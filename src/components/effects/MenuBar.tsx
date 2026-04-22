@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import AccountMenu from "./AccountMenu";
 
 type MenuItem =
   | {
@@ -152,6 +153,8 @@ export default function MenuBar({
           </div>
         );
       })}
+      <div style={{ flex: 1 }} />
+      <AccountMenu />
     </div>
   );
 }
