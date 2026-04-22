@@ -57,6 +57,7 @@ export type ParamType =
   | "color"
   | "boolean"
   | "enum"
+  | "string"
   | "file"
   | "paint"
   | "merge_layers"
@@ -82,6 +83,8 @@ export interface ParamDef {
   softMax?: number;
   default: unknown;
   options?: string[];
+  // Placeholder text for string-type params when the value is empty.
+  placeholder?: string;
   hidden?: boolean;
   // Optional predicate over the node's current params. Returning false hides
   // the row in the UI without affecting the underlying stored value.

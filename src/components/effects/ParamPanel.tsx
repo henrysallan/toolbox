@@ -410,6 +410,29 @@ function ParamControl({
     );
   }
 
+  if (param.type === "string") {
+    const current = typeof value === "string" ? value : (param.default as string);
+    return (
+      <input
+        type="text"
+        value={current}
+        placeholder={param.placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        spellCheck={false}
+        style={{
+          width: "100%",
+          background: "#0a0a0a",
+          border: "1px solid #27272a",
+          color: "#e5e7eb",
+          fontFamily: "inherit",
+          fontSize: 11,
+          padding: "2px 4px",
+          boxSizing: "border-box",
+        }}
+      />
+    );
+  }
+
   if (param.type === "enum") {
     const options = param.options ?? [];
     const current = typeof value === "string" ? value : (param.default as string);

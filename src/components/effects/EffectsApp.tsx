@@ -32,6 +32,12 @@ import { parseTargetHandleKind } from "@/state/graph";
 import { newNodeId } from "@/state/graph";
 import { newLayerId, type MergeLayer } from "@/nodes/effect/merge";
 import { useHistory, useUndoShortcuts, type GraphSnapshot } from "@/state/history";
+import {
+  defaultFilename,
+  downloadBlob,
+  pickVideoMime,
+  sanitizeFilename,
+} from "@/lib/export";
 
 registerAllNodes();
 
@@ -609,6 +615,183 @@ function EffectsShell() {
     [onEdgesChange, pushGraph, getGraphSnapshot]
   );
 
+  // --- Export ---------------------------------------------------------------
+  // Video export drives live playback through the timeline while a
+  // MediaRecorder reads the canvas. That keeps us to a single code path and
+  // zero dependencies; the tradeoff vs. offline WebCodecs encoding is that
+  // recording is real-time and any dropped frames show up in the output.
+  const timeRef = useRef(time);
+  timeRef.current = time;
+  const playingRef = useRef(playing);
+  playingRef.current = playing;
+  const fpsRef = useRef(fps);
+  fpsRef.current = fps;
+
+  const [recording, setRecording] = useState<{
+    totalSec: number;
+    startedAt: number;
+  } | null>(null);
+  const recordingRef = useRef(recording);
+  recordingRef.current = recording;
+
+  const [copied, setCopied] = useState(false);
+  const copiedTimeoutRef = useRef<number | null>(null);
+  const flashCopied = useCallback(() => {
+    setCopied(true);
+    if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+    copiedTimeoutRef.current = window.setTimeout(() => setCopied(false), 1200);
+  }, []);
+  useEffect(
+    () => () => {
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+    },
+    []
+  );
+
+  const getOutputParams = useCallback((nodeId: string) => {
+    const node = nodesRef.current.find((n) => n.id === nodeId);
+    return node?.data.defType === "output" ? node.data.params : null;
+  }, []);
+
+  const exportImage = useCallback(
+    (nodeId: string) => {
+      const canvas = canvasRef.current;
+      const params = getOutputParams(nodeId);
+      if (!canvas || !params) return;
+      const format = (params.imageFormat as string) ?? "png";
+      const quality = (params.imageQuality as number) ?? 0.92;
+      const base = sanitizeFilename((params.filename as string) ?? "");
+      const mime = `image/${format}`;
+      const useQuality = format === "jpeg" || format === "webp";
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) return;
+          downloadBlob(blob, base ? `${base}.${format}` : defaultFilename(format));
+        },
+        mime,
+        useQuality ? quality : undefined
+      );
+    },
+    [getOutputParams]
+  );
+
+  const copyImageToClipboard = useCallback(async () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    // ClipboardItem only accepts PNG reliably — format-specific exports go
+    // through the download path above.
+    const blob = await new Promise<Blob | null>((r) =>
+      canvas.toBlob((b) => r(b), "image/png")
+    );
+    if (!blob) return;
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({ "image/png": blob }),
+      ]);
+      flashCopied();
+    } catch (e) {
+      console.error("Copy to clipboard failed:", e);
+    }
+  }, [flashCopied]);
+
+  const exportVideo = useCallback(
+    async (nodeId: string) => {
+      if (recordingRef.current) return;
+      const canvas = canvasRef.current;
+      const params = getOutputParams(nodeId);
+      if (!canvas || !params) return;
+
+      const requested = (params.videoFormat as "mp4" | "webm") ?? "mp4";
+      const picked = pickVideoMime(requested);
+      if (!picked) {
+        console.error("No supported video codec in this browser");
+        return;
+      }
+      const durationFrames = (params.videoFrames as number) ?? 240;
+      const bitrateMbps = (params.videoBitrateMbps as number) ?? 8;
+      const base = sanitizeFilename((params.filename as string) ?? "");
+      const currentFps = fpsRef.current;
+      const totalSec = durationFrames / currentFps;
+
+      const stream = canvas.captureStream(currentFps);
+      const recorder = new MediaRecorder(stream, {
+        mimeType: picked.mime,
+        videoBitsPerSecond: Math.round(bitrateMbps * 1_000_000),
+      });
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size) chunks.push(e.data);
+      };
+      const done = new Promise<Blob>((resolve) => {
+        recorder.onstop = () => {
+          const type = picked.mime.split(";")[0];
+          resolve(new Blob(chunks, { type }));
+        };
+      });
+
+      const savedTime = timeRef.current;
+      const savedPlaying = playingRef.current;
+
+      // Rewind and let the pipeline render t=0 before we start recording so
+      // the first captured frame isn't whatever was on screen a moment ago.
+      setTime(0);
+      await new Promise<void>((r) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => r()));
+      });
+
+      setPlaying(true);
+      recorder.start();
+      setRecording({ totalSec, startedAt: performance.now() });
+
+      await new Promise((r) => setTimeout(r, totalSec * 1000));
+      recorder.stop();
+      setPlaying(savedPlaying);
+      setTime(savedTime);
+      setRecording(null);
+
+      const blob = await done;
+      downloadBlob(
+        blob,
+        base ? `${base}.${picked.ext}` : defaultFilename(picked.ext)
+      );
+    },
+    [getOutputParams]
+  );
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (
+        e as CustomEvent<{ id: string; kind: "image" | "video" }>
+      ).detail;
+      if (!detail) return;
+      if (detail.kind === "image") exportImage(detail.id);
+      else if (detail.kind === "video") exportVideo(detail.id);
+    };
+    window.addEventListener("effect-node-export", handler);
+    return () => window.removeEventListener("effect-node-export", handler);
+  }, [exportImage, exportVideo]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod || !e.shiftKey) return;
+      if (e.key !== "C" && e.key !== "c") return;
+      // Avoid clobbering text-field copy in inputs/textareas.
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      )
+        return;
+      e.preventDefault();
+      copyImageToClipboard();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [copyImageToClipboard]);
+
   const isParamDriven = useCallback(
     (nodeId: string, paramName: string) => {
       return edges.some((e) => {
@@ -717,6 +900,28 @@ function EffectsShell() {
               }
             />
           )}
+          {recording && <RecordingBanner state={recording} />}
+          {copied && (
+            <div
+              style={{
+                position: "absolute",
+                top: 20,
+                left: 20,
+                padding: "4px 10px",
+                background: "rgba(22, 163, 74, 0.95)",
+                color: "#dcfce7",
+                border: "1px solid #22c55e",
+                borderRadius: 4,
+                fontFamily: "ui-monospace, monospace",
+                fontSize: 11,
+                letterSpacing: 0.5,
+                boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+                pointerEvents: "none",
+              }}
+            >
+              copied
+            </div>
+          )}
         </div>
       </section>
 
@@ -799,6 +1004,59 @@ function EffectsShell() {
         onFpsChange={setFps}
         onLoopFramesChange={setLoopFrames}
       />
+    </div>
+  );
+}
+
+function RecordingBanner({
+  state,
+}: {
+  state: { totalSec: number; startedAt: number };
+}) {
+  const [now, setNow] = useState(() => performance.now());
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      setNow(performance.now());
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  const elapsed = Math.max(0, (now - state.startedAt) / 1000);
+  const remaining = Math.max(0, state.totalSec - elapsed);
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 20,
+        left: "50%",
+        transform: "translateX(-50%)",
+        padding: "6px 12px",
+        background: "rgba(220, 38, 38, 0.9)",
+        color: "#fef2f2",
+        border: "1px solid #ef4444",
+        borderRadius: 4,
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 11,
+        letterSpacing: 0.5,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+        pointerEvents: "none",
+      }}
+    >
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: "#fca5a5",
+          boxShadow: "0 0 8px #ef4444",
+        }}
+      />
+      REC {remaining.toFixed(1)}s remaining
     </div>
   );
 }

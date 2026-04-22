@@ -295,7 +295,71 @@ export default function EffectNode({
           );
         })}
       </div>
+
+      {data.defType === "output" && (
+        <div
+          style={{
+            padding: "6px 8px",
+            borderTop: "1px solid #27272a",
+            display: "flex",
+            gap: 6,
+          }}
+        >
+          <ExportButton
+            label="Image"
+            onClick={() =>
+              window.dispatchEvent(
+                new CustomEvent("effect-node-export", {
+                  detail: { id, kind: "image" },
+                })
+              )
+            }
+          />
+          <ExportButton
+            label="Video"
+            onClick={() =>
+              window.dispatchEvent(
+                new CustomEvent("effect-node-export", {
+                  detail: { id, kind: "video" },
+                })
+              )
+            }
+          />
+        </div>
+      )}
     </div>
+  );
+}
+
+function ExportButton({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className="nodrag"
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      style={{
+        flex: 1,
+        background: "#27272a",
+        color: "#e5e7eb",
+        border: "1px solid #3f3f46",
+        borderRadius: 3,
+        padding: "3px 6px",
+        fontFamily: "inherit",
+        fontSize: 10,
+        cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
