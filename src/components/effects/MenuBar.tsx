@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import AccountMenu from "./AccountMenu";
+import { useUser } from "@/lib/auth-context";
 
 type MenuItem =
   | {
@@ -25,6 +26,8 @@ export interface MenuBarProps {
   canUndo?: boolean;
   canRedo?: boolean;
   onOpenProjectSettings: () => void;
+  onOpenSave: () => void;
+  onOpenLoad: () => void;
 }
 
 const BAR_HEIGHT = 22;
@@ -35,7 +38,11 @@ export default function MenuBar({
   canUndo,
   canRedo,
   onOpenProjectSettings,
+  onOpenSave,
+  onOpenLoad,
 }: MenuBarProps) {
+  const { user } = useUser();
+  const signedIn = !!user;
   const [openId, setOpenId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -75,9 +82,19 @@ export default function MenuBar({
       label: "File",
       items: [
         { kind: "item", label: "New", shortcut: "⌘N", disabled: true },
-        { kind: "item", label: "Open…", shortcut: "⌘O", disabled: true },
+        {
+          kind: "item",
+          label: "Load…",
+          disabled: !signedIn,
+          onClick: onOpenLoad,
+        },
         { kind: "divider" },
-        { kind: "item", label: "Save", shortcut: "⌘S", disabled: true },
+        {
+          kind: "item",
+          label: "Save…",
+          disabled: !signedIn,
+          onClick: onOpenSave,
+        },
         { kind: "item", label: "Export…", disabled: true },
       ],
     },

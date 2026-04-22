@@ -16,7 +16,7 @@ import {
   type OnNodesChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import EffectNode from "./EffectNode";
 import { allNodeDefs, getNodeDef } from "@/engine/registry";
 import { paramSocketType, parseTargetHandleKind } from "@/state/graph";
@@ -129,7 +129,35 @@ function resolveTargetSocketType(
 
 function AddNodeMenu({ onAdd }: { onAdd: (type: string) => void }) {
   const [query, setQuery] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
   const defs = allNodeDefs();
+
+  // Shift+A focuses the search — Blender-style "add node" gesture. Ignored
+  // when the user is already typing in another field or when a modifier
+  // like Cmd/Ctrl/Alt is held (so Cmd+Shift+A etc. pass through).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "A") return;
+      if (!e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      )
+        return;
+      e.preventDefault();
+      const el = inputRef.current;
+      if (el) {
+        setQuery("");
+        el.focus();
+        el.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const normalized = query.trim().toLowerCase();
   const matches = normalized
@@ -169,6 +197,7 @@ function AddNodeMenu({ onAdd }: { onAdd: (type: string) => void }) {
       }}
     >
       <input
+        ref={inputRef}
         type="text"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
@@ -180,7 +209,7 @@ function AddNodeMenu({ onAdd }: { onAdd: (type: string) => void }) {
             handleAdd(matches[0].type);
           }
         }}
-        placeholder="search nodes…"
+        placeholder="search nodes… (⇧A)"
         style={{
           width: "100%",
           background: "#18181b",

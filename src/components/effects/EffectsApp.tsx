@@ -38,6 +38,18 @@ import {
   pickVideoMime,
   sanitizeFilename,
 } from "@/lib/export";
+import {
+  deserializeGraph,
+  generateThumbnail,
+  serializeGraph,
+} from "@/lib/project";
+import {
+  loadProject as loadProjectRow,
+  saveProject as saveProjectRow,
+} from "@/lib/supabase/projects";
+import { AuthProvider, useUser } from "@/lib/auth-context";
+import SaveModal from "./SaveModal";
+import TransformGizmo from "./TransformGizmo";
 
 registerAllNodes();
 
@@ -137,9 +149,11 @@ function fp(v: unknown): string {
 
 export default function EffectsApp() {
   return (
-    <ReactFlowProvider>
-      <EffectsShell />
-    </ReactFlowProvider>
+    <AuthProvider>
+      <ReactFlowProvider>
+        <EffectsShell />
+      </ReactFlowProvider>
+    </AuthProvider>
   );
 }
 
@@ -150,9 +164,16 @@ function EffectsShell() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [canvasRes, setCanvasRes] = useState<[number, number]>([1024, 1024]);
   // Controls which panel the right-side parameters section is showing.
-  // Selecting a node switches it to "node"; the Project Settings menu item
-  // switches it back to "project".
-  const [paramView, setParamView] = useState<"project" | "node">("node");
+  // Selecting a node switches it to "node"; Project Settings flips it to
+  // "project"; File → Load flips it to "load" (grid of saved projects).
+  const [paramView, setParamView] = useState<"project" | "node" | "load">(
+    "node"
+  );
+  // Bumped after every save so the load grid refetches on next view.
+  const [loadRefreshKey, setLoadRefreshKey] = useState(0);
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const { user } = useUser();
+  const signedIn = !!user;
   const [errors, setErrors] = useState<Record<string, string>>({});
   // Default to a 50/50 split between canvas and the right column. The SSR
   // pass uses a placeholder; we swap to half the viewport on mount to avoid
@@ -771,6 +792,36 @@ function EffectsShell() {
     return () => window.removeEventListener("effect-node-export", handler);
   }, [exportImage, exportVideo]);
 
+  // --- Save / Load ----------------------------------------------------------
+  const handleSaveProject = useCallback(
+    async (name: string) => {
+      if (!signedIn) throw new Error("Sign in to save projects.");
+      const graph = await serializeGraph(nodesRef.current, edgesRef.current);
+      const canvas = canvasRef.current;
+      const thumbnail = canvas ? generateThumbnail(canvas, 256) : null;
+      const result = await saveProjectRow(name, graph, thumbnail);
+      if (!result) throw new Error("Save failed — check RLS policy / network.");
+      setLoadRefreshKey((n) => n + 1);
+    },
+    [signedIn]
+  );
+
+  const handleLoadProject = useCallback(
+    async (id: string) => {
+      const saved = await loadProjectRow(id);
+      if (!saved) return;
+      // Snapshot the current graph so Cmd+Z undoes the load.
+      pushGraph(getGraphSnapshot());
+      const { nodes: nextNodes, edges: nextEdges } =
+        await deserializeGraph(saved);
+      setNodes(nextNodes);
+      setEdges(nextEdges);
+      setSelectedId(null);
+      setParamView("node");
+    },
+    [pushGraph, getGraphSnapshot, setNodes, setEdges]
+  );
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -828,6 +879,13 @@ function EffectsShell() {
       )
     : undefined;
 
+  // Show the pivot gizmo whenever a transform node is selected.
+  const activeTransformNode = selectedId
+    ? nodes.find(
+        (n) => n.id === selectedId && n.data.defType === "transform"
+      )
+    : undefined;
+
   return (
     <div
       style={{
@@ -847,6 +905,8 @@ function EffectsShell() {
         canUndo={canUndo}
         canRedo={canRedo}
         onOpenProjectSettings={() => setParamView("project")}
+        onOpenSave={() => setSaveModalOpen(true)}
+        onOpenLoad={() => setParamView("load")}
       />
       <div
         style={{
@@ -898,6 +958,35 @@ function EffectsShell() {
               onStrokeCommit={(nodeId, canvas, before) =>
                 pushPaint({ nodeId, canvas, imageData: before })
               }
+            />
+          )}
+          {activeTransformNode && backendReady && (
+            <TransformGizmo
+              canvas={canvasRef.current}
+              pivotX={(activeTransformNode.data.params.pivotX as number) ?? 0.5}
+              pivotY={(activeTransformNode.data.params.pivotY as number) ?? 0.5}
+              translateX={
+                (activeTransformNode.data.params.translateX as number) ?? 0
+              }
+              translateY={
+                (activeTransformNode.data.params.translateY as number) ?? 0
+              }
+              scaleX={
+                (activeTransformNode.data.params.scaleX as number) ?? 1
+              }
+              scaleY={
+                (activeTransformNode.data.params.scaleY as number) ?? 1
+              }
+              rotate={
+                (activeTransformNode.data.params.rotate as number) ?? 0
+              }
+              onChange={(patch) => {
+                const id = activeTransformNode.id;
+                for (const [k, v] of Object.entries(patch)) {
+                  if (typeof v === "number")
+                    onParamChange(id, k, v);
+                }
+              }}
             />
           )}
           {recording && <RecordingBanner state={recording} />}
@@ -987,6 +1076,9 @@ function EffectsShell() {
             onParamChange={onParamChange}
             onToggleParamExposed={onToggleParamExposed}
             isParamDriven={isParamDriven}
+            signedIn={signedIn}
+            onLoadProject={handleLoadProject}
+            loadRefreshKey={loadRefreshKey}
           />
         </section>
       </div>
@@ -1003,6 +1095,11 @@ function EffectsShell() {
         onScrubEnd={onScrubEnd}
         onFpsChange={setFps}
         onLoopFramesChange={setLoopFrames}
+      />
+      <SaveModal
+        open={saveModalOpen}
+        onClose={() => setSaveModalOpen(false)}
+        onSave={handleSaveProject}
       />
     </div>
   );

@@ -77,3 +77,38 @@ input[type="range"]::-moz-range-thumb {
 input[type="range"]::-moz-focus-outer {
   border: 0;
 }
+
+/* React Flow Controls — strip the panel/button chrome to just white icons
+   on transparent bg. The default styles are a floating card with filled
+   buttons; we want something that disappears into the node-editor surface. */
+.react-flow__controls {
+  background: transparent;
+  box-shadow: none;
+  border: none;
+  gap: 2px;
+}
+
+.react-flow__controls-button {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: none !important;
+  box-shadow: none !important;
+  width: 22px;
+  height: 22px;
+  padding: 4px;
+}
+
+.react-flow__controls-button:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 3px;
+}
+
+.react-flow__controls-button svg,
+.react-flow__controls-button path {
+  fill: #e5e7eb;
+}
+
+.react-flow__controls-button:disabled svg,
+.react-flow__controls-button:disabled path {
+  fill: #52525b;
+}

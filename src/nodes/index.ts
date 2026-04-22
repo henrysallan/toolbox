@@ -11,6 +11,7 @@ import { gaussianBlurNode } from "./effect/gaussian-blur";
 import { ditherNode } from "./effect/dither";
 import { colorRampNode } from "./effect/color-ramp";
 import { colorCorrectionNode } from "./effect/color-correction";
+import { transformNode } from "./effect/transform";
 import { outputNode } from "./output/output";
 
 let registered = false;
@@ -29,6 +30,7 @@ export function registerAllNodes() {
   registerNode(ditherNode);
   registerNode(colorRampNode);
   registerNode(colorCorrectionNode);
+  registerNode(transformNode);
   registerNode(outputNode);
   registered = true;
 }

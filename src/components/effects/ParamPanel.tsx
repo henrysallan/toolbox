@@ -6,6 +6,7 @@ import { getNodeDef } from "@/engine/registry";
 import { paramSocketType } from "@/state/graph";
 import type { NodeDataPayload } from "@/state/graph";
 import type { ParamDef } from "@/engine/types";
+import LoadGrid from "./LoadGrid";
 import {
   COLOR_RAMP_MAX_STOPS,
   newStopId,
@@ -26,9 +27,10 @@ import {
 interface Props {
   nodes: Node<NodeDataPayload>[];
   selectedId: string | null;
-  // Which view the panel shows. "project" renders the project-wide settings
-  // (resolution, etc.); "node" renders params for the selected node.
-  mode: "project" | "node";
+  // Which view the panel shows. "project" renders project-wide settings
+  // (resolution, etc.); "node" renders params for the selected node;
+  // "load" renders a grid of saved projects for the signed-in user.
+  mode: "project" | "node" | "load";
   canvasRes: [number, number];
   onCanvasResChange: (res: [number, number]) => void;
   onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
@@ -36,6 +38,11 @@ interface Props {
   // Returns true when an exposed param currently has an incoming edge
   // driving it. The row is rendered read-only with a "driven" indicator.
   isParamDriven: (nodeId: string, paramName: string) => boolean;
+  signedIn?: boolean;
+  // Clicking a project thumbnail triggers load in the parent.
+  onLoadProject?: (id: string) => void;
+  // Bumped by the parent after save/delete so LoadGrid refetches.
+  loadRefreshKey?: number;
 }
 
 const RES_PRESETS: Array<{ label: string; w: number; h: number }> = [
@@ -56,6 +63,9 @@ export default function ParamPanel({
   onParamChange,
   onToggleParamExposed,
   isParamDriven,
+  signedIn,
+  onLoadProject,
+  loadRefreshKey,
 }: Props) {
   const selected = selectedId
     ? nodes.find((n) => n.id === selectedId)
@@ -79,6 +89,14 @@ export default function ParamPanel({
           canvasRes={canvasRes}
           onCanvasResChange={onCanvasResChange}
         />
+      ) : mode === "load" ? (
+        <Section label="load project">
+          <LoadGrid
+            signedIn={!!signedIn}
+            onLoad={(id) => onLoadProject?.(id)}
+            refreshKey={loadRefreshKey}
+          />
+        </Section>
       ) : selected && def ? (
         <Section label={`${def.name} · parameters`}>
           {(() => {
