@@ -74,6 +74,13 @@ export default function NodeEditor({
           const first = sel.nodes[0];
           onSelectNode(first?.id ?? null);
         }}
+        // Figma-style viewport: two-finger scroll pans, pinch zooms,
+        // drag on empty canvas draws a marquee selection. Cmd-scroll still
+        // zooms via the default zoomActivationKeyCode.
+        panOnScroll
+        zoomOnScroll={false}
+        panOnDrag={false}
+        selectionOnDrag
         fitView
         proOptions={{ hideAttribution: true }}
         colorMode="dark"

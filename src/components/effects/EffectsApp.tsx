@@ -7,13 +7,16 @@ import {
   useNodesState,
   type Connection,
   type Edge,
+  type EdgeChange,
   type Node,
+  type NodeChange,
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NodeEditor from "./NodeEditor";
 import ParamPanel from "./ParamPanel";
 import PaintOverlay from "./PaintOverlay";
 import Timeline from "./Timeline";
+import MenuBar from "./MenuBar";
 import { registerAllNodes } from "@/nodes";
 import { getNodeDef } from "@/engine/registry";
 import { createEngineBackend, type EngineBackend } from "@/engine/gl";
@@ -28,6 +31,7 @@ import type { NodeDataPayload } from "@/state/graph";
 import { parseTargetHandleKind } from "@/state/graph";
 import { newNodeId } from "@/state/graph";
 import { newLayerId, type MergeLayer } from "@/nodes/effect/merge";
+import { useHistory, useUndoShortcuts, type GraphSnapshot } from "@/state/history";
 
 registerAllNodes();
 
@@ -133,23 +137,24 @@ export default function EffectsApp() {
   );
 }
 
-const RES_PRESETS: Array<{ label: string; w: number; h: number }> = [
-  { label: "512 × 512", w: 512, h: 512 },
-  { label: "1024 × 1024", w: 1024, h: 1024 },
-  { label: "2048 × 2048", w: 2048, h: 2048 },
-  { label: "1280 × 720", w: 1280, h: 720 },
-  { label: "1920 × 1080", w: 1920, h: 1080 },
-  { label: "3840 × 2160", w: 3840, h: 2160 },
-];
-
 function EffectsShell() {
   const [nodes, setNodes, onNodesChange] =
     useNodesState<Node<NodeDataPayload>>(INITIAL_NODES);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(INITIAL_EDGES);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [canvasRes, setCanvasRes] = useState<[number, number]>([1024, 1024]);
+  // Controls which panel the right-side parameters section is showing.
+  // Selecting a node switches it to "node"; the Project Settings menu item
+  // switches it back to "project".
+  const [paramView, setParamView] = useState<"project" | "node">("node");
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Default to a 50/50 split between canvas and the right column. The SSR
+  // pass uses a placeholder; we swap to half the viewport on mount to avoid
+  // a hydration mismatch.
   const [rightColWidth, setRightColWidth] = useState(520);
+  useEffect(() => {
+    setRightColWidth(Math.floor(window.innerWidth / 2));
+  }, []);
   const [bottomRowHeight, setBottomRowHeight] = useState(280);
 
   const backendRef = useRef<EngineBackend | null>(null);
@@ -167,6 +172,61 @@ function EffectsShell() {
   // itself isn't touched, so clearing `scrubbing` restores the prior state —
   // a timeline that was paused before the drag stays paused.
   const [scrubbing, setScrubbing] = useState(false);
+
+  // Refs let the history hook read the latest graph state without having to
+  // thread it through every undoable action's dependency list.
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+  const edgesRef = useRef(edges);
+  edgesRef.current = edges;
+
+  const getGraphSnapshot = useCallback(
+    (): GraphSnapshot => ({
+      nodes: nodesRef.current,
+      edges: edgesRef.current,
+    }),
+    []
+  );
+  const applyGraphSnapshot = useCallback(
+    (snap: GraphSnapshot) => {
+      setNodes(snap.nodes);
+      setEdges(snap.edges);
+    },
+    [setNodes, setEdges]
+  );
+  // Restoring paint pixels is only half of undo — the pipeline's input is the
+  // `snapshot` ImageBitmap stashed on the paint param, so we refresh it from
+  // the just-restored canvas and swap it in.
+  const onPaintRestore = useCallback(
+    (nodeId: string, canvas: HTMLCanvasElement) => {
+      createImageBitmap(canvas).then((bmp) => {
+        setNodes((prev) =>
+          prev.map((n) =>
+            n.id === nodeId
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    params: {
+                      ...n.data.params,
+                      paint: { canvas, snapshot: bmp },
+                    },
+                  },
+                }
+              : n
+          )
+        );
+      });
+    },
+    [setNodes]
+  );
+
+  const { pushGraph, pushPaint, undo, redo, canUndo, canRedo } = useHistory({
+    getGraphSnapshot,
+    applyGraphSnapshot,
+    onPaintRestore,
+  });
+  useUndoShortcuts(undo, redo);
 
   useEffect(() => {
     try {
@@ -337,6 +397,7 @@ function EffectsShell() {
 
   const onConnect = useCallback(
     (connection: Connection) => {
+      pushGraph(getGraphSnapshot());
       setEdges((eds) => {
         const filtered = eds.filter(
           (e) =>
@@ -348,22 +409,30 @@ function EffectsShell() {
         return addEdge(connection, filtered);
       });
     },
-    [setEdges]
+    [setEdges, pushGraph, getGraphSnapshot]
   );
 
   const onAddNode = useCallback(
     (type: string) => {
+      pushGraph(getGraphSnapshot());
       const pos = {
         x: 200 + Math.random() * 200,
         y: 200 + Math.random() * 100,
       };
       setNodes((prev) => [...prev, makeInstanceNode(type, pos)]);
     },
-    [setNodes]
+    [setNodes, pushGraph, getGraphSnapshot]
   );
 
   const onParamChange = useCallback(
     (nodeId: string, paramName: string, value: unknown) => {
+      // Coalesce rapid same-param changes (slider drags, color-ramp moves,
+      // curve point drags) into a single undo entry keyed by node+param.
+      // Paint param updates are internal-only — pipeline snapshots and undo
+      // restores trigger them — and are excluded to keep those flows linear.
+      if (paramName !== "paint") {
+        pushGraph(getGraphSnapshot(), `param:${nodeId}:${paramName}`);
+      }
       setNodes((prev) =>
         prev.map((n) => {
           if (n.id !== nodeId) return n;
@@ -387,7 +456,7 @@ function EffectsShell() {
         })
       );
     },
-    [setNodes]
+    [setNodes, pushGraph, getGraphSnapshot]
   );
 
   // Drop edges whose target handle no longer exists on the node — e.g. after
@@ -415,6 +484,13 @@ function EffectsShell() {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ id: string; kind: string }>).detail;
       if (!detail) return;
+      if (
+        detail.kind === "toggleActive" ||
+        detail.kind === "toggleBypass" ||
+        detail.kind === "mergeAddLayer"
+      ) {
+        pushGraph(getGraphSnapshot());
+      }
       if (detail.kind === "toggleActive") {
         setNodes((prev) =>
           prev.map((n) => ({
@@ -462,10 +538,11 @@ function EffectsShell() {
     };
     window.addEventListener("effect-node-toggle", handler);
     return () => window.removeEventListener("effect-node-toggle", handler);
-  }, [setNodes]);
+  }, [setNodes, pushGraph, getGraphSnapshot]);
 
   const onToggleParamExposed = useCallback(
     (nodeId: string, paramName: string) => {
+      pushGraph(getGraphSnapshot());
       let wasExposed = false;
       setNodes((prev) =>
         prev.map((n) => {
@@ -490,7 +567,46 @@ function EffectsShell() {
         );
       }
     },
-    [setNodes, setEdges]
+    [setNodes, setEdges, pushGraph, getGraphSnapshot]
+  );
+
+  // Capture drag starts so a whole drag (many `position` changes with
+  // `dragging: true`) collapses into one undo entry keyed by drag end.
+  const dragStartSnapRef = useRef<GraphSnapshot | null>(null);
+  const onNodesChangeWithHistory = useCallback(
+    (changes: NodeChange<Node<NodeDataPayload>>[]) => {
+      for (const c of changes) {
+        if (c.type === "position") {
+          if (c.dragging === true) {
+            if (!dragStartSnapRef.current) {
+              dragStartSnapRef.current = getGraphSnapshot();
+            }
+          } else if (c.dragging === false) {
+            if (dragStartSnapRef.current) {
+              pushGraph(dragStartSnapRef.current);
+              dragStartSnapRef.current = null;
+            }
+          }
+        } else if (c.type === "remove") {
+          // Deleting a node typically triggers edge removals in the same
+          // dispatch batch — coalesce them under one "rf-remove" entry.
+          pushGraph(getGraphSnapshot(), "rf-remove");
+        }
+      }
+      onNodesChange(changes);
+    },
+    [onNodesChange, pushGraph, getGraphSnapshot]
+  );
+  const onEdgesChangeWithHistory = useCallback(
+    (changes: EdgeChange[]) => {
+      for (const c of changes) {
+        if (c.type === "remove") {
+          pushGraph(getGraphSnapshot(), "rf-remove");
+        }
+      }
+      onEdgesChange(changes);
+    },
+    [onEdgesChange, pushGraph, getGraphSnapshot]
   );
 
   const isParamDriven = useCallback(
@@ -520,9 +636,6 @@ function EffectsShell() {
     setScrubbing(false);
   }, []);
 
-  const resKey = `${canvasRes[0]}×${canvasRes[1]}`;
-  const isPreset = RES_PRESETS.some((r) => `${r.w}×${r.h}` === resKey);
-
   // Paint input is gated on SELECTION. The overlay is visually invisible —
   // strokes only appear through the pipeline as rendered by the ACTIVE node,
   // so you can paint and see the end-of-chain result live.
@@ -545,6 +658,13 @@ function EffectsShell() {
         fontSize: 12,
       }}
     >
+      <MenuBar
+        onUndo={undo}
+        onRedo={redo}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onOpenProjectSettings={() => setParamView("project")}
+      />
       <div
         style={{
           display: "flex",
@@ -562,86 +682,6 @@ function EffectsShell() {
           flexDirection: "column",
         }}
       >
-        <header
-          style={{
-            padding: "8px 12px",
-            borderBottom: "1px solid #27272a",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 12,
-          }}
-        >
-          <span style={{ fontSize: 11, letterSpacing: 0.5 }}>
-            toolbox · canvas
-          </span>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 16,
-              fontSize: 11,
-              color: "#a1a1aa",
-            }}
-          >
-            <span
-              title="Target playback framerate (configured in timeline)"
-              style={{
-                fontVariantNumeric: "tabular-nums",
-                color: "#a1a1aa",
-              }}
-            >
-              {fps} fps
-            </span>
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              fontSize: 11,
-              color: "#a1a1aa",
-            }}
-          >
-            resolution
-            <select
-              value={isPreset ? resKey : "__custom__"}
-              onChange={(e) => {
-                if (e.target.value === "__custom__") return;
-                const [w, h] = e.target.value.split("×").map(Number);
-                setCanvasRes([w, h]);
-              }}
-              style={{
-                background: "#0a0a0a",
-                border: "1px solid #27272a",
-                color: "#e5e7eb",
-                fontFamily: "inherit",
-                fontSize: 11,
-                padding: "2px 4px",
-              }}
-            >
-              {RES_PRESETS.map((r) => (
-                <option key={r.label} value={`${r.w}×${r.h}`}>
-                  {r.label}
-                </option>
-              ))}
-              {!isPreset && (
-                <option value="__custom__">
-                  {canvasRes[0]} × {canvasRes[1]} (custom)
-                </option>
-              )}
-            </select>
-            <ResInput
-              value={canvasRes[0]}
-              onCommit={(w) => setCanvasRes([w, canvasRes[1]])}
-            />
-            <span style={{ color: "#52525b" }}>×</span>
-            <ResInput
-              value={canvasRes[1]}
-              onCommit={(h) => setCanvasRes([canvasRes[0], h])}
-            />
-          </label>
-          </div>
-        </header>
         <div
           style={{
             flex: 1,
@@ -672,6 +712,9 @@ function EffectsShell() {
               params={activePaintNode.data.params}
               canvasRes={canvasRes}
               onParamChange={onParamChange}
+              onStrokeCommit={(nodeId, canvas, before) =>
+                pushPaint({ nodeId, canvas, imageData: before })
+              }
             />
           )}
         </div>
@@ -706,10 +749,15 @@ function EffectsShell() {
           <NodeEditor
             nodes={nodes}
             edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
+            onNodesChange={onNodesChangeWithHistory}
+            onEdgesChange={onEdgesChangeWithHistory}
             onConnect={onConnect}
-            onSelectNode={setSelectedId}
+            onSelectNode={(id) => {
+              setSelectedId(id);
+              // Clicking a node flips the right panel back to node params —
+              // a deselection alone shouldn't disturb the project-settings view.
+              if (id) setParamView("node");
+            }}
             onAddNode={onAddNode}
           />
         </section>
@@ -728,6 +776,9 @@ function EffectsShell() {
           <ParamPanel
             nodes={nodes}
             selectedId={selectedId}
+            mode={paramView}
+            canvasRes={canvasRes}
+            onCanvasResChange={setCanvasRes}
             onParamChange={onParamChange}
             onToggleParamExposed={onToggleParamExposed}
             isParamDriven={isParamDriven}
@@ -749,49 +800,5 @@ function EffectsShell() {
         onLoopFramesChange={setLoopFrames}
       />
     </div>
-  );
-}
-
-function ResInput({
-  value,
-  onCommit,
-}: {
-  value: number;
-  onCommit: (n: number) => void;
-}) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-  const commit = () => {
-    const n = Math.round(parseFloat(draft));
-    if (!Number.isFinite(n) || n < 16 || n > 8192) {
-      setDraft(String(value));
-      return;
-    }
-    if (n !== value) onCommit(n);
-  };
-  return (
-    <input
-      type="number"
-      value={draft}
-      min={16}
-      max={8192}
-      step={1}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-      }}
-      style={{
-        width: 64,
-        background: "#0a0a0a",
-        border: "1px solid #27272a",
-        color: "#e5e7eb",
-        fontFamily: "inherit",
-        fontSize: 11,
-        padding: "2px 4px",
-      }}
-    />
   );
 }

@@ -10,6 +10,13 @@ interface Props {
   params: Record<string, unknown>;
   canvasRes: [number, number];
   onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
+  // Fires after each completed stroke or fill with the pre-action pixels so
+  // the caller can push them onto the undo stack.
+  onStrokeCommit?: (
+    nodeId: string,
+    canvas: HTMLCanvasElement,
+    before: ImageData
+  ) => void;
 }
 
 export default function PaintOverlay({
@@ -17,6 +24,7 @@ export default function PaintOverlay({
   params,
   canvasRes,
   onParamChange,
+  onStrokeCommit,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const atramentRef = useRef<Atrament | null>(null);
@@ -24,6 +32,8 @@ export default function PaintOverlay({
   nodeIdRef.current = nodeId;
   const onChangeRef = useRef(onParamChange);
   onChangeRef.current = onParamChange;
+  const onStrokeCommitRef = useRef(onStrokeCommit);
+  onStrokeCommitRef.current = onStrokeCommit;
 
   const paint = (params.paint as PaintParamValue | null) ?? null;
   const color = (params.color as string) ?? "#ffffff";
@@ -118,31 +128,58 @@ export default function PaintOverlay({
     // directly, which is hidden).
     let drawing = false;
     let rafId = 0;
+    // Pixels captured at stroke/fill start, committed to the undo stack when
+    // the action ends. Cleared on unmount mid-stroke to avoid half-actions.
+    let beforeAction: ImageData | null = null;
     const tick = () => {
       if (!drawing) return;
       snapshot();
       rafId = requestAnimationFrame(tick);
     };
-    const onStart = () => {
+    const captureBefore = () => {
+      const c2d = canvas.getContext("2d");
+      if (!c2d) return;
+      beforeAction = c2d.getImageData(0, 0, canvas.width, canvas.height);
+    };
+    const commitBefore = () => {
+      if (!beforeAction) return;
+      onStrokeCommitRef.current?.(nodeIdRef.current, canvas, beforeAction);
+      beforeAction = null;
+    };
+    const onStrokeStart = () => {
+      captureBefore();
       drawing = true;
       rafId = requestAnimationFrame(tick);
     };
-    const onEnd = () => {
+    const onStrokeEnd = () => {
       drawing = false;
       cancelAnimationFrame(rafId);
       // Final snapshot to capture the last pixels after the loop exits.
       snapshot();
+      commitBefore();
     };
-    at.addEventListener("strokestart", onStart);
-    at.addEventListener("strokeend", onEnd);
-    at.addEventListener("fillend", onEnd);
+    const onFillStart = () => {
+      captureBefore();
+    };
+    const onFillEnd = () => {
+      drawing = false;
+      cancelAnimationFrame(rafId);
+      snapshot();
+      commitBefore();
+    };
+    at.addEventListener("strokestart", onStrokeStart);
+    at.addEventListener("strokeend", onStrokeEnd);
+    at.addEventListener("fillstart", onFillStart);
+    at.addEventListener("fillend", onFillEnd);
 
     return () => {
       drawing = false;
+      beforeAction = null;
       cancelAnimationFrame(rafId);
-      at.removeEventListener("strokestart", onStart);
-      at.removeEventListener("strokeend", onEnd);
-      at.removeEventListener("fillend", onEnd);
+      at.removeEventListener("strokestart", onStrokeStart);
+      at.removeEventListener("strokeend", onStrokeEnd);
+      at.removeEventListener("fillstart", onFillStart);
+      at.removeEventListener("fillend", onFillEnd);
       // atrament.destroy() clears the canvas — save and restore to preserve the drawing.
       const c2d = canvas.getContext("2d");
       const saved = c2d?.getImageData(0, 0, canvas.width, canvas.height);

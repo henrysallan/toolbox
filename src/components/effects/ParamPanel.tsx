@@ -26,6 +26,11 @@ import {
 interface Props {
   nodes: Node<NodeDataPayload>[];
   selectedId: string | null;
+  // Which view the panel shows. "project" renders the project-wide settings
+  // (resolution, etc.); "node" renders params for the selected node.
+  mode: "project" | "node";
+  canvasRes: [number, number];
+  onCanvasResChange: (res: [number, number]) => void;
   onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
   onToggleParamExposed: (nodeId: string, paramName: string) => void;
   // Returns true when an exposed param currently has an incoming edge
@@ -33,9 +38,21 @@ interface Props {
   isParamDriven: (nodeId: string, paramName: string) => boolean;
 }
 
+const RES_PRESETS: Array<{ label: string; w: number; h: number }> = [
+  { label: "512 × 512", w: 512, h: 512 },
+  { label: "1024 × 1024", w: 1024, h: 1024 },
+  { label: "2048 × 2048", w: 2048, h: 2048 },
+  { label: "1280 × 720", w: 1280, h: 720 },
+  { label: "1920 × 1080", w: 1920, h: 1080 },
+  { label: "3840 × 2160", w: 3840, h: 2160 },
+];
+
 export default function ParamPanel({
   nodes,
   selectedId,
+  mode,
+  canvasRes,
+  onCanvasResChange,
   onParamChange,
   onToggleParamExposed,
   isParamDriven,
@@ -57,7 +74,12 @@ export default function ParamPanel({
         fontSize: 11,
       }}
     >
-      {selected && def ? (
+      {mode === "project" ? (
+        <ProjectSettings
+          canvasRes={canvasRes}
+          onCanvasResChange={onCanvasResChange}
+        />
+      ) : selected && def ? (
         <Section label={`${def.name} · parameters`}>
           {(() => {
             const exposedSet = new Set(selected.data.exposedParams ?? []);
@@ -98,6 +120,117 @@ export default function ParamPanel({
         <div style={{ color: "#52525b" }}>Select a node to edit parameters.</div>
       )}
     </div>
+  );
+}
+
+function ProjectSettings({
+  canvasRes,
+  onCanvasResChange,
+}: {
+  canvasRes: [number, number];
+  onCanvasResChange: (res: [number, number]) => void;
+}) {
+  const resKey = `${canvasRes[0]}×${canvasRes[1]}`;
+  const isPreset = RES_PRESETS.some((r) => `${r.w}×${r.h}` === resKey);
+
+  return (
+    <Section label="project settings">
+      <div
+        style={{
+          padding: 8,
+          background: "#111113",
+          border: "1px solid #1f1f23",
+          borderRadius: 4,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+        }}
+      >
+        <span style={{ color: "#d4d4d8" }}>resolution</span>
+        <select
+          value={isPreset ? resKey : "__custom__"}
+          onChange={(e) => {
+            if (e.target.value === "__custom__") return;
+            const [w, h] = e.target.value.split("×").map(Number);
+            onCanvasResChange([w, h]);
+          }}
+          style={{
+            background: "#0a0a0a",
+            border: "1px solid #27272a",
+            color: "#e5e7eb",
+            fontFamily: "inherit",
+            fontSize: 11,
+            padding: "2px 4px",
+          }}
+        >
+          {RES_PRESETS.map((r) => (
+            <option key={r.label} value={`${r.w}×${r.h}`}>
+              {r.label}
+            </option>
+          ))}
+          {!isPreset && (
+            <option value="__custom__">
+              {canvasRes[0]} × {canvasRes[1]} (custom)
+            </option>
+          )}
+        </select>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <ResInput
+            value={canvasRes[0]}
+            onCommit={(w) => onCanvasResChange([w, canvasRes[1]])}
+          />
+          <span style={{ color: "#52525b" }}>×</span>
+          <ResInput
+            value={canvasRes[1]}
+            onCommit={(h) => onCanvasResChange([canvasRes[0], h])}
+          />
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+function ResInput({
+  value,
+  onCommit,
+}: {
+  value: number;
+  onCommit: (n: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+  const commit = () => {
+    const n = Math.round(parseFloat(draft));
+    if (!Number.isFinite(n) || n < 16 || n > 8192) {
+      setDraft(String(value));
+      return;
+    }
+    if (n !== value) onCommit(n);
+  };
+  return (
+    <input
+      type="number"
+      value={draft}
+      min={16}
+      max={8192}
+      step={1}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+      style={{
+        width: 72,
+        background: "#0a0a0a",
+        border: "1px solid #27272a",
+        color: "#e5e7eb",
+        fontFamily: "inherit",
+        fontSize: 11,
+        padding: "2px 4px",
+      }}
+    />
   );
 }
 
