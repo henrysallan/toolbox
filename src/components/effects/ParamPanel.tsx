@@ -13,6 +13,10 @@ import {
   type ColorRampStop,
 } from "@/nodes/effect/color-ramp";
 import {
+  BLEND_MODE_ORDER,
+  blendModeLabel,
+} from "@/nodes/effect/merge";
+import {
   CURVE_CHANNELS,
   computeMonotoneTangents,
   defaultCurveChannel,
@@ -430,6 +434,30 @@ function ParamControl({
 
   if (param.type === "string") {
     const current = typeof value === "string" ? value : (param.default as string);
+    if (param.multiline) {
+      return (
+        <textarea
+          value={current}
+          placeholder={param.placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          spellCheck={false}
+          rows={3}
+          style={{
+            width: "100%",
+            minHeight: 54,
+            resize: "vertical",
+            background: "#0a0a0a",
+            border: "1px solid #27272a",
+            color: "#e5e7eb",
+            fontFamily: "inherit",
+            fontSize: 11,
+            padding: "4px 6px",
+            boxSizing: "border-box",
+            lineHeight: 1.4,
+          }}
+        />
+      );
+    }
     return (
       <input
         type="text"
@@ -448,6 +476,219 @@ function ParamControl({
           boxSizing: "border-box",
         }}
       />
+    );
+  }
+
+  if (param.type === "audio_file") {
+    const current = value as
+      | { filename?: string; duration?: number }
+      | null
+      | undefined;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <input
+          type="file"
+          accept="audio/*"
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const mod = await import("@/lib/audio");
+            const v = await mod.registerAudioFile(file);
+            onChange(v);
+          }}
+          style={{ color: "#e5e7eb", fontSize: 10 }}
+        />
+        {current?.filename && (
+          <div style={{ color: "#71717a", fontSize: 10 }}>
+            {current.filename} · {current.duration?.toFixed(1)}s
+          </div>
+        )}
+        {current && (
+          <button
+            onClick={async () => {
+              const { disposeAudioFile } = await import("@/lib/audio");
+              disposeAudioFile(
+                value as import("@/engine/types").AudioFileParamValue
+              );
+              onChange(null);
+            }}
+            style={{
+              padding: "2px 6px",
+              background: "transparent",
+              border: "1px solid #3f3f46",
+              color: "#a1a1aa",
+              fontFamily: "inherit",
+              fontSize: 10,
+              borderRadius: 3,
+              cursor: "pointer",
+              alignSelf: "flex-start",
+            }}
+          >
+            clear
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (param.type === "video_file") {
+    const current = value as
+      | { filename?: string; duration?: number; width?: number; height?: number }
+      | null
+      | undefined;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <input
+          type="file"
+          accept="video/*"
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const mod = await import("@/lib/video");
+            const { registerVideoFile } = mod;
+            const v = await registerVideoFile(file);
+            onChange(v);
+          }}
+          style={{ color: "#e5e7eb", fontSize: 10 }}
+        />
+        {current?.filename && (
+          <div style={{ color: "#71717a", fontSize: 10 }}>
+            {current.filename} · {current.width}×{current.height} ·{" "}
+            {current.duration?.toFixed(1)}s
+          </div>
+        )}
+        {current && (
+          <button
+            onClick={async () => {
+              const { disposeVideoFile } = await import("@/lib/video");
+              disposeVideoFile(
+                value as import("@/engine/types").VideoFileParamValue
+              );
+              onChange(null);
+            }}
+            style={{
+              padding: "2px 6px",
+              background: "transparent",
+              border: "1px solid #3f3f46",
+              color: "#a1a1aa",
+              fontFamily: "inherit",
+              fontSize: 10,
+              borderRadius: 3,
+              cursor: "pointer",
+              alignSelf: "flex-start",
+            }}
+          >
+            clear
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (param.type === "svg_file") {
+    const current = value as
+      | { filename?: string; subpaths?: unknown[]; aspect?: number }
+      | null
+      | undefined;
+    const subpathCount = current?.subpaths?.length ?? 0;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <input
+          type="file"
+          accept=".svg,image/svg+xml"
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            try {
+              const text = await file.text();
+              const { parseSvg } = await import("@/lib/svg-parse");
+              const parsed = parseSvg(text, file.name);
+              onChange(parsed);
+            } catch (err) {
+              // Surface the error but don't throw — invalid SVGs are a
+              // common user mistake, not a crash condition.
+              // eslint-disable-next-line no-console
+              console.warn("SVG parse failed:", err);
+              alert(
+                "Failed to parse SVG: " +
+                  (err instanceof Error ? err.message : String(err))
+              );
+            }
+          }}
+          style={{ color: "#e5e7eb", fontSize: 10 }}
+        />
+        {current?.filename && (
+          <div style={{ color: "#71717a", fontSize: 10 }}>
+            {current.filename} · {subpathCount} subpath
+            {subpathCount === 1 ? "" : "s"}
+            {current.aspect && ` · aspect ${current.aspect.toFixed(2)}`}
+          </div>
+        )}
+        {current && (
+          <button
+            onClick={() => onChange(null)}
+            style={{
+              padding: "2px 6px",
+              background: "transparent",
+              border: "1px solid #3f3f46",
+              color: "#a1a1aa",
+              fontFamily: "inherit",
+              fontSize: 10,
+              borderRadius: 3,
+              cursor: "pointer",
+              alignSelf: "flex-start",
+            }}
+          >
+            clear
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (param.type === "font") {
+    const current = value as
+      | { family: string; filename?: string }
+      | null
+      | undefined;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <input
+          type="file"
+          accept=".ttf,.otf,.woff,.woff2"
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const mod = await import("@/lib/fonts");
+            const registered = await mod.registerCustomFont(file);
+            onChange(registered);
+          }}
+          style={{ color: "#e5e7eb", fontSize: 10 }}
+        />
+        {current?.family && (
+          <div style={{ color: "#71717a", fontSize: 10 }}>
+            loaded: {current.filename ?? current.family}
+          </div>
+        )}
+        {current && (
+          <button
+            onClick={() => onChange(null)}
+            style={{
+              padding: "2px 6px",
+              background: "transparent",
+              border: "1px solid #3f3f46",
+              color: "#a1a1aa",
+              fontFamily: "inherit",
+              fontSize: 10,
+              borderRadius: 3,
+              cursor: "pointer",
+              alignSelf: "flex-start",
+            }}
+          >
+            clear
+          </button>
+        )}
+      </div>
     );
   }
 
@@ -517,7 +758,7 @@ function ParamControl({
     const layers = Array.isArray(value)
       ? (value as Array<{ id: string; mode: string; opacity: number }>)
       : ((param.default as Array<{ id: string; mode: string; opacity: number }>) ?? []);
-    const modes = ["mix", "normal", "overlay", "screen", "multiply"];
+    const modes = BLEND_MODE_ORDER;
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {layers.length === 0 && (
@@ -583,7 +824,7 @@ function ParamControl({
             >
               {modes.map((m) => (
                 <option key={m} value={m}>
-                  {m}
+                  {blendModeLabel(m)}
                 </option>
               ))}
             </select>
@@ -750,25 +991,29 @@ function ColorRampControl({
   const sorted = [...stops].sort((a, b) => a.position - b.position);
   const selected = stops.find((s) => s.id === selectedId) ?? null;
 
-  // Build a CSS gradient preview. If there's a single stop, pad to a solid fill.
+  // Build a CSS gradient preview using rgba() so transparency is visible
+  // against a checker background layered behind the bar.
   const gradientCss =
     sorted.length === 0
-      ? "#000"
+      ? "transparent"
       : sorted.length === 1
-        ? sorted[0].color
+        ? hexAlphaCss(sorted[0].color, sorted[0].alpha ?? 1)
         : `linear-gradient(to right, ${sorted
             .map(
-              (s) => `${s.color} ${(s.position * 100).toFixed(2)}%`
+              (s) =>
+                `${hexAlphaCss(s.color, s.alpha ?? 1)} ${(s.position * 100).toFixed(2)}%`
             )
             .join(", ")})`;
+  const CHECKER =
+    "repeating-conic-gradient(#1a1a1a 0% 25%, #0f0f0f 0% 50%) 0 0 / 8px 8px";
 
   function addStopAt(pos: number) {
     if (stops.length >= COLOR_RAMP_MAX_STOPS) return;
     const p = Math.max(0, Math.min(1, pos));
-    // Sample the current gradient at p to get a sensible new stop color.
     const color = sampleRampColor(sorted, p);
+    const alpha = sampleRampAlpha(sorted, p);
     const id = newStopId();
-    onChange([...stops, { id, position: p, color }]);
+    onChange([...stops, { id, position: p, color, alpha }]);
     setSelectedId(id);
   }
 
@@ -796,7 +1041,9 @@ function ColorRampControl({
         style={{
           position: "relative",
           height: 24,
-          background: gradientCss,
+          // Gradient on top of a checker so partial alpha is visible through
+          // each stop.
+          background: `${gradientCss}, ${CHECKER}`,
           border: "1px solid #27272a",
           borderRadius: 3,
           cursor: "copy",
@@ -820,7 +1067,7 @@ function ColorRampControl({
                 transform: "translate(-50%, 0)",
                 width: 10,
                 height: 10,
-                background: s.color,
+                background: `${hexAlphaCss(s.color, s.alpha ?? 1)}, ${CHECKER}`,
                 border: isSelected
                   ? "1px solid #e5e7eb"
                   : "1px solid #52525b",
@@ -829,7 +1076,7 @@ function ColorRampControl({
                 marginTop: 3,
                 boxSizing: "border-box",
               }}
-              title={`${s.color} @ ${s.position.toFixed(3)}`}
+              title={`${s.color} α${(s.alpha ?? 1).toFixed(2)} @ ${s.position.toFixed(3)}`}
             />
           );
         })}
@@ -899,6 +1146,49 @@ function ColorRampControl({
                 alignItems: "center",
               }}
             >
+              <span style={{ color: "#71717a", minWidth: 50 }}>alpha</span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={selected.alpha ?? 1}
+                onChange={(e) =>
+                  updateStop(selected.id, {
+                    alpha: parseFloat(e.target.value),
+                  })
+                }
+                style={{ flex: 1 }}
+              />
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.01}
+                value={selected.alpha ?? 1}
+                onChange={(e) =>
+                  updateStop(selected.id, {
+                    alpha: parseFloat(e.target.value),
+                  })
+                }
+                style={{
+                  width: 56,
+                  background: "#0a0a0a",
+                  border: "1px solid #27272a",
+                  color: "#e5e7eb",
+                  fontFamily: "inherit",
+                  fontSize: 11,
+                  padding: "2px 4px",
+                }}
+              />
+            </div>
+            <div
+              style={{
+                display: "flex",
+                gap: 6,
+                alignItems: "center",
+              }}
+            >
               <span style={{ color: "#71717a", minWidth: 50 }}>position</span>
               <input
                 type="range"
@@ -946,6 +1236,30 @@ function ColorRampControl({
       </div>
     </div>
   );
+}
+
+function hexAlphaCss(hex: string, alpha: number): string {
+  const [r, g, b] = hexParts(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function sampleRampAlpha(sorted: ColorRampStop[], p: number): number {
+  if (sorted.length === 0) return 1;
+  if (sorted.length === 1) return sorted[0].alpha ?? 1;
+  if (p <= sorted[0].position) return sorted[0].alpha ?? 1;
+  if (p >= sorted[sorted.length - 1].position)
+    return sorted[sorted.length - 1].alpha ?? 1;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    if (p >= a.position && p <= b.position) {
+      const f = (p - a.position) / Math.max(b.position - a.position, 0.0001);
+      const av = a.alpha ?? 1;
+      const bv = b.alpha ?? 1;
+      return av + (bv - av) * f;
+    }
+  }
+  return sorted[sorted.length - 1].alpha ?? 1;
 }
 
 // Sample the ramp at position p using linear interpolation in hex space.

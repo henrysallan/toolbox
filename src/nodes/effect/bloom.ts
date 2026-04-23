@@ -59,9 +59,9 @@ uniform sampler2D u_bloom;
 uniform float u_intensity;
 out vec4 outColor;
 void main() {
-  vec3 b = texture(u_base, v_uv).rgb;
+  vec4 b = texture(u_base, v_uv);
   vec3 g = texture(u_bloom, v_uv).rgb;
-  outColor = vec4(b + g * u_intensity, 1.0);
+  outColor = vec4(b.rgb + g * u_intensity, b.a);
 }`;
 
 export const bloomNode: NodeDefinition = {

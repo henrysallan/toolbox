@@ -79,6 +79,18 @@ async function serializeParams(
       }
     } else if (p.type === "file" && val instanceof ImageBitmap) {
       out[key] = { kind: "file", dataUrl: await bitmapToDataUrl(val) };
+    } else if (p.type === "font") {
+      // FontFace refs don't survive a page reload — drop custom fonts on
+      // save. On load the text node falls back to the `font_family` enum.
+      out[key] = null;
+    } else if (p.type === "video_file") {
+      // Live <video> elements + ObjectURLs can't round-trip through JSON.
+      // User re-picks the file on load.
+      out[key] = null;
+    } else if (p.type === "audio_file") {
+      // Same story as video_file — live HTMLAudioElement + ObjectURL
+      // don't survive serialization. User re-uploads on reload.
+      out[key] = null;
     } else {
       out[key] = val;
     }
@@ -118,6 +130,13 @@ async function deserializeParams(
       } else {
         out[key] = null;
       }
+    } else if (p.type === "font") {
+      // Always null on load — user re-uploads the custom font if they need it.
+      out[key] = null;
+    } else if (p.type === "video_file") {
+      out[key] = null;
+    } else if (p.type === "audio_file") {
+      out[key] = null;
     } else {
       out[key] = val;
     }
@@ -127,12 +146,24 @@ async function deserializeParams(
 
 // --- graph round-trip ----------------------------------------------------
 
+export interface ProgressCallback {
+  // Fraction is in [0, 1]. Reported after each node finishes processing, so
+  // the caller can drive a progress bar without knowing about the internals.
+  (fraction: number): void;
+}
+
 export async function serializeGraph(
   nodes: Node<NodeDataPayload>[],
-  edges: Edge[]
+  edges: Edge[],
+  onProgress?: ProgressCallback
 ): Promise<SavedProject> {
-  const savedNodes: SavedNode[] = await Promise.all(
-    nodes.map(async (n) => ({
+  // Sequential (not Promise.all) so progress is monotonic and the main
+  // thread isn't thrashed decoding many large paint canvases in parallel.
+  const total = Math.max(1, nodes.length);
+  const savedNodes: SavedNode[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    savedNodes.push({
       id: n.id,
       defType: n.data.defType,
       position: { x: n.position.x, y: n.position.y },
@@ -140,8 +171,9 @@ export async function serializeGraph(
       exposedParams: n.data.exposedParams,
       active: n.data.active,
       bypassed: n.data.bypassed,
-    }))
-  );
+    });
+    onProgress?.((i + 1) / total);
+  }
   const savedEdges: SavedEdge[] = edges.map((e) => ({
     id: e.id,
     source: e.source,
@@ -156,41 +188,53 @@ export async function serializeGraph(
   };
 }
 
-export async function deserializeGraph(saved: SavedProject): Promise<{
+export async function deserializeGraph(
+  saved: SavedProject,
+  onProgress?: ProgressCallback
+): Promise<{
   nodes: Node<NodeDataPayload>[];
   edges: Edge[];
 }> {
-  const nodes: Node<NodeDataPayload>[] = await Promise.all(
-    saved.nodes.map(async (sn) => {
-      const def = getNodeDef(sn.defType);
-      const params = await deserializeParams(sn.defType, sn.params);
-      const inputs = def
-        ? withMaskInput(def.resolveInputs?.(params) ?? def.inputs).map((i) => ({
-            name: i.name,
-            label: i.label,
-            type: i.type,
-          }))
-        : [];
-      return {
-        id: sn.id,
-        type: "effect",
-        position: sn.position,
-        data: {
-          defType: sn.defType,
-          params,
-          exposedParams: sn.exposedParams ?? [],
-          name: def?.name ?? sn.defType,
-          inputs,
-          auxOutputs:
-            def?.auxOutputs.map((a) => ({ name: a.name, type: a.type })) ?? [],
-          primaryOutput: def?.primaryOutput ?? null,
-          terminal: def?.terminal,
-          active: sn.active ?? !!def?.terminal,
-          bypassed: sn.bypassed ?? false,
-        },
-      } satisfies Node<NodeDataPayload>;
-    })
-  );
+  const total = Math.max(1, saved.nodes.length);
+  const nodes: Node<NodeDataPayload>[] = [];
+  for (let i = 0; i < saved.nodes.length; i++) {
+    const sn = saved.nodes[i];
+    const def = getNodeDef(sn.defType);
+    const params = await deserializeParams(sn.defType, sn.params);
+    const inputs = def
+      ? withMaskInput(def.resolveInputs?.(params) ?? def.inputs).map((inp) => ({
+          name: inp.name,
+          label: inp.label,
+          type: inp.type,
+        }))
+      : [];
+    const auxDefs = def
+      ? def.resolveAuxOutputs?.(params) ?? def.auxOutputs
+      : [];
+    nodes.push({
+      id: sn.id,
+      type: "effect",
+      position: sn.position,
+      data: {
+        defType: sn.defType,
+        params,
+        exposedParams: sn.exposedParams ?? [],
+        name: def?.name ?? sn.defType,
+        inputs,
+        auxOutputs: auxDefs.map((a) => ({
+          name: a.name,
+          type: a.type,
+          disabled: a.disabled,
+        })),
+        primaryOutput:
+          def?.resolvePrimaryOutput?.(params) ?? def?.primaryOutput ?? null,
+        terminal: def?.terminal,
+        active: sn.active ?? !!def?.terminal,
+        bypassed: sn.bypassed ?? false,
+      },
+    } satisfies Node<NodeDataPayload>);
+    onProgress?.((i + 1) / total);
+  }
   const edges: Edge[] = saved.edges.map((se) => ({
     id: se.id,
     source: se.source,
@@ -202,6 +246,18 @@ export async function deserializeGraph(saved: SavedProject): Promise<{
 }
 
 // --- thumbnail -----------------------------------------------------------
+
+// Increment the trailing number on a filename-style string. Preserves the
+// digit width of the existing number (so "foo_01" → "foo_02", "foo_99" →
+// "foo_100"). No trailing number means we append `_01`.
+export function incrementName(name: string): string {
+  const trimmed = name.trimEnd();
+  const match = trimmed.match(/(\d+)$/);
+  if (!match) return `${trimmed}_01`;
+  const digits = match[1];
+  const next = String(parseInt(digits, 10) + 1).padStart(digits.length, "0");
+  return trimmed.slice(0, match.index) + next;
+}
 
 export function generateThumbnail(
   canvas: HTMLCanvasElement,

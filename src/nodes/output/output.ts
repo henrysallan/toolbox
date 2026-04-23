@@ -8,7 +8,14 @@ export const outputNode: NodeDefinition = {
     "Terminal node. Its input image is rendered to the visible canvas by the engine.",
   backend: "webgl2",
   terminal: true,
-  inputs: [{ name: "image", type: "image", required: true }],
+  // Audio is optional — the visual pipeline doesn't depend on it, and
+  // requiring it would force users into a specific graph shape. Audio
+  // Source handles play/pause itself via ctx.playing; Output just needs
+  // the node to be "needed" so it evaluates.
+  inputs: [
+    { name: "image", type: "image", required: true },
+    { name: "audio", type: "audio", required: false },
+  ],
   params: [
     {
       name: "filename",

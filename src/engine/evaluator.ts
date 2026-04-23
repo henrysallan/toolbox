@@ -248,7 +248,7 @@ function computeNodeFingerprint(
   node: GraphNode,
   def: NodeDefinition,
   inputFps: string[],
-  time: number
+  ctx: RenderContext
 ): string {
   const parts: string[] = [
     node.type,
@@ -256,7 +256,11 @@ function computeNodeFingerprint(
     stableStringify(node.params),
     inputFps.join("|"),
   ];
-  if (def.stable === false) parts.push("t:" + time);
+  if (def.stable === false) parts.push("t:" + ctx.time);
+  // External-state hook (e.g. the Cursor node mixing in live pointer pos).
+  // Runs after the stable-false time stamp so both signals contribute.
+  const extras = def.fingerprintExtras?.(node.params, ctx);
+  if (extras) parts.push(extras);
   return parts.join("::");
 }
 
@@ -376,7 +380,7 @@ export function evaluateGraph(
         ? { ...node.params, ...paramOverrides }
         : node.params;
 
-    const fingerprint = computeNodeFingerprint(node, def, inputFpParts, ctx.time);
+    const fingerprint = computeNodeFingerprint(node, def, inputFpParts, ctx);
     fingerprints.set(id, fingerprint);
 
     const prev = cache.get(id);

@@ -87,7 +87,62 @@ export default function EffectNode({
           justifyContent: "space-between",
         }}
       >
-        <span style={{ fontWeight: 600, letterSpacing: 0.3 }}>{data.name}</span>
+        <span
+          style={{
+            fontWeight: 600,
+            letterSpacing: 0.3,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          {data.name}
+          {(() => {
+            // Header dropdown for an enum param — lets nodes like Group
+            // / Pick / Length flip mode without opening the params
+            // panel. The choice retypes sockets immediately so
+            // quick-access is high-value for these.
+            const def = getNodeDef(data.defType);
+            const hc = def?.headerControl;
+            if (!hc) return null;
+            const p = def.params.find((x) => x.name === hc.paramName);
+            if (!p || p.type !== "enum" || !p.options) return null;
+            const current = (data.params[hc.paramName] as string) ?? p.default;
+            return (
+              <select
+                value={current}
+                onMouseDown={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  window.dispatchEvent(
+                    new CustomEvent("effect-node-param", {
+                      detail: {
+                        id,
+                        name: hc.paramName,
+                        value: e.target.value,
+                      },
+                    })
+                  );
+                }}
+                style={{
+                  background: "#18181b",
+                  color: "#e5e7eb",
+                  border: "1px solid #27272a",
+                  borderRadius: 3,
+                  fontFamily: "inherit",
+                  fontSize: 10,
+                  padding: "1px 2px",
+                  outline: "none",
+                }}
+              >
+                {p.options.map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+              </select>
+            );
+          })()}
+        </span>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
           {data.error ? (
             <span
@@ -124,6 +179,22 @@ export default function EffectNode({
                 window.dispatchEvent(
                   new CustomEvent("effect-node-toggle", {
                     detail: { id, kind: "mergeAddLayer" },
+                  })
+                )
+              }
+            />
+          )}
+          {data.defType === "trails" && (
+            <HeaderToggle
+              on={false}
+              label="↻"
+              title="Clear trail history"
+              activeBg="#374151"
+              activeFg="#e5e7eb"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("effect-node-toggle", {
+                    detail: { id, kind: "trailsReset" },
                   })
                 )
               }
@@ -186,8 +257,8 @@ export default function EffectNode({
                 position={Position.Left}
                 style={{
                   top: handleCenter,
-                  width: HANDLE_SIZE - 2,
-                  height: HANDLE_SIZE - 2,
+                  width: HANDLE_SIZE,
+                  height: HANDLE_SIZE,
                   background: colorForSocket(ex.socketType),
                   border: "1px dashed #52525b",
                   borderRadius: 2,
@@ -260,18 +331,23 @@ export default function EffectNode({
         {auxes.map((aux, i) => {
           const rowTop = PAD_Y + ((hasPrimary ? 1 : 0) + i) * ROW_H;
           const handleCenter = rowTop + ROW_H / 2;
+          const disabled = !!aux.disabled;
           return (
             <Fragment key={`aux-${aux.name}`}>
               <Handle
                 type="source"
                 id={`out:aux:${aux.name}`}
                 position={Position.Right}
+                isConnectable={!disabled}
                 style={{
                   top: handleCenter,
                   width: HANDLE_SIZE,
                   height: HANDLE_SIZE,
-                  background: colorForSocket(aux.type),
-                  border: "1px solid #0a0a0a",
+                  background: disabled ? "#27272a" : colorForSocket(aux.type),
+                  border: disabled
+                    ? "1px dashed #52525b"
+                    : "1px solid #0a0a0a",
+                  opacity: disabled ? 0.55 : 1,
                 }}
               />
               <div
@@ -284,9 +360,15 @@ export default function EffectNode({
                   alignItems: "center",
                   gap: 6,
                   paddingRight: 14,
+                  opacity: disabled ? 0.5 : 1,
                 }}
               >
-                <span style={{ color: colorForSocket(aux.type), fontSize: 9 }}>
+                <span
+                  style={{
+                    color: disabled ? "#52525b" : colorForSocket(aux.type),
+                    fontSize: 9,
+                  }}
+                >
                   {aux.type}
                 </span>
                 <span style={{ color: "#71717a" }}>{aux.name}</span>

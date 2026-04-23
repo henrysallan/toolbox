@@ -1,7 +1,9 @@
 import type {
+  CursorState,
   ImageValue,
   MaskValue,
   RenderContext,
+  UvValue,
 } from "./types";
 
 const FULLSCREEN_VS = `#version 300 es
@@ -60,7 +62,12 @@ export interface EngineBackend {
   readonly width: number;
   readonly height: number;
   resize(width: number, height: number): void;
-  makeContext(time: number, frame: number): RenderContext;
+  makeContext(
+    time: number,
+    frame: number,
+    cursor?: CursorState,
+    playing?: boolean
+  ): RenderContext;
   destroy(): void;
 }
 
@@ -179,7 +186,7 @@ export function createEngineBackend(
     return tex;
   }
 
-  function bindTarget(target: ImageValue | MaskValue | null) {
+  function bindTarget(target: ImageValue | MaskValue | UvValue | null) {
     if (!target) {
       gl!.bindFramebuffer(gl!.FRAMEBUFFER, null);
       gl!.viewport(0, 0, gl!.drawingBufferWidth, gl!.drawingBufferHeight);
@@ -196,7 +203,12 @@ export function createEngineBackend(
     gl!.viewport(0, 0, target.width, target.height);
   }
 
-  function makeContext(time: number, frame: number): RenderContext {
+  function makeContext(
+    time: number,
+    frame: number,
+    cursor?: CursorState,
+    playing = false
+  ): RenderContext {
     return {
       gl: gl!,
       get width() {
@@ -207,6 +219,8 @@ export function createEngineBackend(
       },
       time,
       frame,
+      playing,
+      cursor: cursor ?? { x: 0.5, y: 0.5, active: false },
       state: persistentState,
       allocImage(opts) {
         const w = opts?.width ?? width;
@@ -219,6 +233,15 @@ export function createEngineBackend(
         const h = opts?.height ?? height;
         const tex = allocTexture(w, h, "r");
         return { kind: "mask", texture: tex, width: w, height: h };
+      },
+      allocUv(opts) {
+        // UV fields live in the same half-float RGBA texture as images. R = u,
+        // G = v; B and A are currently unused (reserved for future per-pixel
+        // derivatives or a mask channel).
+        const w = opts?.width ?? width;
+        const h = opts?.height ?? height;
+        const tex = allocTexture(w, h, "rgba");
+        return { kind: "uv", texture: tex, width: w, height: h };
       },
       releaseTexture(tex) {
         if (tex) gl!.deleteTexture(tex);

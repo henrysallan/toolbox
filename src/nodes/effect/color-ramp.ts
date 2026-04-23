@@ -4,6 +4,9 @@ export interface ColorRampStop {
   id: string;
   position: number; // 0..1
   color: string;    // hex, e.g. "#ff00aa"
+  // Per-stop opacity in [0, 1]. Optional so stops saved before alpha
+  // support keep working — treat `undefined` as fully opaque.
+  alpha?: number;
 }
 
 export const COLOR_RAMP_MAX_STOPS = 16;
@@ -48,7 +51,9 @@ vec4 sampleRamp(float t) {
 void main() {
   vec4 c = texture(u_src, v_uv);
   float lum = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
-  outColor = sampleRamp(clamp(lum, 0.0, 1.0));
+  vec4 ramp = sampleRamp(clamp(lum, 0.0, 1.0));
+  // Preserve the source's alpha — the ramp decides color, not coverage.
+  outColor = vec4(ramp.rgb, ramp.a * c.a);
 }`;
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -121,10 +126,11 @@ export const colorRampNode: NodeDefinition = {
     for (let i = 0; i < sorted.length; i++) {
       positions[i] = Math.max(0, Math.min(1, sorted[i].position));
       const [r, g, b] = hexToRgb(sorted[i].color ?? "#000000");
+      const a = Math.max(0, Math.min(1, sorted[i].alpha ?? 1));
       colors[i * 4 + 0] = r;
       colors[i * 4 + 1] = g;
       colors[i * 4 + 2] = b;
-      colors[i * 4 + 3] = 1;
+      colors[i * 4 + 3] = a;
     }
 
     const interp = interpToInt((params.interpolation as string) ?? "linear");

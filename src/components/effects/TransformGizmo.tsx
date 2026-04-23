@@ -265,7 +265,17 @@ export default function TransformGizmo({
       <svg
         width="100%"
         height="100%"
-        style={{ position: "absolute", inset: 0, overflow: "visible" }}
+        // Force the SVG root transparent to events. Individual handles and
+        // the translate rect re-enable pointer-events explicitly. Without
+        // this the SVG's default `visiblePainted` behavior can swallow
+        // clicks anywhere one of its children is painted — including over
+        // the node editor when the gizmo's handles land near that edge.
+        style={{
+          position: "absolute",
+          inset: 0,
+          overflow: "visible",
+          pointerEvents: "none",
+        }}
       >
         {/* Canvas-wide translate drag area. Drawn first so every handle
             (corners, edges, rotation ring, pivot dot) paints on top and

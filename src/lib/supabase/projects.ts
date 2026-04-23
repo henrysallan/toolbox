@@ -34,6 +34,30 @@ export async function saveProject(
   return { id: data.id };
 }
 
+// Overwrites the graph + thumbnail on an existing project row. Name is
+// preserved; use a separate create (saveProject) for a rename-style save.
+// `updated_at` is nudged explicitly so the load grid reorders correctly.
+export async function updateProject(
+  id: string,
+  graph: SavedProject,
+  thumbnail: string | null
+): Promise<boolean> {
+  const supabase = createClient();
+  const { error } = await supabase
+    .from("projects")
+    .update({
+      graph,
+      thumbnail,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id);
+  if (error) {
+    console.error("updateProject failed:", error);
+    return false;
+  }
+  return true;
+}
+
 export async function listProjects(): Promise<ProjectRow[]> {
   const supabase = createClient();
   const { data, error } = await supabase
@@ -47,18 +71,20 @@ export async function listProjects(): Promise<ProjectRow[]> {
   return data ?? [];
 }
 
-export async function loadProject(id: string): Promise<SavedProject | null> {
+export async function loadProject(
+  id: string
+): Promise<{ name: string; graph: SavedProject } | null> {
   const supabase = createClient();
   const { data, error } = await supabase
     .from("projects")
-    .select("graph")
+    .select("name, graph")
     .eq("id", id)
     .single();
   if (error) {
     console.error("loadProject failed:", error);
     return null;
   }
-  return data.graph as SavedProject;
+  return { name: data.name as string, graph: data.graph as SavedProject };
 }
 
 export async function deleteProject(id: string): Promise<boolean> {

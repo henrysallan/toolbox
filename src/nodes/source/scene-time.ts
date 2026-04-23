@@ -77,6 +77,28 @@ export const sceneTimeNode: NodeDefinition = {
       visibleIf: (p) => p.mode === "pingpong",
     },
     {
+      name: "min",
+      label: "Min",
+      type: "scalar",
+      min: -1000,
+      max: 1000,
+      softMax: 10,
+      step: 0.01,
+      default: 0,
+      visibleIf: (p) => p.mode === "pingpong",
+    },
+    {
+      name: "max",
+      label: "Max",
+      type: "scalar",
+      min: -1000,
+      max: 1000,
+      softMax: 10,
+      step: 0.01,
+      default: 1,
+      visibleIf: (p) => p.mode === "pingpong",
+    },
+    {
       name: "step_size",
       label: "Step size",
       type: "scalar",
@@ -127,12 +149,18 @@ export const sceneTimeNode: NodeDefinition = {
     let shaped: number;
     if (mode === "pingpong") {
       const period = Math.max(1e-4, (params.period as number) ?? 2);
-      // Triangle wave: phased ∈ [0, 2P), output = P - |phased - P| so it
-      // ramps 0 → P → 0 over each 2P cycle. mod-mod trick keeps the input
-      // non-negative even if scale/offset push it past zero elsewhere.
+      // Triangle wave: phased ∈ [0, 2P), ramp ∈ [0, P] over each 2P cycle.
+      // mod-mod trick keeps phased non-negative even when base is.
       const twoP = period * 2;
       const phased = ((base % twoP) + twoP) % twoP;
-      shaped = period - Math.abs(phased - period);
+      const ramp = period - Math.abs(phased - period);
+      // Remap [0, period] → [min, max]. scale/offset below compose on
+      // top of this, so `min`/`max` set the ping-pong range directly and
+      // scale/offset remain free for further animation tweaks.
+      const lo = (params.min as number) ?? 0;
+      const hi = (params.max as number) ?? 1;
+      const t = period > 0 ? ramp / period : 0;
+      shaped = lo + t * (hi - lo);
     } else if (mode === "stepped") {
       const step = Math.max(1e-4, (params.step_size as number) ?? 1);
       const easing = (params.easing as string) ?? "smoothstep";

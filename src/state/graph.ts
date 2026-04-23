@@ -8,7 +8,7 @@ export type NodeDataPayload = {
   // edge's value overrides the stored param value at evaluation time.
   exposedParams?: string[];
   error?: string;
-  auxOutputs: { name: string; type: string }[];
+  auxOutputs: { name: string; type: string; disabled?: boolean }[];
   inputs: { name: string; label?: string; type: string }[];
   primaryOutput: string | null;
   name: string;

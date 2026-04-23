@@ -19,6 +19,21 @@
   }
 }
 
+html,
+body {
+  /* Lock the document to the viewport. The app is a single-page editor;
+     any page-level scroll is a sign that some panel forgot to contain
+     its own overflow. Scrollable panels must declare overflow: auto on
+     their own element. */
+  height: 100%;
+  overflow: hidden;
+  /* Kill the horizontal-swipe history navigation on macOS trackpads.
+     `overscroll-behavior: none` on the root makes Safari/Chrome swallow
+     the overscroll instead of forwarding it to the browser back/forward
+     gesture. Also disables the iOS/Android pull-to-refresh rubber-band. */
+  overscroll-behavior: none;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
@@ -76,6 +91,28 @@ input[type="range"]::-moz-range-thumb {
 
 input[type="range"]::-moz-focus-outer {
   border: 0;
+}
+
+/* Thin, unfilled scrollbar for compact panels (node search popup, etc.).
+   Just a hairline track outline with a muted thumb — no heavy chrome. */
+.thin-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 transparent;
+}
+.thin-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background: transparent;
+  border: 1px solid #3f3f46;
+  border-radius: 3px;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb:hover {
+  border-color: #52525b;
 }
 
 /* React Flow Controls — strip the panel/button chrome to just white icons

@@ -1,4 +1,9 @@
-import type { ImageValue, NodeDefinition } from "@/engine/types";
+import type {
+  ImageValue,
+  InputSocketDef,
+  NodeDefinition,
+  UvValue,
+} from "@/engine/types";
 
 // All four modes share the same fragment shader; `u_mode` selects the
 // evaluator. `t` is the gradient parameter in [0, 1] used to mix the two
@@ -25,12 +30,19 @@ uniform float u_softness;    // applies to all modes; shapes the t curve
 uniform int u_hasAngleMod;   // 0 or 1
 uniform sampler2D u_angleMod;
 uniform float u_angleModAmount; // radians; multiplied by sampled red
+uniform float u_alpha;
+uniform int u_hasUvIn;       // 0 = default v_uv, 1 = UV texture, 2 = scalar broadcast
+uniform sampler2D u_uvIn;
+uniform vec2 u_uvConst;
 out vec4 outColor;
 
 const float PI = 3.14159265358979;
 
 void main() {
-  vec2 uv = v_uv;
+  vec2 uv;
+  if (u_hasUvIn == 1) uv = texture(u_uvIn, v_uv).rg;
+  else if (u_hasUvIn == 2) uv = u_uvConst;
+  else uv = v_uv;
   float t = 0.0;
 
   // Per-pixel angle offset from the modulator (zero if none connected).
@@ -67,7 +79,7 @@ void main() {
   t = 1.0 - pow(1.0 - t, 1.0 / s);
   t = clamp(t, 0.0, 1.0);
 
-  outColor = vec4(mix(u_colorA, u_colorB, t), 1.0);
+  outColor = vec4(mix(u_colorA, u_colorB, t), u_alpha);
 }`;
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -138,8 +150,15 @@ export const gradientNode: NodeDefinition = {
   // avoid confusing no-op connections.
   resolveInputs(params) {
     const mode = (params.mode as string) ?? "linear";
+    const uv: InputSocketDef = {
+      name: "uv_in",
+      label: "UV",
+      type: "uv",
+      required: false,
+    };
     if (mode === "linear" || mode === "wave") {
       return [
+        uv,
         {
           name: "angle_mod",
           label: "angle mod",
@@ -148,7 +167,7 @@ export const gradientNode: NodeDefinition = {
         },
       ];
     }
-    return [];
+    return [uv];
   },
   params: [
     {
@@ -255,6 +274,15 @@ export const gradientNode: NodeDefinition = {
       step: 0.01,
       default: 1,
     },
+    {
+      name: "alpha",
+      label: "Alpha",
+      type: "scalar",
+      min: 0,
+      max: 1,
+      step: 0.01,
+      default: 1,
+    },
   ],
   primaryOutput: "image",
   auxOutputs: [],
@@ -279,6 +307,7 @@ export const gradientNode: NodeDefinition = {
     const frequency = (params.frequency as number) ?? 4;
     const phaseDeg = (params.phase as number) ?? 0;
     const softness = (params.softness as number) ?? 1;
+    const alpha = (params.alpha as number) ?? 1;
     const angleModAmountDeg = (params.angle_mod_amount as number) ?? 0;
 
     const angleMod = inputs.angle_mod;
@@ -287,6 +316,20 @@ export const gradientNode: NodeDefinition = {
         ? (angleMod as ImageValue).texture
         : getZeroTex(ctx.gl, ctx.state, nodeId);
     const hasMod = angleMod && angleMod.kind === "image" ? 1 : 0;
+
+    const uvIn = inputs.uv_in;
+    let uvInMode = 0;
+    let uvInTex: WebGLTexture = getZeroTex(ctx.gl, ctx.state, nodeId);
+    let uvConst: [number, number] = [0, 0];
+    if (uvIn) {
+      if (uvIn.kind === "uv") {
+        uvInMode = 1;
+        uvInTex = (uvIn as UvValue).texture;
+      } else if (uvIn.kind === "scalar") {
+        uvInMode = 2;
+        uvConst = [uvIn.value, uvIn.value];
+      }
+    }
 
     const prog = ctx.getShader("gradient/fs", FS);
     ctx.drawFullscreen(prog, output, (gl) => {
@@ -309,6 +352,7 @@ export const gradientNode: NodeDefinition = {
         (phaseDeg * Math.PI) / 180
       );
       gl.uniform1f(gl.getUniformLocation(prog, "u_softness"), softness);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_alpha"), alpha);
 
       gl.uniform1i(gl.getUniformLocation(prog, "u_hasAngleMod"), hasMod);
       gl.uniform1f(
@@ -318,6 +362,16 @@ export const gradientNode: NodeDefinition = {
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, modTex);
       gl.uniform1i(gl.getUniformLocation(prog, "u_angleMod"), 0);
+
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, uvInTex);
+      gl.uniform1i(gl.getUniformLocation(prog, "u_uvIn"), 1);
+      gl.uniform1i(gl.getUniformLocation(prog, "u_hasUvIn"), uvInMode);
+      gl.uniform2f(
+        gl.getUniformLocation(prog, "u_uvConst"),
+        uvConst[0],
+        uvConst[1]
+      );
     });
 
     return { primary: output };

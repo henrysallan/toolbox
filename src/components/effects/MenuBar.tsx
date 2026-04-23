@@ -26,7 +26,12 @@ export interface MenuBarProps {
   canUndo?: boolean;
   canRedo?: boolean;
   onOpenProjectSettings: () => void;
-  onOpenSave: () => void;
+  // Save overwrites the current project silently; if there's no current
+  // project it falls through to Save As (open the name modal).
+  onSave: () => void;
+  onSaveAs: () => void;
+  onSaveIncremental: () => void;
+  canSaveIncremental: boolean;
   onOpenLoad: () => void;
 }
 
@@ -38,7 +43,10 @@ export default function MenuBar({
   canUndo,
   canRedo,
   onOpenProjectSettings,
-  onOpenSave,
+  onSave,
+  onSaveAs,
+  onSaveIncremental,
+  canSaveIncremental,
   onOpenLoad,
 }: MenuBarProps) {
   const { user } = useUser();
@@ -91,9 +99,23 @@ export default function MenuBar({
         { kind: "divider" },
         {
           kind: "item",
-          label: "Save…",
+          label: "Save",
+          shortcut: "⌘S",
           disabled: !signedIn,
-          onClick: onOpenSave,
+          onClick: onSave,
+        },
+        {
+          kind: "item",
+          label: "Save As…",
+          shortcut: "⇧⌘S",
+          disabled: !signedIn,
+          onClick: onSaveAs,
+        },
+        {
+          kind: "item",
+          label: "Save Incremental",
+          disabled: !canSaveIncremental,
+          onClick: onSaveIncremental,
         },
         { kind: "item", label: "Export…", disabled: true },
       ],
