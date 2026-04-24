@@ -5,6 +5,7 @@ import AccountMenu from "./AccountMenu";
 import VersionMenu from "./VersionMenu";
 import FileNameMenu, { type SaveState } from "./FileNameMenu";
 import NodeBrowserDropdown from "./NodeBrowserDropdown";
+import DocsInfoButton from "./DocsInfoButton";
 import { useUser } from "@/lib/auth-context";
 
 type MenuItem =
@@ -279,6 +280,7 @@ export default function MenuBar({
           findConflict={findNameConflict}
         />
       </div>
+      <DocsInfoButton />
       <VersionMenu />
       <AccountMenu />
     </div>

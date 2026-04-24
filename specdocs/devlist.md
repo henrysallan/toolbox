@@ -55,12 +55,19 @@ hand tracker
 45. hide the minimap in the node editor
 
 
-47. A "Node" menu bar item. It shows all the categories and all the nodes
 
-48. write documentation. Create a wiki like interface for the docs this is a full page, we dont maintain any of the current interface. The button to access the docs should be a little "i" in a circle that sits to the left of the version number in the menu bar. We should start by just writing 
+
+48. write documentation. Create a wiki like interface for the docs this is a full page, we dont maintain any of the current interface. The button to access the docs should be a little "i" in a circle that sits to the left of the version number in the menu bar. We do this in batches, so make a plan. 
 
 49. Some way to do metaballs
 
 50. some way to do proximity join/merge for splines (accept multiple splines or a spline group as input)
 
-51. 
+51. Right click menu in load page (projects panel) that lets you rate a project. we should count the ratings in the database and then average them and show that rating with the number of ratings
+
+52. change the export mode to allow higher bitrates - this probably means recording the canvas to a different format and then using FFMPEG to get the mp4s
+
+
+53. image data should be able to drive UV data
+
+54. Iterative render. Some sort of node that takes multiple inputs and then lets you render the full chain with each of them, 1 after another. Saves everything as a .zip file.

@@ -58,6 +58,11 @@ import { AuthProvider, useUser } from "@/lib/auth-context";
 import SaveModal from "./SaveModal";
 import PublicPrivateConfirm from "./PublicPrivateConfirm";
 import NewProjectConfirm from "./NewProjectConfirm";
+import {
+  clearEditorSession,
+  readEditorSession,
+  writeEditorSession,
+} from "@/state/editor-session";
 import type { SaveState } from "./FileNameMenu";
 import TransformGizmo from "./TransformGizmo";
 import SplineEditorOverlay from "./SplineEditorOverlay";
@@ -179,16 +184,28 @@ export default function EffectsApp() {
 }
 
 function EffectsShell() {
-  const [nodes, setNodes, onNodesChange] =
-    useNodesState<Node<NodeDataPayload>>(INITIAL_NODES);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(INITIAL_EDGES);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [canvasRes, setCanvasRes] = useState<[number, number]>([1024, 1024]);
+  // Rehydrate from the session stash if the user is returning from
+  // a route change (e.g. /docs → back to /). Read once; if present,
+  // seed every piece of React state below from the same snapshot so
+  // they're all internally consistent on first paint.
+  const rehydrate = readEditorSession();
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<NodeDataPayload>>(
+    rehydrate?.nodes ?? INITIAL_NODES
+  );
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(
+    rehydrate?.edges ?? INITIAL_EDGES
+  );
+  const [selectedId, setSelectedId] = useState<string | null>(
+    rehydrate?.selectedId ?? null
+  );
+  const [canvasRes, setCanvasRes] = useState<[number, number]>(
+    rehydrate?.canvasRes ?? [1024, 1024]
+  );
   // Controls which panel the right-side parameters section is showing.
   // Selecting a node switches it to "node"; Project Settings flips it to
   // "project"; File → Load flips it to "load" (grid of saved projects).
   const [paramView, setParamView] = useState<"project" | "node" | "load">(
-    "node"
+    rehydrate?.paramView ?? "node"
   );
   // React Flow echoes one final onSelectionChange with the previously-
   // selected node after we programmatically deselect via setNodes
@@ -219,13 +236,15 @@ function EffectsShell() {
         authorName: string | null;
       }
     | null
-  >(null);
+  >(rehydrate?.currentProject ?? null);
   // Menu-bar pill status. Flips to "dirty" on any graph push, back to
   // "saved" on successful save/load, and to "error" when a save fails.
   // The DB doesn't track is_public yet; we hold it locally so the toggle
   // UI can ship today — when the column lands, the save/load paths each
   // have a single place to start persisting it.
-  const [saveState, setSaveState] = useState<SaveState>("saved");
+  const [saveState, setSaveState] = useState<SaveState>(
+    rehydrate?.saveState ?? "saved"
+  );
   // Visibility confirm modal: `null` closed, otherwise the direction
   // the user is trying to toggle to.
   const [pendingVisibility, setPendingVisibility] = useState<
@@ -339,6 +358,38 @@ function EffectsShell() {
   nodesRef.current = nodes;
   const edgesRef = useRef(edges);
   edgesRef.current = edges;
+  // Mirror refs for every piece of editor-session state so the
+  // unmount cleanup below can snapshot the latest values without
+  // reopening the whole "state in closures" problem. Kept as a
+  // cluster right next to nodesRef so future additions know where
+  // to land.
+  const currentProjectRef = useRef(currentProject);
+  currentProjectRef.current = currentProject;
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+  const paramViewRef = useRef(paramView);
+  paramViewRef.current = paramView;
+  const saveStateRef = useRef(saveState);
+  saveStateRef.current = saveState;
+  const canvasResRef = useRef(canvasRes);
+  canvasResRef.current = canvasRes;
+
+  // Capsule for surviving a same-tab route change (e.g. docs "i"
+  // button). Effect has empty deps on purpose: we only want the
+  // cleanup to fire on true unmount, not on every state change.
+  useEffect(() => {
+    return () => {
+      writeEditorSession({
+        nodes: nodesRef.current,
+        edges: edgesRef.current,
+        currentProject: currentProjectRef.current,
+        selectedId: selectedIdRef.current,
+        paramView: paramViewRef.current,
+        saveState: saveStateRef.current,
+        canvasRes: canvasResRef.current,
+      });
+    };
+  }, []);
 
   const getGraphSnapshot = useCallback(
     (): GraphSnapshot => ({
@@ -2181,6 +2232,10 @@ function EffectsShell() {
     setParamView("node");
     setCurrentProject(null);
     setSaveState("saved");
+    // Drop any survival snapshot from a prior session — otherwise a
+    // docs round-trip after File → New would resurrect the graph
+    // the user explicitly walked away from.
+    clearEditorSession();
   }, [setNodes, setEdges]);
 
   const handleNewProject = useCallback(() => {
