@@ -45,7 +45,7 @@ function applyEasing(name: string, t: number): number {
 export const sceneTimeNode: NodeDefinition = {
   type: "scene-time",
   name: "Scene Time",
-  category: "source",
+  category: "utility",
   description:
     "Emits the current playback time as a scalar. Modes: linear, ping-pong, or stepped with easing. Connect to an exposed scalar input to drive animation.",
   backend: "webgl2",

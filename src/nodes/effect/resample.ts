@@ -12,7 +12,8 @@ import { resampleSubpath } from "@/engine/spline-math";
 export const resampleNode: NodeDefinition = {
   type: "spline-resample",
   name: "Resample",
-  category: "effect",
+  category: "spline",
+  subcategory: "modifier",
   description:
     "Redistribute anchors evenly along the arc length of the spline. Preserves subpath count and closed/open state.",
   backend: "webgl2",

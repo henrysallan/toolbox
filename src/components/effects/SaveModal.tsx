@@ -9,6 +9,11 @@ export interface SaveModalProps {
   // The handler owns async work (serialize + upload). Throwing surfaces the
   // message to the user; resolving normally closes the modal.
   onSave: (name: string) => Promise<void>;
+  // Returns the colliding project row (or null) when the typed name
+  // matches one of the user's existing projects. When non-null the
+  // primary button relabels to "Overwrite" so the user knows the save
+  // will replace an existing row rather than create a new one.
+  findConflict?: (name: string) => { name: string } | null;
 }
 
 export default function SaveModal({
@@ -16,6 +21,7 @@ export default function SaveModal({
   initialName,
   onClose,
   onSave,
+  findConflict,
 }: SaveModalProps) {
   const [name, setName] = useState(initialName ?? "");
   const [saving, setSaving] = useState(false);
@@ -119,29 +125,59 @@ export default function SaveModal({
             marginBottom: 10,
           }}
         />
-        {error && (
-          <div style={{ color: "#ef4444", fontSize: 10, marginBottom: 8 }}>
-            {error}
-          </div>
-        )}
-        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-          <button onClick={onClose} style={btnStyle()}>
-            Cancel
-          </button>
-          <button
-            onClick={submit}
-            disabled={saving || !name.trim()}
-            style={{
-              ...btnStyle(),
-              background: "#16a34a",
-              border: "1px solid #16a34a",
-              color: "#dcfce7",
-              opacity: saving || !name.trim() ? 0.5 : 1,
-            }}
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-        </div>
+        {(() => {
+          const conflict = findConflict?.(name) ?? null;
+          return (
+            <>
+              {conflict && (
+                <div
+                  style={{
+                    color: "#facc15",
+                    fontSize: 10,
+                    marginBottom: 8,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  A project named &ldquo;{conflict.name}&rdquo; already
+                  exists — saving will overwrite it.
+                </div>
+              )}
+              {error && (
+                <div
+                  style={{ color: "#ef4444", fontSize: 10, marginBottom: 8 }}
+                >
+                  {error}
+                </div>
+              )}
+              <div
+                style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}
+              >
+                <button onClick={onClose} style={btnStyle()}>
+                  Cancel
+                </button>
+                <button
+                  onClick={submit}
+                  disabled={saving || !name.trim()}
+                  style={{
+                    ...btnStyle(),
+                    background: conflict ? "#b45309" : "#16a34a",
+                    border: `1px solid ${conflict ? "#b45309" : "#16a34a"}`,
+                    color: conflict ? "#fef3c7" : "#dcfce7",
+                    opacity: saving || !name.trim() ? 0.5 : 1,
+                  }}
+                >
+                  {saving
+                    ? conflict
+                      ? "Overwriting…"
+                      : "Saving…"
+                    : conflict
+                    ? "Overwrite"
+                    : "Save"}
+                </button>
+              </div>
+            </>
+          );
+        })()}
       </div>
     </div>
   );

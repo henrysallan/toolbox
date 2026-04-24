@@ -257,10 +257,34 @@ export interface ComputeArgs {
   nodeId: string;
 }
 
+// Top-level bucket in the Node menu. Nodes of `image` / `spline` /
+// `point` / `audio` type additionally declare a `subcategory` so the
+// menu can split them into Generator / Modifier / Utility columns.
+// `utility`, `effect`, and `output` are flat (no subcategory).
+//
+// Classification rule: use the node's *purpose* as seen by the user,
+// which is usually its primary output — but for nodes that consume one
+// type and extract/transform into another (stroke, object-tracker,
+// fill, sample-along-path), classify by the primary input. Examples
+// are in specdocs/devlist.md.
+export type NodeCategory =
+  | "image"
+  | "spline"
+  | "point"
+  | "audio"
+  | "utility"
+  | "effect"
+  | "output";
+
+export type NodeSubcategory = "generator" | "modifier" | "utility";
+
 export interface NodeDefinition {
   type: string;
   name: string;
-  category: string;
+  category: NodeCategory;
+  // Only meaningful for typed categories (image/spline/point/audio).
+  // Top-level utility/effect/output ignore it.
+  subcategory?: NodeSubcategory;
   description?: string;
   backend: "webgl2";
   terminal?: boolean;

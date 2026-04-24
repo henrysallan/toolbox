@@ -447,7 +447,8 @@ function noiseTypeToInt(t: string): number {
 export const perlinNoiseNode: NodeDefinition = {
   type: "noise",
   name: "Noise",
-  category: "source",
+  category: "image",
+  subcategory: "generator",
   description:
     "Multi-algorithm fBm noise: Perlin / Simplex / Value / OpenSimplex family / Perlin Derivatives / Flow / Curl. Curl outputs a 2D vector encoded in R and G — feed into Displace for motion.",
   backend: "webgl2",

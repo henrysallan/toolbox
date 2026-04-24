@@ -41,7 +41,7 @@ function groupTypeFor(mode: Mode): SocketType {
 export const groupNode: NodeDefinition = {
   type: "group",
   name: "Group",
-  category: "effect",
+  category: "utility",
   description:
     "Bundle N homogeneous inputs into a single group. Pick inner type via the header dropdown; count slider picks how many input sockets appear.",
   backend: "webgl2",

@@ -41,7 +41,8 @@ interface SourceState {
 export const imageSourceNode: NodeDefinition = {
   type: "image-source",
   name: "Image Source",
-  category: "source",
+  category: "image",
+  subcategory: "generator",
   description: "Uploads an image and produces it as the canonical output.",
   backend: "webgl2",
   inputs: [

@@ -36,7 +36,8 @@ void main() {
 export const gaussianBlurNode: NodeDefinition = {
   type: "gaussian-blur",
   name: "Gaussian Blur",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description: "Separable gaussian blur with adjustable radius.",
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],

@@ -81,7 +81,8 @@ function shiftSubpath(
 export const setPositionNode: NodeDefinition = {
   type: "set-position",
   name: "Set Position",
-  category: "effect",
+  category: "point",
+  subcategory: "modifier",
   description:
     "Translate so the input's geometric center lands at (X, Y). Absolute placement — unlike Transform's offset translate, the result is always centered at the target regardless of where the input started.",
   backend: "webgl2",

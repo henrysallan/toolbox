@@ -57,7 +57,7 @@ function stateKey(nodeId: string): string {
 export const accumulatorNode: NodeDefinition = {
   type: "accumulator",
   name: "Accumulator",
-  category: "effect",
+  category: "utility",
   description:
     "Integrate a scalar over time. Output grows or oscillates as the input accumulates each frame. Auto-resets on scene time 0; an optional reset input clears to the initial value while held.",
   backend: "webgl2",

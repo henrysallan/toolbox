@@ -21,7 +21,7 @@ function groupTypeFor(mode: Mode): SocketType {
 export const groupLengthNode: NodeDefinition = {
   type: "group-length",
   name: "Length",
-  category: "effect",
+  category: "utility",
   description:
     "Count the items in a group as a scalar.",
   backend: "webgl2",

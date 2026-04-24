@@ -260,7 +260,8 @@ export function newLayerId(): string {
 export const mergeNode: NodeDefinition = {
   type: "merge",
   name: "Merge",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description: "Blends a base image with one or more layer images.",
   backend: "webgl2",
   inputs: [{ name: "base", type: "image", required: true }],

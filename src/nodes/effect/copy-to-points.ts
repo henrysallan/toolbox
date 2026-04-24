@@ -76,7 +76,8 @@ function ensureState(ctx: RenderContext, nodeId: string): CopyState {
 export const copyToPointsNode: NodeDefinition = {
   type: "copy-to-points",
   name: "Copy to Points",
-  category: "effect",
+  category: "point",
+  subcategory: "modifier",
   description:
     "Duplicate an image, spline, or point at every target point. Each copy respects per-point rotation and scale. The instance anchors at its (0.5, 0.5) center so a scattered tree keeps its trunk on the point.",
   backend: "webgl2",

@@ -107,7 +107,8 @@ function readbackDensity(
 export const scatterPointsNode: NodeDefinition = {
   type: "scatter-points",
   name: "Scatter Points",
-  category: "effect",
+  category: "point",
+  subcategory: "generator",
   description:
     "Scatter N points across the canvas, optionally weighted by a density image (brighter pixels = more points). Deterministic — same seed, same layout.",
   backend: "webgl2",

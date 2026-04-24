@@ -94,7 +94,8 @@ function ensureState(ctx: RenderContext, nodeId: string): PointsState {
 export const pointsOnPathNode: NodeDefinition = {
   type: "points-on-path",
   name: "Points on Path",
-  category: "effect",
+  category: "point",
+  subcategory: "generator",
   description:
     "Emit N evenly-spaced positions along a spline. Primary output is a dot visualization; aux output 'positions' is a UV texture (one pixel per point) for downstream sampling.",
   backend: "webgl2",

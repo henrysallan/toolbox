@@ -269,7 +269,8 @@ function ensureState(
 export const reactionDiffusionNode: NodeDefinition = {
   type: "reaction-diffusion",
   name: "Reaction Diffusion",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description:
     "Gray-Scott / FitzHugh-Nagumo reaction-diffusion patterns. Pick a preset, tune step count. Optional seed image sets the initial U/V fields (R → U, G → V); otherwise starts from a central splat.",
   backend: "webgl2",

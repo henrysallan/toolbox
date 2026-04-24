@@ -8,6 +8,40 @@ import {
   type KeyboardEvent,
 } from "react";
 import { allNodeDefs } from "@/engine/registry";
+import type { NodeCategory, NodeSubcategory } from "@/engine/types";
+
+// Display order + labels mirror NodeBrowserDropdown so the two add-
+// paths feel like one product.
+const CATEGORY_ORDER: NodeCategory[] = [
+  "image",
+  "spline",
+  "point",
+  "audio",
+  "utility",
+  "effect",
+  "output",
+];
+const CATEGORY_LABEL: Record<NodeCategory, string> = {
+  image: "Image",
+  spline: "Spline",
+  point: "Point",
+  audio: "Audio",
+  utility: "Utility",
+  effect: "Effect",
+  output: "Output",
+};
+const SUB_ORDER: NodeSubcategory[] = ["generator", "modifier", "utility"];
+const SUB_LABEL: Record<NodeSubcategory, string> = {
+  generator: "Generator",
+  modifier: "Modifier",
+  utility: "Utility",
+};
+const TYPED_CATEGORIES: ReadonlySet<NodeCategory> = new Set([
+  "image",
+  "spline",
+  "point",
+  "audio",
+]);
 
 // Floating "add node" browser. Two modes:
 //
@@ -79,7 +113,10 @@ export default function NodeSearchPopup({
     return m;
   }, [defs]);
   const categories = useMemo(
-    () => Object.keys(byCategory).sort(),
+    () =>
+      CATEGORY_ORDER.filter(
+        (c) => (byCategory[c as NodeCategory]?.length ?? 0) > 0
+      ),
     [byCategory]
   );
 
@@ -234,7 +271,7 @@ export default function NodeSearchPopup({
                     cursor: "default",
                   }}
                 >
-                  <span style={{ textTransform: "capitalize" }}>{cat}</span>
+                  <span>{CATEGORY_LABEL[cat as NodeCategory] ?? cat}</span>
                   <span style={{ color: active ? "#bfdbfe" : "#52525b" }}>
                     ▶
                   </span>
@@ -263,18 +300,29 @@ export default function NodeSearchPopup({
           flexDirection: "column",
         }}
       >
-        {rightColumnNodes.length === 0 ? (
-          <div style={{ color: "#52525b", padding: "4px 2px" }}>
-            {normalized ? "no matches" : ""}
-          </div>
-        ) : (
-          rightColumnNodes.map((def, i) => {
-            const highlight = normalized && i === activeMatchIdx;
+        {(() => {
+          if (rightColumnNodes.length === 0) {
+            return (
+              <div style={{ color: "#52525b", padding: "4px 2px" }}>
+                {normalized ? "no matches" : ""}
+              </div>
+            );
+          }
+          // Renders a single node row. `flatIdx` is the position in
+          // the flat search list, used for keyboard cursor highlight
+          // when a query is active. Null when we're in browse mode.
+          const renderRow = (
+            def: (typeof defs)[number],
+            flatIdx: number | null,
+            isFirst: boolean
+          ) => {
+            const highlight =
+              !!normalized && flatIdx !== null && flatIdx === activeMatchIdx;
             return (
               <button
                 key={def.type}
                 onMouseEnter={() => {
-                  if (normalized) setActiveMatchIdx(i);
+                  if (normalized && flatIdx !== null) setActiveMatchIdx(flatIdx);
                 }}
                 onClick={() => handleAdd(def.type)}
                 style={{
@@ -282,7 +330,7 @@ export default function NodeSearchPopup({
                   justifyContent: "space-between",
                   alignItems: "center",
                   padding: "4px 6px",
-                  marginTop: i === 0 ? 0 : 2,
+                  marginTop: isFirst ? 0 : 2,
                   background: highlight ? "#1e3a8a" : "transparent",
                   color: highlight ? "#f0f9ff" : "#e5e7eb",
                   border: "none",
@@ -308,13 +356,51 @@ export default function NodeSearchPopup({
                 <span>{def.name}</span>
                 {normalized && (
                   <span style={{ color: "#52525b", fontSize: 10 }}>
-                    {def.category}
+                    {CATEGORY_LABEL[def.category as NodeCategory] ??
+                      def.category}
                   </span>
                 )}
               </button>
             );
-          })
-        )}
+          };
+          // Browse mode, typed category: interleave subcategory
+          // headers above their node groups so users can distinguish
+          // e.g. Image Generator from Image Modifier.
+          if (
+            !normalized &&
+            hoveredCategory &&
+            TYPED_CATEGORIES.has(hoveredCategory as NodeCategory)
+          ) {
+            const bySub: Partial<Record<NodeSubcategory, typeof defs>> = {};
+            for (const d of rightColumnNodes) {
+              const sub =
+                (d as unknown as { subcategory?: NodeSubcategory })
+                  .subcategory ?? "utility";
+              (bySub[sub] ??= []).push(d);
+            }
+            const subs = SUB_ORDER.filter((s) => bySub[s]?.length);
+            return subs.map((sub, groupIdx) => (
+              <div key={sub} style={{ marginTop: groupIdx === 0 ? 0 : 6 }}>
+                <div
+                  style={{
+                    padding: "2px 6px",
+                    color: "#71717a",
+                    fontSize: 9,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.4,
+                  }}
+                >
+                  {SUB_LABEL[sub]}
+                </div>
+                {bySub[sub]!.map((def, i) => renderRow(def, null, i === 0))}
+              </div>
+            ));
+          }
+          // Search mode or flat-category browse: plain list.
+          return rightColumnNodes.map((def, i) =>
+            renderRow(def, normalized ? i : null, i === 0)
+          );
+        })()}
       </div>
     </div>
   );

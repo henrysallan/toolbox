@@ -106,7 +106,8 @@ function rasterSig(
 export const svgSourceNode: NodeDefinition = {
   type: "svg-source",
   name: "SVG Source",
-  category: "source",
+  category: "spline",
+  subcategory: "generator",
   description:
     "Load an SVG file and emit it as spline data. Built-in translate/scale/rotate operate on the result; stroke and fill rasterize to an image.",
   backend: "webgl2",

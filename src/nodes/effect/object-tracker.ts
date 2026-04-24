@@ -213,7 +213,8 @@ function assignIds(
 export const objectTrackerNode: NodeDefinition = {
   type: "object-tracker",
   name: "Object Tracker",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description:
     "Detect objects in an incoming image using MediaPipe. Emits bounding-box rectangles (spline) and per-detection centers (points). IDs persist across frames via IoU matching.",
   backend: "webgl2",

@@ -108,7 +108,8 @@ function ensureState(ctx: RenderContext, nodeId: string): SplineState {
 export const splineDrawNode: NodeDefinition = {
   type: "spline-draw",
   name: "Spline Draw",
-  category: "source",
+  category: "spline",
+  subcategory: "generator",
   description:
     "Author a bezier path with the pen tool over the preview canvas. Outputs the spline as data and, when stroke or fill is enabled, as a rasterized image.",
   backend: "webgl2",

@@ -43,6 +43,9 @@ interface Props {
   // driving it. The row is rendered read-only with a "driven" indicator.
   isParamDriven: (nodeId: string, paramName: string) => boolean;
   signedIn?: boolean;
+  // Current user id (or null when signed out). Lets the load grid
+  // flag public projects authored by the viewer as "you".
+  currentUserId?: string | null;
   // Clicking a project thumbnail triggers load in the parent.
   onLoadProject?: (id: string) => void;
   // Bumped by the parent after save/delete so LoadGrid refetches.
@@ -68,6 +71,7 @@ export default function ParamPanel({
   onToggleParamExposed,
   isParamDriven,
   signedIn,
+  currentUserId,
   onLoadProject,
   loadRefreshKey,
 }: Props) {
@@ -94,13 +98,12 @@ export default function ParamPanel({
           onCanvasResChange={onCanvasResChange}
         />
       ) : mode === "load" ? (
-        <Section label="load project">
-          <LoadGrid
-            signedIn={!!signedIn}
-            onLoad={(id) => onLoadProject?.(id)}
-            refreshKey={loadRefreshKey}
-          />
-        </Section>
+        <LoadGrid
+          signedIn={!!signedIn}
+          currentUserId={currentUserId ?? null}
+          onLoad={(id) => onLoadProject?.(id)}
+          refreshKey={loadRefreshKey}
+        />
       ) : selected && def ? (
         <Section label={`${def.name} · parameters`}>
           {(() => {

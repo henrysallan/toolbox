@@ -14,7 +14,8 @@ void main() {
 export const uvCoordsNode: NodeDefinition = {
   type: "texture-coordinate",
   name: "Texture Coordinate",
-  category: "source",
+  category: "image",
+  subcategory: "generator",
   description:
     "Emits the default per-pixel (u, v) as a UV field. Feed it into UV-aware generators (Image Source, Gradient, Perlin) — with Math in UV mode sitting in between to warp, offset, or animate the coordinates.",
   backend: "webgl2",

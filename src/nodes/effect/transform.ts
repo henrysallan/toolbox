@@ -61,7 +61,7 @@ function modeOf(
 export const transformNode: NodeDefinition = {
   type: "transform",
   name: "Transform",
-  category: "effect",
+  category: "utility",
   description:
     "Scale, rotate, and translate the input around a pivot. Works on images (pixels outside the frame become transparent) or splines (anchors and handles transform in place).",
   backend: "webgl2",

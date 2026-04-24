@@ -31,7 +31,7 @@ function innerTypeFor(mode: Mode): SocketType {
 export const groupPickNode: NodeDefinition = {
   type: "group-pick",
   name: "Pick",
-  category: "effect",
+  category: "utility",
   description:
     "Pick element `index` from a group. Index clamps to the valid range so scrubbing doesn't fall off the ends.",
   backend: "webgl2",

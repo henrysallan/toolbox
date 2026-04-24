@@ -29,7 +29,8 @@ function hexToRgb(hex: string): [number, number, number] {
 export const paintNode: NodeDefinition = {
   type: "paint",
   name: "Paint",
-  category: "source",
+  category: "image",
+  subcategory: "generator",
   description: "Draw on the main canvas while this node is selected.",
   backend: "webgl2",
   inputs: [],

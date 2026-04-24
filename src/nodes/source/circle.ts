@@ -49,7 +49,8 @@ function makeCircleSubpath(
 export const circleNode: NodeDefinition = {
   type: "circle",
   name: "Circle",
-  category: "source",
+  category: "spline",
+  subcategory: "generator",
   description:
     "Generate a circle (or ellipse, via non-uniform radii) as a closed spline.",
   backend: "webgl2",

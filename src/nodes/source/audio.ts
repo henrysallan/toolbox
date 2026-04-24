@@ -50,7 +50,8 @@ function ensureState(ctx: RenderContext, nodeId: string): AudioState {
 export const audioSourceNode: NodeDefinition = {
   type: "audio-source",
   name: "Audio Source",
-  category: "source",
+  category: "audio",
+  subcategory: "generator",
   description:
     "Play an audio file or pipe microphone input into the graph. Connect the output to the Output node's audio socket to hear it during playback.",
   backend: "webgl2",

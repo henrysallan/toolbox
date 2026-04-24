@@ -79,7 +79,8 @@ function interpToInt(m: string): number {
 export const colorRampNode: NodeDefinition = {
   type: "color-ramp",
   name: "Color Ramp",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description:
     "Remaps the input's luminance through a gradient of user-defined color stops.",
   backend: "webgl2",

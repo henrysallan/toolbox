@@ -42,7 +42,7 @@ function modeOf(params: Record<string, unknown>): "scalar" | "image" {
 export const remapNode: NodeDefinition = {
   type: "remap",
   name: "Remap",
-  category: "effect",
+  category: "utility",
   description:
     "Remap an input from [in_min, in_max] to [out_min, out_max]. Scalar mode drives animation; image mode remaps every pixel's channels through the same range.",
   backend: "webgl2",

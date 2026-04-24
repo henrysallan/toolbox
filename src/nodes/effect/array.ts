@@ -117,7 +117,7 @@ void main() {
 export const arrayNode: NodeDefinition = {
   type: "array",
   name: "Array",
-  category: "effect",
+  category: "utility",
   description:
     "Tile the input image into a grid. Fit mode scales cells to fill the canvas; Step mode gives cells a fixed size. Plug noise/gradient images into the modulator inputs for per-cell scale/position/rotation variation.",
   backend: "webgl2",

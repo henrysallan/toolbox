@@ -78,7 +78,8 @@ function allocRgba8(
 export const ditherNode: NodeDefinition = {
   type: "dither",
   name: "Dither",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description:
     "Quantize the input image with error-diffusion or ordered dithering.",
   backend: "webgl2",

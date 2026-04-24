@@ -85,7 +85,8 @@ function wrapToInt(s: string): number {
 export const displaceNode: NodeDefinition = {
   type: "displace",
   name: "Displace",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description:
     "Offset each pixel of the input by a vector read from a displacement image. Midlevel is the neutral (no-offset) value — 0.5 for signed 8-bit maps.",
   backend: "webgl2",

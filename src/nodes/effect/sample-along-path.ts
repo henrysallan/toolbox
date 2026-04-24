@@ -15,7 +15,8 @@ import { measureSpline, sampleSplineAt } from "@/engine/spline-math";
 export const sampleAlongPathNode: NodeDefinition = {
   type: "sample-along-path",
   name: "Sample Along Path",
-  category: "effect",
+  category: "spline",
+  subcategory: "modifier",
   description:
     "Output the position (and tangent) at a given arc-length t ∈ [0,1] along a spline. Expose `t` as a socket to animate along the path.",
   backend: "webgl2",

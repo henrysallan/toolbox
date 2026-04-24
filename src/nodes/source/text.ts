@@ -233,7 +233,8 @@ function applyTransform(
 export const textNode: NodeDefinition = {
   type: "text",
   name: "Text",
-  category: "source",
+  category: "image",
+  subcategory: "generator",
   description:
     "Renders text with a built-in transform. Primary is the rasterized image; aux exposes an SDF (jump-flood) and a vector path socket (coming soon).",
   backend: "webgl2",

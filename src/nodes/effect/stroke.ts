@@ -53,7 +53,8 @@ function ensureState(ctx: RenderContext, nodeId: string): StrokeState {
 export const strokeNode: NodeDefinition = {
   type: "spline-stroke",
   name: "Stroke",
-  category: "effect",
+  category: "spline",
+  subcategory: "modifier",
   description:
     "Render a spline as a stroked outline. Color, thickness, cap, and join all exposed — stack multiple Stroke nodes through Merge for offset/outline effects.",
   backend: "webgl2",

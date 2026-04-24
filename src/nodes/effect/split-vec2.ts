@@ -12,7 +12,7 @@ import type { NodeDefinition, ScalarValue } from "@/engine/types";
 export const splitVec2Node: NodeDefinition = {
   type: "split-vec2",
   name: "Split Vec2",
-  category: "effect",
+  category: "utility",
   description:
     "Pull the x and y components out of a vec2 as scalars. Primary = x, aux = y.",
   backend: "webgl2",

@@ -10,7 +10,8 @@ import type { NodeDefinition, PointsValue } from "@/engine/types";
 export const pointNode: NodeDefinition = {
   type: "point",
   name: "Point",
-  category: "source",
+  category: "point",
+  subcategory: "generator",
   description:
     "Emit a single point at (x, y). Combine with Copy to Points to place one instance of an image or spline at a specific location.",
   backend: "webgl2",

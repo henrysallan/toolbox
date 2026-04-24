@@ -67,7 +67,8 @@ void main() {
 export const bloomNode: NodeDefinition = {
   type: "bloom",
   name: "Bloom",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description: "Extracts bright regions and blurs them into a glow.",
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],

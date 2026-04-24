@@ -248,7 +248,8 @@ export { CURVE_CHANNELS };
 export const colorCorrectionNode: NodeDefinition = {
   type: "color-correction",
   name: "Color Correction",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description:
     "Hue, saturation, brightness, contrast, and per-channel RGB curves.",
   backend: "webgl2",

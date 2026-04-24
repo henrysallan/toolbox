@@ -62,7 +62,8 @@ function makeRectSubpath(
 export const rectangleNode: NodeDefinition = {
   type: "rectangle",
   name: "Rectangle",
-  category: "source",
+  category: "spline",
+  subcategory: "generator",
   description:
     "Generate a rectangle as a closed spline, optionally with rounded corners.",
   backend: "webgl2",

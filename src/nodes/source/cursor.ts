@@ -114,7 +114,8 @@ function ensureTargets(ctx: RenderContext, state: CursorNodeState) {
 export const cursorNode: NodeDefinition = {
   type: "cursor",
   name: "Cursor",
-  category: "source",
+  category: "image",
+  subcategory: "generator",
   description:
     "Circular falloff field centered on the pointer, plus an aux velocity field encoded as RG (direction × magnitude, modulated by the same falloff). Radius and softness are in fractions of canvas width — circular on any aspect.",
   backend: "webgl2",

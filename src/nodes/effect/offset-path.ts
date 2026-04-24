@@ -14,7 +14,8 @@ import { offsetSubpath } from "@/engine/spline-math";
 export const offsetPathNode: NodeDefinition = {
   type: "spline-offset",
   name: "Offset Path",
-  category: "effect",
+  category: "spline",
+  subcategory: "modifier",
   description:
     "Offset each subpath perpendicular to its tangent. Useful for variable-width strokes and outline variants without rasterizing.",
   backend: "webgl2",

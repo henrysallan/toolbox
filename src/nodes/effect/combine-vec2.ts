@@ -8,7 +8,7 @@ import type { NodeDefinition, Vec2Value } from "@/engine/types";
 export const combineVec2Node: NodeDefinition = {
   type: "combine-vec2",
   name: "Combine Vec2",
-  category: "effect",
+  category: "utility",
   description:
     "Build a vec2 from two scalars. Inputs default to the x/y params when unconnected, so the node also doubles as a vec2 constant.",
   backend: "webgl2",

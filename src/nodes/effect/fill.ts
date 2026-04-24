@@ -51,7 +51,8 @@ function ensureState(ctx: RenderContext, nodeId: string): FillState {
 export const fillNode: NodeDefinition = {
   type: "spline-fill",
   name: "Fill",
-  category: "effect",
+  category: "spline",
+  subcategory: "modifier",
   description:
     "Fill the interior of a spline. Open subpaths close implicitly for rendering. Choose evenodd (SVG default, punches holes in nested subpaths) or nonzero winding rule.",
   backend: "webgl2",

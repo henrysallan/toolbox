@@ -2,6 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import AccountMenu from "./AccountMenu";
+import VersionMenu from "./VersionMenu";
+import FileNameMenu, { type SaveState } from "./FileNameMenu";
+import NodeBrowserDropdown from "./NodeBrowserDropdown";
 import { useUser } from "@/lib/auth-context";
 
 type MenuItem =
@@ -26,6 +29,9 @@ export interface MenuBarProps {
   canUndo?: boolean;
   canRedo?: boolean;
   onOpenProjectSettings: () => void;
+  // File → New. Clears the current graph back to a fresh seed,
+  // prompting the user first if there's unsaved work.
+  onNewProject: () => void;
   // Save overwrites the current project silently; if there's no current
   // project it falls through to Save As (open the name modal).
   onSave: () => void;
@@ -33,6 +39,25 @@ export interface MenuBarProps {
   onSaveIncremental: () => void;
   canSaveIncremental: boolean;
   onOpenLoad: () => void;
+  // File-name pill (absolutely centered). Undefined disables rendering.
+  projectName: string;
+  projectId: string | null;
+  saveState: SaveState;
+  isPublic: boolean;
+  // False when viewing someone else's public project — disables
+  // rename + visibility toggle. Save still works (forks a copy).
+  ownedByMe: boolean;
+  authorName: string | null;
+  onRenameProject: (next: string) => Promise<void> | void;
+  onRequestToggleVisibility: (next: boolean) => void;
+  // Sync name-collision check for the rename field. Returns the
+  // conflicting row (or null) so the pill can relabel Rename →
+  // Overwrite when typing over another of the user's projects.
+  findNameConflict?: (name: string) => { name: string } | null;
+  // Called by the Node menu when the user picks a node type from the
+  // dropdown. Same signature as the Shift+A popup's add path so the
+  // parent can reuse onAddNode verbatim.
+  onAddNode: (type: string) => void;
 }
 
 const BAR_HEIGHT = 22;
@@ -43,11 +68,22 @@ export default function MenuBar({
   canUndo,
   canRedo,
   onOpenProjectSettings,
+  onNewProject,
   onSave,
   onSaveAs,
   onSaveIncremental,
   canSaveIncremental,
   onOpenLoad,
+  projectName,
+  projectId,
+  saveState,
+  isPublic,
+  ownedByMe,
+  authorName,
+  onRenameProject,
+  onRequestToggleVisibility,
+  findNameConflict,
+  onAddNode,
 }: MenuBarProps) {
   const { user } = useUser();
   const signedIn = !!user;
@@ -89,11 +125,18 @@ export default function MenuBar({
       id: "file",
       label: "File",
       items: [
-        { kind: "item", label: "New", shortcut: "⌘N", disabled: true },
         {
+          // No keyboard shortcut — ⌘N is claimed by the browser for
+          // a new window and not worth the fight.
+          kind: "item",
+          label: "New",
+          onClick: onNewProject,
+        },
+        {
+          // Always available — the Load panel has a Public tab that
+          // works without auth. The Private tab gates itself internally.
           kind: "item",
           label: "Load…",
-          disabled: !signedIn,
           onClick: onOpenLoad,
         },
         { kind: "divider" },
@@ -140,6 +183,10 @@ export default function MenuBar({
         },
       ],
     },
+    // Node menu is special-cased in the render loop below — it uses
+    // NodeBrowserDropdown instead of the flat list MenuDropdown, so
+    // `items` is left empty and never rendered.
+    { id: "node", label: "Node", items: [] },
   ];
 
   return (
@@ -188,11 +235,51 @@ export default function MenuBar({
             >
               {m.label}
             </button>
-            {open && <MenuDropdown items={m.items} onClose={() => setOpenId(null)} />}
+            {open &&
+              (m.id === "node" ? (
+                <NodeBrowserDropdown
+                  onAdd={onAddNode}
+                  onClose={() => setOpenId(null)}
+                />
+              ) : (
+                <MenuDropdown
+                  items={m.items}
+                  onClose={() => setOpenId(null)}
+                />
+              ))}
           </div>
         );
       })}
       <div style={{ flex: 1 }} />
+      {/* Absolutely centered so the left-menu width and right-cluster
+          width don't shift the pill off-center. */}
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: 0,
+          height: "100%",
+          transform: "translateX(-50%)",
+          display: "flex",
+          alignItems: "center",
+          pointerEvents: "auto",
+        }}
+      >
+        <FileNameMenu
+          name={projectName}
+          saveState={saveState}
+          isPublic={isPublic}
+          projectId={projectId}
+          canEdit={signedIn}
+          ownedByMe={ownedByMe}
+          authorName={authorName}
+          onRename={onRenameProject}
+          onRequestToggleVisibility={onRequestToggleVisibility}
+          onSave={onSave}
+          findConflict={findNameConflict}
+        />
+      </div>
+      <VersionMenu />
       <AccountMenu />
     </div>
   );

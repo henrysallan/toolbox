@@ -194,7 +194,8 @@ function stopWebcam(state: WebcamState) {
 export const webcamSourceNode: NodeDefinition = {
   type: "webcam-source",
   name: "Webcam Source",
-  category: "source",
+  category: "image",
+  subcategory: "generator",
   description:
     "Live webcam feed via getUserMedia. First eval triggers the browser permission prompt. Mirror toggle defaults on to match how video-chat tools render the feed.",
   backend: "webgl2",

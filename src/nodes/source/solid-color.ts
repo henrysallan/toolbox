@@ -22,7 +22,8 @@ function hexToRgb(hex: string): [number, number, number] {
 export const solidColorNode: NodeDefinition = {
   type: "solid-color",
   name: "Solid Color",
-  category: "source",
+  category: "image",
+  subcategory: "generator",
   description: "Fills the frame with a single color.",
   backend: "webgl2",
   inputs: [],

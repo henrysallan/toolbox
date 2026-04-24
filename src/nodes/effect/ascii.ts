@@ -284,7 +284,8 @@ function groupRefsEqual(
 export const asciiNode: NodeDefinition = {
   type: "ascii",
   name: "ASCII",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description:
     "Render the input image as a grid of glyphs — text characters from a palette string, or each image in a connected image_group. Brightness remapping, per-cell modulators, and an aux index output match the Array node's conventions.",
   backend: "webgl2",

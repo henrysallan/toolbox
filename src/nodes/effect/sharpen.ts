@@ -88,7 +88,8 @@ void main() {
 export const sharpenNode: NodeDefinition = {
   type: "sharpen",
   name: "Sharpen",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description:
     "Sharpen an image with one of four kernel shapes. Box/diamond/cross are Laplacian-style (crisp); unsharp uses a Gaussian reference for softer falloff.",
   backend: "webgl2",

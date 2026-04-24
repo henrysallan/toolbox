@@ -51,3 +51,16 @@ hand tracker
 43. image should be allowed to be pipped into a scalar. 
 
 44. 'f' shortcut for fullscreen canvas
+
+45. hide the minimap in the node editor
+
+
+47. A "Node" menu bar item. It shows all the categories and all the nodes
+
+48. write documentation. Create a wiki like interface for the docs this is a full page, we dont maintain any of the current interface. The button to access the docs should be a little "i" in a circle that sits to the left of the version number in the menu bar. We should start by just writing 
+
+49. Some way to do metaballs
+
+50. some way to do proximity join/merge for splines (accept multiple splines or a spline group as input)
+
+51. 

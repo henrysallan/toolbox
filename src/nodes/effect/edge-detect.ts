@@ -65,7 +65,8 @@ void main() {
 export const edgeDetectNode: NodeDefinition = {
   type: "edge-detect",
   name: "Edge Detect",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description:
     "Extract edges via Sobel or Prewitt 3×3 gradient convolution. Output is grayscale gradient magnitude — brighter = stronger edge. Threshold clamps weak responses to zero for binary edge maps.",
   backend: "webgl2",

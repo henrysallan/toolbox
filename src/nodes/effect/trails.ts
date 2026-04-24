@@ -189,7 +189,8 @@ function blendToInt(s: string): number {
 export const trailsNode: NodeDefinition = {
   type: "trails",
   name: "Trails",
-  category: "effect",
+  category: "image",
+  subcategory: "modifier",
   description:
     "Temporal trails. Feedback mode: exponential analog-video look. Ring: stepped stop-motion feel. Velocity: directional motion blur along a vector or UV field.",
   backend: "webgl2",

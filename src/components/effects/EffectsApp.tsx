@@ -45,12 +45,20 @@ import {
   serializeGraph,
 } from "@/lib/project";
 import {
+  deleteProject as deleteProjectRow,
+  listPrivateProjects,
   loadProject as loadProjectRow,
+  renameProject as renameProjectRow,
   saveProject as saveProjectRow,
+  setProjectVisibility as setProjectVisibilityRow,
   updateProject as updateProjectRow,
+  type ProjectRow,
 } from "@/lib/supabase/projects";
 import { AuthProvider, useUser } from "@/lib/auth-context";
 import SaveModal from "./SaveModal";
+import PublicPrivateConfirm from "./PublicPrivateConfirm";
+import NewProjectConfirm from "./NewProjectConfirm";
+import type { SaveState } from "./FileNameMenu";
 import TransformGizmo from "./TransformGizmo";
 import SplineEditorOverlay from "./SplineEditorOverlay";
 import PointsOverlay from "./PointsOverlay";
@@ -182,14 +190,69 @@ function EffectsShell() {
   const [paramView, setParamView] = useState<"project" | "node" | "load">(
     "node"
   );
+  // React Flow echoes one final onSelectionChange with the previously-
+  // selected node after we programmatically deselect via setNodes
+  // (during File → Load / Project Settings). Without a guard, that
+  // echo calls onSelectNode(oldId) → setParamView("node"), undoing
+  // the view switch we just made. This ref is set by the menu
+  // handlers immediately before the deselect, and consumed on the
+  // next onSelectNode to swallow exactly one stale echo.
+  const suppressNextSelectionViewFlipRef = useRef(false);
   // Bumped after every save so the load grid refetches on next view.
   const [loadRefreshKey, setLoadRefreshKey] = useState(0);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   // When set, plain "Save" silently overwrites this row; cleared only by
   // switching to a different project (Load or Save As creating a new row).
   const [currentProject, setCurrentProject] = useState<
-    { id: string; name: string } | null
+    | {
+        id: string;
+        name: string;
+        isPublic: boolean;
+        // user_id of whoever authored this row. Used to gate Save /
+        // rename / visibility-toggle: when the viewer isn't the owner,
+        // Save forks a private copy (`_copy`) instead of attempting a
+        // DB update that RLS would reject.
+        ownerId: string;
+        // Display name of the author when the viewer doesn't own the
+        // row (used for the "by <name>" hint). null when it's the
+        // viewer's own project.
+        authorName: string | null;
+      }
+    | null
   >(null);
+  // Menu-bar pill status. Flips to "dirty" on any graph push, back to
+  // "saved" on successful save/load, and to "error" when a save fails.
+  // The DB doesn't track is_public yet; we hold it locally so the toggle
+  // UI can ship today — when the column lands, the save/load paths each
+  // have a single place to start persisting it.
+  const [saveState, setSaveState] = useState<SaveState>("saved");
+  // Visibility confirm modal: `null` closed, otherwise the direction
+  // the user is trying to toggle to.
+  const [pendingVisibility, setPendingVisibility] = useState<
+    null | { toPublic: boolean }
+  >(null);
+  // Mirror of the user's private-project list, used purely for
+  // client-side name-collision detection in the Save As modal and
+  // the file-name pill. Backed by the `listPrivateProjects` cache so
+  // this typically costs zero extra egress — the same call warms the
+  // Load grid too.
+  //
+  // Declared up here (before the save/rename handlers that consume
+  // it via findConflict) so JS module initialization sees the helper
+  // before the useCallbacks close over it.
+  const [privateRows, setPrivateRows] = useState<ProjectRow[]>([]);
+  const findConflict = useCallback(
+    (name: string, excludeId?: string): ProjectRow | null => {
+      const trimmed = name.trim();
+      if (!trimmed) return null;
+      return (
+        privateRows.find(
+          (r) => r.name === trimmed && r.id !== excludeId
+        ) ?? null
+      );
+    },
+    [privateRows]
+  );
   const { user } = useUser();
   const signedIn = !!user;
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -318,11 +381,43 @@ function EffectsShell() {
     [setNodes]
   );
 
-  const { pushGraph, pushPaint, undo, redo, canUndo, canRedo } = useHistory({
+  const {
+    pushGraph: rawPushGraph,
+    pushPaint: rawPushPaint,
+    undo: rawUndo,
+    redo: rawRedo,
+    canUndo,
+    canRedo,
+  } = useHistory({
     getGraphSnapshot,
     applyGraphSnapshot,
     onPaintRestore,
   });
+  // Wrap the history mutators so any graph/paint change — including
+  // undo/redo — transparently marks the menu-bar pill as dirty. Saves
+  // and loads are the only paths that flip back to "saved".
+  const pushGraph = useCallback<typeof rawPushGraph>(
+    (before, coalesceKey) => {
+      rawPushGraph(before, coalesceKey);
+      setSaveState("dirty");
+    },
+    [rawPushGraph]
+  );
+  const pushPaint = useCallback<typeof rawPushPaint>(
+    (snap) => {
+      rawPushPaint(snap);
+      setSaveState("dirty");
+    },
+    [rawPushPaint]
+  );
+  const undo = useCallback(() => {
+    rawUndo();
+    setSaveState("dirty");
+  }, [rawUndo]);
+  const redo = useCallback(() => {
+    rawRedo();
+    setSaveState("dirty");
+  }, [rawRedo]);
   useUndoShortcuts(undo, redo);
 
   useEffect(() => {
@@ -1710,34 +1805,112 @@ function EffectsShell() {
     return result;
   }
 
-  // Modal callback: always creates a NEW row. After success the new row
-  // becomes the "current project" so plain Save overwrites it next time.
+  // Modal callback. Creates a NEW row by default; when the typed name
+  // matches an existing project of the user's, overwrites that row
+  // instead so "Untitled + Save" can't silently duplicate-then-
+  // accumulate. The modal's button label reflects the current
+  // collision state, so the user has already consented to either
+  // branch by the time this runs.
   const handleSaveAsProject = useCallback(
     async (name: string) => {
-      if (!signedIn) throw new Error("Sign in to save projects.");
+      if (!signedIn || !user) throw new Error("Sign in to save projects.");
+      const conflict = findConflict(name);
       try {
+        if (conflict) {
+          // Overwrite path — write the current graph into the
+          // colliding row. updateProject leaves name + is_public
+          // untouched, which is what we want: we're just replacing
+          // the graph.
+          const result = await saveToRow(name, "update", conflict.id);
+          if (!result) {
+            setSaveState("error");
+            throw new Error("Save failed — check RLS policy / network.");
+          }
+          setCurrentProject({
+            id: conflict.id,
+            name: conflict.name,
+            isPublic: conflict.is_public,
+            ownerId: user.id,
+            authorName: null,
+          });
+          setSaveState("saved");
+          setLoadRefreshKey((n) => n + 1);
+          flashToast(`overwrote ${conflict.name}`);
+          return;
+        }
         const result = await saveToRow(name, "insert");
-        if (!result)
+        if (!result) {
+          setSaveState("error");
           throw new Error("Save failed — check RLS policy / network.");
-        setCurrentProject({ id: result.id, name });
+        }
+        setCurrentProject({
+          id: result.id,
+          name,
+          isPublic: false,
+          ownerId: user.id,
+          authorName: null,
+        });
+        setSaveState("saved");
         setLoadRefreshKey((n) => n + 1);
         flashToast(`saved as ${name}`);
+      } catch (err) {
+        setSaveState("error");
+        throw err;
       } finally {
         setProgressStatus(null);
       }
     },
     // saveToRow closes over refs, flashToast, and setters — all stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [signedIn, flashToast]
+    [signedIn, user, findConflict, flashToast]
   );
 
-  // Silent overwrite if we're already on a row; otherwise this is effectively
-  // Save As and opens the name modal.
-  const handleSave = useCallback(async () => {
-    if (!signedIn) return;
+  // Silent overwrite when we own the current row; forks a private copy
+  // (name + "_copy") if we're on someone else's public project; falls
+  // through to Save As if there's no row at all.
+  //
+  // Return value distinguishes the outcomes so callers that want to
+  // chain behavior on a successful save (e.g. File → New) can: "saved"
+  // and "failed" are immediate, "opened-modal" means the Save As modal
+  // is now open and the actual save hasn't happened yet.
+  const handleSave = useCallback(async (): Promise<
+    "saved" | "opened-modal" | "failed" | "skipped"
+  > => {
+    if (!signedIn || !user) return "skipped";
     if (!currentProject) {
       setSaveModalOpen(true);
-      return;
+      return "opened-modal";
+    }
+    const isMine = currentProject.ownerId === user.id;
+    if (!isMine) {
+      // Copy-on-save: RLS would reject an update against someone
+      // else's row anyway. Create our own private copy under a
+      // derived name instead.
+      const copyName = `${currentProject.name}_copy`;
+      try {
+        const result = await saveToRow(copyName, "insert");
+        if (!result) {
+          setSaveState("error");
+          flashToast("save failed");
+          return "failed";
+        }
+        setCurrentProject({
+          id: result.id,
+          name: copyName,
+          isPublic: false,
+          ownerId: user.id,
+          authorName: null,
+        });
+        setSaveState("saved");
+        setLoadRefreshKey((n) => n + 1);
+        flashToast("saved a copy");
+        return "saved";
+      } catch {
+        setSaveState("error");
+        return "failed";
+      } finally {
+        setProgressStatus(null);
+      }
     }
     try {
       const result = await saveToRow(
@@ -1746,37 +1919,56 @@ function EffectsShell() {
         currentProject.id
       );
       if (result) {
+        setSaveState("saved");
         flashToast("saved");
         setLoadRefreshKey((n) => n + 1);
-      } else {
-        flashToast("save failed");
+        return "saved";
       }
+      setSaveState("error");
+      flashToast("save failed");
+      return "failed";
+    } catch {
+      setSaveState("error");
+      return "failed";
     } finally {
       setProgressStatus(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signedIn, currentProject, flashToast]);
+  }, [signedIn, user, currentProject, flashToast]);
 
   // New row, name derived from the current one by incrementing any trailing
   // digits (foo → foo_01, foo_01 → foo_02, foo_99 → foo_100). Becomes the
   // new current project.
   const handleSaveIncremental = useCallback(async () => {
-    if (!signedIn || !currentProject) return;
+    if (!signedIn || !user || !currentProject) return;
     const newName = incrementName(currentProject.name);
     try {
       const result = await saveToRow(newName, "insert");
       if (!result) {
+        setSaveState("error");
         flashToast("save failed");
         return;
       }
-      setCurrentProject({ id: result.id, name: newName });
+      // New rows are always owned by the current user (RLS requires
+      // user_id = auth.uid() on insert) and default to private — even
+      // when incrementing off someone else's public project.
+      setCurrentProject({
+        id: result.id,
+        name: newName,
+        isPublic: false,
+        ownerId: user.id,
+        authorName: null,
+      });
+      setSaveState("saved");
       setLoadRefreshKey((n) => n + 1);
       flashToast(`saved as ${newName}`);
+    } catch {
+      setSaveState("error");
     } finally {
       setProgressStatus(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signedIn, currentProject, flashToast]);
+  }, [signedIn, user, currentProject, flashToast]);
 
   const handleLoadProject = useCallback(
     async (id: string) => {
@@ -1803,13 +1995,256 @@ function EffectsShell() {
         setEdges(nextEdges);
         setSelectedId(null);
         setParamView("node");
-        setCurrentProject({ id, name: saved.name });
+        setCurrentProject({
+          id,
+          name: saved.name,
+          isPublic: saved.is_public,
+          ownerId: saved.user_id,
+          // Only bother carrying the author label when the viewer
+          // doesn't own the row — own-project rename/toggle paths
+          // don't need it.
+          authorName:
+            user && saved.user_id === user.id
+              ? null
+              : saved.author?.display_name ?? null,
+        });
+        // Load applies a graph snapshot via setNodes/setEdges, which
+        // doesn't flow through pushGraph — so saveState isn't auto-
+        // flipped to "dirty". Explicitly mark clean.
+        setSaveState("saved");
         setProgressStatus({ label: "loading", progress: 1, tone: "load" });
       } finally {
         setProgressStatus(null);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, user]
+  );
+
+  // Rename via the file-name pill. If the target name doesn't collide,
+  // it's a simple metadata update. If it DOES collide with another of
+  // the user's projects, we interpret the click — which the pill has
+  // already relabeled "Overwrite" — as "take over that name": write
+  // the current graph into the colliding row, point the pill at it,
+  // and delete the abandoned source row so there aren't two rows with
+  // the same name.
+  const handleRenameProject = useCallback(
+    async (next: string) => {
+      if (!signedIn || !user || !currentProject) return;
+      if (currentProject.ownerId !== user.id) return;
+      const trimmed = next.trim();
+      if (!trimmed || trimmed === currentProject.name) return;
+      const conflict = findConflict(trimmed, currentProject.id);
+      if (conflict) {
+        // Overwrite flow: serialize current graph into the target row.
+        // Reuse the save-progress banner so the UX matches a save.
+        try {
+          const ok = await saveToRow(trimmed, "update", conflict.id);
+          if (!ok) {
+            setSaveState("error");
+            flashToast("overwrite failed");
+            return;
+          }
+          // Best-effort: drop the source row so the user doesn't end
+          // up with duplicate entries. RLS scopes this to own rows,
+          // which it has to be for the rename-in-pill to be available
+          // in the first place.
+          await deleteProjectRow(currentProject.id);
+          setCurrentProject({
+            id: conflict.id,
+            name: conflict.name,
+            isPublic: conflict.is_public,
+            ownerId: user.id,
+            authorName: null,
+          });
+          setSaveState("saved");
+          setLoadRefreshKey((n) => n + 1);
+          flashToast(`overwrote ${conflict.name}`);
+        } catch {
+          setSaveState("error");
+        } finally {
+          setProgressStatus(null);
+        }
+        return;
+      }
+      const ok = await renameProjectRow(currentProject.id, trimmed);
+      if (!ok) {
+        setSaveState("error");
+        flashToast("rename failed");
+        return;
+      }
+      setCurrentProject({ ...currentProject, name: trimmed });
+      setLoadRefreshKey((n) => n + 1);
+      flashToast(`renamed to ${trimmed}`);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [signedIn, user, currentProject, findConflict, flashToast]
+  );
+
+  // Visibility toggle: guard on ownership (RLS would reject otherwise)
+  // then open the confirm modal. The actual DB write lands inside
+  // handleConfirmVisibility after the user OKs the direction.
+  const handleRequestToggleVisibility = useCallback(
+    (next: boolean) => {
+      if (!currentProject || !user) return;
+      if (currentProject.ownerId !== user.id) return;
+      setPendingVisibility({ toPublic: next });
+    },
+    [currentProject, user]
+  );
+
+  const handleConfirmVisibility = useCallback(async () => {
+    if (!pendingVisibility || !currentProject || !user) {
+      setPendingVisibility(null);
+      return;
+    }
+    if (currentProject.ownerId !== user.id) {
+      setPendingVisibility(null);
+      return;
+    }
+    const next = pendingVisibility.toPublic;
+    const ok = await setProjectVisibilityRow(currentProject.id, next);
+    if (!ok) {
+      setSaveState("error");
+      flashToast("visibility update failed");
+      setPendingVisibility(null);
+      return;
+    }
+    setCurrentProject({ ...currentProject, isPublic: next });
+    flashToast(next ? "now public" : "now private");
+    setLoadRefreshKey((n) => n + 1);
+    setPendingVisibility(null);
+  }, [pendingVisibility, currentProject, user, flashToast]);
+
+  // ----------------------------------------------------------------------
+  // Private-project list refresh
+  //
+  // Warms the list cache on sign-in and whenever `loadRefreshKey`
+  // bumps (every save / rename / visibility / delete invalidates
+  // the shared cache and bumps that key). Feeds `findConflict`
+  // above so the Save As modal and file-name pill can relabel their
+  // buttons synchronously as the user types.
+  // ----------------------------------------------------------------------
+
+  useEffect(() => {
+    if (!signedIn) {
+      setPrivateRows([]);
+      return;
+    }
+    let cancelled = false;
+    listPrivateProjects().then((rows) => {
+      if (!cancelled) setPrivateRows(rows);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [signedIn, loadRefreshKey]);
+
+  // ----------------------------------------------------------------------
+  // File → New
+  // ----------------------------------------------------------------------
+
+  const [newConfirmOpen, setNewConfirmOpen] = useState(false);
+  // When true, a successful Save As (from SaveModal) will be chained
+  // into resetToFreshProject. Cleared if the save modal is cancelled.
+  const [pendingNewAfterSave, setPendingNewAfterSave] = useState(false);
+
+  const resetToFreshProject = useCallback(() => {
+    // Seed a new graph from scratch — don't reuse the module-level
+    // INITIAL_NODES directly since its node IDs were frozen at import
+    // time; calling makeInstanceNode fresh here gives us unique IDs.
+    const imageSrc = makeInstanceNode("image-source", { x: 40, y: 80 });
+    const bloom = makeInstanceNode("bloom", { x: 340, y: 80 });
+    const output = makeInstanceNode("output", { x: 640, y: 120 });
+    const freshNodes: Node<NodeDataPayload>[] = [imageSrc, bloom, output];
+    const freshEdges: Edge[] = [
+      {
+        id: `e-${imageSrc.id}-${bloom.id}`,
+        source: imageSrc.id,
+        sourceHandle: "out:primary",
+        target: bloom.id,
+        targetHandle: "in:image",
+      },
+      {
+        id: `e-${bloom.id}-${output.id}`,
+        source: bloom.id,
+        sourceHandle: "out:primary",
+        target: output.id,
+        targetHandle: "in:image",
+      },
+    ];
+    // Suppress the echo-selection-change paramView flip, same rule
+    // as File → Load / Project Settings.
+    suppressNextSelectionViewFlipRef.current = true;
+    setNodes(freshNodes);
+    setEdges(freshEdges);
+    setSelectedId(null);
+    setParamView("node");
+    setCurrentProject(null);
+    setSaveState("saved");
+  }, [setNodes, setEdges]);
+
+  const handleNewProject = useCallback(() => {
+    // Nothing to lose — skip the confirm.
+    if (saveState === "saved") {
+      resetToFreshProject();
+      return;
+    }
+    setNewConfirmOpen(true);
+  }, [saveState, resetToFreshProject]);
+
+  const handleNewConfirmSave = useCallback(async () => {
+    if (!signedIn || !user) {
+      // Saving isn't possible — treat Save as Don't Save so the user
+      // isn't stuck. The confirm modal already hides the Save button
+      // in this case, but guard here too in case of a race.
+      setNewConfirmOpen(false);
+      resetToFreshProject();
+      return;
+    }
+    if (!currentProject) {
+      // No row yet — hand off to the Save As modal. After that save
+      // resolves, the wrapped onSave handler fires resetToFreshProject
+      // via pendingNewAfterSave.
+      setPendingNewAfterSave(true);
+      setNewConfirmOpen(false);
+      setSaveModalOpen(true);
+      return;
+    }
+    const outcome = await handleSave();
+    if (outcome === "saved") {
+      setNewConfirmOpen(false);
+      resetToFreshProject();
+    }
+    // On "failed" we leave the confirm modal open so the user can
+    // retry or choose Don't Save / Cancel.
+  }, [
+    signedIn,
+    user,
+    currentProject,
+    handleSave,
+    resetToFreshProject,
+  ]);
+
+  const handleNewConfirmDiscard = useCallback(() => {
+    setNewConfirmOpen(false);
+    resetToFreshProject();
+  }, [resetToFreshProject]);
+
+  // Wraps the normal Save As handler so the pending-new flow can
+  // chain reset after a successful save. For the regular Save As
+  // menu path, pendingNewAfterSave is always false — wrapper is a
+  // pass-through.
+  const handleSaveAsWithMaybeReset = useCallback(
+    async (name: string) => {
+      await handleSaveAsProject(name);
+      // Only reached on success — handleSaveAsProject throws on
+      // failure, surfacing the error in SaveModal.
+      if (pendingNewAfterSave) {
+        setPendingNewAfterSave(false);
+        resetToFreshProject();
+      }
+    },
+    [handleSaveAsProject, pendingNewAfterSave, resetToFreshProject]
   );
 
   useEffect(() => {
@@ -1968,23 +2403,44 @@ function EffectsShell() {
           // user opened Project Settings. Clear React Flow's per-node
           // `.selected` flag too — setSelectedId alone leaves the node
           // visually highlighted in the flow pane. Same rule for Load.
+          suppressNextSelectionViewFlipRef.current = true;
           setSelectedId(null);
           setNodes((prev) =>
             prev.map((n) => (n.selected ? { ...n, selected: false } : n))
           );
           setParamView("project");
         }}
+        onNewProject={handleNewProject}
         onSave={handleSave}
         onSaveAs={() => setSaveModalOpen(true)}
         onSaveIncremental={handleSaveIncremental}
         canSaveIncremental={signedIn && !!currentProject}
         onOpenLoad={() => {
+          suppressNextSelectionViewFlipRef.current = true;
           setSelectedId(null);
           setNodes((prev) =>
             prev.map((n) => (n.selected ? { ...n, selected: false } : n))
           );
           setParamView("load");
         }}
+        projectName={currentProject?.name ?? "Untitled"}
+        projectId={currentProject?.id ?? null}
+        saveState={saveState}
+        isPublic={currentProject?.isPublic ?? false}
+        // When the viewer doesn't own the loaded row, rename and the
+        // visibility toggle need to be disabled — Save still works, but
+        // it forks a private copy instead of overwriting.
+        ownedByMe={
+          !currentProject ||
+          (!!user && currentProject.ownerId === user.id)
+        }
+        authorName={currentProject?.authorName ?? null}
+        onRenameProject={handleRenameProject}
+        onRequestToggleVisibility={handleRequestToggleVisibility}
+        findNameConflict={(name) =>
+          findConflict(name, currentProject?.id)
+        }
+        onAddNode={(type) => onAddNode(type)}
       />
       <div
         style={{
@@ -2145,6 +2601,13 @@ function EffectsShell() {
             onEdgesChange={onEdgesChangeWithHistory}
             onConnect={onConnect}
             onSelectNode={(id) => {
+              // One-shot echo suppression: if we just programmatically
+              // deselected via a menu handler, ignore the stale
+              // selection-change that React Flow fires right after.
+              if (suppressNextSelectionViewFlipRef.current) {
+                suppressNextSelectionViewFlipRef.current = false;
+                return;
+              }
               setSelectedId(id);
               // Clicking a node flips the right panel back to node params —
               // a deselection alone shouldn't disturb the project-settings view.
@@ -2189,6 +2652,7 @@ function EffectsShell() {
             onToggleParamExposed={onToggleParamExposed}
             isParamDriven={isParamDriven}
             signedIn={signedIn}
+            currentUserId={user?.id ?? null}
             onLoadProject={handleLoadProject}
             loadRefreshKey={loadRefreshKey}
           />
@@ -2210,11 +2674,47 @@ function EffectsShell() {
       />
       <SaveModal
         open={saveModalOpen}
-        onClose={() => setSaveModalOpen(false)}
-        onSave={handleSaveAsProject}
+        onClose={() => {
+          setSaveModalOpen(false);
+          // Cancelling the save during a File → New flow aborts the
+          // chained reset — otherwise clicking Cancel would silently
+          // still nuke the user's unsaved work.
+          setPendingNewAfterSave(false);
+        }}
+        onSave={handleSaveAsWithMaybeReset}
+        findConflict={(name) => findConflict(name)}
+      />
+      <PublicPrivateConfirm
+        open={!!pendingVisibility}
+        toPublic={pendingVisibility?.toPublic ?? false}
+        onCancel={() => setPendingVisibility(null)}
+        onConfirm={handleConfirmVisibility}
+      />
+      <NewProjectConfirm
+        open={newConfirmOpen}
+        canSave={signedIn}
+        saveHint={newSaveHint(currentProject, user?.id)}
+        onCancel={() => setNewConfirmOpen(false)}
+        onDiscard={handleNewConfirmDiscard}
+        onSave={handleNewConfirmSave}
       />
     </div>
   );
+}
+
+// Short "here's what Save will do" string for the confirm modal.
+// Mirrors the branching in handleSave so the button's effect isn't
+// a surprise.
+function newSaveHint(
+  currentProject: { name: string; ownerId: string } | null,
+  userId: string | undefined
+): string {
+  if (!currentProject) return "You'll be prompted for a name first.";
+  const isMine = !!userId && currentProject.ownerId === userId;
+  if (!isMine) {
+    return `Saving will fork a private copy named "${currentProject.name}_copy".`;
+  }
+  return `Save will overwrite "${currentProject.name}".`;
 }
 
 function ProgressBanner({

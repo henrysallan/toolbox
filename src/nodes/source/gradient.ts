@@ -141,7 +141,8 @@ function getZeroTex(
 export const gradientNode: NodeDefinition = {
   type: "gradient",
   name: "Gradient",
-  category: "source",
+  category: "image",
+  subcategory: "generator",
   description: "Two-color gradient in linear, radial, polar or wave modes.",
   backend: "webgl2",
   inputs: [],
