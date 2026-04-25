@@ -148,12 +148,12 @@ function NodeCard({ def }: { def: NodeDefinition }) {
     !!def.resolveAuxOutputs ||
     !!def.resolvePrimaryOutput;
 
-  // Visible-only params in their default state — hidden ones don't
-  // show in the editor UI, so they shouldn't show in the reference.
-  const visibleParams = def.params.filter((p) => {
-    if (p.hidden) return false;
-    return p.visibleIf?.(defaults) ?? true;
-  });
+  // Show every non-hidden param in the reference — including ones
+  // gated by `visibleIf`. Filtering those out would leave entire
+  // modes undocumented (e.g. math's uv-mode params never show up
+  // under default scalar-mode), and users reading docs aren't in
+  // the editor context that hides them anyway.
+  const visibleParams = def.params.filter((p) => !p.hidden);
 
   return (
     <article

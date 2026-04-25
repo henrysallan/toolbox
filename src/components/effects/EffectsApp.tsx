@@ -288,11 +288,26 @@ function EffectsShell() {
   const evalCacheRef = useRef<EvalCache>(new Map());
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [backendReady, setBackendReady] = useState(false);
-  // Incremented when a source (currently: async font load) needs the
-  // pipeline to re-evaluate while nothing else has changed.
+  // Incremented when a source needs the pipeline to re-evaluate while
+  // nothing else has changed. High-frequency bumpers (webcam ~30Hz,
+  // MediaPipe trackers, audio meters) would otherwise trigger a React
+  // re-render of this whole shell per event — at 30+Hz that tanks
+  // interactivity regardless of what the pipeline itself is doing.
+  //
+  // Collapse multiple bumps within one animation frame into a single
+  // state update. React re-renders at most once per rAF tick, no
+  // matter how many events fire.
   const [pipelineBumpKey, setPipelineBumpKey] = useState(0);
   useEffect(() => {
-    const onBump = () => setPipelineBumpKey((n) => n + 1);
+    let scheduled = false;
+    const onBump = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        setPipelineBumpKey((n) => n + 1);
+      });
+    };
     window.addEventListener("pipeline-bump", onBump);
     return () => window.removeEventListener("pipeline-bump", onBump);
   }, []);
@@ -1434,6 +1449,47 @@ function EffectsShell() {
                 : n.data.auxOutputs,
             },
           };
+        })
+      );
+    },
+    [setNodes, pushGraph, getGraphSnapshot]
+  );
+
+  // Per-instance slider range override. `null` clears the entry so a
+  // future engine update to the param def's defaults takes effect.
+  const onParamRangeChange = useCallback(
+    (
+      nodeId: string,
+      paramName: string,
+      override: { min?: number; max?: number; softMax?: number } | null
+    ) => {
+      pushGraph(getGraphSnapshot(), `range:${nodeId}:${paramName}`);
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id !== nodeId) return n;
+          const cur = n.data.paramOverrides ?? {};
+          let nextOverrides: Record<
+            string,
+            { min?: number; max?: number; softMax?: number }
+          >;
+          if (override === null) {
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const { [paramName]: _drop, ...rest } = cur;
+            nextOverrides = rest;
+          } else {
+            nextOverrides = { ...cur, [paramName]: override };
+          }
+          const next = {
+            ...n,
+            data: {
+              ...n.data,
+              paramOverrides:
+                Object.keys(nextOverrides).length > 0
+                  ? nextOverrides
+                  : undefined,
+            },
+          };
+          return next;
         })
       );
     },
@@ -2705,6 +2761,7 @@ function EffectsShell() {
             onCanvasResChange={setCanvasRes}
             onParamChange={onParamChange}
             onToggleParamExposed={onToggleParamExposed}
+            onParamRangeChange={onParamRangeChange}
             isParamDriven={isParamDriven}
             signedIn={signedIn}
             currentUserId={user?.id ?? null}

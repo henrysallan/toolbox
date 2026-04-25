@@ -56,9 +56,6 @@ hand tracker
 
 
 
-
-48. write documentation. Create a wiki like interface for the docs this is a full page, we dont maintain any of the current interface. The button to access the docs should be a little "i" in a circle that sits to the left of the version number in the menu bar. We do this in batches, so make a plan. 
-
 49. Some way to do metaballs
 
 50. some way to do proximity join/merge for splines (accept multiple splines or a spline group as input)
@@ -71,3 +68,21 @@ hand tracker
 53. image data should be able to drive UV data
 
 54. Iterative render. Some sort of node that takes multiple inputs and then lets you render the full chain with each of them, 1 after another. Saves everything as a .zip file.
+
+55. Spline draw has a tool for doing various shape primatives. 
+
+56. connect points node. Takes points as input, outputs splines. Slider for max distance to connect. 
+
+57. dotted and dashed modes for stroke node (package stroke and fill as "Stroke/Fill")
+
+
+
+59. Any spline generator should have 
+
+60. big feature, Convert To App. This feature lets you essentially export your node tree as a single app. Instead of each node being a seperate canvas/operation passing data, we concatenate the functions into a single script. We take all the controls and put them in a single panel each one listed in 
+
+61. index debug
+
+62. Right click any slider to change its range. Save that data with the project file? How big of a change is it to make the data savable
+
+63. G shortcut for moving notes like in blender. 

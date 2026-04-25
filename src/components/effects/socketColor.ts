@@ -10,12 +10,11 @@ export const socketColor: Record<string, string> = {
   spline: "#22d3ee",
   points: "#fb923c",
   audio: "#ec4899",
-  // Group socket colors reuse the same hue as their inner type but
-  // shift toward the dark end so the group and its elements read as
-  // related-but-distinct.
+  // Image groups reuse the image hue but shift darker so a grouped
+  // wire reads as related-but-distinct from a single image. Spline
+  // and points no longer have a distinct group type — they carry
+  // groupIndex metadata on the base value.
   image_group: "#1d4ed8",
-  spline_group: "#0891b2",
-  points_group: "#c2410c",
 };
 
 export function colorForSocket(type: string): string {

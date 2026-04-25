@@ -32,6 +32,7 @@ import { accumulatorNode } from "./effect/accumulator";
 import { sharpenNode } from "./effect/sharpen";
 import { edgeDetectNode } from "./effect/edge-detect";
 import { objectTrackerNode } from "./effect/object-tracker";
+import { handTrackerNode } from "./effect/hand-tracker";
 import { groupNode } from "./effect/group";
 import { groupPickNode } from "./effect/group-pick";
 import { groupLengthNode } from "./effect/group-length";
@@ -50,6 +51,10 @@ import { mathNode } from "./effect/math";
 import { trailsNode } from "./effect/trails";
 import { displaceNode } from "./effect/displace";
 import { arrayNode } from "./effect/array";
+import { proximityMergeNode } from "./effect/proximity-merge";
+import { connectPointsNode } from "./effect/connect-points";
+import { lissajous2DNode, lissajous3DNode } from "./effect/lissajous";
+import { jitterNode } from "./effect/jitter";
 import { outputNode } from "./output/output";
 
 let registered = false;
@@ -95,6 +100,7 @@ export function registerAllNodes() {
   registerNode(sharpenNode);
   registerNode(edgeDetectNode);
   registerNode(objectTrackerNode);
+  registerNode(handTrackerNode);
   registerNode(groupNode);
   registerNode(groupPickNode);
   registerNode(groupLengthNode);
@@ -113,6 +119,11 @@ export function registerAllNodes() {
   registerNode(trailsNode);
   registerNode(displaceNode);
   registerNode(arrayNode);
+  registerNode(proximityMergeNode);
+  registerNode(connectPointsNode);
+  registerNode(lissajous2DNode);
+  registerNode(lissajous3DNode);
+  registerNode(jitterNode);
   registerNode(outputNode);
   registered = true;
 }

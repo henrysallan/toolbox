@@ -122,7 +122,7 @@ export default function NodeEditor({
   // component renders identically to React Flow's default bezier when no
   // waypoint is set, so there's no visual change for unjoined edges.
   const edgeTypes = useMemo(() => ({ default: JunctionEdge }), []);
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, setNodes: rfSetNodes } = useReactFlow();
   const flowWrapperRef = useRef<HTMLDivElement | null>(null);
   // Static no-op handlers so WireActionOverlay always has something to
   // call, even when the parent didn't wire these props.
@@ -177,17 +177,185 @@ export default function NodeEditor({
   const spliceRef = useRef<typeof spliceCandidate>(null);
   spliceRef.current = spliceCandidate;
 
+  // Set by onReconnect when a drag-detach actually lands on a new
+  // handle. onReconnectEnd consults this to decide whether to drop
+  // the edge (drop on pane = detach) or leave the rewire alone.
+  const reconnectSucceededRef = useRef(false);
+
   // Decorate edges with `data.spliceHighlight` on the fly — purely UI
   // state, no need to round-trip through the parent's edges state.
-  // JunctionEdge picks up the flag and boosts its stroke.
+  // JunctionEdge picks up the flag and boosts its stroke. We also
+  // mark every edge reconnectable on the TARGET (input) side only —
+  // the user can grab a wire from a connected input port and drag
+  // it to re-route, but pulling from the output side is locked so
+  // we don't conflict with the "drag from an unconnected output to
+  // start a new wire" gesture.
   const displayEdges = useMemo(() => {
-    if (!spliceCandidate) return edges;
-    return edges.map((e) =>
-      e.id === spliceCandidate.edgeId
-        ? { ...e, data: { ...(e.data ?? {}), spliceHighlight: true } }
-        : e
-    );
+    return edges.map((e) => {
+      const next: Edge = { ...e, reconnectable: "target" };
+      if (spliceCandidate && e.id === spliceCandidate.edgeId) {
+        return {
+          ...next,
+          data: { ...(e.data ?? {}), spliceHighlight: true },
+        };
+      }
+      return next;
+    });
   }, [edges, spliceCandidate]);
+
+  // -------- G-move state -------------------------------------------------
+  // Blender-style "press G to move." Picks up the currently-selected
+  // nodes and follows the cursor live until the user clicks (commit)
+  // or hits Escape / right-clicks (cancel). Emits position changes
+  // through onNodesChange with dragging flags so the parent's history
+  // hook treats it like a normal drag — undoable, single history entry.
+  const [gMove, setGMove] = useState<null | {
+    startMouse: { x: number; y: number };
+    origPositions: Map<string, { x: number; y: number }>;
+  }>(null);
+  const gMoveRef = useRef(gMove);
+  gMoveRef.current = gMove;
+  // Tracked globally so we can use the cursor position at the moment
+  // of G keypress (which itself doesn't carry mouse coords).
+  const lastMouseRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      lastMouseRef.current = { x: e.clientX, y: e.clientY };
+    };
+    window.addEventListener("mousemove", onMove);
+    return () => window.removeEventListener("mousemove", onMove);
+  }, []);
+
+  const exitGCommit = useCallback(() => {
+    const g = gMoveRef.current;
+    if (!g) return;
+    // dragging=false flushes the parent's history snapshot, which
+    // it captured on the first dragging=true we sent. Net history
+    // entry: original positions → final positions. Properly undoable.
+    const finalChanges: NodeChange<Node<NodeDataPayload>>[] = [];
+    for (const id of g.origPositions.keys()) {
+      finalChanges.push({ type: "position", id, dragging: false });
+    }
+    if (finalChanges.length) onNodesChange(finalChanges);
+    setGMove(null);
+  }, [onNodesChange]);
+
+  const exitGCancel = useCallback(() => {
+    const g = gMoveRef.current;
+    if (!g) return;
+    // Snap positions back to the originals. We bypass onNodesChange
+    // for the revert itself so the parent's history hook doesn't
+    // capture a fresh snapshot mid-drag — just splat the originals
+    // directly. Then send dragging=false to flush whatever snapshot
+    // is already pending; that yields a no-op "original → original"
+    // history entry, which is harmless.
+    rfSetNodes((curr) =>
+      curr.map((n) => {
+        const orig = g.origPositions.get(n.id);
+        return orig ? { ...n, position: orig } : n;
+      })
+    );
+    const flushChanges: NodeChange<Node<NodeDataPayload>>[] = [];
+    for (const id of g.origPositions.keys()) {
+      flushChanges.push({ type: "position", id, dragging: false });
+    }
+    if (flushChanges.length) onNodesChange(flushChanges);
+    setGMove(null);
+  }, [onNodesChange, rfSetNodes]);
+
+  // Keyboard listener: G toggles in (or commits if already in).
+  // Skips when typing in editable elements so the letter isn't stolen.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "g" && e.key !== "G") return;
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
+      if (gMoveRef.current) {
+        // G a second time = commit, mirroring Blender's behavior.
+        e.preventDefault();
+        exitGCommit();
+        return;
+      }
+      const selected = nodes.filter((n) => n.selected);
+      if (selected.length === 0) return;
+      e.preventDefault();
+      const origPositions = new Map<string, { x: number; y: number }>();
+      for (const n of selected)
+        origPositions.set(n.id, { x: n.position.x, y: n.position.y });
+      setGMove({
+        startMouse: lastMouseRef.current,
+        origPositions,
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [nodes, exitGCommit]);
+
+  // While in G-mode, drive position updates from cursor delta and
+  // intercept clicks / Escape / right-click for commit / cancel.
+  useEffect(() => {
+    if (!gMove) return;
+    const onMove = (e: MouseEvent) => {
+      const start = screenToFlowPosition({
+        x: gMove.startMouse.x,
+        y: gMove.startMouse.y,
+      });
+      const cur = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      const dx = cur.x - start.x;
+      const dy = cur.y - start.y;
+      const changes: NodeChange<Node<NodeDataPayload>>[] = [];
+      for (const [id, orig] of gMove.origPositions) {
+        changes.push({
+          type: "position",
+          id,
+          position: { x: orig.x + dx, y: orig.y + dy },
+          dragging: true,
+        });
+      }
+      onNodesChange(changes);
+    };
+    const onDown = (e: MouseEvent) => {
+      if (e.button === 0) {
+        // LMB commits — and we swallow the event so React Flow
+        // doesn't also interpret it as a node selection / pane click.
+        e.preventDefault();
+        e.stopPropagation();
+        exitGCommit();
+      } else if (e.button === 2) {
+        e.preventDefault();
+        e.stopPropagation();
+        exitGCancel();
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        exitGCancel();
+      }
+    };
+    const onContext = (e: MouseEvent) => {
+      // Suppress the right-click context menu while G-mode is active —
+      // the right-click gesture itself was the cancel signal.
+      e.preventDefault();
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mousedown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("contextmenu", onContext);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("contextmenu", onContext);
+    };
+  }, [gMove, screenToFlowPosition, onNodesChange, exitGCommit, exitGCancel]);
 
   // Coercion rules for splice compatibility. Same set `isValidConnection`
   // uses when the user draws a wire manually. Duplicated here because
@@ -235,6 +403,17 @@ export default function NodeEditor({
   } | null => {
     const draggedNode = nodes.find((n) => n.id === draggedNodeId);
     if (!draggedNode) return null;
+    // If the dragged node already participates in any edge, skip the
+    // splice. Auto-splice is meant for "drop a fresh node onto a
+    // wire" — once a node has connections, dragging it past wires
+    // shouldn't aggressively rewire it, that's surprising.
+    if (
+      edges.some(
+        (e) => e.source === draggedNodeId || e.target === draggedNodeId
+      )
+    ) {
+      return null;
+    }
     const nodeEl = document.querySelector(
       `.react-flow__node[data-id="${CSS.escape(draggedNodeId)}"]`
     ) as HTMLElement | null;
@@ -567,6 +746,27 @@ export default function NodeEditor({
         onNodesChange={onNodesChange as (c: NodeChange[]) => void}
         onEdgesChange={onEdgesChange as (c: EdgeChange[]) => void}
         onConnect={onConnect}
+        onReconnect={(oldEdge, newConnection) => {
+          // User dragged the edge end onto a different handle. Drop
+          // the original edge and let onConnect produce the new one
+          // — that path runs the same isValidConnection / type-
+          // promotion logic we'd want for a fresh connection.
+          reconnectSucceededRef.current = true;
+          onEdgesChange([{ type: "remove", id: oldEdge.id }]);
+          onConnect(newConnection);
+        }}
+        onReconnectStart={() => {
+          reconnectSucceededRef.current = false;
+        }}
+        onReconnectEnd={(_event, oldEdge) => {
+          // Drop on empty pane = detach. onReconnect didn't fire,
+          // so the success flag is still false — interpret as
+          // "user wanted to disconnect" and remove the edge.
+          if (!reconnectSucceededRef.current) {
+            onEdgesChange([{ type: "remove", id: oldEdge.id }]);
+          }
+          reconnectSucceededRef.current = false;
+        }}
         onConnectEnd={(event, conn) => {
           // If the wire was dropped on empty pane (toHandle is null on
           // the FinalConnectionState), pop the search so the user can

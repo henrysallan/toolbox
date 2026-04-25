@@ -12,7 +12,14 @@ type EffectNodeType = Node<NodeDataPayload, "effect">;
 
 const ROW_H = 22;
 const PAD_Y = 8;
+// Visual dot diameter. Click area is decoupled (HANDLE_HIT below) so
+// the ports look the same as before but are easier to grab.
 const HANDLE_SIZE = 10;
+// Hit area of the Handle element. Larger than the visual dot — the
+// dot is rendered as an inner child div, so the surrounding ring
+// catches clicks without making the port look chunky. Capped just
+// below ROW_H (22) so adjacent rows don't have overlapping hitboxes.
+const HANDLE_HIT = 20;
 
 interface ExposedSocket {
   name: string;
@@ -215,12 +222,18 @@ export default function EffectNode({
                 position={Position.Left}
                 style={{
                   top: handleCenter,
-                  width: HANDLE_SIZE,
-                  height: HANDLE_SIZE,
-                  background: colorForSocket(input.type),
-                  border: "1px solid #0a0a0a",
+                  width: HANDLE_HIT,
+                  height: HANDLE_HIT,
+                  background: "transparent",
+                  border: "none",
                 }}
-              />
+              >
+                <SocketDot
+                  size={HANDLE_SIZE}
+                  background={colorForSocket(input.type)}
+                  border="1px solid #0a0a0a"
+                />
+              </Handle>
               <div
                 style={{
                   position: "absolute",
@@ -257,13 +270,19 @@ export default function EffectNode({
                 position={Position.Left}
                 style={{
                   top: handleCenter,
-                  width: HANDLE_SIZE,
-                  height: HANDLE_SIZE,
-                  background: colorForSocket(ex.socketType),
-                  border: "1px dashed #52525b",
-                  borderRadius: 2,
+                  width: HANDLE_HIT,
+                  height: HANDLE_HIT,
+                  background: "transparent",
+                  border: "none",
                 }}
-              />
+              >
+                <SocketDot
+                  size={HANDLE_SIZE}
+                  background={colorForSocket(ex.socketType)}
+                  border="1px dashed #52525b"
+                  borderRadius={2}
+                />
+              </Handle>
               <div
                 style={{
                   position: "absolute",
@@ -300,12 +319,18 @@ export default function EffectNode({
               position={Position.Right}
               style={{
                 top: PAD_Y + ROW_H / 2,
-                width: HANDLE_SIZE + 2,
-                height: HANDLE_SIZE + 2,
-                background: colorForSocket(data.primaryOutput!),
-                border: "1px solid #0a0a0a",
+                width: HANDLE_HIT,
+                height: HANDLE_HIT,
+                background: "transparent",
+                border: "none",
               }}
-            />
+            >
+              <SocketDot
+                size={HANDLE_SIZE + 2}
+                background={colorForSocket(data.primaryOutput!)}
+                border="1px solid #0a0a0a"
+              />
+            </Handle>
             <div
               style={{
                 position: "absolute",
@@ -341,15 +366,23 @@ export default function EffectNode({
                 isConnectable={!disabled}
                 style={{
                   top: handleCenter,
-                  width: HANDLE_SIZE,
-                  height: HANDLE_SIZE,
-                  background: disabled ? "#27272a" : colorForSocket(aux.type),
-                  border: disabled
-                    ? "1px dashed #52525b"
-                    : "1px solid #0a0a0a",
+                  width: HANDLE_HIT,
+                  height: HANDLE_HIT,
+                  background: "transparent",
+                  border: "none",
                   opacity: disabled ? 0.55 : 1,
                 }}
-              />
+              >
+                <SocketDot
+                  size={HANDLE_SIZE}
+                  background={
+                    disabled ? "#27272a" : colorForSocket(aux.type)
+                  }
+                  border={
+                    disabled ? "1px dashed #52525b" : "1px solid #0a0a0a"
+                  }
+                />
+              </Handle>
               <div
                 style={{
                   position: "absolute",
@@ -487,5 +520,37 @@ function HeaderToggle({
     >
       {label}
     </button>
+  );
+}
+
+// Visual dot rendered as a child of the larger transparent Handle.
+// pointerEvents: none so all clicks fall through to the Handle for
+// React Flow's connection logic.
+function SocketDot({
+  size,
+  background,
+  border,
+  borderRadius = "50%",
+}: {
+  size: number;
+  background: string;
+  border: string;
+  borderRadius?: number | string;
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: "50%",
+        left: "50%",
+        transform: "translate(-50%, -50%)",
+        width: size,
+        height: size,
+        background,
+        border,
+        borderRadius,
+        pointerEvents: "none",
+      }}
+    />
   );
 }

@@ -56,7 +56,7 @@ export const strokeNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Render a spline as a stroked outline. Color, thickness, cap, and join all exposed — stack multiple Stroke nodes through Merge for offset/outline effects.",
+    "Render a spline as a stroked outline. Three styles: solid (continuous), dashed (alternating dashes and gaps), dotted (round dots at a fixed spacing). Stack multiple Stroke nodes through Merge for offset/outline effects.",
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [
@@ -77,11 +77,55 @@ export const strokeNode: NodeDefinition = {
       default: 4,
     },
     {
+      name: "style",
+      label: "Style",
+      type: "enum",
+      options: ["solid", "dashed", "dotted"],
+      default: "solid",
+    },
+    {
+      name: "dash_length",
+      label: "Dash length (px)",
+      type: "scalar",
+      min: 0.5,
+      max: 200,
+      softMax: 40,
+      step: 0.5,
+      default: 10,
+      visibleIf: (p) => p.style === "dashed",
+    },
+    {
+      name: "dash_gap",
+      label: "Dash gap (px)",
+      type: "scalar",
+      min: 0.5,
+      max: 200,
+      softMax: 40,
+      step: 0.5,
+      default: 8,
+      visibleIf: (p) => p.style === "dashed",
+    },
+    {
+      name: "dot_spacing",
+      label: "Dot spacing (px)",
+      type: "scalar",
+      min: 1,
+      max: 200,
+      softMax: 40,
+      step: 0.5,
+      default: 12,
+      visibleIf: (p) => p.style === "dotted",
+    },
+    {
       name: "cap",
       label: "Cap",
       type: "enum",
       options: ["round", "butt", "square"],
       default: "round",
+      // Dotted mode forces lineCap=round to make the dots circular,
+      // so the user-selectable cap is only meaningful for solid and
+      // dashed styles.
+      visibleIf: (p) => p.style !== "dotted",
     },
     {
       name: "join",
@@ -130,6 +174,10 @@ export const strokeNode: NodeDefinition = {
       subRef: src.subpaths,
       c: params.color,
       t: params.thickness,
+      st: params.style,
+      dl: params.dash_length,
+      dg: params.dash_gap,
+      ds: params.dot_spacing,
       cap: params.cap,
       jn: params.join,
       ml: params.miter_limit,
@@ -150,14 +198,39 @@ export const strokeNode: NodeDefinition = {
         const closeOpen = !!params.close_open_paths;
         const path = buildPath2D(src.subpaths, W, H, closeOpen);
         if (path) {
-          c2d.lineWidth = Math.max(0, (params.thickness as number) ?? 4);
+          const style = (params.style as string) ?? "solid";
+          const thickness = Math.max(0, (params.thickness as number) ?? 4);
+          c2d.lineWidth = thickness;
           c2d.strokeStyle = hexToRgba((params.color as string) ?? "#ffffff");
-          c2d.lineCap =
-            (params.cap as CanvasLineCap) ?? ("round" as CanvasLineCap);
           c2d.lineJoin =
             (params.join as CanvasLineJoin) ?? ("round" as CanvasLineJoin);
           if (params.join === "miter") {
             c2d.miterLimit = (params.miter_limit as number) ?? 10;
+          }
+          // Style-specific setup: dashed uses setLineDash with a
+          // [dash, gap] pattern; dotted leans on Canvas's "dash of
+          // length 0 + round cap" idiom so each dash collapses to a
+          // single round dot whose diameter equals the stroke width.
+          if (style === "dashed") {
+            const dash = Math.max(
+              0.5,
+              (params.dash_length as number) ?? 10
+            );
+            const gap = Math.max(0.5, (params.dash_gap as number) ?? 8);
+            c2d.setLineDash([dash, gap]);
+            c2d.lineCap =
+              (params.cap as CanvasLineCap) ?? ("round" as CanvasLineCap);
+          } else if (style === "dotted") {
+            const spacing = Math.max(
+              1,
+              (params.dot_spacing as number) ?? 12
+            );
+            c2d.setLineDash([0, spacing]);
+            c2d.lineCap = "round";
+          } else {
+            c2d.setLineDash([]);
+            c2d.lineCap =
+              (params.cap as CanvasLineCap) ?? ("round" as CanvasLineCap);
           }
           c2d.stroke(path);
         }

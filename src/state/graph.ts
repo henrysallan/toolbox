@@ -7,6 +7,15 @@ export type NodeDataPayload = {
   // sockets on the node. When an exposed param has an incoming edge, the
   // edge's value overrides the stored param value at evaluation time.
   exposedParams?: string[];
+  // User-defined slider range overrides keyed by param name. Each entry
+  // can override `min`, `max`, and/or `softMax` from the param def.
+  // Set via the right-click "Edit range" popover on a scalar slider;
+  // saved with the project so the customization survives reload. The
+  // engine doesn't read these — they're purely for the param-panel UI.
+  paramOverrides?: Record<
+    string,
+    { min?: number; max?: number; softMax?: number }
+  >;
   error?: string;
   auxOutputs: { name: string; type: string; disabled?: boolean }[];
   inputs: { name: string; label?: string; type: string }[];

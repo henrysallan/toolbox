@@ -3,25 +3,31 @@ import type {
   ImageValue,
   InputSocketDef,
   NodeDefinition,
-  PointsGroupValue,
   PointsValue,
   SocketType,
-  SplineGroupValue,
+  SplineSubpath,
   SplineValue,
 } from "@/engine/types";
 
-// Bundle N homogeneous inputs into a single group value. The mode enum
-// picks the inner type (image / spline / points); the count scalar
-// picks how many input sockets the node exposes.
+// Bundle N homogeneous inputs. Behavior depends on the inner type:
 //
-// Mode is rendered as a quick dropdown on the node header too
-// (headerControl hook) since flipping it is the primary thing you do
-// to this node — no sense burying it in the params panel.
+//  - Images are a genuine collection — no way to flatten without a
+//    compositing decision. The node outputs an image_group carrying
+//    the sockets in order; Select by Index / Merge Group consume it.
+//
+//  - Splines and points are already multi-item at the base-type level
+//    (SplineValue.subpaths, PointsValue.points). The "group" for
+//    those types is a single flattened value where each subpath /
+//    point has been tagged with a groupIndex matching its source
+//    socket (a→0, b→1, c→2…). Downstream per-index operations
+//    (Select by Index, Count Indices, Copy-to-Points' pick mode)
+//    key off that tag. Nodes that don't know about groupIndex just
+//    treat the output as a normal spline/points value and operate
+//    on everything at once — which is usually what you want.
 //
 // Missing inputs (unconnected sockets) are silently dropped rather
-// than stubbed with placeholder values — the group's length equals
-// the number of actually-connected sockets. That matches the
-// intuition that "3 connected out of 5 sockets" is a group of 3.
+// than stubbed with placeholder values — the group's effective size
+// equals the number of actually-connected sockets.
 
 type Mode = "image" | "spline" | "points";
 
@@ -32,9 +38,13 @@ function socketTypeFor(mode: Mode): SocketType {
   if (mode === "points") return "points";
   return "image";
 }
-function groupTypeFor(mode: Mode): SocketType {
-  if (mode === "spline") return "spline_group";
-  if (mode === "points") return "points_group";
+
+// Output type: image groups stay as `image_group`; spline/points
+// "groups" are flattened back to their base type with per-item
+// groupIndex metadata carrying the identity.
+function outputTypeFor(mode: Mode): SocketType {
+  if (mode === "spline") return "spline";
+  if (mode === "points") return "points";
   return "image_group";
 }
 
@@ -43,15 +53,16 @@ export const groupNode: NodeDefinition = {
   name: "Group",
   category: "utility",
   description:
-    "Bundle N homogeneous inputs into a single group. Pick inner type via the header dropdown; count slider picks how many input sockets appear.",
+    "Bundle N homogeneous inputs. For images, produces an image_group. For splines and points, concatenates into a single value with per-subpath / per-point groupIndex metadata matching the socket order (a=0, b=1, c=2…). Nodes that don't understand groupIndex just treat the output as a normal spline/points value; Select by Index and Count Indices key off the tags.",
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   inputs: [{ name: "a", type: "image", required: false }],
   resolveInputs(params): InputSocketDef[] {
     const mode = ((params.mode as string) ?? "image") as Mode;
-    const count = Math.max(1, Math.min(26, Math.floor(
-      (params.count as number) ?? 2
-    )));
+    const count = Math.max(
+      1,
+      Math.min(26, Math.floor((params.count as number) ?? 2))
+    );
     const t = socketTypeFor(mode);
     const out: InputSocketDef[] = [];
     for (let i = 0; i < count; i++) {
@@ -79,37 +90,62 @@ export const groupNode: NodeDefinition = {
   ],
   primaryOutput: "image_group",
   resolvePrimaryOutput(params): SocketType {
-    return groupTypeFor(((params.mode as string) ?? "image") as Mode);
+    return outputTypeFor(((params.mode as string) ?? "image") as Mode);
   },
   auxOutputs: [],
 
   compute({ inputs, params }) {
     const mode = ((params.mode as string) ?? "image") as Mode;
-    const count = Math.max(1, Math.min(26, Math.floor(
-      (params.count as number) ?? 2
-    )));
+    const count = Math.max(
+      1,
+      Math.min(26, Math.floor((params.count as number) ?? 2))
+    );
 
     if (mode === "spline") {
-      const items: SplineValue[] = [];
+      // Flatten into a single SplineValue. Each incoming subpath
+      // inherits a groupIndex matching its source socket index
+      // (position in the sequence of connected sockets, compacted —
+      // a disconnected socket doesn't reserve an index).
+      const subpaths: SplineSubpath[] = [];
+      let outerIdx = 0;
       for (let i = 0; i < count; i++) {
         const v = inputs[INPUT_LABELS[i]];
-        if (v && v.kind === "spline") items.push(v);
+        if (!v || v.kind !== "spline") continue;
+        for (const sub of v.subpaths) {
+          subpaths.push({
+            closed: sub.closed,
+            anchors: sub.anchors,
+            groupIndex: outerIdx,
+          });
+        }
+        outerIdx++;
       }
-      return { primary: { kind: "spline_group", items } satisfies SplineGroupValue };
+      return {
+        primary: { kind: "spline", subpaths } satisfies SplineValue,
+      };
     }
+
     if (mode === "points") {
-      const items: PointsValue[] = [];
+      const points: PointsValue["points"] = [];
+      let outerIdx = 0;
       for (let i = 0; i < count; i++) {
         const v = inputs[INPUT_LABELS[i]];
-        if (v && v.kind === "points") items.push(v);
+        if (!v || v.kind !== "points") continue;
+        for (const p of v.points) {
+          points.push({ ...p, groupIndex: outerIdx });
+        }
+        outerIdx++;
       }
-      return { primary: { kind: "points_group", items } satisfies PointsGroupValue };
+      return { primary: { kind: "points", points } satisfies PointsValue };
     }
+
     const items: ImageValue[] = [];
     for (let i = 0; i < count; i++) {
       const v = inputs[INPUT_LABELS[i]];
       if (v && v.kind === "image") items.push(v);
     }
-    return { primary: { kind: "image_group", items } satisfies ImageGroupValue };
+    return {
+      primary: { kind: "image_group", items } satisfies ImageGroupValue,
+    };
   },
 };

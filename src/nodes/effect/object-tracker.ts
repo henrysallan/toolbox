@@ -75,14 +75,17 @@ interface TrackerState {
   detector: ObjectDetector | null;
   loading: boolean;
   error: string | null;
-  // Offscreen 2D canvas that we blit the source image into before
-  // handing it to MediaPipe. Detection input size is bounded so we
-  // don't round-trip large textures each frame.
-  detectCanvas: HTMLCanvasElement;
-  // Previous frame's tracked boxes (for identity matching).
+  // Previous frame's tracked boxes (for identity matching and, via
+  // the throttle, as cached output between detects).
   prev: TrackedBox[];
   // Monotonically-increasing ID counter.
   nextId: number;
+  // Throttle bookkeeping: `performance.now()` at the last detect
+  // call, and the last confidence/maxResults we pushed to
+  // setOptions so we can skip redundant resets.
+  lastDetectAt: number;
+  lastAppliedConfidence: number;
+  lastAppliedMaxResults: number;
 }
 
 function stateKey(nodeId: string): string {
@@ -98,9 +101,11 @@ function ensureState(ctx: RenderContext, nodeId: string): TrackerState {
     detector: null,
     loading: false,
     error: null,
-    detectCanvas: document.createElement("canvas"),
     prev: [],
     nextId: 1,
+    lastDetectAt: 0,
+    lastAppliedConfidence: Number.NaN,
+    lastAppliedMaxResults: -1,
   };
   ctx.state[key] = s;
   return s;
@@ -132,7 +137,11 @@ async function loadDetector(
         modelAssetPath: modelCfg.url,
         delegate: "GPU",
       },
-      runningMode: "IMAGE",
+      // VIDEO mode is the continuous-frame path — MediaPipe optimizes
+      // its internal pipeline for monotonically-timestamped input and
+      // can amortize setup work between frames. Requires
+      // detectForVideo(frame, timestampMs) below.
+      runningMode: "VIDEO",
       scoreThreshold: confidence,
       maxResults,
     });
@@ -147,9 +156,32 @@ async function loadDetector(
     state.error = err instanceof Error ? err.message : String(err);
     state.loading = false;
     clearProgress();
-    // eslint-disable-next-line no-console
     console.warn("Object Tracker model load failed:", state.error);
   }
+}
+
+// ---- output builders ---------------------------------------------------
+
+function buildSplineFromTracked(tracked: TrackedBox[]): SplineValue {
+  const subpaths: SplineSubpath[] = tracked.map((b) => ({
+    closed: true,
+    anchors: [
+      { pos: [b.x0, b.y0] },
+      { pos: [b.x1, b.y0] },
+      { pos: [b.x1, b.y1] },
+      { pos: [b.x0, b.y1] },
+    ],
+  }));
+  return { kind: "spline", subpaths };
+}
+
+function buildPointsFromTracked(tracked: TrackedBox[]): PointsValue {
+  const points: Point[] = tracked.map((b) => ({
+    pos: [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2],
+    rotation: 0,
+    scale: [b.x1 - b.x0, b.y1 - b.y0],
+  }));
+  return { kind: "points", points };
 }
 
 // ---- IoU-based identity tracking --------------------------------------
@@ -259,6 +291,19 @@ export const objectTrackerNode: NodeDefinition = {
       step: 32,
       default: 320,
     },
+    {
+      name: "detect_fps",
+      label: "Detect rate (fps)",
+      type: "scalar",
+      min: 1,
+      max: 60,
+      softMax: 30,
+      step: 1,
+      // 15 fps is plenty for tracking — IoU identity and downstream
+      // smoothing mask the coarser cadence, and halving detection
+      // cost is a big win vs running the detector at render fps.
+      default: 15,
+    },
   ],
   primaryOutput: "spline",
   auxOutputs: [{ name: "positions", type: "points" }],
@@ -276,6 +321,11 @@ export const objectTrackerNode: NodeDefinition = {
       128,
       Math.floor((params.input_size as number) ?? 320)
     );
+    const detectFps = Math.max(
+      1,
+      Math.min(60, Math.floor((params.detect_fps as number) ?? 15))
+    );
+    const minIntervalMs = 1000 / detectFps;
 
     // Trigger model load. If the user switches model param mid-use,
     // reload. Detector is stale (running an old model) for the
@@ -304,24 +354,46 @@ export const objectTrackerNode: NodeDefinition = {
       return { primary: emptySpline, aux: { positions: emptyPoints } };
     }
 
-    // Keep thresholds in sync with params — MediaPipe requires a
-    // recreate to change them post-init, so we set on the detector
-    // via setOptions when possible.
-    try {
-      state.detector.setOptions({
-        scoreThreshold: confidence,
-        maxResults,
-      });
-    } catch {
-      // setOptions is supported on recent versions; older ones error.
-      // The detector was created with the initial values so this is
-      // non-fatal — params won't update live until reload, which is
-      // acceptable in that edge case.
+    // Throttle: if not enough time has passed since the last detect
+    // call, short-circuit and re-emit the cached tracked boxes. The
+    // node itself is `stable: false` so this runs every eval, but
+    // we only pay the detect + canvas-blit cost at `detect_fps`.
+    const nowMs = performance.now();
+    if (nowMs - state.lastDetectAt < minIntervalMs) {
+      return {
+        primary: buildSplineFromTracked(state.prev),
+        aux: { positions: buildPointsFromTracked(state.prev) },
+      };
     }
 
-    // Blit the source image to the detection canvas. We downsample
-    // to `input_size` (keeping aspect by using the max dim) to keep
-    // per-frame readback cheap. The model resizes internally anyway.
+    // Keep thresholds in sync with params. Only call setOptions when
+    // a value actually changed — calling it every frame has non-trivial
+    // overhead and there's no point if nothing's different.
+    if (
+      state.lastAppliedConfidence !== confidence ||
+      state.lastAppliedMaxResults !== maxResults
+    ) {
+      try {
+        state.detector.setOptions({
+          scoreThreshold: confidence,
+          maxResults,
+        });
+        state.lastAppliedConfidence = confidence;
+        state.lastAppliedMaxResults = maxResults;
+      } catch {
+        // setOptions is supported on recent versions; older ones error.
+        // The detector was created with the initial values so this is
+        // non-fatal — params won't update live until reload, which is
+        // acceptable in that edge case.
+      }
+    }
+
+    // Downscale + hand the image to MediaPipe via our backend's own
+    // WebGL canvas — `blitToGLCanvas` renders the texture directly to
+    // that canvas with NO CPU readback, and MediaPipe's GPU delegate
+    // samples it over WebGL channels. Previously we went GPU→2D
+    // canvas (readback) → MediaPipe GPU buffer (re-upload), which
+    // tanked performance at higher input sizes.
     const srcAspect = src.width / src.height;
     let cw: number;
     let ch: number;
@@ -332,22 +404,20 @@ export const objectTrackerNode: NodeDefinition = {
       ch = inputSize;
       cw = Math.max(1, Math.round(inputSize * srcAspect));
     }
-    if (state.detectCanvas.width !== cw || state.detectCanvas.height !== ch) {
-      state.detectCanvas.width = cw;
-      state.detectCanvas.height = ch;
-    }
+    let detectCanvas: HTMLCanvasElement;
     try {
-      ctx.blitToCanvas(src, state.detectCanvas);
+      detectCanvas = ctx.blitToGLCanvas(src, cw, ch);
     } catch {
       return { primary: emptySpline, aux: { positions: emptyPoints } };
     }
 
     let detections: Detection[] = [];
     try {
-      const result = state.detector.detect(state.detectCanvas);
+      // VIDEO mode — detectForVideo needs a monotonic timestamp.
+      // performance.now() is monotonic per W3C and works here.
+      const result = state.detector.detectForVideo(detectCanvas, nowMs);
       detections = result.detections ?? [];
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.warn("Object Tracker detect failed:", err);
       return { primary: emptySpline, aux: { positions: emptyPoints } };
     }
@@ -375,28 +445,11 @@ export const objectTrackerNode: NodeDefinition = {
     }
     const tracked = assignIds(freshBoxes, state.prev, state);
     state.prev = tracked;
-
-    // Build the two outputs: closed rectangular subpaths for the
-    // spline primary, and center points (with scale = box size) for
-    // the aux points output.
-    const subpaths: SplineSubpath[] = tracked.map((b) => ({
-      closed: true,
-      anchors: [
-        { pos: [b.x0, b.y0] },
-        { pos: [b.x1, b.y0] },
-        { pos: [b.x1, b.y1] },
-        { pos: [b.x0, b.y1] },
-      ],
-    }));
-    const points: Point[] = tracked.map((b) => ({
-      pos: [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2],
-      rotation: 0,
-      scale: [b.x1 - b.x0, b.y1 - b.y0],
-    }));
+    state.lastDetectAt = nowMs;
 
     return {
-      primary: { kind: "spline", subpaths },
-      aux: { positions: { kind: "points", points } },
+      primary: buildSplineFromTracked(tracked),
+      aux: { positions: buildPointsFromTracked(tracked) },
     };
   },
 

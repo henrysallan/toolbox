@@ -7,6 +7,7 @@ import type {
   PointsValue,
   RenderContext,
   SocketType,
+  SplineSubpath,
   SplineValue,
 } from "@/engine/types";
 import { transformSubpath } from "@/engine/spline-transform";
@@ -21,6 +22,14 @@ import { transformSubpath } from "@/engine/spline-transform";
 // Each copy rotates and scales around that anchor, then translates so
 // the anchor lands at the target point's `pos`. Matches user intuition
 // that "a scattered tree at point P has its trunk at P."
+//
+// Pick source (spline / point modes, optional): when the instance
+// carries groupIndex tags (i.e. came through a Group node), connecting
+// a `pick` image samples it per-target-point to select which group
+// index to instance at that point. The sampled luminance in [0, 1]
+// maps to an integer index into the sorted distinct groupIndex set.
+// Feed a noise image for a pseudo-random assortment; feed a UV / any
+// image to drive the assortment spatially.
 //
 // Image mode uses a 2D-canvas readback → draw-at-each-point → upload
 // back to GL. CPU-bound but easy; fine up to a few hundred copies.
@@ -40,6 +49,9 @@ interface CopyState {
   instanceCanvas: HTMLCanvasElement;
   outputCanvas: HTMLCanvasElement;
   outputTex: WebGLTexture | null;
+  // Scratch canvas for pick-source readback. Created lazily so spline
+  // and point modes without a pick input don't allocate.
+  pickCanvas: HTMLCanvasElement | null;
   lastSig: string | null;
 }
 
@@ -67,10 +79,74 @@ function ensureState(ctx: RenderContext, nodeId: string): CopyState {
     instanceCanvas: document.createElement("canvas"),
     outputCanvas: document.createElement("canvas"),
     outputTex: tex,
+    pickCanvas: null,
     lastSig: null,
   };
   ctx.state[key] = s;
   return s;
+}
+
+// Builds a luminance sampler from an image input by reading it back
+// through a 2D canvas once. Returns a closure that maps UV → 0..1
+// luminance. The readback isn't cheap but only runs for spline/point
+// modes when a pick is actually connected, and the samples themselves
+// are in-memory lookups.
+function buildPickSampler(
+  ctx: RenderContext,
+  state: CopyState,
+  pick: ImageValue
+): ((u: number, v: number) => number) | null {
+  if (pick.width <= 0 || pick.height <= 0) return null;
+  const canvas = state.pickCanvas ?? document.createElement("canvas");
+  state.pickCanvas = canvas;
+  if (canvas.width !== pick.width || canvas.height !== pick.height) {
+    canvas.width = pick.width;
+    canvas.height = pick.height;
+  }
+  try {
+    ctx.blitToCanvas(pick, canvas);
+  } catch {
+    return null;
+  }
+  const c2d = canvas.getContext("2d", { willReadFrequently: true });
+  if (!c2d) return null;
+  const img = c2d.getImageData(0, 0, canvas.width, canvas.height);
+  const data = img.data;
+  const w = canvas.width;
+  const h = canvas.height;
+  return (u: number, v: number): number => {
+    // UV is Y-up; 2D canvas rows are Y-down. Flip on sample.
+    const px = Math.max(0, Math.min(w - 1, Math.floor(u * w)));
+    const py = Math.max(0, Math.min(h - 1, Math.floor((1 - v) * h)));
+    const i = (py * w + px) * 4;
+    return (
+      (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255
+    );
+  };
+}
+
+// Collects the sorted distinct groupIndex values present on a
+// spline's subpaths or a points' points. Untagged items default to 0.
+function collectDistinctGroupIndices(
+  indices: Array<number | undefined>
+): number[] {
+  const set = new Set<number>();
+  for (const g of indices) set.add(g ?? 0);
+  return Array.from(set).sort((a, b) => a - b);
+}
+
+// Maps a sampled luminance value to an integer group-index choice.
+// Clamps to [0, distinct.length - 1] so a value of exactly 1 still
+// lands on the last index rather than rolling over.
+function luminanceToIndexPick(
+  distinct: number[],
+  luma: number
+): number | null {
+  if (distinct.length === 0) return null;
+  const N = distinct.length;
+  const raw = Math.floor(luma * N);
+  const clamped = Math.max(0, Math.min(N - 1, raw));
+  return distinct[clamped];
 }
 
 export const copyToPointsNode: NodeDefinition = {
@@ -79,20 +155,27 @@ export const copyToPointsNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Duplicate an image, spline, or point at every target point. Each copy respects per-point rotation and scale. The instance anchors at its (0.5, 0.5) center so a scattered tree keeps its trunk on the point.",
+    "Duplicate an image, spline, or point at every target point. Each copy respects per-point rotation and scale. The instance anchors at its (0.5, 0.5) center so a scattered tree keeps its trunk on the point. When the instance is a grouped spline or points (has groupIndex tags), an optional `pick` image drives per-target group selection by sampling the image at each point and mapping luminance to the group-index set — feed a noise image for a pseudo-random assortment.",
   backend: "webgl2",
   inputs: [
     { name: "points", type: "points", required: true },
     { name: "instance", type: "image", required: true },
+    { name: "pick", type: "image", required: false },
   ],
   resolveInputs(params): InputSocketDef[] {
     const mode = modeOf(params);
     const instType: SocketType =
       mode === "spline" ? "spline" : mode === "point" ? "points" : "image";
-    return [
+    const base: InputSocketDef[] = [
       { name: "points", type: "points", required: true },
       { name: "instance", type: instType, required: true },
     ];
+    // Pick only applies to spline / point modes — image mode has no
+    // groupIndex concept, so suppress the socket there.
+    if (mode !== "image") {
+      base.push({ name: "pick", type: "image", required: false });
+    }
+    return base;
   },
   params: [
     {
@@ -116,6 +199,7 @@ export const copyToPointsNode: NodeDefinition = {
     const mode = modeOf(params);
     const pts = inputs.points;
     const points = pts?.kind === "points" ? pts.points : [];
+    const state = ensureState(ctx, nodeId);
 
     // ---- spline mode ------------------------------------------------
     if (mode === "spline") {
@@ -124,23 +208,48 @@ export const copyToPointsNode: NodeDefinition = {
         const empty: SplineValue = { kind: "spline", subpaths: [] };
         return { primary: empty };
       }
+      const distinct = collectDistinctGroupIndices(
+        inst.subpaths.map((s) => s.groupIndex)
+      );
+      const pickIn = inputs.pick;
+      const sampler =
+        pickIn?.kind === "image" && distinct.length > 1
+          ? buildPickSampler(ctx, state, pickIn)
+          : null;
+
       const outSubpaths: SplineValue["subpaths"] = [];
       for (const pt of points) {
+        // Decide which subpaths to emit for THIS point. Without a
+        // sampler, emit every subpath (pre-groupIndex behavior).
+        let subpathsForPt: SplineSubpath[];
+        if (sampler) {
+          const luma = sampler(pt.pos[0], pt.pos[1]);
+          const chosen = luminanceToIndexPick(distinct, luma);
+          subpathsForPt = inst.subpaths.filter(
+            (s) => (s.groupIndex ?? 0) === chosen
+          );
+        } else {
+          subpathsForPt = inst.subpaths;
+        }
         const sx = pt.scale?.[0] ?? 1;
         const sy = pt.scale?.[1] ?? 1;
         const rotDeg = ((pt.rotation ?? 0) * 180) / Math.PI;
-        for (const sub of inst.subpaths) {
-          outSubpaths.push(
-            transformSubpath(sub, {
-              translateX: pt.pos[0] - 0.5,
-              translateY: pt.pos[1] - 0.5,
-              pivotX: 0.5,
-              pivotY: 0.5,
-              rotateDeg: rotDeg,
-              scaleX: sx,
-              scaleY: sy,
-            })
-          );
+        for (const sub of subpathsForPt) {
+          const transformed = transformSubpath(sub, {
+            translateX: pt.pos[0] - 0.5,
+            translateY: pt.pos[1] - 0.5,
+            pivotX: 0.5,
+            pivotY: 0.5,
+            rotateDeg: rotDeg,
+            scaleX: sx,
+            scaleY: sy,
+          });
+          // Preserve instance groupIndex on the output so downstream
+          // per-index nodes can still key off it.
+          outSubpaths.push({
+            ...transformed,
+            groupIndex: sub.groupIndex,
+          });
         }
       }
       const out: SplineValue = { kind: "spline", subpaths: outSubpaths };
@@ -156,6 +265,15 @@ export const copyToPointsNode: NodeDefinition = {
         const empty: PointsValue = { kind: "points", points: [] };
         return { primary: empty };
       }
+      const distinct = collectDistinctGroupIndices(
+        srcPoints.map((p) => p.groupIndex)
+      );
+      const pickIn = inputs.pick;
+      const sampler =
+        pickIn?.kind === "image" && distinct.length > 1
+          ? buildPickSampler(ctx, state, pickIn)
+          : null;
+
       const outPoints: Point[] = [];
       for (const target of points) {
         const tRot = target.rotation ?? 0;
@@ -163,7 +281,17 @@ export const copyToPointsNode: NodeDefinition = {
         const tSin = Math.sin(tRot);
         const tSx = target.scale?.[0] ?? 1;
         const tSy = target.scale?.[1] ?? 1;
-        for (const src of srcPoints) {
+        let srcForTarget: Point[];
+        if (sampler) {
+          const luma = sampler(target.pos[0], target.pos[1]);
+          const chosen = luminanceToIndexPick(distinct, luma);
+          srcForTarget = srcPoints.filter(
+            (p) => (p.groupIndex ?? 0) === chosen
+          );
+        } else {
+          srcForTarget = srcPoints;
+        }
+        for (const src of srcForTarget) {
           // Translate source's (0.5, 0.5) anchor to (0, 0), apply
           // target's rotate/scale, then translate to target.pos.
           const dx = (src.pos[0] - 0.5) * tSx;
@@ -177,6 +305,7 @@ export const copyToPointsNode: NodeDefinition = {
               (src.scale?.[0] ?? 1) * tSx,
               (src.scale?.[1] ?? 1) * tSy,
             ],
+            groupIndex: src.groupIndex,
           });
         }
       }
@@ -192,7 +321,6 @@ export const copyToPointsNode: NodeDefinition = {
       return { primary: output };
     }
 
-    const state = ensureState(ctx, nodeId);
     const W = ctx.width;
     const H = ctx.height;
 

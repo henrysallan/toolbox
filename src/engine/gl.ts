@@ -287,6 +287,27 @@ export function createEngineBackend(
           ctx2d.drawImage(hiddenCanvas, 0, 0);
         }
       },
+      blitToGLCanvas(image, w, h) {
+        // Same GPU draw as blitToCanvas' first half, then we hand
+        // the internal WebGL canvas back untouched. No ctx2d copy
+        // means no readback — MediaPipe (and any other consumer
+        // accepting a TexImageSource) can sample it directly.
+        if (hiddenCanvas.width !== w) hiddenCanvas.width = w;
+        if (hiddenCanvas.height !== h) hiddenCanvas.height = h;
+        gl!.bindFramebuffer(gl!.FRAMEBUFFER, null);
+        gl!.viewport(0, 0, w, h);
+        gl!.clearColor(0, 0, 0, 1);
+        gl!.clear(gl!.COLOR_BUFFER_BIT);
+        gl!.useProgram(blitProgram);
+        gl!.bindVertexArray(vao);
+        gl!.activeTexture(gl!.TEXTURE0);
+        gl!.bindTexture(gl!.TEXTURE_2D, image.texture);
+        const loc = gl!.getUniformLocation(blitProgram, "u_src");
+        gl!.uniform1i(loc, 0);
+        gl!.drawArrays(gl!.TRIANGLES, 0, 3);
+        gl!.bindVertexArray(null);
+        return hiddenCanvas;
+      },
     };
   }
 

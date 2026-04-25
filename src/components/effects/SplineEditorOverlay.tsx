@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+} from "react";
 import type { SplineAnchor, SplineSubpath } from "@/engine/types";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
 
@@ -50,7 +57,17 @@ interface Props {
 
 const ANCHOR_R = 5;
 const HANDLE_R = 4;
-const DRAG_THRESHOLD = 3; // px; below this a pointerup counts as a click
+// Hidden hit-target radius around each anchor / handle. Larger than
+// the visual dot so users don't have to be pixel-perfect, and so a
+// small wiggle during a click doesn't trip the drag threshold and
+// suppress the corner ↔ smooth toggle.
+const ANCHOR_HIT_R = 11;
+const HANDLE_HIT_R = 9;
+// px; below this a pointerup counts as a click. Bumped well above
+// the visible dot radii so trackpad jitter and mouse wobble during
+// a rapid double-click don't trip into drag mode and suppress the
+// corner ↔ smooth toggle.
+const DRAG_THRESHOLD = 10;
 
 type DragState =
   | {
@@ -144,15 +161,23 @@ export default function SplineEditorOverlay({
   // authoring isn't a v1 feature. Reads return [] if the value happens to
   // arrive without any subpaths; writes always materialize the subpath on
   // first touch.
+  //
+  // `subpathsOf` copes with legacy save data where the param envelope was
+  // missing `subpaths` entirely (pre-multi-subpath shape). Treating that
+  // case as "no anchors yet" lets old projects load without crashing —
+  // the user just needs to re-author the spline.
+  const subpathsOf = (v: SplineParamValue | undefined | null): SplineSubpath[] =>
+    v?.subpaths ?? [];
   const readAnchors = (v: SplineParamValue): SplineAnchor[] =>
-    v.subpaths[EDIT_SUBPATH]?.anchors ?? [];
+    subpathsOf(v)[EDIT_SUBPATH]?.anchors ?? [];
   const withSubpathPatch = (
     cur: SplineParamValue,
     patch: Partial<SplineSubpath>
   ): SplineParamValue => {
+    const subpaths = subpathsOf(cur);
     const base: SplineSubpath[] =
-      cur.subpaths.length > 0
-        ? cur.subpaths
+      subpaths.length > 0
+        ? subpaths
         : [{ anchors: [], closed: false }];
     return {
       ...cur,
@@ -226,15 +251,31 @@ export default function SplineEditorOverlay({
     onChangeRef.current(next);
   };
 
+  // Toggle subpath.closed on the current subpath. Single source of
+  // truth — downstream nodes (Stroke, Resample, Fill, etc.) all read
+  // `subpath.closed` from the spline value, so flipping it here
+  // propagates everywhere that cares.
+  const toggleClosed = () => {
+    const cur = valueRef.current;
+    const wasClosed = subpathsOf(cur)[EDIT_SUBPATH]?.closed ?? false;
+    const next = withSubpathPatch(cur, { closed: !wasClosed });
+    onChangeRef.current(next);
+  };
+
   const toggleCornerSmooth = (i: number) => {
     const anchors = readAnchors(valueRef.current);
     const a = anchors[i];
     if (!a) return;
     const hasHandles = !!a.inHandle || !!a.outHandle;
     if (hasHandles) {
-      // Smooth → corner: strip handles.
-      const patched: SplineAnchor = { pos: a.pos };
-      updateAnchor(i, patched);
+      // Smooth → corner: strip handles. updateAnchor merges via
+      // `{ ...a, ...patch }`, so simply omitting `inHandle` /
+      // `outHandle` in the patch leaves the existing values in
+      // place — bug! We need to explicitly overwrite them with
+      // undefined so the spread drops them. JSON.stringify omits
+      // undefined-valued props on save, so the cleaned anchor
+      // round-trips correctly.
+      updateAnchor(i, { inHandle: undefined, outHandle: undefined });
     } else {
       // Corner → smooth: auto-tangent from neighbors.
       const { inHandle, outHandle } = autoSmoothHandles(anchors, i);
@@ -305,13 +346,26 @@ export default function SplineEditorOverlay({
 
     const onUp = (e: PointerEvent) => {
       // Quick click on an existing anchor (no meaningful movement) →
-      // corner↔smooth toggle. The "new" case is never a toggle candidate
-      // (the anchor was just created this gesture).
+      // either close the spline (start anchor of an open path with
+      // ≥3 anchors) or corner↔smooth toggle (any other anchor). The
+      // "new" case is never a toggle candidate — the anchor was just
+      // created this gesture.
       if (drag.kind === "anchor" && !drag.moved) {
         const dx = e.clientX - drag.startClient.x;
         const dy = e.clientY - drag.startClient.y;
         if (Math.hypot(dx, dy) < DRAG_THRESHOLD) {
-          toggleCornerSmooth(drag.index);
+          const sub = subpathsOf(valueRef.current)[EDIT_SUBPATH];
+          const anchors = sub?.anchors ?? [];
+          const isStart = drag.index === 0;
+          const closed = sub?.closed ?? false;
+          // Click the start point on an open path with ≥3 anchors →
+          // close the loop. (Pen-tool convention; users expect this.)
+          // Otherwise treat as toggle bezier ↔ linear.
+          if (isStart && !closed && anchors.length >= 3) {
+            toggleClosed();
+          } else {
+            toggleCornerSmooth(drag.index);
+          }
         }
       }
       setDrag(null);
@@ -405,11 +459,13 @@ export default function SplineEditorOverlay({
 
   const pathD = useMemo(() => {
     if (!rect) return "";
-    const anchors = value.subpaths[EDIT_SUBPATH]?.anchors ?? [];
+    const sub = subpathsOf(value)[EDIT_SUBPATH];
+    const anchors = sub?.anchors ?? [];
     if (anchors.length < 2) return "";
+    const closed = sub?.closed ?? false;
     const toPx = (p: [number, number]) => normToPx(p);
-    const first = toPx(anchors[0].pos);
-    let d = `M ${first.x} ${first.y}`;
+    const firstPx = toPx(anchors[0].pos);
+    let d = `M ${firstPx.x} ${firstPx.y}`;
     for (let i = 1; i < anchors.length; i++) {
       const prev = anchors[i - 1];
       const cur = anchors[i];
@@ -421,6 +477,24 @@ export default function SplineEditorOverlay({
         : toPx(cur.pos);
       const end = toPx(cur.pos);
       d += ` C ${cp1.x} ${cp1.y}, ${cp2.x} ${cp2.y}, ${end.x} ${end.y}`;
+    }
+    // Closing segment: bezier from the last anchor back to the first.
+    // Uses the last anchor's outHandle and the first anchor's inHandle
+    // so smooth-handled paths read continuously across the seam.
+    if (closed) {
+      const last = anchors[anchors.length - 1];
+      const a0 = anchors[0];
+      const cp1 = last.outHandle
+        ? toPx([
+            last.pos[0] + last.outHandle[0],
+            last.pos[1] + last.outHandle[1],
+          ])
+        : toPx(last.pos);
+      const cp2 = a0.inHandle
+        ? toPx([a0.pos[0] + a0.inHandle[0], a0.pos[1] + a0.inHandle[1]])
+        : toPx(a0.pos);
+      const end = toPx(a0.pos);
+      d += ` C ${cp1.x} ${cp1.y}, ${cp2.x} ${cp2.y}, ${end.x} ${end.y} Z`;
     }
     return d;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -480,7 +554,7 @@ export default function SplineEditorOverlay({
 
         {/* Handle lines (anchor → handle dot). Drawn beneath the dots so
             the dots sit visually on top. */}
-        {(value.subpaths[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
+        {(subpathsOf(value)[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
           const anchorPx = normToPx(a.pos);
           const lines = [] as ReactElement[];
           if (a.inHandle) {
@@ -522,42 +596,35 @@ export default function SplineEditorOverlay({
           return lines;
         })}
 
-        {/* Anchor dots */}
-        {(value.subpaths[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
-          const p = normToPx(a.pos);
-          return (
-            <circle
-              key={`a-${i}`}
-              cx={p.x}
-              cy={p.y}
-              r={ANCHOR_R}
-              fill="#0ea5e9"
-              stroke="#f0f9ff"
-              strokeWidth={1.2}
-              style={{ cursor: "grab", pointerEvents: "auto" }}
-              onPointerDown={onAnchorPointerDown(i)}
-              onContextMenu={onAnchorContextMenu(i)}
-            />
-          );
-        })}
+        {/* Layered rendering: paint passes are split so anchor hit
+            rings sit ABOVE handle hit rings in the SVG stack. Without
+            this, a click near the anchor that overlaps a nearby
+            bezier-handle hit ring gets caught by the handle (SVG
+            paints later siblings on top), starting a handle drag
+            instead of triggering the anchor's click-toggle.
 
-        {/* Handle dots */}
-        {(value.subpaths[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
-          const dots: ReactElement[] = [];
+            Order from bottom to top:
+              1. Handle hit rings (transparent, large)
+              2. Anchor hit rings (transparent, large) — on top so
+                 clicks within anchor radius win
+              3. Handle visual dots (white)
+              4. Anchor visual dots (cyan) — visually on top */}
+
+        {/* Pass 1 — handle hit rings */}
+        {(subpathsOf(value)[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
+          const out: ReactElement[] = [];
           if (a.inHandle) {
             const p = normToPx([
               a.pos[0] + a.inHandle[0],
               a.pos[1] + a.inHandle[1],
             ]);
-            dots.push(
+            out.push(
               <circle
-                key={`h-${i}-in`}
+                key={`hh-${i}-in`}
                 cx={p.x}
                 cy={p.y}
-                r={HANDLE_R}
-                fill="#f8fafc"
-                stroke="#0f172a"
-                strokeWidth={1}
+                r={HANDLE_HIT_R}
+                fill="transparent"
                 style={{ cursor: "grab", pointerEvents: "auto" }}
                 onPointerDown={onHandlePointerDown(i, "in")}
                 onContextMenu={onHandleContextMenu(i, "in")}
@@ -569,18 +636,98 @@ export default function SplineEditorOverlay({
               a.pos[0] + a.outHandle[0],
               a.pos[1] + a.outHandle[1],
             ]);
+            out.push(
+              <circle
+                key={`hh-${i}-out`}
+                cx={p.x}
+                cy={p.y}
+                r={HANDLE_HIT_R}
+                fill="transparent"
+                style={{ cursor: "grab", pointerEvents: "auto" }}
+                onPointerDown={onHandlePointerDown(i, "out")}
+                onContextMenu={onHandleContextMenu(i, "out")}
+              />
+            );
+          }
+          return out;
+        })}
+
+        {/* Pass 2 — anchor hit rings on top, so they intercept clicks
+            within their radius even when a handle is nearby. */}
+        {(subpathsOf(value)[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
+          const p = normToPx(a.pos);
+          return (
+            <circle
+              key={`ah-${i}`}
+              cx={p.x}
+              cy={p.y}
+              r={ANCHOR_HIT_R}
+              fill="transparent"
+              style={{ cursor: "grab", pointerEvents: "auto" }}
+              onPointerDown={onAnchorPointerDown(i)}
+              onContextMenu={onAnchorContextMenu(i)}
+            />
+          );
+        })}
+
+        {/* Pass 3 — anchor visual dots (cyan, drawn first of the
+            visual layers so handles can stack on top — matches the
+            previous pre-decoupling visual order). */}
+        {(subpathsOf(value)[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
+          const p = normToPx(a.pos);
+          return (
+            <circle
+              key={`av-${i}`}
+              cx={p.x}
+              cy={p.y}
+              r={ANCHOR_R}
+              fill="#0ea5e9"
+              stroke="#f0f9ff"
+              strokeWidth={1.2}
+              style={{ pointerEvents: "none" }}
+            />
+          );
+        })}
+
+        {/* Pass 4 — handle visual dots, on top of anchor visuals to
+            preserve the original look (handles overlay anchors when
+            their positions overlap). Hit rings are already in pass 1
+            so these are pointer-event-free. */}
+        {(subpathsOf(value)[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
+          const dots: ReactElement[] = [];
+          if (a.inHandle) {
+            const p = normToPx([
+              a.pos[0] + a.inHandle[0],
+              a.pos[1] + a.inHandle[1],
+            ]);
             dots.push(
               <circle
-                key={`h-${i}-out`}
+                key={`hv-${i}-in`}
                 cx={p.x}
                 cy={p.y}
                 r={HANDLE_R}
                 fill="#f8fafc"
                 stroke="#0f172a"
                 strokeWidth={1}
-                style={{ cursor: "grab", pointerEvents: "auto" }}
-                onPointerDown={onHandlePointerDown(i, "out")}
-                onContextMenu={onHandleContextMenu(i, "out")}
+                style={{ pointerEvents: "none" }}
+              />
+            );
+          }
+          if (a.outHandle) {
+            const p = normToPx([
+              a.pos[0] + a.outHandle[0],
+              a.pos[1] + a.outHandle[1],
+            ]);
+            dots.push(
+              <circle
+                key={`hv-${i}-out`}
+                cx={p.x}
+                cy={p.y}
+                r={HANDLE_R}
+                fill="#f8fafc"
+                stroke="#0f172a"
+                strokeWidth={1}
+                style={{ pointerEvents: "none" }}
               />
             );
           }
@@ -620,6 +767,15 @@ export default function SplineEditorOverlay({
           onClick={() => setTool("select")}
         >
           <CursorIcon />
+        </ToolButton>
+        <ToolButton
+          active={
+            subpathsOf(value)[EDIT_SUBPATH]?.closed ?? false
+          }
+          label="Close loop"
+          onClick={toggleClosed}
+        >
+          <LoopIcon />
         </ToolButton>
       </div>
     </div>
@@ -696,6 +852,21 @@ function CursorIcon() {
         strokeLinecap="round"
         fill="currentColor"
         fillOpacity="0.15"
+      />
+    </svg>
+  );
+}
+
+function LoopIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <circle
+        cx="8"
+        cy="8"
+        r="5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        fill="none"
       />
     </svg>
   );

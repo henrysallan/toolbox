@@ -10,9 +10,7 @@ export type SocketType =
   | "spline"
   | "points"
   | "audio"
-  | "image_group"
-  | "spline_group"
-  | "points_group";
+  | "image_group";
 
 export type ImageValue = {
   kind: "image";
@@ -67,6 +65,13 @@ export interface SplineAnchor {
 export interface SplineSubpath {
   anchors: SplineAnchor[];
   closed: boolean;
+  // Optional per-item identity tag assigned by the Group node when
+  // multiple splines were combined into this one. Downstream
+  // per-index operations (Select by Index, Count Indices, Copy-to-
+  // Points' pick-source mode) key off this. Undefined means the
+  // subpath isn't group-tagged; treat it as its own implicit group
+  // or ignore entirely depending on the operation.
+  groupIndex?: number;
 }
 export type SplineValue = {
   kind: "spline";
@@ -82,6 +87,10 @@ export interface Point {
   pos: [number, number];
   rotation?: number;
   scale?: [number, number];
+  // Same group-identity semantics as SplineSubpath.groupIndex —
+  // assigned by the Group node when point sets are combined. See
+  // the comment there for details.
+  groupIndex?: number;
 }
 export type PointsValue = {
   kind: "points";
@@ -100,21 +109,19 @@ export type AudioValue = {
   source: "file" | "mic";
 };
 
-// Homogeneous collections. Carry an ordered list of the same inner
-// type — `items[i]` always exists and is non-null up to the length.
-// Consumers index in via Pick, collapse via Merge Group (image only),
+// Homogeneous image collection. Carries an ordered list of images —
+// `items[i]` always exists and is non-null up to the length.
+// Consumers index in via Select by Index, collapse via Merge Group,
 // or iterate via Foreach (coming in a follow-up).
+//
+// Splines and points don't need a parallel "_group" type: their base
+// values already carry a collection (SplineValue.subpaths, PointsValue.
+// points). Group-identity there rides on the optional `groupIndex`
+// field on each SplineSubpath / Point. Only images — which are a
+// single texture each — need a separate group wrapper.
 export type ImageGroupValue = {
   kind: "image_group";
   items: ImageValue[];
-};
-export type SplineGroupValue = {
-  kind: "spline_group";
-  items: SplineValue[];
-};
-export type PointsGroupValue = {
-  kind: "points_group";
-  items: PointsValue[];
 };
 
 export type SocketValue =
@@ -128,9 +135,7 @@ export type SocketValue =
   | SplineValue
   | PointsValue
   | AudioValue
-  | ImageGroupValue
-  | SplineGroupValue
-  | PointsGroupValue;
+  | ImageGroupValue;
 
 export interface NodeOutput {
   primary?: SocketValue;
@@ -372,4 +377,15 @@ export interface RenderContext {
   ): void;
   getShader(key: string, fragSrc: string): WebGLProgram;
   blitToCanvas(image: ImageValue, targetCanvas: HTMLCanvasElement): void;
+  // Renders the image to the backend's internal WebGL canvas at the
+  // requested size and returns that canvas. MediaPipe + other GPU
+  // consumers can sample it directly over WebGL→WebGL channels, no
+  // CPU readback. The internal canvas is scratch — its content is
+  // overwritten by the next blit call, so consumers must read it
+  // synchronously before yielding.
+  blitToGLCanvas(
+    image: ImageValue,
+    width: number,
+    height: number
+  ): HTMLCanvasElement;
 }

@@ -39,6 +39,14 @@ interface Props {
   onCanvasResChange: (res: [number, number]) => void;
   onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
   onToggleParamExposed: (nodeId: string, paramName: string) => void;
+  // Updates the user-defined slider range override for a single
+  // scalar param. Pass `null` to clear the override (slider falls
+  // back to the param def's defaults).
+  onParamRangeChange?: (
+    nodeId: string,
+    paramName: string,
+    override: { min?: number; max?: number; softMax?: number } | null
+  ) => void;
   // Returns true when an exposed param currently has an incoming edge
   // driving it. The row is rendered read-only with a "driven" indicator.
   isParamDriven: (nodeId: string, paramName: string) => boolean;
@@ -69,6 +77,7 @@ export default function ParamPanel({
   onCanvasResChange,
   onParamChange,
   onToggleParamExposed,
+  onParamRangeChange,
   isParamDriven,
   signedIn,
   currentUserId,
@@ -122,6 +131,7 @@ export default function ParamPanel({
               const exposable = paramSocketType(p.type) !== null;
               const isExposed = exposedSet.has(p.name);
               const driven = isExposed && isParamDriven(selected.id, p.name);
+              const override = selected.data.paramOverrides?.[p.name];
               return (
                 <ParamRow
                   key={p.name}
@@ -134,6 +144,13 @@ export default function ParamPanel({
                   onToggleExposed={
                     exposable
                       ? () => onToggleParamExposed(selected.id, p.name)
+                      : undefined
+                  }
+                  rangeOverride={override}
+                  onRangeChange={
+                    onParamRangeChange
+                      ? (next) =>
+                          onParamRangeChange(selected.id, p.name, next)
                       : undefined
                   }
                 />
@@ -292,6 +309,8 @@ function ParamRow({
   exposable,
   driven,
   onToggleExposed,
+  rangeOverride,
+  onRangeChange,
 }: {
   param: ParamDef;
   value: unknown;
@@ -300,6 +319,12 @@ function ParamRow({
   exposable?: boolean;
   driven?: boolean;
   onToggleExposed?: () => void;
+  // Per-instance slider range override (right-click → Edit range).
+  // Each field falls back to the param def when undefined.
+  rangeOverride?: { min?: number; max?: number; softMax?: number };
+  onRangeChange?: (
+    next: { min?: number; max?: number; softMax?: number } | null
+  ) => void;
 }) {
   const label = param.label ?? param.name;
 
@@ -368,7 +393,13 @@ function ParamRow({
         )}
       </div>
       <div style={{ opacity: driven ? 0.5 : 1, pointerEvents: driven ? "none" : "auto" }}>
-        <ParamControl param={param} value={value} onChange={onChange} />
+        <ParamControl
+          param={param}
+          value={value}
+          onChange={onChange}
+          rangeOverride={rangeOverride}
+          onRangeChange={onRangeChange}
+        />
       </div>
     </div>
   );
@@ -378,50 +409,44 @@ function ParamControl({
   param,
   value,
   onChange,
+  rangeOverride,
+  onRangeChange,
 }: {
   param: ParamDef;
   value: unknown;
   onChange: (v: unknown) => void;
+  rangeOverride?: { min?: number; max?: number; softMax?: number };
+  onRangeChange?: (
+    next: { min?: number; max?: number; softMax?: number } | null
+  ) => void;
 }) {
   if (param.type === "scalar") {
     const num = typeof value === "number" ? value : (param.default as number);
-    // Slider uses softMax when provided so the user can type past it via the
-    // number input without the slider pinning the stored value.
-    const sliderMax = param.softMax ?? param.max ?? 1;
-    const sliderMin = param.min ?? 0;
+    // Effective range: per-instance override wins over the param def.
+    // Each field overrides independently — set just `max` and the
+    // others stay at their def defaults.
+    const effMin = rangeOverride?.min ?? param.min ?? 0;
+    const effMax = rangeOverride?.max ?? param.max ?? 1;
+    const effSoftMax = rangeOverride?.softMax ?? param.softMax;
+    // Slider uses softMax when provided so the user can type past it
+    // via the number input without the slider pinning the stored value.
+    const sliderMax = effSoftMax ?? effMax;
+    const sliderMin = effMin;
     const sliderValue = Math.max(sliderMin, Math.min(sliderMax, num));
     return (
-      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-        <input
-          type="range"
-          min={sliderMin}
-          max={sliderMax}
-          step={param.step ?? 0.01}
-          value={sliderValue}
-          onChange={(e) => onChange(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <input
-          type="number"
-          min={param.min}
-          max={param.max}
-          step={param.step ?? 0.01}
-          value={num}
-          onChange={(e) => {
-            const v = parseFloat(e.target.value);
-            if (!Number.isNaN(v)) onChange(v);
-          }}
-          style={{
-            width: 60,
-            background: "#0a0a0a",
-            border: "1px solid #27272a",
-            color: "#e5e7eb",
-            fontFamily: "inherit",
-            fontSize: 11,
-            padding: "2px 4px",
-          }}
-        />
-      </div>
+      <ScalarSliderRow
+        param={param}
+        num={num}
+        effMin={effMin}
+        effMax={effMax}
+        effSoftMax={effSoftMax}
+        sliderMin={sliderMin}
+        sliderMax={sliderMax}
+        sliderValue={sliderValue}
+        rangeOverride={rangeOverride}
+        onChange={onChange}
+        onRangeChange={onRangeChange}
+      />
     );
   }
 
@@ -1710,4 +1735,325 @@ function buttonStyle(): React.CSSProperties {
     cursor: "pointer",
     fontFamily: "inherit",
   };
+}
+
+// Scalar slider row with right-click → "Edit range" popover. Slider /
+// number-input behavior is unchanged from the inline version it
+// replaced; the only addition is the contextmenu handler that opens
+// SliderRangeEditor and the highlight when an override is active.
+function ScalarSliderRow({
+  param,
+  num,
+  effMin,
+  effMax,
+  effSoftMax,
+  sliderMin,
+  sliderMax,
+  sliderValue,
+  rangeOverride,
+  onChange,
+  onRangeChange,
+}: {
+  param: ParamDef;
+  num: number;
+  effMin: number;
+  effMax: number;
+  effSoftMax: number | undefined;
+  sliderMin: number;
+  sliderMax: number;
+  sliderValue: number;
+  rangeOverride?: { min?: number; max?: number; softMax?: number };
+  onChange: (v: unknown) => void;
+  onRangeChange?: (
+    next: { min?: number; max?: number; softMax?: number } | null
+  ) => void;
+}) {
+  const [editorOpen, setEditorOpen] = useState(false);
+  const hasOverride = !!rangeOverride;
+  return (
+    <div
+      style={{ display: "flex", gap: 6, alignItems: "center", position: "relative" }}
+      onContextMenu={(e) => {
+        if (!onRangeChange) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setEditorOpen(true);
+      }}
+    >
+      <input
+        type="range"
+        min={sliderMin}
+        max={sliderMax}
+        step={param.step ?? 0.01}
+        value={sliderValue}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        style={{
+          flex: 1,
+          // Subtle hint that this slider has a custom range — accent-color
+          // bumps the thumb tint on browsers that support it.
+          accentColor: hasOverride ? "#60a5fa" : undefined,
+        }}
+        title={
+          hasOverride
+            ? `Custom range — right-click to edit (defaults: ${param.min ?? "—"} to ${param.max ?? "—"})`
+            : "Right-click to set a custom range"
+        }
+      />
+      <input
+        type="number"
+        min={effMin}
+        max={effMax}
+        step={param.step ?? 0.01}
+        value={num}
+        onChange={(e) => {
+          const v = parseFloat(e.target.value);
+          if (!Number.isNaN(v)) onChange(v);
+        }}
+        style={{
+          width: 60,
+          background: "#0a0a0a",
+          border: `1px solid ${hasOverride ? "#1e3a8a" : "#27272a"}`,
+          color: "#e5e7eb",
+          fontFamily: "inherit",
+          fontSize: 11,
+          padding: "2px 4px",
+        }}
+      />
+      {editorOpen && onRangeChange && (
+        <SliderRangeEditor
+          param={param}
+          override={rangeOverride}
+          effMin={effMin}
+          effMax={effMax}
+          effSoftMax={effSoftMax}
+          onCommit={(next) => {
+            onRangeChange(next);
+            setEditorOpen(false);
+          }}
+          onCancel={() => setEditorOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Compact popover anchored to the slider's row. Three numeric inputs
+// (min / max / soft max) plus a Reset that clears the override and
+// falls back to whatever the param def declares. Click-outside or
+// Escape dismisses without committing.
+function SliderRangeEditor({
+  param,
+  override,
+  effMin,
+  effMax,
+  effSoftMax,
+  onCommit,
+  onCancel,
+}: {
+  param: ParamDef;
+  override: { min?: number; max?: number; softMax?: number } | undefined;
+  effMin: number;
+  effMax: number;
+  effSoftMax: number | undefined;
+  onCommit: (
+    next: { min?: number; max?: number; softMax?: number } | null
+  ) => void;
+  onCancel: () => void;
+}) {
+  const [minStr, setMinStr] = useState(String(effMin));
+  const [maxStr, setMaxStr] = useState(String(effMax));
+  const [softStr, setSoftStr] = useState(
+    effSoftMax === undefined ? "" : String(effSoftMax)
+  );
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  const parseOrUndef = (s: string): number | undefined => {
+    const t = s.trim();
+    if (t === "") return undefined;
+    const n = parseFloat(t);
+    return Number.isFinite(n) ? n : undefined;
+  };
+
+  const submit = () => {
+    const m = parseOrUndef(minStr);
+    const x = parseOrUndef(maxStr);
+    const s = parseOrUndef(softStr);
+    // Only persist values that actually differ from the param def
+    // defaults — keeps saved data minimal and lets the engine update
+    // defaults without stale overrides clinging on.
+    const next: { min?: number; max?: number; softMax?: number } = {};
+    if (m !== undefined && m !== (param.min ?? 0)) next.min = m;
+    if (x !== undefined && x !== (param.max ?? 1)) next.max = x;
+    if (s !== undefined && s !== param.softMax) next.softMax = s;
+    onCommit(Object.keys(next).length === 0 ? null : next);
+  };
+
+  const reset = () => onCommit(null);
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current) return;
+      // Disambiguate: `Node` in this file refers to React Flow's
+      // graph node (imported at the top); we want the DOM Node here.
+      if (rootRef.current.contains(e.target as globalThis.Node)) return;
+      onCancel();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+      if (e.key === "Enter") submit();
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [minStr, maxStr, softStr]);
+
+  return (
+    <div
+      ref={rootRef}
+      style={{
+        position: "absolute",
+        top: "calc(100% + 4px)",
+        right: 0,
+        minWidth: 220,
+        background: "#18181b",
+        border: "1px solid #27272a",
+        borderRadius: 4,
+        padding: 8,
+        zIndex: 50,
+        boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 11,
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      onContextMenu={(e) => {
+        // Right-clicking inside the editor shouldn't re-open it via
+        // the slider's contextmenu handler.
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
+      <div
+        style={{
+          color: "#a1a1aa",
+          fontSize: 9,
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+          marginBottom: 6,
+        }}
+      >
+        Slider range — {param.label ?? param.name}
+      </div>
+      <RangeField label="Min" value={minStr} onChange={setMinStr} />
+      <RangeField label="Max" value={maxStr} onChange={setMaxStr} />
+      <RangeField
+        label="Soft max"
+        value={softStr}
+        onChange={setSoftStr}
+        placeholder={
+          param.softMax !== undefined ? `def: ${param.softMax}` : "(none)"
+        }
+      />
+      <div
+        style={{
+          display: "flex",
+          gap: 6,
+          marginTop: 8,
+          justifyContent: "space-between",
+        }}
+      >
+        <button
+          onClick={reset}
+          disabled={!override}
+          style={{
+            padding: "3px 8px",
+            background: "transparent",
+            border: "1px solid #3f3f46",
+            color: override ? "#e5e7eb" : "#52525b",
+            fontFamily: "inherit",
+            fontSize: 10,
+            borderRadius: 3,
+            cursor: override ? "pointer" : "not-allowed",
+          }}
+        >
+          Reset
+        </button>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            onClick={onCancel}
+            style={{
+              padding: "3px 8px",
+              background: "transparent",
+              border: "1px solid #3f3f46",
+              color: "#e5e7eb",
+              fontFamily: "inherit",
+              fontSize: 10,
+              borderRadius: 3,
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            style={{
+              padding: "3px 8px",
+              background: "#1e3a8a",
+              border: "1px solid #1e3a8a",
+              color: "#dbeafe",
+              fontFamily: "inherit",
+              fontSize: 10,
+              borderRadius: 3,
+              cursor: "pointer",
+            }}
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RangeField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        marginBottom: 4,
+      }}
+    >
+      <span style={{ color: "#a1a1aa", minWidth: 60 }}>{label}</span>
+      <input
+        type="number"
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          flex: 1,
+          background: "#0a0a0a",
+          border: "1px solid #27272a",
+          color: "#e5e7eb",
+          fontFamily: "inherit",
+          fontSize: 11,
+          padding: "2px 4px",
+        }}
+      />
+    </div>
+  );
 }

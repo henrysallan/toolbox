@@ -6,6 +6,7 @@ import InPageToc from "../InPageToc";
 export const TOC = [
   { id: "the-graph", title: "The graph" },
   { id: "the-parameters-panel", title: "The parameters panel" },
+  { id: "custom-slider-range", title: "Customizing a slider's range" },
   { id: "saving-your-work", title: "Saving your work" },
 ];
 
@@ -81,6 +82,28 @@ export default function EditorBasicsPage() {
         <em> expose</em> it as a socket, so another node can drive it.
         When a param is driven by an incoming wire, its slider
         displays grayed out — the incoming value wins.
+      </P>
+
+      <H3 id="custom-slider-range">Customizing a slider's range</H3>
+      <P>
+        <strong>Right-click any scalar slider</strong> to open a small
+        popover that lets you override its <em>Min</em>, <em>Max</em>,
+        and optional <em>Soft max</em>. Useful when the default range
+        is too wide for the precision you need, or too narrow for an
+        extreme effect. The override saves with the project — the
+        slider thumb gets a subtle accent and the number input picks
+        up a blue border so you can see at a glance which params
+        you've re-ranged. Hit <em>Reset</em> in the popover to drop
+        the override and snap back to the param def's defaults.
+      </P>
+      <P>
+        <em style={{ color: "#71717a" }}>
+          Tip: the number input still lets you type values past the
+          slider's soft max — that's the whole reason soft max exists.
+          Set Min / Max for the slider's pinned range; set Soft max
+          for the slider's visible range (with the number input as
+          the escape hatch).
+        </em>
       </P>
 
       <H2>Saving your work</H2>
