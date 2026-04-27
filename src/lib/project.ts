@@ -13,6 +13,9 @@ export interface SavedNode {
   position: { x: number; y: number };
   params: Record<string, unknown>;
   exposedParams?: string[];
+  // Names of params marked as user-controllable in an exported app. See
+  // NodeDataPayload for the runtime shape. Plain JSON, no special handling.
+  controlParams?: string[];
   // User-defined slider range overrides — see NodeDataPayload for
   // the runtime shape. Plain JSON, no special handling needed.
   paramOverrides?: Record<
@@ -175,6 +178,7 @@ export async function serializeGraph(
       position: { x: n.position.x, y: n.position.y },
       params: await serializeParams(n.data.defType, n.data.params),
       exposedParams: n.data.exposedParams,
+      controlParams: n.data.controlParams,
       paramOverrides: n.data.paramOverrides,
       active: n.data.active,
       bypassed: n.data.bypassed,
@@ -226,6 +230,7 @@ export async function deserializeGraph(
         defType: sn.defType,
         params,
         exposedParams: sn.exposedParams ?? [],
+        controlParams: sn.controlParams ?? [],
         paramOverrides: sn.paramOverrides,
         name: def?.name ?? sn.defType,
         inputs,

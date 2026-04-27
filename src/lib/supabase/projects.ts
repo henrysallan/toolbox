@@ -20,12 +20,29 @@ export interface ProjectRow {
   // means the project has no ratings yet.
   ratings_avg: number | null;
   ratings_count: number;
+  // Stable random slug minted when a project goes public; cleared when
+  // it goes private (by a DB trigger as a safety net + the client). The
+  // /live/<slug> route resolves rows by this column.
+  public_slug: string | null;
   // Populated for rows returned by listPublicProjects; null elsewhere.
   author: ProjectAuthor | null;
 }
 
 const BASE_COLS =
-  "id, name, thumbnail, is_public, user_id, updated_at, created_at, ratings_avg, ratings_count";
+  "id, name, thumbnail, is_public, user_id, updated_at, created_at, ratings_avg, ratings_count, public_slug";
+
+// Random URL-safe slug. 12 chars × base36 ≈ 62 bits of entropy — well
+// under astronomical collision risk at any realistic project count, and
+// short enough to fit comfortably in a URL pill.
+function mintPublicSlug(): string {
+  const out: string[] = [];
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  for (const b of bytes) {
+    out.push((b % 36).toString(36));
+  }
+  return out.join("");
+}
 
 const THUMB_BUCKET = "project-thumbnails";
 
@@ -260,9 +277,29 @@ export async function setProjectVisibility(
   isPublic: boolean
 ): Promise<boolean> {
   const supabase = createClient();
+  // Going public mints a slug if one doesn't already exist; going private
+  // explicitly clears it (the DB trigger does the same as a safety net).
+  // We pass the slug through the same UPDATE so visibility + slug stay
+  // atomically consistent — no half-published rows.
+  const payload: Record<string, unknown> = {
+    is_public: isPublic,
+    updated_at: new Date().toISOString(),
+  };
+  if (isPublic) {
+    const { data: existing } = await supabase
+      .from("projects")
+      .select("public_slug")
+      .eq("id", id)
+      .maybeSingle();
+    if (!existing?.public_slug) {
+      payload.public_slug = mintPublicSlug();
+    }
+  } else {
+    payload.public_slug = null;
+  }
   const { error } = await supabase
     .from("projects")
-    .update({ is_public: isPublic, updated_at: new Date().toISOString() })
+    .update(payload)
     .eq("id", id);
   if (error) {
     console.error("setProjectVisibility failed:", error);
@@ -449,6 +486,47 @@ export interface LoadedProject {
   is_public: boolean;
   user_id: string;
   author: ProjectAuthor | null;
+}
+
+// Server-side variant: resolves a public project by its URL slug. Takes
+// the supabase client as an argument so callers can pass either the
+// browser or server SSR client. Cache-bypass — every /live request hits
+// the DB so private flips and renames propagate immediately.
+export async function loadPublicProjectBySlug(
+  client: ReturnType<typeof createClient>,
+  slug: string
+): Promise<{
+  id: string;
+  name: string;
+  graph: SavedProject;
+  user_id: string;
+  author: ProjectAuthor | null;
+} | null> {
+  const { data, error } = await client
+    .from("projects")
+    .select("id, name, graph, user_id")
+    .eq("public_slug", slug)
+    .eq("is_public", true)
+    .maybeSingle();
+  if (error) {
+    console.error("loadPublicProjectBySlug failed:", error);
+    return null;
+  }
+  if (!data) return null;
+  let author: ProjectAuthor | null = null;
+  const { data: prof } = await client
+    .from("profiles")
+    .select("id, display_name, avatar_url")
+    .eq("id", data.user_id)
+    .maybeSingle();
+  if (prof) author = prof as ProjectAuthor;
+  return {
+    id: data.id as string,
+    name: data.name as string,
+    graph: data.graph as SavedProject,
+    user_id: data.user_id as string,
+    author,
+  };
 }
 
 export async function loadProject(id: string): Promise<LoadedProject | null> {

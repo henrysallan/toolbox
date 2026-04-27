@@ -56,6 +56,8 @@ import {
 } from "@/lib/supabase/projects";
 import { AuthProvider, useUser } from "@/lib/auth-context";
 import SaveModal from "./SaveModal";
+import ExportAppModal from "./ExportAppModal";
+import { buildExportManifest } from "@/lib/export-manifest";
 import PublicPrivateConfirm from "./PublicPrivateConfirm";
 import NewProjectConfirm from "./NewProjectConfirm";
 import {
@@ -320,6 +322,12 @@ function EffectsShell() {
   // Bumped after every save so the load grid refetches on next view.
   const [loadRefreshKey, setLoadRefreshKey] = useState(0);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
+  // Export App modal — populated with the target Output node id when the
+  // user hits Export App from either the node header or ParamPanel.
+  const [exportApp, setExportApp] = useState<{ outputNodeId: string } | null>(
+    null
+  );
+  const [exportAppBusy, setExportAppBusy] = useState(false);
   // When set, plain "Save" silently overwrites this row; cleared only by
   // switching to a different project (Load or Save As creating a new row).
   const [currentProject, setCurrentProject] = useState<
@@ -1262,6 +1270,9 @@ function EffectsShell() {
           exposedParams: n.data.exposedParams
             ? [...n.data.exposedParams]
             : [],
+          controlParams: n.data.controlParams
+            ? [...n.data.controlParams]
+            : [],
         },
       };
     },
@@ -1915,6 +1926,24 @@ function EffectsShell() {
     [setNodes, setEdges, pushGraph, getGraphSnapshot]
   );
 
+  const onToggleParamControl = useCallback(
+    (nodeId: string, paramName: string) => {
+      pushGraph(getGraphSnapshot());
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id !== nodeId) return n;
+          const current = n.data.controlParams ?? [];
+          const has = current.includes(paramName);
+          const next = has
+            ? current.filter((p) => p !== paramName)
+            : [...current, paramName];
+          return { ...n, data: { ...n.data, controlParams: next } };
+        })
+      );
+    },
+    [setNodes, pushGraph, getGraphSnapshot]
+  );
+
   // Capture drag starts so a whole drag (many `position` changes with
   // `dragging: true`) collapses into one undo entry keyed by drag end.
   const dragStartSnapRef = useRef<GraphSnapshot | null>(null);
@@ -2244,18 +2273,119 @@ function EffectsShell() {
     [getOutputParams, flashToast]
   );
 
+  const onOpenExportApp = useCallback(
+    (outputNodeId: string) => {
+      setExportApp({ outputNodeId });
+    },
+    []
+  );
+
+  // Run the full client-side export pipeline: build manifest, fetch the
+  // pre-built export-template artifacts from public/, package into a zip,
+  // trigger the browser download. All steps run in this tab; no server.
+  const runExportApp = useCallback(
+    async (args: { appName: string; description?: string }) => {
+      const session = exportApp;
+      if (!session) return;
+      setExportAppBusy(true);
+      try {
+        const { manifest } = buildExportManifest({
+          nodes: nodesRef.current,
+          edges: edgesRef.current,
+          appName: args.appName,
+          description: args.description,
+          outputNodeId: session.outputNodeId,
+          canvasRes,
+        });
+        const graphJson = await serializeGraph(
+          nodesRef.current,
+          edgesRef.current
+        );
+        const distManifest = (await fetch(
+          "/export-template/v1/manifest.json"
+        ).then((r) => r.json())) as {
+          built: boolean;
+          reason?: string;
+          distFiles: string[];
+          sourceFiles: string[];
+        };
+        if (!distManifest.built) {
+          throw new Error(
+            "Export template not built. Run `npm run install:export-template && npm run build:export-template` and try again."
+          );
+        }
+        const singleFileHtml = await fetch(
+          "/export-template/v1/index.html"
+        ).then((r) => r.text());
+        const fetchAll = async (
+          base: string,
+          paths: string[]
+        ): Promise<Record<string, string | Uint8Array>> => {
+          const out: Record<string, string | Uint8Array> = {};
+          await Promise.all(
+            paths.map(async (p) => {
+              const resp = await fetch(`${base}/${p}`);
+              const isText =
+                p.endsWith(".html") ||
+                p.endsWith(".js") ||
+                p.endsWith(".css") ||
+                p.endsWith(".json") ||
+                p.endsWith(".ts") ||
+                p.endsWith(".tsx") ||
+                p.endsWith(".md") ||
+                p.endsWith(".svg");
+              out[p] = isText
+                ? await resp.text()
+                : new Uint8Array(await resp.arrayBuffer());
+            })
+          );
+          return out;
+        };
+        const [distFiles, sourceFiles] = await Promise.all([
+          fetchAll("/export-template/v1/dist", distManifest.distFiles),
+          fetchAll("/export-template/v1/source", distManifest.sourceFiles),
+        ]);
+        const { packageExportApp } = await import("@/lib/export-packager");
+        const blob = await packageExportApp({
+          appName: args.appName,
+          description: args.description,
+          manifest,
+          graphJson,
+          template: { singleFileHtml, distFiles, sourceFiles },
+        });
+        const slug =
+          args.appName.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") ||
+          "app";
+        downloadBlob(blob, `${slug}.zip`);
+        setExportApp(null);
+      } catch (err) {
+        console.error("Export App failed:", err);
+        flashToast(
+          err instanceof Error ? err.message : "Export App failed"
+        );
+      } finally {
+        setExportAppBusy(false);
+      }
+    },
+    [exportApp, canvasRes, flashToast]
+  );
+
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (
-        e as CustomEvent<{ id: string; kind: "image" | "video" }>
+        e as CustomEvent<{
+          id: string;
+          kind: "image" | "video" | "app";
+        }>
       ).detail;
       if (!detail) return;
       if (detail.kind === "image") exportImage(detail.id);
       else if (detail.kind === "video") exportVideo(detail.id);
+      else if (detail.kind === "app") onOpenExportApp(detail.id);
     };
     window.addEventListener("effect-node-export", handler);
     return () => window.removeEventListener("effect-node-export", handler);
-  }, [exportImage, exportVideo]);
+  }, [exportImage, exportVideo, onOpenExportApp]);
 
   // --- Save / Load ----------------------------------------------------------
   // Progress budget: serialize/deserialize gets the first 70%, the network
@@ -3395,6 +3525,8 @@ function EffectsShell() {
             onCanvasResChange={setCanvasRes}
             onParamChange={onParamChange}
             onToggleParamExposed={onToggleParamExposed}
+            onToggleParamControl={onToggleParamControl}
+            onExportApp={onOpenExportApp}
             onParamRangeChange={onParamRangeChange}
             onToggleParamLink={onToggleParamLink}
             isParamDriven={isParamDriven}
@@ -3433,6 +3565,50 @@ function EffectsShell() {
         onSave={handleSaveAsWithMaybeReset}
         findConflict={(name) => findConflict(name)}
       />
+      {(() => {
+        if (!exportApp) return null;
+        const node = nodes.find((n) => n.id === exportApp.outputNodeId);
+        if (!node) return null;
+        // Recompute the manifest on every render the modal is open. The
+        // graph + name + description change frequently, so the manifest
+        // and warnings always reflect the live state — cheap pure fn.
+        const initialName = currentProject?.name || "my-app";
+        const built = buildExportManifest({
+          nodes,
+          edges,
+          appName: initialName,
+          outputNodeId: exportApp.outputNodeId,
+          canvasRes,
+        });
+        // Rough size estimate: serialized graph length plus per-asset
+        // overhead. The packager enforces the real 25 MB cap; the
+        // estimate is just a conservative pre-check.
+        const estimate = JSON.stringify(built.manifest).length;
+        // Alt output for split-viewport: let the user pick the other
+        // active terminal as the export target.
+        const alt = nodes.find(
+          (n) => n.id !== node.id && (n.data.active2 || n.data.active)
+        );
+        return (
+          <ExportAppModal
+            open
+            onClose={() => setExportApp(null)}
+            initialAppName={initialName}
+            outputNode={{ id: node.id, name: node.data.name }}
+            altOutputNode={
+              alt ? { id: alt.id, name: alt.data.name } : null
+            }
+            onPickOutputNode={(id) => setExportApp({ outputNodeId: id })}
+            manifest={built.manifest}
+            warnings={built.warnings}
+            estimatedSizeBytes={estimate}
+            busy={exportAppBusy}
+            onExport={(args) => {
+              void runExportApp(args);
+            }}
+          />
+        );
+      })()}
       <PublicPrivateConfirm
         open={!!pendingVisibility}
         toPublic={pendingVisibility?.toPublic ?? false}

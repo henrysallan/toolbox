@@ -1,4 +1,11 @@
-import type { ParamType, SocketType } from "@/engine/types";
+// `paramSocketType` and `parseTargetHandleKind` now live in
+// `@/engine/graph-helpers` (the engine subtree must be self-contained for
+// the Export App bundle). Re-exported here for back-compat with existing
+// editor imports — prefer importing from the engine path in new code.
+export {
+  paramSocketType,
+  parseTargetHandleKind,
+} from "@/engine/graph-helpers";
 
 export type NodeDataPayload = {
   defType: string;
@@ -7,6 +14,11 @@ export type NodeDataPayload = {
   // sockets on the node. When an exposed param has an incoming edge, the
   // edge's value overrides the stored param value at evaluation time.
   exposedParams?: string[];
+  // Names of params marked as user-controllable in an exported app. Parallel
+  // to `exposedParams`: expose is an engine concept (input socket); control
+  // is an export concept (panel knob in the exported app). Both can be on
+  // for the same param. Persisted with the project; default empty.
+  controlParams?: string[];
   // User-defined slider range overrides keyed by param name. Each entry
   // can override `min`, `max`, and/or `softMax` from the param def.
   // Set via the right-click "Edit range" popover on a scalar slider;
@@ -48,40 +60,6 @@ export function makeTargetHandleId(name: string) {
 
 export function makeParamTargetHandleId(paramName: string) {
   return `in:param:${paramName}`;
-}
-
-// Parse a React Flow target handle ID. Regular input sockets are `in:<name>`;
-// exposed param sockets are `in:param:<name>`. Returns null for unrecognized.
-export function parseTargetHandleKind(
-  handle: string
-): { kind: "input"; name: string } | { kind: "param"; name: string } | null {
-  if (handle.startsWith("in:param:")) {
-    return { kind: "param", name: handle.slice("in:param:".length) };
-  }
-  if (handle.startsWith("in:")) {
-    return { kind: "input", name: handle.slice("in:".length) };
-  }
-  return null;
-}
-
-// Map a ParamType to the socket type that drives it. Returns null for param
-// types that don't have a meaningful data-socket representation (paint,
-// color_ramp, curves, merge_layers, file, enum).
-export function paramSocketType(type: ParamType): SocketType | null {
-  switch (type) {
-    case "scalar":
-    case "boolean":
-      return "scalar";
-    case "vec2":
-      return "vec2";
-    case "vec3":
-      return "vec3";
-    case "color":
-    case "vec4":
-      return "vec4";
-    default:
-      return null;
-  }
 }
 
 export function newNodeId(type: string) {

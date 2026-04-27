@@ -1,0 +1,41 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["DOM", "DOM.Iterable", "ES2020"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "allowSyntheticDefaultImports": true,
+    "useDefineForClassFields": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@engine/*": ["../engine/*"],
+      "@nodes/*": ["../nodes/*"],
+      "@lib/*": ["../lib/*"],
+      "@/engine/*": ["../engine/*"],
+      "@/nodes/*": ["../nodes/*"],
+      "@/lib/*": ["../lib/*"],
+      "@/state/graph": ["./src/shims/state-graph.ts"],
+      "@xyflow/react": ["./src/shims/xyflow-react.ts"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "../engine/**/*.ts",
+    "../nodes/**/*.ts",
+    "../lib/audio.ts",
+    "../lib/fonts.ts",
+    "../lib/svg-parse.ts",
+    "../lib/video.ts",
+    "../lib/project.ts"
+  ],
+  "exclude": ["node_modules", "dist", "dist-single"]
+}

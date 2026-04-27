@@ -1,7 +1,7 @@
 import { coerceValue } from "./coerce";
 import { MASK_INPUT_NAME, withMaskInput } from "./conventions";
 import { getNodeDef } from "./registry";
-import { paramSocketType, parseTargetHandleKind } from "@/state/graph";
+import { paramSocketType, parseTargetHandleKind } from "./graph-helpers";
 import type {
   ImageValue,
   MaskValue,
@@ -170,7 +170,9 @@ function topoSort(nodes: GraphNode[], edges: GraphEdge[]): string[] {
 // Compute the set of nodes whose output actually feeds the eval target
 // (active node if set, otherwise any terminal node). A disconnected node not
 // in this set is skipped entirely — no compute, no texture allocation.
-function computeNeededSet(
+// Exported so callers (export-manifest builder, save flows) can reuse the
+// reachability calculation and stay in sync with what the evaluator does.
+export function computeNeededSet(
   nodes: GraphNode[],
   edges: GraphEdge[],
   activeNodeId: string | null | undefined

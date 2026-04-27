@@ -1,4 +1,8 @@
 @import "tailwindcss";
+/* Slider + number-input + spin-button chrome shared with the live-viewer
+   and exported-app bundles. Keeping a single source of truth here means
+   tweaking the slider thumb in one file updates all three surfaces. */
+@import "../lib/live-viewer/form-controls.css";
 
 :root {
   --background: #ffffff;
@@ -38,121 +42,6 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
-}
-
-/* Soft corners on every numeric input — applies app-wide so the
-   timeline scrubber, param panel sliders, vec components, color-ramp
-   pickers, and any one-off type="number" boxes all match. The rule
-   loses to any inline border-radius an individual input sets. */
-input[type="number"] {
-  border-radius: 3px;
-  /* Establish a positioning context for the absolutely-placed spinner
-     so it has explicit bounds to render into. With `appearance: none`
-     and only `width / height: 100%`, WebKit collapses the spinner's
-     layout box and the icons never paint. Absolute positioning fixes
-     it. */
-  position: relative;
-}
-
-/* Replace the browser-default bright blue / white focus ring on text
-   and numeric inputs with a subtle thin grey stroke that picks up the
-   muted-zinc palette the rest of the chrome uses. */
-input[type="number"]:focus,
-input[type="text"]:focus,
-input[type="search"]:focus,
-textarea:focus {
-  outline: 1px solid #3f3f46;
-  outline-offset: -1px;
-}
-
-/* Restyle the WebKit number-spinner. Default look is a chunky white
-   wedge button — we want a thin left-divider with two slim white
-   chevron carets stacked vertically. Carets are inlined as a
-   URL-encoded SVG data URI. Firefox doesn't expose the spinner as a
-   stylable pseudo-element; it falls back to its own minimal arrows. */
-input[type="number"]::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  appearance: none;
-  margin: 0;
-}
-input[type="number"]::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  appearance: none;
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 14px;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  border-left: 1px solid rgba(255, 255, 255, 0.25);
-  background-color: transparent;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 14'%3E%3Cpolyline points='2.5,5.25 5,2.75 7.5,5.25' fill='none' stroke='white' stroke-width='1' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpolyline points='2.5,8.75 5,11.25 7.5,8.75' fill='none' stroke='white' stroke-width='1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 10px 14px;
-  opacity: 0.55;
-  transition: opacity 120ms;
-  cursor: pointer;
-}
-input[type="number"]:hover::-webkit-inner-spin-button,
-input[type="number"]:focus::-webkit-inner-spin-button {
-  opacity: 1;
-}
-
-input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
-  background: transparent;
-  height: 16px;
-  padding: 0;
-  margin: 0;
-  cursor: pointer;
-}
-
-input[type="range"]:focus {
-  outline: none;
-}
-
-input[type="range"]::-webkit-slider-runnable-track {
-  background: #18181b;
-  border: 1px solid #27272a;
-  height: 3px;
-  border-radius: 2px;
-}
-
-input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  /* Circular dot with a hairline grey stroke. */
-  width: 11px;
-  height: 11px;
-  background: #18181b;
-  border: 1px solid #52525b;
-  border-radius: 50%;
-  /* Center the dot vertically over the 3px track + 2px borders. */
-  margin-top: -5px;
-  cursor: pointer;
-}
-
-input[type="range"]::-moz-range-track {
-  background: #18181b;
-  border: 1px solid #27272a;
-  height: 3px;
-  border-radius: 2px;
-}
-
-input[type="range"]::-moz-range-thumb {
-  width: 11px;
-  height: 11px;
-  background: #18181b;
-  border: 1px solid #52525b;
-  border-radius: 50%;
-  cursor: pointer;
-}
-
-input[type="range"]::-moz-focus-outer {
-  border: 0;
 }
 
 /* Hide the scrollbar entirely on a scrollable container without

@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# export-template build outputs
+/src/export-template/dist
+/src/export-template/dist-single
+/src/export-template/node_modules
+/public/export-template

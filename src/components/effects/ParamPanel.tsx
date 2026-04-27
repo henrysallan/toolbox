@@ -45,6 +45,14 @@ interface Props {
   onCanvasResChange: (res: [number, number]) => void;
   onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
   onToggleParamExposed: (nodeId: string, paramName: string) => void;
+  // Toggles whether a param shows up as a knob in an exported app's control
+  // panel. Independent of expose — both can be on; they answer different
+  // questions (engine input socket vs end-user-app control).
+  onToggleParamControl: (nodeId: string, paramName: string) => void;
+  // Triggers the Export App modal for the given output node. Surfaced here
+  // (and on the Output node header) per spec §16. Called only when the
+  // selected node has `defType === "output"`.
+  onExportApp?: (nodeId: string) => void;
   // Updates the user-defined slider range override for a single
   // scalar param. Pass `null` to clear the override (slider falls
   // back to the param def's defaults).
@@ -150,6 +158,8 @@ export default function ParamPanel({
   onCanvasResChange,
   onParamChange,
   onToggleParamExposed,
+  onToggleParamControl,
+  onExportApp,
   onParamRangeChange,
   onToggleParamLink,
   isParamDriven,
@@ -194,14 +204,37 @@ export default function ParamPanel({
           refreshKey={loadRefreshKey}
         />
       ) : selected && def ? (
-        <Section label={`${def.name} · parameters`}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {def.type === "output" && onExportApp && (
+            <button
+              onClick={() => onExportApp(selected.id)}
+              style={{
+                background: "#1e3a8a",
+                border: "1px solid #1d4ed8",
+                color: "#bfdbfe",
+                fontFamily: "inherit",
+                fontSize: 11,
+                padding: "6px 10px",
+                borderRadius: 4,
+                cursor: "pointer",
+                textAlign: "center",
+                letterSpacing: 0.3,
+              }}
+              title="Bundle this graph into a self-contained, runnable web app"
+            >
+              Export App →
+            </button>
+          )}
+          <Section label={`${def.name} · parameters`}>
           {(() => {
             const exposedSet = new Set(selected.data.exposedParams ?? []);
+            const controlSet = new Set(selected.data.controlParams ?? []);
             const visible = def.params.filter((p) => {
               if (p.hidden) return false;
-              // Always show exposed params so the user can reach them to
-              // un-expose, even when `visibleIf` would otherwise hide them.
+              // Always show exposed/controlled params so the user can reach
+              // them to un-toggle, even when `visibleIf` would otherwise hide.
               if (exposedSet.has(p.name)) return true;
+              if (controlSet.has(p.name)) return true;
               return p.visibleIf?.(selected.data.params) ?? true;
             });
             if (visible.length === 0) {
@@ -210,7 +243,22 @@ export default function ParamPanel({
             return visible.map((p) => {
               const exposable = paramSocketType(p.type) !== null;
               const isExposed = exposedSet.has(p.name);
+              const isControlled = controlSet.has(p.name);
               const driven = isExposed && isParamDriven(selected.id, p.name);
+              // Param types the export panel can't render. Toggling control
+              // on these is allowed but the export-modal warns the user.
+              const controlSupported =
+                p.type !== "paint" &&
+                p.type !== "merge_layers" &&
+                p.type !== "curves" &&
+                p.type !== "timeline_curve" &&
+                p.type !== "color_ramp" &&
+                p.type !== "spline_anchors" &&
+                p.type !== "file" &&
+                p.type !== "video_file" &&
+                p.type !== "audio_file" &&
+                p.type !== "svg_file" &&
+                p.type !== "font";
               const override = selected.data.paramOverrides?.[p.name];
               // Resolve chain-link UI state for this param. A param can
               // appear in at most one pair (linked pairs are exclusive
@@ -235,10 +283,15 @@ export default function ParamPanel({
                   exposed={isExposed}
                   exposable={exposable}
                   driven={driven}
+                  controlled={isControlled}
+                  controlSupported={controlSupported}
                   onToggleExposed={
                     exposable
                       ? () => onToggleParamExposed(selected.id, p.name)
                       : undefined
+                  }
+                  onToggleControl={() =>
+                    onToggleParamControl(selected.id, p.name)
                   }
                   rangeOverride={override}
                   onRangeChange={
@@ -257,7 +310,8 @@ export default function ParamPanel({
               );
             });
           })()}
-        </Section>
+          </Section>
+        </div>
       ) : (
         <div style={{ color: "#52525b" }}>Select a node to edit parameters.</div>
       )}
@@ -413,7 +467,10 @@ function ParamRow({
   exposed,
   exposable,
   driven,
+  controlled,
+  controlSupported,
   onToggleExposed,
+  onToggleControl,
   rangeOverride,
   onRangeChange,
   linkInfo,
@@ -425,7 +482,10 @@ function ParamRow({
   exposed?: boolean;
   exposable?: boolean;
   driven?: boolean;
+  controlled?: boolean;
+  controlSupported?: boolean;
   onToggleExposed?: () => void;
+  onToggleControl?: () => void;
   // Per-instance slider range override (right-click → Edit range).
   // Each field falls back to the param def when undefined.
   rangeOverride?: { min?: number; max?: number; softMax?: number };
@@ -504,28 +564,59 @@ function ParamRow({
             </span>
           )}
         </span>
-        {exposable && onToggleExposed && (
-          <button
-            onClick={onToggleExposed}
-            title={
-              exposed
-                ? "Remove the input socket for this parameter"
-                : "Add an input socket for this parameter on the node"
-            }
-            style={{
-              background: exposed ? "#1e3a8a" : "transparent",
-              border: "1px solid #27272a",
-              color: exposed ? "#bfdbfe" : "#71717a",
-              fontSize: 9,
-              padding: "1px 6px",
-              borderRadius: 3,
-              cursor: "pointer",
-              fontFamily: "inherit",
-            }}
-          >
-            {exposed ? "exposed" : "expose"}
-          </button>
-        )}
+        <div style={{ display: "flex", gap: 4 }}>
+          {exposable && onToggleExposed && (
+            <button
+              onClick={onToggleExposed}
+              title={
+                exposed
+                  ? "Remove the input socket for this parameter"
+                  : "Add an input socket for this parameter on the node"
+              }
+              style={{
+                background: exposed ? "#1e3a8a" : "transparent",
+                border: "1px solid #27272a",
+                color: exposed ? "#bfdbfe" : "#71717a",
+                fontSize: 9,
+                padding: "1px 6px",
+                borderRadius: 3,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              {exposed ? "exposed" : "expose"}
+            </button>
+          )}
+          {onToggleControl && (
+            <button
+              onClick={onToggleControl}
+              title={
+                !controlSupported
+                  ? "This param type can't be rendered in an exported app — toggling has no effect"
+                  : controlled
+                  ? "Remove this knob from the exported app's control panel"
+                  : "Show this param as a knob in the exported app's control panel"
+              }
+              style={{
+                background: controlled ? "#065f46" : "transparent",
+                border: "1px solid #27272a",
+                color: controlled
+                  ? "#a7f3d0"
+                  : controlSupported
+                  ? "#71717a"
+                  : "#3f3f46",
+                fontSize: 9,
+                padding: "1px 6px",
+                borderRadius: 3,
+                cursor: "pointer",
+                fontFamily: "inherit",
+                opacity: controlSupported ? 1 : 0.6,
+              }}
+            >
+              {controlled ? "controlled" : "control"}
+            </button>
+          )}
+        </div>
       </div>
       <div style={{ opacity: driven ? 0.5 : 1, pointerEvents: driven ? "none" : "auto" }}>
         <ParamControl

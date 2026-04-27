@@ -1,0 +1,252 @@
+/* Slider + number-input chrome — pulled in so the standalone export-app
+   bundle (no Next.js globals.css) renders sliders identically to the
+   editor and the live link. */
+@import "./form-controls.css";
+
+.live-root {
+  --bg: #0a0a0a;
+  --bg-2: #111113;
+  --bg-3: #18181b;
+  --border: #27272a;
+  --border-strong: #3f3f46;
+  --text: #e5e7eb;
+  --text-dim: #a1a1aa;
+  --text-faint: #71717a;
+  --accent: #93c5fd;
+
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  color-scheme: dark;
+  background: var(--bg);
+  color: var(--text);
+  width: 100%;
+  height: 100%;
+  display: flex;
+}
+
+.live-root .app {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+.live-root .canvas-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #050505;
+  overflow: hidden;
+  padding: 24px;
+}
+
+.live-root .canvas-area canvas {
+  max-width: 100%;
+  max-height: 100%;
+  background: #000;
+  display: block;
+  box-shadow: 0 4px 32px rgba(0, 0, 0, 0.6);
+}
+
+.live-root .sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  height: 100%;
+  background: var(--bg-2);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  color: var(--text);
+  overflow-y: auto;
+}
+
+.live-root .sidebar .section {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.live-root .sidebar .section:last-child {
+  border-bottom: none;
+}
+
+.live-root .sidebar .section-header {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 8px;
+}
+
+.live-root .sidebar .row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.live-root .sidebar .row:last-child {
+  margin-bottom: 0;
+}
+
+.live-root .sidebar .row .label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.live-root .sidebar .row .label .driven-badge {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  padding: 0 4px;
+  line-height: 1.4;
+}
+
+.live-root .sidebar .row.driven .control-host {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.live-root .transport {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-root .transport button {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.live-root .transport button:hover {
+  background: #232328;
+}
+
+.live-root .transport .time {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+}
+
+.live-root .text-input,
+.live-root .number-input,
+.live-root .select-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11px;
+  padding: 2px 4px;
+  font-family: inherit;
+}
+
+.live-root .textarea-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11px;
+  padding: 4px 6px;
+  min-height: 54px;
+  resize: vertical;
+  line-height: 1.4;
+  font-family: inherit;
+}
+
+.live-root .color-input {
+  width: 100%;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.live-root .scalar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-root .scalar-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+.live-root .scalar-row input[type="number"] {
+  width: 64px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11px;
+  padding: 2px 4px;
+  font-family: inherit;
+}
+
+.live-root .vec-row {
+  display: flex;
+  gap: 4px;
+}
+
+.live-root .vec-row input[type="number"] {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11px;
+  padding: 2px 4px;
+  width: 0;
+  font-family: inherit;
+}
+
+.live-root .file-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.live-root .file-row input[type="file"] {
+  color: var(--text);
+  font-size: 10px;
+}
+
+.live-root .file-row .meta {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.live-root .file-row .clear {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.live-root .fatal {
+  padding: 24px;
+  font-family: ui-monospace, monospace;
+  color: #fca5a5;
+  white-space: pre-wrap;
+}
+
+.live-root .unsupported-stub {
+  color: var(--text-faint);
+  font-style: italic;
+  font-size: 11px;
+}

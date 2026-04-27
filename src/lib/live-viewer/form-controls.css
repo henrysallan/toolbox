@@ -1,0 +1,103 @@
+/* Form-control chrome shared between the editor (loaded via app/globals.css)
+   and the live-viewer / export-app bundles (loaded via styles.css). Keeps
+   sliders and number inputs identical across all three surfaces.
+
+   Rules are intentionally unscoped — they target bare `input[type=...]`
+   so any consumer that imports this file gets the look without wrapping
+   markup in a class. */
+
+input[type="number"] {
+  border-radius: 3px;
+  position: relative;
+}
+
+input[type="number"]:focus,
+input[type="text"]:focus,
+input[type="search"]:focus,
+textarea:focus {
+  outline: 1px solid #3f3f46;
+  outline-offset: -1px;
+}
+
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 14px;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
+  background-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 14'%3E%3Cpolyline points='2.5,5.25 5,2.75 7.5,5.25' fill='none' stroke='white' stroke-width='1' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpolyline points='2.5,8.75 5,11.25 7.5,8.75' fill='none' stroke='white' stroke-width='1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 10px 14px;
+  opacity: 0.55;
+  transition: opacity 120ms;
+  cursor: pointer;
+}
+input[type="number"]:hover::-webkit-inner-spin-button,
+input[type="number"]:focus::-webkit-inner-spin-button {
+  opacity: 1;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+input[type="range"]:focus {
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  background: #18181b;
+  border: 1px solid #27272a;
+  height: 3px;
+  border-radius: 2px;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  background: #18181b;
+  border: 1px solid #52525b;
+  border-radius: 50%;
+  margin-top: -5px;
+  cursor: pointer;
+}
+
+input[type="range"]::-moz-range-track {
+  background: #18181b;
+  border: 1px solid #27272a;
+  height: 3px;
+  border-radius: 2px;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  background: #18181b;
+  border: 1px solid #52525b;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+input[type="range"]::-moz-focus-outer {
+  border: 0;
+}

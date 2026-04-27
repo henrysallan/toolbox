@@ -303,6 +303,22 @@ export default function EffectNode({
               }
             />
           )}
+          {data.defType === "output" && (
+            <HeaderToggle
+              on={false}
+              label="↗"
+              title="Export App — bundle this graph as a runnable web app"
+              activeBg="#1e3a8a"
+              activeFg="#bfdbfe"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("effect-node-export", {
+                    detail: { id, kind: "app" },
+                  })
+                )
+              }
+            />
+          )}
           {data.defType === "trails" && (
             <HeaderToggle
               on={false}

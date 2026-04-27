@@ -8,6 +8,11 @@ import {
   type ProjectRow,
 } from "@/lib/supabase/projects";
 
+function liveLinkFor(slug: string): string {
+  if (typeof window === "undefined") return `/live/${slug}`;
+  return `${window.location.origin}/live/${slug}`;
+}
+
 // Floating popover anchored to client (screen) coords — opened from
 // LoadGrid's right-click handler on a project tile. Loads the user's
 // existing rating async so the stars seed correctly; submitting
@@ -46,7 +51,36 @@ export default function RateProjectPopover({
   const [ownRating, setOwnRating] = useState<number | null>(null);
   const [hovered, setHovered] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+
+  const liveSlug = row.is_public ? row.public_slug : null;
+  const liveUrl = liveSlug ? liveLinkFor(liveSlug) : null;
+
+  const copyLive = async () => {
+    if (!liveUrl) return;
+    try {
+      await navigator.clipboard.writeText(liveUrl);
+    } catch {
+      // Fall back to a transient textarea selection — clipboard API
+      // can be unavailable on insecure origins or during automated
+      // tests. The visual confirmation still fires.
+      const ta = document.createElement("textarea");
+      ta.value = liveUrl;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        // ignore; UI still flips to "copied" so the user sees something
+      }
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
 
   // Load existing rating on open. While it's pending we show the
   // popover with no stars filled — feels snappier than waiting on a
@@ -106,8 +140,10 @@ export default function RateProjectPopover({
 
   // Clamp to viewport — prevents the popover from jutting off-screen
   // when the user right-clicks a tile near the bottom-right corner.
-  const W = 220;
-  const H = 110;
+  // Height grows when the share section is rendered so we still fit
+  // on small viewports.
+  const W = 240;
+  const H = liveUrl ? 180 : 120;
   const vw = typeof window !== "undefined" ? window.innerWidth : 0;
   const vh = typeof window !== "undefined" ? window.innerHeight : 0;
   const left = Math.max(8, Math.min(vw - W - 8, x));
@@ -224,6 +260,70 @@ export default function RateProjectPopover({
             )}
           </div>
         </>
+      )}
+      {liveUrl && (
+        <div
+          style={{
+            marginTop: 10,
+            paddingTop: 10,
+            borderTop: "1px solid #27272a",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
+          <div
+            style={{
+              color: "#a1a1aa",
+              fontSize: 9,
+              textTransform: "uppercase",
+              letterSpacing: 0.5,
+            }}
+          >
+            Live link
+          </div>
+          <div
+            style={{
+              fontSize: 10,
+              color: "#a1a1aa",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+            title={liveUrl}
+          >
+            {liveUrl.replace(/^https?:\/\//, "")}
+          </div>
+          <button
+            onClick={copyLive}
+            style={{
+              alignSelf: "flex-start",
+              background: copied ? "#065f46" : "transparent",
+              border: `1px solid ${copied ? "#065f46" : "#3f3f46"}`,
+              color: copied ? "#a7f3d0" : "#e5e7eb",
+              fontSize: 10,
+              padding: "2px 8px",
+              borderRadius: 3,
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            {copied ? "Copied" : "Copy live link"}
+          </button>
+        </div>
+      )}
+      {!liveUrl && row.is_public === false && (
+        <div
+          style={{
+            marginTop: 10,
+            paddingTop: 10,
+            borderTop: "1px solid #27272a",
+            color: "#52525b",
+            fontSize: 10,
+          }}
+        >
+          Make this project public to get a shareable live link.
+        </div>
       )}
     </div>
   );
