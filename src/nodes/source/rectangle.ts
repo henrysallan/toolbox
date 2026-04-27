@@ -120,6 +120,7 @@ export const rectangleNode: NodeDefinition = {
   ],
   primaryOutput: "spline",
   auxOutputs: [],
+  linkedPairs: [{ a: "width", b: "height" }],
 
   compute({ params }) {
     const x = (params.originX as number) ?? 0.25;

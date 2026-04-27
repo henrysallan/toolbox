@@ -11,6 +11,34 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.0.3",
+    date: "2026-04-26",
+    added: [
+      "Timeline node — authored bezier animation curves driven by an internal scene-time source (with a time-scale slider) or an optional external `t` input.",
+      "Curve editor docked to the canvas via a bottom-center tab: marquee multi-select, Shift+drag axis-constraint, two-finger pan, Cmd+wheel x/y zoom, easing presets, draggable green playhead handle that scrubs scene time.",
+      "Playback bar redesign: tick-marked centerline, red playhead, two-finger / middle-click pan, Cmd+wheel horizontal zoom, monotonic auto-grown view span (no more tick reflow on backward scrub), stroke-icon Play/Pause/Reset with hover state.",
+      "Split viewport — Window menu or Shift+S stacks two preview canvases vertically with a draggable divider; per-node A1 / A2 toggles drive each viewport from its own active terminal; pan/zoom is independent per viewport and cursor-contextual.",
+      "Canvas pan/zoom: two-finger / middle-click pan, Cmd+wheel zoom anchored at the cursor, `0` to reset. CSS-transform only — underlying canvas resolution unchanged.",
+      "Spline Draw: select-tool now selects anchors instead of toggling bezier; Shift-click extends, click-drag empty space marquees, Delete removes the whole selection, Esc clears.",
+      "Array node now polymorphic — image / spline / point modes with the same per-cell grid math, plus chain-link toggles on countX-Y, sizeW-H, patternOffset, copy translate, and copy scale.",
+      "Fill node: `Stack subpaths` toggle (default on) so overlapping spline copies render as opaque stacks rather than evenodd-punching each other.",
+      "Threshold and Voronoi / Fracture noise source nodes.",
+      "Output node video pipeline: WebCodecs (AVC/HEVC/VP9/AV1, deterministic frame stepping) and ffmpeg.wasm (ProRes, H.265 CRF, lossless H.264) export tiers in addition to MediaRecorder.",
+      "Project ratings: 1–5 star rating popover on public projects in the Load grid, persisted in Supabase.",
+      "Keyboard shortcuts: Space toggles play/pause; F toggles full canvas; ⇧S toggles split viewport; 0 resets canvas pan/zoom; ⌘⌥N for new project (browser reserves plain ⌘N); X as a delete alias in the node editor; P / V switch Spline Draw modes (already worked, now documented).",
+      "Keyboard-shortcuts doc page expanded to cover every new binding plus dedicated sections for the spline editor and the timeline curve editor.",
+      "Spec docs: `customnodespec.md` (sandboxed user-authored nodes via QuickJS), `exportappspec.md` (Export App — bundle the active graph as a standalone web app).",
+    ],
+    changed: [
+      "Renamed the bottom playback `Timeline.tsx` to `PlaybackBar.tsx` so the new Timeline node owns the unqualified name.",
+      "Number inputs: rounded corners, custom thin-stroke spinner with chevron carets, soft grey focus outline (replaces the bright browser-default focus ring).",
+      "Sliders: circular dot thumb with hairline grey stroke; new Shift-drag dampening (10× finer per-event delta) on every range input via a shared `DampenedRangeInput` wrapper.",
+      "Parameters panel: uniform 10px spacing rhythm (panel padding, section gap, row padding all aligned), hidden scrollbar so left/right insets stay symmetric, explicit border-box sizing on rows.",
+      "Splitter dividers (canvas/right column, node editor/param panel, viewport split, curve editor resize): visible 1px line with a 5px hit area for easier grabbing.",
+      "Reset (⏮) on the playback bar now also re-frames the timeline view so the playhead is on screen.",
+    ],
+  },
+  {
     version: "0.0.2",
     date: "2026-04-25",
     added: [

@@ -25,27 +25,20 @@ const EDIT_SUBPATH = 0;
 // Consumers that expect Y-up (future "sample along path" nodes) are
 // responsible for flipping on their side.
 //
-// Two tool modes govern what a background click does (anchor/handle gestures
-// are identical in both):
-//   - "add"     — pen tool; background click creates an anchor
-//   - "select"  — edit tool; background click is inert, so the user can
-//                 freely drag existing points without accidentally adding
-//                 new ones
+// Two tool modes:
+//   - "add"     — pen tool; background click creates an anchor; quick click
+//                 on an existing anchor toggles corner ↔ smooth (or closes
+//                 the loop on the first anchor of an open path)
+//   - "select"  — edit tool; clicks select anchors instead of toggling
+//                 their bezier state. Shift-click extends the selection;
+//                 click+drag on empty space draws a marquee that picks up
+//                 every anchor inside on release. Drag on a selected
+//                 anchor moves the whole selection together. Delete /
+//                 Backspace removes every selected anchor.
 //
-// Shared gesture grammar:
-//   - pointerdown on empty space (add only) → add new anchor (corner)
-//     pointerdown + drag                    → converts the new anchor to
-//                                              smooth; symmetric handles
-//                                              follow the drag direction
-//   - pointerdown on existing anchor        → drag moves the anchor (handles
-//                                              follow); quick click without
-//                                              drag toggles corner ↔ smooth
-//   - pointerdown on handle                 → reshape, mirroring the opposite
-//                                              handle. Alt-drag breaks the
-//                                              symmetry for that gesture.
-//   - right-click on anchor                 → delete
-//   - right-click on handle                 → remove this handle only
-//     (turns that side of the anchor into a corner tangent)
+// Handle gestures (drag to reshape, right-click to drop a handle) work
+// identically in both modes. Right-click on an anchor still deletes that
+// single anchor in either mode.
 
 type ToolMode = "add" | "select";
 
@@ -82,6 +75,11 @@ type DragState =
       grabOffset: { x: number; y: number }; // stored-coord offset (anchor - pointer)
       startClient: { x: number; y: number };
       moved: boolean;
+      // Snapshot of every anchor's pos at gesture start, keyed by index.
+      // For multi-select drags the whole group moves by the same delta;
+      // for single-anchor drags this still contains just the dragged
+      // anchor's start so endpoint math is uniform.
+      groupStarts?: Map<number, [number, number]>;
     }
   | {
       kind: "handle";
@@ -89,6 +87,16 @@ type DragState =
       side: "in" | "out";
       symmetric: boolean;
       startClient: { x: number; y: number };
+    }
+  | {
+      kind: "marquee";
+      // Client-coord rect anchored at the press; updated on move.
+      startClient: { x: number; y: number };
+      currentClient: { x: number; y: number };
+      // Selection that was already active when the marquee started —
+      // shift-marquee unions with this; plain marquee replaces it.
+      additive: boolean;
+      baseSelection: Set<number>;
     };
 
 export default function SplineEditorOverlay({
@@ -104,6 +112,12 @@ export default function SplineEditorOverlay({
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [tool, setTool] = useState<ToolMode>("add");
+  const [selected, setSelected] = useState<Set<number>>(() => new Set());
+  // Mirror selection in a ref so the long-running pointermove handler in
+  // the drag effect can read the latest set without re-binding when the
+  // selection changes mid-gesture.
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
 
   // P / V switch modes — matching the Photoshop/Figma convention. Skipped
   // while focus is in a text field so typing into the param panel doesn't
@@ -122,9 +136,18 @@ export default function SplineEditorOverlay({
       }
       if (e.key === "p" || e.key === "P") setTool("add");
       else if (e.key === "v" || e.key === "V") setTool("select");
+      else if (e.key === "Escape") setSelected(new Set());
+      else if (e.key === "Delete" || e.key === "Backspace") {
+        const cur = selectedRef.current;
+        if (cur.size === 0) return;
+        e.preventDefault();
+        deleteAnchorIndices(cur);
+        setSelected(new Set());
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Track the canvas's on-screen rectangle the same way TransformGizmo does —
@@ -242,6 +265,36 @@ export default function SplineEditorOverlay({
     onChangeRef.current(next);
   };
 
+  // Apply a position delta to many anchors at once. Used for group drags
+  // when the user moves a multi-selection in select mode. Handle offsets
+  // are stored relative to pos, so they ride along automatically.
+  const moveAnchors = (
+    starts: Map<number, [number, number]>,
+    dx: number,
+    dy: number
+  ) => {
+    const cur = valueRef.current;
+    const anchors = readAnchors(cur);
+    const next = withSubpathPatch(cur, {
+      anchors: anchors.map((a, idx) => {
+        const start = starts.get(idx);
+        if (!start) return a;
+        return { ...a, pos: [start[0] + dx, start[1] + dy] };
+      }),
+    });
+    onChangeRef.current(next);
+  };
+
+  const deleteAnchorIndices = (indices: Set<number>) => {
+    if (indices.size === 0) return;
+    const cur = valueRef.current;
+    const anchors = readAnchors(cur);
+    const next = withSubpathPatch(cur, {
+      anchors: anchors.filter((_, idx) => !indices.has(idx)),
+    });
+    onChangeRef.current(next);
+  };
+
   const deleteAnchor = (i: number) => {
     const cur = valueRef.current;
     const anchors = readAnchors(cur);
@@ -249,6 +302,17 @@ export default function SplineEditorOverlay({
       anchors: anchors.filter((_, idx) => idx !== i),
     });
     onChangeRef.current(next);
+    // Reindex the selection: anchors after `i` shift down by one, the
+    // deleted index drops out. Without this the selection points at
+    // stale slots after a delete.
+    if (selectedRef.current.size > 0) {
+      const next = new Set<number>();
+      for (const s of selectedRef.current) {
+        if (s === i) continue;
+        next.add(s > i ? s - 1 : s);
+      }
+      setSelected(next);
+    }
   };
 
   // Toggle subpath.closed on the current subpath. Single source of
@@ -317,11 +381,24 @@ export default function SplineEditorOverlay({
             drag.moved = true;
           }
           if (drag.moved) {
-            // Preserve handle offsets — they're stored relative to pos, so
-            // moving pos automatically carries them along.
-            updateAnchor(drag.index, {
-              pos: [nx + drag.grabOffset.x, ny + drag.grabOffset.y],
-            });
+            // Compute the world-space delta from gesture start. Group
+            // drags use the snapshot to keep relative offsets exact;
+            // single drags fall back to the original grab-offset path.
+            if (drag.groupStarts && drag.groupStarts.size > 1) {
+              const start = drag.groupStarts.get(drag.index);
+              if (!start) break;
+              const targetX = nx + drag.grabOffset.x;
+              const targetY = ny + drag.grabOffset.y;
+              moveAnchors(
+                drag.groupStarts,
+                targetX - start[0],
+                targetY - start[1]
+              );
+            } else {
+              updateAnchor(drag.index, {
+                pos: [nx + drag.grabOffset.x, ny + drag.grabOffset.y],
+              });
+            }
           }
           break;
         }
@@ -341,31 +418,60 @@ export default function SplineEditorOverlay({
           updateAnchor(drag.index, patch);
           break;
         }
+        case "marquee": {
+          setDrag({ ...drag, currentClient: { x: e.clientX, y: e.clientY } });
+          break;
+        }
       }
     };
 
     const onUp = (e: PointerEvent) => {
-      // Quick click on an existing anchor (no meaningful movement) →
-      // either close the spline (start anchor of an open path with
-      // ≥3 anchors) or corner↔smooth toggle (any other anchor). The
-      // "new" case is never a toggle candidate — the anchor was just
-      // created this gesture.
       if (drag.kind === "anchor" && !drag.moved) {
         const dx = e.clientX - drag.startClient.x;
         const dy = e.clientY - drag.startClient.y;
         if (Math.hypot(dx, dy) < DRAG_THRESHOLD) {
-          const sub = subpathsOf(valueRef.current)[EDIT_SUBPATH];
-          const anchors = sub?.anchors ?? [];
-          const isStart = drag.index === 0;
-          const closed = sub?.closed ?? false;
-          // Click the start point on an open path with ≥3 anchors →
-          // close the loop. (Pen-tool convention; users expect this.)
-          // Otherwise treat as toggle bezier ↔ linear.
-          if (isStart && !closed && anchors.length >= 3) {
-            toggleClosed();
-          } else {
-            toggleCornerSmooth(drag.index);
+          if (tool === "add") {
+            // Add-mode quick click on an existing anchor: close the
+            // spline if it's the first anchor of an open path with
+            // ≥3 anchors, otherwise toggle corner ↔ smooth.
+            const sub = subpathsOf(valueRef.current)[EDIT_SUBPATH];
+            const anchors = sub?.anchors ?? [];
+            const isStart = drag.index === 0;
+            const closed = sub?.closed ?? false;
+            if (isStart && !closed && anchors.length >= 3) {
+              toggleClosed();
+            } else {
+              toggleCornerSmooth(drag.index);
+            }
           }
+          // Select-mode click was already handled at pointerdown
+          // (the anchor was added to the selection there). No further
+          // action on the up — just drop the drag state.
+        }
+      }
+      if (drag.kind === "marquee") {
+        // Resolve which anchors lie inside the marquee rect and either
+        // replace the selection or extend it (shift-marquee).
+        const x0 = Math.min(drag.startClient.x, drag.currentClient.x);
+        const x1 = Math.max(drag.startClient.x, drag.currentClient.x);
+        const y0 = Math.min(drag.startClient.y, drag.currentClient.y);
+        const y1 = Math.max(drag.startClient.y, drag.currentClient.y);
+        const moved = Math.hypot(x1 - x0, y1 - y0) >= DRAG_THRESHOLD;
+        if (moved) {
+          const anchors = readAnchors(valueRef.current);
+          const next = drag.additive
+            ? new Set(drag.baseSelection)
+            : new Set<number>();
+          for (let i = 0; i < anchors.length; i++) {
+            const p = normToPx(anchors[i].pos);
+            if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) {
+              next.add(i);
+            }
+          }
+          setSelected(next);
+        } else if (!drag.additive) {
+          // Plain click on empty space with no drag clears selection.
+          setSelected(new Set());
         }
       }
       setDrag(null);
@@ -383,11 +489,20 @@ export default function SplineEditorOverlay({
   const onBackgroundPointerDown = (e: React.PointerEvent<SVGRectElement>) => {
     if (!rect) return;
     if (e.button !== 0) return; // left only; right-click adds nothing
-    // In select mode, background clicks are inert — the toolbar's pen icon
-    // is the only way to author new anchors.
-    if (tool !== "add") return;
     e.preventDefault();
     e.stopPropagation();
+    if (tool === "select") {
+      // Background drag in select mode → marquee. Plain click without
+      // movement clears the selection (resolved in onUp).
+      setDrag({
+        kind: "marquee",
+        startClient: { x: e.clientX, y: e.clientY },
+        currentClient: { x: e.clientX, y: e.clientY },
+        additive: e.shiftKey,
+        baseSelection: new Set(selectedRef.current),
+      });
+      return;
+    }
     const [nx, ny] = clientToNorm(e.clientX, e.clientY);
     const newIdx = addAnchorAt(nx, ny);
     setDrag({
@@ -407,12 +522,35 @@ export default function SplineEditorOverlay({
       const [nx, ny] = clientToNorm(e.clientX, e.clientY);
       const a = readAnchors(valueRef.current)[index];
       if (!a) return;
+      // Select-mode click resolves the selection up-front so a drag of
+      // a freshly-clicked anchor moves the right group. Shift extends.
+      // In add mode the selection state isn't surfaced, so leave it
+      // alone — the click-no-drag path triggers corner↔smooth toggling.
+      let groupStarts: Map<number, [number, number]> | undefined;
+      if (tool === "select") {
+        const cur = new Set(selectedRef.current);
+        if (e.shiftKey) {
+          if (cur.has(index)) cur.delete(index);
+          else cur.add(index);
+        } else if (!cur.has(index)) {
+          cur.clear();
+          cur.add(index);
+        }
+        setSelected(cur);
+        const anchors = readAnchors(valueRef.current);
+        groupStarts = new Map();
+        for (const i of cur) {
+          const ai = anchors[i];
+          if (ai) groupStarts.set(i, [ai.pos[0], ai.pos[1]]);
+        }
+      }
       setDrag({
         kind: "anchor",
         index,
         grabOffset: { x: a.pos[0] - nx, y: a.pos[1] - ny },
         startClient: { x: e.clientX, y: e.clientY },
         moved: false,
+        groupStarts,
       });
     };
 
@@ -521,9 +659,10 @@ export default function SplineEditorOverlay({
           pointerEvents: "none",
         }}
       >
-        {/* Canvas-area background — receives pointerdown for adding anchors
-            in "add" mode. In "select" mode it lets events pass through so
-            the click doesn't feel caught. */}
+        {/* Canvas-area background — receives pointerdown in both modes.
+            In "add" mode the click adds an anchor; in "select" mode it
+            starts a marquee box (or clears selection on a click without
+            drag). */}
         <rect
           x={rect.left}
           y={rect.top}
@@ -532,7 +671,7 @@ export default function SplineEditorOverlay({
           fill="transparent"
           style={{
             cursor: tool === "add" ? "crosshair" : "default",
-            pointerEvents: tool === "add" ? "auto" : "none",
+            pointerEvents: "auto",
           }}
           onPointerDown={onBackgroundPointerDown}
           onContextMenu={(e) => e.preventDefault()}
@@ -672,18 +811,20 @@ export default function SplineEditorOverlay({
 
         {/* Pass 3 — anchor visual dots (cyan, drawn first of the
             visual layers so handles can stack on top — matches the
-            previous pre-decoupling visual order). */}
+            previous pre-decoupling visual order). Selected anchors
+            switch to amber so multi-select state is obvious. */}
         {(subpathsOf(value)[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
           const p = normToPx(a.pos);
+          const isSel = selected.has(i);
           return (
             <circle
               key={`av-${i}`}
               cx={p.x}
               cy={p.y}
-              r={ANCHOR_R}
-              fill="#0ea5e9"
-              stroke="#f0f9ff"
-              strokeWidth={1.2}
+              r={isSel ? ANCHOR_R + 1 : ANCHOR_R}
+              fill={isSel ? "#fbbf24" : "#0ea5e9"}
+              stroke={isSel ? "#7c2d12" : "#f0f9ff"}
+              strokeWidth={1.4}
               style={{ pointerEvents: "none" }}
             />
           );
@@ -733,6 +874,21 @@ export default function SplineEditorOverlay({
           }
           return dots;
         })}
+
+        {/* Marquee box rendered last so it sits visually on top of the
+            anchors / handles while the user drags. */}
+        {drag?.kind === "marquee" && (
+          <rect
+            x={Math.min(drag.startClient.x, drag.currentClient.x)}
+            y={Math.min(drag.startClient.y, drag.currentClient.y)}
+            width={Math.abs(drag.currentClient.x - drag.startClient.x)}
+            height={Math.abs(drag.currentClient.y - drag.startClient.y)}
+            fill="rgba(251, 191, 36, 0.1)"
+            stroke="#fbbf24"
+            strokeDasharray="3 3"
+            style={{ pointerEvents: "none" }}
+          />
+        )}
       </svg>
 
       {/* Tool picker, pinned to the canvas's upper-left. Positioned in client

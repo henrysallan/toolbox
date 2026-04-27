@@ -15,12 +15,17 @@ export interface ProjectRow {
   user_id: string;
   updated_at: string;
   created_at: string;
+  // Aggregate ratings, denormalized onto the row by a trigger on
+  // project_ratings — see specdocs/ratings-migration.sql. `null` avg
+  // means the project has no ratings yet.
+  ratings_avg: number | null;
+  ratings_count: number;
   // Populated for rows returned by listPublicProjects; null elsewhere.
   author: ProjectAuthor | null;
 }
 
 const BASE_COLS =
-  "id, name, thumbnail, is_public, user_id, updated_at, created_at";
+  "id, name, thumbnail, is_public, user_id, updated_at, created_at, ratings_avg, ratings_count";
 
 const THUMB_BUCKET = "project-thumbnails";
 
@@ -278,6 +283,83 @@ export async function deleteProject(id: string): Promise<boolean> {
   }
   // Best-effort — orphans are cheap, but clean up when we can.
   if (userId) await deleteThumbnail(userId, id);
+  invalidateProjectCaches();
+  return true;
+}
+
+// ========================================================================
+// ratings
+// ========================================================================
+
+// Fetch the signed-in user's existing rating for a project. Returns null
+// when the user is signed out or hasn't rated. Used to seed the rating
+// popover so users see their own previous score.
+export async function getOwnRating(
+  projectId: string
+): Promise<number | null> {
+  const supabase = createClient();
+  const { data: userResp } = await supabase.auth.getUser();
+  if (!userResp.user) return null;
+  const { data, error } = await supabase
+    .from("project_ratings")
+    .select("rating")
+    .eq("project_id", projectId)
+    .eq("user_id", userResp.user.id)
+    .maybeSingle();
+  if (error) {
+    console.error("getOwnRating failed:", error);
+    return null;
+  }
+  return data?.rating ?? null;
+}
+
+// Upsert the user's rating for a project. The DB trigger refreshes the
+// project's `ratings_avg` + `ratings_count` automatically. Returns true
+// on success. We invalidate the listing caches so the next load grid
+// fetch reflects the updated aggregate.
+export async function setRating(
+  projectId: string,
+  rating: number
+): Promise<boolean> {
+  if (!Number.isFinite(rating) || rating < 1 || rating > 5) return false;
+  const value = Math.round(rating);
+  const supabase = createClient();
+  const { data: userResp } = await supabase.auth.getUser();
+  if (!userResp.user) return false;
+  const { error } = await supabase
+    .from("project_ratings")
+    .upsert(
+      {
+        project_id: projectId,
+        user_id: userResp.user.id,
+        rating: value,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "project_id,user_id" }
+    );
+  if (error) {
+    console.error("setRating failed:", error);
+    return false;
+  }
+  invalidateProjectCaches();
+  return true;
+}
+
+// Drops the user's rating row entirely. The trigger recomputes the
+// aggregate (potentially back to "no ratings yet" → null avg).
+export async function clearRating(projectId: string): Promise<boolean> {
+  const supabase = createClient();
+  const { data: userResp } = await supabase.auth.getUser();
+  if (!userResp.user) return false;
+  const { error } = await supabase
+    .from("project_ratings")
+    .delete()
+    .eq("project_id", projectId)
+    .eq("user_id", userResp.user.id);
+  if (error) {
+    console.error("clearRating failed:", error);
+    return false;
+  }
   invalidateProjectCaches();
   return true;
 }

@@ -39,6 +39,7 @@ uniform vec3  u_colorA;
 uniform vec3  u_colorB;
 uniform float u_alpha;
 uniform float u_flowTime;
+uniform float u_w;
 uniform int u_hasUvIn;
 uniform sampler2D u_uvIn;
 uniform vec2 u_uvConst;
@@ -334,7 +335,26 @@ float sampleNoise(vec2 p) {
   return 0.0;
 }
 
-float fbm(vec2 p) {
+// W (4D evolution) is implemented as a slice-blend rather than a true
+// 4D noise function — every algorithm here is 2D, so adding a real
+// w-axis would require rewriting all of them. Instead we hash W to a
+// far-away XY offset per integer slice and smoothstep-blend between
+// consecutive slices. Visually indistinguishable from real 4D noise
+// for the morphing-evolution use case, and works uniformly across all
+// modes (perlin / simplex / OS family / flow / curl).
+//
+// The hashOffset(0) == 0 special-case preserves backwards compatibility:
+// a project saved before this change loads with W=0 and renders pixel-
+// identical to before.
+vec2 hashOffset(float wi) {
+  if (wi == 0.0) return vec2(0.0);
+  return vec2(
+    fract(sin(wi * 12.9898) * 43758.5453),
+    fract(sin(wi * 78.2330) * 43758.5453)
+  ) * 1000.0;
+}
+
+float fbmAt(vec2 p) {
   float total = 0.0;
   float amp = 1.0;
   float freq = 1.0;
@@ -349,9 +369,21 @@ float fbm(vec2 p) {
   return total / max(maxAmp, 0.0001);
 }
 
+float fbm(vec2 p) {
+  float wi = floor(u_w);
+  float wf = u_w - wi;
+  wf = wf * wf * (3.0 - 2.0 * wf);
+  vec2 o0 = hashOffset(wi);
+  // Skip the second evaluation when wf is 0 (W is exactly an integer)
+  // to keep cost flat at integer-W positions.
+  if (wf == 0.0) return fbmAt(p + o0);
+  vec2 o1 = hashOffset(wi + 1.0);
+  return mix(fbmAt(p + o0), fbmAt(p + o1), wf);
+}
+
 // Curl uses perlinDeriv per-octave and takes the curl of the summed field.
 // 2D curl of a stream function ψ: v = (∂ψ/∂y, -∂ψ/∂x).
-vec2 curlFbm(vec2 p) {
+vec2 curlFbmAt(vec2 p) {
   vec2 total = vec2(0.0);
   float amp = 1.0;
   float freq = 1.0;
@@ -366,6 +398,16 @@ vec2 curlFbm(vec2 p) {
     freq *= u_lacunarity;
   }
   return total / max(maxAmp, 0.0001);
+}
+
+vec2 curlFbm(vec2 p) {
+  float wi = floor(u_w);
+  float wf = u_w - wi;
+  wf = wf * wf * (3.0 - 2.0 * wf);
+  vec2 o0 = hashOffset(wi);
+  if (wf == 0.0) return curlFbmAt(p + o0);
+  vec2 o1 = hashOffset(wi + 1.0);
+  return mix(curlFbmAt(p + o0), curlFbmAt(p + o1), wf);
 }
 
 void main() {
@@ -524,6 +566,20 @@ export const perlinNoiseNode: NodeDefinition = {
       step: 1,
       default: 0,
     },
+    // W (4D evolution). Slice-blend through hashed XY offsets — moving
+    // this slider produces a smooth morph through different "slices"
+    // of the noise field. Works across every mode. Connect Scene Time
+    // to it for animated evolution.
+    {
+      name: "w",
+      label: "W (Evolution)",
+      type: "scalar",
+      min: -100,
+      max: 100,
+      softMax: 10,
+      step: 0.01,
+      default: 0,
+    },
     {
       name: "contrast",
       label: "Contrast",
@@ -588,6 +644,7 @@ export const perlinNoiseNode: NodeDefinition = {
     const seed = (params.seed as number) ?? 0;
     const contrast = (params.contrast as number) ?? 1;
     const flowTime = (params.flow_time as number) ?? 0;
+    const w = (params.w as number) ?? 0;
     const [ar, ag, ab] = hexToRgb((params.color_a as string) ?? "#000000");
     const [br, bg, bb] = hexToRgb((params.color_b as string) ?? "#ffffff");
     const alpha = (params.alpha as number) ?? 1;
@@ -625,6 +682,7 @@ export const perlinNoiseNode: NodeDefinition = {
       gl.uniform1f(gl.getUniformLocation(prog, "u_seed"), seed);
       gl.uniform1f(gl.getUniformLocation(prog, "u_contrast"), contrast);
       gl.uniform1f(gl.getUniformLocation(prog, "u_flowTime"), flowTime);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_w"), w);
       gl.uniform3f(gl.getUniformLocation(prog, "u_colorA"), ar, ag, ab);
       gl.uniform3f(gl.getUniformLocation(prog, "u_colorB"), br, bg, bb);
       gl.uniform1f(gl.getUniformLocation(prog, "u_alpha"), alpha);

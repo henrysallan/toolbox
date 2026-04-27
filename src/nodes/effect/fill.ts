@@ -10,6 +10,14 @@ import { buildPath2D, hexToRgba } from "@/engine/spline-raster";
 // overlapping subpaths combine: `evenodd` punches holes on every nested
 // subpath (natural for SVG glyphs), `nonzero` unions regions by winding
 // direction.
+//
+// `stack_subpaths` (default on): each subpath is rasterized as its own
+// Path2D and stacked in order. Overlaps render as opaque, which is what
+// you want for Copy-to-Points spline output where each instance is a
+// distinct shape that happens to overlap its neighbours. Turn this off
+// to revert to the SVG-glyph behaviour: all subpaths combine into a
+// single path so the chosen fill rule can punch holes through nested
+// subpaths.
 
 const FILL_FS = `#version 300 es
 precision highp float;
@@ -60,11 +68,18 @@ export const fillNode: NodeDefinition = {
   params: [
     { name: "color", label: "Color", type: "color", default: "#ffffff" },
     {
+      name: "stack_subpaths",
+      label: "Stack subpaths",
+      type: "boolean",
+      default: true,
+    },
+    {
       name: "rule",
       label: "Fill rule",
       type: "enum",
       options: ["evenodd", "nonzero"],
       default: "evenodd",
+      visibleIf: (p) => !p.stack_subpaths,
     },
   ],
   primaryOutput: "image",
@@ -82,10 +97,12 @@ export const fillNode: NodeDefinition = {
     const W = ctx.width;
     const H = ctx.height;
 
+    const stackSubpaths = params.stack_subpaths !== false;
     const sig = JSON.stringify({
       subRef: src.subpaths,
       c: params.color,
       r: params.rule,
+      stack: stackSubpaths,
       W,
       H,
     });
@@ -99,14 +116,23 @@ export const fillNode: NodeDefinition = {
       const c2d = canvas.getContext("2d");
       if (c2d) {
         c2d.clearRect(0, 0, W, H);
-        // `closeForFill = true`: subpaths that aren't explicitly closed
-        // still get a final segment to the start so there's a defined
-        // interior to fill.
-        const path = buildPath2D(src.subpaths, W, H, true);
-        if (path) {
-          c2d.fillStyle = hexToRgba((params.color as string) ?? "#ffffff");
-          const rule = (params.rule as CanvasFillRule) ?? "evenodd";
-          c2d.fill(path, rule);
+        c2d.fillStyle = hexToRgba((params.color as string) ?? "#ffffff");
+        if (stackSubpaths) {
+          // Per-subpath fill — each subpath rasterizes independently so
+          // overlapping copies (e.g. Copy-to-Points spline output) render
+          // as opaque stacks rather than evenodd-punching each other.
+          for (const sub of src.subpaths) {
+            const path = buildPath2D([sub], W, H, true);
+            if (path) c2d.fill(path);
+          }
+        } else {
+          // Single-path mode — original behaviour, lets the fill rule
+          // decide overlap semantics (evenodd for SVG glyph holes, etc.).
+          const path = buildPath2D(src.subpaths, W, H, true);
+          if (path) {
+            const rule = (params.rule as CanvasFillRule) ?? "evenodd";
+            c2d.fill(path, rule);
+          }
         }
         const gl = ctx.gl;
         gl.bindTexture(gl.TEXTURE_2D, state.rasterTex);

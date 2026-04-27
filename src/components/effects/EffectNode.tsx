@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useMemo } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { getNodeDef } from "@/engine/registry";
 import { paramSocketType } from "@/state/graph";
@@ -27,11 +27,69 @@ interface ExposedSocket {
   socketType: SocketType;
 }
 
+// Compact ms formatting for the timing overlay. Sub-millisecond
+// values land at "<1ms"; everything else rounds to whole ms so the
+// label stays narrow and visually quiet.
+function formatMs(v: number): string {
+  if (v < 1) return "<1ms";
+  if (v < 10) return v.toFixed(1) + "ms";
+  return Math.round(v) + "ms";
+}
+
 export default function EffectNode({
   id,
   data,
   selected,
 }: NodeProps<EffectNodeType>) {
+  // Per-node compute time, surfaced when the Window-menu "Show
+  // Node Timings" toggle is on. EffectsApp dispatches a
+  // `node-timings` event after each pipeline eval; we pick our
+  // own ms out of the map. A `null` detail means the toggle was
+  // turned off — clear the local state so the label disappears.
+  // rAF-batches the visible state update so a fast pipeline doesn't
+  // thrash React with one render per node per eval.
+  const [evalMs, setEvalMs] = useState<number | null>(null);
+  useEffect(() => {
+    let pending: number | null | undefined = undefined;
+    let raf = 0;
+    const onTimings = (e: Event) => {
+      const detail = (e as CustomEvent<Map<string, number> | null>)
+        .detail;
+      if (detail === null) {
+        pending = null;
+      } else {
+        const t = detail.get(id);
+        if (t === undefined) return;
+        pending = t;
+      }
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        if (pending !== undefined) setEvalMs(pending);
+        pending = undefined;
+      });
+    };
+    window.addEventListener("node-timings", onTimings);
+    return () => {
+      window.removeEventListener("node-timings", onTimings);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [id]);
+
+  // Mirror EffectsApp's split-viewport state. EffectsApp dispatches a
+  // `viewport-split-changed` event whenever the user flips it; we
+  // subscribe so the header can render the second active toggle (A2)
+  // only when there's actually a second viewport to drive.
+  const [viewportSplit, setViewportSplit] = useState(false);
+  useEffect(() => {
+    const onChange = (e: Event) => {
+      const detail = (e as CustomEvent<{ split: boolean }>).detail;
+      if (detail) setViewportSplit(!!detail.split);
+    };
+    window.addEventListener("viewport-split-changed", onChange);
+    return () => window.removeEventListener("viewport-split-changed", onChange);
+  }, []);
+
   const inputs = data.inputs;
   const auxes = data.auxOutputs;
   const hasPrimary = !!data.primaryOutput;
@@ -59,9 +117,10 @@ export default function EffectNode({
   const maxRows = Math.max(leftRows, rightRows, 1);
   const bodyH = maxRows * ROW_H + PAD_Y * 2;
   const active = !!data.active;
+  const active2 = !!data.active2;
   const bypassed = !!data.bypassed;
 
-  const dispatch = (kind: "toggleActive" | "toggleBypass") => {
+  const dispatch = (kind: "toggleActive" | "toggleActive2" | "toggleBypass") => {
     window.dispatchEvent(
       new CustomEvent("effect-node-toggle", { detail: { id, kind } })
     );
@@ -82,8 +141,39 @@ export default function EffectNode({
         boxShadow: selected
           ? "0 0 0 1px rgba(96,165,250,0.3)"
           : "0 2px 8px rgba(0,0,0,0.4)",
+        // position: relative anchors the timing label below as an
+        // absolutely-positioned overlay above the node's top edge.
+        position: "relative",
       }}
     >
+      {evalMs !== null && (
+        <div
+          style={{
+            position: "absolute",
+            // Sits above the node's top-left corner.
+            top: -14,
+            left: 2,
+            fontSize: 9,
+            // Color tier matches the FPS counter convention so the
+            // two readouts read as related diagnostics:
+            //   < 4ms  green   (cheap)
+            //   4–16ms yellow  (one frame budget)
+            //   > 16ms red     (over a frame, will drop fps)
+            color:
+              evalMs < 4
+                ? "#34d399"
+                : evalMs < 16
+                ? "#facc15"
+                : "#ef4444",
+            opacity: 0.7,
+            letterSpacing: 0.3,
+            fontVariantNumeric: "tabular-nums",
+            pointerEvents: "none",
+          }}
+        >
+          {formatMs(evalMs)}
+        </div>
+      )}
       <div
         style={{
           padding: "6px 8px",
@@ -161,12 +251,34 @@ export default function EffectNode({
           ) : null}
           <HeaderToggle
             on={active}
-            label="A"
-            title={active ? "Active (viewed)" : "Set active (view on canvas)"}
+            label={viewportSplit ? "A1" : "A"}
+            title={
+              active
+                ? viewportSplit
+                  ? "Active in viewport 1"
+                  : "Active (viewed)"
+                : viewportSplit
+                  ? "Set active in viewport 1"
+                  : "Set active (view on canvas)"
+            }
             activeBg="#047857"
             activeFg="#d1fae5"
             onClick={() => dispatch("toggleActive")}
           />
+          {viewportSplit && (
+            <HeaderToggle
+              on={active2}
+              label="A2"
+              title={
+                active2
+                  ? "Active in viewport 2"
+                  : "Set active in viewport 2"
+              }
+              activeBg="#0369a1"
+              activeFg="#dbeafe"
+              onClick={() => dispatch("toggleActive2")}
+            />
+          )}
           <HeaderToggle
             on={bypassed}
             label="B"

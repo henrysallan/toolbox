@@ -59,6 +59,28 @@ export interface MenuBarProps {
   // dropdown. Same signature as the Shift+A popup's add path so the
   // parent can reuse onAddNode verbatim.
   onAddNode: (type: string) => void;
+  // Window-menu state + actions. `fullCanvas` reflects whether the
+  // editor's chrome is currently hidden so the toggle row can render
+  // a checkmark; the two callbacks fire from the menu items.
+  fullCanvas: boolean;
+  onToggleFullCanvas: () => void;
+  onEnterBrowserFullscreen: () => void;
+  // FPS readout — when on, an inline counter renders in the right
+  // cluster (left of the docs button). Reflects overall page render
+  // rate via rAF, so anything that stalls the main thread shows up.
+  showFps: boolean;
+  onToggleShowFps: () => void;
+  // When on, every node renders its last compute() duration in ms
+  // above its top-left corner. EffectNode subscribes to a
+  // `node-timings` window event the parent dispatches after each
+  // pipeline eval.
+  showNodeTimings: boolean;
+  onToggleShowNodeTimings: () => void;
+  // Split-viewport mode stacks two preview canvases vertically; each
+  // node's header gains a second active toggle so the user can drive
+  // each viewport from a different terminal node.
+  viewportSplit: boolean;
+  onToggleViewportSplit: () => void;
 }
 
 const BAR_HEIGHT = 22;
@@ -85,6 +107,15 @@ export default function MenuBar({
   onRequestToggleVisibility,
   findNameConflict,
   onAddNode,
+  fullCanvas,
+  onToggleFullCanvas,
+  onEnterBrowserFullscreen,
+  showFps,
+  onToggleShowFps,
+  showNodeTimings,
+  onToggleShowNodeTimings,
+  viewportSplit,
+  onToggleViewportSplit,
 }: MenuBarProps) {
   const { user } = useUser();
   const signedIn = !!user;
@@ -188,6 +219,42 @@ export default function MenuBar({
     // NodeBrowserDropdown instead of the flat list MenuDropdown, so
     // `items` is left empty and never rendered.
     { id: "node", label: "Node", items: [] },
+    {
+      id: "window",
+      label: "Window",
+      items: [
+        {
+          kind: "item",
+          label: fullCanvas ? "Exit Full Canvas" : "Full Canvas",
+          shortcut: "F",
+          onClick: onToggleFullCanvas,
+        },
+        {
+          kind: "item",
+          label: viewportSplit ? "Exit Split Viewport" : "Split Viewport",
+          shortcut: "⇧S",
+          onClick: onToggleViewportSplit,
+        },
+        {
+          kind: "item",
+          label: "Enter Browser Fullscreen",
+          onClick: onEnterBrowserFullscreen,
+        },
+        { kind: "divider" },
+        {
+          kind: "item",
+          label: showFps ? "Hide FPS" : "Show FPS",
+          onClick: onToggleShowFps,
+        },
+        {
+          kind: "item",
+          label: showNodeTimings
+            ? "Hide Node Timings"
+            : "Show Node Timings",
+          onClick: onToggleShowNodeTimings,
+        },
+      ],
+    },
   ];
 
   return (
@@ -280,6 +347,7 @@ export default function MenuBar({
           findConflict={findNameConflict}
         />
       </div>
+      {showFps && <FpsCounter />}
       <DocsInfoButton />
       <VersionMenu />
       <AccountMenu />
@@ -371,5 +439,63 @@ function MenuRow({
         </span>
       )}
     </button>
+  );
+}
+
+// Lightweight FPS readout. Runs its own rAF loop independent of the
+// pipeline so it measures BROWSER frame rate — gated by vsync and
+// any main-thread blocking. If React reconciles a huge tree, MediaPipe
+// stalls, or shaders take long to compile, the dt between rAF
+// callbacks grows and the number drops here. Smoothing avoids the
+// noisy single-frame spikes that hide the average performance.
+function FpsCounter() {
+  const [fps, setFps] = useState(60);
+  useEffect(() => {
+    let raf = 0;
+    let last = performance.now();
+    // Exponential moving average of dt; alpha small enough that a
+    // single bad frame doesn't tank the readout, large enough that
+    // sustained drops are visible within ~half a second.
+    let dtAvg = 1000 / 60;
+    const alpha = 0.1;
+    let lastDisplayedAt = last;
+    const tick = (now: number) => {
+      const dt = now - last;
+      last = now;
+      // Cap dt so a backgrounded tab returning doesn't flush the avg.
+      const clamped = Math.min(dt, 250);
+      dtAvg = dtAvg + (clamped - dtAvg) * alpha;
+      // Update display state at most ~6 Hz to avoid flicker. The
+      // measurement itself runs every frame.
+      if (now - lastDisplayedAt >= 150) {
+        lastDisplayedAt = now;
+        setFps(Math.max(1, Math.round(1000 / dtAvg)));
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  // Color tiers tuned to common refresh rates: 55+ green, 30–55
+  // yellow, below 30 red.
+  const color =
+    fps >= 55 ? "#34d399" : fps >= 30 ? "#facc15" : "#ef4444";
+  return (
+    <div
+      title="Frame rate (rAF) — overall page render rate"
+      style={{
+        height: "100%",
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "0 8px",
+        fontSize: 10,
+        color,
+        letterSpacing: 0.3,
+        fontVariantNumeric: "tabular-nums",
+        userSelect: "none",
+      }}
+    >
+      {fps} fps
+    </div>
   );
 }

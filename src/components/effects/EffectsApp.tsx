@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NodeEditor from "./NodeEditor";
 import ParamPanel from "./ParamPanel";
 import PaintOverlay from "./PaintOverlay";
-import Timeline from "./Timeline";
+import PlaybackBar from "./PlaybackBar";
 import MenuBar from "./MenuBar";
 import { registerAllNodes } from "@/nodes";
 import { getNodeDef } from "@/engine/registry";
@@ -67,6 +67,9 @@ import type { SaveState } from "./FileNameMenu";
 import TransformGizmo from "./TransformGizmo";
 import SplineEditorOverlay from "./SplineEditorOverlay";
 import PointsOverlay from "./PointsOverlay";
+import TimelineCurveEditor from "./TimelineCurveEditor";
+import { defaultTimelineCurve } from "@/nodes/source/timeline/eval";
+import type { TimelineCurveValue } from "@/engine/types";
 import type { Point as PointValue } from "@/engine/types";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
 
@@ -207,6 +210,105 @@ function EffectsShell() {
   const [paramView, setParamView] = useState<"project" | "node" | "load">(
     rehydrate?.paramView ?? "node"
   );
+  // Full-canvas mode: canvas fills the viewport, all other UI chrome
+  // is hidden. Toggled via the F shortcut or the Window menu's "Full
+  // Canvas" item. Esc exits.
+  const [fullCanvas, setFullCanvas] = useState(false);
+  // Split viewport: stacks two preview canvases vertically. Each canvas
+  // has its own active terminal node — the per-node header gains a
+  // second "A2" toggle (alongside "A1") so the user can independently
+  // pick which subgraph drives which viewport. Toggled via Shift+S or
+  // the Window menu.
+  const [viewportSplit, setViewportSplit] = useState(false);
+  // EffectNode reads this via the same `effect-node-toggle` event bus
+  // it already uses for active/bypass — but it also needs the boolean
+  // synchronously to decide whether to render the second toggle. Push
+  // it as a window event so EffectNode can subscribe without prop
+  // threading through React Flow's data-only API.
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("viewport-split-changed", {
+        detail: { split: viewportSplit },
+      })
+    );
+  }, [viewportSplit]);
+  // Show an FPS counter in the menu bar. Reflects overall page render
+  // rate via rAF — if anything blocks the main thread (React re-render,
+  // MediaPipe stall, heavy graph eval) it shows up here.
+  const [showFps, setShowFps] = useState(false);
+  // When on, EffectNode subscribes to the post-eval timings event and
+  // renders each node's compute() duration above its top-left corner.
+  // Dispatched separately from showFps so users can pick how much
+  // overlay noise they want.
+  const [showNodeTimings, setShowNodeTimings] = useState(false);
+  const showNodeTimingsRef = useRef(showNodeTimings);
+  showNodeTimingsRef.current = showNodeTimings;
+  // When the toggle goes off we send a single clearing event so
+  // EffectNodes can drop their last-shown values.
+  useEffect(() => {
+    if (!showNodeTimings) {
+      window.dispatchEvent(
+        new CustomEvent("node-timings", { detail: null })
+      );
+    }
+  }, [showNodeTimings]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.key === "f" || e.key === "F") {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        e.preventDefault();
+        setFullCanvas((v) => !v);
+      } else if (e.key === " ") {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        e.preventDefault();
+        setPlaying((p) => !p);
+      } else if ((e.key === "S" || e.key === "s") && e.shiftKey) {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        e.preventDefault();
+        setViewportSplit((v) => !v);
+      } else if (e.key === "0") {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        e.preventDefault();
+        v1.reset();
+        v2.reset();
+      } else if (
+        (e.key === "n" || e.key === "N" || e.code === "KeyN") &&
+        (e.metaKey || e.ctrlKey) &&
+        e.altKey &&
+        !e.shiftKey
+      ) {
+        // Cmd+Alt+N (Ctrl+Alt+N on win/linux) → new project. Plain
+        // Cmd+N is reserved by the browser for "new window" and isn't
+        // deliverable to JS, so we use the Alt-modified variant.
+        e.preventDefault();
+        handleNewProjectRef.current();
+      } else if (e.key === "Escape" && fullCanvas) {
+        e.preventDefault();
+        setFullCanvas(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullCanvas]);
+
+  const enterBrowserFullscreen = useCallback(() => {
+    const el = document.documentElement;
+    if (!document.fullscreenElement) {
+      el.requestFullscreen?.().catch((err) => {
+        console.warn("requestFullscreen rejected:", err);
+      });
+    }
+  }, []);
+
   // React Flow echoes one final onSelectionChange with the previously-
   // selected node after we programmatically deselect via setNodes
   // (during File → Load / Project Settings). Without a guard, that
@@ -287,7 +389,31 @@ function EffectsShell() {
   const backendRef = useRef<EngineBackend | null>(null);
   const evalCacheRef = useRef<EvalCache>(new Map());
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Second preview canvas, only mounted in split-viewport mode. Driven
+  // by the same evaluator on each tick — see renderFrame for the
+  // double-pass eval. Overlays (paint / spline / gizmo) stay anchored
+  // to the primary canvas to keep their pointer math simple.
+  const canvas2Ref = useRef<HTMLCanvasElement | null>(null);
   const [backendReady, setBackendReady] = useState(false);
+  // Per-viewport pan/zoom. Two viewports each carry independent state so
+  // the user can frame each preview separately when split. The
+  // underlying canvas resolution doesn't change — only the on-screen
+  // transform — so overlays anchored via getBoundingClientRect stay
+  // aligned. Reset both with "0".
+  const v1 = useViewportPanZoom();
+  const v2 = useViewportPanZoom();
+  // Bind each viewport's wheel + middle-click handlers to its own ref.
+  useViewportGestures(v1.viewportRef, v1.setPan, v1.setZoom);
+  useViewportGestures(v2.viewportRef, v2.setPan, v2.setZoom);
+  // Overlays subscribe to window "resize" to refresh their cached rect.
+  // Overlays only ride viewport 1, so only its transform needs to fire
+  // the resize event.
+  useEffect(() => {
+    window.dispatchEvent(new Event("resize"));
+  }, [v1.zoom, v1.pan]);
+  // Vertical split between the two preview viewports. Lives as a
+  // fraction of the canvas-area height so the divider can be dragged.
+  const [viewportSplitRatio, setViewportSplitRatio] = useState(0.5);
   // Incremented when a source needs the pipeline to re-evaluate while
   // nothing else has changed. High-frequency bumpers (webcam ~30Hz,
   // MediaPipe trackers, audio meters) would otherwise trigger a React
@@ -554,8 +680,8 @@ function EffectsShell() {
       const expo = (n.data.exposedParams ?? []).slice().sort().join(",");
       parts.push(
         `N:${n.id}:${n.data.defType}:${n.data.active ? 1 : 0}:${
-          n.data.bypassed ? 1 : 0
-        }:${fp(n.data.params)}:X=${expo}`
+          n.data.active2 ? 1 : 0
+        }:${n.data.bypassed ? 1 : 0}:${fp(n.data.params)}:X=${expo}`
       );
     }
     for (const e of edges) {
@@ -566,58 +692,119 @@ function EffectsShell() {
     return parts.sort().join(";");
   }, [nodes, edges]);
 
-  useEffect(() => {
-    const backend = backendRef.current;
-    const canvas = canvasRef.current;
-    if (!backend || !backendReady || !canvas) return;
+  // Imperative render entry point. Pulls graph + cursor from refs so it
+  // can be called both from the React-driven render effect AND from the
+  // offline export loops, where we need to step time deterministically
+  // without going through React's render cycle. `playingHint` lets the
+  // caller force the playing flag (so audio/anim parts of the graph
+  // advance correctly during offline encoding).
+  const renderFrame = useCallback(
+    (renderTime: number, renderFps: number, playingHint: boolean) => {
+      const backend = backendRef.current;
+      const canvas = canvasRef.current;
+      if (!backend || !backendReady || !canvas) return;
 
-    const graphNodes: GraphNode[] = nodes.map((n) => ({
-      id: n.id,
-      type: n.data.defType,
-      params: n.data.params,
-      exposedParams: n.data.exposedParams,
-      bypassed: !!n.data.bypassed,
-    }));
-    const activeNodeId = nodes.find((n) => n.data.active)?.id ?? null;
-    const graphEdges: GraphEdge[] = edges.map((e) => ({
-      id: e.id,
-      source: e.source,
-      sourceHandle: e.sourceHandle ?? "out:primary",
-      target: e.target,
-      targetHandle: e.targetHandle ?? "in:image",
-    }));
+      const currentNodes = nodesRef.current;
+      const currentEdges = edgesRef.current;
+      const graphNodes: GraphNode[] = currentNodes.map((n) => ({
+        id: n.id,
+        type: n.data.defType,
+        params: n.data.params,
+        exposedParams: n.data.exposedParams,
+        bypassed: !!n.data.bypassed,
+      }));
+      const activeNodeId =
+        currentNodes.find((n) => n.data.active)?.id ?? null;
+      const activeNodeId2 =
+        currentNodes.find((n) => n.data.active2)?.id ?? null;
+      const graphEdges: GraphEdge[] = currentEdges.map((e) => ({
+        id: e.id,
+        source: e.source,
+        sourceHandle: e.sourceHandle ?? "out:primary",
+        target: e.target,
+        targetHandle: e.targetHandle ?? "in:image",
+      }));
 
-    const ctx = backend.makeContext(
-      time,
-      Math.floor(time * fps),
-      cursorRef.current,
-      playing && !scrubbing
-    );
-    const result = evaluateGraph(
-      graphNodes,
-      graphEdges,
-      ctx,
-      evalCacheRef.current,
-      activeNodeId
-    );
-    setErrors(result.errors);
+      const ctx = backend.makeContext(
+        renderTime,
+        Math.floor(renderTime * renderFps),
+        cursorRef.current,
+        playingHint
+      );
+      const result = evaluateGraph(
+        graphNodes,
+        graphEdges,
+        ctx,
+        evalCacheRef.current,
+        activeNodeId
+      );
+      setErrors(result.errors);
 
-    if (result.terminalImage && result.terminalImage.image.kind === "image") {
-      ctx.blitToCanvas(result.terminalImage.image, canvas);
-    } else {
-      const c2d = canvas.getContext("2d");
-      if (c2d) {
-        c2d.fillStyle = "#111";
-        c2d.fillRect(0, 0, canvas.width, canvas.height);
-        c2d.fillStyle = "#52525b";
-        c2d.font = "14px ui-monospace, monospace";
-        c2d.fillText(
-          "Connect an Output node to preview.",
-          20,
-          canvas.height / 2
+      if (showNodeTimingsRef.current) {
+        window.dispatchEvent(
+          new CustomEvent("node-timings", { detail: result.timings })
         );
       }
-    }
+
+      const blitOrPlaceholder = (
+        target: HTMLCanvasElement,
+        image:
+          | { image: { kind: string } }
+          | null
+          | undefined,
+        placeholder: string
+      ) => {
+        if (image && (image as { image: { kind: string } }).image.kind === "image") {
+          ctx.blitToCanvas(
+            (image as unknown as { image: import("@/engine/types").ImageValue })
+              .image,
+            target
+          );
+        } else {
+          const c2d = target.getContext("2d");
+          if (c2d) {
+            c2d.fillStyle = "#111";
+            c2d.fillRect(0, 0, target.width, target.height);
+            c2d.fillStyle = "#52525b";
+            c2d.font = "14px ui-monospace, monospace";
+            c2d.fillText(placeholder, 20, target.height / 2);
+          }
+        }
+      };
+
+      blitOrPlaceholder(
+        canvas,
+        result.terminalImage,
+        "Connect an Output node to preview."
+      );
+
+      // Split mode: re-evaluate the graph with the second active node
+      // so its terminal can drive the second canvas. The eval cache is
+      // shared, so any subgraph the two viewports have in common is
+      // reused on this second pass — only the unique branches re-run.
+      const canvas2 = canvas2Ref.current;
+      if (canvas2) {
+        const result2 = evaluateGraph(
+          graphNodes,
+          graphEdges,
+          ctx,
+          evalCacheRef.current,
+          activeNodeId2
+        );
+        blitOrPlaceholder(
+          canvas2,
+          result2.terminalImage,
+          "Set a node Active 2 to preview here."
+        );
+      }
+    },
+    [backendReady]
+  );
+  const renderFrameRef = useRef(renderFrame);
+  renderFrameRef.current = renderFrame;
+
+  useEffect(() => {
+    renderFrame(time, fps, playing && !scrubbing);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     structFp,
@@ -1423,6 +1610,29 @@ function EffectsShell() {
           if (n.id !== nodeId) return n;
           const nextParams = { ...n.data.params, [paramName]: value };
           const def = getNodeDef(n.data.defType);
+          // If this param is half of an active chain-link, write the
+          // partner's value too. Numeric guards skip the link if either
+          // side isn't currently a finite number.
+          const link = def?.linkedPairs?.find(
+            (p) => p.a === paramName || p.b === paramName
+          );
+          if (link) {
+            const key = `${link.a}:${link.b}`;
+            const lock = n.data.linkedParams?.[key];
+            if (lock && typeof value === "number" && isFinite(value)) {
+              if (paramName === link.a) {
+                nextParams[link.b] = value * lock.ratio;
+              } else {
+                // Partner edited — invert the ratio. Guard against zero
+                // ratios that would otherwise divide-by-zero.
+                if (lock.ratio !== 0) {
+                  nextParams[link.a] = value / lock.ratio;
+                } else {
+                  nextParams[link.a] = 0;
+                }
+              }
+            }
+          }
           const resolved = def?.resolveInputs?.(nextParams);
           const nextPrimary =
             def?.resolvePrimaryOutput?.(nextParams) ?? n.data.primaryOutput;
@@ -1496,6 +1706,50 @@ function EffectsShell() {
     [setNodes, pushGraph, getGraphSnapshot]
   );
 
+  // Flip the chain-link state for a `linkedPairs` entry on a node.
+  // Linking captures the current `b / a` ratio so subsequent edits to
+  // either side preserve the proportion. Unlinking clears the entry.
+  const onToggleParamLink = useCallback(
+    (nodeId: string, pairKey: string) => {
+      pushGraph(getGraphSnapshot(), `link:${nodeId}:${pairKey}`);
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id !== nodeId) return n;
+          const def = getNodeDef(n.data.defType);
+          const pair = def?.linkedPairs?.find(
+            (p) => `${p.a}:${p.b}` === pairKey
+          );
+          if (!pair) return n;
+          const cur = n.data.linkedParams ?? {};
+          const isLinked = !!cur[pairKey];
+          let nextLinked = { ...cur };
+          if (isLinked) {
+            delete nextLinked[pairKey];
+          } else {
+            const aVal = n.data.params[pair.a];
+            const bVal = n.data.params[pair.b];
+            const a = typeof aVal === "number" && isFinite(aVal) ? aVal : 1;
+            const b = typeof bVal === "number" && isFinite(bVal) ? bVal : 1;
+            // Capture ratio b/a so editing a → b preserves proportion.
+            // If a is 0 we can't form a meaningful ratio; fall back to
+            // 1:1, which means "keep them equal from now on".
+            const ratio = a !== 0 ? b / a : 1;
+            nextLinked[pairKey] = { ratio };
+          }
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              linkedParams:
+                Object.keys(nextLinked).length > 0 ? nextLinked : undefined,
+            },
+          };
+        })
+      );
+    },
+    [setNodes, pushGraph, getGraphSnapshot]
+  );
+
   // Drop edges whose target handle no longer exists on the node — e.g. after
   // a merge layer was removed, a gradient mode change dropped the angle_mod
   // socket, or a param was un-exposed. Also drops edges whose SOURCE aux
@@ -1530,6 +1784,7 @@ function EffectsShell() {
       if (!detail) return;
       if (
         detail.kind === "toggleActive" ||
+        detail.kind === "toggleActive2" ||
         detail.kind === "toggleBypass" ||
         detail.kind === "mergeAddLayer" ||
         detail.kind === "trailsReset"
@@ -1541,6 +1796,16 @@ function EffectsShell() {
           prev.map((n) => ({
             ...n,
             data: { ...n.data, active: n.id === detail.id ? !n.data.active : false },
+          }))
+        );
+      } else if (detail.kind === "toggleActive2") {
+        setNodes((prev) =>
+          prev.map((n) => ({
+            ...n,
+            data: {
+              ...n.data,
+              active2: n.id === detail.id ? !n.data.active2 : false,
+            },
           }))
         );
       } else if (detail.kind === "toggleBypass") {
@@ -1701,10 +1966,14 @@ function EffectsShell() {
   const fpsRef = useRef(fps);
   fpsRef.current = fps;
 
-  const [recording, setRecording] = useState<{
-    totalSec: number;
-    startedAt: number;
-  } | null>(null);
+  // `mode === "live"` is the MediaRecorder path — banner shows a
+  // countdown. `mode === "offline"` is WebCodecs / ffmpeg.wasm — banner
+  // shows a progress bar from `progress` (0..1) and a label.
+  const [recording, setRecording] = useState<
+    | { mode: "live"; totalSec: number; startedAt: number }
+    | { mode: "offline"; label: string; progress: number }
+    | null
+  >(null);
   const recordingRef = useRef(recording);
   recordingRef.current = recording;
 
@@ -1806,61 +2075,173 @@ function EffectsShell() {
       const params = getOutputParams(nodeId);
       if (!canvas || !params) return;
 
-      const requested = (params.videoFormat as "mp4" | "webm") ?? "mp4";
-      const picked = pickVideoMime(requested);
-      if (!picked) {
-        console.error("No supported video codec in this browser");
-        return;
-      }
+      const quality =
+        (params.videoQuality as "fast" | "high" | "max") ?? "high";
+      const container =
+        (params.videoFormat as "mp4" | "webm" | "mov" | "mkv") ?? "mp4";
       const durationFrames = (params.videoFrames as number) ?? 240;
-      const bitrateMbps = (params.videoBitrateMbps as number) ?? 8;
+      const bitrateMbps = (params.videoBitrateMbps as number) ?? 16;
       const base = sanitizeFilename((params.filename as string) ?? "");
-      const currentFps = fpsRef.current;
-      const totalSec = durationFrames / currentFps;
-
-      const stream = canvas.captureStream(currentFps);
-      const recorder = new MediaRecorder(stream, {
-        mimeType: picked.mime,
-        videoBitsPerSecond: Math.round(bitrateMbps * 1_000_000),
-      });
-      const chunks: Blob[] = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size) chunks.push(e.data);
-      };
-      const done = new Promise<Blob>((resolve) => {
-        recorder.onstop = () => {
-          const type = picked.mime.split(";")[0];
-          resolve(new Blob(chunks, { type }));
-        };
-      });
+      const previewFps = fpsRef.current;
+      const exportFps =
+        quality === "fast"
+          ? previewFps
+          : Math.max(1, (params.videoFps as number) ?? previewFps);
 
       const savedTime = timeRef.current;
       const savedPlaying = playingRef.current;
 
-      // Rewind and let the pipeline render t=0 before we start recording so
-      // the first captured frame isn't whatever was on screen a moment ago.
-      setTime(0);
-      await new Promise<void>((r) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => r()));
-      });
+      // ---- Fast / live path (MediaRecorder) ------------------------------
+      if (quality === "fast") {
+        const liveContainer = container === "webm" ? "webm" : "mp4";
+        const picked = pickVideoMime(liveContainer);
+        if (!picked) {
+          console.error("No supported video codec in this browser");
+          return;
+        }
+        const totalSec = durationFrames / previewFps;
+        const stream = canvas.captureStream(previewFps);
+        const recorder = new MediaRecorder(stream, {
+          mimeType: picked.mime,
+          videoBitsPerSecond: Math.round(bitrateMbps * 1_000_000),
+        });
+        const chunks: Blob[] = [];
+        recorder.ondataavailable = (e) => {
+          if (e.data.size) chunks.push(e.data);
+        };
+        const done = new Promise<Blob>((resolve) => {
+          recorder.onstop = () => {
+            const type = picked.mime.split(";")[0];
+            resolve(new Blob(chunks, { type }));
+          };
+        });
 
-      setPlaying(true);
-      recorder.start();
-      setRecording({ totalSec, startedAt: performance.now() });
+        setTime(0);
+        await new Promise<void>((r) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => r()));
+        });
 
-      await new Promise((r) => setTimeout(r, totalSec * 1000));
-      recorder.stop();
-      setPlaying(savedPlaying);
-      setTime(savedTime);
-      setRecording(null);
+        setPlaying(true);
+        recorder.start();
+        setRecording({
+          mode: "live",
+          totalSec,
+          startedAt: performance.now(),
+        });
 
-      const blob = await done;
-      downloadBlob(
-        blob,
-        base ? `${base}.${picked.ext}` : defaultFilename(picked.ext)
-      );
+        await new Promise((r) => setTimeout(r, totalSec * 1000));
+        recorder.stop();
+        setPlaying(savedPlaying);
+        setTime(savedTime);
+        setRecording(null);
+
+        const blob = await done;
+        downloadBlob(
+          blob,
+          base ? `${base}.${picked.ext}` : defaultFilename(picked.ext)
+        );
+        return;
+      }
+
+      // ---- Offline path (WebCodecs or ffmpeg.wasm) ------------------------
+      // Both rely on `renderFrameRef.current(t, fps, true)` to step the
+      // pipeline synchronously. We pass `playing: true` so animation
+      // nodes that gate on it (audio sources, particle systems, etc.)
+      // still advance during the export render.
+      setPlaying(false);
+      setRecording({ mode: "offline", label: "Preparing…", progress: 0 });
+
+      const renderAt = (_frameIndex: number, t: number) => {
+        // Update the visible timeline so the preview stays in sync with
+        // what the encoder is reading. setTime is async, so we also
+        // call renderFrame imperatively to guarantee the canvas matches
+        // the timestamp we hand to the encoder.
+        setTime(t);
+        renderFrameRef.current?.(t, exportFps, true);
+      };
+
+      try {
+        let result: { blob: Blob; ext: string };
+        if (quality === "high") {
+          const { exportVideoWebCodecs } = await import("@/lib/export-webcodecs");
+          // High-tier codec menu intersected with what mediabunny accepts
+          // for the chosen container. Defaults to AVC for mp4, VP9 for webm.
+          const rawCodec = (params.videoCodec as string) ?? "avc";
+          type WC = "avc" | "hevc" | "vp9" | "av1";
+          const wcAllowed: WC[] = ["avc", "hevc", "vp9", "av1"];
+          const codec: WC = (
+            wcAllowed.includes(rawCodec as WC) ? rawCodec : "avc"
+          ) as WC;
+          const wcContainer =
+            container === "webm" ? "webm" : "mp4";
+          result = await exportVideoWebCodecs({
+            canvas,
+            container: wcContainer,
+            codec,
+            bitrateBps: Math.round(bitrateMbps * 1_000_000),
+            fps: exportFps,
+            durationFrames,
+            renderFrame: renderAt,
+            onProgress: (label, frac) =>
+              setRecording({
+                mode: "offline",
+                label,
+                progress: frac,
+              }),
+          });
+        } else {
+          const { exportVideoFfmpeg } = await import("@/lib/export-ffmpeg");
+          const rawCodec = (params.videoCodec as string) ?? "h264";
+          type FC =
+            | "h264" | "h264-lossless" | "h265" | "prores" | "vp9" | "av1";
+          const ffAllowed: FC[] = [
+            "h264", "h264-lossless", "h265", "prores", "vp9", "av1",
+          ];
+          // If the user left a webcodecs-only codec selected when
+          // switching to Max, fall back to h264 silently.
+          const codec: FC = (
+            ffAllowed.includes(rawCodec as FC) ? rawCodec : "h264"
+          ) as FC;
+          const proresName = (params.videoProresProfile as string) ?? "hq";
+          const proresMap: Record<string, number> = {
+            proxy: 0, lt: 1, standard: 2, hq: 3, "4444": 4, "4444xq": 5,
+          };
+          // ProRes is only compatible with mov/mkv; nudge the user.
+          const ffContainer =
+            (codec === "prores" && container === "mp4")
+              ? "mov"
+              : (codec === "prores" && container === "webm")
+                ? "mov"
+                : container;
+          result = await exportVideoFfmpeg({
+            canvas,
+            container: ffContainer,
+            codec,
+            crf: (params.videoCrf as number) ?? 18,
+            proresProfile: proresMap[proresName] ?? 3,
+            fps: exportFps,
+            durationFrames,
+            renderFrame: renderAt,
+            onProgress: (label, frac) =>
+              setRecording({ mode: "offline", label, progress: frac }),
+          });
+        }
+
+        downloadBlob(
+          result.blob,
+          base ? `${base}.${result.ext}` : defaultFilename(result.ext)
+        );
+      } catch (err) {
+        console.error("Video export failed:", err);
+        const msg = err instanceof Error ? err.message : "Export failed";
+        flashToast(msg);
+      } finally {
+        setPlaying(savedPlaying);
+        setTime(savedTime);
+        setRecording(null);
+      }
     },
-    [getOutputParams]
+    [getOutputParams, flashToast]
   );
 
   useEffect(() => {
@@ -2302,6 +2683,11 @@ function EffectsShell() {
     }
     setNewConfirmOpen(true);
   }, [saveState, resetToFreshProject]);
+  // Mirrored on a ref so the early-mounted keydown handler (Cmd+N) can
+  // call the latest closure without recreating the listener every time
+  // saveState changes.
+  const handleNewProjectRef = useRef(handleNewProject);
+  handleNewProjectRef.current = handleNewProject;
 
   const handleNewConfirmSave = useCallback(async () => {
     if (!signedIn || !user) {
@@ -2484,6 +2870,35 @@ function EffectsShell() {
       )
     : undefined;
 
+  // Curve editor overlay docks at the bottom of the canvas region. A small
+  // tab at the bottom-center toggles it open. The editor only edits a node
+  // when a Timeline node is selected; otherwise the tab is shown but
+  // clicking it surfaces a hint (or just opens an empty editor — keep
+  // simple and only show the tab when a Timeline node is selected).
+  const activeTimelineNode = selectedId
+    ? nodes.find(
+        (n) => n.id === selectedId && n.data.defType === "timeline"
+      )
+    : undefined;
+  const [timelineEditorOpen, setTimelineEditorOpen] = useState(false);
+  const [timelineEditorHeight, setTimelineEditorHeight] = useState(280);
+  // Read the most recent wrapped-t the evaluator stashed for the selected
+  // Timeline node. Re-read on every frame tick so the playhead glides.
+  const [timelinePlayheadT, setTimelinePlayheadT] = useState<number | null>(
+    null
+  );
+  useEffect(() => {
+    if (!activeTimelineNode || !timelineEditorOpen) {
+      setTimelinePlayheadT(null);
+      return;
+    }
+    const id = activeTimelineNode.id;
+    const backend = backendRef.current;
+    if (!backend) return;
+    const v = backend.state[`timeline:${id}:t`];
+    setTimelinePlayheadT(typeof v === "number" ? v : null);
+  }, [activeTimelineNode, timelineEditorOpen, time, pipelineBumpKey]);
+
   // Preview dots for any selected node whose primary output is a points
   // value. Populated by the pipeline-eval effect after each render pass.
   const [selectedPoints, setSelectedPoints] = useState<PointValue[] | null>(
@@ -2503,6 +2918,7 @@ function EffectsShell() {
         fontSize: 12,
       }}
     >
+      <div style={{ display: fullCanvas ? "none" : "contents" }}>
       <MenuBar
         onUndo={undo}
         onRedo={redo}
@@ -2552,7 +2968,17 @@ function EffectsShell() {
           findConflict(name, currentProject?.id)
         }
         onAddNode={(type) => onAddNode(type)}
+        fullCanvas={fullCanvas}
+        onToggleFullCanvas={() => setFullCanvas((v) => !v)}
+        onEnterBrowserFullscreen={enterBrowserFullscreen}
+        showFps={showFps}
+        onToggleShowFps={() => setShowFps((v) => !v)}
+        showNodeTimings={showNodeTimings}
+        onToggleShowNodeTimings={() => setShowNodeTimings((v) => !v)}
+        viewportSplit={viewportSplit}
+        onToggleViewportSplit={() => setViewportSplit((v) => !v)}
       />
+      </div>
       <div
         style={{
           display: "flex",
@@ -2576,24 +3002,117 @@ function EffectsShell() {
             minHeight: 0,
             position: "relative",
             display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
+            flexDirection: "column",
             background: "#050505",
-            padding: 12,
+            padding: fullCanvas ? 0 : 12,
+            overflow: "hidden",
           }}
         >
-          <canvas
-            ref={canvasRef}
-            width={canvasRes[0]}
-            height={canvasRes[1]}
+          <div
+            ref={v1.viewportRef}
             style={{
-              maxWidth: "100%",
-              maxHeight: "100%",
-              background:
-                "repeating-conic-gradient(#1a1a1a 0% 25%, #0f0f0f 0% 50%) 0 0 / 24px 24px",
-              border: "1px solid #27272a",
+              flex: viewportSplit ? viewportSplitRatio : 1,
+              minHeight: 0,
+              minWidth: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              position: "relative",
+              width: "100%",
+              overflow: "hidden",
             }}
-          />
+          >
+            <canvas
+              ref={canvasRef}
+              width={canvasRes[0]}
+              height={canvasRes[1]}
+              style={{
+                maxWidth: "100%",
+                maxHeight: "100%",
+                background:
+                  "repeating-conic-gradient(#1a1a1a 0% 25%, #0f0f0f 0% 50%) 0 0 / 24px 24px",
+                border: "1px solid #27272a",
+                transform: `translate(${v1.pan[0]}px, ${v1.pan[1]}px) scale(${v1.zoom})`,
+                transformOrigin: "center center",
+              }}
+            />
+            {viewportSplit && <ViewportLabel label="1" />}
+            {!v1.isDefault && (
+              <ViewportZoomChip
+                label={`${Math.round(v1.zoom * 100)}% · reset`}
+                onClick={v1.reset}
+              />
+            )}
+          </div>
+          {viewportSplit && (
+            <Divider
+              orientation="horizontal"
+              onPointerDown={(e) => {
+                // Drag the divider — proportional resize between the
+                // two viewports. Snap-clamped so neither viewport can
+                // collapse fully.
+                e.preventDefault();
+                const startY = e.clientY;
+                const parent = (e.currentTarget as HTMLDivElement)
+                  .parentElement;
+                if (!parent) return;
+                const total = parent.clientHeight;
+                const startRatio = viewportSplitRatio;
+                const onMove = (ev: PointerEvent) => {
+                  const dy = ev.clientY - startY;
+                  const next = Math.max(
+                    0.1,
+                    Math.min(0.9, startRatio + dy / Math.max(1, total))
+                  );
+                  setViewportSplitRatio(next);
+                };
+                const onUp = () => {
+                  window.removeEventListener("pointermove", onMove);
+                  window.removeEventListener("pointerup", onUp);
+                };
+                window.addEventListener("pointermove", onMove);
+                window.addEventListener("pointerup", onUp);
+              }}
+            />
+          )}
+          {viewportSplit && (
+            <div
+              ref={v2.viewportRef}
+              style={{
+                flex: 1 - viewportSplitRatio,
+                minHeight: 0,
+                minWidth: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                position: "relative",
+                width: "100%",
+                overflow: "hidden",
+              }}
+            >
+              <canvas
+                ref={canvas2Ref}
+                width={canvasRes[0]}
+                height={canvasRes[1]}
+                style={{
+                  maxWidth: "100%",
+                  maxHeight: "100%",
+                  background:
+                    "repeating-conic-gradient(#1a1a1a 0% 25%, #0f0f0f 0% 50%) 0 0 / 24px 24px",
+                  border: "1px solid #27272a",
+                  transform: `translate(${v2.pan[0]}px, ${v2.pan[1]}px) scale(${v2.zoom})`,
+                  transformOrigin: "center center",
+                }}
+              />
+              <ViewportLabel label="2" />
+              {!v2.isDefault && (
+                <ViewportZoomChip
+                  label={`${Math.round(v2.zoom * 100)}% · reset`}
+                  onClick={v2.reset}
+                />
+              )}
+            </div>
+          )}
           {activePaintNode && (
             <PaintOverlay
               nodeId={activePaintNode.id}
@@ -2653,6 +3172,133 @@ function EffectsShell() {
               }}
             />
           )}
+          {/* Curve editor dock — anchored to the bottom edge of the canvas
+              area. A small tab pokes up from the bottom-center to toggle
+              visibility. The tab only appears when a Timeline node is the
+              current selection; selecting a different node hides it. */}
+          {activeTimelineNode && !timelineEditorOpen && (
+            <button
+              onClick={() => setTimelineEditorOpen(true)}
+              title="Open curve editor"
+              style={{
+                position: "absolute",
+                bottom: 0,
+                left: "50%",
+                transform: "translateX(-50%)",
+                background: "#18181b",
+                color: "#a1a1aa",
+                border: "1px solid #3f3f46",
+                borderBottom: "none",
+                borderTopLeftRadius: 6,
+                borderTopRightRadius: 6,
+                padding: "3px 14px",
+                fontFamily: "ui-monospace, monospace",
+                fontSize: 10,
+                cursor: "pointer",
+                zIndex: 5,
+              }}
+            >
+              ▲ curve
+            </button>
+          )}
+          {activeTimelineNode && timelineEditorOpen && (
+            <div
+              style={{
+                position: "absolute",
+                left: 0,
+                right: 0,
+                bottom: 0,
+                height: timelineEditorHeight,
+                background: "#0a0a0a",
+                borderTop: "1px solid #3f3f46",
+                display: "flex",
+                flexDirection: "column",
+                zIndex: 5,
+              }}
+            >
+              <Divider
+                orientation="horizontal"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  const startY = e.clientY;
+                  const startH = timelineEditorHeight;
+                  const onMove = (ev: MouseEvent) => {
+                    const dy = startY - ev.clientY;
+                    setTimelineEditorHeight(
+                      Math.max(120, Math.min(700, startH + dy))
+                    );
+                  };
+                  const onUp = () => {
+                    window.removeEventListener("mousemove", onMove);
+                    window.removeEventListener("mouseup", onUp);
+                  };
+                  window.addEventListener("mousemove", onMove);
+                  window.addEventListener("mouseup", onUp);
+                }}
+              />
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "2px 8px",
+                  background: "#111114",
+                  borderBottom: "1px solid #27272a",
+                  flexShrink: 0,
+                }}
+              >
+                <span
+                  style={{
+                    color: "#a1a1aa",
+                    fontFamily: "ui-monospace, monospace",
+                    fontSize: 10,
+                  }}
+                >
+                  Curve · {activeTimelineNode.data.name}
+                </span>
+                <button
+                  onClick={() => setTimelineEditorOpen(false)}
+                  title="Close curve editor"
+                  style={{
+                    background: "transparent",
+                    border: "1px solid #3f3f46",
+                    color: "#a1a1aa",
+                    padding: "1px 8px",
+                    fontFamily: "ui-monospace, monospace",
+                    fontSize: 10,
+                    cursor: "pointer",
+                    borderRadius: 3,
+                  }}
+                >
+                  ▼
+                </button>
+              </div>
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <TimelineCurveEditor
+                  value={
+                    (activeTimelineNode.data.params.curve as TimelineCurveValue) ??
+                    defaultTimelineCurve()
+                  }
+                  onChange={(next) =>
+                    onParamChange(activeTimelineNode.id, "curve", next)
+                  }
+                  playheadT={timelinePlayheadT}
+                  height={timelineEditorHeight - 30}
+                  onScrub={(t) => {
+                    // Map normalized 0..1 onto scene seconds. The
+                    // Timeline node wraps via fract, so the scene
+                    // duration we should map to is the loop window
+                    // when set, otherwise one second.
+                    const loopSec =
+                      loopFrames != null && loopFrames > 0
+                        ? loopFrames / fps
+                        : 1;
+                    onSeek(t * loopSec);
+                  }}
+                />
+              </div>
+            </div>
+          )}
           {recording && <RecordingBanner state={recording} />}
           {progressStatus && <ProgressBanner status={progressStatus} />}
           {toast && (
@@ -2679,21 +3325,17 @@ function EffectsShell() {
         </div>
       </section>
 
-      <div
+      <Divider
+        orientation="vertical"
+        hidden={fullCanvas}
         onMouseDown={startVResize}
-        style={{
-          width: 5,
-          cursor: "col-resize",
-          background: "#27272a",
-          flexShrink: 0,
-        }}
       />
 
       <div
         style={{
           width: rightColWidth,
           flexShrink: 0,
-          display: "flex",
+          display: fullCanvas ? "none" : "flex",
           flexDirection: "column",
           minHeight: 0,
         }}
@@ -2742,15 +3384,7 @@ function EffectsShell() {
           />
         </section>
 
-        <div
-          onMouseDown={startHResize}
-          style={{
-            height: 5,
-            cursor: "row-resize",
-            background: "#27272a",
-            flexShrink: 0,
-          }}
-        />
+        <Divider orientation="horizontal" onMouseDown={startHResize} />
 
         <section style={{ height: bottomRowHeight, minHeight: 0, flexShrink: 0 }}>
           <ParamPanel
@@ -2762,6 +3396,7 @@ function EffectsShell() {
             onParamChange={onParamChange}
             onToggleParamExposed={onToggleParamExposed}
             onParamRangeChange={onParamRangeChange}
+            onToggleParamLink={onToggleParamLink}
             isParamDriven={isParamDriven}
             signedIn={signedIn}
             currentUserId={user?.id ?? null}
@@ -2771,19 +3406,21 @@ function EffectsShell() {
         </section>
       </div>
       </div>
-      <Timeline
-        playing={playing}
-        time={time}
-        fps={fps}
-        loopFrames={loopFrames}
-        onPlayPause={onPlayPause}
-        onReset={onReset}
-        onSeek={onSeek}
-        onScrubStart={onScrubStart}
-        onScrubEnd={onScrubEnd}
-        onFpsChange={setFps}
-        onLoopFramesChange={setLoopFrames}
-      />
+      {!fullCanvas && (
+        <PlaybackBar
+          playing={playing}
+          time={time}
+          fps={fps}
+          loopFrames={loopFrames}
+          onPlayPause={onPlayPause}
+          onReset={onReset}
+          onSeek={onSeek}
+          onScrubStart={onScrubStart}
+          onScrubEnd={onScrubEnd}
+          onFpsChange={setFps}
+          onLoopFramesChange={setLoopFrames}
+        />
+      )}
       <SaveModal
         open={saveModalOpen}
         onClose={() => {
@@ -2885,13 +3522,224 @@ function ProgressBanner({
   );
 }
 
+// Pan/zoom state for one preview viewport. Owns its own ref + state so
+// each viewport can frame its preview independently when split.
+function useViewportPanZoom() {
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState<[number, number]>([0, 0]);
+  const reset = useCallback(() => {
+    setZoom(1);
+    setPan([0, 0]);
+  }, []);
+  const isDefault = zoom === 1 && pan[0] === 0 && pan[1] === 0;
+  return { viewportRef, zoom, pan, setZoom, setPan, reset, isDefault };
+}
+
+// Two-finger trackpad / mouse-wheel pan and Cmd-zoom on the given
+// viewport, plus middle-click drag to pan. Listens at the window level
+// and hit-tests the cursor against the viewport's rect, so the gesture
+// applies to whichever viewport the cursor is over — even when a
+// sibling overlay (paint, spline, gizmo, curve dock, etc.) sits visually
+// between the cursor and the viewport's DOM subtree. Overlays that want
+// to consume wheel themselves (the curve editor dock) call
+// stopPropagation, which prevents the bubble path from reaching window.
+function useViewportGestures(
+  viewportRef: React.RefObject<HTMLDivElement | null>,
+  setPan: React.Dispatch<React.SetStateAction<[number, number]>>,
+  setZoom: React.Dispatch<React.SetStateAction<number>>
+) {
+  useEffect(() => {
+    const onWheel = (e: WheelEvent) => {
+      const el = viewportRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (
+        e.clientX < rect.left ||
+        e.clientX > rect.right ||
+        e.clientY < rect.top ||
+        e.clientY > rect.bottom
+      ) {
+        return;
+      }
+      e.preventDefault();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const dx = e.deltaX || 0;
+      const dy = e.deltaY || 0;
+      const isZoom = e.metaKey || e.ctrlKey;
+      if (isZoom) {
+        const mag = Math.abs(dx) > Math.abs(dy) ? dx : dy;
+        const factor = Math.exp(-mag * 0.005);
+        setZoom((prevZoom) => {
+          const nextZoom = Math.max(0.1, Math.min(8, prevZoom * factor));
+          const ratio = nextZoom / prevZoom;
+          setPan(([px, py]) => [
+            px * ratio + (e.clientX - cx) * (1 - ratio),
+            py * ratio + (e.clientY - cy) * (1 - ratio),
+          ]);
+          return nextZoom;
+        });
+        return;
+      }
+      setPan(([px, py]) => [px - dx, py - dy]);
+    };
+    window.addEventListener("wheel", onWheel, { passive: false });
+    return () => window.removeEventListener("wheel", onWheel);
+  }, [viewportRef, setPan, setZoom]);
+
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 1) return;
+      const el = viewportRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (
+        e.clientX < rect.left ||
+        e.clientX > rect.right ||
+        e.clientY < rect.top ||
+        e.clientY > rect.bottom
+      ) {
+        return;
+      }
+      e.preventDefault();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let curPan: [number, number] = [0, 0];
+      setPan((p) => {
+        curPan = p;
+        return p;
+      });
+      const onMove = (ev: PointerEvent) => {
+        setPan([
+          curPan[0] + (ev.clientX - startX),
+          curPan[1] + (ev.clientY - startY),
+        ]);
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointerdown", onDown);
+    return () => window.removeEventListener("pointerdown", onDown);
+  }, [viewportRef, setPan]);
+}
+
+// Splitter handle. Renders a thin 1px visual line but keeps a wider
+// (default 5px) hit-target so it's easy to grab. The visible line
+// stays centered inside the hit zone via flex.
+function Divider({
+  orientation,
+  hit = 5,
+  thickness = 1,
+  color = "#27272a",
+  hidden = false,
+  onPointerDown,
+  onMouseDown,
+}: {
+  orientation: "horizontal" | "vertical";
+  hit?: number;
+  thickness?: number;
+  color?: string;
+  hidden?: boolean;
+  onPointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
+}) {
+  const isH = orientation === "horizontal";
+  return (
+    <div
+      onPointerDown={onPointerDown}
+      onMouseDown={onMouseDown}
+      style={{
+        flexShrink: 0,
+        display: hidden ? "none" : "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: isH ? "row-resize" : "col-resize",
+        height: isH ? hit : "auto",
+        width: isH ? "auto" : hit,
+        alignSelf: "stretch",
+        background: "transparent",
+      }}
+    >
+      <div
+        style={{
+          background: color,
+          height: isH ? thickness : "100%",
+          width: isH ? "100%" : thickness,
+        }}
+      />
+    </div>
+  );
+}
+
+function ViewportZoomChip({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title="Reset canvas zoom & pan (0)"
+      style={{
+        position: "absolute",
+        right: 8,
+        bottom: 8,
+        background: "#18181b",
+        color: "#a1a1aa",
+        border: "1px solid #3f3f46",
+        borderRadius: 3,
+        padding: "3px 8px",
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 10,
+        cursor: "pointer",
+        zIndex: 4,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function ViewportLabel({ label }: { label: string }) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 6,
+        left: 6,
+        padding: "1px 6px",
+        background: "rgba(17, 17, 17, 0.85)",
+        color: "#a1a1aa",
+        border: "1px solid #27272a",
+        borderRadius: 3,
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 10,
+        pointerEvents: "none",
+        zIndex: 3,
+      }}
+    >
+      {label}
+    </div>
+  );
+}
+
 function RecordingBanner({
   state,
 }: {
-  state: { totalSec: number; startedAt: number };
+  state:
+    | { mode: "live"; totalSec: number; startedAt: number }
+    | { mode: "offline"; label: string; progress: number };
 }) {
   const [now, setNow] = useState(() => performance.now());
   useEffect(() => {
+    if (state.mode !== "live") return;
     let raf = 0;
     const tick = () => {
       setNow(performance.now());
@@ -2899,9 +3747,16 @@ function RecordingBanner({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, []);
-  const elapsed = Math.max(0, (now - state.startedAt) / 1000);
-  const remaining = Math.max(0, state.totalSec - elapsed);
+  }, [state.mode]);
+
+  const text =
+    state.mode === "live"
+      ? `REC ${Math.max(
+          0,
+          state.totalSec - Math.max(0, (now - state.startedAt) / 1000)
+        ).toFixed(1)}s remaining`
+      : `REC ${state.label}`;
+
   return (
     <div
       style={{
@@ -2917,23 +3772,47 @@ function RecordingBanner({
         fontFamily: "ui-monospace, monospace",
         fontSize: 11,
         letterSpacing: 0.5,
+        minWidth: 220,
         display: "flex",
-        alignItems: "center",
-        gap: 8,
+        flexDirection: "column",
+        gap: 4,
         boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
         pointerEvents: "none",
       }}
     >
-      <span
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: "50%",
-          background: "#fca5a5",
-          boxShadow: "0 0 8px #ef4444",
-        }}
-      />
-      REC {remaining.toFixed(1)}s remaining
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: "#fca5a5",
+            boxShadow: "0 0 8px #ef4444",
+          }}
+        />
+        {text}
+      </div>
+      {state.mode === "offline" && (
+        <div
+          style={{
+            position: "relative",
+            height: 3,
+            background: "rgba(0,0,0,0.4)",
+            borderRadius: 2,
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: `${Math.max(0, Math.min(1, state.progress)) * 100}%`,
+              background: "#fca5a5",
+              transition: "width 80ms linear",
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }

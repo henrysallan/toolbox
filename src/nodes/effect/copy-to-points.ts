@@ -31,28 +31,125 @@ import { transformSubpath } from "@/engine/spline-transform";
 // Feed a noise image for a pseudo-random assortment; feed a UV / any
 // image to drive the assortment spatially.
 //
-// Image mode uses a 2D-canvas readback → draw-at-each-point → upload
-// back to GL. CPU-bound but easy; fine up to a few hundred copies.
+// Image mode runs entirely on the GPU via instanced quads — one
+// draw call regardless of point count. The vertex shader fetches
+// each instance's transform (position, rotation, scale) from a
+// 2-row data texture, so we're not bottlenecked by CPU-side
+// drawImage loops or uniform-array size limits.
+//
 // Spline and point modes are pure CPU math.
 
-const COPY_BLIT_FS = `#version 300 es
+// Vertex shader: every instance is a unit quad in [0,1]². For the
+// instance with id `gl_InstanceID`, fetch two RGBA32F texels from
+// u_xforms (a Nx2 data texture):
+//   row 0 = (posX, posY, rotation, scaleX)
+//   row 1 = (scaleY, _, _, _)
+//
+// Per-instance modulation:
+//   - u_scaleMul: global scalar multiplier (audio amplitude, etc.)
+//   - u_rotateAdd: global additive rotation
+//   - u_scaleField + u_useScaleField: optional image sampled at the
+//     instance's own UV; R-channel mapped to a multiplier in
+//     [u_scaleFieldLo, u_scaleFieldHi]. Lets noise / mask drive
+//     per-copy size variation.
+//   - u_rotateField + u_useRotateField: optional image sampled at the
+//     instance's own UV; R-channel scaled by u_rotateFieldAmount and
+//     added to rotation. Lets noise / gradient drive per-copy spin.
+//
+// Apply scale, rotate around the quad's center, translate to the
+// point's UV-space position scaled by the canvas resolution. Quad
+// is anchored at its own (0.5, 0.5) so per-instance scale grows
+// outward from the point — matches the existing drawImage
+// convention "trunk of the tree at the point."
+const COPY_INST_VS = `#version 300 es
+precision highp float;
+layout(location = 0) in vec2 a_pos;
+out vec2 v_uv;
+uniform sampler2D u_xforms;
+uniform vec2 u_canvasRes;
+uniform vec2 u_instSize;
+
+uniform float u_scaleMul;
+uniform float u_rotateAdd;
+uniform sampler2D u_scaleField;
+uniform int u_useScaleField;
+uniform float u_scaleFieldLo;
+uniform float u_scaleFieldHi;
+uniform sampler2D u_rotateField;
+uniform int u_useRotateField;
+uniform float u_rotateFieldAmount;
+
+void main() {
+  vec4 t1 = texelFetch(u_xforms, ivec2(gl_InstanceID, 0), 0);
+  vec4 t2 = texelFetch(u_xforms, ivec2(gl_InstanceID, 1), 0);
+  vec2 pos = t1.xy;
+  float rot = t1.z;
+  float sx = t1.w;
+  float sy = t2.x;
+
+  // Per-instance scale modulation.
+  float fieldMul = 1.0;
+  if (u_useScaleField == 1) {
+    // Sample R channel at the instance's UV. Map [0,1] linearly
+    // into [lo, hi] so the user can pick the dynamic range.
+    float r = texture(u_scaleField, pos).r;
+    fieldMul = mix(u_scaleFieldLo, u_scaleFieldHi, r);
+  }
+  float globalMul = max(0.0, u_scaleMul);
+  sx *= fieldMul * globalMul;
+  sy *= fieldMul * globalMul;
+
+  // Per-instance rotation modulation. Rotate field maps R [0,1]
+  // to [-amount, +amount] so 0.5 = no extra rotation.
+  float rotMod = u_rotateAdd;
+  if (u_useRotateField == 1) {
+    float r = texture(u_rotateField, pos).r;
+    rotMod += (r - 0.5) * 2.0 * u_rotateFieldAmount;
+  }
+  rot += rotMod;
+
+  vec2 local = (a_pos - 0.5) * u_instSize * vec2(sx, sy);
+  float c = cos(rot);
+  float s = sin(rot);
+  vec2 r2 = vec2(c * local.x - s * local.y, s * local.x + c * local.y);
+  vec2 pixel = pos * u_canvasRes + r2;
+  vec2 clip = (pixel / u_canvasRes) * 2.0 - 1.0;
+  // Pipeline UV is Y-down; clip space is Y-up. Flip vertically.
+  clip.y = -clip.y;
+  gl_Position = vec4(clip, 0.0, 1.0);
+  v_uv = a_pos;
+}`;
+
+const COPY_INST_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_src;
 out vec4 outColor;
 void main() {
-  // 2D canvas is row-0-top; pipeline is Y-up. Flip on sample.
-  outColor = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
+  // Sampling the upstream pipeline texture directly — no Y flip
+  // needed (we'd only flip if reading back from a 2D canvas, which
+  // the new GPU path no longer does).
+  outColor = texture(u_src, v_uv);
 }`;
 
 interface CopyState {
-  instanceCanvas: HTMLCanvasElement;
-  outputCanvas: HTMLCanvasElement;
-  outputTex: WebGLTexture | null;
   // Scratch canvas for pick-source readback. Created lazily so spline
   // and point modes without a pick input don't allocate.
   pickCanvas: HTMLCanvasElement | null;
-  lastSig: string | null;
+  // GPU resources for instanced image-mode rendering. Lazily created
+  // on first image-mode eval so spline/point users never pay for
+  // them. Lifetime is the node — disposed alongside the node.
+  instProgram: WebGLProgram | null;
+  instVao: WebGLVertexArrayObject | null;
+  instQuadVbo: WebGLBuffer | null;
+  instFbo: WebGLFramebuffer | null;
+  // Per-instance transform data texture. Width = N (point count),
+  // height = 2 (two RGBA32F rows per instance — see VS comment).
+  instXformTex: WebGLTexture | null;
+  instXformWidth: number;
+  // CPU staging buffer for the data-texture upload. Reused across
+  // evals; resized when N grows.
+  instXformBuf: Float32Array | null;
 }
 
 function modeOf(params: Record<string, unknown>): "image" | "spline" | "point" {
@@ -66,24 +163,101 @@ function ensureState(ctx: RenderContext, nodeId: string): CopyState {
   const key = `copy-to-points:${nodeId}`;
   const existing = ctx.state[key] as CopyState | undefined;
   if (existing) return existing;
-  const gl = ctx.gl;
-  const tex = gl.createTexture();
-  if (!tex) throw new Error("copy-to-points: failed to create texture");
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.bindTexture(gl.TEXTURE_2D, null);
   const s: CopyState = {
-    instanceCanvas: document.createElement("canvas"),
-    outputCanvas: document.createElement("canvas"),
-    outputTex: tex,
     pickCanvas: null,
-    lastSig: null,
+    instProgram: null,
+    instVao: null,
+    instQuadVbo: null,
+    instFbo: null,
+    instXformTex: null,
+    instXformWidth: 0,
+    instXformBuf: null,
   };
   ctx.state[key] = s;
   return s;
+}
+
+// Lazy GL setup — compiles the instanced shader pair, creates the
+// quad VAO + a private FBO + the data texture. Only runs the first
+// time image mode is actually used on this node; spline/point users
+// never pay this cost.
+function ensureInstResources(ctx: RenderContext, state: CopyState): boolean {
+  const gl = ctx.gl;
+  if (!state.instProgram) {
+    const vs = gl.createShader(gl.VERTEX_SHADER);
+    const fs = gl.createShader(gl.FRAGMENT_SHADER);
+    if (!vs || !fs) return false;
+    gl.shaderSource(vs, COPY_INST_VS);
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+      console.warn(
+        "copy-to-points instanced VS:",
+        gl.getShaderInfoLog(vs)
+      );
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      return false;
+    }
+    gl.shaderSource(fs, COPY_INST_FS);
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+      console.warn(
+        "copy-to-points instanced FS:",
+        gl.getShaderInfoLog(fs)
+      );
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      return false;
+    }
+    const prog = gl.createProgram();
+    if (!prog) {
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      return false;
+    }
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      console.warn(
+        "copy-to-points instanced link:",
+        gl.getProgramInfoLog(prog)
+      );
+      gl.deleteProgram(prog);
+      return false;
+    }
+    state.instProgram = prog;
+  }
+  if (!state.instQuadVbo || !state.instVao) {
+    state.instQuadVbo = gl.createBuffer();
+    state.instVao = gl.createVertexArray();
+    // Unit-quad corners as a TRIANGLE_STRIP.
+    const quad = new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]);
+    gl.bindVertexArray(state.instVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, state.instQuadVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+    // a_pos is at attribute location 0 — matches the VS's `in vec2 a_pos`.
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindVertexArray(null);
+  }
+  if (!state.instFbo) {
+    state.instFbo = gl.createFramebuffer();
+  }
+  if (!state.instXformTex) {
+    state.instXformTex = gl.createTexture();
+    if (!state.instXformTex) return false;
+    gl.bindTexture(gl.TEXTURE_2D, state.instXformTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+  return true;
 }
 
 // Builds a luminance sampler from an image input by reading it back
@@ -155,12 +329,16 @@ export const copyToPointsNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Duplicate an image, spline, or point at every target point. Each copy respects per-point rotation and scale. The instance anchors at its (0.5, 0.5) center so a scattered tree keeps its trunk on the point. When the instance is a grouped spline or points (has groupIndex tags), an optional `pick` image drives per-target group selection by sampling the image at each point and mapping luminance to the group-index set — feed a noise image for a pseudo-random assortment.",
+    "Duplicate an image, spline, or point at every target point. Each copy respects per-point rotation and scale. The instance anchors at its (0.5, 0.5) center so a scattered tree keeps its trunk on the point. Image mode supports per-instance modulation: scalar inputs drive every copy uniformly (e.g. audio amplitude on `scale_mul` makes everything pulse), and image inputs are sampled at each copy's UV (e.g. noise on `scale_field` gives every copy a different size). For grouped splines / points, an optional `pick` image drives per-target group selection.",
   backend: "webgl2",
   inputs: [
     { name: "points", type: "points", required: true },
     { name: "instance", type: "image", required: true },
     { name: "pick", type: "image", required: false },
+    { name: "scale_mul", type: "scalar", required: false },
+    { name: "rotate_add", type: "scalar", required: false },
+    { name: "scale_field", type: "image", required: false },
+    { name: "rotate_field", type: "image", required: false },
   ],
   resolveInputs(params): InputSocketDef[] {
     const mode = modeOf(params);
@@ -175,6 +353,17 @@ export const copyToPointsNode: NodeDefinition = {
     if (mode !== "image") {
       base.push({ name: "pick", type: "image", required: false });
     }
+    // Per-instance modulation inputs — image mode only. Spline / point
+    // outputs are CPU geometry, modulation there should go through
+    // dedicated nodes (Jitter for noise, Transform for uniform).
+    if (mode === "image") {
+      base.push(
+        { name: "scale_mul", type: "scalar", required: false, label: "Scale × (uniform)" },
+        { name: "rotate_add", type: "scalar", required: false, label: "Rotate + (uniform)" },
+        { name: "scale_field", type: "image", required: false, label: "Scale field" },
+        { name: "rotate_field", type: "image", required: false, label: "Rotate field" },
+      );
+    }
     return base;
   },
   params: [
@@ -184,6 +373,66 @@ export const copyToPointsNode: NodeDefinition = {
       type: "enum",
       options: ["image", "spline", "point"],
       default: "image",
+    },
+    // Modulation params — only meaningful in image mode. These give
+    // the user knobs to set even before they wire any modulation
+    // input; once a corresponding socket is connected, the wired
+    // value overrides via the standard exposed-param semantics.
+    {
+      name: "scale_mul_default",
+      label: "Scale × default",
+      type: "scalar",
+      min: 0,
+      max: 4,
+      softMax: 2,
+      step: 0.001,
+      default: 1,
+      visibleIf: (p) => modeOf(p) === "image",
+    },
+    {
+      name: "rotate_add_default",
+      label: "Rotate + default (rad)",
+      type: "scalar",
+      min: -Math.PI,
+      max: Math.PI,
+      step: 0.001,
+      default: 0,
+      visibleIf: (p) => modeOf(p) === "image",
+    },
+    {
+      name: "scale_field_lo",
+      label: "Scale field — black",
+      type: "scalar",
+      min: 0,
+      max: 4,
+      softMax: 2,
+      step: 0.001,
+      // Map field=0 to 0.5× scale by default — gives a balanced
+      // "shrink half / grow half" range when paired with hi=1.5.
+      default: 0.5,
+      visibleIf: (p) => modeOf(p) === "image",
+    },
+    {
+      name: "scale_field_hi",
+      label: "Scale field — white",
+      type: "scalar",
+      min: 0,
+      max: 4,
+      softMax: 2,
+      step: 0.001,
+      default: 1.5,
+      visibleIf: (p) => modeOf(p) === "image",
+    },
+    {
+      name: "rotate_field_amount",
+      label: "Rotate field amount (rad)",
+      type: "scalar",
+      min: 0,
+      max: Math.PI,
+      softMax: Math.PI,
+      step: 0.001,
+      default: Math.PI,
+      visibleIf: (p) => modeOf(p) === "image",
     },
   ],
   primaryOutput: "image",
@@ -314,101 +563,236 @@ export const copyToPointsNode: NodeDefinition = {
     }
 
     // ---- image mode --------------------------------------------------
+    // Instanced GPU draw: one drawArraysInstanced regardless of point
+    // count. Per-instance transforms ride a small data texture
+    // (Nx2 RGBA32F), uploaded once per eval. No CPU readback / 2D-
+    // canvas drawImage in the hot path — orders of magnitude faster
+    // than the old implementation past ~50 points.
     const output = ctx.allocImage();
     const inst = inputs.instance as ImageValue | undefined;
     if (!inst || inst.kind !== "image" || points.length === 0) {
       ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output };
     }
-
+    if (!ensureInstResources(ctx, state)) {
+      // Shader compile / GL alloc failed — emit empty rather than
+      // crashing the pipeline.
+      ctx.clearTarget(output, [0, 0, 0, 0]);
+      return { primary: output };
+    }
+    const gl = ctx.gl;
     const W = ctx.width;
     const H = ctx.height;
+    const N = points.length;
 
-    // Signature: instance texture identity + point list + canvas size.
-    // When the instance texture re-allocates (upstream re-eval), identity
-    // changes and we re-raster.
-    const sig = JSON.stringify({
-      tex: (inst.texture as unknown as { __id__?: number }).__id__ ?? 0,
-      tw: inst.width,
-      th: inst.height,
-      pts: points,
-      W,
-      H,
-    });
-
-    // The sig above doesn't include the texture bit-pattern, so an
-    // identical texture identity with new pixels won't bust the cache.
-    // To be safe we invalidate every eval when in image mode — this is
-    // still cheap vs. downloading every frame if the source is static.
-    // TODO: a proper content hash (via a tiny sentinel uniform or a
-    // hash-of-sig with texture pointer) would let us skip on true
-    // no-op evals. For now the repaint cost is bounded by 2D canvas
-    // drawImage speed, which handles hundreds of copies comfortably.
-    const needsRepaint = sig !== state.lastSig;
-
-    if (needsRepaint || true) {
-      // Readback instance to a 2D canvas at its full resolution. Used
-      // as the source for every drawImage call below.
-      if (
-        state.instanceCanvas.width !== inst.width ||
-        state.instanceCanvas.height !== inst.height
-      ) {
-        state.instanceCanvas.width = inst.width;
-        state.instanceCanvas.height = inst.height;
-      }
-      try {
-        ctx.blitToCanvas(inst, state.instanceCanvas);
-      } catch {
-        ctx.clearTarget(output, [0, 0, 0, 0]);
-        return { primary: output };
-      }
-
-      if (state.outputCanvas.width !== W || state.outputCanvas.height !== H) {
-        state.outputCanvas.width = W;
-        state.outputCanvas.height = H;
-      }
-      const c2d = state.outputCanvas.getContext("2d");
-      if (c2d) {
-        c2d.clearRect(0, 0, W, H);
-        // The instance is anchored at its own (0.5, 0.5) center — i.e.
-        // (instW/2, instH/2) in pixel space. translate, rotate, and
-        // scale around that center for each point.
-        const iw = inst.width;
-        const ih = inst.height;
-        for (const pt of points) {
-          const sx = pt.scale?.[0] ?? 1;
-          const sy = pt.scale?.[1] ?? 1;
-          const rot = pt.rotation ?? 0;
-          c2d.save();
-          c2d.translate(pt.pos[0] * W, pt.pos[1] * H);
-          if (rot !== 0) c2d.rotate(rot);
-          if (sx !== 1 || sy !== 1) c2d.scale(sx, sy);
-          c2d.drawImage(state.instanceCanvas, -iw / 2, -ih / 2, iw, ih);
-          c2d.restore();
-        }
-
-        const gl = ctx.gl;
-        gl.bindTexture(gl.TEXTURE_2D, state.outputTex);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
-        gl.texImage2D(
-          gl.TEXTURE_2D,
-          0,
-          gl.RGBA,
-          gl.RGBA,
-          gl.UNSIGNED_BYTE,
-          state.outputCanvas
-        );
-        gl.bindTexture(gl.TEXTURE_2D, null);
-      }
-      state.lastSig = sig;
+    // Pack per-instance transforms. Layout matches the VS:
+    //   row 0 = (posX, posY, rotation, scaleX)
+    //   row 1 = (scaleY, 0, 0, 0)
+    // The data texture is Nx2 RGBA32F, so the buffer is 2 * N * 4
+    // floats laid out as [...row0..., ...row1...].
+    const needBufFloats = N * 8;
+    if (
+      !state.instXformBuf ||
+      state.instXformBuf.length < needBufFloats
+    ) {
+      state.instXformBuf = new Float32Array(needBufFloats);
     }
+    const buf = state.instXformBuf;
+    for (let i = 0; i < N; i++) {
+      const pt = points[i];
+      // row 0 — instances laid out contiguously starting at index 0
+      const o1 = i * 4;
+      buf[o1 + 0] = pt.pos[0];
+      buf[o1 + 1] = pt.pos[1];
+      buf[o1 + 2] = pt.rotation ?? 0;
+      buf[o1 + 3] = pt.scale?.[0] ?? 1;
+      // row 1 — laid out starting at index N*4 so the texel at
+      // (i, 1) is at byte-offset (N + i) * 4 floats.
+      const o2 = (N + i) * 4;
+      buf[o2 + 0] = pt.scale?.[1] ?? 1;
+      buf[o2 + 1] = 0;
+      buf[o2 + 2] = 0;
+      buf[o2 + 3] = 0;
+    }
+    // Upload to the data texture. Re-allocate when the width
+    // (instance count) changes; otherwise just texSubImage2D the
+    // fresh values into place.
+    gl.bindTexture(gl.TEXTURE_2D, state.instXformTex!);
+    if (state.instXformWidth !== N) {
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA32F,
+        N,
+        2,
+        0,
+        gl.RGBA,
+        gl.FLOAT,
+        // The view length must match exactly N*2*4 floats. Slice
+        // the staging buffer to exactly the needed length.
+        buf.subarray(0, N * 8)
+      );
+      state.instXformWidth = N;
+    } else {
+      gl.texSubImage2D(
+        gl.TEXTURE_2D,
+        0,
+        0,
+        0,
+        N,
+        2,
+        gl.RGBA,
+        gl.FLOAT,
+        buf.subarray(0, N * 8)
+      );
+    }
+    gl.bindTexture(gl.TEXTURE_2D, null);
 
-    const prog = ctx.getShader("copy-to-points/blit", COPY_BLIT_FS);
-    ctx.drawFullscreen(prog, output, (gl2) => {
-      gl2.activeTexture(gl2.TEXTURE0);
-      gl2.bindTexture(gl2.TEXTURE_2D, state.outputTex);
-      gl2.uniform1i(gl2.getUniformLocation(prog, "u_src"), 0);
-    });
+    // Bind output texture as the framebuffer's color attachment.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, state.instFbo!);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      output.texture,
+      0
+    );
+    gl.viewport(0, 0, output.width, output.height);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    // Standard alpha-over blending so stacked instances composite
+    // like the old drawImage path did.
+    gl.enable(gl.BLEND);
+    gl.blendFuncSeparate(
+      gl.SRC_ALPHA,
+      gl.ONE_MINUS_SRC_ALPHA,
+      gl.ONE,
+      gl.ONE_MINUS_SRC_ALPHA
+    );
+    gl.disable(gl.DEPTH_TEST);
+
+    gl.useProgram(state.instProgram!);
+    gl.bindVertexArray(state.instVao!);
+
+    // Texture unit 0 → instance image (the thing being copied).
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, inst.texture);
+    gl.uniform1i(
+      gl.getUniformLocation(state.instProgram!, "u_src"),
+      0
+    );
+    // Texture unit 1 → per-instance transform data.
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, state.instXformTex!);
+    gl.uniform1i(
+      gl.getUniformLocation(state.instProgram!, "u_xforms"),
+      1
+    );
+    gl.uniform2f(
+      gl.getUniformLocation(state.instProgram!, "u_canvasRes"),
+      W,
+      H
+    );
+    gl.uniform2f(
+      gl.getUniformLocation(state.instProgram!, "u_instSize"),
+      inst.width,
+      inst.height
+    );
+
+    // Resolve uniform-modulation values: scalar input wins over
+    // the matching default param. The audio→scalar coercion path
+    // handles `Audio Source` plugged into scale_mul automatically.
+    const scaleMulIn = inputs.scale_mul;
+    const rotateAddIn = inputs.rotate_add;
+    const scaleMul =
+      scaleMulIn?.kind === "scalar"
+        ? scaleMulIn.value
+        : (params.scale_mul_default as number) ?? 1;
+    const rotateAdd =
+      rotateAddIn?.kind === "scalar"
+        ? rotateAddIn.value
+        : (params.rotate_add_default as number) ?? 0;
+    gl.uniform1f(
+      gl.getUniformLocation(state.instProgram!, "u_scaleMul"),
+      scaleMul
+    );
+    gl.uniform1f(
+      gl.getUniformLocation(state.instProgram!, "u_rotateAdd"),
+      rotateAdd
+    );
+
+    // Per-instance image fields. Bind to texture units 2 and 3.
+    // When unconnected, the field uniforms stay disabled — the VS
+    // skips the texture sample so we don't pay for one and don't
+    // need a placeholder texture bound.
+    // Narrow once and reuse — TS can't carry the discriminator
+    // through a separate boolean variable.
+    const scaleFieldImg =
+      inputs.scale_field?.kind === "image" ? inputs.scale_field : null;
+    const rotateFieldImg =
+      inputs.rotate_field?.kind === "image" ? inputs.rotate_field : null;
+    const useScaleField = scaleFieldImg ? 1 : 0;
+    const useRotateField = rotateFieldImg ? 1 : 0;
+    if (scaleFieldImg) {
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, scaleFieldImg.texture);
+    }
+    if (rotateFieldImg) {
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, rotateFieldImg.texture);
+    }
+    gl.uniform1i(
+      gl.getUniformLocation(state.instProgram!, "u_scaleField"),
+      2
+    );
+    gl.uniform1i(
+      gl.getUniformLocation(state.instProgram!, "u_useScaleField"),
+      useScaleField
+    );
+    gl.uniform1f(
+      gl.getUniformLocation(state.instProgram!, "u_scaleFieldLo"),
+      (params.scale_field_lo as number) ?? 0.5
+    );
+    gl.uniform1f(
+      gl.getUniformLocation(state.instProgram!, "u_scaleFieldHi"),
+      (params.scale_field_hi as number) ?? 1.5
+    );
+    gl.uniform1i(
+      gl.getUniformLocation(state.instProgram!, "u_rotateField"),
+      3
+    );
+    gl.uniform1i(
+      gl.getUniformLocation(state.instProgram!, "u_useRotateField"),
+      useRotateField
+    );
+    gl.uniform1f(
+      gl.getUniformLocation(state.instProgram!, "u_rotateFieldAmount"),
+      (params.rotate_field_amount as number) ?? Math.PI
+    );
+
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, N);
+
+    // Tear down: unbind so the next node sees clean GL state.
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(null);
+    gl.useProgram(null);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      null,
+      0
+    );
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
     return { primary: output };
   },
@@ -420,7 +804,14 @@ export const copyToPointsNode: NodeDefinition = {
   dispose(ctx, nodeId) {
     const key = `copy-to-points:${nodeId}`;
     const state = ctx.state[key] as CopyState | undefined;
-    if (state?.outputTex) ctx.gl.deleteTexture(state.outputTex);
+    if (state) {
+      const gl = ctx.gl;
+      if (state.instProgram) gl.deleteProgram(state.instProgram);
+      if (state.instVao) gl.deleteVertexArray(state.instVao);
+      if (state.instQuadVbo) gl.deleteBuffer(state.instQuadVbo);
+      if (state.instFbo) gl.deleteFramebuffer(state.instFbo);
+      if (state.instXformTex) gl.deleteTexture(state.instXformTex);
+    }
     delete ctx.state[key];
   },
 };

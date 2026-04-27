@@ -42,30 +42,106 @@ export const outputNode: NodeDefinition = {
       visibleIf: (p) =>
         p.imageFormat === "jpeg" || p.imageFormat === "webp",
     },
+    // ----- video --------------------------------------------------------
+    // Three quality tiers:
+    //   fast — MediaRecorder. Real-time capture, ~25 Mbps cap, every browser.
+    //   high — WebCodecs offline. True bitrate, frame-stepped, no drops.
+    //   max  — ffmpeg.wasm. ProRes/H.265/lossless, slowest but best quality.
+    {
+      name: "videoQuality",
+      label: "Quality preset",
+      type: "enum",
+      options: ["fast", "high", "max"],
+      default: "high",
+    },
     {
       name: "videoFormat",
-      label: "Video format",
+      label: "Container",
       type: "enum",
-      options: ["mp4", "webm"],
+      // Container choices depend on the encoder. mediabunny only writes
+      // mp4/webm; ffmpeg writes mov/mkv too. We expose the union and
+      // validate at export time — anything illegal falls back gracefully.
+      options: ["mp4", "webm", "mov", "mkv"],
       default: "mp4",
+    },
+    {
+      name: "videoCodec",
+      label: "Codec",
+      type: "enum",
+      // Per-quality codec menus would need a dependent enum; flatten
+      // and validate at export time instead.
+      //   fast: not used (MediaRecorder picks)
+      //   high: avc, hevc, vp9, av1
+      //   max:  h264, h264-lossless, h265, prores, vp9, av1
+      options: [
+        "avc",
+        "hevc",
+        "vp9",
+        "av1",
+        "h264",
+        "h264-lossless",
+        "h265",
+        "prores",
+      ],
+      default: "avc",
+      visibleIf: (p) => p.videoQuality !== "fast",
     },
     {
       name: "videoFrames",
       label: "Duration (frames)",
       type: "scalar",
       min: 1,
-      max: 6000,
+      max: 12000,
       step: 1,
       default: 240,
+    },
+    {
+      name: "videoFps",
+      label: "Output FPS",
+      type: "scalar",
+      min: 1,
+      max: 120,
+      step: 1,
+      default: 60,
+      // Fast mode is locked to the page's render fps because
+      // MediaRecorder reads the live stream. High/Max step the clock
+      // manually so they get a real, independent fps.
+      visibleIf: (p) => p.videoQuality !== "fast",
     },
     {
       name: "videoBitrateMbps",
       label: "Bitrate (Mbps)",
       type: "scalar",
       min: 0.5,
-      max: 50,
+      max: 200,
       step: 0.5,
-      default: 8,
+      default: 16,
+      visibleIf: (p) => p.videoQuality !== "max",
+    },
+    {
+      name: "videoCrf",
+      label: "Quality (CRF)",
+      type: "scalar",
+      // 0 = lossless, 18 = visually lossless, 23 = default, 28 = small.
+      // Lower = better quality, larger file.
+      min: 0,
+      max: 51,
+      step: 1,
+      default: 18,
+      visibleIf: (p) =>
+        p.videoQuality === "max" &&
+        p.videoCodec !== "prores" &&
+        p.videoCodec !== "h264-lossless",
+    },
+    {
+      name: "videoProresProfile",
+      label: "ProRes profile",
+      type: "enum",
+      // proxy / lt / standard / hq / 4444 / 4444xq
+      options: ["proxy", "lt", "standard", "hq", "4444", "4444xq"],
+      default: "hq",
+      visibleIf: (p) =>
+        p.videoQuality === "max" && p.videoCodec === "prores",
     },
   ],
   primaryOutput: null,

@@ -743,6 +743,7 @@ export default function NodeEditor({
         edges={displayEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
+        deleteKeyCode={["Backspace", "Delete", "x", "X"]}
         onNodesChange={onNodesChange as (c: NodeChange[]) => void}
         onEdgesChange={onEdgesChange as (c: EdgeChange[]) => void}
         onConnect={onConnect}

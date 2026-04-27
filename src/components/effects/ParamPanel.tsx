@@ -27,6 +27,12 @@ import {
   type CurveChannel,
   type CurvesValue,
 } from "@/nodes/effect/color-correction";
+import { TimelineCurveThumbnail } from "./TimelineCurveEditor";
+import {
+  defaultTimelineCurve,
+  sanitizeTimelineCurve,
+} from "@/nodes/source/timeline/eval";
+import type { TimelineCurveValue } from "@/engine/types";
 
 interface Props {
   nodes: Node<NodeDataPayload>[];
@@ -47,6 +53,10 @@ interface Props {
     paramName: string,
     override: { min?: number; max?: number; softMax?: number } | null
   ) => void;
+  // Toggle the chain-link state for a `linkedPairs` entry. The pair key
+  // is `${a}:${b}` matching the order in the node def. When linked,
+  // editing either param proportionally updates the other.
+  onToggleParamLink?: (nodeId: string, pairKey: string) => void;
   // Returns true when an exposed param currently has an incoming edge
   // driving it. The row is rendered read-only with a "driven" indicator.
   isParamDriven: (nodeId: string, paramName: string) => boolean;
@@ -58,6 +68,69 @@ interface Props {
   onLoadProject?: (id: string) => void;
   // Bumped by the parent after save/delete so LoadGrid refetches.
   loadRefreshKey?: number;
+}
+
+// Drop-in <input type="range"> wrapper that dampens the per-event delta
+// to 10% while the user holds Shift during a drag. Tracks shift via a
+// window listener (the slider's `change` event doesn't carry modifier
+// keys), and tracks the slider's "native" position via a ref so each
+// onChange is interpreted as an incremental delta from the prior event.
+// While dampened, the thumb visually lags behind the cursor — the
+// cumulative drag still moves, just at a finer rate.
+function DampenedRangeInput(
+  props: Omit<
+    React.InputHTMLAttributes<HTMLInputElement>,
+    "type" | "value" | "onChange"
+  > & {
+    value: number;
+    onChange: (next: number) => void;
+    shiftFactor?: number;
+  }
+) {
+  const { value, onChange, shiftFactor = 0.1, ...rest } = props;
+  const dragRef = useRef<{ lastNative: number } | null>(null);
+  const shiftRef = useRef(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      shiftRef.current = e.shiftKey;
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKey);
+    };
+  }, []);
+  return (
+    <input
+      type="range"
+      {...rest}
+      value={value}
+      onPointerDown={(e) => {
+        const native = parseFloat((e.target as HTMLInputElement).value);
+        dragRef.current = { lastNative: native };
+      }}
+      onPointerUp={() => {
+        dragRef.current = null;
+      }}
+      onPointerCancel={() => {
+        dragRef.current = null;
+      }}
+      onChange={(e) => {
+        const native = parseFloat(e.target.value);
+        if (Number.isNaN(native)) return;
+        if (dragRef.current) {
+          const delta = native - dragRef.current.lastNative;
+          dragRef.current.lastNative = native;
+          const factor = shiftRef.current ? shiftFactor : 1;
+          onChange(value + delta * factor);
+        } else {
+          // Click-to-set or keyboard arrow — no anchor, apply directly.
+          onChange(native);
+        }
+      }}
+    />
+  );
 }
 
 const RES_PRESETS: Array<{ label: string; w: number; h: number }> = [
@@ -78,6 +151,7 @@ export default function ParamPanel({
   onParamChange,
   onToggleParamExposed,
   onParamRangeChange,
+  onToggleParamLink,
   isParamDriven,
   signedIn,
   currentUserId,
@@ -91,10 +165,16 @@ export default function ParamPanel({
 
   return (
     <div
+      className="no-scrollbar"
       style={{
         height: "100%",
+        width: "100%",
         overflowY: "auto",
-        padding: 12,
+        // Clip any sub-pixel horizontal overflow so a stray child can't
+        // push the visible right edge inward and break the symmetry.
+        overflowX: "hidden",
+        padding: 10,
+        boxSizing: "border-box",
         background: "#0a0a0a",
         color: "#e5e7eb",
         fontFamily: "ui-monospace, monospace",
@@ -132,6 +212,20 @@ export default function ParamPanel({
               const isExposed = exposedSet.has(p.name);
               const driven = isExposed && isParamDriven(selected.id, p.name);
               const override = selected.data.paramOverrides?.[p.name];
+              // Resolve chain-link UI state for this param. A param can
+              // appear in at most one pair (linked pairs are exclusive
+              // by construction at the def level).
+              const pair = def.linkedPairs?.find(
+                (lp) => lp.a === p.name || lp.b === p.name
+              );
+              const pairKey = pair ? `${pair.a}:${pair.b}` : null;
+              const linkInfo = pair && pairKey
+                ? {
+                    pairKey,
+                    isLinked: !!selected.data.linkedParams?.[pairKey],
+                    partnerName: pair.a === p.name ? pair.b : pair.a,
+                  }
+                : undefined;
               return (
                 <ParamRow
                   key={p.name}
@@ -151,6 +245,12 @@ export default function ParamPanel({
                     onParamRangeChange
                       ? (next) =>
                           onParamRangeChange(selected.id, p.name, next)
+                      : undefined
+                  }
+                  linkInfo={linkInfo}
+                  onToggleLink={
+                    linkInfo && onToggleParamLink
+                      ? () => onToggleParamLink(selected.id, linkInfo.pairKey)
                       : undefined
                   }
                 />
@@ -284,14 +384,19 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+      }}
+    >
       <div
         style={{
           color: "#71717a",
           textTransform: "uppercase",
           letterSpacing: 1,
           fontSize: 10,
-          marginBottom: 6,
         }}
       >
         {label}
@@ -311,6 +416,8 @@ function ParamRow({
   onToggleExposed,
   rangeOverride,
   onRangeChange,
+  linkInfo,
+  onToggleLink,
 }: {
   param: ParamDef;
   value: unknown;
@@ -325,14 +432,19 @@ function ParamRow({
   onRangeChange?: (
     next: { min?: number; max?: number; softMax?: number } | null
   ) => void;
+  // Chain-link UI state for this param (only set when the param is
+  // half of a `linkedPairs` entry on the node def).
+  linkInfo?: { pairKey: string; isLinked: boolean; partnerName: string };
+  onToggleLink?: () => void;
 }) {
   const label = param.label ?? param.name;
 
   return (
     <div
       style={{
-        marginBottom: 10,
-        padding: 8,
+        padding: 10,
+        boxSizing: "border-box",
+        width: "100%",
         background: "#111113",
         border: `1px solid ${driven ? "#334155" : "#1f1f23"}`,
         borderRadius: 4,
@@ -343,7 +455,7 @@ function ParamRow({
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          marginBottom: 4,
+          marginBottom: 8,
         }}
       >
         <span
@@ -355,6 +467,29 @@ function ParamRow({
           }}
         >
           {label}
+          {linkInfo && onToggleLink && (
+            <button
+              onClick={onToggleLink}
+              title={
+                linkInfo.isLinked
+                  ? `Unlink from ${linkInfo.partnerName}`
+                  : `Link with ${linkInfo.partnerName} (preserve ratio)`
+              }
+              style={{
+                background: "transparent",
+                border: "none",
+                padding: 0,
+                margin: 0,
+                cursor: "pointer",
+                color: linkInfo.isLinked ? "#facc15" : "#52525b",
+                display: "inline-flex",
+                alignItems: "center",
+                lineHeight: 1,
+              }}
+            >
+              <ChainIcon linked={linkInfo.isLinked} />
+            </button>
+          )}
           {driven && (
             <span
               title="Driven by a connected input — stored value is ignored while connected"
@@ -864,17 +999,14 @@ function ParamControl({
               }}
             >
               <span style={{ color: "#71717a", minWidth: 50 }}>opacity</span>
-              <input
-                type="range"
+              <DampenedRangeInput
                 min={0}
                 max={1}
                 step={0.01}
                 value={l.opacity}
-                onChange={(e) => {
+                onChange={(v) => {
                   const next = layers.map((x) =>
-                    x.id === l.id
-                      ? { ...x, opacity: parseFloat(e.target.value) }
-                      : x
+                    x.id === l.id ? { ...x, opacity: v } : x
                   );
                   onChange(next);
                 }}
@@ -930,6 +1062,30 @@ function ParamControl({
         curves={curves}
         onChange={(next) => onChange(next)}
       />
+    );
+  }
+
+  if (param.type === "timeline_curve") {
+    // The full editor docks to the canvas area (opened via a tab there).
+    // Inside ParamPanel we only show a thumbnail with a hint nudging the
+    // user toward the canvas tab.
+    const curve = sanitizeTimelineCurve(
+      (value as TimelineCurveValue) ?? param.default ?? defaultTimelineCurve()
+    );
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          color: "#71717a",
+          fontFamily: "ui-monospace, monospace",
+          fontSize: 10,
+        }}
+      >
+        <TimelineCurveThumbnail value={curve} width={120} height={36} />
+        <span>Edit in the curve tab below the canvas</span>
+      </div>
     );
   }
 
@@ -1175,17 +1331,12 @@ function ColorRampControl({
               }}
             >
               <span style={{ color: "#71717a", minWidth: 50 }}>alpha</span>
-              <input
-                type="range"
+              <DampenedRangeInput
                 min={0}
                 max={1}
                 step={0.01}
                 value={selected.alpha ?? 1}
-                onChange={(e) =>
-                  updateStop(selected.id, {
-                    alpha: parseFloat(e.target.value),
-                  })
-                }
+                onChange={(v) => updateStop(selected.id, { alpha: v })}
                 style={{ flex: 1 }}
               />
               <input
@@ -1218,17 +1369,12 @@ function ColorRampControl({
               }}
             >
               <span style={{ color: "#71717a", minWidth: 50 }}>position</span>
-              <input
-                type="range"
+              <DampenedRangeInput
                 min={0}
                 max={1}
                 step={0.001}
                 value={selected.position}
-                onChange={(e) =>
-                  updateStop(selected.id, {
-                    position: parseFloat(e.target.value),
-                  })
-                }
+                onChange={(v) => updateStop(selected.id, { position: v })}
                 style={{ flex: 1 }}
               />
               <input
@@ -1711,6 +1857,46 @@ function CurvesControl({
   );
 }
 
+function ChainIcon({ linked }: { linked: boolean }) {
+  // Two-link chain. When `linked`, the gap between halves closes; when
+  // unlinked, a small break separates them. 11px so it sits beside the
+  // 11px label text without overpowering it.
+  if (linked) {
+    return (
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+        <path
+          d="M5 3.5h-1a2 2 0 0 0 0 4h1M7 8.5h1a2 2 0 0 0 0-4h-1"
+          stroke="currentColor"
+          strokeWidth="1.2"
+          strokeLinecap="round"
+        />
+        <path
+          d="M4.25 6h3.5"
+          stroke="currentColor"
+          strokeWidth="1.2"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+      <path
+        d="M5 3h-1.5a2.2 2.2 0 0 0 0 4.4h.5"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M7 9h1.5a2.2 2.2 0 0 0 0-4.4h-.5"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function inputStyle(): React.CSSProperties {
   return {
     width: 56,
@@ -1780,13 +1966,12 @@ function ScalarSliderRow({
         setEditorOpen(true);
       }}
     >
-      <input
-        type="range"
+      <DampenedRangeInput
         min={sliderMin}
         max={sliderMax}
         step={param.step ?? 0.01}
         value={sliderValue}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
+        onChange={(v) => onChange(v)}
         style={{
           flex: 1,
           // Subtle hint that this slider has a custom range — accent-color
@@ -1795,8 +1980,8 @@ function ScalarSliderRow({
         }}
         title={
           hasOverride
-            ? `Custom range — right-click to edit (defaults: ${param.min ?? "—"} to ${param.max ?? "—"})`
-            : "Right-click to set a custom range"
+            ? `Custom range — right-click to edit (defaults: ${param.min ?? "—"} to ${param.max ?? "—"}). Hold Shift to fine-tune.`
+            : "Right-click to set a custom range. Hold Shift to fine-tune."
         }
       />
       <input

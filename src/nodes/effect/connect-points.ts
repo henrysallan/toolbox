@@ -55,28 +55,69 @@ export const connectPointsNode: NodeDefinition = {
       srcVal?.kind === "points" ? srcVal.points : [];
     const maxD = Math.max(0, (params.max_distance as number) ?? 0.1);
     const d2 = maxD * maxD;
+    const N = points.length;
 
+    // Spatial hash bucket: cell size = max_distance, so any pair
+    // within threshold lives in the same cell or in one of the 8
+    // neighbors. Reduces O(N²) pair-checks to O(N · k) where k is
+    // local density. With max_distance = 0.1 the grid is at most
+    // 11×11 buckets; for very small thresholds the grid grows but
+    // each bucket stays sparse, so the gain only widens.
     const subpaths: SplineSubpath[] = [];
-    for (let i = 0; i < points.length; i++) {
-      const a = points[i];
-      for (let j = i + 1; j < points.length; j++) {
-        const b = points[j];
-        const dx = a.pos[0] - b.pos[0];
-        const dy = a.pos[1] - b.pos[1];
-        if (dx * dx + dy * dy > d2) continue;
-        const shared =
-          a.groupIndex !== undefined && a.groupIndex === b.groupIndex
-            ? a.groupIndex
-            : undefined;
-        const sub: SplineSubpath = {
-          closed: false,
-          anchors: [
-            { pos: [a.pos[0], a.pos[1]] },
-            { pos: [b.pos[0], b.pos[1]] },
-          ],
-        };
-        if (shared !== undefined) sub.groupIndex = shared;
-        subpaths.push(sub);
+    if (N > 0 && maxD > 0) {
+      const cell = maxD;
+      const grid = new Map<string, number[]>();
+      const cellKey = (cx: number, cy: number) => `${cx}|${cy}`;
+      // Bucket every point by its cell coordinate. floor() rather
+      // than round() so cell membership matches "this point is in
+      // the [cx*cell, (cx+1)*cell) range."
+      for (let i = 0; i < N; i++) {
+        const p = points[i];
+        const cx = Math.floor(p.pos[0] / cell);
+        const cy = Math.floor(p.pos[1] / cell);
+        const k = cellKey(cx, cy);
+        let arr = grid.get(k);
+        if (!arr) {
+          arr = [];
+          grid.set(k, arr);
+        }
+        arr.push(i);
+      }
+      // For each point, scan its own bucket + the 8 neighbors. The
+      // i < j guard avoids double-counting and self-pairing in one
+      // pass without needing a "visited" set.
+      for (let i = 0; i < N; i++) {
+        const a = points[i];
+        const cx = Math.floor(a.pos[0] / cell);
+        const cy = Math.floor(a.pos[1] / cell);
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const arr = grid.get(cellKey(cx + dx, cy + dy));
+            if (!arr) continue;
+            for (let k = 0; k < arr.length; k++) {
+              const j = arr[k];
+              if (j <= i) continue;
+              const b = points[j];
+              const ex = a.pos[0] - b.pos[0];
+              const ey = a.pos[1] - b.pos[1];
+              if (ex * ex + ey * ey > d2) continue;
+              const shared =
+                a.groupIndex !== undefined &&
+                a.groupIndex === b.groupIndex
+                  ? a.groupIndex
+                  : undefined;
+              const sub: SplineSubpath = {
+                closed: false,
+                anchors: [
+                  { pos: [a.pos[0], a.pos[1]] },
+                  { pos: [b.pos[0], b.pos[1]] },
+                ],
+              };
+              if (shared !== undefined) sub.groupIndex = shared;
+              subpaths.push(sub);
+            }
+          }
+        }
       }
     }
 

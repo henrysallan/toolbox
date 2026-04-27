@@ -175,9 +175,33 @@ export type ParamType =
   | "merge_layers"
   | "color_ramp"
   | "curves"
+  | "timeline_curve"
   | "spline_anchors"
   | "svg_file"
   | "audio_file";
+
+// Authored curve for the Timeline node. Stored as a sequence of control
+// points sorted by x in [0,1]; the first must be at x=0 and the last at x=1.
+// y is typically in [0,1] but not hard-clamped — the editor allows overshoot.
+// Each point carries a left/right bezier handle relative to its position
+// and a handle mode that constrains how the two move together.
+export type TimelineCurveHandleMode =
+  | "aligned"
+  | "mirrored"
+  | "free"
+  | "vector";
+
+export interface TimelineCurvePoint {
+  x: number;
+  y: number;
+  handleMode: TimelineCurveHandleMode;
+  leftHandle: { dx: number; dy: number };
+  rightHandle: { dx: number; dy: number };
+}
+
+export interface TimelineCurveValue {
+  controlPoints: TimelineCurvePoint[];
+}
 
 export interface AudioFileParamValue {
   // Persistent HTMLAudioElement bound to an ObjectURL — kept alive for
@@ -319,6 +343,12 @@ export interface NodeDefinition {
   // node is selected. Nodes must expose `translateX/translateY/scaleX/scaleY/
   // rotate/pivotX/pivotY` params for the gizmo to have something to drive.
   supportsTransformGizmo?: boolean;
+  // Pairs of params that the user can chain-lock so editing one updates
+  // the other proportionally. Both params must be type:"scalar". The
+  // pair key is `${a}:${b}` (using the order declared here); state lives
+  // on `NodeDataPayload.linkedParams[key]` as the captured ratio
+  // `b / a` at link time. The UI renders a chain icon next to both rows.
+  linkedPairs?: { a: string; b: string }[];
   // Render a specific enum param as a compact dropdown on the node's
   // header, in addition to its normal row in the params panel. Used by
   // the Group family (Group / Pick / Length) so users can flip

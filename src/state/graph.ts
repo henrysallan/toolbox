@@ -16,6 +16,12 @@ export type NodeDataPayload = {
     string,
     { min?: number; max?: number; softMax?: number }
   >;
+  // Active chain-locks between pairs of scalar params declared by the
+  // node's `linkedPairs`. Key is `${a}:${b}` matching the def order;
+  // `ratio` is `b / a` captured at the moment the user clicked the
+  // chain icon. While present, editing `a` writes `a * ratio` into `b`
+  // (and vice-versa with `b / ratio`).
+  linkedParams?: Record<string, { ratio: number }>;
   error?: string;
   auxOutputs: { name: string; type: string; disabled?: boolean }[];
   inputs: { name: string; label?: string; type: string }[];
@@ -23,6 +29,11 @@ export type NodeDataPayload = {
   name: string;
   terminal?: boolean;
   active?: boolean;
+  // Second-viewport active flag. Only consulted when split-viewport mode
+  // is on; the second canvas reads `active2` the same way the primary
+  // canvas reads `active`. Persisted with the graph so a saved project
+  // restores both terminals correctly.
+  active2?: boolean;
   bypassed?: boolean;
   [key: string]: unknown;
 };

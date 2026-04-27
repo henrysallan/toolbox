@@ -40,6 +40,66 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+/* Soft corners on every numeric input — applies app-wide so the
+   timeline scrubber, param panel sliders, vec components, color-ramp
+   pickers, and any one-off type="number" boxes all match. The rule
+   loses to any inline border-radius an individual input sets. */
+input[type="number"] {
+  border-radius: 3px;
+  /* Establish a positioning context for the absolutely-placed spinner
+     so it has explicit bounds to render into. With `appearance: none`
+     and only `width / height: 100%`, WebKit collapses the spinner's
+     layout box and the icons never paint. Absolute positioning fixes
+     it. */
+  position: relative;
+}
+
+/* Replace the browser-default bright blue / white focus ring on text
+   and numeric inputs with a subtle thin grey stroke that picks up the
+   muted-zinc palette the rest of the chrome uses. */
+input[type="number"]:focus,
+input[type="text"]:focus,
+input[type="search"]:focus,
+textarea:focus {
+  outline: 1px solid #3f3f46;
+  outline-offset: -1px;
+}
+
+/* Restyle the WebKit number-spinner. Default look is a chunky white
+   wedge button — we want a thin left-divider with two slim white
+   chevron carets stacked vertically. Carets are inlined as a
+   URL-encoded SVG data URI. Firefox doesn't expose the spinner as a
+   stylable pseudo-element; it falls back to its own minimal arrows. */
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 14px;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
+  background-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 14'%3E%3Cpolyline points='2.5,5.25 5,2.75 7.5,5.25' fill='none' stroke='white' stroke-width='1' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpolyline points='2.5,8.75 5,11.25 7.5,8.75' fill='none' stroke='white' stroke-width='1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 10px 14px;
+  opacity: 0.55;
+  transition: opacity 120ms;
+  cursor: pointer;
+}
+input[type="number"]:hover::-webkit-inner-spin-button,
+input[type="number"]:focus::-webkit-inner-spin-button {
+  opacity: 1;
+}
+
 input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
@@ -55,42 +115,57 @@ input[type="range"]:focus {
 }
 
 input[type="range"]::-webkit-slider-runnable-track {
-  background: #000;
-  border: 1px solid #000;
-  height: 4px;
-  border-radius: 0;
+  background: #18181b;
+  border: 1px solid #27272a;
+  height: 3px;
+  border-radius: 2px;
 }
 
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 10px;
-  height: 14px;
-  background: #000;
-  border: 1px solid #000;
-  border-radius: 0;
-  margin-top: -6px;
+  /* Circular dot with a hairline grey stroke. */
+  width: 11px;
+  height: 11px;
+  background: #18181b;
+  border: 1px solid #52525b;
+  border-radius: 50%;
+  /* Center the dot vertically over the 3px track + 2px borders. */
+  margin-top: -5px;
   cursor: pointer;
 }
 
 input[type="range"]::-moz-range-track {
-  background: #000;
-  border: 1px solid #000;
-  height: 4px;
-  border-radius: 0;
+  background: #18181b;
+  border: 1px solid #27272a;
+  height: 3px;
+  border-radius: 2px;
 }
 
 input[type="range"]::-moz-range-thumb {
-  width: 10px;
-  height: 14px;
-  background: #000;
-  border: 1px solid #000;
-  border-radius: 0;
+  width: 11px;
+  height: 11px;
+  background: #18181b;
+  border: 1px solid #52525b;
+  border-radius: 50%;
   cursor: pointer;
 }
 
 input[type="range"]::-moz-focus-outer {
   border: 0;
+}
+
+/* Hide the scrollbar entirely on a scrollable container without
+   disabling wheel/trackpad scrolling. Useful when the panel's padding
+   should stay symmetric and we don't want a scrollbar gutter eating
+   into the right edge. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 /* Thin, unfilled scrollbar for compact panels (node search popup, etc.).

@@ -4,7 +4,10 @@ import { paintNode } from "./source/paint";
 import { solidColorNode } from "./source/solid-color";
 import { gradientNode } from "./source/gradient";
 import { perlinNoiseNode } from "./source/perlin-noise";
+import { voronoiNode } from "./source/voronoi";
+import { fractureNode } from "./source/fracture";
 import { sceneTimeNode } from "./source/scene-time";
+import { timelineNode } from "./source/timeline";
 import { uvCoordsNode } from "./source/uv-coords";
 import { textNode } from "./source/text";
 import { cursorNode } from "./source/cursor";
@@ -55,6 +58,7 @@ import { proximityMergeNode } from "./effect/proximity-merge";
 import { connectPointsNode } from "./effect/connect-points";
 import { lissajous2DNode, lissajous3DNode } from "./effect/lissajous";
 import { jitterNode } from "./effect/jitter";
+import { thresholdNode } from "./effect/threshold";
 import { outputNode } from "./output/output";
 
 let registered = false;
@@ -69,7 +73,10 @@ export function registerAllNodes() {
   // Back-compat: projects saved before the rename from "perlin-noise" to
   // "noise" keep loading via the old type string.
   registerNode({ ...perlinNoiseNode, type: "perlin-noise" });
+  registerNode(voronoiNode);
+  registerNode(fractureNode);
   registerNode(sceneTimeNode);
+  registerNode(timelineNode);
   registerNode(uvCoordsNode);
   // Back-compat alias — projects saved before the rename reference the
   // old type string; serving the same def under both keeps them loading.
@@ -124,6 +131,7 @@ export function registerAllNodes() {
   registerNode(lissajous2DNode);
   registerNode(lissajous3DNode);
   registerNode(jitterNode);
+  registerNode(thresholdNode);
   registerNode(outputNode);
   registered = true;
 }

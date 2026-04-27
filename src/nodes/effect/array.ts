@@ -2,20 +2,39 @@ import type {
   ImageValue,
   InputSocketDef,
   NodeDefinition,
+  OutputSocketDef,
+  Point,
+  PointsValue,
+  SocketType,
+  SplineSubpath,
+  SplineValue,
 } from "@/engine/types";
+import { transformSubpath } from "@/engine/spline-transform";
 import {
   disposePlaceholderTex,
   getPlaceholderTex,
 } from "@/engine/placeholder-tex";
 
-// ─── Main shader ──────────────────────────────────────────────────────────
-// Each output pixel figures out which cell it belongs to, computes a local
-// UV inside that cell, applies the inverse of the per-copy transform, and
-// samples the source — O(1) per pixel regardless of cell count.
+// Tile an instance into a 2D grid.
 //
-// Modulator inputs are sampled once per cell (at the cell's center UV in
-// canvas space), so connecting e.g. a noise image to `mod_scale` gives each
-// copy a different scale based on its location.
+// The instance type is polymorphic — image, spline, or points — and the
+// `mode` param picks which. resolveInputs/resolvePrimaryOutput rewire the
+// sockets to match, exactly like the Copy to Points node.
+//
+// Image mode runs as a single full-screen pass: each output pixel figures
+// out which cell it lies in, computes a cell-local UV, applies the inverse
+// per-copy transform, and samples the source — O(1) per pixel regardless
+// of cell count. Image-mode modulator sockets (mod_scale / mod_pos /
+// mod_rot) sample upstream images at each cell's center.
+//
+// Spline / point modes are pure CPU geometry. For each cell, the input
+// subpaths or points are transformed into the cell's center with the
+// per-copy local translate / rotate / scale applied. The optimization
+// pattern parallels Copy to Points: just affine math through the existing
+// transformSubpath helper, no GPU readback. Per-instance modulator inputs
+// don't apply (matching copy-to-points convention — feed Jitter or
+// Transform downstream for noise / uniform tweaks).
+
 const FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -42,19 +61,14 @@ void main() {
   vec2 idxF = floor(gridUv / u_stepSize);
   vec2 localUv = fract(gridUv / u_stepSize);
 
-  // Out-of-grid pixels are transparent.
   if (idxF.x < 0.0 || idxF.x >= u_count.x ||
       idxF.y < 0.0 || idxF.y >= u_count.y) {
     outColor = vec4(0.0);
     return;
   }
 
-  // Cell center in canvas UV — what modulators are sampled at.
   vec2 cellCenter = (idxF + 0.5) * u_stepSize + u_patternOffset;
 
-  // Modulator samples. Map 0..1 source → -amt..+amt (for pos/rot) or
-  // 1-amt..1+amt (for scale). Gives sensible behavior when the modulator
-  // defaults to 0.5 grey (no change).
   vec2 effScale = u_localScale;
   if (u_hasModScale == 1) {
     float m = texture(u_modScale, cellCenter).r;
@@ -71,7 +85,6 @@ void main() {
     effAngle += (r - 0.5) * 2.0 * u_modRotAmt;
   }
 
-  // Inverse transform cell-local UV back to the source texture.
   vec2 p = localUv - vec2(0.5);
   p -= effOffset;
   float c = cos(-effAngle);
@@ -87,8 +100,6 @@ void main() {
   outColor = texture(u_src, srcUv);
 }`;
 
-// Per-cell normalized index as a one-channel image. Useful as a driver for
-// downstream effects ("color ramp by index", "displace per cell", etc.).
 const INDEX_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -114,43 +125,47 @@ void main() {
   outColor = vec4(t, t, t, 1.0);
 }`;
 
+function modeOf(params: Record<string, unknown>): "image" | "spline" | "point" {
+  const m = params.mode;
+  if (m === "spline") return "spline";
+  if (m === "point") return "point";
+  return "image";
+}
+
 export const arrayNode: NodeDefinition = {
   type: "array",
   name: "Array",
   category: "utility",
   description:
-    "Tile the input image into a grid. Fit mode scales cells to fill the canvas; Step mode gives cells a fixed size. Plug noise/gradient images into the modulator inputs for per-cell scale/position/rotation variation.",
+    "Tile an image, spline, or points into a grid. Image mode supports modulator inputs for per-cell scale/position/rotation variation; spline / point modes emit transformed CPU geometry — feed Jitter or Transform downstream for noise / uniform tweaks.",
   backend: "webgl2",
-  inputs: [{ name: "image", type: "image", required: true }],
-  // Modulator sockets only surface when the feature they drive makes sense.
-  // Always-visible would clutter the default node; resolveInputs lets us
-  // add them when the user wants them (here, always — but stubbed if the
-  // "distribution" enum grows).
-  resolveInputs() {
+  inputs: [{ name: "instance", type: "image", required: true }],
+  resolveInputs(params): InputSocketDef[] {
+    const mode = modeOf(params);
+    const instType: SocketType =
+      mode === "spline" ? "spline" : mode === "point" ? "points" : "image";
     const list: InputSocketDef[] = [
-      { name: "image", label: "image", type: "image", required: true },
-      {
-        name: "mod_scale",
-        label: "scale mod",
-        type: "image",
-        required: false,
-      },
-      {
-        name: "mod_pos",
-        label: "pos mod",
-        type: "image",
-        required: false,
-      },
-      {
-        name: "mod_rot",
-        label: "rot mod",
-        type: "image",
-        required: false,
-      },
+      { name: "instance", label: "instance", type: instType, required: true },
     ];
+    // Image-mode-only modulator sockets. Spline / point geometry edits
+    // belong on Jitter / Transform — same convention as Copy to Points.
+    if (mode === "image") {
+      list.push(
+        { name: "mod_scale", label: "scale mod", type: "image", required: false },
+        { name: "mod_pos", label: "pos mod", type: "image", required: false },
+        { name: "mod_rot", label: "rot mod", type: "image", required: false }
+      );
+    }
     return list;
   },
   params: [
+    {
+      name: "mode",
+      label: "Instance type",
+      type: "enum",
+      options: ["image", "spline", "point"],
+      default: "image",
+    },
     {
       name: "distribution",
       label: "Distribution",
@@ -228,7 +243,6 @@ export const arrayNode: NodeDefinition = {
       options: ["flow-columns", "flow-rows"],
       default: "flow-rows",
     },
-    // Per-copy transform (applied uniformly to every cell, then modulated).
     {
       name: "localX",
       label: "Copy X",
@@ -276,7 +290,6 @@ export const arrayNode: NodeDefinition = {
       step: 0.01,
       default: 1,
     },
-    // Modulator strengths. 0 disables the effect even if an input is wired.
     {
       name: "modScaleAmount",
       label: "Scale Mod Amt",
@@ -286,6 +299,7 @@ export const arrayNode: NodeDefinition = {
       softMax: 1,
       step: 0.01,
       default: 1,
+      visibleIf: (p) => modeOf(p) === "image",
     },
     {
       name: "modPosAmount",
@@ -296,6 +310,7 @@ export const arrayNode: NodeDefinition = {
       softMax: 0.5,
       step: 0.001,
       default: 0.25,
+      visibleIf: (p) => modeOf(p) === "image",
     },
     {
       name: "modRotAmount",
@@ -306,9 +321,23 @@ export const arrayNode: NodeDefinition = {
       softMax: 180,
       step: 0.5,
       default: 90,
+      visibleIf: (p) => modeOf(p) === "image",
     },
   ],
+  linkedPairs: [
+    { a: "countX", b: "countY" },
+    { a: "sizeW", b: "sizeH" },
+    { a: "patternOffsetX", b: "patternOffsetY" },
+    { a: "localX", b: "localY" },
+    { a: "localScaleX", b: "localScaleY" },
+  ],
   primaryOutput: "image",
+  resolvePrimaryOutput(params): SocketType {
+    const mode = modeOf(params);
+    if (mode === "spline") return "spline";
+    if (mode === "point") return "points";
+    return "image";
+  },
   auxOutputs: [
     {
       name: "index",
@@ -316,18 +345,24 @@ export const arrayNode: NodeDefinition = {
       description: "Per-cell normalized index as grayscale (0..1).",
     },
   ],
+  resolveAuxOutputs(params): OutputSocketDef[] {
+    // The grayscale-index aux is only meaningful in image mode — the
+    // other modes emit CPU geometry where per-instance index already
+    // lives on each output item via groupIndex.
+    if (modeOf(params) !== "image") return [];
+    return [
+      {
+        name: "index",
+        type: "image",
+        description: "Per-cell normalized index as grayscale (0..1).",
+      },
+    ];
+  },
 
   compute({ inputs, params, ctx, nodeId }) {
-    const output = ctx.allocImage();
-    const src = inputs.image;
-    const indexOut = ctx.allocImage();
-    if (!src || src.kind !== "image") {
-      ctx.clearTarget(output, [0, 0, 0, 0]);
-      ctx.clearTarget(indexOut, [0, 0, 0, 0]);
-      return { primary: output, aux: { index: indexOut } };
-    }
+    const mode = modeOf(params);
 
-    // Compute step size based on mode.
+    // Geometry common: cell-step sizing, ordering, per-copy transform.
     const countX = Math.max(1, Math.floor((params.countX as number) ?? 3));
     const countY = Math.max(1, Math.floor((params.countY as number) ?? 3));
     const sizeMode = (params.sizeMode as string) ?? "fit";
@@ -339,8 +374,7 @@ export const arrayNode: NodeDefinition = {
     const patternY = (params.patternOffsetY as number) ?? 0;
     const localX = (params.localX as number) ?? 0;
     const localY = (params.localY as number) ?? 0;
-    const localAngle =
-      (((params.localRotate as number) ?? 0) * Math.PI) / 180;
+    const localRotateDeg = (params.localRotate as number) ?? 0;
     const localScaleX = Math.max(
       0.0001,
       (params.localScaleX as number) ?? 1
@@ -349,6 +383,95 @@ export const arrayNode: NodeDefinition = {
       0.0001,
       (params.localScaleY as number) ?? 1
     );
+    const direction = (params.direction as string) ?? "flow-rows";
+    const rowFirst = direction === "flow-rows";
+
+    // ---- spline mode -------------------------------------------------
+    if (mode === "spline") {
+      const inst = inputs.instance;
+      if (!inst || inst.kind !== "spline") {
+        const empty: SplineValue = { kind: "spline", subpaths: [] };
+        return { primary: empty };
+      }
+      const out: SplineSubpath[] = [];
+      const total = countX * countY;
+      for (let n = 0; n < total; n++) {
+        // Resolve cell (ix, iy) using the same row-first / column-first
+        // ordering as the index shader so external indexing matches.
+        const ix = rowFirst ? n % countX : Math.floor(n / countY);
+        const iy = rowFirst ? Math.floor(n / countX) : n % countY;
+        const cellCenterX = (ix + 0.5) * stepX + patternX;
+        const cellCenterY = (iy + 0.5) * stepY + patternY;
+        // Translate is offset relative to the natural (0.5, 0.5) anchor
+        // — match Copy to Points convention so a centered glyph lands
+        // its pivot on the cell center, then localX/Y nudges from there.
+        const tx = cellCenterX - 0.5 + localX;
+        const ty = cellCenterY - 0.5 + localY;
+        for (const sub of inst.subpaths) {
+          const transformed = transformSubpath(sub, {
+            translateX: tx,
+            translateY: ty,
+            pivotX: 0.5,
+            pivotY: 0.5,
+            rotateDeg: localRotateDeg,
+            scaleX: localScaleX,
+            scaleY: localScaleY,
+          });
+          out.push({ ...transformed, groupIndex: sub.groupIndex });
+        }
+      }
+      return { primary: { kind: "spline", subpaths: out } };
+    }
+
+    // ---- point mode --------------------------------------------------
+    if (mode === "point") {
+      const inst = inputs.instance;
+      if (!inst || inst.kind !== "points") {
+        const empty: PointsValue = { kind: "points", points: [] };
+        return { primary: empty };
+      }
+      const out: Point[] = [];
+      const total = countX * countY;
+      const localRot = (localRotateDeg * Math.PI) / 180;
+      const cosR = Math.cos(localRot);
+      const sinR = Math.sin(localRot);
+      for (let n = 0; n < total; n++) {
+        const ix = rowFirst ? n % countX : Math.floor(n / countY);
+        const iy = rowFirst ? Math.floor(n / countX) : n % countY;
+        const cellCenterX = (ix + 0.5) * stepX + patternX;
+        const cellCenterY = (iy + 0.5) * stepY + patternY;
+        for (const src of inst.points) {
+          // Source point's offset from its own (0.5, 0.5) anchor →
+          // scale → rotate → place at the cell center + per-copy nudge.
+          const dx = (src.pos[0] - 0.5) * localScaleX;
+          const dy = (src.pos[1] - 0.5) * localScaleY;
+          const rx = cosR * dx - sinR * dy;
+          const ry = sinR * dx + cosR * dy;
+          out.push({
+            pos: [cellCenterX + localX + rx, cellCenterY + localY + ry],
+            rotation: (src.rotation ?? 0) + localRot,
+            scale: [
+              (src.scale?.[0] ?? 1) * localScaleX,
+              (src.scale?.[1] ?? 1) * localScaleY,
+            ],
+            groupIndex: src.groupIndex,
+          });
+        }
+      }
+      return { primary: { kind: "points", points: out } };
+    }
+
+    // ---- image mode (original full-screen tiling shader) -------------
+    const output = ctx.allocImage();
+    const indexOut = ctx.allocImage();
+    const src = inputs.instance;
+    if (!src || src.kind !== "image") {
+      ctx.clearTarget(output, [0, 0, 0, 0]);
+      ctx.clearTarget(indexOut, [0, 0, 0, 0]);
+      return { primary: output, aux: { index: indexOut } };
+    }
+
+    const localAngle = (localRotateDeg * Math.PI) / 180;
     const modScaleAmt = (params.modScaleAmount as number) ?? 1;
     const modPosAmt = (params.modPosAmount as number) ?? 0.25;
     const modRotAmtRad =
@@ -416,9 +539,6 @@ export const arrayNode: NodeDefinition = {
       );
     });
 
-    // Index aux output.
-    const direction = (params.direction as string) ?? "flow-rows";
-    const rowFirst = direction === "flow-rows" ? 1 : 0;
     const indexProg = ctx.getShader("array/index", INDEX_FS);
     ctx.drawFullscreen(indexProg, indexOut, (gl) => {
       gl.uniform2f(gl.getUniformLocation(indexProg, "u_count"), countX, countY);
@@ -432,7 +552,10 @@ export const arrayNode: NodeDefinition = {
         patternX,
         patternY
       );
-      gl.uniform1i(gl.getUniformLocation(indexProg, "u_rowFirst"), rowFirst);
+      gl.uniform1i(
+        gl.getUniformLocation(indexProg, "u_rowFirst"),
+        rowFirst ? 1 : 0
+      );
     });
 
     return { primary: output, aux: { index: indexOut } };

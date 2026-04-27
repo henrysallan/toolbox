@@ -170,6 +170,7 @@ export const transformNode: NodeDefinition = {
     return "image";
   },
   auxOutputs: [],
+  linkedPairs: [{ a: "scaleX", b: "scaleY" }],
 
   compute({ inputs, params, ctx }) {
     const mode = modeOf(params);

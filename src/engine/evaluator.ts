@@ -93,6 +93,11 @@ export interface EvalResult {
   // Per-node fingerprints this eval produced. Useful for debugging/tools;
   // the evaluator keeps its own authoritative copy inside the cache.
   fingerprints: Map<string, string>;
+  // Wall-clock duration in milliseconds that each node's compute()
+  // call (and downstream mask blend) took on this eval. Cache hits
+  // are reported as ~0 since no compute happened. Drives the in-
+  // editor "node timing" overlay.
+  timings: Map<string, number>;
 }
 
 // Stable stringify for params. Sorts object keys, and gives opaque browser
@@ -276,6 +281,7 @@ export function evaluateGraph(
   const outputs = new Map<string, NodeOutput>();
   const errors: Record<string, string> = {};
   const fingerprints = new Map<string, string>();
+  const timings = new Map<string, number>();
   let terminalImage: EvalResult["terminalImage"];
   const needed = computeNeededSet(nodes, edges, activeNodeId);
 
@@ -393,8 +399,16 @@ export function evaluateGraph(
       // still alive (not released since we didn't evict).
       result = prev.output;
       outputs.set(id, result);
+      // Cache hit means no compute ran — surface 0 so the overlay
+      // shows the node as cheap rather than persisting an old timing.
+      timings.set(id, 0);
     } else {
-      // Cache miss (or uncacheable): recompute.
+      // Cache miss (or uncacheable): recompute. Wall-clock around the
+      // whole branch (compute + mask blend) — this is what the user
+      // actually pays for on this eval. GPU work might still be
+      // pending after compute returns; CPU dispatch time is what we
+      // can measure cheaply without forcing a sync.
+      const tStart = performance.now();
       try {
         let ownsTextures = true;
         if (node.bypassed) {
@@ -457,6 +471,7 @@ export function evaluateGraph(
           cache.delete(id);
         }
       }
+      timings.set(id, performance.now() - tStart);
     }
 
     // Terminal preview selection. Same semantics as before: active override
@@ -486,5 +501,5 @@ export function evaluateGraph(
     }
   }
 
-  return { outputs, terminalImage, errors, fingerprints };
+  return { outputs, terminalImage, errors, fingerprints, timings };
 }

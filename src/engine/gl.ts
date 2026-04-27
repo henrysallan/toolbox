@@ -61,6 +61,10 @@ export interface EngineBackend {
   readonly hiddenCanvas: HTMLCanvasElement;
   readonly width: number;
   readonly height: number;
+  // The same `state` map exposed on RenderContext — exposed here so UI code
+  // (e.g. the Timeline curve editor reading per-node playhead values stashed
+  // by Timeline.compute) can read it without going through a render tick.
+  readonly state: Record<string, unknown>;
   resize(width: number, height: number): void;
   makeContext(
     time: number,
@@ -314,6 +318,7 @@ export function createEngineBackend(
   return {
     gl: gl!,
     hiddenCanvas,
+    state: persistentState,
     get width() {
       return width;
     },

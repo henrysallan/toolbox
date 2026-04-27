@@ -97,6 +97,7 @@ export const circleNode: NodeDefinition = {
   ],
   primaryOutput: "spline",
   auxOutputs: [],
+  linkedPairs: [{ a: "radiusX", b: "radiusY" }],
 
   compute({ params }) {
     const cx = (params.centerX as number) ?? 0.5;

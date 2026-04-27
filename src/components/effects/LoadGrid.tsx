@@ -8,6 +8,13 @@ import {
   thumbnailSrc,
   type ProjectRow,
 } from "@/lib/supabase/projects";
+import RateProjectPopover from "./RateProjectPopover";
+
+interface RatePopover {
+  row: ProjectRow;
+  x: number;
+  y: number;
+}
 
 type Tab = "private" | "public";
 type View = "grid" | "list";
@@ -44,6 +51,9 @@ export default function LoadGrid({
   // Manual refresh bumps this to bust both the server fetch and any
   // cache we might layer in later.
   const [manualRefresh, setManualRefresh] = useState(0);
+  // Right-click → rate popover. Stored at top-level so it survives
+  // re-renders inside the grid/list child views.
+  const [ratePopover, setRatePopover] = useState<RatePopover | null>(null);
 
   // If sign-in state flips to signed-out while we're on the Private
   // tab, bounce to Public. Done as a render-time reconciliation
@@ -133,8 +143,24 @@ export default function LoadGrid({
           signedIn={signedIn}
           currentUserId={currentUserId ?? null}
           onLoad={onLoad}
+          onRate={(row, x, y) => setRatePopover({ row, x, y })}
         />
       </div>
+      {ratePopover && (
+        <RateProjectPopover
+          x={ratePopover.x}
+          y={ratePopover.y}
+          row={ratePopover.row}
+          signedIn={signedIn}
+          onClose={() => setRatePopover(null)}
+          onChanged={() => {
+            // Bust the cache and bump the refresh key so the tile picks
+            // up the new aggregate from the trigger-maintained columns.
+            invalidateProjectCaches();
+            setManualRefresh((n) => n + 1);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -350,6 +376,7 @@ function Body({
   signedIn,
   currentUserId,
   onLoad,
+  onRate,
 }: {
   tab: Tab;
   view: View;
@@ -359,6 +386,7 @@ function Body({
   signedIn: boolean;
   currentUserId: string | null;
   onLoad: (id: string) => void;
+  onRate: (row: ProjectRow, x: number, y: number) => void;
 }) {
   if (tab === "private" && !signedIn) {
     return (
@@ -388,6 +416,7 @@ function Body({
         currentUserId={currentUserId}
         showAuthor={tab === "public"}
         onLoad={onLoad}
+        onRate={onRate}
       />
     );
   }
@@ -397,6 +426,7 @@ function Body({
       currentUserId={currentUserId}
       showAuthor={tab === "public"}
       onLoad={onLoad}
+      onRate={onRate}
     />
   );
 }
@@ -406,11 +436,13 @@ function GridView({
   currentUserId,
   showAuthor,
   onLoad,
+  onRate,
 }: {
   rows: ProjectRow[];
   currentUserId: string | null;
   showAuthor: boolean;
   onLoad: (id: string) => void;
+  onRate: (row: ProjectRow, x: number, y: number) => void;
 }) {
   return (
     <div
@@ -427,6 +459,7 @@ function GridView({
           showAuthor={showAuthor}
           isMine={!!currentUserId && currentUserId === r.user_id}
           onLoad={onLoad}
+          onRate={onRate}
         />
       ))}
     </div>
@@ -440,6 +473,7 @@ function ListView({
   currentUserId,
   showAuthor,
   onLoad,
+  onRate,
 }: {
   rows: ProjectRow[];
   sort: { key: SortKey; dir: SortDir };
@@ -447,9 +481,10 @@ function ListView({
   currentUserId: string | null;
   showAuthor: boolean;
   onLoad: (id: string) => void;
+  onRate: (row: ProjectRow, x: number, y: number) => void;
 }) {
   // Grid so column widths are consistent between header and body rows.
-  const grid = "1fr 160px 140px";
+  const grid = "1fr 160px 90px 140px";
   return (
     <div style={{ fontSize: 11 }}>
       <div
@@ -479,6 +514,15 @@ function ListView({
         >
           Author
         </HeaderCell>
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            color: "#a1a1aa",
+          }}
+        >
+          Rating
+        </span>
         <HeaderCell
           active={sort.key === "date"}
           dir={sort.key === "date" ? sort.dir : null}
@@ -499,6 +543,10 @@ function ListView({
             <button
               key={r.id}
               onClick={() => onLoad(r.id)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                onRate(r, e.clientX, e.clientY);
+              }}
               style={{
                 display: "grid",
                 gridTemplateColumns: grid,
@@ -539,6 +587,16 @@ function ListView({
                 }}
               >
                 {author}
+              </span>
+              <span style={{ color: "#71717a" }}>
+                {r.ratings_count > 0 ? (
+                  <>
+                    <span style={{ color: "#facc15" }}>★</span>{" "}
+                    {(r.ratings_avg ?? 0).toFixed(1)} ({r.ratings_count})
+                  </>
+                ) : (
+                  <span style={{ color: "#3f3f46" }}>—</span>
+                )}
               </span>
               <span style={{ color: "#71717a" }}>
                 {new Date(r.updated_at).toLocaleDateString()}
@@ -598,19 +656,29 @@ function ProjectTile({
   showAuthor,
   isMine,
   onLoad,
+  onRate,
 }: {
   row: ProjectRow;
   showAuthor: boolean;
   isMine: boolean;
   onLoad: (id: string) => void;
+  onRate: (row: ProjectRow, x: number, y: number) => void;
 }) {
   const authorLabel = isMine
     ? "you"
     : row.author?.display_name?.trim() || "unknown";
+  const ratingLabel =
+    row.ratings_count > 0
+      ? `★ ${(row.ratings_avg ?? 0).toFixed(1)} (${row.ratings_count})`
+      : "";
   return (
     <button
       onClick={() => onLoad(row.id)}
-      title={`${row.name}${showAuthor ? ` · by ${authorLabel}` : ""} · ${new Date(row.updated_at).toLocaleString()}`}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onRate(row, e.clientX, e.clientY);
+      }}
+      title={`${row.name}${showAuthor ? ` · by ${authorLabel}` : ""}${ratingLabel ? ` · ${ratingLabel}` : ""} · ${new Date(row.updated_at).toLocaleString()} · right-click to rate`}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -623,6 +691,7 @@ function ProjectTile({
         color: "#e5e7eb",
         cursor: "pointer",
         fontFamily: "inherit",
+        position: "relative",
       }}
     >
       <div
@@ -659,6 +728,25 @@ function ProjectTile({
             <span style={{ color: "#52525b", fontSize: 10 }}>no thumb</span>
           );
         })()}
+        {ratingLabel && (
+          <span
+            style={{
+              position: "absolute",
+              top: 4,
+              right: 4,
+              padding: "1px 4px",
+              borderRadius: 2,
+              background: "rgba(0,0,0,0.6)",
+              color: "#facc15",
+              fontSize: 9,
+              lineHeight: "12px",
+              fontFamily: "inherit",
+              pointerEvents: "none",
+            }}
+          >
+            {ratingLabel}
+          </span>
+        )}
       </div>
       <div
         style={{
