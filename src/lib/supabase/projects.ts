@@ -275,7 +275,7 @@ export async function renameProject(
 export async function setProjectVisibility(
   id: string,
   isPublic: boolean
-): Promise<boolean> {
+): Promise<{ ok: true; slug: string | null } | { ok: false }> {
   const supabase = createClient();
   // Going public mints a slug if one doesn't already exist; going private
   // explicitly clears it (the DB trigger does the same as a safety net).
@@ -285,14 +285,18 @@ export async function setProjectVisibility(
     is_public: isPublic,
     updated_at: new Date().toISOString(),
   };
+  let resolvedSlug: string | null = null;
   if (isPublic) {
     const { data: existing } = await supabase
       .from("projects")
       .select("public_slug")
       .eq("id", id)
       .maybeSingle();
-    if (!existing?.public_slug) {
-      payload.public_slug = mintPublicSlug();
+    if (existing?.public_slug) {
+      resolvedSlug = existing.public_slug as string;
+    } else {
+      resolvedSlug = mintPublicSlug();
+      payload.public_slug = resolvedSlug;
     }
   } else {
     payload.public_slug = null;
@@ -303,10 +307,10 @@ export async function setProjectVisibility(
     .eq("id", id);
   if (error) {
     console.error("setProjectVisibility failed:", error);
-    return false;
+    return { ok: false };
   }
   invalidateProjectCaches();
-  return true;
+  return { ok: true, slug: isPublic ? resolvedSlug : null };
 }
 
 export async function deleteProject(id: string): Promise<boolean> {
@@ -486,6 +490,9 @@ export interface LoadedProject {
   is_public: boolean;
   user_id: string;
   author: ProjectAuthor | null;
+  // The /p/<slug> editor link and /live/<slug> client view both
+  // need this. Null when the project isn't currently public.
+  public_slug: string | null;
 }
 
 // Server-side variant: resolves a public project by its URL slug. Takes
@@ -501,6 +508,7 @@ export async function loadPublicProjectBySlug(
   graph: SavedProject;
   user_id: string;
   author: ProjectAuthor | null;
+  public_slug: string;
 } | null> {
   const { data, error } = await client
     .from("projects")
@@ -526,6 +534,7 @@ export async function loadPublicProjectBySlug(
     graph: data.graph as SavedProject,
     user_id: data.user_id as string,
     author,
+    public_slug: slug,
   };
 }
 
@@ -535,7 +544,7 @@ export async function loadProject(id: string): Promise<LoadedProject | null> {
   const supabase = createClient();
   const { data, error } = await supabase
     .from("projects")
-    .select("name, graph, is_public, user_id")
+    .select("name, graph, is_public, user_id, public_slug")
     .eq("id", id)
     .single();
   if (error) {
@@ -560,6 +569,7 @@ export async function loadProject(id: string): Promise<LoadedProject | null> {
     is_public: !!data.is_public,
     user_id: data.user_id as string,
     author,
+    public_slug: (data.public_slug as string | null) ?? null,
   };
   loadedCache.set(id, { project, fetchedAt: Date.now() });
   return project;

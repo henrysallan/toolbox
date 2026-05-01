@@ -45,6 +45,10 @@ export interface MenuBarProps {
   projectId: string | null;
   saveState: SaveState;
   isPublic: boolean;
+  // Public URL slug for the current project. When non-null and
+  // isPublic is true, the file-name pill exposes a "Copy editor
+  // link" button that hands out /p/<slug>.
+  publicSlug: string | null;
   // False when viewing someone else's public project — disables
   // rename + visibility toggle. Save still works (forks a copy).
   ownedByMe: boolean;
@@ -101,6 +105,7 @@ export default function MenuBar({
   projectId,
   saveState,
   isPublic,
+  publicSlug,
   ownedByMe,
   authorName,
   onRenameProject,
@@ -337,6 +342,7 @@ export default function MenuBar({
           name={projectName}
           saveState={saveState}
           isPublic={isPublic}
+          publicSlug={publicSlug}
           projectId={projectId}
           canEdit={signedIn}
           ownedByMe={ownedByMe}

@@ -25,6 +25,11 @@ export interface FileNameMenuProps {
   name: string;
   saveState: SaveState;
   isPublic: boolean;
+  // Public URL slug. Non-null when the project is currently public —
+  // unlocks the "Copy editor link" button (/p/<slug>) below the
+  // visibility toggle. Mirrors the /live/<slug> button on the project
+  // grid's right-click popover.
+  publicSlug: string | null;
   // null when there's no project row yet — in that case Save from the
   // dropdown falls through to the Save As flow (modal).
   projectId: string | null;
@@ -50,6 +55,7 @@ export default function FileNameMenu({
   name,
   saveState,
   isPublic,
+  publicSlug,
   projectId,
   canEdit,
   ownedByMe,
@@ -62,6 +68,8 @@ export default function FileNameMenu({
   const canMutate = canEdit && ownedByMe;
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(name);
+  const [editorLinkCopied, setEditorLinkCopied] = useState(false);
+  const [liveLinkCopied, setLiveLinkCopied] = useState(false);
   // Tracks the last external `name` we've reconciled against. When the
   // dropdown is closed and `name` changes (load, Save As, rename
   // elsewhere), we pull the new value in. This is the React-idiomatic
@@ -111,6 +119,48 @@ export default function FileNameMenu({
   };
 
   const dotColor = DOT_COLOR[saveState];
+
+  // Build the public URLs only when we have a slug and the project
+  // is currently public. Hidden otherwise so the user doesn't see
+  // dead controls — matches the pattern in RateProjectPopover.
+  const editorUrl =
+    isPublic && publicSlug
+      ? typeof window === "undefined"
+        ? `/p/${publicSlug}`
+        : `${window.location.origin}/p/${publicSlug}`
+      : null;
+  const liveUrl =
+    isPublic && publicSlug
+      ? typeof window === "undefined"
+        ? `/live/${publicSlug}`
+        : `${window.location.origin}/live/${publicSlug}`
+      : null;
+
+  const copyToClipboard = async (
+    url: string,
+    setCopied: (v: boolean) => void
+  ) => {
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      // Insecure-origin / sandboxed iframe fallback — same trick
+      // RateProjectPopover uses. Visual confirmation still fires.
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        // ignore
+      }
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
 
   return (
     <div
@@ -262,6 +312,43 @@ export default function FileNameMenu({
               onChange={(next) => onRequestToggleVisibility(next)}
             />
           </div>
+
+          {editorUrl && liveUrl && (
+            <div
+              style={{
+                display: "flex",
+                gap: 6,
+                marginBottom: 8,
+              }}
+            >
+              <button
+                onClick={() => copyToClipboard(editorUrl, setEditorLinkCopied)}
+                title="Copy a link that opens this project in the full editor (read-only for non-owners; signed-in viewers can save their own forked copy)."
+                style={{
+                  ...btnStyle(),
+                  flex: 1,
+                  background: editorLinkCopied ? "#1e3a8a" : "transparent",
+                  color: editorLinkCopied ? "#dbeafe" : "#e5e7eb",
+                  border: `1px solid ${editorLinkCopied ? "#1e3a8a" : "#3f3f46"}`,
+                }}
+              >
+                {editorLinkCopied ? "Copied" : "Copy editor link"}
+              </button>
+              <button
+                onClick={() => copyToClipboard(liveUrl, setLiveLinkCopied)}
+                title="Copy the minimal client view link — full-screen output only, no editor chrome. Same project graph; different audience."
+                style={{
+                  ...btnStyle(),
+                  flex: 1,
+                  background: liveLinkCopied ? "#166534" : "transparent",
+                  color: liveLinkCopied ? "#dcfce7" : "#e5e7eb",
+                  border: `1px solid ${liveLinkCopied ? "#166534" : "#3f3f46"}`,
+                }}
+              >
+                {liveLinkCopied ? "Copied" : "Copy live link"}
+              </button>
+            </div>
+          )}
 
           {(() => {
             // Compute collision only when the draft differs from

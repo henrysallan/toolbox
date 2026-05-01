@@ -44,6 +44,7 @@ import {
   generateThumbnail,
   incrementName,
   serializeGraph,
+  type SavedProject,
 } from "@/lib/project";
 import {
   deleteProject as deleteProjectRow,
@@ -188,22 +189,52 @@ function fp(v: unknown): string {
   return "?";
 }
 
-export default function EffectsApp() {
+// Bootstrap payload for the `/p/<slug>` editor route. When present,
+// EffectsApp deserializes the supplied graph on mount and seeds the
+// `currentProject` state from the supplied metadata, bypassing the
+// session-storage rehydrate path. The rehydrate path stays in place
+// for plain `/` navigation (e.g. /docs round-trips).
+export interface InitialProjectPayload {
+  id: string;
+  name: string;
+  isPublic: boolean;
+  publicSlug: string | null;
+  ownerId: string;
+  authorName: string | null;
+  graph: SavedProject;
+}
+
+export default function EffectsApp({
+  initialProject,
+}: {
+  initialProject?: InitialProjectPayload;
+} = {}) {
   return (
     <AuthProvider>
       <ReactFlowProvider>
-        <EffectsShell />
+        <EffectsShell initialProject={initialProject} />
       </ReactFlowProvider>
     </AuthProvider>
   );
 }
 
-function EffectsShell() {
+function EffectsShell({
+  initialProject,
+}: {
+  initialProject?: InitialProjectPayload;
+}) {
   // Rehydrate from the session stash if the user is returning from
   // a route change (e.g. /docs → back to /). Read once; if present,
   // seed every piece of React state below from the same snapshot so
   // they're all internally consistent on first paint.
-  const rehydrate = readEditorSession();
+  //
+  // When `initialProject` is supplied (the /p/<slug> editor route),
+  // its metadata seeds `currentProject` synchronously so the menu
+  // bar pill shows the right name from the first paint. The graph
+  // itself is deserialized asynchronously in an effect below — the
+  // initial nodes/edges briefly show the empty default before the
+  // load resolves.
+  const rehydrate = initialProject ? null : readEditorSession();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NodeDataPayload>>(
     rehydrate?.nodes ?? INITIAL_NODES
   );
@@ -216,6 +247,39 @@ function EffectsShell() {
   const [canvasRes, setCanvasRes] = useState<[number, number]>(
     rehydrate?.canvasRes ?? [1024, 1024]
   );
+
+  // /p/<slug> bootstrap. Runs once on mount when initialProject was
+  // supplied; deserializes the saved graph and seeds the editor.
+  // The graph payload was loaded server-side and passed in, so we
+  // don't need to await any DB call here — the hop is purely from
+  // SavedProject (JSON) to the live ReactFlow shape.
+  useEffect(() => {
+    if (!initialProject) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { nodes: nextNodes, edges: nextEdges, scene } =
+          await deserializeGraph(initialProject.graph);
+        if (cancelled) return;
+        setNodes(nextNodes);
+        setEdges(nextEdges);
+        if (scene) {
+          if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
+          if (scene.fps !== undefined) setFps(scene.fps);
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[EffectsApp] /p/<slug> bootstrap failed:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // initialProject is captured at mount; route changes that swap
+    // the slug remount the page (Next.js dynamic route default), so
+    // we intentionally don't depend on it here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Preview render scale. Decouples the GL render resolution from
   // both the on-screen canvas size and the project export resolution
@@ -417,6 +481,10 @@ function EffectsShell() {
         id: string;
         name: string;
         isPublic: boolean;
+        // Mirrors projects.public_slug. Carried so the file-name menu
+        // can build the /p/<slug> editor link without a separate fetch.
+        // null when the project isn't currently public.
+        publicSlug: string | null;
         // user_id of whoever authored this row. Used to gate Save /
         // rename / visibility-toggle: when the viewer isn't the owner,
         // Save forks a private copy (`_copy`) instead of attempting a
@@ -428,7 +496,18 @@ function EffectsShell() {
         authorName: string | null;
       }
     | null
-  >(rehydrate?.currentProject ?? null);
+  >(
+    initialProject
+      ? {
+          id: initialProject.id,
+          name: initialProject.name,
+          isPublic: initialProject.isPublic,
+          publicSlug: initialProject.publicSlug,
+          ownerId: initialProject.ownerId,
+          authorName: initialProject.authorName,
+        }
+      : (rehydrate?.currentProject ?? null)
+  );
   // Menu-bar pill status. Flips to "dirty" on any graph push, back to
   // "saved" on successful save/load, and to "error" when a save fails.
   // The DB doesn't track is_public yet; we hold it locally so the toggle
@@ -2770,6 +2849,7 @@ function EffectsShell() {
             id: conflict.id,
             name: conflict.name,
             isPublic: conflict.is_public,
+            publicSlug: conflict.public_slug,
             ownerId: user.id,
             authorName: null,
           });
@@ -2787,6 +2867,7 @@ function EffectsShell() {
           id: result.id,
           name,
           isPublic: false,
+          publicSlug: null,
           ownerId: user.id,
           authorName: null,
         });
@@ -2838,6 +2919,7 @@ function EffectsShell() {
           id: result.id,
           name: copyName,
           isPublic: false,
+          publicSlug: null,
           ownerId: user.id,
           authorName: null,
         });
@@ -2896,6 +2978,7 @@ function EffectsShell() {
         id: result.id,
         name: newName,
         isPublic: false,
+        publicSlug: null,
         ownerId: user.id,
         authorName: null,
       });
@@ -2949,6 +3032,7 @@ function EffectsShell() {
           id,
           name: saved.name,
           isPublic: saved.is_public,
+          publicSlug: saved.public_slug,
           ownerId: saved.user_id,
           // Only bother carrying the author label when the viewer
           // doesn't own the row — own-project rename/toggle paths
@@ -3003,6 +3087,7 @@ function EffectsShell() {
             id: conflict.id,
             name: conflict.name,
             isPublic: conflict.is_public,
+            publicSlug: conflict.public_slug,
             ownerId: user.id,
             authorName: null,
           });
@@ -3052,14 +3137,21 @@ function EffectsShell() {
       return;
     }
     const next = pendingVisibility.toPublic;
-    const ok = await setProjectVisibilityRow(currentProject.id, next);
-    if (!ok) {
+    const result = await setProjectVisibilityRow(currentProject.id, next);
+    if (!result.ok) {
       setSaveState("error");
       flashToast("visibility update failed");
       setPendingVisibility(null);
       return;
     }
-    setCurrentProject({ ...currentProject, isPublic: next });
+    setCurrentProject({
+      ...currentProject,
+      isPublic: next,
+      // The toggle return surfaces the slug (minted on first
+      // public-flip, cleared on private-flip) so the file-name menu's
+      // "Copy editor link" button lights up immediately, no reload.
+      publicSlug: result.slug,
+    });
     flashToast(next ? "now public" : "now private");
     setLoadRefreshKey((n) => n + 1);
     setPendingVisibility(null);
@@ -3389,6 +3481,7 @@ function EffectsShell() {
         projectId={currentProject?.id ?? null}
         saveState={saveState}
         isPublic={currentProject?.isPublic ?? false}
+        publicSlug={currentProject?.publicSlug ?? null}
         // When the viewer doesn't own the loaded row, rename and the
         // visibility toggle need to be disabled — Save still works, but
         // it forks a private copy instead of overwriting.
