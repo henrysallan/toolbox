@@ -63,7 +63,17 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
   const playingRef = useRef(false);
   const timeRef = useRef(0);
   const lastFrameRef = useRef<number | null>(null);
-  const fps = 60;
+  // Use the project's saved playback metadata when present. Pre-v2
+  // saves omit `scene`; fall back to the editor's defaults so they
+  // play back exactly as they did before the field landed.
+  const fps = graph.scene?.fps ?? 60;
+  // null = no loop (open-ended). When set, the RAF tick wraps `time`
+  // at `loopFrames / fps` so animation/keyframes loop on the same
+  // boundary the editor's playhead does.
+  const loopSecs =
+    graph.scene?.loopFrames != null && graph.scene.loopFrames > 0
+      ? graph.scene.loopFrames / fps
+      : null;
 
   // Live cursor in canvas UV. Updated on pointermove and read on every
   // frame — mirrors the editor's wiring so cursor-aware nodes (Cursor
@@ -107,6 +117,12 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
           type: n.data.defType,
           params: { ...n.data.params },
           exposedParams: n.data.exposedParams,
+          // Keyframe blocks are first-class on GraphNode — the
+          // evaluator reads them per-eval to compute the animated
+          // value at the current tick. Dropping this field is what
+          // made /live/ render the static initial pose instead of
+          // the animated graph.
+          animation: n.data.animation,
           bypassed: !!n.data.bypassed,
         }));
         const graphEdges: GraphEdge[] = edges.map((e) => ({
@@ -195,7 +211,14 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
       lastFrameRef.current = now;
       if (playingRef.current && last !== null) {
         const dt = (now - last) / 1000;
-        timeRef.current += dt;
+        let next = timeRef.current + dt;
+        // Wrap at loop boundary so animation blocks repeat instead
+        // of running off into dead time. Mirrors the editor's RAF
+        // wrap math; > 0 guard skips degenerate "loop length 0".
+        if (loopSecs != null && loopSecs > 0 && next >= loopSecs) {
+          next = next % loopSecs;
+        }
+        timeRef.current = next;
         setTime(timeRef.current);
       }
       runFrame(timeRef.current);
