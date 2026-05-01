@@ -128,7 +128,14 @@ export default function NodeEditor({
   // component renders identically to React Flow's default bezier when no
   // waypoint is set, so there's no visual change for unjoined edges.
   const edgeTypes = useMemo(() => ({ default: JunctionEdge }), []);
-  const { screenToFlowPosition, setNodes: rfSetNodes } = useReactFlow();
+  const {
+    screenToFlowPosition,
+    setNodes: rfSetNodes,
+    setEdges: rfSetEdges,
+    getNodes: rfGetNodes,
+    getEdges: rfGetEdges,
+    deleteElements,
+  } = useReactFlow();
   const flowWrapperRef = useRef<HTMLDivElement | null>(null);
 
   // Touch / pen detection for the React Flow gesture model. On
@@ -885,6 +892,35 @@ export default function NodeEditor({
           setNodePopup({ x: x + 4, y: y + 4, pendingWire });
         }}
         isValidConnection={isValidConnection}
+        // On touch, React Flow's default click-to-select on edges
+        // sometimes loses to its own pan-on-drag handling — the
+        // pointer-down is consumed before a select fires. Explicit
+        // edge-click handler clears any other selection and selects
+        // the tapped edge so the corner Delete button has something
+        // to act on.
+        onEdgeClick={(_e, edge) => {
+          rfSetEdges((edges) =>
+            edges.map((ed) =>
+              ed.id === edge.id
+                ? ed.selected
+                  ? ed
+                  : { ...ed, selected: true }
+                : ed.selected
+                  ? { ...ed, selected: false }
+                  : ed
+            )
+          );
+          rfSetNodes((nodes) =>
+            nodes.map((n) => (n.selected ? { ...n, selected: false } : n))
+          );
+          onSelectNode(null);
+        }}
+        // Generous reconnect grab radius on touch so the user can
+        // grab the end of a wire with a finger or pen tip and drag
+        // it off the socket. Default is 10px which is too small for
+        // a fingertip; 28 is comfortable without preempting clicks
+        // on adjacent handles.
+        reconnectRadius={touchActive ? 28 : 10}
         onSelectionChange={(sel) => {
           const first = sel.nodes[0];
           onSelectNode(first?.id ?? null);
@@ -977,29 +1013,105 @@ export default function NodeEditor({
         {viewportOverlay && <ViewportPortal>{viewportOverlay}</ViewportPortal>}
       </ReactFlow>
 
-      {/* Apple Pencil hover indicator. The dot tracks the pen tip;
-          the offset "+" is a tappable add-node trigger that opens
-          the search popup at the pen position (same code path as
-          Shift+A). Render-suppressed when a popup is already open
-          so the floating "+" doesn't sit on top of the open menu. */}
+      {/* Apple Pencil hover ring. Tracks the pen tip so the user
+          gets a familiar Procreate-style hover affordance. Purely
+          visual — the actual add-node trigger is the corner button
+          below. Render-suppressed when the search popup is open so
+          a stray ring doesn't sit on top of the menu. */}
       {penHover && !nodePopup && (
-        <PenHoverIndicator
+        <PenHoverCursor
           x={penHover.x}
           y={penHover.y}
           wrapper={flowWrapperRef.current}
-          onAddTap={() => {
-            // Match the Shift+A flow: clear any pending-wire context
-            // and seed the popup at the pen tip with a small inward
-            // offset so the popup doesn't appear directly under the
-            // pen and visually obscure where the user is pointing.
-            const x = penHover.x;
-            const y = penHover.y;
+        />
+      )}
+
+      {/* Fixed corner action stack — pinned upper-left of the editor.
+          Designed for touch / pencil where the equivalent gestures
+          (Shift+A, Backspace) aren't reachable without a hardware
+          keyboard. The "+" opens the node search at the pen's last
+          hover position (or near the button on mouse). The "−"
+          deletes whatever's selected (nodes or edges); falls back
+          to no-op when nothing is selected. */}
+      <div
+        style={{
+          position: "absolute",
+          top: 8,
+          left: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          zIndex: 30,
+        }}
+      >
+        <CornerActionButton
+          title="Add node"
+          onTap={() => {
+            // Prefer the most recent pen-hover position (pen users
+            // expect the popup at their tip); fall back to a spot
+            // just below the button so the popup is reachable on
+            // mouse / touch.
+            const wrapper = flowWrapperRef.current;
+            const wrapperRect = wrapper?.getBoundingClientRect();
+            let x: number;
+            let y: number;
+            if (penHover) {
+              x = penHover.x;
+              y = penHover.y;
+            } else if (wrapperRect) {
+              x = wrapperRect.left + 36;
+              y = wrapperRect.top + 36;
+            } else {
+              x = window.innerWidth / 2;
+              y = window.innerHeight / 2;
+            }
             const flowPos = screenToFlowPosition({ x, y });
             onPanePointer?.(flowPos);
             setNodePopup({ x: x + 4, y: y + 4 });
           }}
-        />
-      )}
+        >
+          +
+        </CornerActionButton>
+        <CornerActionButton
+          title="Delete selected"
+          onTap={() => {
+            // Mirror the keyboard Delete: remove every selected
+            // node and edge in one go. deleteElements handles
+            // dependent-edge cleanup and fires the same
+            // onNodesChange / onEdgesChange callbacks the keyboard
+            // path uses, so undo history snapshots the same way.
+            const selectedNodes = rfGetNodes().filter((n) => n.selected);
+            const selectedEdges = rfGetEdges().filter((e) => e.selected);
+            if (selectedNodes.length === 0 && selectedEdges.length === 0) {
+              return;
+            }
+            deleteElements({
+              nodes: selectedNodes.map((n) => ({ id: n.id })),
+              edges: selectedEdges.map((e) => ({ id: e.id })),
+            });
+          }}
+        >
+          {/* Trash icon — single-stroke SVG sized to match the "+"
+              optical weight. Inline so we don't pull a new icon dep
+              for one glyph. */}
+          <svg
+            width={14}
+            height={14}
+            viewBox="0 0 14 14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.4}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M2.5 4 L11.5 4" />
+            <path d="M5 4 L5 2.5 L9 2.5 L9 4" />
+            <path d="M3.5 4 L4 12 L10 12 L10.5 4" />
+            <path d="M6 6.5 L6 9.5" />
+            <path d="M8 6.5 L8 9.5" />
+          </svg>
+        </CornerActionButton>
+      </div>
 
       {nodePopup && (
         <NodeSearchPopup
@@ -1212,99 +1324,93 @@ function resolveTargetSocketType(
   return paramSocketType(p.type);
 }
 
-// Floating Apple Pencil hover indicator — a small ring at the pen
-// tip plus an offset "+" badge that opens the node search popup.
+// Square chrome button used by the corner action stack. Same
+// background / border treatment as the rest of the editor's chrome
+// so the buttons disappear into the surface but are tappable on
+// touch. Stops pointer events from reaching React Flow's gesture
+// system (which would otherwise interpret the tap as the start of
+// a marquee or pan).
+function CornerActionButton({
+  title,
+  onTap,
+  children,
+}: {
+  title: string;
+  onTap: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onTap();
+      }}
+      style={{
+        width: 28,
+        height: 28,
+        borderRadius: 6,
+        background: "#1c1c1f",
+        border: "1px solid #3f3f46",
+        color: "#e5e7eb",
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 18,
+        lineHeight: 1,
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        touchAction: "manipulation",
+        userSelect: "none",
+        padding: 0,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Floating Apple Pencil hover cursor — a small ring at the pen tip.
+// Purely visual (pointer-events: none) — the actual add-node trigger
+// is the fixed "+" button in the upper-left of the editor pane,
+// which competes less with React Flow's gesture handling.
+//
 // Mounts inside the node-editor wrapper (which is position: relative)
 // and translates client coords into wrapper-relative coords so the
 // indicator stays glued to the pen even when the wrapper isn't at
 // (0, 0) of the page (split view, right panel widths, etc.).
-//
-// `pointer-events: none` on the cursor ring (it's purely visual);
-// the "+" badge is interactive and large enough to tap with a pen
-// nib comfortably without obstructing the underlying canvas.
-function PenHoverIndicator({
+function PenHoverCursor({
   x,
   y,
   wrapper,
-  onAddTap,
 }: {
   x: number;
   y: number;
   wrapper: HTMLDivElement | null;
-  onAddTap: () => void;
 }) {
   if (!wrapper) return null;
   const rect = wrapper.getBoundingClientRect();
   const localX = x - rect.left;
   const localY = y - rect.top;
-  // "+" badge sits up and to the right of the pen tip — out of the
-  // way of the underlying inputs the user might be aiming at, but
-  // close enough that the gesture feels deliberate.
-  const badgeOffset = 18;
   return (
-    <>
-      {/* Tip cursor — a thin ring with a center dot. The ring style
-          mimics the system Pencil hover cursor so users with a Pencil
-          recognize the affordance instantly. */}
-      <div
-        style={{
-          position: "absolute",
-          left: localX,
-          top: localY,
-          width: 18,
-          height: 18,
-          marginLeft: -9,
-          marginTop: -9,
-          borderRadius: "50%",
-          border: "1.5px solid rgba(255, 255, 255, 0.85)",
-          background: "rgba(255, 255, 255, 0.08)",
-          pointerEvents: "none",
-          zIndex: 60,
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          left: localX + badgeOffset,
-          top: localY - badgeOffset,
-          width: 24,
-          height: 24,
-          marginLeft: -12,
-          marginTop: -12,
-          borderRadius: 6,
-          background: "#1c1c1f",
-          border: "1px solid #3f3f46",
-          color: "#e5e7eb",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontFamily: "ui-monospace, monospace",
-          fontSize: 14,
-          lineHeight: 1,
-          cursor: "pointer",
-          boxShadow: "0 2px 8px rgba(0, 0, 0, 0.4)",
-          zIndex: 60,
-          // Pen taps fire pointerdown then click; click is the safer
-          // bind because pointerdown competes with React Flow's own
-          // pointer handling.
-          touchAction: "manipulation",
-          userSelect: "none",
-        }}
-        onPointerDown={(e) => {
-          // Stop the event from reaching the underlying canvas /
-          // React Flow — otherwise the pen tap would also land on
-          // a node or initiate a marquee. Click handler does the
-          // actual work.
-          e.stopPropagation();
-        }}
-        onClick={(e) => {
-          e.stopPropagation();
-          onAddTap();
-        }}
-      >
-        +
-      </div>
-    </>
+    <div
+      style={{
+        position: "absolute",
+        left: localX,
+        top: localY,
+        width: 18,
+        height: 18,
+        marginLeft: -9,
+        marginTop: -9,
+        borderRadius: "50%",
+        border: "1.5px solid rgba(255, 255, 255, 0.85)",
+        background: "rgba(255, 255, 255, 0.08)",
+        pointerEvents: "none",
+        zIndex: 60,
+      }}
+    />
   );
 }
 

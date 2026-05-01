@@ -519,6 +519,19 @@ function emitSdf(node: SdfNode, state: EmitState): string {
       return `splineSdf(${pos}, ${segs}, ${segCount}, ${closed})`;
     }
 
+    case "sdfFromImage": {
+      const pos = emitPosition(node.position, state);
+      const samp = alloc(state, "sampler2D", node.image);
+      const range = alloc(state, "float", node.range);
+      // JFA / canvas textures are y-up; our position pipeline is
+      // y-down (canvas-UV). Flip Y at sample time so a glyph
+      // rasterized at the visual top of the canvas aligns with
+      // its sdf source. R channel holds normalized [0, 1] distance
+      // with 0.5 = boundary; un-normalize via `(R - 0.5) * 2 * range`
+      // so downstream SDF ops see canvas-UV signed distance.
+      return `((texture(${samp}, vec2((${pos}).x, 1.0 - (${pos}).y)).r - 0.5) * 2.0 * ${range})`;
+    }
+
     case "union": {
       const a = emitSdf(node.a, state);
       const b = emitSdf(node.b, state);
@@ -776,6 +789,8 @@ export function structuralHash(node: SdfNode): string {
       // shader (the closed flag is a uniform). Position chain is
       // structural.
       return `sp[${positionHash(node.position)}]`;
+    case "sdfFromImage":
+      return `im[${positionHash(node.position)}]`;
     case "union":
       return `U(${structuralHash(node.a)},${structuralHash(node.b)})`;
     case "intersection":

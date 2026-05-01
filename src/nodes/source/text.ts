@@ -4,8 +4,11 @@ import type {
   MaskValue,
   NodeDefinition,
   RenderContext,
+  SdfValue,
+  SplineValue,
 } from "@/engine/types";
 import { computeSDF } from "@/engine/sdf";
+import { marchingSquares } from "@/engine/marching-squares";
 import { CURATED_FONTS, ensureFontLoaded, isFontReady } from "@/lib/fonts";
 
 // The built-in transform shader. Mostly identical to transform.ts but with an
@@ -46,6 +49,10 @@ interface TextState {
   rasterTex: WebGLTexture;
   primary: ImageValue;
   sdf: MaskValue;
+  // Cached marching-squares contour of the current text raster.
+  // Recomputed only when rasterChanged || postChanged fires (text /
+  // font / size / position changes), reused across frames otherwise.
+  spline: SplineValue;
   // Hashable summary of every param that changes what gets rasterized. When
   // this matches the last eval's sig and the font is ready, we return the
   // existing textures and skip all the GL work.
@@ -110,6 +117,7 @@ function ensureState(ctx: RenderContext, nodeId: string): TextState {
     rasterTex: tex,
     primary: ctx.allocImage(),
     sdf: ctx.allocMask(),
+    spline: { kind: "spline", subpaths: [] },
     lastSig: null,
     lastPostSig: null,
     lastW: ctx.width,
@@ -378,14 +386,15 @@ export const textNode: NodeDefinition = {
   auxOutputs: [
     {
       name: "sdf",
-      type: "mask",
-      description: "Signed distance field via jump flooding.",
+      type: "sdf",
+      description:
+        "Signed distance field via jump flooding, exposed as a first-class sdf socket — composes with SDF Smooth Union / Round / Rasterize / etc. Distance is sampled from a precomputed JFA texture (clamped to ~12% of the canvas dimension), so the result is fast but bounded — narrow text glyphs work great; very wide kerning may show clipping.",
     },
     {
-      name: "paths",
-      type: "vector",
-      description: "Vector paths (not yet implemented).",
-      disabled: true,
+      name: "spline",
+      type: "spline",
+      description:
+        "Outline of the rasterized text as a spline (marching squares on the alpha channel). Recomputes only when the text content / font / position changes; downstream consumers (Stroke, Fill, Modulate Splines, etc.) work directly on it.",
     },
   ],
 
@@ -404,7 +413,11 @@ export const textNode: NodeDefinition = {
       ctx.clearTarget(state.sdf, [0, 0, 0, 0]);
       state.lastSig = null;
       state.lastPostSig = null;
-      return { primary: state.primary, aux: { sdf: state.sdf } };
+      state.spline = { kind: "spline", subpaths: [] };
+      return {
+        primary: state.primary,
+        aux: { sdf: emptySdf(), spline: state.spline },
+      };
     }
 
     const sig = computeRasterSig(params, family, ctx.width, ctx.height);
@@ -423,10 +436,34 @@ export const textNode: NodeDefinition = {
       // so downstream gets a fresh MaskValue — the old one is freed below.
       ctx.releaseTexture(state.sdf.texture);
       state.sdf = computeSDF(ctx, state.primary, 128);
+      // Refresh the cached spline outline by marching squares on the
+      // raster's alpha channel (text is opaque inside, transparent
+      // outside). Iso = 0.5 puts the contour on the visual edge of
+      // the glyph. CPU readback is one sync stall per text change —
+      // acceptable since text rarely animates per-frame.
+      state.spline = extractTextSpline(ctx, state.primary);
       state.lastPostSig = postSig;
     }
 
-    return { primary: state.primary, aux: { sdf: state.sdf } };
+    // Wrap the JFA distance image as a real sdf-socket value so it
+    // composes with the rest of the SDF graph. The range matches
+    // computeSDF's own normalization: 128 px / max(canvas dim) →
+    // canvas-UV signed distance after the un-normalize in the helper.
+    const sdfRange = 128 / Math.max(state.primary.width, state.primary.height, 1);
+    const sdfOut: SdfValue = {
+      kind: "sdf",
+      root: {
+        kind: "sdfFromImage",
+        position: { kind: "canvasUv" },
+        image: state.sdf.texture,
+        range: sdfRange,
+      },
+    };
+
+    return {
+      primary: state.primary,
+      aux: { sdf: sdfOut, spline: state.spline },
+    };
   },
 
   dispose(ctx, nodeId) {
@@ -438,3 +475,47 @@ export const textNode: NodeDefinition = {
     delete ctx.state[`text:${nodeId}`];
   },
 };
+
+// Sentinel for the placeholder pre-font-load case. Combiners
+// (Union, Smooth Union, etc.) treat `empty` as far-away so they
+// degrade gracefully when one input isn't producing yet.
+function emptySdf(): SdfValue {
+  return { kind: "sdf", root: { kind: "empty" } };
+}
+
+// Extract the text glyph outline by marching squares on the alpha
+// channel of the rasterized text image. Reads the raster back via
+// the engine's existing readImageToFloat32 bridge, packs the alpha
+// values into a flat Float32 grid (with the convention "value < iso
+// = inside"), and runs the same marching-squares helper SDF to
+// Spline uses. The text raster's resolution is the canvas size,
+// which can be 1024² or larger — one CPU readback per text edit
+// is the cost.
+function extractTextSpline(
+  ctx: RenderContext,
+  image: ImageValue
+): SplineValue {
+  const w = image.width;
+  const h = image.height;
+  if (w <= 0 || h <= 0) return { kind: "spline", subpaths: [] };
+  const data = ctx.readImageToFloat32(image);
+  const grid = new Float32Array(w * h);
+  // Convention: marching squares treats `value < iso` as inside.
+  // Text alpha is ~1 inside the glyph, ~0 outside — so use
+  // `(0.5 - alpha)`: negative inside, positive outside, contour at
+  // alpha = 0.5. readPixels returns rows bottom-up, but our spline
+  // coords are y-down — flip Y when copying into the grid.
+  for (let y = 0; y < h; y++) {
+    const srcY = h - 1 - y;
+    for (let x = 0; x < w; x++) {
+      const a = data[(srcY * w + x) * 4 + 3];
+      grid[y * w + x] = 0.5 - a;
+    }
+  }
+  const subpaths = marchingSquares(grid, w, h, {
+    iso: 0,
+    uvOrigin: [0, 0],
+    uvSize: [1, 1],
+  });
+  return { kind: "spline", subpaths };
+}

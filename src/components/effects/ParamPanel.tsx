@@ -1,7 +1,7 @@
 "use client";
 
 import type { Node } from "@xyflow/react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getNodeDef } from "@/engine/registry";
 import { paramSocketType } from "@/state/graph";
 import type { NodeDataPayload } from "@/state/graph";
@@ -128,6 +128,63 @@ function DampenedRangeInput(
   const { value, onChange, shiftFactor = 0.1, ...rest } = props;
   const dragRef = useRef<{ lastNative: number } | null>(null);
   const shiftRef = useRef(false);
+
+  // RAF-coalescing for the parent onChange. iPad / Apple Pencil
+  // input events fire faster than 60Hz (Pencil Pro: ~120Hz), and
+  // each parent update cascades into a React re-render + pipeline
+  // re-eval — enough to drop frame rate noticeably during a slider
+  // drag. Coalescing means we still see every native event for
+  // dampening math (no precision loss), but the parent only sees
+  // one update per animation frame with the latest value.
+  //
+  // Stable refs so the effect cleanup can flush + cancel reliably
+  // even after re-renders swap the closure.
+  const pendingRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const flush = useCallback(() => {
+    rafRef.current = null;
+    if (pendingRef.current !== null) {
+      const v = pendingRef.current;
+      pendingRef.current = null;
+      onChangeRef.current(v);
+    }
+  }, []);
+  const queueChange = useCallback(
+    (v: number) => {
+      pendingRef.current = v;
+      if (rafRef.current === null) {
+        rafRef.current = requestAnimationFrame(flush);
+      }
+    },
+    [flush]
+  );
+  const flushNow = useCallback(() => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (pendingRef.current !== null) {
+      const v = pendingRef.current;
+      pendingRef.current = null;
+      onChangeRef.current(v);
+    }
+  }, []);
+  useEffect(() => {
+    return () => {
+      // On unmount, drop any pending RAF — re-render of the param
+      // panel (e.g. selection switch) shouldn't leak a callback into
+      // a stale onChange closure. Last value would have been written
+      // by the most recent rAF anyway; if the user was mid-drag,
+      // pointerup already flushed.
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       shiftRef.current = e.shiftKey;
@@ -150,9 +207,14 @@ function DampenedRangeInput(
       }}
       onPointerUp={() => {
         dragRef.current = null;
+        // Flush any in-flight pending change immediately so the
+        // pointerup commit sees the user's final value, not the
+        // value from the last RAF tick (which can lag by ~16ms).
+        flushNow();
       }}
       onPointerCancel={() => {
         dragRef.current = null;
+        flushNow();
       }}
       onChange={(e) => {
         const native = parseFloat(e.target.value);
@@ -161,9 +223,10 @@ function DampenedRangeInput(
           const delta = native - dragRef.current.lastNative;
           dragRef.current.lastNative = native;
           const factor = shiftRef.current ? shiftFactor : 1;
-          onChange(value + delta * factor);
+          queueChange(value + delta * factor);
         } else {
-          // Click-to-set or keyboard arrow — no anchor, apply directly.
+          // Click-to-set or keyboard arrow — no anchor, apply
+          // directly without coalescing (single discrete event).
           onChange(native);
         }
       }}

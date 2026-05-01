@@ -591,6 +591,20 @@ export type SdfNode =
       segCount: number;
       closed: boolean;
     }
+  // Sampled distance field from a precomputed image (typically a
+  // JFA-derived signed distance). The texture's R channel holds
+  // values in [0, 1] with 0.5 = boundary; `range` un-normalizes
+  // back to canvas-UV signed distance: `d = (R - 0.5) * 2 * range`.
+  // The Y axis is flipped inside the helper to match the JFA's
+  // y-up texture convention vs the SDF graph's y-down position
+  // pipeline. Used by the Text node to expose its JFA distance
+  // field as a first-class sdf socket.
+  | {
+      kind: "sdfFromImage";
+      position: PositionNode;
+      image: WebGLTexture;
+      range: number;
+    }
   | { kind: "union"; a: SdfNode; b: SdfNode }
   | { kind: "intersection"; a: SdfNode; b: SdfNode }
   | { kind: "subtraction"; a: SdfNode; b: SdfNode }
