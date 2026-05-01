@@ -1,21 +1,29 @@
 import type {
   InputSocketDef,
   NodeDefinition,
+  ScalarFieldNode,
+  ScalarFieldValue,
   ScalarValue,
   SocketType,
+  SocketValue,
 } from "@/engine/types";
 
 // Linear remap from [in_min, in_max] to [out_min, out_max].
 //
-// Polymorphic on the input: scalar mode runs on CPU and emits a scalar;
-// image mode runs a per-pixel shader and emits an image (same remap
-// applied to every channel including alpha). Parameters are always
-// scalar — if you need per-channel remaps, stack multiple Remap nodes
-// after channel-picking with Color Correction.
+// Three pipelines coexist on this single node:
+//   - Scalar:  primary input/output (CPU value, current behavior)
+//   - Image:   primary input/output when mode = "image" (per-pixel shader)
+//   - Field:   `input_field` input + `field` aux output, always
+//              available regardless of mode. Wires straight through
+//              the SDF compiler — drop a Remap between Noise.field
+//              and a downstream consumer (Polygon.sides_field,
+//              Rotate.angle_field, etc.) and the remap inlines into
+//              the compiled shader.
 //
-// Switch modes with the `mode` param. Same pattern as Math node's
-// scalar/uv toggle — resolveInputs + resolvePrimaryOutput re-type the
-// sockets on each change.
+// The mode enum still gates scalar vs image (those are mutually
+// exclusive — either CPU or rasterized). Field is orthogonal: its
+// input/output are always exposed, and feeding either with no value
+// no-ops cleanly.
 
 const REMAP_FS = `#version 300 es
 precision highp float;
@@ -44,9 +52,17 @@ export const remapNode: NodeDefinition = {
   name: "Remap",
   category: "utility",
   description:
-    "Remap an input from [in_min, in_max] to [out_min, out_max]. Scalar mode drives animation; image mode remaps every pixel's channels through the same range.",
+    "Remap an input from [in_min, in_max] to [out_min, out_max]. Mode chooses between Scalar (CPU value) and Image (per-pixel shader) for the primary path. The Input Field socket + Field output are always available — wire a scalar_field in to get a remapped scalar_field out, inlined into the SDF shader.",
   backend: "webgl2",
-  inputs: [{ name: "input", type: "scalar", required: true }],
+  inputs: [
+    { name: "input", type: "scalar", required: true },
+    {
+      name: "input_field",
+      type: "scalar_field",
+      required: false,
+      label: "Input Field",
+    },
+  ],
   resolveInputs(params): InputSocketDef[] {
     const t: SocketType = modeOf(params) === "image" ? "image" : "scalar";
     return [
@@ -55,6 +71,12 @@ export const remapNode: NodeDefinition = {
         label: modeOf(params) === "image" ? "Image" : "Input",
         type: t,
         required: true,
+      },
+      {
+        name: "input_field",
+        type: "scalar_field",
+        required: false,
+        label: "Input Field",
       },
     ];
   },
@@ -113,7 +135,14 @@ export const remapNode: NodeDefinition = {
   resolvePrimaryOutput(params): SocketType {
     return modeOf(params) === "image" ? "image" : "scalar";
   },
-  auxOutputs: [],
+  auxOutputs: [
+    {
+      name: "field",
+      type: "scalar_field",
+      description:
+        "Remapped scalar field — the same linear remap applied per-pixel in the SDF shader. Wire here when feeding from Noise.field, or to chain remaps inside an SDF graph.",
+    },
+  ],
 
   compute({ inputs, params, ctx }) {
     const mode = modeOf(params);
@@ -123,12 +152,30 @@ export const remapNode: NodeDefinition = {
     const outMax = (params.out_max as number) ?? 1;
     const clampFlag = !!params.clamp;
 
+    // Field path is always built. If a field is wired, wrap it in a
+    // remap AST. If not but a scalar is wired, wrap the scalar as a
+    // constant field so downstream consumers can still pull a field
+    // (a scalar Remap gracefully degrades to a constant field).
+    const fieldChild = buildFieldChild(inputs);
+    const fieldOut: ScalarFieldValue = {
+      kind: "scalar_field",
+      root: {
+        kind: "remap",
+        child: fieldChild,
+        inMin,
+        inMax,
+        outMin,
+        outMax,
+        clamp: clampFlag,
+      },
+    };
+
     if (mode === "image") {
       const output = ctx.allocImage();
       const src = inputs.input;
       if (!src || src.kind !== "image") {
         ctx.clearTarget(output, [0, 0, 0, 0]);
-        return { primary: output };
+        return { primary: output, aux: { field: fieldOut } };
       }
       const prog = ctx.getShader("remap/image", REMAP_FS);
       ctx.drawFullscreen(prog, output, (gl) => {
@@ -144,7 +191,7 @@ export const remapNode: NodeDefinition = {
           clampFlag ? 1 : 0
         );
       });
-      return { primary: output };
+      return { primary: output, aux: { field: fieldOut } };
     }
 
     // scalar mode
@@ -156,6 +203,21 @@ export const remapNode: NodeDefinition = {
     const result = outMin + t * (outMax - outMin);
     return {
       primary: { kind: "scalar", value: result } satisfies ScalarValue,
+      aux: { field: fieldOut },
     };
   },
 };
+
+// Pick the field's child AST. Priority:
+//   1. Wired input_field — pass through directly.
+//   2. Wired scalar input — wrap as a constant field.
+//   3. Nothing wired — constant field of value 0.
+function buildFieldChild(
+  inputs: Record<string, SocketValue | undefined>
+): ScalarFieldNode {
+  const f = inputs.input_field;
+  if (f && f.kind === "scalar_field") return (f as ScalarFieldValue).root;
+  const s = inputs.input;
+  if (s && s.kind === "scalar") return { kind: "constant", value: s.value };
+  return { kind: "constant", value: 0 };
+}

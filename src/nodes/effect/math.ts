@@ -1,6 +1,8 @@
 import type {
   InputSocketDef,
   NodeDefinition,
+  ScalarFieldNode,
+  ScalarFieldValue,
   SocketType,
   SocketValue,
   UvValue,
@@ -344,20 +346,42 @@ export const mathNode: NodeDefinition = {
     { name: "b", label: "B", type: "scalar", required: false },
     { name: "c", label: "C", type: "scalar", required: false },
   ],
-  resolveInputs(params) {
+  resolveInputs(params, ctx) {
     const op = (params.operation as string) ?? "Add";
     const mode = (params.mode as string) ?? "scalar";
     const n = inputCountFor(op);
     const [la, lb, lc] = labelsFor(op);
-    const type: SocketType = mode === "uv" ? "uv" : "scalar";
+    // Per-socket type derivation. Priority:
+    //   1. If the wire's source is a scalar_field, the socket adapts
+    //      to scalar_field — this is the dynamic per-input retype the
+    //      user wants (no mode toggle needed).
+    //   2. Else if the mode param is "uv", uv mode (existing behavior).
+    //   3. Else scalar.
+    const connected = ctx?.connectedTypes ?? {};
+    const typeFor = (name: string): SocketType => {
+      if (connected[name] === "scalar_field") return "scalar_field";
+      return mode === "uv" ? "uv" : "scalar";
+    };
     const sockets: InputSocketDef[] = [
-      { name: "a", label: la, type, required: false },
+      { name: "a", label: la, type: typeFor("a"), required: false },
     ];
-    if (n >= 2) sockets.push({ name: "b", label: lb, type, required: false });
-    if (n >= 3) sockets.push({ name: "c", label: lc, type, required: false });
+    if (n >= 2)
+      sockets.push({ name: "b", label: lb, type: typeFor("b"), required: false });
+    if (n >= 3)
+      sockets.push({ name: "c", label: lc, type: typeFor("c"), required: false });
     return sockets;
   },
-  resolvePrimaryOutput(params) {
+  resolvePrimaryOutput(params, ctx) {
+    // Output type is driven by the strongest input. Field beats uv
+    // beats scalar — same precedence as resolveInputs uses.
+    const connected = ctx?.connectedTypes ?? {};
+    if (
+      connected.a === "scalar_field" ||
+      connected.b === "scalar_field" ||
+      connected.c === "scalar_field"
+    ) {
+      return "scalar_field";
+    }
     return (params.mode as string) === "uv" ? "uv" : "scalar";
   },
   params: [
@@ -421,6 +445,38 @@ export const mathNode: NodeDefinition = {
     const mode = (params.mode as string) ?? "scalar";
     const op = ((params.operation as string) ?? "Add") as Operation;
     const clamp = !!params.clamp;
+
+    // Field path: any wired scalar_field flips us into per-pixel
+    // shader mode. The output is a scalar_field AST that downstream
+    // SDF nodes inline into their compiled shader. Mixing scalars
+    // and fields works — scalars wrap as constant fields.
+    const aIsField = inputs.a?.kind === "scalar_field";
+    const bIsField = inputs.b?.kind === "scalar_field";
+    const cIsField = inputs.c?.kind === "scalar_field";
+    if (aIsField || bIsField || cIsField) {
+      const toField = (
+        sock: SocketValue | undefined,
+        paramVal: number
+      ): ScalarFieldNode => {
+        if (sock?.kind === "scalar_field")
+          return (sock as ScalarFieldValue).root;
+        if (sock?.kind === "scalar")
+          return { kind: "constant", value: sock.value };
+        return { kind: "constant", value: paramVal };
+      };
+      const fieldOut: ScalarFieldValue = {
+        kind: "scalar_field",
+        root: {
+          kind: "mathOp",
+          op,
+          a: toField(inputs.a, (params.a as number) ?? 0),
+          b: toField(inputs.b, (params.b as number) ?? 0),
+          c: toField(inputs.c, (params.c as number) ?? 0),
+          clamp,
+        },
+      };
+      return { primary: fieldOut };
+    }
 
     if (mode === "uv") {
       const output = ctx.allocUv();

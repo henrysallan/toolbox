@@ -385,6 +385,33 @@ export type ScalarFieldNode =
       // (lo=-1, hi=1, out=[-1,1]).
       outLo: number;
       outHi: number;
+    }
+  // Linear remap of a child field. Used by the Remap node's
+  // scalar_field path so existing graphs that drop a Remap between
+  // a Noise.field and a downstream consumer keep working — same
+  // params, same math, just inlined into the SDF shader.
+  | {
+      kind: "remap";
+      child: ScalarFieldNode;
+      inMin: number;
+      inMax: number;
+      outMin: number;
+      outMax: number;
+      clamp: boolean;
+    }
+  // Math operation on 1–3 field children. `op` is the same string
+  // enum the Math node uses; `clamp` mirrors Math's "Clamp to 0–1"
+  // toggle. Field-graph-version of Math — emits the corresponding
+  // GLSL expression inline so chained Math nodes inside an SDF
+  // graph compile to a single fragment shader, not a chain of
+  // intermediate textures.
+  | {
+      kind: "mathOp";
+      op: string;
+      a: ScalarFieldNode;
+      b: ScalarFieldNode;
+      c: ScalarFieldNode;
+      clamp: boolean;
     };
 
 // Per-pixel position AST. Compiles to a GLSL `vec2` expression. Each
@@ -524,7 +551,13 @@ export type SdfNode =
       cx: number;
       cy: number;
       r: number;
-      sides: number;
+      // Sides is polymorphic — number for a fixed-side polygon, or
+      // a ScalarFieldNode for per-pixel/per-tile variation. When the
+      // field is active, `quantizeSides` rounds the per-pixel value
+      // to an integer so you get clean 3/4/5-sided polygons rather
+      // than smooth interpolations.
+      sides: number | ScalarFieldNode;
+      quantizeSides?: boolean;
     }
   | {
       kind: "triangle";
@@ -709,6 +742,16 @@ export type NodeCategory =
 
 export type NodeSubcategory = "generator" | "modifier" | "utility";
 
+// Passed to resolveInputs / resolvePrimaryOutput so polymorphic nodes
+// can retype themselves based on what's actually wired into them.
+// `connectedTypes[inputName]` is the resolved primary/aux output type
+// of whatever's wired into that input socket, or undefined if nothing
+// is wired. The evaluator computes this in topological order, so the
+// source's type is already finalized by the time this is queried.
+export interface ResolveCtx {
+  connectedTypes: Record<string, SocketType | undefined>;
+}
+
 export interface NodeDefinition {
   type: string;
   name: string;
@@ -724,16 +767,28 @@ export interface NodeDefinition {
   // params/inputs fingerprint. Defaults to true (cacheable).
   stable?: boolean;
   inputs: InputSocketDef[];
-  // Optional: derive the active input socket list from params (for nodes with
-  // a user-extensible number of inputs). Falls back to static `inputs`.
-  resolveInputs?: (params: Record<string, unknown>) => InputSocketDef[];
+  // Optional: derive the active input socket list from params and from
+  // the source-output types of any currently-wired edges. The
+  // `connectedTypes` map is keyed by input socket name and populated
+  // by the evaluator before this is called — undefined entries mean
+  // "nothing wired into that socket". Use it for input-driven socket
+  // retyping (e.g. Math morphing between scalar / scalar_field based
+  // on what the user pipes in). Falls back to static `inputs` when
+  // omitted.
+  resolveInputs?: (
+    params: Record<string, unknown>,
+    ctx?: ResolveCtx
+  ) => InputSocketDef[];
   params: ParamDef[];
   primaryOutput: SocketType | null;
-  // Optional: derive the primary output socket type from current params. Used
-  // by nodes whose output kind depends on a mode param (e.g. Math switching
-  // between scalar and UV). Falls back to `primaryOutput` when absent.
+  // Optional: derive the primary output socket type from current
+  // params and connected source types. Same `connectedTypes` map as
+  // resolveInputs. Used by polymorphic nodes (Math returning
+  // scalar_field when any input is wired with a field, etc.). Falls
+  // back to `primaryOutput` when omitted.
   resolvePrimaryOutput?: (
-    params: Record<string, unknown>
+    params: Record<string, unknown>,
+    ctx?: ResolveCtx
   ) => SocketType | null;
   auxOutputs: OutputSocketDef[];
   // Optional: derive the active aux output list from params. Parallel to

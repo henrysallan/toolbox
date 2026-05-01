@@ -361,6 +361,28 @@ function emitScalarField(node: ScalarFieldNode, state: EmitState): string {
     case "constant": {
       return alloc(state, "float", node.value);
     }
+    case "remap": {
+      const child = emitScalarField(node.child, state);
+      const inMin = alloc(state, "float", node.inMin);
+      const inMax = alloc(state, "float", node.inMax);
+      const outMin = alloc(state, "float", node.outMin);
+      const outMax = alloc(state, "float", node.outMax);
+      // `t` is the [0..1] interpolation parameter; clamping is
+      // baked into the structural form so the shader is identical
+      // across param changes (only uniforms vary).
+      const tExpr = node.clamp
+        ? `clamp((${child} - ${inMin}) / max(${inMax} - ${inMin}, 1e-6), 0.0, 1.0)`
+        : `((${child} - ${inMin}) / max(${inMax} - ${inMin}, 1e-6))`;
+      return `(${outMin} + ${tExpr} * (${outMax} - ${outMin}))`;
+    }
+    case "mathOp": {
+      const a = emitScalarField(node.a, state);
+      const b = emitScalarField(node.b, state);
+      const c = emitScalarField(node.c, state);
+      let r = mathOpExpr(node.op, a, b, c, state);
+      if (node.clamp) r = `clamp(${r}, 0.0, 1.0)`;
+      return `(${r})`;
+    }
     case "noise": {
       // For now only simplex is wired through; perlin/value can be
       // added by emitting different fbm wrappers. The position the
@@ -424,8 +446,18 @@ function emitSdf(node: SdfNode, state: EmitState): string {
       const pos = emitPosition(node.position, state);
       const c = alloc(state, "vec2", [node.cx, node.cy]);
       const r = alloc(state, "float", node.r);
-      const n = alloc(state, "float", node.sides);
-      return `polySdf(${pos} - ${c}, ${r}, ${n})`;
+      // Polymorphic sides — number → uniform; ScalarFieldNode →
+      // inlined per-pixel field expression. `quantizeSides` rounds
+      // the per-pixel value so animated transitions step through
+      // clean integer side counts instead of smooth interpolations.
+      let nExpr: string;
+      if (typeof node.sides === "number") {
+        nExpr = alloc(state, "float", node.sides);
+      } else {
+        const raw = emitScalarField(node.sides, state);
+        nExpr = node.quantizeSides ? `max(round(${raw}), 3.0)` : raw;
+      }
+      return `polySdf(${pos} - ${c}, ${r}, ${nExpr})`;
     }
 
     case "triangle": {
@@ -512,6 +544,116 @@ function emitSdf(node: SdfNode, state: EmitState): string {
   }
 }
 
+// Map a Math node op string to a GLSL expression in terms of the
+// emitted child expressions a / b / c. Mirrors the CPU implementation
+// in nodes/effect/math.ts so a Math node operating in field mode
+// produces visually identical results to its scalar mode at the
+// same params.
+//
+// Ops that need helpers (smooth min/max) add them to the helper set
+// via `state` so they're declared once in the final shader. Ops not
+// listed here fall through to "Add" — defensive default for future
+// ops added to the Math node before the field path catches up.
+function mathOpExpr(
+  op: string,
+  a: string,
+  b: string,
+  c: string,
+  state: EmitState
+): string {
+  switch (op) {
+    case "Add":
+      return `(${a} + ${b})`;
+    case "Subtract":
+      return `(${a} - ${b})`;
+    case "Multiply":
+      return `(${a} * ${b})`;
+    case "Divide":
+      return `((abs(${b}) < 1e-5) ? 0.0 : (${a} / ${b}))`;
+    case "Multiply Add":
+      return `(${a} * ${b} + ${c})`;
+    case "Power":
+      return `pow(max(${a}, 0.0), ${b})`;
+    case "Logarithm":
+      return `((${a} <= 0.0 || ${b} <= 0.0 || ${b} == 1.0) ? 0.0 : log(${a}) / log(${b}))`;
+    case "Square Root":
+      return `sqrt(max(${a}, 0.0))`;
+    case "Inverse Square Root":
+      return `((${a} <= 0.0) ? 0.0 : 1.0 / sqrt(${a}))`;
+    case "Absolute":
+      return `abs(${a})`;
+    case "Exponent":
+      return `exp(${a})`;
+    case "Minimum":
+      return `min(${a}, ${b})`;
+    case "Maximum":
+      return `max(${a}, ${b})`;
+    case "Less Than":
+      return `((${a} < ${b}) ? 1.0 : 0.0)`;
+    case "Greater Than":
+      return `((${a} > ${b}) ? 1.0 : 0.0)`;
+    case "Sign":
+      return `sign(${a})`;
+    case "Compare":
+      return `((abs(${a} - ${b}) <= ${c}) ? 1.0 : 0.0)`;
+    case "Smooth Minimum":
+      state.helpers.add("smin");
+      return `smin(${a}, ${b}, ${c})`;
+    case "Smooth Maximum":
+      state.helpers.add("smax");
+      return `smax(${a}, ${b}, ${c})`;
+    case "Round":
+      return `floor(${a} + 0.5)`;
+    case "Floor":
+      return `floor(${a})`;
+    case "Ceiling":
+      return `ceil(${a})`;
+    case "Truncate":
+      return `trunc(${a})`;
+    case "Fraction":
+      return `fract(${a})`;
+    case "Truncated Modulo":
+      return `((abs(${b}) < 1e-5) ? 0.0 : (${a} - trunc(${a} / ${b}) * ${b}))`;
+    case "Floored Modulo":
+      return `((abs(${b}) < 1e-5) ? 0.0 : (${a} - floor(${a} / ${b}) * ${b}))`;
+    case "Wrap":
+      return `(${b} + mod(mod(${a} - ${b}, max(${c} - ${b}, 1e-5)) + max(${c} - ${b}, 1e-5), max(${c} - ${b}, 1e-5)))`;
+    case "Snap":
+      return `((abs(${b}) < 1e-5) ? ${a} : floor(${a} / ${b} + 0.5) * ${b})`;
+    case "Ping-Pong": {
+      // Match the CPU pingpong: scale-aware triangle wave.
+      const twoB = `(2.0 * ${b})`;
+      return `((${b}) - abs(mod(mod(${a}, ${twoB}) + ${twoB}, ${twoB}) - ${b}))`;
+    }
+    case "Sine":
+      return `sin(${a})`;
+    case "Cosine":
+      return `cos(${a})`;
+    case "Tangent":
+      return `tan(${a})`;
+    case "Arcsine":
+      return `asin(clamp(${a}, -1.0, 1.0))`;
+    case "Arccosine":
+      return `acos(clamp(${a}, -1.0, 1.0))`;
+    case "Arctangent":
+      return `atan(${a})`;
+    case "Arctan2":
+      return `atan(${a}, ${b})`;
+    case "Hyperbolic Sine":
+      return `sinh(${a})`;
+    case "Hyperbolic Cosine":
+      return `cosh(${a})`;
+    case "Hyperbolic Tangent":
+      return `tanh(${a})`;
+    case "To Radians":
+      return `(${a} * 0.0174532925199433)`;
+    case "To Degrees":
+      return `(${a} * 57.29577951308232)`;
+    default:
+      return `(${a} + ${b})`;
+  }
+}
+
 // Topology-only fingerprints. Two trees with the same hash produce
 // identical GLSL source (uniform names are allocated in DFS order
 // across both pipelines, so a given topology always names them the
@@ -522,6 +664,12 @@ function scalarFieldHash(node: ScalarFieldNode): string {
       return "k";
     case "noise":
       return `n[${positionHash(node.position)}]`;
+    case "remap":
+      // Clamp flag is part of the structure (different GLSL).
+      return `rm${node.clamp ? "c" : ""}(${scalarFieldHash(node.child)})`;
+    case "mathOp":
+      // Op string IS structure (different GLSL per op). Clamp flag too.
+      return `mo:${node.op}${node.clamp ? "c" : ""}(${scalarFieldHash(node.a)},${scalarFieldHash(node.b)},${scalarFieldHash(node.c)})`;
   }
 }
 
@@ -570,8 +718,15 @@ export function structuralHash(node: SdfNode): string {
       return `r[${positionHash(node.position)}]`;
     case "lineSegment":
       return `l[${positionHash(node.position)}]`;
-    case "polygon":
-      return `g[${positionHash(node.position)}]`;
+    case "polygon": {
+      // Sides field topology must be in the hash — different field
+      // shapes emit different GLSL.
+      const sidesTag =
+        typeof node.sides === "number"
+          ? "k"
+          : `${node.quantizeSides ? "q" : "f"}[${scalarFieldHash(node.sides)}]`;
+      return `g{${sidesTag}}[${positionHash(node.position)}]`;
+    }
     case "triangle":
       return `t[${positionHash(node.position)}]`;
     case "star":

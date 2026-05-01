@@ -14,6 +14,8 @@ import type {
   NodeOutput,
   ParamType,
   RenderContext,
+  ResolveCtx,
+  SocketType,
   SocketValue,
 } from "./types";
 
@@ -233,6 +235,63 @@ function parseSourceHandle(
   return null;
 }
 
+// Resolve the *socket type* of one of a node's outputs without
+// running compute. Used by `connectedTypesFor` so polymorphic nodes
+// (Math, Lerp, etc.) can retype their own inputs based on what's
+// wired into them. Recurses through resolveOutputType for primary
+// outputs whose type itself depends on connected sources — but keeps
+// recursion bounded by the topo order: the source has already been
+// processed, and we only need its *declared* output type, not a live
+// computation.
+function resolvePrimaryType(
+  def: NodeDefinition,
+  params: Record<string, unknown>,
+  ctx?: ResolveCtx
+): SocketType | null {
+  return def.resolvePrimaryOutput?.(params, ctx) ?? def.primaryOutput;
+}
+
+function resolveAuxType(
+  def: NodeDefinition,
+  params: Record<string, unknown>,
+  name: string
+): SocketType | null {
+  const list = def.resolveAuxOutputs?.(params) ?? def.auxOutputs;
+  return list.find((a) => a.name === name)?.type ?? null;
+}
+
+// Build the connectedTypes map for a target node — for every input
+// socket that has a wire, record the source's resolved output type.
+// Sources are resolved using their own resolvePrimaryOutput (or a
+// previously-cached type from `outputTypeCache` to avoid re-evaluating
+// chains of polymorphic nodes).
+function connectedTypesFor(
+  targetId: string,
+  edges: GraphEdge[],
+  byId: Map<string, GraphNode>,
+  outputTypeCache: Map<string, SocketType | null>
+): Record<string, SocketType | undefined> {
+  const out: Record<string, SocketType | undefined> = {};
+  for (const e of edges) {
+    if (e.target !== targetId) continue;
+    const tParsed = parseTargetHandleKind(e.targetHandle);
+    if (tParsed?.kind !== "input") continue;
+    const srcNode = byId.get(e.source);
+    if (!srcNode) continue;
+    const srcDef = getNodeDef(srcNode.type);
+    if (!srcDef) continue;
+    const sParsed = parseSourceHandle(e.sourceHandle);
+    let t: SocketType | null = null;
+    if (sParsed?.kind === "primary") {
+      t = outputTypeCache.get(srcNode.id) ?? null;
+    } else if (sParsed?.kind === "aux") {
+      t = resolveAuxType(srcDef, srcNode.params, sParsed.name);
+    }
+    if (t) out[tParsed.name] = t;
+  }
+  return out;
+}
+
 // Convert a resolved socket value back into a raw param value (number, bool,
 // number[]). Returns undefined if the socket type can't drive the param.
 function socketToParamRaw(
@@ -312,6 +371,10 @@ export function evaluateGraph(
       : undefined;
   let terminalImage: EvalResult["terminalImage"];
   const needed = computeNeededSet(nodes, edges, activeNodeId);
+  // Cache of resolved primary output types in topo order. Used by
+  // `connectedTypesFor` so polymorphic nodes (Math, Lerp, …) can
+  // reshape their own sockets based on what's wired into them.
+  const outputTypeCache = new Map<string, SocketType | null>();
 
   for (const id of order) {
     if (!needed.has(id)) continue;
@@ -327,8 +390,20 @@ export function evaluateGraph(
     const auxIn: Record<string, Record<string, SocketValue | undefined>> = {};
     const inputFpParts: string[] = [];
 
+    // Build the resolve-context for this node — connected source
+    // types per input socket. Used by polymorphic nodes that need to
+    // know what's wired before they declare their own socket types
+    // and primary output type.
+    const connectedTypes = connectedTypesFor(
+      id,
+      edges,
+      byId,
+      outputTypeCache
+    );
+    const resolveCtx: ResolveCtx = { connectedTypes };
+
     const defInputs = withMaskInput(
-      def.resolveInputs?.(node.params) ?? def.inputs
+      def.resolveInputs?.(node.params, resolveCtx) ?? def.inputs
     );
     for (const inputDef of defInputs) {
       const incoming = edges.find((e) => {
@@ -463,6 +538,7 @@ export function evaluateGraph(
       // still alive (not released since we didn't evict).
       result = prev.output;
       outputs.set(id, result);
+      outputTypeCache.set(id, resolvePrimaryType(def, node.params, resolveCtx));
       // Cache hit means no compute ran — surface 0 so the overlay
       // shows the node as cheap rather than persisting an old timing.
       timings.set(id, 0);
@@ -517,6 +593,7 @@ export function evaluateGraph(
         }
 
         outputs.set(id, result);
+        outputTypeCache.set(id, resolvePrimaryType(def, node.params, resolveCtx));
 
         if (cacheable) {
           if (prev) releaseCachedTextures(ctx, prev);
@@ -535,6 +612,7 @@ export function evaluateGraph(
         );
         result = {};
         outputs.set(id, result);
+        outputTypeCache.set(id, resolvePrimaryType(def, node.params, resolveCtx));
         if (prev) {
           releaseCachedTextures(ctx, prev);
           cache.delete(id);
