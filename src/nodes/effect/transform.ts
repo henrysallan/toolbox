@@ -64,7 +64,7 @@ export const transformNode: NodeDefinition = {
   name: "Transform",
   category: "utility",
   description:
-    "Scale, rotate, and translate the input around a pivot. Works on images (pixels outside the frame become transparent) or splines (anchors and handles transform in place).",
+    "Scale, rotate, and translate the input around a pivot. Works on images, splines, or points. For SDFs use the Position-pipeline operators (Position Translate / Scale / Rotate) — they compose with Position Repeat / Mirror / Polar for tile-local transforms.",
   backend: "webgl2",
   supportsTransformGizmo: true,
   // Mode dropdown duplicated on the node header so switching data

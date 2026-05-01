@@ -22,6 +22,17 @@ export const socketColor: Record<string, string> = {
   emitter: "#fcd34d",
   collider: "#fb7185",
   particles: "#f43f5e",
+  // SDF wires — soft purple, distinct from vec2/3/4 lavender so a
+  // distance-field signal reads as its own pipeline.
+  sdf: "#c084fc",
+  // Position wires — green-cyan. Visually distinct from SDF and uv
+  // (which is also green-ish but emerald): position is a "where to
+  // sample" signal, paired with sdf as the "what to evaluate" signal.
+  position: "#5eead4",
+  // Scalar field — yellow-amber, distinct from scalar's bright yellow
+  // so users can tell at a glance whether a wire carries a single CPU
+  // value or a per-pixel shader expression.
+  scalar_field: "#eab308",
 };
 
 export function colorForSocket(type: string): string {

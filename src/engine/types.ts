@@ -18,7 +18,26 @@ export type SocketType =
   | "force"
   | "emitter"
   | "collider"
-  | "particles";
+  | "particles"
+  // Signed distance function. Carries an opaque AST that the SDF
+  // Rasterize node compiles into a single fragment shader. SDF nodes
+  // do no GL work themselves — they just build tree nodes — so any
+  // chain of SDF ops costs one shader compile + one fullscreen pass
+  // total at the Rasterize boundary.
+  | "sdf"
+  // Per-pixel position field. Carries a `PositionNode` AST that the
+  // SDF compiler emits as a `vec2` GLSL expression. The pipeline is
+  // strictly compile-time — no GL work happens until a shape primitive
+  // (or the SDF Rasterize node, transitively) consumes it. Default
+  // when unwired into a shape's position input is canvas UV.
+  | "position"
+  // Per-pixel scalar field. Carries a `ScalarFieldNode` AST that the
+  // SDF compiler emits as a `float` GLSL expression evaluated per
+  // pixel. Wire one into a position op's scalar input (Rotate.angle,
+  // Twist.strength) for per-pixel/per-tile/per-anything modulation —
+  // the only path to per-instance variation through a node graph (a
+  // CPU scalar uniform can only carry one value per draw).
+  | "scalar_field";
 
 export type ImageValue = {
   kind: "image";
@@ -329,7 +348,220 @@ export type SocketValue =
   | ForceValue
   | EmitterValue
   | ColliderValue
-  | ParticlesValue;
+  | ParticlesValue
+  | SdfValue
+  | PositionValue
+  | ScalarFieldValue;
+
+// SDF AST. Every SDF node's compute() returns one of these — a small
+// data tree, no GL work. The Rasterize node walks the tree, emits a
+// single GLSL shader, compiles it (once per tree-shape via the shader
+// cache), and binds the leaf parameters as uniforms each frame.
+//
+// Coordinates are in normalized canvas-UV [0, 1]² Y-DOWN, matching
+// every other engine value. Distances are also in canvas-UV units —
+// a circle with radius 0.2 covers 20% of the canvas width.
+// Per-pixel scalar AST. Compiles to a `float` GLSL expression
+// evaluated per pixel. Wire into a position op's scalar input
+// (Rotate.angle, Twist.strength) to get true per-pixel modulation.
+// `noise` samples noise at a position pipeline; `constant` wraps a
+// CPU scalar (so a uniform `scalar_field` slot can be partially
+// upgraded — same socket, varying behavior).
+export type ScalarFieldNode =
+  | { kind: "constant"; value: number }
+  | {
+      kind: "noise";
+      position: PositionNode;
+      noiseType: "simplex" | "perlin" | "value";
+      scale: number;
+      octaves: number;
+      persistence: number;
+      lacunarity: number;
+      offsetX: number;
+      offsetY: number;
+      seed: number;
+      // Linear remap applied after the fbm sample so users don't
+      // have to chain a separate Math/Remap. Defaults to identity
+      // (lo=-1, hi=1, out=[-1,1]).
+      outLo: number;
+      outHi: number;
+    };
+
+// Per-pixel position AST. Compiles to a GLSL `vec2` expression. Each
+// shape primitive carries a PositionNode; chaining position operators
+// (Translate, Repeat, Mirror, etc.) builds nested expressions that
+// fold the per-pixel position before the shape evaluates against it.
+//
+// `canvasUv` is the identity — the bare per-pixel UV. It's the
+// default when a shape's `position` input is unwired.
+export type PositionNode =
+  | { kind: "canvasUv" }
+  | { kind: "translate"; child: PositionNode; tx: number; ty: number }
+  | {
+      kind: "scale";
+      child: PositionNode;
+      sx: number;
+      sy: number;
+      cx: number;
+      cy: number;
+    }
+  // Rotation in radians around (cx, cy). When `rotation` is a
+  // ScalarFieldNode, the per-pixel field value drives the angle
+  // (used for per-tile / per-cell / per-pixel rotation variation).
+  | {
+      kind: "rotate";
+      child: PositionNode;
+      rotation: number | ScalarFieldNode;
+      cx: number;
+      cy: number;
+    }
+  // Tile the coordinate space. Cost is O(1) regardless of tile count.
+  // Jitter fields (`rotJitter` / `posJitterX/Y` / `scaleJitter`) hash
+  // the cell ID inside the GLSL fold so each tile gets independent
+  // pseudo-random rotation / offset / scale. When all jitter values
+  // are 0 the helper degenerates to a plain tile fold.
+  | {
+      kind: "repeat";
+      child: PositionNode;
+      spacingX: number;
+      spacingY: number;
+      cx: number;
+      cy: number;
+      bounded: boolean;
+      limitX: number;
+      limitY: number;
+      rotJitter?: number;
+      posJitterX?: number;
+      posJitterY?: number;
+      scaleJitter?: number;
+      seed?: number;
+    }
+  // Per-pixel cell ID for a Repeat-style fold. Returns the integer
+  // cell index as a vec2 (constant within a tile, varies between
+  // tiles). Used as the `position` input to SDF Noise to drive
+  // per-tile variation.
+  | {
+      kind: "cellId";
+      child: PositionNode;
+      spacingX: number;
+      spacingY: number;
+      cx: number;
+      cy: number;
+    }
+  | {
+      kind: "mirror";
+      child: PositionNode;
+      // Bitmask: 1 = mirror X, 2 = mirror Y, 3 = both.
+      axis: 1 | 2 | 3;
+      cx: number;
+      cy: number;
+    }
+  // N-fold rotational symmetry. `rotation` rotates the sector boundary.
+  | {
+      kind: "polar";
+      child: PositionNode;
+      cx: number;
+      cy: number;
+      segments: number;
+      rotation: number;
+    }
+  // Spiral around (cx, cy) by `strength` radians per unit distance.
+  // `strength` accepts a per-pixel scalar field for per-pixel /
+  // per-tile twist variation.
+  | {
+      kind: "twist";
+      child: PositionNode;
+      cx: number;
+      cy: number;
+      strength: number | ScalarFieldNode;
+    };
+
+export type PositionValue = {
+  kind: "position";
+  root: PositionNode;
+};
+
+export type ScalarFieldValue = {
+  kind: "scalar_field";
+  root: ScalarFieldNode;
+};
+
+// SDF AST. Shape primitives carry an explicit `position` field — the
+// position pipeline that produces this shape's per-pixel sample
+// coordinate. Default for `position` is `{ kind: "canvasUv" }`.
+//
+// Domain-style operators (Translate / Rotate / Repeat / etc.) used to
+// live on the SDF tree as wrappers, but they're now in the position
+// pipeline. The SDF tree is purely about distance composition
+// (booleans, smoothing, modifiers).
+export type SdfNode =
+  // Sentinel for "no input wired". Emits a very large positive
+  // distance so combiners degrade gracefully (Union with empty = the
+  // other side; Intersection with empty = empty).
+  | { kind: "empty" }
+  | { kind: "circle"; position: PositionNode; cx: number; cy: number; r: number }
+  | {
+      kind: "rect";
+      position: PositionNode;
+      cx: number;
+      cy: number;
+      sx: number;
+      sy: number;
+      cornerRadius: number;
+    }
+  | {
+      kind: "lineSegment";
+      position: PositionNode;
+      ax: number;
+      ay: number;
+      bx: number;
+      by: number;
+      r: number;
+    }
+  | {
+      kind: "polygon";
+      position: PositionNode;
+      cx: number;
+      cy: number;
+      r: number;
+      sides: number;
+    }
+  | {
+      kind: "triangle";
+      position: PositionNode;
+      ax: number;
+      ay: number;
+      bx: number;
+      by: number;
+      cx: number;
+      cy: number;
+    }
+  | {
+      kind: "star";
+      position: PositionNode;
+      cx: number;
+      cy: number;
+      r: number;
+      sides: number;
+      sharpness: number;
+    }
+  | { kind: "union"; a: SdfNode; b: SdfNode }
+  | { kind: "intersection"; a: SdfNode; b: SdfNode }
+  | { kind: "subtraction"; a: SdfNode; b: SdfNode }
+  | { kind: "smoothUnion"; a: SdfNode; b: SdfNode; k: number }
+  | { kind: "smoothIntersection"; a: SdfNode; b: SdfNode; k: number }
+  | { kind: "smoothSubtraction"; a: SdfNode; b: SdfNode; k: number }
+  | { kind: "round"; child: SdfNode; r: number }
+  | { kind: "onion"; child: SdfNode; thickness: number }
+  // Sample an image's red channel at the rendered position and add
+  // `(v - 0.5) * 2 * amount` to the distance. The image lives on the
+  // runtime AST node — never serialized.
+  | { kind: "displace"; child: SdfNode; amount: number; image: ImageValue };
+
+export type SdfValue = {
+  kind: "sdf";
+  root: SdfNode;
+};
 
 export interface NodeOutput {
   primary?: SocketValue;

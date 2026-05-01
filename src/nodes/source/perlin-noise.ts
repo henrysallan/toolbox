@@ -1,8 +1,30 @@
-import type { NodeDefinition, UvValue } from "@/engine/types";
+import type {
+  NodeDefinition,
+  PositionNode,
+  PositionValue,
+  ScalarFieldValue,
+  UvValue,
+} from "@/engine/types";
 import {
   disposePlaceholderTex,
   getPlaceholderTex,
 } from "@/engine/placeholder-tex";
+import { fbmWithW, noiseFnFor } from "@/engine/noise";
+
+// Helper: extract a PositionNode from a `position` socket value. Used
+// by the `field` aux output, whose source position can be wired from
+// any position-pipeline node (canvas UV by default, SDF Repeat.cell_id
+// for per-tile noise, etc.).
+function rootOfPosition(v: unknown): PositionNode {
+  if (
+    v &&
+    typeof v === "object" &&
+    (v as { kind?: string }).kind === "position"
+  ) {
+    return (v as PositionValue).root;
+  }
+  return { kind: "canvasUv" };
+}
 
 // Unified multi-algorithm noise source. `type` selects a lattice/gradient
 // scheme; fBm + shaping params wrap all of them so visual tuning carries
@@ -492,9 +514,18 @@ export const perlinNoiseNode: NodeDefinition = {
   category: "image",
   subcategory: "generator",
   description:
-    "Multi-algorithm fBm noise: Perlin / Simplex / Value / OpenSimplex family / Perlin Derivatives / Flow / Curl. Curl outputs a 2D vector encoded in R and G — feed into Displace for motion.",
+    "Multi-algorithm fBm noise. Three outputs: `image` (rasterized canvas-wide), `value` (CPU scalar sampled at the `position` input — single number per frame), and `field` (per-pixel scalar shader expression sampled at `field_position` — wire into SDF Rotate.angle_field / SDF Twist.strength_field for true per-pixel/per-tile modulation; pair with SDF Repeat.cell_id for per-tile variation). The `field` output uses simplex regardless of the `type` param; image and value paths respect type.",
   backend: "webgl2",
-  inputs: [{ name: "uv_in", label: "UV", type: "uv", required: false }],
+  inputs: [
+    { name: "uv_in", label: "UV", type: "uv", required: false },
+    { name: "position", label: "Position", type: "vec2", required: false },
+    {
+      name: "field_position",
+      label: "Field Position",
+      type: "position",
+      required: false,
+    },
+  ],
   params: [
     {
       name: "type",
@@ -625,9 +656,45 @@ export const perlinNoiseNode: NodeDefinition = {
       step: 0.01,
       default: 1,
     },
+    // Field-output remap. Raw fbm sits in roughly [-1, 1]; users
+    // almost always want to remap (e.g. to [-π, π] for rotation).
+    // Defaults to identity.
+    {
+      name: "field_lo",
+      label: "Field Lo",
+      type: "scalar",
+      min: -1000,
+      max: 1000,
+      softMax: 10,
+      step: 0.001,
+      default: -1,
+    },
+    {
+      name: "field_hi",
+      label: "Field Hi",
+      type: "scalar",
+      min: -1000,
+      max: 1000,
+      softMax: 10,
+      step: 0.001,
+      default: 1,
+    },
   ],
   primaryOutput: "image",
-  auxOutputs: [],
+  auxOutputs: [
+    {
+      name: "value",
+      type: "scalar",
+      description:
+        "Scalar noise sampled at the `position` input (defaults to (0.5, 0.5) — i.e. the center of the canvas — when unwired). Signed, roughly in [-1, 1].",
+    },
+    {
+      name: "field",
+      type: "scalar_field",
+      description:
+        "Per-pixel scalar shader expression. Sampled at `field_position` (defaults to canvas UV). Wire into SDF Rotate.angle_field / SDF Twist.strength_field for per-pixel modulation; pair with SDF Repeat.cell_id for per-tile variation. Output is remapped through Field Lo / Field Hi.",
+    },
+  ],
 
   compute({ inputs, params, ctx, nodeId }) {
     const output = ctx.allocImage();
@@ -668,6 +735,29 @@ export const perlinNoiseNode: NodeDefinition = {
       }
     }
 
+    // Value output — sample the noise on the CPU at the requested
+    // position. We mirror the exact same coordinate transform the
+    // shader applies to UVs: p = (uv - 0.5) * scale + offset + seed.
+    // That keeps "value at position P" equal to the rendered pixel
+    // at canvas UV P, modulo the contrast/color mapping.
+    const posIn = inputs.position;
+    const px = posIn?.kind === "vec2" ? posIn.value[0] : 0.5;
+    const py = posIn?.kind === "vec2" ? posIn.value[1] : 0.5;
+    const seedOffX = seed * 127.1;
+    const seedOffY = seed * 311.7;
+    const sx = (px - 0.5) * scale + offX + seedOffX;
+    const sy = (py - 0.5) * scale + offY + seedOffY;
+    const noiseFn = noiseFnFor((params.type as string) ?? "simplex");
+    const valueScalar = fbmWithW(
+      noiseFn,
+      sx,
+      sy,
+      w,
+      octaves,
+      persistence,
+      lacunarity
+    );
+
     const prog = ctx.getShader("noise/fs", FS);
     ctx.drawFullscreen(prog, output, (gl) => {
       gl.uniform1i(gl.getUniformLocation(prog, "u_type"), typeInt);
@@ -698,7 +788,36 @@ export const perlinNoiseNode: NodeDefinition = {
       );
     });
 
-    return { primary: output };
+    // Field output — a per-pixel scalar shader expression compiled
+    // into the consuming SDF graph. Uses simplex regardless of the
+    // type param (the SDF compiler currently only ports simplex).
+    const fieldLo = (params.field_lo as number) ?? -1;
+    const fieldHi = (params.field_hi as number) ?? 1;
+    const fieldOut: ScalarFieldValue = {
+      kind: "scalar_field",
+      root: {
+        kind: "noise",
+        position: rootOfPosition(inputs.field_position),
+        noiseType: "simplex",
+        scale,
+        octaves,
+        persistence,
+        lacunarity,
+        offsetX: offX,
+        offsetY: offY,
+        seed,
+        outLo: fieldLo,
+        outHi: fieldHi,
+      },
+    };
+
+    return {
+      primary: output,
+      aux: {
+        value: { kind: "scalar", value: valueScalar },
+        field: fieldOut,
+      },
+    };
   },
 
   dispose(ctx, nodeId) {
