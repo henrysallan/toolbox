@@ -578,6 +578,19 @@ export type SdfNode =
       sides: number;
       sharpness: number;
     }
+  // Distance to a flattened spline (pre-subdivided line segments
+  // packed into an RGBA32F data texture). Each texel holds one
+  // segment as vec4(ax, ay, bx, by). When `closed` is true, sign
+  // comes from a horizontal-ray winding count; when false, distance
+  // is unsigned (acts like a stroke). The texture lives on the
+  // runtime AST node — never serialized.
+  | {
+      kind: "splineSdf";
+      position: PositionNode;
+      segmentTexture: WebGLTexture;
+      segCount: number;
+      closed: boolean;
+    }
   | { kind: "union"; a: SdfNode; b: SdfNode }
   | { kind: "intersection"; a: SdfNode; b: SdfNode }
   | { kind: "subtraction"; a: SdfNode; b: SdfNode }

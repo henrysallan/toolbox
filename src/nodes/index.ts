@@ -100,6 +100,7 @@ import { sdfLineSegmentNode } from "./sdf/line-segment";
 import { sdfPolygonNode } from "./sdf/polygon";
 import { sdfTriangleNode } from "./sdf/triangle";
 import { sdfStarNode } from "./sdf/star";
+import { sdfSplineNode } from "./sdf/spline";
 import { sdfSmoothIntersectionNode } from "./sdf/smooth-intersection";
 import { sdfSmoothSubtractionNode } from "./sdf/smooth-subtraction";
 import { sdfTranslateNode } from "./sdf/sdf-translate";
@@ -228,6 +229,7 @@ export function registerAllNodes() {
   registerNode(sdfPolygonNode);
   registerNode(sdfTriangleNode);
   registerNode(sdfStarNode);
+  registerNode(sdfSplineNode);
   registerNode(sdfSmoothIntersectionNode);
   registerNode(sdfSmoothSubtractionNode);
   registerNode(sdfTranslateNode);

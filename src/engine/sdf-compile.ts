@@ -47,6 +47,7 @@ type HelperKey =
   | "polySdf"
   | "triSdf"
   | "starSdf"
+  | "splineSdf"
   // Scalar field helpers
   | "snoise"
   | "snoiseFbm";
@@ -188,6 +189,33 @@ const HELPERS: Record<HelperKey, string> = {
   q -= r * acs;
   q += ecs * clamp(-dot(q, ecs), 0.0, r * acs.y / max(ecs.y, 1e-6));
   return length(q) * sign(q.x);
+}`,
+  // Distance to a polyline / closed polygon, packed into a 1×N
+  // RGBA32F texture. Each texel = vec4(ax, ay, bx, by). For closed
+  // splines, sign comes from a horizontal-ray winding count; for
+  // open splines, the distance is unsigned (the result acts like a
+  // stroke). Loop is bounded at 1024 segments — anything more
+  // gracefully truncates.
+  splineSdf: `float splineSdf(vec2 p, sampler2D segs, float segCount, float closed) {
+  float d = 1e10;
+  int wind = 0;
+  for (int i = 0; i < 1024; i++) {
+    if (float(i) >= segCount) break;
+    vec4 s = texelFetch(segs, ivec2(i, 0), 0);
+    vec2 a = s.xy;
+    vec2 b = s.zw;
+    vec2 ba = b - a;
+    vec2 pa = p - a;
+    float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+    d = min(d, length(pa - ba * h));
+    bool crosses = (a.y > p.y) != (b.y > p.y);
+    if (crosses) {
+      float xCross = a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y);
+      if (p.x < xCross) wind++;
+    }
+  }
+  bool inside = closed > 0.5 && (wind - (wind / 2) * 2) == 1;
+  return inside ? -d : d;
 }`,
 
   // ── Scalar field (noise) helpers ────────────────────────────────
@@ -479,6 +507,18 @@ function emitSdf(node: SdfNode, state: EmitState): string {
       return `starSdf(${pos} - ${c}, ${r}, ${n}, ${m})`;
     }
 
+    case "splineSdf": {
+      state.helpers.add("splineSdf");
+      const pos = emitPosition(node.position, state);
+      // The segment texture is opaque to the shader cache (textures
+      // bind by uniform location at draw time). segCount and closed
+      // are values that vary per spline but use the same shader.
+      const segs = alloc(state, "sampler2D", node.segmentTexture);
+      const segCount = alloc(state, "float", node.segCount);
+      const closed = alloc(state, "float", node.closed ? 1 : 0);
+      return `splineSdf(${pos}, ${segs}, ${segCount}, ${closed})`;
+    }
+
     case "union": {
       const a = emitSdf(node.a, state);
       const b = emitSdf(node.b, state);
@@ -731,6 +771,11 @@ export function structuralHash(node: SdfNode): string {
       return `t[${positionHash(node.position)}]`;
     case "star":
       return `*[${positionHash(node.position)}]`;
+    case "splineSdf":
+      // Closed/open changes the visible result but uses the same
+      // shader (the closed flag is a uniform). Position chain is
+      // structural.
+      return `sp[${positionHash(node.position)}]`;
     case "union":
       return `U(${structuralHash(node.a)},${structuralHash(node.b)})`;
     case "intersection":
