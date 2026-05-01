@@ -280,6 +280,13 @@ export default function MenuBar({
         userSelect: "none",
       }}
     >
+      {/* Inline undo/redo affordance — always visible (matches the
+          desktop convention; also gives iPad/touch users a tappable
+          alternative since the keyboard shortcut isn't reachable
+          without a hardware keyboard). Sits between the left menus
+          and the centered file-name pill, so render after the menus
+          finish iterating. The actual buttons are below; this
+          comment stays adjacent to keep them findable. */}
       {menus.map((m) => {
         const open = openId === m.id;
         return (
@@ -323,6 +330,12 @@ export default function MenuBar({
           </div>
         );
       })}
+      <UndoRedoButtons
+        canUndo={!!canUndo}
+        canRedo={!!canRedo}
+        onUndo={onUndo}
+        onRedo={onRedo}
+      />
       <div style={{ flex: 1 }} />
       {/* Absolutely centered so the left-menu width and right-cluster
           width don't shift the pill off-center. */}
@@ -503,5 +516,100 @@ function FpsCounter() {
     >
       {fps} fps
     </div>
+  );
+}
+
+// Inline undo/redo buttons. Visible alongside the menu bar so iPad
+// and other touch users have a tappable affordance equivalent to the
+// ⌘Z / ⇧⌘Z shortcuts. Disabled when the history buffer's edge has
+// been reached.
+function UndoRedoButtons({
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+}: {
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 2,
+        marginLeft: 4,
+      }}
+    >
+      <UndoRedoIconButton
+        title="Undo  ⌘Z"
+        disabled={!canUndo}
+        onClick={onUndo}
+        kind="undo"
+      />
+      <UndoRedoIconButton
+        title="Redo  ⇧⌘Z"
+        disabled={!canRedo}
+        onClick={onRedo}
+        kind="redo"
+      />
+    </div>
+  );
+}
+
+function UndoRedoIconButton({
+  title,
+  disabled,
+  onClick,
+  kind,
+}: {
+  title: string;
+  disabled: boolean;
+  onClick: () => void;
+  kind: "undo" | "redo";
+}) {
+  // Minimal curved-arrow glyph drawn in SVG. The redo variant is the
+  // same path mirrored on X — keeps both icons visually identical
+  // weight without two separate drawings.
+  return (
+    <button
+      type="button"
+      title={title}
+      disabled={disabled}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onClick}
+      style={{
+        width: 22,
+        height: 16,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "transparent",
+        border: "none",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.35 : 1,
+        padding: 0,
+        color: "inherit",
+      }}
+    >
+      <svg
+        width={14}
+        height={14}
+        viewBox="0 0 14 14"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.4}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        // Mirror the redo glyph so the arc bends in the opposite
+        // direction without a second SVG.
+        style={{ transform: kind === "redo" ? "scaleX(-1)" : undefined }}
+      >
+        <path d="M3 6 L1.5 4.5 L3 3" />
+        <path d="M1.5 4.5 L8 4.5 A3.5 3.5 0 0 1 11.5 8 L11.5 11" />
+      </svg>
+    </button>
   );
 }

@@ -3437,7 +3437,16 @@ function EffectsShell({
       style={{
         display: "flex",
         flexDirection: "column",
-        height: "100vh",
+        // 100dvh tracks the *visible* viewport — on iPad Safari the
+        // URL bar shrinks the viewport when shown, and 100vh would
+        // park the bottom of the timeline below the address bar. dvh
+        // re-evaluates as the bar shows/hides. Falls back to 100vh on
+        // browsers that don't support dvh (none of the current iPad
+        // Safari versions, but the inline @supports keeps older
+        // engines unbroken).
+        height: "100dvh",
+        // Tailwind doesn't generate a dvh utility under our config;
+        // inline-style fallback for max breadth.
         width: "100%",
         background: "#000",
         color: "#e5e7eb",
@@ -3555,6 +3564,11 @@ function EffectsShell({
               position: "relative",
               width: "100%",
               overflow: "hidden",
+              // Suppress system pan/zoom inside the canvas viewport
+              // so our touch handler (one-finger pan, two-finger
+              // pinch) gets exclusive control. Page-level pinch is
+              // already disabled via the viewport meta.
+              touchAction: "none",
             }}
           >
             <canvas
@@ -3622,6 +3636,7 @@ function EffectsShell({
                 justifyContent: "center",
                 position: "relative",
                 width: "100%",
+                touchAction: "none",
                 overflow: "hidden",
               }}
             >
@@ -4330,6 +4345,134 @@ function useViewportGestures(
     window.addEventListener("pointerdown", onDown);
     return () => window.removeEventListener("pointerdown", onDown);
   }, [viewportRef, setPan]);
+
+  // Touch / Pencil pan + pinch-zoom on the canvas viewport.
+  // Mirrors the wheel handler's pan/zoom semantics so the canvas
+  // behaves the same on touch as it does on a trackpad. Wired
+  // directly on the viewport element (not window) because we need
+  // multi-touch state and want to passively skip touches that start
+  // outside the viewport.
+  //
+  // One finger / one pen → pan.
+  // Two fingers → pinch zooms about the midpoint, AND drag pans
+  // by the midpoint delta (matches Figma / Procreate).
+  // Mouse pointers are ignored here — those go through the wheel
+  // and middle-button paths above.
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    // Track active touch/pen pointers by id. Only the first two
+    // matter for pinch math; additional fingers are ignored until
+    // one of the active two leaves.
+    const active = new Map<number, { x: number; y: number }>();
+    let lastPanX = 0;
+    let lastPanY = 0;
+    let lastDist = 0;
+
+    const isAcceptedPointer = (e: PointerEvent) =>
+      e.pointerType === "touch" || e.pointerType === "pen";
+
+    const recompute = () => {
+      const pts = Array.from(active.values());
+      if (pts.length === 1) {
+        lastPanX = pts[0].x;
+        lastPanY = pts[0].y;
+        lastDist = 0;
+      } else if (pts.length >= 2) {
+        const a = pts[0];
+        const b = pts[1];
+        lastPanX = (a.x + b.x) / 2;
+        lastPanY = (a.y + b.y) / 2;
+        lastDist = Math.hypot(b.x - a.x, b.y - a.y);
+      }
+    };
+
+    const onDown = (e: PointerEvent) => {
+      if (!isAcceptedPointer(e)) return;
+      // Only own gestures that *started* over the canvas viewport.
+      const rect = el.getBoundingClientRect();
+      if (
+        e.clientX < rect.left ||
+        e.clientX > rect.right ||
+        e.clientY < rect.top ||
+        e.clientY > rect.bottom
+      ) {
+        return;
+      }
+      // Cap at two tracked pointers — third+ fingers are noise.
+      if (active.size >= 2) return;
+      active.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      recompute();
+      el.setPointerCapture(e.pointerId);
+    };
+
+    const onMove = (e: PointerEvent) => {
+      if (!active.has(e.pointerId)) return;
+      // Don't let the page see the gesture — touch-action on the el
+      // disables it for one-finger pans, but two-finger pinches still
+      // need this for some browsers.
+      e.preventDefault();
+      active.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const pts = Array.from(active.values());
+      if (pts.length === 1) {
+        const dx = pts[0].x - lastPanX;
+        const dy = pts[0].y - lastPanY;
+        lastPanX = pts[0].x;
+        lastPanY = pts[0].y;
+        setPan(([px, py]) => [px + dx, py + dy]);
+      } else if (pts.length >= 2) {
+        const a = pts[0];
+        const b = pts[1];
+        const midX = (a.x + b.x) / 2;
+        const midY = (a.y + b.y) / 2;
+        const dist = Math.hypot(b.x - a.x, b.y - a.y);
+        // Pan by midpoint movement so two-finger drag pans the
+        // viewport, same as a trackpad two-finger swipe.
+        const dx = midX - lastPanX;
+        const dy = midY - lastPanY;
+        lastPanX = midX;
+        lastPanY = midY;
+        // Pinch about the midpoint, in viewport-center-relative
+        // coords (mirrors the wheel-zoom math above).
+        const factor = lastDist > 0 ? dist / lastDist : 1;
+        lastDist = dist;
+        const rect = el.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        setZoom((prevZoom) => {
+          const nextZoom = Math.max(0.1, Math.min(8, prevZoom * factor));
+          const ratio = nextZoom / prevZoom;
+          setPan(([px, py]) => [
+            (px + dx) * ratio + (midX - cx) * (1 - ratio),
+            (py + dy) * ratio + (midY - cy) * (1 - ratio),
+          ]);
+          return nextZoom;
+        });
+      }
+    };
+
+    const release = (e: PointerEvent) => {
+      if (!active.has(e.pointerId)) return;
+      active.delete(e.pointerId);
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        // Pointer was already released by the browser; ignore.
+      }
+      recompute();
+    };
+
+    el.addEventListener("pointerdown", onDown);
+    el.addEventListener("pointermove", onMove, { passive: false });
+    el.addEventListener("pointerup", release);
+    el.addEventListener("pointercancel", release);
+    return () => {
+      el.removeEventListener("pointerdown", onDown);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", release);
+      el.removeEventListener("pointercancel", release);
+    };
+  }, [viewportRef, setPan, setZoom]);
 }
 
 // Splitter handle. Renders a thin 1px visual line but keeps a wider

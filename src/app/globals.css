@@ -36,6 +36,13 @@ body {
      the overscroll instead of forwarding it to the browser back/forward
      gesture. Also disables the iOS/Android pull-to-refresh rubber-band. */
   overscroll-behavior: none;
+  /* Touch behavior — kill iOS double-tap-zoom + the 300ms tap delay so
+     buttons feel native on iPad. Pinch-zoom is also disabled via the
+     viewport meta in app/layout.tsx; combined, the body never receives
+     a system gesture our editor doesn't own. Individual surfaces (node
+     editor canvas, output canvas) override `touch-action` to declare
+     their own gesture intent. */
+  touch-action: manipulation;
 }
 
 body {

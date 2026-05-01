@@ -130,6 +130,81 @@ export default function NodeEditor({
   const edgeTypes = useMemo(() => ({ default: JunctionEdge }), []);
   const { screenToFlowPosition, setNodes: rfSetNodes } = useReactFlow();
   const flowWrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // Touch / pen detection for the React Flow gesture model. On
+  // mouse, the marquee box-select is on by default and a single-
+  // finger drag would be ambiguous — so we only flip it off when
+  // we've actually seen a touch / pen pointer interact with the
+  // editor. Once flipped, single-finger drag pans the canvas the
+  // way users expect on iPad.
+  //
+  // We don't reset on a subsequent mouse pointer because hybrid
+  // devices (iPad with mouse / trackpad) tend to keep using touch
+  // intermittently — flipping back-and-forth would feel unstable.
+  // A page reload (or new session) starts fresh in mouse mode.
+  const [touchActive, setTouchActive] = useState(false);
+  useEffect(() => {
+    if (touchActive) return;
+    const el = flowWrapperRef.current;
+    if (!el) return;
+    const onDown = (e: PointerEvent) => {
+      if (e.pointerType === "touch" || e.pointerType === "pen") {
+        setTouchActive(true);
+      }
+    };
+    el.addEventListener("pointerdown", onDown);
+    return () => el.removeEventListener("pointerdown", onDown);
+  }, [touchActive]);
+
+  // Apple Pencil hover indicator. iPad / Apple Pencil fires
+  // pointermove with pointerType === "pen" while hovering, *before*
+  // the user touches down. We track the latest hover position to
+  // render a small floating cursor + an offset "+" affordance the
+  // user can tap to open the node search at that flow position
+  // (same code path as Shift+A).
+  //
+  // Auto-hides shortly after the pen leaves to avoid a stale ghost.
+  // Only mouse / pen pointers count — finger touches on iPad don't
+  // expose hover, and treating the most recent finger touch as a
+  // "hover" would leave the indicator stuck wherever the user last
+  // tapped.
+  const [penHover, setPenHover] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  useEffect(() => {
+    const el = flowWrapperRef.current;
+    if (!el) return;
+    let hideTimer: number | null = null;
+    const clearHide = () => {
+      if (hideTimer != null) {
+        window.clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+    };
+    const scheduleHide = () => {
+      clearHide();
+      hideTimer = window.setTimeout(() => setPenHover(null), 600);
+    };
+    const onMove = (e: PointerEvent) => {
+      if (e.pointerType !== "pen") return;
+      clearHide();
+      setPenHover({ x: e.clientX, y: e.clientY });
+    };
+    const onLeave = (e: PointerEvent) => {
+      if (e.pointerType !== "pen") return;
+      scheduleHide();
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerleave", onLeave);
+    el.addEventListener("pointercancel", onLeave);
+    return () => {
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerleave", onLeave);
+      el.removeEventListener("pointercancel", onLeave);
+      clearHide();
+    };
+  }, []);
   // Static no-op handlers so WireActionOverlay always has something to
   // call, even when the parent didn't wire these props.
   const handleCombine = useCallback(
@@ -884,11 +959,13 @@ export default function NodeEditor({
         // zooms via the default zoomActivationKeyCode.
         panOnScroll
         zoomOnScroll={false}
-        // Array form of panOnDrag selects which mouse buttons pan. [1]
-        // = middle button only — left-button drag still hits the
-        // marquee path via `selectionOnDrag`.
-        panOnDrag={[1]}
-        selectionOnDrag
+        // Mouse: middle button pans, left button draws marquee
+        //        (selectionOnDrag).
+        // Touch / pen: single-finger drag pans the canvas — marquee
+        //        is unreachable without a hover modifier and would
+        //        otherwise hijack the most natural touch gesture.
+        panOnDrag={touchActive ? [0, 1] : [1]}
+        selectionOnDrag={!touchActive}
         fitView
         proOptions={{ hideAttribution: true }}
         colorMode="dark"
@@ -899,6 +976,30 @@ export default function NodeEditor({
         <MiniMap pannable zoomable />
         {viewportOverlay && <ViewportPortal>{viewportOverlay}</ViewportPortal>}
       </ReactFlow>
+
+      {/* Apple Pencil hover indicator. The dot tracks the pen tip;
+          the offset "+" is a tappable add-node trigger that opens
+          the search popup at the pen position (same code path as
+          Shift+A). Render-suppressed when a popup is already open
+          so the floating "+" doesn't sit on top of the open menu. */}
+      {penHover && !nodePopup && (
+        <PenHoverIndicator
+          x={penHover.x}
+          y={penHover.y}
+          wrapper={flowWrapperRef.current}
+          onAddTap={() => {
+            // Match the Shift+A flow: clear any pending-wire context
+            // and seed the popup at the pen tip with a small inward
+            // offset so the popup doesn't appear directly under the
+            // pen and visually obscure where the user is pointing.
+            const x = penHover.x;
+            const y = penHover.y;
+            const flowPos = screenToFlowPosition({ x, y });
+            onPanePointer?.(flowPos);
+            setNodePopup({ x: x + 4, y: y + 4 });
+          }}
+        />
+      )}
 
       {nodePopup && (
         <NodeSearchPopup
@@ -1109,5 +1210,101 @@ function resolveTargetSocketType(
   const p = def.params.find((x) => x.name === parsed.name);
   if (!p) return null;
   return paramSocketType(p.type);
+}
+
+// Floating Apple Pencil hover indicator — a small ring at the pen
+// tip plus an offset "+" badge that opens the node search popup.
+// Mounts inside the node-editor wrapper (which is position: relative)
+// and translates client coords into wrapper-relative coords so the
+// indicator stays glued to the pen even when the wrapper isn't at
+// (0, 0) of the page (split view, right panel widths, etc.).
+//
+// `pointer-events: none` on the cursor ring (it's purely visual);
+// the "+" badge is interactive and large enough to tap with a pen
+// nib comfortably without obstructing the underlying canvas.
+function PenHoverIndicator({
+  x,
+  y,
+  wrapper,
+  onAddTap,
+}: {
+  x: number;
+  y: number;
+  wrapper: HTMLDivElement | null;
+  onAddTap: () => void;
+}) {
+  if (!wrapper) return null;
+  const rect = wrapper.getBoundingClientRect();
+  const localX = x - rect.left;
+  const localY = y - rect.top;
+  // "+" badge sits up and to the right of the pen tip — out of the
+  // way of the underlying inputs the user might be aiming at, but
+  // close enough that the gesture feels deliberate.
+  const badgeOffset = 18;
+  return (
+    <>
+      {/* Tip cursor — a thin ring with a center dot. The ring style
+          mimics the system Pencil hover cursor so users with a Pencil
+          recognize the affordance instantly. */}
+      <div
+        style={{
+          position: "absolute",
+          left: localX,
+          top: localY,
+          width: 18,
+          height: 18,
+          marginLeft: -9,
+          marginTop: -9,
+          borderRadius: "50%",
+          border: "1.5px solid rgba(255, 255, 255, 0.85)",
+          background: "rgba(255, 255, 255, 0.08)",
+          pointerEvents: "none",
+          zIndex: 60,
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          left: localX + badgeOffset,
+          top: localY - badgeOffset,
+          width: 24,
+          height: 24,
+          marginLeft: -12,
+          marginTop: -12,
+          borderRadius: 6,
+          background: "#1c1c1f",
+          border: "1px solid #3f3f46",
+          color: "#e5e7eb",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "ui-monospace, monospace",
+          fontSize: 14,
+          lineHeight: 1,
+          cursor: "pointer",
+          boxShadow: "0 2px 8px rgba(0, 0, 0, 0.4)",
+          zIndex: 60,
+          // Pen taps fire pointerdown then click; click is the safer
+          // bind because pointerdown competes with React Flow's own
+          // pointer handling.
+          touchAction: "manipulation",
+          userSelect: "none",
+        }}
+        onPointerDown={(e) => {
+          // Stop the event from reaching the underlying canvas /
+          // React Flow — otherwise the pen tap would also land on
+          // a node or initiate a marquee. Click handler does the
+          // actual work.
+          e.stopPropagation();
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onAddTap();
+        }}
+      >
+        +
+      </div>
+    </>
+  );
 }
 
