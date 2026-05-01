@@ -6,7 +6,12 @@ import { getNodeDef } from "@/engine/registry";
 import { withMaskInput } from "@/engine/conventions";
 
 // Bump when the on-wire shape changes. Load path should branch on this.
-export const CURRENT_SCHEMA = 1;
+//
+// v2 — added the optional `scene` block (loop length + fps). Back-
+// compat: v1 saves omit `scene`; the deserializer returns
+// `scene = undefined` and the caller leaves the user's current
+// loop / fps untouched.
+export const CURRENT_SCHEMA = 2;
 
 export interface SavedNode {
   id: string;
@@ -38,10 +43,25 @@ export interface SavedEdge {
   targetHandle: string | null;
 }
 
+// Scene-level (non-graph) project state. Optional so v1 projects
+// load cleanly. Each field is also optional so a project that only
+// cares about (say) the loop length doesn't have to carry the rest.
+export interface SavedScene {
+  // Loop length in frames. `null` means "no loop set" (∞ in the UI).
+  // Omitted means "no value saved" — leave the user's current loop
+  // alone on load.
+  loopFrames?: number | null;
+  // Target FPS. Paired with loopFrames since loop time = frames / fps;
+  // saving both keeps the loop's *duration* stable even if the
+  // project is opened on a machine with a different default FPS.
+  fps?: number;
+}
+
 export interface SavedProject {
   schemaVersion: number;
   nodes: SavedNode[];
   edges: SavedEdge[];
+  scene?: SavedScene;
 }
 
 // --- image helpers -------------------------------------------------------
@@ -168,7 +188,8 @@ export interface ProgressCallback {
 export async function serializeGraph(
   nodes: Node<NodeDataPayload>[],
   edges: Edge[],
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  scene?: SavedScene
 ): Promise<SavedProject> {
   // Sequential (not Promise.all) so progress is monotonic and the main
   // thread isn't thrashed decoding many large paint canvases in parallel.
@@ -201,6 +222,9 @@ export async function serializeGraph(
     schemaVersion: CURRENT_SCHEMA,
     nodes: savedNodes,
     edges: savedEdges,
+    // Drop the field entirely if no scene info was provided — keeps
+    // the on-disk shape minimal for graph-only callers.
+    ...(scene !== undefined ? { scene } : {}),
   };
 }
 
@@ -210,6 +234,7 @@ export async function deserializeGraph(
 ): Promise<{
   nodes: Node<NodeDataPayload>[];
   edges: Edge[];
+  scene?: SavedScene;
 }> {
   const total = Math.max(1, saved.nodes.length);
   const nodes: Node<NodeDataPayload>[] = [];
@@ -261,7 +286,7 @@ export async function deserializeGraph(
     target: se.target,
     targetHandle: se.targetHandle ?? undefined,
   }));
-  return { nodes, edges };
+  return { nodes, edges, scene: saved.scene };
 }
 
 // --- thumbnail -----------------------------------------------------------

@@ -2311,6 +2311,8 @@ function EffectsShell() {
   playingRef.current = playing;
   const fpsRef = useRef(fps);
   fpsRef.current = fps;
+  const loopFramesRef = useRef(loopFrames);
+  loopFramesRef.current = loopFrames;
 
   // `mode === "live"` is the MediaRecorder path — banner shows a
   // countdown. `mode === "offline"` is WebCodecs / ffmpeg.wasm — banner
@@ -2616,7 +2618,9 @@ function EffectsShell() {
         });
         const graphJson = await serializeGraph(
           nodesRef.current,
-          edgesRef.current
+          edgesRef.current,
+          undefined,
+          { loopFrames: loopFramesRef.current, fps: fpsRef.current }
         );
         const distManifest = (await fetch(
           "/export-template/v1/manifest.json"
@@ -2723,7 +2727,8 @@ function EffectsShell() {
           label: "saving",
           progress: f * SERIALIZE_SHARE,
           tone: "save",
-        })
+        }),
+      { loopFrames: loopFramesRef.current, fps: fpsRef.current }
     );
     const canvas = canvasRef.current;
     const thumbnail = canvas ? generateThumbnail(canvas, 256) : null;
@@ -2917,17 +2922,27 @@ function EffectsShell() {
           tone: "load",
         });
         pushGraph(getGraphSnapshot());
-        const { nodes: nextNodes, edges: nextEdges } = await deserializeGraph(
-          saved.graph,
-          (f) =>
-            setProgressStatus({
-              label: "loading",
-              progress: 1 - SERIALIZE_SHARE + f * SERIALIZE_SHARE,
-              tone: "load",
-            })
-        );
+        const { nodes: nextNodes, edges: nextEdges, scene } =
+          await deserializeGraph(
+            saved.graph,
+            (f) =>
+              setProgressStatus({
+                label: "loading",
+                progress: 1 - SERIALIZE_SHARE + f * SERIALIZE_SHARE,
+                tone: "load",
+              })
+          );
         setNodes(nextNodes);
         setEdges(nextEdges);
+        // Restore scene-level state (loop length, fps). Pre-v2 saves
+        // omit `scene` entirely — leave the user's current values
+        // untouched in that case. `loopFrames` can legitimately be
+        // null (= no loop), so check for the key's presence rather
+        // than truthiness.
+        if (scene) {
+          if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
+          if (scene.fps !== undefined) setFps(scene.fps);
+        }
         setSelectedId(null);
         setParamView("node");
         setCurrentProject({
