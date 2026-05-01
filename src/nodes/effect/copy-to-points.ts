@@ -11,6 +11,7 @@ import type {
   SplineValue,
 } from "@/engine/types";
 import { transformSubpath } from "@/engine/spline-transform";
+import { ensurePointArray, pointsFromArray } from "@/engine/points";
 
 // Duplicate an "instance" at every target point.
 //
@@ -289,9 +290,10 @@ function buildPickSampler(
   const w = canvas.width;
   const h = canvas.height;
   return (u: number, v: number): number => {
-    // UV is Y-up; 2D canvas rows are Y-down. Flip on sample.
+    // Point/subpath UVs are Y-DOWN (matches canvas image-data row
+    // order — row 0 = visual top). Sample directly without flipping.
     const px = Math.max(0, Math.min(w - 1, Math.floor(u * w)));
-    const py = Math.max(0, Math.min(h - 1, Math.floor((1 - v) * h)));
+    const py = Math.max(0, Math.min(h - 1, Math.floor(v * h)));
     const i = (py * w + px) * 4;
     return (
       (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255
@@ -353,17 +355,17 @@ export const copyToPointsNode: NodeDefinition = {
     if (mode !== "image") {
       base.push({ name: "pick", type: "image", required: false });
     }
-    // Per-instance modulation inputs — image mode only. Spline / point
-    // outputs are CPU geometry, modulation there should go through
-    // dedicated nodes (Jitter for noise, Transform for uniform).
-    if (mode === "image") {
-      base.push(
-        { name: "scale_mul", type: "scalar", required: false, label: "Scale × (uniform)" },
-        { name: "rotate_add", type: "scalar", required: false, label: "Rotate + (uniform)" },
-        { name: "scale_field", type: "image", required: false, label: "Scale field" },
-        { name: "rotate_field", type: "image", required: false, label: "Rotate field" },
-      );
-    }
+    // Per-instance modulation inputs — exposed in every mode so users
+    // can wire them ahead of switching modes. Image mode consumes them
+    // in the shader; spline / point modes ignore the wired values
+    // (compute path doesn't read them — use Jitter / Transform for
+    // CPU geometry modulation).
+    base.push(
+      { name: "scale_mul", type: "scalar", required: false, label: "Scale × (uniform)" },
+      { name: "rotate_add", type: "scalar", required: false, label: "Rotate + (uniform)" },
+      { name: "scale_field", type: "image", required: false, label: "Scale field" },
+      { name: "rotate_field", type: "image", required: false, label: "Rotate field" },
+    );
     return base;
   },
   params: [
@@ -447,16 +449,18 @@ export const copyToPointsNode: NodeDefinition = {
   compute({ inputs, params, ctx, nodeId }) {
     const mode = modeOf(params);
     const pts = inputs.points;
-    const points = pts?.kind === "points" ? pts.points : [];
+    const ptsValue = pts?.kind === "points" ? pts : null;
+    const ptCount = ptsValue?.count ?? 0;
     const state = ensureState(ctx, nodeId);
 
     // ---- spline mode ------------------------------------------------
     if (mode === "spline") {
       const inst = inputs.instance;
-      if (!inst || inst.kind !== "spline" || points.length === 0) {
+      if (!inst || inst.kind !== "spline" || ptCount === 0) {
         const empty: SplineValue = { kind: "spline", subpaths: [] };
         return { primary: empty };
       }
+      const points = ensurePointArray(ptsValue!);
       const distinct = collectDistinctGroupIndices(
         inst.subpaths.map((s) => s.groupIndex)
       );
@@ -509,11 +513,12 @@ export const copyToPointsNode: NodeDefinition = {
     if (mode === "point") {
       const inst = inputs.instance;
       const srcPoints =
-        inst?.kind === "points" ? inst.points : [];
-      if (points.length === 0 || srcPoints.length === 0) {
-        const empty: PointsValue = { kind: "points", points: [] };
+        inst?.kind === "points" ? ensurePointArray(inst) : [];
+      if (ptCount === 0 || srcPoints.length === 0) {
+        const empty: PointsValue = pointsFromArray([]);
         return { primary: empty };
       }
+      const points = ensurePointArray(ptsValue!);
       const distinct = collectDistinctGroupIndices(
         srcPoints.map((p) => p.groupIndex)
       );
@@ -558,7 +563,7 @@ export const copyToPointsNode: NodeDefinition = {
           });
         }
       }
-      const out: PointsValue = { kind: "points", points: outPoints };
+      const out: PointsValue = pointsFromArray(outPoints);
       return { primary: out };
     }
 
@@ -570,7 +575,7 @@ export const copyToPointsNode: NodeDefinition = {
     // than the old implementation past ~50 points.
     const output = ctx.allocImage();
     const inst = inputs.instance as ImageValue | undefined;
-    if (!inst || inst.kind !== "image" || points.length === 0) {
+    if (!inst || inst.kind !== "image" || ptCount === 0) {
       ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output };
     }
@@ -583,7 +588,7 @@ export const copyToPointsNode: NodeDefinition = {
     const gl = ctx.gl;
     const W = ctx.width;
     const H = ctx.height;
-    const N = points.length;
+    const N = ptCount;
 
     // Pack per-instance transforms. Layout matches the VS:
     //   row 0 = (posX, posY, rotation, scaleX)
@@ -598,18 +603,21 @@ export const copyToPointsNode: NodeDefinition = {
       state.instXformBuf = new Float32Array(needBufFloats);
     }
     const buf = state.instXformBuf;
+    // All PointsValues now carry typed-array storage (`pointsFromArray`
+    // wraps legacy producers). Read straight off the Float32Arrays —
+    // no per-point object lookup, no optional-chain branch in the
+    // inner loop.
+    const positionsTA = ptsValue!.positions;
+    const scalesTA = ptsValue!.scales;
+    const rotationsTA = ptsValue!.rotations;
     for (let i = 0; i < N; i++) {
-      const pt = points[i];
-      // row 0 — instances laid out contiguously starting at index 0
       const o1 = i * 4;
-      buf[o1 + 0] = pt.pos[0];
-      buf[o1 + 1] = pt.pos[1];
-      buf[o1 + 2] = pt.rotation ?? 0;
-      buf[o1 + 3] = pt.scale?.[0] ?? 1;
-      // row 1 — laid out starting at index N*4 so the texel at
-      // (i, 1) is at byte-offset (N + i) * 4 floats.
+      buf[o1 + 0] = positionsTA[i * 2];
+      buf[o1 + 1] = positionsTA[i * 2 + 1];
+      buf[o1 + 2] = rotationsTA ? rotationsTA[i] : 0;
+      buf[o1 + 3] = scalesTA ? scalesTA[i * 2] : 1;
       const o2 = (N + i) * 4;
-      buf[o2 + 0] = pt.scale?.[1] ?? 1;
+      buf[o2 + 0] = scalesTA ? scalesTA[i * 2 + 1] : 1;
       buf[o2 + 1] = 0;
       buf[o2 + 2] = 0;
       buf[o2 + 3] = 0;

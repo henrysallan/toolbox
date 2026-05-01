@@ -10,6 +10,7 @@ import type {
   Vec2Value,
 } from "@/engine/types";
 import type { HandLandmarker } from "@mediapipe/tasks-vision";
+import { pointsFromArray } from "@/engine/points";
 
 // Hand Tracker node. Runs MediaPipe HandLandmarker on the incoming
 // image and emits:
@@ -245,9 +246,9 @@ function landmarkAsSinglePoints(
   hand: HandLM | undefined,
   idx: number
 ): PointsValue {
-  if (!hand) return { kind: "points", points: [] };
+  if (!hand) return pointsFromArray([]);
   const lm = hand[idx];
-  return { kind: "points", points: [{ pos: [lm.x, lm.y] }] };
+  return pointsFromArray([{ pos: [lm.x, lm.y] }]);
 }
 
 // ---- node definition ---------------------------------------------------
@@ -605,7 +606,7 @@ export const handTrackerNode: NodeDefinition = {
           pts.push({ pos: [lm.x, lm.y] });
         }
       }
-      aux.fingers = { kind: "points", points: pts } satisfies PointsValue;
+      aux.fingers = pointsFromArray(pts) satisfies PointsValue;
     }
 
     return { primary, aux };

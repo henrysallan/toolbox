@@ -1,4 +1,5 @@
 import type { NodeDefinition, PointsValue } from "@/engine/types";
+import { pointsFromArray } from "@/engine/points";
 
 // Single-point generator. Outputs a `points` value with exactly one entry.
 // Useful as the identity element for Copy-to-Points ("place one instance
@@ -75,16 +76,13 @@ export const pointNode: NodeDefinition = {
     }
     const rotDeg = (params.rotation_deg as number) ?? 0;
     const scale = (params.scale as number) ?? 1;
-    const out: PointsValue = {
-      kind: "points",
-      points: [
-        {
-          pos: [x, y],
-          rotation: (rotDeg * Math.PI) / 180,
-          scale: [scale, scale],
-        },
-      ],
-    };
+    const out: PointsValue = pointsFromArray([
+      {
+        pos: [x, y],
+        rotation: (rotDeg * Math.PI) / 180,
+        scale: [scale, scale],
+      },
+    ]);
     return { primary: out };
   },
 };

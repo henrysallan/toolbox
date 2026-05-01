@@ -15,6 +15,13 @@ export const socketColor: Record<string, string> = {
   // and points no longer have a distinct group type — they carry
   // groupIndex metadata on the base value.
   image_group: "#1d4ed8",
+  // Particle-engine sockets. Forces and emitters are descriptor
+  // socket types — distinct from data sockets, so warm-tinted to set
+  // them apart from the cool image/spline pipeline.
+  force: "#fda4af",
+  emitter: "#fcd34d",
+  collider: "#fb7185",
+  particles: "#f43f5e",
 };
 
 export function colorForSocket(type: string): string {

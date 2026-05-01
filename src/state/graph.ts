@@ -7,9 +7,16 @@ export {
   parseTargetHandleKind,
 } from "@/engine/graph-helpers";
 
+import type { AnimationMap } from "@/engine/keyframes";
+
 export type NodeDataPayload = {
   defType: string;
   params: Record<string, unknown>;
+  // Per-parameter keyframe animation, keyed by param name. A param is
+  // either constant (no entry / `animated:false`), keyframe-animated
+  // (`animated:true`), or wired (entry preserved but ignored at eval).
+  // Wire > keyframes > constant. See src/engine/keyframes.ts.
+  animation?: AnimationMap;
   // Names of params that have been "exposed" — rendered as extra typed input
   // sockets on the node. When an exposed param has an incoming edge, the
   // edge's value overrides the stored param value at evaluation time.

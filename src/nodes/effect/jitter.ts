@@ -8,6 +8,7 @@ import type {
   SplineAnchor,
   SplineValue,
 } from "@/engine/types";
+import { ensurePointArray, pointsFromArray } from "@/engine/points";
 
 // Jitter — displace each anchor of a spline (or each point of a points
 // value) by sampling noise images at the anchor's own UV. The whole
@@ -195,14 +196,15 @@ export const jitterNode: NodeDefinition = {
     if (mode === "points") {
       const src = inputs.in;
       if (!src || src.kind !== "points") {
-        const empty: PointsValue = { kind: "points", points: [] };
+        const empty: PointsValue = pointsFromArray([]);
         return { primary: empty };
       }
-      const out: Point[] = src.points.map((p) => {
+      const inPts = ensurePointArray(src);
+      const out: Point[] = inPts.map((p) => {
         const [dx, dy] = offsetAt(p.pos[0], p.pos[1]);
         return { ...p, pos: [p.pos[0] + dx, p.pos[1] + dy] };
       });
-      return { primary: { kind: "points", points: out } };
+      return { primary: pointsFromArray(out) };
     }
 
     // spline mode

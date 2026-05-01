@@ -2,6 +2,11 @@ import { coerceValue } from "./coerce";
 import { MASK_INPUT_NAME, withMaskInput } from "./conventions";
 import { getNodeDef } from "./registry";
 import { paramSocketType, parseTargetHandleKind } from "./graph-helpers";
+import {
+  evaluateKeyframesAt,
+  isKeyframable,
+  type AnimationMap,
+} from "./keyframes";
 import type {
   ImageValue,
   MaskValue,
@@ -64,6 +69,8 @@ export interface GraphNode {
   // with a connected edge has its value overridden by the incoming signal at
   // compute time.
   exposedParams?: string[];
+  // Per-parameter keyframe animation. Wire > keyframes > constant.
+  animation?: AnimationMap;
   bypassed?: boolean;
 }
 
@@ -86,6 +93,13 @@ export interface CachedEntry {
 
 export type EvalCache = Map<string, CachedEntry>;
 
+// Snapshot of one node's resolved inputs for the data inspector. Outputs
+// are already in `EvalResult.outputs`; inputs aren't otherwise retained
+// after eval, so we capture them here only for ids the caller asks about.
+export interface InspectSnapshot {
+  inputs: Record<string, SocketValue | undefined>;
+}
+
 export interface EvalResult {
   outputs: Map<string, NodeOutput>;
   terminalImage?: { nodeId: string; image: SocketValue };
@@ -93,6 +107,10 @@ export interface EvalResult {
   // Per-node fingerprints this eval produced. Useful for debugging/tools;
   // the evaluator keeps its own authoritative copy inside the cache.
   fingerprints: Map<string, string>;
+  // Populated only for node ids passed in via `inspectIds`. Lets the
+  // node-inspector popup read live input values without us caching
+  // every node's inputs every frame.
+  inspectInputs?: Map<string, InspectSnapshot>;
   // Wall-clock duration in milliseconds that each node's compute()
   // call (and downstream mask blend) took on this eval. Cache hits
   // are reported as ~0 since no compute happened. Drives the in-
@@ -263,6 +281,7 @@ function computeNodeFingerprint(
     stableStringify(node.params),
     inputFps.join("|"),
   ];
+  if (node.animation) parts.push("a:" + stableStringify(node.animation));
   if (def.stable === false) parts.push("t:" + ctx.time);
   // External-state hook (e.g. the Cursor node mixing in live pointer pos).
   // Runs after the stable-false time stamp so both signals contribute.
@@ -276,7 +295,8 @@ export function evaluateGraph(
   edges: GraphEdge[],
   ctx: RenderContext,
   cache: EvalCache,
-  activeNodeId?: string | null
+  activeNodeId?: string | null,
+  inspectIds?: ReadonlySet<string>
 ): EvalResult {
   const order = topoSort(nodes, edges);
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -284,6 +304,12 @@ export function evaluateGraph(
   const errors: Record<string, string> = {};
   const fingerprints = new Map<string, string>();
   const timings = new Map<string, number>();
+  // Only populated when inspectIds is non-empty; left undefined otherwise
+  // so callers can do a cheap presence check.
+  const inspectInputs =
+    inspectIds && inspectIds.size > 0
+      ? new Map<string, InspectSnapshot>()
+      : undefined;
   let terminalImage: EvalResult["terminalImage"];
   const needed = computeNeededSet(nodes, edges, activeNodeId);
 
@@ -383,10 +409,46 @@ export function evaluateGraph(
       }
     }
 
+    // Resolve per-parameter keyframe animation. A param wins from
+    // wire > keyframe > constant, so we only evaluate keyframes for
+    // params that did NOT get a wire override above. The animation
+    // block contributes to the fingerprint via `tick` so caches bust on
+    // playhead movement (only when at least one param is animated; an
+    // unanimated node stays cacheable across frames).
+    const animation = node.animation;
+    const keyframeOverrides: Record<string, unknown> = {};
+    if (animation) {
+      let anyAnimated = false;
+      for (const pdef of def.params) {
+        if (!isKeyframable(pdef.type)) continue;
+        if (paramOverrides[pdef.name] !== undefined) continue; // wire wins
+        const block = animation[pdef.name];
+        if (!block || !block.animated || block.keyframes.length === 0) continue;
+        anyAnimated = true;
+        const v = evaluateKeyframesAt(block, pdef.type, ctx.tick);
+        if (v !== undefined) keyframeOverrides[pdef.name] = v;
+      }
+      if (anyAnimated) {
+        // Tick + animated-param-name list are enough — values are
+        // determined by (tick, keyframes) and keyframes already
+        // contribute via stableStringify(node.animation) below.
+        inputFpParts.push(`anim:${ctx.tick}`);
+      }
+    }
+
     const effectiveParams =
-      Object.keys(paramOverrides).length > 0
-        ? { ...node.params, ...paramOverrides }
+      Object.keys(paramOverrides).length > 0 ||
+      Object.keys(keyframeOverrides).length > 0
+        ? { ...node.params, ...keyframeOverrides, ...paramOverrides }
         : node.params;
+
+    // Snapshot inputs for inspected nodes BEFORE compute runs. The
+    // SocketValue objects (textures included) are still alive at this
+    // point — the inspector reads them on the same frame, so no extra
+    // ref-counting is needed.
+    if (inspectInputs && inspectIds!.has(id)) {
+      inspectInputs.set(id, { inputs: { ...inputs } });
+    }
 
     const fingerprint = computeNodeFingerprint(node, def, inputFpParts, ctx);
     fingerprints.set(id, fingerprint);
@@ -466,6 +528,11 @@ export function evaluateGraph(
         }
       } catch (e) {
         errors[id] = e instanceof Error ? e.message : String(e);
+        // eslint-disable-next-line no-console
+        console.error(
+          `[eval] node ${id} (${node.type}) compute threw:`,
+          e
+        );
         result = {};
         outputs.set(id, result);
         if (prev) {
@@ -503,5 +570,5 @@ export function evaluateGraph(
     }
   }
 
-  return { outputs, terminalImage, errors, fingerprints, timings };
+  return { outputs, terminalImage, errors, fingerprints, timings, inspectInputs };
 }

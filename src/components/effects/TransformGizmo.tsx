@@ -259,7 +259,9 @@ export default function TransformGizmo({
         position: "fixed",
         inset: 0,
         pointerEvents: "none",
-        zIndex: 50,
+        // Sits above the canvas (zIndex: 1) but below the Track Editor
+        // dock (zIndex: 5), banners, modals, and other UI chrome.
+        zIndex: 2,
       }}
     >
       <svg

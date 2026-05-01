@@ -7,6 +7,7 @@ import type {
   SplineValue,
 } from "@/engine/types";
 import type { ObjectDetector, Detection } from "@mediapipe/tasks-vision";
+import { pointsFromArray } from "@/engine/points";
 
 // Object Tracker node. Runs MediaPipe's EfficientDet object detection
 // on the incoming image each frame and emits:
@@ -181,7 +182,7 @@ function buildPointsFromTracked(tracked: TrackedBox[]): PointsValue {
     rotation: 0,
     scale: [b.x1 - b.x0, b.y1 - b.y0],
   }));
-  return { kind: "points", points };
+  return pointsFromArray(points);
 }
 
 // ---- IoU-based identity tracking --------------------------------------
@@ -348,7 +349,7 @@ export const objectTrackerNode: NodeDefinition = {
     }
 
     const emptySpline: SplineValue = { kind: "spline", subpaths: [] };
-    const emptyPoints: PointsValue = { kind: "points", points: [] };
+    const emptyPoints: PointsValue = pointsFromArray([]);
 
     if (!src || src.kind !== "image" || !state.detector) {
       return { primary: emptySpline, aux: { positions: emptyPoints } };

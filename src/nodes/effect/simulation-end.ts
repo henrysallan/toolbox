@@ -1,23 +1,26 @@
 import type {
   ImageValue,
+  InputSocketDef,
   NodeDefinition,
+  PointsValue,
   RenderContext,
+  SocketType,
+  SplineValue,
 } from "@/engine/types";
-import { ensureZoneState } from "./simulation-start";
+import { ensureZoneState, type SimZoneKind } from "./simulation-start";
+import { ensurePointArray, pointsFromArray } from "@/engine/points";
 
 // Simulation Zone — End half. Paired with a Simulation Start via a
 // shared `zone_id` param.
 //
 // Per frame:
 //   - Takes the `state` input (the result of whatever compute the zone
-//     ran this frame) and blits it into the zone's write buffer.
-//   - If `skip` is true, doesn't advance — just emits the read buffer
-//     (same as what Start emitted this frame) so the rest of the graph
-//     sees a frozen state.
-//   - Swaps read/write so NEXT frame's Start reads this frame's output.
+//     ran this frame) and stores it as next frame's starting state.
+//   - If `skip` is true, doesn't advance — just emits the current
+//     stored state so the rest of the graph sees a frozen frame.
 //
-// Emits the just-committed state as its primary output — that's what
-// downstream nodes outside the zone see.
+// Three data kinds — must match the Start's `kind` for the zone to
+// behave. A mismatch causes the state blob to reset on next eval.
 
 const COPY_FS = `#version 300 es
 precision highp float;
@@ -44,43 +47,95 @@ function blitInto(
   });
 }
 
+function socketTypeFor(kind: SimZoneKind): SocketType {
+  if (kind === "points") return "points";
+  if (kind === "spline") return "spline";
+  return "image";
+}
+
 export const simulationEndNode: NodeDefinition = {
   type: "simulation-end",
   name: "Simulation",
   category: "effect",
   description:
-    "Exit point of a simulation zone. Commits the `state` input as next frame's starting state; pass `skip` high to pause advancement without losing state.",
+    "Exit point of a simulation zone. Commits the `state` input as next frame's starting state; pass `skip` high to pause advancement without losing state. Set `kind` to match the paired Simulation Start.",
   backend: "webgl2",
   stable: false,
+  headerControl: { paramName: "kind" },
   inputs: [
     { name: "state", type: "image", required: true },
     { name: "skip", type: "scalar", required: false },
   ],
+  resolveInputs(params): InputSocketDef[] {
+    const kind = ((params.kind as string) ?? "image") as SimZoneKind;
+    return [
+      { name: "state", type: socketTypeFor(kind), required: true },
+      { name: "skip", type: "scalar", required: false },
+    ];
+  },
   params: [
+    {
+      name: "kind",
+      label: "Type",
+      type: "enum",
+      options: ["image", "points", "spline"],
+      default: "image",
+    },
     { name: "zone_id", type: "string", default: "", hidden: true },
   ],
   primaryOutput: "image",
+  resolvePrimaryOutput(params): SocketType {
+    return socketTypeFor(((params.kind as string) ?? "image") as SimZoneKind);
+  },
   auxOutputs: [],
 
   fingerprintExtras(params, ctx) {
-    return `z:${params.zone_id}|t:${ctx.time.toFixed(4)}`;
+    return `z:${params.zone_id}|k:${params.kind ?? "image"}|t:${ctx.time.toFixed(4)}`;
   },
 
   compute({ inputs, params, ctx }) {
     const zoneId = (params.zone_id as string) ?? "";
+    const kind = ((params.kind as string) ?? "image") as SimZoneKind;
     if (!zoneId) {
+      if (kind === "points") {
+        return { primary: pointsFromArray([]) satisfies PointsValue };
+      }
+      if (kind === "spline") {
+        return {
+          primary: { kind: "spline", subpaths: [] } satisfies SplineValue,
+        };
+      }
       const out = ctx.allocImage();
       ctx.clearTarget(out, [0, 0, 0, 0]);
       return { primary: out };
     }
-    const state = ensureZoneState(ctx, zoneId);
+    const state = ensureZoneState(ctx, zoneId, kind);
     const skip = inputs.skip?.kind === "scalar" ? inputs.skip.value > 0.5 : false;
     const stateInput = inputs.state;
 
-    if (skip || !stateInput || stateInput.kind !== "image") {
-      // Pass through — emit read tex (what Start emitted this frame).
-      // No swap, so next frame's Start sees the same state. That's
-      // exactly the "pause the sim" semantic.
+    if (state.kind === "image") {
+      if (skip || !stateInput || stateInput.kind !== "image") {
+        // Pass through — emit read tex (what Start emitted this frame).
+        // No swap, so next frame's Start sees the same state.
+        return {
+          primary: {
+            kind: "image",
+            texture: state.readTex,
+            width: state.width,
+            height: state.height,
+          } satisfies ImageValue,
+        };
+      }
+      blitInto(
+        ctx,
+        stateInput.texture,
+        state.writeTex,
+        state.width,
+        state.height
+      );
+      const tmp = state.readTex;
+      state.readTex = state.writeTex;
+      state.writeTex = tmp;
       return {
         primary: {
           kind: "image",
@@ -91,43 +146,44 @@ export const simulationEndNode: NodeDefinition = {
       };
     }
 
-    // Commit: copy `state` input into the write buffer, then swap
-    // read/write so next frame's Start reads this frame's output.
-    blitInto(
-      ctx,
-      stateInput.texture,
-      state.writeTex,
-      state.width,
-      state.height
-    );
-    const tmp = state.readTex;
-    state.readTex = state.writeTex;
-    state.writeTex = tmp;
+    if (state.kind === "points") {
+      if (skip || !stateInput || stateInput.kind !== "points") {
+        return {
+          primary: pointsFromArray(state.points) satisfies PointsValue,
+        };
+      }
+      // CPU array swap: the input is already a fresh array produced this
+      // frame, so we can just retain it. No copy needed — the state
+      // reference IS the new authoritative value.
+      state.points = ensurePointArray(stateInput);
+      return {
+        primary: pointsFromArray(state.points) satisfies PointsValue,
+      };
+    }
 
-    // Emit the just-committed state (now in readTex after the swap).
-    // Downstream nodes outside the zone see this.
+    // spline
+    if (skip || !stateInput || stateInput.kind !== "spline") {
+      return {
+        primary: {
+          kind: "spline",
+          subpaths: state.subpaths,
+        } satisfies SplineValue,
+      };
+    }
+    state.subpaths = stateInput.subpaths;
     return {
       primary: {
-        kind: "image",
-        texture: state.readTex,
-        width: state.width,
-        height: state.height,
-      } satisfies ImageValue,
+        kind: "spline",
+        subpaths: state.subpaths,
+      } satisfies SplineValue,
     };
   },
 
-  // End is the owner of the zone's persistent textures in our
-  // cleanup contract — if End gets disposed, tear down the zone. Start's
-  // dispose is a no-op. (Both fire together on pair deletion, but we
-  // only need one side to release.)
   dispose(ctx, _nodeId) {
     void _nodeId;
-    // Find the zone_id from the currently-evaluating params. The
-    // dispose hook doesn't get params; we'd need to store them. Skip
-    // per-node teardown for v1 — textures outlive pair deletion until
-    // the render context itself is torn down. Small leak, acceptable
-    // for v1 since recreating a zone reuses the same texture pool on
-    // subsequent allocImage calls anyway.
     void ctx;
+    // Texture cleanup deferred to render-context teardown for v1 — same
+    // approach as image-only zones used. Future: stash zone_id at
+    // dispose time so we can release ping-pong textures eagerly.
   },
 };

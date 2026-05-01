@@ -6,6 +6,7 @@ import type {
   UvValue,
 } from "@/engine/types";
 import { measureSpline, sampleSplineAt } from "@/engine/spline-math";
+import { pointsFromArray } from "@/engine/points";
 
 // Emit N evenly-spaced positions along the total arc length of a spline.
 //
@@ -97,7 +98,7 @@ export const pointsOnPathNode: NodeDefinition = {
   category: "point",
   subcategory: "generator",
   description:
-    "Emit N evenly-spaced positions along a spline. Primary output is a dot visualization; aux output 'positions' is a UV texture (one pixel per point) for downstream sampling.",
+    "Emit N evenly-spaced positions along a spline. Primary output is a `points` value for direct wiring into Copy-to-Points / Set Position / etc. Aux outputs: a UV texture of positions (one pixel per point) and a dot visualization image.",
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [
@@ -134,18 +135,14 @@ export const pointsOnPathNode: NodeDefinition = {
       default: true,
     },
   ],
-  primaryOutput: "image",
+  primaryOutput: "points",
   auxOutputs: [
     { name: "positions", type: "uv" },
-    // CPU-side points value — same samples as the UV texture, just
-    // as a native `points` socket so Copy-to-Points, Set Position,
-    // Transform (point mode), etc. can consume them without a
-    // sample-from-image round trip.
-    { name: "points", type: "points" },
+    // Dot visualization image — auxiliary; useful for previewing the
+    // sample positions on canvas. Wire it into a Merge or Output if
+    // you want it rendered.
+    { name: "viz", type: "image" },
   ],
-  resolveAuxOutputs(): OutputSocketDef[] {
-    return [{ name: "positions", type: "uv" }];
-  },
 
   compute({ inputs, params, ctx, nodeId }) {
     const src = inputs.path;
@@ -256,18 +253,17 @@ export const pointsOnPathNode: NodeDefinition = {
     // ---- Aux: points (CPU-side) ----
     // Use `sampledCount` rather than `count` so missing / empty
     // inputs yield an empty points value instead of a stack at origin.
-    const pointsValue: PointsValue = {
-      kind: "points",
-      points: positions.slice(0, sampledCount).map((p) => ({
+    const pointsValue: PointsValue = pointsFromArray(
+      positions.slice(0, sampledCount).map((p) => ({
         pos: [p[0], p[1]],
         rotation: 0,
         scale: [1, 1],
-      })),
-    };
+      }))
+    );
 
     return {
-      primary: image,
-      aux: { positions: positionsTex, points: pointsValue },
+      primary: pointsValue,
+      aux: { positions: positionsTex, viz: image },
     };
   },
 

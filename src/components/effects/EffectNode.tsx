@@ -194,6 +194,38 @@ export default function EffectNode({
           }}
         >
           {data.name}
+          <button
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              window.dispatchEvent(
+                new CustomEvent("effect-node-toggle", {
+                  detail: { id, kind: "toggleInspect" },
+                })
+              );
+            }}
+            title="Inspect — show inputs and outputs flowing through this node"
+            className="nodrag"
+            data-node-inspect-toggle="1"
+            style={{
+              width: 14,
+              height: 14,
+              borderRadius: "50%",
+              background: "transparent",
+              border: "1px solid #52525b",
+              color: "#a1a1aa",
+              fontSize: 9,
+              fontWeight: 700,
+              fontFamily: "inherit",
+              fontStyle: "italic",
+              lineHeight: "12px",
+              textAlign: "center",
+              padding: 0,
+              cursor: "pointer",
+            }}
+          >
+            i
+          </button>
           {(() => {
             // Header dropdown for an enum param — lets nodes like Group
             // / Pick / Length flip mode without opening the params

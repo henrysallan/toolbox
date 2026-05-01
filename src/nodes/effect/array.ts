@@ -10,6 +10,7 @@ import type {
   SplineValue,
 } from "@/engine/types";
 import { transformSubpath } from "@/engine/spline-transform";
+import { ensurePointArray, pointsFromArray } from "@/engine/points";
 import {
   disposePlaceholderTex,
   getPlaceholderTex,
@@ -427,9 +428,10 @@ export const arrayNode: NodeDefinition = {
     if (mode === "point") {
       const inst = inputs.instance;
       if (!inst || inst.kind !== "points") {
-        const empty: PointsValue = { kind: "points", points: [] };
+        const empty: PointsValue = pointsFromArray([]);
         return { primary: empty };
       }
+      const instPoints = ensurePointArray(inst);
       const out: Point[] = [];
       const total = countX * countY;
       const localRot = (localRotateDeg * Math.PI) / 180;
@@ -440,7 +442,7 @@ export const arrayNode: NodeDefinition = {
         const iy = rowFirst ? Math.floor(n / countX) : n % countY;
         const cellCenterX = (ix + 0.5) * stepX + patternX;
         const cellCenterY = (iy + 0.5) * stepY + patternY;
-        for (const src of inst.points) {
+        for (const src of instPoints) {
           // Source point's offset from its own (0.5, 0.5) anchor →
           // scale → rotate → place at the cell center + per-copy nudge.
           const dx = (src.pos[0] - 0.5) * localScaleX;
@@ -458,7 +460,7 @@ export const arrayNode: NodeDefinition = {
           });
         }
       }
-      return { primary: { kind: "points", points: out } };
+      return { primary: pointsFromArray(out) };
     }
 
     // ---- image mode (original full-screen tiling shader) -------------

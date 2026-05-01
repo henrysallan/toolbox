@@ -7,6 +7,7 @@ import type {
   SplineAnchor,
   SplineValue,
 } from "@/engine/types";
+import { ensurePointArray, pointsFromArray } from "@/engine/points";
 
 // Proximity merge — snap nearby spline anchors or point positions
 // together when they fall within a distance threshold in UV space.
@@ -144,10 +145,12 @@ export const proximityMergeNode: NodeDefinition = {
 
     if (mode === "points") {
       if (!src || src.kind !== "points") {
-        const empty: PointsValue = { kind: "points", points: [] };
+        const empty: PointsValue = pointsFromArray([]);
         return { primary: empty };
       }
-      return { primary: mergePoints(src.points, distance, t, dedupe) };
+      return {
+        primary: mergePoints(ensurePointArray(src), distance, t, dedupe),
+      };
     }
 
     // spline mode
@@ -192,7 +195,7 @@ function mergePoints(
   dedupe: boolean
 ): PointsValue {
   const n = points.length;
-  if (n === 0) return { kind: "points", points: [] };
+  if (n === 0) return pointsFromArray([]);
   const { find, union } = unionFind(n);
   const d2 = distance * distance;
   for (let i = 0; i < n; i++) {
@@ -256,7 +259,7 @@ function mergePoints(
       groupIndex: p.groupIndex,
     };
   });
-  if (!dedupe) return { kind: "points", points: merged };
+  if (!dedupe) return pointsFromArray(merged);
   // Per-cluster representative: pick the member with the lowest
   // groupIndex. When groups mix, that deterministically corresponds
   // to "the earliest socket wins" (socket a before b before c…),
@@ -276,7 +279,7 @@ function mergePoints(
   }
   const reduced: Point[] = [];
   for (const idx of winnerByRoot.values()) reduced.push(merged[idx]);
-  return { kind: "points", points: reduced };
+  return pointsFromArray(reduced);
 }
 
 function mergeSpline(

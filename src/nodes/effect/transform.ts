@@ -7,6 +7,7 @@ import type {
   SplineValue,
 } from "@/engine/types";
 import { transformSpline } from "@/engine/spline-transform";
+import { ensurePointArray, pointsFromArray } from "@/engine/points";
 
 // Scale/rotate/translate around a user-controlled pivot. All params are in
 // normalized (0-1) screen space — pivot (0,0) is the top-left of the frame,
@@ -205,7 +206,7 @@ export const transformNode: NodeDefinition = {
     if (mode === "point") {
       const src = inputs["image"];
       if (!src || src.kind !== "points") {
-        const empty: PointsValue = { kind: "points", points: [] };
+        const empty: PointsValue = pointsFromArray([]);
         return { primary: empty };
       }
       // Same affine math as the spline/image paths, applied per
@@ -216,7 +217,7 @@ export const transformNode: NodeDefinition = {
       const rad = (rotateDeg * Math.PI) / 180;
       const cos = Math.cos(rad);
       const sin = Math.sin(rad);
-      const transformed: Point[] = src.points.map((p) => {
+      const transformed: Point[] = ensurePointArray(src).map((p) => {
         const dx = (p.pos[0] - pivotX) * scaleX;
         const dy = (p.pos[1] - pivotY) * scaleY;
         const rx = cos * dx - sin * dy;
@@ -231,7 +232,7 @@ export const transformNode: NodeDefinition = {
           ],
         };
       });
-      const out: PointsValue = { kind: "points", points: transformed };
+      const out: PointsValue = pointsFromArray(transformed);
       return { primary: out };
     }
 

@@ -646,7 +646,8 @@ export default function SplineEditorOverlay({
         position: "fixed",
         inset: 0,
         pointerEvents: "none",
-        zIndex: 50,
+        // Above canvas, below Track Editor dock and other UI chrome.
+        zIndex: 2,
       }}
     >
       <svg

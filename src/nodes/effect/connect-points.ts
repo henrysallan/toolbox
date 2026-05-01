@@ -4,6 +4,7 @@ import type {
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
+import { ensurePointArray, pointsFromArray } from "@/engine/points";
 
 // Connect nearby points with straight-line spline segments. The
 // user's control is a max-distance threshold (UV space): every pair
@@ -52,7 +53,7 @@ export const connectPointsNode: NodeDefinition = {
   compute({ inputs, params }) {
     const srcVal = inputs.points;
     const points: PointsValue["points"] =
-      srcVal?.kind === "points" ? srcVal.points : [];
+      srcVal?.kind === "points" ? ensurePointArray(srcVal) : [];
     const maxD = Math.max(0, (params.max_distance as number) ?? 0.1);
     const d2 = maxD * maxD;
     const N = points.length;
@@ -128,7 +129,7 @@ export const connectPointsNode: NodeDefinition = {
     const passthrough: PointsValue =
       srcVal?.kind === "points"
         ? srcVal
-        : { kind: "points", points: [] };
+        : pointsFromArray([]);
     return { primary: spline, aux: { points: passthrough } };
   },
 };

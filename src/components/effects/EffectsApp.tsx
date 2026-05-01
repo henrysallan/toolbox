@@ -17,6 +17,7 @@ import ParamPanel from "./ParamPanel";
 import PaintOverlay from "./PaintOverlay";
 import PlaybackBar from "./PlaybackBar";
 import MenuBar from "./MenuBar";
+import ViewportMenuBar from "./ViewportMenuBar";
 import { registerAllNodes } from "@/nodes";
 import { getNodeDef } from "@/engine/registry";
 import { createEngineBackend, type EngineBackend } from "@/engine/gl";
@@ -57,6 +58,7 @@ import {
 import { AuthProvider, useUser } from "@/lib/auth-context";
 import SaveModal from "./SaveModal";
 import ExportAppModal from "./ExportAppModal";
+import NodeInspectorPopup from "./NodeInspectorPopup";
 import { buildExportManifest } from "@/lib/export-manifest";
 import PublicPrivateConfirm from "./PublicPrivateConfirm";
 import NewProjectConfirm from "./NewProjectConfirm";
@@ -69,10 +71,18 @@ import type { SaveState } from "./FileNameMenu";
 import TransformGizmo from "./TransformGizmo";
 import SplineEditorOverlay from "./SplineEditorOverlay";
 import PointsOverlay from "./PointsOverlay";
-import TimelineCurveEditor from "./TimelineCurveEditor";
-import { defaultTimelineCurve } from "@/nodes/source/timeline/eval";
-import type { TimelineCurveValue } from "@/engine/types";
-import type { Point as PointValue } from "@/engine/types";
+import { TrackEditor } from "./TrackEditor";
+import { GraphEditor } from "./GraphEditor";
+import {
+  DEFAULT_TICKS_PER_FRAME,
+  emptyAnimationBlock,
+  evaluateKeyframesAt,
+  isKeyframable,
+  upsertKeyframe,
+  type KeyframeAnimationBlock,
+  type ProjectTimeline,
+} from "@/engine/keyframes";
+import type { PointsValue } from "@/engine/types";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
 
 registerAllNodes();
@@ -206,6 +216,30 @@ function EffectsShell() {
   const [canvasRes, setCanvasRes] = useState<[number, number]>(
     rehydrate?.canvasRes ?? [1024, 1024]
   );
+
+  // Preview render scale. Decouples the GL render resolution from
+  // both the on-screen canvas size and the project export resolution
+  // — lowering it gives the user a quick way to crank up fps during
+  // live editing without touching the project. Persisted in
+  // localStorage (not in the project file) since it's a per-machine
+  // viewing preference, not project content.
+  const [previewScale, setPreviewScale] = useState<number>(() => {
+    if (typeof window === "undefined") return 1;
+    const raw = window.localStorage.getItem("viewport.previewScale");
+    const n = raw ? Number(raw) : 1;
+    return Number.isFinite(n) && n > 0 && n <= 1 ? n : 1;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("viewport.previewScale", String(previewScale));
+  }, [previewScale]);
+  const renderRes: [number, number] = useMemo(
+    () => [
+      Math.max(2, Math.round(canvasRes[0] * previewScale)),
+      Math.max(2, Math.round(canvasRes[1] * previewScale)),
+    ],
+    [canvasRes, previewScale]
+  );
   // Controls which panel the right-side parameters section is showing.
   // Selecting a node switches it to "node"; Project Settings flips it to
   // "project"; File → Load flips it to "load" (grid of saved projects).
@@ -328,6 +362,54 @@ function EffectsShell() {
     null
   );
   const [exportAppBusy, setExportAppBusy] = useState(false);
+  // Node IDs whose data inspector is currently open. The eval loop
+  // captures their inputs each frame; the popups read from
+  // inspectSnapshotsRef. Stored as an array so React equality is cheap;
+  // converted to a Set per-eval.
+  const [inspectIds, setInspectIds] = useState<string[]>([]);
+  const inspectIdsRef = useRef<Set<string>>(new Set());
+  inspectIdsRef.current = new Set(inspectIds);
+  const inspectSnapshotsRef = useRef<
+    Map<
+      string,
+      {
+        inputs: Record<string, import("@/engine/types").SocketValue | undefined>;
+        output: import("@/engine/types").NodeOutput | undefined;
+      }
+    >
+  >(new Map());
+  // Bumped after each eval that touched at least one inspected node so the
+  // popups re-render. rAF-throttled inside the eval loop to avoid React
+  // thrash when the graph runs at 60fps.
+  const [inspectTick, setInspectTick] = useState(0);
+  const inspectRafRef = useRef<number | null>(null);
+  const scheduleInspectBump = useCallback(() => {
+    if (inspectRafRef.current != null) return;
+    inspectRafRef.current = requestAnimationFrame(() => {
+      inspectRafRef.current = null;
+      setInspectTick((n) => n + 1);
+    });
+  }, []);
+  // Click-outside dismissal: a click anywhere that isn't an inspector
+  // panel or an `i` toggle closes the most-recently-opened inspector.
+  // We close one at a time (LIFO) so a user with several open can dismiss
+  // them one click at a time, the same way stacked modals usually behave.
+  useEffect(() => {
+    if (inspectIds.length === 0) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      // Allow clicks inside any inspector panel.
+      if (target.closest("[data-node-inspector]")) return;
+      // Allow clicks on an `i` toggle — that path drives toggling itself.
+      if (target.closest("[data-node-inspect-toggle]")) return;
+      const last = inspectIds[inspectIds.length - 1];
+      setInspectIds((prev) => prev.filter((x) => x !== last));
+      inspectSnapshotsRef.current.delete(last);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [inspectIds]);
   // When set, plain "Save" silently overwrites this row; cleared only by
   // switching to a different project (Load or Save As creating a new row).
   const [currentProject, setCurrentProject] = useState<
@@ -495,6 +577,29 @@ function EffectsShell() {
   const [time, setTime] = useState(0);
   const [fps, setFps] = useState(60);
   const [loopFrames, setLoopFrames] = useState<number | null>(null);
+  // Per-parameter keyframe time model. `time` (seconds) remains the
+  // source of truth for playback (RAF still ticks in seconds); `tick` is
+  // the integer tick representation derived from time × fps × tpf, used
+  // by the keyframe evaluator and Track Editor for exact equality.
+  const ticksPerFrame = DEFAULT_TICKS_PER_FRAME;
+  const currentTick = Math.round(time * fps * ticksPerFrame);
+  const sceneDurationTicks =
+    (loopFrames != null && loopFrames > 0 ? loopFrames : fps * 5) *
+    ticksPerFrame;
+  const projectTimeline: ProjectTimeline = {
+    ticksPerFrame,
+    fps,
+    sceneDurationTicks,
+  };
+  // Track Editor + Graph Editor UI state.
+  const [trackEditorOpen, setTrackEditorOpen] = useState(false);
+  const [trackEditorHeight, setTrackEditorHeight] = useState(280);
+  const [dockTab, setDockTab] = useState<"tracks" | "graph">("tracks");
+  const [graphNormalizeY, setGraphNormalizeY] = useState(false);
+  const [graphRefitVersion, setGraphRefitVersion] = useState(0);
+  const [collapsedTrackNodes, setCollapsedTrackNodes] = useState<Set<string>>(
+    new Set()
+  );
   // During scrubbing the RAF advancer is suspended so the drag can set time
   // directly without a running playback stepping on the mouse. `playing`
   // itself isn't touched, so clearing `scrubbing` restores the prior state —
@@ -625,7 +730,7 @@ function EffectsShell() {
       // Drop stale cache — old GL textures belong to the outgoing backend,
       // which destroys them on teardown. No need to individually release.
       evalCacheRef.current = new Map();
-      const backend = createEngineBackend(canvasRes[0], canvasRes[1]);
+      const backend = createEngineBackend(renderRes[0], renderRes[1]);
       backendRef.current = backend;
       setBackendReady(true);
       return () => {
@@ -636,7 +741,7 @@ function EffectsShell() {
     } catch (e) {
       console.error("Engine init failed", e);
     }
-  }, [canvasRes]);
+  }, [renderRes]);
 
   const startVResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -719,6 +824,7 @@ function EffectsShell() {
         type: n.data.defType,
         params: n.data.params,
         exposedParams: n.data.exposedParams,
+        animation: n.data.animation,
         bypassed: !!n.data.bypassed,
       }));
       const activeNodeId =
@@ -733,20 +839,50 @@ function EffectsShell() {
         targetHandle: e.targetHandle ?? "in:image",
       }));
 
+      const tpf = DEFAULT_TICKS_PER_FRAME;
       const ctx = backend.makeContext(
         renderTime,
         Math.floor(renderTime * renderFps),
         cursorRef.current,
-        playingHint
+        playingHint,
+        {
+          tick: Math.round(renderTime * renderFps * tpf),
+          ticksPerFrame: tpf,
+          fps: renderFps,
+        }
       );
+      const inspectSet = inspectIdsRef.current;
       const result = evaluateGraph(
         graphNodes,
         graphEdges,
         ctx,
         evalCacheRef.current,
-        activeNodeId
+        activeNodeId,
+        inspectSet.size > 0 ? inspectSet : undefined
       );
       setErrors(result.errors);
+
+      // Stash inspect snapshots for the popups. Inputs come from the
+      // eval result; outputs are pulled from the same `outputs` map the
+      // engine just produced. Snapshots are intentionally shallow — the
+      // popup reads them on the same frame, so the underlying texture /
+      // canvas references stay alive.
+      if (inspectSet.size > 0 && result.inspectInputs) {
+        const next = new Map(inspectSnapshotsRef.current);
+        for (const id of inspectSet) {
+          const snap = result.inspectInputs.get(id);
+          next.set(id, {
+            inputs: snap?.inputs ?? {},
+            output: result.outputs.get(id),
+          });
+        }
+        // Drop entries for ids no longer being inspected.
+        for (const k of next.keys()) {
+          if (!inspectSet.has(k)) next.delete(k);
+        }
+        inspectSnapshotsRef.current = next;
+        scheduleInspectBump();
+      }
 
       if (showNodeTimingsRef.current) {
         window.dispatchEvent(
@@ -797,7 +933,8 @@ function EffectsShell() {
           graphEdges,
           ctx,
           evalCacheRef.current,
-          activeNodeId2
+          activeNodeId2,
+          inspectSet.size > 0 ? inspectSet : undefined
         );
         blitOrPlaceholder(
           canvas2,
@@ -838,7 +975,7 @@ function EffectsShell() {
     const entry = evalCacheRef.current.get(selectedId);
     const primary = entry?.output.primary;
     if (primary && primary.kind === "points") {
-      setSelectedPoints(primary.points);
+      setSelectedPoints(primary);
     } else {
       setSelectedPoints(null);
     }
@@ -1616,9 +1753,34 @@ function EffectsShell() {
       if (paramName !== "paint") {
         pushGraph(getGraphSnapshot(), `param:${nodeId}:${paramName}`);
       }
+      const tickAtEdit = currentTick;
       setNodes((prev) =>
         prev.map((n) => {
           if (n.id !== nodeId) return n;
+          // Auto-keyframe: if this param is animated and not driven by a
+          // wire, write a keyframe at the current tick instead of (or
+          // in addition to, for round-trip) the constant. We always
+          // write the constant too — if the user later disables
+          // animation, the constant becomes the visible value.
+          const animBlock = n.data.animation?.[paramName];
+          const isAnimated =
+            !!animBlock &&
+            animBlock.animated &&
+            isKeyframable(
+              getNodeDef(n.data.defType)?.params.find(
+                (p) => p.name === paramName
+              )?.type ?? "string"
+            );
+          let nextAnimation = n.data.animation;
+          if (isAnimated && animBlock) {
+            const updated = upsertKeyframe(
+              animBlock,
+              tickAtEdit,
+              value,
+              "easeInOut"
+            );
+            nextAnimation = { ...n.data.animation, [paramName]: updated };
+          }
           const nextParams = { ...n.data.params, [paramName]: value };
           const def = getNodeDef(n.data.defType);
           // If this param is half of an active chain-link, write the
@@ -1642,6 +1804,36 @@ function EffectsShell() {
                   nextParams[link.a] = 0;
                 }
               }
+              // Linked-keyframe mirror: when the edited param is being
+              // auto-keyframed, force a keyframe on the partner too at
+              // the same tick. Enable the partner's animation block if
+              // it isn't already.
+              if (isAnimated) {
+                const partnerName =
+                  paramName === link.a ? link.b : link.a;
+                const partnerValue = nextParams[partnerName];
+                if (
+                  typeof partnerValue === "number" &&
+                  isFinite(partnerValue)
+                ) {
+                  const partnerCur =
+                    nextAnimation?.[partnerName] ?? emptyAnimationBlock();
+                  const partnerEnabled = {
+                    ...partnerCur,
+                    animated: true,
+                  };
+                  const partnerNext = upsertKeyframe(
+                    partnerEnabled,
+                    tickAtEdit,
+                    partnerValue,
+                    "easeInOut"
+                  );
+                  nextAnimation = {
+                    ...nextAnimation,
+                    [partnerName]: partnerNext,
+                  };
+                }
+              }
             }
           }
           const resolved = def?.resolveInputs?.(nextParams);
@@ -1653,6 +1845,7 @@ function EffectsShell() {
             data: {
               ...n.data,
               params: nextParams,
+              animation: nextAnimation,
               primaryOutput: nextPrimary,
               inputs: resolved
                 ? withMaskInput(resolved).map((i) => ({
@@ -1673,7 +1866,120 @@ function EffectsShell() {
         })
       );
     },
-    [setNodes, pushGraph, getGraphSnapshot]
+    [setNodes, pushGraph, getGraphSnapshot, currentTick]
+  );
+
+  // Per-parameter animation block read/write. Used by ParamPanel and the
+  // Track Editor; undo coalesces the same way as onParamChange.
+  const getAnimation = useCallback(
+    (nodeId: string, paramName: string): KeyframeAnimationBlock | undefined => {
+      const n = nodesRef.current.find((x) => x.id === nodeId);
+      return n?.data.animation?.[paramName];
+    },
+    []
+  );
+  const onAnimationChange = useCallback(
+    (
+      nodeId: string,
+      paramName: string,
+      next: KeyframeAnimationBlock | undefined
+    ) => {
+      pushGraph(getGraphSnapshot(), `anim:${nodeId}:${paramName}`);
+      const tickAtEdit = currentTick;
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id !== nodeId) return n;
+          const cur = n.data.animation ?? {};
+          let nextAnim: typeof cur;
+          if (next === undefined) {
+            const { [paramName]: _drop, ...rest } = cur;
+            void _drop;
+            nextAnim = rest;
+          } else {
+            nextAnim = { ...cur, [paramName]: next };
+          }
+
+          // Linked-keyframe mirror: when this op inserts a keyframe at
+          // the playhead OR enables animation on a linked param, do
+          // the same to the partner using the partner's current
+          // effective value at the playhead.
+          if (next) {
+            const def = getNodeDef(n.data.defType);
+            const link = def?.linkedPairs?.find(
+              (p) => p.a === paramName || p.b === paramName
+            );
+            const lock = link
+              ? n.data.linkedParams?.[`${link.a}:${link.b}`]
+              : undefined;
+            if (link && lock) {
+              const partnerName =
+                paramName === link.a ? link.b : link.a;
+              const prevBlock = cur[paramName];
+              const newKfAtTick = next.keyframes.some(
+                (k) => k.tick === tickAtEdit
+              );
+              const prevKfAtTick =
+                prevBlock?.keyframes.some((k) => k.tick === tickAtEdit) ??
+                false;
+              const didInsertHere = newKfAtTick && !prevKfAtTick;
+              const didEnable =
+                next.animated && !(prevBlock?.animated ?? false);
+              if (didInsertHere || didEnable) {
+                // Compute partner's value at the playhead. Prefer the
+                // partner's keyframe-evaluated value if it's already
+                // animated; otherwise use its constant.
+                const partnerBlock = nextAnim[partnerName];
+                const partnerEvaluated =
+                  partnerBlock && partnerBlock.animated
+                    ? evaluateKeyframesAt(
+                        partnerBlock,
+                        "scalar",
+                        tickAtEdit
+                      )
+                    : undefined;
+                const partnerConstant = n.data.params[partnerName];
+                const partnerValue =
+                  typeof partnerEvaluated === "number"
+                    ? partnerEvaluated
+                    : typeof partnerConstant === "number"
+                      ? partnerConstant
+                      : undefined;
+                if (
+                  typeof partnerValue === "number" &&
+                  isFinite(partnerValue)
+                ) {
+                  const partnerCur =
+                    nextAnim[partnerName] ?? emptyAnimationBlock();
+                  const partnerEnabled = {
+                    ...partnerCur,
+                    animated: true,
+                  };
+                  nextAnim = {
+                    ...nextAnim,
+                    [partnerName]: upsertKeyframe(
+                      partnerEnabled,
+                      tickAtEdit,
+                      partnerValue,
+                      "easeInOut"
+                    ),
+                  };
+                }
+              }
+            }
+          }
+
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              animation:
+                Object.keys(nextAnim).length > 0 ? nextAnim : undefined,
+            },
+          };
+        })
+      );
+    },
+    [setNodes, pushGraph, getGraphSnapshot, currentTick]
   );
 
   // Per-instance slider range override. `null` clears the entry so a
@@ -1844,6 +2150,17 @@ function EffectsShell() {
             };
           })
         );
+      } else if (detail.kind === "toggleInspect") {
+        // Open / close the data inspector for this node. Toggling off
+        // also drops the cached snapshot so a stale frame doesn't flash
+        // if the user re-opens it before a new eval runs.
+        setInspectIds((prev) => {
+          if (prev.includes(detail.id)) {
+            inspectSnapshotsRef.current.delete(detail.id);
+            return prev.filter((x) => x !== detail.id);
+          }
+          return [...prev, detail.id];
+        });
       } else if (detail.kind === "mergeAddLayer") {
         setNodes((prev) =>
           prev.map((n) => {
@@ -3000,38 +3317,11 @@ function EffectsShell() {
       )
     : undefined;
 
-  // Curve editor overlay docks at the bottom of the canvas region. A small
-  // tab at the bottom-center toggles it open. The editor only edits a node
-  // when a Timeline node is selected; otherwise the tab is shown but
-  // clicking it surfaces a hint (or just opens an empty editor — keep
-  // simple and only show the tab when a Timeline node is selected).
-  const activeTimelineNode = selectedId
-    ? nodes.find(
-        (n) => n.id === selectedId && n.data.defType === "timeline"
-      )
-    : undefined;
-  const [timelineEditorOpen, setTimelineEditorOpen] = useState(false);
-  const [timelineEditorHeight, setTimelineEditorHeight] = useState(280);
-  // Read the most recent wrapped-t the evaluator stashed for the selected
-  // Timeline node. Re-read on every frame tick so the playhead glides.
-  const [timelinePlayheadT, setTimelinePlayheadT] = useState<number | null>(
-    null
-  );
-  useEffect(() => {
-    if (!activeTimelineNode || !timelineEditorOpen) {
-      setTimelinePlayheadT(null);
-      return;
-    }
-    const id = activeTimelineNode.id;
-    const backend = backendRef.current;
-    if (!backend) return;
-    const v = backend.state[`timeline:${id}:t`];
-    setTimelinePlayheadT(typeof v === "number" ? v : null);
-  }, [activeTimelineNode, timelineEditorOpen, time, pipelineBumpKey]);
-
   // Preview dots for any selected node whose primary output is a points
   // value. Populated by the pipeline-eval effect after each render pass.
-  const [selectedPoints, setSelectedPoints] = useState<PointValue[] | null>(
+  // Stored as the typed-array PointsValue (not a materialized Point[])
+  // so PointsOverlay can read positions without a per-frame alloc.
+  const [selectedPoints, setSelectedPoints] = useState<PointsValue | null>(
     null
   );
 
@@ -3126,6 +3416,13 @@ function EffectsShell() {
           flexDirection: "column",
         }}
       >
+        {!fullCanvas && (
+          <ViewportMenuBar
+            projectRes={canvasRes}
+            previewScale={previewScale}
+            onPreviewScaleChange={setPreviewScale}
+          />
+        )}
         <div
           style={{
             flex: 1,
@@ -3154,8 +3451,8 @@ function EffectsShell() {
           >
             <canvas
               ref={canvasRef}
-              width={canvasRes[0]}
-              height={canvasRes[1]}
+              width={renderRes[0]}
+              height={renderRes[1]}
               style={{
                 maxWidth: "100%",
                 maxHeight: "100%",
@@ -3222,8 +3519,8 @@ function EffectsShell() {
             >
               <canvas
                 ref={canvas2Ref}
-                width={canvasRes[0]}
-                height={canvasRes[1]}
+                width={renderRes[0]}
+                height={renderRes[1]}
                 style={{
                   maxWidth: "100%",
                   maxHeight: "100%",
@@ -3254,10 +3551,10 @@ function EffectsShell() {
               }
             />
           )}
-          {selectedPoints && selectedPoints.length > 0 && backendReady && (
+          {selectedPoints && selectedPoints.count > 0 && backendReady && (
             <PointsOverlay
               canvas={canvasRef.current}
-              points={selectedPoints}
+              value={selectedPoints}
             />
           )}
           {activeSplineNode && backendReady && (
@@ -3273,43 +3570,51 @@ function EffectsShell() {
               }
             />
           )}
-          {activeTransformNode && backendReady && (
-            <TransformGizmo
-              canvas={canvasRef.current}
-              pivotX={(activeTransformNode.data.params.pivotX as number) ?? 0.5}
-              pivotY={(activeTransformNode.data.params.pivotY as number) ?? 0.5}
-              translateX={
-                (activeTransformNode.data.params.translateX as number) ?? 0
+          {activeTransformNode && backendReady && (() => {
+            // Read the effective param value at the current playhead.
+            // For animated params, this returns the keyframe-evaluated
+            // value so the on-canvas handles track the animation as the
+            // user scrubs. For constant or wired params, falls back to
+            // the stored constant.
+            const animMap = activeTransformNode.data.animation;
+            const effective = (name: string, fallback: number): number => {
+              const block = animMap?.[name];
+              if (block && block.animated && block.keyframes.length > 0) {
+                const v = evaluateKeyframesAt(block, "scalar", currentTick);
+                if (typeof v === "number") return v;
               }
-              translateY={
-                (activeTransformNode.data.params.translateY as number) ?? 0
-              }
-              scaleX={
-                (activeTransformNode.data.params.scaleX as number) ?? 1
-              }
-              scaleY={
-                (activeTransformNode.data.params.scaleY as number) ?? 1
-              }
-              rotate={
-                (activeTransformNode.data.params.rotate as number) ?? 0
-              }
-              onChange={(patch) => {
-                const id = activeTransformNode.id;
-                for (const [k, v] of Object.entries(patch)) {
-                  if (typeof v === "number")
-                    onParamChange(id, k, v);
-                }
-              }}
-            />
-          )}
-          {/* Curve editor dock — anchored to the bottom edge of the canvas
-              area. A small tab pokes up from the bottom-center to toggle
-              visibility. The tab only appears when a Timeline node is the
-              current selection; selecting a different node hides it. */}
-          {activeTimelineNode && !timelineEditorOpen && (
+              const raw = activeTransformNode.data.params[name];
+              return typeof raw === "number" ? raw : fallback;
+            };
+            return (
+              <TransformGizmo
+                canvas={canvasRef.current}
+                pivotX={effective("pivotX", 0.5)}
+                pivotY={effective("pivotY", 0.5)}
+                translateX={effective("translateX", 0)}
+                translateY={effective("translateY", 0)}
+                scaleX={effective("scaleX", 1)}
+                scaleY={effective("scaleY", 1)}
+                rotate={effective("rotate", 0)}
+                onChange={(patch) => {
+                  const id = activeTransformNode.id;
+                  for (const [k, v] of Object.entries(patch)) {
+                    if (typeof v === "number")
+                      onParamChange(id, k, v);
+                  }
+                }}
+              />
+            );
+          })()}
+          {/* Track Editor dock — anchored to the bottom edge of the canvas
+              area. A tab pokes up from the bottom-center to toggle
+              visibility. Always available (no longer gated on a selected
+              Timeline node). When the user opens the Graph Editor for a
+              scalar track, it overlays the upper portion of the dock. */}
+          {!trackEditorOpen && (
             <button
-              onClick={() => setTimelineEditorOpen(true)}
-              title="Open curve editor"
+              onClick={() => setTrackEditorOpen(true)}
+              title="Open Track Editor"
               style={{
                 position: "absolute",
                 bottom: 0,
@@ -3328,17 +3633,17 @@ function EffectsShell() {
                 zIndex: 5,
               }}
             >
-              ▲ curve
+              ▲ tracks
             </button>
           )}
-          {activeTimelineNode && timelineEditorOpen && (
+          {trackEditorOpen && (
             <div
               style={{
                 position: "absolute",
                 left: 0,
                 right: 0,
                 bottom: 0,
-                height: timelineEditorHeight,
+                height: trackEditorHeight,
                 background: "#0a0a0a",
                 borderTop: "1px solid #3f3f46",
                 display: "flex",
@@ -3351,10 +3656,10 @@ function EffectsShell() {
                 onMouseDown={(e) => {
                   e.preventDefault();
                   const startY = e.clientY;
-                  const startH = timelineEditorHeight;
+                  const startH = trackEditorHeight;
                   const onMove = (ev: MouseEvent) => {
                     const dy = startY - ev.clientY;
-                    setTimelineEditorHeight(
+                    setTrackEditorHeight(
                       Math.max(120, Math.min(700, startH + dy))
                     );
                   };
@@ -3377,18 +3682,92 @@ function EffectsShell() {
                   flexShrink: 0,
                 }}
               >
-                <span
+                <div
                   style={{
-                    color: "#a1a1aa",
-                    fontFamily: "ui-monospace, monospace",
-                    fontSize: 10,
+                    display: "flex",
+                    alignItems: "stretch",
+                    gap: 0,
                   }}
                 >
-                  Curve · {activeTimelineNode.data.name}
-                </span>
+                  {(["tracks", "graph"] as const).map((t) => {
+                    const active = dockTab === t;
+                    return (
+                      <button
+                        key={t}
+                        onClick={() => setDockTab(t)}
+                        style={{
+                          background: active ? "#0a0a0a" : "transparent",
+                          border: "1px solid #3f3f46",
+                          borderBottom: active ? "1px solid #0a0a0a" : "1px solid #3f3f46",
+                          color: active ? "#fafafa" : "#a1a1aa",
+                          padding: "2px 12px",
+                          marginRight: 2,
+                          marginBottom: -1,
+                          fontFamily: "ui-monospace, monospace",
+                          fontSize: 10,
+                          cursor: "pointer",
+                          borderTopLeftRadius: 3,
+                          borderTopRightRadius: 3,
+                        }}
+                      >
+                        {t === "tracks" ? "Tracks" : "Graph"}
+                      </button>
+                    );
+                  })}
+                  {dockTab === "graph" && (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                        marginLeft: 8,
+                      }}
+                    >
+                      <button
+                        onClick={() => setGraphNormalizeY((v) => !v)}
+                        title={
+                          graphNormalizeY
+                            ? "Normalize on — y-axis fits each curve to its own range"
+                            : "Normalize off — y-axis uses the parameter's declared range"
+                        }
+                        style={{
+                          background: graphNormalizeY
+                            ? "#1e3a8a"
+                            : "transparent",
+                          border: "1px solid #3f3f46",
+                          color: graphNormalizeY ? "#bfdbfe" : "#a1a1aa",
+                          padding: "2px 8px",
+                          fontFamily: "ui-monospace, monospace",
+                          fontSize: 10,
+                          cursor: "pointer",
+                          borderRadius: 3,
+                        }}
+                      >
+                        normalize
+                      </button>
+                      <button
+                        onClick={() => setGraphRefitVersion((v) => v + 1)}
+                        title="Refresh: re-fit y-axis to current keyframes"
+                        style={{
+                          background: "transparent",
+                          border: "1px solid #3f3f46",
+                          color: "#a1a1aa",
+                          padding: "2px 6px",
+                          fontFamily: "ui-monospace, monospace",
+                          fontSize: 11,
+                          cursor: "pointer",
+                          borderRadius: 3,
+                          lineHeight: 1,
+                        }}
+                      >
+                        ↻
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <button
-                  onClick={() => setTimelineEditorOpen(false)}
-                  title="Close curve editor"
+                  onClick={() => setTrackEditorOpen(false)}
+                  title="Close"
                   style={{
                     background: "transparent",
                     border: "1px solid #3f3f46",
@@ -3403,29 +3782,47 @@ function EffectsShell() {
                   ▼
                 </button>
               </div>
-              <div style={{ flex: 1, minHeight: 0 }}>
-                <TimelineCurveEditor
-                  value={
-                    (activeTimelineNode.data.params.curve as TimelineCurveValue) ??
-                    defaultTimelineCurve()
-                  }
-                  onChange={(next) =>
-                    onParamChange(activeTimelineNode.id, "curve", next)
-                  }
-                  playheadT={timelinePlayheadT}
-                  height={timelineEditorHeight - 30}
-                  onScrub={(t) => {
-                    // Map normalized 0..1 onto scene seconds. The
-                    // Timeline node wraps via fract, so the scene
-                    // duration we should map to is the loop window
-                    // when set, otherwise one second.
-                    const loopSec =
-                      loopFrames != null && loopFrames > 0
-                        ? loopFrames / fps
-                        : 1;
-                    onSeek(t * loopSec);
-                  }}
-                />
+              <div
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
+                {dockTab === "tracks" ? (
+                  <TrackEditor
+                    nodes={nodes}
+                    timeline={projectTimeline}
+                    currentTick={currentTick}
+                    playing={playing}
+                    onScrub={(tick) =>
+                      onSeek(tick / (fps * ticksPerFrame))
+                    }
+                    onAnimationChange={onAnimationChange}
+                    collapsedNodeIds={collapsedTrackNodes}
+                    onToggleCollapsed={(nodeId) =>
+                      setCollapsedTrackNodes((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(nodeId)) next.delete(nodeId);
+                        else next.add(nodeId);
+                        return next;
+                      })
+                    }
+                  />
+                ) : (
+                  <GraphEditor
+                    nodes={nodes}
+                    timeline={projectTimeline}
+                    currentTick={currentTick}
+                    onAnimationChange={onAnimationChange}
+                    onScrub={(tick) =>
+                      onSeek(tick / (fps * ticksPerFrame))
+                    }
+                    normalizeY={graphNormalizeY}
+                    refitVersion={graphRefitVersion}
+                  />
+                )}
               </div>
             </div>
           )}
@@ -3511,6 +3908,26 @@ function EffectsShell() {
             onSpliceNode={handleSpliceNode}
             onWaypointDragStart={handleWaypointDragStart}
             onWaypointDrag={handleWaypointDrag}
+            viewportOverlay={
+              inspectIds.length > 0
+                ? inspectIds.map((id) => {
+                    const n = nodes.find((x) => x.id === id);
+                    if (!n) return null;
+                    // Reading inspectTick keeps the popup re-rendering on
+                    // each eval bump even though the value isn't used as
+                    // a prop — the snapshot ref is mutated in place, so
+                    // we need a render trigger.
+                    void inspectTick;
+                    return (
+                      <NodeInspectorPopup
+                        key={`inspect-${id}`}
+                        node={n}
+                        snapshot={inspectSnapshotsRef.current.get(id)}
+                      />
+                    );
+                  })
+                : null
+            }
           />
         </section>
 
@@ -3530,6 +3947,9 @@ function EffectsShell() {
             onParamRangeChange={onParamRangeChange}
             onToggleParamLink={onToggleParamLink}
             isParamDriven={isParamDriven}
+            currentTick={currentTick}
+            getAnimation={getAnimation}
+            onAnimationChange={onAnimationChange}
             signedIn={signedIn}
             currentUserId={user?.id ?? null}
             onLoadProject={handleLoadProject}

@@ -4,6 +4,7 @@ import type {
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
+import { pointsFromArray } from "@/engine/points";
 
 // Lissajous curve generators — 2D and 3D.
 //
@@ -72,10 +73,9 @@ function buildOutputs(positions: Array<[number, number]>): {
     closed: false,
   };
   const spline: SplineValue = { kind: "spline", subpaths: [sub] };
-  const points: PointsValue = {
-    kind: "points",
-    points: positions.map((p) => ({ pos: p })),
-  };
+  const points: PointsValue = pointsFromArray(
+    positions.map((p) => ({ pos: p }))
+  );
   return { spline, points };
 }
 

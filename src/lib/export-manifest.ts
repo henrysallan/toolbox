@@ -30,7 +30,6 @@ const UNSUPPORTED_CONTROL_TYPES = new Set<ParamType>([
   "paint",
   "merge_layers",
   "curves",
-  "timeline_curve",
   "color_ramp",
   "spline_anchors",
 ]);

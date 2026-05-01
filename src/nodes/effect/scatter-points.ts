@@ -5,6 +5,7 @@ import type {
   PointsValue,
   RenderContext,
 } from "@/engine/types";
+import { pointsFromArray } from "@/engine/points";
 
 // Scatter N points across the canvas. When a density input is attached,
 // uses rejection sampling on the image's R channel (brighter = more
@@ -234,7 +235,7 @@ export const scatterPointsNode: NodeDefinition = {
       }
     }
 
-    const out: PointsValue = { kind: "points", points };
+    const out: PointsValue = pointsFromArray(points);
     return { primary: out };
   },
 

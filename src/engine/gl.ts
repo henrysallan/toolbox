@@ -70,7 +70,8 @@ export interface EngineBackend {
     time: number,
     frame: number,
     cursor?: CursorState,
-    playing?: boolean
+    playing?: boolean,
+    timeline?: { tick: number; ticksPerFrame: number; fps: number }
   ): RenderContext;
   destroy(): void;
 }
@@ -108,6 +109,119 @@ export function createEngineBackend(
   let width = initialWidth;
   let height = initialHeight;
   const persistentState: Record<string, unknown> = {};
+
+  // Lazy WebGPU device handle. Resolved on the first getWebGPUDevice()
+  // call and cached forever after. We hold the promise (not just the
+  // device) so concurrent callers all await the same boot. `null` is
+  // a valid resolved value meaning "this browser/hw can't do WebGPU";
+  // callers should branch on that rather than throw.
+  let webGpuDevicePromise: Promise<GPUDevice | null> | null = null;
+  function getWebGPUDevice(): Promise<GPUDevice | null> {
+    if (webGpuDevicePromise) return webGpuDevicePromise;
+    webGpuDevicePromise = (async (): Promise<GPUDevice | null> => {
+      const nav = typeof navigator !== "undefined" ? navigator : null;
+      const gpu = (nav as Navigator & { gpu?: GPU }).gpu;
+      if (!gpu) return null;
+      try {
+        const adapter = await gpu.requestAdapter();
+        if (!adapter) return null;
+        return await adapter.requestDevice();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("WebGPU device request failed:", err);
+        return null;
+      }
+    })();
+    return webGpuDevicePromise;
+  }
+
+  // ---- Cross-context bridges ----------------------------------------
+  // These use a transient FBO + readPixels for the read side, and
+  // texSubImage2D for the write side. Both go through CPU memory; for
+  // v1 that's the simplest stable interop path across WebGL ↔ WebGPU.
+  function readImageToFloat32Internal(image: ImageValue): Float32Array {
+    const w = image.width;
+    const h = image.height;
+    const fboLocal = gl!.createFramebuffer();
+    if (!fboLocal) throw new Error("readImageToFloat32: createFramebuffer failed");
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, fboLocal);
+    gl!.framebufferTexture2D(
+      gl!.FRAMEBUFFER,
+      gl!.COLOR_ATTACHMENT0,
+      gl!.TEXTURE_2D,
+      image.texture,
+      0
+    );
+    const status = gl!.checkFramebufferStatus(gl!.FRAMEBUFFER);
+    if (status !== gl!.FRAMEBUFFER_COMPLETE) {
+      gl!.bindFramebuffer(gl!.FRAMEBUFFER, null);
+      gl!.deleteFramebuffer(fboLocal);
+      throw new Error(`readImageToFloat32: incomplete framebuffer (0x${status.toString(16)})`);
+    }
+    const out = new Float32Array(w * h * 4);
+    if (hasColorBufferFloat) {
+      // Source is RGBA16F (or fallback RGBA8). EXT_color_buffer_float
+      // lets us read back as FLOAT directly — best path.
+      gl!.readPixels(0, 0, w, h, gl!.RGBA, gl!.FLOAT, out);
+    } else {
+      // RGBA8 fallback: read as UNSIGNED_BYTE then scale to 0..1.
+      const bytes = new Uint8Array(w * h * 4);
+      gl!.readPixels(0, 0, w, h, gl!.RGBA, gl!.UNSIGNED_BYTE, bytes);
+      for (let i = 0; i < bytes.length; i++) out[i] = bytes[i] / 255;
+    }
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, null);
+    gl!.deleteFramebuffer(fboLocal);
+    return out;
+  }
+
+  function uploadFloat32ToImageInternal(
+    data: Float32Array,
+    w: number,
+    h: number
+  ): ImageValue {
+    if (data.length !== w * h * 4) {
+      throw new Error(
+        `uploadFloat32ToImage: expected ${w * h * 4} floats, got ${data.length}`
+      );
+    }
+    const tex = allocTexture(w, h, "rgba");
+    gl!.bindTexture(gl!.TEXTURE_2D, tex);
+    if (hasColorBufferFloat) {
+      // RGBA16F target accepts FLOAT uploads — WebGL2 spec converts
+      // float-to-half on the driver side.
+      gl!.texSubImage2D(
+        gl!.TEXTURE_2D,
+        0,
+        0,
+        0,
+        w,
+        h,
+        gl!.RGBA,
+        gl!.FLOAT,
+        data
+      );
+    } else {
+      // RGBA8 fallback: clamp + scale to 0..255.
+      const bytes = new Uint8Array(data.length);
+      for (let i = 0; i < data.length; i++) {
+        const v = Math.max(0, Math.min(1, data[i]));
+        bytes[i] = (v * 255) | 0;
+      }
+      gl!.texSubImage2D(
+        gl!.TEXTURE_2D,
+        0,
+        0,
+        0,
+        w,
+        h,
+        gl!.RGBA,
+        gl!.UNSIGNED_BYTE,
+        bytes
+      );
+    }
+    gl!.bindTexture(gl!.TEXTURE_2D, null);
+    return { kind: "image", texture: tex, width: w, height: h };
+  }
 
   function getShader(key: string, fragSrc: string): WebGLProgram {
     const cached = shaderCache.get(key);
@@ -211,8 +325,12 @@ export function createEngineBackend(
     time: number,
     frame: number,
     cursor?: CursorState,
-    playing = false
+    playing = false,
+    timeline?: { tick: number; ticksPerFrame: number; fps: number }
   ): RenderContext {
+    const tpf = timeline?.ticksPerFrame ?? 1000;
+    const renderFps = timeline?.fps ?? (frame > 0 && time > 0 ? frame / time : 60);
+    const tick = timeline?.tick ?? Math.round(time * renderFps * tpf);
     return {
       gl: gl!,
       get width() {
@@ -223,6 +341,9 @@ export function createEngineBackend(
       },
       time,
       frame,
+      tick,
+      ticksPerFrame: tpf,
+      fps: renderFps,
       playing,
       cursor: cursor ?? { x: 0.5, y: 0.5, active: false },
       state: persistentState,
@@ -312,6 +433,9 @@ export function createEngineBackend(
         gl!.bindVertexArray(null);
         return hiddenCanvas;
       },
+      getWebGPUDevice,
+      readImageToFloat32: readImageToFloat32Internal,
+      uploadFloat32ToImage: uploadFloat32ToImageInternal,
     };
   }
 

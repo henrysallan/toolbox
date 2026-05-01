@@ -8,6 +8,7 @@ import type {
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
+import { ensurePointArray, pointsFromArray } from "@/engine/points";
 
 // Translate a spline or point cluster so its geometric center lands at
 // (X, Y). Absolute "place this thing here" semantics — unlike
@@ -154,19 +155,19 @@ export const setPositionNode: NodeDefinition = {
 
     if (mode === "points") {
       if (!src || src.kind !== "points") {
-        const empty: PointsValue = { kind: "points", points: [] };
+        const empty: PointsValue = pointsFromArray([]);
         return { primary: empty };
       }
-      const c = centroidOfPoints(src.points);
+      const srcPts = ensurePointArray(src);
+      const c = centroidOfPoints(srcPts);
       if (!c) {
         return { primary: src };
       }
       const dx = target[0] - c[0];
       const dy = target[1] - c[1];
-      const out: PointsValue = {
-        kind: "points",
-        points: shiftPoints(src.points, dx, dy),
-      };
+      const out: PointsValue = pointsFromArray(
+        shiftPoints(srcPts, dx, dy)
+      );
       return { primary: out };
     }
 

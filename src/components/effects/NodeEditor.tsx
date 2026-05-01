@@ -6,6 +6,7 @@ import {
   Controls,
   MiniMap,
   ReactFlow,
+  ViewportPortal,
   useReactFlow,
   type Connection,
   type Edge,
@@ -93,6 +94,10 @@ interface Props {
     inputName: string;
     outputHandle: string;
   }) => void;
+  // Optional content rendered inside React Flow's viewport — receives
+  // the same pan/zoom transform as nodes, so anchored overlays (data
+  // inspector popups, etc.) follow the graph.
+  viewportOverlay?: React.ReactNode;
 }
 
 export default function NodeEditor({
@@ -115,6 +120,7 @@ export default function NodeEditor({
   onWaypointDragStart,
   onWaypointDrag,
   onSpliceNode,
+  viewportOverlay,
 }: Props) {
   const nodeTypes = useMemo(() => ({ effect: EffectNode }), []);
   // Register JunctionEdge under the default edge type so every edge —
@@ -891,6 +897,7 @@ export default function NodeEditor({
         <SimulationZoneUnderlay nodes={nodes} />
         <Controls />
         <MiniMap pannable zoomable />
+        {viewportOverlay && <ViewportPortal>{viewportOverlay}</ViewportPortal>}
       </ReactFlow>
 
       {nodePopup && (

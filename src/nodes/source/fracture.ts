@@ -6,6 +6,7 @@ import type {
   SplineSubpath,
 } from "@/engine/types";
 import { Delaunay } from "d3-delaunay";
+import { pointsFromArray } from "@/engine/points";
 
 // True variable-density Voronoi via a CPU-generated point set. This is
 // the node to reach for when you want "more cells where the image is
@@ -885,7 +886,7 @@ export const fractureNode: NodeDefinition = {
       primary: output,
       aux: {
         edges: { kind: "spline", subpaths: edges },
-        vertices: { kind: "points", points: vertices },
+        vertices: pointsFromArray(vertices),
       },
     };
   },

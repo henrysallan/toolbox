@@ -10,7 +10,15 @@ export type SocketType =
   | "spline"
   | "points"
   | "audio"
-  | "image_group";
+  | "image_group"
+  // Particle-engine sockets. `force`, `emitter`, and `collider` carry
+  // small CPU-side descriptor structs (the actual sim runs as
+  // fragment-shader GPGPU inside the Particle Simulator). `particles`
+  // carries a pair of floating-point textures owned by the simulator.
+  | "force"
+  | "emitter"
+  | "collider"
+  | "particles";
 
 export type ImageValue = {
   kind: "image";
@@ -92,8 +100,28 @@ export interface Point {
   // the comment there for details.
   groupIndex?: number;
 }
+// Authoritative storage is typed-array (positions/scales/rotations/
+// groupIndices). The legacy `points: Point[]` view is preserved as a
+// lazily-built compatibility surface — see `src/engine/points.ts` for
+// `ensurePointArray()` and the `makePoints` / `pointsFromArray` helpers
+// that producers should use. Hot consumers (modulate-points, copy-to-
+// points, simulation, transform feedback path) read the typed arrays
+// directly to avoid per-point allocations.
 export type PointsValue = {
   kind: "points";
+  count: number;
+  // Length = count * 2, interleaved [x0,y0, x1,y1, ...].
+  positions: Float32Array;
+  // Length = count * 2 if present. Absent ⇒ all [1, 1].
+  scales?: Float32Array;
+  // Length = count if present. Absent ⇒ all 0.
+  rotations?: Float32Array;
+  // Length = count if present. Absent ⇒ all 0.
+  groupIndices?: Int32Array;
+  // Lazy view onto the typed arrays. Producers may emit `[]` and let
+  // `ensurePointArray()` build it on demand. Never mutate this without
+  // also writing back into the typed arrays — they are the source of
+  // truth.
   points: Point[];
 };
 
@@ -124,6 +152,168 @@ export type ImageGroupValue = {
   items: ImageValue[];
 };
 
+// =====================================================================
+// Particle-engine descriptors
+// =====================================================================
+//
+// Forces and emitters are CPU-side description structs. The actual sim
+// runs as a fragment-shader GPGPU pass inside the Particle Simulator —
+// these descriptors are read as uniforms on each frame.
+//
+// Coordinate convention: positions and velocities are in normalized
+// [0,1]² Y-DOWN canvas-UV space (matches every other engine value).
+// "vy = 1" means "one canvas-height downward per second".
+//
+// New force/emitter kinds: extend the union AND the simulator's switch
+// in nodes/effect/particle-simulator.ts. Both ends are in the same repo
+// so the contract stays in sync.
+
+export type ForceDescriptor =
+  // Constant pull. (gx, gy) in canvas-UV/sec². Negative gy = up.
+  | { kind: "gravity"; gx: number; gy: number }
+  // Linear-in-velocity damping. v *= (1 - coeff * dt). 0 = no drag.
+  | { kind: "drag"; coeff: number }
+  // Radial force from a point. Sign +1 = repel, -1 = attract.
+  // `falloff` controls 1/r^falloff (clamped, see shader).
+  | {
+      kind: "point";
+      px: number;
+      py: number;
+      strength: number;
+      falloff: number;
+      sign: number;
+      radius: number;
+    }
+  // Tangential swirl around a point. Strength = peak angular velocity.
+  | {
+      kind: "vortex";
+      px: number;
+      py: number;
+      strength: number;
+      falloff: number;
+      radius: number;
+    }
+  // Constant directional push. (dx, dy) is the unit direction;
+  // `strength` is its magnitude in canvas-UV/sec.
+  | {
+      kind: "wind";
+      dx: number;
+      dy: number;
+      strength: number;
+    }
+  // Curl-noise turbulence. `scale` = noise frequency (cells per canvas).
+  // `strength` = peak displacement velocity. `speed` advects the noise
+  // field through time (so the same particle gets different noise on
+  // subsequent frames).
+  | {
+      kind: "turbulence";
+      scale: number;
+      strength: number;
+      speed: number;
+    };
+
+export type ForceValue = {
+  kind: "force";
+  descriptor: ForceDescriptor;
+};
+
+export type EmitterDescriptor =
+  // Spawn near a single point each frame. `rate` = particles per second.
+  // (vx, vy) seeds initial velocity; vJitter randomizes it. `spread` is
+  // a positional radius around (px, py) for jittery position seeding.
+  | {
+      kind: "point";
+      px: number;
+      py: number;
+      spread: number;
+      rate: number;
+      vx: number;
+      vy: number;
+      vJitter: number;
+      lifetime: number;
+    }
+  // Spawn into pixels of a mask weighted by alpha. The simulator
+  // samples the mask texture at random UVs and rejects below threshold.
+  | {
+      kind: "image_mask";
+      mask: ImageValue;
+      threshold: number;
+      rate: number;
+      vx: number;
+      vy: number;
+      vJitter: number;
+      lifetime: number;
+    };
+
+export type EmitterValue = {
+  kind: "emitter";
+  descriptor: EmitterDescriptor;
+};
+
+// Colliders deflect particles. The simulator checks each collider per
+// particle per frame and reflects velocity (or kills the particle,
+// depending on the collider's `mode`).
+//
+// Coordinate convention: positions in [0,1]² Y-DOWN canvas-UV,
+// matching forces and emitters.
+
+export type ColliderDescriptor =
+  // Circular collider. `inside`=false treats the disc as solid (particles
+  // bounce off the outside); `inside`=true treats it as a contained
+  // boundary (particles bounce off the inside, like a fish-tank).
+  | {
+      kind: "circle";
+      cx: number;
+      cy: number;
+      radius: number;
+      inside: boolean;
+      restitution: number;
+    }
+  // Half-plane collider, defined by a unit normal (nx, ny) and a
+  // signed offset `d`. The plane equation is `n · p = d`; the
+  // collider blocks points with `n · p < d` (the side opposite the
+  // normal). For "ground at y=0.9", set normal=(0, -1), d=-0.9.
+  | {
+      kind: "line";
+      nx: number;
+      ny: number;
+      d: number;
+      restitution: number;
+    }
+  // Image-mask collider. The mask's alpha channel (above `threshold`)
+  // is treated as solid. Particles entering an opaque pixel either
+  // bounce (using a sampled gradient as the surface normal) or die.
+  | {
+      kind: "image_mask";
+      mask: ImageValue;
+      threshold: number;
+      restitution: number;
+      kill: boolean;
+    };
+
+export type ColliderValue = {
+  kind: "collider";
+  descriptor: ColliderDescriptor;
+};
+
+// Particle state held in floating-point textures, ping-ponged each
+// frame inside the Particle Simulator. `width × height` gives the layout
+// (pixel index = particle index); `count = width × height` is the
+// allocation cap, not the live particle count (dead slots have age=0
+// and are eligible for respawn).
+//
+// Channel layout:
+//   positionTex.RGBA = (pos.x, pos.y, age, lifetime)   — age 0 = dead
+//   velocityTex.RGBA = (vel.x, vel.y, _, _)
+export type ParticlesValue = {
+  kind: "particles";
+  positionTex: WebGLTexture;
+  velocityTex: WebGLTexture;
+  width: number;
+  height: number;
+  count: number;
+};
+
 export type SocketValue =
   | ImageValue
   | MaskValue
@@ -135,7 +325,11 @@ export type SocketValue =
   | SplineValue
   | PointsValue
   | AudioValue
-  | ImageGroupValue;
+  | ImageGroupValue
+  | ForceValue
+  | EmitterValue
+  | ColliderValue
+  | ParticlesValue;
 
 export interface NodeOutput {
   primary?: SocketValue;
@@ -175,33 +369,9 @@ export type ParamType =
   | "merge_layers"
   | "color_ramp"
   | "curves"
-  | "timeline_curve"
   | "spline_anchors"
   | "svg_file"
   | "audio_file";
-
-// Authored curve for the Timeline node. Stored as a sequence of control
-// points sorted by x in [0,1]; the first must be at x=0 and the last at x=1.
-// y is typically in [0,1] but not hard-clamped — the editor allows overshoot.
-// Each point carries a left/right bezier handle relative to its position
-// and a handle mode that constrains how the two move together.
-export type TimelineCurveHandleMode =
-  | "aligned"
-  | "mirrored"
-  | "free"
-  | "vector";
-
-export interface TimelineCurvePoint {
-  x: number;
-  y: number;
-  handleMode: TimelineCurveHandleMode;
-  leftHandle: { dx: number; dy: number };
-  rightHandle: { dx: number; dy: number };
-}
-
-export interface TimelineCurveValue {
-  controlPoints: TimelineCurvePoint[];
-}
 
 export interface AudioFileParamValue {
   // Persistent HTMLAudioElement bound to an ObjectURL — kept alive for
@@ -384,8 +554,17 @@ export interface RenderContext {
   gl: WebGL2RenderingContext;
   width: number;
   height: number;
+  // Project-time scalars. `tick` is the integer subframe time
+  // (`ticksPerFrame` per frame, default 1000). `time` is seconds and
+  // `frame` is the integer frame index — both derived from tick.
+  // Existing nodes consume `time` / `frame`; new code (keyframe
+  // evaluator, Track Editor) should prefer `tick` so equality with
+  // stored keyframe ticks is exact.
   time: number;
   frame: number;
+  tick: number;
+  ticksPerFrame: number;
+  fps: number;
   // Whether the scene's RAF playback is active right now. Used by
   // time-sensitive sources (Audio, Video) to decide whether to play or
   // pause their media elements; image-only nodes can safely ignore it.
@@ -418,4 +597,41 @@ export interface RenderContext {
     width: number,
     height: number
   ): HTMLCanvasElement;
+  // ===================================================================
+  // WebGPU / WebGL2 interop bridges
+  // ===================================================================
+  // The engine is primarily WebGL2 — that's where rendering and most
+  // existing nodes live. Some nodes (heavy compute kernels: particle
+  // sims, neighbor lookups, sort, scan) benefit from WebGPU's compute
+  // shaders. The pattern: a node calls getWebGPUDevice() to lazily
+  // boot a WebGPU device; runs its compute pass; then bridges results
+  // back to WebGL via readImageToFloat32 / uploadFloat32ToTexture (or
+  // the inverse for WebGL → WebGPU).
+  //
+  // Both bridges are CPU-mediated for v1 (one Float32Array hop). True
+  // GPU-shared-memory interop (importing a GPUTexture into WebGL or
+  // vice-versa) requires platform extensions that aren't available in
+  // browsers yet. The Float32 hop is fast for ≤ ~1MB of float data,
+  // which covers up to ~64k 4-channel pixels per readback.
+
+  // Returns a WebGPU device, or null if the browser/hardware doesn't
+  // expose one. Cached after the first successful call. Async because
+  // device creation requires an awaited adapter request.
+  getWebGPUDevice(): Promise<GPUDevice | null>;
+
+  // Read every pixel of an RGBA16F-or-RGBA8 image back as a flat
+  // Float32Array of length width*height*4. Forces a sync GPU stall —
+  // expensive, use sparingly. RGBA8 sources scale 0..255 → 0..1 so
+  // the consumer doesn't have to branch on internal format.
+  readImageToFloat32(image: ImageValue): Float32Array;
+
+  // Inverse of readImageToFloat32: upload a Float32Array into a fresh
+  // RGBA16F image. Length must equal width*height*4. Caller owns the
+  // returned image — release it via ctx.releaseTexture(img.texture)
+  // when done.
+  uploadFloat32ToImage(
+    data: Float32Array,
+    width: number,
+    height: number
+  ): ImageValue;
 }

@@ -1,6 +1,7 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
 import type { PaintParamValue } from "@/engine/types";
+import type { AnimationMap } from "@/engine/keyframes";
 import { getNodeDef } from "@/engine/registry";
 import { withMaskInput } from "@/engine/conventions";
 
@@ -22,6 +23,9 @@ export interface SavedNode {
     string,
     { min?: number; max?: number; softMax?: number }
   >;
+  // Per-parameter keyframe animation. Plain JSON (numbers, booleans,
+  // strings, arrays). Absent on projects saved before keyframes shipped.
+  animation?: AnimationMap;
   active?: boolean;
   bypassed?: boolean;
 }
@@ -180,6 +184,7 @@ export async function serializeGraph(
       exposedParams: n.data.exposedParams,
       controlParams: n.data.controlParams,
       paramOverrides: n.data.paramOverrides,
+      animation: n.data.animation,
       active: n.data.active,
       bypassed: n.data.bypassed,
     });
@@ -232,6 +237,7 @@ export async function deserializeGraph(
         exposedParams: sn.exposedParams ?? [],
         controlParams: sn.controlParams ?? [],
         paramOverrides: sn.paramOverrides,
+        animation: sn.animation,
         name: def?.name ?? sn.defType,
         inputs,
         auxOutputs: auxDefs.map((a) => ({

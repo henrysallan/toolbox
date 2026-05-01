@@ -27,12 +27,24 @@ import {
   type CurveChannel,
   type CurvesValue,
 } from "@/nodes/effect/color-correction";
-import { TimelineCurveThumbnail } from "./TimelineCurveEditor";
 import {
-  defaultTimelineCurve,
-  sanitizeTimelineCurve,
-} from "@/nodes/source/timeline/eval";
-import type { TimelineCurveValue } from "@/engine/types";
+  diamondStateFor,
+  findKeyframeAt,
+  isKeyframable,
+  removeKeyframeAt,
+  upsertKeyframe,
+  type KeyframeAnimationBlock,
+} from "@/engine/keyframes";
+import KeyframeDiamond from "./KeyframeDiamond";
+import TrackVisibilityEye from "./TrackVisibilityEye";
+
+// NOTE: Auto-keyframe on parameter edits (spec §2.2 / §2.3) is NOT done
+// inside ParamRow. ParamRow keeps emitting raw `onChange(v)` for every
+// edit; the auto-keyframe rule lives at the param-change call site
+// (EffectsApp), which has the full undo/redo + tick context. EffectsApp
+// should: if `animation[paramName]?.animated === true && !driven`, route
+// the edit through `upsertKeyframe(block, ctx.tick, value)` instead of
+// writing to `params[paramName]`.
 
 interface Props {
   nodes: Node<NodeDataPayload>[];
@@ -68,6 +80,24 @@ interface Props {
   // Returns true when an exposed param currently has an incoming edge
   // driving it. The row is rendered read-only with a "driven" indicator.
   isParamDriven: (nodeId: string, paramName: string) => boolean;
+  // Current playhead tick (integer). Used by the keyframe-diamond to
+  // decide insert vs remove at the current time. Defaults to 0 for
+  // callers that haven't migrated to the tick model yet.
+  currentTick?: number;
+  // Lookup for the per-parameter animation block on a node. Returns
+  // undefined when the parameter has no animation data yet.
+  getAnimation?: (
+    nodeId: string,
+    paramName: string
+  ) => KeyframeAnimationBlock | undefined;
+  // Writes the animation block back. Pass `undefined` to delete the
+  // entry entirely. Used for diamond clicks, right-click "disable", and
+  // visibility-eye toggles (visibility folds in via this prop).
+  onAnimationChange?: (
+    nodeId: string,
+    paramName: string,
+    next: KeyframeAnimationBlock | undefined
+  ) => void;
   signedIn?: boolean;
   // Current user id (or null when signed out). Lets the load grid
   // flag public projects authored by the viewer as "you".
@@ -163,6 +193,9 @@ export default function ParamPanel({
   onParamRangeChange,
   onToggleParamLink,
   isParamDriven,
+  currentTick = 0,
+  getAnimation,
+  onAnimationChange,
   signedIn,
   currentUserId,
   onLoadProject,
@@ -251,7 +284,6 @@ export default function ParamPanel({
                 p.type !== "paint" &&
                 p.type !== "merge_layers" &&
                 p.type !== "curves" &&
-                p.type !== "timeline_curve" &&
                 p.type !== "color_ramp" &&
                 p.type !== "spline_anchors" &&
                 p.type !== "file" &&
@@ -304,6 +336,15 @@ export default function ParamPanel({
                   onToggleLink={
                     linkInfo && onToggleParamLink
                       ? () => onToggleParamLink(selected.id, linkInfo.pairKey)
+                      : undefined
+                  }
+                  animation={getAnimation?.(selected.id, p.name)}
+                  currentTick={currentTick}
+                  keyframable={isKeyframable(p.type)}
+                  onAnimationChange={
+                    onAnimationChange
+                      ? (next) =>
+                          onAnimationChange(selected.id, p.name, next)
                       : undefined
                   }
                 />
@@ -475,6 +516,10 @@ function ParamRow({
   onRangeChange,
   linkInfo,
   onToggleLink,
+  animation,
+  currentTick = 0,
+  keyframable = false,
+  onAnimationChange,
 }: {
   param: ParamDef;
   value: unknown;
@@ -496,8 +541,98 @@ function ParamRow({
   // half of a `linkedPairs` entry on the node def).
   linkInfo?: { pairKey: string; isLinked: boolean; partnerName: string };
   onToggleLink?: () => void;
+  // Per-parameter keyframe animation block (spec §6.1). Undefined when
+  // the parameter has never been keyframed.
+  animation?: KeyframeAnimationBlock;
+  // Current playhead tick — drives diamond state and insert/remove.
+  currentTick?: number;
+  // Whether this param's type can be keyframed at all (caller passes
+  // isKeyframable(param.type)). When false, the eye and diamond are not
+  // rendered, preserving the existing layout for unsupported types.
+  keyframable?: boolean;
+  // Emit a new animation block (or undefined to remove) for this param.
+  // Auto-keyframe on edit must be implemented at the param-change call
+  // site (EffectsApp), since ParamRow doesn't know `currentTick`
+  // semantics deeply enough to insert without coordinating with undo
+  // history. EffectsApp should: if `animation[paramName]?.animated ===
+  // true && !driven`, route the edit through `upsertKeyframe(block,
+  // ctx.tick, value)` instead of writing to `params[paramName]`.
+  onAnimationChange?: (next: KeyframeAnimationBlock | undefined) => void;
 }) {
   const label = param.label ?? param.name;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDocDown = (e: MouseEvent) => {
+      if (!menuRef.current) return;
+      const target = e.target as globalThis.Node | null;
+      if (target && menuRef.current.contains(target)) return;
+      setMenuOpen(false);
+    };
+    window.addEventListener("mousedown", onDocDown);
+    return () => window.removeEventListener("mousedown", onDocDown);
+  }, [menuOpen]);
+
+  const animated = !!animation?.animated;
+  const diamondState = keyframable
+    ? diamondStateFor(animation, currentTick)
+    : "empty";
+
+  const handleDiamondClick = () => {
+    if (!onAnimationChange) return;
+    if (driven) return;
+    if (!animation || !animation.animated) {
+      // Enable: turn animation on and seed first keyframe at the
+      // playhead with the parameter's current value.
+      onAnimationChange({
+        animated: true,
+        trackVisible: true,
+        keyframes: [
+          { tick: currentTick, value, easingOut: "easeInOut" },
+        ],
+      });
+      return;
+    }
+    if (findKeyframeAt(animation, currentTick)) {
+      onAnimationChange(removeKeyframeAt(animation, currentTick));
+    } else {
+      onAnimationChange(
+        upsertKeyframe(animation, currentTick, value, "easeInOut")
+      );
+    }
+  };
+
+  const handleDisableEnable = () => {
+    if (!onAnimationChange) return;
+    if (!animation) {
+      onAnimationChange({
+        animated: true,
+        trackVisible: true,
+        keyframes: [],
+      });
+    } else {
+      onAnimationChange({ ...animation, animated: !animation.animated });
+    }
+    setMenuOpen(false);
+  };
+
+  const handleColorSpace = (space: "oklab" | "rgb") => {
+    if (!onAnimationChange) return;
+    const base: KeyframeAnimationBlock = animation ?? {
+      animated: false,
+      trackVisible: true,
+      keyframes: [],
+    };
+    onAnimationChange({ ...base, colorSpace: space });
+    setMenuOpen(false);
+  };
+
+  const handleVisibilityClick = () => {
+    if (!onAnimationChange || !animation) return;
+    onAnimationChange({ ...animation, trackVisible: !animation.trackVisible });
+  };
 
   return (
     <div
@@ -618,17 +753,136 @@ function ParamRow({
           )}
         </div>
       </div>
-      <div style={{ opacity: driven ? 0.5 : 1, pointerEvents: driven ? "none" : "auto" }}>
-        <ParamControl
-          param={param}
-          value={value}
-          onChange={onChange}
-          rangeOverride={rangeOverride}
-          onRangeChange={onRangeChange}
-        />
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          position: "relative",
+        }}
+      >
+        {keyframable && (
+          <TrackVisibilityEye
+            visible={animation?.trackVisible ?? false}
+            enabled={animated}
+            onClick={handleVisibilityClick}
+            title={
+              !animated
+                ? "Track visibility — enable animation to use"
+                : animation?.trackVisible
+                ? "Hide track in Track Editor"
+                : "Show track in Track Editor"
+            }
+          />
+        )}
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            opacity: driven ? 0.5 : 1,
+            pointerEvents: driven ? "none" : "auto",
+          }}
+        >
+          <ParamControl
+            param={param}
+            value={value}
+            onChange={onChange}
+            rangeOverride={rangeOverride}
+            onRangeChange={onRangeChange}
+          />
+        </div>
+        {keyframable && (
+          <div style={{ position: "relative" }}>
+            <KeyframeDiamond
+              state={diamondState}
+              disabled={driven}
+              onClick={handleDiamondClick}
+              onContextMenu={() => setMenuOpen((v) => !v)}
+              title={
+                driven
+                  ? "wired — disconnect to use keyframes"
+                  : diamondState === "empty"
+                  ? "Animate this parameter"
+                  : diamondState === "red"
+                  ? "Remove keyframe at playhead"
+                  : "Insert keyframe at playhead"
+              }
+            />
+            {menuOpen && (
+              <div
+                ref={menuRef}
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  right: 0,
+                  marginTop: 4,
+                  background: "#111113",
+                  border: "1px solid #1f1f23",
+                  borderRadius: 4,
+                  padding: 4,
+                  zIndex: 1000,
+                  display: "flex",
+                  flexDirection: "column",
+                  minWidth: 160,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+                }}
+              >
+                <button
+                  onClick={handleDisableEnable}
+                  style={menuItemStyle()}
+                >
+                  {animated ? "Disable animation" : "Enable animation"}
+                </button>
+                {param.type === "color" && (
+                  <>
+                    <div
+                      style={{
+                        color: "#52525b",
+                        fontSize: 9,
+                        textTransform: "uppercase",
+                        letterSpacing: 1,
+                        padding: "6px 8px 2px",
+                      }}
+                    >
+                      color space
+                    </div>
+                    <button
+                      onClick={() => handleColorSpace("oklab")}
+                      style={menuItemStyle(
+                        (animation?.colorSpace ?? "oklab") === "oklab"
+                      )}
+                    >
+                      OKLab
+                    </button>
+                    <button
+                      onClick={() => handleColorSpace("rgb")}
+                      style={menuItemStyle(animation?.colorSpace === "rgb")}
+                    >
+                      RGB-linear
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+function menuItemStyle(active?: boolean): React.CSSProperties {
+  return {
+    background: active ? "#1f1f23" : "transparent",
+    border: "none",
+    color: active ? "#facc15" : "#d4d4d8",
+    fontFamily: "inherit",
+    fontSize: 11,
+    padding: "5px 8px",
+    textAlign: "left",
+    cursor: "pointer",
+    borderRadius: 3,
+  };
 }
 
 function ParamControl({
@@ -1153,30 +1407,6 @@ function ParamControl({
         curves={curves}
         onChange={(next) => onChange(next)}
       />
-    );
-  }
-
-  if (param.type === "timeline_curve") {
-    // The full editor docks to the canvas area (opened via a tab there).
-    // Inside ParamPanel we only show a thumbnail with a hint nudging the
-    // user toward the canvas tab.
-    const curve = sanitizeTimelineCurve(
-      (value as TimelineCurveValue) ?? param.default ?? defaultTimelineCurve()
-    );
-    return (
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#71717a",
-          fontFamily: "ui-monospace, monospace",
-          fontSize: 10,
-        }}
-      >
-        <TimelineCurveThumbnail value={curve} width={120} height={36} />
-        <span>Edit in the curve tab below the canvas</span>
-      </div>
     );
   }
 

@@ -79,6 +79,16 @@ body {
   border-color: #52525b;
 }
 
+/* Pen-tool cursor while Shift is held over the timeline curve editor —
+   surfaces the "Shift+click adds a point" gesture before the user has
+   to discover it. Inlined SVG with the hot-spot at the nib (1, 22).
+   We apply via `*` so the cursor wins over individual control points'
+   own `cursor: move` while the modifier is held. */
+.timeline-pen-cursor,
+.timeline-pen-cursor * {
+  cursor: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='black' stroke-width='1.2' stroke-linejoin='round'%3E%3Cpath d='M2 22 L4 17 L17 4 L20 7 L7 20 Z' fill='white'/%3E%3Cpath d='M14 7 L17 10' /%3E%3Cpath d='M2 22 L5 19' /%3E%3Cpath d='M4 17 L7 20' /%3E%3C/g%3E%3C/svg%3E") 1 22, crosshair !important;
+}
+
 /* React Flow Controls — strip the panel/button chrome to just white icons
    on transparent bg. The default styles are a floating card with filled
    buttons; we want something that disappears into the node-editor surface. */

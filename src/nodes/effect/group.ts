@@ -8,6 +8,7 @@ import type {
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
+import { ensurePointArray, pointsFromArray } from "@/engine/points";
 
 // Bundle N homogeneous inputs. Behavior depends on the inner type:
 //
@@ -131,12 +132,13 @@ export const groupNode: NodeDefinition = {
       for (let i = 0; i < count; i++) {
         const v = inputs[INPUT_LABELS[i]];
         if (!v || v.kind !== "points") continue;
-        for (const p of v.points) {
+        const arr = ensurePointArray(v);
+        for (const p of arr) {
           points.push({ ...p, groupIndex: outerIdx });
         }
         outerIdx++;
       }
-      return { primary: { kind: "points", points } satisfies PointsValue };
+      return { primary: pointsFromArray(points) satisfies PointsValue };
     }
 
     const items: ImageValue[] = [];

@@ -60,7 +60,6 @@ compute shaders
 55. Spline draw has a tool for doing various shape primatives. 
 
 
-60. big feature, Convert To App. This feature lets you essentially export your node tree as a single app. Instead of each node being a seperate canvas/operation passing data, we concatenate the functions into a single script. We take all the controls and put them in a single panel each one listed in. I Have a few ideas for this. the first is basically we have an a button on the output node called Export App. in the background we already have a project template set up and we procedurally copy the code of the active nodes into that project file - ideally this would be a single script file or something (or it could be many idk maybe that is nicer). And then when you hit export it downloads a zip that has the boilerplate code, and our node network. Then for controls we dont want every single node control, so we add a new toggle that goes next to the "expose" toggle on a per node basis. 
 
 61. index debug
 
@@ -98,3 +97,58 @@ So I think you should first set up the modal, the infrastructure for calling the
 
 
 84. In the spline draw Id like to add various alignment tools
+
+85. for curve primitives (circle and rectangle for now) 
+
+86. add point and spline compatibility to the simulation zone
+
+
+88. the timeline has issues when 
+
+89. a spreadsheet viewer and node for using data. 
+
+90. an api node for setting up live data sources
+
+91. speed up dither shader?
+
+92. Daw style nodes? Whole audio toolkit? instrument nodes, 
+
+93. Shift select in node editor. Specific behavior for shift selecting things like primitives and transform nodes: I want to be able to select a group of transform nodes and see the overlayed controls all at once. That way I can edit positions of stuff without going back and forth to the node editor. 
+
+94.
+
+95. 
+
+
+
+
+
+
+
+97. save the loop frame # for the project when we save the project.
+
+98. box select in node editor should select any node thats underneath it at all, not just ones that are totally under it
+
+99. fully set up the webgpu pipes
+
+100. we need to be able to copy paste keyframes. mulptiple at a time even (like two from different trakcs, both get pasted to their respected tracks using playhead as arget locationd)
+
+101. add dedicated logs for errors
+
+102. show the keyframes easying on hover
+
+103. Serversent events
+
+104. SDF nodes. (spline)
+
+105. export controls in tool
+
+converting data types
+
+106. undo doesnt work well for position changes using transform handles in the canvas it undos in very small incremental positional changes
+
+107. array node doesnt work well becuase it squashes instances when we raise the count in either firestion
+
+I am finding the modulate points node is pretty slow. wondering if there are ways we can speed it up. Also i want you to give me a sense of where changes like moving to webgpu, wasm, etc would help. 
+
+https://github.com/matsuoka-601/webgpu-ocean
