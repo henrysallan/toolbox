@@ -149,6 +149,7 @@ converting data types
 
 107. array node doesnt work well becuase it squashes instances when we raise the count in either firestion
 
-I am finding the modulate points node is pretty slow. wondering if there are ways we can speed it up. Also i want you to give me a sense of where changes like moving to webgpu, wasm, etc would help. 
 
 https://github.com/matsuoka-601/webgpu-ocean
+
+108. for math node add dropdown for operation on the node itself

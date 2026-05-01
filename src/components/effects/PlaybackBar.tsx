@@ -16,21 +16,22 @@ interface Props {
   onLoopFramesChange: (frames: number | null) => void;
 }
 
-// Width-based picks for tick spacing. Tries ascending intervals until
-// the minor-tick gap is at least MIN_TICK_PX wide. Major ticks land
-// every 5th minor and carry the seconds label.
-const NICE_INTERVALS = [
-  0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300, 600,
+// Width-based picks for tick spacing, in frames. Tries ascending
+// intervals until the minor-tick gap is at least MIN_TICK_PX wide.
+// Major ticks land every 5th minor and carry the frame-number label.
+const NICE_FRAME_INTERVALS = [
+  1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 3000, 6000, 18000, 36000,
 ];
 const MIN_TICK_PX = 12;
 
-function pickTickInterval(viewSpanSec: number, trackWidthPx: number) {
-  if (trackWidthPx <= 0) return NICE_INTERVALS[NICE_INTERVALS.length - 1];
-  for (const iv of NICE_INTERVALS) {
-    const px = (iv / viewSpanSec) * trackWidthPx;
+function pickFrameTickInterval(viewSpanFrames: number, trackWidthPx: number) {
+  if (trackWidthPx <= 0)
+    return NICE_FRAME_INTERVALS[NICE_FRAME_INTERVALS.length - 1];
+  for (const iv of NICE_FRAME_INTERVALS) {
+    const px = (iv / viewSpanFrames) * trackWidthPx;
     if (px >= MIN_TICK_PX) return iv;
   }
-  return NICE_INTERVALS[NICE_INTERVALS.length - 1];
+  return NICE_FRAME_INTERVALS[NICE_FRAME_INTERVALS.length - 1];
 }
 
 export default function PlaybackBar({
@@ -190,27 +191,32 @@ export default function PlaybackBar({
     seekFromClientX(e.clientX);
   };
 
-  // Build tick positions in pixels.
+  // Build tick positions in pixels. Tick spacing is picked in frames
+  // so labels read as integer frame numbers regardless of fps.
   const ticks = useMemo(() => {
     if (trackWidth === 0) return [];
-    const interval = pickTickInterval(viewSpan, trackWidth);
-    const startTick = Math.floor(viewOffset / interval) * interval;
+    const viewSpanFrames = viewSpan * fps;
+    const viewOffsetFrames = viewOffset * fps;
+    const viewEndFrames = viewEnd * fps;
+    const interval = pickFrameTickInterval(viewSpanFrames, trackWidth);
+    const startTick = Math.floor(viewOffsetFrames / interval) * interval;
+    const pxPerFrame = pxPerSec / fps;
     const out: { x: number; major: boolean; label: string | null }[] = [];
     // Major every 5 minor ticks. Compute the major epoch off zero so
     // labels stay aligned regardless of pan.
-    for (let t = startTick; t <= viewEnd + interval; t += interval) {
-      const x = (t - viewOffset) * pxPerSec;
+    for (let f = startTick; f <= viewEndFrames + interval; f += interval) {
+      const x = (f - viewOffsetFrames) * pxPerFrame;
       if (x < -MIN_TICK_PX || x > trackWidth + MIN_TICK_PX) continue;
-      const ratio = t / interval;
+      const ratio = f / interval;
       const major = Math.round(ratio) % 5 === 0;
       out.push({
         x,
         major,
-        label: major ? formatTickLabel(t) : null,
+        label: major ? `${Math.round(f)}` : null,
       });
     }
     return out;
-  }, [trackWidth, viewSpan, viewOffset, viewEnd, pxPerSec]);
+  }, [trackWidth, viewSpan, viewOffset, viewEnd, pxPerSec, fps]);
 
   // Playhead pixel position (only rendered if it lies in the visible
   // window — otherwise we hint with a small marker on the relevant edge).
@@ -415,23 +421,15 @@ export default function PlaybackBar({
           fontVariantNumeric: "tabular-nums",
         }}
       >
-        {time.toFixed(3)}s
+        {Math.floor(time * fps)}
         <span style={{ color: "#52525b" }}>
           {" / "}
-          {loopDuration != null ? `${loopDuration.toFixed(3)}s` : "∞"}
+          {loopFrames != null ? loopFrames : "∞"}
         </span>
+        <span style={{ color: "#52525b", marginLeft: 4 }}>f</span>
       </div>
     </div>
   );
-}
-
-function formatTickLabel(sec: number): string {
-  // Tabular display: drop trailing zeros for whole-seconds; show one
-  // decimal for sub-second intervals so 0.5 doesn't render as "0".
-  const abs = Math.abs(sec);
-  if (abs < 1) return sec.toFixed(2).replace(/\.?0+$/, "") + "s" || "0s";
-  if (Number.isInteger(sec)) return `${sec}s`;
-  return `${sec.toFixed(1)}s`;
 }
 
 function PlaybackBarButton({
