@@ -6,6 +6,7 @@ import {
   Controls,
   MiniMap,
   ReactFlow,
+  SelectionMode,
   ViewportPortal,
   useReactFlow,
   type Connection,
@@ -58,6 +59,7 @@ interface Props {
   onDuplicateOnDrag?: (nodeId: string) => void;
   onDetachNode?: (nodeId: string) => void;
   onDuplicateNode?: (nodeId: string) => void;
+  onDuplicateSelection?: () => void;
   onCopyNodes?: () => void;
   onPasteNodes?: () => void;
   // Desktop file drop + clipboard paste — when the user drops an image/
@@ -112,6 +114,7 @@ export default function NodeEditor({
   onDuplicateOnDrag,
   onDetachNode,
   onDuplicateNode,
+  onDuplicateSelection,
   onCopyNodes,
   onPasteNodes,
   onAddFileNode,
@@ -162,6 +165,74 @@ export default function NodeEditor({
     el.addEventListener("pointerdown", onDown);
     return () => el.removeEventListener("pointerdown", onDown);
   }, [touchActive]);
+
+  // Window-level Delete / Backspace handler. React Flow's built-in
+  // deleteKeyCode requires the pane to have keyboard focus, which it
+  // loses the moment the user clicks anything outside the canvas
+  // (param panel input, menu bar, etc.) — that's why "Delete" used
+  // to need two presses: the first re-focused something, the second
+  // actually deleted. Owning the key at the window level fixes that
+  // without any focus-tracking magic. We skip when the user is
+  // typing into a real input so backspace still edits text normally.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      if (t?.isContentEditable) return;
+
+      // Shift+D = duplicate selection, then immediately enter
+      // G-move so the new clones follow the cursor until the user
+      // left-clicks to place them (or right-clicks / Escape to
+      // cancel). The actual G-move start is deferred to a useEffect
+      // that fires once the parent's nodes state has propagated
+      // back down with the new selection.
+      if (
+        e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        (e.key === "D" || e.key === "d")
+      ) {
+        if (!onDuplicateSelection) return;
+        const selectedNodes = rfGetNodes().filter((n) => n.selected);
+        if (selectedNodes.length === 0) return;
+        e.preventDefault();
+        pendingGAfterDupRef.current = true;
+        onDuplicateSelection();
+        return;
+      }
+
+      // Skip when modifier keys repurpose the key (Cmd+X = cut,
+      // Cmd+Backspace = delete-line in some browsers).
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const isDelete =
+        e.key === "Backspace" ||
+        e.key === "Delete" ||
+        e.key === "x" ||
+        e.key === "X";
+      if (!isDelete) return;
+      // Don't steal Delete from the Track Editor — when the cursor
+      // is over its lane area, keyframe deletion is the right action.
+      // We use the latest mouse position (tracked below for G-move)
+      // because window keydowns don't carry pointer coords.
+      const mp = lastMouseRef.current;
+      if (mp) {
+        const under = document.elementFromPoint(mp.x, mp.y) as HTMLElement | null;
+        if (under?.closest("[data-track-editor]")) return;
+      }
+      const selectedNodes = rfGetNodes().filter((n) => n.selected);
+      const selectedEdges = rfGetEdges().filter((ed) => ed.selected);
+      if (selectedNodes.length === 0 && selectedEdges.length === 0) return;
+      e.preventDefault();
+      deleteElements({
+        nodes: selectedNodes.map((n) => ({ id: n.id })),
+        edges: selectedEdges.map((ed) => ({ id: ed.id })),
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [rfGetNodes, rfGetEdges, deleteElements, onDuplicateSelection]);
 
   // Apple Pencil hover indicator. iPad / Apple Pencil fires
   // pointermove with pointerType === "pen" while hovering, *before*
@@ -303,6 +374,9 @@ export default function NodeEditor({
   }>(null);
   const gMoveRef = useRef(gMove);
   gMoveRef.current = gMove;
+  // Set by Shift+D so the next render (once duplicates land in `nodes`)
+  // can immediately enter G-move on the new selection.
+  const pendingGAfterDupRef = useRef(false);
   // Tracked globally so we can use the cursor position at the moment
   // of G keypress (which itself doesn't carry mouse coords).
   const lastMouseRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -385,6 +459,23 @@ export default function NodeEditor({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [nodes, exitGCommit]);
+
+  // Shift+D handoff to G-move. After the parent has applied the
+  // duplicate, the new clones land in `nodes` already selected — at
+  // which point we pick them up the same way the G hotkey does.
+  useEffect(() => {
+    if (!pendingGAfterDupRef.current) return;
+    const selected = nodes.filter((n) => n.selected);
+    if (selected.length === 0) return;
+    pendingGAfterDupRef.current = false;
+    const origPositions = new Map<string, { x: number; y: number }>();
+    for (const n of selected)
+      origPositions.set(n.id, { x: n.position.x, y: n.position.y });
+    setGMove({
+      startMouse: lastMouseRef.current,
+      origPositions,
+    });
+  }, [nodes]);
 
   // While in G-mode, drive position updates from cursor delta and
   // intercept clicks / Escape / right-click for commit / cancel.
@@ -831,7 +922,13 @@ export default function NodeEditor({
         edges={displayEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        deleteKeyCode={["Backspace", "Delete", "x", "X"]}
+        // Owned by the window-level keydown listener above so delete
+        // works regardless of which DOM element has focus. Setting
+        // null here disables React Flow's internal handler — the
+        // window listener calls deleteElements (the same path React
+        // Flow's handler uses), so no double-delete and no behavior
+        // change beyond the focus fix.
+        deleteKeyCode={null}
         onNodesChange={onNodesChange as (c: NodeChange[]) => void}
         onEdgesChange={onEdgesChange as (c: EdgeChange[]) => void}
         onConnect={onConnect}
@@ -1002,6 +1099,16 @@ export default function NodeEditor({
         //        otherwise hijack the most natural touch gesture.
         panOnDrag={touchActive ? [0, 1] : [1]}
         selectionOnDrag={!touchActive}
+        selectionMode={SelectionMode.Partial}
+        // Shift adds to selection alongside the platform default
+        // (Meta on Mac, Control on Windows). React Flow accepts an
+        // array — listing all three covers every keyboard combo
+        // users reach for. We also null out `selectionKeyCode`
+        // (default "Shift", used to start a marquee drag) so Shift
+        // is unambiguously the multi-select modifier — marquee
+        // already works on plain drag via `selectionOnDrag`.
+        multiSelectionKeyCode={["Shift", "Meta", "Control"]}
+        selectionKeyCode={null}
         fitView
         proOptions={{ hideAttribution: true }}
         colorMode="dark"

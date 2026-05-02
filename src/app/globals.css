@@ -86,6 +86,35 @@ body {
   border-color: #52525b;
 }
 
+/* Custom cursor: replace EVERY native cursor state with the white
+   ring overlay (CustomCursor.tsx). The !important + universal
+   selector beats every authored `cursor: pointer` / `cursor: move`
+   / `cursor: text` / `cursor: ew-resize` rule in the codebase, so
+   the ring is the single visual cursor. On touch / coarse pointers
+   we leave the native cursor alone — the ring component disables
+   itself there anyway. */
+@media (hover: hover) and (pointer: fine) {
+  *,
+  *::before,
+  *::after {
+    cursor: none !important;
+  }
+  /* Vendor pseudo-elements aren't reached by the universal selector,
+     so the slider thumbs / number-input spin buttons / etc. would
+     keep showing the system pointer set in form-controls.css. */
+  input::-webkit-slider-thumb,
+  input::-moz-range-thumb,
+  input::-webkit-slider-runnable-track,
+  input::-moz-range-track,
+  input::-webkit-inner-spin-button,
+  input::-webkit-outer-spin-button,
+  input::-webkit-color-swatch,
+  input::-webkit-color-swatch-wrapper,
+  select::-ms-expand {
+    cursor: none !important;
+  }
+}
+
 /* Pen-tool cursor while Shift is held over the timeline curve editor —
    surfaces the "Shift+click adds a point" gesture before the user has
    to discover it. Inlined SVG with the hot-spot at the nib (1, 22).

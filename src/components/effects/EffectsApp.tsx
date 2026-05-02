@@ -14,10 +14,12 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NodeEditor from "./NodeEditor";
 import ParamPanel from "./ParamPanel";
+import CustomCursor from "./CustomCursor";
 import PaintOverlay from "./PaintOverlay";
 import PlaybackBar from "./PlaybackBar";
 import MenuBar from "./MenuBar";
 import ViewportMenuBar from "./ViewportMenuBar";
+import TransformContextBar from "./TransformContextBar";
 import { registerAllNodes } from "@/nodes";
 import { getNodeDef } from "@/engine/registry";
 import { createEngineBackend, type EngineBackend } from "@/engine/gl";
@@ -1547,6 +1549,42 @@ function EffectsShell({
     setEdges((prev) => [...prev, ...newEdges]);
   }, [pushGraph, getGraphSnapshot, cloneNode, setNodes, setEdges]);
 
+  // Shift+D duplicate: clone every selected node, preserving any edges
+  // whose endpoints are both inside the selection. Mirrors copy+paste
+  // semantics (offset, selection swap) but skips the clipboard so the
+  // user's actual paste buffer isn't disturbed.
+  const handleDuplicateSelection = useCallback(() => {
+    const selected = nodesRef.current.filter((n) => n.selected);
+    if (selected.length === 0) return;
+    pushGraph(getGraphSnapshot());
+    const ids = new Set(selected.map((n) => n.id));
+    const internalEdges = edgesRef.current.filter(
+      (e) => ids.has(e.source) && ids.has(e.target)
+    );
+    const offset = { x: 32, y: 32 };
+    const idMap = new Map<string, string>();
+    const newNodes = selected.map((n) => {
+      const cloned = cloneNode(n, {
+        x: n.position.x + offset.x,
+        y: n.position.y + offset.y,
+      });
+      idMap.set(n.id, cloned.id);
+      cloned.selected = true;
+      return cloned;
+    });
+    const newEdges = internalEdges.map((e) => ({
+      ...e,
+      id: `e-${Math.random().toString(36).slice(2, 10)}`,
+      source: idMap.get(e.source) ?? e.source,
+      target: idMap.get(e.target) ?? e.target,
+    }));
+    setNodes((prev) => [
+      ...prev.map((n) => ({ ...n, selected: false })),
+      ...newNodes,
+    ]);
+    setEdges((prev) => [...prev, ...newEdges]);
+  }, [pushGraph, getGraphSnapshot, cloneNode, setNodes, setEdges]);
+
   // Context-menu / standalone Duplicate: clone the source node at a small
   // offset so it's visibly distinct. No edge surgery — the clone starts
   // disconnected and the user wires it up themselves.
@@ -1824,13 +1862,28 @@ function EffectsShell({
   );
 
   const onParamChange = useCallback(
-    (nodeId: string, paramName: string, value: unknown) => {
+    (
+      nodeId: string,
+      paramName: string,
+      value: unknown,
+      // Optional override for the undo-coalescing key. Multi-param
+      // drags (the on-canvas Transform gizmo writes scaleX + scaleY +
+      // translateX + translateY in a single move) need every patched
+      // param to share one key — otherwise each param mints its own
+      // history entry and a single drag turns into hundreds of tiny
+      // undos. Default is per-param so single-slider drags coalesce
+      // the same way they used to.
+      coalesceKey?: string
+    ) => {
       // Coalesce rapid same-param changes (slider drags, color-ramp moves,
       // curve point drags) into a single undo entry keyed by node+param.
       // Paint param updates are internal-only — pipeline snapshots and undo
       // restores trigger them — and are excluded to keep those flows linear.
       if (paramName !== "paint") {
-        pushGraph(getGraphSnapshot(), `param:${nodeId}:${paramName}`);
+        pushGraph(
+          getGraphSnapshot(),
+          coalesceKey ?? `param:${nodeId}:${paramName}`
+        );
       }
       const tickAtEdit = currentTick;
       setNodes((prev) =>
@@ -3540,6 +3593,27 @@ function EffectsShell({
             onPreviewScaleChange={setPreviewScale}
           />
         )}
+        {!fullCanvas && activeTransformNode && (
+          <TransformContextBar
+            // Flip = invert the corresponding scale around the pivot.
+            // The transform shader applies scale around pivot, so a
+            // negative scale produces a mirror across the pivot's
+            // perpendicular axis. Coalesce key keyed on the node id so
+            // a click is one undo entry.
+            onFlipHorizontal={() => {
+              const id = activeTransformNode.id;
+              const cur = activeTransformNode.data.params.scaleX;
+              const v = typeof cur === "number" ? cur : 1;
+              onParamChange(id, "scaleX", -v, `flip:${id}`);
+            }}
+            onFlipVertical={() => {
+              const id = activeTransformNode.id;
+              const cur = activeTransformNode.data.params.scaleY;
+              const v = typeof cur === "number" ? cur : 1;
+              onParamChange(id, "scaleY", -v, `flip:${id}`);
+            }}
+          />
+        )}
         <div
           style={{
             flex: 1,
@@ -3709,6 +3783,45 @@ function EffectsShell({
               const raw = activeTransformNode.data.params[name];
               return typeof raw === "number" ? raw : fallback;
             };
+            // Spline-mode bounds: hug the actual spline geometry instead
+            // of the unit canvas box. We pull the spline value off the
+            // upstream node's most recent eval result; if the upstream
+            // hasn't evaluated yet (or isn't a spline), fall back to
+            // canvas bounds. Anchors-only AABB — close enough at typical
+            // spline densities and avoids per-frame Bézier eval.
+            let boundsMin: [number, number] | undefined;
+            let boundsMax: [number, number] | undefined;
+            const isSplineMode =
+              activeTransformNode.data.params.mode === "spline";
+            if (isSplineMode) {
+              const inEdge = edges.find(
+                (e) =>
+                  e.target === activeTransformNode.id &&
+                  e.targetHandle === "in:image"
+              );
+              const srcOut = inEdge
+                ? evalCacheRef.current.get(inEdge.source)
+                : undefined;
+              const splineVal = srcOut?.output?.primary;
+              if (splineVal && splineVal.kind === "spline") {
+                let minX = Infinity;
+                let minY = Infinity;
+                let maxX = -Infinity;
+                let maxY = -Infinity;
+                for (const sub of splineVal.subpaths) {
+                  for (const a of sub.anchors) {
+                    if (a.pos[0] < minX) minX = a.pos[0];
+                    if (a.pos[0] > maxX) maxX = a.pos[0];
+                    if (a.pos[1] < minY) minY = a.pos[1];
+                    if (a.pos[1] > maxY) maxY = a.pos[1];
+                  }
+                }
+                if (Number.isFinite(minX) && maxX - minX > 1e-4 && maxY - minY > 1e-4) {
+                  boundsMin = [minX, minY];
+                  boundsMax = [maxX, maxY];
+                }
+              }
+            }
             return (
               <TransformGizmo
                 canvas={canvasRef.current}
@@ -3719,11 +3832,17 @@ function EffectsShell({
                 scaleX={effective("scaleX", 1)}
                 scaleY={effective("scaleY", 1)}
                 rotate={effective("rotate", 0)}
+                boundsMin={boundsMin}
+                boundsMax={boundsMax}
                 onChange={(patch) => {
                   const id = activeTransformNode.id;
+                  // Single coalescing key for the whole drag so a 60-
+                  // frame gizmo manipulation yields one undo entry,
+                  // not one-per-(param × frame).
+                  const key = `gizmo:${id}`;
                   for (const [k, v] of Object.entries(patch)) {
                     if (typeof v === "number")
-                      onParamChange(id, k, v);
+                      onParamChange(id, k, v, key);
                   }
                 }}
               />
@@ -4023,6 +4142,7 @@ function EffectsShell({
             onDuplicateOnDrag={handleDuplicateOnDrag}
             onDetachNode={handleDetachNode}
             onDuplicateNode={handleDuplicateNode}
+            onDuplicateSelection={handleDuplicateSelection}
             onCopyNodes={handleCopyNodes}
             onPasteNodes={handlePasteNodes}
             onAddFileNode={onAddFileNode}
@@ -4166,6 +4286,7 @@ function EffectsShell({
         onDiscard={handleNewConfirmDiscard}
         onSave={handleNewConfirmSave}
       />
+      <CustomCursor />
     </div>
   );
 }

@@ -817,7 +817,12 @@ export interface CompiledSdf {
   uniforms: SdfUniform[];
 }
 
-export type SdfOutputMode = "rasterize" | "distance" | "mask" | "raw";
+export type SdfOutputMode =
+  | "rasterize"
+  | "distance"
+  | "mask"
+  | "raw"
+  | "bevel";
 
 const RASTERIZE_UNIFORMS = `uniform vec3 u_fg;
 uniform vec3 u_bg;
@@ -837,6 +842,24 @@ uniform float u_alpha;`;
 const MASK_UNIFORMS = `uniform float u_threshold;
 uniform float u_softness;
 uniform float u_invert;`;
+
+const BEVEL_UNIFORMS = `uniform int u_style;          // 0 outer, 1 inner, 2 emboss, 3 pillow
+uniform float u_depth;        // canvas-UV units
+uniform float u_soften;       // px multiplier on the central-diff step
+uniform vec3 u_l1Dir;
+uniform float u_l1HiOp;
+uniform float u_l1ShOp;
+uniform vec3 u_l2Dir;
+uniform float u_l2HiOp;
+uniform float u_l2ShOp;
+uniform vec3 u_fgColor;
+uniform vec3 u_bgColor;
+uniform float u_fgAlpha;
+uniform float u_bgAlpha;
+uniform vec3 u_hiColor;
+uniform vec3 u_shColor;
+uniform int u_hiBlend;
+uniform int u_shBlend;`;
 
 function mainBody(mode: SdfOutputMode, distExpr: string): string {
   const setup = `vec2 p = v_uv;
@@ -879,6 +902,108 @@ function mainBody(mode: SdfOutputMode, distExpr: string): string {
   outColor = vec4(m, m, m, 1.0);`;
   }
 
+  if (mode === "bevel") {
+    // Bevel mode: evaluate the SDF at the pixel and at 4 neighbors,
+    // map signed distance to a height field per style, derive a
+    // normal via finite differences on that height, then apply two
+    // lights' highlight/shadow contributions over a base fg/bg fill.
+    //
+    // The same `${distExpr}` is inlined 5 times with `p` reassigned
+    // between calls — equivalent to wrapping it in a function but
+    // without restructuring the emit pipeline. GPU compilers CSE the
+    // repeated sub-expressions cheaply.
+    return `vec2 p = v_uv;
+  if (u_aspectCorrect > 0.5) {
+    float aspect = u_canvasSize.x / u_canvasSize.y;
+    p = vec2(p.x, (p.y - 0.5) / aspect + 0.5);
+  }
+  vec2 p_orig = p;
+  float pixel = 1.0 / max(u_canvasSize.x, u_canvasSize.y);
+  float step = max((1.0 + u_soften * 0.5) * pixel, pixel * 0.5);
+
+  float d = ${distExpr};
+  p = p_orig - vec2(step, 0.0);
+  float dL = ${distExpr};
+  p = p_orig + vec2(step, 0.0);
+  float dR = ${distExpr};
+  p = p_orig - vec2(0.0, step);
+  float dD = ${distExpr};
+  p = p_orig + vec2(0.0, step);
+  float dU = ${distExpr};
+  p = p_orig;
+
+  float depthN = max(u_depth, 1e-6);
+
+  float h, hL, hR, hD, hU;
+  if (u_style == 0) {
+    h  = (d  <= 0.0) ? 1.0 : 1.0 - smoothstep(0.0, depthN, d);
+    hL = (dL <= 0.0) ? 1.0 : 1.0 - smoothstep(0.0, depthN, dL);
+    hR = (dR <= 0.0) ? 1.0 : 1.0 - smoothstep(0.0, depthN, dR);
+    hD = (dD <= 0.0) ? 1.0 : 1.0 - smoothstep(0.0, depthN, dD);
+    hU = (dU <= 0.0) ? 1.0 : 1.0 - smoothstep(0.0, depthN, dU);
+  } else if (u_style == 1) {
+    h  = (d  >= 0.0) ? 0.0 : smoothstep(0.0, depthN, -d);
+    hL = (dL >= 0.0) ? 0.0 : smoothstep(0.0, depthN, -dL);
+    hR = (dR >= 0.0) ? 0.0 : smoothstep(0.0, depthN, -dR);
+    hD = (dD >= 0.0) ? 0.0 : smoothstep(0.0, depthN, -dD);
+    hU = (dU >= 0.0) ? 0.0 : smoothstep(0.0, depthN, -dU);
+  } else if (u_style == 2) {
+    h  = clamp(0.5 - 0.5 * d  / depthN, 0.0, 1.0);
+    hL = clamp(0.5 - 0.5 * dL / depthN, 0.0, 1.0);
+    hR = clamp(0.5 - 0.5 * dR / depthN, 0.0, 1.0);
+    hD = clamp(0.5 - 0.5 * dD / depthN, 0.0, 1.0);
+    hU = clamp(0.5 - 0.5 * dU / depthN, 0.0, 1.0);
+  } else {
+    h  = 1.0 - smoothstep(0.0, depthN, abs(d));
+    hL = 1.0 - smoothstep(0.0, depthN, abs(dL));
+    hR = 1.0 - smoothstep(0.0, depthN, abs(dR));
+    hD = 1.0 - smoothstep(0.0, depthN, abs(dD));
+    hU = 1.0 - smoothstep(0.0, depthN, abs(dU));
+  }
+
+  vec3 n = normalize(vec3(hL - hR, hU - hD, 0.5));
+
+  float soft = max(u_soften * pixel, pixel * 0.5);
+  float fillMask = smoothstep(soft, -soft, d);
+  vec4 fg = vec4(u_fgColor, u_fgAlpha);
+  vec4 bg = vec4(u_bgColor, u_bgAlpha);
+  vec4 base = mix(bg, fg, fillMask);
+  vec3 col = base.rgb;
+
+  for (int li = 0; li < 2; li++) {
+    vec3 ldir = li == 0 ? u_l1Dir : u_l2Dir;
+    float hiOp = li == 0 ? u_l1HiOp : u_l2HiOp;
+    float shOp = li == 0 ? u_l1ShOp : u_l2ShOp;
+    float diff = dot(n, normalize(ldir));
+    if (diff > 0.0) {
+      float a = hiOp * diff;
+      if (u_hiBlend == 0) {
+        col = mix(col, vec3(1.0) - (vec3(1.0) - col) * (vec3(1.0) - u_hiColor), a);
+      } else if (u_hiBlend == 1) {
+        col = mix(col, min(col + u_hiColor, vec3(1.0)), a);
+      } else {
+        col = mix(col, u_hiColor, a);
+      }
+    } else if (diff < 0.0) {
+      float a = shOp * (-diff);
+      if (u_shBlend == 0) {
+        col = mix(col, col * u_shColor, a);
+      } else if (u_shBlend == 1) {
+        col = mix(col, max(col + u_shColor - vec3(1.0), vec3(0.0)), a);
+      } else if (u_shBlend == 2) {
+        vec3 cb = vec3(1.0) - clamp((vec3(1.0) - col) / max(u_shColor, vec3(1e-3)), 0.0, 1.0);
+        col = mix(col, cb, a);
+      } else {
+        col = mix(col, u_shColor, a);
+      }
+    }
+  }
+
+  outColor = vec4(col, base.a);`;
+  }
+
+  // raw — CPU readback. R holds signed distance; everything else
+  // reads zero. The image must be RGBA16F to preserve the sign + range.
   return `${setup}
   outColor = vec4(d, 0.0, 0.0, 1.0);`;
 }
@@ -891,6 +1016,8 @@ function modeUniformDecls(mode: SdfOutputMode): string {
       return DISTANCE_UNIFORMS;
     case "mask":
       return MASK_UNIFORMS;
+    case "bevel":
+      return BEVEL_UNIFORMS;
     case "raw":
       return "";
   }
