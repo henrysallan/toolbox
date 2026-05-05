@@ -4,7 +4,6 @@ import {
   Background,
   BackgroundVariant,
   Controls,
-  MiniMap,
   ReactFlow,
   SelectionMode,
   ViewportPortal,
@@ -1110,13 +1109,26 @@ export default function NodeEditor({
         multiSelectionKeyCode={["Shift", "Meta", "Control"]}
         selectionKeyCode={null}
         fitView
+        // Open up the zoom + pan envelope. Defaults are minZoom 0.5
+        // and a tight translateExtent that walls off the empty area
+        // around the graph; both feel cramped for the kind of large
+        // multi-stage graphs this editor encourages. minZoom 0.05
+        // lets the user zoom out far enough to see a sprawling graph
+        // at a glance, and a ±100k translate extent is effectively
+        // "infinite" canvas without disabling bounds entirely (which
+        // would let fitView misbehave on empty graphs).
+        minZoom={0.05}
+        maxZoom={4}
+        translateExtent={[
+          [-100000, -100000],
+          [100000, 100000],
+        ]}
         proOptions={{ hideAttribution: true }}
         colorMode="dark"
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
         <SimulationZoneUnderlay nodes={nodes} />
         <Controls />
-        <MiniMap pannable zoomable />
         {viewportOverlay && <ViewportPortal>{viewportOverlay}</ViewportPortal>}
       </ReactFlow>
 

@@ -256,9 +256,20 @@ float snoise(vec2 v) {
   // fBm wrapper around snoise. octaves capped at 8 to match the Noise
   // image source. Returns the normalized average so the output stays
   // in roughly [-1, 1] regardless of octave count.
-  snoiseFbm: `float snoiseFbm(vec2 p, float scl, vec2 off, float seed,
-                  int oct, float pers, float lac) {
-  vec2 sp = (p - 0.5) * scl + off + vec2(seed * 127.1, seed * 311.7);
+  //
+  // `w` is the 4D-evolution parameter, matched to the image-side
+  // `hashOffset(w)` slice-blend so changing W in the Noise param
+  // panel morphs the field through the same animation curve. The
+  // wi == 0 branch is kept identical to the no-W path so projects
+  // saved before W existed render unchanged.
+  snoiseFbm: `vec2 snoiseHashOff(float wi) {
+  if (wi == 0.0) return vec2(0.0);
+  return vec2(
+    fract(sin(wi * 12.9898) * 43758.5453),
+    fract(sin(wi * 78.2330) * 43758.5453)
+  ) * 1000.0;
+}
+float snoiseFbmAt(vec2 sp, int oct, float pers, float lac) {
   float total = 0.0;
   float amp = 1.0;
   float freq = 1.0;
@@ -271,6 +282,21 @@ float snoise(vec2 v) {
     freq *= lac;
   }
   return total / max(maxAmp, 1e-4);
+}
+float snoiseFbm(vec2 p, float scl, vec2 off, float seed,
+                int oct, float pers, float lac, float w) {
+  vec2 sp = (p - 0.5) * scl + off + vec2(seed * 127.1, seed * 311.7);
+  float wi = floor(w);
+  float wf = w - wi;
+  wf = wf * wf * (3.0 - 2.0 * wf);
+  vec2 o0 = snoiseHashOff(wi);
+  if (wf == 0.0) return snoiseFbmAt(sp + o0, oct, pers, lac);
+  vec2 o1 = snoiseHashOff(wi + 1.0);
+  return mix(
+    snoiseFbmAt(sp + o0, oct, pers, lac),
+    snoiseFbmAt(sp + o1, oct, pers, lac),
+    wf
+  );
 }`,
 };
 
@@ -426,11 +452,12 @@ function emitScalarField(node: ScalarFieldNode, state: EmitState): string {
       const lac = alloc(state, "float", node.lacunarity);
       const lo = alloc(state, "float", node.outLo);
       const hi = alloc(state, "float", node.outHi);
+      const w = alloc(state, "float", node.w ?? 0);
       // Raw fbm is in roughly [-1, 1]. Remap to [outLo, outHi]. The
       // shader-side "(t + 1) * 0.5" centers the raw value into [0, 1]
       // before the linear remap so lo/hi feel natural to the user
       // (white = hi, black = lo, mid-gray = midpoint).
-      return `(${lo} + (${hi} - ${lo}) * ((snoiseFbm(${pos}, ${scale}, ${off}, ${seed}, int(${oct}), ${pers}, ${lac}) + 1.0) * 0.5))`;
+      return `(${lo} + (${hi} - ${lo}) * ((snoiseFbm(${pos}, ${scale}, ${off}, ${seed}, int(${oct}), ${pers}, ${lac}, ${w}) + 1.0) * 0.5))`;
     }
   }
 }

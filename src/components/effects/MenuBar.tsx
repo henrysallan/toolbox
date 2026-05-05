@@ -85,6 +85,13 @@ export interface MenuBarProps {
   // each viewport from a different terminal node.
   viewportSplit: boolean;
   onToggleViewportSplit: () => void;
+  // Layout mode toggle. "default" is the current layout (canvas
+  // center, params right, optional dock). "timeline" is an
+  // After-Effects-style layout: canvas top-right, tabbed
+  // params/node-editor on the left, tracks editor pinned to the
+  // bottom of the page with the timeline below it.
+  timelineLayout: boolean;
+  onToggleTimelineLayout: () => void;
 }
 
 const BAR_HEIGHT = 22;
@@ -121,6 +128,8 @@ export default function MenuBar({
   onToggleShowNodeTimings,
   viewportSplit,
   onToggleViewportSplit,
+  timelineLayout,
+  onToggleTimelineLayout,
 }: MenuBarProps) {
   const { user } = useUser();
   const signedIn = !!user;
@@ -239,6 +248,11 @@ export default function MenuBar({
           label: viewportSplit ? "Exit Split Viewport" : "Split Viewport",
           shortcut: "⇧S",
           onClick: onToggleViewportSplit,
+        },
+        {
+          kind: "item",
+          label: timelineLayout ? "Exit Timeline Layout" : "Timeline",
+          onClick: onToggleTimelineLayout,
         },
         {
           kind: "item",

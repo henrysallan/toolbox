@@ -380,6 +380,10 @@ export type ScalarFieldNode =
       offsetX: number;
       offsetY: number;
       seed: number;
+      // 4D evolution parameter — same slice-blend trick the image
+      // and value paths use. Optional so old graphs (and consumers
+      // that don't expose W) keep rendering identically.
+      w?: number;
       // Linear remap applied after the fbm sample so users don't
       // have to chain a separate Math/Remap. Defaults to identity
       // (lo=-1, hi=1, out=[-1,1]).

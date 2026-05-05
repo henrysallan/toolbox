@@ -48,6 +48,7 @@ import { imageMaskColliderNode } from "./effect/collider-image-mask";
 import { reactionDiffusionNode } from "./effect/reaction-diffusion";
 import { accumulatorNode } from "./effect/accumulator";
 import { sharpenNode } from "./effect/sharpen";
+import { grainNode } from "./effect/grain";
 import { edgeDetectNode } from "./effect/edge-detect";
 import { objectTrackerNode } from "./effect/object-tracker";
 import { handTrackerNode } from "./effect/hand-tracker";
@@ -179,6 +180,7 @@ export function registerAllNodes() {
   registerNode(reactionDiffusionNode);
   registerNode(accumulatorNode);
   registerNode(sharpenNode);
+  registerNode(grainNode);
   registerNode(edgeDetectNode);
   registerNode(objectTrackerNode);
   registerNode(handTrackerNode);

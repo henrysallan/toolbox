@@ -309,13 +309,34 @@ function EffectsShell({
   // Controls which panel the right-side parameters section is showing.
   // Selecting a node switches it to "node"; Project Settings flips it to
   // "project"; File → Load flips it to "load" (grid of saved projects).
+  // First-load default: open the Load Projects browser. The user
+  // arrives most often wanting to pick up an existing project (their
+  // own private list when signed in, the public gallery otherwise),
+  // so surfacing it immediately beats showing an empty node panel.
+  // Skipped when:
+  //   • rehydrate is present — the editor is restoring an in-progress
+  //     session, so respect whichever view they had open.
+  //   • initialProject is present — /p/<slug> route opens straight to
+  //     a specific project; the load grid would just hide it.
   const [paramView, setParamView] = useState<"project" | "node" | "load">(
-    rehydrate?.paramView ?? "node"
+    rehydrate?.paramView ?? (initialProject ? "node" : "load")
   );
   // Full-canvas mode: canvas fills the viewport, all other UI chrome
   // is hidden. Toggled via the F shortcut or the Window menu's "Full
   // Canvas" item. Esc exits.
   const [fullCanvas, setFullCanvas] = useState(false);
+  // After-Effects-style layout. When on, the page splits into a
+  // tabbed Parameters / Node Editor pane on the left, a canvas on
+  // the right, an always-visible Tracks editor stretching across
+  // the bottom, and the playback bar (timeline) below it. The
+  // existing "default" layout is the alternative.
+  const [timelineLayout, setTimelineLayout] = useState(false);
+  // Active tab in the timeline-layout left pane. Defaults to
+  // Parameters per the spec; the user can flip to the node editor
+  // when they need to wire things up without leaving this layout.
+  const [timelineLayoutTab, setTimelineLayoutTab] = useState<
+    "params" | "nodes"
+  >("params");
   // Split viewport: stacks two preview canvases vertically. Each canvas
   // has its own active terminal node — the per-node header gains a
   // second "A2" toggle (alongside "A1") so the user can independently
@@ -618,12 +639,40 @@ function EffectsShell({
     active: false,
   });
   const [cursorTick, setCursorTick] = useState(0);
+  // Mirror playback flags into a ref so the pointermove listener
+  // (which lives in a setup-once useEffect) can read the live value
+  // without re-binding listeners on every play / pause toggle.
+  const playbackActiveRef = useRef(false);
   useEffect(() => {
     let rafId: number | null = null;
+    let lastBumpedActive = false;
+    let lastBumpedX = -1;
+    let lastBumpedY = -1;
     const scheduleBump = () => {
       if (rafId != null) return;
+      // While playback is running the renderFrame effect is already
+      // scheduled every frame from the playback rAF — bumping
+      // cursorTick on top would just queue an extra render per
+      // pointermove. Skipping here keeps the cursor-driven re-render
+      // path scoped to the paused case it was intended for.
+      if (playbackActiveRef.current) return;
       rafId = requestAnimationFrame(() => {
         rafId = null;
+        // Skip the state churn entirely when nothing changed since
+        // the last bump. This is what guards against the runaway
+        // re-render React was tripping on — repeated `setState((n)
+        // => n + 1)` calls with identical incoming pointer state.
+        const c = cursorRef.current;
+        if (
+          c.active === lastBumpedActive &&
+          Math.abs(c.x - lastBumpedX) < 1e-4 &&
+          Math.abs(c.y - lastBumpedY) < 1e-4
+        ) {
+          return;
+        }
+        lastBumpedActive = c.active;
+        lastBumpedX = c.x;
+        lastBumpedY = c.y;
         setCursorTick((n) => n + 1);
       });
     };
@@ -637,12 +686,18 @@ function EffectsShell({
       const yDom = (e.clientY - rect.top) / rect.height;
       const y = 1 - yDom;
       const inside = x >= 0 && x <= 1 && yDom >= 0 && yDom <= 1;
+      const prev = cursorRef.current;
       cursorRef.current = { x, y, active: inside };
-      scheduleBump();
+      // Only nudge a re-render when the pointer is actually inside
+      // the canvas (or just left it). Pointer movement anywhere else
+      // on the page has no bearing on what the pipeline produces, so
+      // there's no point re-rendering for it.
+      if (inside || prev.active) scheduleBump();
     };
     const onLeave = () => {
-      cursorRef.current = { ...cursorRef.current, active: false };
-      scheduleBump();
+      const prev = cursorRef.current;
+      cursorRef.current = { ...prev, active: false };
+      if (prev.active) scheduleBump();
     };
     window.addEventListener("pointermove", onMove);
     document.addEventListener("pointerleave", onLeave);
@@ -676,6 +731,10 @@ function EffectsShell({
   const [trackEditorOpen, setTrackEditorOpen] = useState(false);
   const [trackEditorHeight, setTrackEditorHeight] = useState(280);
   const [dockTab, setDockTab] = useState<"tracks" | "graph">("tracks");
+  // When on, the tracks editor only shows lanes for nodes that are
+  // currently selected in the node editor. Keeps the dock readable
+  // when a graph has dozens of animated parameters.
+  const [tracksSelectedOnly, setTracksSelectedOnly] = useState(false);
   const [graphNormalizeY, setGraphNormalizeY] = useState(false);
   const [graphRefitVersion, setGraphRefitVersion] = useState(0);
   const [collapsedTrackNodes, setCollapsedTrackNodes] = useState<Set<string>>(
@@ -686,6 +745,13 @@ function EffectsShell({
   // itself isn't touched, so clearing `scrubbing` restores the prior state —
   // a timeline that was paused before the drag stays paused.
   const [scrubbing, setScrubbing] = useState(false);
+  // Keep the cursor-bump effect's "should I bump?" check in sync with
+  // playback. The renderFrame loop already runs every frame while
+  // playing, so an extra cursor-driven re-render is redundant — and
+  // was the source of the runaway re-render loop.
+  useEffect(() => {
+    playbackActiveRef.current = playing && !scrubbing;
+  }, [playing, scrubbing]);
 
   // Refs let the history hook read the latest graph state without having to
   // thread it through every undoable action's dependency list.
@@ -828,8 +894,14 @@ function EffectsShell({
     e.preventDefault();
     const startX = e.clientX;
     const startW = rightColWidth;
+    // Default layout: column lives on the right, dragging left
+    // grows it (mouse moves toward the column). Timeline layout
+    // flips the body to row-reverse, so the column sits on the
+    // left and the same intuition (mouse moves toward the column =
+    // grow) requires the opposite sign on dx.
+    const reverse = timelineLayout;
     const onMove = (ev: MouseEvent) => {
-      const dx = startX - ev.clientX;
+      const dx = reverse ? ev.clientX - startX : startX - ev.clientX;
       setRightColWidth(
         Math.max(320, Math.min(window.innerWidth - 320, startW + dx))
       );
@@ -844,7 +916,7 @@ function EffectsShell({
     window.addEventListener("mouseup", onUp);
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
-  }, [rightColWidth]);
+  }, [rightColWidth, timelineLayout]);
 
   const startHResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -941,7 +1013,21 @@ function EffectsShell({
         activeNodeId,
         inspectSet.size > 0 ? inspectSet : undefined
       );
-      setErrors(result.errors);
+      // Bail when the error set is unchanged. evaluateGraph returns a
+      // fresh object every frame, so a naive setErrors(result.errors)
+      // changes the reference every render — and triggers the
+      // [errors]-dep effect below to call setNodes again, which can
+      // cascade into React's "Maximum update depth exceeded" guard
+      // when other state is also churning. Shallow equality is enough
+      // since errors is a flat string-keyed map.
+      setErrors((prev) => {
+        const next = result.errors;
+        const prevKeys = Object.keys(prev);
+        const nextKeys = Object.keys(next);
+        if (prevKeys.length !== nextKeys.length) return next;
+        for (const k of nextKeys) if (prev[k] !== next[k]) return next;
+        return prev;
+      });
 
       // Stash inspect snapshots for the popups. Inputs come from the
       // eval result; outputs are pulled from the same `outputs` map the
@@ -1050,15 +1136,18 @@ function EffectsShell({
   // change. Dep list tracks both selection and pipeline invalidation.
   useEffect(() => {
     if (!selectedId) {
-      setSelectedPoints(null);
+      setSelectedPoints((prev) => (prev === null ? prev : null));
       return;
     }
     const entry = evalCacheRef.current.get(selectedId);
     const primary = entry?.output.primary;
     if (primary && primary.kind === "points") {
-      setSelectedPoints(primary);
+      // Bail when the same reference comes back so we don't burn a
+      // re-render per playback frame just because the eval output
+      // is a new object that contains the same data.
+      setSelectedPoints((prev) => (prev === primary ? prev : primary));
     } else {
-      setSelectedPoints(null);
+      setSelectedPoints((prev) => (prev === null ? prev : null));
     }
   }, [selectedId, structFp, time, pipelineBumpKey, cursorTick]);
 
@@ -3485,6 +3574,300 @@ function EffectsShell({
     null
   );
 
+  // ---------------------------------------------------------------------
+  // Shared building blocks for the layouts.
+  //
+  // The two layouts (default + timeline) need the same NodeEditor,
+  // ParamPanel, dock body, and PlaybackBar — extracting them here keeps
+  // a single source of truth for the props each receives so the
+  // layouts only differ in how the pieces are arranged on screen.
+  // ---------------------------------------------------------------------
+  const nodeEditorJsx = (
+    <NodeEditor
+      nodes={nodes}
+      edges={edges}
+      onNodesChange={onNodesChangeWithHistory}
+      onEdgesChange={onEdgesChangeWithHistory}
+      onConnect={onConnect}
+      onSelectNode={(id) => {
+        if (suppressNextSelectionViewFlipRef.current) {
+          suppressNextSelectionViewFlipRef.current = false;
+          return;
+        }
+        setSelectedId(id);
+        if (id) setParamView("node");
+      }}
+      onAddNode={onAddNode}
+      onPanePointer={(p) => {
+        lastPanePointerRef.current = p;
+      }}
+      onDuplicateOnDrag={handleDuplicateOnDrag}
+      onDetachNode={handleDetachNode}
+      onDuplicateNode={handleDuplicateNode}
+      onDuplicateSelection={handleDuplicateSelection}
+      onCopyNodes={handleCopyNodes}
+      onPasteNodes={handlePasteNodes}
+      onAddFileNode={onAddFileNode}
+      onCombineWires={handleCombineWires}
+      onCutWires={handleCutWires}
+      onSpliceNode={handleSpliceNode}
+      onWaypointDragStart={handleWaypointDragStart}
+      onWaypointDrag={handleWaypointDrag}
+      viewportOverlay={
+        inspectIds.length > 0
+          ? inspectIds.map((id) => {
+              const n = nodes.find((x) => x.id === id);
+              if (!n) return null;
+              void inspectTick;
+              return (
+                <NodeInspectorPopup
+                  key={`inspect-${id}`}
+                  node={n}
+                  snapshot={inspectSnapshotsRef.current.get(id)}
+                />
+              );
+            })
+          : null
+      }
+    />
+  );
+
+  const paramPanelJsx = (
+    <ParamPanel
+      nodes={nodes}
+      selectedId={selectedId}
+      mode={paramView}
+      canvasRes={canvasRes}
+      onCanvasResChange={setCanvasRes}
+      onParamChange={onParamChange}
+      onToggleParamExposed={onToggleParamExposed}
+      onToggleParamControl={onToggleParamControl}
+      onExportApp={onOpenExportApp}
+      onParamRangeChange={onParamRangeChange}
+      onToggleParamLink={onToggleParamLink}
+      isParamDriven={isParamDriven}
+      currentTick={currentTick}
+      getAnimation={getAnimation}
+      onAnimationChange={onAnimationChange}
+      signedIn={signedIn}
+      currentUserId={user?.id ?? null}
+      onLoadProject={handleLoadProject}
+      loadRefreshKey={loadRefreshKey}
+    />
+  );
+
+  // The body of the dock — the toolbar with tab buttons and the
+  // active editor (Tracks or Graph). Used both as the absolute-
+  // positioned overlay in the default layout and as the bottom strip
+  // in the timeline layout. The wrapping container differs between
+  // layouts so its `flexShrink: 0` lives outside this fragment.
+  const dockBodyJsx = (
+    <>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "2px 8px",
+          background: "#111114",
+          borderBottom: "1px solid #27272a",
+          flexShrink: 0,
+        }}
+      >
+        <div
+          style={{ display: "flex", alignItems: "stretch", gap: 0 }}
+        >
+          {(["tracks", "graph"] as const).map((t) => {
+            const active = dockTab === t;
+            return (
+              <button
+                key={t}
+                onClick={() => setDockTab(t)}
+                style={{
+                  background: active ? "#0a0a0a" : "transparent",
+                  border: "1px solid #3f3f46",
+                  borderBottom: active
+                    ? "1px solid #0a0a0a"
+                    : "1px solid #3f3f46",
+                  color: active ? "#fafafa" : "#a1a1aa",
+                  padding: "2px 12px",
+                  marginRight: 2,
+                  marginBottom: -1,
+                  fontFamily: "ui-monospace, monospace",
+                  fontSize: 10,
+                  cursor: "pointer",
+                  borderTopLeftRadius: 3,
+                  borderTopRightRadius: 3,
+                }}
+              >
+                {t === "tracks" ? "Tracks" : "Graph"}
+              </button>
+            );
+          })}
+          {dockTab === "tracks" && (
+            <button
+              onClick={() => setTracksSelectedOnly((v) => !v)}
+              title={
+                tracksSelectedOnly
+                  ? "Showing tracks for selected nodes only — click to show all"
+                  : "Show tracks only for nodes selected in the node editor"
+              }
+              style={{
+                background: tracksSelectedOnly
+                  ? "#1e3a8a"
+                  : "transparent",
+                border: "1px solid #3f3f46",
+                color: tracksSelectedOnly ? "#bfdbfe" : "#a1a1aa",
+                padding: "2px 8px",
+                marginLeft: 8,
+                fontFamily: "ui-monospace, monospace",
+                fontSize: 10,
+                cursor: "pointer",
+                borderRadius: 3,
+                alignSelf: "center",
+              }}
+            >
+              selected only
+            </button>
+          )}
+          {dockTab === "graph" && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                marginLeft: 8,
+              }}
+            >
+              <button
+                onClick={() => setGraphNormalizeY((v) => !v)}
+                title={
+                  graphNormalizeY
+                    ? "Normalize on — y-axis fits each curve to its own range"
+                    : "Normalize off — y-axis uses the parameter's declared range"
+                }
+                style={{
+                  background: graphNormalizeY
+                    ? "#1e3a8a"
+                    : "transparent",
+                  border: "1px solid #3f3f46",
+                  color: graphNormalizeY ? "#bfdbfe" : "#a1a1aa",
+                  padding: "2px 8px",
+                  fontFamily: "ui-monospace, monospace",
+                  fontSize: 10,
+                  cursor: "pointer",
+                  borderRadius: 3,
+                }}
+              >
+                normalize
+              </button>
+              <button
+                onClick={() => setGraphRefitVersion((v) => v + 1)}
+                title="Refresh: re-fit y-axis to current keyframes"
+                style={{
+                  background: "transparent",
+                  border: "1px solid #3f3f46",
+                  color: "#a1a1aa",
+                  padding: "2px 6px",
+                  fontFamily: "ui-monospace, monospace",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  borderRadius: 3,
+                  lineHeight: 1,
+                }}
+              >
+                ↻
+              </button>
+            </div>
+          )}
+        </div>
+        {!timelineLayout && (
+          <button
+            onClick={() => setTrackEditorOpen(false)}
+            title="Close"
+            style={{
+              background: "transparent",
+              border: "1px solid #3f3f46",
+              color: "#a1a1aa",
+              padding: "1px 8px",
+              fontFamily: "ui-monospace, monospace",
+              fontSize: 10,
+              cursor: "pointer",
+              borderRadius: 3,
+            }}
+          >
+            ▼
+          </button>
+        )}
+      </div>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        {dockTab === "tracks" ? (
+          <TrackEditor
+            nodes={
+              tracksSelectedOnly
+                ? nodes.filter((n) => n.selected)
+                : nodes
+            }
+            timeline={projectTimeline}
+            currentTick={currentTick}
+            playing={playing}
+            onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
+            onAnimationChange={onAnimationChange}
+            collapsedNodeIds={collapsedTrackNodes}
+            onToggleCollapsed={(nodeId) =>
+              setCollapsedTrackNodes((prev) => {
+                const next = new Set(prev);
+                if (next.has(nodeId)) next.delete(nodeId);
+                else next.add(nodeId);
+                return next;
+              })
+            }
+            onSelectNode={(nodeId) => {
+              setNodes((prev) =>
+                prev.map((n) => ({ ...n, selected: n.id === nodeId }))
+              );
+              setSelectedId(nodeId);
+              setParamView("node");
+            }}
+          />
+        ) : (
+          <GraphEditor
+            nodes={nodes}
+            timeline={projectTimeline}
+            currentTick={currentTick}
+            onAnimationChange={onAnimationChange}
+            onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
+            normalizeY={graphNormalizeY}
+            refitVersion={graphRefitVersion}
+          />
+        )}
+      </div>
+    </>
+  );
+
+  const playbackBarJsx = !fullCanvas && (
+    <PlaybackBar
+      playing={playing}
+      time={time}
+      fps={fps}
+      loopFrames={loopFrames}
+      onPlayPause={onPlayPause}
+      onReset={onReset}
+      onSeek={onSeek}
+      onScrubStart={onScrubStart}
+      onScrubEnd={onScrubEnd}
+      onFpsChange={setFps}
+      onLoopFramesChange={setLoopFrames}
+    />
+  );
+
   return (
     <div
       style={{
@@ -3567,11 +3950,21 @@ function EffectsShell({
         onToggleShowNodeTimings={() => setShowNodeTimings((v) => !v)}
         viewportSplit={viewportSplit}
         onToggleViewportSplit={() => setViewportSplit((v) => !v)}
+        timelineLayout={timelineLayout}
+        onToggleTimelineLayout={() => setTimelineLayout((v) => !v)}
       />
       </div>
+      {/* Body wrapper. Default layout = canvas left, right column
+          (NodeEditor over ParamPanel). Timeline layout = canvas right,
+          a tabbed Parameters/Node Editor pane on the left, plus a
+          tracks strip pinned beneath this row (rendered after the
+          closing wrapper div below). flex-direction: row-reverse in
+          timeline mode flips the existing left/right ordering with no
+          structural changes to the children. */}
       <div
         style={{
           display: "flex",
+          flexDirection: timelineLayout ? "row-reverse" : "row",
           flex: 1,
           minHeight: 0,
           width: "100%",
@@ -3850,10 +4243,9 @@ function EffectsShell({
           })()}
           {/* Track Editor dock — anchored to the bottom edge of the canvas
               area. A tab pokes up from the bottom-center to toggle
-              visibility. Always available (no longer gated on a selected
-              Timeline node). When the user opens the Graph Editor for a
-              scalar track, it overlays the upper portion of the dock. */}
-          {!trackEditorOpen && (
+              visibility. Suppressed in timeline-layout mode, where the
+              dock body lives in its own bottom strip instead. */}
+          {!timelineLayout && !trackEditorOpen && (
             <button
               onClick={() => setTrackEditorOpen(true)}
               title="Open Track Editor"
@@ -3878,7 +4270,7 @@ function EffectsShell({
               ▲ tracks
             </button>
           )}
-          {trackEditorOpen && (
+          {!timelineLayout && trackEditorOpen && (
             <div
               style={{
                 position: "absolute",
@@ -3913,159 +4305,7 @@ function EffectsShell({
                   window.addEventListener("mouseup", onUp);
                 }}
               />
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "2px 8px",
-                  background: "#111114",
-                  borderBottom: "1px solid #27272a",
-                  flexShrink: 0,
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "stretch",
-                    gap: 0,
-                  }}
-                >
-                  {(["tracks", "graph"] as const).map((t) => {
-                    const active = dockTab === t;
-                    return (
-                      <button
-                        key={t}
-                        onClick={() => setDockTab(t)}
-                        style={{
-                          background: active ? "#0a0a0a" : "transparent",
-                          border: "1px solid #3f3f46",
-                          borderBottom: active ? "1px solid #0a0a0a" : "1px solid #3f3f46",
-                          color: active ? "#fafafa" : "#a1a1aa",
-                          padding: "2px 12px",
-                          marginRight: 2,
-                          marginBottom: -1,
-                          fontFamily: "ui-monospace, monospace",
-                          fontSize: 10,
-                          cursor: "pointer",
-                          borderTopLeftRadius: 3,
-                          borderTopRightRadius: 3,
-                        }}
-                      >
-                        {t === "tracks" ? "Tracks" : "Graph"}
-                      </button>
-                    );
-                  })}
-                  {dockTab === "graph" && (
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 4,
-                        marginLeft: 8,
-                      }}
-                    >
-                      <button
-                        onClick={() => setGraphNormalizeY((v) => !v)}
-                        title={
-                          graphNormalizeY
-                            ? "Normalize on — y-axis fits each curve to its own range"
-                            : "Normalize off — y-axis uses the parameter's declared range"
-                        }
-                        style={{
-                          background: graphNormalizeY
-                            ? "#1e3a8a"
-                            : "transparent",
-                          border: "1px solid #3f3f46",
-                          color: graphNormalizeY ? "#bfdbfe" : "#a1a1aa",
-                          padding: "2px 8px",
-                          fontFamily: "ui-monospace, monospace",
-                          fontSize: 10,
-                          cursor: "pointer",
-                          borderRadius: 3,
-                        }}
-                      >
-                        normalize
-                      </button>
-                      <button
-                        onClick={() => setGraphRefitVersion((v) => v + 1)}
-                        title="Refresh: re-fit y-axis to current keyframes"
-                        style={{
-                          background: "transparent",
-                          border: "1px solid #3f3f46",
-                          color: "#a1a1aa",
-                          padding: "2px 6px",
-                          fontFamily: "ui-monospace, monospace",
-                          fontSize: 11,
-                          cursor: "pointer",
-                          borderRadius: 3,
-                          lineHeight: 1,
-                        }}
-                      >
-                        ↻
-                      </button>
-                    </div>
-                  )}
-                </div>
-                <button
-                  onClick={() => setTrackEditorOpen(false)}
-                  title="Close"
-                  style={{
-                    background: "transparent",
-                    border: "1px solid #3f3f46",
-                    color: "#a1a1aa",
-                    padding: "1px 8px",
-                    fontFamily: "ui-monospace, monospace",
-                    fontSize: 10,
-                    cursor: "pointer",
-                    borderRadius: 3,
-                  }}
-                >
-                  ▼
-                </button>
-              </div>
-              <div
-                style={{
-                  flex: 1,
-                  minHeight: 0,
-                  display: "flex",
-                  flexDirection: "column",
-                }}
-              >
-                {dockTab === "tracks" ? (
-                  <TrackEditor
-                    nodes={nodes}
-                    timeline={projectTimeline}
-                    currentTick={currentTick}
-                    playing={playing}
-                    onScrub={(tick) =>
-                      onSeek(tick / (fps * ticksPerFrame))
-                    }
-                    onAnimationChange={onAnimationChange}
-                    collapsedNodeIds={collapsedTrackNodes}
-                    onToggleCollapsed={(nodeId) =>
-                      setCollapsedTrackNodes((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(nodeId)) next.delete(nodeId);
-                        else next.add(nodeId);
-                        return next;
-                      })
-                    }
-                  />
-                ) : (
-                  <GraphEditor
-                    nodes={nodes}
-                    timeline={projectTimeline}
-                    currentTick={currentTick}
-                    onAnimationChange={onAnimationChange}
-                    onScrub={(tick) =>
-                      onSeek(tick / (fps * ticksPerFrame))
-                    }
-                    normalizeY={graphNormalizeY}
-                    refitVersion={graphRefitVersion}
-                  />
-                )}
-              </div>
+              {dockBodyJsx}
             </div>
           )}
           {recording && <RecordingBanner state={recording} />}
@@ -4109,113 +4349,130 @@ function EffectsShell({
           minHeight: 0,
         }}
       >
-        <section
+        {timelineLayout ? (
+          // Timeline layout: this column lives on the LEFT (the
+          // wrapper above flips order via row-reverse) and shows a
+          // tabbed Parameters / Node Editor pane instead of the
+          // stacked NodeEditor + ParamPanel.
+          <>
+            <div
+              style={{
+                display: "flex",
+                gap: 0,
+                padding: "2px 8px",
+                background: "#111114",
+                borderBottom: "1px solid #27272a",
+                flexShrink: 0,
+              }}
+            >
+              {(["params", "nodes"] as const).map((t) => {
+                const active = timelineLayoutTab === t;
+                return (
+                  <button
+                    key={t}
+                    onClick={() => setTimelineLayoutTab(t)}
+                    style={{
+                      background: active ? "#0a0a0a" : "transparent",
+                      border: "1px solid #3f3f46",
+                      borderBottom: active
+                        ? "1px solid #0a0a0a"
+                        : "1px solid #3f3f46",
+                      color: active ? "#fafafa" : "#a1a1aa",
+                      padding: "2px 12px",
+                      marginRight: 2,
+                      marginBottom: -1,
+                      fontFamily: "ui-monospace, monospace",
+                      fontSize: 10,
+                      cursor: "pointer",
+                      borderTopLeftRadius: 3,
+                      borderTopRightRadius: 3,
+                    }}
+                  >
+                    {t === "params" ? "Parameters" : "Node Editor"}
+                  </button>
+                );
+              })}
+            </div>
+            <section
+              style={{
+                flex: 1,
+                minHeight: 0,
+                background: "#0a0a0a",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              {timelineLayoutTab === "params"
+                ? paramPanelJsx
+                : nodeEditorJsx}
+            </section>
+          </>
+        ) : (
+          <>
+            <section
+              style={{
+                flex: 1,
+                minHeight: 0,
+                background: "#0a0a0a",
+              }}
+            >
+              {nodeEditorJsx}
+            </section>
+
+            <Divider orientation="horizontal" onMouseDown={startHResize} />
+
+            <section
+              style={{
+                height: bottomRowHeight,
+                minHeight: 0,
+                flexShrink: 0,
+              }}
+            >
+              {paramPanelJsx}
+            </section>
+          </>
+        )}
+      </div>
+      </div>
+      {/* Timeline-layout bottom strip: tracks editor full width, with
+          the playback bar beneath it. The default layout pins the
+          PlaybackBar as a sibling here too, just without the tracks
+          strip on top. */}
+      {timelineLayout && (
+        <div
           style={{
-            flex: 1,
-            minHeight: 0,
+            height: trackEditorHeight,
             background: "#0a0a0a",
+            borderTop: "1px solid #3f3f46",
+            display: "flex",
+            flexDirection: "column",
+            flexShrink: 0,
           }}
         >
-          <NodeEditor
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChangeWithHistory}
-            onEdgesChange={onEdgesChangeWithHistory}
-            onConnect={onConnect}
-            onSelectNode={(id) => {
-              // One-shot echo suppression: if we just programmatically
-              // deselected via a menu handler, ignore the stale
-              // selection-change that React Flow fires right after.
-              if (suppressNextSelectionViewFlipRef.current) {
-                suppressNextSelectionViewFlipRef.current = false;
-                return;
-              }
-              setSelectedId(id);
-              // Clicking a node flips the right panel back to node params —
-              // a deselection alone shouldn't disturb the project-settings view.
-              if (id) setParamView("node");
+          <Divider
+            orientation="horizontal"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              const startY = e.clientY;
+              const startH = trackEditorHeight;
+              const onMove = (ev: MouseEvent) => {
+                const dy = startY - ev.clientY;
+                setTrackEditorHeight(
+                  Math.max(120, Math.min(700, startH + dy))
+                );
+              };
+              const onUp = () => {
+                window.removeEventListener("mousemove", onMove);
+                window.removeEventListener("mouseup", onUp);
+              };
+              window.addEventListener("mousemove", onMove);
+              window.addEventListener("mouseup", onUp);
             }}
-            onAddNode={onAddNode}
-            onPanePointer={(p) => {
-              lastPanePointerRef.current = p;
-            }}
-            onDuplicateOnDrag={handleDuplicateOnDrag}
-            onDetachNode={handleDetachNode}
-            onDuplicateNode={handleDuplicateNode}
-            onDuplicateSelection={handleDuplicateSelection}
-            onCopyNodes={handleCopyNodes}
-            onPasteNodes={handlePasteNodes}
-            onAddFileNode={onAddFileNode}
-            onCombineWires={handleCombineWires}
-            onCutWires={handleCutWires}
-            onSpliceNode={handleSpliceNode}
-            onWaypointDragStart={handleWaypointDragStart}
-            onWaypointDrag={handleWaypointDrag}
-            viewportOverlay={
-              inspectIds.length > 0
-                ? inspectIds.map((id) => {
-                    const n = nodes.find((x) => x.id === id);
-                    if (!n) return null;
-                    // Reading inspectTick keeps the popup re-rendering on
-                    // each eval bump even though the value isn't used as
-                    // a prop — the snapshot ref is mutated in place, so
-                    // we need a render trigger.
-                    void inspectTick;
-                    return (
-                      <NodeInspectorPopup
-                        key={`inspect-${id}`}
-                        node={n}
-                        snapshot={inspectSnapshotsRef.current.get(id)}
-                      />
-                    );
-                  })
-                : null
-            }
           />
-        </section>
-
-        <Divider orientation="horizontal" onMouseDown={startHResize} />
-
-        <section style={{ height: bottomRowHeight, minHeight: 0, flexShrink: 0 }}>
-          <ParamPanel
-            nodes={nodes}
-            selectedId={selectedId}
-            mode={paramView}
-            canvasRes={canvasRes}
-            onCanvasResChange={setCanvasRes}
-            onParamChange={onParamChange}
-            onToggleParamExposed={onToggleParamExposed}
-            onToggleParamControl={onToggleParamControl}
-            onExportApp={onOpenExportApp}
-            onParamRangeChange={onParamRangeChange}
-            onToggleParamLink={onToggleParamLink}
-            isParamDriven={isParamDriven}
-            currentTick={currentTick}
-            getAnimation={getAnimation}
-            onAnimationChange={onAnimationChange}
-            signedIn={signedIn}
-            currentUserId={user?.id ?? null}
-            onLoadProject={handleLoadProject}
-            loadRefreshKey={loadRefreshKey}
-          />
-        </section>
-      </div>
-      </div>
-      {!fullCanvas && (
-        <PlaybackBar
-          playing={playing}
-          time={time}
-          fps={fps}
-          loopFrames={loopFrames}
-          onPlayPause={onPlayPause}
-          onReset={onReset}
-          onSeek={onSeek}
-          onScrubStart={onScrubStart}
-          onScrubEnd={onScrubEnd}
-          onFpsChange={setFps}
-          onLoopFramesChange={setLoopFrames}
-        />
+          {dockBodyJsx}
+        </div>
       )}
+      {playbackBarJsx}
       <SaveModal
         open={saveModalOpen}
         onClose={() => {

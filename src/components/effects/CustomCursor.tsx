@@ -2,26 +2,45 @@
 
 import { useEffect, useRef } from "react";
 
-// Global custom cursor: a white ring that follows the mouse, lerps
-// slightly smaller and gains a soft glow + center dot when the
-// pointer is over something clickable. Renders via a fixed-position
-// div on top of every other UI surface; pointer-events: none keeps
-// it transparent to interaction.
+// Global custom cursor: a small crosshair — a center ring with four
+// short tick marks (N / S / E / W) — that follows the mouse. The
+// ring's center sits exactly at the click hot spot. On hover the
+// crosshair gains a soft white halo; on a strong hover (button,
+// input, socket) a red dot fades in at the ring's center and the
+// halo blooms a touch.
 //
-// Only enabled on real mouse pointers — touch / pen devices use the
-// native cursor (or none at all).
+// Only enabled on real mouse pointers — touch / pen devices use
+// the native cursor (or none at all).
 
-const RING_BASE = 16; // diameter at rest
-const RING_HOVER = 13; // diameter when over a clickable
-const DOT_SIZE = 3; // diameter of the inner hover dot
-const LERP_POS = 0.45; // pos lerp per frame — high so it tracks tightly
-const LERP_SHAPE = 0.22; // size / glow lerp per frame — slower for a soft feel
+const SCALE_BASE = 1; // scale at rest
+const SCALE_HOVER = 0.92; // scale when hovering anything interactive
+const LERP_SHAPE = 0.22; // shape lerp per frame — slower for a soft feel
+
+// Crosshair geometry, in a square box CURSOR_SIZE wide. Hot spot is
+// the exact center.
+const CURSOR_SIZE = 22;
+const CENTER = CURSOR_SIZE / 2;
+const RING_R = 3.5; // ring radius
+const TICK_GAP = 1.5; // gap between ring and the start of each tick
+const TICK_LEN = 4; // length of each tick mark
+const STROKE_W = 1.1;
+const DOT_R = 1.6; // radius of the red hover dot
+
+// Outer SVG canvas needs a touch of padding so the strokes near the
+// edge ticks don't get clipped under any edge cases. With overflow:
+// visible we don't strictly need this, but it keeps drop-shadow
+// filter regions tight and predictable.
+const PAD = 2;
+const SVG_SIZE = CURSOR_SIZE + PAD * 2;
+const SVG_CENTER = SVG_SIZE / 2;
+const TICK_INNER = RING_R + TICK_GAP;
+const TICK_OUTER = TICK_INNER + TICK_LEN;
 
 // Two-tier hover detection.
 // "strong" → an actual click / drag target (button, input, socket, …):
-//            ring shrinks + glows AND the center dot fades in.
+//            crosshair shrinks + glows AND the red dot fades in.
 // "soft"   → a broader interactive surface (a node body, an edge):
-//            ring shrinks + glows, no dot.
+//            crosshair shrinks + glows, no dot.
 // "none"   → resting cursor.
 type HoverTier = "none" | "soft" | "strong";
 
@@ -98,8 +117,8 @@ function hoverTier(start: HTMLElement | null): HoverTier {
 }
 
 export default function CustomCursor() {
-  const ringRef = useRef<HTMLDivElement | null>(null);
-  const dotRef = useRef<HTMLDivElement | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const dotRef = useRef<SVGCircleElement | null>(null);
 
   useEffect(() => {
     let raf = 0;
@@ -107,11 +126,10 @@ export default function CustomCursor() {
     let visible = false;
     let touchSeen = false;
 
-    // glow drives ring shrink + halo (fires on both soft and strong);
-    // dot drives the inner dot (fires only on strong).
-    const target = { x: 0, y: 0, size: RING_BASE, glow: 0, dot: 0 };
-    const cur = { x: 0, y: 0, size: RING_BASE, glow: 0, dot: 0 };
-    let initialized = false;
+    // glow drives shrink + halo (fires on both soft and strong);
+    // dot drives the red center dot (fires only on strong).
+    const target = { x: 0, y: 0, scale: SCALE_BASE, glow: 0, dot: 0 };
+    const cur = { x: 0, y: 0, scale: SCALE_BASE, glow: 0, dot: 0 };
 
     const onPointerMove = (e: PointerEvent) => {
       if (e.pointerType === "touch" || e.pointerType === "pen") {
@@ -120,11 +138,6 @@ export default function CustomCursor() {
         return;
       }
       if (touchSeen) return;
-      if (!initialized) {
-        cur.x = e.clientX;
-        cur.y = e.clientY;
-        initialized = true;
-      }
       target.x = e.clientX;
       target.y = e.clientY;
       visible = true;
@@ -134,7 +147,7 @@ export default function CustomCursor() {
       ) as HTMLElement | null;
       const tier = hoverTier(el);
       const hovering = tier !== "none";
-      target.size = hovering ? RING_HOVER : RING_BASE;
+      target.scale = hovering ? SCALE_HOVER : SCALE_BASE;
       target.glow = hovering ? 1 : 0;
       target.dot = tier === "strong" ? 1 : 0;
     };
@@ -145,35 +158,49 @@ export default function CustomCursor() {
 
     const tick = () => {
       if (!mounted) return;
-      cur.x += (target.x - cur.x) * LERP_POS;
-      cur.y += (target.y - cur.y) * LERP_POS;
-      cur.size += (target.size - cur.size) * LERP_SHAPE;
+      // Position snaps to the actual pointer — no lerp — so the
+      // ring center always sits exactly at the click target.
+      cur.x = target.x;
+      cur.y = target.y;
+      cur.scale += (target.scale - cur.scale) * LERP_SHAPE;
       cur.glow += (target.glow - cur.glow) * LERP_SHAPE;
       cur.dot += (target.dot - cur.dot) * LERP_SHAPE;
-      const r = ringRef.current;
+      const w = wrapRef.current;
       const d = dotRef.current;
-      if (r) {
-        const s = cur.size;
-        r.style.transform = `translate3d(${cur.x - s / 2}px, ${cur.y - s / 2}px, 0)`;
-        r.style.width = `${s}px`;
-        r.style.height = `${s}px`;
+      if (w) {
+        // The wrapper is a zero-size point anchored at the ring
+        // center: position: fixed; width: 0; height: 0. We move it
+        // to the click target with top / left, then scale around
+        // its own (0, 0) which is the ring center. The SVG inside
+        // uses a viewBox centered at (0, 0) with overflow: visible,
+        // so the ring + ticks render outward from the hot spot.
+        // Avoiding any "translate ± half size" math removes the
+        // chance for sub-pixel drift between the visual center and
+        // the click point.
+        w.style.left = `${cur.x}px`;
+        w.style.top = `${cur.y}px`;
+        w.style.transform = `scale(${cur.scale})`;
         const g = cur.glow;
-        // Soft outer halo + a tighter inner halo so the boundary
-        // stays crisp at small sizes when the outer halo bleeds in.
-        r.style.boxShadow =
+        // Soft white halo grows with the glow value. The strong
+        // tier (g approaches 1 along with dot) gets a slight red
+        // bias so the bloom matches the dot color.
+        const dt = cur.dot;
+        w.style.filter =
           g > 0.001
-            ? `0 0 ${8 + g * 10}px rgba(255,255,255,${0.3 * g}), 0 0 ${
-                1.5 + g * 3
-              }px rgba(255,255,255,${0.5 * g})`
+            ? `drop-shadow(0 0 ${1 + g * 2}px rgba(255,255,255,${
+                0.55 * g
+              })) drop-shadow(0 0 ${4 + g * 8}px rgba(${
+                255 - dt * 80
+              }, ${255 - dt * 200}, ${255 - dt * 200}, ${0.35 * g}))`
             : "none";
-        r.style.opacity = visible && !touchSeen ? "1" : "0";
+        w.style.opacity = visible && !touchSeen ? "1" : "0";
       }
       if (d) {
+        // Dot stays at the ring center in SVG coords; opacity +
+        // scale fade in with the strong-hover signal.
         const dt = cur.dot;
-        d.style.transform = `translate3d(${cur.x - DOT_SIZE / 2}px, ${
-          cur.y - DOT_SIZE / 2
-        }px, 0) scale(${0.5 + dt * 0.5})`;
-        d.style.opacity = `${visible && !touchSeen ? dt : 0}`;
+        d.setAttribute("opacity", `${dt}`);
+        d.setAttribute("r", `${DOT_R * (0.5 + dt * 0.5)}`);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -192,41 +219,68 @@ export default function CustomCursor() {
   }, []);
 
   return (
-    <>
-      <div
-        ref={ringRef}
-        aria-hidden
+    <div
+      ref={wrapRef}
+      aria-hidden
+      style={{
+        position: "fixed",
+        left: 0,
+        top: 0,
+        // Zero-size anchor — the wrapper IS the ring center.
+        width: 0,
+        height: 0,
+        // Scale around the wrapper's own (0, 0) — same point as
+        // the ring center / hot spot — so hover shrink stays
+        // pinned to the click target.
+        transformOrigin: "0 0",
+        pointerEvents: "none",
+        zIndex: 2147483647,
+        opacity: 0,
+        willChange: "transform, filter, opacity, top, left",
+      }}
+    >
+      <svg
+        width={SVG_SIZE}
+        height={SVG_SIZE}
+        // viewBox centered at (0, 0) so SVG (0, 0) is the ring
+        // center. overflow: visible lets the ticks + halo extend
+        // past the box without clipping.
+        viewBox={`${-SVG_CENTER} ${-SVG_CENTER} ${SVG_SIZE} ${SVG_SIZE}`}
         style={{
-          position: "fixed",
-          left: 0,
-          top: 0,
-          width: RING_BASE,
-          height: RING_BASE,
-          borderRadius: "50%",
-          border: "1px solid rgba(255,255,255,0.95)",
-          pointerEvents: "none",
-          zIndex: 2147483647,
-          opacity: 0,
-          willChange: "transform, width, height, box-shadow",
+          display: "block",
+          overflow: "visible",
+          position: "absolute",
+          // Position the SVG so its viewBox (0, 0) — the ring
+          // center — sits exactly at the wrapper's (0, 0).
+          left: -SVG_CENTER,
+          top: -SVG_CENTER,
         }}
-      />
-      <div
-        ref={dotRef}
-        aria-hidden
-        style={{
-          position: "fixed",
-          left: 0,
-          top: 0,
-          width: DOT_SIZE,
-          height: DOT_SIZE,
-          borderRadius: "50%",
-          background: "rgba(255,255,255,0.95)",
-          pointerEvents: "none",
-          zIndex: 2147483647,
-          opacity: 0,
-          willChange: "transform, opacity",
-        }}
-      />
-    </>
+      >
+        <g
+          fill="none"
+          stroke="#fff"
+          strokeWidth={STROKE_W}
+          strokeLinecap="round"
+        >
+          {/* Center ring */}
+          <circle cx={0} cy={0} r={RING_R} />
+          {/* N / S / E / W ticks */}
+          <line x1={0} y1={-TICK_OUTER} x2={0} y2={-TICK_INNER} />
+          <line x1={0} y1={TICK_INNER} x2={0} y2={TICK_OUTER} />
+          <line x1={-TICK_OUTER} y1={0} x2={-TICK_INNER} y2={0} />
+          <line x1={TICK_INNER} y1={0} x2={TICK_OUTER} y2={0} />
+        </g>
+        {/* Red hover dot at the exact ring center — opacity + radius
+            driven by `cur.dot`. */}
+        <circle
+          ref={dotRef}
+          cx={0}
+          cy={0}
+          r={DOT_R}
+          fill="#ef4444"
+          opacity={0}
+        />
+      </svg>
+    </div>
   );
 }

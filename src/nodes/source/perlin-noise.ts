@@ -806,6 +806,7 @@ export const perlinNoiseNode: NodeDefinition = {
         offsetX: offX,
         offsetY: offY,
         seed,
+        w,
         outLo: fieldLo,
         outHi: fieldHi,
       },

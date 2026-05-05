@@ -154,7 +154,7 @@ https://github.com/matsuoka-601/webgpu-ocean
 
 108. for math node add dropdown for operation on the node itself
 
-109. A view of the program that is more AE like. So we would have the tracks editor at the bottom spanning the whole page width, the timeline below it. The canvas on topright taking up most of the screen.
+109. A view of the program that is more AE like. So we would have the tracks editor at the bottom spanning the whole page width - always open, the timeline below it. The canvas on topright taking up most of the screen. and then the top left panel would be one panel with two tabs for node editor and parameters (default to parameters).
 
 in this form we would mostly hide the node editor and instead we would add stuff via a quick menu (in the menu bar). The options there would be like adding a spline primitive, but when you add it, in the background it adds 
 
@@ -164,26 +164,15 @@ Then wed add some sort of abstraction where clicking a track group would show
 110. more polymorphic nodes: Compare, Logic, Clamp, Lerp, Smooth, Switch could all become polymorphic in the same pattern (resolveInputs checks connectedTypes, compute branches on wired type). Flag what's next.
 
 
-111. how can we add a bevel and embosss filter?
-
-112. We need to work on the transform node. 
-1. Undo is broken when we manipulate the transfrom handles in the cavas, it undos in super super small steps.
-2. we need to add shift left click drag to either scale proportionally when dragging scale handles. Or when we are moving it constrains movement to the direction you are dragging..
-3. when holding alt/option and draging scale handles we need to make that do propotional scale (horizontially or vertically only depending on the handle or if a corner, the drag direction.)
-4. Whenw the transform node is in spline mode, I want the bounds to be constrained to the minimum square that fits around the spline. 
 
 
-113. Id like to have a rasterize spline node which basically combines stroke and fill so we can do it in one node. Both should be togglable. Keep the independent nodes as well. 
 
 114. investigate what other transform.js nodes we can add
 
 
 116. I want to be able to copy a group of SVG/spline elements in figma (a group or just a selection of a few) and be able to paste directly into the node editor, with each element give its own node, with them all stacked vertically, with all of them wired into a group node. it should be visually neat.
 
-117. box select in node editor currently only selects a node if its totally inside the selection, but i woudl rather selection work if any part of a node is inside the select box
 
-118. add a toggle called show selected only in the tracks editor that allows you to filter which tracks are shown based on what node is selected (button near the tabs)
 
-119. When you first load up the site, we should start the user with the Load projects menu/area active (show private if we are logged in, show public if we are not logged in)
 
-120. hide the minimap in the node editor
+121. 
