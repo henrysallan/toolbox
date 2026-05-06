@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NodeEditor from "./NodeEditor";
 import ParamPanel from "./ParamPanel";
 import CustomCursor from "./CustomCursor";
+import UserPreferencesModal from "./UserPreferencesModal";
 import PaintOverlay from "./PaintOverlay";
 import PlaybackBar from "./PlaybackBar";
 import MenuBar from "./MenuBar";
@@ -443,6 +444,10 @@ function EffectsShell({
   // Bumped after every save so the load grid refetches on next view.
   const [loadRefreshKey, setLoadRefreshKey] = useState(0);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
+  // User Preferences modal — Toolbox menu → User Preferences. Hosts
+  // the BYO OpenAI key for AI-driven nodes plus future editor-wide
+  // settings.
+  const [userPrefsOpen, setUserPrefsOpen] = useState(false);
   // Export App modal — populated with the target Output node id when the
   // user hits Export App from either the node header or ParamPanel.
   const [exportApp, setExportApp] = useState<{ outputNodeId: string } | null>(
@@ -3653,6 +3658,7 @@ function EffectsShell({
       currentUserId={user?.id ?? null}
       onLoadProject={handleLoadProject}
       loadRefreshKey={loadRefreshKey}
+      projectId={currentProject?.id ?? null}
     />
   );
 
@@ -3952,6 +3958,7 @@ function EffectsShell({
         onToggleViewportSplit={() => setViewportSplit((v) => !v)}
         timelineLayout={timelineLayout}
         onToggleTimelineLayout={() => setTimelineLayout((v) => !v)}
+        onOpenUserPreferences={() => setUserPrefsOpen(true)}
       />
       </div>
       {/* Body wrapper. Default layout = canvas left, right column
@@ -4542,6 +4549,11 @@ function EffectsShell({
         onCancel={() => setNewConfirmOpen(false)}
         onDiscard={handleNewConfirmDiscard}
         onSave={handleNewConfirmSave}
+      />
+      <UserPreferencesModal
+        open={userPrefsOpen}
+        signedIn={signedIn}
+        onClose={() => setUserPrefsOpen(false)}
       />
       <CustomCursor />
     </div>

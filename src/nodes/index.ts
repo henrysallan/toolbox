@@ -17,6 +17,7 @@ import { splineDrawNode } from "./source/spline-draw";
 import { svgSourceNode } from "./source/svg-source";
 import { circleNode } from "./source/circle";
 import { rectangleNode } from "./source/rectangle";
+import { imageGenerateNode } from "./source/image-generate";
 import { sampleAlongPathNode } from "./effect/sample-along-path";
 import { resampleNode } from "./effect/resample";
 import { pointsOnPathNode } from "./effect/points-on-path";
@@ -149,6 +150,7 @@ export function registerAllNodes() {
   registerNode(svgSourceNode);
   registerNode(circleNode);
   registerNode(rectangleNode);
+  registerNode(imageGenerateNode);
   registerNode(sampleAlongPathNode);
   registerNode(resampleNode);
   registerNode(pointsOnPathNode);

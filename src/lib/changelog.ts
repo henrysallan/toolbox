@@ -11,6 +11,33 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.0.4",
+    date: "2026-05-06",
+    added: [
+      "Image Generate node — chat-driven AI image generation backed by OpenAI's gpt-image-2 (Responses API, multi-turn `previous_response_id` chaining via gpt-4.1-mini orchestrator). Bring-your-own key configured under Toolbox → User Preferences. Custom split param panel: prompt log on the left, generation thumbnails (grid / list, white-stroke selection state) on the right, gear-icon settings popover for size / quality / format. Three optional reference image inputs reserved for future ref-conditioning. Selected thumbnail copies to a public Supabase bucket so saved projects render the curated output for everyone; chat history + alternate generations stay private to the creator in a per-(user, project, node) session row.",
+      "User Preferences modal under Toolbox → User Preferences. v1 hosts the OpenAI API key (with show/hide + Test Connection); future editor-wide settings will live alongside.",
+      "Timeline layout — Window → Timeline. After-Effects-style: tracks editor pinned full-width to the bottom, playback bar beneath it, canvas top-right, tabbed Parameters / Node Editor pane on the left (defaults to Parameters). Default layout is unchanged; toggle to switch.",
+      "Grain node — luminance + chromatic film grain in one shader pass, Gaussian-shaped hash so it has a film-y shoulder. Optional image input with seven mix modes (overlay default), scale param defaulting to 1px (finest), seed for animated grain.",
+      "Bevel & Emboss (image) and SDF Bevel (terminal). Image variant renders four bevel styles with two configurable lights using a JFA-cached height field; SDF variant taps the existing distance-field compile path for crisp vector bevels.",
+      "Rasterize Spline node — combined fill + stroke in a single canvas pass, both toggleable. Keeps the standalone Stroke and Fill nodes for compositing flexibility.",
+      "Transform gizmo overhaul: rounded handles, per-corner rotation grips, center + boundary snapping with red guides, Shift / Alt modifiers, spline-mode AABB hugging the actual geometry, drag coalescing into a single undo entry. Transform context bar above the canvas adds Flip Horizontal / Flip Vertical.",
+      "Custom crosshair cursor (replaces every native cursor): white ring + four tick marks, soft hover halo on nodes / edges, red center dot on strong-hover targets (buttons, sockets, gizmo handles, form controls). Position snaps to the pointer with no lag so click target = ring center.",
+      "Tracks Editor: clicking a header / lane label selects the owning node in the node editor (selection state mirrored as a white left-stripe + faint wash). New `selected only` toggle next to the Tracks / Graph tabs filters lanes to selected nodes.",
+      "Node editor multi-select via Shift; Shift+D duplicates the selection and immediately enters G-move so clones follow the cursor until placed; marquee now uses partial intersection (any overlap = selected).",
+      "Noise node field output now respects the W (4D evolution) param via slice-blend, matching the image / value paths so SDF graphs animate the way their visualizers preview.",
+      "Default first-load view is the Load Projects browser (private when signed in, public when not) instead of an empty node panel.",
+      "Spec docs added: `image-generate-node.md` (full design + OpenAI request shapes), `user-preferences-migration.sql`, `image-gen-migration.sql`, `typed-array-points-refactor.md`, `updatedtimelinespecv2.md`.",
+    ],
+    changed: [
+      "Removed minimap from the node editor; widened pan / zoom envelope (minZoom 0.05, ±100k translate extent) so large multi-stage graphs aren't cramped.",
+      "Rectangle source: position parameter now means the rectangle's center, not its top-left corner — consistent with Circle and the SDF primitives.",
+      "Param panel: rAF-coalesced sliders so iPad doesn't drop from 60fps to 40 during drag; pointer-up flushes the final value.",
+      "Track Editor delete deletes the selected keyframes (was deleting the whole node before).",
+      "Performance: per-frame `setErrors` and `setSelectedPoints` shallow-equality guards to keep React out of its max-update-depth guard during playback. Cursor re-render bumps now skip while playback is active.",
+      "Bug fixes: fixed timeline-layout vertical-resize drag direction in row-reverse mode; removed ImageBitmap upload race so first-click thumbnails render to canvas without a view-mode toggle workaround.",
+    ],
+  },
+  {
     version: "0.0.3",
     date: "2026-04-26",
     added: [

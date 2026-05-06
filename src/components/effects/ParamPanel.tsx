@@ -7,6 +7,7 @@ import { paramSocketType } from "@/state/graph";
 import type { NodeDataPayload } from "@/state/graph";
 import type { ParamDef } from "@/engine/types";
 import LoadGrid from "./LoadGrid";
+import ImageGeneratePanel from "./ImageGeneratePanel";
 import {
   COLOR_RAMP_MAX_STOPS,
   newStopId,
@@ -106,6 +107,9 @@ interface Props {
   onLoadProject?: (id: string) => void;
   // Bumped by the parent after save/delete so LoadGrid refetches.
   loadRefreshKey?: number;
+  // Active project id — needed by AI nodes (Image Generate) that
+  // scope their per-(user,project,node) Supabase session row by it.
+  projectId?: string | null;
 }
 
 // Drop-in <input type="range"> wrapper that dampens the per-event delta
@@ -263,6 +267,7 @@ export default function ParamPanel({
   currentUserId,
   onLoadProject,
   loadRefreshKey,
+  projectId,
 }: Props) {
   const selected = selectedId
     ? nodes.find((n) => n.id === selectedId)
@@ -298,6 +303,16 @@ export default function ParamPanel({
           currentUserId={currentUserId ?? null}
           onLoad={(id) => onLoadProject?.(id)}
           refreshKey={loadRefreshKey}
+        />
+      ) : selected && selected.data.defType === "image-generate" ? (
+        // Custom split-view UI for the AI Image Generate node. This
+        // node owns the entire param panel — the standard property
+        // list is bypassed in favour of the chat / thumbnails layout.
+        <ImageGeneratePanel
+          node={selected}
+          projectId={projectId ?? null}
+          signedIn={!!signedIn}
+          onParamChange={onParamChange}
         />
       ) : selected && def ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>

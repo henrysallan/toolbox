@@ -92,6 +92,10 @@ export interface MenuBarProps {
   // bottom of the page with the timeline below it.
   timelineLayout: boolean;
   onToggleTimelineLayout: () => void;
+  // User-wide preferences (OpenAI key, etc.). Lives under the
+  // Toolbox menu — application-scoped, distinct from the per-project
+  // settings that live in Project Settings.
+  onOpenUserPreferences: () => void;
 }
 
 const BAR_HEIGHT = 22;
@@ -130,6 +134,7 @@ export default function MenuBar({
   onToggleViewportSplit,
   timelineLayout,
   onToggleTimelineLayout,
+  onOpenUserPreferences,
 }: MenuBarProps) {
   const { user } = useUser();
   const signedIn = !!user;
@@ -160,6 +165,11 @@ export default function MenuBar({
       items: [
         { kind: "item", label: "About Toolbox", disabled: true },
         { kind: "divider" },
+        {
+          kind: "item",
+          label: "User Preferences…",
+          onClick: onOpenUserPreferences,
+        },
         {
           kind: "item",
           label: "Project Settings…",
