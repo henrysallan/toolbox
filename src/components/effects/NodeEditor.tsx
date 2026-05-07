@@ -69,6 +69,16 @@ interface Props {
     file: File,
     flowPos: { x: number; y: number }
   ) => void;
+  // Drop a generated image (from the Image Generate panel's
+  // thumbnail strip) onto the canvas → spawn an Image Source node.
+  // Drag mime is `application/x-toolbox-image-gen`; payload is JSON
+  // `{ privatePath, format }`. Parent owns the download + bitmap
+  // creation so the new node ends up with a freshly-decoded
+  // ImageBitmap in its `file` param.
+  onAddImageNodeFromImageGen?: (
+    payload: { privatePath: string; format: string },
+    flowPos: { x: number; y: number }
+  ) => void;
   // Wire-gesture actions. `onCombineWires` is called when a shift-drag
   // crosses ≥2 edges sharing a source; the caller is expected to stamp a
   // junction waypoint on each of the listed edges. `onCutWires` is called
@@ -117,6 +127,7 @@ export default function NodeEditor({
   onCopyNodes,
   onPasteNodes,
   onAddFileNode,
+  onAddImageNodeFromImageGen,
   onCombineWires,
   onCutWires,
   onWaypointDragStart,
@@ -888,30 +899,52 @@ export default function NodeEditor({
       ref={flowWrapperRef}
       style={{ width: "100%", height: "100%", position: "relative" }}
       onDragOver={(e) => {
-        // Only opt in when the OS is actually dragging a file — lets
-        // React Flow keep its own drag behaviors (like internal node
-        // drags) untouched. preventDefault is required on DragOver
-        // for the Drop event to fire.
-        if (e.dataTransfer.types.includes("Files")) {
+        // Opt in for both OS file drags AND our custom thumbnail
+        // drag from the Image Generate panel. Anything else (like
+        // React Flow's internal node drags) keeps its default
+        // behaviour.
+        const types = e.dataTransfer.types;
+        if (
+          types.includes("Files") ||
+          types.includes("application/x-toolbox-image-gen")
+        ) {
           e.preventDefault();
           e.dataTransfer.dropEffect = "copy";
         }
       }}
       onDrop={(e) => {
+        const flowPos = screenToFlowPosition({
+          x: e.clientX,
+          y: e.clientY,
+        });
+        // Image-Generate thumbnail drop → spawn Image Source.
+        const imgGen = e.dataTransfer.getData(
+          "application/x-toolbox-image-gen"
+        );
+        if (imgGen && onAddImageNodeFromImageGen) {
+          try {
+            const payload = JSON.parse(imgGen) as {
+              privatePath: string;
+              format: string;
+            };
+            if (payload.privatePath) {
+              e.preventDefault();
+              onAddImageNodeFromImageGen(payload, flowPos);
+              return;
+            }
+          } catch {
+            // Malformed payload — fall through to file handling.
+          }
+        }
+        // OS file drop.
         if (!onAddFileNode) return;
         const files = e.dataTransfer.files;
         if (!files || files.length === 0) return;
         e.preventDefault();
-        const firstPos = screenToFlowPosition({
-          x: e.clientX,
-          y: e.clientY,
-        });
-        // Offset subsequent files slightly so a multi-file drop doesn't
-        // land every node on top of the same coords.
         for (let i = 0; i < files.length; i++) {
           onAddFileNode(files[i], {
-            x: firstPos.x + i * 28,
-            y: firstPos.y + i * 28,
+            x: flowPos.x + i * 28,
+            y: flowPos.y + i * 28,
           });
         }
       }}

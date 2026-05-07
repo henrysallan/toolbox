@@ -175,4 +175,5 @@ Then wed add some sort of abstraction where clicking a track group would show
 
 
 
-121. 
+121. Right click on layers inside merge to rename the layers
+122. 

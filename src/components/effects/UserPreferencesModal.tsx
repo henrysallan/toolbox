@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   loadUserPreferences,
   saveUserPreferences,
+  testHuggingFaceToken,
   testOpenAIKey,
 } from "@/lib/supabase/user-preferences";
 
@@ -17,52 +18,54 @@ export interface UserPreferencesModalProps {
   onSaved?: () => void;
 }
 
-// Editor-wide preferences. v1 hosts a single field — the OpenAI API
-// key used by AI nodes that bring-your-own-key. Future fields land
-// here without further design work.
+// Editor-wide preferences. Hosts:
+//  - OpenAI API key  → Image Generate node + future AI nodes
+//  - HuggingFace token → optional, unlocks gated transformers.js
+//                        models (e.g. briaai/RMBG-2.0). Non-gated
+//                        models work without it.
+//
+// Each field uses the same masked-input + show/hide + test +
+// last-4-tail placeholder UX, factored into <KeyField/>.
 export default function UserPreferencesModal({
   open,
   signedIn,
   onClose,
   onSaved,
 }: UserPreferencesModalProps) {
-  const [key, setKey] = useState("");
-  // Track whether a key was already saved on the server so we can
-  // (a) show "•••• <last 4>" instead of leaking the full value when
-  // the modal opens, and (b) keep the user's edits distinct from a
-  // "no change" save.
-  const [savedTail, setSavedTail] = useState<string | null>(null);
-  const [dirty, setDirty] = useState(false);
-  const [reveal, setReveal] = useState(false);
+  const [openaiKey, setOpenaiKey] = useState("");
+  const [openaiSavedTail, setOpenaiSavedTail] = useState<string | null>(null);
+  const [openaiDirty, setOpenaiDirty] = useState(false);
+
+  const [hfToken, setHfToken] = useState("");
+  const [hfSavedTail, setHfSavedTail] = useState<string | null>(null);
+  const [hfDirty, setHfDirty] = useState(false);
+
   const [saving, setSaving] = useState(false);
-  const [testStatus, setTestStatus] = useState<
-    | { kind: "idle" }
-    | { kind: "testing" }
-    | { kind: "ok" }
-    | { kind: "err"; message: string }
-  >({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
 
   // (Re)load preferences whenever the modal opens.
   useEffect(() => {
     if (!open) return;
     setError(null);
-    setTestStatus({ kind: "idle" });
-    setDirty(false);
-    setReveal(false);
+    setOpenaiDirty(false);
+    setHfDirty(false);
     if (!signedIn) {
-      setKey("");
-      setSavedTail(null);
+      setOpenaiKey("");
+      setOpenaiSavedTail(null);
+      setHfToken("");
+      setHfSavedTail(null);
       return;
     }
     setLoading(true);
     loadUserPreferences()
       .then((prefs) => {
-        const k = prefs.openaiApiKey ?? "";
-        setKey(k);
-        setSavedTail(k ? k.slice(-4) : null);
+        const ok = prefs.openaiApiKey ?? "";
+        const hk = prefs.huggingfaceToken ?? "";
+        setOpenaiKey(ok);
+        setOpenaiSavedTail(ok ? ok.slice(-4) : null);
+        setHfToken(hk);
+        setHfSavedTail(hk ? hk.slice(-4) : null);
       })
       .finally(() => setLoading(false));
   }, [open, signedIn]);
@@ -82,10 +85,11 @@ export default function UserPreferencesModal({
     if (!signedIn || saving) return;
     setSaving(true);
     setError(null);
-    const trimmed = key.trim();
+    const trimmedOpenai = openaiKey.trim();
+    const trimmedHf = hfToken.trim();
     const res = await saveUserPreferences({
-      // Empty input = clear the saved key.
-      openaiApiKey: trimmed === "" ? null : trimmed,
+      openaiApiKey: trimmedOpenai === "" ? null : trimmedOpenai,
+      huggingfaceToken: trimmedHf === "" ? null : trimmedHf,
     });
     setSaving(false);
     if (!res.ok) {
@@ -94,14 +98,6 @@ export default function UserPreferencesModal({
     }
     onSaved?.();
     onClose();
-  };
-
-  const runTest = async () => {
-    if (testStatus.kind === "testing") return;
-    setTestStatus({ kind: "testing" });
-    const res = await testOpenAIKey(key);
-    if (res.ok) setTestStatus({ kind: "ok" });
-    else setTestStatus({ kind: "err", message: res.error ?? "Failed" });
   };
 
   return (
@@ -120,8 +116,8 @@ export default function UserPreferencesModal({
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          minWidth: 460,
-          maxWidth: 520,
+          minWidth: 480,
+          maxWidth: 540,
           background: "#18181b",
           border: "1px solid #27272a",
           borderRadius: 6,
@@ -130,6 +126,8 @@ export default function UserPreferencesModal({
           fontSize: 12,
           color: "#e5e7eb",
           boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
+          maxHeight: "85vh",
+          overflowY: "auto",
         }}
       >
         <div
@@ -161,127 +159,47 @@ export default function UserPreferencesModal({
           </div>
         )}
 
-        <div
-          style={{
-            color: "#a1a1aa",
-            fontSize: 10,
-            textTransform: "uppercase",
-            letterSpacing: 1,
-            marginBottom: 6,
+        <KeyField
+          label="OpenAI API Key"
+          description="Used by AI-driven nodes (Image Generate). Stored on your account; only ever sent directly to OpenAI from your browser. Leave blank to clear."
+          placeholder="sk-…"
+          value={openaiKey}
+          savedTail={openaiSavedTail}
+          dirty={openaiDirty}
+          onChange={(v) => {
+            setOpenaiKey(v);
+            setOpenaiDirty(true);
           }}
-        >
-          OpenAI API Key
-        </div>
-        <div
-          style={{
-            color: "#71717a",
-            fontSize: 11,
-            marginBottom: 8,
-            lineHeight: 1.5,
-          }}
-        >
-          Used by AI-driven nodes (Image Generate, etc.). The key is
-          stored on your account and only ever sent directly to
-          OpenAI from your browser. Leave blank to clear.
-        </div>
+          onTest={() => testOpenAIKey(openaiKey)}
+          disabled={!signedIn || loading}
+          enterToSave={submit}
+        />
 
-        <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-          <input
-            ref={inputRef}
-            type={reveal ? "text" : "password"}
-            value={key}
-            onChange={(e) => {
-              setKey(e.target.value);
-              setDirty(true);
-              setTestStatus({ kind: "idle" });
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") submit();
-            }}
-            placeholder={
-              savedTail
-                ? `•••• •••• •••• ${savedTail}`
-                : "sk-…"
-            }
-            spellCheck={false}
-            disabled={!signedIn || loading}
-            style={{
-              flex: 1,
-              boxSizing: "border-box",
-              padding: "6px 8px",
-              background: "#0a0a0a",
-              border: "1px solid #27272a",
-              color: "#e5e7eb",
-              fontFamily: "inherit",
-              fontSize: 12,
-              borderRadius: 3,
-              opacity: !signedIn || loading ? 0.5 : 1,
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => setReveal((v) => !v)}
-            disabled={!signedIn}
-            style={btnStyle()}
-            title={reveal ? "Hide key" : "Show key"}
-          >
-            {reveal ? "Hide" : "Show"}
-          </button>
-        </div>
+        <div style={{ height: 14 }} />
 
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            marginBottom: 14,
+        <KeyField
+          label="HuggingFace Token (optional)"
+          description="Required only for GATED transformers.js models like briaai/RMBG-2.0. The non-gated rmbg-1.4 works without it. Get a Read token at huggingface.co/settings/tokens after accepting the model's license."
+          placeholder="hf_…"
+          value={hfToken}
+          savedTail={hfSavedTail}
+          dirty={hfDirty}
+          onChange={(v) => {
+            setHfToken(v);
+            setHfDirty(true);
           }}
-        >
-          <button
-            type="button"
-            onClick={runTest}
-            disabled={
-              !signedIn ||
-              key.trim() === "" ||
-              testStatus.kind === "testing"
-            }
-            style={{
-              ...btnStyle(),
-              opacity:
-                !signedIn ||
-                key.trim() === "" ||
-                testStatus.kind === "testing"
-                  ? 0.5
-                  : 1,
-            }}
-          >
-            {testStatus.kind === "testing"
-              ? "Testing…"
-              : "Test connection"}
-          </button>
-          {testStatus.kind === "ok" && (
-            <span style={{ color: "#22c55e", fontSize: 11 }}>
-              ✓ Key works
-            </span>
-          )}
-          {testStatus.kind === "err" && (
-            <span style={{ color: "#ef4444", fontSize: 11 }}>
-              ✗ {testStatus.message}
-            </span>
-          )}
-          {savedTail && !dirty && testStatus.kind === "idle" && (
-            <span style={{ color: "#a1a1aa", fontSize: 11 }}>
-              Saved key on file
-            </span>
-          )}
-        </div>
+          onTest={() => testHuggingFaceToken(hfToken)}
+          disabled={!signedIn || loading}
+          enterToSave={submit}
+        />
 
         {error && (
           <div
             style={{
               color: "#ef4444",
               fontSize: 11,
-              marginBottom: 10,
+              marginTop: 12,
+              marginBottom: 4,
             }}
           >
             {error}
@@ -289,7 +207,12 @@ export default function UserPreferencesModal({
         )}
 
         <div
-          style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}
+          style={{
+            display: "flex",
+            gap: 6,
+            justifyContent: "flex-end",
+            marginTop: 14,
+          }}
         >
           <button onClick={onClose} style={btnStyle()}>
             Cancel
@@ -308,6 +231,156 @@ export default function UserPreferencesModal({
             {saving ? "Saving…" : "Save"}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// One masked-input + test-button row. Same UX shared between the
+// OpenAI and HuggingFace fields.
+function KeyField({
+  label,
+  description,
+  placeholder,
+  value,
+  savedTail,
+  dirty,
+  onChange,
+  onTest,
+  disabled,
+  enterToSave,
+}: {
+  label: string;
+  description: string;
+  placeholder: string;
+  value: string;
+  savedTail: string | null;
+  dirty: boolean;
+  onChange: (v: string) => void;
+  onTest: () => Promise<{ ok: boolean; error?: string }>;
+  disabled: boolean;
+  enterToSave: () => void;
+}) {
+  const [reveal, setReveal] = useState(false);
+  const [status, setStatus] = useState<
+    | { kind: "idle" }
+    | { kind: "testing" }
+    | { kind: "ok" }
+    | { kind: "err"; message: string }
+  >({ kind: "idle" });
+
+  useEffect(() => {
+    setStatus({ kind: "idle" });
+  }, [value]);
+
+  const runTest = async () => {
+    if (status.kind === "testing") return;
+    setStatus({ kind: "testing" });
+    const res = await onTest();
+    if (res.ok) setStatus({ kind: "ok" });
+    else setStatus({ kind: "err", message: res.error ?? "Failed" });
+  };
+
+  return (
+    <div>
+      <div
+        style={{
+          color: "#a1a1aa",
+          fontSize: 10,
+          textTransform: "uppercase",
+          letterSpacing: 1,
+          marginBottom: 6,
+        }}
+      >
+        {label}
+      </div>
+      <div
+        style={{
+          color: "#71717a",
+          fontSize: 11,
+          marginBottom: 8,
+          lineHeight: 1.5,
+        }}
+      >
+        {description}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+        <input
+          type={reveal ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") enterToSave();
+          }}
+          placeholder={
+            savedTail ? `•••• •••• •••• ${savedTail}` : placeholder
+          }
+          spellCheck={false}
+          disabled={disabled}
+          style={{
+            flex: 1,
+            boxSizing: "border-box",
+            padding: "6px 8px",
+            background: "#0a0a0a",
+            border: "1px solid #27272a",
+            color: "#e5e7eb",
+            fontFamily: "inherit",
+            fontSize: 12,
+            borderRadius: 3,
+            opacity: disabled ? 0.5 : 1,
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => setReveal((v) => !v)}
+          disabled={disabled}
+          style={btnStyle()}
+          title={reveal ? "Hide" : "Show"}
+        >
+          {reveal ? "Hide" : "Show"}
+        </button>
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <button
+          type="button"
+          onClick={runTest}
+          disabled={
+            disabled ||
+            value.trim() === "" ||
+            status.kind === "testing"
+          }
+          style={{
+            ...btnStyle(),
+            opacity:
+              disabled ||
+              value.trim() === "" ||
+              status.kind === "testing"
+                ? 0.5
+                : 1,
+          }}
+        >
+          {status.kind === "testing" ? "Testing…" : "Test connection"}
+        </button>
+        {status.kind === "ok" && (
+          <span style={{ color: "#22c55e", fontSize: 11 }}>✓ Works</span>
+        )}
+        {status.kind === "err" && (
+          <span style={{ color: "#ef4444", fontSize: 11 }}>
+            ✗ {status.message}
+          </span>
+        )}
+        {savedTail && !dirty && status.kind === "idle" && (
+          <span style={{ color: "#a1a1aa", fontSize: 11 }}>
+            Saved on file
+          </span>
+        )}
       </div>
     </div>
   );

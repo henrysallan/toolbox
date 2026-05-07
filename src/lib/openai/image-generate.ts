@@ -82,18 +82,27 @@ export async function generateImage(
   // Tool config — only include keys we actually want to set so we
   // inherit OpenAI's defaults for the rest. gpt-image-2 ignores
   // input_fidelity, so we never send it.
+  //
+  // When ref images are present we FORCE `action: "edit"` so the
+  // orchestrator can't drop the input on the floor and call
+  // generate-from-text. With `auto`, weaker orchestrators routinely
+  // ignore the attached image; "edit" makes gpt-image-2 receive the
+  // input and treat it as the conditioning bitmap.
+  const hasRefs = !!(referenceImageUrls && referenceImageUrls.length > 0);
   const tool: Record<string, unknown> = { type: "image_generation" };
   if (size && size !== "auto") tool.size = size;
   if (quality && quality !== "auto") tool.quality = quality;
   if (outputFormat) tool.output_format = outputFormat;
+  if (hasRefs) tool.action = "edit";
 
   const body: Record<string, unknown> = {
-    // Top-level model = chat model orchestrator. gpt-4.1-mini is the
-    // model OpenAI uses in their image_generation tool example and
-    // is widely available. Image generation itself happens inside
-    // the tool call, on gpt-image-2. Bump to a newer chat model
-    // (gpt-5, gpt-5.5, …) once those are confirmed in our account.
-    model: "gpt-4.1-mini",
+    // Top-level model = chat model orchestrator. gpt-5 is the
+    // smartest widely-available model that supports the
+    // image_generation tool and reliably routes ref images through
+    // to gpt-image-2 when the user asks for "use this as a
+    // reference"-style prompts. Image generation itself still
+    // happens inside the tool call on gpt-image-2.
+    model: "gpt-5",
     input: [{ role: "user", content }],
     tools: [tool],
     stream: false,

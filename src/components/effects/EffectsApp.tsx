@@ -1402,6 +1402,68 @@ function EffectsShell({
     [pushGraph, getGraphSnapshot, setNodes]
   );
 
+  // Read the upstream node's primary IMAGE output as a PNG blob.
+  // Used by the Image Generate panel to package its connected
+  // ref_a/b/c sockets and ship the bytes to OpenAI as input_image
+  // content parts on each turn.
+  //
+  // Reads the most-recent eval cache entry rather than re-running
+  // the upstream node — the source's bitmap is whatever the
+  // pipeline produced on the last frame, which is what the user
+  // sees on the canvas (and what they intend to feed to the model).
+  const getRefImageBlob = useCallback(
+    async (sourceNodeId: string): Promise<Blob | null> => {
+      const entry = evalCacheRef.current.get(sourceNodeId);
+      const primary = entry?.output.primary;
+      if (!primary || primary.kind !== "image") return null;
+      const backend = backendRef.current;
+      if (!backend) return null;
+      const ctx = backend.makeContext(0, 0);
+      const tmp = document.createElement("canvas");
+      tmp.width = primary.width;
+      tmp.height = primary.height;
+      ctx.blitToCanvas(primary, tmp);
+      return await new Promise<Blob | null>((resolve) => {
+        tmp.toBlob((b) => resolve(b), "image/png");
+      });
+    },
+    []
+  );
+
+  // Drop an Image-Generate thumbnail onto the node editor → spawn
+  // an Image Source node owning its own copy of the bitmap. The new
+  // node is decoupled from the originating Image Generate node;
+  // re-running prompts there or deleting it doesn't affect this
+  // node's image.
+  const onAddImageNodeFromImageGen = useCallback(
+    async (
+      payload: { privatePath: string; format: string },
+      flowPos: { x: number; y: number }
+    ) => {
+      try {
+        const { downloadPrivate } = await import(
+          "@/lib/supabase/image-gen"
+        );
+        const blob = await downloadPrivate(payload.privatePath);
+        if (!blob) {
+          console.warn(
+            "image-gen drop: failed to download",
+            payload.privatePath
+          );
+          return;
+        }
+        const bitmap = await createImageBitmap(blob);
+        pushGraph(getGraphSnapshot());
+        const newNode = makeInstanceNode("image-source", flowPos);
+        newNode.data.params = { ...newNode.data.params, file: bitmap };
+        setNodes((prev) => [...prev, newNode]);
+      } catch (err) {
+        console.warn("image-gen drop failed:", err);
+      }
+    },
+    [pushGraph, getGraphSnapshot, setNodes]
+  );
+
   const onAddNode = useCallback(
     (
       type: string,
@@ -3613,6 +3675,7 @@ function EffectsShell({
       onCopyNodes={handleCopyNodes}
       onPasteNodes={handlePasteNodes}
       onAddFileNode={onAddFileNode}
+      onAddImageNodeFromImageGen={onAddImageNodeFromImageGen}
       onCombineWires={handleCombineWires}
       onCutWires={handleCutWires}
       onSpliceNode={handleSpliceNode}
@@ -3659,6 +3722,8 @@ function EffectsShell({
       onLoadProject={handleLoadProject}
       loadRefreshKey={loadRefreshKey}
       projectId={currentProject?.id ?? null}
+      edges={edges}
+      getRefImageBlob={getRefImageBlob}
     />
   );
 

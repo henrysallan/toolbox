@@ -115,6 +115,19 @@ body {
   }
 }
 
+/* Inline spinner used by async chat affordances (Image Generate's
+   per-message status indicator, etc.). 0.9s rotation lets the eye
+   read it as "working" without becoming jittery. */
+@keyframes toolbox-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.toolbox-spinner {
+  display: inline-block;
+  vertical-align: middle;
+  animation: toolbox-spin 0.9s linear infinite;
+}
+
 /* Pen-tool cursor while Shift is held over the timeline curve editor —
    surfaces the "Shift+click adds a point" gesture before the user has
    to discover it. Inlined SVG with the hot-spot at the nib (1, 22).

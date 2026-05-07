@@ -43,14 +43,25 @@ export interface ImageGenSession {
 // session row CRUD
 // ------------------------------------------------------------
 
+// Discriminated load result so callers can tell apart "no row yet"
+// from "couldn't query the row". Critical for the panel's send
+// path: a failed read followed by an upsert with empty messages
+// would silently destroy the user's chat history. The panel reads
+// `kind === "ok"` and uses `session ?? null` for "row missing";
+// `kind === "error"` blocks send.
+export type LoadSessionResult =
+  | { kind: "ok"; session: ImageGenSession | null }
+  | { kind: "error"; error: string };
+
 export async function loadSession(
   projectId: string,
   nodeId: string
-): Promise<ImageGenSession | null> {
+): Promise<LoadSessionResult> {
   const supa = createClient();
-  const { data: u } = await supa.auth.getUser();
+  const { data: u, error: authError } = await supa.auth.getUser();
+  if (authError) return { kind: "error", error: authError.message };
   const uid = u.user?.id;
-  if (!uid) return null;
+  if (!uid) return { kind: "ok", session: null };
   const { data, error } = await supa
     .from("image_gen_sessions")
     .select("id, user_id, project_id, node_id, last_response_id, messages")
@@ -60,16 +71,19 @@ export async function loadSession(
     .maybeSingle();
   if (error) {
     console.warn("loadSession:", error.message);
-    return null;
+    return { kind: "error", error: error.message };
   }
-  if (!data) return null;
+  if (!data) return { kind: "ok", session: null };
   return {
-    id: data.id as string,
-    userId: data.user_id as string,
-    projectId: data.project_id as string,
-    nodeId: data.node_id as string,
-    lastResponseId: (data.last_response_id as string | null) ?? null,
-    messages: (data.messages as ImageGenMessage[]) ?? [],
+    kind: "ok",
+    session: {
+      id: data.id as string,
+      userId: data.user_id as string,
+      projectId: data.project_id as string,
+      nodeId: data.node_id as string,
+      lastResponseId: (data.last_response_id as string | null) ?? null,
+      messages: (data.messages as ImageGenMessage[]) ?? [],
+    },
   };
 }
 

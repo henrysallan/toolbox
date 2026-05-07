@@ -1,6 +1,6 @@
 "use client";
 
-import type { Node } from "@xyflow/react";
+import type { Edge, Node } from "@xyflow/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getNodeDef } from "@/engine/registry";
 import { paramSocketType } from "@/state/graph";
@@ -8,6 +8,7 @@ import type { NodeDataPayload } from "@/state/graph";
 import type { ParamDef } from "@/engine/types";
 import LoadGrid from "./LoadGrid";
 import ImageGeneratePanel from "./ImageGeneratePanel";
+import BgRemovePanel from "./BgRemovePanel";
 import {
   COLOR_RAMP_MAX_STOPS,
   newStopId,
@@ -110,6 +111,14 @@ interface Props {
   // Active project id — needed by AI nodes (Image Generate) that
   // scope their per-(user,project,node) Supabase session row by it.
   projectId?: string | null;
+  // Edge list — the Image Generate panel filters these to find its
+  // connected ref_a/b/c inputs. Cheap pass-through; no per-node
+  // pre-computation in EffectsApp.
+  edges?: Edge[];
+  // Read the upstream node's primary IMAGE output as a PNG Blob.
+  // The Image Generate panel uses this at send-time to package its
+  // ref inputs as input_image attachments for OpenAI.
+  getRefImageBlob?: (sourceNodeId: string) => Promise<Blob | null>;
 }
 
 // Drop-in <input type="range"> wrapper that dampens the per-event delta
@@ -268,6 +277,8 @@ export default function ParamPanel({
   onLoadProject,
   loadRefreshKey,
   projectId,
+  edges,
+  getRefImageBlob,
 }: Props) {
   const selected = selectedId
     ? nodes.find((n) => n.id === selectedId)
@@ -308,10 +319,34 @@ export default function ParamPanel({
         // Custom split-view UI for the AI Image Generate node. This
         // node owns the entire param panel — the standard property
         // list is bypassed in favour of the chat / thumbnails layout.
+        //
+        // `key={selected.id}` forces a fresh component instance each
+        // time the user switches between Image Generate nodes. Two
+        // problems it solves:
+        //   1. Stale session state: without a remount, the in-flight
+        //      loadSession() for the previous node can race with the
+        //      new node's load and clobber the displayed chat.
+        //   2. Stray local state (the prompt textarea, the signed-
+        //      URL cache, expanded settings popover) bleeds across
+        //      nodes. With the key, each node gets its own.
         <ImageGeneratePanel
+          key={selected.id}
           node={selected}
           projectId={projectId ?? null}
           signedIn={!!signedIn}
+          edges={edges ?? []}
+          onParamChange={onParamChange}
+          getRefImageBlob={getRefImageBlob}
+        />
+      ) : selected && selected.data.defType === "bg-remove" ? (
+        // Custom BG-remove panel: Bake button + status + live edge
+        // params (feather, threshold). Same key trick as Image
+        // Generate keeps state isolated per node instance.
+        <BgRemovePanel
+          key={selected.id}
+          node={selected}
+          edges={edges ?? []}
+          getRefImageBlob={getRefImageBlob}
           onParamChange={onParamChange}
         />
       ) : selected && def ? (

@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { Node } from "@xyflow/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Edge, Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
 import {
   loadSession,
@@ -27,6 +27,15 @@ export interface ImageGeneratePanelProps {
   node: Node<NodeDataPayload>;
   projectId: string | null;
   signedIn: boolean;
+  // Live edge list — we filter for edges targeting our ref_a/b/c
+  // input handles to know which sockets are wired so we can both
+  // (a) light up the badge in the chat input row and (b) attach the
+  // upstream bytes to the next OpenAI request.
+  edges: Edge[];
+  // Bridge into the engine to grab the upstream node's primary
+  // IMAGE output as a PNG Blob — used at send-time to package each
+  // wired ref socket as an input_image attachment.
+  getRefImageBlob?: (sourceNodeId: string) => Promise<Blob | null>;
   onParamChange: (
     nodeId: string,
     paramName: string,
@@ -47,6 +56,8 @@ export default function ImageGeneratePanel({
   node,
   projectId,
   signedIn,
+  edges,
+  getRefImageBlob,
   onParamChange,
 }: ImageGeneratePanelProps) {
   const view = (node.data.params.view as string) ?? "grid";
@@ -58,6 +69,30 @@ export default function ImageGeneratePanel({
 
   const [prompt, setPrompt] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Filter the live edge list down to the refs that target this
+  // node's ref_a/b/c handles. ReactFlow stores target handles as
+  // `in:<inputName>` (the same convention NodeEditor uses elsewhere
+  // for per-input wiring), so we look those up to know which ref
+  // socket each edge plugs into.
+  const refSources = useMemo(() => {
+    const out: { a: string | null; b: string | null; c: string | null } = {
+      a: null,
+      b: null,
+      c: null,
+    };
+    for (const e of edges) {
+      if (e.target !== node.id) continue;
+      if (e.targetHandle === "in:ref_a") out.a = e.source;
+      else if (e.targetHandle === "in:ref_b") out.b = e.source;
+      else if (e.targetHandle === "in:ref_c") out.c = e.source;
+    }
+    return out;
+  }, [edges, node.id]);
+  const wiredRefLabels: string[] = [];
+  if (refSources.a) wiredRefLabels.push("A");
+  if (refSources.b) wiredRefLabels.push("B");
+  if (refSources.c) wiredRefLabels.push("C");
   const [session, setSession] = useState<ImageGenSession | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -68,15 +103,31 @@ export default function ImageGeneratePanel({
   const signedRef = useRef<Map<string, string>>(new Map());
   const [, bumpSigned] = useState(0);
 
+  // Track whether the initial load actually succeeded. Critical
+  // for the send path — if the row failed to load (e.g. transient
+  // network blip), we can't trust the cached `session` and must
+  // refuse to send to avoid clobbering an existing row with empty
+  // history.
+  const [loadFailed, setLoadFailed] = useState<string | null>(null);
+
   // Load session whenever the (project, node) target changes.
   useEffect(() => {
     if (!signedIn || !projectId) {
       setSession(null);
+      setLoadFailed(null);
       return;
     }
     setLoading(true);
+    setLoadFailed(null);
     loadSession(projectId, node.id)
-      .then((s) => setSession(s))
+      .then((res) => {
+        if (res.kind === "error") {
+          setLoadFailed(res.error);
+          setSession(null);
+        } else {
+          setSession(res.session);
+        }
+      })
       .finally(() => setLoading(false));
   }, [signedIn, projectId, node.id]);
 
@@ -103,6 +154,16 @@ export default function ImageGeneratePanel({
       cancelled = true;
     };
   }, [session]);
+
+  const retryLoad = async () => {
+    if (!signedIn || !projectId) return;
+    setLoading(true);
+    setLoadFailed(null);
+    const res = await loadSession(projectId, node.id);
+    if (res.kind === "error") setLoadFailed(res.error);
+    else setSession(res.session);
+    setLoading(false);
+  };
 
   // ---- Send ---------------------------------------------------------
   const send = async () => {
@@ -131,6 +192,34 @@ export default function ImageGeneratePanel({
       return;
     }
 
+    // Read-modify-write at send time. Re-fetch the session row
+    // from the DB right now so we never overwrite messages that
+    // the cached `session` state didn't know about (transient load
+    // blips, multi-tab edits, etc.). If the read fails we BLOCK
+    // the send — far better to surface an error than to clobber
+    // the user's chat history.
+    const fresh = await loadSession(projectId, node.id);
+    if (fresh.kind === "error") {
+      setTopError(
+        `Couldn't load chat history (${fresh.error}). Refusing to send to avoid overwriting existing messages — try again.`
+      );
+      setLoadFailed(fresh.error);
+      return;
+    }
+    const baseSession: ImageGenSession =
+      fresh.session ?? {
+        id: "",
+        userId: "",
+        projectId,
+        nodeId: node.id,
+        lastResponseId: null,
+        messages: [],
+      };
+    // Reflect the freshest base into the panel state before we
+    // overlay the optimistic pending message — keeps the chat
+    // visible in the UI honest with what's actually in the DB.
+    setSession(baseSession);
+
     // Optimistic pending message.
     const msgId = newGenerationId();
     const pending: ImageGenMessage = {
@@ -140,15 +229,6 @@ export default function ImageGeneratePanel({
       createdAt: Date.now(),
       images: [],
     };
-    const baseSession: ImageGenSession =
-      session ?? {
-        id: "",
-        userId: "",
-        projectId,
-        nodeId: node.id,
-        lastResponseId: null,
-        messages: [],
-      };
     const optimistic: ImageGenSession = {
       ...baseSession,
       messages: [...baseSession.messages, pending],
@@ -158,6 +238,27 @@ export default function ImageGeneratePanel({
     setBusy(true);
 
     try {
+      // Resolve any wired ref sockets to base64 data URLs. We pull
+      // the upstream node's primary IMAGE output from the eval
+      // cache, render it to a PNG via canvas readback, and inline
+      // it in the request. Inline (vs signed URL upload) keeps the
+      // round-trip simple at the cost of a fatter payload — fine
+      // at typical canvas sizes.
+      const refUrls: string[] = [];
+      const refSourcesOrdered = [
+        refSources.a,
+        refSources.b,
+        refSources.c,
+      ].filter((id): id is string => !!id);
+      if (refSourcesOrdered.length > 0 && getRefImageBlob) {
+        for (const sid of refSourcesOrdered) {
+          const blob = await getRefImageBlob(sid);
+          if (!blob) continue;
+          const dataUrl = await blobToDataUrl(blob);
+          refUrls.push(dataUrl);
+        }
+      }
+
       const result = await generateImage({
         apiKey: prefs.openaiApiKey,
         prompt: trimmed,
@@ -165,6 +266,7 @@ export default function ImageGeneratePanel({
         quality,
         outputFormat: format,
         previousResponseId: baseSession.lastResponseId,
+        referenceImageUrls: refUrls.length > 0 ? refUrls : undefined,
       });
 
       // Upload each returned image to private bucket.
@@ -408,6 +510,52 @@ export default function ImageGeneratePanel({
         </div>
       )}
 
+      {/* Load-failed banner — surfaced when the session row failed
+          to fetch (network blip, RLS misconfig, etc.). Critical to
+          show this loud so the user knows the chat is in an
+          undefined state — sending while in this state would
+          overwrite history with an empty record. */}
+      {loadFailed && (
+        <div
+          style={{
+            margin: "6px 0 0 0",
+            padding: "6px 10px",
+            background: "rgba(180, 83, 9, 0.12)",
+            border: "1px solid #b45309",
+            color: "#fde68a",
+            borderRadius: 4,
+            fontSize: 11,
+            lineHeight: 1.4,
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            Couldn&apos;t load chat history: {loadFailed}. Sends are
+            blocked until this clears so we don&apos;t overwrite
+            existing messages.
+          </span>
+          <button
+            type="button"
+            onClick={retryLoad}
+            style={{
+              padding: "2px 10px",
+              background: "transparent",
+              border: "1px solid #b45309",
+              color: "#fde68a",
+              fontFamily: "inherit",
+              fontSize: 11,
+              borderRadius: 3,
+              cursor: "pointer",
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* Top-level error banner — survives across messages */}
       {topError && (
         <div
@@ -507,7 +655,16 @@ export default function ImageGeneratePanel({
                 >
                   <span>{statusBadge(m.status)}</span>
                   <span>{m.images.length} img</span>
-                  <span>{relativeTime(m.createdAt)}</span>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                  >
+                    {m.status === "pending" && <InlineSpinner />}
+                    {relativeTime(m.createdAt)}
+                  </span>
                 </div>
                 {m.error && (
                   <div style={{ color: "#fecaca", fontSize: 10 }}>
@@ -567,22 +724,57 @@ export default function ImageGeneratePanel({
             >
               <div
                 style={{ color: "#52525b", fontSize: 10 }}
-                title="Reference image inputs (Phase 4)"
+                title={
+                  wiredRefLabels.length > 0
+                    ? `Will attach reference images from ref_${wiredRefLabels
+                        .join(", ref_")
+                        .toLowerCase()} on next send.`
+                    : "Wire ref_a / ref_b / ref_c sockets on the node to attach reference images."
+                }
               >
-                refs: <span style={{ color: "#71717a" }}>—</span>
+                refs:{" "}
+                {(["A", "B", "C"] as const).map((k) => {
+                  const on = wiredRefLabels.includes(k);
+                  return (
+                    <span
+                      key={k}
+                      style={{
+                        color: on ? "#bfdbfe" : "#3f3f46",
+                        marginLeft: 4,
+                        fontWeight: on ? 600 : 400,
+                      }}
+                    >
+                      {k}
+                    </span>
+                  );
+                })}
               </div>
               <button
                 type="button"
                 onClick={send}
-                disabled={!prompt.trim() || busy}
+                disabled={!prompt.trim() || busy || !!loadFailed}
+                title={
+                  loadFailed
+                    ? "Resolve the load-failed banner above before sending."
+                    : undefined
+                }
                 style={{
                   ...btnStyle(),
-                  background: prompt.trim() && !busy ? "#1e3a8a" : "transparent",
+                  background:
+                    prompt.trim() && !busy && !loadFailed
+                      ? "#1e3a8a"
+                      : "transparent",
                   border: `1px solid ${
-                    prompt.trim() && !busy ? "#1d4ed8" : "#3f3f46"
+                    prompt.trim() && !busy && !loadFailed
+                      ? "#1d4ed8"
+                      : "#3f3f46"
                   }`,
-                  color: prompt.trim() && !busy ? "#bfdbfe" : "#52525b",
-                  opacity: prompt.trim() && !busy ? 1 : 0.6,
+                  color:
+                    prompt.trim() && !busy && !loadFailed
+                      ? "#bfdbfe"
+                      : "#52525b",
+                  opacity:
+                    prompt.trim() && !busy && !loadFailed ? 1 : 0.6,
                 }}
               >
                 {busy ? "Generating…" : "Send"}
@@ -687,6 +879,20 @@ function ThumbList({
     }
   }
 
+  // Custom drag mime so the node editor's drop handler can
+  // distinguish our thumbnails from native OS file drags.
+  const onDragStart = (
+    e: React.DragEvent<HTMLButtonElement>,
+    path: string,
+    fmt: string
+  ) => {
+    e.dataTransfer.setData(
+      "application/x-toolbox-image-gen",
+      JSON.stringify({ privatePath: path, format: fmt })
+    );
+    e.dataTransfer.effectAllowed = "copy";
+  };
+
   if (items.length === 0) {
     return (
       <div
@@ -736,7 +942,9 @@ function ThumbList({
               key={it.path}
               type="button"
               onClick={() => onClickThumb(it.path, it.format)}
-              title={it.revised}
+              draggable
+              onDragStart={(e) => onDragStart(e, it.path, it.format)}
+              title={`${it.revised}\n\nDrag onto the node editor to spawn an Image Source.`}
               style={{
                 display: "flex",
                 gap: 8,
@@ -814,7 +1022,9 @@ function ThumbList({
             key={it.path}
             type="button"
             onClick={() => onClickThumb(it.path, it.format)}
-            title={it.revised}
+            draggable
+            onDragStart={(e) => onDragStart(e, it.path, it.format)}
+            title={`${it.revised}\n\nDrag onto the node editor to spawn an Image Source.`}
             style={{
               aspectRatio: "1 / 1",
               padding: 0,
@@ -849,6 +1059,42 @@ function ThumbList({
 // ----------------------------------------------------------------------
 // Tiny helpers
 // ----------------------------------------------------------------------
+
+// Tiny inline spinner. SVG circle with a partial dasharray so a
+// pending request shows visible motion. Driven by the keyframe
+// declared in globals.css under `.toolbox-spinner`.
+function InlineSpinner() {
+  return (
+    <svg
+      className="toolbox-spinner"
+      width="9"
+      height="9"
+      viewBox="0 0 24 24"
+      aria-hidden
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="9"
+        fill="none"
+        stroke="#71717a"
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeDasharray="40"
+        strokeDashoffset="20"
+      />
+    </svg>
+  );
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as string);
+    r.onerror = () => reject(new Error("blob read failed"));
+    r.readAsDataURL(blob);
+  });
+}
 
 function statusBadge(s: "pending" | "done" | "error"): string {
   if (s === "pending") return "…";
