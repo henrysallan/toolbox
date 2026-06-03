@@ -14,7 +14,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NodeEditor from "./NodeEditor";
 import ParamPanel from "./ParamPanel";
-import CustomCursor from "./CustomCursor";
+// import CustomCursor from "./CustomCursor"; // temporarily disabled — using native cursor
 import UserPreferencesModal from "./UserPreferencesModal";
 import PaintOverlay from "./PaintOverlay";
 import PlaybackBar from "./PlaybackBar";
@@ -75,6 +75,8 @@ import type { SaveState } from "./FileNameMenu";
 import TransformGizmo from "./TransformGizmo";
 import SplineEditorOverlay from "./SplineEditorOverlay";
 import PointsOverlay from "./PointsOverlay";
+import WebGPUParticleOverlay from "./WebGPUParticleOverlay";
+import { resolveParticleTestCount } from "@/nodes/effect/webgpu-particle-test";
 import { TrackEditor } from "./TrackEditor";
 import { GraphEditor } from "./GraphEditor";
 import {
@@ -3633,6 +3635,15 @@ function EffectsShell({
       )
     : undefined;
 
+  // WebGPU Particle Test (Phase 0 spike). Presence-driven: the overlay
+  // mounts whenever any node of this type exists in the graph, no
+  // selection required. We only support one at a time — extras would
+  // need their own canvases.
+  const webgpuParticleTest = useMemo(
+    () => nodes.find((n) => n.data.defType === "webgpu-particle-test"),
+    [nodes]
+  );
+
   // Preview dots for any selected node whose primary output is a points
   // value. Populated by the pipeline-eval effect after each render pass.
   // Stored as the typed-array PointsValue (not a materialized Point[])
@@ -4219,6 +4230,34 @@ function EffectsShell({
               value={selectedPoints}
             />
           )}
+          {webgpuParticleTest && backendReady && (
+            <WebGPUParticleOverlay
+              canvas={canvasRef.current}
+              count={resolveParticleTestCount(
+                webgpuParticleTest.data.params.count
+              )}
+              gravity={
+                typeof webgpuParticleTest.data.params.gravity === "number"
+                  ? webgpuParticleTest.data.params.gravity
+                  : 0.8
+              }
+              damping={
+                typeof webgpuParticleTest.data.params.damping === "number"
+                  ? webgpuParticleTest.data.params.damping
+                  : 0.999
+              }
+              pointSizePx={
+                typeof webgpuParticleTest.data.params.pointSize === "number"
+                  ? webgpuParticleTest.data.params.pointSize
+                  : 2.5
+              }
+              seedNonce={
+                typeof webgpuParticleTest.data.params.seed === "number"
+                  ? webgpuParticleTest.data.params.seed
+                  : 0
+              }
+            />
+          )}
           {activeSplineNode && backendReady && (
             <SplineEditorOverlay
               canvas={canvasRef.current}
@@ -4620,7 +4659,7 @@ function EffectsShell({
         signedIn={signedIn}
         onClose={() => setUserPrefsOpen(false)}
       />
-      <CustomCursor />
+      {/* <CustomCursor /> temporarily disabled — using native cursor */}
     </div>
   );
 }

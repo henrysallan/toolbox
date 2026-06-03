@@ -660,6 +660,7 @@ export type ParamType =
   | "string"
   | "file"
   | "font"
+  | "font_variations"
   | "video_file"
   | "paint"
   | "merge_layers"
@@ -668,6 +669,20 @@ export type ParamType =
   | "spline_anchors"
   | "svg_file"
   | "audio_file";
+
+// One axis declared by a variable font's `fvar` table. Surfaced in
+// FontParamValue.axes when the user uploads a variable .ttf/.otf;
+// drives the per-axis sliders the Text node renders. Tag is the
+// 4-char OpenType tag (wght / wdth / slnt / opsz / GRAD / …); name
+// is the human label resolved from the font's name table at parse
+// time, with a fallback to a built-in alias for known tags.
+export interface FontAxis {
+  tag: string;
+  name: string;
+  min: number;
+  max: number;
+  default: number;
+}
 
 export interface AudioFileParamValue {
   // Persistent HTMLAudioElement bound to an ObjectURL — kept alive for
@@ -700,6 +715,11 @@ export interface FontParamValue {
   family: string;
   // Original filename (for display — e.g. "MyCustom-Regular.otf").
   filename?: string;
+  // Variation axes declared by the font's `fvar` table. Empty /
+  // undefined when the font isn't variable (or the format isn't
+  // parseable — e.g. WOFF2). Drives the per-axis sliders the Text
+  // node renders.
+  axes?: FontAxis[];
 }
 
 export interface PaintParamValue {
@@ -791,7 +811,13 @@ export interface NodeDefinition {
   // Top-level utility/effect/output ignore it.
   subcategory?: NodeSubcategory;
   description?: string;
-  backend: "webgl2";
+  // Which GPU API this node uses. Today almost every node is "webgl2";
+  // "webgpu" is reserved for compute-heavy nodes that own their own
+  // WebGPU pipeline (Phase 0: WebGPU Particle Test). The evaluator
+  // does not yet bucket by this — Phase 1+ will use it to schedule a
+  // WebGPU pass after the WebGL2 pass each frame (see
+  // specdocs/webgpu-particles.md).
+  backend: "webgl2" | "webgpu";
   terminal?: boolean;
   // When false, the evaluator will not cache this node's output — it is
   // assumed to read time or other external state that isn't captured by its

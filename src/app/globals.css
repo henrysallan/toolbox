@@ -93,15 +93,13 @@ body {
    the ring is the single visual cursor. On touch / coarse pointers
    we leave the native cursor alone — the ring component disables
    itself there anyway. */
+/* Temporarily disabled — using native cursor instead of CustomCursor.tsx
 @media (hover: hover) and (pointer: fine) {
   *,
   *::before,
   *::after {
     cursor: none !important;
   }
-  /* Vendor pseudo-elements aren't reached by the universal selector,
-     so the slider thumbs / number-input spin buttons / etc. would
-     keep showing the system pointer set in form-controls.css. */
   input::-webkit-slider-thumb,
   input::-moz-range-thumb,
   input::-webkit-slider-runnable-track,
@@ -114,6 +112,7 @@ body {
     cursor: none !important;
   }
 }
+*/
 
 /* Inline spinner used by async chat affordances (Image Generate's
    per-message status indicator, etc.). 0.9s rotation lets the eye

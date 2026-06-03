@@ -1,4 +1,5 @@
 import type { FontParamValue } from "@/engine/types";
+import { parseVariableAxes } from "./font-parse";
 
 // Curated set of Google Fonts plus a handful of system families. System
 // families resolve instantly; Google families load on first use via an
@@ -103,10 +104,18 @@ export async function registerCustomFont(
   const face = new FontFace(family, buffer);
   await face.load();
   document.fonts.add(face);
-  // Pre-warm the loadPromises cache so callers asking `ensureFontLoaded`
-  // with the synthetic family skip the network path.
   loadPromises.set(family, Promise.resolve());
-  return { family, filename: file.name };
+  // Best-effort `fvar` parse so the Text node knows which axis
+  // sliders to expose. Returns null for non-variable fonts and for
+  // formats we don't unpack here (WOFF/WOFF2) — both cases just
+  // mean "no axis sliders".
+  let axes;
+  try {
+    axes = parseVariableAxes(buffer) ?? undefined;
+  } catch {
+    axes = undefined;
+  }
+  return { family, filename: file.name, axes };
 }
 
 // Synchronous availability check — used by the text node to decide whether

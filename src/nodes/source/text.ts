@@ -10,6 +10,13 @@ import type {
 import { computeSDF } from "@/engine/sdf";
 import { marchingSquares } from "@/engine/marching-squares";
 import { CURATED_FONTS, ensureFontLoaded, isFontReady } from "@/lib/fonts";
+import {
+  asAxisDict,
+  hasMaskDriven,
+  isAxisDictAllConstant,
+  resolveAxisAt,
+  type AxisInput,
+} from "@/lib/font-axis";
 
 // The built-in transform shader. Mostly identical to transform.ts but with an
 // extra Y-flip when sampling the rasterized 2D canvas, whose row 0 sits at
@@ -47,6 +54,12 @@ interface TextState {
   // resizing the canvas once on init avoids a re-alloc on every frame.
   rasterCanvas: HTMLCanvasElement;
   rasterTex: WebGLTexture;
+  // Off-screen canvas used to read back the `mask` input's pixels
+  // when any axis is in `maskDriven` mode. The rasterizer blits
+  // the mask into this canvas at our own resolution, then
+  // `getImageData` to sample the mask at each glyph's centre.
+  // Allocated lazily.
+  maskReadCanvas: HTMLCanvasElement | null;
   primary: ImageValue;
   sdf: MaskValue;
   // Cached marching-squares contour of the current text raster.
@@ -76,9 +89,92 @@ function computeRasterSig(
     a: params.alignment,
     l: params.leading,
     k: params.letter_spacing,
+    // Variable-font axes — included so a slider drag re-rasterizes.
+    v: params.font_variations,
     W,
     H,
   });
+}
+
+// Build the CSS `font-variation-settings` string from a resolved
+// `Record<tag, number>`. The rasterizer calls resolveAxisAt once
+// per char to populate that record, then this helper emits the CSS
+// string that goes onto the rasterCanvas's style attribute.
+function buildVariationsCss(
+  resolved: Record<string, number>,
+  axes: { tag: string }[] | undefined
+): string {
+  if (!axes || axes.length === 0) return "";
+  const parts: string[] = [];
+  for (const a of axes) {
+    const v = resolved[a.tag];
+    if (typeof v !== "number" || !Number.isFinite(v)) continue;
+    parts.push(`'${a.tag}' ${v}`);
+  }
+  return parts.join(", ");
+}
+
+// Apply all variation-styling paths (canvas CSS, font shorthand,
+// fontStretch) for the axis values resolved at position `t`
+// (normalised across the line) and `charIndex` (absolute char
+// index). `axesDict` is the user's per-axis modulation config;
+// fontAxes is the font's declared axis list (tags + ranges).
+function applyAxisStyling(
+  canvas: HTMLCanvasElement,
+  c2d: CanvasRenderingContext2D,
+  fontAxes: { tag: string }[] | undefined,
+  axesDict: Record<string, AxisInput>,
+  t: number,
+  charIndex: number,
+  family: string,
+  size: number,
+  // `maskValue` is forwarded to resolveAxisAt so the maskDriven
+  // mode can interpolate its endpoints. Other modes ignore it.
+  maskValue: number | null = null
+) {
+  // Resolve every axis at this character.
+  const resolved: Record<string, number> = {};
+  if (fontAxes) {
+    for (const a of fontAxes) {
+      const v = resolveAxisAt(axesDict[a.tag], t, charIndex, maskValue);
+      if (v != null && Number.isFinite(v)) resolved[a.tag] = v;
+    }
+  }
+
+  // CSS path — feeds Chromium's canvas-style inheritance.
+  canvas.style.fontVariationSettings = buildVariationsCss(
+    resolved,
+    fontAxes
+  );
+
+  // Pull out wght / wdth / ital for the first-class canvas2d API
+  // fallback. These are the standard axes for which canvas2d has
+  // dedicated paths regardless of style inheritance.
+  const wght = resolved.wght;
+  const wdth = resolved.wdth;
+  const isItalic =
+    typeof resolved.ital === "number" && resolved.ital >= 0.5;
+  const styleSlot = isItalic ? "italic " : "";
+  const weightSlot =
+    typeof wght === "number" && Number.isFinite(wght)
+      ? `${Math.round(wght)} `
+      : "";
+  c2d.font = `${styleSlot}${weightSlot}${size}px "${family}", sans-serif`;
+  if (typeof wdth === "number" && Number.isFinite(wdth)) {
+    try {
+      (c2d as unknown as { fontStretch?: string }).fontStretch =
+        `${wdth}%`;
+    } catch {
+      // Older canvas2d — ignore.
+    }
+  } else {
+    try {
+      (c2d as unknown as { fontStretch?: string }).fontStretch =
+        "normal";
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function computePostSig(params: Record<string, unknown>): string {
@@ -112,9 +208,28 @@ function ensureState(ctx: RenderContext, nodeId: string): TextState {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.bindTexture(gl.TEXTURE_2D, null);
+  // Attach the rasterCanvas to the DOM (off-screen + hidden) so the
+  // browser actually computes its style. Detached canvases don't get
+  // styles resolved, which means setting
+  // `canvas.style.fontVariationSettings` would silently no-op when
+  // canvas2d's font property tries to inherit from the element. With
+  // the canvas in the document the computed style is real and
+  // canvas2d's font resolver (Chromium + recent Firefox) reads
+  // font-variation-settings out of it for variable-font axes.
+  const rasterCanvas = document.createElement("canvas");
+  rasterCanvas.setAttribute("data-toolbox-text-raster", "1");
+  rasterCanvas.style.position = "fixed";
+  rasterCanvas.style.left = "-99999px";
+  rasterCanvas.style.top = "-99999px";
+  rasterCanvas.style.pointerEvents = "none";
+  rasterCanvas.style.visibility = "hidden";
+  if (typeof document !== "undefined") {
+    document.body.appendChild(rasterCanvas);
+  }
   const state: TextState = {
-    rasterCanvas: document.createElement("canvas"),
+    rasterCanvas,
     rasterTex: tex,
+    maskReadCanvas: null,
     primary: ctx.allocImage(),
     sdf: ctx.allocMask(),
     spline: { kind: "spline", subpaths: [] },
@@ -125,6 +240,57 @@ function ensureState(ctx: RenderContext, nodeId: string): TextState {
   };
   ctx.state[key] = state;
   return state;
+}
+
+// Blit the mask image to a CPU-readable 2D canvas at the
+// rasterizer's native resolution, then pull the pixel buffer.
+// Returns an ImageData for direct (x, y) sampling, or null if
+// the mask isn't usable. Allocates the readback canvas lazily on
+// the state so we don't churn one per frame.
+function readMaskImageData(
+  ctx: RenderContext,
+  state: TextState,
+  mask: ImageValue,
+  W: number,
+  H: number
+): ImageData | null {
+  if (!state.maskReadCanvas) {
+    state.maskReadCanvas = document.createElement("canvas");
+  }
+  const c = state.maskReadCanvas;
+  if (c.width !== W) c.width = W;
+  if (c.height !== H) c.height = H;
+  try {
+    ctx.blitToCanvas(mask, c);
+    const c2d = c.getContext("2d");
+    if (!c2d) return null;
+    return c2d.getImageData(0, 0, W, H);
+  } catch {
+    return null;
+  }
+}
+
+// Sample the mask's R channel at (x, y) pixels. Clamps to the
+// canvas bounds and returns a [0, 1] luminance. The mask image is
+// blitToCanvas'd in engine-standard Y-up orientation, so its
+// row 0 is the visual bottom — we flip Y to match canvas2d's
+// Y-down convention (where the text is drawn).
+function sampleMask(
+  maskData: ImageData,
+  x: number,
+  y: number,
+  W: number,
+  H: number
+): number {
+  if (W === 0 || H === 0) return 0;
+  const ix = Math.max(0, Math.min(maskData.width - 1, Math.round(x)));
+  // Flip Y: text draws with row 0 at canvas top; the blitted mask
+  // also lands row 0 at top from canvas2d's POV (drawImage flips
+  // FBO orientation back to top-down). If your mask looks
+  // upside-down in practice, swap this `iy` to use H - 1 - y.
+  const iy = Math.max(0, Math.min(maskData.height - 1, Math.round(y)));
+  const idx = (iy * maskData.width + ix) * 4;
+  return maskData.data[idx] / 255;
 }
 
 function resizeStateIfNeeded(ctx: RenderContext, state: TextState): void {
@@ -144,7 +310,13 @@ function rasterize(
   ctx: RenderContext,
   state: TextState,
   params: Record<string, unknown>,
-  family: string
+  family: string,
+  // Pre-blitted mask pixels — when present, the per-char layout
+  // samples the mask at each character's centre and passes the
+  // resulting [0, 1] luminance into applyAxisStyling so maskDriven
+  // axes can interpolate between their endpoints. Null when no
+  // mask is wired (or no axis is in maskDriven mode).
+  maskData: ImageData | null = null
 ): void {
   const W = ctx.width;
   const H = ctx.height;
@@ -165,27 +337,144 @@ function rasterize(
   const leading = (params.leading as number) ?? 1.2;
   const letterSpacing = (params.letter_spacing as number) ?? 0;
 
+  // Variable-font axes — applied via TWO redundant paths:
+  //   1. `canvas.style.fontVariationSettings` — canvas needs to be
+  //      in the DOM (we attach it in ensureState) for the browser
+  //      to actually compute this. Chromium then reads it from the
+  //      canvas's computed style during canvas2d font resolution,
+  //      which is what carries all axes (including custom GRAD /
+  //      XHGT / etc.) through.
+  //   2. `wght` is also baked into the font shorthand and `wdth`
+  //      into `c2d.fontStretch`. These are first-class canvas2d
+  //      APIs and don't depend on CSS resolution at all, so even
+  //      browsers that ignore the style attribute still get the
+  //      most-common axes right.
+  const customFont = params.custom_font as FontParamValue | null | undefined;
+  const axesDict = asAxisDict(params.font_variations);
+  const allConstant = isAxisDictAllConstant(axesDict);
+
   c2d.save();
   c2d.fillStyle = color;
-  // The quote wrapping lets families with spaces ("Playfair Display") parse.
-  c2d.font = `${size}px "${family}", sans-serif`;
-  c2d.textAlign = alignment;
   c2d.textBaseline = "middle";
-  // `letterSpacing` is a 2023+ canvas property. Older browsers just ignore
-  // the assignment rather than throwing.
-  (c2d as unknown as { letterSpacing?: string }).letterSpacing = `${letterSpacing}px`;
 
   const lines = text.split("\n");
   const lineHeight = size * leading;
   const totalHeight = Math.max(1, lines.length) * lineHeight;
   const startY = H / 2 - totalHeight / 2 + lineHeight / 2;
-  const x = alignment === "left" ? 0 : alignment === "right" ? W : W / 2;
-  for (let i = 0; i < lines.length; i++) {
-    c2d.fillText(lines[i], x, startY + i * lineHeight);
+
+  if (allConstant) {
+    // FAST PATH — single fillText per line. All axes have the same
+    // value across every character, so we set styling once and let
+    // canvas2d's native text layout (kerning, letter-spacing) do
+    // the work.
+    // Fast path: every axis is constant. maskDriven counts as
+    // modulated (isAxisDictAllConstant excludes it), so we never
+    // reach here with a maskData payload — pass null and let the
+    // resolver use its constant value.
+    applyAxisStyling(
+      canvas,
+      c2d,
+      customFont?.axes,
+      axesDict,
+      0,
+      0,
+      family,
+      size,
+      null
+    );
+    c2d.textAlign = alignment;
+    (c2d as unknown as { letterSpacing?: string }).letterSpacing =
+      `${letterSpacing}px`;
+    const x =
+      alignment === "left" ? 0 : alignment === "right" ? W : W / 2;
+    for (let i = 0; i < lines.length; i++) {
+      c2d.fillText(lines[i], x, startY + i * lineHeight);
+    }
+  } else {
+    // MODULATED PATH — per-character layout. For each character we
+    // resolve every axis at its position, restyle, measure, and
+    // draw. textAlign stays "left" because we manage horizontal
+    // alignment ourselves (we need exact advance accumulation,
+    // which textAlign can't do mid-string).
+    c2d.textAlign = "left";
+    (c2d as unknown as { letterSpacing?: string }).letterSpacing = "0px";
+    // For each line, two passes: measure total width (to handle
+    // center/right alignment), then draw at the right starting x.
+    // The line-total measure pre-applies the median axis values so
+    // alignment is roughly right even when axes swing wildly; the
+    // per-char draw pass then restyles for each glyph.
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+      const chars = Array.from(line); // codepoint-safe split
+      const total = chars.length;
+      const y = startY + li * lineHeight;
+      // Pre-measure each char with its axis values applied so
+      // alignment uses real advances rather than a single-shape
+      // approximation. Mask sampling for the measure pass uses
+      // a rough placeholder (W/2, y) — close enough; the draw
+      // pass below re-samples at the actual glyph centre.
+      const advances: number[] = [];
+      let lineWidth = 0;
+      for (let i = 0; i < total; i++) {
+        const t = total <= 1 ? 0 : i / (total - 1);
+        const mPre = maskData
+          ? sampleMask(maskData, W / 2, y, W, H)
+          : null;
+        applyAxisStyling(
+          canvas,
+          c2d,
+          customFont?.axes,
+          axesDict,
+          t,
+          i,
+          family,
+          size,
+          mPre
+        );
+        const adv = c2d.measureText(chars[i]).width;
+        advances.push(adv);
+        lineWidth += adv + letterSpacing;
+      }
+      lineWidth -= letterSpacing; // no trailing gap
+      let cx =
+        alignment === "left"
+          ? 0
+          : alignment === "right"
+          ? W - lineWidth
+          : (W - lineWidth) / 2;
+      // Final draw pass — re-apply per-char styling and draw at cx.
+      // measureText + fillText share the same active style so as
+      // long as we restyle before each, the rendered glyph matches
+      // the advance we measured. Mask sampling reads at the
+      // glyph's CENTRE so a wide character is driven by its own
+      // mid-region rather than its leading edge.
+      for (let i = 0; i < total; i++) {
+        const t = total <= 1 ? 0 : i / (total - 1);
+        const cxCentre = cx + advances[i] / 2;
+        const mVal = maskData
+          ? sampleMask(maskData, cxCentre, y, W, H)
+          : null;
+        applyAxisStyling(
+          canvas,
+          c2d,
+          customFont?.axes,
+          axesDict,
+          t,
+          i,
+          family,
+          size,
+          mVal
+        );
+        c2d.fillText(chars[i], cx, y);
+        cx += advances[i] + letterSpacing;
+      }
+    }
   }
   c2d.restore();
 
-  // Upload to the reusable RGBA8 texture bound to u_src in the transform pass.
+  // Upload to the main rasterTex — single-pass canvas2d render
+  // for all modes now (the mask-driven mode samples per char,
+  // not per pixel, so we no longer need a parallel raster chain).
   const gl = ctx.gl;
   gl.bindTexture(gl.TEXTURE_2D, state.rasterTex);
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
@@ -250,7 +539,14 @@ export const textNode: NodeDefinition = {
   // cache inside the compute skips re-rasterization when nothing changed.
   stable: false,
   supportsTransformGizmo: true,
-  inputs: [],
+  inputs: [
+    // Optional mask image — consumed only when at least one axis
+    // is in maskMorph mode. The rasterizer renders the text twice
+    // (axis endpoints A and B) and the GPU blend pass mixes
+    // per-pixel using mask.r. Wire any image-producing node (SDF
+    // Rasterize, Image Source, Gradient, etc.) in here.
+    { name: "mask", label: "Mask", type: "image", required: false },
+  ],
   params: [
     {
       name: "text",
@@ -272,6 +568,21 @@ export const textNode: NodeDefinition = {
       label: "Custom font",
       type: "font",
       default: null,
+    },
+    {
+      // Variable-font axis values, keyed by 4-char OpenType tag
+      // (e.g. { wght: 700, wdth: 80 }). The slider list is
+      // rendered dynamically by ParamPanel based on the uploaded
+      // custom_font's `.axes`. Empty / missing keys fall back to
+      // each axis's declared default at render time.
+      name: "font_variations",
+      label: "Variable axes",
+      type: "font_variations",
+      default: {},
+      visibleIf: (p) => {
+        const f = p.custom_font as FontParamValue | null | undefined;
+        return !!(f?.axes && f.axes.length > 0);
+      },
     },
     {
       name: "font_size",
@@ -398,7 +709,7 @@ export const textNode: NodeDefinition = {
     },
   ],
 
-  compute({ params, ctx, nodeId }) {
+  compute({ inputs, params, ctx, nodeId }) {
     const state = ensureState(ctx, nodeId);
     resizeStateIfNeeded(ctx, state);
 
@@ -420,14 +731,47 @@ export const textNode: NodeDefinition = {
       };
     }
 
-    const sig = computeRasterSig(params, family, ctx.width, ctx.height);
+    // Mask-driven dispatch. When any axis is in `maskDriven` mode
+    // we read the mask socket back to CPU once and sample it per
+    // character during the per-char layout. The mask's texture
+    // identity goes into the sig so wiring / unwiring the socket
+    // reliably re-renders.
+    const axesDict = asAxisDict(params.font_variations);
+    const maskMode = hasMaskDriven(axesDict);
+    const maskIn = inputs.mask;
+    const maskImg =
+      maskIn && maskIn.kind === "image" ? maskIn : null;
+    const maskSigKey = maskMode
+      ? `mask:${maskImg ? "wired" : "unwired"}`
+      : "no-mask";
+    const sig =
+      computeRasterSig(params, family, ctx.width, ctx.height) +
+      "|" +
+      maskSigKey;
     const postSig = computePostSig(params);
 
-    const rasterChanged = sig !== state.lastSig;
+    // Force re-rasterize every frame when maskDriven is in play
+    // AND the socket is actually wired. The mask's TEXTURE
+    // identity is stable across frames (the engine reuses
+    // pooled textures), so we can't detect content changes from
+    // it — and we DO want content changes to drive a re-render
+    // when the user wires, say, the Cursor node into the mask.
+    // The text node already declares stable: false so compute
+    // re-enters on every pipeline bump; bypassing the sig cache
+    // here is what actually makes the mask sampling live.
+    const liveMask = maskMode && !!maskImg;
+    const rasterChanged = liveMask || sig !== state.lastSig;
     const postChanged = postSig !== state.lastPostSig;
 
     if (rasterChanged) {
-      rasterize(ctx, state, params, family);
+      // Read mask back once per rasterize. Skip when no axis needs
+      // it, or when the socket is unwired (resolver falls back to
+      // each maskDriven axis's `a` endpoint in that case).
+      const maskData =
+        maskMode && maskImg
+          ? readMaskImageData(ctx, state, maskImg, ctx.width, ctx.height)
+          : null;
+      rasterize(ctx, state, params, family, maskData);
       state.lastSig = sig;
     }
     if (rasterChanged || postChanged) {
@@ -472,6 +816,9 @@ export const textNode: NodeDefinition = {
     ctx.releaseTexture(state.primary.texture);
     ctx.releaseTexture(state.sdf.texture);
     ctx.gl.deleteTexture(state.rasterTex);
+    if (state.rasterCanvas.parentNode) {
+      state.rasterCanvas.parentNode.removeChild(state.rasterCanvas);
+    }
     delete ctx.state[`text:${nodeId}`];
   },
 };

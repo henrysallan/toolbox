@@ -424,6 +424,7 @@ export default function ParamPanel({
                   key={p.name}
                   param={p}
                   value={selected.data.params[p.name]}
+                  allParams={selected.data.params}
                   onChange={(v) => onParamChange(selected.id, p.name, v)}
                   exposed={isExposed}
                   exposable={exposable}
@@ -617,6 +618,7 @@ function Section({
 function ParamRow({
   param,
   value,
+  allParams,
   onChange,
   exposed,
   exposable,
@@ -636,6 +638,11 @@ function ParamRow({
 }: {
   param: ParamDef;
   value: unknown;
+  // Full param object for the selected node — passed alongside the
+  // single-param value so renderers that need cross-param context
+  // (font_variations reading `custom_font.axes` from the same node)
+  // can opt in without restructuring the whole row.
+  allParams?: Record<string, unknown>;
   onChange: (v: unknown) => void;
   exposed?: boolean;
   exposable?: boolean;
@@ -899,6 +906,7 @@ function ParamRow({
           <ParamControl
             param={param}
             value={value}
+            allParams={allParams}
             onChange={onChange}
             rangeOverride={rangeOverride}
             onRangeChange={onRangeChange}
@@ -1001,12 +1009,16 @@ function menuItemStyle(active?: boolean): React.CSSProperties {
 function ParamControl({
   param,
   value,
+  allParams,
   onChange,
   rangeOverride,
   onRangeChange,
 }: {
   param: ParamDef;
   value: unknown;
+  // Sibling params on the same node — only consumed by renderers
+  // that need cross-param context (font_variations).
+  allParams?: Record<string, unknown>;
   onChange: (v: unknown) => void;
   rangeOverride?: { min?: number; max?: number; softMax?: number };
   onRangeChange?: (
@@ -1309,6 +1321,50 @@ function ParamControl({
             clear
           </button>
         )}
+      </div>
+    );
+  }
+
+  if (param.type === "font_variations") {
+    const customFont = (allParams?.custom_font ?? null) as
+      | {
+          axes?: Array<{
+            tag: string;
+            name: string;
+            min: number;
+            max: number;
+            default: number;
+          }>;
+        }
+      | null;
+    const axes = customFont?.axes ?? [];
+    const variations =
+      value && typeof value === "object"
+        ? (value as Record<string, unknown>)
+        : {};
+    if (axes.length === 0) {
+      return (
+        <div style={{ color: "#71717a", fontSize: 10, fontStyle: "italic" }}>
+          Upload a variable font to expose its axes.
+        </div>
+      );
+    }
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {axes.map((axis) => (
+          <FontAxisControl
+            key={axis.tag}
+            axis={axis}
+            value={variations[axis.tag]}
+            textValue={(allParams?.text as string) ?? ""}
+            onChange={(next) => {
+              const nextDict = { ...variations };
+              if (next === null) delete nextDict[axis.tag];
+              else nextDict[axis.tag] = next;
+              onChange(nextDict);
+            }}
+          />
+        ))}
       </div>
     );
   }
@@ -2287,6 +2343,638 @@ function CurvesControl({
       <div style={{ color: "#52525b", fontSize: 10 }}>
         click to add · drag to move · drag far off-chart to remove
       </div>
+    </div>
+  );
+}
+
+// Per-axis control for a font's variation axis. Supports a few
+// modulation modes (constant / gradient / sine / random / cycle)
+// — the rasterizer reads the mode and renders each character with
+// its own resolved axis value.
+function FontAxisControl({
+  axis,
+  value,
+  textValue,
+  onChange,
+}: {
+  axis: { tag: string; name: string; min: number; max: number; default: number };
+  value: unknown;
+  // Sibling text param — used by the perGlyph mode to size its
+  // per-character list to match the current string. Empty string
+  // is fine; the list just shrinks to length 0.
+  textValue?: string;
+  onChange: (next: unknown) => void;
+}) {
+  // Normalise to the AxisValue object form so the UI doesn't have
+  // to special-case legacy plain numbers. Legacy stays on-disk in
+  // the original shape until the user touches it.
+  const av = (() => {
+    if (typeof value === "number") return { mode: "constant" as const, value };
+    if (value && typeof value === "object" && "mode" in value)
+      return value as {
+        mode: string;
+        [k: string]: unknown;
+      };
+    return null;
+  })();
+  const mode = (av?.mode as string) ?? "default";
+  const step = Math.max((axis.max - axis.min) / 1000, 0.001);
+
+  const setMode = (next: string) => {
+    if (next === "default") {
+      onChange(null);
+      return;
+    }
+    if (next === "constant") {
+      onChange({ mode: "constant", value: axis.default });
+      return;
+    }
+    if (next === "gradient") {
+      onChange({
+        mode: "gradient",
+        from: axis.min,
+        to: axis.max,
+        curve: 1,
+      });
+      return;
+    }
+    if (next === "sine") {
+      onChange({
+        mode: "sine",
+        center: axis.default,
+        amplitude: (axis.max - axis.min) * 0.25,
+        frequency: 1,
+        phase: 0,
+      });
+      return;
+    }
+    if (next === "random") {
+      onChange({
+        mode: "random",
+        min: axis.min,
+        max: axis.max,
+        seed: 1,
+      });
+      return;
+    }
+    if (next === "cycle") {
+      onChange({
+        mode: "cycle",
+        values: [axis.min, axis.max],
+      });
+      return;
+    }
+    if (next === "perGlyph") {
+      // Seed with the current text length, all set to the axis
+      // default. User then dials each glyph in independently.
+      const chars = Array.from(textValue ?? "");
+      const len = Math.max(1, chars.length);
+      onChange({
+        mode: "perGlyph",
+        values: new Array(len).fill(axis.default),
+      });
+      return;
+    }
+    if (next === "maskDriven") {
+      onChange({ mode: "maskDriven", a: axis.min, b: axis.max });
+      return;
+    }
+  };
+
+  const labelHeader = (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+      }}
+    >
+      <div
+        style={{
+          flex: 1,
+          color: "#a1a1aa",
+          fontSize: 10,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+        title={`${axis.name} (${axis.tag}) — ${axis.min}…${axis.max}, default ${axis.default}`}
+      >
+        {axis.name}
+        <span style={{ color: "#52525b", marginLeft: 4 }}>
+          {axis.tag}
+        </span>
+      </div>
+      <select
+        value={mode}
+        onChange={(e) => setMode(e.target.value)}
+        style={{
+          background: "#0a0a0a",
+          border: "1px solid #27272a",
+          color: "#e5e7eb",
+          fontFamily: "inherit",
+          fontSize: 10,
+          padding: "1px 4px",
+        }}
+      >
+        <option value="default">default</option>
+        <option value="constant">constant</option>
+        <option value="gradient">gradient</option>
+        <option value="sine">sine</option>
+        <option value="random">random</option>
+        <option value="cycle">cycle</option>
+        <option value="perGlyph">per glyph</option>
+        <option value="maskDriven">mask (per glyph)</option>
+      </select>
+    </div>
+  );
+
+  // Mode-specific body.
+  let body: React.ReactNode = null;
+  if (mode === "constant") {
+    body = (
+      <FontAxisSlider
+        label="value"
+        value={(av as unknown as { value: number }).value}
+        min={axis.min}
+        max={axis.max}
+        step={step}
+        onChange={(v) => onChange({ mode: "constant", value: v })}
+      />
+    );
+  } else if (mode === "gradient") {
+    const a = av as unknown as { from: number; to: number; curve?: number };
+    body = (
+      <>
+        <FontAxisSlider
+          label="from"
+          value={a.from}
+          min={axis.min}
+          max={axis.max}
+          step={step}
+          onChange={(v) =>
+            onChange({ ...a, mode: "gradient", from: v })
+          }
+        />
+        <FontAxisSlider
+          label="to"
+          value={a.to}
+          min={axis.min}
+          max={axis.max}
+          step={step}
+          onChange={(v) => onChange({ ...a, mode: "gradient", to: v })}
+        />
+        <FontAxisSlider
+          label="curve"
+          value={a.curve ?? 1}
+          min={0.25}
+          max={4}
+          step={0.05}
+          onChange={(v) =>
+            onChange({ ...a, mode: "gradient", curve: v })
+          }
+        />
+      </>
+    );
+  } else if (mode === "sine") {
+    const a = av as unknown as {
+      center: number;
+      amplitude: number;
+      frequency: number;
+      phase: number;
+    };
+    body = (
+      <>
+        <FontAxisSlider
+          label="center"
+          value={a.center}
+          min={axis.min}
+          max={axis.max}
+          step={step}
+          onChange={(v) => onChange({ ...a, mode: "sine", center: v })}
+        />
+        <FontAxisSlider
+          label="amplitude"
+          value={a.amplitude}
+          min={0}
+          max={axis.max - axis.min}
+          step={step}
+          onChange={(v) =>
+            onChange({ ...a, mode: "sine", amplitude: v })
+          }
+        />
+        <FontAxisSlider
+          label="freq"
+          value={a.frequency}
+          min={0.1}
+          max={10}
+          step={0.05}
+          onChange={(v) =>
+            onChange({ ...a, mode: "sine", frequency: v })
+          }
+        />
+        <FontAxisSlider
+          label="phase"
+          value={a.phase}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(v) => onChange({ ...a, mode: "sine", phase: v })}
+        />
+      </>
+    );
+  } else if (mode === "random") {
+    const a = av as unknown as { min: number; max: number; seed: number };
+    body = (
+      <>
+        <FontAxisSlider
+          label="min"
+          value={a.min}
+          min={axis.min}
+          max={axis.max}
+          step={step}
+          onChange={(v) => onChange({ ...a, mode: "random", min: v })}
+        />
+        <FontAxisSlider
+          label="max"
+          value={a.max}
+          min={axis.min}
+          max={axis.max}
+          step={step}
+          onChange={(v) => onChange({ ...a, mode: "random", max: v })}
+        />
+        <FontAxisSlider
+          label="seed"
+          value={a.seed}
+          min={0}
+          max={1000}
+          step={1}
+          onChange={(v) =>
+            onChange({ ...a, mode: "random", seed: v })
+          }
+        />
+      </>
+    );
+  } else if (mode === "cycle") {
+    const a = av as unknown as { values: number[] };
+    const cv = Array.isArray(a.values) ? a.values : [axis.min, axis.max];
+    body = (
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+        }}
+      >
+        {cv.map((v, i) => (
+          <div
+            key={i}
+            style={{ display: "flex", alignItems: "center", gap: 6 }}
+          >
+            <span
+              style={{
+                width: 30,
+                fontSize: 10,
+                color: "#71717a",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              #{i}
+            </span>
+            <input
+              type="range"
+              min={axis.min}
+              max={axis.max}
+              step={step}
+              value={v}
+              onChange={(e) => {
+                const next = [...cv];
+                next[i] = parseFloat(e.target.value);
+                onChange({ mode: "cycle", values: next });
+              }}
+              style={{ flex: 1 }}
+            />
+            <span
+              style={{
+                width: 36,
+                fontSize: 10,
+                color: "#a1a1aa",
+                textAlign: "right",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {Number.isInteger(v) ? v.toFixed(0) : v.toFixed(1)}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                if (cv.length <= 1) return;
+                const next = cv.filter((_, j) => j !== i);
+                onChange({ mode: "cycle", values: next });
+              }}
+              style={{
+                padding: "1px 4px",
+                background: "transparent",
+                border: "1px solid #3f3f46",
+                color: "#a1a1aa",
+                fontFamily: "inherit",
+                fontSize: 10,
+                borderRadius: 3,
+                cursor: "pointer",
+              }}
+              title="Remove"
+            >
+              −
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => {
+            const next = [...cv, axis.default];
+            onChange({ mode: "cycle", values: next });
+          }}
+          style={{
+            alignSelf: "flex-start",
+            padding: "2px 8px",
+            background: "transparent",
+            border: "1px solid #3f3f46",
+            color: "#a1a1aa",
+            fontFamily: "inherit",
+            fontSize: 10,
+            borderRadius: 3,
+            cursor: "pointer",
+          }}
+        >
+          + add step
+        </button>
+      </div>
+    );
+  } else if (mode === "maskDriven") {
+    const a = av as unknown as { a: number; b: number };
+    body = (
+      <>
+        <div
+          style={{
+            color: "#71717a",
+            fontSize: 10,
+            marginBottom: 2,
+            lineHeight: 1.5,
+          }}
+        >
+          Wire an image into the Text node&apos;s <b>mask</b> socket
+          — the rasterizer samples it at each character&apos;s
+          centre and interpolates between <b>a</b> (mask = 0) and{" "}
+          <b>b</b> (mask = 1). One value per glyph (not sub-pixel).
+        </div>
+        <FontAxisSlider
+          label="a (mask 0)"
+          value={a.a}
+          min={axis.min}
+          max={axis.max}
+          step={step}
+          onChange={(v) =>
+            onChange({ ...a, mode: "maskDriven", a: v })
+          }
+        />
+        <FontAxisSlider
+          label="b (mask 1)"
+          value={a.b}
+          min={axis.min}
+          max={axis.max}
+          step={step}
+          onChange={(v) =>
+            onChange({ ...a, mode: "maskDriven", b: v })
+          }
+        />
+      </>
+    );
+  } else if (mode === "perGlyph") {
+    const a = av as unknown as { values: number[] };
+    // Codepoint-safe split so emoji / combining marks count as one
+    // glyph. Matches the rasterizer's `Array.from(line)` exactly.
+    const chars = Array.from(textValue ?? "");
+    const stored = Array.isArray(a.values) ? a.values : [];
+    // Source of truth = the user's text. Pad missing entries with
+    // the axis default; ignore extra trailing entries (they're
+    // harmless and the resolver returns null for out-of-range, but
+    // we don't display them).
+    const rows = chars.map((ch, i) => ({
+      ch,
+      value:
+        typeof stored[i] === "number" && Number.isFinite(stored[i])
+          ? (stored[i] as number)
+          : axis.default,
+    }));
+    const updateRow = (i: number, v: number) => {
+      // Make sure the stored array covers all current chars when
+      // the user edits — pad with defaults for any earlier indices
+      // they hadn't touched yet.
+      const next = chars.map((_, j) =>
+        j === i
+          ? v
+          : typeof stored[j] === "number" && Number.isFinite(stored[j])
+          ? (stored[j] as number)
+          : axis.default
+      );
+      onChange({ mode: "perGlyph", values: next });
+    };
+    const fillAll = () => {
+      if (rows.length === 0) return;
+      const v = rows[0].value;
+      onChange({
+        mode: "perGlyph",
+        values: new Array(chars.length).fill(v),
+      });
+    };
+    const resetAll = () => {
+      onChange({
+        mode: "perGlyph",
+        values: new Array(chars.length).fill(axis.default),
+      });
+    };
+    body = (
+      <div
+        style={{ display: "flex", flexDirection: "column", gap: 4 }}
+      >
+        <div
+          style={{
+            display: "flex",
+            gap: 6,
+            color: "#52525b",
+            fontSize: 10,
+            alignItems: "center",
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            {chars.length} glyph{chars.length === 1 ? "" : "s"}
+            {chars.length === 0 && " — type something in Text"}
+          </span>
+          {chars.length > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={fillAll}
+                title="Set every glyph to row 0's value"
+                style={btnStyleSmall()}
+              >
+                fill
+              </button>
+              <button
+                type="button"
+                onClick={resetAll}
+                title="Reset every glyph to the axis default"
+                style={btnStyleSmall()}
+              >
+                reset all
+              </button>
+            </>
+          )}
+        </div>
+        {rows.map((row, i) => (
+          <div
+            key={`${i}-${row.ch}`}
+            style={{ display: "flex", alignItems: "center", gap: 6 }}
+          >
+            <span
+              style={{
+                width: 28,
+                fontSize: 11,
+                color: "#e5e7eb",
+                textAlign: "center",
+                background: "#0a0a0a",
+                border: "1px solid #27272a",
+                borderRadius: 2,
+                padding: "1px 0",
+                fontFamily: "ui-monospace, monospace",
+                whiteSpace: "pre",
+              }}
+              title={`Char ${i}: ${row.ch === " " ? "space" : row.ch === "\n" ? "newline" : row.ch}`}
+            >
+              {row.ch === " "
+                ? "·"
+                : row.ch === "\n"
+                ? "⏎"
+                : row.ch}
+            </span>
+            <input
+              type="range"
+              min={axis.min}
+              max={axis.max}
+              step={step}
+              value={row.value}
+              onChange={(e) =>
+                updateRow(i, parseFloat(e.target.value))
+              }
+              style={{ flex: 1 }}
+            />
+            <span
+              style={{
+                width: 42,
+                fontSize: 10,
+                color: "#a1a1aa",
+                textAlign: "right",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {Number.isInteger(row.value)
+                ? row.value.toFixed(0)
+                : row.value.toFixed(1)}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  } else {
+    // default — falls back to the font's declared default at
+    // rasterize time. No body needed.
+    body = (
+      <div style={{ color: "#52525b", fontSize: 10, fontStyle: "italic" }}>
+        font default ({axis.default})
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        padding: 6,
+        background: "#0d0d10",
+        border: "1px solid #27272a",
+        borderRadius: 3,
+      }}
+    >
+      {labelHeader}
+      {body}
+    </div>
+  );
+}
+
+function btnStyleSmall(): React.CSSProperties {
+  return {
+    padding: "1px 6px",
+    background: "transparent",
+    border: "1px solid #3f3f46",
+    color: "#a1a1aa",
+    fontFamily: "inherit",
+    fontSize: 10,
+    borderRadius: 3,
+    cursor: "pointer",
+  };
+}
+
+function FontAxisSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+}) {
+  const display = Number.isInteger(value)
+    ? value.toFixed(0)
+    : value.toFixed(2);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <span
+        style={{
+          width: 60,
+          fontSize: 10,
+          color: "#71717a",
+        }}
+      >
+        {label}
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        style={{ flex: 1 }}
+      />
+      <span
+        style={{
+          width: 42,
+          textAlign: "right",
+          fontSize: 10,
+          color: "#a1a1aa",
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {display}
+      </span>
     </div>
   );
 }

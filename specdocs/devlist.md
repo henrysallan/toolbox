@@ -177,3 +177,8 @@ Then wed add some sort of abstraction where clicking a track group would show
 
 121. Right click on layers inside merge to rename the layers
 122. 
+
+123. Depth map node fast and accurate mode 
+
+124. specific lora/image to image model for doing pencil sketch
+125. kuwahava filter
