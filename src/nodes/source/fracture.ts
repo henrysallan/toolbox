@@ -54,6 +54,7 @@ uniform vec3  u_colorA;
 uniform vec3  u_colorB;
 uniform float u_alpha;
 uniform float u_seed;        // for cell-color hash, not point placement
+uniform vec2  u_canvasSize;
 
 out vec4 outColor;
 
@@ -87,7 +88,10 @@ float dist(vec2 a, vec2 b) {
 }
 
 void main() {
-  vec2 uv = v_uv;
+  // Aspect-correct the sample so Voronoi cells stay round on a non-square
+  // canvas (square = no change). Feature points stay in full-canvas [0,1]².
+  float aspect = u_canvasSize.x / u_canvasSize.y;
+  vec2 uv = vec2(v_uv.x, (v_uv.y - 0.5) / aspect + 0.5);
   float f1 = 1e9, f2 = 1e9;
   int nearest = 0;
 
@@ -876,6 +880,11 @@ export const fractureNode: NodeDefinition = {
       gl.uniform3f(gl.getUniformLocation(prog, "u_colorB"), br, bg, bb);
       gl.uniform1f(gl.getUniformLocation(prog, "u_alpha"), alpha);
       gl.uniform1f(gl.getUniformLocation(prog, "u_seed"), seed);
+      gl.uniform2f(
+        gl.getUniformLocation(prog, "u_canvasSize"),
+        ctx.width,
+        ctx.height
+      );
 
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, cache.pointsTex!);

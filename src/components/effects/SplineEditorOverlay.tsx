@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { SplineAnchor, SplineSubpath } from "@/engine/types";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
+import { aspectCorrectY, aspectUncorrectY } from "@/engine/aspect";
 
 // The overlay authors exactly one subpath — the first in the SplineParamValue.
 // Multi-subpath authoring (Figma-style compound paths) is a later concern;
@@ -170,14 +171,25 @@ export default function SplineEditorOverlay({
     };
   }, [canvas]);
 
+  // Anchors are normalized [0,1]²; the rasterizer aspect-corrects y so the
+  // spline stays round on a non-square canvas. Apply the same correction here
+  // so the editor handles sit exactly on the rendered curve.
   const clientToNorm = (cx: number, cy: number): [number, number] => {
     if (!rect) return [0, 0];
-    return [(cx - rect.left) / rect.width, (cy - rect.top) / rect.height];
+    const aspect = rect.width / rect.height;
+    return [
+      (cx - rect.left) / rect.width,
+      aspectUncorrectY((cy - rect.top) / rect.height, aspect),
+    ];
   };
 
   const normToPx = (p: [number, number]) => {
     if (!rect) return { x: 0, y: 0 };
-    return { x: rect.left + p[0] * rect.width, y: rect.top + p[1] * rect.height };
+    const aspect = rect.width / rect.height;
+    return {
+      x: rect.left + p[0] * rect.width,
+      y: rect.top + aspectCorrectY(p[1], aspect) * rect.height,
+    };
   };
 
   // Everything below operates on the first subpath exclusively — multi-subpath

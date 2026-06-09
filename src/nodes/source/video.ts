@@ -7,6 +7,7 @@ import {
   disposePlaceholderTex,
   getPlaceholderTex,
 } from "@/engine/placeholder-tex";
+import { pushMediaSettle, videoSeekSettle } from "@/engine/offline-settle";
 
 // Video source. Each frame: optionally sync the <video> element's clock to
 // ctx.time, upload whatever's currently decoded to a GL texture, then draw
@@ -180,7 +181,24 @@ export const videoNode: NodeDefinition = {
       // can't be served by playbackRate so it falls back to seek.
       const wantsForward = speed > 0;
 
-      if (!ctx.playing) {
+      if (ctx.offline) {
+        // Deterministic offline export — the clock is stepped frame by
+        // frame, NOT wall-clock, so the soft-sync playbackRate path
+        // (which assumes realtime advance) would drift and snap. Always
+        // pause and hard-seek to the exact target, and register a settle
+        // promise so the export waits for the decode before capturing —
+        // otherwise we'd record the previous frame, and two videos would
+        // visibly fall out of sync.
+        if (!video.paused) video.pause();
+        if (absDrift > 0.005) {
+          try {
+            video.currentTime = target;
+            pushMediaSettle(ctx, videoSeekSettle(video, target));
+          } catch {
+            // Metadata may be partial — next pass retries.
+          }
+        }
+      } else if (!ctx.playing) {
         // Scene is paused — freeze the video at exactly `target` so
         // the soft-sync loop doesn't creep forward and hard-seek back
         // every ~0.3s while playback is stopped.

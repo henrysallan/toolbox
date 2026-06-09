@@ -7,6 +7,13 @@ import {
   isKeyframable,
   type AnimationMap,
 } from "./keyframes";
+import {
+  clipLocalTick,
+  emptyClipOutput,
+  isTimeDrivenClip,
+  resolveClipAt,
+  type ClipBlock,
+} from "./clips";
 import type {
   ImageValue,
   MaskValue,
@@ -73,6 +80,9 @@ export interface GraphNode {
   exposedParams?: string[];
   // Per-parameter keyframe animation. Wire > keyframes > constant.
   animation?: AnimationMap;
+  // Timeline clip windows (in/out gates + optional local-time remap). See
+  // clips.ts.
+  clips?: ClipBlock[];
   bypassed?: boolean;
 }
 
@@ -195,7 +205,10 @@ function topoSort(nodes: GraphNode[], edges: GraphEdge[]): string[] {
 export function computeNeededSet(
   nodes: GraphNode[],
   edges: GraphEdge[],
-  activeNodeId: string | null | undefined
+  activeNodeId: string | null | undefined,
+  // Extra nodes to evaluate even when they don't feed the active/terminal
+  // node — e.g. a selected node we want to preview on its own.
+  extraTargets?: Iterable<string>
 ): Set<string> {
   const parents = new Map<string, string[]>();
   for (const e of edges) {
@@ -203,6 +216,7 @@ export function computeNeededSet(
     if (list) list.push(e.source);
     else parents.set(e.target, [e.source]);
   }
+  const byId = new Set(nodes.map((n) => n.id));
   const targets = new Set<string>();
   if (activeNodeId) {
     targets.add(activeNodeId);
@@ -211,6 +225,9 @@ export function computeNeededSet(
       const d = getNodeDef(n.type);
       if (d?.terminal) targets.add(n.id);
     }
+  }
+  if (extraTargets) {
+    for (const id of extraTargets) if (byId.has(id)) targets.add(id);
   }
   const needed = new Set<string>(targets);
   const queue = [...targets];
@@ -332,7 +349,8 @@ function computeNodeFingerprint(
   node: GraphNode,
   def: NodeDefinition,
   inputFps: string[],
-  ctx: RenderContext
+  ctx: RenderContext,
+  clipFp: string
 ): string {
   const parts: string[] = [
     node.type,
@@ -340,6 +358,12 @@ function computeNodeFingerprint(
     stableStringify(node.params),
     inputFps.join("|"),
   ];
+  // A gated clip makes the output an empty value regardless of params/inputs;
+  // marking it keeps the gated output cached (stable while gated) and forces
+  // a recompute when the playhead re-enters the window. Active time-driven
+  // clips need no marker — their local clock already rides ctx.time via the
+  // stable:false stamp below.
+  if (clipFp) parts.push(clipFp);
   if (node.animation) parts.push("a:" + stableStringify(node.animation));
   if (def.stable === false) parts.push("t:" + ctx.time);
   // External-state hook (e.g. the Cursor node mixing in live pointer pos).
@@ -355,7 +379,10 @@ export function evaluateGraph(
   ctx: RenderContext,
   cache: EvalCache,
   activeNodeId?: string | null,
-  inspectIds?: ReadonlySet<string>
+  inspectIds?: ReadonlySet<string>,
+  // Optional node to also evaluate (so its output is available even when it
+  // isn't wired to a terminal) — used to preview the selected node.
+  previewNodeId?: string | null
 ): EvalResult {
   const order = topoSort(nodes, edges);
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -370,11 +397,40 @@ export function evaluateGraph(
       ? new Map<string, InspectSnapshot>()
       : undefined;
   let terminalImage: EvalResult["terminalImage"];
-  const needed = computeNeededSet(nodes, edges, activeNodeId);
+  const needed = computeNeededSet(
+    nodes,
+    edges,
+    activeNodeId,
+    previewNodeId ? [previewNodeId] : undefined
+  );
+
+  // Audio sources whose primary output is wired into an Output node's
+  // `audio` socket. Only these play audibly; every other audio source
+  // keeps advancing its element (for data) but stays muted. Recomputed
+  // each eval so re-wiring takes effect immediately.
+  const audioRoutedToOutput = new Set<string>();
+  for (const e of edges) {
+    if (e.sourceHandle !== "out:primary" || e.targetHandle !== "in:audio") {
+      continue;
+    }
+    const target = byId.get(e.target);
+    if (target && getNodeDef(target.type)?.type === "output") {
+      audioRoutedToOutput.add(e.source);
+    }
+  }
+  ctx.audioRoutedToOutput = audioRoutedToOutput;
   // Cache of resolved primary output types in topo order. Used by
   // `connectedTypesFor` so polymorphic nodes (Math, Lerp, …) can
   // reshape their own sockets based on what's wired into them.
   const outputTypeCache = new Map<string, SocketType | null>();
+
+  // Global clock for this pass. Clipped time-driven nodes temporarily
+  // override ctx.tick/time/frame with a clip-local clock during their own
+  // processing and restore these afterwards, so every other node still sees
+  // the global clock.
+  const globalTick = ctx.tick;
+  const globalTime = ctx.time;
+  const globalFrame = ctx.frame;
 
   for (const id of order) {
     if (!needed.has(id)) continue;
@@ -384,6 +440,22 @@ export function evaluateGraph(
     if (!def) {
       errors[id] = `Unknown node type: ${node.type}`;
       continue;
+    }
+
+    // --- Timeline clip: gate + local-time -----------------------------
+    // `gated` ⇒ playhead is outside the clip window; the node emits an empty
+    // value of its output type and skips compute. `timeDriven` ⇒ an active
+    // clip on a Video-style source; we remap the clock so its content (and
+    // its stable:false fingerprint) reflect clip-local time. Static clipped
+    // sources are pure gates — no clock change, so their keyframes stay on
+    // the global clock for now. ctx is restored at the end of the iteration.
+    const { gated, active: activeClip } = resolveClipAt(node.clips, globalTick);
+    const timeDriven = !!activeClip && isTimeDrivenClip(node.type);
+    if (timeDriven) {
+      const localTick = clipLocalTick(activeClip!, globalTick);
+      ctx.tick = localTick;
+      ctx.frame = Math.floor(localTick / ctx.ticksPerFrame);
+      ctx.time = localTick / (ctx.ticksPerFrame * ctx.fps);
     }
 
     const inputs: Record<string, SocketValue | undefined> = {};
@@ -525,7 +597,14 @@ export function evaluateGraph(
       inspectInputs.set(id, { inputs: { ...inputs } });
     }
 
-    const fingerprint = computeNodeFingerprint(node, def, inputFpParts, ctx);
+    const clipFp = gated ? "clip:gated" : "";
+    const fingerprint = computeNodeFingerprint(
+      node,
+      def,
+      inputFpParts,
+      ctx,
+      clipFp
+    );
     fingerprints.set(id, fingerprint);
 
     const prev = cache.get(id);
@@ -551,7 +630,17 @@ export function evaluateGraph(
       const tStart = performance.now();
       try {
         let ownsTextures = true;
-        if (node.bypassed) {
+        if (gated) {
+          // Clip window doesn't contain the playhead — emit an empty value of
+          // this node's output type and skip compute. We own any allocated
+          // texture (transparent image), so it releases on eviction like a
+          // normal output.
+          result = emptyClipOutput(
+            ctx,
+            resolvePrimaryType(def, node.params, resolveCtx)
+          );
+          ownsTextures = !!(result.primary && "texture" in result.primary);
+        } else if (node.bypassed) {
           // Pass-through: primary output = primary input (first input socket).
           // We don't own the upstream texture, so this entry must not release
           // on eviction.
@@ -576,6 +665,7 @@ export function evaluateGraph(
         const maskIn = inputs[MASK_INPUT_NAME];
         if (
           !node.bypassed &&
+          !gated &&
           maskIn &&
           maskIn.kind === "mask" &&
           result.primary &&
@@ -621,18 +711,44 @@ export function evaluateGraph(
       timings.set(id, performance.now() - tStart);
     }
 
-    // Terminal preview selection. Same semantics as before: active override
-    // wins; otherwise the first terminal node's first-input image is shown.
+    // Terminal preview selection. Active override wins; otherwise the first
+    // terminal node's first-input image is shown. When the chosen node's
+    // primary isn't an image but it exposes an `image` aux (e.g. a spline
+    // primitive's bundled rasterizer), fall back to that.
     if (activeNodeId && id === activeNodeId) {
       const img = result.primary ?? inputs[defInputs[0]?.name ?? ""];
       if (img && img.kind === "image") {
         terminalImage = { nodeId: id, image: img };
+      } else if (result.aux?.image?.kind === "image") {
+        terminalImage = { nodeId: id, image: result.aux.image };
       }
     } else if (!activeNodeId && def.terminal) {
       const firstInput = defInputs[0]?.name;
       const img = firstInput ? inputs[firstInput] : undefined;
       if (img && img.kind === "image") {
         terminalImage = { nodeId: id, image: img };
+      }
+    }
+
+    // Restore the global clock if this node ran on clip-local time.
+    if (timeDriven) {
+      ctx.tick = globalTick;
+      ctx.time = globalTime;
+      ctx.frame = globalFrame;
+    }
+  }
+
+  // Preview fallback: if nothing claimed the canvas (no active node, no
+  // connected terminal image), show the selected node's own image — its
+  // primary if it's an image, otherwise its `image` aux. Lets you drop in a
+  // node (e.g. a spline primitive) and see it without wiring an Output.
+  if (!terminalImage && previewNodeId) {
+    const out = outputs.get(previewNodeId);
+    if (out) {
+      if (out.primary?.kind === "image") {
+        terminalImage = { nodeId: previewNodeId, image: out.primary };
+      } else if (out.aux?.image?.kind === "image") {
+        terminalImage = { nodeId: previewNodeId, image: out.aux.image };
       }
     }
   }

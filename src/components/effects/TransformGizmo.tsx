@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { aspectCorrectY, aspectUncorrectY } from "@/engine/aspect";
 
 export interface TransformGizmoPatch {
   translateX?: number;
@@ -161,9 +162,12 @@ export default function TransformGizmo({
 
   useEffect(() => {
     if (!drag || !rect) return;
+    const aspect = rect.width / rect.height;
     const onMove = (e: PointerEvent) => {
+      // Node space is normalized [0,1]²; the canvas aspect-corrects y, so undo
+      // that here to recover true node-space y from the screen position.
       const px = (e.clientX - rect.left) / rect.width;
-      const py = (e.clientY - rect.top) / rect.height;
+      const py = aspectUncorrectY((e.clientY - rect.top) / rect.height, aspect);
       const shift = e.shiftKey;
       const alt = e.altKey;
       // Reset axis lock when neither modifier is held — re-pressing
@@ -323,11 +327,11 @@ export default function TransformGizmo({
           break;
         }
         case "rotate": {
-          const cx = (translateX + pivotX) * rect.width;
-          const cy = (translateY + pivotY) * rect.height;
+          // Measure the angle in node space (the space the transform rotates
+          // in), so it stays consistent with the rendered result.
           const ptrAngle = Math.atan2(
-            e.clientY - rect.top - cy,
-            e.clientX - rect.left - cx
+            py - (translateY + pivotY),
+            px - (translateX + pivotX)
           );
           const startA = drag.startAngle ?? 0;
           const startR = drag.startRotate ?? 0;
@@ -494,7 +498,7 @@ export default function TransformGizmo({
       };
       const toScreen = (n: { x: number; y: number }) => ({
         x: rect.left + n.x * rect.width,
-        y: rect.top + n.y * rect.height,
+        y: rect.top + aspectCorrectY(n.y, rect.width / rect.height) * rect.height,
       });
       const corners: Record<CornerKey, { x: number; y: number }> = {
         tl: toScreen(fwdLocal(bMinX, bMinY)),
@@ -539,7 +543,7 @@ export default function TransformGizmo({
 
   const toPx = (n: { x: number; y: number }) => ({
     x: rect.left + n.x * rect.width,
-    y: rect.top + n.y * rect.height,
+    y: rect.top + aspectCorrectY(n.y, rect.width / rect.height) * rect.height,
   });
 
   const tl = toPx(fwd(bMinX, bMinY));
@@ -559,12 +563,17 @@ export default function TransformGizmo({
       // previous drag's decision doesn't persist into a new gesture.
       lockedAxisRef.current = null;
       const startScale = { x: scaleX, y: scaleY };
+      const aspect = rect.width / rect.height;
       if (kind === "rotate") {
-        const cx = (translateX + pivotX) * rect.width;
-        const cy = (translateY + pivotY) * rect.height;
+        // Node-space angle (matches the rotate handler in onMove).
+        const startPx = (e.clientX - rect.left) / rect.width;
+        const startPy = aspectUncorrectY(
+          (e.clientY - rect.top) / rect.height,
+          aspect
+        );
         const startAngle = Math.atan2(
-          e.clientY - rect.top - cy,
-          e.clientX - rect.left - cx
+          startPy - (translateY + pivotY),
+          startPx - (translateX + pivotX)
         );
         setDrag({
           kind,
@@ -578,7 +587,7 @@ export default function TransformGizmo({
           kind,
           startPointer: {
             x: (e.clientX - rect.left) / rect.width,
-            y: (e.clientY - rect.top) / rect.height,
+            y: aspectUncorrectY((e.clientY - rect.top) / rect.height, aspect),
           },
           startTranslate: { x: translateX, y: translateY },
           startScale,
@@ -666,9 +675,9 @@ export default function TransformGizmo({
         {snap.y && (
           <line
             x1={rect.left}
-            y1={rect.top + snap.y.lineUv * rect.height}
+            y1={rect.top + aspectCorrectY(snap.y.lineUv, rect.width / rect.height) * rect.height}
             x2={rect.left + rect.width}
-            y2={rect.top + snap.y.lineUv * rect.height}
+            y2={rect.top + aspectCorrectY(snap.y.lineUv, rect.width / rect.height) * rect.height}
             stroke="#ef4444"
             strokeWidth={0.75}
             style={{ pointerEvents: "none" }}

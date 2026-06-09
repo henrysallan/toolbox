@@ -70,6 +70,8 @@ import { gaussianBlurNode } from "./effect/gaussian-blur";
 import { ditherNode } from "./effect/dither";
 import { colorRampNode } from "./effect/color-ramp";
 import { colorCorrectionNode } from "./effect/color-correction";
+import { rgbCurvesNode } from "./effect/rgb-curves";
+import { lutNode } from "./effect/lut";
 import { transformNode } from "./effect/transform";
 import { mathNode } from "./effect/math";
 import { trailsNode } from "./effect/trails";
@@ -208,6 +210,8 @@ export function registerAllNodes() {
   registerNode(ditherNode);
   registerNode(colorRampNode);
   registerNode(colorCorrectionNode);
+  registerNode(rgbCurvesNode);
+  registerNode(lutNode);
   registerNode(transformNode);
   registerNode(mathNode);
   registerNode(trailsNode);

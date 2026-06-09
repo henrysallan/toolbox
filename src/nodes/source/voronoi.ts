@@ -57,6 +57,7 @@ uniform float     u_warpHi;
 uniform int       u_hasUvIn;
 uniform sampler2D u_uvIn;
 uniform vec2      u_uvConst;
+uniform vec2      u_canvasSize;
 
 out vec4 outColor;
 
@@ -183,7 +184,12 @@ void main() {
   }
 
   vec2 seedOffset = vec2(u_seed * 127.1, u_seed * 311.7);
-  vec2 p = (uv - 0.5) * (u_scale * warpScale) + u_offset + seedOffset;
+  // Aspect-correct so cells stay square on a non-square canvas (square = no
+  // change); scale keeps meaning cells-across-the-width.
+  float aspect = u_canvasSize.x / u_canvasSize.y;
+  vec2 p = (uv - 0.5) * (u_scale * warpScale);
+  p.y /= aspect;
+  p += u_offset + seedOffset;
 
   Voro v = voronoi(p);
 
@@ -516,6 +522,11 @@ export const voronoiNode: NodeDefinition = {
         gl.getUniformLocation(prog, "u_uvConst"),
         uvConst[0],
         uvConst[1]
+      );
+      gl.uniform2f(
+        gl.getUniformLocation(prog, "u_canvasSize"),
+        ctx.width,
+        ctx.height
       );
 
       gl.activeTexture(gl.TEXTURE1);

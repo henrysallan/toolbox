@@ -29,11 +29,13 @@ import {
   EASING_PRESET_ORDER,
   easeOf,
   easingPathFor,
+  emptyAnimationBlock,
   framesToTicks,
   snapTickToFrame,
   ticksToFrames,
 } from "@/engine/keyframes";
 import { getNodeDef } from "@/engine/registry";
+import { getShortcutScope } from "./shortcut-scope";
 
 // ---------------------------------------------------------------------
 // Public API
@@ -74,7 +76,11 @@ const CURVE = "#60a5fa";
 
 const HEIGHT = 280;
 const HEADER_H = 24;
-const PADDING = { top: 16, right: 24, bottom: 28, left: 44 };
+// Time-ruler band drawn at the top of the plot (ticks + frame labels +
+// playhead). PADDING.top reserves room for it; x labels live here now
+// instead of along the bottom.
+const RULER_H = 18;
+const PADDING = { top: RULER_H + 10, right: 24, bottom: 18, left: 44 };
 
 const POINT_HIT = 9;
 const HANDLE_HIT = 7;
@@ -137,7 +143,43 @@ type DragState =
         yMaxView: number;
       };
     }
-  | { kind: "scrub" };
+  | { kind: "scrub" }
+  | {
+      kind: "marquee";
+      startX: number;
+      startY: number;
+      curX: number;
+      curY: number;
+      // Selection to union the box hits into (the prior selection when
+      // shift-dragging; empty otherwise).
+      base: Set<number>;
+    }
+  | {
+      // Drag a handle of the multi-select transform box → scale the
+      // selection in screen space around the opposite edge/corner.
+      kind: "boxResize";
+      handle: BoxHandle;
+      anchorX: number; // fixed screen point the scale pivots around
+      anchorY: number;
+      box: { left: number; right: number; top: number; bottom: number };
+      starts: Map<number, { sx: number; sy: number }>;
+    };
+
+type BoxHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
+// Blender-style keyboard-driven modal transform (G grab / S scale) with
+// optional X/Y axis constraint. Confirmed by click/Enter, cancelled by
+// Esc/right-click. Updates follow the cursor (no button held).
+type ModalTransform =
+  | null
+  | {
+      mode: "grab" | "scale";
+      axis: "x" | "y" | null;
+      origin: { x: number; y: number }; // cursor when the modal began
+      starts: Map<number, { tick: number; value: number }>;
+      anchorTick: number; // scale pivot (playhead) in tick space
+      anchorValue: number; // scale pivot (selection centroid) in value space
+    };
 
 // ---------------------------------------------------------------------
 // Component
@@ -201,38 +243,24 @@ export function GraphEditor({
 
   const active =
     visibleTracks.find((t) => t.key === activeKey) ?? visibleTracks[0];
-  if (!active) {
-    return (
-      <div
-        style={{
-          height: "100%",
-          background: BG,
-          color: MUTED,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 12,
-          fontFamily: "ui-monospace, monospace",
-          padding: 16,
-          textAlign: "center",
-        }}
-      >
-        No curves visible. Click the ∿ icon on a scalar track in the
-        Track Editor to show it here.
-      </div>
-    );
-  }
 
-  const block = active.block;
-  const paramLabel = active.label;
-  const yMin = active.yMin;
-  const yMax = active.yMax;
-  const onChange = (next: KeyframeAnimationBlock) =>
-    onAnimationChange(active.nodeId, active.paramName, next);
+  // NOTE: every hook below must run unconditionally — `active` can flip to
+  // undefined mid-session (last track unticked, or a re-render during a
+  // modal transform), and an early return here would change the hook count
+  // and crash React. So we derive null-safe values and defer the "no
+  // curves" message to the render at the very end (after all hooks).
+  const block = active?.block ?? emptyAnimationBlock();
+  const paramLabel = active?.label ?? "";
+  const yMin = active?.yMin;
+  const yMax = active?.yMax;
+  const onChange = active
+    ? (next: KeyframeAnimationBlock) =>
+        onAnimationChange(active.nodeId, active.paramName, next)
+    : () => {};
   const trackPicker =
     visibleTracks.length > 1 ? (
       <select
-        value={active.key}
+        value={active?.key ?? ""}
         onChange={(e) => setActiveKey(e.target.value)}
         style={{
           background: "#15151a",
@@ -255,8 +283,19 @@ export function GraphEditor({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [width, setWidth] = useState(800);
+  // Measured container height so the plot fills the vertical space the dock
+  // gives it (rather than a fixed HEIGHT). Falls back to HEIGHT pre-measure.
+  const [height, setHeight] = useState(HEIGHT);
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const [drag, setDrag] = useState<DragState>({ kind: "none" });
+  // Modal G/S transform (keyboard-driven).
+  const [modal, setModal] = useState<ModalTransform>(null);
+  // Last cursor position within the SVG (for the hover line + as the
+  // origin when a modal transform begins).
+  const cursorRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
+  // Axis lock latched when shift is first held mid-drag (keyframe/handle).
+  const shiftAxisRef = useRef<"x" | "y" | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [contextMenu, setContextMenu] = useState<
     | {
@@ -284,7 +323,7 @@ export function GraphEditor({
   const [yMaxView, setYMaxView] = useState(initialBounds.yMaxView);
 
   const innerW = Math.max(40, width - PADDING.left - PADDING.right);
-  const innerH = Math.max(40, HEIGHT - HEADER_H - PADDING.top - PADDING.bottom);
+  const innerH = Math.max(40, height - HEADER_H - PADDING.top - PADDING.bottom);
 
   // Re-fit y bounds when the active track changes, when normalize is
   // toggled, when refresh is clicked, or when the param's declared
@@ -300,17 +339,22 @@ export function GraphEditor({
     setYMinView(fit.yMinView);
     setYMaxView(fit.yMaxView);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active.key, normalizeY, refitVersion, yMin, yMax]);
+  }, [active?.key, normalizeY, refitVersion, yMin, yMax]);
 
   // ----- Width tracking -----
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
+    const ro = new ResizeObserver(() => {
+      setWidth(el.clientWidth);
+      setHeight(el.clientHeight);
+    });
     ro.observe(el);
     setWidth(el.clientWidth);
+    setHeight(el.clientHeight);
     return () => ro.disconnect();
   }, []);
+
 
   // ----- Coordinate helpers -----
   const tickToScreen = useCallback(
@@ -512,9 +556,68 @@ export function GraphEditor({
 
   // ----- Keyboard: space / delete / escape / F -----
   useEffect(() => {
+    function startModal(mode: "grab" | "scale") {
+      const kks = blockRef.current.keyframes;
+      const starts = new Map<number, { tick: number; value: number }>();
+      let sum = 0;
+      for (const i of selected) {
+        const k = kks[i];
+        if (!k) continue;
+        starts.set(i, { tick: k.tick, value: k.value as number });
+        sum += k.value as number;
+      }
+      if (starts.size === 0) return;
+      setModal({
+        mode,
+        axis: null,
+        origin: { ...cursorRef.current },
+        starts,
+        anchorTick: currentTick,
+        anchorValue: sum / starts.size,
+      });
+    }
+
     function onDown(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
       const inInput = tag === "input" || tag === "textarea";
+
+      // ----- Modal transform live: capture its controls -----
+      if (modal) {
+        if (e.key === "Escape") {
+          // Cancel — restore the original positions.
+          const restore = new Map<number, Partial<Keyframe>>();
+          for (const [i, s] of modal.starts)
+            restore.set(i, { tick: s.tick, value: s.value });
+          patchMany(restore);
+          setModal(null);
+          e.preventDefault();
+          return;
+        }
+        if (e.key === "Enter") {
+          setModal(null); // confirm — positions already committed
+          e.preventDefault();
+          return;
+        }
+        if (e.key === "x" || e.key === "X") {
+          setModal((m) => (m ? { ...m, axis: m.axis === "x" ? null : "x" } : m));
+          e.preventDefault();
+          return;
+        }
+        if (e.key === "y" || e.key === "Y") {
+          setModal((m) => (m ? { ...m, axis: m.axis === "y" ? null : "y" } : m));
+          e.preventDefault();
+          return;
+        }
+        // Swallow other keys (incl. re-pressing g/s) while modal is live.
+        e.preventDefault();
+        return;
+      }
+
+      // Everything below is contextual to this editor: only react when the
+      // last mouse click landed here, so keypresses meant for the node
+      // editor (which has its own G-move, Delete, etc.) don't double-fire.
+      if (getShortcutScope() !== "graph") return;
+
       if (e.key === " " && !inInput) {
         setSpaceHeld(true);
         e.preventDefault();
@@ -522,6 +625,25 @@ export function GraphEditor({
       if (e.key === "Escape") {
         setSelected(new Set());
         setContextMenu(null);
+      }
+      // Contextual transforms — need a keyframe selection.
+      if (
+        (e.key === "g" || e.key === "G") &&
+        !inInput &&
+        selected.size > 0
+      ) {
+        e.preventDefault();
+        startModal("grab");
+        return;
+      }
+      if (
+        (e.key === "s" || e.key === "S") &&
+        !inInput &&
+        selected.size > 0
+      ) {
+        e.preventDefault();
+        startModal("scale");
+        return;
       }
       if ((e.key === "Delete" || e.key === "Backspace") && !inInput) {
         if (selected.size === 0) return;
@@ -561,12 +683,20 @@ export function GraphEditor({
       window.removeEventListener("keyup", onUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [selected, innerW, yMin, yMax]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selected, innerW, yMin, yMax, modal, currentTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ----- Mouse interactions on the SVG surface -----
   function onMouseDown(e: React.MouseEvent) {
     if (contextMenu) setContextMenu(null);
+    // A click while a modal transform is live confirms it (positions are
+    // already committed by the modal's move handler).
+    if (modal) {
+      setModal(null);
+      e.preventDefault();
+      return;
+    }
     if (e.button !== 0 && e.button !== 1) return;
+    shiftAxisRef.current = null;
     const { x, y } = getMousePos(e);
 
     // Space-drag or middle-click → pan.
@@ -637,14 +767,27 @@ export function GraphEditor({
       return;
     }
 
-    // Empty surface — clear selection and start scrub at this tick.
-    setSelected(new Set());
-    const tickAt = screenToTick(x);
-    const snapped = e.shiftKey
-      ? Math.round(tickAt)
-      : snapTickToFrame(Math.round(tickAt), timeline.ticksPerFrame);
-    onScrub(snapped);
-    setDrag({ kind: "scrub" });
+    // Ruler band (top strip) → scrub the playhead, keeping selection.
+    if (y < PADDING.top) {
+      const tickAt = screenToTick(x);
+      const snapped = e.shiftKey
+        ? Math.round(tickAt)
+        : snapTickToFrame(Math.round(tickAt), timeline.ticksPerFrame);
+      onScrub(snapped);
+      setDrag({ kind: "scrub" });
+      return;
+    }
+
+    // Empty plot body → box-select. Shift keeps the current selection as a
+    // base to add to; a bare click (no drag) clears it (handled on mouse-up).
+    setDrag({
+      kind: "marquee",
+      startX: x,
+      startY: y,
+      curX: x,
+      curY: y,
+      base: e.shiftKey ? new Set(selected) : new Set(),
+    });
   }
 
   function onDoubleClick(e: React.MouseEvent) {
@@ -661,6 +804,16 @@ export function GraphEditor({
   }
 
   function onContextMenuHandler(e: React.MouseEvent) {
+    // Right-click cancels an in-progress modal transform (Blender style).
+    if (modal) {
+      e.preventDefault();
+      const restore = new Map<number, Partial<Keyframe>>();
+      for (const [i, s] of modal.starts)
+        restore.set(i, { tick: s.tick, value: s.value });
+      patchMany(restore);
+      setModal(null);
+      return;
+    }
     const { x, y } = getMousePos(e);
     const ph = pointAt(x, y);
     if (ph === null) return;
@@ -700,9 +853,37 @@ export function GraphEditor({
         onScrub(snapped);
         return;
       }
+      if (drag.kind === "marquee") {
+        const minX = Math.min(drag.startX, x);
+        const maxX = Math.max(drag.startX, x);
+        const minY = Math.min(drag.startY, y);
+        const maxY = Math.max(drag.startY, y);
+        const mks = blockRef.current.keyframes;
+        const hits = new Set(drag.base);
+        for (let i = 0; i < mks.length; i++) {
+          const px = tickToScreen(mks[i].tick);
+          const py = valueToScreen(mks[i].value as number);
+          if (px >= minX && px <= maxX && py >= minY && py <= maxY) hits.add(i);
+        }
+        setSelected(hits);
+        setDrag({ ...drag, curX: x, curY: y });
+        return;
+      }
       if (drag.kind === "point") {
-        const dxPx = x - drag.startMouseX;
-        const dyPx = y - drag.startMouseY;
+        let dxPx = x - drag.startMouseX;
+        let dyPx = y - drag.startMouseY;
+        // Shift = constrain to the initial dominant direction (latched on
+        // first shift-held move so it doesn't flip mid-drag).
+        if (ev.shiftKey) {
+          if (!shiftAxisRef.current) {
+            shiftAxisRef.current =
+              Math.abs(dxPx) >= Math.abs(dyPx) ? "x" : "y";
+          }
+          if (shiftAxisRef.current === "x") dyPx = 0;
+          else dxPx = 0;
+        } else {
+          shiftAxisRef.current = null;
+        }
         const dTickRaw = dxPx / pixelsPerTick;
         const ySpan = yMaxView - yMinView;
         const dValue = -(dyPx / innerH) * ySpan;
@@ -711,13 +892,10 @@ export function GraphEditor({
         for (const i of drag.group) {
           const start = drag.starts.get(i);
           if (!start) continue;
-          let newTick = start.tick + dTickRaw;
-          if (ev.shiftKey) {
-            newTick = Math.round(newTick);
-          } else {
-            // Snap each key's tick to whole frames.
-            newTick = snapTickToFrame(Math.round(newTick), tpf);
-          }
+          const newTick = snapTickToFrame(
+            Math.round(start.tick + dTickRaw),
+            tpf
+          );
           updates.set(i, {
             tick: newTick,
             value: start.value + dValue,
@@ -726,9 +904,42 @@ export function GraphEditor({
         patchMany(updates);
         return;
       }
+      if (drag.kind === "boxResize") {
+        const { box, anchorX, anchorY } = drag;
+        const spanX = box.right - box.left;
+        const spanY = box.bottom - box.top;
+        const movesX = drag.handle.includes("e") || drag.handle.includes("w");
+        const movesY = drag.handle.includes("n") || drag.handle.includes("s");
+        const fx = movesX && spanX !== 0 ? (x - anchorX) / (drag.handle.includes("e") ? spanX : -spanX) : 1;
+        const fy = movesY && spanY !== 0 ? (y - anchorY) / (drag.handle.includes("s") ? spanY : -spanY) : 1;
+        const updates = new Map<number, Partial<Keyframe>>();
+        for (const [i, s] of drag.starts) {
+          const nsx = anchorX + (s.sx - anchorX) * fx;
+          const nsy = anchorY + (s.sy - anchorY) * fy;
+          updates.set(i, {
+            tick: snapTickToFrame(
+              Math.round(screenToTick(nsx)),
+              timeline.ticksPerFrame
+            ),
+            value: screenToValue(nsy),
+          });
+        }
+        patchMany(updates);
+        return;
+      }
       if (drag.kind === "handle") {
-        const dxPx = x - drag.startMouseX;
-        const dyPx = y - drag.startMouseY;
+        let dxPx = x - drag.startMouseX;
+        let dyPx = y - drag.startMouseY;
+        if (ev.shiftKey) {
+          if (!shiftAxisRef.current) {
+            shiftAxisRef.current =
+              Math.abs(dxPx) >= Math.abs(dyPx) ? "x" : "y";
+          }
+          if (shiftAxisRef.current === "x") dyPx = 0;
+          else dxPx = 0;
+        } else {
+          shiftAxisRef.current = null;
+        }
         const dTick = dxPx / pixelsPerTick;
         const ySpan = yMaxView - yMinView;
         const dValue = -(dyPx / innerH) * ySpan;
@@ -762,6 +973,13 @@ export function GraphEditor({
       }
     }
     function onUp() {
+      if (drag.kind === "marquee") {
+        const moved =
+          Math.abs(drag.curX - drag.startX) > 3 ||
+          Math.abs(drag.curY - drag.startY) > 3;
+        // Bare click on empty space (no drag, no shift) clears selection.
+        if (!moved && drag.base.size === 0) setSelected(new Set());
+      }
       setDrag({ kind: "none" });
     }
     window.addEventListener("mousemove", onMove);
@@ -779,7 +997,67 @@ export function GraphEditor({
     timeline.ticksPerFrame,
     onScrub,
     screenToTick,
+    screenToValue,
   ]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ----- Modal G/S transform: follow the cursor, apply continuously -----
+  useEffect(() => {
+    if (!modal) return;
+    const apply = (cur: { x: number; y: number }) => {
+      const updates = new Map<number, Partial<Keyframe>>();
+      const tpf = timeline.ticksPerFrame;
+      if (modal.mode === "grab") {
+        let dxPx = cur.x - modal.origin.x;
+        let dyPx = cur.y - modal.origin.y;
+        if (modal.axis === "x") dyPx = 0;
+        else if (modal.axis === "y") dxPx = 0;
+        const dTick = dxPx / pixelsPerTick;
+        const dValue = -(dyPx / innerH) * (yMaxView - yMinView);
+        for (const [i, s] of modal.starts) {
+          updates.set(i, {
+            tick: snapTickToFrame(Math.round(s.tick + dTick), tpf),
+            value: s.value + dValue,
+          });
+        }
+      } else {
+        // Scale around the playhead (x) / selection centroid (y).
+        const ax = tickToScreen(modal.anchorTick);
+        const ay = valueToScreen(modal.anchorValue);
+        const dx0 = modal.origin.x - ax;
+        const dy0 = modal.origin.y - ay;
+        let fx = dx0 !== 0 ? (cur.x - ax) / dx0 : 1;
+        let fy = dy0 !== 0 ? (cur.y - ay) / dy0 : 1;
+        if (modal.axis === "x") fy = 1;
+        else if (modal.axis === "y") fx = 1;
+        else {
+          const d0 = Math.hypot(dx0, dy0);
+          const d1 = Math.hypot(cur.x - ax, cur.y - ay);
+          const f = d0 !== 0 ? d1 / d0 : 1;
+          fx = f;
+          fy = f;
+        }
+        for (const [i, s] of modal.starts) {
+          updates.set(i, {
+            tick: snapTickToFrame(
+              Math.round(modal.anchorTick + (s.tick - modal.anchorTick) * fx),
+              tpf
+            ),
+            value: modal.anchorValue + (s.value - modal.anchorValue) * fy,
+          });
+        }
+      }
+      patchMany(updates);
+    };
+    // Re-apply right away so axis-toggles update without needing a move.
+    apply(cursorRef.current);
+    const onMove = (ev: MouseEvent) => {
+      cursorRef.current = getMousePos(ev);
+      apply(cursorRef.current);
+    };
+    window.addEventListener("mousemove", onMove);
+    return () => window.removeEventListener("mousemove", onMove);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modal, pixelsPerTick, innerH, yMaxView, yMinView, timeline.ticksPerFrame]);
 
   // ---------------------------------------------------------------------
   // Render helpers
@@ -878,12 +1156,88 @@ export function GraphEditor({
       ? ks[Math.min(...Array.from(selected))]
       : undefined;
 
+  // Screen-space bounding box of the selection — drives the multi-select
+  // transform box (shown for 2+ keyframes). Recomputed live so it tracks
+  // the keyframes while they're being scaled.
+  const BOX_MARGIN = 7;
+  const selBox = (() => {
+    if (selected.size < 2) return null;
+    let left = Infinity;
+    let right = -Infinity;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const i of selected) {
+      const k = ks[i];
+      if (!k) continue;
+      const sx = tickToScreen(k.tick);
+      const sy = valueToScreen(k.value as number);
+      left = Math.min(left, sx);
+      right = Math.max(right, sx);
+      top = Math.min(top, sy);
+      bottom = Math.max(bottom, sy);
+    }
+    if (!isFinite(left)) return null;
+    return {
+      left: left - BOX_MARGIN,
+      right: right + BOX_MARGIN,
+      top: top - BOX_MARGIN,
+      bottom: bottom + BOX_MARGIN,
+    };
+  })();
+
+  // Begin a box-resize drag from one of the transform-box handles.
+  function startBoxResize(
+    e: React.MouseEvent,
+    handle: BoxHandle,
+    box: { left: number; right: number; top: number; bottom: number }
+  ) {
+    e.stopPropagation();
+    e.preventDefault();
+    const starts = new Map<number, { sx: number; sy: number }>();
+    for (const i of selected) {
+      const k = blockRef.current.keyframes[i];
+      if (!k) continue;
+      starts.set(i, {
+        sx: tickToScreen(k.tick),
+        sy: valueToScreen(k.value as number),
+      });
+    }
+    const anchorX = handle.includes("w") ? box.right : box.left;
+    const anchorY = handle.includes("n") ? box.bottom : box.top;
+    setDrag({ kind: "boxResize", handle, anchorX, anchorY, box, starts });
+  }
+
+  // Safe to return conditionally here — every hook has already run above.
+  if (!active) {
+    return (
+      <div
+        style={{
+          height: "100%",
+          background: BG,
+          color: MUTED,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 12,
+          fontFamily: "ui-monospace, monospace",
+          padding: 16,
+          textAlign: "center",
+        }}
+      >
+        No curves visible. Click the ∿ icon on a scalar track in the Track
+        Editor to show it here.
+      </div>
+    );
+  }
+
   return (
     <div
       ref={containerRef}
+      data-shortcut-scope="graph"
       style={{
         width: "100%",
-        height: HEIGHT,
+        height: "100%",
+        minHeight: 0,
         background: BG,
         border: `1px solid ${BORDER}`,
         borderRadius: 4,
@@ -958,9 +1312,15 @@ export function GraphEditor({
       <svg
         ref={svgRef}
         width={width}
-        height={HEIGHT - HEADER_H}
+        height={height - HEADER_H}
         style={{ display: "block" }}
         onMouseDown={onMouseDown}
+        onMouseMove={(e) => {
+          const p = getMousePos(e);
+          cursorRef.current = p;
+          setHover(p);
+        }}
+        onMouseLeave={() => setHover(null)}
         onDoubleClick={onDoubleClick}
         onContextMenu={onContextMenuHandler}
       >
@@ -1002,10 +1362,11 @@ export function GraphEditor({
           );
         })}
 
-        {/* X gridlines + frame labels */}
+        {/* X gridlines + top ruler ticks / frame labels */}
         {xTicks.map(({ frame, tick }, i) => {
           const sx = tickToScreen(tick);
           if (sx < PADDING.left || sx > PADDING.left + innerW) return null;
+          const seconds = frame / Math.max(1, timeline.fps);
           return (
             <g key={`gx-${i}`}>
               <line
@@ -1017,14 +1378,17 @@ export function GraphEditor({
                 strokeDasharray="2 3"
                 opacity={0.6}
               />
-              <text
-                x={sx}
-                y={PADDING.top + innerH + 14}
-                textAnchor="middle"
-                fill={MUTED}
-                fontSize={10}
-              >
-                {formatFrameLabel(frame)}
+              {/* Ruler tick + label in the band above the plot. */}
+              <line
+                x1={sx}
+                y1={PADDING.top - 6}
+                x2={sx}
+                y2={PADDING.top}
+                stroke={MUTED}
+                strokeWidth={1}
+              />
+              <text x={sx + 3} y={PADDING.top - 8} fill={MUTED} fontSize={9}>
+                {`${frame}f${seconds >= 1 ? ` ${seconds.toFixed(1)}s` : ""}`}
               </text>
             </g>
           );
@@ -1193,17 +1557,141 @@ export function GraphEditor({
           );
         })}
 
-        {/* Playhead */}
-        {playheadVisible && (
-          <line
-            x1={playheadX}
-            y1={PADDING.top}
-            x2={playheadX}
-            y2={PADDING.top + innerH}
+        {/* Marquee box-select */}
+        {drag.kind === "marquee" && (
+          <rect
+            x={Math.min(drag.startX, drag.curX)}
+            y={Math.min(drag.startY, drag.curY)}
+            width={Math.abs(drag.curX - drag.startX)}
+            height={Math.abs(drag.curY - drag.startY)}
+            fill="rgba(59,130,246,0.12)"
             stroke={ACCENT}
-            strokeWidth={1}
-            opacity={0.85}
+            strokeDasharray="3 3"
+            pointerEvents="none"
           />
+        )}
+
+        {/* Hover preview — faded playhead line tracking the cursor. */}
+        {hover &&
+          drag.kind === "none" &&
+          !modal &&
+          hover.x >= PADDING.left &&
+          hover.x <= PADDING.left + innerW && (
+            <line
+              x1={hover.x}
+              y1={PADDING.top - RULER_H}
+              x2={hover.x}
+              y2={PADDING.top + innerH}
+              stroke={ACCENT}
+              strokeWidth={1}
+              opacity={0.22}
+              pointerEvents="none"
+            />
+          )}
+
+        {/* Multi-select transform box (2+ keyframes) with resize handles. */}
+        {selBox &&
+          (() => {
+            const cx = (selBox.left + selBox.right) / 2;
+            const cy = (selBox.top + selBox.bottom) / 2;
+            const handles: {
+              key: BoxHandle;
+              x: number;
+              y: number;
+              cursor: string;
+            }[] = [
+              { key: "nw", x: selBox.left, y: selBox.top, cursor: "nwse-resize" },
+              { key: "ne", x: selBox.right, y: selBox.top, cursor: "nesw-resize" },
+              { key: "sw", x: selBox.left, y: selBox.bottom, cursor: "nesw-resize" },
+              { key: "se", x: selBox.right, y: selBox.bottom, cursor: "nwse-resize" },
+              { key: "n", x: cx, y: selBox.top, cursor: "ns-resize" },
+              { key: "s", x: cx, y: selBox.bottom, cursor: "ns-resize" },
+              { key: "w", x: selBox.left, y: cy, cursor: "ew-resize" },
+              { key: "e", x: selBox.right, y: cy, cursor: "ew-resize" },
+            ];
+            return (
+              <g>
+                <rect
+                  x={selBox.left}
+                  y={selBox.top}
+                  width={selBox.right - selBox.left}
+                  height={selBox.bottom - selBox.top}
+                  fill="none"
+                  stroke={ACCENT}
+                  strokeDasharray="3 3"
+                  opacity={0.7}
+                  pointerEvents="none"
+                />
+                {handles.map((h) => (
+                  <rect
+                    key={h.key}
+                    x={h.x - 4}
+                    y={h.y - 4}
+                    width={8}
+                    height={8}
+                    fill={BG}
+                    stroke={ACCENT}
+                    strokeWidth={1.5}
+                    style={{ cursor: h.cursor }}
+                    onMouseDown={(e) => startBoxResize(e, h.key, selBox)}
+                  />
+                ))}
+              </g>
+            );
+          })()}
+
+        {/* Modal transform axis guide (X = red horizontal, Y = green vertical). */}
+        {modal &&
+          modal.axis &&
+          (modal.axis === "x" ? (
+            <line
+              x1={PADDING.left}
+              y1={cursorRef.current.y}
+              x2={PADDING.left + innerW}
+              y2={cursorRef.current.y}
+              stroke="#ef4444"
+              strokeWidth={1}
+              strokeDasharray="4 3"
+              opacity={0.5}
+              pointerEvents="none"
+            />
+          ) : (
+            <line
+              x1={cursorRef.current.x}
+              y1={PADDING.top - RULER_H}
+              x2={cursorRef.current.x}
+              y2={PADDING.top + innerH}
+              stroke="#22c55e"
+              strokeWidth={1}
+              strokeDasharray="4 3"
+              opacity={0.5}
+              pointerEvents="none"
+            />
+          ))}
+
+        {/* Playhead — extends up through the ruler band, with a draggable
+            triangle handle at the top for legibility. */}
+        {playheadVisible && (
+          <g>
+            <line
+              x1={playheadX}
+              y1={PADDING.top - RULER_H}
+              x2={playheadX}
+              y2={PADDING.top + innerH}
+              stroke={ACCENT}
+              strokeWidth={1}
+              opacity={0.85}
+            />
+            <path
+              d={`M ${playheadX - 5} ${PADDING.top - RULER_H} L ${playheadX + 5} ${PADDING.top - RULER_H} L ${playheadX} ${PADDING.top - RULER_H + 7} Z`}
+              fill={ACCENT}
+              style={{ cursor: "ew-resize" }}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                setDrag({ kind: "scrub" });
+              }}
+            />
+          </g>
         )}
       </svg>
 
@@ -1221,6 +1709,25 @@ export function GraphEditor({
         {ks.length} kf · {selected.size} sel · frame{" "}
         {ticksToFrames(currentTick, timeline.ticksPerFrame).toFixed(2)}
       </div>
+
+      {/* Modal transform hint — mode + active axis constraint. */}
+      {modal && (
+        <div
+          style={{
+            position: "absolute",
+            right: 8,
+            bottom: 4,
+            color: ACCENT,
+            pointerEvents: "none",
+            fontSize: 10,
+            letterSpacing: 0.5,
+          }}
+        >
+          {modal.mode === "grab" ? "GRAB" : "SCALE"}
+          {modal.axis ? ` ${modal.axis.toUpperCase()}` : ""} · click/↵ confirm ·
+          esc cancel
+        </div>
+      )}
 
       {contextMenu && (
         <KeyframeContextMenu
@@ -1584,8 +2091,3 @@ function formatTickLabel(v: number): string {
   return v.toFixed(3);
 }
 
-function formatFrameLabel(f: number): string {
-  if (!isFinite(f)) return "";
-  if (Math.abs(f - Math.round(f)) < 1e-3) return String(Math.round(f));
-  return f.toFixed(1);
-}

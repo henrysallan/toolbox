@@ -8,6 +8,7 @@ export {
 } from "@/engine/graph-helpers";
 
 import type { AnimationMap } from "@/engine/keyframes";
+import type { ClipBlock } from "@/engine/clips";
 
 export type NodeDataPayload = {
   defType: string;
@@ -17,6 +18,12 @@ export type NodeDataPayload = {
   // (`animated:true`), or wired (entry preserved but ignored at eval).
   // Wire > keyframes > constant. See src/engine/keyframes.ts.
   animation?: AnimationMap;
+  // Timeline clip windows: one or more disjoint in/out ranges (and, for
+  // time-driven sources like Video, a local-time remap per window). Splitting
+  // a clip inserts a cut into this array. Only present on clippable source
+  // nodes; see src/engine/clips.ts. Absent/empty ⇒ the node is always active
+  // on the global clock.
+  clips?: ClipBlock[];
   // Names of params that have been "exposed" — rendered as extra typed input
   // sockets on the node. When an exposed param has an incoming edge, the
   // edge's value overrides the stored param value at evaluation time.

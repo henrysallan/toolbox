@@ -4,6 +4,12 @@ import type {
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
+import {
+  SPLINE_RASTER_PARAMS,
+  disposeSplineRasterAux,
+  rasterizeSplineAux,
+  resolveSplineRasterAux,
+} from "./spline-raster-aux";
 
 // Generate a rectangle (optionally with rounded corners) as a closed
 // spline. Corner radius uses the same kappa approximation as Circle so
@@ -125,12 +131,16 @@ export const rectangleNode: NodeDefinition = {
       step: 0.001,
       default: 0,
     },
+    // Bundled rasterizer — gives the primitive an `image` output so it's
+    // immediately viewable.
+    ...SPLINE_RASTER_PARAMS,
   ],
   primaryOutput: "spline",
-  auxOutputs: [],
+  auxOutputs: [{ name: "image", type: "image" }],
+  resolveAuxOutputs: resolveSplineRasterAux,
   linkedPairs: [{ a: "width", b: "height" }],
 
-  compute({ params }) {
+  compute({ params, ctx, nodeId }) {
     // (cx, cy) is the center; subtract w/2 + h/2 to get the top-left
     // corner that makeRectSubpath wants.
     const cx = (params.originX as number) ?? 0.5;
@@ -140,6 +150,9 @@ export const rectangleNode: NodeDefinition = {
     const r = Math.max(0, (params.corner_radius as number) ?? 0);
     const subpath = makeRectSubpath(cx - w / 2, cy - h / 2, w, h, r);
     const out: SplineValue = { kind: "spline", subpaths: [subpath] };
-    return { primary: out };
+    const image = rasterizeSplineAux(ctx, nodeId, out.subpaths, params);
+    return image ? { primary: out, aux: { image } } : { primary: out };
   },
+
+  dispose: disposeSplineRasterAux,
 };

@@ -113,7 +113,12 @@ void main() {
   float c = cos(rot);
   float s = sin(rot);
   vec2 r2 = vec2(c * local.x - s * local.y, s * local.x + c * local.y);
-  vec2 pixel = pos * u_canvasRes + r2;
+  // Aspect-correct the instance center so copies sit on the rendered points
+  // (and on aspect-corrected geometry); the instance quad stays in pixels, so
+  // it remains round. Square canvas = no change.
+  float aspect = u_canvasRes.x / u_canvasRes.y;
+  vec2 center = vec2(pos.x, 0.5 + (pos.y - 0.5) * aspect);
+  vec2 pixel = center * u_canvasRes + r2;
   vec2 clip = (pixel / u_canvasRes) * 2.0 - 1.0;
   // Pipeline UV is Y-down; clip space is Y-up. Flip vertically.
   clip.y = -clip.y;

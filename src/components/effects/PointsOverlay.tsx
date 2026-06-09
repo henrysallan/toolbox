@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { PointsValue } from "@/engine/types";
+import { aspectCorrectY } from "@/engine/aspect";
 
 // Read-only visualization for a points value. Renders dots via a single
 // canvas2D draw over the preview canvas — no per-point JSX/SVG
@@ -67,9 +68,12 @@ export default function PointsOverlay({ canvas, value }: Props) {
     const n = value.count;
     const r = 3;
     const tau = Math.PI * 2;
+    // Match the rasterizers' aspect correction so dots sit on the rendered
+    // geometry (e.g. points along a spline) on a non-square canvas.
+    const aspect = cssW / cssH;
     for (let i = 0; i < n; i++) {
       const x = pos[i * 2] * cssW;
-      const y = pos[i * 2 + 1] * cssH;
+      const y = aspectCorrectY(pos[i * 2 + 1], aspect) * cssH;
       ctx.beginPath();
       ctx.arc(x, y, r, 0, tau);
       ctx.fill();

@@ -11,6 +11,31 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.1.0",
+    date: "2026-06-08",
+    added: [
+      "Color grading suite: RGB Curves node (per-channel + master monotone-cubic curves with a dedicated curve-editor panel), LUT node (apply a `.cube` 3D LUT via a hardware-filtered 3D texture — 1D LUTs expanded to a 3D grid for one sampling path), and a DaVinci-style primaries panel on the Color Correction node — four color wheels (Lift / Gamma / Gain / Offset) with balance discs and master sliders, plus Temp / Tint / Hue / Contrast / Pivot, all writing straight to the node's shader.",
+      "On-canvas Primitive Gizmo — transform handles for centered shape primitives (Circle, Rectangle, …) in a node-agnostic center + half-extents space; per-primitive adapters let new primitives opt in without touching the gizmo. Spline primitives also gained an `image` aux output (shared rasterizer) so you can drop one in and see it without a separate Rasterize node.",
+      "Viewport shelf (right of the resolution bar): Circle / Rectangle / Draw spline-primitive buttons spawn the matching source node; when a Merge node is selected or active, the new node's image output is wired straight in as a new layer for one-click compositing.",
+      "Shift+M in the node editor wraps the selected image/mask-output nodes (including aux image outputs) in a Merge node — leftmost selection becomes the base layer, the rest stack on top in left-to-right order with their layer sockets wired automatically.",
+      "Per-node timeline clips — turn a source node (Video / Image / Text / Spline Draw / primitives) into Track-Editor clips with in/out windows. A node can hold multiple disjoint windows (razor-cut splitting) while still producing a single output per frame, so no node duplication or rewiring.",
+      "`.toolbox` project files — a self-contained, desktop-loadable zip (manifest + graph + de-duplicated assets) so videos and images relink offline. Toolbox menu gains Save / Load for local `.toolbox` files.",
+      "Prev/next keyframe carets flanking the keyframe diamond in the parameters panel — jump the playhead to the adjacent keyframe on that parameter. Always visible, dimmed when there's nowhere to go.",
+      "Audio in video exports: the audio wired into the Output node's `audio` socket is muxed across all three encoder tiers — a deterministic offline render (decoded file → AudioBuffer, honoring start offset / loop / volume) for High (WebCodecs, AAC/Opus) and Max (ffmpeg, AAC/libopus), and a live captured track (file or mic) for Fast (MediaRecorder).",
+      "WebGPU stipple relaxation — a GPU compute runner for the Stipple node's relaxation kernel, reusing buffers frame-to-frame.",
+      "Landing page — first-load project browser (public / private) as its own screen, with a staggered fade-in (StaggerReveal) reused for parameter rows.",
+      "Also shipped: WebGPU particle system; Stipple and Shape Cells nodes; variable-font Text; BG Remove and Lens Flare nodes; mip-chain bloom.",
+    ],
+    changed: [
+      "Image / Video Source nodes auto-rename to the loaded file name (extension dropped) on load — via the Load button or drag-drop / paste — and the same label flows through to the Tracks editor.",
+      "Audio Source plays to the speakers only when its output is wired into the Output node's `audio` socket; otherwise the element keeps advancing (so amplitude / data stays live for driving parameters) but stays muted.",
+      "\"Match Aspect\" button nested in the image / video load module sets the project's aspect ratio to the source clip, keeping the current longest side and swinging only the ratio.",
+      "Editor shortcut scoping — contextual shortcuts (G-move, Delete, Shift+D / Shift+M, …) route to the editor region last clicked, so tweaking params no longer silently disables the node editor's shortcuts.",
+      "Offline-export media settle: deterministic frame stepping now waits for async video seeks to land before capture, keeping multi-video exports frame-accurate.",
+      "Geometry aspect correction so shapes stay round on non-square canvases (render-time Y correction) without mutating any stored param.",
+    ],
+  },
+  {
     version: "0.0.4",
     date: "2026-05-06",
     added: [

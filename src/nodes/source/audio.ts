@@ -18,8 +18,15 @@ import { requestMicrophone } from "@/lib/audio";
 // so the audio follows the scene's playback state; scrub also silences
 // the mic (mic doesn't really "scrub" — the gate keeps things quiet).
 //
-// Limitation: if the user disconnects Audio Source from Output mid-
-// playback, Audio Source's compute stops running and the element keeps
+// Speaker audibility is gated on routing: the element only un-mutes when
+// this source's primary output is wired into the Output node's `audio`
+// socket (ctx.audioRoutedToOutput, computed per-eval). When it's used
+// only for data — e.g. amplitude driving a parameter — the element keeps
+// advancing so that data stays live, but plays muted. Re-wiring takes
+// effect on the next eval.
+//
+// Limitation: if the user disconnects Audio Source from the graph
+// entirely mid-playback, its compute stops running and the element keeps
 // playing briefly until the next param change or delete. Known issue;
 // acceptable for v1. Workaround is to stop scene playback first.
 
@@ -118,6 +125,12 @@ export const audioSourceNode: NodeDefinition = {
     const state = ensureState(ctx, nodeId);
     const volume = Math.max(0, Math.min(1, (params.volume as number) ?? 1));
 
+    // Speakers only when this source is wired into the Output node's audio
+    // socket. Otherwise the element still advances (so amplitude/data stays
+    // live for downstream nodes) but is muted. Absent set (non-eval
+    // callers) defaults to audible.
+    const audible = ctx.audioRoutedToOutput?.has(nodeId) ?? true;
+
     if (mode === "microphone") {
       // Lazily request mic access. The first compute fires
       // getUserMedia — browser shows its permission prompt. Subsequent
@@ -145,8 +158,9 @@ export const audioSourceNode: NodeDefinition = {
       }
       el.volume = volume;
       // Mic is always "live" — gate audibility on ctx.playing so a
-      // paused scene goes quiet without terminating the stream.
-      el.muted = !ctx.playing;
+      // paused scene goes quiet without terminating the stream, and on
+      // routing so an unconnected mic monitors silently.
+      el.muted = !ctx.playing || !audible;
       return {
         primary: { kind: "audio", element: el, source: "mic" } satisfies AudioValue,
       };
@@ -160,6 +174,9 @@ export const audioSourceNode: NodeDefinition = {
     const el = paramFile.element;
     el.volume = volume;
     el.loop = !!params.loop;
+    // Keep advancing for data, but only reach the speakers when routed to
+    // the Output node's audio socket.
+    el.muted = !audible;
 
     const sync = !!params.sync_to_scene_time;
     const startOffset = (params.start_offset as number) ?? 0;

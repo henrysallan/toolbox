@@ -668,7 +668,16 @@ export type ParamType =
   | "curves"
   | "spline_anchors"
   | "svg_file"
-  | "audio_file";
+  | "audio_file"
+  | "lut_file";
+
+// A loaded .cube 3D LUT. Stored as the raw .cube text (plus the original
+// file name) so it round-trips through JSON save/load; the node parses the
+// text into a GPU 3D texture lazily and caches by reference.
+export interface LutFileParamValue {
+  filename: string;
+  text: string;
+}
 
 // One axis declared by a variable font's `fvar` table. Surfaced in
 // FontParamValue.axes when the user uploads a variable .ttf/.otf;
@@ -913,6 +922,20 @@ export interface RenderContext {
   // time-sensitive sources (Audio, Video) to decide whether to play or
   // pause their media elements; image-only nodes can safely ignore it.
   playing: boolean;
+  // Audio-source node ids whose primary output is wired into an Output
+  // node's `audio` socket. The Audio Source node keeps its element
+  // advancing for data regardless, but only un-mutes (plays to the
+  // speakers) when it appears here. Populated per-eval by evaluateGraph;
+  // absent for callers that don't set it (treated as "audible").
+  audioRoutedToOutput?: ReadonlySet<string>;
+  // True during a deterministic, frame-by-frame offline export (WebCodecs /
+  // ffmpeg). Each frame is rendered once and captured immediately, so nodes
+  // that normally defer work across frames — async GPU passes whose result
+  // lands a frame or two later via a pipeline-bump — MUST instead settle
+  // synchronously here, or the export captures stale/unsettled frames.
+  // Realtime playback leaves this false (the continuous loop lets deferred
+  // results catch up).
+  offline: boolean;
   cursor: CursorState;
   state: Record<string, unknown>;
   allocImage(opts?: { width?: number; height?: number }): ImageValue;

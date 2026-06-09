@@ -1,4 +1,12 @@
-import type { NodeDefinition, RenderContext } from "@/engine/types";
+import type { NodeDefinition, RenderContext, ImageValue } from "@/engine/types";
+import { ensureWebGPUDevice, peekWebGPUDevice } from "@/engine/webgpu/device";
+import { pushMediaSettle } from "@/engine/offline-settle";
+import {
+  ensureStippleRelaxGPU,
+  destroyStippleRelaxGPU,
+  runStippleRelax,
+  type StippleRelaxGPU,
+} from "@/engine/webgpu/stipple-relax";
 
 // Stipple — image → image filter that re-renders the input as a field of
 // dots whose size and packing follow the input's darkness.
@@ -58,18 +66,79 @@ interface StippleState {
   cellTexture: WebGLTexture | null;
   cellsX: number;
   cellsY: number;
-  lastBakeKey: string;
-  // Tracked separately from `lastBakeKey` because WebGLTexture has no
-  // useful toString — putting it in a join()'d key would compare
-  // "[object WebGLTexture]" to itself every time and miss real changes
-  // when upstream produces a new texture object.
-  lastSrcTexture: WebGLTexture | null;
   // packed-flow state
   flowDots: FlowDot[];
   lastFlowTime: number;
+
+  // --- Relaxation result (shared by packed + packed-flow) ---
+  // The relaxation stage runs either synchronously on the CPU or
+  // asynchronously on a WebGPU compute pass. Both write their result
+  // here; consumers read the freshest available set. `gen` bumps every
+  // time the set is replaced so a consumer (cell-texture upload, flow
+  // matcher) can tell when there's something new without comparing
+  // arrays. `key` / `src` identify which (params, source) the result was
+  // baked from, so a stale result triggers a fresh bake.
+  relaxResultPts: RawPoint[] | null;
+  relaxResultKey: string;
+  relaxResultSrc: WebGLTexture | null;
+  relaxResultGen: number;
+  renderedGen: number; // last gen uploaded to the cell texture (static packed)
+  matchedGen: number; // last gen fed to the flow matcher (packed-flow)
+  // bakeKey of an in-flight GPU bake, or null. Coalesces: while a bake is
+  // running we don't launch another, even if inputs change again.
+  relaxBusyKey: string | null;
+  gpu: StippleRelaxGPU | null;
+  gpuFailed: boolean; // a GPU bake errored — fall back to CPU for good
+  disposed: boolean; // node disposed mid-flight — async callback must bail
 }
 
 const stateKey = (nodeId: string) => `stipple:${nodeId}`;
+
+// Below this point count the CPU relaxation is faster than the WebGPU
+// round trip (source upload + compute + readback), and the one-frame
+// "seed then relaxed" pop isn't worth it. Small bakes stay on the CPU.
+const GPU_RELAX_MIN_POINTS = 6000;
+
+// Per-node flag, keyed by the params object (stable per node instance
+// unless a param is animated — in which case the node already recomputes
+// every frame, so the flag is moot). Read by fingerprintExtras to force
+// the node to recompute while an async GPU bake is pending, so the result
+// gets picked up even on a paused/static scene.
+const relaxPending = new WeakMap<object, boolean>();
+
+// Nudge the editor to run one more eval pass. The async GPU result lands
+// outside React's render cycle; this coalesced bump (see EffectsApp's
+// "pipeline-bump" listener) guarantees a follow-up frame that consumes it.
+function requestPipelineReeval(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("pipeline-bump"));
+  }
+}
+
+// Relaxation step size — must match between CPU and GPU paths.
+function computeStepBase(
+  relaxStrength: number,
+  cellsX: number,
+  cellsY: number
+): number {
+  return relaxStrength * (0.7 / Math.max(cellsX, cellsY));
+}
+
+interface ScatterArgs {
+  imgW: number;
+  imgH: number;
+  cellsX: number;
+  cellsY: number;
+  targetPoints: number;
+  invert: boolean;
+  densityCurve: number;
+  seed: number;
+}
+
+interface RelaxArgs {
+  iterations: number;
+  relaxStrength: number;
+}
 
 // =====================================================================
 // Shader — grid + screen (unified)
@@ -365,104 +434,123 @@ function sampleDensityCPU(
 
 interface RawPoint { x: number; y: number; density: number; }
 
-// Density-weighted scatter + relaxation. Used by both `packed` (which
-// then buckets into a one-shot cell texture) and `packed-flow` (which
-// matches these as targets against persistent dot identities).
-function bakeRawPositions(
-  densityImage: Float32Array, imgW: number, imgH: number,
-  cellsX: number, cellsY: number,
-  targetPoints: number,
-  invert: boolean, densityCurve: number,
-  relaxIterations: number, relaxStrength: number,
-  seed: number
-): RawPoint[] {
-  const rng = makeRng(seed);
-  const maxPts = Math.min(targetPoints, cellsX * cellsY);
+// ----- Bake stage 1: density-weighted scatter -----
+// Seeded rejection sampling. Stays on the CPU in every backend so a given
+// seed yields the exact same point set — the GPU path only relaxes this
+// fixed set, never regenerates it.
+function scatterPoints(
+  densityImage: Float32Array,
+  a: ScatterArgs
+): { xs: number[]; ys: number[] } {
+  const rng = makeRng(a.seed);
+  const maxPts = Math.min(a.targetPoints, a.cellsX * a.cellsY);
   const maxAttempts = maxPts * 40;
-
-  // ----- 1. Density-weighted scatter -----
   const xs: number[] = [];
   const ys: number[] = [];
   let attempts = 0;
   while (xs.length < maxPts && attempts < maxAttempts) {
     const u = rng();
     const v = rng();
-    const d = sampleDensityCPU(densityImage, imgW, imgH, u, v, invert, densityCurve);
+    const d = sampleDensityCPU(
+      densityImage, a.imgW, a.imgH, u, v, a.invert, a.densityCurve
+    );
     if (rng() < d) {
       xs.push(u);
       ys.push(v);
     }
     attempts++;
   }
+  return { xs, ys };
+}
+
+// ----- Bake stage 2 (CPU): relaxation -----
+// Mutates xs/ys in place. Jacobi nearest-neighbour push over a uniform
+// grid whose cell size matches the output cell grid. The WebGPU kernel in
+// engine/webgpu/wgsl/stipple-relax.ts mirrors this exactly; this is the
+// fallback when WebGPU is unavailable or the point count is small.
+function relaxPositionsCPU(
+  xs: number[], ys: number[],
+  densityImage: Float32Array,
+  a: ScatterArgs, r: RelaxArgs
+): void {
   const n = xs.length;
+  if (r.iterations <= 0 || n <= 1) return;
+  const { cellsX, cellsY, imgW, imgH, invert, densityCurve } = a;
+  const stepBase = computeStepBase(r.relaxStrength, cellsX, cellsY);
+  for (let iter = 0; iter < r.iterations; iter++) {
+    const bins = new Map<number, number[]>();
+    for (let i = 0; i < n; i++) {
+      const cx = Math.max(0, Math.min(cellsX - 1, Math.floor(xs[i] * cellsX)));
+      const cy = Math.max(0, Math.min(cellsY - 1, Math.floor(ys[i] * cellsY)));
+      const key = cy * cellsX + cx;
+      const arr = bins.get(key);
+      if (arr) arr.push(i);
+      else bins.set(key, [i]);
+    }
 
-  // ----- 2. Relaxation -----
-  // Uniform-grid neighbour lookup. Cell size matches the output cell
-  // grid so each cell holds at most a handful of candidates.
-  if (relaxIterations > 0 && n > 1) {
-    const stepBase = relaxStrength * (0.7 / Math.max(cellsX, cellsY));
-    for (let iter = 0; iter < relaxIterations; iter++) {
-      const bins = new Map<number, number[]>();
-      for (let i = 0; i < n; i++) {
-        const cx = Math.max(0, Math.min(cellsX - 1, Math.floor(xs[i] * cellsX)));
-        const cy = Math.max(0, Math.min(cellsY - 1, Math.floor(ys[i] * cellsY)));
-        const key = cy * cellsX + cx;
-        const arr = bins.get(key);
-        if (arr) arr.push(i);
-        else bins.set(key, [i]);
-      }
-
-      const dx = new Float32Array(n);
-      const dy = new Float32Array(n);
-      for (let i = 0; i < n; i++) {
-        const px = xs[i];
-        const py = ys[i];
-        const cx = Math.max(0, Math.min(cellsX - 1, Math.floor(px * cellsX)));
-        const cy = Math.max(0, Math.min(cellsY - 1, Math.floor(py * cellsY)));
-        let nearestDist2 = Infinity;
-        let nnDx = 0, nnDy = 0;
-        for (let oy = -1; oy <= 1; oy++) {
-          for (let ox = -1; ox <= 1; ox++) {
-            const ncx = cx + ox;
-            const ncy = cy + oy;
-            if (ncx < 0 || ncy < 0 || ncx >= cellsX || ncy >= cellsY) continue;
-            const bucket = bins.get(ncy * cellsX + ncx);
-            if (!bucket) continue;
-            for (let k = 0; k < bucket.length; k++) {
-              const j = bucket[k];
-              if (j === i) continue;
-              const ddx = px - xs[j];
-              const ddy = py - ys[j];
-              const d2 = ddx * ddx + ddy * ddy;
-              if (d2 < nearestDist2) {
-                nearestDist2 = d2;
-                nnDx = ddx;
-                nnDy = ddy;
-              }
+    const dx = new Float32Array(n);
+    const dy = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const px = xs[i];
+      const py = ys[i];
+      const cx = Math.max(0, Math.min(cellsX - 1, Math.floor(px * cellsX)));
+      const cy = Math.max(0, Math.min(cellsY - 1, Math.floor(py * cellsY)));
+      let nearestDist2 = Infinity;
+      let nnDx = 0, nnDy = 0;
+      for (let oy = -1; oy <= 1; oy++) {
+        for (let ox = -1; ox <= 1; ox++) {
+          const ncx = cx + ox;
+          const ncy = cy + oy;
+          if (ncx < 0 || ncy < 0 || ncx >= cellsX || ncy >= cellsY) continue;
+          const bucket = bins.get(ncy * cellsX + ncx);
+          if (!bucket) continue;
+          for (let k = 0; k < bucket.length; k++) {
+            const j = bucket[k];
+            if (j === i) continue;
+            const ddx = px - xs[j];
+            const ddy = py - ys[j];
+            const d2 = ddx * ddx + ddy * ddy;
+            if (d2 < nearestDist2) {
+              nearestDist2 = d2;
+              nnDx = ddx;
+              nnDy = ddy;
             }
           }
         }
-        if (nearestDist2 < Infinity && nearestDist2 > 0) {
-          const mag = Math.sqrt(nearestDist2);
-          // Allow tighter packing where density is high — push less.
-          const localD = sampleDensityCPU(densityImage, imgW, imgH, px, py, invert, densityCurve);
-          const ease = 1.0 - localD * 0.85;
-          dx[i] = (nnDx / mag) * stepBase * ease;
-          dy[i] = (nnDy / mag) * stepBase * ease;
-        }
       }
-      for (let i = 0; i < n; i++) {
-        xs[i] = Math.max(0, Math.min(1, xs[i] + dx[i]));
-        ys[i] = Math.max(0, Math.min(1, ys[i] + dy[i]));
+      if (nearestDist2 < Infinity && nearestDist2 > 0) {
+        const mag = Math.sqrt(nearestDist2);
+        // Allow tighter packing where density is high — push less.
+        const localD = sampleDensityCPU(densityImage, imgW, imgH, px, py, invert, densityCurve);
+        const ease = 1.0 - localD * 0.85;
+        dx[i] = (nnDx / mag) * stepBase * ease;
+        dy[i] = (nnDy / mag) * stepBase * ease;
       }
     }
+    for (let i = 0; i < n; i++) {
+      xs[i] = Math.max(0, Math.min(1, xs[i] + dx[i]));
+      ys[i] = Math.max(0, Math.min(1, ys[i] + dy[i]));
+    }
   }
+}
 
+// ----- Bake stage 3: finalize -----
+// Re-sample density at the final (relaxed) positions and pack into the
+// RawPoint shape consumers expect. Accepts number[] (CPU) or Float32Array
+// (GPU readback) transparently.
+function finalizePoints(
+  xs: ArrayLike<number>, ys: ArrayLike<number>,
+  densityImage: Float32Array,
+  a: ScatterArgs
+): RawPoint[] {
+  const n = xs.length;
   const out: RawPoint[] = new Array(n);
   for (let i = 0; i < n; i++) {
     const u = xs[i];
     const v = ys[i];
-    const d = sampleDensityCPU(densityImage, imgW, imgH, u, v, invert, densityCurve);
+    const d = sampleDensityCPU(
+      densityImage, a.imgW, a.imgH, u, v, a.invert, a.densityCurve
+    );
     out[i] = { x: u, y: v, density: d };
   }
   return out;
@@ -498,21 +586,139 @@ function buildCellData(
   return cellData;
 }
 
-// Convenience wrapper for static packed mode — full-life buckets.
-function bakePackedCells(
-  densityImage: Float32Array, imgW: number, imgH: number,
-  cellsX: number, cellsY: number,
-  targetPoints: number,
-  invert: boolean, densityCurve: number,
-  relaxIterations: number, relaxStrength: number,
-  seed: number
-): Float32Array {
-  const raw = bakeRawPositions(
-    densityImage, imgW, imgH, cellsX, cellsY, targetPoints,
-    invert, densityCurve, relaxIterations, relaxStrength, seed
-  );
-  const points = raw.map((p) => ({ ...p, life: 1.0 }));
-  return buildCellData(points, cellsX, cellsY);
+// =====================================================================
+// Relaxation orchestration — CPU sync or WebGPU async
+// =====================================================================
+
+// Fire-and-forget WebGPU bake. Scatter has already run on the CPU; this
+// uploads the fixed point set, runs the relaxation kernel, reads it back,
+// and stores the finalized result on `state`. Errors are swallowed into a
+// permanent CPU fallback. Always requests a follow-up eval so the result
+// is consumed even on a paused scene.
+async function launchGpuRelax(
+  ctx: RenderContext,
+  state: StippleState,
+  paramsRef: object,
+  bakeKey: string,
+  srcTex: WebGLTexture | null,
+  xs: Float32Array,
+  ys: Float32Array,
+  srcData: Float32Array,
+  a: ScatterArgs,
+  r: RelaxArgs
+): Promise<void> {
+  try {
+    const status = await ensureWebGPUDevice(ctx);
+    if (!status.ok) throw new Error(status.message);
+    const cells = a.cellsX * a.cellsY;
+    state.gpu = ensureStippleRelaxGPU(
+      status.device, state.gpu, xs.length, cells, srcData.length
+    );
+    const relaxed = await runStippleRelax(state.gpu, xs, ys, srcData, {
+      cellsX: a.cellsX,
+      cellsY: a.cellsY,
+      imgW: a.imgW,
+      imgH: a.imgH,
+      invert: a.invert,
+      curve: a.densityCurve,
+      stepBase: computeStepBase(r.relaxStrength, a.cellsX, a.cellsY),
+      iterations: r.iterations,
+    });
+    if (state.disposed) return;
+    state.relaxResultPts = finalizePoints(relaxed.xs, relaxed.ys, srcData, a);
+    state.relaxResultKey = bakeKey;
+    state.relaxResultSrc = srcTex;
+    state.relaxResultGen++;
+  } catch (e) {
+    console.warn("Stipple GPU relax failed; falling back to CPU.", e);
+    state.gpuFailed = true;
+    // Invalidate so the next compute() rebakes on the CPU path.
+    state.relaxResultKey = "";
+    state.relaxResultSrc = null;
+  } finally {
+    relaxPending.set(paramsRef, false);
+    if (state.relaxBusyKey === bakeKey) state.relaxBusyKey = null;
+    requestPipelineReeval();
+  }
+}
+
+// Return the freshest relaxed point set for the current (params, source),
+// kicking off a fresh bake when the held result is stale. The returned
+// `gen` lets callers detect a new set without comparing arrays. The GPU
+// path is async: it returns a seed (un-relaxed) or stale set immediately
+// and the relaxed set lands a frame or two later.
+function ensureRelaxedTargets(
+  ctx: RenderContext,
+  state: StippleState,
+  src: ImageValue,
+  paramsRef: object,
+  bakeKey: string,
+  a: ScatterArgs,
+  r: RelaxArgs,
+  gpuOk: boolean
+): { pts: RawPoint[]; gen: number } {
+  const stale =
+    state.relaxResultKey !== bakeKey || state.relaxResultSrc !== src.texture;
+
+  const useGpu =
+    gpuOk &&
+    !state.gpuFailed &&
+    r.iterations > 0 &&
+    a.targetPoints >= GPU_RELAX_MIN_POINTS;
+
+  if (useGpu) {
+    if (stale && state.relaxBusyKey === null) {
+      const srcData = ctx.readImageToFloat32(src);
+      const { xs, ys } = scatterPoints(srcData, a);
+      if (xs.length === 0) {
+        // Degenerate scatter (near-white image): nothing to relax. Settle
+        // synchronously on the empty set so we don't spin launching jobs.
+        state.relaxResultPts = [];
+        state.relaxResultKey = bakeKey;
+        state.relaxResultSrc = src.texture;
+        state.relaxResultGen++;
+        relaxPending.set(paramsRef, false);
+      } else {
+        // Seed an un-relaxed result so the first frame before the GPU bake
+        // lands shows points rather than a blank / stale image.
+        if (!state.relaxResultPts) {
+          state.relaxResultPts = finalizePoints(xs, ys, srcData, a);
+          state.relaxResultKey = bakeKey;
+          state.relaxResultSrc = src.texture;
+          state.relaxResultGen++;
+        }
+        state.relaxBusyKey = bakeKey;
+        relaxPending.set(paramsRef, true);
+        const job = launchGpuRelax(
+          ctx, state, paramsRef, bakeKey, src.texture,
+          Float32Array.from(xs), Float32Array.from(ys), srcData, a, r
+        );
+        if (ctx.offline) {
+          // Deterministic export: register the relax job so the two-pass
+          // render waits for the GPU readback, then re-renders with the
+          // settled result. Realtime leaves it fire-and-forget — the
+          // continuous loop picks the result up via pipeline-bump.
+          pushMediaSettle(ctx, job);
+        } else {
+          void job;
+        }
+      }
+    }
+    return { pts: state.relaxResultPts ?? [], gen: state.relaxResultGen };
+  }
+
+  // CPU path: no WebGPU, GPU failed, relax disabled, or below threshold.
+  if (stale) {
+    const srcData = ctx.readImageToFloat32(src);
+    const { xs, ys } = scatterPoints(srcData, a);
+    relaxPositionsCPU(xs, ys, srcData, a, r);
+    state.relaxResultPts = finalizePoints(xs, ys, srcData, a);
+    state.relaxResultKey = bakeKey;
+    state.relaxResultSrc = src.texture;
+    state.relaxResultGen++;
+    relaxPending.set(paramsRef, false);
+  }
+  return { pts: state.relaxResultPts ?? [], gen: state.relaxResultGen };
 }
 
 // =====================================================================
@@ -779,10 +985,16 @@ export const stippleNode: NodeDefinition = {
   linkedPairs: [{ a: "dotMinSize", b: "dotMaxSize" }],
 
   // packed-flow ticks every frame so dots can animate even when the
-  // upstream input is static. Other modes are purely fingerprint-driven
-  // and need no time mixed in.
+  // upstream input is static. packed forces a recompute only while an
+  // async GPU relax bake is pending, so the result is picked up even on a
+  // paused scene (see relaxPending / requestPipelineReeval). Other modes
+  // are purely fingerprint-driven and need no time mixed in.
   fingerprintExtras(params, ctx) {
-    return params.mode === "packed-flow" ? `t:${ctx.time.toFixed(3)}` : "";
+    if (params.mode === "packed-flow") return `t:${ctx.time.toFixed(3)}`;
+    if (params.mode === "packed" && relaxPending.get(params)) {
+      return `p:${ctx.time.toFixed(3)}`;
+    }
+    return "";
   },
 
   compute({ inputs, params, ctx, nodeId }) {
@@ -831,8 +1043,10 @@ export const stippleNode: NodeDefinition = {
       if (!state) {
         state = {
           cellTexture: null, cellsX: 0, cellsY: 0,
-          lastBakeKey: "", lastSrcTexture: null,
           flowDots: [], lastFlowTime: ctx.time,
+          relaxResultPts: null, relaxResultKey: "", relaxResultSrc: null,
+          relaxResultGen: 0, renderedGen: -1, matchedGen: -1,
+          relaxBusyKey: null, gpu: null, gpuFailed: false, disposed: false,
         };
         ctx.state[key] = state;
       }
@@ -844,8 +1058,30 @@ export const stippleNode: NodeDefinition = {
         realCellsX, realCellsY,
       ].join("|");
 
-      const srcChanged = state.lastSrcTexture !== src.texture;
-      const needsRebake = srcChanged || state.lastBakeKey !== bakeKey;
+      // Kick the WebGPU boot once (async, cached); use the resolved status
+      // synchronously thereafter. Until it resolves the relaxation runs on
+      // the CPU — a brief warmup, not a fallback.
+      //
+      // Offline export also uses the GPU: the relax job registers itself as
+      // a settle promise (see ensureRelaxedTargets), so the two-pass export
+      // render waits for the readback and captures the settled result. This
+      // keeps export visually identical to the realtime preview.
+      void ensureWebGPUDevice(ctx);
+      const gpuOk = peekWebGPUDevice(ctx)?.ok === true;
+
+      const scatterArgs: ScatterArgs = {
+        imgW: src.width, imgH: src.height,
+        cellsX: realCellsX, cellsY: realCellsY,
+        targetPoints: pointCount,
+        invert: invert === 1, densityCurve, seed,
+      };
+      const relaxArgs: RelaxArgs = {
+        iterations: relaxIterations, relaxStrength,
+      };
+
+      const { pts, gen } = ensureRelaxedTargets(
+        ctx, state, src, params, bakeKey, scatterArgs, relaxArgs, gpuOk
+      );
 
       if (mode === "packed-flow") {
         // ----- Flow path: persistent dots, fade in/out, position lerp -----
@@ -861,22 +1097,14 @@ export const stippleNode: NodeDefinition = {
         const dt = Math.max(0, Math.min(0.1, rawDt));
         state.lastFlowTime = ctx.time;
 
-        if (needsRebake) {
-          const srcData = ctx.readImageToFloat32(src);
-          const targets = bakeRawPositions(
-            srcData, src.width, src.height,
-            realCellsX, realCellsY,
-            pointCount,
-            invert === 1, densityCurve,
-            relaxIterations, relaxStrength,
-            seed
-          );
-          // If this is the very first bake, seed the persistent dots
-          // at full life so the user sees something immediately
-          // instead of a one-fadeInTime wait.
+        // A fresh relaxed set (new gen) is the trigger to re-match. Until
+        // one lands the dots keep flowing toward their existing targets.
+        if (gen !== state.matchedGen) {
           if (state.flowDots.length === 0) {
-            for (let i = 0; i < targets.length; i++) {
-              const t = targets[i];
+            // First bake: seed dots at full life so the user sees
+            // something immediately instead of a one-fadeInTime wait.
+            for (let i = 0; i < pts.length; i++) {
+              const t = pts[i];
               state.flowDots.push({
                 x: t.x, y: t.y, targetX: t.x, targetY: t.y,
                 density: t.density, life: 1, fadeDir: 1,
@@ -884,12 +1112,11 @@ export const stippleNode: NodeDefinition = {
             }
           } else {
             matchFlowTargets(
-              state.flowDots, targets, maxMatchDistance,
+              state.flowDots, pts, maxMatchDistance,
               realCellsX, realCellsY
             );
           }
-          state.lastBakeKey = bakeKey;
-          state.lastSrcTexture = src.texture;
+          state.matchedGen = gen;
         }
 
         state.flowDots = stepFlowDots(
@@ -900,19 +1127,16 @@ export const stippleNode: NodeDefinition = {
         ensureCellTexture(ctx, state, cellData, realCellsX, realCellsY);
       } else {
         // ----- Static packed path -----
-        if (needsRebake) {
-          const srcData = ctx.readImageToFloat32(src);
-          const cellData = bakePackedCells(
-            srcData, src.width, src.height,
-            realCellsX, realCellsY,
-            pointCount,
-            invert === 1, densityCurve,
-            relaxIterations, relaxStrength,
-            seed
-          );
+        // Rebuild the cell texture whenever a new relaxed set has landed
+        // (gen changed) — this includes the async GPU result arriving on a
+        // later frame, not just the synchronous CPU path.
+        const cellsChanged =
+          state.cellsX !== realCellsX || state.cellsY !== realCellsY;
+        if (gen !== state.renderedGen || cellsChanged || !state.cellTexture) {
+          const points = pts.map((p) => ({ ...p, life: 1.0 }));
+          const cellData = buildCellData(points, realCellsX, realCellsY);
           ensureCellTexture(ctx, state, cellData, realCellsX, realCellsY);
-          state.lastBakeKey = bakeKey;
-          state.lastSrcTexture = src.texture;
+          state.renderedGen = gen;
         }
       }
 
@@ -974,7 +1198,13 @@ export const stippleNode: NodeDefinition = {
   dispose(ctx: RenderContext, nodeId: string) {
     const key = stateKey(nodeId);
     const state = ctx.state[key] as StippleState | undefined;
-    if (state?.cellTexture) ctx.gl.deleteTexture(state.cellTexture);
+    if (state) {
+      // Flag for any in-flight GPU bake so its async callback bails
+      // instead of writing into freed state.
+      state.disposed = true;
+      if (state.cellTexture) ctx.gl.deleteTexture(state.cellTexture);
+      if (state.gpu) destroyStippleRelaxGPU(state.gpu);
+    }
     delete ctx.state[key];
   },
 };

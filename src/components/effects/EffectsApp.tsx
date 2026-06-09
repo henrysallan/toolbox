@@ -19,11 +19,13 @@ import UserPreferencesModal from "./UserPreferencesModal";
 import PaintOverlay from "./PaintOverlay";
 import PlaybackBar from "./PlaybackBar";
 import MenuBar from "./MenuBar";
+import Landing from "./Landing";
 import ViewportMenuBar from "./ViewportMenuBar";
 import TransformContextBar from "./TransformContextBar";
 import { registerAllNodes } from "@/nodes";
 import { getNodeDef } from "@/engine/registry";
 import { createEngineBackend, type EngineBackend } from "@/engine/gl";
+import { awaitMediaSettle } from "@/engine/offline-settle";
 import {
   evaluateGraph,
   type EvalCache,
@@ -64,6 +66,12 @@ import SaveModal from "./SaveModal";
 import ExportAppModal from "./ExportAppModal";
 import NodeInspectorPopup from "./NodeInspectorPopup";
 import { buildExportManifest } from "@/lib/export-manifest";
+import {
+  audioBufferToWav,
+  renderExportAudioBuffer,
+  type ExportAudioSpec,
+} from "@/lib/export-audio";
+import type { AudioFileParamValue } from "@/engine/types";
 import PublicPrivateConfirm from "./PublicPrivateConfirm";
 import NewProjectConfirm from "./NewProjectConfirm";
 import {
@@ -73,6 +81,9 @@ import {
 } from "@/state/editor-session";
 import type { SaveState } from "./FileNameMenu";
 import TransformGizmo from "./TransformGizmo";
+import PrimitiveGizmo, {
+  PRIMITIVE_GIZMO_ADAPTERS,
+} from "./PrimitiveGizmo";
 import SplineEditorOverlay from "./SplineEditorOverlay";
 import PointsOverlay from "./PointsOverlay";
 import WebGPUParticleOverlay from "./WebGPUParticleOverlay";
@@ -88,6 +99,7 @@ import {
   type KeyframeAnimationBlock,
   type ProjectTimeline,
 } from "@/engine/keyframes";
+import type { ClipBlock } from "@/engine/clips";
 import type { PointsValue } from "@/engine/types";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
 
@@ -115,6 +127,13 @@ const INITIAL_EDGES: Edge[] = [
     targetHandle: "in:image",
   },
 ];
+
+// Node label from a loaded file name: drop the extension so the network
+// reads as "sunset" rather than "sunset.jpg". Falls back to the raw name
+// for extensionless files.
+function fileLabel(name: string): string {
+  return name.replace(/\.[^/.]+$/, "") || name;
+}
 
 function makeInstanceNode(
   type: string,
@@ -324,6 +343,18 @@ function EffectsShell({
   const [paramView, setParamView] = useState<"project" | "node" | "load">(
     rehydrate?.paramView ?? (initialProject ? "node" : "load")
   );
+  // First-load landing gateway. Shown only on a clean visit to `/` —
+  // skipped when arriving via /p/<slug> (initialProject) or when
+  // restoring an in-progress session (rehydrate), since both already
+  // resolve to a specific graph the user expects to see immediately.
+  const [showLanding, setShowLanding] = useState(
+    !initialProject && !rehydrate
+  );
+  // Once the menu bar has finished sliding in we drop its wrapper's
+  // transform back to `none`. A lingering transform establishes a
+  // stacking context that would trap the menu dropdowns beneath the
+  // editor body — so it must only exist while actually animating.
+  const [menuSettled, setMenuSettled] = useState(!showLanding);
   // Full-canvas mode: canvas fills the viewport, all other UI chrome
   // is hidden. Toggled via the F shortcut or the Window menu's "Full
   // Canvas" item. Esc exits.
@@ -737,6 +768,21 @@ function EffectsShell({
   // Track Editor + Graph Editor UI state.
   const [trackEditorOpen, setTrackEditorOpen] = useState(false);
   const [trackEditorHeight, setTrackEditorHeight] = useState(280);
+  // Slide-up animation for the default-layout dock. `mounted` keeps the
+  // dock in the DOM through its exit slide; `shown` drives the transform
+  // (false = parked below the canvas, true = expanded into view).
+  const [trackDockMounted, setTrackDockMounted] = useState(false);
+  const [trackDockShown, setTrackDockShown] = useState(false);
+  useEffect(() => {
+    if (trackEditorOpen) {
+      setTrackDockMounted(true);
+      const id = requestAnimationFrame(() => setTrackDockShown(true));
+      return () => cancelAnimationFrame(id);
+    }
+    setTrackDockShown(false);
+    const t = setTimeout(() => setTrackDockMounted(false), 260);
+    return () => clearTimeout(t);
+  }, [trackEditorOpen]);
   const [dockTab, setDockTab] = useState<"tracks" | "graph">("tracks");
   // When on, the tracks editor only shows lanes for nodes that are
   // currently selected in the node editor. Keeps the dock readable
@@ -744,6 +790,7 @@ function EffectsShell({
   const [tracksSelectedOnly, setTracksSelectedOnly] = useState(false);
   const [graphNormalizeY, setGraphNormalizeY] = useState(false);
   const [graphRefitVersion, setGraphRefitVersion] = useState(0);
+  const [trackFitVersion, setTrackFitVersion] = useState(0);
   const [collapsedTrackNodes, setCollapsedTrackNodes] = useState<Set<string>>(
     new Set()
   );
@@ -965,6 +1012,17 @@ function EffectsShell({
     return parts.sort().join(";");
   }, [nodes, edges]);
 
+  // True while a deterministic offline (WebCodecs / ffmpeg) export is
+  // stepping the clock itself. Two jobs:
+  //   1. The time-driven eval effect bails (it would double-render each
+  //      frame, and a stray trigger could capture the wrong frame).
+  //   2. It flows into ctx.offline so nodes with async/deferred-settle
+  //      work (the WebGPU stipple relax) run synchronously instead —
+  //      otherwise the export captures stale/seed frames.
+  // The live/MediaRecorder path leaves this false (it's realtime; the
+  // continuous loop lets deferred results catch up).
+  const offlineRenderingRef = useRef(false);
+
   // Imperative render entry point. Pulls graph + cursor from refs so it
   // can be called both from the React-driven render effect AND from the
   // offline export loops, where we need to step time deterministically
@@ -985,12 +1043,18 @@ function EffectsShell({
         params: n.data.params,
         exposedParams: n.data.exposedParams,
         animation: n.data.animation,
+        clips: n.data.clips,
         bypassed: !!n.data.bypassed,
       }));
       const activeNodeId =
         currentNodes.find((n) => n.data.active)?.id ?? null;
       const activeNodeId2 =
         currentNodes.find((n) => n.data.active2)?.id ?? null;
+      // When nothing is explicitly set Active, preview the selected node's
+      // own image (primary image, or its `image` aux) on the canvas — so a
+      // freshly-added node (e.g. a spline primitive) is viewable without
+      // wiring it to an Output.
+      const previewNodeId = !activeNodeId ? selectedIdRef.current : null;
       const graphEdges: GraphEdge[] = currentEdges.map((e) => ({
         id: e.id,
         source: e.source,
@@ -1009,7 +1073,8 @@ function EffectsShell({
           tick: Math.round(renderTime * renderFps * tpf),
           ticksPerFrame: tpf,
           fps: renderFps,
-        }
+        },
+        offlineRenderingRef.current
       );
       const inspectSet = inspectIdsRef.current;
       const result = evaluateGraph(
@@ -1018,7 +1083,8 @@ function EffectsShell({
         ctx,
         evalCacheRef.current,
         activeNodeId,
-        inspectSet.size > 0 ? inspectSet : undefined
+        inspectSet.size > 0 ? inspectSet : undefined,
+        previewNodeId
       );
       // Bail when the error set is unchanged. evaluateGraph returns a
       // fresh object every frame, so a naive setErrors(result.errors)
@@ -1123,6 +1189,7 @@ function EffectsShell({
   renderFrameRef.current = renderFrame;
 
   useEffect(() => {
+    if (offlineRenderingRef.current) return;
     renderFrame(time, fps, playing && !scrubbing);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -1134,6 +1201,9 @@ function EffectsShell({
     cursorTick,
     playing,
     scrubbing,
+    // Re-render when the selection changes so the selected-node preview
+    // (when nothing is set Active) updates on the canvas.
+    selectedId,
   ]);
 
   // Capture the selected node's points output after each pipeline run so
@@ -1373,7 +1443,13 @@ function EffectsShell({
       try {
         if (kind === "image") {
           nodeType = "image-source";
-          paramValue = await createImageBitmap(file);
+          const bmp = await createImageBitmap(file);
+          // Stash the file name on the bitmap for the param panel chip
+          // (cosmetic; the GL upload ignores it).
+          try {
+            (bmp as unknown as { fileName?: string }).fileName = file.name;
+          } catch {}
+          paramValue = bmp;
         } else if (kind === "svg") {
           nodeType = "svg-source";
           const mod = await import("@/lib/svg-parse");
@@ -1399,6 +1475,10 @@ function EffectsShell({
       pushGraph(getGraphSnapshot());
       const newNode = makeInstanceNode(nodeType, flowPos);
       newNode.data.params = { ...newNode.data.params, file: paramValue };
+      // Match the Load-button path: a dropped image/video names its node.
+      if (kind === "image" || kind === "video") {
+        newNode.data.name = fileLabel(file.name);
+      }
       setNodes((prev) => [...prev, newNode]);
     },
     [pushGraph, getGraphSnapshot, setNodes]
@@ -1617,12 +1697,21 @@ function EffectsShell({
         }
       }
 
-      setNodes((prev) => [...prev, newNode]);
+      // Select the new node (deselecting others) so it previews on the
+      // canvas immediately and its params open — "add and see it" with no
+      // extra click. setSelectedId mirrors the flag for the param panel /
+      // canvas preview without waiting on React Flow's selection echo.
+      setNodes((prev) => [
+        ...prev.map((n) => (n.selected ? { ...n, selected: false } : n)),
+        { ...newNode, selected: true },
+      ]);
       if (autoEdge) {
         setEdges((prev) => [...prev, autoEdge as Edge]);
       }
+      setSelectedId(newNode.id);
+      setParamView("node");
     },
-    [setNodes, setEdges, pushGraph, getGraphSnapshot]
+    [setNodes, setEdges, setSelectedId, setParamView, pushGraph, getGraphSnapshot]
   );
 
   // Shallow-clone a node with a fresh id + position. Params share references
@@ -1742,6 +1831,237 @@ function EffectsShell({
     ]);
     setEdges((prev) => [...prev, ...newEdges]);
   }, [pushGraph, getGraphSnapshot, cloneNode, setNodes, setEdges]);
+
+  // Shift+M: wrap the selected nodes' image/mask outputs in a new Merge
+  // node. Every image/mask output counts — a node's primary output and
+  // any of its (enabled) aux outputs each become their own layer. The
+  // leftmost selected node's first output (ties broken by vertical
+  // position; primary before aux within a node) becomes the `base`
+  // layer; the rest stack on top in that same order. Selected nodes with
+  // no image/mask output are ignored, and the shortcut no-ops if none
+  // qualify.
+  const handleMergeSelection = useCallback(() => {
+    // The output handles a node exposes that the merge can consume,
+    // primary first so it lands lower in the layer stack than its auxes.
+    const imageOutputsOf = (n: Node<NodeDataPayload>): string[] => {
+      const handles: string[] = [];
+      if (n.data.primaryOutput === "image" || n.data.primaryOutput === "mask") {
+        handles.push("out:primary");
+      }
+      for (const a of n.data.auxOutputs ?? []) {
+        if (a.disabled) continue;
+        if (a.type === "image" || a.type === "mask") {
+          handles.push(`out:aux:${a.name}`);
+        }
+      }
+      return handles;
+    };
+
+    const eligible = nodesRef.current
+      .filter((n) => n.selected)
+      .map((n) => ({ node: n, handles: imageOutputsOf(n) }))
+      .filter((e) => e.handles.length > 0)
+      .sort(
+        (a, b) =>
+          a.node.position.x - b.node.position.x ||
+          a.node.position.y - b.node.position.y
+      );
+    if (eligible.length === 0) return;
+
+    // Flatten to one wire-source per image/mask output, preserving node
+    // order and primary-before-aux order within each node.
+    const sources = eligible.flatMap((e) =>
+      e.handles.map((handle) => ({ nodeId: e.node.id, handle }))
+    );
+
+    pushGraph(getGraphSnapshot());
+
+    const [base, ...layerSources] = sources;
+    // One fresh layer slot per non-base source so the merge's resolved
+    // input sockets line up exactly with the wires added below.
+    const layers: MergeLayer[] = layerSources.map(() => ({
+      id: newLayerId(),
+      mode: "normal",
+      opacity: 1,
+    }));
+
+    // Drop the merge to the right of the selection, vertically centered
+    // on the nodes it consumes.
+    const rightEdge = Math.max(...eligible.map((e) => e.node.position.x));
+    const avgY =
+      eligible.reduce((s, e) => s + e.node.position.y, 0) / eligible.length;
+    const merge = makeInstanceNode("merge", { x: rightEdge + 360, y: avgY });
+    merge.data.params = { ...merge.data.params, layers };
+    // Recompute the resolved input sockets so the dynamic `layer:*`
+    // handles exist for the edges below (and for the node renderer).
+    const def = getNodeDef("merge");
+    if (def) {
+      const resolved = withMaskInput(
+        def.resolveInputs?.(merge.data.params) ?? def.inputs
+      );
+      merge.data.inputs = resolved.map((i) => ({
+        name: i.name,
+        label: i.label,
+        type: i.type,
+      }));
+    }
+    merge.selected = true;
+
+    const newEdges: Edge[] = [
+      {
+        id: `e-${Math.random().toString(36).slice(2, 10)}`,
+        source: base.nodeId,
+        sourceHandle: base.handle,
+        target: merge.id,
+        targetHandle: "in:base",
+      },
+      ...layerSources.map((src, i) => ({
+        id: `e-${Math.random().toString(36).slice(2, 10)}`,
+        source: src.nodeId,
+        sourceHandle: src.handle,
+        target: merge.id,
+        targetHandle: `in:layer:${layers[i].id}`,
+      })),
+    ];
+
+    setNodes((prev) => [
+      ...prev.map((n) => (n.selected ? { ...n, selected: false } : n)),
+      merge,
+    ]);
+    setEdges((prev) => [...prev, ...newEdges]);
+    setSelectedId(merge.id);
+    setParamView("node");
+  }, [
+    pushGraph,
+    getGraphSnapshot,
+    setNodes,
+    setEdges,
+    setSelectedId,
+    setParamView,
+  ]);
+
+  // Viewport shelf-tool spawner (the spline-primitive buttons that live
+  // in the viewport menubar). Drops a new source node into the network;
+  // when a Merge node is the current target — selected, or active in the
+  // viewport — the new node's image output is wired straight in as a
+  // fresh layer, so stacking up a composite is one click per primitive.
+  const handleAddShelfNode = useCallback(
+    (type: string) => {
+      pushGraph(getGraphSnapshot());
+
+      // Best image/mask output handle on a node, or null if it has none.
+      const imageOutputHandle = (n: Node<NodeDataPayload>): string | null => {
+        if (
+          n.data.primaryOutput === "image" ||
+          n.data.primaryOutput === "mask"
+        ) {
+          return "out:primary";
+        }
+        const aux = (n.data.auxOutputs ?? []).find(
+          (a) => !a.disabled && (a.type === "image" || a.type === "mask")
+        );
+        return aux ? `out:aux:${aux.name}` : null;
+      };
+
+      // Target Merge: one that's selected (explicit pick wins) or, failing
+      // that, the one parked as the active viewport output.
+      const selId = selectedIdRef.current;
+      const target =
+        nodesRef.current.find(
+          (n) =>
+            n.data.defType === "merge" && (n.id === selId || n.selected)
+        ) ??
+        nodesRef.current.find(
+          (n) => n.data.defType === "merge" && n.data.active
+        ) ??
+        null;
+
+      // Position: stack to the left of the merge (nudged down per existing
+      // layer) when wiring; otherwise drop at the last pane cursor.
+      let pos: { x: number; y: number };
+      if (target) {
+        const layerCount = (
+          (target.data.params.layers as MergeLayer[]) ?? []
+        ).length;
+        pos = {
+          x: target.position.x - 360,
+          y: target.position.y + layerCount * 96,
+        };
+      } else {
+        const base = lastPanePointerRef.current ?? { x: 200, y: 200 };
+        pos = { x: base.x, y: base.y };
+      }
+
+      const newNode = makeInstanceNode(type, pos);
+      const handle = target ? imageOutputHandle(newNode) : null;
+
+      if (!target || !handle) {
+        // No merge to wire into (or the new node has no image output) —
+        // just add it, selected, so its gizmo / pen overlay opens.
+        setNodes((prev) => [
+          ...prev.map((n) => (n.selected ? { ...n, selected: false } : n)),
+          { ...newNode, selected: true },
+        ]);
+        setSelectedId(newNode.id);
+        setParamView("node");
+        return;
+      }
+
+      // Wire the new node in as a fresh layer on the target merge.
+      const layer: MergeLayer = { id: newLayerId(), mode: "normal", opacity: 1 };
+      const nextParams = {
+        ...target.data.params,
+        layers: [
+          ...((target.data.params.layers as MergeLayer[]) ?? []),
+          layer,
+        ],
+      };
+      let nextInputs = target.data.inputs;
+      const def = getNodeDef("merge");
+      if (def) {
+        const resolved = withMaskInput(
+          def.resolveInputs?.(nextParams) ?? def.inputs
+        );
+        nextInputs = resolved.map((i) => ({
+          name: i.name,
+          label: i.label,
+          type: i.type,
+        }));
+      }
+
+      const edge: Edge = {
+        id: `e-${Math.random().toString(36).slice(2, 10)}`,
+        source: newNode.id,
+        sourceHandle: handle,
+        target: target.id,
+        targetHandle: `in:layer:${layer.id}`,
+      };
+
+      setNodes((prev) => [
+        ...prev.map((n) => {
+          if (n.id === target.id) {
+            return {
+              ...n,
+              data: { ...n.data, params: nextParams, inputs: nextInputs },
+            };
+          }
+          return n.selected ? { ...n, selected: false } : n;
+        }),
+        { ...newNode, selected: true },
+      ]);
+      setEdges((prev) => [...prev, edge]);
+      setSelectedId(newNode.id);
+      setParamView("node");
+    },
+    [
+      pushGraph,
+      getGraphSnapshot,
+      setNodes,
+      setEdges,
+      setSelectedId,
+      setParamView,
+    ]
+  );
 
   // Context-menu / standalone Duplicate: clone the source node at a small
   // offset so it's visibly distinct. No edge surgery — the clone starts
@@ -2130,10 +2450,26 @@ function EffectsShell({
           const nextPrimary =
             def?.resolvePrimaryOutput?.(nextParams) ?? n.data.primaryOutput;
           const resolvedAux = def?.resolveAuxOutputs?.(nextParams);
+          // Loading a clip renames the node to the file (extension dropped)
+          // so the network reads as "sunset" / "clip-03" instead of a wall
+          // of identical "Image Source" labels. Image bitmaps stash the
+          // name as `fileName`; video values carry `filename`.
+          let nextName = n.data.name;
+          if (paramName === "file") {
+            const raw =
+              n.data.defType === "image-source"
+                ? (value as { fileName?: string } | null | undefined)?.fileName
+                : n.data.defType === "video-source"
+                  ? (value as { filename?: string } | null | undefined)
+                      ?.filename
+                  : undefined;
+            if (raw) nextName = fileLabel(raw);
+          }
           return {
             ...n,
             data: {
               ...n.data,
+              name: nextName,
               params: nextParams,
               animation: nextAnimation,
               primaryOutput: nextPrimary,
@@ -2270,6 +2606,26 @@ function EffectsShell({
       );
     },
     [setNodes, pushGraph, getGraphSnapshot, currentTick]
+  );
+
+  // Set/clear a node's timeline clip windows (Track Editor clip bars). Clip
+  // drags fire many times per gesture, so coalesce the whole drag under one
+  // undo entry keyed by node id — same pattern as slider drags. An empty
+  // array is normalized to undefined so the field disappears when the last
+  // window is removed.
+  const onClipChange = useCallback(
+    (nodeId: string, next: ClipBlock[] | undefined) => {
+      pushGraph(getGraphSnapshot(), `clip:${nodeId}`);
+      const normalized = next && next.length > 0 ? next : undefined;
+      setNodes((prev) =>
+        prev.map((n) =>
+          n.id === nodeId
+            ? { ...n, data: { ...n.data, clips: normalized } }
+            : n
+        )
+      );
+    },
+    [setNodes, pushGraph, getGraphSnapshot]
   );
 
   // Per-instance slider range override. `null` clears the entry so a
@@ -2485,6 +2841,32 @@ function EffectsShell({
     return () => window.removeEventListener("effect-node-toggle", handler);
   }, [setNodes, pushGraph, getGraphSnapshot]);
 
+  // "Match Aspect" button inside the image / video load controls dispatches
+  // the source's pixel dims here. We keep the project's current longest side
+  // and swing only the aspect: a 1024×1024 project with a 16:9 source
+  // becomes 1024×576; a portrait source becomes 576×1024.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (
+        e as CustomEvent<{ width: number; height: number }>
+      ).detail;
+      const sw = detail?.width ?? 0;
+      const sh = detail?.height ?? 0;
+      if (sw <= 0 || sh <= 0) return;
+      const srcAspect = sw / sh;
+      const [cw, ch] = canvasResRef.current;
+      const longest = Math.max(cw, ch);
+      const clamp = (v: number) => Math.max(16, Math.min(8192, Math.round(v)));
+      const next: [number, number] =
+        srcAspect >= 1
+          ? [clamp(longest), clamp(longest / srcAspect)]
+          : [clamp(longest * srcAspect), clamp(longest)];
+      setCanvasRes(next);
+    };
+    window.addEventListener("project-match-aspect", handler);
+    return () => window.removeEventListener("project-match-aspect", handler);
+  }, [setCanvasRes]);
+
   // Inline header controls (dropdowns on the node body) dispatch this
   // event to set a param value. Routes through onParamChange so every
   // normal param-change side effect — undo history, resolveInputs /
@@ -2665,6 +3047,59 @@ function EffectsShell({
     return node?.data.defType === "output" ? node.data.params : null;
   }, []);
 
+  // The Audio Source feeding the Output node's `audio` socket, distilled to
+  // the params the export muxer needs. Null when nothing is wired in or the
+  // source isn't an Audio Source.
+  const getOutputAudioSpec = useCallback(
+    (outputNodeId: string): ExportAudioSpec | null => {
+      const edge = edgesRef.current.find(
+        (e) => e.target === outputNodeId && e.targetHandle === "in:audio"
+      );
+      if (!edge) return null;
+      const node = nodesRef.current.find((n) => n.id === edge.source);
+      if (!node || node.data.defType !== "audio-source") return null;
+      const p = node.data.params;
+      return {
+        nodeId: node.id,
+        mode: (p.mode as "file" | "microphone") ?? "file",
+        file: (p.file as AudioFileParamValue | null) ?? null,
+        volume: Math.max(0, Math.min(1, (p.volume as number) ?? 1)),
+        loop: !!p.loop,
+        sync: !!p.sync_to_scene_time,
+        startOffset: (p.start_offset as number) ?? 0,
+      };
+    },
+    []
+  );
+
+  // Live audio track for the Fast (MediaRecorder) path. File-mode clips
+  // expose one via captureStream(); mic-mode reads the live MediaStream off
+  // the node's compute state. Returns null if unavailable.
+  const getLiveAudioTrack = useCallback(
+    (spec: ExportAudioSpec): MediaStreamTrack | null => {
+      try {
+        if (spec.mode === "microphone") {
+          const st = backendRef.current?.state?.[
+            `audio-source:${spec.nodeId}`
+          ] as { micStream?: MediaStream } | undefined;
+          return st?.micStream?.getAudioTracks?.()[0] ?? null;
+        }
+        const el = spec.file?.element as
+          | (HTMLAudioElement & {
+              captureStream?: () => MediaStream;
+              mozCaptureStream?: () => MediaStream;
+            })
+          | undefined;
+        if (!el) return null;
+        const cs = el.captureStream?.() ?? el.mozCaptureStream?.();
+        return cs?.getAudioTracks?.()[0] ?? null;
+      } catch {
+        return null;
+      }
+    },
+    []
+  );
+
   const exportImage = useCallback(
     (nodeId: string) => {
       const canvas = canvasRef.current;
@@ -2732,13 +3167,19 @@ function EffectsShell({
       // ---- Fast / live path (MediaRecorder) ------------------------------
       if (quality === "fast") {
         const liveContainer = container === "webm" ? "webm" : "mp4";
-        const picked = pickVideoMime(liveContainer);
+        // Pull a live audio track (file or mic) from the wired Audio Source
+        // and mix it into the captured stream. Picked before the mime so we
+        // can request an audio-capable codec string when there's audio.
+        const audioSpec = getOutputAudioSpec(nodeId);
+        const audioTrack = audioSpec ? getLiveAudioTrack(audioSpec) : null;
+        const picked = pickVideoMime(liveContainer, !!audioTrack);
         if (!picked) {
           console.error("No supported video codec in this browser");
           return;
         }
         const totalSec = durationFrames / previewFps;
         const stream = canvas.captureStream(previewFps);
+        if (audioTrack) stream.addTrack(audioTrack);
         const recorder = new MediaRecorder(stream, {
           mimeType: picked.mime,
           videoBitsPerSecond: Math.round(bitrateMbps * 1_000_000),
@@ -2787,18 +3228,51 @@ function EffectsShell({
       // nodes that gate on it (audio sources, particle systems, etc.)
       // still advance during the export render.
       setPlaying(false);
+      // Take over rendering: the export loop drives the canvas imperatively
+      // (below), so the time-driven eval effect must not also render — see
+      // offlineRenderingRef. Without this each frame would render twice.
+      offlineRenderingRef.current = true;
       setRecording({ mode: "offline", label: "Preparing…", progress: 0 });
 
-      const renderAt = (_frameIndex: number, t: number) => {
-        // Update the visible timeline so the preview stays in sync with
-        // what the encoder is reading. setTime is async, so we also
-        // call renderFrame imperatively to guarantee the canvas matches
-        // the timestamp we hand to the encoder.
+      const renderAt = async (_frameIndex: number, t: number) => {
+        // setTime only advances the visible timeline cursor for progress
+        // feedback — with the eval effect guarded by offlineRenderingRef it
+        // no longer triggers a redundant render of the same frame.
         setTime(t);
+        // Pass 1 issues any async media work (video seeks to the exact
+        // target time). Nodes register a settle promise; if any did, wait
+        // for the decode to land, then render again to upload the now-
+        // correct frames before the encoder captures. Without this, video
+        // sources record stale frames and multiple videos drift out of
+        // sync — the deterministic export's job is to be frame-accurate.
+        const backend = backendRef.current;
         renderFrameRef.current?.(t, exportFps, true);
+        const settled = backend
+          ? await awaitMediaSettle(backend.state)
+          : false;
+        if (settled) renderFrameRef.current?.(t, exportFps, true);
       };
 
       try {
+        // Render the wired audio into a buffer covering the export window
+        // (file mode only — mic has no deterministic offline form). Shared
+        // by both offline encoders; null when no file audio is connected.
+        const audioSpec = getOutputAudioSpec(nodeId);
+        let audioBuffer: AudioBuffer | null = null;
+        if (audioSpec) {
+          try {
+            audioBuffer = await renderExportAudioBuffer(
+              audioSpec,
+              durationFrames / exportFps
+            );
+          } catch (e) {
+            console.warn(
+              "Audio render for export failed; exporting video only:",
+              e
+            );
+          }
+        }
+
         let result: { blob: Blob; ext: string };
         if (quality === "high") {
           const { exportVideoWebCodecs } = await import("@/lib/export-webcodecs");
@@ -2819,6 +3293,7 @@ function EffectsShell({
             bitrateBps: Math.round(bitrateMbps * 1_000_000),
             fps: exportFps,
             durationFrames,
+            audioBuffer,
             renderFrame: renderAt,
             onProgress: (label, frac) =>
               setRecording({
@@ -2859,6 +3334,7 @@ function EffectsShell({
             proresProfile: proresMap[proresName] ?? 3,
             fps: exportFps,
             durationFrames,
+            audioWav: audioBuffer ? audioBufferToWav(audioBuffer) : null,
             renderFrame: renderAt,
             onProgress: (label, frac) =>
               setRecording({ mode: "offline", label, progress: frac }),
@@ -2874,12 +3350,15 @@ function EffectsShell({
         const msg = err instanceof Error ? err.message : "Export failed";
         flashToast(msg);
       } finally {
+        // Hand rendering back to the eval effect before restoring state, so
+        // the restored time/playing values drive a normal render again.
+        offlineRenderingRef.current = false;
         setPlaying(savedPlaying);
         setTime(savedTime);
         setRecording(null);
       }
     },
-    [getOutputParams, flashToast]
+    [getOutputParams, getOutputAudioSpec, getLiveAudioTrack, flashToast]
   );
 
   const onOpenExportApp = useCallback(
@@ -3265,6 +3744,90 @@ function EffectsShell({
     [pushGraph, getGraphSnapshot, setNodes, setEdges, user]
   );
 
+  // --- Local .toolbox files (File → Save to File / Load…) ------------------
+  // Self-contained project files, independent of the cloud. The base name of
+  // the last opened/saved file so a round-trip keeps its name even though a
+  // file-loaded project has no cloud row (currentProject stays null).
+  const projectFileNameRef = useRef<string | null>(null);
+
+  const sanitizeFileName = (name: string): string =>
+    name.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "project";
+
+  const handleSaveToFile = useCallback(async () => {
+    try {
+      setProgressStatus({ label: "saving", progress: 0.1, tone: "save" });
+      const graph = await serializeGraph(
+        nodesRef.current,
+        edgesRef.current,
+        (f) =>
+          setProgressStatus({ label: "saving", progress: f * 0.8, tone: "save" }),
+        { loopFrames: loopFramesRef.current, fps: fpsRef.current }
+      );
+      const canvas = canvasRef.current;
+      const thumbnailDataUrl = canvas ? generateThumbnail(canvas, 256) : null;
+      const name =
+        currentProject?.name ?? projectFileNameRef.current ?? "Untitled";
+      const { writeProjectFile, TOOLBOX_EXTENSION } = await import(
+        "@/lib/project-file"
+      );
+      const blob = await writeProjectFile({ name, graph, thumbnailDataUrl });
+      setProgressStatus({ label: "saving", progress: 1, tone: "save" });
+      projectFileNameRef.current = name;
+      downloadBlob(blob, `${sanitizeFileName(name)}.${TOOLBOX_EXTENSION}`);
+    } catch (e) {
+      console.error("Save to file failed:", e);
+      flashToast(e instanceof Error ? e.message : "Could not save project file");
+    } finally {
+      setProgressStatus(null);
+    }
+  }, [currentProject, flashToast]);
+
+  const handleOpenProjectFile = useCallback(() => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".toolbox,application/zip";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        setProgressStatus({ label: "loading", progress: 0.1, tone: "load" });
+        const { readProjectFile } = await import("@/lib/project-file");
+        const { name, graph } = await readProjectFile(file);
+        pushGraph(getGraphSnapshot());
+        const { nodes: nextNodes, edges: nextEdges, scene } =
+          await deserializeGraph(graph, (f) =>
+            setProgressStatus({
+              label: "loading",
+              progress: 0.1 + f * 0.9,
+              tone: "load",
+            })
+          );
+        suppressNextSelectionViewFlipRef.current = true;
+        setNodes(nextNodes);
+        setEdges(nextEdges);
+        if (scene) {
+          if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
+          if (scene.fps !== undefined) setFps(scene.fps);
+        }
+        setSelectedId(null);
+        setParamView("node");
+        // A file-loaded project has no cloud row — cloud Save falls through
+        // to Save As. Remember the name for the next Save to File.
+        setCurrentProject(null);
+        projectFileNameRef.current =
+          file.name.replace(/\.toolbox$/i, "") || name;
+        setSaveState("saved");
+        setProgressStatus({ label: "loading", progress: 1, tone: "load" });
+      } catch (e) {
+        console.error("Open project file failed:", e);
+        flashToast(e instanceof Error ? e.message : "Could not open project file");
+      } finally {
+        setProgressStatus(null);
+      }
+    };
+    input.click();
+  }, [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast]);
+
   // Rename via the file-name pill. If the target name doesn't collide,
   // it's a simple metadata update. If it DOES collide with another of
   // the user's projects, we interpret the click — which the pill has
@@ -3433,6 +3996,7 @@ function EffectsShell({
     setSelectedId(null);
     setParamView("node");
     setCurrentProject(null);
+    projectFileNameRef.current = null;
     setSaveState("saved");
     // Drop any survival snapshot from a prior session — otherwise a
     // docs round-trip after File → New would resurrect the graph
@@ -3628,6 +4192,17 @@ function EffectsShell({
       })
     : undefined;
 
+  // On-canvas shape handles for a selected spline primitive (Circle,
+  // Rectangle, …). Driven by the adapter map so new primitives opt in
+  // there without touching this wiring.
+  const activePrimitiveNode = selectedId
+    ? nodes.find(
+        (n) =>
+          n.id === selectedId &&
+          !!PRIMITIVE_GIZMO_ADAPTERS[n.data.defType]
+      )
+    : undefined;
+
   // Pen-tool overlay: active whenever a Spline Draw node is selected.
   const activeSplineNode = selectedId
     ? nodes.find(
@@ -3683,6 +4258,7 @@ function EffectsShell({
       onDetachNode={handleDetachNode}
       onDuplicateNode={handleDuplicateNode}
       onDuplicateSelection={handleDuplicateSelection}
+      onMergeSelection={handleMergeSelection}
       onCopyNodes={handleCopyNodes}
       onPasteNodes={handlePasteNodes}
       onAddFileNode={onAddFileNode}
@@ -3718,6 +4294,8 @@ function EffectsShell({
       mode={paramView}
       canvasRes={canvasRes}
       onCanvasResChange={setCanvasRes}
+      fps={fps}
+      onFpsChange={setFps}
       onParamChange={onParamChange}
       onToggleParamExposed={onToggleParamExposed}
       onToggleParamControl={onToggleParamControl}
@@ -3728,6 +4306,7 @@ function EffectsShell({
       currentTick={currentTick}
       getAnimation={getAnimation}
       onAnimationChange={onAnimationChange}
+      onSeekTick={(tick) => onSeek(tick / (fps * ticksPerFrame))}
       signedIn={signedIn}
       currentUserId={user?.id ?? null}
       onLoadProject={handleLoadProject}
@@ -3750,137 +4329,63 @@ function EffectsShell({
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "2px 8px",
-          background: "#111114",
+          // Equal margin on all sides around the buttons.
+          padding: 6,
+          background: "#000",
           borderBottom: "1px solid #27272a",
           flexShrink: 0,
         }}
       >
-        <div
-          style={{ display: "flex", alignItems: "stretch", gap: 0 }}
-        >
-          {(["tracks", "graph"] as const).map((t) => {
-            const active = dockTab === t;
-            return (
-              <button
-                key={t}
-                onClick={() => setDockTab(t)}
-                style={{
-                  background: active ? "#0a0a0a" : "transparent",
-                  border: "1px solid #3f3f46",
-                  borderBottom: active
-                    ? "1px solid #0a0a0a"
-                    : "1px solid #3f3f46",
-                  color: active ? "#fafafa" : "#a1a1aa",
-                  padding: "2px 12px",
-                  marginRight: 2,
-                  marginBottom: -1,
-                  fontFamily: "ui-monospace, monospace",
-                  fontSize: 10,
-                  cursor: "pointer",
-                  borderTopLeftRadius: 3,
-                  borderTopRightRadius: 3,
-                }}
-              >
-                {t === "tracks" ? "Tracks" : "Graph"}
-              </button>
-            );
-          })}
+        <DockTabToggle value={dockTab} onChange={setDockTab} />
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {dockTab === "tracks" && (
-            <button
-              onClick={() => setTracksSelectedOnly((v) => !v)}
-              title={
-                tracksSelectedOnly
-                  ? "Showing tracks for selected nodes only — click to show all"
-                  : "Show tracks only for nodes selected in the node editor"
-              }
-              style={{
-                background: tracksSelectedOnly
-                  ? "#1e3a8a"
-                  : "transparent",
-                border: "1px solid #3f3f46",
-                color: tracksSelectedOnly ? "#bfdbfe" : "#a1a1aa",
-                padding: "2px 8px",
-                marginLeft: 8,
-                fontFamily: "ui-monospace, monospace",
-                fontSize: 10,
-                cursor: "pointer",
-                borderRadius: 3,
-                alignSelf: "center",
-              }}
-            >
-              selected only
-            </button>
+            <>
+              <DockButton
+                active={tracksSelectedOnly}
+                onClick={() => setTracksSelectedOnly((v) => !v)}
+                title={
+                  tracksSelectedOnly
+                    ? "Showing tracks for selected nodes only — click to show all"
+                    : "Show tracks only for nodes selected in the node editor"
+                }
+              >
+                selected only
+              </DockButton>
+              <DockButton
+                onClick={() => setTrackFitVersion((v) => v + 1)}
+                title="Fit scene to width"
+              >
+                fit
+              </DockButton>
+            </>
           )}
           {dockTab === "graph" && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                marginLeft: 8,
-              }}
-            >
-              <button
+            <>
+              <DockButton
+                active={graphNormalizeY}
                 onClick={() => setGraphNormalizeY((v) => !v)}
                 title={
                   graphNormalizeY
                     ? "Normalize on — y-axis fits each curve to its own range"
                     : "Normalize off — y-axis uses the parameter's declared range"
                 }
-                style={{
-                  background: graphNormalizeY
-                    ? "#1e3a8a"
-                    : "transparent",
-                  border: "1px solid #3f3f46",
-                  color: graphNormalizeY ? "#bfdbfe" : "#a1a1aa",
-                  padding: "2px 8px",
-                  fontFamily: "ui-monospace, monospace",
-                  fontSize: 10,
-                  cursor: "pointer",
-                  borderRadius: 3,
-                }}
               >
                 normalize
-              </button>
-              <button
+              </DockButton>
+              <DockButton
                 onClick={() => setGraphRefitVersion((v) => v + 1)}
                 title="Refresh: re-fit y-axis to current keyframes"
-                style={{
-                  background: "transparent",
-                  border: "1px solid #3f3f46",
-                  color: "#a1a1aa",
-                  padding: "2px 6px",
-                  fontFamily: "ui-monospace, monospace",
-                  fontSize: 11,
-                  cursor: "pointer",
-                  borderRadius: 3,
-                  lineHeight: 1,
-                }}
               >
                 ↻
-              </button>
-            </div>
+              </DockButton>
+            </>
+          )}
+          {!timelineLayout && (
+            <DockButton onClick={() => setTrackEditorOpen(false)} title="Close">
+              ▼
+            </DockButton>
           )}
         </div>
-        {!timelineLayout && (
-          <button
-            onClick={() => setTrackEditorOpen(false)}
-            title="Close"
-            style={{
-              background: "transparent",
-              border: "1px solid #3f3f46",
-              color: "#a1a1aa",
-              padding: "1px 8px",
-              fontFamily: "ui-monospace, monospace",
-              fontSize: 10,
-              cursor: "pointer",
-              borderRadius: 3,
-            }}
-          >
-            ▼
-          </button>
-        )}
       </div>
       <div
         style={{
@@ -3902,6 +4407,8 @@ function EffectsShell({
             playing={playing}
             onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
             onAnimationChange={onAnimationChange}
+            onClipChange={onClipChange}
+            fitVersion={trackFitVersion}
             collapsedNodeIds={collapsedTrackNodes}
             onToggleCollapsed={(nodeId) =>
               setCollapsedTrackNodes((prev) => {
@@ -3945,8 +4452,13 @@ function EffectsShell({
       onSeek={onSeek}
       onScrubStart={onScrubStart}
       onScrubEnd={onScrubEnd}
-      onFpsChange={setFps}
       onLoopFramesChange={setLoopFrames}
+      tracksOpen={trackEditorOpen}
+      onToggleTracks={
+        timelineLayout
+          ? undefined
+          : () => setTrackEditorOpen((o) => !o)
+      }
     />
   );
 
@@ -3973,6 +4485,29 @@ function EffectsShell({
       }}
     >
       <div style={{ display: fullCanvas ? "none" : "contents" }}>
+      <div
+        onTransitionEnd={(e) => {
+          // Slide-in finished → remove the transform so no stacking
+          // context lingers to trap the menu dropdowns.
+          if (e.propertyName === "transform" && !showLanding) {
+            setMenuSettled(true);
+          }
+        }}
+        style={{
+          flexShrink: 0,
+          // Slide the menu bar in from offscreen-top once the landing
+          // gateway is dismissed. While the landing is up it sits just
+          // above the viewport; its layout slot is always reserved so
+          // the editor below never shifts when it arrives. Once settled
+          // the transform is dropped entirely (see menuSettled).
+          transform: showLanding
+            ? "translateY(-110%)"
+            : menuSettled
+              ? undefined
+              : "translateY(0)",
+          transition: "transform 380ms cubic-bezier(0.16, 1, 0.3, 1)",
+        }}
+      >
       <MenuBar
         onUndo={undo}
         onRedo={redo}
@@ -3994,6 +4529,7 @@ function EffectsShell({
         onNewProject={handleNewProject}
         onSave={handleSave}
         onSaveAs={() => setSaveModalOpen(true)}
+        onSaveAsNamed={handleSaveAsProject}
         onSaveIncremental={handleSaveIncremental}
         canSaveIncremental={signedIn && !!currentProject}
         onOpenLoad={() => {
@@ -4004,6 +4540,10 @@ function EffectsShell({
           );
           setParamView("load");
         }}
+        onOpenProjectFile={handleOpenProjectFile}
+        onSaveToFile={handleSaveToFile}
+        canvasRes={canvasRes}
+        onCanvasResChange={setCanvasRes}
         projectName={currentProject?.name ?? "Untitled"}
         projectId={currentProject?.id ?? null}
         saveState={saveState}
@@ -4037,6 +4577,7 @@ function EffectsShell({
         onOpenUserPreferences={() => setUserPrefsOpen(true)}
       />
       </div>
+      </div>
       {/* Body wrapper. Default layout = canvas left, right column
           (NodeEditor over ParamPanel). Timeline layout = canvas right,
           a tabbed Parameters/Node Editor pane on the left, plus a
@@ -4051,6 +4592,15 @@ function EffectsShell({
           flex: 1,
           minHeight: 0,
           width: "100%",
+          // Outer gap so framed panels float off the window edges; the
+          // inter-panel gaps come from the gutter dividers between them.
+          // No bottom gap here — the timeline / playback strips below own
+          // their own top spacing so seams stay single-width. Full-canvas
+          // mode goes edge-to-edge with no chrome.
+          padding: fullCanvas
+            ? 0
+            : `${PANEL_GAP}px ${PANEL_GAP}px 0 ${PANEL_GAP}px`,
+          background: "#000",
         }}
       >
       <section
@@ -4060,6 +4610,7 @@ function EffectsShell({
           position: "relative",
           display: "flex",
           flexDirection: "column",
+          ...(fullCanvas ? null : PANEL_FRAME),
         }}
       >
         {!fullCanvas && (
@@ -4067,6 +4618,7 @@ function EffectsShell({
             projectRes={canvasRes}
             previewScale={previewScale}
             onPreviewScaleChange={setPreviewScale}
+            onAddPrimitive={handleAddShelfNode}
           />
         )}
         {!fullCanvas && activeTransformNode && (
@@ -4130,7 +4682,7 @@ function EffectsShell({
                 maxHeight: "100%",
                 background:
                   "repeating-conic-gradient(#1a1a1a 0% 25%, #0f0f0f 0% 50%) 0 0 / 24px 24px",
-                border: "1px solid #27272a",
+                border: "1px solid #111112",
                 transform: `translate(${v1.pan[0]}px, ${v1.pan[1]}px) scale(${v1.zoom})`,
                 transformOrigin: "center center",
               }}
@@ -4352,52 +4904,73 @@ function EffectsShell({
               />
             );
           })()}
+          {/* Shape-primitive handles (Circle, Rectangle, …) — move the
+              center, drag edges/corners to resize. Reads effective
+              (keyframe-aware) params; writes coalesce into one undo entry. */}
+          {activePrimitiveNode && backendReady && (() => {
+            const node = activePrimitiveNode;
+            const adapter = PRIMITIVE_GIZMO_ADAPTERS[node.data.defType];
+            if (!adapter) return null;
+            const animMap = node.data.animation;
+            const get = (name: string, fallback: number): number => {
+              const block = animMap?.[name];
+              if (block && block.animated && block.keyframes.length > 0) {
+                const v = evaluateKeyframesAt(block, "scalar", currentTick);
+                if (typeof v === "number") return v;
+              }
+              const raw = node.data.params[name];
+              return typeof raw === "number" ? raw : fallback;
+            };
+            const { cx, cy, hx, hy } = adapter.read(get);
+            return (
+              <PrimitiveGizmo
+                canvas={canvasRef.current}
+                cx={cx}
+                cy={cy}
+                hx={hx}
+                hy={hy}
+                onChange={(patch) => {
+                  const id = node.id;
+                  const key = `gizmo:${id}`;
+                  for (const [name, value] of adapter.write(patch)) {
+                    onParamChange(id, name, value, key);
+                  }
+                }}
+              />
+            );
+          })()}
           {/* Track Editor dock — anchored to the bottom edge of the canvas
-              area. A tab pokes up from the bottom-center to toggle
-              visibility. Suppressed in timeline-layout mode, where the
-              dock body lives in its own bottom strip instead. */}
-          {!timelineLayout && !trackEditorOpen && (
-            <button
-              onClick={() => setTrackEditorOpen(true)}
-              title="Open Track Editor"
-              style={{
-                position: "absolute",
-                bottom: 0,
-                left: "50%",
-                transform: "translateX(-50%)",
-                background: "#18181b",
-                color: "#a1a1aa",
-                border: "1px solid #3f3f46",
-                borderBottom: "none",
-                borderTopLeftRadius: 6,
-                borderTopRightRadius: 6,
-                padding: "3px 14px",
-                fontFamily: "ui-monospace, monospace",
-                fontSize: 10,
-                cursor: "pointer",
-                zIndex: 5,
-              }}
-            >
-              ▲ tracks
-            </button>
-          )}
-          {!timelineLayout && trackEditorOpen && (
+              area. Toggled by the curves button in the PlaybackBar (next to
+              Play). Suppressed in timeline-layout mode, where the dock body
+              lives in its own bottom strip instead. */}
+          {!timelineLayout && trackDockMounted && (
             <div
               style={{
                 position: "absolute",
-                left: 0,
-                right: 0,
-                bottom: 0,
+                left: PANEL_GAP,
+                right: PANEL_GAP,
+                bottom: PANEL_GAP,
                 height: trackEditorHeight,
                 background: "#0a0a0a",
-                borderTop: "1px solid #3f3f46",
+                // Match the framed panels: thin stroke + slightly rounded
+                // corners, floated a hair off the viewport edges.
+                ...PANEL_FRAME,
                 display: "flex",
                 flexDirection: "column",
                 zIndex: 5,
+                // Slide up from below the canvas on open (and back down on
+                // close); the canvas area clips the parked state.
+                transform: trackDockShown
+                  ? "translateY(0)"
+                  : `translateY(calc(100% + ${PANEL_GAP}px))`,
+                transition: "transform 240ms cubic-bezier(0.16, 1, 0.3, 1)",
               }}
             >
-              <Divider
-                orientation="horizontal"
+              {/* Resize handle — overlaid on the top edge (absolute) so it
+                  doesn't add layout height above the toolbar. Sits over the
+                  toolbar's top padding, clear of the buttons. */}
+              <div
+                title="Drag to resize"
                 onMouseDown={(e) => {
                   e.preventDefault();
                   const startY = e.clientY;
@@ -4414,6 +4987,15 @@ function EffectsShell({
                   };
                   window.addEventListener("mousemove", onMove);
                   window.addEventListener("mouseup", onUp);
+                }}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: 6,
+                  cursor: "row-resize",
+                  zIndex: 10,
                 }}
               />
               {dockBodyJsx}
@@ -4447,6 +5029,7 @@ function EffectsShell({
 
       <Divider
         orientation="vertical"
+        gutter
         hidden={fullCanvas}
         onMouseDown={startVResize}
       />
@@ -4465,7 +5048,16 @@ function EffectsShell({
           // wrapper above flips order via row-reverse) and shows a
           // tabbed Parameters / Node Editor pane instead of the
           // stacked NodeEditor + ParamPanel.
-          <>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              display: "flex",
+              flexDirection: "column",
+              background: "#0a0a0a",
+              ...PANEL_FRAME,
+            }}
+          >
             <div
               style={{
                 display: "flex",
@@ -4517,7 +5109,7 @@ function EffectsShell({
                 ? paramPanelJsx
                 : nodeEditorJsx}
             </section>
-          </>
+          </div>
         ) : (
           <>
             <section
@@ -4525,18 +5117,25 @@ function EffectsShell({
                 flex: 1,
                 minHeight: 0,
                 background: "#0a0a0a",
+                ...PANEL_FRAME,
               }}
             >
               {nodeEditorJsx}
             </section>
 
-            <Divider orientation="horizontal" onMouseDown={startHResize} />
+            <Divider
+              orientation="horizontal"
+              gutter
+              onMouseDown={startHResize}
+            />
 
             <section
               style={{
                 height: bottomRowHeight,
                 minHeight: 0,
                 flexShrink: 0,
+                background: "#0a0a0a",
+                ...PANEL_FRAME,
               }}
             >
               {paramPanelJsx}
@@ -4552,16 +5151,18 @@ function EffectsShell({
       {timelineLayout && (
         <div
           style={{
-            height: trackEditorHeight,
-            background: "#0a0a0a",
-            borderTop: "1px solid #3f3f46",
+            flexShrink: 0,
             display: "flex",
             flexDirection: "column",
-            flexShrink: 0,
+            background: "#000",
+            // Side gutters match the framed panels above; the gutter
+            // divider provides the top seam (and the resize handle).
+            padding: `0 ${PANEL_GAP}px`,
           }}
         >
           <Divider
             orientation="horizontal"
+            gutter
             onMouseDown={(e) => {
               e.preventDefault();
               const startY = e.clientY;
@@ -4580,10 +5181,32 @@ function EffectsShell({
               window.addEventListener("mouseup", onUp);
             }}
           />
-          {dockBodyJsx}
+          <div
+            style={{
+              height: trackEditorHeight,
+              background: "#0a0a0a",
+              display: "flex",
+              flexDirection: "column",
+              ...PANEL_FRAME,
+            }}
+          >
+            {dockBodyJsx}
+          </div>
         </div>
       )}
-      {playbackBarJsx}
+      {playbackBarJsx && (
+        <div
+          style={{
+            flexShrink: 0,
+            background: "#000",
+            // No vertical gap and only a hair of side inset, so the timeline
+            // sits tight and spans a touch wider than the panels above.
+            padding: "0 1px",
+          }}
+        >
+          {playbackBarJsx}
+        </div>
+      )}
       <SaveModal
         open={saveModalOpen}
         onClose={() => {
@@ -4659,6 +5282,21 @@ function EffectsShell({
         signedIn={signedIn}
         onClose={() => setUserPrefsOpen(false)}
       />
+      {/* First-load gateway. Mounts over the editor; picking a project
+          loads it in place, "New Project" seeds a fresh graph. Either
+          path dismisses the landing. */}
+      {showLanding && (
+        <Landing
+          onLoad={(id) => {
+            setShowLanding(false);
+            handleLoadProject(id);
+          }}
+          onNewProject={() => {
+            setShowLanding(false);
+            resetToFreshProject();
+          }}
+        />
+      )}
       {/* <CustomCursor /> temporarily disabled — using native cursor */}
     </div>
   );
@@ -4972,12 +5610,28 @@ function useViewportGestures(
 // Splitter handle. Renders a thin 1px visual line but keeps a wider
 // (default 5px) hit-target so it's easy to grab. The visible line
 // stays centered inside the hit zone via flex.
+// Blender-style panel chrome. Each editor area is enclosed in a thin
+// bordered, slightly rounded rect; areas are separated by a tiny gutter
+// that doubles (invisibly) as the resize handle — the gap around where
+// borders meet.
+const PANEL_GAP = 3;
+// Resize grab zone for gutter dividers. Wider than the visible gap so
+// it's easy to grab; the extra width overlaps the neighbouring panel
+// edges via negative margins, so the *visible* gap stays PANEL_GAP.
+const GUTTER_HIT = 11;
+const PANEL_FRAME: React.CSSProperties = {
+  border: "1px solid #222225",
+  borderRadius: 5,
+  overflow: "hidden",
+};
+
 function Divider({
   orientation,
   hit = 5,
   thickness = 1,
   color = "#27272a",
   hidden = false,
+  gutter = false,
   onPointerDown,
   onMouseDown,
 }: {
@@ -4986,10 +5640,21 @@ function Divider({
   thickness?: number;
   color?: string;
   hidden?: boolean;
+  // Gutter mode: the gap between two framed panels *is* the handle —
+  // no visible line, just the resize cursor over the gap.
+  gutter?: boolean;
   onPointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
 }) {
   const isH = orientation === "horizontal";
+  // Negative margin reclaims the grab zone's extra width so it nets out
+  // to PANEL_GAP of layout while overlapping the panels for easy grabbing.
+  const bleed = -(GUTTER_HIT - PANEL_GAP) / 2;
+  const gutterStyle: React.CSSProperties = gutter
+    ? isH
+      ? { height: GUTTER_HIT, marginTop: bleed, marginBottom: bleed, position: "relative", zIndex: 10 }
+      : { width: GUTTER_HIT, marginLeft: bleed, marginRight: bleed, position: "relative", zIndex: 10 }
+    : { height: isH ? hit : "auto", width: isH ? "auto" : hit };
   return (
     <div
       onPointerDown={onPointerDown}
@@ -5000,19 +5665,20 @@ function Divider({
         alignItems: "center",
         justifyContent: "center",
         cursor: isH ? "row-resize" : "col-resize",
-        height: isH ? hit : "auto",
-        width: isH ? "auto" : hit,
         alignSelf: "stretch",
         background: "transparent",
+        ...gutterStyle,
       }}
     >
-      <div
-        style={{
-          background: color,
-          height: isH ? thickness : "100%",
-          width: isH ? "100%" : thickness,
-        }}
-      />
+      {!gutter && (
+        <div
+          style={{
+            background: color,
+            height: isH ? thickness : "100%",
+            width: isH ? "100%" : thickness,
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -5068,6 +5734,122 @@ function ViewportLabel({ label }: { label: string }) {
     >
       {label}
     </div>
+  );
+}
+
+// Shared button for the track/graph dock header. Near-invisible border at
+// rest (so the bar reads clean), a subtle hover, and a soft blue highlight
+// when toggled on. Tabs and toggles use `active`; momentary actions omit it.
+// Segmented Tracks/Graph toggle: both options live in one rounded frame
+// with a single blue highlight that slides between them on selection.
+function DockTabToggle({
+  value,
+  onChange,
+}: {
+  value: "tracks" | "graph";
+  onChange: (v: "tracks" | "graph") => void;
+}) {
+  const tabs = [
+    { key: "tracks", label: "Tracks" },
+    { key: "graph", label: "Graph" },
+  ] as const;
+  const idx = value === "tracks" ? 0 : 1;
+  return (
+    <div
+      style={{
+        position: "relative",
+        display: "flex",
+        background: "#0a0a0a",
+        border: "1px solid #27272a",
+        borderRadius: 5,
+        padding: 2,
+      }}
+    >
+      {/* Sliding highlight — one button-width, translated to the active tab. */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          top: 2,
+          bottom: 2,
+          left: 2,
+          width: "calc(50% - 2px)",
+          background: "#1b2741",
+          border: "1px solid #26375f",
+          borderRadius: 4,
+          transform: `translateX(${idx * 100}%)`,
+          transition: "transform 220ms cubic-bezier(0.16, 1, 0.3, 1)",
+          pointerEvents: "none",
+        }}
+      />
+      {tabs.map((t) => {
+        const active = value === t.key;
+        return (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => onChange(t.key)}
+            style={{
+              position: "relative",
+              zIndex: 1,
+              flex: 1,
+              minWidth: 60,
+              padding: "3px 14px",
+              background: "transparent",
+              border: "none",
+              borderRadius: 4,
+              color: active ? "#bfdbfe" : "#8a8a90",
+              fontFamily: "ui-monospace, monospace",
+              fontSize: 10,
+              lineHeight: 1,
+              cursor: "pointer",
+              transition: "color 150ms",
+            }}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function DockButton({
+  children,
+  onClick,
+  title,
+  active = false,
+  pad = "3px 10px",
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  title?: string;
+  active?: boolean;
+  pad?: string;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        background: active ? "#1b2741" : hover ? "#19191c" : "transparent",
+        border: `1px solid ${active ? "#26375f" : hover ? "#2a2a2e" : "#171719"}`,
+        color: active ? "#bfdbfe" : hover ? "#e5e7eb" : "#8a8a90",
+        padding: pad,
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 10,
+        lineHeight: 1,
+        cursor: "pointer",
+        borderRadius: 3,
+        transition: "background 80ms, border-color 80ms, color 80ms",
+      }}
+    >
+      {children}
+    </button>
   );
 }
 

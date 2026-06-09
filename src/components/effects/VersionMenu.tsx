@@ -1,23 +1,27 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { CHANGELOG, CURRENT_VERSION } from "@/lib/changelog";
 
-// Small version/changelog dropdown that lives in the menu bar. Deliberately
-// narrow — the menu bar's vertical real estate is tight, so we cap the body
-// and let it scroll instead of growing.
-
-export default function VersionMenu() {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
+// Changelog popover, opened from the Toolbox menu (it used to be its own
+// menu-bar button). Controlled: the parent owns `open`. Fixed below the menu
+// bar near the top-left; click-outside or Escape dismisses.
+export default function ChangelogPopover({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      if (!ref.current?.contains(e.target as Node)) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") onClose();
     };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
@@ -25,81 +29,74 @@ export default function VersionMenu() {
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, onClose]);
+
+  if (!open) return null;
 
   return (
-    <div ref={rootRef} style={{ position: "relative" }}>
-      <button
-        onMouseDown={(e) => {
-          e.preventDefault();
-          setOpen((v) => !v);
-        }}
-        title="Version & changelog"
+    <div
+      ref={ref}
+      className="thin-scrollbar"
+      style={{
+        position: "fixed",
+        top: 26,
+        left: 8,
+        width: 300,
+        maxHeight: 440,
+        overflowY: "auto",
+        background: "#18181b",
+        border: "1px solid #27272a",
+        borderRadius: 4,
+        boxShadow: "0 8px 24px rgba(0,0,0,0.55)",
+        padding: "10px 12px",
+        fontSize: 11,
+        color: "#e5e7eb",
+        zIndex: 2000,
+        fontFamily: "ui-monospace, monospace",
+      }}
+    >
+      <div
         style={{
-          height: "100%",
-          padding: "0 8px",
-          background: open ? "#27272a" : "transparent",
-          color: "#a1a1aa",
-          border: "none",
-          fontFamily: "inherit",
-          fontSize: 10,
-          cursor: "default",
-          letterSpacing: 0.3,
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          marginBottom: 8,
+          paddingBottom: 6,
+          borderBottom: "1px solid #27272a",
         }}
       >
-        v{CURRENT_VERSION}
-      </button>
-      {open && (
+        <span style={{ fontWeight: 600, letterSpacing: 0.3 }}>
+          Changelog
+        </span>
+        <span style={{ color: "#71717a", fontSize: 10 }}>
+          v{CURRENT_VERSION}
+        </span>
+      </div>
+      {CHANGELOG.map((entry, i) => (
         <div
+          key={entry.version}
           style={{
-            position: "absolute",
-            top: "100%",
-            right: 0,
-            width: 280,
-            maxHeight: 320,
-            overflowY: "auto",
-            background: "#18181b",
-            border: "1px solid #27272a",
-            borderRadius: 4,
-            boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
-            padding: "8px 10px",
-            marginTop: 2,
-            fontSize: 11,
-            color: "#e5e7eb",
+            paddingBottom: 8,
+            marginBottom: i === CHANGELOG.length - 1 ? 0 : 8,
+            borderBottom:
+              i === CHANGELOG.length - 1 ? "none" : "1px solid #27272a",
           }}
-          className="thin-scrollbar"
         >
-          {CHANGELOG.map((entry, i) => (
-            <div
-              key={entry.version}
-              style={{
-                paddingBottom: 8,
-                marginBottom: i === CHANGELOG.length - 1 ? 0 : 8,
-                borderBottom:
-                  i === CHANGELOG.length - 1
-                    ? "none"
-                    : "1px solid #27272a",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "baseline",
-                  justifyContent: "space-between",
-                  marginBottom: 6,
-                }}
-              >
-                <span style={{ fontWeight: 600 }}>v{entry.version}</span>
-                <span style={{ color: "#71717a", fontSize: 10 }}>
-                  {entry.date}
-                </span>
-              </div>
-              <Section title="What's new" items={entry.added} />
-              <Section title="What's changed" items={entry.changed} />
-            </div>
-          ))}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "baseline",
+              justifyContent: "space-between",
+              marginBottom: 6,
+            }}
+          >
+            <span style={{ fontWeight: 600 }}>v{entry.version}</span>
+            <span style={{ color: "#71717a", fontSize: 10 }}>{entry.date}</span>
+          </div>
+          <Section title="What's new" items={entry.added} />
+          <Section title="What's changed" items={entry.changed} />
         </div>
-      )}
+      ))}
     </div>
   );
 }
@@ -119,9 +116,7 @@ function Section({ title, items }: { title: string; items: string[] }) {
         {title}
       </div>
       {items.length === 0 ? (
-        <div style={{ color: "#52525b", fontSize: 11, paddingLeft: 2 }}>
-          —
-        </div>
+        <div style={{ color: "#52525b", fontSize: 11, paddingLeft: 2 }}>—</div>
       ) : (
         <ul
           style={{

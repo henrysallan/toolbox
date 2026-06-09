@@ -23,6 +23,23 @@
   }
 }
 
+/* Far-right menu-bar items (Sign in / account / version / docs) share the
+   menu hover treatment: an inset rounded pill that lifts on hover and stays
+   lit while its menu is open. (Class-driven so the hover background isn't
+   blocked by inline styles.) */
+.menubar-pill {
+  height: calc(100% - 6px);
+  margin: 3px 2px;
+  border-radius: 4px;
+  transition: background 90ms;
+}
+.menubar-pill:hover {
+  background: #2a2a2e;
+}
+.menubar-pill.is-open {
+  background: #27272a;
+}
+
 html,
 body {
   /* Lock the document to the viewport. The app is a single-page editor;
@@ -62,6 +79,79 @@ body {
   display: none;
   width: 0;
   height: 0;
+}
+
+/* Interaction-only range input for the bar-style param slider. Fully
+   transparent — the visible track / fill / leading-edge line are real DOM
+   rendered behind it in ScalarSliderRow (DOM gives a rounded fill cap a
+   native track gradient can't). The native thumb stays as the invisible
+   grab target. The live-viewer / exported apps keep the shared dot-on-line
+   slider from form-controls.css; this class only applies in the editor. */
+input.param-slider-bare[type="range"] {
+  height: 20px;
+  background: transparent;
+}
+input.param-slider-bare[type="range"]::-webkit-slider-runnable-track {
+  height: 20px;
+  background: transparent;
+}
+input.param-slider-bare[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 20px;
+  margin-top: 0;
+  border: none;
+  background: transparent;
+  cursor: ew-resize;
+}
+input.param-slider-bare[type="range"]::-moz-range-track {
+  height: 20px;
+  background: transparent;
+}
+input.param-slider-bare[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  cursor: ew-resize;
+}
+
+/* Color Correction bottom-bar sliders: a thin track whose fill is supplied
+   per field via the --track CSS var (the Temp/Tint/Hue/Cont gradients, or a
+   plain grey for the rest), with a small round knob. */
+input.ccbar-slider[type="range"] {
+  height: 14px;
+  background: transparent;
+}
+input.ccbar-slider[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track, #3f3f46);
+}
+input.ccbar-slider[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -3.5px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  border: 1px solid #0a0a0a;
+  cursor: pointer;
+}
+input.ccbar-slider[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track, #3f3f46);
+}
+input.ccbar-slider[type="range"]::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  border: 1px solid #0a0a0a;
+  cursor: pointer;
 }
 
 /* Thin, unfilled scrollbar for compact panels (node search popup, etc.).

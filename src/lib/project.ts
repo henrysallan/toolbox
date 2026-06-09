@@ -2,6 +2,7 @@ import type { Edge, Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
 import type { PaintParamValue } from "@/engine/types";
 import type { AnimationMap } from "@/engine/keyframes";
+import type { ClipBlock } from "@/engine/clips";
 import { getNodeDef } from "@/engine/registry";
 import { withMaskInput } from "@/engine/conventions";
 
@@ -31,6 +32,9 @@ export interface SavedNode {
   // Per-parameter keyframe animation. Plain JSON (numbers, booleans,
   // strings, arrays). Absent on projects saved before keyframes shipped.
   animation?: AnimationMap;
+  // Timeline clip windows (in/out + local-time remap). Plain JSON; absent on
+  // projects saved before clips shipped, and on non-clippable nodes.
+  clips?: ClipBlock[];
   active?: boolean;
   bypassed?: boolean;
 }
@@ -206,6 +210,7 @@ export async function serializeGraph(
       controlParams: n.data.controlParams,
       paramOverrides: n.data.paramOverrides,
       animation: n.data.animation,
+      clips: n.data.clips,
       active: n.data.active,
       bypassed: n.data.bypassed,
     });
@@ -263,6 +268,7 @@ export async function deserializeGraph(
         controlParams: sn.controlParams ?? [],
         paramOverrides: sn.paramOverrides,
         animation: sn.animation,
+        clips: sn.clips,
         name: def?.name ?? sn.defType,
         inputs,
         auxOutputs: auxDefs.map((a) => ({

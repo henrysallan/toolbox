@@ -12,8 +12,11 @@ interface Props {
   onSeek: (time: number) => void;
   onScrubStart: () => void;
   onScrubEnd: () => void;
-  onFpsChange: (fps: number) => void;
   onLoopFramesChange: (frames: number | null) => void;
+  // Track (curves) editor toggle — rendered as a button by Play. Optional so
+  // layouts that manage the track editor elsewhere can omit it.
+  tracksOpen?: boolean;
+  onToggleTracks?: () => void;
 }
 
 // Width-based picks for tick spacing, in frames. Tries ascending
@@ -44,11 +47,15 @@ export default function PlaybackBar({
   onSeek,
   onScrubStart,
   onScrubEnd,
-  onFpsChange,
   onLoopFramesChange,
+  tracksOpen,
+  onToggleTracks,
 }: Props) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
+  // Cursor x (px within the track) while hovering — drives the faded
+  // playhead-preview line. Null when the cursor is off the track.
+  const [hoverX, setHoverX] = useState<number | null>(null);
   const [trackWidth, setTrackWidth] = useState(0);
   // Seconds shown at the left edge of the visible track. Pans negative
   // to look at "before zero" (a no-op time-wise but useful framing).
@@ -230,8 +237,7 @@ export default function PlaybackBar({
     <div
       style={{
         height: 44,
-        background: "#0a0a0a",
-        borderTop: "1px solid #27272a",
+        background: "#000",
         display: "flex",
         alignItems: "center",
         gap: 8,
@@ -263,36 +269,24 @@ export default function PlaybackBar({
       >
         {playing ? <PauseIcon /> : <PlayIcon />}
       </PlaybackBarButton>
-
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 4,
-          color: "#71717a",
-          marginLeft: 4,
-        }}
-      >
-        loop
-        <LoopInput value={loopFrames} onCommit={onLoopFramesChange} />
-        <span style={{ color: "#52525b" }}>frames</span>
-      </label>
-
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 4,
-          color: "#71717a",
-        }}
-      >
-        fps
-        <FpsInput value={fps} onCommit={onFpsChange} />
-      </label>
+      {onToggleTracks && (
+        <PlaybackBarButton
+          title={tracksOpen ? "Hide Track Editor" : "Open Track Editor"}
+          onClick={onToggleTracks}
+          highlighted={tracksOpen}
+        >
+          <CurvesIcon />
+        </PlaybackBarButton>
+      )}
 
       <div
         ref={trackRef}
         onMouseDown={handleTrackMouseDown}
+        onMouseMove={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          setHoverX(e.clientX - rect.left);
+        }}
+        onMouseLeave={() => setHoverX(null)}
         onDoubleClick={() => {
           setViewOffset(0);
           setViewSpanOverride(null);
@@ -337,7 +331,7 @@ export default function PlaybackBar({
                 width: 1,
                 height: t.major ? 16 : 5,
                 marginTop: t.major ? 0 : -2,
-                background: t.major ? "#71717a" : "#52525b",
+                background: t.major ? "#4a4a52" : "#333338",
                 pointerEvents: "none",
               }}
             />
@@ -348,7 +342,7 @@ export default function PlaybackBar({
                   bottom: 1,
                   left: t.x + 3,
                   fontSize: 9,
-                  color: "#71717a",
+                  color: "#4a4a52",
                   fontVariantNumeric: "tabular-nums",
                   pointerEvents: "none",
                   lineHeight: 1,
@@ -380,6 +374,23 @@ export default function PlaybackBar({
             />
           );
         })()}
+        {/* Hover preview — a faded red line mirroring the playhead that
+            tracks the cursor. Hidden while scrubbing, since the real
+            playhead is already snapped to the cursor then. */}
+        {hoverX != null && !dragging && (
+          <div
+            style={{
+              position: "absolute",
+              top: -2,
+              left: hoverX - 1,
+              width: 2,
+              height: "calc(100% + 4px)",
+              background: "#ef4444",
+              opacity: 0.3,
+              pointerEvents: "none",
+            }}
+          />
+        )}
         {/* Playhead — red vertical line. */}
         {playheadVisible && (
           <div
@@ -413,21 +424,12 @@ export default function PlaybackBar({
         )}
       </div>
 
-      <div
-        style={{
-          minWidth: 120,
-          textAlign: "right",
-          color: "#a1a1aa",
-          fontVariantNumeric: "tabular-nums",
-        }}
-      >
-        {Math.floor(time * fps)}
-        <span style={{ color: "#52525b" }}>
-          {" / "}
-          {loopFrames != null ? loopFrames : "∞"}
-        </span>
-        <span style={{ color: "#52525b", marginLeft: 4 }}>f</span>
-      </div>
+      <LoopInput value={loopFrames} onCommit={onLoopFramesChange} />
+
+      <FrameInput
+        frame={Math.floor(time * fps)}
+        onJump={(f) => onSeek(f / fps)}
+      />
     </div>
   );
 }
@@ -456,7 +458,7 @@ function PlaybackBarButton({
     ? "#047857"
     : hover
       ? "#1f1f23"
-      : "#18181b";
+      : "#0a0a0a";
   return (
     <button
       onClick={onClick}
@@ -465,7 +467,7 @@ function PlaybackBarButton({
       onMouseLeave={() => setHover(false)}
       style={{
         width: 28,
-        height: 24,
+        height: 20,
         background,
         color,
         border: `1px solid ${border}`,
@@ -487,6 +489,22 @@ function PlaybackBarButton({
 
 // Stroke-only icons. Use currentColor so PlaybackBarButton's hover/
 // highlighted color flow through automatically.
+function CurvesIcon() {
+  // An ease curve between two keyframe dots — the track/curves editor.
+  return (
+    <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+      <path
+        d="M1.5 11 C 5 11, 5 2, 11.5 2"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+      <circle cx="1.5" cy="11" r="1.4" fill="currentColor" />
+      <circle cx="11.5" cy="2" r="1.4" fill="currentColor" />
+    </svg>
+  );
+}
+
 function PlayIcon() {
   return (
     <svg width="10" height="12" viewBox="0 0 10 12" fill="none">
@@ -549,6 +567,61 @@ function ResetIcon() {
   );
 }
 
+// Current-frame readout that doubles as a jump field: shows the live frame
+// while idle, and on entering a number seeks to that frame. Editing freezes
+// the displayed value so playback updates don't fight what you're typing.
+function FrameInput({
+  frame,
+  onJump,
+}: {
+  frame: number;
+  onJump: (frame: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(frame));
+  const commit = () => {
+    setEditing(false);
+    const n = Math.round(parseFloat(draft));
+    if (!Number.isFinite(n) || n < 0) {
+      setDraft(String(frame));
+      return;
+    }
+    onJump(n);
+  };
+  return (
+    <input
+      type="text"
+      value={editing ? draft : String(frame)}
+      title="Current frame — type a frame number to jump there"
+      onFocus={() => {
+        setDraft(String(frame));
+        setEditing(true);
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        else if (e.key === "Escape") {
+          setEditing(false);
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+      style={{
+        width: 56,
+        background: "#0a0a0a",
+        border: "1px solid #27272a",
+        borderRadius: 3,
+        color: "#a1a1aa",
+        fontFamily: "inherit",
+        fontSize: 11,
+        padding: "2px 4px",
+        textAlign: "center",
+        fontVariantNumeric: "tabular-nums",
+      }}
+    />
+  );
+}
+
 function LoopInput({
   value,
   onCommit,
@@ -577,7 +650,8 @@ function LoopInput({
     <input
       type="text"
       value={draft}
-      placeholder="∞"
+      placeholder="Loop"
+      title="Loop length in frames — empty plays without looping"
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
@@ -596,52 +670,9 @@ function LoopInput({
         fontFamily: "inherit",
         fontSize: 11,
         padding: "2px 4px",
-        textAlign: "right",
+        textAlign: "center",
       }}
     />
   );
 }
 
-function FpsInput({
-  value,
-  onCommit,
-}: {
-  value: number;
-  onCommit: (v: number) => void;
-}) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-  const commit = () => {
-    const n = Math.round(parseFloat(draft));
-    if (!Number.isFinite(n) || n < 1 || n > 240) {
-      setDraft(String(value));
-      return;
-    }
-    if (n !== value) onCommit(n);
-  };
-  return (
-    <input
-      type="number"
-      value={draft}
-      min={1}
-      max={240}
-      step={1}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-      }}
-      style={{
-        width: 48,
-        background: "#0a0a0a",
-        border: "1px solid #27272a",
-        color: "#e5e7eb",
-        fontFamily: "inherit",
-        fontSize: 11,
-        padding: "2px 4px",
-      }}
-    />
-  );
-}

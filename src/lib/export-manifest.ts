@@ -69,6 +69,7 @@ export function buildExportManifest(
     type: n.data.defType,
     params: n.data.params,
     exposedParams: n.data.exposedParams,
+    clips: n.data.clips,
     bypassed: n.data.bypassed,
   }));
   const graphEdges: GraphEdge[] = edges.map((e) => ({

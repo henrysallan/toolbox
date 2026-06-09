@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import AccountMenu from "./AccountMenu";
-import VersionMenu from "./VersionMenu";
+import ChangelogPopover from "./VersionMenu";
 import FileNameMenu, { type SaveState } from "./FileNameMenu";
 import NodeBrowserDropdown from "./NodeBrowserDropdown";
-import DocsInfoButton from "./DocsInfoButton";
 import { useUser } from "@/lib/auth-context";
+import { CURRENT_VERSION } from "@/lib/changelog";
 
 type MenuItem =
   | {
@@ -37,9 +38,21 @@ export interface MenuBarProps {
   // project it falls through to Save As (open the name modal).
   onSave: () => void;
   onSaveAs: () => void;
+  // Save a new project directly under a given name (no modal) — used by
+  // the file-name dropdown's Save on a fresh, unsaved project.
+  onSaveAsNamed: (name: string) => Promise<void> | void;
   onSaveIncremental: () => void;
   canSaveIncremental: boolean;
+  // Opens the cloud project browser (the "Projects…" item).
   onOpenLoad: () => void;
+  // Opens the OS file picker to load a local .toolbox file ("Load…").
+  onOpenProjectFile: () => void;
+  // Downloads the current project as a self-contained .toolbox file.
+  onSaveToFile: () => void;
+  // Project resolution — surfaced in the file-name dropdown so it can be
+  // changed without opening Project Settings.
+  canvasRes: [number, number];
+  onCanvasResChange: (res: [number, number]) => void;
   // File-name pill (absolutely centered). Undefined disables rendering.
   projectName: string;
   projectId: string | null;
@@ -109,9 +122,14 @@ export default function MenuBar({
   onNewProject,
   onSave,
   onSaveAs,
+  onSaveAsNamed,
   onSaveIncremental,
   canSaveIncremental,
   onOpenLoad,
+  onOpenProjectFile,
+  onSaveToFile,
+  canvasRes,
+  onCanvasResChange,
   projectName,
   projectId,
   saveState,
@@ -139,7 +157,40 @@ export default function MenuBar({
   const { user } = useUser();
   const signedIn = !!user;
   const [openId, setOpenId] = useState<string | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [changelogOpen, setChangelogOpen] = useState(false);
+  const router = useRouter();
   const rootRef = useRef<HTMLDivElement>(null);
+  // A single highlight rectangle that slides between menu buttons. We keep the
+  // last rect when nothing is active (just fade it out) so the next hover
+  // animates from where it was rather than snapping.
+  const menuBtnRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [hl, setHl] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    visible: boolean;
+  }>({ left: 0, top: 0, width: 0, height: 0, visible: false });
+
+  useEffect(() => {
+    const target = openId ?? hoverId;
+    const root = rootRef.current;
+    const btn = target ? menuBtnRefs.current[target] : null;
+    if (!btn || !root) {
+      setHl((p) => (p.visible ? { ...p, visible: false } : p));
+      return;
+    }
+    const rb = btn.getBoundingClientRect();
+    const rr = root.getBoundingClientRect();
+    setHl({
+      left: rb.left - rr.left,
+      top: rb.top - rr.top,
+      width: rb.width,
+      height: rb.height,
+      visible: true,
+    });
+  }, [openId, hoverId]);
 
   // Click-outside and escape both dismiss the open menu.
   useEffect(() => {
@@ -163,7 +214,18 @@ export default function MenuBar({
       id: "toolbox",
       label: "Toolbox",
       items: [
-        { kind: "item", label: "About Toolbox", disabled: true },
+        { kind: "item", label: `Toolbox v${CURRENT_VERSION}`, disabled: true },
+        { kind: "divider" },
+        {
+          kind: "item",
+          label: "Documentation",
+          onClick: () => router.push("/docs"),
+        },
+        {
+          kind: "item",
+          label: "Changelog…",
+          onClick: () => setChangelogOpen(true),
+        },
         { kind: "divider" },
         {
           kind: "item",
@@ -189,10 +251,17 @@ export default function MenuBar({
           onClick: onNewProject,
         },
         {
-          // Always available — the Load panel has a Public tab that
-          // works without auth. The Private tab gates itself internally.
+          // Opens a local .toolbox project file from disk — works offline,
+          // no auth required.
           kind: "item",
           label: "Load…",
+          onClick: onOpenProjectFile,
+        },
+        {
+          // The cloud project browser. Public tab works without auth; the
+          // Private tab gates itself internally.
+          kind: "item",
+          label: "Projects…",
           onClick: onOpenLoad,
         },
         { kind: "divider" },
@@ -215,6 +284,12 @@ export default function MenuBar({
           label: "Save Incremental",
           disabled: !canSaveIncremental,
           onClick: onSaveIncremental,
+        },
+        {
+          // Self-contained download — no account needed. Always available.
+          kind: "item",
+          label: "Save to File…",
+          onClick: onSaveToFile,
         },
         { kind: "item", label: "Export…", disabled: true },
       ],
@@ -292,8 +367,7 @@ export default function MenuBar({
       style={{
         height: BAR_HEIGHT,
         flexShrink: 0,
-        background: "#111113",
-        borderBottom: "1px solid #27272a",
+        background: "#000",
         display: "flex",
         alignItems: "stretch",
         fontFamily: "ui-monospace, monospace",
@@ -304,6 +378,27 @@ export default function MenuBar({
         userSelect: "none",
       }}
     >
+      {/* Single sliding highlight behind the menu buttons. Position/size
+          animate so it glides from one menu to the next on hover; fades out
+          when none is active, keeping its last position so it slides in. */}
+      <div
+        style={{
+          position: "absolute",
+          left: hl.left,
+          // Inset vertically so the pill sits with a little margin top/bottom
+          // rather than filling the full button height.
+          top: hl.top + 3,
+          width: hl.width,
+          height: Math.max(0, hl.height - 6),
+          background: "#2a2a2e",
+          borderRadius: 4,
+          opacity: hl.visible ? 1 : 0,
+          transition:
+            "left 0.16s cubic-bezier(0.4,0,0.2,1), top 0.16s, width 0.16s, height 0.16s, opacity 0.12s",
+          pointerEvents: "none",
+          zIndex: 0,
+        }}
+      />
       {/* Inline undo/redo affordance — always visible (matches the
           desktop convention; also gives iPad/touch users a tappable
           alternative since the keyboard shortcut isn't reachable
@@ -313,28 +408,54 @@ export default function MenuBar({
           comment stays adjacent to keep them findable. */}
       {menus.map((m) => {
         const open = openId === m.id;
+        const isBrand = m.id === "toolbox";
+        // Labels sit dim until hovered/opened, so the menu bar reads
+        // quietly until the user reaches for it. The brand stays bright.
+        const labelColor = isBrand
+          ? "#e5e7eb"
+          : open || hoverId === m.id
+            ? "#e5e7eb"
+            : "#5f5f66";
         return (
-          <div key={m.id} style={{ position: "relative" }}>
+          <div
+            key={m.id}
+            style={{
+              position: "relative",
+              display: "flex",
+              alignItems: "center",
+              zIndex: 1,
+            }}
+          >
             <button
+              ref={(el) => {
+                menuBtnRefs.current[m.id] = el;
+              }}
               onMouseDown={(e) => {
                 e.preventDefault();
                 setOpenId(open ? null : m.id);
               }}
               onMouseEnter={() => {
+                setHoverId(m.id);
                 // Once a menu is open, hovering siblings swaps to that menu —
                 // matches native menu-bar behavior.
                 if (openId && openId !== m.id) setOpenId(m.id);
               }}
+              onMouseLeave={() => setHoverId((h) => (h === m.id ? null : h))}
               style={{
-                height: "100%",
-                padding: "0 10px",
-                background: open ? "#27272a" : "transparent",
-                color: "#e5e7eb",
+                // Transparent — the shared sliding highlight (above) provides
+                // the hover/open background; this keeps the pill margins/
+                // padding so the highlight matches the button box.
+                padding: "2px 10px",
+                margin: "0 2px",
+                borderRadius: 4,
+                background: "transparent",
+                color: labelColor,
                 border: "none",
                 fontFamily: "inherit",
                 fontSize: "inherit",
                 cursor: "default",
                 fontWeight: m.id === "toolbox" ? 600 : 400,
+                transition: "color 90ms",
               }}
             >
               {m.label}
@@ -377,6 +498,8 @@ export default function MenuBar({
       >
         <FileNameMenu
           name={projectName}
+          canvasRes={canvasRes}
+          onCanvasResChange={onCanvasResChange}
           saveState={saveState}
           isPublic={isPublic}
           publicSlug={publicSlug}
@@ -387,13 +510,16 @@ export default function MenuBar({
           onRename={onRenameProject}
           onRequestToggleVisibility={onRequestToggleVisibility}
           onSave={onSave}
+          onSaveAsNamed={onSaveAsNamed}
           findConflict={findNameConflict}
         />
       </div>
       {showFps && <FpsCounter />}
-      <DocsInfoButton />
-      <VersionMenu />
       <AccountMenu />
+      <ChangelogPopover
+        open={changelogOpen}
+        onClose={() => setChangelogOpen(false)}
+      />
     </div>
   );
 }

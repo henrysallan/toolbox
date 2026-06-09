@@ -21,8 +21,22 @@ const DOT_LABEL: Record<SaveState, string> = {
   error: "save failed",
 };
 
+// Mirrors the preset list in ParamPanel's Project Settings so the two
+// resolution editors offer the same options.
+const RES_PRESETS: Array<{ label: string; w: number; h: number }> = [
+  { label: "512 × 512", w: 512, h: 512 },
+  { label: "1024 × 1024", w: 1024, h: 1024 },
+  { label: "2048 × 2048", w: 2048, h: 2048 },
+  { label: "1280 × 720", w: 1280, h: 720 },
+  { label: "1920 × 1080", w: 1920, h: 1080 },
+  { label: "3840 × 2160", w: 3840, h: 2160 },
+];
+
 export interface FileNameMenuProps {
   name: string;
+  // Project render resolution + setter, surfaced in the dropdown.
+  canvasRes: [number, number];
+  onCanvasResChange: (res: [number, number]) => void;
   saveState: SaveState;
   isPublic: boolean;
   // Public URL slug. Non-null when the project is currently public —
@@ -44,6 +58,10 @@ export interface FileNameMenuProps {
   onRequestToggleVisibility: (next: boolean) => void;
   // Save from the dropdown — same semantics as File → Save.
   onSave: () => void;
+  // Save a brand-new (unsaved) project directly under the given name —
+  // used so the dropdown's Save doesn't re-prompt for a name the user
+  // already typed here. Handles name collisions like the Save As flow.
+  onSaveAsNamed: (name: string) => Promise<void> | void;
   // Non-null when the current draft matches another of the user's
   // existing projects (excluding the current row). The Rename button
   // relabels to "Overwrite" and the parent handler forks the current
@@ -53,6 +71,8 @@ export interface FileNameMenuProps {
 
 export default function FileNameMenu({
   name,
+  canvasRes,
+  onCanvasResChange,
   saveState,
   isPublic,
   publicSlug,
@@ -63,10 +83,12 @@ export default function FileNameMenu({
   onRename,
   onRequestToggleVisibility,
   onSave,
+  onSaveAsNamed,
   findConflict,
 }: FileNameMenuProps) {
   const canMutate = canEdit && ownedByMe;
   const [open, setOpen] = useState(false);
+  const [hover, setHover] = useState(false);
   const [draft, setDraft] = useState(name);
   const [editorLinkCopied, setEditorLinkCopied] = useState(false);
   const [liveLinkCopied, setLiveLinkCopied] = useState(false);
@@ -119,6 +141,9 @@ export default function FileNameMenu({
   };
 
   const dotColor = DOT_COLOR[saveState];
+
+  const resKey = `${canvasRes[0]}×${canvasRes[1]}`;
+  const isResPreset = RES_PRESETS.some((r) => `${r.w}×${r.h}` === resKey);
 
   // Build the public URLs only when we have a slug and the project
   // is currently public. Hidden otherwise so the user doesn't see
@@ -177,6 +202,8 @@ export default function FileNameMenu({
           e.preventDefault();
           setOpen((v) => !v);
         }}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
         title={`${name} — ${DOT_LABEL[saveState]}`}
         style={{
           display: "flex",
@@ -184,10 +211,11 @@ export default function FileNameMenu({
           gap: 6,
           height: 16,
           padding: "0 10px",
-          background: open ? "#27272a" : "#1c1c1f",
-          border: "1px solid #27272a",
+          background: open ? "#27272a" : hover ? "#232327" : "#1c1c1f",
+          border: `1px solid ${open || hover ? "#3f3f46" : "#27272a"}`,
           borderRadius: 10,
           color: "#e5e7eb",
+          transition: "background 90ms, border-color 90ms",
           fontFamily: "inherit",
           fontSize: 10,
           cursor: "default",
@@ -284,6 +312,70 @@ export default function FileNameMenu({
               by {authorName} · save creates your own copy
             </div>
           )}
+
+          {/* Resolution — same presets as Project Settings, editable here
+              without leaving the dropdown. Not gated by ownership: it's a
+              local render setting, like in Project Settings. */}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              padding: "8px 2px",
+              marginBottom: 8,
+              borderTop: "1px solid #27272a",
+            }}
+          >
+            <div
+              style={{
+                color: "#a1a1aa",
+                fontSize: 10,
+                textTransform: "uppercase",
+                letterSpacing: 0.5,
+              }}
+            >
+              Resolution
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <ResField
+                value={canvasRes[0]}
+                onCommit={(w) => onCanvasResChange([w, canvasRes[1]])}
+              />
+              <span style={{ color: "#52525b" }}>×</span>
+              <ResField
+                value={canvasRes[1]}
+                onCommit={(h) => onCanvasResChange([canvasRes[0], h])}
+              />
+              <select
+                value={isResPreset ? resKey : "__custom__"}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "__custom__") return;
+                  const [w, h] = v.split("×").map(Number);
+                  onCanvasResChange([w, h]);
+                }}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  background: "#0a0a0a",
+                  border: "1px solid #27272a",
+                  color: "#e5e7eb",
+                  fontFamily: "inherit",
+                  fontSize: 11,
+                  borderRadius: 3,
+                  padding: "4px 6px",
+                  cursor: "pointer",
+                }}
+              >
+                {!isResPreset && <option value="__custom__">custom</option>}
+                {RES_PRESETS.map((r) => (
+                  <option key={r.label} value={`${r.w}×${r.h}`}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
 
           <div
             style={{
@@ -429,8 +521,18 @@ export default function FileNameMenu({
                     )}
                     <button
                       onClick={() => {
+                        const trimmed = draft.trim();
                         setOpen(false);
-                        onSave();
+                        // New, unsaved project: save straight away with the
+                        // name the user typed here instead of reopening the
+                        // Save As modal (which would re-prompt for a name).
+                        if (!projectId && trimmed) {
+                          Promise.resolve(onSaveAsNamed(trimmed)).catch(
+                            () => {}
+                          );
+                        } else {
+                          onSave();
+                        }
                       }}
                       disabled={!canEdit}
                       style={{
@@ -438,6 +540,7 @@ export default function FileNameMenu({
                         background: "#16a34a",
                         border: "1px solid #16a34a",
                         color: "#dcfce7",
+                        borderRadius: 999,
                         opacity: canEdit ? 1 : 0.5,
                       }}
                     >
@@ -502,6 +605,56 @@ function VisibilityToggle({
         }}
       />
     </button>
+  );
+}
+
+// Numeric resolution input: commits on blur / Enter, reverts on invalid.
+function ResField({
+  value,
+  onCommit,
+  min = 16,
+  max = 8192,
+}: {
+  value: number;
+  onCommit: (n: number) => void;
+  min?: number;
+  max?: number;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+  const commit = () => {
+    const n = Math.round(parseFloat(draft));
+    if (!Number.isFinite(n) || n < min || n > max) {
+      setDraft(String(value));
+      return;
+    }
+    if (n !== value) onCommit(n);
+  };
+  return (
+    <input
+      type="number"
+      value={draft}
+      min={min}
+      max={max}
+      step={1}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+      style={{
+        width: 60,
+        background: "#0a0a0a",
+        border: "1px solid #27272a",
+        color: "#e5e7eb",
+        fontFamily: "inherit",
+        fontSize: 11,
+        borderRadius: 3,
+        padding: "4px 6px",
+      }}
+    />
   );
 }
 

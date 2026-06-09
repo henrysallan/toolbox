@@ -123,6 +123,7 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
           // made /live/ render the static initial pose instead of
           // the animated graph.
           animation: n.data.animation,
+          clips: n.data.clips,
           bypassed: !!n.data.bypassed,
         }));
         const graphEdges: GraphEdge[] = edges.map((e) => ({

@@ -16,6 +16,34 @@ interface RatePopover {
   y: number;
 }
 
+// Per-item fade-in offset (ms). Each successive tile/row waits this much
+// longer before it appears, producing the sequential cascade.
+const STAGGER_STEP = 35;
+const STAGGER_DURATION = 260;
+
+// Flips to true one frame after `ready` becomes true, so a child that
+// starts at opacity 0 transitions to its visible state. Returns the
+// trigger; callers add a per-index transition-delay for the cascade.
+function useStaggerShown(ready: boolean): boolean {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (!ready) return;
+    const id = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(id);
+  }, [ready]);
+  return shown;
+}
+
+// Shared style for a staggered fade-in item.
+function staggerStyle(shown: boolean, index: number): React.CSSProperties {
+  return {
+    opacity: shown ? 1 : 0,
+    transform: shown ? "translateY(0)" : "translateY(6px)",
+    transition: `opacity ${STAGGER_DURATION}ms ease, transform ${STAGGER_DURATION}ms ease`,
+    transitionDelay: `${index * STAGGER_STEP}ms`,
+  };
+}
+
 type Tab = "private" | "public";
 type View = "grid" | "list";
 type SortKey = "name" | "author" | "date";
@@ -31,6 +59,10 @@ interface Props {
   // the viewer (so a user's own public work shows "you" instead of
   // their display name).
   currentUserId?: string | null;
+  // When provided, a synthetic "New Project" tile is rendered as the
+  // first grid item (and list row). Used by the landing screen so the
+  // grid doubles as the entry point to a fresh, empty project.
+  onNewProject?: () => void;
 }
 
 export default function LoadGrid({
@@ -38,6 +70,7 @@ export default function LoadGrid({
   signedIn,
   refreshKey,
   currentUserId,
+  onNewProject,
 }: Props) {
   // Default to Public when signed out so visitors see something useful;
   // default to Private for signed-in users since that's their own work.
@@ -54,6 +87,16 @@ export default function LoadGrid({
   // Right-click → rate popover. Stored at top-level so it survives
   // re-renders inside the grid/list child views.
   const [ratePopover, setRatePopover] = useState<RatePopover | null>(null);
+
+  // Open sequence: the panel mounts with everything hidden, then the
+  // chrome (tab bar) fades in first. The tiles handle their own
+  // staggered fade once rows arrive, so the eye reads it as: menu bar
+  // settles → projects cascade in.
+  const [chromeIn, setChromeIn] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setChromeIn(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
 
   // If sign-in state flips to signed-out while we're on the Private
   // tab, bounce to Public. Done as a render-time reconciliation
@@ -112,20 +155,28 @@ export default function LoadGrid({
         margin: -12,
       }}
     >
-      <Toolbar
-        tab={tab}
-        onTabChange={setTab}
-        signedIn={signedIn}
-        view={view}
-        onViewChange={setView}
-        onRefresh={() => {
-          // Drop the session cache so the refetch actually hits the
-          // DB; otherwise the list call would return the cached rows
-          // and defeat the whole point of the button.
-          invalidateProjectCaches();
-          setManualRefresh((n) => n + 1);
+      <div
+        style={{
+          flexShrink: 0,
+          opacity: chromeIn ? 1 : 0,
+          transition: "opacity 220ms ease",
         }}
-      />
+      >
+        <Toolbar
+          tab={tab}
+          onTabChange={setTab}
+          signedIn={signedIn}
+          view={view}
+          onViewChange={setView}
+          onRefresh={() => {
+            // Drop the session cache so the refetch actually hits the
+            // DB; otherwise the list call would return the cached rows
+            // and defeat the whole point of the button.
+            invalidateProjectCaches();
+            setManualRefresh((n) => n + 1);
+          }}
+        />
+      </div>
       <div
         style={{
           flex: 1,
@@ -144,6 +195,8 @@ export default function LoadGrid({
           currentUserId={currentUserId ?? null}
           onLoad={onLoad}
           onRate={(row, x, y) => setRatePopover({ row, x, y })}
+          staggerReady={chromeIn}
+          onNewProject={onNewProject}
         />
       </div>
       {ratePopover && (
@@ -188,32 +241,38 @@ function Toolbar({
     <div
       style={{
         display: "flex",
-        alignItems: "stretch",
-        height: 22,
+        alignItems: "center",
+        height: 28,
         flexShrink: 0,
         background: "#111113",
         borderBottom: "1px solid #27272a",
+        padding: "0 6px",
+        gap: 6,
         fontFamily: "inherit",
         fontSize: 11,
         color: "#e5e7eb",
         userSelect: "none",
       }}
     >
-      <MenuTab
-        active={tab === "private"}
-        disabled={!signedIn}
-        onClick={() => onTabChange("private")}
-        title={signedIn ? "Your saved projects" : "Sign in to see your projects"}
-      >
-        Private
-      </MenuTab>
-      <MenuTab
-        active={tab === "public"}
-        onClick={() => onTabChange("public")}
-        title="Projects shared by the community"
-      >
-        Public
-      </MenuTab>
+      <div style={{ display: "flex", gap: 2 }}>
+        <MenuTab
+          active={tab === "private"}
+          disabled={!signedIn}
+          onClick={() => onTabChange("private")}
+          title={
+            signedIn ? "Your saved projects" : "Sign in to see your projects"
+          }
+        >
+          Private
+        </MenuTab>
+        <MenuTab
+          active={tab === "public"}
+          onClick={() => onTabChange("public")}
+          title="Projects shared by the community"
+        >
+          Public
+        </MenuTab>
+      </div>
       <div style={{ flex: 1 }} />
       <IconButton
         onClick={onRefresh}
@@ -222,22 +281,24 @@ function Toolbar({
       >
         <RefreshIcon />
       </IconButton>
-      <IconButton
-        onClick={() => onViewChange("grid")}
-        active={view === "grid"}
-        title="Grid view"
-        ariaLabel="Grid view"
-      >
-        <GridIcon />
-      </IconButton>
-      <IconButton
-        onClick={() => onViewChange("list")}
-        active={view === "list"}
-        title="List view"
-        ariaLabel="List view"
-      >
-        <ListIcon />
-      </IconButton>
+      <div style={{ display: "flex", gap: 2 }}>
+        <IconButton
+          onClick={() => onViewChange("grid")}
+          active={view === "grid"}
+          title="Grid view"
+          ariaLabel="Grid view"
+        >
+          <GridIcon />
+        </IconButton>
+        <IconButton
+          onClick={() => onViewChange("list")}
+          active={view === "list"}
+          title="List view"
+          ariaLabel="List view"
+        >
+          <ListIcon />
+        </IconButton>
+      </div>
     </div>
   );
 }
@@ -255,6 +316,10 @@ function MenuTab({
   title?: string;
   children: React.ReactNode;
 }) {
+  const [hover, setHover] = useState(false);
+  const hot = hover && !disabled;
+  // Mirrors EffectsApp's DockButton: near-invisible border at rest, a subtle
+  // hover, and a soft blue highlight when active.
   return (
     <button
       onMouseDown={(e) => {
@@ -264,16 +329,27 @@ function MenuTab({
       }}
       disabled={disabled}
       title={title}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       style={{
-        height: "100%",
-        padding: "0 10px",
-        background: active ? "#27272a" : "transparent",
-        color: disabled ? "#3f3f46" : "#e5e7eb",
-        border: "none",
+        padding: "3px 12px",
+        borderRadius: 3,
+        background: active ? "#1b2741" : hot ? "#19191c" : "transparent",
+        border: `1px solid ${
+          active ? "#26375f" : hot ? "#2a2a2e" : "#171719"
+        }`,
+        color: disabled
+          ? "#3f3f46"
+          : active
+            ? "#bfdbfe"
+            : hot
+              ? "#e5e7eb"
+              : "#8a8a90",
         fontFamily: "inherit",
-        fontSize: "inherit",
-        cursor: disabled ? "not-allowed" : "default",
-        fontWeight: active ? 600 : 400,
+        fontSize: 11,
+        lineHeight: 1,
+        cursor: disabled ? "not-allowed" : "pointer",
+        transition: "background 80ms, border-color 80ms, color 80ms",
       }}
     >
       {children}
@@ -294,6 +370,9 @@ function IconButton({
   ariaLabel: string;
   children: React.ReactNode;
 }) {
+  const [hover, setHover] = useState(false);
+  // Same DockButton treatment as the tabs: faint rest border, hover lift,
+  // soft blue when active.
   return (
     <button
       onMouseDown={(e) => {
@@ -302,17 +381,23 @@ function IconButton({
       }}
       title={title}
       aria-label={ariaLabel}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       style={{
-        height: "100%",
-        width: 24,
+        width: 22,
+        height: 20,
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        background: active ? "#27272a" : "transparent",
-        color: active ? "#e5e7eb" : "#a1a1aa",
-        border: "none",
-        cursor: "default",
+        background: active ? "#1b2741" : hover ? "#19191c" : "transparent",
+        border: `1px solid ${
+          active ? "#26375f" : hover ? "#2a2a2e" : "#171719"
+        }`,
+        borderRadius: 3,
+        color: active ? "#bfdbfe" : hover ? "#e5e7eb" : "#8a8a90",
+        cursor: "pointer",
         padding: 0,
+        transition: "background 80ms, border-color 80ms, color 80ms",
       }}
     >
       {children}
@@ -377,6 +462,8 @@ function Body({
   currentUserId,
   onLoad,
   onRate,
+  staggerReady,
+  onNewProject,
 }: {
   tab: Tab;
   view: View;
@@ -387,6 +474,11 @@ function Body({
   currentUserId: string | null;
   onLoad: (id: string) => void;
   onRate: (row: ProjectRow, x: number, y: number) => void;
+  // True once the menu bar has begun fading in — gates the project
+  // cascade so the chrome always settles first.
+  staggerReady: boolean;
+  // Landing-only: renders the "New Project" tile/row first.
+  onNewProject?: () => void;
 }) {
   if (tab === "private" && !signedIn) {
     return (
@@ -398,7 +490,9 @@ function Body({
   if (rows === null) {
     return <div style={{ color: "#52525b" }}>Loading…</div>;
   }
-  if (rows.length === 0) {
+  // Empty list: still surface the New Project entry on its own when the
+  // landing supplies it, so the user is never stranded with no action.
+  if (rows.length === 0 && !onNewProject) {
     return (
       <div style={{ color: "#52525b" }}>
         {tab === "private"
@@ -417,6 +511,8 @@ function Body({
         showAuthor={tab === "public"}
         onLoad={onLoad}
         onRate={onRate}
+        staggerReady={staggerReady}
+        onNewProject={onNewProject}
       />
     );
   }
@@ -427,6 +523,8 @@ function Body({
       showAuthor={tab === "public"}
       onLoad={onLoad}
       onRate={onRate}
+      staggerReady={staggerReady}
+      onNewProject={onNewProject}
     />
   );
 }
@@ -437,13 +535,21 @@ function GridView({
   showAuthor,
   onLoad,
   onRate,
+  staggerReady,
+  onNewProject,
 }: {
   rows: ProjectRow[];
   currentUserId: string | null;
   showAuthor: boolean;
   onLoad: (id: string) => void;
   onRate: (row: ProjectRow, x: number, y: number) => void;
+  staggerReady: boolean;
+  onNewProject?: () => void;
 }) {
+  const shown = useStaggerShown(staggerReady);
+  // The New Project tile, when present, takes slot 0 — project tiles
+  // shift one place along in the cascade so it always fades first.
+  const offset = onNewProject ? 1 : 0;
   return (
     <div
       style={{
@@ -452,7 +558,13 @@ function GridView({
         gap: 8,
       }}
     >
-      {rows.map((r) => (
+      {onNewProject && (
+        <NewProjectTile
+          onClick={onNewProject}
+          appearStyle={staggerStyle(shown, 0)}
+        />
+      )}
+      {rows.map((r, i) => (
         <ProjectTile
           key={r.id}
           row={r}
@@ -460,9 +572,88 @@ function GridView({
           isMine={!!currentUserId && currentUserId === r.user_id}
           onLoad={onLoad}
           onRate={onRate}
+          appearStyle={staggerStyle(shown, i + offset)}
         />
       ))}
     </div>
+  );
+}
+
+// First-slot tile that starts a fresh, empty project. Mirrors the
+// ProjectTile footprint (square thumb + label) but swaps the screenshot
+// for a flat dark panel with a centred plus.
+function NewProjectTile({
+  onClick,
+  appearStyle,
+}: {
+  onClick: () => void;
+  appearStyle: React.CSSProperties;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      title="Start a new, empty project"
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "stretch",
+        padding: 0,
+        background: "#111113",
+        border: `1px solid ${hover ? "#3f3f46" : "#27272a"}`,
+        borderRadius: 4,
+        overflow: "hidden",
+        color: "#e5e7eb",
+        cursor: "pointer",
+        fontFamily: "inherit",
+        position: "relative",
+        transition: "border-color 100ms",
+        ...appearStyle,
+      }}
+    >
+      <div
+        style={{
+          aspectRatio: "1 / 1",
+          background: hover ? "#1b1b1f" : "#161619",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          transition: "background 100ms",
+        }}
+      >
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <path
+            d="M14 6v16M6 14h16"
+            stroke={hover ? "#a1a1aa" : "#52525b"}
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+        </svg>
+      </div>
+      <div
+        style={{
+          padding: "4px 6px",
+          textAlign: "left",
+          display: "flex",
+          flexDirection: "column",
+          gap: 1,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 10,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            color: hover ? "#e5e7eb" : "#a1a1aa",
+          }}
+        >
+          New Project
+        </div>
+      </div>
+    </button>
   );
 }
 
@@ -474,6 +665,8 @@ function ListView({
   showAuthor,
   onLoad,
   onRate,
+  staggerReady,
+  onNewProject,
 }: {
   rows: ProjectRow[];
   sort: { key: SortKey; dir: SortDir };
@@ -482,7 +675,11 @@ function ListView({
   showAuthor: boolean;
   onLoad: (id: string) => void;
   onRate: (row: ProjectRow, x: number, y: number) => void;
+  staggerReady: boolean;
+  onNewProject?: () => void;
 }) {
+  const shown = useStaggerShown(staggerReady);
+  const offset = onNewProject ? 1 : 0;
   // Grid so column widths are consistent between header and body rows.
   const grid = "1fr 160px 90px 140px";
   return (
@@ -532,7 +729,44 @@ function ListView({
         </HeaderCell>
       </div>
       <div>
-        {rows.map((r) => {
+        {onNewProject && (
+          <button
+            onClick={onNewProject}
+            title="Start a new, empty project"
+            style={{
+              display: "grid",
+              gridTemplateColumns: grid,
+              gap: 8,
+              padding: "6px 6px",
+              width: "100%",
+              textAlign: "left",
+              background: "transparent",
+              border: "none",
+              borderBottom: "1px solid #1a1a1d",
+              color: "#a1a1aa",
+              fontFamily: "inherit",
+              fontSize: "inherit",
+              cursor: "pointer",
+              ...staggerStyle(shown, 0),
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "#161619")}
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.background = "transparent")
+            }
+          >
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <span style={{ color: "#52525b", fontSize: 13, lineHeight: 1 }}>
+                +
+              </span>
+              New Project
+            </span>
+            <span />
+            <span />
+            <span />
+          </button>
+        )}
+        {rows.map((r, idx) => {
+          const i = idx + offset;
           const isMine = !!currentUserId && currentUserId === r.user_id;
           const author = showAuthor
             ? isMine
@@ -561,6 +795,7 @@ function ListView({
                 fontFamily: "inherit",
                 fontSize: "inherit",
                 cursor: "pointer",
+                ...staggerStyle(shown, i),
               }}
               onMouseEnter={(e) =>
                 (e.currentTarget.style.background = "#161619")
@@ -657,12 +892,15 @@ function ProjectTile({
   isMine,
   onLoad,
   onRate,
+  appearStyle,
 }: {
   row: ProjectRow;
   showAuthor: boolean;
   isMine: boolean;
   onLoad: (id: string) => void;
   onRate: (row: ProjectRow, x: number, y: number) => void;
+  // Staggered fade-in style supplied by the parent grid.
+  appearStyle: React.CSSProperties;
 }) {
   const authorLabel = isMine
     ? "you"
@@ -692,6 +930,7 @@ function ProjectTile({
         cursor: "pointer",
         fontFamily: "inherit",
         position: "relative",
+        ...appearStyle,
       }}
     >
       <div

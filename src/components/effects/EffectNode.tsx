@@ -141,6 +141,9 @@ export default function EffectNode({
         boxShadow: selected
           ? "0 0 0 1px rgba(96,165,250,0.3)"
           : "0 2px 8px rgba(0,0,0,0.4)",
+        // Fade the selection outline (border tint + ring) in/out rather
+        // than snapping it on click.
+        transition: "border-color 140ms ease, box-shadow 140ms ease",
         // position: relative anchors the timing label below as an
         // absolutely-positioned overlay above the node's top edge.
         position: "relative",

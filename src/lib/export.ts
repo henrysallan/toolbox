@@ -3,19 +3,35 @@
 // We probe a ranked candidate list at runtime and fall back gracefully.
 
 export function pickVideoMime(
-  requested: "mp4" | "webm"
+  requested: "mp4" | "webm",
+  // When the captured stream carries an audio track, prefer mime strings
+  // that name an audio codec so MediaRecorder actually writes the audio.
+  withAudio = false
 ): { mime: string; ext: "mp4" | "webm" } | null {
-  const mp4Candidates = [
-    "video/mp4;codecs=avc1.42E01E",
-    "video/mp4;codecs=avc1",
-    "video/mp4;codecs=h264",
-    "video/mp4",
-  ];
-  const webmCandidates = [
-    "video/webm;codecs=vp9",
-    "video/webm;codecs=vp8",
-    "video/webm",
-  ];
+  const mp4Candidates = withAudio
+    ? [
+        "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+        "video/mp4;codecs=avc1,mp4a.40.2",
+        "video/mp4;codecs=h264,aac",
+        "video/mp4",
+      ]
+    : [
+        "video/mp4;codecs=avc1.42E01E",
+        "video/mp4;codecs=avc1",
+        "video/mp4;codecs=h264",
+        "video/mp4",
+      ];
+  const webmCandidates = withAudio
+    ? [
+        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus",
+        "video/webm",
+      ]
+    : [
+        "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8",
+        "video/webm",
+      ];
 
   const tryList = (list: string[], ext: "mp4" | "webm") => {
     for (const m of list) {

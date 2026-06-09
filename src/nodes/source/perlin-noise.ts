@@ -65,6 +65,7 @@ uniform float u_w;
 uniform int u_hasUvIn;
 uniform sampler2D u_uvIn;
 uniform vec2 u_uvConst;
+uniform vec2 u_canvasSize;
 out vec4 outColor;
 
 // ── shared helpers ──────────────────────────────────────────────────────
@@ -439,7 +440,13 @@ void main() {
   else uv = v_uv;
 
   vec2 seedOffset = vec2(u_seed * 127.1, u_seed * 311.7);
-  vec2 p = (uv - 0.5) * u_scale + u_offset + seedOffset;
+  // Aspect-correct so noise cells stay square on a non-square canvas:
+  // compress the y sample by the canvas aspect (square = no change). scale
+  // keeps meaning cells-across-the-width.
+  float aspect = u_canvasSize.x / u_canvasSize.y;
+  vec2 p = (uv - 0.5) * u_scale;
+  p.y /= aspect;
+  p += u_offset + seedOffset;
 
   // Curl outputs a vec2; pack into R/G at 0.5-centered encoding so it
   // visualizes cleanly AND downstream Displace (with channel R/G) sees a
@@ -745,8 +752,11 @@ export const perlinNoiseNode: NodeDefinition = {
     const py = posIn?.kind === "vec2" ? posIn.value[1] : 0.5;
     const seedOffX = seed * 127.1;
     const seedOffY = seed * 311.7;
+    // Mirror the shader's aspect correction so the CPU `value` output matches
+    // the rendered pixel at the same position.
+    const aspect = ctx.width / ctx.height;
     const sx = (px - 0.5) * scale + offX + seedOffX;
-    const sy = (py - 0.5) * scale + offY + seedOffY;
+    const sy = ((py - 0.5) * scale) / aspect + offY + seedOffY;
     const noiseFn = noiseFnFor((params.type as string) ?? "simplex");
     const valueScalar = fbmWithW(
       noiseFn,
@@ -785,6 +795,11 @@ export const perlinNoiseNode: NodeDefinition = {
         gl.getUniformLocation(prog, "u_uvConst"),
         uvConst[0],
         uvConst[1]
+      );
+      gl.uniform2f(
+        gl.getUniformLocation(prog, "u_canvasSize"),
+        ctx.width,
+        ctx.height
       );
     });
 

@@ -69,8 +69,21 @@ export interface FfmpegExportOptions {
   proresProfile: number;
   fps: number;
   durationFrames: number;
-  renderFrame: (frameIndex: number, timeSec: number) => void;
+  renderFrame: (frameIndex: number, timeSec: number) => void | Promise<void>;
   onProgress?: (label: string, fraction: number) => void;
+  // Optional 16-bit PCM WAV bytes covering the export window. When present
+  // it's written into the wasm FS and muxed as a second input.
+  audioWav?: Uint8Array | null;
+}
+
+// Audio encoder + args per container. AAC for the mp4 family / mkv, Opus
+// for webm. `-shortest` keeps output length tied to the (frame-exact)
+// video when the WAV is a hair longer.
+function buildAudioArgs(container: FfmpegContainer): string[] {
+  if (container === "webm") {
+    return ["-c:a", "libopus", "-b:a", "192k"];
+  }
+  return ["-c:a", "aac", "-b:a", "256k"];
 }
 
 // Maps the simplified UI codec onto an ffmpeg encoder + arg list.
@@ -162,7 +175,7 @@ export async function exportVideoFfmpeg(
   const captureStart = performance.now();
   for (let i = 0; i < opts.durationFrames; i++) {
     const t = i / opts.fps;
-    opts.renderFrame(i, t);
+    await opts.renderFrame(i, t);
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
     const png = await canvasToPngBytes(opts.canvas);
     const name = `frame_${String(i).padStart(6, "0")}.png`;
@@ -182,11 +195,20 @@ export async function exportVideoFfmpeg(
     }
   }
 
+  // Audio input — write the WAV into the FS so ffmpeg can mux it.
+  const hasAudio = !!opts.audioWav && opts.audioWav.byteLength > 0;
+  if (hasAudio) {
+    await ffmpeg.writeFile("audio.wav", opts.audioWav!);
+  }
+
   const outputName = `out.${opts.container}`;
   const args = [
     "-framerate", String(opts.fps),
     "-i", "frame_%06d.png",
+    ...(hasAudio ? ["-i", "audio.wav"] : []),
     ...buildEncoderArgs(opts.codec, opts.crf, opts.proresProfile),
+    ...(hasAudio ? buildAudioArgs(opts.container) : []),
+    ...(hasAudio ? ["-shortest"] : []),
     "-r", String(opts.fps),
     outputName,
   ];
@@ -229,6 +251,7 @@ export async function exportVideoFfmpeg(
   // Best-effort cleanup so we don't leak frames into the next export.
   try {
     await ffmpeg.deleteFile(outputName);
+    if (hasAudio) await ffmpeg.deleteFile("audio.wav");
     for (let i = 0; i < opts.durationFrames; i++) {
       await ffmpeg.deleteFile(`frame_${String(i).padStart(6, "0")}.png`);
     }

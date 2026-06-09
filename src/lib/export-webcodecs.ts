@@ -18,11 +18,13 @@
 // has flushed before the encoder reads.
 
 import {
+  AudioBufferSource,
   BufferTarget,
   CanvasSource,
   Mp4OutputFormat,
   WebMOutputFormat,
   Output,
+  type AudioCodec,
   type VideoCodec,
 } from "mediabunny";
 
@@ -36,9 +38,14 @@ export interface WebCodecsExportOptions {
   bitrateBps: number;
   fps: number;
   durationFrames: number;
-  // Called for each frame BEFORE we capture. Should set the timeline
-  // clock and synchronously evaluate the graph. Frame index is 0..N-1.
-  renderFrame: (frameIndex: number, timeSec: number) => void;
+  // Optional audio track to mux alongside the video (already rendered to
+  // cover the full export window). Skipped when null or when no audio
+  // codec is encodable for the container.
+  audioBuffer?: AudioBuffer | null;
+  // Called for each frame BEFORE we capture. Sets the timeline clock and
+  // evaluates the graph. May be async (e.g. to await video seeks settling
+  // for a deterministic frame); the loop awaits it. Frame index is 0..N-1.
+  renderFrame: (frameIndex: number, timeSec: number) => void | Promise<void>;
   // Fired once per frame. `label` is the human-readable status (e.g.
   // "Frame 42/240"), `fraction` is 0..1 for progress-bar fill.
   onProgress?: (label: string, fraction: number) => void;
@@ -63,6 +70,23 @@ async function pickCodec(
     ...allowed[container].filter((c) => c !== preferred),
   ].filter((c) => allowed[container].includes(c));
   return getFirstEncodableVideoCodec(order);
+}
+
+// First encodable audio codec legal for the container. mp4 muxes AAC
+// (Opus as a fallback); webm is Opus/Vorbis. Returns null when the browser
+// can't encode any of them.
+async function pickAudioCodec(
+  container: WebCodecsContainer,
+  numberOfChannels: number,
+  sampleRate: number
+): Promise<AudioCodec | null> {
+  const { getFirstEncodableAudioCodec } = await import("mediabunny");
+  const allowed: AudioCodec[] =
+    container === "mp4" ? ["aac", "opus"] : ["opus", "vorbis"];
+  return getFirstEncodableAudioCodec(allowed, {
+    numberOfChannels,
+    sampleRate,
+  });
 }
 
 export async function exportVideoWebCodecs(
@@ -97,13 +121,30 @@ export async function exportVideoWebCodecs(
   });
   output.addVideoTrack(source, { frameRate: opts.fps });
 
+  // Audio track (optional). Must be added before output.start(); the
+  // samples themselves are encoded after the video loop. If no audio codec
+  // is encodable for this container we silently skip — the video still
+  // exports rather than failing the whole render.
+  let audioSource: AudioBufferSource | null = null;
+  if (opts.audioBuffer) {
+    const audioCodec = await pickAudioCodec(
+      opts.container,
+      opts.audioBuffer.numberOfChannels,
+      opts.audioBuffer.sampleRate
+    );
+    if (audioCodec) {
+      audioSource = new AudioBufferSource({ codec: audioCodec, bitrate: 192_000 });
+      output.addAudioTrack(audioSource);
+    }
+  }
+
   await output.start();
 
   const frameDuration = 1 / opts.fps;
   const startMs = performance.now();
   for (let i = 0; i < opts.durationFrames; i++) {
     const t = i / opts.fps;
-    opts.renderFrame(i, t);
+    await opts.renderFrame(i, t);
     // Yield once so the browser can flush the GL commands before the
     // encoder samples the canvas. Without this we'd capture the
     // previous frame's pixels under heavy graphs.
@@ -124,6 +165,14 @@ export async function exportVideoWebCodecs(
         done / opts.durationFrames
       );
     }
+  }
+
+  // Encode the whole audio buffer in one shot (mediabunny streams it into
+  // the muxer). Done after the frames so the video track's timeline is
+  // already established.
+  if (audioSource && opts.audioBuffer) {
+    if (opts.onProgress) opts.onProgress("Encoding audio…", 1);
+    await audioSource.add(opts.audioBuffer);
   }
 
   if (opts.onProgress) opts.onProgress("Finalizing…", 1);

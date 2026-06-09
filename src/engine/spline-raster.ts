@@ -1,4 +1,5 @@
 import type { SplineSubpath } from "./types";
+import { aspectCorrectY } from "./aspect";
 
 // Convert a color-picker hex (`#rgb`, `#rrggbb`, or `#rrggbbaa`) into a
 // Canvas-2D-compatible `rgba()` string. The `alpha` override applies when
@@ -38,7 +39,12 @@ export function buildPath2D(
 ): Path2D | null {
   if (subpaths.length === 0) return null;
   const path = new Path2D();
-  const toPx = (p: [number, number]) => [p[0] * W, p[1] * H] as const;
+  // Aspect-correct the y axis so splines stay round on a non-square canvas
+  // (a circle authored in [0,1]² rasterizes round, not as an ellipse).
+  // Matches the SDF compiler's u_aspectCorrect convention. Square = identity.
+  const aspect = W / H;
+  const toPx = (p: [number, number]) =>
+    [p[0] * W, aspectCorrectY(p[1], aspect) * H] as const;
   let any = false;
   for (const sub of subpaths) {
     const anchors = sub.anchors;

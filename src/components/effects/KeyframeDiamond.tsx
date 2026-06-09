@@ -18,7 +18,7 @@ interface Props {
   title?: string;
 }
 
-const SIZE = 14;
+const SIZE = 10;
 
 export default function KeyframeDiamond({
   state,

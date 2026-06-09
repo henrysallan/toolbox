@@ -3,7 +3,6 @@
 import {
   Background,
   BackgroundVariant,
-  Controls,
   ReactFlow,
   SelectionMode,
   ViewportPortal,
@@ -33,6 +32,7 @@ import {
   type Pt,
 } from "@/engine/wire-geometry";
 import { paramSocketType, parseTargetHandleKind } from "@/state/graph";
+import { getShortcutScope } from "./shortcut-scope";
 import type { NodeDataPayload } from "@/state/graph";
 
 interface Props {
@@ -59,6 +59,10 @@ interface Props {
   onDetachNode?: (nodeId: string) => void;
   onDuplicateNode?: (nodeId: string) => void;
   onDuplicateSelection?: () => void;
+  // Shift+M: wrap the currently selected image/mask-output nodes in a
+  // new Merge node, wiring them in as base + layers. Parent owns the
+  // eligibility filter and edge surgery; NodeEditor just owns the key.
+  onMergeSelection?: () => void;
   onCopyNodes?: () => void;
   onPasteNodes?: () => void;
   // Desktop file drop + clipboard paste — when the user drops an image/
@@ -124,6 +128,7 @@ export default function NodeEditor({
   onDetachNode,
   onDuplicateNode,
   onDuplicateSelection,
+  onMergeSelection,
   onCopyNodes,
   onPasteNodes,
   onAddFileNode,
@@ -190,6 +195,9 @@ export default function NodeEditor({
       const tag = t?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea") return;
       if (t?.isContentEditable) return;
+      // Only act when this editor was the last one clicked, so Delete /
+      // Shift+D don't fire while the user is working in the graph editor.
+      if (getShortcutScope() !== "node") return;
 
       // Shift+D = duplicate selection, then immediately enter
       // G-move so the new clones follow the cursor until the user
@@ -210,6 +218,24 @@ export default function NodeEditor({
         e.preventDefault();
         pendingGAfterDupRef.current = true;
         onDuplicateSelection();
+        return;
+      }
+
+      // Shift+M = wrap the selected nodes in a Merge node. The parent
+      // filters the selection down to image/mask-output nodes and no-ops
+      // if none qualify, so we just gate on "something is selected".
+      if (
+        e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        (e.key === "M" || e.key === "m")
+      ) {
+        if (!onMergeSelection) return;
+        const selectedNodes = rfGetNodes().filter((n) => n.selected);
+        if (selectedNodes.length === 0) return;
+        e.preventDefault();
+        onMergeSelection();
         return;
       }
 
@@ -242,7 +268,13 @@ export default function NodeEditor({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rfGetNodes, rfGetEdges, deleteElements, onDuplicateSelection]);
+  }, [
+    rfGetNodes,
+    rfGetEdges,
+    deleteElements,
+    onDuplicateSelection,
+    onMergeSelection,
+  ]);
 
   // Apple Pencil hover indicator. iPad / Apple Pencil fires
   // pointermove with pointerType === "pen" while hovering, *before*
@@ -449,6 +481,9 @@ export default function NodeEditor({
       ) {
         return;
       }
+      // Gate to the last-clicked editor so G doesn't fire here while the
+      // graph editor (which owns G-grab) is the one in use.
+      if (getShortcutScope() !== "node" && !gMoveRef.current) return;
       if (gMoveRef.current) {
         // G a second time = commit, mirroring Blender's behavior.
         e.preventDefault();
@@ -897,6 +932,7 @@ export default function NodeEditor({
     <WaypointContext.Provider value={waypointActions}>
     <div
       ref={flowWrapperRef}
+      data-shortcut-scope="node"
       style={{ width: "100%", height: "100%", position: "relative" }}
       onDragOver={(e) => {
         // Opt in for both OS file drags AND our custom thumbnail
@@ -1161,7 +1197,6 @@ export default function NodeEditor({
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
         <SimulationZoneUnderlay nodes={nodes} />
-        <Controls />
         {viewportOverlay && <ViewportPortal>{viewportOverlay}</ViewportPortal>}
       </ReactFlow>
 
@@ -1188,11 +1223,11 @@ export default function NodeEditor({
       <div
         style={{
           position: "absolute",
-          top: 8,
-          left: 8,
+          top: 5,
+          left: 5,
           display: "flex",
           flexDirection: "column",
-          gap: 6,
+          gap: 4,
           zIndex: 30,
         }}
       >
@@ -1491,6 +1526,7 @@ function CornerActionButton({
   onTap: () => void;
   children: React.ReactNode;
 }) {
+  const [hover, setHover] = useState(false);
   return (
     <button
       type="button"
@@ -1500,13 +1536,15 @@ function CornerActionButton({
         e.stopPropagation();
         onTap();
       }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       style={{
         width: 28,
         height: 28,
         borderRadius: 6,
-        background: "#1c1c1f",
-        border: "1px solid #3f3f46",
-        color: "#e5e7eb",
+        background: hover ? "#26262b" : "#1c1c1f",
+        border: `1px solid ${hover ? "#52525b" : "#3f3f46"}`,
+        color: hover ? "#e1e1e1" : "#8d9199",
         fontFamily: "ui-monospace, monospace",
         fontSize: 18,
         lineHeight: 1,
@@ -1517,6 +1555,7 @@ function CornerActionButton({
         touchAction: "manipulation",
         userSelect: "none",
         padding: 0,
+        transition: "background 90ms, border-color 90ms, color 90ms",
       }}
     >
       {children}

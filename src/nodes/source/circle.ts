@@ -4,6 +4,12 @@ import type {
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
+import {
+  SPLINE_RASTER_PARAMS,
+  disposeSplineRasterAux,
+  rasterizeSplineAux,
+  resolveSplineRasterAux,
+} from "./spline-raster-aux";
 
 // Generate a circle (or ellipse) as a 4-cubic approximation. Standard kappa
 // constant — error vs. a true circle is < 0.03% of radius, visually
@@ -94,18 +100,25 @@ export const circleNode: NodeDefinition = {
       step: 0.001,
       default: 0.25,
     },
+    // Bundled rasterizer — gives the primitive an `image` output so it's
+    // immediately viewable.
+    ...SPLINE_RASTER_PARAMS,
   ],
   primaryOutput: "spline",
-  auxOutputs: [],
+  auxOutputs: [{ name: "image", type: "image" }],
+  resolveAuxOutputs: resolveSplineRasterAux,
   linkedPairs: [{ a: "radiusX", b: "radiusY" }],
 
-  compute({ params }) {
+  compute({ params, ctx, nodeId }) {
     const cx = (params.centerX as number) ?? 0.5;
     const cy = (params.centerY as number) ?? 0.5;
     const rx = Math.max(0, (params.radiusX as number) ?? 0.25);
     const ry = Math.max(0, (params.radiusY as number) ?? 0.25);
     const subpath = makeCircleSubpath(cx, cy, rx, ry);
     const out: SplineValue = { kind: "spline", subpaths: [subpath] };
-    return { primary: out };
+    const image = rasterizeSplineAux(ctx, nodeId, out.subpaths, params);
+    return image ? { primary: out, aux: { image } } : { primary: out };
   },
+
+  dispose: disposeSplineRasterAux,
 };

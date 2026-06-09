@@ -182,3 +182,79 @@ Then wed add some sort of abstraction where clicking a track group would show
 
 124. specific lora/image to image model for doing pencil sketch
 125. kuwahava filter
+
+
+looks great. ok Two architectural questions. One is I want to make export better for video, and I'm wondering if, one, we can make it more seamless by maybe using a web worker. Okay. And then the other one is... I'm curious if we can do some sort of option for simultaneously exporting ProRes and m p four. Or if that doesn't make sense. Okay. And then next, we want to figure out what loading a local file would look like? And I have a few ideas. The first and the simplest is probably some sort of manifest doc type. So, like, a JSON. Then the other idea is a custom file extension with some sort of code. Maybe it's a custom file extension, but underneath it's JSON or something. Or maybe we have some sort of custom decoder or something that reads our custom file format. And then the other idea is that what if we could encode the node network definition for the project file inside every single export? So a PNG would contain metadata that defines the node graph, and then we could just, you know, load in
+
+render should be on a web worker and we should create a render queue
+
+ok id like to shift to building out and refining the output/export node. 
+
+so currently the output node's parameters let you define all the settings for video/ export. the node also lets you do the app export by hitting a button on the node.
+
+I want to add an output socket to that node
+
+I also want to add a new node called Render Queue
+
+The render queue should basically have a socket input (that receives wires only from the output socket of the)
+
+
+128. 
+
+I want to change the slider style. Instead of a line with a slider dot, I want 
+
+129. implement depth map node (depth anything web)
+
+130. ADD rasterize spline inside all the spline generator nodes (rect, circle, etc)
+
+131.darken bg of node editor
+
+141. image to spline converter node
+
+I want to add a luma key node. this node should let you draw on it to create a color selection and then it outputs a mask using that color range
+
+RGB curves node
+
+I want to add a node that is a curve. The main mode is a combo rgb curve, but you can toggle to edit individual r g and b curves (we can probably reuse the implementation of the graph editor). The editor should occupy the width and height of the parameters editor, resizing as the editor resizes. It should always be 0-1 on both axis. Points should not be able to be dragged further than 0 or 1. we allow double clicking curve to add new points, right click to remove
+
+
+realtime segmentation node (segment anything realtime?)
+
+when we drag in a video or image, or we upload one, Id like to change the node lable from "Image Source" or "Video Source" to the actual file name. Same thing for the label in the tracks editor
+
+when we hit the projects options to open our projects
+
+
+One thing that we do is pull in local files to work with. but the save function doesnt save videos. Ideally we could remember the path that those videos came from and try to relink them. That way if we are using the same computer they will easily relink
+
+Another thing is that if we load a .toolbox file, we should be able to autolink the files that were kept in that folder. 
+
+instead of a 
+
+
+when you mouse over the timeline, i want a faded red playhead to follow cursor position. 
+
+
+holding shift then doing box select in node editor should be able to add nodes to selection
+
+the filled" lighter portion of the slides in the parameters panel can be a bit darker
+
+when we click a node lets have the highlight outline fade in instead of just appear
+
+for the keyframe diamonds in parameters panel i want a carrot on either side that lets us jump to the ext keyed frame forward or back (this will probably make the actual slider (if its a slider) less wide, thats fine)
+
+
+
+
+130.
+
+Ok big feature idea. I want to make the viewport much more interactive.
+
+First, for all shape primitives (lets start with just spline generators (circle rectangle etc) I want to include transform handles (like a gizmo that can manipulate the parameters of the primitive - reuse stuff from the transform node where possible)
+
+Then I want to develop a system where if we have no nodes selected, we can actually click inside the canvas area to select a node. Multiple repeated clicks in close succession dives deeper into lower layers. This probably has a ton of edge cases. we can think through some of them together first before implementing. I think it makes most sense to limit this selection process to primitive nodes that have transform handles.
+
+
+
+131. theres a tiny but of extra space at the bottom of the main menubar. can you reduce it a tiny bit so it optically matches the top
+

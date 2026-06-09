@@ -42,12 +42,11 @@ export default function AccountMenu() {
   if (!user) {
     return (
       <button
+        className="menubar-pill"
         onMouseDown={(e) => e.preventDefault()}
         onClick={signIn}
         style={{
-          height: "100%",
           padding: "0 10px",
-          background: "transparent",
           color: "#d4d4d8",
           border: "none",
           fontFamily: "inherit",
@@ -73,14 +72,13 @@ export default function AccountMenu() {
   return (
     <div ref={rootRef} style={{ position: "relative" }}>
       <button
+        className={`menubar-pill${open ? " is-open" : ""}`}
         onMouseDown={(e) => {
           e.preventDefault();
           setOpen((v) => !v);
         }}
         style={{
-          height: "100%",
           padding: "0 10px",
-          background: open ? "#27272a" : "transparent",
           color: "#e5e7eb",
           border: "none",
           fontFamily: "inherit",

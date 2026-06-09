@@ -2,13 +2,17 @@
 
 import type { Edge, Node } from "@xyflow/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { getNodeDef } from "@/engine/registry";
 import { paramSocketType } from "@/state/graph";
 import type { NodeDataPayload } from "@/state/graph";
-import type { ParamDef } from "@/engine/types";
+import type { LutFileParamValue, ParamDef } from "@/engine/types";
 import LoadGrid from "./LoadGrid";
 import ImageGeneratePanel from "./ImageGeneratePanel";
 import BgRemovePanel from "./BgRemovePanel";
+import ColorCorrectionPanel from "./ColorCorrectionPanel";
+import RgbCurvesPanel from "./RgbCurvesPanel";
+import { StaggerItem } from "./StaggerReveal";
 import {
   COLOR_RAMP_MAX_STOPS,
   newStopId,
@@ -40,6 +44,43 @@ import {
 import KeyframeDiamond from "./KeyframeDiamond";
 import TrackVisibilityEye from "./TrackVisibilityEye";
 
+// Expose / Control toggle glyphs. Referenced from public/ via CSS mask so the
+// silhouette recolors to the button's `currentColor` (active/inactive states)
+// AND edits to the source SVGs show up live — no inlined path data to keep in
+// sync. ExposeSymbol is ~2.52:1, ControlSymbol is square.
+function MaskGlyph({
+  src,
+  width,
+  height,
+}: {
+  src: string;
+  width: number;
+  height: number;
+}) {
+  const mask = `url(${src}) no-repeat center / contain`;
+  return (
+    <span
+      aria-hidden
+      style={{
+        display: "inline-block",
+        width,
+        height,
+        backgroundColor: "currentColor",
+        WebkitMask: mask,
+        mask,
+      }}
+    />
+  );
+}
+
+function ExposeIcon({ size = 9 }: { size?: number }) {
+  return <MaskGlyph src="/ExposeSymbol.svg" width={size * (1060 / 420)} height={size} />;
+}
+
+function ControlIcon({ size = 11 }: { size?: number }) {
+  return <MaskGlyph src="/ControlSymbol.svg" width={size} height={size} />;
+}
+
 // NOTE: Auto-keyframe on parameter edits (spec §2.2 / §2.3) is NOT done
 // inside ParamRow. ParamRow keeps emitting raw `onChange(v)` for every
 // edit; the auto-keyframe rule lives at the param-change call site
@@ -57,6 +98,10 @@ interface Props {
   mode: "project" | "node" | "load";
   canvasRes: [number, number];
   onCanvasResChange: (res: [number, number]) => void;
+  // Project frame rate — lives in Project Settings (moved here from the
+  // timeline).
+  fps: number;
+  onFpsChange: (fps: number) => void;
   onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
   onToggleParamExposed: (nodeId: string, paramName: string) => void;
   // Toggles whether a param shows up as a knob in an exported app's control
@@ -100,6 +145,9 @@ interface Props {
     paramName: string,
     next: KeyframeAnimationBlock | undefined
   ) => void;
+  // Move the playhead to an absolute tick. Wired to the keyframe-diamond
+  // carets that jump to the prev/next keyframe on the parameter.
+  onSeekTick?: (tick: number) => void;
   signedIn?: boolean;
   // Current user id (or null when signed out). Lets the load grid
   // flag public projects authored by the viewer as "you".
@@ -262,6 +310,8 @@ export default function ParamPanel({
   mode,
   canvasRes,
   onCanvasResChange,
+  fps,
+  onFpsChange,
   onParamChange,
   onToggleParamExposed,
   onToggleParamControl,
@@ -272,6 +322,7 @@ export default function ParamPanel({
   currentTick = 0,
   getAnimation,
   onAnimationChange,
+  onSeekTick,
   signedIn,
   currentUserId,
   onLoadProject,
@@ -307,6 +358,8 @@ export default function ParamPanel({
         <ProjectSettings
           canvasRes={canvasRes}
           onCanvasResChange={onCanvasResChange}
+          fps={fps}
+          onFpsChange={onFpsChange}
         />
       ) : mode === "load" ? (
         <LoadGrid
@@ -349,6 +402,19 @@ export default function ParamPanel({
           getRefImageBlob={getRefImageBlob}
           onParamChange={onParamChange}
         />
+      ) : selected && selected.data.defType === "color-correction" ? (
+        // DaVinci-style primaries panel (4 color wheels + bottom bar).
+        <Section label="color correction · primaries">
+          <ColorCorrectionPanel node={selected} onParamChange={onParamChange} />
+        </Section>
+      ) : selected && selected.data.defType === "rgb-curves" ? (
+        // Full-panel resize-aware tone-curve editor. `key` resets the
+        // editor's local UI state (active channel, selection) per node.
+        <RgbCurvesPanel
+          key={selected.id}
+          node={selected}
+          onParamChange={onParamChange}
+        />
       ) : selected && def ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {def.type === "output" && onExportApp && (
@@ -386,7 +452,7 @@ export default function ParamPanel({
             if (visible.length === 0) {
               return <div style={{ color: "#52525b" }}>(no parameters)</div>;
             }
-            return visible.map((p) => {
+            return visible.map((p, i) => {
               const exposable = paramSocketType(p.type) !== null;
               const isExposed = exposedSet.has(p.name);
               const isControlled = controlSet.has(p.name);
@@ -403,6 +469,7 @@ export default function ParamPanel({
                 p.type !== "video_file" &&
                 p.type !== "audio_file" &&
                 p.type !== "svg_file" &&
+                p.type !== "lut_file" &&
                 p.type !== "font";
               const override = selected.data.paramOverrides?.[p.name];
               // Resolve chain-link UI state for this param. A param can
@@ -420,8 +487,8 @@ export default function ParamPanel({
                   }
                 : undefined;
               return (
+                <StaggerItem key={`${selected.id}:${p.name}`} index={i}>
                 <ParamRow
-                  key={p.name}
                   param={p}
                   value={selected.data.params[p.name]}
                   allParams={selected.data.params}
@@ -454,6 +521,7 @@ export default function ParamPanel({
                   }
                   animation={getAnimation?.(selected.id, p.name)}
                   currentTick={currentTick}
+                  onSeekTick={onSeekTick}
                   keyframable={isKeyframable(p.type)}
                   onAnimationChange={
                     onAnimationChange
@@ -462,6 +530,7 @@ export default function ParamPanel({
                       : undefined
                   }
                 />
+                </StaggerItem>
               );
             });
           })()}
@@ -477,9 +546,13 @@ export default function ParamPanel({
 function ProjectSettings({
   canvasRes,
   onCanvasResChange,
+  fps,
+  onFpsChange,
 }: {
   canvasRes: [number, number];
   onCanvasResChange: (res: [number, number]) => void;
+  fps: number;
+  onFpsChange: (fps: number) => void;
 }) {
   const resKey = `${canvasRes[0]}×${canvasRes[1]}`;
   const isPreset = RES_PRESETS.some((r) => `${r.w}×${r.h}` === resKey);
@@ -498,33 +571,28 @@ function ProjectSettings({
         }}
       >
         <span style={{ color: "#d4d4d8" }}>resolution</span>
-        <select
+        <Dropdown
           value={isPreset ? resKey : "__custom__"}
-          onChange={(e) => {
-            if (e.target.value === "__custom__") return;
-            const [w, h] = e.target.value.split("×").map(Number);
+          options={[
+            ...RES_PRESETS.map((r) => ({
+              value: `${r.w}×${r.h}`,
+              label: r.label,
+            })),
+            ...(!isPreset
+              ? [
+                  {
+                    value: "__custom__",
+                    label: `${canvasRes[0]} × ${canvasRes[1]} (custom)`,
+                  },
+                ]
+              : []),
+          ]}
+          onChange={(v) => {
+            if (v === "__custom__") return;
+            const [w, h] = v.split("×").map(Number);
             onCanvasResChange([w, h]);
           }}
-          style={{
-            background: "#0a0a0a",
-            border: "1px solid #27272a",
-            color: "#e5e7eb",
-            fontFamily: "inherit",
-            fontSize: 11,
-            padding: "2px 4px",
-          }}
-        >
-          {RES_PRESETS.map((r) => (
-            <option key={r.label} value={`${r.w}×${r.h}`}>
-              {r.label}
-            </option>
-          ))}
-          {!isPreset && (
-            <option value="__custom__">
-              {canvasRes[0]} × {canvasRes[1]} (custom)
-            </option>
-          )}
-        </select>
+        />
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <ResInput
             value={canvasRes[0]}
@@ -536,6 +604,17 @@ function ProjectSettings({
             onCommit={(h) => onCanvasResChange([canvasRes[0], h])}
           />
         </div>
+        <span style={{ color: "#d4d4d8", marginTop: 4 }}>frame rate</span>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <ResInput
+            value={fps}
+            onCommit={onFpsChange}
+            min={1}
+            max={240}
+            width={56}
+          />
+          <span style={{ color: "#52525b" }}>fps</span>
+        </div>
       </div>
     </Section>
   );
@@ -544,9 +623,15 @@ function ProjectSettings({
 function ResInput({
   value,
   onCommit,
+  min = 16,
+  max = 8192,
+  width = 72,
 }: {
   value: number;
   onCommit: (n: number) => void;
+  min?: number;
+  max?: number;
+  width?: number;
 }) {
   const [draft, setDraft] = useState(String(value));
   useEffect(() => {
@@ -554,7 +639,7 @@ function ResInput({
   }, [value]);
   const commit = () => {
     const n = Math.round(parseFloat(draft));
-    if (!Number.isFinite(n) || n < 16 || n > 8192) {
+    if (!Number.isFinite(n) || n < min || n > max) {
       setDraft(String(value));
       return;
     }
@@ -564,8 +649,8 @@ function ResInput({
     <input
       type="number"
       value={draft}
-      min={16}
-      max={8192}
+      min={min}
+      max={max}
       step={1}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
@@ -573,7 +658,7 @@ function ResInput({
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
       style={{
-        width: 72,
+        width,
         background: "#0a0a0a",
         border: "1px solid #27272a",
         color: "#e5e7eb",
@@ -615,6 +700,426 @@ function Section({
   );
 }
 
+// Shared rounded "Load X" button — blue stroke, dark-blue fill, hover lift.
+function LoadFileButton({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "5px 14px",
+        borderRadius: 999,
+        background: hover ? "#1e376b" : "#172a52",
+        border: "1px solid #2563eb",
+        color: "#bfdbfe",
+        fontFamily: "inherit",
+        fontSize: 11,
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+        transition: "background 90ms",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+// Shared chip showing a circular thumbnail + file name for a loaded asset.
+function LoadedFilePill({
+  thumb,
+  name,
+}: {
+  thumb: React.ReactNode;
+  name: string;
+}) {
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 7,
+        padding: "3px 12px 3px 3px",
+        borderRadius: 999,
+        background: "#18181b",
+        border: "1px solid #27272a",
+        minWidth: 0,
+        maxWidth: "100%",
+      }}
+    >
+      {thumb}
+      <span
+        style={{
+          color: "#d4d4d8",
+          fontSize: 10,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {name}
+      </span>
+    </div>
+  );
+}
+
+// Compact "match the project aspect ratio to this source" action, nested
+// inside the image/video load controls. Carries the source's pixel dims on
+// a window event; EffectsApp owns the canvasRes change (keeps the current
+// longest side, swings only the aspect). Hidden until a clip is loaded.
+function MatchAspectButton({
+  width,
+  height,
+}: {
+  width: number;
+  height: number;
+}) {
+  if (!(width > 0 && height > 0)) return null;
+  return (
+    <button
+      onClick={() =>
+        window.dispatchEvent(
+          new CustomEvent("project-match-aspect", {
+            detail: { width, height },
+          })
+        )
+      }
+      title="Set the project's aspect ratio to match this source (keeps the current longest side)"
+      style={{
+        background: "#27272a",
+        border: "1px solid #3f3f46",
+        color: "#d4d4d8",
+        fontFamily: "inherit",
+        fontSize: 10,
+        padding: "4px 8px",
+        borderRadius: 4,
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+      }}
+    >
+      Match Aspect
+    </button>
+  );
+}
+
+// Caret that flanks the keyframe diamond to jump the playhead to the
+// previous / next keyframe on the parameter. Disabled (and dimmed) when
+// there's no keyframe in that direction.
+function KeyframeCaret({
+  dir,
+  disabled,
+  onClick,
+  title,
+}: {
+  dir: "prev" | "next";
+  disabled: boolean;
+  onClick: () => void;
+  title: string;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      disabled={disabled}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!disabled) onClick();
+      }}
+      style={{
+        background: "transparent",
+        border: "none",
+        padding: 0,
+        margin: 0,
+        width: 11,
+        height: 14,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.25 : 0.7,
+        lineHeight: 0,
+        color: "#a1a1aa",
+      }}
+    >
+      <svg width="7" height="10" viewBox="0 0 7 10" fill="none">
+        <path
+          d={dir === "prev" ? "M5 1 L1 5 L5 9" : "M2 1 L6 5 L2 9"}
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  );
+}
+
+// Image `file` param control. The engine consumes the raw ImageBitmap, so
+// the file name is stashed on the bitmap object (ignored by the GL upload)
+// rather than changing the value shape.
+function ImageFileControl({
+  value,
+  onChange,
+}: {
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const bitmap =
+    typeof ImageBitmap !== "undefined" && value instanceof ImageBitmap
+      ? value
+      : null;
+  const fileName = bitmap
+    ? (bitmap as unknown as { fileName?: string }).fileName ?? "image"
+    : null;
+  return (
+    <div
+      style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        style={{ display: "none" }}
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          const bmp = await createImageBitmap(file);
+          try {
+            (bmp as unknown as { fileName?: string }).fileName = file.name;
+          } catch {
+            // Some engines freeze ImageBitmap; the name is cosmetic, so
+            // a failure here just falls back to the generic label.
+          }
+          onChange(bmp);
+        }}
+      />
+      <LoadFileButton
+        label="Load Image"
+        onClick={() => inputRef.current?.click()}
+      />
+      {bitmap && fileName && (
+        <LoadedFilePill thumb={<BitmapThumb bitmap={bitmap} />} name={fileName} />
+      )}
+      {bitmap && (
+        <MatchAspectButton width={bitmap.width} height={bitmap.height} />
+      )}
+    </div>
+  );
+}
+
+// Video `video_file` param control. Mirrors the image control; the
+// thumbnail is drawn from the live <video> element's current frame.
+function VideoFileControl({
+  value,
+  onChange,
+}: {
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const current =
+    (value as import("@/engine/types").VideoFileParamValue | null | undefined) ??
+    null;
+  return (
+    <div
+      style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept="video/*"
+        style={{ display: "none" }}
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          const { registerVideoFile, disposeVideoFile } = await import(
+            "@/lib/video"
+          );
+          const v = await registerVideoFile(file);
+          // Release the previous clip's <video>/ObjectURL — replacing via
+          // the button is the only path now that the clear button is gone.
+          if (current) {
+            try {
+              disposeVideoFile(current);
+            } catch {
+              // Already disposed / not registered — nothing to free.
+            }
+          }
+          onChange(v);
+        }}
+      />
+      <LoadFileButton
+        label="Load Video"
+        onClick={() => inputRef.current?.click()}
+      />
+      {current && (
+        <LoadedFilePill
+          thumb={<VideoThumb video={current.video} />}
+          name={current.filename ?? "video"}
+        />
+      )}
+      {current && (
+        <MatchAspectButton width={current.width} height={current.height} />
+      )}
+    </div>
+  );
+}
+
+// `.cube` LUT param control. Stores the raw file text (round-trips through
+// save/load); the node parses it into a GPU 3D texture.
+function LutFileControl({
+  value,
+  onChange,
+}: {
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const current = (value as LutFileParamValue | null) ?? null;
+  return (
+    <div
+      style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".cube"
+        style={{ display: "none" }}
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          const text = await file.text();
+          onChange({ filename: file.name, text } satisfies LutFileParamValue);
+        }}
+      />
+      <LoadFileButton
+        label="Load .cube"
+        onClick={() => inputRef.current?.click()}
+      />
+      {current && (
+        <LoadedFilePill thumb={<LutSwatch />} name={current.filename} />
+      )}
+    </div>
+  );
+}
+
+// Tiny round gradient swatch standing in for a loaded LUT (it has no single
+// thumbnail image the way an image/video clip does).
+function LutSwatch({ size = 22 }: { size?: number }) {
+  return (
+    <span
+      style={{
+        width: size,
+        height: size,
+        flexShrink: 0,
+        borderRadius: "50%",
+        border: "1px solid #3f3f46",
+        background:
+          "conic-gradient(from 0deg, #ef4444, #facc15, #22c55e, #3b82f6, #a855f7, #ef4444)",
+      }}
+    />
+  );
+}
+
+// Small circular preview of an ImageBitmap, cover-fit into a round canvas.
+function BitmapThumb({
+  bitmap,
+  size = 22,
+}: {
+  bitmap: ImageBitmap;
+  size?: number;
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const c = ref.current;
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, size, size);
+    // Cover-fit: scale up to the larger axis ratio, centre the overflow.
+    const s = Math.max(size / bitmap.width, size / bitmap.height);
+    const w = bitmap.width * s;
+    const h = bitmap.height * s;
+    ctx.drawImage(bitmap, (size - w) / 2, (size - h) / 2, w, h);
+  }, [bitmap, size]);
+  return (
+    <canvas
+      ref={ref}
+      width={size}
+      height={size}
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        display: "block",
+        flexShrink: 0,
+        border: "1px solid #3f3f46",
+      }}
+    />
+  );
+}
+
+// Small circular preview of a video's current frame. Draws once on mount
+// and again on first decode if the element wasn't ready yet.
+function VideoThumb({
+  video,
+  size = 22,
+}: {
+  video: HTMLVideoElement;
+  size?: number;
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const c = ref.current;
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    const draw = () => {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (!vw || !vh) return;
+      ctx.clearRect(0, 0, size, size);
+      const s = Math.max(size / vw, size / vh);
+      const w = vw * s;
+      const h = vh * s;
+      ctx.drawImage(video, (size - w) / 2, (size - h) / 2, w, h);
+    };
+    draw();
+    // HAVE_CURRENT_DATA (2) means a frame is decodable; below that, wait.
+    if (video.readyState < 2) {
+      video.addEventListener("loadeddata", draw, { once: true });
+      return () => video.removeEventListener("loadeddata", draw);
+    }
+  }, [video, size]);
+  return (
+    <canvas
+      ref={ref}
+      width={size}
+      height={size}
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        display: "block",
+        flexShrink: 0,
+        border: "1px solid #3f3f46",
+      }}
+    />
+  );
+}
+
 function ParamRow({
   param,
   value,
@@ -633,6 +1138,7 @@ function ParamRow({
   onToggleLink,
   animation,
   currentTick = 0,
+  onSeekTick,
   keyframable = false,
   onAnimationChange,
 }: {
@@ -666,6 +1172,8 @@ function ParamRow({
   animation?: KeyframeAnimationBlock;
   // Current playhead tick — drives diamond state and insert/remove.
   currentTick?: number;
+  // Jump the playhead to an absolute tick (prev/next keyframe carets).
+  onSeekTick?: (tick: number) => void;
   // Whether this param's type can be keyframed at all (caller passes
   // isKeyframable(param.type)). When false, the eye and diamond are not
   // rendered, preserving the existing layout for unsupported types.
@@ -699,6 +1207,19 @@ function ParamRow({
   const diamondState = keyframable
     ? diamondStateFor(animation, currentTick)
     : "empty";
+
+  // Nearest keyframe ticks on either side of the playhead, for the carets.
+  const kfTicks = animation?.keyframes?.map((k) => k.tick) ?? [];
+  const prevKfTick = kfTicks
+    .filter((t) => t < currentTick)
+    .reduce<number | null>((m, t) => (m === null || t > m ? t : m), null);
+  const nextKfTick = kfTicks
+    .filter((t) => t > currentTick)
+    .reduce<number | null>((m, t) => (m === null || t < m ? t : m), null);
+  // Always present alongside the diamond (even before any keyframe exists);
+  // each side just disables when there's nothing to jump to in that
+  // direction.
+  const showCarets = keyframable && !driven && !!onSeekTick;
 
   const handleDiamondClick = () => {
     if (!onAnimationChange) return;
@@ -754,241 +1275,1048 @@ function ParamRow({
     onAnimationChange({ ...animation, trackVisible: !animation.trackVisible });
   };
 
+  // Single-line param types collapse label + control + keyframe diamond +
+  // expose/control onto ONE row (half the height). Multi-line controls
+  // (text areas, paint, font/file pickers, ramps, curves) keep the stacked
+  // header so they aren't crushed against the label.
+  const inline = isInlineParam(param);
+  // File controls suppress their header label (the "Load …" button is
+  // self-describing), so they collapse onto a single snug row with the
+  // expose/control toggle on the right — no empty header eating height.
+  const labelSuppressed =
+    param.type === "file" ||
+    param.type === "video_file" ||
+    param.type === "lut_file";
+
+  const labelEl = (
+    <span
+      title={inline ? label : undefined}
+      style={{
+        color: "#8a8a90",
+        display: inline ? "flex" : "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        ...(inline ? { flex: "0 0 90px", minWidth: 0 } : {}),
+      }}
+    >
+      <span
+        style={
+          inline
+            ? {
+                flex: "1 1 auto",
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }
+            : undefined
+        }
+      >
+        {label}
+      </span>
+      {linkInfo && onToggleLink && (
+        <button
+          onClick={onToggleLink}
+          title={
+            linkInfo.isLinked
+              ? `Unlink from ${linkInfo.partnerName}`
+              : `Link with ${linkInfo.partnerName} (preserve ratio)`
+          }
+          style={{
+            background: "transparent",
+            border: "none",
+            padding: 0,
+            margin: 0,
+            cursor: "pointer",
+            color: linkInfo.isLinked ? "#facc15" : "#52525b",
+            display: "inline-flex",
+            alignItems: "center",
+            lineHeight: 1,
+            flexShrink: 0,
+          }}
+        >
+          <ChainIcon linked={linkInfo.isLinked} />
+        </button>
+      )}
+      {driven && (
+        <span
+          title="Driven by a connected input — stored value is ignored while connected"
+          style={{
+            color: "#93c5fd",
+            fontSize: 9,
+            textTransform: "uppercase",
+            letterSpacing: 0.5,
+            flexShrink: 0,
+          }}
+        >
+          driven
+        </span>
+      )}
+    </span>
+  );
+
+  const exposeControlEl = (
+    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+      {exposable && onToggleExposed && (
+        <button
+          onClick={onToggleExposed}
+          title={
+            exposed
+              ? "Remove the input socket for this parameter"
+              : "Add an input socket for this parameter on the node"
+          }
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: exposed ? "#1e3a8a" : "transparent",
+            border: "1px solid #27272a",
+            color: exposed ? "#bfdbfe" : "#71717a",
+            width: 18,
+            height: 18,
+            padding: 0,
+            boxSizing: "border-box",
+            borderRadius: 3,
+            cursor: "pointer",
+            fontFamily: "inherit",
+          }}
+        >
+          <ExposeIcon size={5} />
+        </button>
+      )}
+      {onToggleControl && (
+        <button
+          onClick={onToggleControl}
+          title={
+            !controlSupported
+              ? "This param type can't be rendered in an exported app — toggling has no effect"
+              : controlled
+              ? "Remove this knob from the exported app's control panel"
+              : "Show this param as a knob in the exported app's control panel"
+          }
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: controlled ? "#065f46" : "transparent",
+            border: "1px solid #27272a",
+            color: controlled
+              ? "#a7f3d0"
+              : controlSupported
+              ? "#71717a"
+              : "#3f3f46",
+            width: 18,
+            height: 18,
+            padding: 0,
+            boxSizing: "border-box",
+            borderRadius: 3,
+            cursor: "pointer",
+            fontFamily: "inherit",
+            opacity: controlSupported ? 1 : 0.6,
+          }}
+        >
+          <ControlIcon size={11} />
+        </button>
+      )}
+    </div>
+  );
+
+  const eyeEl = keyframable ? (
+    <TrackVisibilityEye
+      visible={animation?.trackVisible ?? false}
+      enabled={animated}
+      onClick={handleVisibilityClick}
+      title={
+        !animated
+          ? "Track visibility — enable animation to use"
+          : animation?.trackVisible
+          ? "Hide track in Track Editor"
+          : "Show track in Track Editor"
+      }
+    />
+  ) : null;
+
+  const controlEl = (
+    <div
+      style={{
+        flex: 1,
+        minWidth: 0,
+        opacity: driven ? 0.5 : 1,
+        pointerEvents: driven ? "none" : "auto",
+      }}
+    >
+      <ParamControl
+        param={param}
+        value={value}
+        allParams={allParams}
+        onChange={onChange}
+        rangeOverride={rangeOverride}
+        onRangeChange={onRangeChange}
+      />
+    </div>
+  );
+
+  const diamondEl = keyframable ? (
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 1 }}>
+      {showCarets && (
+        <KeyframeCaret
+          dir="prev"
+          disabled={prevKfTick === null}
+          onClick={() => prevKfTick !== null && onSeekTick?.(prevKfTick)}
+          title={
+            prevKfTick === null
+              ? "No earlier keyframe"
+              : "Jump to previous keyframe"
+          }
+        />
+      )}
+      <div style={{ position: "relative", display: "inline-flex" }}>
+      <KeyframeDiamond
+        state={diamondState}
+        disabled={driven}
+        onClick={handleDiamondClick}
+        onContextMenu={() => setMenuOpen((v) => !v)}
+        title={
+          driven
+            ? "wired — disconnect to use keyframes"
+            : diamondState === "empty"
+            ? "Animate this parameter"
+            : diamondState === "red"
+            ? "Remove keyframe at playhead"
+            : "Insert keyframe at playhead"
+        }
+      />
+      {menuOpen && (
+        <div
+          ref={menuRef}
+          style={{
+            position: "absolute",
+            top: "100%",
+            right: 0,
+            marginTop: 4,
+            background: "#111113",
+            border: "1px solid #1f1f23",
+            borderRadius: 4,
+            padding: 4,
+            zIndex: 1000,
+            display: "flex",
+            flexDirection: "column",
+            minWidth: 160,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+          }}
+        >
+          <button onClick={handleDisableEnable} style={menuItemStyle()}>
+            {animated ? "Disable animation" : "Enable animation"}
+          </button>
+          {param.type === "color" && (
+            <>
+              <div
+                style={{
+                  color: "#52525b",
+                  fontSize: 9,
+                  textTransform: "uppercase",
+                  letterSpacing: 1,
+                  padding: "6px 8px 2px",
+                }}
+              >
+                color space
+              </div>
+              <button
+                onClick={() => handleColorSpace("oklab")}
+                style={menuItemStyle(
+                  (animation?.colorSpace ?? "oklab") === "oklab"
+                )}
+              >
+                OKLab
+              </button>
+              <button
+                onClick={() => handleColorSpace("rgb")}
+                style={menuItemStyle(animation?.colorSpace === "rgb")}
+              >
+                RGB-linear
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      </div>
+      {showCarets && (
+        <KeyframeCaret
+          dir="next"
+          disabled={nextKfTick === null}
+          onClick={() => nextKfTick !== null && onSeekTick?.(nextKfTick)}
+          title={
+            nextKfTick === null ? "No later keyframe" : "Jump to next keyframe"
+          }
+        />
+      )}
+    </div>
+  ) : null;
+
   return (
     <div
       style={{
-        padding: 10,
+        // Inline rows are a single line — trim the vertical padding so the
+        // whole row is shorter. Stacked (multi-line) rows keep the roomier
+        // padding their taller controls need.
+        padding: inline || labelSuppressed ? "5px 10px" : 10,
         boxSizing: "border-box",
         width: "100%",
-        background: "#111113",
-        border: `1px solid ${driven ? "#334155" : "#1f1f23"}`,
+        background: "#0c0c0e",
+        border: `1px solid ${driven ? "#334155" : "#1a1a1d"}`,
         borderRadius: 4,
       }}
     >
+      {inline || labelSuppressed ? (
+        // Single snug row. Label-suppressed file controls reuse this so
+        // the module hugs the button instead of stacking under an empty
+        // header; controlEl's flex:1 pushes the expose toggle to the right.
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            position: "relative",
+          }}
+        >
+          {!labelSuppressed && labelEl}
+          {eyeEl}
+          {controlEl}
+          {diamondEl}
+          {exposeControlEl}
+        </div>
+      ) : (
+        <>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 8,
+            }}
+          >
+            {labelEl}
+            {exposeControlEl}
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              position: "relative",
+            }}
+          >
+            {eyeEl}
+            {controlEl}
+            {diamondEl}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Param types whose control is a single line — these collapse onto one
+// row with the label, keyframe diamond, and expose/control buttons. Wide /
+// multi-line controls (file & font pickers, paint canvas, multiline text,
+// ramps, curves, merge layers) keep the stacked header so they have room.
+function isInlineParam(param: ParamDef): boolean {
+  switch (param.type) {
+    case "scalar":
+    case "vec2":
+    case "vec3":
+    case "vec4":
+    case "color":
+    case "boolean":
+    case "enum":
+      return true;
+    case "string":
+      // Single-line text inputs collapse; multiline text areas don't.
+      return !param.multiline;
+    default:
+      return false;
+  }
+}
+
+// --- color conversions (hex <-> rgb <-> hsl) -----------------------------
+// HSL here is the conventional UI scale: H 0–360, S/L 0–100.
+
+function normalizeHex(s: string): string | null {
+  let h = s.trim().replace(/^#/, "");
+  if (/^[0-9a-fA-F]{3}$/.test(h)) h = h.split("").map((c) => c + c).join("");
+  if (/^[0-9a-fA-F]{6}$/.test(h)) return "#" + h.toLowerCase();
+  // 8-digit (with alpha) — keep the rgb, drop alpha (param colors are rgb).
+  if (/^[0-9a-fA-F]{8}$/.test(h)) return "#" + h.slice(0, 6).toLowerCase();
+  return null;
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = (normalizeHex(hex) ?? "#000000").slice(1);
+  const n = parseInt(h, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  const c = (v: number) =>
+    Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+  return `#${c(r)}${c(g)}${c(b)}`;
+}
+
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  let h = 0;
+  let s = 0;
+  const d = max - min;
+  if (d !== 0) {
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+  }
+  return [Math.round(h), Math.round(s * 100), Math.round(l * 100)];
+}
+
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  h = ((h % 360) + 360) % 360 / 360;
+  s = Math.max(0, Math.min(100, s)) / 100;
+  l = Math.max(0, Math.min(100, l)) / 100;
+  if (s === 0) {
+    const v = l * 255;
+    return [v, v, v];
+  }
+  const hue2rgb = (p: number, q: number, t: number) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return [
+    hue2rgb(p, q, h + 1 / 3) * 255,
+    hue2rgb(p, q, h) * 255,
+    hue2rgb(p, q, h - 1 / 3) * 255,
+  ];
+}
+
+function hexToHsl(hex: string): [number, number, number] {
+  const [r, g, b] = hexToRgb(hex);
+  return rgbToHsl(r, g, b);
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const [r, g, b] = hslToRgb(h, s, l);
+  return rgbToHex(r, g, b);
+}
+
+// Compact color control: a small swatch + hex field + H/S/L inputs. Local
+// drafts keep partial hex typing and HSL round-trip rounding from fighting
+// the controlled value; an external change (keyframe playback, undo, the
+// swatch) resyncs them.
+function ColorControl({
+  value,
+  onChange,
+}: {
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  const hex = normalizeHex(typeof value === "string" ? value : "") ?? "#000000";
+  const [hexDraft, setHexDraft] = useState(hex);
+  const [hsl, setHsl] = useState<[number, number, number]>(() => hexToHsl(hex));
+  const lastHexRef = useRef(hex);
+
+  useEffect(() => {
+    if (hex !== lastHexRef.current) {
+      lastHexRef.current = hex;
+      setHexDraft(hex);
+      setHsl(hexToHsl(hex));
+    }
+  }, [hex]);
+
+  const commitHex = (next: string) => {
+    const norm = normalizeHex(next);
+    if (!norm) {
+      setHexDraft(hex); // invalid — revert the draft
+      return;
+    }
+    lastHexRef.current = norm;
+    setHexDraft(norm);
+    setHsl(hexToHsl(norm));
+    onChange(norm);
+  };
+
+  const setChannel = (idx: 0 | 1 | 2, v: number) => {
+    const max = idx === 0 ? 360 : 100;
+    const next: [number, number, number] = [...hsl];
+    next[idx] = Math.max(0, Math.min(max, v));
+    setHsl(next);
+    const nextHex = hslToHex(next[0], next[1], next[2]);
+    lastHexRef.current = nextHex;
+    setHexDraft(nextHex);
+    onChange(nextHex);
+  };
+
+  const textStyle: React.CSSProperties = {
+    background: "#0a0a0a",
+    border: "1px solid #27272a",
+    color: "#e5e7eb",
+    fontFamily: "inherit",
+    fontSize: 10,
+    padding: "1px 3px",
+    boxSizing: "border-box",
+  };
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+      <input
+        type="color"
+        value={hex}
+        onChange={(e) => commitHex(e.target.value)}
+        title="Pick a color"
+        style={{
+          width: 22,
+          height: 18,
+          padding: 0,
+          border: "1px solid #27272a",
+          borderRadius: 3,
+          background: "transparent",
+          flexShrink: 0,
+          cursor: "pointer",
+        }}
+      />
+      <input
+        type="text"
+        value={hexDraft}
+        spellCheck={false}
+        onChange={(e) => setHexDraft(e.target.value)}
+        onBlur={() => commitHex(hexDraft)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        }}
+        title="Hex"
+        style={{ ...textStyle, width: 60, minWidth: 46, flexShrink: 1 }}
+      />
+      {(["H", "S", "L"] as const).map((lbl, i) => (
+        <HslField
+          key={lbl}
+          label={lbl}
+          value={hsl[i]}
+          max={i === 0 ? 360 : 100}
+          onChange={(v) => setChannel(i as 0 | 1 | 2, v)}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Format a number for display, trimming float noise to the precision the
+// step implies (step 0.01 → 2 decimals) and dropping trailing zeros.
+function formatNum(v: number, step: number): string {
+  if (!Number.isFinite(v)) return "0";
+  const decimals =
+    step > 0 && step < 1 ? Math.min(6, Math.ceil(-Math.log10(step))) : 0;
+  let s = v.toFixed(decimals);
+  if (s.indexOf(".") >= 0) s = s.replace(/0+$/, "").replace(/\.$/, "");
+  return s;
+}
+
+// One arrow button in NumberField's stepper. Holds-to-repeat like a native
+// spin button: an initial step, then a delayed accelerating repeat. Reads
+// the step action through a ref so the repeat always uses the latest value.
+function StepButton({
+  dir,
+  onStep,
+  title,
+}: {
+  dir: "up" | "down";
+  onStep: () => void;
+  title: string;
+}) {
+  const onStepRef = useRef(onStep);
+  onStepRef.current = onStep;
+  const timers = useRef<{ to: number | null; iv: number | null }>({
+    to: null,
+    iv: null,
+  });
+  const stop = () => {
+    if (timers.current.to != null) window.clearTimeout(timers.current.to);
+    if (timers.current.iv != null) window.clearInterval(timers.current.iv);
+    timers.current = { to: null, iv: null };
+  };
+  useEffect(() => stop, []);
+  const start = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); // don't steal focus from / blur the input
+    e.stopPropagation();
+    onStepRef.current();
+    timers.current.to = window.setTimeout(() => {
+      timers.current.iv = window.setInterval(() => onStepRef.current(), 55);
+    }, 300);
+  };
+  return (
+    <button
+      type="button"
+      title={title}
+      onPointerDown={start}
+      onPointerUp={stop}
+      onPointerLeave={stop}
+      onPointerCancel={stop}
+      tabIndex={-1}
+      style={{
+        flex: 1,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "transparent",
+        border: "none",
+        padding: 0,
+        margin: 0,
+        cursor: "pointer",
+        color: "#a1a1aa",
+        lineHeight: 0,
+      }}
+    >
+      <svg width={7} height={4} viewBox="0 0 8 5" aria-hidden>
+        <polyline
+          points={dir === "up" ? "1.5,3.5 4,1.5 6.5,3.5" : "1.5,1.5 4,3.5 6.5,1.5"}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  );
+}
+
+const SCRUB_THRESHOLD = 3; // px of movement before a press becomes a scrub
+
+// Numeric field with three input modes: type (free-form — can be emptied,
+// commits to 0 on blank), drag-to-scrub (press + move horizontally), and a
+// custom up/down stepper. A clean click (press + release without moving)
+// enters text-edit mode; a press that moves scrubs instead. The underlying
+// element is a text input so partial entries ("", "-", "1.") don't fight a
+// controlled numeric value.
+function NumberField({
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+  width = 56,
+  borderColor = "#27272a",
+  title,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  width?: number | string;
+  borderColor?: string;
+  title?: string;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const scrub = useRef<{ startX: number; startVal: number; moved: boolean } | null>(
+    null
+  );
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  // rAF-coalesce scrub emits so a fast drag doesn't re-eval the graph per
+  // pointer event (same idea as the slider's dampening).
+  const raf = useRef<number | null>(null);
+  const pending = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (raf.current != null) cancelAnimationFrame(raf.current);
+    },
+    []
+  );
+
+  const clamp = (v: number) => {
+    if (typeof min === "number") v = Math.max(min, v);
+    if (typeof max === "number") v = Math.min(max, v);
+    return v;
+  };
+  const snap = (v: number) => {
+    if (!step || step <= 0) return v;
+    return parseFloat((Math.round(v / step) * step).toFixed(6));
+  };
+  const emit = (v: number) => {
+    if (v !== valueRef.current) onChangeRef.current(v);
+  };
+  const stepBy = (sign: number) => emit(clamp(snap(valueRef.current + sign * step)));
+
+  const flush = () => {
+    raf.current = null;
+    if (pending.current != null) {
+      emit(pending.current);
+      pending.current = null;
+    }
+  };
+  const queue = (v: number) => {
+    pending.current = v;
+    if (raf.current == null) raf.current = requestAnimationFrame(flush);
+  };
+
+  const beginEdit = () => {
+    setDraft(formatNum(valueRef.current, step));
+    setEditing(true);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (el) {
+        el.focus();
+        el.select();
+      }
+    });
+  };
+  const commit = () => {
+    const t = draft.trim();
+    let next: number;
+    if (t === "") {
+      next = 0; // blank confirms to 0
+    } else {
+      const p = parseFloat(t);
+      if (Number.isNaN(p)) {
+        setEditing(false); // garbage — revert to the live value
+        return;
+      }
+      next = p;
+    }
+    setEditing(false);
+    emit(clamp(next));
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLInputElement>) => {
+    if (editing) return; // already typing — let the caret behave normally
+    if (e.button !== 0) return;
+    e.preventDefault(); // suppress auto-focus; decide click-vs-scrub on release
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // not all environments support capture; scrub still works via events
+    }
+    scrub.current = { startX: e.clientX, startVal: value, moved: false };
+  };
+  const onPointerMove = (e: React.PointerEvent<HTMLInputElement>) => {
+    const s = scrub.current;
+    if (!s) return;
+    const dx = e.clientX - s.startX;
+    if (!s.moved && Math.abs(dx) < SCRUB_THRESHOLD) return;
+    s.moved = true;
+    const span =
+      typeof min === "number" && typeof max === "number" && max > min
+        ? max - min
+        : null;
+    // Cross the whole range in ~250px; no range → 1 step/px. Shift = fine.
+    const perPx = (span != null ? span / 250 : step || 1) * (e.shiftKey ? 0.2 : 1);
+    queue(clamp(snap(s.startVal + dx * perPx)));
+  };
+  const onPointerUp = (e: React.PointerEvent<HTMLInputElement>) => {
+    const s = scrub.current;
+    scrub.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    if (s && !s.moved) beginEdit(); // clean click → edit
+  };
+
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "stretch",
+        width,
+        height: 18,
+        background: "#0a0a0a",
+        border: `1px solid ${borderColor}`,
+        borderRadius: 3,
+        boxSizing: "border-box",
+        overflow: "hidden",
+      }}
+    >
+      <input
+        ref={inputRef}
+        type="text"
+        inputMode="decimal"
+        value={editing ? draft : formatNum(value, step)}
+        title={title ?? "Drag to scrub · click to type"}
+        onChange={(e) => editing && setDraft(e.target.value)}
+        onFocus={() => {
+          if (!editing) beginEdit();
+        }}
+        onBlur={commit}
+        // Belt-and-suspenders focus suppression: keep a press from focusing
+        // the field until we've decided it's a click (not a scrub). Once
+        // editing, let clicks position the caret normally.
+        onMouseDown={(e) => {
+          if (!editing) e.preventDefault();
+        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          else if (e.key === "Escape") {
+            setEditing(false);
+            (e.target as HTMLInputElement).blur();
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            stepBy(1);
+          } else if (e.key === "ArrowDown") {
+            e.preventDefault();
+            stepBy(-1);
+          }
+        }}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          background: "transparent",
+          border: "none",
+          outline: "none",
+          color: "#8a8a90",
+          fontFamily: "inherit",
+          fontSize: 10,
+          padding: "1px 3px",
+          cursor: editing ? "text" : "ew-resize",
+        }}
+      />
       <div
         style={{
           display: "flex",
-          justifyContent: "space-between",
+          flexDirection: "column",
+          width: 11,
+          flexShrink: 0,
+          borderLeft: "1px solid rgba(255,255,255,0.18)",
+        }}
+      >
+        <StepButton dir="up" title="Increase" onStep={() => stepBy(1)} />
+        <StepButton dir="down" title="Decrease" onStep={() => stepBy(-1)} />
+      </div>
+    </div>
+  );
+}
+
+function HslField({
+  label,
+  value,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+      <span style={{ color: "#52525b", fontSize: 9, flexShrink: 0 }}>
+        {label}
+      </span>
+      <NumberField
+        value={value}
+        onChange={(v) => onChange(v)}
+        min={0}
+        max={max}
+        step={1}
+        width={42}
+        title={`${label} (0–${max})`}
+      />
+    </div>
+  );
+}
+
+// Custom dropdown replacing the native <select> — the native option popup is
+// OS-chrome (a light list on macOS) that clashes with the dark panel. This
+// renders a dark, rounded control + a portal popup styled like the rest of
+// the panel. Portal-to-body with fixed positioning avoids the param panel's
+// overflow:auto clipping the list.
+function Dropdown({
+  value,
+  options,
+  onChange,
+  style,
+  title,
+}: {
+  value: string;
+  options: Array<string | { value: string; label: string }>;
+  onChange: (v: string) => void;
+  style?: React.CSSProperties;
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(
+    null
+  );
+
+  const norm = options.map((o) =>
+    typeof o === "string" ? { value: o, label: o } : o
+  );
+  const currentLabel = norm.find((o) => o.value === value)?.label ?? value;
+
+  useEffect(() => {
+    if (!open) return;
+    const el = btnRef.current;
+    if (el) {
+      const r = el.getBoundingClientRect();
+      setRect({ left: r.left, top: r.bottom + 2, width: r.width });
+    }
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as globalThis.Node | null;
+      if (btnRef.current?.contains(t as globalThis.Node)) return;
+      if (popRef.current?.contains(t as globalThis.Node)) return;
+      setOpen(false);
+    };
+    // Any scroll (the panel, a parent) or resize invalidates the fixed
+    // position — simplest correct behavior is to close.
+    const onMove = () => setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        title={title}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "flex",
           alignItems: "center",
-          marginBottom: 8,
+          justifyContent: "space-between",
+          gap: 4,
+          width: "100%",
+          height: 20,
+          background: "#0a0a0a",
+          border: `1px solid ${open ? "#3f3f46" : "#27272a"}`,
+          borderRadius: 4,
+          color: "#8a8a90",
+          fontFamily: "inherit",
+          fontSize: 11,
+          padding: "0 6px",
+          cursor: "pointer",
+          boxSizing: "border-box",
+          textAlign: "left",
+          ...style,
         }}
       >
         <span
           style={{
-            color: "#d4d4d8",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
           }}
         >
-          {label}
-          {linkInfo && onToggleLink && (
-            <button
-              onClick={onToggleLink}
-              title={
-                linkInfo.isLinked
-                  ? `Unlink from ${linkInfo.partnerName}`
-                  : `Link with ${linkInfo.partnerName} (preserve ratio)`
-              }
-              style={{
-                background: "transparent",
-                border: "none",
-                padding: 0,
-                margin: 0,
-                cursor: "pointer",
-                color: linkInfo.isLinked ? "#facc15" : "#52525b",
-                display: "inline-flex",
-                alignItems: "center",
-                lineHeight: 1,
-              }}
-            >
-              <ChainIcon linked={linkInfo.isLinked} />
-            </button>
-          )}
-          {driven && (
-            <span
-              title="Driven by a connected input — stored value is ignored while connected"
-              style={{
-                color: "#93c5fd",
-                fontSize: 9,
-                textTransform: "uppercase",
-                letterSpacing: 0.5,
-              }}
-            >
-              driven
-            </span>
-          )}
+          {currentLabel}
         </span>
-        <div style={{ display: "flex", gap: 4 }}>
-          {exposable && onToggleExposed && (
-            <button
-              onClick={onToggleExposed}
-              title={
-                exposed
-                  ? "Remove the input socket for this parameter"
-                  : "Add an input socket for this parameter on the node"
-              }
-              style={{
-                background: exposed ? "#1e3a8a" : "transparent",
-                border: "1px solid #27272a",
-                color: exposed ? "#bfdbfe" : "#71717a",
-                fontSize: 9,
-                padding: "1px 6px",
-                borderRadius: 3,
-                cursor: "pointer",
-                fontFamily: "inherit",
-              }}
-            >
-              {exposed ? "exposed" : "expose"}
-            </button>
-          )}
-          {onToggleControl && (
-            <button
-              onClick={onToggleControl}
-              title={
-                !controlSupported
-                  ? "This param type can't be rendered in an exported app — toggling has no effect"
-                  : controlled
-                  ? "Remove this knob from the exported app's control panel"
-                  : "Show this param as a knob in the exported app's control panel"
-              }
-              style={{
-                background: controlled ? "#065f46" : "transparent",
-                border: "1px solid #27272a",
-                color: controlled
-                  ? "#a7f3d0"
-                  : controlSupported
-                  ? "#71717a"
-                  : "#3f3f46",
-                fontSize: 9,
-                padding: "1px 6px",
-                borderRadius: 3,
-                cursor: "pointer",
-                fontFamily: "inherit",
-                opacity: controlSupported ? 1 : 0.6,
-              }}
-            >
-              {controlled ? "controlled" : "control"}
-            </button>
-          )}
-        </div>
-      </div>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          position: "relative",
-        }}
-      >
-        {keyframable && (
-          <TrackVisibilityEye
-            visible={animation?.trackVisible ?? false}
-            enabled={animated}
-            onClick={handleVisibilityClick}
-            title={
-              !animated
-                ? "Track visibility — enable animation to use"
-                : animation?.trackVisible
-                ? "Hide track in Track Editor"
-                : "Show track in Track Editor"
-            }
-          />
-        )}
-        <div
-          style={{
-            flex: 1,
-            minWidth: 0,
-            opacity: driven ? 0.5 : 1,
-            pointerEvents: driven ? "none" : "auto",
-          }}
+        <svg
+          width={8}
+          height={5}
+          viewBox="0 0 8 5"
+          style={{ flexShrink: 0, color: "#71717a" }}
+          aria-hidden
         >
-          <ParamControl
-            param={param}
-            value={value}
-            allParams={allParams}
-            onChange={onChange}
-            rangeOverride={rangeOverride}
-            onRangeChange={onRangeChange}
+          <polyline
+            points="1,1 4,4 7,1"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
           />
-        </div>
-        {keyframable && (
-          <div style={{ position: "relative" }}>
-            <KeyframeDiamond
-              state={diamondState}
-              disabled={driven}
-              onClick={handleDiamondClick}
-              onContextMenu={() => setMenuOpen((v) => !v)}
-              title={
-                driven
-                  ? "wired — disconnect to use keyframes"
-                  : diamondState === "empty"
-                  ? "Animate this parameter"
-                  : diamondState === "red"
-                  ? "Remove keyframe at playhead"
-                  : "Insert keyframe at playhead"
-              }
-            />
-            {menuOpen && (
-              <div
-                ref={menuRef}
-                style={{
-                  position: "absolute",
-                  top: "100%",
-                  right: 0,
-                  marginTop: 4,
-                  background: "#111113",
-                  border: "1px solid #1f1f23",
-                  borderRadius: 4,
-                  padding: 4,
-                  zIndex: 1000,
-                  display: "flex",
-                  flexDirection: "column",
-                  minWidth: 160,
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
-                }}
-              >
+        </svg>
+      </button>
+      {open &&
+        rect &&
+        createPortal(
+          <div
+            ref={popRef}
+            className="thin-scrollbar"
+            style={{
+              position: "fixed",
+              left: rect.left,
+              top: rect.top,
+              width: rect.width,
+              maxHeight: 260,
+              overflowY: "auto",
+              background: "#111113",
+              border: "1px solid #27272a",
+              borderRadius: 4,
+              boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+              zIndex: 10000,
+              padding: 3,
+            }}
+          >
+            {norm.map((o) => {
+              const sel = o.value === value;
+              return (
                 <button
-                  onClick={handleDisableEnable}
-                  style={menuItemStyle()}
+                  key={o.value}
+                  type="button"
+                  onClick={() => {
+                    onChange(o.value);
+                    setOpen(false);
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!sel) e.currentTarget.style.background = "#18181b";
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!sel) e.currentTarget.style.background = "transparent";
+                  }}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    textAlign: "left",
+                    background: sel ? "#1f1f23" : "transparent",
+                    border: "none",
+                    color: sel ? "#facc15" : "#8a8a90",
+                    fontFamily: "inherit",
+                    fontSize: 11,
+                    padding: "4px 7px",
+                    borderRadius: 3,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
                 >
-                  {animated ? "Disable animation" : "Enable animation"}
+                  {o.label}
                 </button>
-                {param.type === "color" && (
-                  <>
-                    <div
-                      style={{
-                        color: "#52525b",
-                        fontSize: 9,
-                        textTransform: "uppercase",
-                        letterSpacing: 1,
-                        padding: "6px 8px 2px",
-                      }}
-                    >
-                      color space
-                    </div>
-                    <button
-                      onClick={() => handleColorSpace("oklab")}
-                      style={menuItemStyle(
-                        (animation?.colorSpace ?? "oklab") === "oklab"
-                      )}
-                    >
-                      OKLab
-                    </button>
-                    <button
-                      onClick={() => handleColorSpace("rgb")}
-                      style={menuItemStyle(animation?.colorSpace === "rgb")}
-                    >
-                      RGB-linear
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
+              );
+            })}
+          </div>,
+          document.body
         )}
-      </div>
-    </div>
+    </>
   );
 }
 
@@ -1165,57 +2493,11 @@ function ParamControl({
   }
 
   if (param.type === "video_file") {
-    const current = value as
-      | { filename?: string; duration?: number; width?: number; height?: number }
-      | null
-      | undefined;
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <input
-          type="file"
-          accept="video/*"
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            const mod = await import("@/lib/video");
-            const { registerVideoFile } = mod;
-            const v = await registerVideoFile(file);
-            onChange(v);
-          }}
-          style={{ color: "#e5e7eb", fontSize: 10 }}
-        />
-        {current?.filename && (
-          <div style={{ color: "#71717a", fontSize: 10 }}>
-            {current.filename} · {current.width}×{current.height} ·{" "}
-            {current.duration?.toFixed(1)}s
-          </div>
-        )}
-        {current && (
-          <button
-            onClick={async () => {
-              const { disposeVideoFile } = await import("@/lib/video");
-              disposeVideoFile(
-                value as import("@/engine/types").VideoFileParamValue
-              );
-              onChange(null);
-            }}
-            style={{
-              padding: "2px 6px",
-              background: "transparent",
-              border: "1px solid #3f3f46",
-              color: "#a1a1aa",
-              fontFamily: "inherit",
-              fontSize: 10,
-              borderRadius: 3,
-              cursor: "pointer",
-              alignSelf: "flex-start",
-            }}
-          >
-            clear
-          </button>
-        )}
-      </div>
-    );
+    return <VideoFileControl value={value} onChange={onChange} />;
+  }
+
+  if (param.type === "lut_file") {
+    return <LutFileControl value={value} onChange={onChange} />;
   }
 
   if (param.type === "svg_file") {
@@ -1373,62 +2655,21 @@ function ParamControl({
     const options = param.options ?? [];
     const current = typeof value === "string" ? value : (param.default as string);
     return (
-      <select
+      <Dropdown
         value={current}
-        onChange={(e) => onChange(e.target.value)}
-        style={{
-          background: "#0a0a0a",
-          border: "1px solid #27272a",
-          color: "#e5e7eb",
-          fontFamily: "inherit",
-          fontSize: 11,
-          padding: "2px 4px",
-          width: "100%",
-        }}
-      >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
+        options={options}
+        onChange={(v) => onChange(v)}
+      />
     );
   }
 
   if (param.type === "color") {
     const hex = typeof value === "string" ? value : (param.default as string);
-    return (
-      <input
-        type="color"
-        value={hex}
-        onChange={(e) => onChange(e.target.value)}
-        style={{ width: "100%", height: 24 }}
-      />
-    );
+    return <ColorControl value={hex} onChange={onChange} />;
   }
 
   if (param.type === "file") {
-    const hasValue = !!value;
-    return (
-      <div>
-        <input
-          type="file"
-          accept="image/*"
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            const bmp = await createImageBitmap(file);
-            onChange(bmp);
-          }}
-          style={{ color: "#e5e7eb", fontSize: 10 }}
-        />
-        {hasValue && (
-          <div style={{ marginTop: 4, color: "#71717a", fontSize: 10 }}>
-            image loaded
-          </div>
-        )}
-      </div>
-    );
+    return <ImageFileControl value={value} onChange={onChange} />;
   }
 
   if (param.type === "merge_layers") {
@@ -1481,30 +2722,16 @@ function ParamControl({
                 remove
               </button>
             </div>
-            <select
+            <Dropdown
               value={l.mode}
-              onChange={(e) => {
+              options={modes.map((m) => ({ value: m, label: blendModeLabel(m) }))}
+              onChange={(v) => {
                 const next = layers.map((x) =>
-                  x.id === l.id ? { ...x, mode: e.target.value } : x
+                  x.id === l.id ? { ...x, mode: v } : x
                 );
                 onChange(next);
               }}
-              style={{
-                background: "#0a0a0a",
-                border: "1px solid #27272a",
-                color: "#e5e7eb",
-                fontFamily: "inherit",
-                fontSize: 11,
-                padding: "2px 4px",
-                width: "100%",
-              }}
-            >
-              {modes.map((m) => (
-                <option key={m} value={m}>
-                  {blendModeLabel(m)}
-                </option>
-              ))}
-            </select>
+            />
             <div
               style={{
                 display: "flex",
@@ -1593,26 +2820,20 @@ function ParamControl({
     return (
       <div style={{ display: "flex", gap: 4 }}>
         {arr.map((v, i) => (
-          <input
-            key={i}
-            type="number"
-            value={v}
-            step={param.step ?? 0.01}
-            onChange={(e) => {
-              const next = [...arr];
-              next[i] = parseFloat(e.target.value);
-              onChange(next);
-            }}
-            style={{
-              width: "100%",
-              background: "#0a0a0a",
-              border: "1px solid #27272a",
-              color: "#e5e7eb",
-              fontFamily: "inherit",
-              fontSize: 11,
-              padding: "2px 4px",
-            }}
-          />
+          <div key={i} style={{ flex: 1, minWidth: 0 }}>
+            <NumberField
+              value={v}
+              step={param.step ?? 0.01}
+              min={param.min}
+              max={param.max}
+              width="100%"
+              onChange={(nv) => {
+                const next = [...arr];
+                next[i] = nv;
+                onChange(next);
+              }}
+            />
+          </div>
         ))}
       </div>
     );
@@ -2465,27 +3686,21 @@ function FontAxisControl({
           {axis.tag}
         </span>
       </div>
-      <select
+      <Dropdown
         value={mode}
-        onChange={(e) => setMode(e.target.value)}
-        style={{
-          background: "#0a0a0a",
-          border: "1px solid #27272a",
-          color: "#e5e7eb",
-          fontFamily: "inherit",
-          fontSize: 10,
-          padding: "1px 4px",
-        }}
-      >
-        <option value="default">default</option>
-        <option value="constant">constant</option>
-        <option value="gradient">gradient</option>
-        <option value="sine">sine</option>
-        <option value="random">random</option>
-        <option value="cycle">cycle</option>
-        <option value="perGlyph">per glyph</option>
-        <option value="maskDriven">mask (per glyph)</option>
-      </select>
+        onChange={(v) => setMode(v)}
+        style={{ fontSize: 10 }}
+        options={[
+          { value: "default", label: "default" },
+          { value: "constant", label: "constant" },
+          { value: "gradient", label: "gradient" },
+          { value: "sine", label: "sine" },
+          { value: "random", label: "random" },
+          { value: "cycle", label: "cycle" },
+          { value: "perGlyph", label: "per glyph" },
+          { value: "maskDriven", label: "mask (per glyph)" },
+        ]}
+      />
     </div>
   );
 
@@ -3078,9 +4293,20 @@ function ScalarSliderRow({
 }) {
   const [editorOpen, setEditorOpen] = useState(false);
   const hasOverride = !!rangeOverride;
+  // Fill percentage for the new bar-style slider (driven via the --fill CSS
+  // var the .param-slider rules read).
+  const fillPct =
+    sliderMax > sliderMin
+      ? Math.max(
+          0,
+          Math.min(100, ((sliderValue - sliderMin) / (sliderMax - sliderMin)) * 100)
+        )
+      : 0;
+  const barColor = hasOverride ? "#172a52" : "#202023";
+  const lineColor = hasOverride ? "#6b8fc7" : "#8a8a90";
   return (
     <div
-      style={{ display: "flex", gap: 6, alignItems: "center", position: "relative" }}
+      style={{ display: "flex", gap: 4, alignItems: "center", position: "relative" }}
       onContextMenu={(e) => {
         if (!onRangeChange) return;
         e.preventDefault();
@@ -3088,43 +4314,76 @@ function ScalarSliderRow({
         setEditorOpen(true);
       }}
     >
-      <DampenedRangeInput
-        min={sliderMin}
-        max={sliderMax}
-        step={param.step ?? 0.01}
-        value={sliderValue}
+      <div style={{ position: "relative", flex: 1, height: 20 }}>
+        {/* Track — clips the fill so its rounded left corners follow the
+            track radius; the fill's rounded RIGHT corner is the leading-edge
+            cap a native gradient track can't produce. */}
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            borderRadius: 6,
+            boxShadow: "inset 0 0 0 1px #232327",
+            background: "#0f0f11",
+            overflow: "hidden",
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: `${fillPct}%`,
+              background: barColor,
+              borderRadius: 6,
+            }}
+          />
+        </div>
+        {/* Thin leading-edge stroke at the value, inset vertically. */}
+        <div
+          style={{
+            position: "absolute",
+            left: `${fillPct}%`,
+            top: "21%",
+            bottom: "21%",
+            width: 1,
+            marginLeft: -0.5,
+            background: lineColor,
+            pointerEvents: "none",
+          }}
+        />
+        {/* Transparent native range on top — interaction + grab target. */}
+        <DampenedRangeInput
+          className="param-slider-bare"
+          min={sliderMin}
+          max={sliderMax}
+          step={param.step ?? 0.01}
+          value={sliderValue}
+          onChange={(v) => onChange(v)}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            margin: 0,
+          }}
+          title={
+            hasOverride
+              ? `Custom range — right-click to edit (defaults: ${param.min ?? "—"} to ${param.max ?? "—"}). Hold Shift to fine-tune.`
+              : "Right-click to set a custom range. Hold Shift to fine-tune."
+          }
+        />
+      </div>
+      <NumberField
+        value={num}
         onChange={(v) => onChange(v)}
-        style={{
-          flex: 1,
-          // Subtle hint that this slider has a custom range — accent-color
-          // bumps the thumb tint on browsers that support it.
-          accentColor: hasOverride ? "#60a5fa" : undefined,
-        }}
-        title={
-          hasOverride
-            ? `Custom range — right-click to edit (defaults: ${param.min ?? "—"} to ${param.max ?? "—"}). Hold Shift to fine-tune.`
-            : "Right-click to set a custom range. Hold Shift to fine-tune."
-        }
-      />
-      <input
-        type="number"
         min={effMin}
         max={effMax}
         step={param.step ?? 0.01}
-        value={num}
-        onChange={(e) => {
-          const v = parseFloat(e.target.value);
-          if (!Number.isNaN(v)) onChange(v);
-        }}
-        style={{
-          width: 60,
-          background: "#0a0a0a",
-          border: `1px solid ${hasOverride ? "#1e3a8a" : "#27272a"}`,
-          color: "#e5e7eb",
-          fontFamily: "inherit",
-          fontSize: 11,
-          padding: "2px 4px",
-        }}
+        width={44}
+        borderColor={hasOverride ? "#1e3a8a" : "#27272a"}
       />
       {editorOpen && onRangeChange && (
         <SliderRangeEditor

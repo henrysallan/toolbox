@@ -1,4 +1,4 @@
-import type { NodeDefinition } from "@/engine/types";
+import type { NodeDefinition, ParamDef } from "@/engine/types";
 
 export interface CurvePoint {
   id: string;
@@ -154,9 +154,20 @@ in vec2 v_uv;
 uniform sampler2D u_src;
 uniform sampler2D u_lut;
 uniform float u_hue;         // 0..1, wraps
-uniform float u_saturation;  // 1.0 = identity
-uniform float u_contrast;    // 1.0 = identity, pivots on 0.5
+uniform float u_saturation;  // 1.0 = identity (legacy global)
+uniform float u_contrast;    // 1.0 = identity, pivots on u_pivot
 uniform float u_brightness;  // 0.0 = identity, additive
+// DaVinci-style primaries. Each wheel packs (balanceX, balanceY, lum, exp).
+uniform vec4 u_dark;    // Lift   (shadows)
+uniform vec4 u_shadow;  // Gamma  (low-mids)
+uniform vec4 u_light;   // Gain   (highlights)
+uniform vec4 u_global;  // Offset (overall)
+uniform vec4 u_sats;    // per-wheel saturation: dark, shadow, light, global
+uniform float u_temp;   // white balance, blue<->orange
+uniform float u_tint;   // white balance, green<->magenta
+uniform float u_pivot;  // contrast pivot
+uniform float u_md;     // midtone detail (mid contrast)
+uniform float u_boffset;// black offset
 out vec4 outColor;
 
 vec3 rgb2hsv(vec3 c) {
@@ -187,28 +198,79 @@ float sampleLut(float v, int channel) {
   return s.a; // master
 }
 
+const float LUMA_R = 0.2126, LUMA_G = 0.7152, LUMA_B = 0.0722;
+
+// A color wheel's per-channel push. The 2D balance angle is read clockwise
+// from "up" to match the panel's conic hue disc (red at top), so dragging
+// toward a displayed color pushes that color; radius is strength. The tint is
+// made roughly luminance-neutral, then the master "lum" lifts all channels.
+vec3 wheelRGB(vec2 p, float lum) {
+  float radius = min(length(p), 1.0);
+  float ang = atan(p.x, -p.y);             // 0 = up = red, clockwise
+  float hue = fract(ang / 6.2831853 + 1.0);
+  vec3 tint = hsv2rgb(vec3(hue, 1.0, 1.0)) - vec3(1.0 / 3.0);
+  return tint * radius * 0.8 + lum * 0.5;
+}
+
 void main() {
   vec4 src = texture(u_src, v_uv);
   vec3 c = src.rgb;
 
-  // Brightness: additive, pre-clamp.
-  c += vec3(u_brightness);
+  // ---- White balance (temp / tint) ----
+  c.r *= 1.0 + u_temp * 0.4;
+  c.b *= 1.0 - u_temp * 0.4;
+  c.g *= 1.0 + u_tint * 0.4;
+  c.r *= 1.0 - u_tint * 0.2;
+  c.b *= 1.0 - u_tint * 0.2;
+  c = max(c, 0.0);
 
-  // Contrast: pivot around 0.5.
-  c = (c - 0.5) * u_contrast + 0.5;
+  // ---- Lift / Gamma / Gain / Offset (the four wheels) ----
+  vec3 lift   = wheelRGB(u_dark.xy, u_dark.z);
+  vec3 gainv  = 1.0 + wheelRGB(u_light.xy, u_light.z);
+  vec3 gammav = 1.0 + wheelRGB(u_shadow.xy, u_shadow.z);
+  vec3 offv   = wheelRGB(u_global.xy, u_global.z);
+  c = gainv * c + lift * (1.0 - c);
+  c = pow(max(c, 0.0), 1.0 / max(gammav, vec3(0.05)));
+  c = c + offv;
+  c += vec3(u_boffset * 0.2); // black offset
+
+  // ---- Zone weights (for per-wheel exposure + saturation) ----
+  float luma = dot(clamp(c, 0.0, 1.0), vec3(LUMA_R, LUMA_G, LUMA_B));
+  float wDark = 1.0 - smoothstep(0.0, 0.5, luma);
+  float wLight = smoothstep(0.5, 1.0, luma);
+  float wMid = clamp(1.0 - abs(luma - 0.5) * 2.0, 0.0, 1.0);
+
+  // Per-wheel exposure (stops), summed by zone; global applies everywhere.
+  float ev = u_dark.w * wDark + u_shadow.w * wMid + u_light.w * wLight + u_global.w;
+  c *= exp2(ev);
+
+  // Per-wheel saturation, blended by zone.
+  float satF = 1.0
+    + (u_sats.x - 1.0) * wDark
+    + (u_sats.y - 1.0) * wMid
+    + (u_sats.z - 1.0) * wLight
+    + (u_sats.w - 1.0);
+  float l2 = dot(c, vec3(LUMA_R, LUMA_G, LUMA_B));
+  c = mix(vec3(l2), c, satF);
+
+  // ---- Brightness + contrast (pivot) ----
+  c += vec3(u_brightness);
+  c = (c - u_pivot) * u_contrast + u_pivot;
+
+  // ---- Midtone detail: extra contrast weighted to the mids ----
+  vec3 cm = (c - 0.5) * (1.0 + u_md) + 0.5;
+  c = mix(c, cm, wMid);
 
   c = clamp(c, 0.0, 1.0);
 
-  // Hue + saturation in HSV.
+  // ---- Global hue + saturation (legacy) ----
   vec3 hsv = rgb2hsv(c);
   hsv.x = fract(hsv.x + u_hue + 1.0);
   hsv.y = clamp(hsv.y * u_saturation, 0.0, 1.0);
   c = hsv2rgb(hsv);
-
   c = clamp(c, 0.0, 1.0);
 
-  // Master curve first (treated as a per-channel tone curve applied equally),
-  // then per-channel curves stacked on top.
+  // ---- Curves: master then per-channel ----
   c = vec3(sampleLut(c.r, 3), sampleLut(c.g, 3), sampleLut(c.b, 3));
   c = vec3(sampleLut(c.r, 0), sampleLut(c.g, 1), sampleLut(c.b, 2));
 
@@ -244,6 +306,34 @@ function allocLutTexture(gl: WebGL2RenderingContext): WebGLTexture {
 }
 
 export { CURVE_CHANNELS };
+
+// Wheel keys in tonal order; the panel and shader share these names.
+export const GRADE_WHEELS = ["dark", "shadow", "light", "global"] as const;
+export type GradeWheel = (typeof GRADE_WHEELS)[number];
+
+// The DaVinci-style primaries params: per wheel a balance (X/Y), master (Lum),
+// Exp, and Sat; plus the bottom bar (Temp/Tint/Pivot/MD/Black Offset). Hue and
+// Contrast already exist above and serve the bar's Hue/Cont fields.
+const GRADE_PARAMS: ParamDef[] = (() => {
+  const ps: ParamDef[] = [];
+  for (const w of GRADE_WHEELS) {
+    ps.push(
+      { name: `${w}X`, label: `${w} balance X`, type: "scalar", min: -1, max: 1, step: 0.001, default: 0 },
+      { name: `${w}Y`, label: `${w} balance Y`, type: "scalar", min: -1, max: 1, step: 0.001, default: 0 },
+      { name: `${w}Lum`, label: `${w} master`, type: "scalar", min: -2, max: 2, step: 0.001, default: 0 },
+      { name: `${w}Exp`, label: `${w} exposure`, type: "scalar", min: -2, max: 2, step: 0.001, default: 0 },
+      { name: `${w}Sat`, label: `${w} saturation`, type: "scalar", min: 0, max: 2, step: 0.001, default: 1 }
+    );
+  }
+  ps.push(
+    { name: "temp", label: "Temp", type: "scalar", min: -1, max: 1, step: 0.001, default: 0 },
+    { name: "tint", label: "Tint", type: "scalar", min: -1, max: 1, step: 0.001, default: 0 },
+    { name: "pivot", label: "Pivot", type: "scalar", min: 0, max: 1, step: 0.001, default: 0.5 },
+    { name: "md", label: "Midtone Detail", type: "scalar", min: -1, max: 1, step: 0.001, default: 0 },
+    { name: "boffset", label: "Black Offset", type: "scalar", min: -1, max: 1, step: 0.001, default: 0 }
+  );
+  return ps;
+})();
 
 export const colorCorrectionNode: NodeDefinition = {
   type: "color-correction",
@@ -299,6 +389,7 @@ export const colorCorrectionNode: NodeDefinition = {
       type: "curves",
       default: defaultCurvesValue(),
     },
+    ...GRADE_PARAMS,
   ],
   primaryOutput: "image",
   auxOutputs: [],
@@ -348,32 +439,54 @@ export const colorCorrectionNode: NodeDefinition = {
     );
     gl.bindTexture(gl.TEXTURE_2D, null);
 
-    const hueDeg = (params.hue as number) ?? 0;
-    const saturation = (params.saturation as number) ?? 1;
-    const contrast = (params.contrast as number) ?? 1;
-    const brightness = (params.brightness as number) ?? 0;
+    const num = (name: string, d: number) =>
+      typeof params[name] === "number" ? (params[name] as number) : d;
+
+    const hueDeg = num("hue", 0);
+    const saturation = num("saturation", 1);
+    const contrast = num("contrast", 1);
+    const brightness = num("brightness", 0);
+
+    // Per wheel: (balanceX, balanceY, master/lum, exposure).
+    const wheel = (w: string): [number, number, number, number] => [
+      num(`${w}X`, 0),
+      num(`${w}Y`, 0),
+      num(`${w}Lum`, 0),
+      num(`${w}Exp`, 0),
+    ];
+    const dark = wheel("dark");
+    const shadow = wheel("shadow");
+    const light = wheel("light");
+    const global = wheel("global");
 
     const prog = ctx.getShader("color-correction/fs", FS);
     ctx.drawFullscreen(prog, output, (gl2) => {
+      const u = (n: string) => gl2.getUniformLocation(prog, n);
       gl2.activeTexture(gl2.TEXTURE0);
       gl2.bindTexture(gl2.TEXTURE_2D, src.texture);
-      gl2.uniform1i(gl2.getUniformLocation(prog, "u_src"), 0);
+      gl2.uniform1i(u("u_src"), 0);
       gl2.activeTexture(gl2.TEXTURE1);
       gl2.bindTexture(gl2.TEXTURE_2D, state!.lut);
-      gl2.uniform1i(gl2.getUniformLocation(prog, "u_lut"), 1);
-      gl2.uniform1f(
-        gl2.getUniformLocation(prog, "u_hue"),
-        ((hueDeg % 360) + 360) / 360
-      );
-      gl2.uniform1f(
-        gl2.getUniformLocation(prog, "u_saturation"),
-        saturation
-      );
-      gl2.uniform1f(gl2.getUniformLocation(prog, "u_contrast"), contrast);
-      gl2.uniform1f(
-        gl2.getUniformLocation(prog, "u_brightness"),
-        brightness
-      );
+      gl2.uniform1i(u("u_lut"), 1);
+      gl2.uniform1f(u("u_hue"), ((hueDeg % 360) + 360) / 360);
+      gl2.uniform1f(u("u_saturation"), saturation);
+      gl2.uniform1f(u("u_contrast"), contrast);
+      gl2.uniform1f(u("u_brightness"), brightness);
+      gl2.uniform4fv(u("u_dark"), dark);
+      gl2.uniform4fv(u("u_shadow"), shadow);
+      gl2.uniform4fv(u("u_light"), light);
+      gl2.uniform4fv(u("u_global"), global);
+      gl2.uniform4fv(u("u_sats"), [
+        num("darkSat", 1),
+        num("shadowSat", 1),
+        num("lightSat", 1),
+        num("globalSat", 1),
+      ]);
+      gl2.uniform1f(u("u_temp"), num("temp", 0));
+      gl2.uniform1f(u("u_tint"), num("tint", 0));
+      gl2.uniform1f(u("u_pivot"), num("pivot", 0.5));
+      gl2.uniform1f(u("u_md"), num("md", 0));
+      gl2.uniform1f(u("u_boffset"), num("boffset", 0));
     });
 
     return { primary: output };
