@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
   ImageValue,
   InputSocketDef,
@@ -171,6 +172,7 @@ export const gradientNode: NodeDefinition = {
     return [uv];
   },
   params: [
+    OPACITY_PARAM,
     {
       name: "mode",
       label: "Mode",

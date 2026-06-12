@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type { NodeDefinition, RenderContext } from "@/engine/types";
 import { getCachedImage } from "@/lib/openai/image-cache";
 
@@ -176,6 +177,7 @@ export const imageGenerateNode: NodeDefinition = {
     { name: "ref_c", label: "Ref C", type: "image", required: false },
   ],
   params: [
+    OPACITY_PARAM,
     {
       name: "size",
       label: "Size",

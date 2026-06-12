@@ -40,7 +40,7 @@ export const groupLengthNode: NodeDefinition = {
         name: "group",
         type: inputTypeFor(mode),
         required: true,
-        label: mode === "image" ? "Group" : "In",
+        label: mode === "image" ? "Collection" : "In",
       },
     ];
   },

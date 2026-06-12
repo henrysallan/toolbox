@@ -16,7 +16,7 @@ import { ensurePointArray, pointsFromArray } from "@/engine/points";
 // For spline / points, we filter the flat input down to only
 // subpaths / points whose `groupIndex` matches the chosen index.
 // Subpaths and points without a groupIndex (i.e. never passed
-// through a Group node) are treated as belonging to a default
+// through a Collect node) are treated as belonging to a default
 // "index 0" bucket so an un-grouped input still works sensibly —
 // picking index 0 returns everything.
 //
@@ -32,7 +32,7 @@ function innerTypeFor(mode: Mode): SocketType {
   return "image";
 }
 
-// For spline/points, the Group node now flattens to the base type
+// For spline/points, the Collect node now flattens to the base type
 // with groupIndex tags. So the input socket type is just the base
 // type in those modes, same as the output.
 function inputTypeFor(mode: Mode): SocketType {
@@ -62,7 +62,7 @@ export const groupPickNode: NodeDefinition = {
         name: "group",
         type: inputTypeFor(mode),
         required: true,
-        label: mode === "image" ? "Group" : "In",
+        label: mode === "image" ? "Collection" : "In",
       },
       { name: "index", type: "scalar", required: false },
     ];

@@ -379,25 +379,12 @@ export default function FileNameMenu({
 
           <div
             style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "6px 2px",
+              padding: "8px 2px",
               marginBottom: 8,
               borderTop: "1px solid #27272a",
               borderBottom: "1px solid #27272a",
             }}
           >
-            <div>
-              <div style={{ color: "#e5e7eb" }}>
-                {isPublic ? "Public" : "Private"}
-              </div>
-              <div style={{ color: "#71717a", fontSize: 10, marginTop: 2 }}>
-                {isPublic
-                  ? "Anyone with the link can view."
-                  : "Only you can view."}
-              </div>
-            </div>
             <VisibilityToggle
               value={isPublic}
               disabled={!canMutate || !projectId}
@@ -557,6 +544,8 @@ export default function FileNameMenu({
   );
 }
 
+// Full-width Private / Public segmented pill. A rounded indicator slides
+// behind whichever side is active; clicking the inactive side switches.
 function VisibilityToggle({
   value,
   disabled,
@@ -567,44 +556,72 @@ function VisibilityToggle({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <button
-      onClick={() => {
-        if (disabled) return;
-        onChange(!value);
-      }}
-      title={
-        disabled
-          ? "Save the project first to set visibility"
-          : value
-          ? "Switch to private"
-          : "Switch to public"
-      }
+    <div
       style={{
-        width: 32,
-        height: 18,
-        borderRadius: 9,
-        background: value ? "#16a34a" : "#3f3f46",
-        border: "none",
         position: "relative",
-        cursor: disabled ? "not-allowed" : "pointer",
+        display: "flex",
+        width: "100%",
+        height: 26,
+        borderRadius: 999,
+        background: "#0a0a0a",
+        border: "1px solid #27272a",
         opacity: disabled ? 0.5 : 1,
-        padding: 0,
-        transition: "background 120ms",
+        overflow: "hidden",
       }}
     >
+      {/* sliding indicator */}
       <span
+        aria-hidden
         style={{
           position: "absolute",
           top: 2,
-          left: value ? 16 : 2,
-          width: 14,
-          height: 14,
-          borderRadius: "50%",
-          background: "#fafafa",
-          transition: "left 120ms",
+          bottom: 2,
+          left: value ? "50%" : 2,
+          width: "calc(50% - 2px)",
+          borderRadius: 999,
+          background: value ? "#166534" : "#3f3f46",
+          transition: "left 160ms ease, background 160ms ease",
         }}
       />
-    </button>
+      {([false, true] as const).map((isPublicSide) => {
+        const active = isPublicSide === value;
+        return (
+          <button
+            key={isPublicSide ? "public" : "private"}
+            onClick={() => {
+              if (disabled || active) return;
+              onChange(isPublicSide);
+            }}
+            title={
+              disabled
+                ? "Save the project first to set visibility"
+                : isPublicSide
+                  ? "Anyone with the link can view."
+                  : "Only you can view."
+            }
+            style={{
+              flex: 1,
+              zIndex: 1,
+              background: "transparent",
+              border: "none",
+              padding: 0,
+              fontFamily: "inherit",
+              fontSize: 11,
+              letterSpacing: 0.3,
+              color: active
+                ? isPublicSide
+                  ? "#dcfce7"
+                  : "#fafafa"
+                : "#71717a",
+              cursor: disabled || active ? "default" : "pointer",
+              transition: "color 160ms ease",
+            }}
+          >
+            {isPublicSide ? "Public" : "Private"}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

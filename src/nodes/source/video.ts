@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
   NodeDefinition,
   UvValue,
@@ -90,6 +91,7 @@ export const videoNode: NodeDefinition = {
   stable: false,
   inputs: [{ name: "uv_in", label: "UV", type: "uv", required: false }],
   params: [
+    OPACITY_PARAM,
     { name: "file", label: "Video", type: "video_file", default: null },
     {
       name: "fit",

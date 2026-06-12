@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type { NodeDefinition } from "@/engine/types";
 
 const FS = `#version 300 es
@@ -28,6 +29,7 @@ export const solidColorNode: NodeDefinition = {
   backend: "webgl2",
   inputs: [],
   params: [
+    OPACITY_PARAM,
     { name: "color", label: "Color", type: "color", default: "#808080" },
     {
       name: "alpha",

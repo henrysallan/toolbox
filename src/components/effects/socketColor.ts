@@ -33,6 +33,10 @@ export const socketColor: Record<string, string> = {
   // so users can tell at a glance whether a wire carries a single CPU
   // value or a per-pixel shader expression.
   scalar_field: "#eab308",
+  // Render reference wire (Output → Render Queue). Neutral slate — it's an
+  // organizational link, not a data pipeline, so it shouldn't read as one
+  // of the colorful signal types.
+  render: "#94a3b8",
 };
 
 export function colorForSocket(type: string): string {

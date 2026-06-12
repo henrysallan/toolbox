@@ -12,6 +12,7 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import NodeEditor from "./NodeEditor";
 import ParamPanel from "./ParamPanel";
 // import CustomCursor from "./CustomCursor"; // temporarily disabled — using native cursor
@@ -32,11 +33,36 @@ import {
   type GraphEdge,
   type GraphNode,
 } from "@/engine/evaluator";
-import { withMaskInput } from "@/engine/conventions";
+import { layerOpacityKey, withMaskInput } from "@/engine/conventions";
 import type { NodeDataPayload } from "@/state/graph";
 import { parseTargetHandleKind } from "@/state/graph";
-import { newNodeId } from "@/state/graph";
+import {
+  buildStarterGraph,
+  cloneSubgraph,
+  collectDescendantIds,
+  connectToVirtualSocket,
+  createLayer,
+  defaultScopeFor,
+  expandWithDescendants,
+  getLayerChain,
+  reorderLayers,
+  splitLayer,
+  groupSelection,
+  makeInstanceNode,
+  newEdgeId,
+  removeGroupSocket,
+  renameGroupSocket,
+  ungroupNode,
+} from "@/state/graph-ops";
+import {
+  GROUP_INPUT_TYPE,
+  GROUP_OUTPUT_TYPE,
+  GROUP_TYPE,
+  LAYER_TYPE,
+} from "@/engine/groups";
 import { newLayerId, type MergeLayer } from "@/nodes/effect/merge";
+import { newRenderQueueItemId } from "@/nodes/output/render-queue";
+import type { RenderQueueItem } from "@/engine/types";
 import { useHistory, useUndoShortcuts, type GraphSnapshot } from "@/state/history";
 import {
   defaultFilename,
@@ -51,6 +77,17 @@ import {
   serializeGraph,
   type SavedProject,
 } from "@/lib/project";
+import {
+  matchFilesToMissing,
+  pickMediaFiles,
+  pickMediaFilesViaInput,
+  readStoredMediaFile,
+  type MissingMedia,
+} from "@/lib/media-relink";
+import MediaRelinkModal, {
+  type RelinkItem,
+  type RelinkStatus,
+} from "./MediaRelinkModal";
 import {
   deleteProject as deleteProjectRow,
   listPrivateProjects,
@@ -90,6 +127,7 @@ import WebGPUParticleOverlay from "./WebGPUParticleOverlay";
 import { resolveParticleTestCount } from "@/nodes/effect/webgpu-particle-test";
 import { TrackEditor } from "./TrackEditor";
 import { GraphEditor } from "./GraphEditor";
+import { LayersEditor } from "./LayersEditor";
 import {
   DEFAULT_TICKS_PER_FRAME,
   emptyAnimationBlock,
@@ -105,73 +143,17 @@ import type { SplineParamValue } from "@/nodes/source/spline-draw";
 
 registerAllNodes();
 
-const INITIAL_NODES: Node<NodeDataPayload>[] = [
-  makeInstanceNode("image-source", { x: 40, y: 80 }),
-  makeInstanceNode("bloom", { x: 340, y: 80 }),
-  makeInstanceNode("output", { x: 640, y: 120 }),
-];
-
-const INITIAL_EDGES: Edge[] = [
-  {
-    id: "e1",
-    source: INITIAL_NODES[0].id,
-    sourceHandle: "out:primary",
-    target: INITIAL_NODES[1].id,
-    targetHandle: "in:image",
-  },
-  {
-    id: "e2",
-    source: INITIAL_NODES[1].id,
-    sourceHandle: "out:primary",
-    target: INITIAL_NODES[2].id,
-    targetHandle: "in:image",
-  },
-];
+// Fresh-session scaffold: Output + "Layer 1" with the starter chain
+// inside (see buildStarterGraph). The editor opens inside the layer.
+const STARTER = buildStarterGraph();
+const INITIAL_NODES: Node<NodeDataPayload>[] = STARTER.nodes;
+const INITIAL_EDGES: Edge[] = STARTER.edges;
 
 // Node label from a loaded file name: drop the extension so the network
 // reads as "sunset" rather than "sunset.jpg". Falls back to the raw name
 // for extensionless files.
 function fileLabel(name: string): string {
   return name.replace(/\.[^/.]+$/, "") || name;
-}
-
-function makeInstanceNode(
-  type: string,
-  position: { x: number; y: number }
-): Node<NodeDataPayload> {
-  const def = getNodeDef(type);
-  if (!def) throw new Error(`Unknown node type ${type}`);
-  const params: Record<string, unknown> = {};
-  for (const p of def.params) params[p.name] = p.default;
-  const resolved = withMaskInput(def.resolveInputs?.(params) ?? def.inputs);
-  return {
-    id: newNodeId(type),
-    type: "effect",
-    position,
-    data: {
-      defType: type,
-      params,
-      exposedParams: [],
-      name: def.name,
-      inputs: resolved.map((i) => ({
-        name: i.name,
-        label: i.label,
-        type: i.type,
-      })),
-      auxOutputs: (def.resolveAuxOutputs?.(params) ?? def.auxOutputs).map(
-        (a) => ({
-          name: a.name,
-          type: a.type,
-          disabled: a.disabled,
-        })
-      ),
-      primaryOutput:
-        def.resolvePrimaryOutput?.(params) ?? def.primaryOutput,
-      terminal: def.terminal,
-      active: !!def.terminal,
-      bypassed: false,
-    },
-  };
 }
 
 // Fingerprint that ignores positions.
@@ -272,6 +254,18 @@ function EffectsShell({
     rehydrate?.canvasRes ?? [1024, 1024]
   );
 
+  // Media params (video/audio files) the last project load couldn't
+  // silently relink — drives the relink modal, which tracks a per-item
+  // status (missing / ok / failed) across relink attempts. Reset by
+  // every load (deserializeGraph reports the fresh list, possibly empty).
+  const [relinkItems, setRelinkItems] = useState<RelinkItem[]>([]);
+  const [relinkBusy, setRelinkBusy] = useState(false);
+  const setMissingMedia = useCallback((missing: MissingMedia[]) => {
+    setRelinkItems(
+      missing.map((media) => ({ media, status: "missing" as const }))
+    );
+  }, []);
+
   // /p/<slug> bootstrap. Runs once on mount when initialProject was
   // supplied; deserializes the saved graph and seeds the editor.
   // The graph payload was loaded server-side and passed in, so we
@@ -282,11 +276,13 @@ function EffectsShell({
     let cancelled = false;
     (async () => {
       try {
-        const { nodes: nextNodes, edges: nextEdges, scene } =
+        const { nodes: nextNodes, edges: nextEdges, scene, missingMedia } =
           await deserializeGraph(initialProject.graph);
         if (cancelled) return;
         setNodes(nextNodes);
         setEdges(nextEdges);
+        setCurrentGroupId(defaultScopeFor(nextNodes));
+        setMissingMedia(missingMedia);
         if (scene) {
           if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
           if (scene.fps !== undefined) setFps(scene.fps);
@@ -783,7 +779,19 @@ function EffectsShell({
     const t = setTimeout(() => setTrackDockMounted(false), 260);
     return () => clearTimeout(t);
   }, [trackEditorOpen]);
-  const [dockTab, setDockTab] = useState<"tracks" | "graph">("tracks");
+  const [dockTab, setDockTab] = useState<"tracks" | "graph" | "layers">(
+    "layers"
+  );
+  // Node-group scope: which group's interior the node editor shows.
+  // undefined = root. Navigation state, deliberately NOT part of undo
+  // history — undoing a group creation while inside it falls back to
+  // root via the stale-scope effect below. A fresh or rehydrated
+  // single-layer project opens inside its layer.
+  const [currentGroupId, setCurrentGroupId] = useState<string | undefined>(
+    () => defaultScopeFor(rehydrate?.nodes ?? INITIAL_NODES)
+  );
+  const currentGroupIdRef = useRef(currentGroupId);
+  currentGroupIdRef.current = currentGroupId;
   // When on, the tracks editor only shows lanes for nodes that are
   // currently selected in the node editor. Keeps the dock readable
   // when a graph has dozens of animated parameters.
@@ -1040,6 +1048,7 @@ function EffectsShell({
       const graphNodes: GraphNode[] = currentNodes.map((n) => ({
         id: n.id,
         type: n.data.defType,
+        parentId: n.data.parentId,
         params: n.data.params,
         exposedParams: n.data.exposedParams,
         animation: n.data.animation,
@@ -1269,6 +1278,20 @@ function EffectsShell({
     (connection: Connection) => {
       pushGraph(getGraphSnapshot());
 
+      // Wiring into a virtual boundary socket (Group Input / Group
+      // Output's trailing "+") mints a real socket typed after the far
+      // end and lands the edge there instead.
+      const virtual = connectToVirtualSocket(
+        nodesRef.current,
+        edgesRef.current,
+        connection
+      );
+      if (virtual) {
+        setNodes(virtual.nodes);
+        setEdges(virtual.edges);
+        return;
+      }
+
       // If we're dropping a UV edge on a Math node in scalar mode, promote
       // it to UV mode so the target socket is properly typed and all of
       // the node's inputs/outputs line up. Equivalent to the user
@@ -1296,10 +1319,11 @@ function EffectsShell({
                 params: nextParams,
                 primaryOutput: nextPrimary,
                 inputs: resolved
-                  ? withMaskInput(resolved).map((i) => ({
+                  ? withMaskInput(resolved, def).map((i) => ({
                       name: i.name,
                       label: i.label,
                       type: i.type,
+                      hidden: i.hidden,
                     }))
                   : n.data.inputs,
                 auxOutputs: resolvedAux
@@ -1326,6 +1350,7 @@ function EffectsShell({
       );
       const copySocketTypeToMode: Record<string, string> = {
         image: "image",
+        image_group: "image",
         spline: "spline",
         points: "point",
       };
@@ -1352,10 +1377,11 @@ function EffectsShell({
                 params: nextParams,
                 primaryOutput: nextPrimary,
                 inputs: resolved
-                  ? withMaskInput(resolved).map((i) => ({
+                  ? withMaskInput(resolved, def).map((i) => ({
                       name: i.name,
                       label: i.label,
                       type: i.type,
+                      hidden: i.hidden,
                     }))
                   : n.data.inputs,
               },
@@ -1427,6 +1453,79 @@ function EffectsShell({
     return null;
   }
 
+  // makeInstanceNode + scope stamp: every interactively-created node
+  // lands in the scope the user is currently looking at. All runtime
+  // node-creation paths must go through here (the module-level
+  // INITIAL_NODES / new-project scaffold stay at root by design).
+  const spawnNode = useCallback(
+    (type: string, position: { x: number; y: number }) => {
+      const n = makeInstanceNode(type, position);
+      n.data.parentId = currentGroupIdRef.current;
+      return n;
+    },
+    []
+  );
+
+  // Declared up here (ahead of the clipboard / structural handlers that
+  // consume them) — a brief status toast and the group-scope navigation
+  // primitives.
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimeoutRef = useRef<number | null>(null);
+  const flashToast = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    toastTimeoutRef.current = window.setTimeout(() => setToast(null), 1500);
+  }, []);
+  useEffect(
+    () => () => {
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    },
+    []
+  );
+
+  // Change scope and drop the selection — selected nodes from the old
+  // scope would be hidden but still selected (Delete would eat them
+  // invisibly).
+  const navigateScope = useCallback(
+    (groupId: string | undefined) => {
+      setCurrentGroupId(groupId);
+      setSelectedId(null);
+      setNodes((prev) =>
+        prev.map((n) => (n.selected ? { ...n, selected: false } : n))
+      );
+    },
+    [setNodes, setSelectedId]
+  );
+
+  const handleDiveIntoGroup = useCallback(
+    (groupId: string) => {
+      const g = nodesRef.current.find((n) => n.id === groupId);
+      if (!g) return;
+      if (g.data.defType !== GROUP_TYPE && g.data.defType !== LAYER_TYPE) {
+        return;
+      }
+      navigateScope(groupId);
+    },
+    [navigateScope]
+  );
+
+  const handleScopeUp = useCallback(() => {
+    const cur = currentGroupIdRef.current;
+    if (!cur) return;
+    const g = nodesRef.current.find((n) => n.id === cur);
+    navigateScope(g?.data.parentId);
+  }, [navigateScope]);
+
+  // If the scope group vanishes from the graph (undo of the group's
+  // creation, deletion from outside, project load), fall back to root.
+  // Navigation state is not part of undo history, so this is the only
+  // guard needed.
+  useEffect(() => {
+    if (currentGroupId && !nodes.some((n) => n.id === currentGroupId)) {
+      setCurrentGroupId(undefined);
+    }
+  }, [nodes, currentGroupId]);
+
   // Create a source node for a dropped / pasted file. Mirrors the
   // per-ParamType registration path ParamPanel uses when the user
   // picks a file interactively — we get the same param value shape
@@ -1473,15 +1572,49 @@ function EffectsShell({
       }
 
       pushGraph(getGraphSnapshot());
-      const newNode = makeInstanceNode(nodeType, flowPos);
+      const newNode = spawnNode(nodeType, flowPos);
       newNode.data.params = { ...newNode.data.params, file: paramValue };
       // Match the Load-button path: a dropped image/video names its node.
       if (kind === "image" || kind === "video") {
         newNode.data.name = fileLabel(file.name);
       }
+      // Strict root: a media drop at root becomes its own layer (named
+      // after the file), with the source wired into the layer's Group
+      // Output so it shows immediately.
+      if (!currentGroupIdRef.current) {
+        const res = createLayer(nodesRef.current, edgesRef.current, {
+          name: fileLabel(file.name),
+        });
+        const go = res.nodes.find(
+          (n) =>
+            n.data.parentId === res.layerId &&
+            n.data.defType === GROUP_OUTPUT_TYPE
+        );
+        newNode.data.parentId = res.layerId;
+        const out = newNode.data.primaryOutput;
+        const goSocket =
+          out === "image" ? "in:image" : out === "audio" ? "in:audio" : null;
+        setNodes([...res.nodes, newNode]);
+        setEdges(
+          go && goSocket
+            ? [
+                ...res.edges,
+                {
+                  id: newEdgeId(),
+                  source: newNode.id,
+                  sourceHandle: "out:primary",
+                  target: go.id,
+                  targetHandle: goSocket,
+                },
+              ]
+            : res.edges
+        );
+        navigateScope(res.layerId);
+        return;
+      }
       setNodes((prev) => [...prev, newNode]);
     },
-    [pushGraph, getGraphSnapshot, setNodes]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, spawnNode, navigateScope]
   );
 
   // Read the upstream node's primary IMAGE output as a PNG blob.
@@ -1536,14 +1669,14 @@ function EffectsShell({
         }
         const bitmap = await createImageBitmap(blob);
         pushGraph(getGraphSnapshot());
-        const newNode = makeInstanceNode("image-source", flowPos);
+        const newNode = spawnNode("image-source", flowPos);
         newNode.data.params = { ...newNode.data.params, file: bitmap };
         setNodes((prev) => [...prev, newNode]);
       } catch (err) {
         console.warn("image-gen drop failed:", err);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes]
+    [pushGraph, getGraphSnapshot, setNodes, spawnNode]
   );
 
   const onAddNode = useCallback(
@@ -1561,6 +1694,18 @@ function EffectsShell({
       const jitter = { x: (Math.random() - 0.5) * 24, y: (Math.random() - 0.5) * 24 };
       const pos = { x: base.x + jitter.x, y: base.y + jitter.y };
 
+      // Compound: "layer" creates a new layer (node + fixed boundary
+      // nodes) and splices it into the top of the root chain. Offered
+      // only by the root add menus.
+      if (type === "layer") {
+        const res = createLayer(nodesRef.current, edgesRef.current);
+        setNodes(res.nodes);
+        setEdges(res.edges);
+        setSelectedId(res.layerId);
+        setParamView("node");
+        return;
+      }
+
       // Compound: "simulation-zone" creates a Start + End pair with a
       // shared zone_id. Start lands at `pos`; End is offset to the right
       // so the pair is pre-arranged. They're NOT pre-wired to each other
@@ -1568,8 +1713,8 @@ function EffectsShell({
       // dropped source wire doesn't apply to compound nodes — skip.
       if (type === "simulation-zone") {
         const zoneId = `zone-${Math.random().toString(36).slice(2, 10)}`;
-        const start = makeInstanceNode("simulation-start", pos);
-        const end = makeInstanceNode("simulation-end", {
+        const start = spawnNode("simulation-start", pos);
+        const end = spawnNode("simulation-end", {
           x: pos.x + 380,
           y: pos.y,
         });
@@ -1579,7 +1724,7 @@ function EffectsShell({
         return;
       }
 
-      const newNode = makeInstanceNode(type, pos);
+      const newNode = spawnNode(type, pos);
 
       // Auto-wire: the user dropped a live wire on empty pane and
       // then picked this node from the search popup. Try to connect
@@ -1604,7 +1749,7 @@ function EffectsShell({
           }
           if (def.type === "copy-to-points") {
             const nextMode =
-              srcType === "image"
+              srcType === "image" || srcType === "image_group"
                 ? "image"
                 : srcType === "spline"
                   ? "spline"
@@ -1622,12 +1767,14 @@ function EffectsShell({
           // param mutation so the edge target matches what the evaluator
           // will see.
           const resolvedInputs = withMaskInput(
-            def.resolveInputs?.(newNode.data.params) ?? def.inputs
+            def.resolveInputs?.(newNode.data.params) ?? def.inputs,
+            def
           );
           newNode.data.inputs = resolvedInputs.map((i) => ({
             name: i.name,
             label: i.label,
             type: i.type,
+            hidden: i.hidden,
           }));
           newNode.data.primaryOutput =
             def.resolvePrimaryOutput?.(newNode.data.params) ??
@@ -1678,6 +1825,7 @@ function EffectsShell({
               !targetInput &&
               def.type === "copy-to-points" &&
               (srcType === "image" ||
+                srcType === "image_group" ||
                 srcType === "spline" ||
                 srcType === "points")
             ) {
@@ -1711,48 +1859,25 @@ function EffectsShell({
       setSelectedId(newNode.id);
       setParamView("node");
     },
-    [setNodes, setEdges, setSelectedId, setParamView, pushGraph, getGraphSnapshot]
-  );
-
-  // Shallow-clone a node with a fresh id + position. Params share references
-  // (so fonts, bitmaps, paint canvases are reused rather than deep-copied) —
-  // intentional for v1: deep-cloning a paint canvas or video element would
-  // be a bigger project and isn't what most users expect from duplicate.
-  const cloneNode = useCallback(
-    (
-      n: Node<NodeDataPayload>,
-      position: { x: number; y: number }
-    ): Node<NodeDataPayload> => {
-      const newId = newNodeId(n.data.defType);
-      return {
-        ...n,
-        id: newId,
-        position,
-        selected: false,
-        data: {
-          ...n.data,
-          params: { ...n.data.params },
-          exposedParams: n.data.exposedParams
-            ? [...n.data.exposedParams]
-            : [],
-          controlParams: n.data.controlParams
-            ? [...n.data.controlParams]
-            : [],
-        },
-      };
-    },
-    []
+    [setNodes, setEdges, setSelectedId, setParamView, pushGraph, getGraphSnapshot, spawnNode]
   );
 
   const handleCopyNodes = useCallback(() => {
     const selected = nodesRef.current.filter((n) => n.selected);
     if (selected.length === 0) return;
-    const ids = new Set(selected.map((n) => n.id));
+    // Selected groups travel with their interiors — copying just the
+    // shell would paste a group with no contents.
+    const ids = expandWithDescendants(
+      nodesRef.current,
+      selected.map((n) => n.id)
+    );
     const internalEdges = edgesRef.current.filter(
       (e) => ids.has(e.source) && ids.has(e.target)
     );
     clipboardRef.current = {
-      nodes: selected.map((n) => ({ ...n, selected: false })),
+      nodes: nodesRef.current
+        .filter((n) => ids.has(n.id))
+        .map((n) => ({ ...n, selected: false })),
       edges: internalEdges,
     };
   }, []);
@@ -1773,28 +1898,55 @@ function EffectsShell({
     } else {
       offset = { x: 24, y: 24 };
     }
-    const idMap = new Map<string, string>();
-    const newNodes = clip.nodes.map((n) => {
-      const cloned = cloneNode(n, {
-        x: n.position.x + offset.x,
-        y: n.position.y + offset.y,
-      });
-      idMap.set(n.id, cloned.id);
-      cloned.selected = true;
-      return cloned;
-    });
-    const newEdges = clip.edges.map((e) => ({
-      ...e,
-      id: `e-${Math.random().toString(36).slice(2, 10)}`,
-      source: idMap.get(e.source) ?? e.source,
-      target: idMap.get(e.target) ?? e.target,
-    }));
-    setNodes((prev) => [
-      ...prev.map((n) => ({ ...n, selected: false })),
+    // Paste lands in the scope the user is looking at, which may differ
+    // from where the copy happened (retarget applies to top-level
+    // clones only; group interiors keep pointing at their cloned
+    // shells). At root — where only layers live — the pasted nodes
+    // auto-wrap into a fresh layer instead.
+    let targetScope = currentGroupIdRef.current;
+    let baseNodes = nodesRef.current;
+    let baseEdges = edgesRef.current;
+    let wrapped: string | null = null;
+    if (
+      !targetScope &&
+      !clip.nodes.every((n) => n.data.defType === LAYER_TYPE)
+    ) {
+      const res = createLayer(baseNodes, baseEdges);
+      baseNodes = res.nodes;
+      baseEdges = res.edges;
+      targetScope = res.layerId;
+      wrapped = res.layerId;
+    }
+    const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
+      clip.nodes,
+      clip.edges,
+      offset,
+      { parentId: targetScope }
+    );
+    setNodes([
+      ...baseNodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
       ...newNodes,
     ]);
-    setEdges((prev) => [...prev, ...newEdges]);
-  }, [pushGraph, getGraphSnapshot, cloneNode, setNodes, setEdges]);
+    setEdges([...baseEdges, ...newEdges]);
+    if (wrapped) {
+      flashToast("pasted into a new layer");
+      navigateScope(wrapped);
+      // navigateScope clears selection; keep the pasted clones selected
+      // so the user can immediately move them.
+      setNodes((prev) =>
+        prev.map((n) =>
+          newNodes.some((c) => c.id === n.id) ? { ...n, selected: true } : n
+        )
+      );
+    }
+  }, [
+    pushGraph,
+    getGraphSnapshot,
+    setNodes,
+    setEdges,
+    flashToast,
+    navigateScope,
+  ]);
 
   // Shift+D duplicate: clone every selected node, preserving any edges
   // whose endpoints are both inside the selection. Mirrors copy+paste
@@ -1804,33 +1956,23 @@ function EffectsShell({
     const selected = nodesRef.current.filter((n) => n.selected);
     if (selected.length === 0) return;
     pushGraph(getGraphSnapshot());
-    const ids = new Set(selected.map((n) => n.id));
-    const internalEdges = edgesRef.current.filter(
-      (e) => ids.has(e.source) && ids.has(e.target)
+    // Selected groups duplicate with their interiors (fresh ids + zone
+    // remap — see cloneSubgraph).
+    const ids = expandWithDescendants(
+      nodesRef.current,
+      selected.map((n) => n.id)
     );
-    const offset = { x: 32, y: 32 };
-    const idMap = new Map<string, string>();
-    const newNodes = selected.map((n) => {
-      const cloned = cloneNode(n, {
-        x: n.position.x + offset.x,
-        y: n.position.y + offset.y,
-      });
-      idMap.set(n.id, cloned.id);
-      cloned.selected = true;
-      return cloned;
-    });
-    const newEdges = internalEdges.map((e) => ({
-      ...e,
-      id: `e-${Math.random().toString(36).slice(2, 10)}`,
-      source: idMap.get(e.source) ?? e.source,
-      target: idMap.get(e.target) ?? e.target,
-    }));
+    const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
+      nodesRef.current.filter((n) => ids.has(n.id)),
+      edgesRef.current,
+      { x: 32, y: 32 }
+    );
     setNodes((prev) => [
       ...prev.map((n) => ({ ...n, selected: false })),
       ...newNodes,
     ]);
     setEdges((prev) => [...prev, ...newEdges]);
-  }, [pushGraph, getGraphSnapshot, cloneNode, setNodes, setEdges]);
+  }, [pushGraph, getGraphSnapshot, setNodes, setEdges]);
 
   // Shift+M: wrap the selected nodes' image/mask outputs in a new Merge
   // node. Every image/mask output counts — a node's primary output and
@@ -1890,33 +2032,35 @@ function EffectsShell({
     const rightEdge = Math.max(...eligible.map((e) => e.node.position.x));
     const avgY =
       eligible.reduce((s, e) => s + e.node.position.y, 0) / eligible.length;
-    const merge = makeInstanceNode("merge", { x: rightEdge + 360, y: avgY });
+    const merge = spawnNode("merge", { x: rightEdge + 360, y: avgY });
     merge.data.params = { ...merge.data.params, layers };
     // Recompute the resolved input sockets so the dynamic `layer:*`
     // handles exist for the edges below (and for the node renderer).
     const def = getNodeDef("merge");
     if (def) {
       const resolved = withMaskInput(
-        def.resolveInputs?.(merge.data.params) ?? def.inputs
+        def.resolveInputs?.(merge.data.params) ?? def.inputs,
+        def
       );
       merge.data.inputs = resolved.map((i) => ({
         name: i.name,
         label: i.label,
         type: i.type,
+        hidden: i.hidden,
       }));
     }
     merge.selected = true;
 
     const newEdges: Edge[] = [
       {
-        id: `e-${Math.random().toString(36).slice(2, 10)}`,
+        id: newEdgeId(),
         source: base.nodeId,
         sourceHandle: base.handle,
         target: merge.id,
         targetHandle: "in:base",
       },
       ...layerSources.map((src, i) => ({
-        id: `e-${Math.random().toString(36).slice(2, 10)}`,
+        id: newEdgeId(),
         source: src.nodeId,
         sourceHandle: src.handle,
         target: merge.id,
@@ -1938,6 +2082,7 @@ function EffectsShell({
     setEdges,
     setSelectedId,
     setParamView,
+    spawnNode,
   ]);
 
   // Viewport shelf-tool spawner (the spline-primitive buttons that live
@@ -1962,6 +2107,43 @@ function EffectsShell({
         );
         return aux ? `out:aux:${aux.name}` : null;
       };
+
+      // Strict root: shelf tools redirect into a fresh layer, wired to
+      // its Group Output when the primitive has an image output.
+      if (!currentGroupIdRef.current) {
+        const res = createLayer(nodesRef.current, edgesRef.current);
+        const go = res.nodes.find(
+          (n) =>
+            n.data.parentId === res.layerId &&
+            n.data.defType === GROUP_OUTPUT_TYPE
+        );
+        const base = lastPanePointerRef.current ?? { x: 200, y: 200 };
+        const node = spawnNode(type, base);
+        node.data.parentId = res.layerId;
+        node.selected = true;
+        const handle = imageOutputHandle(node);
+        // Navigate first — navigateScope clears selection flags, and the
+        // fresh node should come out selected.
+        navigateScope(res.layerId);
+        setNodes([...res.nodes, node]);
+        setEdges(
+          go && handle
+            ? [
+                ...res.edges,
+                {
+                  id: newEdgeId(),
+                  source: node.id,
+                  sourceHandle: handle,
+                  target: go.id,
+                  targetHandle: "in:image",
+                },
+              ]
+            : res.edges
+        );
+        setSelectedId(node.id);
+        setParamView("node");
+        return;
+      }
 
       // Target Merge: one that's selected (explicit pick wins) or, failing
       // that, the one parked as the active viewport output.
@@ -1992,7 +2174,7 @@ function EffectsShell({
         pos = { x: base.x, y: base.y };
       }
 
-      const newNode = makeInstanceNode(type, pos);
+      const newNode = spawnNode(type, pos);
       const handle = target ? imageOutputHandle(newNode) : null;
 
       if (!target || !handle) {
@@ -2020,17 +2202,19 @@ function EffectsShell({
       const def = getNodeDef("merge");
       if (def) {
         const resolved = withMaskInput(
-          def.resolveInputs?.(nextParams) ?? def.inputs
+          def.resolveInputs?.(nextParams) ?? def.inputs,
+          def
         );
         nextInputs = resolved.map((i) => ({
           name: i.name,
           label: i.label,
           type: i.type,
+          hidden: i.hidden,
         }));
       }
 
       const edge: Edge = {
-        id: `e-${Math.random().toString(36).slice(2, 10)}`,
+        id: newEdgeId(),
         source: newNode.id,
         sourceHandle: handle,
         target: target.id,
@@ -2056,32 +2240,38 @@ function EffectsShell({
     [
       pushGraph,
       getGraphSnapshot,
+      navigateScope,
       setNodes,
       setEdges,
       setSelectedId,
       setParamView,
+      spawnNode,
     ]
   );
 
   // Context-menu / standalone Duplicate: clone the source node at a small
-  // offset so it's visibly distinct. No edge surgery — the clone starts
-  // disconnected and the user wires it up themselves.
+  // offset so it's visibly distinct. No exterior edge surgery — the clone
+  // starts disconnected and the user wires it up themselves. Groups
+  // deep-copy their interior (nodes + interior edges) so the duplicate
+  // is self-contained.
   const handleDuplicateNode = useCallback(
     (nodeId: string) => {
       const src = nodesRef.current.find((n) => n.id === nodeId);
       if (!src) return;
       pushGraph(getGraphSnapshot());
-      const clone = cloneNode(src, {
-        x: src.position.x + 32,
-        y: src.position.y + 32,
-      });
-      clone.selected = true;
+      const ids = expandWithDescendants(nodesRef.current, [nodeId]);
+      const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
+        nodesRef.current.filter((n) => ids.has(n.id)),
+        edgesRef.current,
+        { x: 32, y: 32 }
+      );
       setNodes((prev) => [
         ...prev.map((n) => ({ ...n, selected: false })),
-        clone,
+        ...newNodes,
       ]);
+      if (newEdges.length > 0) setEdges((prev) => [...prev, ...newEdges]);
     },
-    [pushGraph, getGraphSnapshot, cloneNode, setNodes]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges]
   );
 
   // Alt-drag duplicate: Figma-style. A clone takes the node's original
@@ -2094,20 +2284,30 @@ function EffectsShell({
       const src = nodesRef.current.find((n) => n.id === nodeId);
       if (!src) return;
       pushGraph(getGraphSnapshot());
-      const clone = cloneNode(src, {
-        x: src.position.x,
-        y: src.position.y,
-      });
-      setNodes((prev) => [...prev, clone]);
-      setEdges((prev) =>
-        prev.map((e) => ({
-          ...e,
-          source: e.source === nodeId ? clone.id : e.source,
-          target: e.target === nodeId ? clone.id : e.target,
-        }))
+      // Groups deep-copy their interior; the redirect below only ever
+      // touches exterior edges since nothing wires directly into a
+      // group shell from inside it.
+      const ids = expandWithDescendants(nodesRef.current, [nodeId]);
+      const { nodes: newNodes, edges: newEdges, idMap } = cloneSubgraph(
+        nodesRef.current.filter((n) => ids.has(n.id)),
+        edgesRef.current,
+        { x: 0, y: 0 }
       );
+      const cloneId = idMap.get(nodeId)!;
+      // The user keeps dragging the original — the clone must not steal
+      // selection.
+      for (const n of newNodes) n.selected = false;
+      setNodes((prev) => [...prev, ...newNodes]);
+      setEdges((prev) => [
+        ...prev.map((e) => ({
+          ...e,
+          source: e.source === nodeId ? cloneId : e.source,
+          target: e.target === nodeId ? cloneId : e.target,
+        })),
+        ...newEdges,
+      ]);
     },
-    [pushGraph, getGraphSnapshot, cloneNode, setNodes, setEdges]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges]
   );
 
   // Wire-gesture actions from NodeEditor. `combine` stamps a junction
@@ -2163,6 +2363,14 @@ function EffectsShell({
       const nodeList = nodesRef.current;
       const splicedNode = nodeList.find((n) => n.id === args.nodeId);
       if (!splicedNode) return;
+      // Strict root: root edges are the layer chain (+ Output wiring) —
+      // only layer nodes may splice into them.
+      if (
+        !splicedNode.data.parentId &&
+        splicedNode.data.defType !== LAYER_TYPE
+      ) {
+        return;
+      }
       const sourceNode = nodeList.find((n) => n.id === oldEdge.source);
       if (!sourceNode) return;
       // Resolve the source-side socket type of the old edge — same as
@@ -2209,7 +2417,8 @@ function EffectsShell({
         }
         if (nextParams !== promoted.data.params) {
           const resolvedInputs = withMaskInput(
-            def.resolveInputs?.(nextParams) ?? def.inputs
+            def.resolveInputs?.(nextParams) ?? def.inputs,
+            def
           );
           const nextAux =
             def.resolveAuxOutputs?.(nextParams) ?? def.auxOutputs;
@@ -2222,6 +2431,7 @@ function EffectsShell({
                 name: i.name,
                 label: i.label,
                 type: i.type,
+                hidden: i.hidden,
               })),
               primaryOutput:
                 def.resolvePrimaryOutput?.(nextParams) ??
@@ -2391,6 +2601,37 @@ function EffectsShell({
             );
             nextAnimation = { ...n.data.animation, [paramName]: updated };
           }
+          // Per-layer opacity auto-keyframe (Merge): an edit to the
+          // merge_layers array that changes a layer's opacity mirrors
+          // into that layer's virtual block (layer_opacity:<id>) when it
+          // is animated — same contract as scalar params. The constant
+          // is still written below for the animation-off round-trip.
+          if (Array.isArray(value)) {
+            const pdefType = getNodeDef(n.data.defType)?.params.find(
+              (p) => p.name === paramName
+            )?.type;
+            if (pdefType === "merge_layers") {
+              const before =
+                (n.data.params[paramName] as MergeLayer[] | undefined) ?? [];
+              for (const layer of value as MergeLayer[]) {
+                const prev = before.find((b) => b.id === layer.id);
+                if (!prev || prev.opacity === layer.opacity) continue;
+                const key = layerOpacityKey(layer.id);
+                const blk = nextAnimation?.[key];
+                if (blk?.animated) {
+                  nextAnimation = {
+                    ...nextAnimation,
+                    [key]: upsertKeyframe(
+                      blk,
+                      tickAtEdit,
+                      layer.opacity,
+                      "easeInOut"
+                    ),
+                  };
+                }
+              }
+            }
+          }
           const nextParams = { ...n.data.params, [paramName]: value };
           const def = getNodeDef(n.data.defType);
           // If this param is half of an active chain-link, write the
@@ -2474,10 +2715,11 @@ function EffectsShell({
               animation: nextAnimation,
               primaryOutput: nextPrimary,
               inputs: resolved
-                ? withMaskInput(resolved).map((i) => ({
+                ? withMaskInput(resolved, def).map((i) => ({
                     name: i.name,
                     label: i.label,
                     type: i.type,
+                    hidden: i.hidden,
                   }))
                 : n.data.inputs,
               auxOutputs: resolvedAux
@@ -2508,9 +2750,13 @@ function EffectsShell({
     (
       nodeId: string,
       paramName: string,
-      next: KeyframeAnimationBlock | undefined
+      next: KeyframeAnimationBlock | undefined,
+      // Batch gestures (multi-track move / scale / stagger) pass a single
+      // shared key so every param write in the gesture coalesces into one
+      // undo step. Single edits default to a per-param key.
+      coalesceKey?: string
     ) => {
-      pushGraph(getGraphSnapshot(), `anim:${nodeId}:${paramName}`);
+      pushGraph(getGraphSnapshot(), coalesceKey ?? `anim:${nodeId}:${paramName}`);
       const tickAtEdit = currentTick;
       setNodes((prev) =>
         prev.map((n) => {
@@ -2750,6 +2996,7 @@ function EffectsShell({
         detail.kind === "toggleActive2" ||
         detail.kind === "toggleBypass" ||
         detail.kind === "mergeAddLayer" ||
+        detail.kind === "queueAddItem" ||
         detail.kind === "trailsReset"
       ) {
         pushGraph(getGraphSnapshot());
@@ -2825,10 +3072,40 @@ function EffectsShell({
                 ...n.data,
                 params: nextParams,
                 inputs: resolved
-                  ? withMaskInput(resolved).map((i) => ({
+                  ? withMaskInput(resolved, def).map((i) => ({
                       name: i.name,
                       label: i.label,
                       type: i.type,
+                      hidden: i.hidden,
+                    }))
+                  : n.data.inputs,
+              },
+            };
+          })
+        );
+      } else if (detail.kind === "queueAddItem") {
+        setNodes((prev) =>
+          prev.map((n) => {
+            if (n.id !== detail.id) return n;
+            const current = (n.data.params.items as RenderQueueItem[]) ?? [];
+            const nextItems: RenderQueueItem[] = [
+              ...current,
+              { id: newRenderQueueItemId(), kind: "video", frame: 0 },
+            ];
+            const def = getNodeDef(n.data.defType);
+            const nextParams = { ...n.data.params, items: nextItems };
+            const resolved = def?.resolveInputs?.(nextParams);
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                params: nextParams,
+                inputs: resolved
+                  ? withMaskInput(resolved, def).map((i) => ({
+                      name: i.name,
+                      label: i.label,
+                      type: i.type,
+                      hidden: i.hidden,
                     }))
                   : n.data.inputs,
               },
@@ -2956,9 +3233,57 @@ function EffectsShell({
           pushGraph(getGraphSnapshot(), "rf-remove");
         }
       }
+      // Cascade group deletion: removing a group shell also removes its
+      // interior (recursively) and any edges touching it — otherwise the
+      // orphans linger invisible in the flat array. deleteElements only
+      // knows about the shell, so the cascade is appended here, at the
+      // single chokepoint every removal flows through.
+      const removedIds = changes
+        .filter((c) => c.type === "remove")
+        .map((c) => c.id);
+      if (removedIds.length > 0) {
+        const dead = new Set([
+          ...removedIds,
+          ...collectDescendantIds(nodesRef.current, removedIds),
+        ]);
+        // Deleting a root layer heals the chain: the layer below
+        // reconnects to whatever the deleted one fed (the layer above,
+        // or Output). Compute the full survivor graph and apply it
+        // directly — RF's incremental change path can't express the
+        // re-wire.
+        const removedRootLayer = removedIds.some((id) => {
+          const n = nodesRef.current.find((x) => x.id === id);
+          return n && n.data.defType === LAYER_TYPE && !n.data.parentId;
+        });
+        if (removedRootLayer) {
+          const order = getLayerChain(nodesRef.current, edgesRef.current)
+            .map((n) => n.id)
+            .filter((id) => !dead.has(id));
+          const survivors = nodesRef.current.filter((n) => !dead.has(n.id));
+          const survEdges = edgesRef.current.filter(
+            (e) => !dead.has(e.source) && !dead.has(e.target)
+          );
+          const res = reorderLayers(survivors, survEdges, order);
+          setNodes(res.nodes);
+          setEdges(res.edges);
+          return;
+        }
+        if (dead.size > removedIds.length) {
+          changes = [
+            ...changes,
+            ...[...dead]
+              .filter((id) => !removedIds.includes(id))
+              .map((id) => ({ type: "remove" as const, id })),
+          ];
+          const edgeRemovals = edgesRef.current
+            .filter((e) => dead.has(e.source) || dead.has(e.target))
+            .map((e) => ({ type: "remove" as const, id: e.id }));
+          if (edgeRemovals.length > 0) onEdgesChange(edgeRemovals);
+        }
+      }
       onNodesChange(changes);
     },
-    [onNodesChange, pushGraph, getGraphSnapshot]
+    [onNodesChange, onEdgesChange, pushGraph, getGraphSnapshot, setNodes, setEdges]
   );
   const onEdgesChangeWithHistory = useCallback(
     (changes: EdgeChange[]) => {
@@ -2997,6 +3322,21 @@ function EffectsShell({
   const recordingRef = useRef(recording);
   recordingRef.current = recording;
 
+  // Render Queue batch progress. Shown as an "Item i/N · <name>" line above
+  // the per-item export banner. Separate from `recording` so each item's own
+  // export still drives its overlay while the batch tracks the outer loop.
+  const [queueProgress, setQueueProgress] = useState<{
+    index: number;
+    total: number;
+    name: string;
+    // Which Render Queue node is running and which of its rows is
+    // rendering — lets the param panel and the canvas node highlight the
+    // matching row. itemId is null during the trailing zip step.
+    nodeId: string;
+    itemId: string | null;
+  } | null>(null);
+  const queueRenderingRef = useRef(false);
+
   // Drives the save/load progress banner. `progress` is a 0..1 value; the
   // banner renders it as a percentage plus a thin fill bar.
   const [progressStatus, setProgressStatus] = useState<{
@@ -3028,18 +3368,266 @@ function EffectsShell({
     window.addEventListener("node-progress", onProgress);
     return () => window.removeEventListener("node-progress", onProgress);
   }, []);
-  const [toast, setToast] = useState<string | null>(null);
-  const toastTimeoutRef = useRef<number | null>(null);
-  const flashToast = useCallback((message: string) => {
-    setToast(message);
-    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
-    toastTimeoutRef.current = window.setTimeout(() => setToast(null), 1500);
-  }, []);
-  useEffect(
-    () => () => {
-      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+  // Cmd+G — collapse the selection into a group. graph-ops owns socket
+  // creation, edge surgery, and cycle refusal; refusals surface as a
+  // toast.
+  const handleGroupSelection = useCallback(() => {
+    // Strict root: layers live at root and can't be grouped — Cmd+G
+    // only works inside a layer (or deeper).
+    if (!currentGroupIdRef.current) {
+      flashToast("Cmd+G is disabled at root — group inside a layer");
+      return;
+    }
+    const selectedIds = new Set(
+      nodesRef.current.filter((n) => n.selected).map((n) => n.id)
+    );
+    if (selectedIds.size === 0) return;
+    const res = groupSelection(
+      nodesRef.current,
+      edgesRef.current,
+      selectedIds,
+      currentGroupIdRef.current
+    );
+    if (!res.ok) {
+      flashToast(res.error);
+      return;
+    }
+    pushGraph(getGraphSnapshot());
+    setNodes(res.nodes);
+    setEdges(res.edges);
+    setSelectedId(res.groupId);
+    setParamView("node");
+  }, [
+    pushGraph,
+    getGraphSnapshot,
+    setNodes,
+    setEdges,
+    setSelectedId,
+    setParamView,
+    flashToast,
+  ]);
+
+  // Cmd+Shift+G — dissolve every selected group back into the current
+  // scope. Multiple selected groups dissolve in one undo step.
+  const handleUngroupSelection = useCallback(() => {
+    const selectedGroups = nodesRef.current.filter(
+      (n) => n.selected && n.data.defType === GROUP_TYPE
+    );
+    if (selectedGroups.length === 0) {
+      flashToast("Select a group to ungroup");
+      return;
+    }
+    pushGraph(getGraphSnapshot());
+    let curNodes = nodesRef.current;
+    let curEdges = edgesRef.current;
+    for (const g of selectedGroups) {
+      const res = ungroupNode(curNodes, curEdges, g.id);
+      if (!res.ok) continue;
+      curNodes = res.nodes;
+      curEdges = res.edges;
+    }
+    setNodes(curNodes);
+    setEdges(curEdges);
+    setSelectedId(null);
+  }, [
+    pushGraph,
+    getGraphSnapshot,
+    setNodes,
+    setEdges,
+    setSelectedId,
+    flashToast,
+  ]);
+
+  // Rename a node (today surfaced for group shells in the ParamPanel;
+  // breadcrumbs and the Layers editor read the same data.name).
+  const handleRenameNode = useCallback(
+    (nodeId: string, rawName: string) => {
+      const name = rawName.trim();
+      if (!name) return;
+      const node = nodesRef.current.find((n) => n.id === nodeId);
+      if (!node || node.data.name === name) return;
+      pushGraph(getGraphSnapshot());
+      setNodes((prev) =>
+        prev.map((n) =>
+          n.id === nodeId ? { ...n, data: { ...n.data, name } } : n
+        )
+      );
     },
-    []
+    [pushGraph, getGraphSnapshot, setNodes]
+  );
+
+  // Rename / remove a socket on a Group Input / Group Output node —
+  // edge handles on both faces of the boundary are rewritten/dropped by
+  // graph-ops.
+  const handleRenameGroupSocket = useCallback(
+    (nodeId: string, oldName: string, newName: string) => {
+      const res = renameGroupSocket(
+        nodesRef.current,
+        edgesRef.current,
+        nodeId,
+        oldName,
+        newName
+      );
+      if (!res) return;
+      pushGraph(getGraphSnapshot());
+      setNodes(res.nodes);
+      setEdges(res.edges);
+    },
+    [pushGraph, getGraphSnapshot, setNodes, setEdges]
+  );
+
+  const handleRemoveGroupSocket = useCallback(
+    (nodeId: string, name: string) => {
+      const res = removeGroupSocket(
+        nodesRef.current,
+        edgesRef.current,
+        nodeId,
+        name
+      );
+      if (!res) return;
+      pushGraph(getGraphSnapshot());
+      setNodes(res.nodes);
+      setEdges(res.edges);
+    },
+    [pushGraph, getGraphSnapshot, setNodes, setEdges]
+  );
+
+  // Scope-filtered view for the node editor: nodes outside the current
+  // group scope get React Flow's `hidden` flag (positions persist, and
+  // edges with a hidden endpoint hide automatically). Identity is
+  // preserved for nodes whose flag is already correct so React Flow
+  // only re-renders on actual scope changes.
+  const scopedNodes = useMemo(
+    () =>
+      nodes.map((n) => {
+        const hidden = n.data.parentId !== currentGroupId;
+        return !!n.hidden === hidden ? n : { ...n, hidden };
+      }),
+    [nodes, currentGroupId]
+  );
+
+  // Scope trail for the breadcrumb row: project name at root, then one
+  // crumb per group down to the current scope.
+  const breadcrumbs = useMemo(() => {
+    const chain: { id: string | null; name: string }[] = [];
+    let cur: string | undefined = currentGroupId;
+    for (let guard = 0; cur && guard < 100; guard++) {
+      const g = nodes.find((n) => n.id === cur);
+      if (!g) break;
+      chain.unshift({ id: g.id, name: g.data.name });
+      cur = g.data.parentId;
+    }
+    return [
+      { id: null, name: currentProject?.name ?? "Untitled" },
+      ...chain,
+    ];
+  }, [nodes, currentGroupId, currentProject]);
+
+  // --- Layers editor wiring ------------------------------------------------
+
+  // Ordered root layer chain (bottom → top) — the Layers editor renders
+  // it reversed (top of stack first).
+  const layerChain = useMemo(
+    () => getLayerChain(nodes, edges),
+    [nodes, edges]
+  );
+
+  const handleReorderLayers = useCallback(
+    (orderedBottomToTop: string[]) => {
+      pushGraph(getGraphSnapshot());
+      const res = reorderLayers(
+        nodesRef.current,
+        edgesRef.current,
+        orderedBottomToTop
+      );
+      setNodes(res.nodes);
+      setEdges(res.edges);
+    },
+    [pushGraph, getGraphSnapshot, setNodes, setEdges]
+  );
+
+  const handleAddLayerFromEditor = useCallback(
+    (kind: "empty" | "text" | "image" | "video") => {
+      const content =
+        kind === "text"
+          ? "text"
+          : kind === "image"
+            ? "image-source"
+            : kind === "video"
+              ? "video-source"
+              : undefined;
+      const name =
+        kind === "empty"
+          ? undefined
+          : kind[0].toUpperCase() + kind.slice(1);
+      pushGraph(getGraphSnapshot());
+      const res = createLayer(nodesRef.current, edgesRef.current, {
+        content,
+        name,
+      });
+      setNodes(res.nodes);
+      setEdges(res.edges);
+      setSelectedId(res.layerId);
+      setParamView("node");
+    },
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, setSelectedId, setParamView]
+  );
+
+  // Visibility = bypass (the layer passes its stack through). Reuse the
+  // existing toggle-bypass event so undo / fingerprinting are handled.
+  const handleToggleLayerVisibility = useCallback((nodeId: string) => {
+    window.dispatchEvent(
+      new CustomEvent("effect-node-toggle", {
+        detail: { id: nodeId, kind: "toggleBypass" },
+      })
+    );
+  }, []);
+
+  const handleSelectLayer = useCallback(
+    (nodeId: string) => {
+      setNodes((prev) =>
+        prev.map((n) =>
+          n.selected === (n.id === nodeId)
+            ? n
+            : { ...n, selected: n.id === nodeId }
+        )
+      );
+      setSelectedId(nodeId);
+      setParamView("node");
+    },
+    [setNodes, setSelectedId, setParamView]
+  );
+
+  // Cmd+Shift+D: split a layer at the playhead into two distinct layers
+  // (deep copy + chain insert; in/out set by the split). No-op when the
+  // playhead isn't inside the layer's span.
+  const handleSplitLayer = useCallback(
+    (nodeId: string, splitTick: number) => {
+      const res = splitLayer(
+        nodesRef.current,
+        edgesRef.current,
+        nodeId,
+        splitTick,
+        (loopFramesRef.current != null && loopFramesRef.current > 0
+          ? loopFramesRef.current
+          : fpsRef.current * 5) * ticksPerFrame
+      );
+      if (!res) return;
+      pushGraph(getGraphSnapshot());
+      setNodes(res.nodes);
+      setEdges(res.edges);
+      setSelectedId(res.newLayerId);
+      setParamView("node");
+    },
+    [
+      pushGraph,
+      getGraphSnapshot,
+      setNodes,
+      setEdges,
+      setSelectedId,
+      setParamView,
+      ticksPerFrame,
+    ]
   );
 
   const getOutputParams = useCallback((nodeId: string) => {
@@ -3142,11 +3730,25 @@ function EffectsShell({
   }, [flashToast]);
 
   const exportVideo = useCallback(
-    async (nodeId: string) => {
+    async (
+      nodeId: string,
+      // When `sink` is provided (batch render), the finished blob is handed
+      // back instead of being downloaded — the Render Queue collects them
+      // and delivers the whole batch at the end.
+      opts?: { sink?: (blob: Blob, ext: string) => void }
+    ) => {
       if (recordingRef.current) return;
       const canvas = canvasRef.current;
       const params = getOutputParams(nodeId);
       if (!canvas || !params) return;
+      const deliver = (blob: Blob, ext: string) => {
+        if (opts?.sink) opts.sink(blob, ext);
+        else
+          downloadBlob(
+            blob,
+            base ? `${base}.${ext}` : defaultFilename(ext)
+          );
+      };
 
       const quality =
         (params.videoQuality as "fast" | "high" | "max") ?? "high";
@@ -3215,10 +3817,7 @@ function EffectsShell({
         setRecording(null);
 
         const blob = await done;
-        downloadBlob(
-          blob,
-          base ? `${base}.${picked.ext}` : defaultFilename(picked.ext)
-        );
+        deliver(blob, picked.ext);
         return;
       }
 
@@ -3341,10 +3940,7 @@ function EffectsShell({
           });
         }
 
-        downloadBlob(
-          result.blob,
-          base ? `${base}.${result.ext}` : defaultFilename(result.ext)
-        );
+        deliver(result.blob, result.ext);
       } catch (err) {
         console.error("Video export failed:", err);
         const msg = err instanceof Error ? err.message : "Export failed";
@@ -3359,6 +3955,207 @@ function EffectsShell({
       }
     },
     [getOutputParams, getOutputAudioSpec, getLiveAudioTrack, flashToast]
+  );
+
+  // Render a single still for a Render Queue image item: step the offline
+  // clock to the requested frame, render it deterministically (waiting for
+  // any async media seeks), then read the canvas. Returns the blob + ext.
+  const renderImageToBlobAtFrame = useCallback(
+    async (
+      nodeId: string,
+      frame: number
+    ): Promise<{ blob: Blob; ext: string } | null> => {
+      const canvas = canvasRef.current;
+      const params = getOutputParams(nodeId);
+      if (!canvas || !params) return null;
+      const format = (params.imageFormat as string) ?? "png";
+      const quality = (params.imageQuality as number) ?? 0.92;
+      const useQuality = format === "jpeg" || format === "webp";
+      const fps = fpsRef.current;
+      const t = Math.max(0, frame) / Math.max(1, fps);
+
+      const savedTime = timeRef.current;
+      const savedPlaying = playingRef.current;
+      setPlaying(false);
+      offlineRenderingRef.current = true;
+      try {
+        setTime(t);
+        const backend = backendRef.current;
+        renderFrameRef.current?.(t, fps, true);
+        const settled = backend ? await awaitMediaSettle(backend.state) : false;
+        if (settled) renderFrameRef.current?.(t, fps, true);
+        // Yield so the GL commands flush before we read pixels back.
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        const blob = await new Promise<Blob | null>((res) =>
+          canvas.toBlob(
+            (b) => res(b),
+            `image/${format}`,
+            useQuality ? quality : undefined
+          )
+        );
+        return blob ? { blob, ext: format } : null;
+      } finally {
+        offlineRenderingRef.current = false;
+        setPlaying(savedPlaying);
+        setTime(savedTime);
+      }
+    },
+    [getOutputParams]
+  );
+
+  // Resolve a Render Queue node into its ordered rows, each paired with the
+  // Output node wired into the matching `item:<id>` socket (or null). Used by
+  // both the batch runner and the param panel.
+  const resolveQueueItems = useCallback((queueNodeId: string) => {
+    const queue = nodesRef.current.find((n) => n.id === queueNodeId);
+    if (!queue) return [];
+    const items = (queue.data.params.items as RenderQueueItem[]) ?? [];
+    return items.map((item) => {
+      const edge = edgesRef.current.find(
+        (e) =>
+          e.target === queueNodeId &&
+          e.targetHandle === `in:item:${item.id}`
+      );
+      const output = edge
+        ? nodesRef.current.find((n) => n.id === edge.source) ?? null
+        : null;
+      return { item, output };
+    });
+  }, []);
+
+  // Batch render: walk the queue's rows in order, render each connected
+  // Output (video via exportVideo's sink, image via renderImageToBlobAtFrame),
+  // and deliver per the node's `delivery` mode — sequential downloads, a
+  // single zip, or streamed into a chosen folder (File System Access).
+  const renderQueue = useCallback(
+    async (queueNodeId: string) => {
+      if (recordingRef.current || queueRenderingRef.current) return;
+      const queue = nodesRef.current.find((n) => n.id === queueNodeId);
+      if (!queue) return;
+      const delivery =
+        (queue.data.params.delivery as "sequential" | "zip" | "folder") ??
+        "sequential";
+      const resolved = resolveQueueItems(queueNodeId).filter((r) => r.output);
+      if (resolved.length === 0) {
+        flashToast("Render Queue is empty");
+        return;
+      }
+
+      queueRenderingRef.current = true;
+
+      // Folder mode: prompt for a destination directory up front.
+      let dirHandle:
+        | { getFileHandle: (n: string, o: { create: boolean }) => Promise<{
+            createWritable: () => Promise<{
+              write: (b: Blob) => Promise<void>;
+              close: () => Promise<void>;
+            }>;
+          }> }
+        | null = null;
+      if (delivery === "folder") {
+        const picker = (
+          window as unknown as {
+            showDirectoryPicker?: () => Promise<typeof dirHandle>;
+          }
+        ).showDirectoryPicker;
+        if (!picker) {
+          queueRenderingRef.current = false;
+          flashToast("Folder mode needs a Chromium browser");
+          return;
+        }
+        try {
+          dirHandle = await picker();
+        } catch {
+          // User cancelled the folder picker — abort quietly.
+          queueRenderingRef.current = false;
+          return;
+        }
+      }
+
+      const collected: { blob: Blob; name: string }[] = [];
+      const usedNames = new Set<string>();
+      const total = resolved.length;
+      try {
+        for (let i = 0; i < resolved.length; i++) {
+          const { item, output } = resolved[i];
+          if (!output) continue;
+          setQueueProgress({
+            index: i,
+            total,
+            name: output.data.name ?? "output",
+            nodeId: queueNodeId,
+            itemId: item.id,
+          });
+          const p = output.data.params;
+          const baseName =
+            sanitizeFilename((p.filename as string) ?? "") ||
+            (output.data.name ?? `item-${i + 1}`);
+
+          const out: { blob: Blob | null; ext: string } = {
+            blob: null,
+            ext: "",
+          };
+          if (item.kind === "video") {
+            await exportVideo(output.id, {
+              sink: (b, e) => {
+                out.blob = b;
+                out.ext = e;
+              },
+            });
+          } else {
+            const r = await renderImageToBlobAtFrame(output.id, item.frame);
+            if (r) {
+              out.blob = r.blob;
+              out.ext = r.ext;
+            }
+          }
+          if (!out.blob) continue;
+
+          // De-dupe filenames within the batch.
+          let name = `${baseName}.${out.ext}`;
+          let n = 2;
+          while (usedNames.has(name)) name = `${baseName}-${n++}.${out.ext}`;
+          usedNames.add(name);
+
+          if (delivery === "folder" && dirHandle) {
+            const fh = await dirHandle.getFileHandle(name, { create: true });
+            const w = await fh.createWritable();
+            await w.write(out.blob);
+            await w.close();
+          } else if (delivery === "sequential") {
+            downloadBlob(out.blob, name);
+          } else {
+            collected.push({ blob: out.blob, name });
+          }
+        }
+
+        if (delivery === "zip" && collected.length) {
+          setQueueProgress({
+            index: total,
+            total,
+            name: "zipping…",
+            nodeId: queueNodeId,
+            itemId: null,
+          });
+          const JSZip = (await import("jszip")).default;
+          const zip = new JSZip();
+          for (const c of collected) zip.file(c.name, c.blob);
+          const zipBlob = await zip.generateAsync({ type: "blob" });
+          const zipName =
+            sanitizeFilename((queue.data.name as string) ?? "") ||
+            "render-queue";
+          downloadBlob(zipBlob, `${zipName}.zip`);
+        }
+        flashToast(`Rendered ${usedNames.size} item${usedNames.size === 1 ? "" : "s"}`);
+      } catch (err) {
+        console.error("Render queue failed:", err);
+        flashToast(err instanceof Error ? err.message : "Render queue failed");
+      } finally {
+        queueRenderingRef.current = false;
+        setQueueProgress(null);
+      }
+    },
+    [resolveQueueItems, exportVideo, renderImageToBlobAtFrame, flashToast]
   );
 
   const onOpenExportApp = useCallback(
@@ -3465,17 +4262,18 @@ function EffectsShell({
       const detail = (
         e as CustomEvent<{
           id: string;
-          kind: "image" | "video" | "app";
+          kind: "image" | "video" | "app" | "queue";
         }>
       ).detail;
       if (!detail) return;
       if (detail.kind === "image") exportImage(detail.id);
       else if (detail.kind === "video") exportVideo(detail.id);
       else if (detail.kind === "app") onOpenExportApp(detail.id);
+      else if (detail.kind === "queue") renderQueue(detail.id);
     };
     window.addEventListener("effect-node-export", handler);
     return () => window.removeEventListener("effect-node-export", handler);
-  }, [exportImage, exportVideo, onOpenExportApp]);
+  }, [exportImage, exportVideo, onOpenExportApp, renderQueue]);
 
   // --- Save / Load ----------------------------------------------------------
   // Progress budget: serialize/deserialize gets the first 70%, the network
@@ -3695,7 +4493,7 @@ function EffectsShell({
           tone: "load",
         });
         pushGraph(getGraphSnapshot());
-        const { nodes: nextNodes, edges: nextEdges, scene } =
+        const { nodes: nextNodes, edges: nextEdges, scene, missingMedia } =
           await deserializeGraph(
             saved.graph,
             (f) =>
@@ -3707,6 +4505,8 @@ function EffectsShell({
           );
         setNodes(nextNodes);
         setEdges(nextEdges);
+        setCurrentGroupId(defaultScopeFor(nextNodes));
+        setMissingMedia(missingMedia);
         // Restore scene-level state (loop length, fps). Pre-v2 saves
         // omit `scene` entirely — leave the user's current values
         // untouched in that case. `loopFrames` can legitimately be
@@ -3741,7 +4541,7 @@ function EffectsShell({
         setProgressStatus(null);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, user]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia]
   );
 
   // --- Local .toolbox files (File → Save to File / Load…) ------------------
@@ -3782,6 +4582,97 @@ function EffectsShell({
     }
   }, [currentProject, flashToast]);
 
+  // Relink-modal action. Two passes, both inside the click's user
+  // activation:
+  //   1. Stored file handles — silently granted ones read immediately;
+  //      the rest pop the browser's lightweight re-grant prompt.
+  //   2. Whatever's left gets one multi-select picker; picks are matched
+  //      back to nodes by filename (+size when known).
+  // Per-item results land back in `relinkItems` so the modal shows a
+  // ✓ / ✕ next to every file. Cancelling the picker leaves untried items
+  // "missing" (amber); items that were attempted but found no match read
+  // "failed" (red). Both stay clickable for another attempt.
+  const relinkBusyRef = useRef(false);
+  const relinkMissingMedia = useCallback(async () => {
+    if (relinkBusyRef.current) return;
+    const pending = relinkItems.filter((i) => i.status !== "ok");
+    if (pending.length === 0) return;
+    relinkBusyRef.current = true;
+    setRelinkBusy(true);
+    try {
+      const status = new Map<MissingMedia, RelinkStatus>(
+        relinkItems.map((i) => [i.media, i.status])
+      );
+      let relinked = 0;
+      const apply = async (m: MissingMedia, file: File): Promise<boolean> => {
+        try {
+          const value =
+            m.envelope.kind === "video_file"
+              ? await (await import("@/lib/video")).registerVideoFile(file)
+              : await (await import("@/lib/audio")).registerAudioFile(file);
+          onParamChange(m.nodeId, m.paramName, value);
+          status.set(m, "ok");
+          relinked++;
+          return true;
+        } catch (err) {
+          console.warn(`Relink failed for ${m.envelope.filename}:`, err);
+          status.set(m, "failed");
+          return false;
+        }
+      };
+
+      const remaining: MissingMedia[] = [];
+      for (const i of pending) {
+        const file = await readStoredMediaFile(i.media.envelope, {
+          allowPrompt: true,
+        });
+        if (!(file && (await apply(i.media, file)))) remaining.push(i.media);
+      }
+
+      if (remaining.length > 0) {
+        const kinds = new Set(remaining.map((m) => m.envelope.kind));
+        const kind =
+          kinds.size > 1
+            ? ("media" as const)
+            : kinds.has("video_file")
+              ? ("video" as const)
+              : ("audio" as const);
+        let files = await pickMediaFiles({ kind, multiple: true });
+        if (files === "unsupported") {
+          files = await pickMediaFilesViaInput({ kind, multiple: true });
+        }
+        if (files && files.length > 0) {
+          const matched = matchFilesToMissing(files, remaining);
+          for (const m of remaining) {
+            const f = matched.get(m);
+            if (f) await apply(m, f);
+            else status.set(m, "failed");
+          }
+        }
+        // files === null / empty → picker cancelled: leave statuses as
+        // they were so untried items stay "missing", not "failed".
+      }
+
+      setRelinkItems((prev) =>
+        prev.map((i) => ({ ...i, status: status.get(i.media) ?? i.status }))
+      );
+      if (relinked > 0) {
+        flashToast(
+          `Relinked ${relinked} media file${relinked === 1 ? "" : "s"}`
+        );
+      }
+    } catch (err) {
+      // Belt-and-braces: every step above guards itself, but an
+      // unexpected throw must not end as an invisible unhandled
+      // rejection — that reads as "the button does nothing".
+      console.error("Relink failed:", err);
+      flashToast(err instanceof Error ? err.message : "Relink failed");
+    } finally {
+      relinkBusyRef.current = false;
+      setRelinkBusy(false);
+    }
+  }, [relinkItems, onParamChange, flashToast]);
+
   const handleOpenProjectFile = useCallback(() => {
     const input = document.createElement("input");
     input.type = "file";
@@ -3794,7 +4685,7 @@ function EffectsShell({
         const { readProjectFile } = await import("@/lib/project-file");
         const { name, graph } = await readProjectFile(file);
         pushGraph(getGraphSnapshot());
-        const { nodes: nextNodes, edges: nextEdges, scene } =
+        const { nodes: nextNodes, edges: nextEdges, scene, missingMedia } =
           await deserializeGraph(graph, (f) =>
             setProgressStatus({
               label: "loading",
@@ -3805,6 +4696,8 @@ function EffectsShell({
         suppressNextSelectionViewFlipRef.current = true;
         setNodes(nextNodes);
         setEdges(nextEdges);
+        setCurrentGroupId(defaultScopeFor(nextNodes));
+        setMissingMedia(missingMedia);
         if (scene) {
           if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
           if (scene.fps !== undefined) setFps(scene.fps);
@@ -3826,7 +4719,7 @@ function EffectsShell({
       }
     };
     input.click();
-  }, [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast]);
+  }, [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia]);
 
   // Rename via the file-name pill. If the target name doesn't collide,
   // it's a simple metadata update. If it DOES collide with another of
@@ -3966,33 +4859,16 @@ function EffectsShell({
 
   const resetToFreshProject = useCallback(() => {
     // Seed a new graph from scratch — don't reuse the module-level
-    // INITIAL_NODES directly since its node IDs were frozen at import
-    // time; calling makeInstanceNode fresh here gives us unique IDs.
-    const imageSrc = makeInstanceNode("image-source", { x: 40, y: 80 });
-    const bloom = makeInstanceNode("bloom", { x: 340, y: 80 });
-    const output = makeInstanceNode("output", { x: 640, y: 120 });
-    const freshNodes: Node<NodeDataPayload>[] = [imageSrc, bloom, output];
-    const freshEdges: Edge[] = [
-      {
-        id: `e-${imageSrc.id}-${bloom.id}`,
-        source: imageSrc.id,
-        sourceHandle: "out:primary",
-        target: bloom.id,
-        targetHandle: "in:image",
-      },
-      {
-        id: `e-${bloom.id}-${output.id}`,
-        source: bloom.id,
-        sourceHandle: "out:primary",
-        target: output.id,
-        targetHandle: "in:image",
-      },
-    ];
+    // STARTER directly since its node IDs were frozen at import time;
+    // building fresh gives unique IDs. Open inside Layer 1 so a new
+    // project feels exactly like the pre-layers app.
+    const fresh = buildStarterGraph();
     // Suppress the echo-selection-change paramView flip, same rule
     // as File → Load / Project Settings.
     suppressNextSelectionViewFlipRef.current = true;
-    setNodes(freshNodes);
-    setEdges(freshEdges);
+    setNodes(fresh.nodes);
+    setEdges(fresh.edges);
+    setCurrentGroupId(fresh.layerId);
     setSelectedId(null);
     setParamView("node");
     setCurrentProject(null);
@@ -4146,13 +5022,60 @@ function EffectsShell({
 
   const isParamDriven = useCallback(
     (nodeId: string, paramName: string) => {
-      return edges.some((e) => {
+      const start = edges.find((e) => {
         if (e.target !== nodeId) return false;
         const parsed = parseTargetHandleKind(e.targetHandle ?? "");
         return parsed?.kind === "param" && parsed.name === paramName;
       });
+      if (!start) return false;
+      // Resolve through group boundaries the same way the flatten pass
+      // does: a wire from a Group Input (or a group shell's output)
+      // only drives the param when the chain reaches a real producer.
+      // A dead end (shell socket unwired outside, group output unwired
+      // inside) means the stored param value is live — not driven.
+      let cur = start;
+      for (let hops = 0; hops <= edges.length; hops++) {
+        const src = nodes.find((n) => n.id === cur.source);
+        if (!src) return false;
+        const auxName = cur.sourceHandle?.startsWith("out:aux:")
+          ? cur.sourceHandle.slice("out:aux:".length)
+          : null;
+        if (src.data.defType === GROUP_INPUT_TYPE) {
+          const shellId = src.data.parentId;
+          const outer =
+            auxName && shellId
+              ? edges.find(
+                  (e) =>
+                    e.target === shellId && e.targetHandle === `in:${auxName}`
+                )
+              : undefined;
+          if (!outer) return false;
+          cur = outer;
+          continue;
+        }
+        if (src.data.defType === GROUP_TYPE) {
+          const groupOutput = nodes.find(
+            (n) =>
+              n.data.parentId === src.id &&
+              n.data.defType === GROUP_OUTPUT_TYPE
+          );
+          const inner =
+            auxName && groupOutput
+              ? edges.find(
+                  (e) =>
+                    e.target === groupOutput.id &&
+                    e.targetHandle === `in:${auxName}`
+                )
+              : undefined;
+          if (!inner) return false;
+          cur = inner;
+          continue;
+        }
+        return true;
+      }
+      return true;
     },
-    [edges]
+    [edges, nodes]
   );
 
   const onPlayPause = useCallback(() => {
@@ -4237,7 +5160,7 @@ function EffectsShell({
   // ---------------------------------------------------------------------
   const nodeEditorJsx = (
     <NodeEditor
-      nodes={nodes}
+      nodes={scopedNodes}
       edges={edges}
       onNodesChange={onNodesChangeWithHistory}
       onEdgesChange={onEdgesChangeWithHistory}
@@ -4268,6 +5191,13 @@ function EffectsShell({
       onSpliceNode={handleSpliceNode}
       onWaypointDragStart={handleWaypointDragStart}
       onWaypointDrag={handleWaypointDrag}
+      onGroupSelection={handleGroupSelection}
+      onUngroupSelection={handleUngroupSelection}
+      onDiveIntoGroup={handleDiveIntoGroup}
+      onScopeUp={handleScopeUp}
+      breadcrumbs={breadcrumbs}
+      onNavigateScope={(id) => navigateScope(id ?? undefined)}
+      atRoot={currentGroupId == null}
       viewportOverlay={
         inspectIds.length > 0
           ? inspectIds.map((id) => {
@@ -4286,6 +5216,42 @@ function EffectsShell({
       }
     />
   );
+
+  // Single 0..1 fraction for the queue item currently rendering. Offline
+  // encoders (WebCodecs / ffmpeg) report it per frame via `recording`.
+  // Realtime MediaRecorder captures report nothing, but they play the
+  // timeline live — the app re-renders every frame — so elapsed wall time
+  // over the capture window is exact (the playhead itself can wrap when
+  // the project loop is shorter than the capture, so don't use `time`).
+  const queueItemProgress = !queueProgress
+    ? null
+    : recording?.mode === "offline"
+      ? recording.progress
+      : recording?.mode === "live"
+        ? Math.min(
+            1,
+            (performance.now() - recording.startedAt) /
+              1000 /
+              Math.max(recording.totalSec, 1e-3)
+          )
+        : null;
+
+  // Mirror the batch state to the canvas: EffectNode draws inline per-row
+  // progress bars on Render Queue nodes. Event-based (like `node-timings`)
+  // so node components don't need new props threaded through React Flow.
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("render-queue-progress", {
+        detail: queueProgress
+          ? {
+              nodeId: queueProgress.nodeId,
+              activeItemId: queueProgress.itemId,
+              itemProgress: queueItemProgress,
+            }
+          : null,
+      })
+    );
+  }, [queueProgress, queueItemProgress]);
 
   const paramPanelJsx = (
     <ParamPanel
@@ -4307,6 +5273,9 @@ function EffectsShell({
       getAnimation={getAnimation}
       onAnimationChange={onAnimationChange}
       onSeekTick={(tick) => onSeek(tick / (fps * ticksPerFrame))}
+      onRenameNode={handleRenameNode}
+      onRenameGroupSocket={handleRenameGroupSocket}
+      onRemoveGroupSocket={handleRemoveGroupSocket}
       signedIn={signedIn}
       currentUserId={user?.id ?? null}
       onLoadProject={handleLoadProject}
@@ -4314,6 +5283,22 @@ function EffectsShell({
       projectId={currentProject?.id ?? null}
       edges={edges}
       getRefImageBlob={getRefImageBlob}
+      queueRender={
+        queueProgress
+          ? {
+              nodeId: queueProgress.nodeId,
+              activeItemId: queueProgress.itemId,
+              itemProgress: queueItemProgress,
+            }
+          : null
+      }
+      onSelectNode={(nodeId) => {
+        setNodes((prev) =>
+          prev.map((n) => ({ ...n, selected: n.id === nodeId }))
+        );
+        setSelectedId(nodeId);
+        setParamView("node");
+      }}
     />
   );
 
@@ -4336,7 +5321,12 @@ function EffectsShell({
           flexShrink: 0,
         }}
       >
-        <DockTabToggle value={dockTab} onChange={setDockTab} />
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <DockTabToggle value={dockTab} onChange={setDockTab} />
+          {dockTab !== "graph" && (
+            <StaggerControl ticksPerFrame={ticksPerFrame} />
+          )}
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {dockTab === "tracks" && (
             <>
@@ -4395,13 +5385,46 @@ function EffectsShell({
           flexDirection: "column",
         }}
       >
-        {dockTab === "tracks" ? (
+        {dockTab === "layers" ? (
+          <LayersEditor
+            layers={layerChain}
+            timeline={projectTimeline}
+            currentTick={currentTick}
+            selectedId={selectedId}
+            onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
+            onClipChange={onClipChange}
+            onSelectLayer={handleSelectLayer}
+            onDiveLayer={handleDiveIntoGroup}
+            onToggleVisibility={handleToggleLayerVisibility}
+            onReorder={handleReorderLayers}
+            onAddLayer={handleAddLayerFromEditor}
+            onSplitLayer={handleSplitLayer}
+            nodes={nodes}
+            edges={edges}
+            getAnimation={getAnimation}
+            onAnimationChange={onAnimationChange}
+            fitVersion={trackFitVersion}
+          />
+        ) : dockTab === "tracks" ? (
           <TrackEditor
-            nodes={
-              tracksSelectedOnly
-                ? nodes.filter((n) => n.selected)
-                : nodes
-            }
+            // Scope-follow: Tracks shows only the nodes in the scope the
+            // node editor is currently viewing (the layer/group you've
+            // dived into), so the two stay coherent. Layer nodes are
+            // excluded — the Layers tab owns them (their opacity
+            // keyframes live in the per-layer twirl-down there). The
+            // "selected only" filter applies on top.
+            nodes={(() => {
+              const scoped = nodes.filter(
+                (n) =>
+                  n.data.parentId === currentGroupId &&
+                  n.data.defType !== LAYER_TYPE
+              );
+              return tracksSelectedOnly
+                ? scoped.filter((n) => n.selected)
+                : scoped;
+            })()}
+            allNodes={nodes}
+            edges={edges}
             timeline={projectTimeline}
             currentTick={currentTick}
             playing={playing}
@@ -4428,6 +5451,11 @@ function EffectsShell({
           />
         ) : (
           <GraphEditor
+            // Not scope-filtered: the graph view is a global curve
+            // pinboard — a track is shown only when its `graphVisible`
+            // flag is on, which the user sets explicitly. This also
+            // surfaces a group's promoted params (keyframes live on deep
+            // interior nodes outside the current scope).
             nodes={nodes}
             timeline={projectTimeline}
             currentTick={currentTick}
@@ -4563,6 +5591,7 @@ function EffectsShell({
           findConflict(name, currentProject?.id)
         }
         onAddNode={(type) => onAddNode(type)}
+        atRoot={currentGroupId == null}
         fullCanvas={fullCanvas}
         onToggleFullCanvas={() => setFullCanvas((v) => !v)}
         onEnterBrowserFullscreen={enterBrowserFullscreen}
@@ -5002,7 +6031,15 @@ function EffectsShell({
             </div>
           )}
           {recording && <RecordingBanner state={recording} />}
+          {queueProgress && <QueueBanner state={queueProgress} />}
           {progressStatus && <ProgressBanner status={progressStatus} />}
+          <MediaRelinkModal
+            open={relinkItems.length > 0}
+            items={relinkItems}
+            busy={relinkBusy}
+            onRelink={relinkMissingMedia}
+            onClose={() => setRelinkItems([])}
+          />
           {toast && (
             <div
               style={{
@@ -5737,6 +6774,242 @@ function ViewportLabel({ label }: { label: string }) {
   );
 }
 
+// Stagger control — a square button (three stacked lines) next to the
+// dock toggle. Clicking pops a small panel above with a frame-offset
+// number field (type or drag). It drives the keyframe stagger in the
+// active editor via window CustomEvents: the editor snapshots its
+// multi-lane selection on "begin", applies the per-lane offset on each
+// "keyframe-stagger", and drops the snapshot on "end". If the selection
+// is confined to a single lane/layer, the editor doesn't respond and
+// the panel says so.
+function StaggerControl({ ticksPerFrame }: { ticksPerFrame: number }) {
+  const [open, setOpen] = useState(false);
+  const [frames, setFrames] = useState(0);
+  const [hasEffect, setHasEffect] = useState(false);
+  const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(
+    null
+  );
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const popRef = useRef<HTMLDivElement | null>(null);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    window.dispatchEvent(new CustomEvent("keyframe-stagger-end"));
+  }, []);
+
+  const toggle = () => {
+    if (open) {
+      close();
+      return;
+    }
+    let responded = false;
+    window.dispatchEvent(
+      new CustomEvent("keyframe-stagger-begin", {
+        detail: { respond: () => (responded = true) },
+      })
+    );
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setAnchor({ left: r.left, top: r.top });
+    setHasEffect(responded);
+    setFrames(0);
+    setOpen(true);
+  };
+
+  // Push the current frame offset to the editor whenever it changes.
+  useEffect(() => {
+    if (!open || !hasEffect) return;
+    window.dispatchEvent(
+      new CustomEvent("keyframe-stagger", {
+        detail: { stepTicks: frames * ticksPerFrame },
+      })
+    );
+  }, [frames, open, hasEffect, ticksPerFrame]);
+
+  // Click-outside closes (and commits, since edits are applied live).
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as globalThis.Node;
+      if (!rootRef.current?.contains(t) && !popRef.current?.contains(t)) {
+        close();
+      }
+    };
+    const id = window.setTimeout(
+      () => window.addEventListener("mousedown", onDown),
+      0
+    );
+    return () => {
+      window.clearTimeout(id);
+      window.removeEventListener("mousedown", onDown);
+    };
+  }, [open, close]);
+
+  return (
+    <div ref={rootRef} style={{ position: "relative" }}>
+      <button
+        ref={btnRef}
+        type="button"
+        title="Stagger selected keyframes across layers/tracks"
+        onClick={toggle}
+        style={{
+          width: 26,
+          height: 26,
+          borderRadius: 5,
+          background: open ? "#1b2741" : "#0a0a0a",
+          border: `1px solid ${open ? "#26375f" : "#27272a"}`,
+          color: open ? "#bfdbfe" : "#8a8a90",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 0,
+        }}
+      >
+        <svg width={12} height={12} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
+          <line x1={2} y1={3} x2={10} y2={3} />
+          <line x1={2} y1={6} x2={10} y2={6} />
+          <line x1={2} y1={9} x2={10} y2={9} />
+        </svg>
+      </button>
+      {open && anchor &&
+        createPortal(
+          <div
+            ref={popRef}
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              position: "fixed",
+              // Anchor the panel's bottom 6px above the button (portaled
+              // to body so the dock's overflow/transform can't clip it).
+              left: anchor.left,
+              top: anchor.top - 6,
+              transform: "translateY(-100%)",
+              zIndex: 1000,
+              background: "#18181b",
+              border: "1px solid #27272a",
+              borderRadius: 6,
+              boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+              padding: 8,
+              width: 160,
+            }}
+          >
+          <div
+            style={{
+              color: "#71717a",
+              fontSize: 9,
+              textTransform: "uppercase",
+              letterSpacing: 1,
+              marginBottom: 6,
+            }}
+          >
+            Stagger
+          </div>
+          {hasEffect ? (
+            <StaggerNumber value={frames} onChange={setFrames} />
+          ) : (
+            <div style={{ color: "#52525b", fontSize: 10, lineHeight: 1.4 }}>
+              Select keyframes across two or more layers/tracks first.
+            </div>
+          )}
+          </div>,
+          document.body
+        )}
+    </div>
+  );
+}
+
+// Compact frames field: drag horizontally to scrub, or click to type.
+function StaggerNumber({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(String(value));
+  const dragRef = useRef<{ startX: number; startVal: number; moved: boolean } | null>(
+    null
+  );
+  useEffect(() => {
+    if (!editing) setText(String(value));
+  }, [value, editing]);
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      if (Math.abs(e.clientX - d.startX) > 2) d.moved = true;
+      onChange(d.startVal + Math.round((e.clientX - d.startX) / 5));
+    };
+    const onUp = () => {
+      const d = dragRef.current;
+      if (d && !d.moved) setEditing(true);
+      dragRef.current = null;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [onChange]);
+  const commit = () => {
+    const n = parseInt(text, 10);
+    onChange(Number.isFinite(n) ? n : 0);
+    setEditing(false);
+  };
+  return editing ? (
+    <input
+      autoFocus
+      type="text"
+      value={text}
+      spellCheck={false}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        if (e.key === "Escape") setEditing(false);
+      }}
+      style={{
+        width: "100%",
+        background: "#0a0a0a",
+        border: "1px solid #3f3f46",
+        color: "#e5e7eb",
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 12,
+        padding: "4px 6px",
+        borderRadius: 4,
+        boxSizing: "border-box",
+      }}
+    />
+  ) : (
+    <div
+      onMouseDown={(e) => {
+        dragRef.current = { startX: e.clientX, startVal: value, moved: false };
+      }}
+      title="Drag to scrub, click to type — frames offset per layer step"
+      style={{
+        width: "100%",
+        background: "#0a0a0a",
+        border: "1px solid #27272a",
+        color: "#e5e7eb",
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 12,
+        padding: "4px 6px",
+        borderRadius: 4,
+        boxSizing: "border-box",
+        cursor: "ew-resize",
+        userSelect: "none",
+        display: "flex",
+        justifyContent: "space-between",
+      }}
+    >
+      <span>{value}</span>
+      <span style={{ color: "#52525b" }}>frames</span>
+    </div>
+  );
+}
+
 // Shared button for the track/graph dock header. Near-invisible border at
 // rest (so the bar reads clean), a subtle hover, and a soft blue highlight
 // when toggled on. Tabs and toggles use `active`; momentary actions omit it.
@@ -5746,14 +7019,15 @@ function DockTabToggle({
   value,
   onChange,
 }: {
-  value: "tracks" | "graph";
-  onChange: (v: "tracks" | "graph") => void;
+  value: "tracks" | "graph" | "layers";
+  onChange: (v: "tracks" | "graph" | "layers") => void;
 }) {
   const tabs = [
+    { key: "layers", label: "Layers" },
     { key: "tracks", label: "Tracks" },
     { key: "graph", label: "Graph" },
   ] as const;
-  const idx = value === "tracks" ? 0 : 1;
+  const idx = tabs.findIndex((t) => t.key === value);
   return (
     <div
       style={{
@@ -5773,11 +7047,11 @@ function DockTabToggle({
           top: 2,
           bottom: 2,
           left: 2,
-          width: "calc(50% - 2px)",
+          width: `calc(${100 / tabs.length}% - 2px)`,
           background: "#1b2741",
           border: "1px solid #26375f",
           borderRadius: 4,
-          transform: `translateX(${idx * 100}%)`,
+          transform: `translateX(${Math.max(0, idx) * 100}%)`,
           transition: "transform 220ms cubic-bezier(0.16, 1, 0.3, 1)",
           pointerEvents: "none",
         }}
@@ -5850,6 +7124,42 @@ function DockButton({
     >
       {children}
     </button>
+  );
+}
+
+// Outer batch banner for the Render Queue — sits just above the per-item
+// RecordingBanner so the user sees both "Item 2/5" and that item's own
+// progress at once.
+function QueueBanner({
+  state,
+}: {
+  state: { index: number; total: number; name: string };
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 64,
+        left: "50%",
+        transform: "translateX(-50%)",
+        padding: "6px 12px",
+        background: "rgba(24, 24, 27, 0.95)",
+        color: "#e4e4e7",
+        border: "1px solid #3f3f46",
+        borderRadius: 4,
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 11,
+        letterSpacing: 0.5,
+        minWidth: 220,
+        textAlign: "center",
+        boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+        pointerEvents: "none",
+      }}
+    >
+      {`Render Queue · item ${Math.min(state.index + 1, state.total)}/${
+        state.total
+      } · ${state.name}`}
+    </div>
   );
 }
 

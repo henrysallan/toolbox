@@ -601,6 +601,25 @@ function emitSdf(node: SdfNode, state: EmitState): string {
       return `smax(${a}, -(${b}), ${k})`;
     }
 
+    case "morph": {
+      // An empty (unwired) side degrades to a passthrough of the other,
+      // matching union/smooth-union semantics. Mixing with the empty
+      // sentinel instead would yield ~t*1e10 — a huge constant that
+      // blanks the whole field for any t in (0,1) and overflows to
+      // Infinity in fp16 readbacks (SDF to Spline). The structural hash
+      // already distinguishes these shapes (empty child hashes as "E"),
+      // so the shader cache stays coherent.
+      if (node.a.kind === "empty") return emitSdf(node.b, state);
+      if (node.b.kind === "empty") return emitSdf(node.a, state);
+      // True linear field interpolation. `mix` is a GLSL built-in, no
+      // helper needed. t is a uniform so keyframing it only rebinds a
+      // value — the shader stays cached.
+      const a = emitSdf(node.a, state);
+      const b = emitSdf(node.b, state);
+      const t = alloc(state, "float", node.t);
+      return `mix(${a}, ${b}, ${t})`;
+    }
+
     case "round": {
       const r = alloc(state, "float", node.r);
       const child = emitSdf(node.child, state);
@@ -830,6 +849,9 @@ export function structuralHash(node: SdfNode): string {
       return `Si(${structuralHash(node.a)},${structuralHash(node.b)})`;
     case "smoothSubtraction":
       return `Ss(${structuralHash(node.a)},${structuralHash(node.b)})`;
+    case "morph":
+      // t is a uniform, not structural — same shader across all amounts.
+      return `M(${structuralHash(node.a)},${structuralHash(node.b)})`;
     case "round":
       return `R(${structuralHash(node.child)})`;
     case "onion":

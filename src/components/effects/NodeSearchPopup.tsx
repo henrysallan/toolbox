@@ -69,6 +69,9 @@ interface Props {
   // drop we could use this to filter to compatible types; today we
   // always open blank but keep the hook.
   initialQuery?: string;
+  // Root scope is a strict layer chain — when the editor is at root the
+  // popup offers only the Layer compound entry.
+  atRoot?: boolean;
 }
 
 export default function NodeSearchPopup({
@@ -77,6 +80,7 @@ export default function NodeSearchPopup({
   onAdd,
   onClose,
   initialQuery = "",
+  atRoot,
 }: Props) {
   const [query, setQuery] = useState(initialQuery);
   const [hoveredCategory, setHoveredCategory] = useState<string | null>(null);
@@ -90,8 +94,31 @@ export default function NodeSearchPopup({
     // a shared zone_id. We hide the individual Simulation Start / End
     // node defs from the menu so users can't create orphans.
     const real = allNodeDefs().filter(
-      (d) => d.type !== "simulation-start" && d.type !== "simulation-end"
+      (d) =>
+        !d.hidden &&
+        d.type !== "simulation-start" &&
+        d.type !== "simulation-end"
     );
+    // Strict root: layers (the compositing chain) and Render Queue live
+    // at root scope.
+    if (atRoot) {
+      return [
+        {
+          type: "layer",
+          name: "Layer",
+          category: "utility",
+          description:
+            "A new layer on top of the compositing stack. Dive in (Tab / double-click) to build its contents.",
+        } as unknown as (typeof real)[number],
+        {
+          type: "render-queue",
+          name: "Render Queue",
+          category: "output",
+          description:
+            "Collects Output nodes into an ordered batch render.",
+        } as unknown as (typeof real)[number],
+      ];
+    }
     return [
       ...real,
       {
@@ -103,7 +130,7 @@ export default function NodeSearchPopup({
         // when iterated; nothing else touches them.
       } as unknown as (typeof real)[number],
     ];
-  }, []);
+  }, [atRoot]);
   const byCategory = useMemo(() => {
     const m: Record<string, typeof defs> = {};
     for (const d of defs) (m[d.category] ??= []).push(d);

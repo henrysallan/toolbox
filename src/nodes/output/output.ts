@@ -16,6 +16,9 @@ export const outputNode: NodeDefinition = {
     { name: "image", type: "image", required: true },
     { name: "audio", type: "audio", required: false },
   ],
+  // `render` is a reference output: wire it into a Render Queue node to add
+  // this Output as a queue item. It carries no value (the evaluator ignores
+  // `render` edges) — it just links the two nodes organizationally.
   params: [
     {
       name: "filename",
@@ -145,9 +148,10 @@ export const outputNode: NodeDefinition = {
     },
   ],
   primaryOutput: null,
-  auxOutputs: [],
+  auxOutputs: [{ name: "render", type: "render" }],
   compute() {
-    // Engine blits our input image to the canvas after evaluation.
+    // Engine blits our input image to the canvas after evaluation. The
+    // `render` aux output carries no value — it's a reference link only.
     return {};
   },
 };

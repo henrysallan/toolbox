@@ -37,7 +37,13 @@ export type SocketType =
   // Twist.strength) for per-pixel/per-tile/per-anything modulation —
   // the only path to per-instance variation through a node graph (a
   // CPU scalar uniform can only carry one value per draw).
-  | "scalar_field";
+  | "scalar_field"
+  // Render reference. Carries no pixels — it's an organizational link
+  // from an Output node's `render` aux output into a Render Queue node,
+  // marking that output as a queue item. The evaluator deliberately
+  // ignores `render` edges when computing what to evaluate, so the queue
+  // stays inert until the user presses Render.
+  | "render";
 
 export type ImageValue = {
   kind: "image";
@@ -92,7 +98,7 @@ export interface SplineAnchor {
 export interface SplineSubpath {
   anchors: SplineAnchor[];
   closed: boolean;
-  // Optional per-item identity tag assigned by the Group node when
+  // Optional per-item identity tag assigned by the Collect node when
   // multiple splines were combined into this one. Downstream
   // per-index operations (Select by Index, Count Indices, Copy-to-
   // Points' pick-source mode) key off this. Undefined means the
@@ -115,7 +121,7 @@ export interface Point {
   rotation?: number;
   scale?: [number, number];
   // Same group-identity semantics as SplineSubpath.groupIndex —
-  // assigned by the Group node when point sets are combined. See
+  // assigned by the Collect node when point sets are combined. See
   // the comment there for details.
   groupIndex?: number;
 }
@@ -615,6 +621,11 @@ export type SdfNode =
   | { kind: "smoothUnion"; a: SdfNode; b: SdfNode; k: number }
   | { kind: "smoothIntersection"; a: SdfNode; b: SdfNode; k: number }
   | { kind: "smoothSubtraction"; a: SdfNode; b: SdfNode; k: number }
+  // Linear interpolation of two distance fields: mix(a, b, t). At t=0 the
+  // shape is A, at t=1 it's B; in between the zero-isoline sweeps smoothly
+  // from one to the other (topology can change for free). `t` is a uniform,
+  // so animating it never recompiles the shader.
+  | { kind: "morph"; a: SdfNode; b: SdfNode; t: number }
   | { kind: "round"; child: SdfNode; r: number }
   | { kind: "onion"; child: SdfNode; thickness: number }
   // Sample an image's red channel at the rendered position and add
@@ -638,6 +649,11 @@ export interface InputSocketDef {
   type: SocketType;
   required: boolean;
   defaultValue?: SocketValue;
+  // Not rendered on the node (no handle, no row) — the socket exists
+  // only for the evaluator to bind edges that a compile pass synthesizes
+  // (e.g. the layer node's `content` input, wired by the flatten pass
+  // from the layer's interior Group Output).
+  hidden?: boolean;
 }
 
 export interface OutputSocketDef {
@@ -669,7 +685,20 @@ export type ParamType =
   | "spline_anchors"
   | "svg_file"
   | "audio_file"
-  | "lut_file";
+  | "lut_file"
+  | "render_queue";
+
+// One row in a Render Queue node. `outputNodeId` is resolved from the wire
+// on the matching `item:<id>` socket at render time (not stored), so this
+// only persists the queue-local choices: render as image or video, and —
+// for image items — which frame to capture the still at.
+export interface RenderQueueItem {
+  id: string;
+  kind: "image" | "video";
+  // Frame to capture for `kind: "image"`. Ignored for video (which uses
+  // the output node's own frame-count param).
+  frame: number;
+}
 
 // A loaded .cube 3D LUT. Stored as the raw .cube text (plus the original
 // file name) so it round-trips through JSON save/load; the node parses the
@@ -702,6 +731,9 @@ export interface AudioFileParamValue {
   element: HTMLAudioElement;
   url: string;
   filename?: string;
+  // Source file byte size — identity key for the relink handle store
+  // (lib/media-relink.ts) and for filename+size matching on manual relink.
+  size?: number;
   duration: number;
 }
 
@@ -713,6 +745,9 @@ export interface VideoFileParamValue {
   video: HTMLVideoElement;
   url: string;
   filename?: string;
+  // Source file byte size — identity key for the relink handle store
+  // (lib/media-relink.ts) and for filename+size matching on manual relink.
+  size?: number;
   duration: number;
   width: number;
   height: number;
@@ -815,6 +850,11 @@ export interface ResolveCtx {
 export interface NodeDefinition {
   type: string;
   name: string;
+  // Hidden from the add-node menus and the docs reference. Used by
+  // back-compat aliases (the same def registered under a retired type
+  // string so old projects keep loading) and by defs that can only be
+  // created through compound actions.
+  hidden?: boolean;
   category: NodeCategory;
   // Only meaningful for typed categories (image/spline/point/audio).
   // Top-level utility/effect/output ignore it.
@@ -828,6 +868,10 @@ export interface NodeDefinition {
   // specdocs/webgpu-particles.md).
   backend: "webgl2" | "webgpu";
   terminal?: boolean;
+  // Opt out of the universal appended `mask` input (see
+  // engine/conventions.ts). For organizational nodes (Render Queue) that
+  // produce no image a mask socket is meaningless.
+  noMaskInput?: boolean;
   // When false, the evaluator will not cache this node's output — it is
   // assumed to read time or other external state that isn't captured by its
   // params/inputs fingerprint. Defaults to true (cacheable).
@@ -874,7 +918,7 @@ export interface NodeDefinition {
   linkedPairs?: { a: string; b: string }[];
   // Render a specific enum param as a compact dropdown on the node's
   // header, in addition to its normal row in the params panel. Used by
-  // the Group family (Group / Pick / Length) so users can flip
+  // the Collect family (Collect / Pick / Length) so users can flip
   // image/spline/points modes without opening the panel — the mode
   // choice retypes the node's sockets, so quick access matters.
   headerControl?: { paramName: string };

@@ -68,7 +68,7 @@ export const transformNode: NodeDefinition = {
   backend: "webgl2",
   supportsTransformGizmo: true,
   // Mode dropdown duplicated on the node header so switching data
-  // types is one click — same pattern the Group family uses.
+  // types is one click — same pattern the Collect family uses.
   headerControl: { paramName: "mode" },
   // Input socket is named "image" for back-compat with saved projects; in
   // spline / point modes the label updates and the socket type retypes

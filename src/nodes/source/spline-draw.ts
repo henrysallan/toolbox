@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
   ImageValue,
   NodeDefinition,
@@ -115,6 +116,7 @@ export const splineDrawNode: NodeDefinition = {
   backend: "webgl2",
   inputs: [],
   params: [
+    OPACITY_PARAM,
     // Anchor data is mutated by the on-canvas overlay, not the params panel —
     // hidden from the UI but still round-trips through save/load.
     {

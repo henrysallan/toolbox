@@ -76,6 +76,9 @@ export interface MenuBarProps {
   // dropdown. Same signature as the Shift+A popup's add path so the
   // parent can reuse onAddNode verbatim.
   onAddNode: (type: string) => void;
+  // True when the node editor shows root scope — the Node menu then
+  // offers only the Layer entry (strict root).
+  atRoot?: boolean;
   // Window-menu state + actions. `fullCanvas` reflects whether the
   // editor's chrome is currently hidden so the toggle row can render
   // a checkmark; the two callbacks fire from the menu items.
@@ -141,6 +144,7 @@ export default function MenuBar({
   onRequestToggleVisibility,
   findNameConflict,
   onAddNode,
+  atRoot,
   fullCanvas,
   onToggleFullCanvas,
   onEnterBrowserFullscreen,
@@ -465,6 +469,7 @@ export default function MenuBar({
                 <NodeBrowserDropdown
                   onAdd={onAddNode}
                   onClose={() => setOpenId(null)}
+                  atRoot={atRoot}
                 />
               ) : (
                 <MenuDropdown

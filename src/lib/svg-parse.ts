@@ -97,29 +97,69 @@ function parseTransform(s: string | null): Mat23 {
 
 // ---- path `d` tokenizer -------------------------------------------------
 
-// Returns [command, args] pairs. Each command keeps its original case (upper =
-// absolute, lower = relative).
-function tokenizePath(d: string): Array<[string, number[]]> {
-  const tokens: Array<[string, number[]]> = [];
-  const numRe =
-    /([+-]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][+-]?\d+)?)/g;
-  const cmdRe = /([MmLlHhVvCcSsQqTtAaZz])/;
-  // Split around commands, keeping them.
-  const parts = d.split(cmdRe).filter((p) => p.trim().length);
+const NUM_RE_SRC = "[+-]?(?:\\d*\\.\\d+|\\d+\\.?\\d*)(?:[eE][+-]?\\d+)?";
+
+function parseNumbers(s: string): number[] {
+  const out: number[] = [];
+  const re = new RegExp(NUM_RE_SRC, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s))) out.push(Number(m[0]));
+  return out;
+}
+
+// Arc arguments need their own scanner: slots 3 and 4 of every 7-tuple
+// are the large-arc / sweep FLAGS, which the SVG grammar allows to be
+// written fused with the following number ("0 016 24" = flags 0,1 then
+// x=6 — Illustrator and SVGO both emit this). A generic number regex
+// reads "016" as sixteen and shreds everything after it.
+function parseArcArgs(s: string): number[] {
+  const out: number[] = [];
+  const numRe = new RegExp(NUM_RE_SRC, "y");
   let i = 0;
-  while (i < parts.length) {
-    const cmd = parts[i];
-    if (!/^[MmLlHhVvCcSsQqTtAaZz]$/.test(cmd)) {
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === ",") {
       i++;
       continue;
     }
-    const argStr = parts[i + 1] ?? "";
-    const nums: number[] = [];
-    let m: RegExpExecArray | null;
-    numRe.lastIndex = 0;
-    while ((m = numRe.exec(argStr))) nums.push(Number(m[1]));
-    tokens.push([cmd, nums]);
-    i += 2;
+    const slot = out.length % 7;
+    if (slot === 3 || slot === 4) {
+      // Flag: exactly one character, 0 or 1.
+      if (ch !== "0" && ch !== "1") break; // malformed — stop cleanly
+      out.push(ch === "1" ? 1 : 0);
+      i++;
+    } else {
+      numRe.lastIndex = i;
+      const m = numRe.exec(s);
+      if (!m || m[0].length === 0) break;
+      out.push(Number(m[0]));
+      i = numRe.lastIndex;
+    }
+  }
+  return out;
+}
+
+// Returns [command, args] pairs. Each command keeps its original case (upper =
+// absolute, lower = relative).
+//
+// Single regex scan: every command letter captures everything up to the
+// next command letter as its argument text. (The previous split-based
+// implementation dropped any command that directly followed an argless
+// command — "Z M3 3" tokenized Z with argStr "M", swallowing the moveto,
+// so compound paths fused their subpaths into spike-y messes.)
+function tokenizePath(d: string): Array<[string, number[]]> {
+  const tokens: Array<[string, number[]]> = [];
+  const re = /([MmLlHhVvCcSsQqTtAaZz])([^MmLlHhVvCcSsQqTtAaZz]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(d))) {
+    const cmd = m[1];
+    const argStr = m[2];
+    tokens.push([
+      cmd,
+      cmd === "A" || cmd === "a"
+        ? parseArcArgs(argStr)
+        : parseNumbers(argStr),
+    ]);
   }
   return tokens;
 }
@@ -271,12 +311,20 @@ function parsePathD(d: string, transform: Mat23): SplineSubpath[] {
   let lastCubicC2: [number, number] | null = null;
   let lastQuadC1: [number, number] | null = null;
 
+  // Start a subpath at the current point when a drawing command arrives
+  // without one — a path that begins with L/C, or any segment following
+  // Z (per spec, the next subpath starts at the closed subpath's
+  // initial point; appending to the closed ring instead draws chords
+  // across the shape).
+  const ensureCurrent = () => {
+    if (current) return;
+    current = { anchors: [], closed: false };
+    subpaths.push(current);
+    const [ax, ay] = apply(transform, cx, cy);
+    current.anchors.push({ pos: [ax, ay] });
+  };
   const pushAnchor = (a: SplineAnchor) => {
-    if (!current) {
-      current = { anchors: [], closed: false };
-      subpaths.push(current);
-    }
-    current.anchors.push(a);
+    current!.anchors.push(a);
   };
   // Attach an out-handle to the last-pushed anchor (the segment's start).
   const setLastOutHandle = (ox: number, oy: number) => {
@@ -290,6 +338,7 @@ function parsePathD(d: string, transform: Mat23): SplineSubpath[] {
   const lineTo = (nx: number, ny: number) => {
     // Emit a cubic whose handles collapse to the endpoints — renders as a
     // straight line but keeps the data uniform (every segment is a cubic).
+    ensureCurrent();
     const [ax, ay] = apply(transform, nx, ny);
     pushAnchor({ pos: [ax, ay] });
     cx = nx;
@@ -319,6 +368,7 @@ function parsePathD(d: string, transform: Mat23): SplineSubpath[] {
     nx: number,
     ny: number
   ) => {
+    ensureCurrent();
     setLastOutHandle(c1x, c1y);
     const [ex, ey] = apply(transform, nx, ny);
     const [hx, hy] = apply(transform, c2x, c2y);
@@ -437,13 +487,15 @@ function parsePathD(d: string, transform: Mat23): SplineSubpath[] {
         break;
       }
       case "Z": {
-        // Last pushed subpath is always the open one; close it if non-empty.
-        const sub = subpaths[subpaths.length - 1];
-        if (sub && sub.anchors.length > 0) {
-          sub.closed = true;
+        if (current && (current as SplineSubpath).anchors.length > 0) {
+          (current as SplineSubpath).closed = true;
           cx = startX;
           cy = startY;
         }
+        // The subpath is sealed — a following segment without an
+        // explicit M starts a NEW subpath at the close point
+        // (ensureCurrent handles it), never appends to the ring.
+        current = null;
         lastCubicC2 = null;
         lastQuadC1 = null;
         break;

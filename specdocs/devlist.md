@@ -258,3 +258,50 @@ Then I want to develop a system where if we have no nodes selected, we can actua
 
 131. theres a tiny but of extra space at the bottom of the main menubar. can you reduce it a tiny bit so it optically matches the top
 
+132. copy to points should accept an image group, and then we should have a pick instance toggle and an ID input socket. Then we can feed in image data - like a noise - to randomly select which image from the group to use for each point.
+
+133. I want to add two features. first a breadcrumb/hierchary indicator at the top left of the node editor. 
+
+It should be a series of small rounded rectangles. The highest one is always the project name.
+
+Then I want to add the idea of a node group. How it works is we should be able to select 1 or more nodes, hit cmd + g, and put all those nodes into their own group - a single node called "group" with inputs and outputs. The inputs and outputs are at minimum whatever the ajoining nodes connected nodes are on the right or left. So if we have 6 nodes and we select the middle 4, then the group will have an input and output socket. 
+
+Inside the group we should auto creat a Group Input, and Group output node. Those nodes will be autoconnnected but you should be able to add or remove ouput socketws (for the input node) or input sockets (for the output node).
+
+134. we are not storing videos on cloud, but its annoying to always re add them. when we load a video can we somehow save the file path and then next time we load a project we try to auto relink? idk how that would work
+
+135. Debug node. This node in my mind could be placed in any datastream at any position and it would return a spreadsheet view in the parameters panel of all the data passing through it. What are the key questions for this node.
+
+136. Lets rework the merge node to put the slider and blend mode on the same line (first blend mode, then opacity slider). Update the slider style to match the main slider UI. 
+
+137. Our new custom drop down doesnt let me do a two finger scroll on trackpad - right now it immediately closes dropdown
+
+138. I have seen another comparable program that uses a different notion than my tracks/graph idea. Instead it has a further abstraction on top which is layers. The idea is that every layer contains a node graph and then you can do kind of normal NLE editing but then dive into a layer and look at its node graph. 
+
+This feels like a slight tradeoff where you loose the 'everything in one graph' mentality, but you gain the ability to sequence events much much easier. 
+
+Ideally we would find a way to elegantly merge these. 
+
+one idea is that there is a compositing node graph that lives at the top level. This node graph only allows a squence of one node after another - no branching just compositing - its just each node represents a layer in a stack. And the primary mode for editing these layers is via a dedicated layer editor. The idea being that the user basically never needs to interact with it if they dont want to, every edit is linked. So this is basically a different notion of how a graph works - its just a node based representation of a stacked layer compositor. The only controls each node has is blend mode, and opacity slider. 
+
+We kind of have some of this set up with the tracks editor but I think we could make this just a dedicated keyframe editor, keeping the clip editing for now, but making the Layers editor the main place where we do NLE style editing. 
+
+This idea necessitates an additional big feature: 1. the idea of a node group. 2. a breadcrumb/hierchary indicator at the top left of the node editor. 
+
+the breadcrumb/hierachry should be a series of small rounded rectangles. The highest one is always the project name - which is the "layers" nodegroup
+
+For nodegroups, at minimum each layer node is a group containing a node graph. Generally How groups work is we should be able to select a group and hit tab to dive into the group. OR select 1 or more nodes, hit cmd + g, and put all those nodes into their own group - a single node called "group" with inputs and outputs. The inputs and outputs are at minimum whatever the ajoining nodes connected nodes are on the right or left. So if we have 6 nodes and we select the middle 4, then the group will have an input and output socket. The behavior is similar to blender geometry nodes.
+
+Inside the group we should auto create a Group Input, and Group output node. Those nodes will be autoconnnected but you should be able to add or remove ouput socketws (for the input node) or input sockets (for the output node) so we can expose an arbitrary amount of parameters.
+
+For the layers editor, we would create a new toggle in addition to tracks and graph: Layers. The layers editor would essentially be an after effects style NLE editor where is layer corresponds to a layer node. Reordering them by dragging and dropping will reorder the nodes in the layers nodegraph. Its kinda similar to the tracks editor but more closely related to an after effects editor. 
+
+
+
+141. when editing keyframes (in tracks or layers) if the user selects multiple keyframes accross tracks/layers and option + drags them, the keys should stagger themselves with the top keys staying static and the ones underneath being staggered out/in as you drag right/left (importantly the spacing between keys on the same track should stay the same)
+
+142. autolayout nodes. I want to build a node that replicates the autolayout function of Figma. You should pipe in various data streams (kind of like a merge) and then in the parameters panel you should be able to choose between horizontial or vertical. The key settings are alginement (left right top bottom and each corner), and horizontial and vertial padding, and gap. We can replicate the figma layout for those. The thing im not sure exactly how to handle is responsive sizing. In figma, every layer (image, text, or frame basically) has the ability to be fixed size, or hug contents or fill container for its height or width. 
+
+143. Spline boolean node. I want a node that can take two splines and subtract A - B. 
+
+144. Font database. I want to write a script to fetch and distill all the google fonts into a json. Then for text nodes we should make the font field searchable and when the user selects the font we dynamically load it. I think we use he google api once locally to build the json. Then the other concern is that for certain things we need the actual font file. not sure how to handle that. 

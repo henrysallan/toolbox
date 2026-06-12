@@ -19,18 +19,34 @@ import { ensurePointArray, pointsFromArray } from "@/engine/points";
 // `mode` param picks which. resolveInputs/resolvePrimaryOutput wire the
 // right socket types to match the mode, just like the Transform node.
 //
-// Convention: the instance is anchored at its own (0.5, 0.5) center.
-// Each copy rotates and scales around that anchor, then translates so
-// the anchor lands at the target point's `pos`. Matches user intuition
-// that "a scattered tree at point P has its trunk at P."
+// Anchor: each copy rotates and scales around its anchor, then
+// translates so the anchor lands at the target point's `pos`. The
+// `anchor` param picks it: "content center" (default — the instance's
+// visible bounds center; for images this also crops each quad to the
+// alpha bbox, a big fill-rate win), "canvas center" (the legacy
+// (0.5, 0.5) convention — nodes saved before the param keep it), or
+// "custom" (explicit X/Y). Matches user intuition that "a scattered
+// tree at point P has its trunk at P."
 //
-// Pick source (spline / point modes, optional): when the instance
-// carries groupIndex tags (i.e. came through a Group node), connecting
-// a `pick` image samples it per-target-point to select which group
-// index to instance at that point. The sampled luminance in [0, 1]
-// maps to an integer index into the sorted distinct groupIndex set.
-// Feed a noise image for a pseudo-random assortment; feed a UV / any
-// image to drive the assortment spatially.
+// Variant pick: when the instance carries variants — groupIndex tags
+// on splines / points, or the items of an image group — `pick_mode`
+// chooses which variant lands on each target point:
+//   all          every variant at every point (default)
+//   image        sample the `pick` input's luminance at the point;
+//                [0,1] maps to an index into the variant set
+//                (noise → spatial assortment)
+//   random       seeded per-point hash, no wiring needed
+//   cycle        round-robin by target point index
+//   target group pair the target point's own groupIndex with the
+//                matching variant
+// Nodes saved before pick_mode existed behaved image-driven whenever a
+// pick was wired; a missing param resolves to "image" for them.
+//
+// Aspect note: authored UV maps to pixels uniformly (see
+// engine/aspect.ts — y offsets scale by W just like x), so rotating
+// offsets in UV space here renders undistorted; the GPU path's center
+// remap is that same mapping. The three modes agree on non-square
+// canvases by construction.
 //
 // Image mode runs entirely on the GPU via instanced quads — one
 // draw call regardless of point count. The vertex shader fetches
@@ -42,9 +58,11 @@ import { ensurePointArray, pointsFromArray } from "@/engine/points";
 
 // Vertex shader: every instance is a unit quad in [0,1]². For the
 // instance with id `gl_InstanceID`, fetch two RGBA32F texels from
-// u_xforms (a Nx2 data texture):
-//   row 0 = (posX, posY, rotation, scaleX)
-//   row 1 = (scaleY, _, _, _)
+// u_xforms — a tiled data texture, u_xformTileW instances per row-pair
+// (instance counts beyond MAX_TEXTURE_SIZE would fail as a single row;
+// tiling removes the ceiling):
+//   row 2k   = (posX, posY, rotation, scaleX)
+//   row 2k+1 = (scaleY, _, _, _)
 //
 // Per-instance modulation:
 //   - u_scaleMul: global scalar multiplier (audio amplitude, etc.)
@@ -67,8 +85,19 @@ precision highp float;
 layout(location = 0) in vec2 a_pos;
 out vec2 v_uv;
 uniform sampler2D u_xforms;
+uniform int u_xformTileW;
+// First transform slot for this draw — image-group variants issue one
+// draw per item over a contiguous segment of the packed transforms.
+uniform int u_instBase;
 uniform vec2 u_canvasRes;
 uniform vec2 u_instSize;
+// Sampled sub-rect of the instance image (x, y, w, h in its UV space).
+// Full image = (0,0,1,1); the content-center anchor crops to the alpha
+// bbox so mostly-transparent instances stop costing full-canvas fill.
+uniform vec4 u_uvRect;
+// Anchor within the sub-rect (normalized). The anchor lands on the
+// target point and is the rotate/scale pivot.
+uniform vec2 u_anchor;
 
 uniform float u_scaleMul;
 uniform float u_rotateAdd;
@@ -81,8 +110,10 @@ uniform int u_useRotateField;
 uniform float u_rotateFieldAmount;
 
 void main() {
-  vec4 t1 = texelFetch(u_xforms, ivec2(gl_InstanceID, 0), 0);
-  vec4 t2 = texelFetch(u_xforms, ivec2(gl_InstanceID, 1), 0);
+  int id = gl_InstanceID + u_instBase;
+  ivec2 cell = ivec2(id % u_xformTileW, (id / u_xformTileW) * 2);
+  vec4 t1 = texelFetch(u_xforms, cell, 0);
+  vec4 t2 = texelFetch(u_xforms, cell + ivec2(0, 1), 0);
   vec2 pos = t1.xy;
   float rot = t1.z;
   float sx = t1.w;
@@ -96,9 +127,10 @@ void main() {
     float r = texture(u_scaleField, pos).r;
     fieldMul = mix(u_scaleFieldLo, u_scaleFieldHi, r);
   }
-  float globalMul = max(0.0, u_scaleMul);
-  sx *= fieldMul * globalMul;
-  sy *= fieldMul * globalMul;
+  // Unclamped on purpose — a negative multiplier point-mirrors copies
+  // through their anchor. Matches the CPU modes.
+  sx *= fieldMul * u_scaleMul;
+  sy *= fieldMul * u_scaleMul;
 
   // Per-instance rotation modulation. Rotate field maps R [0,1]
   // to [-amount, +amount] so 0.5 = no extra rotation.
@@ -109,7 +141,7 @@ void main() {
   }
   rot += rotMod;
 
-  vec2 local = (a_pos - 0.5) * u_instSize * vec2(sx, sy);
+  vec2 local = (a_pos - u_anchor) * u_instSize * u_uvRect.zw * vec2(sx, sy);
   float c = cos(rot);
   float s = sin(rot);
   vec2 r2 = vec2(c * local.x - s * local.y, s * local.x + c * local.y);
@@ -123,7 +155,7 @@ void main() {
   // Pipeline UV is Y-down; clip space is Y-up. Flip vertically.
   clip.y = -clip.y;
   gl_Position = vec4(clip, 0.0, 1.0);
-  v_uv = a_pos;
+  v_uv = u_uvRect.xy + a_pos * u_uvRect.zw;
 }`;
 
 const COPY_INST_FS = `#version 300 es
@@ -138,10 +170,36 @@ void main() {
   outColor = texture(u_src, v_uv);
 }`;
 
+// CPU-side luminance samplers built from image inputs (pick / scale
+// field / rotate field). Cached per slot, keyed on the source
+// ImageValue's identity — the evaluator hands back the same value
+// object while an upstream is cached, so identity ⇒ same pixels.
+type LumaSampler = (u: number, v: number) => number;
+type SamplerSlot = "pick" | "scale" | "rotate";
+interface LumaSamplerEntry {
+  src: ImageValue;
+  sample: LumaSampler;
+}
+
+// UV-space sub-rect of an instance image (Y-down, like all authored UVs).
+interface UvRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+const FULL_RECT: UvRect = { x: 0, y: 0, w: 1, h: 1 };
+
 interface CopyState {
-  // Scratch canvas for pick-source readback. Created lazily so spline
-  // and point modes without a pick input don't allocate.
+  // Scratch canvas for CPU readbacks (pick / field samplers, content
+  // rects). Created lazily so graphs without image-driven CPU sampling
+  // don't allocate.
   pickCanvas: HTMLCanvasElement | null;
+  samplers: Partial<Record<SamplerSlot, LumaSamplerEntry>>;
+  // Alpha-bbox cache for the content-center anchor, keyed on ImageValue
+  // identity (same contract as the sampler cache). WeakMap so group
+  // items and animated instances don't accumulate.
+  contentRects: WeakMap<ImageValue, UvRect>;
   // GPU resources for instanced image-mode rendering. Lazily created
   // on first image-mode eval so spline/point users never pay for
   // them. Lifetime is the node — disposed alongside the node.
@@ -149,13 +207,22 @@ interface CopyState {
   instVao: WebGLVertexArrayObject | null;
   instQuadVbo: WebGLBuffer | null;
   instFbo: WebGLFramebuffer | null;
-  // Per-instance transform data texture. Width = N (point count),
-  // height = 2 (two RGBA32F rows per instance — see VS comment).
+  // Uniform locations, resolved once at link time instead of ~14
+  // getUniformLocation calls per draw.
+  instLocs: Record<string, WebGLUniformLocation | null> | null;
+  // Per-instance transform data texture, tiled XFORM_TILE_W instances
+  // per row-pair (two RGBA32F rows per instance — see VS comment).
   instXformTex: WebGLTexture | null;
   instXformWidth: number;
+  instXformHeight: number;
   // CPU staging buffer for the data-texture upload. Reused across
   // evals; resized when N grows.
   instXformBuf: Float32Array | null;
+  // The PointsValue last packed+uploaded (single-instance path only).
+  // Identity match + same ordering ⇒ the texture already holds these
+  // transforms; skip the pack and upload.
+  lastPoints: PointsValue | null;
+  lastOrderKey: string;
 }
 
 function modeOf(params: Record<string, unknown>): "image" | "spline" | "point" {
@@ -171,17 +238,48 @@ function ensureState(ctx: RenderContext, nodeId: string): CopyState {
   if (existing) return existing;
   const s: CopyState = {
     pickCanvas: null,
+    samplers: {},
+    contentRects: new WeakMap(),
     instProgram: null,
     instVao: null,
     instQuadVbo: null,
     instFbo: null,
+    instLocs: null,
     instXformTex: null,
     instXformWidth: 0,
+    instXformHeight: 0,
     instXformBuf: null,
+    lastPoints: null,
+    lastOrderKey: "",
   };
   ctx.state[key] = s;
   return s;
 }
+
+// Instances per row-pair in the transform data texture. 2048 is the
+// WebGL2-guaranteed MAX_TEXTURE_SIZE floor, so the tiled layout works
+// on every conformant GPU; height grows as ceil(N / 2048) * 2.
+const XFORM_TILE_W = 2048;
+
+const INST_UNIFORMS = [
+  "u_src",
+  "u_xforms",
+  "u_xformTileW",
+  "u_instBase",
+  "u_canvasRes",
+  "u_instSize",
+  "u_uvRect",
+  "u_anchor",
+  "u_scaleMul",
+  "u_rotateAdd",
+  "u_scaleField",
+  "u_useScaleField",
+  "u_scaleFieldLo",
+  "u_scaleFieldHi",
+  "u_rotateField",
+  "u_useRotateField",
+  "u_rotateFieldAmount",
+] as const;
 
 // Lazy GL setup — compiles the instanced shader pair, creates the
 // quad VAO + a private FBO + the data texture. Only runs the first
@@ -235,6 +333,11 @@ function ensureInstResources(ctx: RenderContext, state: CopyState): boolean {
       return false;
     }
     state.instProgram = prog;
+    const locs: Record<string, WebGLUniformLocation | null> = {};
+    for (const name of INST_UNIFORMS) {
+      locs[name] = gl.getUniformLocation(prog, name);
+    }
+    state.instLocs = locs;
   }
   if (!state.instQuadVbo || !state.instVao) {
     state.instQuadVbo = gl.createBuffer();
@@ -266,35 +369,51 @@ function ensureInstResources(ctx: RenderContext, state: CopyState): boolean {
   return true;
 }
 
-// Builds a luminance sampler from an image input by reading it back
-// through a 2D canvas once. Returns a closure that maps UV → 0..1
-// luminance. The readback isn't cheap but only runs for spline/point
-// modes when a pick is actually connected, and the samples themselves
-// are in-memory lookups.
-function buildPickSampler(
+// Builds (and caches) a luminance sampler from an image input. The
+// source is blitted DOWNSAMPLED to ≤256px on the long edge before the
+// CPU readback — pick / field sources are low-frequency selectors, so
+// full-resolution getImageData (~8 MB at 1080p, per eval) is pure
+// waste. Same recipe as Scatter Points' density readback. Cached per
+// slot keyed on the ImageValue identity: while the upstream node is
+// cached the evaluator hands back the same object, so an animated
+// source misses (new value each frame) and a static one hits.
+function getLumaSampler(
   ctx: RenderContext,
   state: CopyState,
-  pick: ImageValue
-): ((u: number, v: number) => number) | null {
-  if (pick.width <= 0 || pick.height <= 0) return null;
+  slot: SamplerSlot,
+  img: ImageValue
+): LumaSampler | null {
+  const cached = state.samplers[slot];
+  if (cached && cached.src === img) return cached.sample;
+  if (img.width <= 0 || img.height <= 0) return null;
+  const MAX = 256;
+  const aspect = img.width / img.height;
+  let w: number;
+  let h: number;
+  if (img.width >= img.height) {
+    w = Math.min(MAX, img.width);
+    h = Math.max(1, Math.round(w / aspect));
+  } else {
+    h = Math.min(MAX, img.height);
+    w = Math.max(1, Math.round(h * aspect));
+  }
   const canvas = state.pickCanvas ?? document.createElement("canvas");
   state.pickCanvas = canvas;
-  if (canvas.width !== pick.width || canvas.height !== pick.height) {
-    canvas.width = pick.width;
-    canvas.height = pick.height;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
   }
   try {
-    ctx.blitToCanvas(pick, canvas);
+    ctx.blitToCanvas(img, canvas);
   } catch {
     return null;
   }
   const c2d = canvas.getContext("2d", { willReadFrequently: true });
   if (!c2d) return null;
-  const img = c2d.getImageData(0, 0, canvas.width, canvas.height);
-  const data = img.data;
-  const w = canvas.width;
-  const h = canvas.height;
-  return (u: number, v: number): number => {
+  // getImageData copies, so the shared scratch canvas can be reused by
+  // the next slot's build within the same eval.
+  const data = c2d.getImageData(0, 0, w, h).data;
+  const sample: LumaSampler = (u, v) => {
     // Point/subpath UVs are Y-DOWN (matches canvas image-data row
     // order — row 0 = visual top). Sample directly without flipping.
     const px = Math.max(0, Math.min(w - 1, Math.floor(u * w)));
@@ -304,6 +423,207 @@ function buildPickSampler(
       (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255
     );
   };
+  state.samplers[slot] = { src: img, sample };
+  return sample;
+}
+
+// Deterministic per-point hash → [0, 1). Index-stable so a static
+// scatter keeps the same variant assignment frame to frame; the seed
+// param reshuffles the whole assignment.
+function hash01(index: number, seed: number): number {
+  let h = (index * 374761393 + seed * 668265263) | 0;
+  h = (h ^ (h >>> 13)) | 0;
+  h = Math.imul(h, 1274126177);
+  h = h ^ (h >>> 16);
+  return (h >>> 0) / 4294967296;
+}
+
+// Resolve which groupIndex to instance at one target point, per the
+// pick mode. `null` means "no filtering — emit every variant" (the
+// `all` mode, single-group instances, or image mode with no pick wired).
+function chooseVariantGroup(opts: {
+  pickMode: string;
+  distinct: number[];
+  index: number;
+  sampler: LumaSampler | null;
+  u: number;
+  v: number;
+  targetGroup: number;
+  seed: number;
+}): number | null {
+  const { distinct } = opts;
+  const n = distinct.length;
+  if (n <= 1) return null;
+  switch (opts.pickMode) {
+    case "image":
+      return opts.sampler
+        ? luminanceToIndexPick(distinct, opts.sampler(opts.u, opts.v))
+        : null;
+    case "random": {
+      const r = hash01(opts.index, opts.seed);
+      return distinct[Math.min(n - 1, Math.floor(r * n))];
+    }
+    case "cycle":
+      return distinct[opts.index % n];
+    case "target group": {
+      // Pair the target point's own groupIndex with the matching
+      // instance group; indices outside the instance's set wrap so
+      // mismatched group counts still produce something sensible.
+      const g = opts.targetGroup;
+      return distinct.includes(g) ? g : distinct[((g % n) + n) % n];
+    }
+    default:
+      return null; // "all"
+  }
+}
+
+// Alpha bounding box of an image in UV space, from a ≤128px readback,
+// cached per ImageValue identity. Drives the "content center" anchor:
+// the quad is cropped to visible pixels, which both anchors copies at
+// their content and removes the fill cost of transparent margins
+// (pipeline images are canvas-sized, so uncropped instances are mostly
+// empty quads). Fully-transparent or unreadable images fall back to the
+// full rect.
+function getContentRect(
+  ctx: RenderContext,
+  state: CopyState,
+  img: ImageValue
+): UvRect {
+  const cached = state.contentRects.get(img);
+  if (cached) return cached;
+  let rect = FULL_RECT;
+  if (img.width > 0 && img.height > 0) {
+    const MAX = 128;
+    const aspect = img.width / img.height;
+    let w: number;
+    let h: number;
+    if (img.width >= img.height) {
+      w = Math.min(MAX, img.width);
+      h = Math.max(1, Math.round(w / aspect));
+    } else {
+      h = Math.min(MAX, img.height);
+      w = Math.max(1, Math.round(h * aspect));
+    }
+    const canvas = state.pickCanvas ?? document.createElement("canvas");
+    state.pickCanvas = canvas;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    try {
+      ctx.blitToCanvas(img, canvas);
+      const c2d = canvas.getContext("2d", { willReadFrequently: true });
+      if (c2d) {
+        const data = c2d.getImageData(0, 0, w, h).data;
+        let minX = w;
+        let minY = h;
+        let maxX = -1;
+        let maxY = -1;
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            if (data[(y * w + x) * 4 + 3] > 0) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+        }
+        if (maxX >= 0) {
+          // Pad one downsampled texel so soft edges don't clip.
+          minX = Math.max(0, minX - 1);
+          minY = Math.max(0, minY - 1);
+          maxX = Math.min(w - 1, maxX + 1);
+          maxY = Math.min(h - 1, maxY + 1);
+          rect = {
+            x: minX / w,
+            y: minY / h,
+            w: (maxX - minX + 1) / w,
+            h: (maxY - minY + 1) / h,
+          };
+        }
+      }
+    } catch {
+      // Readback failed — full rect keeps rendering correct.
+    }
+  }
+  state.contentRects.set(img, rect);
+  return rect;
+}
+
+// Bounds center of a spline instance's anchor positions — the
+// "content center" anchor for spline mode. Null when there are no
+// anchors (caller falls back to canvas center).
+function splineBoundsCenter(
+  subpaths: SplineSubpath[]
+): [number, number] | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const s of subpaths) {
+    for (const a of s.anchors) {
+      if (a.pos[0] < minX) minX = a.pos[0];
+      if (a.pos[0] > maxX) maxX = a.pos[0];
+      if (a.pos[1] < minY) minY = a.pos[1];
+      if (a.pos[1] > maxY) maxY = a.pos[1];
+    }
+  }
+  return Number.isFinite(minX)
+    ? [(minX + maxX) / 2, (minY + maxY) / 2]
+    : null;
+}
+
+// Same for a points instance.
+function pointsBoundsCenter(pts: Point[]): [number, number] | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of pts) {
+    if (p.pos[0] < minX) minX = p.pos[0];
+    if (p.pos[0] > maxX) maxX = p.pos[0];
+    if (p.pos[1] < minY) minY = p.pos[1];
+    if (p.pos[1] > maxY) maxY = p.pos[1];
+  }
+  return Number.isFinite(minX)
+    ? [(minX + maxX) / 2, (minY + maxY) / 2]
+    : null;
+}
+
+// Emission order over the target points. "points order" keeps the
+// producer's ordering (null = identity, preserves the fast path).
+// "by y" sorts top→bottom so lower copies paint over higher ones — the
+// painter's-order pseudo-depth trick. "shuffled" is a seeded
+// Fisher–Yates (seeded by pick_seed) for when the producer's order
+// creates visible stacking patterns. Variant assignment stays keyed on
+// the point's own index, so reordering never reshuffles variants.
+function buildDrawOrder(
+  pts: PointsValue,
+  mode: string,
+  seed: number
+): Int32Array | null {
+  const n = pts.count;
+  if (n <= 1) return null;
+  if (mode === "by y") {
+    const order = new Int32Array(n);
+    for (let i = 0; i < n; i++) order[i] = i;
+    const pos = pts.positions;
+    order.sort((a, b) => pos[a * 2 + 1] - pos[b * 2 + 1]);
+    return order;
+  }
+  if (mode === "shuffled") {
+    const order = new Int32Array(n);
+    for (let i = 0; i < n; i++) order[i] = i;
+    for (let i = n - 1; i > 0; i--) {
+      const j = Math.floor(hash01(i, seed ^ 0x9e3779) * (i + 1));
+      const t = order[i];
+      order[i] = order[j];
+      order[j] = t;
+    }
+    return order;
+  }
+  return null;
 }
 
 // Collects the sorted distinct groupIndex values present on a
@@ -336,7 +656,7 @@ export const copyToPointsNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Duplicate an image, spline, or point at every target point. Each copy respects per-point rotation and scale. The instance anchors at its (0.5, 0.5) center so a scattered tree keeps its trunk on the point. Image mode supports per-instance modulation: scalar inputs drive every copy uniformly (e.g. audio amplitude on `scale_mul` makes everything pulse), and image inputs are sampled at each copy's UV (e.g. noise on `scale_field` gives every copy a different size). For grouped splines / points, an optional `pick` image drives per-target group selection.",
+    "Duplicate an image (or image group), spline, or point at every target point. Each copy respects per-point rotation and scale, anchored at the instance's content center (or canvas center / custom). Per-instance modulation works in every mode: scalar inputs drive every copy uniformly (e.g. audio amplitude on `scale_mul` makes everything pulse), and image inputs are sampled at each copy's position (e.g. noise on `scale_field` gives every copy a different size). Variants — grouped splines / points, or image-group items — land per point via the pick mode: all, image-driven (`pick` input), seeded random, cycle, or by the target point's own group. Draw order controls stacking (painter's by-y, shuffled).",
   backend: "webgl2",
   inputs: [
     { name: "points", type: "points", required: true },
@@ -347,24 +667,32 @@ export const copyToPointsNode: NodeDefinition = {
     { name: "scale_field", type: "image", required: false },
     { name: "rotate_field", type: "image", required: false },
   ],
-  resolveInputs(params): InputSocketDef[] {
+  resolveInputs(params, ctx): InputSocketDef[] {
     const mode = modeOf(params);
-    const instType: SocketType =
+    let instType: SocketType =
       mode === "spline" ? "spline" : mode === "point" ? "points" : "image";
+    // Image mode also accepts a homogeneous image group — one variant
+    // per item, selected per point by the pick mode. The socket retypes
+    // to follow what's actually wired (the evaluator's coercion layer
+    // drops mismatched kinds, so the declared type must track the
+    // connection — same pattern as Math's uv morphing).
+    if (mode === "image" && ctx?.connectedTypes?.instance === "image_group") {
+      instType = "image_group";
+    }
     const base: InputSocketDef[] = [
       { name: "points", type: "points", required: true },
       { name: "instance", type: instType, required: true },
     ];
-    // Pick only applies to spline / point modes — image mode has no
-    // groupIndex concept, so suppress the socket there.
-    if (mode !== "image") {
+    // The pick socket only exists when the variant pick actually reads
+    // an image; `undefined` covers nodes saved before the enum, whose
+    // behavior was always image-driven.
+    const pickMode = params.pick_mode as string | undefined;
+    if (pickMode === "image" || pickMode === undefined) {
       base.push({ name: "pick", type: "image", required: false });
     }
-    // Per-instance modulation inputs — exposed in every mode so users
-    // can wire them ahead of switching modes. Image mode consumes them
-    // in the shader; spline / point modes ignore the wired values
-    // (compute path doesn't read them — use Jitter / Transform for
-    // CPU geometry modulation).
+    // Per-instance modulation inputs — honored in every mode. Image
+    // mode consumes them in the shader; spline / point modes apply the
+    // same math on the CPU (fields sampled at each target point).
     base.push(
       { name: "scale_mul", type: "scalar", required: false, label: "Scale × (uniform)" },
       { name: "rotate_add", type: "scalar", required: false, label: "Rotate + (uniform)" },
@@ -381,20 +709,89 @@ export const copyToPointsNode: NodeDefinition = {
       options: ["image", "spline", "point"],
       default: "image",
     },
-    // Modulation params — only meaningful in image mode. These give
-    // the user knobs to set even before they wire any modulation
-    // input; once a corresponding socket is connected, the wired
-    // value overrides via the standard exposed-param semantics.
+    // How to choose which instance variant lands on each target point.
+    // Variants are groupIndex groups for spline / point instances, and
+    // group items for an image-group instance. "all" stamps every
+    // variant at every point; "image" samples the `pick` input's
+    // luminance; "random" / "cycle" need no extra wiring; "target
+    // group" pairs the target point's own groupIndex with the matching
+    // variant.
+    {
+      name: "pick_mode",
+      label: "Variant pick",
+      type: "enum",
+      options: ["all", "image", "random", "cycle", "target group"],
+      default: "all",
+    },
+    {
+      name: "pick_seed",
+      label: "Pick seed",
+      type: "scalar",
+      min: 0,
+      max: 9999,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.pick_mode === "random",
+    },
+    // Where the instance hangs on each target point (also the
+    // rotate/scale pivot). "content center" anchors at the instance's
+    // visible bounds — and, for images, crops each copy's quad to its
+    // alpha bbox, a large fill-rate win on mostly-transparent
+    // instances. "canvas center" is the legacy (0.5, 0.5) convention
+    // for pre-composed full-frame instances; nodes saved before this
+    // param keep it. "custom" exposes explicit anchor X/Y.
+    {
+      name: "anchor",
+      label: "Anchor",
+      type: "enum",
+      options: ["content center", "canvas center", "custom"],
+      default: "content center",
+    },
+    {
+      name: "anchor_x",
+      label: "Anchor X",
+      type: "scalar",
+      min: 0,
+      max: 1,
+      step: 0.001,
+      default: 0.5,
+      visibleIf: (p) => p.anchor === "custom",
+    },
+    {
+      name: "anchor_y",
+      label: "Anchor Y",
+      type: "scalar",
+      min: 0,
+      max: 1,
+      step: 0.001,
+      default: 0.5,
+      visibleIf: (p) => p.anchor === "custom",
+    },
+    // Stacking order for overlapping copies. "by y" gives the classic
+    // painter's-order pseudo-depth (lower copies in front); "shuffled"
+    // breaks up producer-order stacking patterns (seeded by pick_seed).
+    {
+      name: "draw_order",
+      label: "Draw order",
+      type: "enum",
+      options: ["points order", "by y", "shuffled"],
+      default: "points order",
+    },
+    // Modulation params — honored in every mode (shader in image mode,
+    // CPU math in spline / point modes). These give the user knobs to
+    // set even before they wire any modulation input; once a
+    // corresponding socket is connected, the wired value overrides via
+    // the standard exposed-param semantics.
     {
       name: "scale_mul_default",
       label: "Scale × default",
       type: "scalar",
-      min: 0,
+      // Negative point-mirrors copies through their anchor.
+      min: -4,
       max: 4,
       softMax: 2,
       step: 0.001,
       default: 1,
-      visibleIf: (p) => modeOf(p) === "image",
     },
     {
       name: "rotate_add_default",
@@ -404,7 +801,6 @@ export const copyToPointsNode: NodeDefinition = {
       max: Math.PI,
       step: 0.001,
       default: 0,
-      visibleIf: (p) => modeOf(p) === "image",
     },
     {
       name: "scale_field_lo",
@@ -417,7 +813,6 @@ export const copyToPointsNode: NodeDefinition = {
       // Map field=0 to 0.5× scale by default — gives a balanced
       // "shrink half / grow half" range when paired with hi=1.5.
       default: 0.5,
-      visibleIf: (p) => modeOf(p) === "image",
     },
     {
       name: "scale_field_hi",
@@ -428,7 +823,6 @@ export const copyToPointsNode: NodeDefinition = {
       softMax: 2,
       step: 0.001,
       default: 1.5,
-      visibleIf: (p) => modeOf(p) === "image",
     },
     {
       name: "rotate_field_amount",
@@ -439,7 +833,6 @@ export const copyToPointsNode: NodeDefinition = {
       softMax: Math.PI,
       step: 0.001,
       default: Math.PI,
-      visibleIf: (p) => modeOf(p) === "image",
     },
   ],
   primaryOutput: "image",
@@ -458,6 +851,83 @@ export const copyToPointsNode: NodeDefinition = {
     const ptCount = ptsValue?.count ?? 0;
     const state = ensureState(ctx, nodeId);
 
+    // Modulation, resolved once for every mode: scalar input wins over
+    // the matching default param (audio→scalar coercion makes `Audio
+    // Source` into scale_mul work automatically). Image mode passes
+    // these to the shader; spline / point modes apply the same math on
+    // the CPU so a wired socket never silently does nothing.
+    const scaleMulIn = inputs.scale_mul;
+    const rotateAddIn = inputs.rotate_add;
+    const scaleMul =
+      scaleMulIn?.kind === "scalar"
+        ? scaleMulIn.value
+        : (params.scale_mul_default as number) ?? 1;
+    const rotateAdd =
+      rotateAddIn?.kind === "scalar"
+        ? rotateAddIn.value
+        : (params.rotate_add_default as number) ?? 0;
+    const scaleFieldImg =
+      inputs.scale_field?.kind === "image" ? inputs.scale_field : null;
+    const rotateFieldImg =
+      inputs.rotate_field?.kind === "image" ? inputs.rotate_field : null;
+    const fieldLo = (params.scale_field_lo as number) ?? 0.5;
+    const fieldHi = (params.scale_field_hi as number) ?? 1.5;
+    const rotFieldAmt = (params.rotate_field_amount as number) ?? Math.PI;
+
+    // Variant pick mode. Nodes saved before the enum existed behaved
+    // image-driven whenever a pick was wired — a missing param maps to
+    // "image" so those projects keep working (unwired, "image" degrades
+    // to "all").
+    const pickMode = (params.pick_mode as string | undefined) ?? "image";
+    const pickSeed = Math.floor((params.pick_seed as number) ?? 0);
+
+    // Anchor. Same legacy rule: nodes saved before the param anchored
+    // at canvas center, so a missing value keeps that; new nodes
+    // default to "content center".
+    const anchorMode = (params.anchor as string | undefined) ?? "canvas center";
+    const customAnchor: [number, number] = [
+      (params.anchor_x as number) ?? 0.5,
+      (params.anchor_y as number) ?? 0.5,
+    ];
+
+    // Emission/stacking order over the target points (null = producer
+    // order, the fast path).
+    const drawOrderMode = (params.draw_order as string) ?? "points order";
+    const order = ptsValue
+      ? buildDrawOrder(ptsValue, drawOrderMode, pickSeed)
+      : null;
+
+    // Per-target modulation for the CPU modes, mirroring the shader:
+    // fields sample luminance at the target point's UV; scale maps
+    // [0,1] → [lo,hi] multiplicatively, rotate maps to ±amount.
+    const makeModAt = (): ((u: number, v: number) => {
+      mul: number;
+      rot: number;
+    }) => {
+      const scaleSampler = scaleFieldImg
+        ? getLumaSampler(ctx, state, "scale", scaleFieldImg)
+        : null;
+      const rotateSampler = rotateFieldImg
+        ? getLumaSampler(ctx, state, "rotate", rotateFieldImg)
+        : null;
+      // Unclamped — negative point-mirrors through the anchor (matches
+      // the GPU path).
+      if (!scaleSampler && !rotateSampler) {
+        return () => ({ mul: scaleMul, rot: rotateAdd });
+      }
+      return (u, v) => {
+        let mul = scaleMul;
+        if (scaleSampler) {
+          mul *= fieldLo + (fieldHi - fieldLo) * scaleSampler(u, v);
+        }
+        let rot = rotateAdd;
+        if (rotateSampler) {
+          rot += (rotateSampler(u, v) - 0.5) * 2 * rotFieldAmt;
+        }
+        return { mul, rot };
+      };
+    };
+
     // ---- spline mode ------------------------------------------------
     if (mode === "spline") {
       const inst = inputs.instance;
@@ -471,33 +941,47 @@ export const copyToPointsNode: NodeDefinition = {
       );
       const pickIn = inputs.pick;
       const sampler =
-        pickIn?.kind === "image" && distinct.length > 1
-          ? buildPickSampler(ctx, state, pickIn)
+        pickMode === "image" && pickIn?.kind === "image" && distinct.length > 1
+          ? getLumaSampler(ctx, state, "pick", pickIn)
           : null;
+      const modAt = makeModAt();
+      const anchor: [number, number] =
+        anchorMode === "custom"
+          ? customAnchor
+          : anchorMode === "content center"
+            ? splineBoundsCenter(inst.subpaths) ?? [0.5, 0.5]
+            : [0.5, 0.5];
 
       const outSubpaths: SplineValue["subpaths"] = [];
-      for (const pt of points) {
-        // Decide which subpaths to emit for THIS point. Without a
-        // sampler, emit every subpath (pre-groupIndex behavior).
-        let subpathsForPt: SplineSubpath[];
-        if (sampler) {
-          const luma = sampler(pt.pos[0], pt.pos[1]);
-          const chosen = luminanceToIndexPick(distinct, luma);
-          subpathsForPt = inst.subpaths.filter(
-            (s) => (s.groupIndex ?? 0) === chosen
-          );
-        } else {
-          subpathsForPt = inst.subpaths;
-        }
-        const sx = pt.scale?.[0] ?? 1;
-        const sy = pt.scale?.[1] ?? 1;
-        const rotDeg = ((pt.rotation ?? 0) * 180) / Math.PI;
+      for (let oi = 0; oi < points.length; oi++) {
+        const i = order ? order[oi] : oi;
+        const pt = points[i];
+        // Decide which subpaths to emit for THIS point. `null` means
+        // every subpath (the "all" behavior).
+        const chosen = chooseVariantGroup({
+          pickMode,
+          distinct,
+          index: i,
+          sampler,
+          u: pt.pos[0],
+          v: pt.pos[1],
+          targetGroup: pt.groupIndex ?? 0,
+          seed: pickSeed,
+        });
+        const subpathsForPt: SplineSubpath[] =
+          chosen === null
+            ? inst.subpaths
+            : inst.subpaths.filter((s) => (s.groupIndex ?? 0) === chosen);
+        const m = modAt(pt.pos[0], pt.pos[1]);
+        const sx = (pt.scale?.[0] ?? 1) * m.mul;
+        const sy = (pt.scale?.[1] ?? 1) * m.mul;
+        const rotDeg = (((pt.rotation ?? 0) + m.rot) * 180) / Math.PI;
         for (const sub of subpathsForPt) {
           const transformed = transformSubpath(sub, {
-            translateX: pt.pos[0] - 0.5,
-            translateY: pt.pos[1] - 0.5,
-            pivotX: 0.5,
-            pivotY: 0.5,
+            translateX: pt.pos[0] - anchor[0],
+            translateY: pt.pos[1] - anchor[1],
+            pivotX: anchor[0],
+            pivotY: anchor[1],
             rotateDeg: rotDeg,
             scaleX: sx,
             scaleY: sy,
@@ -529,32 +1013,46 @@ export const copyToPointsNode: NodeDefinition = {
       );
       const pickIn = inputs.pick;
       const sampler =
-        pickIn?.kind === "image" && distinct.length > 1
-          ? buildPickSampler(ctx, state, pickIn)
+        pickMode === "image" && pickIn?.kind === "image" && distinct.length > 1
+          ? getLumaSampler(ctx, state, "pick", pickIn)
           : null;
+      const modAt = makeModAt();
+      const anchor: [number, number] =
+        anchorMode === "custom"
+          ? customAnchor
+          : anchorMode === "content center"
+            ? pointsBoundsCenter(srcPoints) ?? [0.5, 0.5]
+            : [0.5, 0.5];
 
       const outPoints: Point[] = [];
-      for (const target of points) {
-        const tRot = target.rotation ?? 0;
+      for (let oi = 0; oi < points.length; oi++) {
+        const i = order ? order[oi] : oi;
+        const target = points[i];
+        const m = modAt(target.pos[0], target.pos[1]);
+        const tRot = (target.rotation ?? 0) + m.rot;
         const tCos = Math.cos(tRot);
         const tSin = Math.sin(tRot);
-        const tSx = target.scale?.[0] ?? 1;
-        const tSy = target.scale?.[1] ?? 1;
-        let srcForTarget: Point[];
-        if (sampler) {
-          const luma = sampler(target.pos[0], target.pos[1]);
-          const chosen = luminanceToIndexPick(distinct, luma);
-          srcForTarget = srcPoints.filter(
-            (p) => (p.groupIndex ?? 0) === chosen
-          );
-        } else {
-          srcForTarget = srcPoints;
-        }
+        const tSx = (target.scale?.[0] ?? 1) * m.mul;
+        const tSy = (target.scale?.[1] ?? 1) * m.mul;
+        const chosen = chooseVariantGroup({
+          pickMode,
+          distinct,
+          index: i,
+          sampler,
+          u: target.pos[0],
+          v: target.pos[1],
+          targetGroup: target.groupIndex ?? 0,
+          seed: pickSeed,
+        });
+        const srcForTarget: Point[] =
+          chosen === null
+            ? srcPoints
+            : srcPoints.filter((p) => (p.groupIndex ?? 0) === chosen);
         for (const src of srcForTarget) {
-          // Translate source's (0.5, 0.5) anchor to (0, 0), apply
+          // Translate the source's anchor to (0, 0), apply the
           // target's rotate/scale, then translate to target.pos.
-          const dx = (src.pos[0] - 0.5) * tSx;
-          const dy = (src.pos[1] - 0.5) * tSy;
+          const dx = (src.pos[0] - anchor[0]) * tSx;
+          const dy = (src.pos[1] - anchor[1]) * tSy;
           const rx = tCos * dx - tSin * dy;
           const ry = tSin * dx + tCos * dy;
           outPoints.push({
@@ -575,12 +1073,22 @@ export const copyToPointsNode: NodeDefinition = {
     // ---- image mode --------------------------------------------------
     // Instanced GPU draw: one drawArraysInstanced regardless of point
     // count. Per-instance transforms ride a small data texture
-    // (Nx2 RGBA32F), uploaded once per eval. No CPU readback / 2D-
+    // (tiled RGBA32F), re-uploaded only when the points value changes.
+    // No CPU readback / 2D-
     // canvas drawImage in the hot path — orders of magnitude faster
     // than the old implementation past ~50 points.
     const output = ctx.allocImage();
-    const inst = inputs.instance as ImageValue | undefined;
-    if (!inst || inst.kind !== "image" || ptCount === 0) {
+    const instIn = inputs.instance;
+    // Single image or a homogeneous image group — group items are
+    // variants, one chosen per point by the pick mode ("all" stamps
+    // every item at every point).
+    const items: ImageValue[] =
+      instIn?.kind === "image_group"
+        ? instIn.items
+        : instIn?.kind === "image"
+          ? [instIn]
+          : [];
+    if (items.length === 0 || ptCount === 0) {
       ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output };
     }
@@ -594,72 +1102,174 @@ export const copyToPointsNode: NodeDefinition = {
     const W = ctx.width;
     const H = ctx.height;
     const N = ptCount;
-
-    // Pack per-instance transforms. Layout matches the VS:
-    //   row 0 = (posX, posY, rotation, scaleX)
-    //   row 1 = (scaleY, 0, 0, 0)
-    // The data texture is Nx2 RGBA32F, so the buffer is 2 * N * 4
-    // floats laid out as [...row0..., ...row1...].
-    const needBufFloats = N * 8;
-    if (
-      !state.instXformBuf ||
-      state.instXformBuf.length < needBufFloats
-    ) {
-      state.instXformBuf = new Float32Array(needBufFloats);
-    }
-    const buf = state.instXformBuf;
-    // All PointsValues now carry typed-array storage (`pointsFromArray`
-    // wraps legacy producers). Read straight off the Float32Arrays —
-    // no per-point object lookup, no optional-chain branch in the
-    // inner loop.
+    const M = items.length;
     const positionsTA = ptsValue!.positions;
     const scalesTA = ptsValue!.scales;
     const rotationsTA = ptsValue!.rotations;
-    for (let i = 0; i < N; i++) {
-      const o1 = i * 4;
-      buf[o1 + 0] = positionsTA[i * 2];
-      buf[o1 + 1] = positionsTA[i * 2 + 1];
-      buf[o1 + 2] = rotationsTA ? rotationsTA[i] : 0;
-      buf[o1 + 3] = scalesTA ? scalesTA[i * 2] : 1;
-      const o2 = (N + i) * 4;
-      buf[o2 + 0] = scalesTA ? scalesTA[i * 2 + 1] : 1;
-      buf[o2 + 1] = 0;
-      buf[o2 + 2] = 0;
-      buf[o2 + 3] = 0;
-    }
-    // Upload to the data texture. Re-allocate when the width
-    // (instance count) changes; otherwise just texSubImage2D the
-    // fresh values into place.
-    gl.bindTexture(gl.TEXTURE_2D, state.instXformTex!);
-    if (state.instXformWidth !== N) {
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA32F,
-        N,
-        2,
-        0,
-        gl.RGBA,
-        gl.FLOAT,
-        // The view length must match exactly N*2*4 floats. Slice
-        // the staging buffer to exactly the needed length.
-        buf.subarray(0, N * 8)
-      );
-      state.instXformWidth = N;
+    const groupIdxTA = ptsValue!.groupIndices;
+
+    // --- variant assignment → contiguous per-item segments -----------
+    // The transforms pack item-major; item k then draws its slice via
+    // u_instBase, so one data texture serves M instanced draws.
+    // `srcIndex(t)` maps a packed slot to its source point.
+    let T: number;
+    let segStarts: number[];
+    let segCounts: number[];
+    let srcIndex: (t: number) => number;
+    if (M === 1) {
+      T = N;
+      segStarts = [0];
+      segCounts = [N];
+      srcIndex = order ? (t) => order[t] : (t) => t;
     } else {
-      gl.texSubImage2D(
-        gl.TEXTURE_2D,
-        0,
-        0,
-        0,
-        N,
-        2,
-        gl.RGBA,
-        gl.FLOAT,
-        buf.subarray(0, N * 8)
-      );
+      const pickIn = inputs.pick;
+      const sampler =
+        pickMode === "image" && pickIn?.kind === "image"
+          ? getLumaSampler(ctx, state, "pick", pickIn)
+          : null;
+      const distinct = items.map((_, k) => k);
+      if (pickMode === "all" || (pickMode === "image" && !sampler)) {
+        // Every item at every point. Item-major: later items stack on
+        // top, mirroring the spline/point modes' subpath order.
+        T = N * M;
+        segStarts = items.map((_, k) => k * N);
+        segCounts = items.map(() => N);
+        srcIndex = (t) => {
+          const within = t % N;
+          return order ? order[within] : within;
+        };
+      } else {
+        // One item per point.
+        const assign = new Int32Array(N);
+        for (let i = 0; i < N; i++) {
+          assign[i] =
+            chooseVariantGroup({
+              pickMode,
+              distinct,
+              index: i,
+              sampler,
+              u: positionsTA[i * 2],
+              v: positionsTA[i * 2 + 1],
+              targetGroup: groupIdxTA ? groupIdxTA[i] : 0,
+              seed: pickSeed,
+            }) ?? 0;
+        }
+        segCounts = new Array<number>(M).fill(0);
+        for (let i = 0; i < N; i++) segCounts[assign[i]]++;
+        segStarts = [];
+        let acc = 0;
+        for (let k = 0; k < M; k++) {
+          segStarts.push(acc);
+          acc += segCounts[k];
+        }
+        T = N;
+        const slots = new Int32Array(N);
+        const cursor = segStarts.slice();
+        for (let t = 0; t < N; t++) {
+          const i = order ? order[t] : t;
+          slots[cursor[assign[i]]++] = i;
+        }
+        srcIndex = (t) => slots[t];
+      }
     }
-    gl.bindTexture(gl.TEXTURE_2D, null);
+
+    // Content rects must be resolved BEFORE any GL state is set up —
+    // getContentRect does a blitToCanvas readback that clobbers GL
+    // bindings.
+    const rects: UvRect[] =
+      anchorMode === "content center"
+        ? items.map((item) => getContentRect(ctx, state, item))
+        : items.map(() => FULL_RECT);
+    const anchorXY: [number, number] =
+      anchorMode === "custom" ? customAnchor : [0.5, 0.5];
+
+    // Tiled data-texture geometry: up to XFORM_TILE_W instances per
+    // row-pair. A single T-wide row would silently exceed
+    // MAX_TEXTURE_SIZE past ~16k instances (2k on minimal GPUs);
+    // tiling bounds the width and grows rows instead.
+    const tileW = Math.min(T, XFORM_TILE_W);
+    const texH = Math.ceil(T / tileW) * 2;
+
+    // Skip the pack + upload when the texture already holds exactly
+    // this points value in this order (identity ⇒ same data —
+    // producers emit a new value object whenever their output
+    // changes). Single-item only: group assignment depends on more
+    // state than the points value.
+    const orderKey = `${drawOrderMode}:${pickSeed}`;
+    const xformsCurrent =
+      M === 1 &&
+      state.lastPoints === ptsValue &&
+      state.lastOrderKey === orderKey &&
+      state.instXformWidth === tileW &&
+      state.instXformHeight === texH;
+    if (!xformsCurrent) {
+      // Pack per-instance transforms. Layout matches the VS: slot t
+      // lives at column (t % tileW), row-pair floor(t / tileW):
+      //   row 2k   = (posX, posY, rotation, scaleX)
+      //   row 2k+1 = (scaleY, 0, 0, 0)
+      const needBufFloats = tileW * texH * 4;
+      if (
+        !state.instXformBuf ||
+        state.instXformBuf.length < needBufFloats
+      ) {
+        state.instXformBuf = new Float32Array(needBufFloats);
+      }
+      const buf = state.instXformBuf;
+      // All PointsValues now carry typed-array storage (`pointsFromArray`
+      // wraps legacy producers). Read straight off the Float32Arrays —
+      // no per-point object lookup, no optional-chain branch in the
+      // inner loop.
+      for (let t = 0; t < T; t++) {
+        const i = srcIndex(t);
+        const col = t % tileW;
+        const rowPair = (t / tileW) | 0;
+        const o1 = (rowPair * 2 * tileW + col) * 4;
+        buf[o1 + 0] = positionsTA[i * 2];
+        buf[o1 + 1] = positionsTA[i * 2 + 1];
+        buf[o1 + 2] = rotationsTA ? rotationsTA[i] : 0;
+        buf[o1 + 3] = scalesTA ? scalesTA[i * 2] : 1;
+        const o2 = ((rowPair * 2 + 1) * tileW + col) * 4;
+        buf[o2 + 0] = scalesTA ? scalesTA[i * 2 + 1] : 1;
+        buf[o2 + 1] = 0;
+        buf[o2 + 2] = 0;
+        buf[o2 + 3] = 0;
+      }
+      // Upload to the data texture. Re-allocate when the tiled
+      // dimensions change; otherwise just texSubImage2D the fresh
+      // values into place.
+      gl.bindTexture(gl.TEXTURE_2D, state.instXformTex!);
+      if (state.instXformWidth !== tileW || state.instXformHeight !== texH) {
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          0,
+          gl.RGBA32F,
+          tileW,
+          texH,
+          0,
+          gl.RGBA,
+          gl.FLOAT,
+          // The view length must match the texture extent exactly.
+          buf.subarray(0, needBufFloats)
+        );
+        state.instXformWidth = tileW;
+        state.instXformHeight = texH;
+      } else {
+        gl.texSubImage2D(
+          gl.TEXTURE_2D,
+          0,
+          0,
+          0,
+          tileW,
+          texH,
+          gl.RGBA,
+          gl.FLOAT,
+          buf.subarray(0, needBufFloats)
+        );
+      }
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      state.lastPoints = M === 1 ? ptsValue : null;
+      state.lastOrderKey = orderKey;
+    }
 
     // Bind output texture as the framebuffer's color attachment.
     gl.bindFramebuffer(gl.FRAMEBUFFER, state.instFbo!);
@@ -687,66 +1297,24 @@ export const copyToPointsNode: NodeDefinition = {
 
     gl.useProgram(state.instProgram!);
     gl.bindVertexArray(state.instVao!);
+    const L = state.instLocs!;
 
-    // Texture unit 0 → instance image (the thing being copied).
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, inst.texture);
-    gl.uniform1i(
-      gl.getUniformLocation(state.instProgram!, "u_src"),
-      0
-    );
+    gl.uniform1i(L.u_src, 0);
     // Texture unit 1 → per-instance transform data.
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, state.instXformTex!);
-    gl.uniform1i(
-      gl.getUniformLocation(state.instProgram!, "u_xforms"),
-      1
-    );
-    gl.uniform2f(
-      gl.getUniformLocation(state.instProgram!, "u_canvasRes"),
-      W,
-      H
-    );
-    gl.uniform2f(
-      gl.getUniformLocation(state.instProgram!, "u_instSize"),
-      inst.width,
-      inst.height
-    );
+    gl.uniform1i(L.u_xforms, 1);
+    gl.uniform1i(L.u_xformTileW, tileW);
+    gl.uniform2f(L.u_canvasRes, W, H);
 
-    // Resolve uniform-modulation values: scalar input wins over
-    // the matching default param. The audio→scalar coercion path
-    // handles `Audio Source` plugged into scale_mul automatically.
-    const scaleMulIn = inputs.scale_mul;
-    const rotateAddIn = inputs.rotate_add;
-    const scaleMul =
-      scaleMulIn?.kind === "scalar"
-        ? scaleMulIn.value
-        : (params.scale_mul_default as number) ?? 1;
-    const rotateAdd =
-      rotateAddIn?.kind === "scalar"
-        ? rotateAddIn.value
-        : (params.rotate_add_default as number) ?? 0;
-    gl.uniform1f(
-      gl.getUniformLocation(state.instProgram!, "u_scaleMul"),
-      scaleMul
-    );
-    gl.uniform1f(
-      gl.getUniformLocation(state.instProgram!, "u_rotateAdd"),
-      rotateAdd
-    );
+    // Uniform modulation — resolved once at the top of compute.
+    gl.uniform1f(L.u_scaleMul, scaleMul);
+    gl.uniform1f(L.u_rotateAdd, rotateAdd);
 
     // Per-instance image fields. Bind to texture units 2 and 3.
     // When unconnected, the field uniforms stay disabled — the VS
     // skips the texture sample so we don't pay for one and don't
     // need a placeholder texture bound.
-    // Narrow once and reuse — TS can't carry the discriminator
-    // through a separate boolean variable.
-    const scaleFieldImg =
-      inputs.scale_field?.kind === "image" ? inputs.scale_field : null;
-    const rotateFieldImg =
-      inputs.rotate_field?.kind === "image" ? inputs.rotate_field : null;
-    const useScaleField = scaleFieldImg ? 1 : 0;
-    const useRotateField = rotateFieldImg ? 1 : 0;
     if (scaleFieldImg) {
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, scaleFieldImg.texture);
@@ -755,36 +1323,30 @@ export const copyToPointsNode: NodeDefinition = {
       gl.activeTexture(gl.TEXTURE3);
       gl.bindTexture(gl.TEXTURE_2D, rotateFieldImg.texture);
     }
-    gl.uniform1i(
-      gl.getUniformLocation(state.instProgram!, "u_scaleField"),
-      2
-    );
-    gl.uniform1i(
-      gl.getUniformLocation(state.instProgram!, "u_useScaleField"),
-      useScaleField
-    );
-    gl.uniform1f(
-      gl.getUniformLocation(state.instProgram!, "u_scaleFieldLo"),
-      (params.scale_field_lo as number) ?? 0.5
-    );
-    gl.uniform1f(
-      gl.getUniformLocation(state.instProgram!, "u_scaleFieldHi"),
-      (params.scale_field_hi as number) ?? 1.5
-    );
-    gl.uniform1i(
-      gl.getUniformLocation(state.instProgram!, "u_rotateField"),
-      3
-    );
-    gl.uniform1i(
-      gl.getUniformLocation(state.instProgram!, "u_useRotateField"),
-      useRotateField
-    );
-    gl.uniform1f(
-      gl.getUniformLocation(state.instProgram!, "u_rotateFieldAmount"),
-      (params.rotate_field_amount as number) ?? Math.PI
-    );
+    gl.uniform1i(L.u_scaleField, 2);
+    gl.uniform1i(L.u_useScaleField, scaleFieldImg ? 1 : 0);
+    gl.uniform1f(L.u_scaleFieldLo, fieldLo);
+    gl.uniform1f(L.u_scaleFieldHi, fieldHi);
+    gl.uniform1i(L.u_rotateField, 3);
+    gl.uniform1i(L.u_useRotateField, rotateFieldImg ? 1 : 0);
+    gl.uniform1f(L.u_rotateFieldAmount, rotFieldAmt);
 
-    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, N);
+    // One instanced draw per item over its packed segment. Texture
+    // unit 0 → the item being copied; the rect/anchor uniforms carry
+    // its alpha-bbox crop when the content-center anchor is active.
+    for (let k = 0; k < M; k++) {
+      const count = segCounts[k];
+      if (count === 0) continue;
+      const item = items[k];
+      const rect = rects[k];
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, item.texture);
+      gl.uniform2f(L.u_instSize, item.width, item.height);
+      gl.uniform4f(L.u_uvRect, rect.x, rect.y, rect.w, rect.h);
+      gl.uniform2f(L.u_anchor, anchorXY[0], anchorXY[1]);
+      gl.uniform1i(L.u_instBase, segStarts[k]);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+    }
 
     // Tear down: unbind so the next node sees clean GL state.
     gl.disable(gl.BLEND);

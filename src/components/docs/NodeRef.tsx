@@ -45,10 +45,6 @@ const CATEGORY_TITLE: Record<NodeCategory, string> = {
 const HIDDEN_TYPES: ReadonlySet<string> = new Set([
   "simulation-start",
   "simulation-end",
-  // Back-compat aliases — same def under two type keys, don't
-  // double-list.
-  "perlin-noise",
-  "uv-coords",
 ]);
 
 export default function NodeCategoryPage({
@@ -60,7 +56,7 @@ export default function NodeCategoryPage({
 }) {
   const defs = useMemo(() => {
     return allNodeDefs().filter(
-      (d) => d.category === category && !HIDDEN_TYPES.has(d.type)
+      (d) => d.category === category && !d.hidden && !HIDDEN_TYPES.has(d.type)
     );
   }, [category]);
 
@@ -494,7 +490,7 @@ function formatDefault(p: ParamDef): string {
 
 export function makeNodeCategoryToc(category: NodeCategory): TocItem[] {
   const defs = allNodeDefs().filter(
-    (d) => d.category === category && !HIDDEN_TYPES.has(d.type)
+    (d) => d.category === category && !d.hidden && !HIDDEN_TYPES.has(d.type)
   );
   const typed =
     category !== "utility" && category !== "effect" && category !== "output";

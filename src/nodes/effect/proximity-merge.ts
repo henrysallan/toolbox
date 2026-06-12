@@ -263,7 +263,7 @@ function mergePoints(
   // Per-cluster representative: pick the member with the lowest
   // groupIndex. When groups mix, that deterministically corresponds
   // to "the earliest socket wins" (socket a before b before c…),
-  // matching the Group node's ordering convention. Ties (or
+  // matching the Collect node's ordering convention. Ties (or
   // un-grouped clusters) fall back to the first-seen index.
   const winnerByRoot = new Map<number, number>();
   for (let i = 0; i < n; i++) {

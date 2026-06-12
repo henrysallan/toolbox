@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type { NodeDefinition } from "@/engine/types";
 
 // u_hasUvIn: 0 = no UV field connected (use v_uv), 1 = UV texture, 2 = scalar
@@ -49,6 +50,7 @@ export const imageSourceNode: NodeDefinition = {
     { name: "uv_in", label: "UV", type: "uv", required: false },
   ],
   params: [
+    OPACITY_PARAM,
     { name: "file", label: "Image", type: "file", default: null },
     {
       name: "fit",

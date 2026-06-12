@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
   ImageValue,
   NodeDefinition,
@@ -643,6 +644,7 @@ export const fractureNode: NodeDefinition = {
     { name: "density", label: "Density", type: "image", required: false },
   ],
   params: [
+    OPACITY_PARAM,
     {
       name: "mode",
       label: "Mode",

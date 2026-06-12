@@ -108,7 +108,7 @@ export interface MergeLayer {
   opacity: number;
 }
 
-const BLIT_FS = `#version 300 es
+export const BLIT_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_src;
@@ -125,7 +125,7 @@ void main() {
 // Formulas match the widely-cited Photoshop / Krita set; division-based
 // modes guard the denominator so backgrounds don't explode to infinity on
 // black/white pixels.
-const BLEND_FS = `#version 300 es
+export const BLEND_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_base;
@@ -219,7 +219,7 @@ void main() {
   outColor = vec4(outRgb, outA);
 }`;
 
-function modeToInt(m: BlendMode): number {
+export function modeToInt(m: BlendMode): number {
   switch (m) {
     case "mix": return 0;
     case "normal": return 1;

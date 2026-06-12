@@ -26,6 +26,8 @@ import { offsetPathNode } from "./effect/offset-path";
 import { strokeNode } from "./effect/stroke";
 import { fillNode } from "./effect/fill";
 import { rasterizeSplineNode } from "./effect/rasterize-spline";
+import { splineBooleanNode } from "./effect/spline-boolean";
+import { splineMorphNode } from "./effect/spline-morph";
 import { pointNode } from "./source/point";
 import { scatterPointsNode } from "./effect/scatter-points";
 import { copyToPointsNode } from "./effect/copy-to-points";
@@ -56,7 +58,11 @@ import { bgRemoveNode } from "./effect/bg-remove";
 import { edgeDetectNode } from "./effect/edge-detect";
 import { objectTrackerNode } from "./effect/object-tracker";
 import { handTrackerNode } from "./effect/hand-tracker";
-import { groupNode } from "./effect/group";
+import { collectNode } from "./effect/collect";
+import { nodeGroupNode } from "./group/node-group";
+import { groupInputNode } from "./group/group-input";
+import { groupOutputNode } from "./group/group-output";
+import { layerNode } from "./group/layer";
 import { groupPickNode } from "./effect/group-pick";
 import { groupLengthNode } from "./effect/group-length";
 import { asciiNode } from "./effect/ascii";
@@ -115,6 +121,8 @@ import { sdfBevelNode } from "./sdf/sdf-bevel";
 import { bevelEmbossNode } from "./effect/bevel-emboss";
 import { sdfSmoothIntersectionNode } from "./sdf/smooth-intersection";
 import { sdfSmoothSubtractionNode } from "./sdf/smooth-subtraction";
+import { sdfMorphNode } from "./sdf/morph";
+import { sdfFromImageNode } from "./sdf/from-image";
 import { sdfTranslateNode } from "./sdf/sdf-translate";
 import { sdfScaleNode } from "./sdf/sdf-scale";
 import { sdfRotateNode } from "./sdf/sdf-rotate";
@@ -128,6 +136,7 @@ import { sdfToDistanceImageNode } from "./sdf/to-distance-image";
 import { sdfToMaskNode } from "./sdf/to-mask";
 import { sdfToSplineNode } from "./sdf/to-spline";
 import { outputNode } from "./output/output";
+import { renderQueueNode } from "./output/render-queue";
 
 let registered = false;
 
@@ -140,14 +149,14 @@ export function registerAllNodes() {
   registerNode(perlinNoiseNode);
   // Back-compat: projects saved before the rename from "perlin-noise" to
   // "noise" keep loading via the old type string.
-  registerNode({ ...perlinNoiseNode, type: "perlin-noise" });
+  registerNode({ ...perlinNoiseNode, type: "perlin-noise", hidden: true });
   registerNode(voronoiNode);
   registerNode(fractureNode);
   registerNode(sceneTimeNode);
   registerNode(uvCoordsNode);
   // Back-compat alias — projects saved before the rename reference the
   // old type string; serving the same def under both keeps them loading.
-  registerNode({ ...uvCoordsNode, type: "uv-coords" });
+  registerNode({ ...uvCoordsNode, type: "uv-coords", hidden: true });
   registerNode(textNode);
   registerNode(cursorNode);
   registerNode(videoNode);
@@ -166,6 +175,8 @@ export function registerAllNodes() {
   registerNode(strokeNode);
   registerNode(fillNode);
   registerNode(rasterizeSplineNode);
+  registerNode(splineBooleanNode);
+  registerNode(splineMorphNode);
   registerNode(pointNode);
   registerNode(scatterPointsNode);
   registerNode(copyToPointsNode);
@@ -196,7 +207,17 @@ export function registerAllNodes() {
   registerNode(edgeDetectNode);
   registerNode(objectTrackerNode);
   registerNode(handTrackerNode);
-  registerNode(groupNode);
+  registerNode(collectNode);
+  // Back-compat: "Collect" was named "Group" before node groups
+  // (subgraph nesting) claimed that name. Old projects load via the
+  // retired type string; `hidden` keeps it out of menus and docs.
+  registerNode({ ...collectNode, type: "group", hidden: true });
+  // Node groups (subgraph nesting). All hidden from the add menus —
+  // groups are created with Cmd+G, boundary nodes are auto-created.
+  registerNode(nodeGroupNode);
+  registerNode(groupInputNode);
+  registerNode(groupOutputNode);
+  registerNode(layerNode);
   registerNode(groupPickNode);
   registerNode(groupLengthNode);
   registerNode(asciiNode);
@@ -256,6 +277,8 @@ export function registerAllNodes() {
   registerNode(bevelEmbossNode);
   registerNode(sdfSmoothIntersectionNode);
   registerNode(sdfSmoothSubtractionNode);
+  registerNode(sdfMorphNode);
+  registerNode(sdfFromImageNode);
   registerNode(sdfTranslateNode);
   registerNode(sdfScaleNode);
   registerNode(sdfRotateNode);
@@ -269,5 +292,6 @@ export function registerAllNodes() {
   registerNode(sdfToMaskNode);
   registerNode(sdfToSplineNode);
   registerNode(outputNode);
+  registerNode(renderQueueNode);
   registered = true;
 }

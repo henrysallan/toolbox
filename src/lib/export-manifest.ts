@@ -1,5 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 import { computeNeededSet, type GraphEdge, type GraphNode } from "@/engine/evaluator";
+import { flattenGraph } from "@/engine/flatten";
 import { getNodeDef } from "@/engine/registry";
 import type { ParamDef, ParamType } from "@/engine/types";
 import type { NodeDataPayload } from "@/state/graph";
@@ -67,6 +68,7 @@ export function buildExportManifest(
   const graphNodes: GraphNode[] = nodes.map((n) => ({
     id: n.id,
     type: n.data.defType,
+    parentId: n.data.parentId,
     params: n.data.params,
     exposedParams: n.data.exposedParams,
     clips: n.data.clips,
@@ -80,7 +82,11 @@ export function buildExportManifest(
     targetHandle: e.targetHandle ?? "",
   }));
 
-  const needed = computeNeededSet(graphNodes, graphEdges, outputNodeId);
+  // Reachability must be computed on the flattened graph — group
+  // shells don't carry data edges, so interior nodes of a group are
+  // only reachable once boundaries are spliced through.
+  const flat = flattenGraph(graphNodes, graphEdges);
+  const needed = computeNeededSet(flat.nodes, flat.edges, outputNodeId);
 
   const fileInputs: ExportManifestFileInput[] = [];
   const controls: ExportManifestControl[] = [];

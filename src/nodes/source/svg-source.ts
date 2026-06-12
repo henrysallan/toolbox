@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
   ImageValue,
   NodeDefinition,
@@ -114,6 +115,7 @@ export const svgSourceNode: NodeDefinition = {
   supportsTransformGizmo: true,
   inputs: [],
   params: [
+    OPACITY_PARAM,
     { name: "file", label: "SVG", type: "svg_file", default: null },
     {
       name: "stroke_enabled",

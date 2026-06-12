@@ -50,10 +50,13 @@ const loadPromises = new Map<string, Promise<void>>();
 
 function googleFontsHref(family: string): string {
   const slug = family.replace(/ /g, "+");
-  // Pull regular + bold so the rasterizer can switch weights later without
-  // re-injecting the stylesheet. `display=block` avoids the fallback-first
-  // flash while loading.
-  return `https://fonts.googleapis.com/css2?family=${slug}:wght@400;700&display=block`;
+  // Request the full weight RANGE (`100..900`), not two fixed instances —
+  // this delivers the variable font so the Text node's weight axis (and
+  // arbitrary in-between weights) actually interpolate. Google clamps the
+  // range to whatever the family supports, so static families still
+  // resolve to their available weights. `display=swap` shows a fallback
+  // immediately rather than hiding text while the file downloads.
+  return `https://fonts.googleapis.com/css2?family=${slug}:wght@100..900&display=swap`;
 }
 
 // Idempotent: kicks off (or returns an in-flight) promise that resolves when

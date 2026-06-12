@@ -1,12 +1,19 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
+import {
+  Handle,
+  Position,
+  useUpdateNodeInternals,
+  type Node,
+  type NodeProps,
+} from "@xyflow/react";
 import { getNodeDef } from "@/engine/registry";
 import { paramSocketType } from "@/state/graph";
 import type { NodeDataPayload } from "@/state/graph";
 import type { SocketType } from "@/engine/types";
 import { colorForSocket } from "./socketColor";
+import { VIRTUAL_SOCKET } from "@/engine/groups";
 
 type EffectNodeType = Node<NodeDataPayload, "effect">;
 
@@ -90,7 +97,39 @@ export default function EffectNode({
     return () => window.removeEventListener("viewport-split-changed", onChange);
   }, []);
 
-  const inputs = data.inputs;
+  const isQueue = data.defType === "render-queue";
+
+  // Render Queue nodes draw an inline progress bar per item row.
+  // EffectsApp broadcasts the batch state on `render-queue-progress`
+  // (same pattern as `node-timings`); null detail or another queue
+  // node's id clears ours.
+  const [queueProg, setQueueProg] = useState<{
+    activeItemId: string | null;
+    itemProgress: number | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!isQueue) return;
+    const onProg = (e: Event) => {
+      const d = (
+        e as CustomEvent<{
+          nodeId: string;
+          activeItemId: string | null;
+          itemProgress: number | null;
+        } | null>
+      ).detail;
+      setQueueProg(
+        d && d.nodeId === id
+          ? { activeItemId: d.activeItemId, itemProgress: d.itemProgress }
+          : null
+      );
+    };
+    window.addEventListener("render-queue-progress", onProg);
+    return () => window.removeEventListener("render-queue-progress", onProg);
+  }, [isQueue, id]);
+
+  // Hidden inputs (evaluator-only sockets like a layer's `content`)
+  // never render — no handle, no row.
+  const inputs = data.inputs.filter((i) => !i.hidden);
   const auxes = data.auxOutputs;
   const hasPrimary = !!data.primaryOutput;
 
@@ -112,6 +151,24 @@ export default function EffectNode({
     return out;
   }, [data.defType, data.exposedParams]);
 
+  // React Flow caches handle positions per node and only re-measures on
+  // resize. A socket *rename* swaps handle ids without changing the
+  // node's height (same row count), so edges pointing at the new id
+  // can't find their handle until something forces a re-measure —
+  // they'd silently vanish until the node remounts (e.g. leaving and
+  // re-entering a group scope). Re-measure whenever the handle id set
+  // changes.
+  const updateNodeInternals = useUpdateNodeInternals();
+  const handleSignature = [
+    ...inputs.map((i) => `in:${i.name}`),
+    ...exposedSockets.map((e) => `in:param:${e.name}`),
+    data.primaryOutput ? "out:primary" : "",
+    ...auxes.map((a) => `out:aux:${a.name}`),
+  ].join("|");
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [handleSignature, id, updateNodeInternals]);
+
   const leftRows = inputs.length + exposedSockets.length;
   const rightRows = (hasPrimary ? 1 : 0) + auxes.length;
   const maxRows = Math.max(leftRows, rightRows, 1);
@@ -126,10 +183,26 @@ export default function EffectNode({
     );
   };
 
+  // Mirrors the queue-panel row logic: rows before the active item are
+  // done, the active one shows its export fraction (or an indeterminate
+  // dim fill), rows after are pending. activeItemId === null while a
+  // batch runs means the trailing zip step — everything reads done.
+  const queueActiveIdx = queueProg?.activeItemId
+    ? inputs.findIndex((inp) => inp.name === `item:${queueProg.activeItemId}`)
+    : -1;
+  const queueRowFill = (i: number): number | "indeterminate" => {
+    if (!queueProg) return 0;
+    if (queueProg.activeItemId === null) return 1;
+    if (queueActiveIdx === -1) return 0;
+    if (i < queueActiveIdx) return 1;
+    if (i > queueActiveIdx) return 0;
+    return queueProg.itemProgress ?? "indeterminate";
+  };
+
   return (
     <div
       style={{
-        minWidth: 200,
+        minWidth: isQueue ? 300 : 200,
         background: "#18181b",
         border: `1px solid ${selected ? "#60a5fa" : data.error ? "#ef4444" : "#3f3f46"}`,
         borderRadius: 6,
@@ -284,23 +357,27 @@ export default function EffectNode({
               ERR
             </span>
           ) : null}
-          <HeaderToggle
-            on={active}
-            label={viewportSplit ? "A1" : "A"}
-            title={
-              active
-                ? viewportSplit
-                  ? "Active in viewport 1"
-                  : "Active (viewed)"
-                : viewportSplit
-                  ? "Set active in viewport 1"
-                  : "Set active (view on canvas)"
-            }
-            activeBg="#047857"
-            activeFg="#d1fae5"
-            onClick={() => dispatch("toggleActive")}
-          />
-          {viewportSplit && (
+          {/* A view / A2 / B bypass make no sense on a Render Queue —
+              it produces nothing to view or pass through. */}
+          {!isQueue && (
+            <HeaderToggle
+              on={active}
+              label={viewportSplit ? "A1" : "A"}
+              title={
+                active
+                  ? viewportSplit
+                    ? "Active in viewport 1"
+                    : "Active (viewed)"
+                  : viewportSplit
+                    ? "Set active in viewport 1"
+                    : "Set active (view on canvas)"
+              }
+              activeBg="#047857"
+              activeFg="#d1fae5"
+              onClick={() => dispatch("toggleActive")}
+            />
+          )}
+          {!isQueue && viewportSplit && (
             <HeaderToggle
               on={active2}
               label="A2"
@@ -314,14 +391,16 @@ export default function EffectNode({
               onClick={() => dispatch("toggleActive2")}
             />
           )}
-          <HeaderToggle
-            on={bypassed}
-            label="B"
-            title={bypassed ? "Bypassed" : "Bypass (pass through)"}
-            activeBg="#b45309"
-            activeFg="#fef3c7"
-            onClick={() => dispatch("toggleBypass")}
-          />
+          {!isQueue && (
+            <HeaderToggle
+              on={bypassed}
+              label="B"
+              title={bypassed ? "Bypassed" : "Bypass (pass through)"}
+              activeBg="#b45309"
+              activeFg="#fef3c7"
+              onClick={() => dispatch("toggleBypass")}
+            />
+          )}
           {data.defType === "merge" && (
             <HeaderToggle
               on={false}
@@ -333,6 +412,22 @@ export default function EffectNode({
                 window.dispatchEvent(
                   new CustomEvent("effect-node-toggle", {
                     detail: { id, kind: "mergeAddLayer" },
+                  })
+                )
+              }
+            />
+          )}
+          {data.defType === "render-queue" && (
+            <HeaderToggle
+              on={false}
+              label="+"
+              title="Add queue slot"
+              activeBg="#374151"
+              activeFg="#e5e7eb"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("effect-node-toggle", {
+                    detail: { id, kind: "queueAddItem" },
                   })
                 )
               }
@@ -377,6 +472,9 @@ export default function EffectNode({
         {inputs.map((input, i) => {
           const rowTop = PAD_Y + i * ROW_H;
           const handleCenter = rowTop + ROW_H / 2;
+          // Trailing virtual socket on Group Output — hollow dashed dot;
+          // wiring into it mints a real typed socket.
+          const isVirtual = input.name === VIRTUAL_SOCKET;
           return (
             <Fragment key={`in-${input.name}`}>
               <Handle
@@ -393,8 +491,12 @@ export default function EffectNode({
               >
                 <SocketDot
                   size={HANDLE_SIZE}
-                  background={colorForSocket(input.type)}
-                  border="1px solid #0a0a0a"
+                  background={
+                    isVirtual ? "transparent" : colorForSocket(input.type)
+                  }
+                  border={
+                    isVirtual ? "1px dashed #52525b" : "1px solid #0a0a0a"
+                  }
                 />
               </Handle>
               <div
@@ -407,16 +509,55 @@ export default function EffectNode({
                   alignItems: "center",
                   gap: 6,
                   paddingLeft: 14,
+                  // Queue rows stretch across the node so the inline
+                  // progress bar gets the leftover width.
+                  ...(isQueue ? { right: 10 } : {}),
                 }}
               >
-                <span style={{ color: "#a1a1aa" }}>
-                  {input.label ?? input.name}
-                </span>
                 <span
-                  style={{ color: colorForSocket(input.type), fontSize: 9 }}
+                  style={{
+                    color: isVirtual ? "#52525b" : "#a1a1aa",
+                    fontStyle: isVirtual ? "italic" : undefined,
+                  }}
                 >
-                  {input.type}
+                  {isVirtual ? "new socket" : input.label ?? input.name}
                 </span>
+                {isQueue ? (
+                  (() => {
+                    const fill = queueRowFill(i);
+                    return (
+                      <div
+                        style={{
+                          flex: 1,
+                          height: 6,
+                          borderRadius: 999,
+                          background: "#0a0a0a",
+                          border: "1px solid #27272a",
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div
+                          style={{
+                            width:
+                              fill === "indeterminate"
+                                ? "100%"
+                                : `${fill * 100}%`,
+                            height: "100%",
+                            background: "#2563eb",
+                            opacity: fill === "indeterminate" ? 0.45 : 1,
+                            transition: "width 200ms",
+                          }}
+                        />
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <span
+                    style={{ color: colorForSocket(input.type), fontSize: 9 }}
+                  >
+                    {input.type}
+                  </span>
+                )}
               </div>
             </Fragment>
           );
@@ -520,6 +661,9 @@ export default function EffectNode({
           const rowTop = PAD_Y + ((hasPrimary ? 1 : 0) + i) * ROW_H;
           const handleCenter = rowTop + ROW_H / 2;
           const disabled = !!aux.disabled;
+          // Trailing virtual socket on Group Input — hollow dashed dot;
+          // wiring from it mints a real typed socket.
+          const isVirtual = aux.name === VIRTUAL_SOCKET;
           return (
             <Fragment key={`aux-${aux.name}`}>
               <Handle
@@ -539,10 +683,16 @@ export default function EffectNode({
                 <SocketDot
                   size={HANDLE_SIZE}
                   background={
-                    disabled ? "#27272a" : colorForSocket(aux.type)
+                    disabled || isVirtual
+                      ? isVirtual
+                        ? "transparent"
+                        : "#27272a"
+                      : colorForSocket(aux.type)
                   }
                   border={
-                    disabled ? "1px dashed #52525b" : "1px solid #0a0a0a"
+                    disabled || isVirtual
+                      ? "1px dashed #52525b"
+                      : "1px solid #0a0a0a"
                   }
                 />
               </Handle>
@@ -559,15 +709,24 @@ export default function EffectNode({
                   opacity: disabled ? 0.5 : 1,
                 }}
               >
+                {!isVirtual && (
+                  <span
+                    style={{
+                      color: disabled ? "#52525b" : colorForSocket(aux.type),
+                      fontSize: 9,
+                    }}
+                  >
+                    {aux.type}
+                  </span>
+                )}
                 <span
                   style={{
-                    color: disabled ? "#52525b" : colorForSocket(aux.type),
-                    fontSize: 9,
+                    color: isVirtual ? "#52525b" : "#71717a",
+                    fontStyle: isVirtual ? "italic" : undefined,
                   }}
                 >
-                  {aux.type}
+                  {isVirtual ? "new socket" : aux.name}
                 </span>
-                <span style={{ color: "#71717a" }}>{aux.name}</span>
               </div>
             </Fragment>
           );
@@ -603,6 +762,44 @@ export default function EffectNode({
               )
             }
           />
+        </div>
+      )}
+
+      {isQueue && (
+        <div
+          style={{
+            padding: "6px 8px",
+            borderTop: "1px solid #27272a",
+            display: "flex",
+          }}
+        >
+          <button
+            className="nodrag"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              window.dispatchEvent(
+                new CustomEvent("effect-node-export", {
+                  detail: { id, kind: "queue" },
+                })
+              );
+            }}
+            title="Render every queued Output in order"
+            style={{
+              flex: 1,
+              background: "#1e3a8a",
+              border: "1px solid #1d4ed8",
+              color: "#bfdbfe",
+              borderRadius: 999,
+              padding: "4px 10px",
+              fontFamily: "inherit",
+              fontSize: 10,
+              letterSpacing: 0.3,
+              cursor: "pointer",
+            }}
+          >
+            Render ▶
+          </button>
         </div>
       )}
     </div>

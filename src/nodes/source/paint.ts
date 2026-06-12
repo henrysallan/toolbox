@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type { NodeDefinition, PaintParamValue } from "@/engine/types";
 
 const BLIT_FS = `#version 300 es
@@ -35,6 +36,7 @@ export const paintNode: NodeDefinition = {
   backend: "webgl2",
   inputs: [],
   params: [
+    OPACITY_PARAM,
     { name: "paint", type: "paint", default: null, hidden: true },
     { name: "color", label: "Color", type: "color", default: "#ffffff" },
     {

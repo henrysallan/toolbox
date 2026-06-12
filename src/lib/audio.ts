@@ -36,6 +36,7 @@ export async function registerAudioFile(
     element,
     url,
     filename: file.name,
+    size: file.size,
     duration: element.duration,
   };
 }

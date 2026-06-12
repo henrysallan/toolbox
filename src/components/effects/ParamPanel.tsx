@@ -6,7 +6,23 @@ import { createPortal } from "react-dom";
 import { getNodeDef } from "@/engine/registry";
 import { paramSocketType } from "@/state/graph";
 import type { NodeDataPayload } from "@/state/graph";
-import type { LutFileParamValue, ParamDef } from "@/engine/types";
+import type {
+  LutFileParamValue,
+  ParamDef,
+  RenderQueueItem,
+} from "@/engine/types";
+import { layerOpacityKey } from "@/engine/conventions";
+import {
+  GROUP_INPUT_TYPE,
+  GROUP_OUTPUT_TYPE,
+  GROUP_TYPE,
+  LAYER_TYPE,
+  isFixedBoundary,
+  readBoundarySockets,
+  readReservedSockets,
+  type GroupSocketSpec,
+} from "@/engine/groups";
+import { colorForSocket } from "./socketColor";
 import LoadGrid from "./LoadGrid";
 import ImageGeneratePanel from "./ImageGeneratePanel";
 import BgRemovePanel from "./BgRemovePanel";
@@ -148,6 +164,17 @@ interface Props {
   // Move the playhead to an absolute tick. Wired to the keyframe-diamond
   // carets that jump to the prev/next keyframe on the parameter.
   onSeekTick?: (tick: number) => void;
+  // Rename a node's display label. Surfaced for group shells (the name
+  // feeds breadcrumbs and, later, the Layers editor).
+  onRenameNode?: (nodeId: string, name: string) => void;
+  // Group boundary socket editing — shown when a Group Input / Group
+  // Output node is selected. Edge rewiring happens in graph-ops.
+  onRenameGroupSocket?: (
+    nodeId: string,
+    oldName: string,
+    newName: string
+  ) => void;
+  onRemoveGroupSocket?: (nodeId: string, name: string) => void;
   signedIn?: boolean;
   // Current user id (or null when signed out). Lets the load grid
   // flag public projects authored by the viewer as "you".
@@ -167,6 +194,20 @@ interface Props {
   // The Image Generate panel uses this at send-time to package its
   // ref inputs as input_image attachments for OpenAI.
   getRefImageBlob?: (sourceNodeId: string) => Promise<Blob | null>;
+  // Live batch-render state for the Render Queue panel. Null when idle.
+  // `nodeId` is the queue node running the batch (progress is ignored for
+  // any other node); `activeItemId` is the row currently rendering (null
+  // during the trailing zip step — every row reads as done);
+  // `itemProgress` is the active row's 0..1 export progress, or null when
+  // no fraction is known (indeterminate).
+  queueRender?: {
+    nodeId: string;
+    activeItemId: string | null;
+    itemProgress: number | null;
+  } | null;
+  // Select a node on the canvas (used by the Render Queue rows' settings
+  // button to jump to the wired Output node's params).
+  onSelectNode?: (nodeId: string) => void;
 }
 
 // Drop-in <input type="range"> wrapper that dampens the per-event delta
@@ -323,6 +364,9 @@ export default function ParamPanel({
   getAnimation,
   onAnimationChange,
   onSeekTick,
+  onRenameNode,
+  onRenameGroupSocket,
+  onRemoveGroupSocket,
   signedIn,
   currentUserId,
   onLoadProject,
@@ -330,6 +374,8 @@ export default function ParamPanel({
   projectId,
   edges,
   getRefImageBlob,
+  queueRender,
+  onSelectNode,
 }: Props) {
   const selected = selectedId
     ? nodes.find((n) => n.id === selectedId)
@@ -415,8 +461,177 @@ export default function ParamPanel({
           node={selected}
           onParamChange={onParamChange}
         />
+      ) : selected && selected.data.defType === "render-queue" ? (
+        // Batch-render organizer: a reorderable list of the wired Output
+        // nodes with inline filename / frame editing and a delivery picker.
+        <RenderQueuePanel
+          key={selected.id}
+          node={selected}
+          nodes={nodes}
+          edges={edges ?? []}
+          onParamChange={onParamChange}
+          queueRender={queueRender ?? null}
+          onSelectNode={onSelectNode}
+        />
+      ) : selected &&
+        (selected.data.defType === GROUP_INPUT_TYPE ||
+          selected.data.defType === GROUP_OUTPUT_TYPE) ? (
+        // Boundary-node socket editor: rename / remove the group's
+        // interface sockets. New sockets are added by wiring into the
+        // dashed virtual port on the node itself.
+        // Fixed boundaries (layer interiors) render read-only — their
+        // interface is part of the layer contract.
+        <GroupSocketsPanel
+          key={selected.id}
+          node={selected}
+          isInput={selected.data.defType === GROUP_INPUT_TYPE}
+          onRename={
+            onRenameGroupSocket && !isFixedBoundary(selected.data.params)
+              ? (o, n) => onRenameGroupSocket(selected.id, o, n)
+              : undefined
+          }
+          onRemove={
+            onRemoveGroupSocket && !isFixedBoundary(selected.data.params)
+              ? (n) => onRemoveGroupSocket(selected.id, n)
+              : undefined
+          }
+        />
       ) : selected && def ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {(def.type === GROUP_TYPE || def.type === LAYER_TYPE) &&
+            onRenameNode && (
+              <Section label={def.type === LAYER_TYPE ? "layer" : "group"}>
+                <NodeNameField
+                  key={selected.id}
+                  name={selected.data.name}
+                  onCommit={(v) => onRenameNode(selected.id, v)}
+                />
+              </Section>
+            )}
+          {def.type === GROUP_TYPE &&
+            (() => {
+              // The group's interface, viewed from the shell — a clean
+              // parameters list. Editing the interface (rename / remove
+              // / add) happens on the Group Input / Group Output nodes
+              // inside the group; here a socket renders as its param's
+              // real widget (slider / dropdown / color …) when it feeds
+              // an interior node's exposed param, or as a minimal
+              // dot + name row otherwise. Widget edits write through to
+              // the interior node — a remote control, not a second copy
+              // of the value. When the shell socket is wired from
+              // outside, the wire wins and the widget reads as driven —
+              // same rule as exposed params.
+              const groupInput = nodes.find(
+                (n) =>
+                  n.data.parentId === selected.id &&
+                  n.data.defType === GROUP_INPUT_TYPE
+              );
+              const groupOutput = nodes.find(
+                (n) =>
+                  n.data.parentId === selected.id &&
+                  n.data.defType === GROUP_OUTPUT_TYPE
+              );
+              const allEdges = edges ?? [];
+              const inputSockets = groupInput
+                ? readBoundarySockets(groupInput.data.params)
+                : [];
+              return (
+                <>
+                  {groupInput && (
+                    <Section label="group inputs">
+                      {inputSockets.length === 0 ? (
+                        <div style={{ color: "#52525b" }}>(no sockets yet)</div>
+                      ) : (
+                        inputSockets.map((s) => {
+                          // Interior exposed-param consumers of this
+                          // socket. The first one supplies the widget
+                          // (ParamDef + current value); edits write to
+                          // all of them.
+                          const consumers = allEdges.filter(
+                            (e) =>
+                              e.source === groupInput.id &&
+                              e.sourceHandle === `out:aux:${s.name}` &&
+                              e.targetHandle?.startsWith("in:param:")
+                          );
+                          const first = consumers[0];
+                          const consumerNode = first
+                            ? nodes.find((n) => n.id === first.target)
+                            : undefined;
+                          const consumerParam = first
+                            ? first.targetHandle!.slice("in:param:".length)
+                            : null;
+                          const pdef =
+                            consumerNode && consumerParam
+                              ? getNodeDef(
+                                  consumerNode.data.defType
+                                )?.params.find((p) => p.name === consumerParam)
+                              : undefined;
+                          const wired = allEdges.some(
+                            (e) =>
+                              e.target === selected.id &&
+                              e.targetHandle === `in:${s.name}`
+                          );
+                          // Widget-backed sockets show only the widget
+                          // (its label is the socket name); the rest
+                          // show a minimal dot + name row.
+                          if (pdef && consumerNode && consumerParam) {
+                            return (
+                              <ParamRow
+                                key={s.name}
+                                param={{ ...pdef, label: s.name }}
+                                value={consumerNode.data.params[consumerParam]}
+                                allParams={consumerNode.data.params}
+                                onChange={(v) => {
+                                  for (const c of consumers) {
+                                    onParamChange(
+                                      c.target,
+                                      c.targetHandle!.slice(
+                                        "in:param:".length
+                                      ),
+                                      v
+                                    );
+                                  }
+                                }}
+                                driven={wired}
+                                keyframable={isKeyframable(pdef.type)}
+                                animation={getAnimation?.(
+                                  consumerNode.id,
+                                  consumerParam
+                                )}
+                                currentTick={currentTick}
+                                onSeekTick={onSeekTick}
+                                onAnimationChange={
+                                  onAnimationChange
+                                    ? (next) =>
+                                        onAnimationChange(
+                                          consumerNode.id,
+                                          consumerParam,
+                                          next
+                                        )
+                                    : undefined
+                                }
+                              />
+                            );
+                          }
+                          return <GroupSocketRow key={s.name} spec={s} />;
+                        })
+                      )}
+                      <div style={{ color: "#52525b", fontSize: 10 }}>
+                        Wire into the dashed “new socket” port on Group Input
+                        to add one.
+                      </div>
+                    </Section>
+                  )}
+                  {groupOutput && (
+                    <GroupSocketsPanel
+                      key={groupOutput.id}
+                      node={groupOutput}
+                      isInput={false}
+                    />
+                  )}
+                </>
+              );
+            })()}
           {def.type === "output" && onExportApp && (
             <button
               onClick={() => onExportApp(selected.id)}
@@ -437,6 +652,9 @@ export default function ParamPanel({
               Export App →
             </button>
           )}
+          {/* Group shells have no def params — their name + interface
+              sections above are the whole panel. */}
+          {def.type !== GROUP_TYPE && (
           <Section label={`${def.name} · parameters`}>
           {(() => {
             const exposedSet = new Set(selected.data.exposedParams ?? []);
@@ -529,12 +747,25 @@ export default function ParamPanel({
                           onAnimationChange(selected.id, p.name, next)
                       : undefined
                   }
+                  layerAnim={
+                    p.type === "merge_layers" &&
+                    getAnimation &&
+                    onAnimationChange
+                      ? {
+                          currentTick: currentTick ?? 0,
+                          get: (key) => getAnimation(selected.id, key),
+                          set: (key, next) =>
+                            onAnimationChange(selected.id, key, next),
+                        }
+                      : undefined
+                  }
                 />
                 </StaggerItem>
               );
             });
           })()}
           </Section>
+          )}
         </div>
       ) : (
         <div style={{ color: "#52525b" }}>Select a node to edit parameters.</div>
@@ -670,6 +901,199 @@ function ResInput({
   );
 }
 
+// Editable node display name — commit on blur / Enter, Escape reverts.
+// Used for group shells; the name feeds the node header, breadcrumbs,
+// and (later) the Layers editor.
+function NodeNameField({
+  name,
+  onCommit,
+}: {
+  name: string;
+  onCommit: (name: string) => void;
+}) {
+  const [draft, setDraft] = useState(name);
+  return (
+    <input
+      type="text"
+      value={draft}
+      spellCheck={false}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        const v = draft.trim();
+        if (v && v !== name) onCommit(v);
+        else setDraft(name);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        if (e.key === "Escape") {
+          setDraft(name);
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+      title="Group name"
+      style={{
+        background: "#0a0a0a",
+        border: "1px solid #27272a",
+        color: "#e5e7eb",
+        fontFamily: "inherit",
+        fontSize: 11,
+        padding: "4px 6px",
+        borderRadius: 4,
+        boxSizing: "border-box",
+        width: "100%",
+      }}
+    />
+  );
+}
+
+// One row of the boundary-socket editor: colored type dot, editable
+// name (commit on blur / Enter), and a remove button that also drops
+// the edges wired into the socket on both faces of the boundary.
+function GroupSocketRow({
+  spec,
+  onRename,
+  onRemove,
+}: {
+  spec: GroupSocketSpec;
+  onRename?: (oldName: string, newName: string) => void;
+  onRemove?: (name: string) => void;
+}) {
+  const [draft, setDraft] = useState(spec.name);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <span
+        title={spec.type}
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: colorForSocket(spec.type),
+          flexShrink: 0,
+        }}
+      />
+      {onRename ? (
+        <input
+          type="text"
+          value={draft}
+          spellCheck={false}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => {
+            const v = draft.trim();
+            if (v && v !== spec.name) onRename(spec.name, v);
+            else setDraft(spec.name);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            if (e.key === "Escape") {
+              setDraft(spec.name);
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+          title="Socket name"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            background: "#0a0a0a",
+            border: "1px solid #27272a",
+            color: "#e5e7eb",
+            fontFamily: "inherit",
+            fontSize: 11,
+            padding: "3px 6px",
+            borderRadius: 4,
+            boxSizing: "border-box",
+          }}
+        />
+      ) : (
+        // No rename here (the group shell's view) — names are edited on
+        // the Group Input / Group Output nodes inside the group.
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            color: "#a1a1aa",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {spec.name}
+        </span>
+      )}
+      {/* Type label only in the boundary-node editor view; the shell's
+          read-only list keeps just dot + name (the dot still carries
+          the type via color + tooltip). */}
+      {onRename && (
+        <span style={{ color: "#52525b", fontSize: 9, flexShrink: 0 }}>
+          {spec.type}
+        </span>
+      )}
+      {onRemove && (
+        <button
+          onClick={() => onRemove(spec.name)}
+          title="Remove socket (disconnects its wires)"
+          style={{
+            background: "transparent",
+            border: "1px solid #3f3f46",
+            color: "#8d9199",
+            borderRadius: 4,
+            width: 18,
+            height: 18,
+            lineHeight: "16px",
+            fontSize: 11,
+            padding: 0,
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Param-panel body for a selected Group Input / Group Output node.
+// Lists the group's interface sockets on that side for rename / remove;
+// adding happens on the canvas by wiring into the node's dashed
+// virtual port.
+function GroupSocketsPanel({
+  node,
+  isInput,
+  onRename,
+  onRemove,
+}: {
+  node: Node<NodeDataPayload>;
+  isInput: boolean;
+  onRename?: (oldName: string, newName: string) => void;
+  onRemove?: (name: string) => void;
+}) {
+  const sockets = readBoundarySockets(node.data.params);
+  // Reserved sockets (a layer's `backdrop`) are part of the fixed
+  // interface — shown read-only, no rename/remove.
+  const reserved = new Set(readReservedSockets(node.data.params));
+  return (
+    <Section label={isInput ? "group inputs" : "group outputs"}>
+      {sockets.length === 0 ? (
+        <div style={{ color: "#52525b" }}>(no sockets yet)</div>
+      ) : (
+        sockets.map((s) => (
+          <GroupSocketRow
+            // Keyed by name: a rename commits upstream and the row
+            // remounts with the (possibly deduped) final name.
+            key={s.name}
+            spec={s}
+            onRename={reserved.has(s.name) ? undefined : onRename}
+            onRemove={reserved.has(s.name) ? undefined : onRemove}
+          />
+        ))
+      )}
+      <div style={{ color: "#52525b", fontSize: 10 }}>
+        Wire into the dashed “new socket” port on the node to add one.
+      </div>
+    </Section>
+  );
+}
+
 function Section({
   label,
   children,
@@ -770,6 +1194,430 @@ function LoadedFilePill({
       >
         {name}
       </span>
+    </div>
+  );
+}
+
+// Custom panel for the Render Queue node. Lists the wired Output nodes as a
+// reorderable queue with inline filename / frame editing (edits backfill the
+// Output node), a per-row image/video type, a delivery-mode gear popover, and
+// the one-button batch Render trigger. Reordering writes the `items` param,
+// which re-derives the node's input-socket order via resolveInputs.
+function RenderQueuePanel({
+  node,
+  nodes,
+  edges,
+  onParamChange,
+  queueRender,
+  onSelectNode,
+}: {
+  node: Node<NodeDataPayload>;
+  nodes: Node<NodeDataPayload>[];
+  edges: Edge[];
+  onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
+  queueRender: {
+    nodeId: string;
+    activeItemId: string | null;
+    itemProgress: number | null;
+  } | null;
+  onSelectNode?: (nodeId: string) => void;
+}) {
+  const items = (node.data.params.items as RenderQueueItem[]) ?? [];
+  const delivery = (node.data.params.delivery as string) ?? "sequential";
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [overIndex, setOverIndex] = useState<number | null>(null);
+
+  const outputFor = (item: RenderQueueItem): Node<NodeDataPayload> | null => {
+    const edge = edges.find(
+      (e) => e.target === node.id && e.targetHandle === `in:item:${item.id}`
+    );
+    return edge ? nodes.find((n) => n.id === edge.source) ?? null : null;
+  };
+
+  const setItems = (next: RenderQueueItem[]) =>
+    onParamChange(node.id, "items", next);
+  const patchItem = (id: string, patch: Partial<RenderQueueItem>) =>
+    setItems(items.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+  const move = (from: number, to: number) => {
+    if (from === to || to < 0 || to >= items.length) return;
+    const next = items.slice();
+    const [m] = next.splice(from, 1);
+    next.splice(to, 0, m);
+    setItems(next);
+  };
+
+  const run = () =>
+    window.dispatchEvent(
+      new CustomEvent("effect-node-export", {
+        detail: { id: node.id, kind: "queue" },
+      })
+    );
+  const addSlot = () =>
+    window.dispatchEvent(
+      new CustomEvent("effect-node-toggle", {
+        detail: { id: node.id, kind: "queueAddItem" },
+      })
+    );
+
+  const deliveryLabels: Record<string, string> = {
+    sequential: "Sequential downloads",
+    zip: "Single .zip",
+    folder: "Save to folder…",
+  };
+  // Batch progress scoped to THIS queue node — another Render Queue
+  // node's run must not light up our rows.
+  const qr = queueRender && queueRender.nodeId === node.id ? queueRender : null;
+
+  // Where each row sits in the running batch: rows before the active one
+  // are done (full bar), the active row shows its own export progress (or
+  // an indeterminate dim fill), rows after are pending. `activeItemId ===
+  // null` while rendering means the trailing zip step — everything's done.
+  const activeIdx = qr?.activeItemId
+    ? items.findIndex((it) => it.id === qr.activeItemId)
+    : -1;
+  const rowFill = (i: number): number | "indeterminate" => {
+    if (!qr) return 0;
+    if (qr.activeItemId === null) return 1;
+    if (activeIdx === -1) return 0;
+    if (i < activeIdx) return 1;
+    if (i > activeIdx) return 0;
+    return qr.itemProgress ?? "indeterminate";
+  };
+
+  const textInput: React.CSSProperties = {
+    flex: 1,
+    minWidth: 0,
+    background: "#0a0a0a",
+    border: "1px solid #27272a",
+    color: "#e5e7eb",
+    fontFamily: "inherit",
+    fontSize: 11,
+    borderRadius: 3,
+    padding: "3px 6px",
+  };
+  const numInput: React.CSSProperties = {
+    width: 56,
+    flexShrink: 0,
+    background: "#0a0a0a",
+    border: "1px solid #27272a",
+    color: "#e5e7eb",
+    fontFamily: "inherit",
+    fontSize: 11,
+    borderRadius: 3,
+    padding: "3px 6px",
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 6,
+          alignItems: "center",
+          position: "relative",
+        }}
+      >
+        <button
+          onClick={run}
+          style={{
+            flex: 1,
+            background: "#1e3a8a",
+            border: "1px solid #1d4ed8",
+            color: "#bfdbfe",
+            fontFamily: "inherit",
+            fontSize: 11,
+            padding: "6px 10px",
+            borderRadius: 999,
+            cursor: "pointer",
+            letterSpacing: 0.3,
+          }}
+          title="Render every queued Output in order"
+        >
+          Render Queue ▶
+        </button>
+        <button
+          onClick={() => setSettingsOpen((v) => !v)}
+          title={`Delivery: ${deliveryLabels[delivery] ?? delivery}`}
+          style={{
+            width: 28,
+            height: 28,
+            background: "#18181b",
+            border: "1px solid #3f3f46",
+            color: "#a1a1aa",
+            borderRadius: 4,
+            cursor: "pointer",
+            fontSize: 13,
+          }}
+        >
+          ⚙
+        </button>
+        {settingsOpen && (
+          <div
+            style={{
+              position: "absolute",
+              top: "100%",
+              right: 0,
+              marginTop: 4,
+              background: "#111113",
+              border: "1px solid #1f1f23",
+              borderRadius: 4,
+              padding: 4,
+              zIndex: 1000,
+              display: "flex",
+              flexDirection: "column",
+              minWidth: 180,
+              boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+            }}
+          >
+            <div
+              style={{
+                color: "#52525b",
+                fontSize: 9,
+                textTransform: "uppercase",
+                letterSpacing: 1,
+                padding: "6px 8px 2px",
+              }}
+            >
+              delivery
+            </div>
+            {(["sequential", "zip", "folder"] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => {
+                  onParamChange(node.id, "delivery", mode);
+                  setSettingsOpen(false);
+                }}
+                style={menuItemStyle(delivery === mode)}
+              >
+                {deliveryLabels[mode]}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {items.length === 0 && (
+          <div style={{ color: "#52525b" }}>(no slots — use + on node)</div>
+        )}
+        {items.map((item, i) => {
+          const out = outputFor(item);
+          const p = out?.data.params ?? {};
+          const filename = (p.filename as string) ?? "";
+          const frames = (p.videoFrames as number) ?? 240;
+          const fill = rowFill(i);
+          return (
+            <div
+              key={item.id}
+              onDragOver={(e) => {
+                if (dragIndex === null) return;
+                e.preventDefault();
+                setOverIndex(i);
+              }}
+              onDrop={() => {
+                if (dragIndex !== null) move(dragIndex, i);
+                setDragIndex(null);
+                setOverIndex(null);
+              }}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                padding: 8,
+                border: `1px solid ${
+                  overIndex === i && dragIndex !== null && dragIndex !== i
+                    ? "#52525b"
+                    : "#27272a"
+                }`,
+                borderRadius: 4,
+                background: dragIndex === i ? "#26262b" : "#1f1f23",
+              }}
+            >
+              {/* Line 1: drag · index · progress bar · jump-to-node · remove */}
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span
+                  title="Drag to reorder"
+                  draggable
+                  onDragStart={() => setDragIndex(i)}
+                  onDragEnd={() => {
+                    setDragIndex(null);
+                    setOverIndex(null);
+                  }}
+                  style={{ cursor: "grab", color: "#52525b", fontSize: 13 }}
+                >
+                  ⠿
+                </span>
+                <span
+                  style={{ color: "#71717a", fontSize: 10, minWidth: 14 }}
+                >
+                  {i + 1}
+                </span>
+                {out ? (
+                  <div
+                    title={
+                      qr
+                        ? fill === "indeterminate"
+                          ? "Rendering…"
+                          : `${Math.round(fill * 100)}%`
+                        : "Idle"
+                    }
+                    style={{
+                      flex: 1,
+                      height: 10,
+                      borderRadius: 999,
+                      background: "#0a0a0a",
+                      border: "1px solid #27272a",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width:
+                          fill === "indeterminate"
+                            ? "100%"
+                            : `${fill * 100}%`,
+                        height: "100%",
+                        background: "#2563eb",
+                        opacity: fill === "indeterminate" ? 0.45 : 1,
+                        transition: "width 200ms",
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <span
+                    style={{
+                      flex: 1,
+                      color: "#71717a",
+                      fontSize: 11,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    (wire an Output node)
+                  </span>
+                )}
+                {out && (
+                  <button
+                    onClick={() => onSelectNode?.(out.id)}
+                    title="Open this Output node's settings"
+                    style={{
+                      background: "transparent",
+                      border: "1px solid #3f3f46",
+                      color: "#a1a1aa",
+                      fontSize: 11,
+                      lineHeight: 1,
+                      padding: "1px 5px",
+                      borderRadius: 3,
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    ⚙
+                  </button>
+                )}
+                <button
+                  onClick={() =>
+                    setItems(items.filter((x) => x.id !== item.id))
+                  }
+                  title="Remove slot"
+                  style={{
+                    background: "transparent",
+                    border: "1px solid #3f3f46",
+                    color: "#a1a1aa",
+                    fontSize: 12,
+                    lineHeight: 1,
+                    padding: "1px 6px",
+                    borderRadius: 3,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              {/* Line 2: every setting on one row — filename · type · frame(s) */}
+              {out && (
+                <div
+                  style={{ display: "flex", gap: 6, alignItems: "center" }}
+                >
+                  <input
+                    value={filename}
+                    placeholder="filename (auto)"
+                    title="Output filename"
+                    onChange={(e) =>
+                      onParamChange(out.id, "filename", e.target.value)
+                    }
+                    style={textInput}
+                  />
+                  <Dropdown
+                    value={item.kind}
+                    options={[
+                      { value: "video", label: "Video" },
+                      { value: "image", label: "Image" },
+                    ]}
+                    onChange={(v) =>
+                      patchItem(item.id, {
+                        kind: v as "image" | "video",
+                      })
+                    }
+                    title="Render as a video or a single image"
+                    style={{ width: 76, flexShrink: 0 }}
+                  />
+                  {item.kind === "video" ? (
+                    <input
+                      type="number"
+                      min={1}
+                      value={frames}
+                      title="Frame count"
+                      onChange={(e) =>
+                        onParamChange(
+                          out.id,
+                          "videoFrames",
+                          Math.max(1, Math.round(Number(e.target.value) || 1))
+                        )
+                      }
+                      style={numInput}
+                    />
+                  ) : (
+                    <input
+                      type="number"
+                      min={0}
+                      value={item.frame}
+                      title="Frame to render"
+                      onChange={(e) =>
+                        patchItem(item.id, {
+                          frame: Math.max(
+                            0,
+                            Math.round(Number(e.target.value) || 0)
+                          ),
+                        })
+                      }
+                      style={numInput}
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <button
+          onClick={addSlot}
+          style={{
+            background: "#18181b",
+            border: "1px dashed #3f3f46",
+            color: "#a1a1aa",
+            fontFamily: "inherit",
+            fontSize: 11,
+            padding: "5px 10px",
+            borderRadius: 4,
+            cursor: "pointer",
+          }}
+        >
+          + Add slot
+        </button>
+      </div>
     </div>
   );
 }
@@ -932,6 +1780,22 @@ function VideoFileControl({
   const current =
     (value as import("@/engine/types").VideoFileParamValue | null | undefined) ??
     null;
+  const applyFile = async (file: File) => {
+    const { registerVideoFile, disposeVideoFile } = await import(
+      "@/lib/video"
+    );
+    const v = await registerVideoFile(file);
+    // Release the previous clip's <video>/ObjectURL — replacing via
+    // the button is the only path now that the clear button is gone.
+    if (current) {
+      try {
+        disposeVideoFile(current);
+      } catch {
+        // Already disposed / not registered — nothing to free.
+      }
+    }
+    onChange(v);
+  };
   return (
     <div
       style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
@@ -943,26 +1807,23 @@ function VideoFileControl({
         style={{ display: "none" }}
         onChange={async (e) => {
           const file = e.target.files?.[0];
-          if (!file) return;
-          const { registerVideoFile, disposeVideoFile } = await import(
-            "@/lib/video"
-          );
-          const v = await registerVideoFile(file);
-          // Release the previous clip's <video>/ObjectURL — replacing via
-          // the button is the only path now that the clear button is gone.
-          if (current) {
-            try {
-              disposeVideoFile(current);
-            } catch {
-              // Already disposed / not registered — nothing to free.
-            }
-          }
-          onChange(v);
+          if (file) await applyFile(file);
         }}
       />
       <LoadFileButton
         label="Load Video"
-        onClick={() => inputRef.current?.click()}
+        onClick={async () => {
+          // Prefer the File System Access picker — it yields a persistable
+          // handle so reopening the project can auto-relink this clip.
+          // Browsers without it fall back to the plain file input.
+          const { pickMediaFiles } = await import("@/lib/media-relink");
+          const picked = await pickMediaFiles({ kind: "video" });
+          if (picked === "unsupported") {
+            inputRef.current?.click();
+            return;
+          }
+          if (picked?.[0]) await applyFile(picked[0]);
+        }}
       />
       {current && (
         <LoadedFilePill
@@ -972,6 +1833,95 @@ function VideoFileControl({
       )}
       {current && (
         <MatchAspectButton width={current.width} height={current.height} />
+      )}
+    </div>
+  );
+}
+
+// Audio `audio_file` param control. Mirrors VideoFileControl: the File
+// System Access picker (where available) persists a relink handle so the
+// clip auto-relinks on the next project load; plain input fallback elsewhere.
+function AudioFileControl({
+  value,
+  onChange,
+}: {
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const current =
+    (value as import("@/engine/types").AudioFileParamValue | null | undefined) ??
+    null;
+  const applyFile = async (file: File) => {
+    const { registerAudioFile, disposeAudioFile } = await import(
+      "@/lib/audio"
+    );
+    const v = await registerAudioFile(file);
+    if (current) {
+      try {
+        disposeAudioFile(current);
+      } catch {
+        // Already disposed — nothing to free.
+      }
+    }
+    onChange(v);
+  };
+  return (
+    <div
+      style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept="audio/*"
+        style={{ display: "none" }}
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          if (file) await applyFile(file);
+        }}
+      />
+      <LoadFileButton
+        label="Load Audio"
+        onClick={async () => {
+          const { pickMediaFiles } = await import("@/lib/media-relink");
+          const picked = await pickMediaFiles({ kind: "audio" });
+          if (picked === "unsupported") {
+            inputRef.current?.click();
+            return;
+          }
+          if (picked?.[0]) await applyFile(picked[0]);
+        }}
+      />
+      {current && (
+        <LoadedFilePill
+          thumb={<span style={{ color: "#71717a", fontSize: 11 }}>♪</span>}
+          name={`${current.filename ?? "audio"} · ${
+            Number.isFinite(current.duration)
+              ? `${current.duration.toFixed(1)}s`
+              : "stream"
+          }`}
+        />
+      )}
+      {current && (
+        <button
+          onClick={async () => {
+            const { disposeAudioFile } = await import("@/lib/audio");
+            disposeAudioFile(current);
+            onChange(null);
+          }}
+          style={{
+            padding: "2px 6px",
+            background: "transparent",
+            border: "1px solid #3f3f46",
+            color: "#a1a1aa",
+            fontFamily: "inherit",
+            fontSize: 10,
+            borderRadius: 3,
+            cursor: "pointer",
+          }}
+        >
+          clear
+        </button>
       )}
     </div>
   );
@@ -1120,6 +2070,15 @@ function VideoThumb({
   );
 }
 
+// Per-key animation access for controls that keyframe values INSIDE a
+// composite param (merge layers' per-layer opacity). Keys are virtual
+// animation-map entries (`layer_opacity:<id>` — see engine/conventions).
+interface LayerAnimApi {
+  currentTick: number;
+  get: (key: string) => KeyframeAnimationBlock | undefined;
+  set: (key: string, next: KeyframeAnimationBlock | undefined) => void;
+}
+
 function ParamRow({
   param,
   value,
@@ -1141,6 +2100,7 @@ function ParamRow({
   onSeekTick,
   keyframable = false,
   onAnimationChange,
+  layerAnim,
 }: {
   param: ParamDef;
   value: unknown;
@@ -1186,6 +2146,8 @@ function ParamRow({
   // true && !driven`, route the edit through `upsertKeyframe(block,
   // ctx.tick, value)` instead of writing to `params[paramName]`.
   onAnimationChange?: (next: KeyframeAnimationBlock | undefined) => void;
+  // Composite-param keyframing (merge layers) — see LayerAnimApi.
+  layerAnim?: LayerAnimApi;
 }) {
   const label = param.label ?? param.name;
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1452,6 +2414,7 @@ function ParamRow({
         onChange={onChange}
         rangeOverride={rangeOverride}
         onRangeChange={onRangeChange}
+        layerAnim={layerAnim}
       />
     </div>
   );
@@ -2341,6 +3304,7 @@ function ParamControl({
   onChange,
   rangeOverride,
   onRangeChange,
+  layerAnim,
 }: {
   param: ParamDef;
   value: unknown;
@@ -2352,6 +3316,8 @@ function ParamControl({
   onRangeChange?: (
     next: { min?: number; max?: number; softMax?: number } | null
   ) => void;
+  // Composite-param keyframing (merge layers) — see LayerAnimApi.
+  layerAnim?: LayerAnimApi;
 }) {
   if (param.type === "scalar") {
     const num = typeof value === "number" ? value : (param.default as number);
@@ -2441,55 +3407,7 @@ function ParamControl({
   }
 
   if (param.type === "audio_file") {
-    const current = value as
-      | { filename?: string; duration?: number }
-      | null
-      | undefined;
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <input
-          type="file"
-          accept="audio/*"
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            const mod = await import("@/lib/audio");
-            const v = await mod.registerAudioFile(file);
-            onChange(v);
-          }}
-          style={{ color: "#e5e7eb", fontSize: 10 }}
-        />
-        {current?.filename && (
-          <div style={{ color: "#71717a", fontSize: 10 }}>
-            {current.filename} · {current.duration?.toFixed(1)}s
-          </div>
-        )}
-        {current && (
-          <button
-            onClick={async () => {
-              const { disposeAudioFile } = await import("@/lib/audio");
-              disposeAudioFile(
-                value as import("@/engine/types").AudioFileParamValue
-              );
-              onChange(null);
-            }}
-            style={{
-              padding: "2px 6px",
-              background: "transparent",
-              border: "1px solid #3f3f46",
-              color: "#a1a1aa",
-              fontFamily: "inherit",
-              fontSize: 10,
-              borderRadius: 3,
-              cursor: "pointer",
-              alignSelf: "flex-start",
-            }}
-          >
-            clear
-          </button>
-        )}
-      </div>
-    );
+    return <AudioFileControl value={value} onChange={onChange} />;
   }
 
   if (param.type === "video_file") {
@@ -2706,6 +3624,8 @@ function ParamControl({
                 onClick={() => {
                   const next = layers.filter((x) => x.id !== l.id);
                   onChange(next);
+                  // Drop the layer's opacity keyframes with it.
+                  layerAnim?.set(layerOpacityKey(l.id), undefined);
                 }}
                 title="Remove layer"
                 style={{
@@ -2722,25 +3642,22 @@ function ParamControl({
                 remove
               </button>
             </div>
-            <Dropdown
-              value={l.mode}
-              options={modes.map((m) => ({ value: m, label: blendModeLabel(m) }))}
-              onChange={(v) => {
-                const next = layers.map((x) =>
-                  x.id === l.id ? { ...x, mode: v } : x
-                );
-                onChange(next);
-              }}
-            />
-            <div
-              style={{
-                display: "flex",
-                gap: 6,
-                alignItems: "center",
-              }}
-            >
-              <span style={{ color: "#71717a", minWidth: 50 }}>opacity</span>
-              <DampenedRangeInput
+            {/* Blend mode + opacity share one line: dropdown first, then
+                a bar slider + number field styled like the main scalar
+                sliders. */}
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <Dropdown
+                value={l.mode}
+                options={modes.map((m) => ({ value: m, label: blendModeLabel(m) }))}
+                onChange={(v) => {
+                  const next = layers.map((x) =>
+                    x.id === l.id ? { ...x, mode: v } : x
+                  );
+                  onChange(next);
+                }}
+                style={{ width: 96, flexShrink: 0 }}
+              />
+              <MiniBarSlider
                 min={0}
                 max={1}
                 step={0.01}
@@ -2751,32 +3668,58 @@ function ParamControl({
                   );
                   onChange(next);
                 }}
-                style={{ flex: 1 }}
+                title="Opacity — hold Shift to fine-tune"
               />
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.01}
+              <NumberField
                 value={l.opacity}
-                onChange={(e) => {
+                onChange={(v) => {
                   const next = layers.map((x) =>
-                    x.id === l.id
-                      ? { ...x, opacity: parseFloat(e.target.value) }
-                      : x
+                    x.id === l.id ? { ...x, opacity: v } : x
                   );
                   onChange(next);
                 }}
-                style={{
-                  width: 56,
-                  background: "#0a0a0a",
-                  border: "1px solid #27272a",
-                  color: "#e5e7eb",
-                  fontFamily: "inherit",
-                  fontSize: 11,
-                  padding: "2px 4px",
-                }}
+                min={0}
+                max={1}
+                step={0.01}
+                width={44}
               />
+              {layerAnim &&
+                (() => {
+                  // Same diamond contract as scalar rows, against the
+                  // layer's virtual animation key. Once animated, slider
+                  // edits auto-keyframe via EffectsApp's onParamChange.
+                  const key = layerOpacityKey(l.id);
+                  const block = layerAnim.get(key);
+                  const tick = layerAnim.currentTick;
+                  return (
+                    <KeyframeDiamond
+                      state={diamondStateFor(block, tick)}
+                      title="Keyframe this layer's opacity"
+                      onClick={() => {
+                        if (!block || !block.animated) {
+                          layerAnim.set(key, {
+                            animated: true,
+                            trackVisible: true,
+                            keyframes: [
+                              {
+                                tick,
+                                value: l.opacity,
+                                easingOut: "easeInOut",
+                              },
+                            ],
+                          });
+                        } else if (findKeyframeAt(block, tick)) {
+                          layerAnim.set(key, removeKeyframeAt(block, tick));
+                        } else {
+                          layerAnim.set(
+                            key,
+                            upsertKeyframe(block, tick, l.opacity, "easeInOut")
+                          );
+                        }
+                      }}
+                    />
+                  );
+                })()}
             </div>
           </div>
         ))}
@@ -4264,6 +5207,85 @@ function buttonStyle(): React.CSSProperties {
 // number-input behavior is unchanged from the inline version it
 // replaced; the only addition is the contextmenu handler that opens
 // SliderRangeEditor and the highlight when an override is active.
+// Compact bar-style slider matching ScalarSliderRow's visuals (track +
+// fill + leading-edge line + transparent native range on top) for
+// embedded controls — merge layers, etc. — that have no ParamDef or
+// range-override machinery behind them.
+function MiniBarSlider({
+  value,
+  min,
+  max,
+  step,
+  onChange,
+  title,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+  title?: string;
+}) {
+  const clamped = Math.max(min, Math.min(max, value));
+  const fillPct =
+    max > min ? ((clamped - min) / (max - min)) * 100 : 0;
+  return (
+    <div style={{ position: "relative", flex: 1, height: 20, minWidth: 40 }}>
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          borderRadius: 6,
+          boxShadow: "inset 0 0 0 1px #232327",
+          background: "#0f0f11",
+          overflow: "hidden",
+          pointerEvents: "none",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: `${fillPct}%`,
+            background: "#202023",
+            borderRadius: 6,
+          }}
+        />
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          left: `${fillPct}%`,
+          top: "21%",
+          bottom: "21%",
+          width: 1,
+          marginLeft: -0.5,
+          background: "#8a8a90",
+          pointerEvents: "none",
+        }}
+      />
+      <DampenedRangeInput
+        className="param-slider-bare"
+        min={min}
+        max={max}
+        step={step}
+        value={clamped}
+        onChange={onChange}
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          margin: 0,
+        }}
+        title={title}
+      />
+    </div>
+  );
+}
+
 function ScalarSliderRow({
   param,
   num,

@@ -50,6 +50,14 @@ export const CLIPPABLE_NODE_TYPES: ReadonlySet<string> = new Set([
   "rectangle",
   "circle",
   "svg-source",
+  // A layer's clip windows are its in/out bars: outside them the layer
+  // passes its stack through and its interior leaves the needed set.
+  // The window also sets the interior's local clock (AE-style:
+  // localTick = globalTick − inTick + sourceInTick), so sliding the
+  // bar slides everything inside. Not time-driven — the layer node's
+  // own params (opacity keyframes) stay on the global clock; the
+  // evaluator applies the offset to interior nodes directly.
+  "layer",
 ]);
 
 // Of the clippable set, only these remap their clock to clip-local time.

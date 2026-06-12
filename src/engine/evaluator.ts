@@ -1,6 +1,12 @@
 import { coerceValue } from "./coerce";
-import { MASK_INPUT_NAME, withMaskInput } from "./conventions";
+import {
+  LAYER_OPACITY_PREFIX,
+  MASK_INPUT_NAME,
+  withMaskInput,
+} from "./conventions";
 import { getNodeDef } from "./registry";
+import { flattenGraph } from "./flatten";
+import { LAYER_TYPE } from "./groups";
 import { paramSocketType, parseTargetHandleKind } from "./graph-helpers";
 import {
   evaluateKeyframesAt,
@@ -45,6 +51,34 @@ void main() {
   }
 }`;
 
+const OPACITY_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform float u_opacity;
+out vec4 outColor;
+void main() {
+  vec4 c = texture(u_src, v_uv);
+  // Straight (non-premultiplied) alpha convention — fade alpha only.
+  outColor = vec4(c.rgb, c.a * u_opacity);
+}`;
+
+function applyOpacity(
+  ctx: RenderContext,
+  src: ImageValue,
+  opacity: number
+): ImageValue {
+  const out = ctx.allocImage({ width: src.width, height: src.height });
+  const prog = ctx.getShader("engine/opacity", OPACITY_FS);
+  ctx.drawFullscreen(prog, out, (gl) => {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.texture);
+    gl.uniform1i(gl.getUniformLocation(prog, "u_src"), 0);
+    gl.uniform1f(gl.getUniformLocation(prog, "u_opacity"), opacity);
+  });
+  return out;
+}
+
 function applyMask(
   ctx: RenderContext,
   effect: ImageValue,
@@ -73,6 +107,10 @@ function applyMask(
 export interface GraphNode {
   id: string;
   type: string;
+  // Group nesting (id of the enclosing node-group; undefined = root).
+  // Evaluation itself ignores scope — the flatten pass dissolves group
+  // boundaries before this graph reaches evaluateGraph.
+  parentId?: string;
   params: Record<string, unknown>;
   // Names of params exposed as input sockets on this node. An exposed param
   // with a connected edge has its value overridden by the incoming signal at
@@ -210,8 +248,19 @@ export function computeNeededSet(
   // node — e.g. a selected node we want to preview on its own.
   extraTargets?: Iterable<string>
 ): Set<string> {
+  // `render` edges (Output → Render Queue) are organizational, not data —
+  // they must NOT pull the wired Output chains into evaluation just because
+  // the queue is a target. Identify queue nodes and skip every edge into
+  // them (the queue only has `render` inputs, so this drops exactly the
+  // render links).
+  const renderQueueIds = new Set(
+    nodes
+      .filter((n) => getNodeDef(n.type)?.type === "render-queue")
+      .map((n) => n.id)
+  );
   const parents = new Map<string, string[]>();
   for (const e of edges) {
+    if (renderQueueIds.has(e.target)) continue;
     const list = parents.get(e.target);
     if (list) list.push(e.source);
     else parents.set(e.target, [e.source]);
@@ -384,6 +433,37 @@ export function evaluateGraph(
   // isn't wired to a terminal) — used to preview the selected node.
   previewNodeId?: string | null
 ): EvalResult {
+  // Dissolve group structure first — groups are transparent at eval
+  // time (see flatten.ts). No-op (same arrays back) for structure-free
+  // graphs. `layerOf` maps interior nodes to their enclosing layer for
+  // AE-style local time.
+  const flat = flattenGraph(nodes, edges);
+  nodes = flat.nodes;
+  const layerOf = flat.layerOf;
+
+  // Per-layer time offset for this pass, from the layer's clip windows:
+  // interior local time is `globalTick − inTick + sourceInTick` of the
+  // active (or first) window, so sliding a layer slides its interior
+  // animation. Layers outside every window are gated: the layer node
+  // passes its stack through, and dropping its `content` edge here
+  // removes the whole interior from the needed set for free.
+  const layerOffsets = new Map<string, number>();
+  const gatedLayers = new Set<string>();
+  for (const n of nodes) {
+    if (n.type !== LAYER_TYPE) continue;
+    const res = resolveClipAt(n.clips, ctx.tick);
+    if (res.gated) gatedLayers.add(n.id);
+    const ref = res.active ?? n.clips?.find((c) => c.enabled);
+    layerOffsets.set(n.id, ref ? ref.inTick - ref.sourceInTick : 0);
+  }
+  edges =
+    gatedLayers.size === 0
+      ? flat.edges
+      : flat.edges.filter(
+          (e) =>
+            !(e.targetHandle === "in:content" && gatedLayers.has(e.target))
+        );
+
   const order = topoSort(nodes, edges);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const outputs = new Map<string, NodeOutput>();
@@ -442,6 +522,25 @@ export function evaluateGraph(
       continue;
     }
 
+    // --- Layer-local time (AE-style) ----------------------------------
+    // Nodes inside a layer run on the layer's clock: a pure offset that
+    // never stops (negative before the in-point; keyframe eval clamps to
+    // the first key). Layers are root-only, so offsets never compose —
+    // every node is at most one offset from the global clock. The scoped
+    // tick drives this node's clip gating, keyframe evaluation, and
+    // every ctx.tick/time/frame read during its compute; ctx is restored
+    // at the end of the iteration.
+    const enclosingLayer = layerOf.get(id);
+    const layerOffset = enclosingLayer
+      ? layerOffsets.get(enclosingLayer) ?? 0
+      : 0;
+    const scopedTick = globalTick - layerOffset;
+    if (layerOffset !== 0) {
+      ctx.tick = scopedTick;
+      ctx.frame = Math.floor(scopedTick / ctx.ticksPerFrame);
+      ctx.time = scopedTick / (ctx.ticksPerFrame * ctx.fps);
+    }
+
     // --- Timeline clip: gate + local-time -----------------------------
     // `gated` ⇒ playhead is outside the clip window; the node emits an empty
     // value of its output type and skips compute. `timeDriven` ⇒ an active
@@ -449,10 +548,10 @@ export function evaluateGraph(
     // its stable:false fingerprint) reflect clip-local time. Static clipped
     // sources are pure gates — no clock change, so their keyframes stay on
     // the global clock for now. ctx is restored at the end of the iteration.
-    const { gated, active: activeClip } = resolveClipAt(node.clips, globalTick);
+    const { gated, active: activeClip } = resolveClipAt(node.clips, scopedTick);
     const timeDriven = !!activeClip && isTimeDrivenClip(node.type);
     if (timeDriven) {
-      const localTick = clipLocalTick(activeClip!, globalTick);
+      const localTick = clipLocalTick(activeClip!, scopedTick);
       ctx.tick = localTick;
       ctx.frame = Math.floor(localTick / ctx.ticksPerFrame);
       ctx.time = localTick / (ctx.ticksPerFrame * ctx.fps);
@@ -475,7 +574,8 @@ export function evaluateGraph(
     const resolveCtx: ResolveCtx = { connectedTypes };
 
     const defInputs = withMaskInput(
-      def.resolveInputs?.(node.params, resolveCtx) ?? def.inputs
+      def.resolveInputs?.(node.params, resolveCtx) ?? def.inputs,
+      def
     );
     for (const inputDef of defInputs) {
       const incoming = edges.find((e) => {
@@ -575,6 +675,38 @@ export function evaluateGraph(
         const v = evaluateKeyframesAt(block, pdef.type, ctx.tick);
         if (v !== undefined) keyframeOverrides[pdef.name] = v;
       }
+      // Virtual per-layer opacity keys ("layer_opacity:<id>") animate a
+      // single layer's opacity inside a merge_layers param. The array
+      // param isn't keyframable itself; each layer opacity is a scalar
+      // with its own block. Applied onto a clone so the stored params
+      // stay untouched. Blocks whose layer no longer exists are ignored.
+      const layersParam = def.params.find((p) => p.type === "merge_layers");
+      if (layersParam) {
+        let layers:
+          | Array<{ id?: string; opacity?: number } & Record<string, unknown>>
+          | null = null;
+        for (const [key, block] of Object.entries(animation)) {
+          if (!key.startsWith(LAYER_OPACITY_PREFIX)) continue;
+          if (!block || !block.animated || block.keyframes.length === 0) {
+            continue;
+          }
+          const v = evaluateKeyframesAt(block, "scalar", ctx.tick);
+          if (typeof v !== "number") continue;
+          if (!layers) {
+            const base = node.params[layersParam.name];
+            layers = Array.isArray(base)
+              ? base.map((l) => ({ ...(l as Record<string, unknown>) }))
+              : [];
+          }
+          const id = key.slice(LAYER_OPACITY_PREFIX.length);
+          const layer = layers.find((l) => l.id === id);
+          if (layer) {
+            layer.opacity = Math.max(0, Math.min(1, v));
+            anyAnimated = true;
+            keyframeOverrides[layersParam.name] = layers;
+          }
+        }
+      }
       if (anyAnimated) {
         // Tick + animated-param-name list are enough — values are
         // determined by (tick, keyframes) and keyframes already
@@ -630,7 +762,15 @@ export function evaluateGraph(
       const tStart = performance.now();
       try {
         let ownsTextures = true;
-        if (gated) {
+        if (gated && node.type === LAYER_TYPE) {
+          // A layer outside its window is a pure passthrough — the
+          // stack below it flows on unchanged (its interior already
+          // left the needed set via the content-edge drop above). Like
+          // bypass, we don't own the upstream texture.
+          const passthrough = inputs.stack;
+          result = passthrough ? { primary: passthrough } : {};
+          ownsTextures = false;
+        } else if (gated) {
           // Clip window doesn't contain the playhead — emit an empty value of
           // this node's output type and skip compute. We own any allocated
           // texture (transparent image), so it releases on eviction like a
@@ -682,6 +822,36 @@ export function evaluateGraph(
           result = { ...result, primary: masked };
         }
 
+        // Universal per-node opacity (see OPACITY_PARAM in conventions):
+        // any def declaring an `opacity` param gets its image outputs —
+        // primary and aux — alpha-multiplied here. One convention covers
+        // image sources and spline primitives whose visible raster is an
+        // aux output. No-op at 1 so undeclared/default nodes pay nothing.
+        const opacity = effectiveParams.opacity;
+        if (
+          !node.bypassed &&
+          !gated &&
+          typeof opacity === "number" &&
+          opacity < 1
+        ) {
+          const o = Math.max(0, opacity);
+          if (result.primary?.kind === "image") {
+            const faded = applyOpacity(ctx, result.primary, o);
+            ctx.releaseTexture(result.primary.texture);
+            result = { ...result, primary: faded };
+          }
+          if (result.aux) {
+            let nextAux: typeof result.aux | null = null;
+            for (const [name, value] of Object.entries(result.aux)) {
+              if (value?.kind !== "image") continue;
+              const faded = applyOpacity(ctx, value, o);
+              ctx.releaseTexture(value.texture);
+              (nextAux ??= { ...result.aux })[name] = faded;
+            }
+            if (nextAux) result = { ...result, aux: nextAux };
+          }
+        }
+
         outputs.set(id, result);
         outputTypeCache.set(id, resolvePrimaryType(def, node.params, resolveCtx));
 
@@ -730,8 +900,9 @@ export function evaluateGraph(
       }
     }
 
-    // Restore the global clock if this node ran on clip-local time.
-    if (timeDriven) {
+    // Restore the global clock if this node ran on clip-local or
+    // layer-local time.
+    if (timeDriven || layerOffset !== 0) {
       ctx.tick = globalTick;
       ctx.time = globalTime;
       ctx.frame = globalFrame;

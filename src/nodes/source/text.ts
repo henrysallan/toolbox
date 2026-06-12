@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
   FontParamValue,
   ImageValue,
@@ -548,6 +549,7 @@ export const textNode: NodeDefinition = {
     { name: "mask", label: "Mask", type: "image", required: false },
   ],
   params: [
+    OPACITY_PARAM,
     {
       name: "text",
       label: "Text",

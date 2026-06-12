@@ -115,6 +115,7 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
         const graphNodes: GraphNode[] = nodes.map((n) => ({
           id: n.id,
           type: n.data.defType,
+          parentId: n.data.parentId,
           params: { ...n.data.params },
           exposedParams: n.data.exposedParams,
           // Keyframe blocks are first-class on GraphNode — the

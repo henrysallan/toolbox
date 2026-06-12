@@ -49,9 +49,13 @@ function outputTypeFor(mode: Mode): SocketType {
   return "image_group";
 }
 
-export const groupNode: NodeDefinition = {
-  type: "group",
-  name: "Group",
+// Renamed from "Group" (2026-06) to free the name for node groups
+// (subgraph nesting). The old type string stays registered as a load
+// alias in nodes/index.ts; groupIndex metadata keeps its name since
+// it's per-item identity, not nesting.
+export const collectNode: NodeDefinition = {
+  type: "collect",
+  name: "Collect",
   category: "utility",
   description:
     "Bundle N homogeneous inputs. For images, produces an image_group. For splines and points, concatenates into a single value with per-subpath / per-point groupIndex metadata matching the socket order (a=0, b=1, c=2…). Nodes that don't understand groupIndex just treat the output as a normal spline/points value; Select by Index and Count Indices key off the tags.",

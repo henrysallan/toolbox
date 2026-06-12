@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
   NodeDefinition,
   PositionNode,
@@ -534,6 +535,7 @@ export const perlinNoiseNode: NodeDefinition = {
     },
   ],
   params: [
+    OPACITY_PARAM,
     {
       name: "type",
       label: "Type",

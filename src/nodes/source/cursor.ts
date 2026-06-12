@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type { ImageValue, NodeDefinition, RenderContext } from "@/engine/types";
 
 // Source node emitting a circular falloff field centered on the pointer,
@@ -124,6 +125,7 @@ export const cursorNode: NodeDefinition = {
   stable: false,
   inputs: [],
   params: [
+    OPACITY_PARAM,
     {
       name: "radius",
       label: "Radius",

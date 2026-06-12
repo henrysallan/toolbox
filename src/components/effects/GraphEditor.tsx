@@ -35,6 +35,7 @@ import {
   ticksToFrames,
 } from "@/engine/keyframes";
 import { getNodeDef } from "@/engine/registry";
+import { LAYER_OPACITY_PREFIX } from "@/engine/conventions";
 import { getShortcutScope } from "./shortcut-scope";
 
 // ---------------------------------------------------------------------
@@ -213,6 +214,29 @@ export function GraphEditor({
       for (const [pname, b] of Object.entries(anim)) {
         if (!b || !b.animated || !b.graphVisible) continue;
         const pdef = def?.params.find((p) => p.name === pname);
+        // Virtual per-layer opacity keys (merge node) have no param def
+        // but are plain 0..1 scalars — graph them like one.
+        if (!pdef && pname.startsWith(LAYER_OPACITY_PREFIX)) {
+          const layerId = pname.slice(LAYER_OPACITY_PREFIX.length);
+          const layersRaw = n.data.params?.layers;
+          const idx = Array.isArray(layersRaw)
+            ? layersRaw.findIndex(
+                (l) => (l as { id?: string } | null)?.id === layerId
+              )
+            : -1;
+          out.push({
+            key: `${n.id}|${pname}`,
+            nodeId: n.id,
+            paramName: pname,
+            label: `${n.data.name} · ${
+              idx >= 0 ? `layer ${idx + 1} opacity` : "layer opacity"
+            }`,
+            block: b,
+            yMin: 0,
+            yMax: 1,
+          });
+          continue;
+        }
         if (!pdef || pdef.type !== "scalar") continue;
         out.push({
           key: `${n.id}|${pname}`,

@@ -12,6 +12,12 @@ import type { ClipBlock } from "@/engine/clips";
 
 export type NodeDataPayload = {
   defType: string;
+  // Group nesting: id of the node-group this node lives inside, or
+  // undefined for root scope. The nodes array stays flat — nesting is
+  // arbitrary depth via parentId chains, and the NodeEditor filters
+  // its view to one scope at a time. See
+  // specdocs/layers-groups-attributes.md.
+  parentId?: string;
   params: Record<string, unknown>;
   // Per-parameter keyframe animation, keyed by param name. A param is
   // either constant (no entry / `animated:false`), keyframe-animated
@@ -50,7 +56,9 @@ export type NodeDataPayload = {
   linkedParams?: Record<string, { ratio: number }>;
   error?: string;
   auxOutputs: { name: string; type: string; disabled?: boolean }[];
-  inputs: { name: string; label?: string; type: string }[];
+  // `hidden` inputs exist for the evaluator only (edges synthesized by
+  // the flatten pass, e.g. a layer's `content`) — no handle renders.
+  inputs: { name: string; label?: string; type: string; hidden?: boolean }[];
   primaryOutput: string | null;
   name: string;
   terminal?: boolean;

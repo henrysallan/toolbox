@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type { NodeDefinition } from "@/engine/types";
 import type { ColorRampStop } from "@/nodes/effect/color-ramp";
 import { COLOR_RAMP_MAX_STOPS } from "@/nodes/effect/color-ramp";
@@ -242,6 +243,7 @@ export const shapeCellsNode: NodeDefinition = {
     { name: "time", type: "scalar", required: false },
   ],
   params: [
+    OPACITY_PARAM,
     { name: "rows", label: "Rows", type: "scalar", min: 1, max: 64, step: 1, default: 5 },
     { name: "cols", label: "Columns", type: "scalar", min: 1, max: 64, step: 1, default: 9 },
     {

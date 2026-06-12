@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type { ImageValue, NodeDefinition, UvValue } from "@/engine/types";
 import {
   disposePlaceholderTex,
@@ -282,6 +283,7 @@ export const voronoiNode: NodeDefinition = {
     { name: "warp", label: "Warp", type: "image", required: false },
   ],
   params: [
+    OPACITY_PARAM,
     {
       name: "mode",
       label: "Mode",

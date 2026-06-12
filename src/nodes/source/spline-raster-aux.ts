@@ -6,6 +6,7 @@ import type {
   SplineSubpath,
 } from "@/engine/types";
 import { buildPath2D, hexToRgba } from "@/engine/spline-raster";
+import { OPACITY_PARAM } from "@/engine/conventions";
 
 // Shared "view this spline" rasterizer bundled into the spline primitive
 // nodes (Circle, Rectangle, …). Each primitive keeps its `spline` output and
@@ -44,6 +45,9 @@ export const SPLINE_RASTER_PARAMS: ParamDef[] = [
     default: "#ffffff",
     visibleIf: (p) => !!p.fill_enabled,
   },
+  // Applied by the evaluator's universal opacity pass to the aux image —
+  // see OPACITY_PARAM in engine/conventions.
+  OPACITY_PARAM,
 ];
 
 // Use as a node's `resolveAuxOutputs`: only expose the image socket when

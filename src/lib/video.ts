@@ -67,6 +67,7 @@ export async function registerVideoFile(
     video,
     url,
     filename: file.name,
+    size: file.size,
     duration: video.duration,
     width: video.videoWidth,
     height: video.videoHeight,

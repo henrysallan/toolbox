@@ -1,3 +1,4 @@
+import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
   NodeDefinition,
   RenderContext,
@@ -202,6 +203,7 @@ export const webcamSourceNode: NodeDefinition = {
   stable: false,
   inputs: [{ name: "uv_in", label: "UV", type: "uv", required: false }],
   params: [
+    OPACITY_PARAM,
     {
       name: "facing",
       label: "Facing",

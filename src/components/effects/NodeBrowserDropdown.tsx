@@ -14,6 +14,9 @@ import type { NodeCategory, NodeSubcategory } from "@/engine/types";
 interface Props {
   onAdd: (type: string) => void;
   onClose: () => void;
+  // Root scope is a strict layer chain — when the editor is at root the
+  // menu offers only the Layer compound entry.
+  atRoot?: boolean;
 }
 
 interface NodeEntry {
@@ -62,13 +65,26 @@ const TYPED_CATEGORIES: ReadonlySet<NodeCategory> = new Set([
   "audio",
 ]);
 
-export default function NodeBrowserDropdown({ onAdd, onClose }: Props) {
+export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
   const entries = useMemo<NodeEntry[]>(() => {
+    // Strict root: only layers (the compositing chain) and Render Queue
+    // (a batch organizer) live at root scope. "layer" is a compound the
+    // parent's onAddNode special-cases (creates the layer + its boundary
+    // nodes and splices it into the chain).
+    if (atRoot) {
+      return [
+        { type: "layer", name: "Layer", category: "utility" },
+        { type: "render-queue", name: "Render Queue", category: "output" },
+      ];
+    }
     // Same filter as NodeSearchPopup: hide the standalone Simulation
     // Start / End defs, surface the compound "simulation-zone" entry
     // instead. That compound lands in top-level Effect.
     const real = allNodeDefs().filter(
-      (d) => d.type !== "simulation-start" && d.type !== "simulation-end"
+      (d) =>
+        !d.hidden &&
+        d.type !== "simulation-start" &&
+        d.type !== "simulation-end"
     );
     const list: NodeEntry[] = real.map((d) => ({
       type: d.type,
@@ -82,7 +98,7 @@ export default function NodeBrowserDropdown({ onAdd, onClose }: Props) {
       category: "effect",
     });
     return list;
-  }, []);
+  }, [atRoot]);
 
   const byCategory = useMemo(() => {
     const m: Partial<Record<NodeCategory, NodeEntry[]>> = {};

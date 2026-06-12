@@ -17,7 +17,7 @@ import {
   type OnNodesChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EffectNode from "./EffectNode";
 import JunctionEdge from "./JunctionEdge";
 import WireActionOverlay from "./WireActionOverlay";
@@ -32,6 +32,18 @@ import {
   type Pt,
 } from "@/engine/wire-geometry";
 import { paramSocketType, parseTargetHandleKind } from "@/state/graph";
+import {
+  GROUP_INPUT_TYPE,
+  GROUP_OUTPUT_TYPE,
+  GROUP_TYPE,
+  LAYER_TYPE,
+  VIRTUAL_SOCKET,
+} from "@/engine/groups";
+
+// Node types you can dive into with Tab / double-click.
+function isEnterableScope(defType: string): boolean {
+  return defType === GROUP_TYPE || defType === LAYER_TYPE;
+}
 import { getShortcutScope } from "./shortcut-scope";
 import type { NodeDataPayload } from "@/state/graph";
 
@@ -113,6 +125,22 @@ interface Props {
   // the same pan/zoom transform as nodes, so anchored overlays (data
   // inspector popups, etc.) follow the graph.
   viewportOverlay?: React.ReactNode;
+  // Node groups. Cmd+G / Cmd+Shift+G — parent owns the edge surgery and
+  // scope rules; NodeEditor owns the keys. Tab dives into the selected
+  // group, Shift+Tab goes up one scope, double-click on a group node
+  // also dives.
+  onGroupSelection?: () => void;
+  onUngroupSelection?: () => void;
+  onDiveIntoGroup?: (groupId: string) => void;
+  onScopeUp?: () => void;
+  // Scope trail for the breadcrumb row: root (project name, id null)
+  // first, current scope last. Rendered only when there is somewhere to
+  // navigate (length > 1) or always — the row itself hides at root.
+  breadcrumbs?: { id: string | null; name: string }[];
+  onNavigateScope?: (groupId: string | null) => void;
+  // True when the editor shows root scope (the strict layer chain) —
+  // the add-node popup then offers only the Layer entry.
+  atRoot?: boolean;
 }
 
 export default function NodeEditor({
@@ -139,6 +167,13 @@ export default function NodeEditor({
   onWaypointDrag,
   onSpliceNode,
   viewportOverlay,
+  onGroupSelection,
+  onUngroupSelection,
+  onDiveIntoGroup,
+  onScopeUp,
+  breadcrumbs,
+  onNavigateScope,
+  atRoot,
 }: Props) {
   const nodeTypes = useMemo(() => ({ effect: EffectNode }), []);
   // Register JunctionEdge under the default edge type so every edge —
@@ -221,6 +256,25 @@ export default function NodeEditor({
         return;
       }
 
+      // Cmd+G = group selection, Cmd+Shift+G = ungroup. The parent owns
+      // socket creation / edge surgery / cycle refusal; we just gate on
+      // having a selection so an empty Cmd+G doesn't eat the browser
+      // shortcut for nothing.
+      if ((e.metaKey || e.ctrlKey) && (e.key === "G" || e.key === "g")) {
+        if (e.shiftKey) {
+          if (!onUngroupSelection) return;
+          e.preventDefault();
+          onUngroupSelection();
+          return;
+        }
+        if (!onGroupSelection) return;
+        const selectedNodes = rfGetNodes().filter((n) => n.selected);
+        if (selectedNodes.length === 0) return;
+        e.preventDefault();
+        onGroupSelection();
+        return;
+      }
+
       // Shift+M = wrap the selected nodes in a Merge node. The parent
       // filters the selection down to image/mask-output nodes and no-ops
       // if none qualify, so we just gate on "something is selected".
@@ -274,7 +328,56 @@ export default function NodeEditor({
     deleteElements,
     onDuplicateSelection,
     onMergeSelection,
+    onGroupSelection,
+    onUngroupSelection,
   ]);
+
+  // Tab = dive into the selected group/layer; Shift+Tab = up one scope.
+  // Owned in CAPTURE phase because React Flow's keyboard a11y makes
+  // nodes focusable and steals Tab (to cycle focus between nodes) at the
+  // pane level — a bubble-phase window listener never sees it. Capturing
+  // at the window runs us first, so we preventDefault + stopPropagation
+  // and React Flow's handler never fires.
+  useEffect(() => {
+    const onKeyCapture = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || t?.isContentEditable) {
+        return;
+      }
+      if (getShortcutScope() !== "node") return;
+      if (e.shiftKey) {
+        if (!onScopeUp) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onScopeUp();
+        return;
+      }
+      const selectedNodes = rfGetNodes().filter((n) => n.selected);
+      const group =
+        selectedNodes.length === 1 &&
+        isEnterableScope((selectedNodes[0].data as NodeDataPayload).defType)
+          ? selectedNodes[0]
+          : null;
+      if (group) {
+        if (!onDiveIntoGroup) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onDiveIntoGroup(group.id);
+        return;
+      }
+      // No enterable group selected: Tab pops up one level (same as
+      // Shift+Tab) when we're inside a group/layer. At root it's a no-op.
+      if (!atRoot && onScopeUp) {
+        e.preventDefault();
+        e.stopPropagation();
+        onScopeUp();
+      }
+    };
+    window.addEventListener("keydown", onKeyCapture, true);
+    return () => window.removeEventListener("keydown", onKeyCapture, true);
+  }, [rfGetNodes, onDiveIntoGroup, onScopeUp, atRoot]);
 
   // Apple Pencil hover indicator. iPad / Apple Pencil fires
   // pointermove with pointerType === "pen" while hovering, *before*
@@ -607,7 +710,10 @@ export default function NodeEditor({
     if (
       targetDefType === "copy-to-points" &&
       targetHandle === "in:instance" &&
-      (src === "image" || src === "spline" || src === "points")
+      (src === "image" ||
+        src === "image_group" ||
+        src === "spline" ||
+        src === "points")
     ) {
       return true;
     }
@@ -690,8 +796,13 @@ export default function NodeEditor({
       if (!srcType || !tgtType) continue;
 
       // Does the dragged node have an input we can route srcType into?
-      const inputMatch = draggedNode.data.inputs.find((i) =>
-        canCoerce(srcType!, i.type, draggedNode.data.defType, `in:${i.name}`)
+      // Virtual boundary sockets are excluded — splice wires straight
+      // into handles, bypassing the connect path that mints real
+      // sockets, so a virtual port must never be a splice target.
+      const inputMatch = draggedNode.data.inputs.find(
+        (i) =>
+          i.name !== VIRTUAL_SOCKET &&
+          canCoerce(srcType!, i.type, draggedNode.data.defType, `in:${i.name}`)
       );
       if (!inputMatch) continue;
 
@@ -710,7 +821,7 @@ export default function NodeEditor({
       }
       if (!outputHandleId) {
         for (const aux of draggedNode.data.auxOutputs) {
-          if (aux.disabled) continue;
+          if (aux.disabled || aux.name === VIRTUAL_SOCKET) continue;
           if (
             canCoerce(
               aux.type,
@@ -876,6 +987,17 @@ export default function NodeEditor({
     const targetNode = nodes.find((n) => n.id === c.target);
     if (!sourceNode || !targetNode) return false;
 
+    // Virtual boundary sockets accept any type — the connect path mints
+    // a real socket typed after the far end. Virtual-to-virtual is
+    // refused: there'd be no type to infer on either side.
+    const srcVirtual =
+      c.sourceHandle === `out:aux:${VIRTUAL_SOCKET}` &&
+      sourceNode.data.defType === GROUP_INPUT_TYPE;
+    const tgtVirtual =
+      c.targetHandle === `in:${VIRTUAL_SOCKET}` &&
+      targetNode.data.defType === GROUP_OUTPUT_TYPE;
+    if (srcVirtual || tgtVirtual) return !(srcVirtual && tgtVirtual);
+
     if (c.sourceHandle.startsWith("out:aux:")) {
       const auxName = c.sourceHandle.slice("out:aux:".length);
       const aux = sourceNode.data.auxOutputs.find((a) => a.name === auxName);
@@ -915,13 +1037,18 @@ export default function NodeEditor({
     ) {
       return true;
     }
-    // Copy to Points accepts any of {image, spline, points} on its
-    // `instance` socket regardless of current mode. onConnect flips
-    // `mode` to match the incoming type so the socket retypes correctly.
+    // Copy to Points accepts any of {image, image_group, spline,
+    // points} on its `instance` socket regardless of current mode.
+    // onConnect flips `mode` to match the incoming type so the socket
+    // retypes correctly (image_group → image mode; the socket itself
+    // retypes via resolveInputs' connectedTypes).
     if (
       targetNode.data.defType === "copy-to-points" &&
       c.targetHandle === "in:instance" &&
-      (srcType === "image" || srcType === "spline" || srcType === "points")
+      (srcType === "image" ||
+        srcType === "image_group" ||
+        srcType === "spline" ||
+        srcType === "points")
     ) {
       return true;
     }
@@ -1142,6 +1269,15 @@ export default function NodeEditor({
           e.preventDefault();
           setContextMenu({ x: e.clientX, y: e.clientY, nodeId: node.id });
         }}
+        onNodeDoubleClick={(_e, node) => {
+          // Double-click a group or layer node = dive in (same as Tab).
+          if (
+            onDiveIntoGroup &&
+            isEnterableScope((node.data as NodeDataPayload).defType)
+          ) {
+            onDiveIntoGroup(node.id);
+          }
+        }}
         onPaneContextMenu={(e) => {
           // Right-click on empty pane — close any open node menu so it
           // doesn't linger past its node.
@@ -1300,10 +1436,60 @@ export default function NodeEditor({
         </CornerActionButton>
       </div>
 
+      {/* Scope breadcrumbs — root crumb is the project name, then one
+          crumb per group in the current path. Click any crumb to jump
+          to that scope. Sits beside the corner action stack. */}
+      {breadcrumbs && breadcrumbs.length > 0 && onNavigateScope && (
+        <div
+          style={{
+            position: "absolute",
+            top: 5,
+            left: 40,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            zIndex: 30,
+            height: 28,
+          }}
+        >
+          {breadcrumbs.map((crumb, i) => {
+            const isCurrent = i === breadcrumbs.length - 1;
+            return (
+              <Fragment key={crumb.id ?? "root"}>
+                {i > 0 && (
+                  // Chevron separator between crumbs.
+                  <svg
+                    width={9}
+                    height={9}
+                    viewBox="0 0 9 9"
+                    fill="none"
+                    stroke="#52525b"
+                    strokeWidth={1.4}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{ flexShrink: 0 }}
+                  >
+                    <path d="M3 1.5 L6 4.5 L3 7.5" />
+                  </svg>
+                )}
+                <BreadcrumbChip
+                  label={crumb.name}
+                  current={isCurrent}
+                  onTap={() => {
+                    if (!isCurrent) onNavigateScope(crumb.id);
+                  }}
+                />
+              </Fragment>
+            );
+          })}
+        </div>
+      )}
+
       {nodePopup && (
         <NodeSearchPopup
           x={nodePopup.x}
           y={nodePopup.y}
+          atRoot={atRoot}
           // Thread the pending-wire context through the popup so the
           // parent's onAddNode can auto-connect the new node back to
           // the source handle the user dragged from.
@@ -1517,6 +1703,56 @@ function resolveTargetSocketType(
 // touch. Stops pointer events from reaching React Flow's gesture
 // system (which would otherwise interpret the tap as the start of
 // a marquee or pan).
+// One rounded-rect crumb in the scope trail. The current scope is the
+// last crumb — rendered brighter and inert; ancestors are clickable.
+function BreadcrumbChip({
+  label,
+  current,
+  onTap,
+}: {
+  label: string;
+  current: boolean;
+  onTap: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      title={current ? undefined : `Go to ${label}`}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onTap();
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        height: 22,
+        maxWidth: 160,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        borderRadius: 999,
+        padding: "0 11px",
+        background: current ? "#26262b" : hover ? "#26262b" : "#1c1c1f",
+        border: `1px solid ${
+          current ? "#52525b" : hover ? "#52525b" : "#3f3f46"
+        }`,
+        color: current ? "#e1e1e1" : hover ? "#e1e1e1" : "#8d9199",
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 11,
+        lineHeight: "20px",
+        cursor: current ? "default" : "pointer",
+        touchAction: "manipulation",
+        userSelect: "none",
+        transition: "background 90ms, border-color 90ms, color 90ms",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 function CornerActionButton({
   title,
   onTap,
