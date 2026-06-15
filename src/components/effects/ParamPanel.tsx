@@ -139,6 +139,10 @@ interface Props {
   // (and on the Output node header) per spec §16. Called only when the
   // selected node has `defType === "output"`.
   onExportApp?: (nodeId: string) => void;
+  // Convert an SVG Source node's paths into a new editable Spline Draw node
+  // (bakes the SVG's transform + style). Surfaced as a button at the end of
+  // the SVG Source params.
+  onConvertToEditable?: (nodeId: string) => void;
   // Updates the user-defined slider range override for a single
   // scalar param. Pass `null` to clear the override (slider falls
   // back to the param def's defaults).
@@ -375,6 +379,7 @@ export default function ParamPanel({
   fps,
   onFpsChange,
   onParamChange,
+  onConvertToEditable,
   onToggleParamExposed,
   onToggleParamControl,
   onExportApp,
@@ -832,6 +837,35 @@ export default function ParamPanel({
               }
               onSeekTick={onSeekTick}
             />
+          )}
+          {/* SVG Source: convert the imported paths into an editable Spline
+              Draw node (bakes the current transform + copies stroke/fill). */}
+          {def.type === "svg-source" && onConvertToEditable && (
+            <button
+              type="button"
+              onClick={() => onConvertToEditable(selected.id)}
+              disabled={
+                !(
+                  (selected.data.params.file as { subpaths?: unknown[] } | null)
+                    ?.subpaths?.length
+                )
+              }
+              style={{
+                marginTop: 8,
+                width: "100%",
+                padding: "7px 10px",
+                background: "rgba(59, 130, 246, 0.12)",
+                border: "1px solid #3b82f6",
+                color: "#bfdbfe",
+                borderRadius: 5,
+                cursor: "pointer",
+                fontFamily: "inherit",
+                fontSize: 12,
+              }}
+              title="Create an editable Spline Draw node from this SVG"
+            >
+              Convert Editable
+            </button>
           )}
           </Section>
           )}

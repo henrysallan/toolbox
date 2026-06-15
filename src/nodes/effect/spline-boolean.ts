@@ -5,60 +5,37 @@ import type {
   RenderContext,
   SplineValue,
 } from "@/engine/types";
-import { buildPath2D, hexToRgba } from "@/engine/spline-raster";
 import {
   splineBoolean,
   type SplineBooleanOp,
 } from "@/engine/spline-boolean";
+import {
+  SPLINE_FILL_INPUT,
+  disposeSplineRasterAux,
+  rasterizeSplineAux,
+} from "@/nodes/source/spline-raster-aux";
 
 // Boolean combination of two splines' filled regions. Defaults to
 // Subtract (A − B): the area inside A but outside B — i.e. B cuts a hole
 // in A. Also unions, intersects, and excludes (XOR). The result is a
 // (polygonal) spline; an optional rasterized image is exposed exactly
 // like the spline primitives (Spline Draw / SVG Source) when stroke or
-// fill is enabled.
-
-const BLIT_FS = `#version 300 es
-precision highp float;
-in vec2 v_uv;
-uniform sampler2D u_src;
-out vec4 outColor;
-void main() {
-  outColor = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
-}`;
+// fill is enabled — including the optional `fill` image input.
 
 const EMPTY_SPLINE: SplineValue = { kind: "spline", subpaths: [] };
 
+// Cache for the (expensive) boolean clip, keyed by its inputs — the raster
+// itself is handled by the shared rasterizeSplineAux (own ctx.state entry).
 interface BoolState {
-  rasterCanvas: HTMLCanvasElement;
-  rasterTex: WebGLTexture | null;
-  // Cached boolean result, keyed by its inputs — the clip is the
-  // expensive part, so we skip it when nothing geometry-side changed.
   lastBoolSig: string | null;
   result: SplineValue;
-  lastRasterSig: string | null;
 }
 
 function ensureState(ctx: RenderContext, nodeId: string): BoolState {
   const key = `spline-boolean:${nodeId}`;
   const existing = ctx.state[key] as BoolState | undefined;
   if (existing) return existing;
-  const gl = ctx.gl;
-  const tex = gl.createTexture();
-  if (!tex) throw new Error("spline-boolean: failed to create raster texture");
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.bindTexture(gl.TEXTURE_2D, null);
-  const s: BoolState = {
-    rasterCanvas: document.createElement("canvas"),
-    rasterTex: tex,
-    lastBoolSig: null,
-    result: EMPTY_SPLINE,
-    lastRasterSig: null,
-  };
+  const s: BoolState = { lastBoolSig: null, result: EMPTY_SPLINE };
   ctx.state[key] = s;
   return s;
 }
@@ -75,6 +52,9 @@ export const splineBooleanNode: NodeDefinition = {
     { name: "a", type: "spline", required: true, label: "A (base)" },
     // Optional — with B unwired, A passes through unchanged.
     { name: "b", type: "spline", required: false, label: "B (cut)" },
+    // Optional fill image — fills the boolean result with that image when
+    // wired (and fill is on), same as the spline primitives.
+    SPLINE_FILL_INPUT,
   ],
   params: [
     OPACITY_PARAM,
@@ -134,6 +114,14 @@ export const splineBooleanNode: NodeDefinition = {
       default: "#ffffff",
       visibleIf: (p) => !!p.fill_enabled,
     },
+    {
+      name: "fill_fit",
+      label: "Fill fit",
+      type: "enum",
+      options: ["window", "contain", "cover"],
+      default: "window",
+      visibleIf: (p) => !!p.fill_enabled,
+    },
   ],
   primaryOutput: "spline",
   auxOutputs: [{ name: "image", type: "image" }],
@@ -178,82 +166,23 @@ export const splineBooleanNode: NodeDefinition = {
       return { primary: resultSpline };
     }
 
-    const W = ctx.width;
-    const H = ctx.height;
-    const rasterSig = JSON.stringify({
-      subRef: resultSpline.subpaths,
-      se: strokeOn,
-      st: params.stroke_thickness,
-      sc: params.stroke_color,
-      fe: fillOn,
-      fc: params.fill_color,
-      W,
-      H,
-    });
-
-    if (rasterSig !== state.lastRasterSig) {
-      const canvas = state.rasterCanvas;
-      if (canvas.width !== W || canvas.height !== H) {
-        canvas.width = W;
-        canvas.height = H;
-      }
-      const c2d = canvas.getContext("2d");
-      if (c2d) {
-        c2d.clearRect(0, 0, W, H);
-        const path = buildPath2D(resultSpline.subpaths, W, H, fillOn);
-        if (path) {
-          if (fillOn) {
-            c2d.fillStyle = hexToRgba(
-              (params.fill_color as string) ?? "#ffffff"
-            );
-            // Even-odd: boolean results carry holes as separate rings,
-            // and the engine fills splines even-odd everywhere else.
-            c2d.fill(path, "evenodd");
-          }
-          if (strokeOn) {
-            c2d.lineWidth = Math.max(
-              0,
-              (params.stroke_thickness as number) ?? 4
-            );
-            c2d.strokeStyle = hexToRgba(
-              (params.stroke_color as string) ?? "#ffffff"
-            );
-            c2d.lineCap = "round";
-            c2d.lineJoin = "round";
-            c2d.stroke(path);
-          }
-        }
-        const gl = ctx.gl;
-        gl.bindTexture(gl.TEXTURE_2D, state.rasterTex);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
-        gl.texImage2D(
-          gl.TEXTURE_2D,
-          0,
-          gl.RGBA,
-          gl.RGBA,
-          gl.UNSIGNED_BYTE,
-          canvas
-        );
-        gl.bindTexture(gl.TEXTURE_2D, null);
-      }
-      state.lastRasterSig = rasterSig;
-    }
-
-    const image = ctx.allocImage();
-    const prog = ctx.getShader("spline-boolean/blit", BLIT_FS);
-    ctx.drawFullscreen(prog, image, (gl2) => {
-      gl2.activeTexture(gl2.TEXTURE0);
-      gl2.bindTexture(gl2.TEXTURE_2D, state.rasterTex);
-      gl2.uniform1i(gl2.getUniformLocation(prog, "u_src"), 0);
-    });
-
+    // Shared rasterizer — same stroke/fill (+ optional `fill` image) the
+    // spline primitives use. Boolean results carry holes as separate rings,
+    // which the shared even-odd fill handles.
+    const fillImage = inputs.fill?.kind === "image" ? inputs.fill : null;
+    const image = rasterizeSplineAux(
+      ctx,
+      nodeId,
+      resultSpline.subpaths,
+      params,
+      fillImage
+    );
+    if (!image) return { primary: resultSpline };
     return { primary: resultSpline, aux: { image } };
   },
 
   dispose(ctx, nodeId) {
-    const key = `spline-boolean:${nodeId}`;
-    const state = ctx.state[key] as BoolState | undefined;
-    if (state?.rasterTex) ctx.gl.deleteTexture(state.rasterTex);
-    delete ctx.state[key];
+    delete ctx.state[`spline-boolean:${nodeId}`];
+    disposeSplineRasterAux(ctx, nodeId);
   },
 };

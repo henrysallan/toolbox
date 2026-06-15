@@ -14,19 +14,24 @@ let installed = false;
 function ensureInstalled() {
   if (installed || typeof window === "undefined") return;
   installed = true;
-  // Capture phase so the scope is updated before any downstream handler runs
+  const onDown = (e: Event) => {
+    const target = e.target as HTMLElement | null;
+    const el = target?.closest?.(
+      "[data-shortcut-scope]"
+    ) as HTMLElement | null;
+    if (el) activeScope = el.dataset.shortcutScope ?? null;
+  };
+  // Capture phase so the scope updates before any downstream handler runs
   // (and regardless of stopPropagation further down the tree).
-  window.addEventListener(
-    "mousedown",
-    (e) => {
-      const target = e.target as HTMLElement | null;
-      const el = target?.closest?.(
-        "[data-shortcut-scope]"
-      ) as HTMLElement | null;
-      if (el) activeScope = el.dataset.shortcutScope ?? null;
-    },
-    true
-  );
+  //
+  // We listen on BOTH pointerdown and mousedown. pointerdown fires first and
+  // — crucially — isn't suppressed when a handler calls preventDefault() on
+  // it. The spline editor's anchor/handle handlers DO preventDefault their
+  // pointerdown, which can swallow the compatibility mousedown; without the
+  // pointerdown listener, clicking a spline point would leave the scope on
+  // "node" and Delete would remove the graph node instead of the point.
+  window.addEventListener("pointerdown", onDown, true);
+  window.addEventListener("mousedown", onDown, true);
 }
 
 /** The scope name of the editor that was last clicked, or null. */

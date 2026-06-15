@@ -396,6 +396,11 @@ export async function serializeGraph(
   // thread isn't thrashed decoding many large paint canvases in parallel.
   const total = Math.max(1, nodes.length);
   const savedNodes: SavedNode[] = [];
+  // Throttle progress to coarse buckets. The callback typically does a React
+  // setState; firing it once per node on a large graph floods React's update
+  // queue inside this tight async loop and trips "Maximum update depth
+  // exceeded" (→ the save throws). ~5% buckets cap it at ≤21 calls.
+  let lastBucket = -1;
   for (let i = 0; i < nodes.length; i++) {
     const n = nodes[i];
     savedNodes.push({
@@ -413,7 +418,11 @@ export async function serializeGraph(
       active: n.data.active,
       bypassed: n.data.bypassed,
     });
-    onProgress?.((i + 1) / total);
+    const bucket = Math.floor(((i + 1) / total) * 20);
+    if (bucket !== lastBucket) {
+      lastBucket = bucket;
+      onProgress?.((i + 1) / total);
+    }
   }
   const savedEdges: SavedEdge[] = edges.map((e) => ({
     id: e.id,
@@ -472,6 +481,7 @@ export async function deserializeGraph(
   const total = Math.max(1, saved.nodes.length);
   const nodes: Node<NodeDataPayload>[] = [];
   const missingMedia: MissingMedia[] = [];
+  let lastProgressBucket = -1;
   for (let i = 0; i < saved.nodes.length; i++) {
     const sn = saved.nodes[i];
     const def = getNodeDef(sn.defType);
@@ -530,7 +540,12 @@ export async function deserializeGraph(
         bypassed: sn.bypassed ?? false,
       },
     } satisfies Node<NodeDataPayload>);
-    onProgress?.((i + 1) / total);
+    // Throttle to ~5% buckets — same React update-depth guard as serialize.
+    const bucket = Math.floor(((i + 1) / total) * 20);
+    if (bucket !== lastProgressBucket) {
+      lastProgressBucket = bucket;
+      onProgress?.((i + 1) / total);
+    }
   }
   const edges: Edge[] = saved.edges.map((se) => ({
     id: se.id,

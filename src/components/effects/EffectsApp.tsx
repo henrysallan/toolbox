@@ -73,7 +73,9 @@ import type {
   AutoLayoutItem,
   GradientPoint,
   RenderQueueItem,
+  SvgFileParamValue,
 } from "@/engine/types";
+import { transformSpline } from "@/engine/spline-transform";
 import { useHistory, useUndoShortcuts, type GraphSnapshot } from "@/state/history";
 import {
   defaultFilename,
@@ -1997,6 +1999,73 @@ function EffectsShell({
       setParamView("node");
     },
     [setNodes, setEdges, setSelectedId, setParamView, pushGraph, getGraphSnapshot, spawnNode]
+  );
+
+  // "Convert Editable" (SVG Source param panel): spawn a Spline Draw node
+  // holding the SVG's paths as editable beziers. The SVG's current transform
+  // is baked into the geometry so the editable spline lands where the SVG
+  // renders, and its stroke/fill style is copied so it looks identical. The
+  // SVG node is left intact (non-destructive).
+  const convertSvgToEditable = useCallback(
+    (svgNodeId: string) => {
+      const svgNode = nodesRef.current.find((n) => n.id === svgNodeId);
+      if (!svgNode || svgNode.data.defType !== "svg-source") return;
+      const p = svgNode.data.params;
+      const file = p.file as SvgFileParamValue | null | undefined;
+      const rawSubs = file?.subpaths ?? [];
+      if (rawSubs.length === 0) {
+        flashToast("No SVG paths to convert");
+        return;
+      }
+      const baked = transformSpline(
+        { kind: "spline", subpaths: rawSubs },
+        {
+          translateX: (p.translateX as number) ?? 0,
+          translateY: (p.translateY as number) ?? 0,
+          scaleX: (p.scaleX as number) ?? 1,
+          scaleY: (p.scaleY as number) ?? 1,
+          rotateDeg: (p.rotate as number) ?? 0,
+          pivotX: (p.pivotX as number) ?? 0.5,
+          pivotY: (p.pivotY as number) ?? 0.5,
+        }
+      );
+
+      pushGraph(getGraphSnapshot());
+      const node = spawnNode("spline-draw", {
+        x: svgNode.position.x + 320,
+        y: svgNode.position.y,
+      });
+      // Land it in the SVG node's scope, not just the viewed scope.
+      node.data.parentId = svgNode.data.parentId;
+      node.data.params = {
+        ...node.data.params,
+        spline: { subpaths: baked.subpaths },
+        // Mirror the SVG node's stroke/fill so the editable copy looks the same.
+        stroke_enabled: !!p.stroke_enabled,
+        stroke_thickness:
+          p.stroke_thickness ?? node.data.params.stroke_thickness,
+        stroke_color: p.stroke_color ?? node.data.params.stroke_color,
+        fill_enabled: !!p.fill_enabled,
+        fill_color: p.fill_color ?? node.data.params.fill_color,
+        fill_fit: p.fill_fit ?? node.data.params.fill_fit,
+      };
+      setNodes((prev) => [
+        ...prev.map((n) => (n.selected ? { ...n, selected: false } : n)),
+        { ...node, selected: true },
+      ]);
+      setSelectedId(node.id);
+      setParamView("node");
+      flashToast("Converted to editable spline");
+    },
+    [
+      spawnNode,
+      setNodes,
+      setSelectedId,
+      setParamView,
+      pushGraph,
+      getGraphSnapshot,
+      flashToast,
+    ]
   );
 
   const handleCopyNodes = useCallback(() => {
@@ -4678,8 +4747,12 @@ function EffectsShell({
         setLoadRefreshKey((n) => n + 1);
         flashToast("saved a copy");
         return "saved";
-      } catch {
+      } catch (e) {
+        // Surface the real reason — a thrown serialize/thumbnail error here
+        // was previously swallowed, leaving only a bare "save failed".
+        console.error("save failed (copy):", e);
         setSaveState("error");
+        flashToast("save failed");
         return "failed";
       } finally {
         setProgressStatus(null);
@@ -4700,8 +4773,12 @@ function EffectsShell({
       setSaveState("error");
       flashToast("save failed");
       return "failed";
-    } catch {
+    } catch (e) {
+      // Surface the real reason — a thrown serialize/thumbnail error here was
+      // previously swallowed, leaving only a bare "save failed" with no clue.
+      console.error("save failed (update):", e);
       setSaveState("error");
+      flashToast("save failed");
       return "failed";
     } finally {
       setProgressStatus(null);
@@ -5569,6 +5646,7 @@ function EffectsShell({
       fps={fps}
       onFpsChange={setFps}
       onParamChange={onParamChange}
+      onConvertToEditable={convertSvgToEditable}
       onToggleParamExposed={onToggleParamExposed}
       onToggleParamControl={onToggleParamControl}
       onExportApp={onOpenExportApp}

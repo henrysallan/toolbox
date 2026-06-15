@@ -8,7 +8,12 @@ import type {
   SplineSubpath,
 } from "@/engine/types";
 import { buildPath2D, buildPath2DWith, hexToRgba } from "@/engine/spline-raster";
-import { flattenSpline } from "@/engine/spline-flatten";
+import {
+  compositeSplineFill,
+  makeZeroTex,
+  splineBbox,
+  type SplineFillFit,
+} from "@/engine/spline-fill";
 import {
   aspectFitMeasure,
   emptyElement,
@@ -113,62 +118,6 @@ void main() {
   outColor = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
 }`;
 
-// Image-fill composite: the fill region is a coverage mask (white-on-
-// transparent, row-0-top) and the stroke is its own color layer (row-0-top).
-// The fill is sampled from a wired image (per `fill_fit`) or a flat color,
-// modulated by coverage, with the stroke composited OVER it (straight-alpha
-// Porter-Duff source-over, matching merge.ts BLEND_FS).
-const COMPOSITE_FS = `#version 300 es
-precision highp float;
-in vec2 v_uv;
-uniform sampler2D u_fillMask;  // coverage (alpha), row-0-top
-uniform sampler2D u_stroke;    // stroke color straight-alpha, row-0-top
-uniform sampler2D u_fillImage; // straight-alpha fill image, Y-up canvas space
-uniform int u_hasStroke;
-uniform int u_hasFillImage;
-uniform vec4 u_fillColor;      // straight-alpha solid fill fallback
-uniform int u_fit;             // 0 window, 1 contain, 2 cover
-uniform vec2 u_uvMin;          // shape bbox in canvas UV (Y-up)
-uniform vec2 u_uvSize;
-uniform vec2 u_fitScale;       // per-axis sample scale for contain/cover
-out vec4 outColor;
-
-vec4 over(vec4 s, vec4 d) {
-  float oa = s.a + d.a * (1.0 - s.a);
-  vec3 oc = oa < 1e-4
-    ? vec3(0.0)
-    : (s.rgb * s.a + d.rgb * d.a * (1.0 - s.a)) / oa;
-  return vec4(oc, oa);
-}
-
-void main() {
-  vec2 m = vec2(v_uv.x, 1.0 - v_uv.y);   // sample CPU canvases (row-0-top)
-  float cov = texture(u_fillMask, m).a;
-
-  vec4 col;
-  if (u_hasFillImage == 1) {
-    vec2 uv;
-    if (u_fit == 0) {
-      uv = v_uv;                          // window: image stays in canvas
-    } else {
-      vec2 local = (v_uv - u_uvMin) / max(u_uvSize, vec2(1e-6));
-      uv = (local - 0.5) * u_fitScale + 0.5;
-    }
-    col = texture(u_fillImage, uv);
-    // contain: anything outside the fitted image is letterbox (transparent).
-    if (u_fit == 1 &&
-        (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))))) {
-      col = vec4(0.0);
-    }
-  } else {
-    col = u_fillColor;
-  }
-  vec4 fill = vec4(col.rgb, col.a * cov);
-
-  vec4 stroke = u_hasStroke == 1 ? texture(u_stroke, m) : vec4(0.0);
-  outColor = over(stroke, fill);          // stroke over fill
-}`;
-
 interface RasterState {
   rasterCanvas: HTMLCanvasElement;
   // Single-bake fill+stroke (flat-fill path).
@@ -216,23 +165,8 @@ function ensureState(ctx: RenderContext, nodeId: string): RasterState {
 // when its layer is absent (WebGL requires it regardless of branching).
 function ensureZeroTex(ctx: RenderContext, state: RasterState): WebGLTexture {
   if (state.zeroTex) return state.zeroTex;
-  const gl = ctx.gl;
-  const tex = makeTex(gl);
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.RGBA,
-    1,
-    1,
-    0,
-    gl.RGBA,
-    gl.UNSIGNED_BYTE,
-    new Uint8Array([0, 0, 0, 0])
-  );
-  gl.bindTexture(gl.TEXTURE_2D, null);
-  state.zeroTex = tex;
-  return tex;
+  state.zeroTex = makeZeroTex(ctx.gl);
+  return state.zeroTex;
 }
 
 function uploadCanvas(gl: WebGL2RenderingContext, tex: WebGLTexture, c: HTMLCanvasElement) {
@@ -240,63 +174,6 @@ function uploadCanvas(gl: WebGL2RenderingContext, tex: WebGLTexture, c: HTMLCanv
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
   gl.bindTexture(gl.TEXTURE_2D, null);
-}
-
-// Parse a hex color to straight-alpha floats [r,g,b,a] in [0,1].
-function hexToRgba01(hex: string): [number, number, number, number] {
-  const h = (hex || "#ffffff").replace("#", "");
-  let r = 255, g = 255, b = 255, a = 255;
-  if (h.length === 3) {
-    r = parseInt(h[0] + h[0], 16);
-    g = parseInt(h[1] + h[1], 16);
-    b = parseInt(h[2] + h[2], 16);
-  } else if (h.length >= 6) {
-    r = parseInt(h.slice(0, 2), 16);
-    g = parseInt(h.slice(2, 4), 16);
-    b = parseInt(h.slice(4, 6), 16);
-    if (h.length === 8) a = parseInt(h.slice(6, 8), 16);
-  }
-  return [r / 255, g / 255, b / 255, a / 255];
-}
-
-// Compute the shape's bbox in canvas UV (Y-up) plus the per-axis sample
-// scale that fits the (full-canvas) fill image into that bbox per `fit`.
-// The rasterizer aspect-corrects Y so the bbox shares the X pixel scale —
-// hence the bbox's *pixel* aspect equals its authored w/h.
-function fitUniforms(
-  subpaths: SplineSubpath[],
-  W: number,
-  H: number,
-  fit: "window" | "contain" | "cover"
-): {
-  uvMin: [number, number];
-  uvSize: [number, number];
-  fitScale: [number, number];
-} | null {
-  const bbox = splineBbox(subpaths);
-  if (!bbox) return null;
-  const aspect = W / H;
-  // authored (Y-down) bbox → canvas UV (Y-up): u = x; v = 0.5 - (y-0.5)*aspect.
-  const vTop = 0.5 - (bbox.minY - 0.5) * aspect; // authored top (minY) → max v
-  const vBot = 0.5 - (bbox.minY + bbox.h - 0.5) * aspect;
-  const uvMin: [number, number] = [bbox.minX, vBot];
-  const uvSize: [number, number] = [bbox.w, vTop - vBot];
-
-  let sx = 1;
-  let sy = 1;
-  if (fit !== "window") {
-    const aImg = W / H; // full-canvas content aspect
-    const aBox = bbox.w / bbox.h; // bbox pixel aspect (Y shares X scale)
-    if (fit === "contain") {
-      if (aBox > aImg) sx = aBox / aImg;
-      else sy = aImg / aBox;
-    } else {
-      // cover
-      if (aBox > aImg) sy = aImg / aBox;
-      else sx = aBox / aImg;
-    }
-  }
-  return { uvMin, uvSize, fitScale: [sx, sy] };
 }
 
 // Rasterize the given subpaths into a fresh ImageValue using the bundled
@@ -384,10 +261,7 @@ export function rasterizeSplineAux(
   }
 
   // --- Image-fill path: separate coverage + stroke layers, composite. ---
-  const fit = ((params.fill_fit as string) ?? "window") as
-    | "window"
-    | "contain"
-    | "cover";
+  const fit = ((params.fill_fit as string) ?? "window") as SplineFillFit;
   if (!state.fillTex) state.fillTex = makeTex(gl);
   if (!state.strokeTex) state.strokeTex = makeTex(gl);
   const zeroTex = ensureZeroTex(ctx, state);
@@ -440,47 +314,15 @@ export function rasterizeSplineAux(
     state.lastSig = sig;
   }
 
-  const fitU = fit === "window" ? null : fitUniforms(subpaths, W, H, fit);
-  const [fr, fg, fb, fa] = hexToRgba01((params.fill_color as string) ?? "#ffffff");
-
   const image = ctx.allocImage();
-  const prog = ctx.getShader("spline-raster-aux/composite", COMPOSITE_FS);
-  ctx.drawFullscreen(prog, image, (gl2) => {
-    gl2.activeTexture(gl2.TEXTURE0);
-    gl2.bindTexture(gl2.TEXTURE_2D, state.fillTex);
-    gl2.uniform1i(gl2.getUniformLocation(prog, "u_fillMask"), 0);
-
-    gl2.activeTexture(gl2.TEXTURE1);
-    gl2.bindTexture(gl2.TEXTURE_2D, strokeOn ? state.strokeTex : zeroTex);
-    gl2.uniform1i(gl2.getUniformLocation(prog, "u_stroke"), 1);
-
-    gl2.activeTexture(gl2.TEXTURE2);
-    gl2.bindTexture(gl2.TEXTURE_2D, img!.texture);
-    gl2.uniform1i(gl2.getUniformLocation(prog, "u_fillImage"), 2);
-
-    gl2.uniform1i(gl2.getUniformLocation(prog, "u_hasStroke"), strokeOn ? 1 : 0);
-    gl2.uniform1i(gl2.getUniformLocation(prog, "u_hasFillImage"), 1);
-    gl2.uniform4f(gl2.getUniformLocation(prog, "u_fillColor"), fr, fg, fb, fa);
-    // window when fit math is unavailable (degenerate bbox) too.
-    gl2.uniform1i(
-      gl2.getUniformLocation(prog, "u_fit"),
-      fitU ? (fit === "contain" ? 1 : 2) : 0
-    );
-    gl2.uniform2f(
-      gl2.getUniformLocation(prog, "u_uvMin"),
-      fitU ? fitU.uvMin[0] : 0,
-      fitU ? fitU.uvMin[1] : 0
-    );
-    gl2.uniform2f(
-      gl2.getUniformLocation(prog, "u_uvSize"),
-      fitU ? fitU.uvSize[0] : 1,
-      fitU ? fitU.uvSize[1] : 1
-    );
-    gl2.uniform2f(
-      gl2.getUniformLocation(prog, "u_fitScale"),
-      fitU ? fitU.fitScale[0] : 1,
-      fitU ? fitU.fitScale[1] : 1
-    );
+  compositeSplineFill(ctx, image, {
+    fillMaskTex: state.fillTex!,
+    strokeTex: strokeOn ? state.strokeTex : null,
+    fillImage: img,
+    fillColorHex: (params.fill_color as string) ?? "#ffffff",
+    fit,
+    subpaths,
+    zeroTex,
   });
   return image;
 }
@@ -493,39 +335,6 @@ export function disposeSplineRasterAux(ctx: RenderContext, nodeId: string) {
   if (state?.strokeTex) ctx.gl.deleteTexture(state.strokeTex);
   if (state?.zeroTex) ctx.gl.deleteTexture(state.zeroTex);
   delete ctx.state[key];
-}
-
-interface SplineBbox {
-  minX: number;
-  minY: number;
-  w: number;
-  h: number;
-}
-
-// Tight bbox in authored [0,1]² space, sampled off the flattened curve so
-// the bounds follow the actual bezier extent (not just anchor positions).
-function splineBbox(subpaths: SplineSubpath[]): SplineBbox | null {
-  const { segments, segCount } = flattenSpline(
-    { kind: "spline", subpaths },
-    24
-  );
-  if (segCount === 0) return null;
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (let i = 0; i < segCount * 4; i += 2) {
-    const x = segments[i];
-    const y = segments[i + 1];
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-  }
-  const w = maxX - minX;
-  const h = maxY - minY;
-  if (!(w > 1e-6) || !(h > 1e-6)) return null;
-  return { minX, minY, w, h };
 }
 
 // Build an Auto Layout element from a spline primitive's subpaths + the
