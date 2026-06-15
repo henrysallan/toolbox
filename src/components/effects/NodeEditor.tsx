@@ -707,6 +707,8 @@ export default function NodeEditor({
       return true;
     if ((src === "image" || src === "mask") && tgt === "scalar") return true;
     if (src === "audio" && tgt === "scalar") return true;
+    if (src === "image" && tgt === "element") return true;
+    if (src === "element" && tgt === "image") return true;
     if (
       targetDefType === "copy-to-points" &&
       targetHandle === "in:instance" &&
@@ -1028,6 +1030,12 @@ export default function NodeEditor({
     if (srcType === "audio" && tgtType === "scalar") {
       return true;
     }
+    // Image ↔ element. Forward: any image chain wires straight into an
+    // Auto Layout slot (the coercion wraps the texture as a full-canvas
+    // element). Backward: an element flattens to a centered canvas-sized
+    // image so element outputs feed every existing image consumer.
+    if (srcType === "image" && tgtType === "element") return true;
+    if (srcType === "element" && tgtType === "image") return true;
     // Math nodes accept UV even while in scalar mode — onConnect flips the
     // mode param to uv so the socket becomes properly typed on next render.
     if (

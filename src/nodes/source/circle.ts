@@ -1,11 +1,14 @@
 import type {
   NodeDefinition,
+  NodeOutput,
   SplineAnchor,
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
 import {
+  SPLINE_FILL_INPUT,
   SPLINE_RASTER_PARAMS,
+  buildSplineElement,
   disposeSplineRasterAux,
   rasterizeSplineAux,
   resolveSplineRasterAux,
@@ -60,7 +63,7 @@ export const circleNode: NodeDefinition = {
   description:
     "Generate a circle (or ellipse, via non-uniform radii) as a closed spline.",
   backend: "webgl2",
-  inputs: [],
+  inputs: [SPLINE_FILL_INPUT],
   params: [
     {
       name: "centerX",
@@ -105,19 +108,26 @@ export const circleNode: NodeDefinition = {
     ...SPLINE_RASTER_PARAMS,
   ],
   primaryOutput: "spline",
-  auxOutputs: [{ name: "image", type: "image" }],
+  auxOutputs: [
+    { name: "image", type: "image" },
+    { name: "element", type: "element" },
+  ],
   resolveAuxOutputs: resolveSplineRasterAux,
   linkedPairs: [{ a: "radiusX", b: "radiusY" }],
 
-  compute({ params, ctx, nodeId }) {
+  compute({ inputs, params, ctx, nodeId }) {
     const cx = (params.centerX as number) ?? 0.5;
     const cy = (params.centerY as number) ?? 0.5;
     const rx = Math.max(0, (params.radiusX as number) ?? 0.25);
     const ry = Math.max(0, (params.radiusY as number) ?? 0.25);
     const subpath = makeCircleSubpath(cx, cy, rx, ry);
     const out: SplineValue = { kind: "spline", subpaths: [subpath] };
-    const image = rasterizeSplineAux(ctx, nodeId, out.subpaths, params);
-    return image ? { primary: out, aux: { image } } : { primary: out };
+    const fillImage = inputs.fill?.kind === "image" ? inputs.fill : null;
+    const image = rasterizeSplineAux(ctx, nodeId, out.subpaths, params, fillImage);
+    const element = buildSplineElement(ctx, out.subpaths, params);
+    const aux: NodeOutput["aux"] = { element };
+    if (image) aux.image = image;
+    return { primary: out, aux };
   },
 
   dispose: disposeSplineRasterAux,

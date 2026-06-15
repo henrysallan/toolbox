@@ -43,7 +43,13 @@ export type SocketType =
   // marking that output as a queue item. The evaluator deliberately
   // ignores `render` edges when computing what to evaluate, so the queue
   // stays inert until the user presses Render.
-  | "render";
+  | "render"
+  // Intrinsically-sized renderable (see ElementValue). Carries deferred
+  // measure/render closures instead of a texture, so Auto Layout can ask
+  // "how big do you want to be?" before any GL work happens — the SDF
+  // precedent of runtime-only data with the terminal node doing the
+  // rendering. Plain `image` wires coerce both ways (coerce.ts).
+  | "element";
 
 export type ImageValue = {
   kind: "image";
@@ -94,6 +100,11 @@ export interface SplineAnchor {
   pos: [number, number];
   inHandle?: [number, number];
   outHandle?: [number, number];
+  // Editor-only authoring hint: when true the two handles are "broken"
+  // (independent) — dragging one in the pen tool doesn't mirror the other.
+  // Falsy = smooth (the default), where a handle drag mirrors its partner.
+  // The rasterizer ignores this entirely; it only reads inHandle/outHandle.
+  broken?: boolean;
 }
 export interface SplineSubpath {
   anchors: SplineAnchor[];
@@ -339,6 +350,83 @@ export type ParticlesValue = {
   count: number;
 };
 
+// =====================================================================
+// Auto Layout / element sockets
+// =====================================================================
+
+// Constraints flow FORWARD into measure — this is how text reflow works
+// without back-propagating params. All px values are canvas pixels.
+export interface LayoutConstraints {
+  maxWidth?: number; // undefined = unconstrained
+  maxHeight?: number;
+}
+
+export interface ElementSize {
+  width: number;
+  height: number;
+}
+
+// How an Auto Layout slot (or the container itself, per axis) sizes:
+// `fixed` = explicit layout units, `hug` = the child's natural size,
+// `fill` = share of the container's leftover space.
+export type SizeMode = "fixed" | "hug" | "fill";
+
+// Intrinsically-sized renderable. Like SdfValue, this is runtime-only —
+// closures and texture refs are never serialized; params on the producing
+// node are the persistent state, and the fingerprint chain (producer params
+// → producer fp → consumer input fp) already handles invalidation.
+//
+// Lifetime contract: closures are valid while the producing node's cache
+// entry is alive (same as SdfValue.segmentTexture). Consumers only invoke
+// them inside their own compute(), during the same eval or while
+// fingerprints hold.
+export type ElementValue = {
+  kind: "element";
+  // Natural size under constraints. Pure CPU (canvas2d measureText at
+  // most). May be called several times per layout pass; must be cheap
+  // and re-entrant.
+  measure(constraints: LayoutConstraints): ElementSize;
+  // Render content into an exactly width×height texture. CALLER OWNS the
+  // returned texture and must release it after compositing. Must be safe
+  // to call repeatedly (each call allocates fresh). `fit` is honored by
+  // raster-content elements (wrapped images); intrinsic renderers (text,
+  // nested layouts) ignore it. `alignX`/`alignY` place the content within
+  // the rect when fit leaves slack (contain letterbox / cover crop) —
+  // Auto Layout passes its container alignment so "center-left" leans
+  // content left; default is centered.
+  render(
+    ctx: RenderContext,
+    width: number,
+    height: number,
+    opts?: {
+      fit?: "contain" | "cover" | "stretch";
+      alignX?: "start" | "center" | "end";
+      alignY?: "start" | "center" | "end";
+    }
+  ): ImageValue;
+  // Default slot sizing when first wired (text → hug/hug, wrapped
+  // full-canvas image → fixed). Advisory only.
+  preferredSizing?: { width: SizeMode; height: SizeMode };
+  // Present when this element wraps a plain texture (coercion or Frame
+  // around an image). Lets Auto Layout's per-slot "trim" re-derive the
+  // content rect from alpha. NOT owned by the element — never release.
+  sourceImage?: ImageValue;
+};
+
+// One row in an Auto Layout node's `items` param — the per-slot sizing
+// config for the child wired into `item:<id>`. Width/height are in layout
+// units (1/1000 of the canvas's smaller dimension) and only apply in
+// `fixed` mode. Plain JSON, serializes with the params blob.
+export interface AutoLayoutItem {
+  id: string;
+  widthMode: SizeMode;
+  heightMode: SizeMode;
+  width: number;
+  height: number;
+  fit: "cover" | "contain" | "stretch";
+  trim: boolean;
+}
+
 export type SocketValue =
   | ImageValue
   | MaskValue
@@ -357,7 +445,8 @@ export type SocketValue =
   | ParticlesValue
   | SdfValue
   | PositionValue
-  | ScalarFieldValue;
+  | ScalarFieldValue
+  | ElementValue;
 
 // SDF AST. Every SDF node's compute() returns one of these — a small
 // data tree, no GL work. The Rasterize node walks the tree, emits a
@@ -686,7 +775,26 @@ export type ParamType =
   | "svg_file"
   | "audio_file"
   | "lut_file"
-  | "render_queue";
+  | "render_queue"
+  // AutoLayoutItem[] — per-slot sizing rows on the Auto Layout node
+  // (merge_layers pattern: array param drives dynamic `item:<id>` sockets).
+  | "autolayout_items"
+  // GradientPoint[] — the Gradient node's "multipoint" mode. Like
+  // merge_layers, the array itself isn't keyframable; each point's x / y /
+  // color animate via virtual keys (gpoint_x/y/c:<id> — see conventions.ts).
+  | "gradient_points";
+
+// One color point of a multipoint gradient. Position is normalized UV,
+// Y-UP (matching the Gradient shader's sampling space — the opposite of the
+// CPU Y-DOWN convention). Color is a hex string in the stored param; a
+// keyframe-resolved color may arrive as an RGBA float tuple instead (the
+// engine interpolates colors as [r,g,b,a] in 0..1).
+export interface GradientPoint {
+  id: string;
+  x: number;
+  y: number;
+  color: string;
+}
 
 // One row in a Render Queue node. `outputNodeId` is resolved from the wire
 // on the matching `item:<id>` socket at render time (not stored), so this
@@ -814,6 +922,14 @@ export interface ComputeArgs {
   params: Record<string, unknown>;
   ctx: RenderContext;
   nodeId: string;
+  // Output handle keys that something actually consumes this eval —
+  // `"primary"` and `"aux:<name>"` for each output wired to an evaluated
+  // node (or shown by the viewport). Lets a node skip building expensive
+  // outputs nobody reads: e.g. Text skips its JFA SDF and marching-squares
+  // spline when only its image/element output is wired, which is what
+  // keeps dragging text smooth. Undefined ⇒ the caller didn't compute it;
+  // treat every output as potentially consumed (compute everything).
+  consumedOutputs?: ReadonlySet<string>;
 }
 
 // Top-level bucket in the Node menu. Nodes of `image` / `spline` /
@@ -929,10 +1045,13 @@ export interface NodeDefinition {
   // Returns a string that's appended to this node's fingerprint. Lets a
   // node key its cache on external state that isn't in params or inputs —
   // e.g. the Cursor node reflects `ctx.cursor` so downstream caches bust
-  // when the pointer moves. Return an empty string for "no extra".
+  // when the pointer moves, or Segment Anything keying on its per-node
+  // session-store version (hence the node id). Return an empty string for
+  // "no extra".
   fingerprintExtras?: (
     params: Record<string, unknown>,
-    ctx: RenderContext
+    ctx: RenderContext,
+    nodeId?: string
   ) => string;
 }
 

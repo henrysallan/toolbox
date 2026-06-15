@@ -1,11 +1,14 @@
 import type {
   NodeDefinition,
+  NodeOutput,
   SplineAnchor,
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
 import {
+  SPLINE_FILL_INPUT,
   SPLINE_RASTER_PARAMS,
+  buildSplineElement,
   disposeSplineRasterAux,
   rasterizeSplineAux,
   resolveSplineRasterAux,
@@ -76,7 +79,7 @@ export const rectangleNode: NodeDefinition = {
   description:
     "Generate a rectangle as a closed spline, optionally with rounded corners.",
   backend: "webgl2",
-  inputs: [],
+  inputs: [SPLINE_FILL_INPUT],
   params: [
     {
       // Param key kept as "originX" / "originY" for save-load
@@ -136,11 +139,14 @@ export const rectangleNode: NodeDefinition = {
     ...SPLINE_RASTER_PARAMS,
   ],
   primaryOutput: "spline",
-  auxOutputs: [{ name: "image", type: "image" }],
+  auxOutputs: [
+    { name: "image", type: "image" },
+    { name: "element", type: "element" },
+  ],
   resolveAuxOutputs: resolveSplineRasterAux,
   linkedPairs: [{ a: "width", b: "height" }],
 
-  compute({ params, ctx, nodeId }) {
+  compute({ inputs, params, ctx, nodeId }) {
     // (cx, cy) is the center; subtract w/2 + h/2 to get the top-left
     // corner that makeRectSubpath wants.
     const cx = (params.originX as number) ?? 0.5;
@@ -150,8 +156,12 @@ export const rectangleNode: NodeDefinition = {
     const r = Math.max(0, (params.corner_radius as number) ?? 0);
     const subpath = makeRectSubpath(cx - w / 2, cy - h / 2, w, h, r);
     const out: SplineValue = { kind: "spline", subpaths: [subpath] };
-    const image = rasterizeSplineAux(ctx, nodeId, out.subpaths, params);
-    return image ? { primary: out, aux: { image } } : { primary: out };
+    const fillImage = inputs.fill?.kind === "image" ? inputs.fill : null;
+    const image = rasterizeSplineAux(ctx, nodeId, out.subpaths, params, fillImage);
+    const element = buildSplineElement(ctx, out.subpaths, params);
+    const aux: NodeOutput["aux"] = { element };
+    if (image) aux.image = image;
+    return { primary: out, aux };
   },
 
   dispose: disposeSplineRasterAux,

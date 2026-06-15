@@ -1,108 +1,22 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
-  ImageValue,
   NodeDefinition,
   OutputSocketDef,
-  RenderContext,
   SplineValue,
   SvgFileParamValue,
 } from "@/engine/types";
-import { buildPath2D } from "@/engine/spline-raster";
 import { transformSpline } from "@/engine/spline-transform";
+import {
+  SPLINE_FILL_INPUT,
+  disposeSplineRasterAux,
+  rasterizeSplineAux,
+} from "./spline-raster-aux";
 
 // SVG source. The file param holds a pre-parsed payload (see lib/svg-parse)
 // in [0,1]² Y-DOWN space. Compute applies the built-in transform (same
 // param shape the Text and Transform nodes use, same on-canvas gizmo) and
-// optionally rasterizes to an image if stroke or fill is on.
-
-const SPLINE_FS = `#version 300 es
-precision highp float;
-in vec2 v_uv;
-uniform sampler2D u_src;
-out vec4 outColor;
-void main() {
-  // 2D canvas is row-0-top; flip Y on sample to match the pipeline's Y-up
-  // rendering convention.
-  outColor = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
-}`;
-
-interface SvgState {
-  rasterCanvas: HTMLCanvasElement;
-  rasterTex: WebGLTexture | null;
-  lastSig: string | null;
-}
-
-function hexToRgba(hex: string, alpha = 1): string {
-  const h = hex.replace("#", "");
-  let r = 0, g = 0, b = 0, a = alpha;
-  if (h.length === 3) {
-    r = parseInt(h[0] + h[0], 16);
-    g = parseInt(h[1] + h[1], 16);
-    b = parseInt(h[2] + h[2], 16);
-  } else if (h.length === 6) {
-    r = parseInt(h.slice(0, 2), 16);
-    g = parseInt(h.slice(2, 4), 16);
-    b = parseInt(h.slice(4, 6), 16);
-  } else if (h.length === 8) {
-    r = parseInt(h.slice(0, 2), 16);
-    g = parseInt(h.slice(2, 4), 16);
-    b = parseInt(h.slice(4, 6), 16);
-    a = parseInt(h.slice(6, 8), 16) / 255;
-  }
-  return `rgba(${r}, ${g}, ${b}, ${a})`;
-}
-
-function ensureState(ctx: RenderContext, nodeId: string): SvgState {
-  const key = `svg-source:${nodeId}`;
-  const existing = ctx.state[key] as SvgState | undefined;
-  if (existing) return existing;
-  const gl = ctx.gl;
-  const tex = gl.createTexture();
-  if (!tex) throw new Error("svg-source: failed to create raster texture");
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.bindTexture(gl.TEXTURE_2D, null);
-  const s: SvgState = {
-    rasterCanvas: document.createElement("canvas"),
-    rasterTex: tex,
-    lastSig: null,
-  };
-  ctx.state[key] = s;
-  return s;
-}
-
-// Cache key: whatever affects the rasterized output. The SvgFileParamValue
-// carries the parsed subpaths by reference — we identify the FILE by its
-// filename (unique per user upload) so a re-parse of the same file doesn't
-// invalidate the cache, but swapping the file does.
-function rasterSig(
-  params: Record<string, unknown>,
-  W: number,
-  H: number
-): string {
-  const f = params.file as SvgFileParamValue | null | undefined;
-  return JSON.stringify({
-    fn: f?.filename ?? null,
-    n: f?.subpaths?.length ?? 0,
-    tx: params.translateX,
-    ty: params.translateY,
-    sx: params.scaleX,
-    sy: params.scaleY,
-    r: params.rotate,
-    px: params.pivotX,
-    py: params.pivotY,
-    se: !!params.stroke_enabled,
-    st: params.stroke_thickness,
-    sc: params.stroke_color,
-    fe: !!params.fill_enabled,
-    fc: params.fill_color,
-    W,
-    H,
-  });
-}
+// optionally rasterizes to an image if stroke or fill is on. The shared
+// spline rasterizer also gives it an optional `fill` image input.
 
 export const svgSourceNode: NodeDefinition = {
   type: "svg-source",
@@ -113,7 +27,8 @@ export const svgSourceNode: NodeDefinition = {
     "Load an SVG file and emit it as spline data. Built-in translate/scale/rotate operate on the result; stroke and fill rasterize to an image.",
   backend: "webgl2",
   supportsTransformGizmo: true,
-  inputs: [],
+  // Optional `fill` image input — fills the shape with that image when wired.
+  inputs: [SPLINE_FILL_INPUT],
   params: [
     OPACITY_PARAM,
     { name: "file", label: "SVG", type: "svg_file", default: null },
@@ -152,6 +67,14 @@ export const svgSourceNode: NodeDefinition = {
       label: "Fill color",
       type: "color",
       default: "#ffffff",
+      visibleIf: (p) => !!p.fill_enabled,
+    },
+    {
+      name: "fill_fit",
+      label: "Fill fit",
+      type: "enum",
+      options: ["window", "contain", "cover"],
+      default: "window",
       visibleIf: (p) => !!p.fill_enabled,
     },
 
@@ -230,7 +153,7 @@ export const svgSourceNode: NodeDefinition = {
     return hasRaster ? [{ name: "image", type: "image" }] : [];
   },
 
-  compute({ params, ctx, nodeId }) {
+  compute({ inputs, params, ctx, nodeId }) {
     const file = params.file as SvgFileParamValue | null | undefined;
     const raw: SplineValue = {
       kind: "spline",
@@ -252,74 +175,17 @@ export const svgSourceNode: NodeDefinition = {
       return { primary: transformed };
     }
 
-    const state = ensureState(ctx, nodeId);
-    const W = ctx.width;
-    const H = ctx.height;
-    const sig = rasterSig(params, W, H);
-    const needsRepaint = sig !== state.lastSig;
-
-    if (needsRepaint) {
-      const canvas = state.rasterCanvas;
-      if (canvas.width !== W || canvas.height !== H) {
-        canvas.width = W;
-        canvas.height = H;
-      }
-      const c2d = canvas.getContext("2d");
-      if (c2d) {
-        c2d.clearRect(0, 0, W, H);
-        const path = buildPath2D(transformed.subpaths, W, H, fillOn);
-        if (path) {
-          if (fillOn) {
-            c2d.fillStyle = hexToRgba(
-              (params.fill_color as string) ?? "#ffffff"
-            );
-            // evenodd: inner subpaths (letter holes, etc.) punch through.
-            c2d.fill(path, "evenodd");
-          }
-          if (strokeOn) {
-            c2d.lineWidth = Math.max(
-              0,
-              (params.stroke_thickness as number) ?? 2
-            );
-            c2d.strokeStyle = hexToRgba(
-              (params.stroke_color as string) ?? "#ffffff"
-            );
-            c2d.lineCap = "round";
-            c2d.lineJoin = "round";
-            c2d.stroke(path);
-          }
-        }
-        const gl = ctx.gl;
-        gl.bindTexture(gl.TEXTURE_2D, state.rasterTex);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
-        gl.texImage2D(
-          gl.TEXTURE_2D,
-          0,
-          gl.RGBA,
-          gl.RGBA,
-          gl.UNSIGNED_BYTE,
-          canvas
-        );
-        gl.bindTexture(gl.TEXTURE_2D, null);
-      }
-      state.lastSig = sig;
-    }
-
-    const image: ImageValue = ctx.allocImage();
-    const prog = ctx.getShader("svg-source/blit", SPLINE_FS);
-    ctx.drawFullscreen(prog, image, (gl2) => {
-      gl2.activeTexture(gl2.TEXTURE0);
-      gl2.bindTexture(gl2.TEXTURE_2D, state.rasterTex);
-      gl2.uniform1i(gl2.getUniformLocation(prog, "u_src"), 0);
-    });
-
+    const fillImage = inputs.fill?.kind === "image" ? inputs.fill : null;
+    const image = rasterizeSplineAux(
+      ctx,
+      nodeId,
+      transformed.subpaths,
+      params,
+      fillImage
+    );
+    if (!image) return { primary: transformed };
     return { primary: transformed, aux: { image } };
   },
 
-  dispose(ctx, nodeId) {
-    const key = `svg-source:${nodeId}`;
-    const state = ctx.state[key] as SvgState | undefined;
-    if (state?.rasterTex) ctx.gl.deleteTexture(state.rasterTex);
-    delete ctx.state[key];
-  },
+  dispose: disposeSplineRasterAux,
 };

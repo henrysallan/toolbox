@@ -30,6 +30,7 @@ const FILE_PARAM_TYPES = new Set<ParamType>([
 const UNSUPPORTED_CONTROL_TYPES = new Set<ParamType>([
   "paint",
   "merge_layers",
+  "autolayout_items",
   "curves",
   "color_ramp",
   "spline_anchors",

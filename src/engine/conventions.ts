@@ -28,6 +28,26 @@ export function layerOpacityKey(layerId: string): string {
   return LAYER_OPACITY_PREFIX + layerId;
 }
 
+// Virtual animation keys for a multipoint gradient's per-point sub-values.
+// The `gradient_points` array param isn't keyframable itself; each point's
+// x / y (scalar) and color (RGBA) animate via their own blocks under these
+// keys. Resolved by the evaluator into a cloned points array; the param
+// panel renders a diamond per point; EffectsApp auto-keyframes edits when a
+// point's block is animated. Same pattern as LAYER_OPACITY_PREFIX.
+export const GPOINT_X_PREFIX = "gpoint_x:";
+export const GPOINT_Y_PREFIX = "gpoint_y:";
+export const GPOINT_C_PREFIX = "gpoint_c:";
+
+export function gpointXKey(id: string): string {
+  return GPOINT_X_PREFIX + id;
+}
+export function gpointYKey(id: string): string {
+  return GPOINT_Y_PREFIX + id;
+}
+export function gpointCKey(id: string): string {
+  return GPOINT_C_PREFIX + id;
+}
+
 export const MASK_INPUT_NAME = "mask";
 
 export const MASK_INPUT: InputSocketDef = {

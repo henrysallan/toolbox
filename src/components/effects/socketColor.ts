@@ -37,6 +37,9 @@ export const socketColor: Record<string, string> = {
   // organizational link, not a data pipeline, so it shouldn't read as one
   // of the colorful signal types.
   render: "#94a3b8",
+  // Element wires (Auto Layout) — indigo, distinct from image blue and
+  // the vec lavender: an intrinsically-sized renderable, not yet pixels.
+  element: "#818cf8",
 };
 
 export function colorForSocket(type: string): string {

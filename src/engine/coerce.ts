@@ -1,3 +1,4 @@
+import { elementToCanvasImage, wrapImageAsElement } from "./element";
 import type {
   AudioValue,
   RenderContext,
@@ -240,6 +241,23 @@ export function coerceValue(
     const entry = getOrCreateAnalyser(ctx, value);
     if (!entry) return { kind: "scalar", value: 0 };
     return { kind: "scalar", value: audioAmplitudeRms(entry) };
+  }
+
+  // Image → element. Wraps the texture as a deferred renderable whose
+  // natural size is the image's own px dimensions. This is what makes
+  // ANY existing image chain wirable into Auto Layout directly
+  // (Image Source → Blur → Auto Layout, no adapter node). Identity-
+  // cached inside the helper so per-eval cost is near-zero.
+  if (value.kind === "image" && target === "element") {
+    return wrapImageAsElement(value);
+  }
+
+  // Element → image. Renders at natural size (clamped to canvas) and
+  // composites centered onto a transparent canvas-sized image — element
+  // wires become acceptable to every existing image consumer, and the
+  // preview canvas works. Identity-cached inside the helper.
+  if (value.kind === "element" && target === "image") {
+    return elementToCanvasImage(value, ctx);
   }
 
   return undefined;

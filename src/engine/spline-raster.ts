@@ -25,6 +25,11 @@ export function hexToRgba(hex: string, alpha = 1): string {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
 
+// A normalized [0,1]² point → device-pixel mapping. Lets the path builder
+// target either the full canvas (with aspect correction) or an arbitrary
+// sub-rect (Auto Layout element render maps a spline's bbox into its slot).
+export type SplinePointMap = (p: [number, number]) => readonly [number, number];
+
 // Shared Path2D builder used by any node that rasterizes a spline to a 2D
 // canvas (Spline Draw, SVG Source). Each subpath gets its own moveTo; when
 // `closeForFill` is true, open subpaths are also closed with a final cubic
@@ -37,14 +42,25 @@ export function buildPath2D(
   H: number,
   closeForFill: boolean
 ): Path2D | null {
-  if (subpaths.length === 0) return null;
-  const path = new Path2D();
   // Aspect-correct the y axis so splines stay round on a non-square canvas
   // (a circle authored in [0,1]² rasterizes round, not as an ellipse).
   // Matches the SDF compiler's u_aspectCorrect convention. Square = identity.
   const aspect = W / H;
-  const toPx = (p: [number, number]) =>
-    [p[0] * W, aspectCorrectY(p[1], aspect) * H] as const;
+  return buildPath2DWith(
+    subpaths,
+    (p) => [p[0] * W, aspectCorrectY(p[1], aspect) * H] as const,
+    closeForFill
+  );
+}
+
+// buildPath2D's generalization: the caller supplies the point mapping.
+export function buildPath2DWith(
+  subpaths: SplineSubpath[],
+  toPx: SplinePointMap,
+  closeForFill: boolean
+): Path2D | null {
+  if (subpaths.length === 0) return null;
+  const path = new Path2D();
   let any = false;
   for (const sub of subpaths) {
     const anchors = sub.anchors;

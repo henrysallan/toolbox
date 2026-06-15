@@ -417,6 +417,22 @@ export default function EffectNode({
               }
             />
           )}
+          {data.defType === "autolayout" && (
+            <HeaderToggle
+              on={false}
+              label="+"
+              title="Add item slot"
+              activeBg="#374151"
+              activeFg="#e5e7eb"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("effect-node-toggle", {
+                    detail: { id, kind: "autolayoutAddItem" },
+                  })
+                )
+              }
+            />
+          )}
           {data.defType === "render-queue" && (
             <HeaderToggle
               on={false}

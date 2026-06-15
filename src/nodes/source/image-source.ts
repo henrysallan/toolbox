@@ -1,5 +1,11 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
-import type { NodeDefinition } from "@/engine/types";
+import {
+  aspectFitMeasure,
+  emptyElement,
+  renderRegionToRect,
+  type ElementFit,
+} from "@/engine/element";
+import type { ElementValue, NodeDefinition } from "@/engine/types";
 
 // u_hasUvIn: 0 = no UV field connected (use v_uv), 1 = UV texture, 2 = scalar
 // broadcast (whole frame samples the same point). Fit math runs on the
@@ -61,7 +67,14 @@ export const imageSourceNode: NodeDefinition = {
     },
   ],
   primaryOutput: "image",
-  auxOutputs: [],
+  auxOutputs: [
+    {
+      name: "element",
+      type: "element",
+      description:
+        "The source bitmap as an intrinsically-sized element for Auto Layout — natural size is the bitmap's own pixels, so aspect is correct and resampling stays crisp without a Frame node. The primary output's canvas fit doesn't apply; the layout slot's fit does.",
+    },
+  ],
 
   compute({ inputs, params, ctx, nodeId }) {
     const output = ctx.allocImage();
@@ -69,7 +82,7 @@ export const imageSourceNode: NodeDefinition = {
 
     if (!bitmap) {
       ctx.clearTarget(output, [0, 0, 0, 1]);
-      return { primary: output };
+      return { primary: output, aux: { element: emptyElement() } };
     }
 
     const stateKey = `image-source:${nodeId}`;
@@ -158,7 +171,38 @@ export const imageSourceNode: NodeDefinition = {
       );
     });
 
-    return { primary: output };
+    // Auto Layout element: natural size is the bitmap's own pixels.
+    // Render samples the uploaded bitmap texture directly — the negative-
+    // height region flips its Y-down rows into engine orientation, same
+    // job FIT_FS's `1.0 - s.y` does for the primary.
+    const srcTex = cached.tex!;
+    const srcW = bitmap.width;
+    const srcH = bitmap.height;
+    const nodeFit = fit as ElementFit;
+    const element: ElementValue = {
+      kind: "element",
+      // Aspect-aware: a hug/fixed-on-one-axis slot keeps the bitmap's
+      // ratio and scales with the layout, instead of pinning to the full
+      // bitmap resolution (which is what made fill+cover blow up when the
+      // container got wide).
+      measure: (c) => aspectFitMeasure(srcW, srcH, c),
+      render: (rctx, width, height, opts) =>
+        renderRegionToRect(
+          rctx,
+          { texture: srcTex, width: srcW, height: srcH },
+          { x: 0, y: 1, width: 1, height: -1 },
+          width,
+          height,
+          opts?.fit ?? nodeFit,
+          opts?.alignX,
+          opts?.alignY
+        ),
+      // Bitmap px routinely dwarf the layout — advise fixed so a fresh
+      // slot doesn't blow out to a 4000px child.
+      preferredSizing: { width: "fixed", height: "fixed" },
+    };
+
+    return { primary: output, aux: { element } };
   },
 
   dispose(ctx, nodeId) {

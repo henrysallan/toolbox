@@ -1,5 +1,6 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
+  ElementValue,
   FontParamValue,
   ImageValue,
   MaskValue,
@@ -9,15 +10,20 @@ import type {
   SplineValue,
 } from "@/engine/types";
 import { computeSDF } from "@/engine/sdf";
+import { emptyElement, uploadCanvasToImage } from "@/engine/element";
 import { marchingSquares } from "@/engine/marching-squares";
-import { CURATED_FONTS, ensureFontLoaded, isFontReady } from "@/lib/fonts";
 import {
-  asAxisDict,
-  hasMaskDriven,
-  isAxisDictAllConstant,
-  resolveAxisAt,
-  type AxisInput,
-} from "@/lib/font-axis";
+  drawTextBlock,
+  measureStyledBlock,
+  wrapStyledLines,
+  type TextFill,
+  type TextGradientStop,
+  type TextStroke,
+  type TextStyle,
+  type VAlign,
+} from "@/engine/text-raster";
+import { CURATED_FONTS, ensureFontLoaded, isFontReady } from "@/lib/fonts";
+import { asAxisDict, hasMaskDriven } from "@/lib/font-axis";
 
 // The built-in transform shader. Mostly identical to transform.ts but with an
 // extra Y-flip when sampling the rasterized 2D canvas, whose row 0 sits at
@@ -50,11 +56,108 @@ void main() {
   outColor = texture(u_src, vec2(uv.x, 1.0 - uv.y));
 }`;
 
+// Transform variant for an already-Y-up source (the image-fill composite
+// renders into a standard pooled image, unlike the row-0-top rasterTex). Same
+// math, no sample-time Y-flip.
+const TEXT_TRANSFORM_NOFLIP_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform vec2 u_translate;
+uniform vec2 u_scale;
+uniform float u_angle;
+uniform vec2 u_pivot;
+out vec4 outColor;
+
+void main() {
+  vec2 pivot = vec2(u_pivot.x, 1.0 - u_pivot.y);
+  vec2 translate = vec2(u_translate.x, -u_translate.y);
+  vec2 uv = v_uv - translate;
+  vec2 p = uv - pivot;
+  float c = cos(-u_angle);
+  float s = sin(-u_angle);
+  p = vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+  p /= max(u_scale, vec2(0.0001));
+  uv = p + pivot;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    outColor = vec4(0.0);
+    return;
+  }
+  outColor = texture(u_src, uv);
+}`;
+
+// Image-fill composite. The glyph fill coverage (white-on-transparent,
+// row-0-top) and the in-raster stroke (its own color, row-0-top) are rendered
+// as separate layers; the wired image fills the glyph interiors (per
+// `fill_fit`) and the stroke sits OVER it — matching the CPU raster's
+// stroke-then-fill order (fill on top). Straight-alpha source-over.
+const TEXT_COMPOSITE_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_cov;       // glyph fill coverage (alpha), row-0-top
+uniform sampler2D u_stroke;    // stroke color straight-alpha, row-0-top
+uniform sampler2D u_fillImage; // straight-alpha fill image, Y-up
+uniform int u_hasStroke;
+uniform int u_fit;             // 0 window, 1 contain, 2 cover
+uniform vec2 u_uvMin;          // text box in canvas UV (Y-up)
+uniform vec2 u_uvSize;
+uniform vec2 u_fitScale;
+out vec4 outColor;
+
+vec4 over(vec4 s, vec4 d) {
+  float oa = s.a + d.a * (1.0 - s.a);
+  vec3 oc = oa < 1e-4
+    ? vec3(0.0)
+    : (s.rgb * s.a + d.rgb * d.a * (1.0 - s.a)) / oa;
+  return vec4(oc, oa);
+}
+
+void main() {
+  vec2 m = vec2(v_uv.x, 1.0 - v_uv.y);   // sample row-0-top canvases
+  float cov = texture(u_cov, m).a;
+
+  vec2 uv;
+  if (u_fit == 0) {
+    uv = v_uv;
+  } else {
+    vec2 local = (v_uv - u_uvMin) / max(u_uvSize, vec2(1e-6));
+    uv = (local - 0.5) * u_fitScale + 0.5;
+  }
+  vec4 img = texture(u_fillImage, uv);
+  if (u_fit == 1 &&
+      (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))))) {
+    img = vec4(0.0);
+  }
+  vec4 fill = vec4(img.rgb, img.a * cov);
+
+  vec4 stroke = u_hasStroke == 1 ? texture(u_stroke, m) : vec4(0.0);
+  outColor = over(fill, stroke);          // fill over stroke (fill on top)
+}`;
+
+function makeTex(gl: WebGL2RenderingContext): WebGLTexture {
+  const tex = gl.createTexture();
+  if (!tex) throw new Error("text: failed to create texture");
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  return tex;
+}
+
 interface TextState {
   // Reused offscreen raster target + its uploaded texture. Kept per-node so
   // resizing the canvas once on init avoids a re-alloc on every frame.
   rasterCanvas: HTMLCanvasElement;
   rasterTex: WebGLTexture;
+  // Image-fill path: glyph fill coverage + stroke layers, composited with a
+  // wired image into `composite` (pre-transform). Allocated lazily, only when
+  // fillMode === "image".
+  fillCovTex: WebGLTexture | null;
+  strokeLayerTex: WebGLTexture | null;
+  zeroTex: WebGLTexture | null;
+  composite: ImageValue | null;
   // Off-screen canvas used to read back the `mask` input's pixels
   // when any axis is in `maskDriven` mode. The rasterizer blits
   // the mask into this canvas at our own resolution, then
@@ -74,6 +177,13 @@ interface TextState {
   lastPostSig: string | null;
   lastW: number;
   lastH: number;
+  // Whether the cached sdf / spline reflect the CURRENT raster+transform.
+  // Reset whenever the raster or transform changes; the expensive
+  // recompute is deferred until something actually consumes that output
+  // (so dragging text that only feeds an image/element pays nothing for
+  // the JFA SDF or the marching-squares contour).
+  sdfValid: boolean;
+  splineValid: boolean;
 }
 
 function computeRasterSig(
@@ -90,92 +200,28 @@ function computeRasterSig(
     a: params.alignment,
     l: params.leading,
     k: params.letter_spacing,
+    // Weight / italic / case / vertical align — all re-rasterize.
+    fw: params.font_weight,
+    it: params.italic,
+    tc: params.textCase,
+    va: params.vAlign,
+    // Fill (solid/gradient) + in-raster stroke.
+    fm: params.fillMode,
+    fs: params.fillStops,
+    ga: params.gradientAngle,
+    se: params.strokeEnabled,
+    sw: params.strokeWidth,
+    sc: params.strokeColor,
+    sj: params.strokeJoin,
+    // Text box + wrap — box edits and the wrap toggle re-rasterize.
+    bw: params.boxWidth,
+    bh: params.boxHeight,
+    w: params.wrap,
     // Variable-font axes — included so a slider drag re-rasterizes.
     v: params.font_variations,
     W,
     H,
   });
-}
-
-// Build the CSS `font-variation-settings` string from a resolved
-// `Record<tag, number>`. The rasterizer calls resolveAxisAt once
-// per char to populate that record, then this helper emits the CSS
-// string that goes onto the rasterCanvas's style attribute.
-function buildVariationsCss(
-  resolved: Record<string, number>,
-  axes: { tag: string }[] | undefined
-): string {
-  if (!axes || axes.length === 0) return "";
-  const parts: string[] = [];
-  for (const a of axes) {
-    const v = resolved[a.tag];
-    if (typeof v !== "number" || !Number.isFinite(v)) continue;
-    parts.push(`'${a.tag}' ${v}`);
-  }
-  return parts.join(", ");
-}
-
-// Apply all variation-styling paths (canvas CSS, font shorthand,
-// fontStretch) for the axis values resolved at position `t`
-// (normalised across the line) and `charIndex` (absolute char
-// index). `axesDict` is the user's per-axis modulation config;
-// fontAxes is the font's declared axis list (tags + ranges).
-function applyAxisStyling(
-  canvas: HTMLCanvasElement,
-  c2d: CanvasRenderingContext2D,
-  fontAxes: { tag: string }[] | undefined,
-  axesDict: Record<string, AxisInput>,
-  t: number,
-  charIndex: number,
-  family: string,
-  size: number,
-  // `maskValue` is forwarded to resolveAxisAt so the maskDriven
-  // mode can interpolate its endpoints. Other modes ignore it.
-  maskValue: number | null = null
-) {
-  // Resolve every axis at this character.
-  const resolved: Record<string, number> = {};
-  if (fontAxes) {
-    for (const a of fontAxes) {
-      const v = resolveAxisAt(axesDict[a.tag], t, charIndex, maskValue);
-      if (v != null && Number.isFinite(v)) resolved[a.tag] = v;
-    }
-  }
-
-  // CSS path — feeds Chromium's canvas-style inheritance.
-  canvas.style.fontVariationSettings = buildVariationsCss(
-    resolved,
-    fontAxes
-  );
-
-  // Pull out wght / wdth / ital for the first-class canvas2d API
-  // fallback. These are the standard axes for which canvas2d has
-  // dedicated paths regardless of style inheritance.
-  const wght = resolved.wght;
-  const wdth = resolved.wdth;
-  const isItalic =
-    typeof resolved.ital === "number" && resolved.ital >= 0.5;
-  const styleSlot = isItalic ? "italic " : "";
-  const weightSlot =
-    typeof wght === "number" && Number.isFinite(wght)
-      ? `${Math.round(wght)} `
-      : "";
-  c2d.font = `${styleSlot}${weightSlot}${size}px "${family}", sans-serif`;
-  if (typeof wdth === "number" && Number.isFinite(wdth)) {
-    try {
-      (c2d as unknown as { fontStretch?: string }).fontStretch =
-        `${wdth}%`;
-    } catch {
-      // Older canvas2d — ignore.
-    }
-  } else {
-    try {
-      (c2d as unknown as { fontStretch?: string }).fontStretch =
-        "normal";
-    } catch {
-      // ignore
-    }
-  }
 }
 
 function computePostSig(params: Record<string, unknown>): string {
@@ -201,14 +247,7 @@ function ensureState(ctx: RenderContext, nodeId: string): TextState {
   const existing = ctx.state[key] as TextState | undefined;
   if (existing) return existing;
   const gl = ctx.gl;
-  const tex = gl.createTexture();
-  if (!tex) throw new Error("text: failed to create raster texture");
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.bindTexture(gl.TEXTURE_2D, null);
+  const tex = makeTex(gl);
   // Attach the rasterCanvas to the DOM (off-screen + hidden) so the
   // browser actually computes its style. Detached canvases don't get
   // styles resolved, which means setting
@@ -230,6 +269,10 @@ function ensureState(ctx: RenderContext, nodeId: string): TextState {
   const state: TextState = {
     rasterCanvas,
     rasterTex: tex,
+    fillCovTex: null,
+    strokeLayerTex: null,
+    zeroTex: null,
+    composite: null,
     maskReadCanvas: null,
     primary: ctx.allocImage(),
     sdf: ctx.allocMask(),
@@ -238,6 +281,8 @@ function ensureState(ctx: RenderContext, nodeId: string): TextState {
     lastPostSig: null,
     lastW: ctx.width,
     lastH: ctx.height,
+    sdfValid: false,
+    splineValid: false,
   };
   ctx.state[key] = state;
   return state;
@@ -271,35 +316,19 @@ function readMaskImageData(
   }
 }
 
-// Sample the mask's R channel at (x, y) pixels. Clamps to the
-// canvas bounds and returns a [0, 1] luminance. The mask image is
-// blitToCanvas'd in engine-standard Y-up orientation, so its
-// row 0 is the visual bottom — we flip Y to match canvas2d's
-// Y-down convention (where the text is drawn).
-function sampleMask(
-  maskData: ImageData,
-  x: number,
-  y: number,
-  W: number,
-  H: number
-): number {
-  if (W === 0 || H === 0) return 0;
-  const ix = Math.max(0, Math.min(maskData.width - 1, Math.round(x)));
-  // Flip Y: text draws with row 0 at canvas top; the blitted mask
-  // also lands row 0 at top from canvas2d's POV (drawImage flips
-  // FBO orientation back to top-down). If your mask looks
-  // upside-down in practice, swap this `iy` to use H - 1 - y.
-  const iy = Math.max(0, Math.min(maskData.height - 1, Math.round(y)));
-  const idx = (iy * maskData.width + ix) * 4;
-  return maskData.data[idx] / 255;
-}
-
 function resizeStateIfNeeded(ctx: RenderContext, state: TextState): void {
   if (state.lastW === ctx.width && state.lastH === ctx.height) return;
   ctx.releaseTexture(state.primary.texture);
   ctx.releaseTexture(state.sdf.texture);
   state.primary = ctx.allocImage();
   state.sdf = ctx.allocMask();
+  // The image-fill composite target is canvas-sized; drop it so it re-allocs
+  // at the new size. The coverage/stroke layer textures are re-uploaded at
+  // the new size on the forced re-raster below.
+  if (state.composite) {
+    ctx.releaseTexture(state.composite.texture);
+    state.composite = null;
+  }
   state.lastW = ctx.width;
   state.lastH = ctx.height;
   // Force re-rasterize + retransform since the target grew/shrunk.
@@ -307,17 +336,89 @@ function resizeStateIfNeeded(ctx: RenderContext, state: TextState): void {
   state.lastPostSig = null;
 }
 
-function rasterize(
+// Case transform applied to the raw text before layout/wrap so measure,
+// wrap, and draw all agree. "title" uppercases the first letter of each
+// whitespace-delimited word (Unicode-aware), preserving newlines.
+function applyTextCase(text: string, mode: string | undefined): string {
+  switch (mode) {
+    case "upper":
+      return text.toUpperCase();
+    case "lower":
+      return text.toLowerCase();
+    case "title":
+      return text
+        .toLowerCase()
+        .replace(/(^|\s)(\p{L})/gu, (_m, lead, ch) => lead + ch.toUpperCase());
+    default:
+      return text;
+  }
+}
+
+// Build the gradient/solid fill descriptor. The `fillStops` param is a
+// ColorRampStop[] (id + position + color + alpha?), a structural superset
+// of TextGradientStop — passed straight through.
+function fillFromParams(params: Record<string, unknown>): TextFill {
+  const mode = (params.fillMode as string) ?? "solid";
+  if (mode !== "linear" && mode !== "radial") return { mode: "solid" };
+  const stops = (Array.isArray(params.fillStops)
+    ? params.fillStops
+    : []) as TextGradientStop[];
+  if (mode === "radial") return { mode: "radial", stops };
+  return { mode: "linear", stops, angle: (params.gradientAngle as number) ?? 0 };
+}
+
+function strokeFromParams(params: Record<string, unknown>): TextStroke | null {
+  if (params.strokeEnabled !== true) return null;
+  const width = (params.strokeWidth as number) ?? 0;
+  if (width <= 0) return null;
+  return {
+    width,
+    color: (params.strokeColor as string) ?? "#000000",
+    join: ((params.strokeJoin as string) ?? "round") as CanvasLineJoin,
+  };
+}
+
+// Resolve the node's params into the shared text-raster style. The
+// variable-font styling paths (canvas CSS + font shorthand + fontStretch)
+// live in engine/text-raster.ts now — see the comments there.
+function styleFromParams(
+  params: Record<string, unknown>,
+  family: string
+): TextStyle {
+  const customFont = params.custom_font as FontParamValue | null | undefined;
+  return {
+    text: applyTextCase((params.text as string) ?? "", params.textCase as string),
+    family,
+    size: (params.font_size as number) ?? 64,
+    color: (params.color as string) ?? "#ffffff",
+    alignment: ((params.alignment as string) ?? "center") as
+      | "left"
+      | "center"
+      | "right",
+    vAlign: ((params.vAlign as string) ?? "middle") as VAlign,
+    leading: (params.leading as number) ?? 1.2,
+    letterSpacing: (params.letter_spacing as number) ?? 0,
+    weight: (params.font_weight as number) ?? 400,
+    italic: params.italic === true,
+    fill: fillFromParams(params),
+    stroke: strokeFromParams(params),
+    fontAxes: customFont?.axes,
+    axesDict: asAxisDict(params.font_variations),
+  };
+}
+
+// Lay out + draw one styled text block onto the node's raster canvas and
+// upload it to `targetTex`. Shared by the primary raster and the image-fill
+// coverage/stroke layers (each passes a style override). The box model
+// (centered boxWidth/boxHeight rect) is identical across layers so the
+// coverage and stroke register exactly.
+function renderTextLayer(
   ctx: RenderContext,
   state: TextState,
   params: Record<string, unknown>,
-  family: string,
-  // Pre-blitted mask pixels — when present, the per-char layout
-  // samples the mask at each character's centre and passes the
-  // resulting [0, 1] luminance into applyAxisStyling so maskDriven
-  // axes can interpolate between their endpoints. Null when no
-  // mask is wired (or no axis is in maskDriven mode).
-  maskData: ImageData | null = null
+  style: TextStyle,
+  maskData: ImageData | null,
+  targetTex: WebGLTexture
 ): void {
   const W = ctx.width;
   const H = ctx.height;
@@ -328,172 +429,155 @@ function rasterize(
   if (!c2d) return;
   c2d.clearRect(0, 0, W, H);
 
-  const text = (params.text as string) ?? "";
-  const size = (params.font_size as number) ?? 64;
-  const color = (params.color as string) ?? "#ffffff";
-  const alignment = ((params.alignment as string) ?? "center") as
-    | "left"
-    | "center"
-    | "right";
-  const leading = (params.leading as number) ?? 1.2;
-  const letterSpacing = (params.letter_spacing as number) ?? 0;
+  // Text box: a rect centered on the canvas (boxWidth/boxHeight are
+  // fractions of the canvas dims; both default 1 = full canvas, which
+  // reproduces the pre-box rendering exactly). Alignment is within the
+  // box; the wrap toggle word-wraps lines at the box width. The node's
+  // transform post-pass then places the box on the canvas, so the
+  // gizmo's box position rides translateX/translateY.
+  const boxW = Math.max(1, Math.min(2, (params.boxWidth as number) ?? 1) * W);
+  const boxH = Math.max(1, Math.min(2, (params.boxHeight as number) ?? 1) * H);
+  const originX = W / 2 - boxW / 2;
+  const originY = H / 2 - boxH / 2;
+  const wrap = params.wrap === true;
+  const lines = wrapStyledLines(canvas, c2d, style, wrap ? boxW : undefined);
+  drawTextBlock(canvas, c2d, style, lines, boxW, boxH, maskData, originX, originY);
 
-  // Variable-font axes — applied via TWO redundant paths:
-  //   1. `canvas.style.fontVariationSettings` — canvas needs to be
-  //      in the DOM (we attach it in ensureState) for the browser
-  //      to actually compute this. Chromium then reads it from the
-  //      canvas's computed style during canvas2d font resolution,
-  //      which is what carries all axes (including custom GRAD /
-  //      XHGT / etc.) through.
-  //   2. `wght` is also baked into the font shorthand and `wdth`
-  //      into `c2d.fontStretch`. These are first-class canvas2d
-  //      APIs and don't depend on CSS resolution at all, so even
-  //      browsers that ignore the style attribute still get the
-  //      most-common axes right.
-  const customFont = params.custom_font as FontParamValue | null | undefined;
-  const axesDict = asAxisDict(params.font_variations);
-  const allConstant = isAxisDictAllConstant(axesDict);
-
-  c2d.save();
-  c2d.fillStyle = color;
-  c2d.textBaseline = "middle";
-
-  const lines = text.split("\n");
-  const lineHeight = size * leading;
-  const totalHeight = Math.max(1, lines.length) * lineHeight;
-  const startY = H / 2 - totalHeight / 2 + lineHeight / 2;
-
-  if (allConstant) {
-    // FAST PATH — single fillText per line. All axes have the same
-    // value across every character, so we set styling once and let
-    // canvas2d's native text layout (kerning, letter-spacing) do
-    // the work.
-    // Fast path: every axis is constant. maskDriven counts as
-    // modulated (isAxisDictAllConstant excludes it), so we never
-    // reach here with a maskData payload — pass null and let the
-    // resolver use its constant value.
-    applyAxisStyling(
-      canvas,
-      c2d,
-      customFont?.axes,
-      axesDict,
-      0,
-      0,
-      family,
-      size,
-      null
-    );
-    c2d.textAlign = alignment;
-    (c2d as unknown as { letterSpacing?: string }).letterSpacing =
-      `${letterSpacing}px`;
-    const x =
-      alignment === "left" ? 0 : alignment === "right" ? W : W / 2;
-    for (let i = 0; i < lines.length; i++) {
-      c2d.fillText(lines[i], x, startY + i * lineHeight);
-    }
-  } else {
-    // MODULATED PATH — per-character layout. For each character we
-    // resolve every axis at its position, restyle, measure, and
-    // draw. textAlign stays "left" because we manage horizontal
-    // alignment ourselves (we need exact advance accumulation,
-    // which textAlign can't do mid-string).
-    c2d.textAlign = "left";
-    (c2d as unknown as { letterSpacing?: string }).letterSpacing = "0px";
-    // For each line, two passes: measure total width (to handle
-    // center/right alignment), then draw at the right starting x.
-    // The line-total measure pre-applies the median axis values so
-    // alignment is roughly right even when axes swing wildly; the
-    // per-char draw pass then restyles for each glyph.
-    for (let li = 0; li < lines.length; li++) {
-      const line = lines[li];
-      const chars = Array.from(line); // codepoint-safe split
-      const total = chars.length;
-      const y = startY + li * lineHeight;
-      // Pre-measure each char with its axis values applied so
-      // alignment uses real advances rather than a single-shape
-      // approximation. Mask sampling for the measure pass uses
-      // a rough placeholder (W/2, y) — close enough; the draw
-      // pass below re-samples at the actual glyph centre.
-      const advances: number[] = [];
-      let lineWidth = 0;
-      for (let i = 0; i < total; i++) {
-        const t = total <= 1 ? 0 : i / (total - 1);
-        const mPre = maskData
-          ? sampleMask(maskData, W / 2, y, W, H)
-          : null;
-        applyAxisStyling(
-          canvas,
-          c2d,
-          customFont?.axes,
-          axesDict,
-          t,
-          i,
-          family,
-          size,
-          mPre
-        );
-        const adv = c2d.measureText(chars[i]).width;
-        advances.push(adv);
-        lineWidth += adv + letterSpacing;
-      }
-      lineWidth -= letterSpacing; // no trailing gap
-      let cx =
-        alignment === "left"
-          ? 0
-          : alignment === "right"
-          ? W - lineWidth
-          : (W - lineWidth) / 2;
-      // Final draw pass — re-apply per-char styling and draw at cx.
-      // measureText + fillText share the same active style so as
-      // long as we restyle before each, the rendered glyph matches
-      // the advance we measured. Mask sampling reads at the
-      // glyph's CENTRE so a wide character is driven by its own
-      // mid-region rather than its leading edge.
-      for (let i = 0; i < total; i++) {
-        const t = total <= 1 ? 0 : i / (total - 1);
-        const cxCentre = cx + advances[i] / 2;
-        const mVal = maskData
-          ? sampleMask(maskData, cxCentre, y, W, H)
-          : null;
-        applyAxisStyling(
-          canvas,
-          c2d,
-          customFont?.axes,
-          axesDict,
-          t,
-          i,
-          family,
-          size,
-          mVal
-        );
-        c2d.fillText(chars[i], cx, y);
-        cx += advances[i] + letterSpacing;
-      }
-    }
-  }
-  c2d.restore();
-
-  // Upload to the main rasterTex — single-pass canvas2d render
-  // for all modes now (the mask-driven mode samples per char,
-  // not per pixel, so we no longer need a parallel raster chain).
   const gl = ctx.gl;
-  gl.bindTexture(gl.TEXTURE_2D, state.rasterTex);
+  gl.bindTexture(gl.TEXTURE_2D, targetTex);
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.RGBA,
-    gl.RGBA,
-    gl.UNSIGNED_BYTE,
-    canvas
-  );
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
   gl.bindTexture(gl.TEXTURE_2D, null);
+}
+
+function rasterize(
+  ctx: RenderContext,
+  state: TextState,
+  params: Record<string, unknown>,
+  family: string,
+  // Pre-blitted mask pixels — when present, the per-char layout
+  // samples the mask at each character's centre so maskDriven axes
+  // can interpolate between their endpoints. Null when no mask is
+  // wired (or no axis is in maskDriven mode).
+  maskData: ImageData | null = null
+): void {
+  // Single-pass canvas2d render for all (non-image-fill) modes — the
+  // mask-driven mode samples per char, not per pixel.
+  const style = styleFromParams(params, family);
+  renderTextLayer(ctx, state, params, style, maskData, state.rasterTex);
+}
+
+// Box rect (canvas UV, Y-up) + per-axis sample scale for the image-fill
+// contain/cover modes. The box is centered, so the Y-up conversion is
+// symmetric (no flip needed). `null` for window mode.
+function textFitUniforms(
+  params: Record<string, unknown>,
+  W: number,
+  H: number,
+  fit: "window" | "contain" | "cover"
+): { uvMin: [number, number]; uvSize: [number, number]; fitScale: [number, number] } | null {
+  if (fit === "window") return null;
+  const bwf = Math.max(0.01, Math.min(2, (params.boxWidth as number) ?? 1));
+  const bhf = Math.max(0.01, Math.min(2, (params.boxHeight as number) ?? 1));
+  const aImg = W / H;
+  const aBox = (bwf * W) / (bhf * H);
+  let sx = 1;
+  let sy = 1;
+  if (fit === "contain") {
+    if (aBox > aImg) sx = aBox / aImg;
+    else sy = aImg / aBox;
+  } else {
+    if (aBox > aImg) sy = aImg / aBox;
+    else sx = aBox / aImg;
+  }
+  return {
+    uvMin: [0.5 - bwf / 2, 0.5 - bhf / 2],
+    uvSize: [bwf, bhf],
+    fitScale: [sx, sy],
+  };
+}
+
+// Composite the wired fill image through the glyph coverage (+ stroke layer)
+// into `state.composite`, returning its texture for the transform pass. The
+// coverage/stroke layers are assumed up to date (rendered on rasterChanged).
+function compositeImageFill(
+  ctx: RenderContext,
+  state: TextState,
+  params: Record<string, unknown>,
+  fillImg: ImageValue
+): WebGLTexture {
+  const gl = ctx.gl;
+  if (!state.composite) state.composite = ctx.allocImage();
+  if (!state.zeroTex) {
+    state.zeroTex = makeTex(gl);
+    gl.bindTexture(gl.TEXTURE_2D, state.zeroTex);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      1,
+      1,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      new Uint8Array([0, 0, 0, 0])
+    );
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+  const fit = ((params.fill_fit as string) ?? "window") as
+    | "window"
+    | "contain"
+    | "cover";
+  const fitU = textFitUniforms(params, ctx.width, ctx.height, fit);
+  const hasStroke = params.strokeEnabled === true && state.strokeLayerTex;
+
+  const prog = ctx.getShader("text/composite", TEXT_COMPOSITE_FS);
+  ctx.drawFullscreen(prog, state.composite, (g) => {
+    g.activeTexture(g.TEXTURE0);
+    g.bindTexture(g.TEXTURE_2D, state.fillCovTex ?? state.zeroTex);
+    g.uniform1i(g.getUniformLocation(prog, "u_cov"), 0);
+
+    g.activeTexture(g.TEXTURE1);
+    g.bindTexture(g.TEXTURE_2D, hasStroke ? state.strokeLayerTex! : state.zeroTex!);
+    g.uniform1i(g.getUniformLocation(prog, "u_stroke"), 1);
+
+    g.activeTexture(g.TEXTURE2);
+    g.bindTexture(g.TEXTURE_2D, fillImg.texture);
+    g.uniform1i(g.getUniformLocation(prog, "u_fillImage"), 2);
+
+    g.uniform1i(g.getUniformLocation(prog, "u_hasStroke"), hasStroke ? 1 : 0);
+    g.uniform1i(
+      g.getUniformLocation(prog, "u_fit"),
+      fitU ? (fit === "contain" ? 1 : 2) : 0
+    );
+    g.uniform2f(
+      g.getUniformLocation(prog, "u_uvMin"),
+      fitU ? fitU.uvMin[0] : 0,
+      fitU ? fitU.uvMin[1] : 0
+    );
+    g.uniform2f(
+      g.getUniformLocation(prog, "u_uvSize"),
+      fitU ? fitU.uvSize[0] : 1,
+      fitU ? fitU.uvSize[1] : 1
+    );
+    g.uniform2f(
+      g.getUniformLocation(prog, "u_fitScale"),
+      fitU ? fitU.fitScale[0] : 1,
+      fitU ? fitU.fitScale[1] : 1
+    );
+  });
+  return state.composite.texture;
 }
 
 function applyTransform(
   ctx: RenderContext,
   state: TextState,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  // Source raster to transform into `state.primary`. The default rasterTex is
+  // a row-0-top canvas upload (needs the Y-flip variant); the image-fill
+  // composite is a standard pooled image (no flip).
+  srcTex: WebGLTexture = state.rasterTex,
+  flip = true
 ): void {
   const translateX = (params.translateX as number) ?? 0;
   const translateY = (params.translateY as number) ?? 0;
@@ -504,10 +588,12 @@ function applyTransform(
   const pivotY = (params.pivotY as number) ?? 0.5;
   const angle = (rotate * Math.PI) / 180;
 
-  const prog = ctx.getShader("text/transform", TEXT_TRANSFORM_FS);
+  const prog = flip
+    ? ctx.getShader("text/transform", TEXT_TRANSFORM_FS)
+    : ctx.getShader("text/transform-noflip", TEXT_TRANSFORM_NOFLIP_FS);
   ctx.drawFullscreen(prog, state.primary, (gl) => {
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, state.rasterTex);
+    gl.bindTexture(gl.TEXTURE_2D, srcTex);
     gl.uniform1i(gl.getUniformLocation(prog, "u_src"), 0);
     gl.uniform2f(
       gl.getUniformLocation(prog, "u_translate"),
@@ -539,7 +625,9 @@ export const textNode: NodeDefinition = {
   // Unstable so font-load pipeline bumps re-enter compute; a local signature
   // cache inside the compute skips re-rasterization when nothing changed.
   stable: false,
-  supportsTransformGizmo: true,
+  // On-canvas manipulation is the bounds gizmo (PRIMITIVE_GIZMO_ADAPTERS
+  // "text" entry): drag the box, resize edges/corners with the opposite
+  // side anchored. The legacy symmetric transform gizmo is off.
   inputs: [
     // Optional mask image — consumed only when at least one axis
     // is in maskMorph mode. The rasterizer renders the text twice
@@ -547,6 +635,10 @@ export const textNode: NodeDefinition = {
     // per-pixel using mask.r. Wire any image-producing node (SDF
     // Rasterize, Image Source, Gradient, etc.) in here.
     { name: "mask", label: "Mask", type: "image", required: false },
+    // Optional fill image — when wired and fillMode is "image", the glyph
+    // interiors are filled with this image (per `fill_fit`) instead of a
+    // flat color. Declared `image`, so mask/element coercions apply.
+    { name: "fill", label: "fill", type: "image", required: false },
   ],
   params: [
     OPACITY_PARAM,
@@ -596,11 +688,103 @@ export const textNode: NodeDefinition = {
       step: 1,
       default: 96,
     },
+    // Base weight applies to any font (the Google CDN ships the full
+    // wght@100..900 range, so built-in families interpolate too). A
+    // modulated `wght` variable axis overrides this per glyph.
+    {
+      name: "font_weight",
+      label: "Weight",
+      type: "scalar",
+      min: 100,
+      max: 900,
+      step: 1,
+      default: 400,
+    },
+    {
+      name: "italic",
+      label: "Italic",
+      type: "boolean",
+      default: false,
+    },
     {
       name: "color",
       label: "Color",
       type: "color",
       default: "#ffffff",
+    },
+    // Fill mode — solid uses `color`; the gradient modes span the whole
+    // text box through a color ramp.
+    {
+      name: "fillMode",
+      label: "Fill",
+      type: "enum",
+      options: ["solid", "linear", "radial", "image"],
+      default: "solid",
+    },
+    // How a wired `fill` image maps into the glyphs. `window` reveals the
+    // full-canvas image through the letters; `contain`/`cover` fit the image
+    // into the text box. Only meaningful in `image` fill mode with the `fill`
+    // socket wired (otherwise the glyphs fall back to the flat `color`).
+    {
+      name: "fill_fit",
+      label: "Image fit",
+      type: "enum",
+      options: ["window", "contain", "cover"],
+      default: "window",
+      visibleIf: (p) => p.fillMode === "image",
+    },
+    {
+      name: "fillStops",
+      label: "Gradient",
+      type: "color_ramp",
+      default: [
+        { id: "stop-a", position: 0, color: "#ffffff" },
+        { id: "stop-b", position: 1, color: "#3b82f6" },
+      ],
+      visibleIf: (p) => p.fillMode === "linear" || p.fillMode === "radial",
+    },
+    {
+      name: "gradientAngle",
+      label: "Gradient angle",
+      type: "scalar",
+      min: -180,
+      max: 180,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.fillMode === "linear",
+    },
+    // In-raster outline (the spline Stroke node still handles vector strokes).
+    {
+      name: "strokeEnabled",
+      label: "Stroke",
+      type: "boolean",
+      default: false,
+    },
+    {
+      name: "strokeWidth",
+      label: "Stroke width",
+      type: "scalar",
+      min: 0,
+      max: 50,
+      softMax: 20,
+      step: 0.5,
+      default: 2,
+      visibleIf: (p) => p.strokeEnabled === true,
+    },
+    {
+      name: "strokeColor",
+      label: "Stroke color",
+      type: "color",
+      default: "#000000",
+      visibleIf: (p) => p.strokeEnabled === true,
+    },
+    {
+      name: "strokeJoin",
+      label: "Stroke join",
+      type: "enum",
+      options: ["round", "miter", "bevel"],
+      default: "round",
+      visibleIf: (p) => p.strokeEnabled === true,
     },
     {
       name: "alignment",
@@ -608,6 +792,20 @@ export const textNode: NodeDefinition = {
       type: "enum",
       options: ["left", "center", "right"],
       default: "center",
+    },
+    {
+      name: "vAlign",
+      label: "Vertical align",
+      type: "enum",
+      options: ["top", "middle", "bottom"],
+      default: "middle",
+    },
+    {
+      name: "textCase",
+      label: "Case",
+      type: "enum",
+      options: ["none", "upper", "lower", "title"],
+      default: "none",
     },
     {
       name: "leading",
@@ -627,8 +825,40 @@ export const textNode: NodeDefinition = {
       step: 0.5,
       default: 0,
     },
-    // Built-in transform — same param names as the Transform node so the
-    // shared gizmo works without any special-casing.
+    // Text box — a rect the text is laid out inside (alignment is
+    // box-relative; vertical centering is within the box). Sizes are
+    // fractions of the canvas dims; 1 × 1 = full canvas reproduces the
+    // pre-box rendering, so old saves are unchanged. The on-canvas
+    // gizmo drags edges/corners with the opposite side anchored.
+    {
+      name: "boxWidth",
+      label: "Box width",
+      type: "scalar",
+      min: 0.01,
+      max: 2,
+      softMax: 1,
+      step: 0.001,
+      default: 1,
+    },
+    {
+      name: "boxHeight",
+      label: "Box height",
+      type: "scalar",
+      min: 0.01,
+      max: 2,
+      softMax: 1,
+      step: 0.001,
+      default: 1,
+    },
+    {
+      name: "wrap",
+      label: "Wrap in box",
+      type: "boolean",
+      default: false,
+    },
+    // Built-in transform — applied as a post-pass after the box layout.
+    // The bounds gizmo drives translateX/Y (box position); scale /
+    // rotate / pivot stay panel-and-keyframe-driven.
     {
       name: "translateX",
       label: "Translate X",
@@ -709,9 +939,15 @@ export const textNode: NodeDefinition = {
       description:
         "Outline of the rasterized text as a spline (marching squares on the alpha channel). Recomputes only when the text content / font / position changes; downstream consumers (Stroke, Fill, Modulate Splines, etc.) work directly on it.",
     },
+    {
+      name: "element",
+      type: "element",
+      description:
+        "The text as an intrinsically-sized element for Auto Layout. Measures to tight line bounds and word-wraps when the layout constrains its width (a fill-width slot in a vertical layout reflows live). The node's built-in transform params do NOT apply here — the layout owns placement.",
+    },
   ],
 
-  compute({ inputs, params, ctx, nodeId }) {
+  compute({ inputs, params, ctx, nodeId, consumedOutputs }) {
     const state = ensureState(ctx, nodeId);
     resizeStateIfNeeded(ctx, state);
 
@@ -726,10 +962,12 @@ export const textNode: NodeDefinition = {
       ctx.clearTarget(state.sdf, [0, 0, 0, 0]);
       state.lastSig = null;
       state.lastPostSig = null;
+      state.sdfValid = false;
+      state.splineValid = false;
       state.spline = { kind: "spline", subpaths: [] };
       return {
         primary: state.primary,
-        aux: { sdf: emptySdf(), spline: state.spline },
+        aux: { sdf: emptySdf(), spline: state.spline, element: emptyElement() },
       };
     }
 
@@ -746,10 +984,21 @@ export const textNode: NodeDefinition = {
     const maskSigKey = maskMode
       ? `mask:${maskImg ? "wired" : "unwired"}`
       : "no-mask";
+
+    // Image fill: fillMode "image" + a wired `fill` socket fills the glyphs
+    // with that image. Unwired (or another mode) falls back to the normal
+    // raster (the flat `color`). The active flag goes in the sig so toggling
+    // it re-renders the (different) raster layers.
+    const fillIn = inputs.fill;
+    const fillImg = fillIn && fillIn.kind === "image" ? fillIn : null;
+    const imageFillActive = (params.fillMode as string) === "image" && !!fillImg;
+
     const sig =
       computeRasterSig(params, family, ctx.width, ctx.height) +
       "|" +
-      maskSigKey;
+      maskSigKey +
+      "|imgfill:" +
+      (imageFillActive ? "1" : "0");
     const postSig = computePostSig(params);
 
     // Force re-rasterize every frame when maskDriven is in play
@@ -773,22 +1022,82 @@ export const textNode: NodeDefinition = {
         maskMode && maskImg
           ? readMaskImageData(ctx, state, maskImg, ctx.width, ctx.height)
           : null;
-      rasterize(ctx, state, params, family, maskData);
+      if (imageFillActive) {
+        // Two layers: glyph fill coverage (solid white, no stroke) and the
+        // in-raster stroke in its own color. Composited with the image below.
+        const gl = ctx.gl;
+        if (!state.fillCovTex) state.fillCovTex = makeTex(gl);
+        const baseStyle = styleFromParams(params, family);
+        renderTextLayer(
+          ctx,
+          state,
+          params,
+          { ...baseStyle, fill: { mode: "solid" }, color: "#ffffff", stroke: null },
+          maskData,
+          state.fillCovTex
+        );
+        const strokeOnly = strokeFromParams(params);
+        if (strokeOnly) {
+          if (!state.strokeLayerTex) state.strokeLayerTex = makeTex(gl);
+          renderTextLayer(
+            ctx,
+            state,
+            params,
+            {
+              ...baseStyle,
+              fill: { mode: "solid" },
+              color: "rgba(0,0,0,0)",
+              stroke: strokeOnly,
+            },
+            maskData,
+            state.strokeLayerTex
+          );
+        }
+      } else {
+        rasterize(ctx, state, params, family, maskData);
+      }
       state.lastSig = sig;
+      // Raster moved → cached sdf/spline are stale.
+      state.sdfValid = false;
+      state.splineValid = false;
     }
-    if (rasterChanged || postChanged) {
-      applyTransform(ctx, state, params);
-      // Re-run SDF on the transformed image. Released/reallocated each time
-      // so downstream gets a fresh MaskValue — the old one is freed below.
+    // Image fill re-composites every eval (the wired image may have changed
+    // even when the glyph layers did not); the flat path only re-transforms
+    // when the raster or transform params moved.
+    if (imageFillActive) {
+      const compTex = compositeImageFill(ctx, state, params, fillImg!);
+      applyTransform(ctx, state, params, compTex, false);
+      state.lastPostSig = postSig;
+      state.sdfValid = false;
+      state.splineValid = false;
+    } else if (rasterChanged || postChanged) {
+      applyTransform(ctx, state, params, state.rasterTex, true);
+      state.lastPostSig = postSig;
+      // Transform moved the glyphs → cached sdf/spline are stale.
+      state.sdfValid = false;
+      state.splineValid = false;
+    }
+
+    // The two costly aux outputs — the JFA SDF (GPU) and the marching-
+    // squares spline outline (a full-canvas readback + contour trace) —
+    // are the bulk of this node's per-frame cost. Build them lazily, only
+    // when something actually consumes that output, and only when the
+    // cache is stale. This is what keeps dragging text smooth: text →
+    // Output / Auto Layout never touches either. `consumedOutputs`
+    // undefined (non-evaluator caller) ⇒ behave as before and build both.
+    const wantSdf = !consumedOutputs || consumedOutputs.has("aux:sdf");
+    const wantSpline = !consumedOutputs || consumedOutputs.has("aux:spline");
+    if (wantSdf && !state.sdfValid) {
+      // Released/reallocated so downstream gets a fresh MaskValue.
       ctx.releaseTexture(state.sdf.texture);
       state.sdf = computeSDF(ctx, state.primary, 128);
-      // Refresh the cached spline outline by marching squares on the
-      // raster's alpha channel (text is opaque inside, transparent
-      // outside). Iso = 0.5 puts the contour on the visual edge of
-      // the glyph. CPU readback is one sync stall per text change —
-      // acceptable since text rarely animates per-frame.
+      state.sdfValid = true;
+    }
+    if (wantSpline && !state.splineValid) {
+      // Marching squares on the raster's alpha channel (opaque inside,
+      // transparent outside; iso 0.5 = the glyph edge).
       state.spline = extractTextSpline(ctx, state.primary);
-      state.lastPostSig = postSig;
+      state.splineValid = true;
     }
 
     // Wrap the JFA distance image as a real sdf-socket value so it
@@ -806,9 +1115,49 @@ export const textNode: NodeDefinition = {
       },
     };
 
+    // Auto Layout element. Measure wraps + measures to tight line bounds
+    // through the shared text-raster core; render rasterizes at exactly
+    // the granted rect (wrap width = rect width) into a caller-owned
+    // texture. Reuses the node's DOM-attached rasterCanvas — required
+    // for variable-font axis styling to resolve; safe to clobber because
+    // the primary raster was already uploaded to rasterTex, and the sig
+    // path re-rasterizes whenever the primary actually changes.
+    // maskDriven axis modulation is primary-only (mask coords are canvas
+    // space, which doesn't exist inside a layout rect).
+    const style = styleFromParams(params, family);
+    const element: ElementValue = {
+      kind: "element",
+      measure(constraints) {
+        const canvas = state.rasterCanvas;
+        const c2d = canvas.getContext("2d");
+        if (!c2d) return { width: 0, height: 0 };
+        const lines = wrapStyledLines(canvas, c2d, style, constraints.maxWidth);
+        const m = measureStyledBlock(canvas, c2d, style, lines);
+        return { width: Math.ceil(m.width), height: Math.ceil(m.height) };
+      },
+      render(rctx, width, height) {
+        const canvas = state.rasterCanvas;
+        const w = Math.max(1, Math.round(width));
+        const h = Math.max(1, Math.round(height));
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
+        const c2d = canvas.getContext("2d");
+        if (!c2d) {
+          const out = rctx.allocImage({ width: w, height: h });
+          rctx.clearTarget(out, [0, 0, 0, 0]);
+          return out;
+        }
+        c2d.clearRect(0, 0, w, h);
+        const lines = wrapStyledLines(canvas, c2d, style, w);
+        drawTextBlock(canvas, c2d, style, lines, w, h, null);
+        return uploadCanvasToImage(rctx, canvas);
+      },
+      preferredSizing: { width: "hug", height: "hug" },
+    };
+
     return {
       primary: state.primary,
-      aux: { sdf: sdfOut, spline: state.spline },
+      aux: { sdf: sdfOut, spline: state.spline, element },
     };
   },
 
@@ -817,7 +1166,11 @@ export const textNode: NodeDefinition = {
     if (!state) return;
     ctx.releaseTexture(state.primary.texture);
     ctx.releaseTexture(state.sdf.texture);
+    if (state.composite) ctx.releaseTexture(state.composite.texture);
     ctx.gl.deleteTexture(state.rasterTex);
+    if (state.fillCovTex) ctx.gl.deleteTexture(state.fillCovTex);
+    if (state.strokeLayerTex) ctx.gl.deleteTexture(state.strokeLayerTex);
+    if (state.zeroTex) ctx.gl.deleteTexture(state.zeroTex);
     if (state.rasterCanvas.parentNode) {
       state.rasterCanvas.parentNode.removeChild(state.rasterCanvas);
     }

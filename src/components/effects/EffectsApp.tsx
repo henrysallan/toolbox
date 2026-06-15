@@ -33,7 +33,13 @@ import {
   type GraphEdge,
   type GraphNode,
 } from "@/engine/evaluator";
-import { layerOpacityKey, withMaskInput } from "@/engine/conventions";
+import {
+  gpointCKey,
+  gpointXKey,
+  gpointYKey,
+  layerOpacityKey,
+  withMaskInput,
+} from "@/engine/conventions";
 import type { NodeDataPayload } from "@/state/graph";
 import { parseTargetHandleKind } from "@/state/graph";
 import {
@@ -61,8 +67,13 @@ import {
   LAYER_TYPE,
 } from "@/engine/groups";
 import { newLayerId, type MergeLayer } from "@/nodes/effect/merge";
+import { defaultAutoLayoutItem } from "@/nodes/effect/autolayout";
 import { newRenderQueueItemId } from "@/nodes/output/render-queue";
-import type { RenderQueueItem } from "@/engine/types";
+import type {
+  AutoLayoutItem,
+  GradientPoint,
+  RenderQueueItem,
+} from "@/engine/types";
 import { useHistory, useUndoShortcuts, type GraphSnapshot } from "@/state/history";
 import {
   defaultFilename,
@@ -120,8 +131,17 @@ import type { SaveState } from "./FileNameMenu";
 import TransformGizmo from "./TransformGizmo";
 import PrimitiveGizmo, {
   PRIMITIVE_GIZMO_ADAPTERS,
+  type PrimitiveGizmoEnv,
 } from "./PrimitiveGizmo";
 import SplineEditorOverlay from "./SplineEditorOverlay";
+import SegmentDotsOverlay from "./SegmentDotsOverlay";
+import GradientOverlay from "./GradientOverlay";
+import type { SegmentDot } from "@/lib/ai/segment";
+import {
+  clearLiveSegment,
+  isSegmentLocked,
+  runLiveSegment,
+} from "@/lib/ai/segment-session";
 import PointsOverlay from "./PointsOverlay";
 import WebGPUParticleOverlay from "./WebGPUParticleOverlay";
 import { resolveParticleTestCount } from "@/nodes/effect/webgpu-particle-test";
@@ -154,6 +174,24 @@ const INITIAL_EDGES: Edge[] = STARTER.edges;
 // for extensionless files.
 function fileLabel(name: string): string {
   return name.replace(/\.[^/.]+$/, "") || name;
+}
+
+// Hex → straight-alpha RGBA floats [r,g,b,a] in 0..1 — the form the keyframe
+// engine interpolates colors in. Used to store a multipoint gradient point's
+// color keyframe value from its hex (see the gradient_points autokey mirror).
+function hexToRgba01Tuple(hex: string): [number, number, number, number] {
+  const h = (hex || "#ffffff").replace("#", "");
+  const s = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const r = parseInt(s.slice(0, 2), 16);
+  const g = parseInt(s.slice(2, 4), 16);
+  const b = parseInt(s.slice(4, 6), 16);
+  const a = s.length >= 8 ? parseInt(s.slice(6, 8), 16) : 255;
+  return [
+    (Number.isFinite(r) ? r : 255) / 255,
+    (Number.isFinite(g) ? g : 255) / 255,
+    (Number.isFinite(b) ? b : 255) / 255,
+    (Number.isFinite(a) ? a : 255) / 255,
+  ];
 }
 
 // Fingerprint that ignores positions.
@@ -614,6 +652,15 @@ function EffectsShell({
 
   const backendRef = useRef<EngineBackend | null>(null);
   const evalCacheRef = useRef<EvalCache>(new Map());
+  // Outputs map from the most recent evaluateGraph pass. The eval cache
+  // only holds STABLE nodes — uncacheable sources (Video, Webcam: stable:
+  // false) never land there, so panel-side readers (getRefImageBlob, the
+  // Segment bake driver) fall back to this for their pixels. Holding the
+  // ref also pins the transient output textures (they're GC-freed once
+  // unreferenced), so a one-frame-old read stays valid.
+  const lastEvalOutputsRef = useRef<ReturnType<
+    typeof evaluateGraph
+  >["outputs"] | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   // Second preview canvas, only mounted in split-viewport mode. Driven
   // by the same evaluator on each tick — see renderFrame for the
@@ -1095,6 +1142,7 @@ function EffectsShell({
         inspectSet.size > 0 ? inspectSet : undefined,
         previewNodeId
       );
+      lastEvalOutputsRef.current = result.outputs;
       // Bail when the error set is unchanged. evaluateGraph returns a
       // fresh object every frame, so a naive setErrors(result.errors)
       // changes the reference every render — and triggers the
@@ -1390,15 +1438,76 @@ function EffectsShell({
         );
       }
 
+      // Auto Layout slots accept the `element` type. Two affordances when
+      // a wire lands on a slot:
+      let conn = connection;
+      const alSlotId = conn.targetHandle?.startsWith("in:item:")
+        ? conn.targetHandle.slice("in:item:".length)
+        : null;
+      if (alSlotId && targetNode?.data.defType === "autolayout") {
+        // 1. Redirect a primary IMAGE wire to the source's `element` aux
+        //    when it has one (Image Source, Frame, Circle, Rectangle,
+        //    Text...). The element output carries the raw, intrinsically-
+        //    sized content and ignores the source's own canvas fit /
+        //    transform — which is what you want inside a layout. The image
+        //    output bakes those in (a full-canvas texture), so wiring it
+        //    leaks the upstream framing downstream. Generic images (Blur,
+        //    Merge, …) have no element aux and fall through to the
+        //    image→element coercion unchanged.
+        if (
+          conn.sourceHandle === "out:primary" &&
+          sourceNode?.data.primaryOutput === "image" &&
+          sourceNode.data.auxOutputs?.some(
+            (a) => a.name === "element" && a.type === "element"
+          )
+        ) {
+          conn = { ...conn, sourceHandle: "out:aux:element" };
+        }
+        // 2. Honor the source element's advisory preferredSizing the first
+        //    time a wire lands. Image Source's element is bitmap-px (far
+        //    larger than the layout wants), so its slot defaults to fixed;
+        //    everything else keeps the hug/hug default. Slots the user
+        //    already retyped are left alone.
+        if (
+          conn.sourceHandle === "out:aux:element" &&
+          sourceNode?.data.defType === "image-source"
+        ) {
+          setNodes((prev) =>
+            prev.map((n) => {
+              if (n.id !== targetNode.id) return n;
+              const items = (n.data.params.items as AutoLayoutItem[]) ?? [];
+              const nextItems = items.map((it) =>
+                it.id === alSlotId &&
+                it.widthMode === "hug" &&
+                it.heightMode === "hug"
+                  ? {
+                      ...it,
+                      widthMode: "fixed" as const,
+                      heightMode: "fixed" as const,
+                    }
+                  : it
+              );
+              return {
+                ...n,
+                data: {
+                  ...n.data,
+                  params: { ...n.data.params, items: nextItems },
+                },
+              };
+            })
+          );
+        }
+      }
+
       setEdges((eds) => {
         const filtered = eds.filter(
           (e) =>
             !(
-              e.target === connection.target &&
-              e.targetHandle === connection.targetHandle
+              e.target === conn.target &&
+              e.targetHandle === conn.targetHandle
             )
         );
-        return addEdge(connection, filtered);
+        return addEdge(conn, filtered);
       });
     },
     [setEdges, setNodes, pushGraph, getGraphSnapshot]
@@ -1622,14 +1731,18 @@ function EffectsShell({
   // ref_a/b/c sockets and ship the bytes to OpenAI as input_image
   // content parts on each turn.
   //
-  // Reads the most-recent eval cache entry rather than re-running
-  // the upstream node — the source's bitmap is whatever the
-  // pipeline produced on the last frame, which is what the user
-  // sees on the canvas (and what they intend to feed to the model).
+  // Reads the most-recent eval result rather than re-running the
+  // upstream node — the source's bitmap is whatever the pipeline
+  // produced on the last frame, which is what the user sees on the
+  // canvas (and what they intend to feed to the model). The eval cache
+  // covers stable nodes; uncacheable sources (Video, Webcam) are read
+  // from the last pass's outputs map instead.
   const getRefImageBlob = useCallback(
     async (sourceNodeId: string): Promise<Blob | null> => {
       const entry = evalCacheRef.current.get(sourceNodeId);
-      const primary = entry?.output.primary;
+      const primary =
+        entry?.output.primary ??
+        lastEvalOutputsRef.current?.get(sourceNodeId)?.primary;
       if (!primary || primary.kind !== "image") return null;
       const backend = backendRef.current;
       if (!backend) return null;
@@ -1812,6 +1925,8 @@ function EffectsShell({
               if ((s === "image" || s === "mask") && t === "scalar")
                 return true;
               if (s === "audio" && t === "scalar") return true;
+              if (s === "image" && t === "element") return true;
+              if (s === "element" && t === "image") return true;
               return false;
             };
             for (const i of resolvedInputs) {
@@ -1834,10 +1949,32 @@ function EffectsShell({
           }
 
           if (targetInput) {
+            // Dragging a primary IMAGE wire into a fresh Auto Layout slot:
+            // prefer the source's `element` aux (raw, intrinsically sized,
+            // no baked-in canvas fit) over the image→element coercion —
+            // mirrors the redirect in onConnect.
+            let autoSourceHandle = pendingWire.sourceHandle;
+            if (
+              def.type === "autolayout" &&
+              targetInput.startsWith("item:") &&
+              pendingWire.sourceHandle === "out:primary" &&
+              pendingWire.sourceType === "image"
+            ) {
+              const src = nodesRef.current.find(
+                (n) => n.id === pendingWire.sourceNodeId
+              );
+              if (
+                src?.data.auxOutputs?.some(
+                  (a) => a.name === "element" && a.type === "element"
+                )
+              ) {
+                autoSourceHandle = "out:aux:element";
+              }
+            }
             autoEdge = {
               id: `e-auto-${pendingWire.sourceNodeId}-${newNode.id}-${targetInput}`,
               source: pendingWire.sourceNodeId,
-              sourceHandle: pendingWire.sourceHandle,
+              sourceHandle: autoSourceHandle,
               target: newNode.id,
               targetHandle: `in:${targetInput}`,
             };
@@ -2631,6 +2768,41 @@ function EffectsShell({
                 }
               }
             }
+            // Per-point x/y/color auto-keyframe (multipoint Gradient): an edit
+            // to the gradient_points array mirrors each changed sub-value into
+            // its virtual block when that block is animated. Color is stored
+            // as an RGBA tuple to match the keyframe engine's color interp.
+            if (pdefType === "gradient_points") {
+              const before =
+                (n.data.params[paramName] as GradientPoint[] | undefined) ?? [];
+              for (const pt of value as GradientPoint[]) {
+                const prev = before.find((b) => b.id === pt.id);
+                if (!prev) continue;
+                const tryKey = (
+                  key: string,
+                  changed: boolean,
+                  kfValue: unknown
+                ) => {
+                  if (!changed) return;
+                  const blk = nextAnimation?.[key];
+                  if (blk?.animated) {
+                    nextAnimation = {
+                      ...nextAnimation,
+                      [key]: upsertKeyframe(blk, tickAtEdit, kfValue, "easeInOut"),
+                    };
+                  }
+                };
+                tryKey(gpointXKey(pt.id), prev.x !== pt.x, pt.x);
+                tryKey(gpointYKey(pt.id), prev.y !== pt.y, pt.y);
+                tryKey(
+                  gpointCKey(pt.id),
+                  prev.color !== pt.color,
+                  hexToRgba01Tuple(
+                    typeof pt.color === "string" ? pt.color : "#ffffff"
+                  )
+                );
+              }
+            }
           }
           const nextParams = { ...n.data.params, [paramName]: value };
           const def = getNodeDef(n.data.defType);
@@ -2996,6 +3168,7 @@ function EffectsShell({
         detail.kind === "toggleActive2" ||
         detail.kind === "toggleBypass" ||
         detail.kind === "mergeAddLayer" ||
+        detail.kind === "autolayoutAddItem" ||
         detail.kind === "queueAddItem" ||
         detail.kind === "trailsReset"
       ) {
@@ -3065,6 +3238,35 @@ function EffectsShell({
             ];
             const def = getNodeDef(n.data.defType);
             const nextParams = { ...n.data.params, layers: nextLayers };
+            const resolved = def?.resolveInputs?.(nextParams);
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                params: nextParams,
+                inputs: resolved
+                  ? withMaskInput(resolved, def).map((i) => ({
+                      name: i.name,
+                      label: i.label,
+                      type: i.type,
+                      hidden: i.hidden,
+                    }))
+                  : n.data.inputs,
+              },
+            };
+          })
+        );
+      } else if (detail.kind === "autolayoutAddItem") {
+        setNodes((prev) =>
+          prev.map((n) => {
+            if (n.id !== detail.id) return n;
+            const current = (n.data.params.items as AutoLayoutItem[]) ?? [];
+            const nextItems: AutoLayoutItem[] = [
+              ...current,
+              defaultAutoLayoutItem(),
+            ];
+            const def = getNodeDef(n.data.defType);
+            const nextParams = { ...n.data.params, items: nextItems };
             const resolved = def?.resolveInputs?.(nextParams);
             return {
               ...n,
@@ -4001,6 +4203,67 @@ function EffectsShell({
       }
     },
     [getOutputParams]
+  );
+
+  // Step the offline clock through a list of frames and hand the upstream
+  // node's rendered pixels to a callback at each one — the Segment node's
+  // bake driver. Same deterministic two-pass render as the offline
+  // exporters (issue async media seeks, await settle, render again), but
+  // reading a specific node's output instead of the canvas. The callback
+  // may be slow (ML inference per frame) — the clock simply waits; return
+  // false from it to stop early.
+  const captureNodeFrames = useCallback(
+    async (
+      sourceNodeId: string,
+      frames: number[],
+      onFrame: (frame: number, blob: Blob) => Promise<boolean | void>
+    ): Promise<void> => {
+      const fps = fpsRef.current;
+      const savedTime = timeRef.current;
+      const savedPlaying = playingRef.current;
+      setPlaying(false);
+      offlineRenderingRef.current = true;
+      try {
+        for (const frame of frames) {
+          const t = Math.max(0, frame) / Math.max(1, fps);
+          setTime(t);
+          const backend = backendRef.current;
+          renderFrameRef.current?.(t, fps, true);
+          const settled = backend
+            ? await awaitMediaSettle(backend.state)
+            : false;
+          if (settled) renderFrameRef.current?.(t, fps, true);
+          await new Promise<void>((r) => requestAnimationFrame(() => r()));
+          // Stable upstreams live in the eval cache; uncacheable ones
+          // (Video/Webcam) only exist in the last pass's outputs map.
+          const entry = evalCacheRef.current.get(sourceNodeId);
+          const primary =
+            entry?.output.primary ??
+            lastEvalOutputsRef.current?.get(sourceNodeId)?.primary;
+          if (!primary || primary.kind !== "image" || !backend) {
+            throw new Error(
+              "Couldn't read the upstream image — make the Segment node's chain visible on the canvas (set it or a downstream node Active), then retry."
+            );
+          }
+          const blitCtx = backend.makeContext(0, 0);
+          const tmp = document.createElement("canvas");
+          tmp.width = primary.width;
+          tmp.height = primary.height;
+          blitCtx.blitToCanvas(primary, tmp);
+          const blob = await new Promise<Blob | null>((res) =>
+            tmp.toBlob((b) => res(b), "image/png")
+          );
+          if (!blob) throw new Error("Failed to read frame pixels.");
+          const cont = await onFrame(frame, blob);
+          if (cont === false) break;
+        }
+      } finally {
+        offlineRenderingRef.current = false;
+        setPlaying(savedPlaying);
+        setTime(savedTime);
+      }
+    },
+    []
   );
 
   // Resolve a Render Queue node into its ordered rows, each paired with the
@@ -5105,8 +5368,9 @@ function EffectsShell({
 
   // Show the pivot gizmo for any selected node whose definition opts in via
   // `supportsTransformGizmo` and exposes the expected param names. Today
-  // that's Transform and Text, but new nodes can participate by flipping
-  // the flag without any changes here.
+  // that's Transform and SVG Source; Text and Auto Layout use the bounds
+  // gizmo instead (PRIMITIVE_GIZMO_ADAPTERS), which resizes against an
+  // anchored opposite edge rather than scaling around a pivot.
   const activeTransformNode = selectedId
     ? nodes.find((n) => {
         if (n.id !== selectedId) return false;
@@ -5130,6 +5394,48 @@ function EffectsShell({
   const activeSplineNode = selectedId
     ? nodes.find(
         (n) => n.id === selectedId && n.data.defType === "spline-draw"
+      )
+    : undefined;
+
+  // Gradient handle overlay: active for a selected Gradient node in linear,
+  // radial, or multipoint mode (polar/wave have no positional handles yet).
+  const activeGradientNode = selectedId
+    ? nodes.find((n) => {
+        if (n.id !== selectedId || n.data.defType !== "gradient") return false;
+        const m = (n.data.params.mode as string) ?? "linear";
+        return m === "linear" || m === "radial" || m === "multipoint";
+      })
+    : undefined;
+
+  // The spline to show in the pen-tool overlay at the current playhead. When
+  // "Path Animation" is keyframed, that's the interpolated shape (so the
+  // editor handles sit on the rendered/animated curve and on-canvas edits
+  // branch from what's displayed — autokey then writes a keyframe here);
+  // otherwise the stored constant.
+  const activeSplineValue: SplineParamValue | null = (() => {
+    if (!activeSplineNode) return null;
+    const stored =
+      (activeSplineNode.data.params.spline as SplineParamValue | undefined) ?? {
+        subpaths: [{ anchors: [], closed: false }],
+      };
+    const block = activeSplineNode.data.animation?.spline;
+    if (block && block.animated && block.keyframes.length > 0) {
+      const v = evaluateKeyframesAt(block, "spline_anchors", currentTick);
+      if (v) return v as SplineParamValue;
+    }
+    return stored;
+  })();
+
+  // Dot-prompt overlay: active whenever a Segment Anything node in dots
+  // mode is selected (the auto modes are point-free). Clicks place/remove
+  // dots; each edit re-runs the live (single-frame) segmentation against
+  // the upstream image.
+  const activeSegmentNode = selectedId
+    ? nodes.find(
+        (n) =>
+          n.id === selectedId &&
+          n.data.defType === "segment-anything" &&
+          ((n.data.params.mode as string) ?? "dots") === "dots"
       )
     : undefined;
 
@@ -5283,6 +5589,10 @@ function EffectsShell({
       projectId={currentProject?.id ?? null}
       edges={edges}
       getRefImageBlob={getRefImageBlob}
+      captureNodeFrames={captureNodeFrames}
+      sceneFrames={
+        loopFrames != null && loopFrames > 0 ? loopFrames : fps * 5
+      }
       queueRender={
         queueProgress
           ? {
@@ -5843,13 +6153,41 @@ function EffectsShell({
             <SplineEditorOverlay
               canvas={canvasRef.current}
               value={
-                (activeSplineNode.data.params.spline as SplineParamValue) ?? {
+                activeSplineValue ?? {
                   subpaths: [{ anchors: [], closed: false }],
                 }
               }
               onChange={(next) =>
                 onParamChange(activeSplineNode.id, "spline", next)
               }
+            />
+          )}
+          {activeSegmentNode && backendReady && (
+            <SegmentDotsOverlay
+              canvas={canvasRef.current}
+              dots={
+                (activeSegmentNode.data.params.dots as SegmentDot[]) ?? []
+              }
+              locked={isSegmentLocked(activeSegmentNode.id)}
+              onChange={(next) => {
+                const id = activeSegmentNode.id;
+                onParamChange(id, "dots", next);
+                // Re-segment immediately so the cutout tracks each click.
+                // The session queue is latest-wins, so rapid clicks
+                // converge on the final dot set.
+                if (next.length === 0) {
+                  clearLiveSegment(id);
+                  return;
+                }
+                const inEdge = edgesRef.current.find(
+                  (e) => e.target === id && e.targetHandle === "in:image"
+                );
+                if (inEdge) {
+                  void runLiveSegment(id, next, () =>
+                    getRefImageBlob(inEdge.source)
+                  );
+                }
+              }}
             />
           )}
           {activeTransformNode && backendReady && (() => {
@@ -5950,7 +6288,28 @@ function EffectsShell({
               const raw = node.data.params[name];
               return typeof raw === "number" ? raw : fallback;
             };
-            const { cx, cy, hx, hy } = adapter.read(get);
+            // Solved container px size — lets Auto Layout's hug axes
+            // display their actual bounds. The aux element's measure is
+            // pure CPU; the cache entry is from the latest eval.
+            let solvedSize: { width: number; height: number } | null = null;
+            if (node.data.defType === "autolayout") {
+              const out = evalCacheRef.current.get(node.id)?.output;
+              const el = out?.aux?.element;
+              if (el && el.kind === "element") {
+                try {
+                  solvedSize = el.measure({});
+                } catch {
+                  solvedSize = null;
+                }
+              }
+            }
+            const env: PrimitiveGizmoEnv = {
+              canvasWidth: canvasRes[0],
+              canvasHeight: canvasRes[1],
+              getRaw: (name) => node.data.params[name],
+              solvedSize,
+            };
+            const { cx, cy, hx, hy } = adapter.read(get, env);
             return (
               <PrimitiveGizmo
                 canvas={canvasRef.current}
@@ -5958,12 +6317,80 @@ function EffectsShell({
                 cy={cy}
                 hx={hx}
                 hy={hy}
+                anchorResize={adapter.anchorResize}
                 onChange={(patch) => {
                   const id = node.id;
                   const key = `gizmo:${id}`;
-                  for (const [name, value] of adapter.write(patch)) {
+                  for (const [name, value] of adapter.write(patch, env)) {
                     onParamChange(id, name, value, key);
                   }
+                }}
+              />
+            );
+          })()}
+          {/* Gradient handles — linear endpoints (line + 2 dots) or the
+              radial center/radius. Reads keyframe-aware params; writes
+              coalesce into one undo entry per drag. Gradient param space is
+              Y-up UV; the overlay flips Y. */}
+          {activeGradientNode && backendReady && (() => {
+            const node = activeGradientNode;
+            const animMap = node.data.animation;
+            const get = (name: string, fallback: number): number => {
+              const block = animMap?.[name];
+              if (block && block.animated && block.keyframes.length > 0) {
+                const v = evaluateKeyframesAt(block, "scalar", currentTick);
+                if (typeof v === "number") return v;
+              }
+              const raw = node.data.params[name];
+              return typeof raw === "number" ? raw : fallback;
+            };
+            const rawMode = (node.data.params.mode as string) ?? "linear";
+            const mode =
+              rawMode === "radial"
+                ? "radial"
+                : rawMode === "multipoint"
+                  ? "multipoint"
+                  : "linear";
+            // Multipoint dots: positions are keyframe-effective (per-point
+            // virtual gpoint_x/y tracks), colors are the stored hex.
+            const storedPoints =
+              (node.data.params.points as GradientPoint[] | undefined) ?? [];
+            const effPoints = storedPoints.map((pt) => ({
+              id: pt.id,
+              x: get(gpointXKey(pt.id), pt.x),
+              y: get(gpointYKey(pt.id), pt.y),
+              color: typeof pt.color === "string" ? pt.color : "#ffffff",
+            }));
+            return (
+              <GradientOverlay
+                canvas={canvasRef.current}
+                mode={mode}
+                startX={get("start_x", 0)}
+                startY={get("start_y", 0.5)}
+                endX={get("end_x", 1)}
+                endY={get("end_y", 0.5)}
+                centerX={get("center_x", 0.5)}
+                centerY={get("center_y", 0.5)}
+                radius={get("radius", 0.5)}
+                points={effPoints}
+                onChange={(updates) => {
+                  const id = node.id;
+                  const key = `gizmo:${id}`;
+                  for (const [name, value] of updates) {
+                    onParamChange(id, name, value, key);
+                  }
+                }}
+                onPointChange={(pointId, x, y) => {
+                  // Update only the dragged point's x/y in the STORED array
+                  // (not the effective positions), so other keyframed points
+                  // aren't baked. Autokey mirrors x/y when their tracks are on.
+                  const stored =
+                    (node.data.params.points as GradientPoint[] | undefined) ??
+                    [];
+                  const next = stored.map((p) =>
+                    p.id === pointId ? { ...p, x, y } : p
+                  );
+                  onParamChange(node.id, "points", next, `gizmo:${node.id}`);
                 }}
               />
             );

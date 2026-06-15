@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Fragment,
   useEffect,
   useMemo,
   useRef,
@@ -11,6 +10,7 @@ import {
 import type { SplineAnchor, SplineSubpath } from "@/engine/types";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
 import { aspectCorrectY, aspectUncorrectY } from "@/engine/aspect";
+import { getShortcutScope } from "./shortcut-scope";
 
 // The overlay authors exactly one subpath — the first in the SplineParamValue.
 // Multi-subpath authoring (Figma-style compound paths) is a later concern;
@@ -29,17 +29,24 @@ const EDIT_SUBPATH = 0;
 // Two tool modes:
 //   - "add"     — pen tool; background click creates an anchor; quick click
 //                 on an existing anchor toggles corner ↔ smooth (or closes
-//                 the loop on the first anchor of an open path)
+//                 the loop on the first anchor of an open path). A dotted
+//                 rubber-band previews the next segment from the last anchor
+//                 to the cursor (curved if the last anchor has an out handle).
 //   - "select"  — edit tool; clicks select anchors instead of toggling
 //                 their bezier state. Shift-click extends the selection;
-//                 click+drag on empty space draws a marquee that picks up
-//                 every anchor inside on release. Drag on a selected
-//                 anchor moves the whole selection together. Delete /
-//                 Backspace removes every selected anchor.
+//                 click+drag on empty space draws a marquee. Drag on a
+//                 selected anchor moves the whole selection. Grab a curve
+//                 *segment* (not an anchor/handle) to bend it directly —
+//                 the two interior controls move via a minimum-norm
+//                 least-squares solve so the curve passes under the cursor
+//                 while the anchors stay pinned. Delete / Backspace removes
+//                 every selected anchor.
 //
 // Handle gestures (drag to reshape, right-click to drop a handle) work
-// identically in both modes. Right-click on an anchor still deletes that
-// single anchor in either mode.
+// identically in both modes. Smooth anchors mirror their handles on drag;
+// Alt-drag *breaks* the anchor (persistently) so the two handles move
+// independently. Right-click an anchor for a context menu (delete / align /
+// even handles); right-click a handle to drop just that handle.
 
 type ToolMode = "add" | "select";
 
@@ -49,19 +56,38 @@ interface Props {
   onChange: (next: SplineParamValue) => void;
 }
 
-const ANCHOR_R = 5;
-const HANDLE_R = 4;
+// Visual sizing. Anchors are intentionally small and outlined (blue stroke,
+// faint fill); corner anchors (no handles) draw as squares, smooth/handled
+// anchors as circles — matching Illustrator/AE pen-tool affordances.
+const ANCHOR_R = 4; // circle radius for handled (smooth) anchors
+const ANCHOR_SQUARE = 7; // square side for corner anchors (no handles)
+const HANDLE_R = 3; // handle dot radius
 // Hidden hit-target radius around each anchor / handle. Larger than
 // the visual dot so users don't have to be pixel-perfect, and so a
 // small wiggle during a click doesn't trip the drag threshold and
 // suppress the corner ↔ smooth toggle.
 const ANCHOR_HIT_R = 11;
 const HANDLE_HIT_R = 9;
+// px stroke width of the invisible per-segment hit path used for hover +
+// direct segment dragging in select mode.
+const SEGMENT_HIT_W = 12;
 // px; below this a pointerup counts as a click. Bumped well above
 // the visible dot radii so trackpad jitter and mouse wobble during
 // a rapid double-click don't trip into drag mode and suppress the
 // corner ↔ smooth toggle.
 const DRAG_THRESHOLD = 10;
+
+// Palette.
+const COL_STROKE = "#3b82f6"; // anchor outline (blue)
+const COL_FILL = "rgba(59, 130, 246, 0.18)"; // low-opacity anchor fill
+const COL_SEL_STROKE = "#f59e0b"; // selected anchor outline (amber)
+const COL_SEL_FILL = "rgba(245, 158, 11, 0.25)";
+const COL_PATH = "#22d3ee"; // authored-curve preview
+const COL_HANDLE_LINE = "#60a5fa"; // anchor → handle connector
+const COL_HANDLE_FILL = "#3b82f6";
+const COL_HANDLE_STROKE = "#dbeafe";
+const COL_SEG_HOVER = "#22d3ee"; // highlighted segment under cursor
+const COL_RUBBER = "#22d3ee"; // dotted next-segment preview
 
 type DragState =
   | {
@@ -90,6 +116,17 @@ type DragState =
       startClient: { x: number; y: number };
     }
   | {
+      // Direct segment drag: bend the cubic between anchors i and j by
+      // moving its two interior controls. t (the grabbed parameter) is
+      // cached at drag-start so the curve doesn't slide under the cursor.
+      kind: "segment";
+      seg: number;
+      i: number;
+      j: number;
+      t: number;
+      startClient: { x: number; y: number };
+    }
+  | {
       kind: "marquee";
       // Client-coord rect anchored at the press; updated on move.
       startClient: { x: number; y: number };
@@ -99,6 +136,134 @@ type DragState =
       additive: boolean;
       baseSelection: Set<number>;
     };
+
+// --- pure bezier helpers (px or norm, caller-consistent) -------------------
+
+function bezierAt(
+  p0: [number, number],
+  p1: [number, number],
+  p2: [number, number],
+  p3: [number, number],
+  t: number
+): [number, number] {
+  const u = 1 - t;
+  const w0 = u * u * u;
+  const w1 = 3 * u * u * t;
+  const w2 = 3 * u * t * t;
+  const w3 = t * t * t;
+  return [
+    w0 * p0[0] + w1 * p1[0] + w2 * p2[0] + w3 * p3[0],
+    w0 * p0[1] + w1 * p1[1] + w2 * p2[1] + w3 * p3[1],
+  ];
+}
+
+// Coarse-to-fine nearest-point projection onto a cubic. Returns the
+// parameter t minimizing distance to `target`. Operates in whatever space
+// the control points are given in (we feed it pixels so "nearest" matches
+// what the user sees on a non-square canvas).
+function nearestTOnCubic(
+  p0: [number, number],
+  p1: [number, number],
+  p2: [number, number],
+  p3: [number, number],
+  target: [number, number]
+): number {
+  const dist2 = (t: number) => {
+    const b = bezierAt(p0, p1, p2, p3, t);
+    const dx = b[0] - target[0];
+    const dy = b[1] - target[1];
+    return dx * dx + dy * dy;
+  };
+  let bestT = 0;
+  let bestD = Infinity;
+  const N = 24;
+  for (let k = 0; k <= N; k++) {
+    const t = k / N;
+    const d = dist2(t);
+    if (d < bestD) {
+      bestD = d;
+      bestT = t;
+    }
+  }
+  const lo = Math.max(0, bestT - 1 / N);
+  const hi = Math.min(1, bestT + 1 / N);
+  const M = 20;
+  for (let k = 0; k <= M; k++) {
+    const t = lo + ((hi - lo) * k) / M;
+    const d = dist2(t);
+    if (d < bestD) {
+      bestD = d;
+      bestT = t;
+    }
+  }
+  return bestT;
+}
+
+const vlen = (v: [number, number]) => Math.hypot(v[0], v[1]);
+
+// Common tangent axis (unit) for an anchor's handles: average of the out
+// direction and the negated in direction (both point "along" the tangent).
+function handleAxis(a: SplineAnchor): [number, number] | null {
+  let ax = 0;
+  let ay = 0;
+  if (a.outHandle) {
+    const m = vlen(a.outHandle) || 1;
+    ax += a.outHandle[0] / m;
+    ay += a.outHandle[1] / m;
+  }
+  if (a.inHandle) {
+    const m = vlen(a.inHandle) || 1;
+    ax += -a.inHandle[0] / m;
+    ay += -a.inHandle[1] / m;
+  }
+  const m = Math.hypot(ax, ay);
+  if (m < 1e-6) {
+    // Handles already directly opposed (cancel out) or degenerate — fall
+    // back to whichever handle exists.
+    if (a.outHandle) {
+      const om = vlen(a.outHandle) || 1;
+      return [a.outHandle[0] / om, a.outHandle[1] / om];
+    }
+    if (a.inHandle) {
+      const im = vlen(a.inHandle) || 1;
+      return [-a.inHandle[0] / im, -a.inHandle[1] / im];
+    }
+    return null;
+  }
+  return [ax / m, ay / m];
+}
+
+// "Align handles": make the two handles collinear (opposite directions),
+// keeping each one's current length. Re-links the anchor to smooth.
+function alignHandles(a: SplineAnchor): SplineAnchor {
+  if (!a.inHandle && !a.outHandle) return a;
+  const axis = handleAxis(a);
+  if (!axis) return a;
+  const next: SplineAnchor = { ...a, broken: false };
+  const lOut = a.outHandle ? vlen(a.outHandle) : a.inHandle ? vlen(a.inHandle) : 0;
+  const lIn = a.inHandle ? vlen(a.inHandle) : a.outHandle ? vlen(a.outHandle) : 0;
+  next.outHandle = [axis[0] * lOut, axis[1] * lOut];
+  next.inHandle = [-axis[0] * lIn, -axis[1] * lIn];
+  return next;
+}
+
+// "Even handles": collinear AND equal length (a perfect mirror), using the
+// average of the present handle lengths. Re-links the anchor to smooth.
+function evenHandles(a: SplineAnchor): SplineAnchor {
+  if (!a.inHandle && !a.outHandle) return a;
+  const axis = handleAxis(a);
+  if (!axis) return a;
+  const lens: number[] = [];
+  if (a.outHandle) lens.push(vlen(a.outHandle));
+  if (a.inHandle) lens.push(vlen(a.inHandle));
+  const L = lens.reduce((s, x) => s + x, 0) / lens.length;
+  return {
+    ...a,
+    broken: false,
+    outHandle: [axis[0] * L, axis[1] * L],
+    inHandle: [-axis[0] * L, -axis[1] * L],
+  };
+}
 
 export default function SplineEditorOverlay({
   canvas,
@@ -111,14 +276,33 @@ export default function SplineEditorOverlay({
   onChangeRef.current = onChange;
 
   const [rect, setRect] = useState<DOMRect | null>(null);
+  // Rect of the canvas's containing viewport panel (its parent). The tool
+  // dock anchors to this so it sits at the panel's corner rather than the
+  // letterboxed canvas edge, which can be inset on non-matching aspects.
+  const [hostRect, setHostRect] = useState<DOMRect | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [tool, setTool] = useState<ToolMode>("add");
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
+  // Segment under the cursor in select mode (index into the segment list),
+  // and the live cursor position used for the add-mode rubber band.
+  const [hoverSeg, setHoverSeg] = useState<number | null>(null);
+  const [hoverPx, setHoverPx] = useState<{ x: number; y: number } | null>(null);
+  // Right-click context menu anchored at a client position for one anchor.
+  const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(
+    null
+  );
   // Mirror selection in a ref so the long-running pointermove handler in
   // the drag effect can read the latest set without re-binding when the
   // selection changes mid-gesture.
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  // The most recently touched anchor (created / clicked / dragged / right-
+  // clicked). Drives contextual Delete when nothing is selected — "delete
+  // the point near where I was last working" rather than the graph node.
+  const lastAnchorRef = useRef<number | null>(null);
+  // Shift toggles the add-mode "insert on path" affordance (snap a preview
+  // point to the nearest spot on an existing segment; click inserts there).
+  const [shiftHeld, setShiftHeld] = useState(false);
 
   // P / V switch modes — matching the Photoshop/Figma convention. Skipped
   // while focus is in a text field so typing into the param panel doesn't
@@ -137,13 +321,33 @@ export default function SplineEditorOverlay({
       }
       if (e.key === "p" || e.key === "P") setTool("add");
       else if (e.key === "v" || e.key === "V") setTool("select");
-      else if (e.key === "Escape") setSelected(new Set());
-      else if (e.key === "Delete" || e.key === "Backspace") {
-        const cur = selectedRef.current;
-        if (cur.size === 0) return;
-        e.preventDefault();
-        deleteAnchorIndices(cur);
+      else if (e.key === "Escape") {
         setSelected(new Set());
+        setMenu(null);
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        // Contextual delete: only act when the spline canvas is the last
+        // clicked region (scope "spline"). Otherwise let the node editor's
+        // window handler delete the selected graph node instead — pressing
+        // Delete while working in the graph must still remove the node.
+        if (getShortcutScope() !== "spline") return;
+        const anchorsNow = readAnchors(valueRef.current);
+        if (anchorsNow.length === 0) return;
+        e.preventDefault();
+        const sel = selectedRef.current;
+        if (sel.size > 0) {
+          deleteAnchorIndices(sel);
+          setSelected(new Set());
+        } else {
+          // No selection (typical in add mode): delete the point near where
+          // the user last worked, falling back to the most recent anchor.
+          const li = lastAnchorRef.current;
+          const idx =
+            li != null && li >= 0 && li < anchorsNow.length
+              ? li
+              : anchorsNow.length - 1;
+          deleteAnchor(idx);
+        }
+        lastAnchorRef.current = null;
       }
     };
     window.addEventListener("keydown", onKey);
@@ -151,17 +355,45 @@ export default function SplineEditorOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Track the Shift key for the add-mode insert-on-path affordance. Cleared
+  // on blur so a tab-away mid-hold doesn't leave it stuck on.
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === "Shift") setShiftHeld(true);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key === "Shift") setShiftHeld(false);
+    };
+    const blur = () => setShiftHeld(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
+
   // Track the canvas's on-screen rectangle the same way TransformGizmo does —
-  // ResizeObserver catches splitter resizes and zoom-to-fit changes.
+  // ResizeObserver catches splitter resizes and zoom-to-fit changes. Also
+  // track the parent panel rect (for docking the toolbar); observe both since
+  // the panel can resize without the letterboxed canvas changing size.
   useEffect(() => {
     if (!canvas) {
       setRect(null);
+      setHostRect(null);
       return;
     }
-    const update = () => setRect(canvas.getBoundingClientRect());
+    const host = canvas.parentElement;
+    const update = () => {
+      setRect(canvas.getBoundingClientRect());
+      setHostRect((host ?? canvas).getBoundingClientRect());
+    };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(canvas);
+    if (host) ro.observe(host);
     window.addEventListener("resize", update);
     window.addEventListener("scroll", update, true);
     return () => {
@@ -211,9 +443,7 @@ export default function SplineEditorOverlay({
   ): SplineParamValue => {
     const subpaths = subpathsOf(cur);
     const base: SplineSubpath[] =
-      subpaths.length > 0
-        ? subpaths
-        : [{ anchors: [], closed: false }];
+      subpaths.length > 0 ? subpaths : [{ anchors: [], closed: false }];
     return {
       ...cur,
       subpaths: base.map((s, i) =>
@@ -268,11 +498,136 @@ export default function SplineEditorOverlay({
     return anchors.length;
   };
 
+  // Project a client point onto the nearest spot on any segment of the path.
+  // Returns the segment endpoints (i, j) and parameter t plus the projected
+  // px point, or null when there are no segments. Used for the shift-insert
+  // affordance in add mode.
+  const findInsertOnSpline = (
+    cx: number,
+    cy: number
+  ): { i: number; j: number; t: number; x: number; y: number } | null => {
+    const sub = subpathsOf(valueRef.current)[EDIT_SUBPATH];
+    const anchors = sub?.anchors ?? [];
+    const closed = sub?.closed ?? false;
+    const n = anchors.length;
+    const count = closed ? n : n - 1;
+    if (count < 1) return null;
+    let best: { i: number; j: number; t: number; x: number; y: number; d: number } | null =
+      null;
+    for (let s = 0; s < count; s++) {
+      const i = s;
+      const j = (s + 1) % n;
+      const A = anchors[i];
+      const B = anchors[j];
+      const p0 = normToPx(A.pos);
+      const p1 = A.outHandle
+        ? normToPx([A.pos[0] + A.outHandle[0], A.pos[1] + A.outHandle[1]])
+        : p0;
+      const p3 = normToPx(B.pos);
+      const p2 = B.inHandle
+        ? normToPx([B.pos[0] + B.inHandle[0], B.pos[1] + B.inHandle[1]])
+        : p3;
+      const c0: [number, number] = [p0.x, p0.y];
+      const c1: [number, number] = [p1.x, p1.y];
+      const c2: [number, number] = [p2.x, p2.y];
+      const c3: [number, number] = [p3.x, p3.y];
+      const t = nearestTOnCubic(c0, c1, c2, c3, [cx, cy]);
+      const b = bezierAt(c0, c1, c2, c3, t);
+      const d = Math.hypot(b[0] - cx, b[1] - cy);
+      if (!best || d < best.d) best = { i, j, t, x: b[0], y: b[1], d };
+    }
+    if (!best) return null;
+    return { i: best.i, j: best.j, t: best.t, x: best.x, y: best.y };
+  };
+
+  // Insert a new anchor on the segment between anchors i and j at parameter t,
+  // splitting the cubic via de Casteljau so the existing curve shape is
+  // preserved. A straight segment (no handles either side) just gets a plain
+  // corner anchor at the point; a curved segment splits into two smooth halves.
+  const insertAnchorOnSegment = (i: number, j: number, t: number) => {
+    const cur = valueRef.current;
+    const anchors = readAnchors(cur);
+    const A = anchors[i];
+    const B = anchors[j];
+    if (!A || !B) return;
+    const straight = !A.outHandle && !B.inHandle;
+    let inserted: SplineAnchor;
+    const patchI: Partial<SplineAnchor> = {};
+    const patchJ: Partial<SplineAnchor> = {};
+    if (straight) {
+      const x = A.pos[0] + (B.pos[0] - A.pos[0]) * t;
+      const y = A.pos[1] + (B.pos[1] - A.pos[1]) * t;
+      inserted = { pos: [x, y] };
+    } else {
+      const P0 = A.pos;
+      const P3 = B.pos;
+      const P1: [number, number] = [
+        P0[0] + (A.outHandle?.[0] ?? 0),
+        P0[1] + (A.outHandle?.[1] ?? 0),
+      ];
+      const P2: [number, number] = [
+        P3[0] + (B.inHandle?.[0] ?? 0),
+        P3[1] + (B.inHandle?.[1] ?? 0),
+      ];
+      const lerp = (
+        a: [number, number],
+        b: [number, number]
+      ): [number, number] => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      const a1 = lerp(P0, P1);
+      const b1 = lerp(P1, P2);
+      const c1 = lerp(P2, P3);
+      const d1 = lerp(a1, b1);
+      const e1 = lerp(b1, c1);
+      const f1 = lerp(d1, e1); // split point
+      // |v|≈0 → drop the handle (undefined) rather than store a zero vector
+      // that would render a degenerate dot on top of the anchor.
+      const nz = (
+        vx: number,
+        vy: number
+      ): [number, number] | undefined =>
+        Math.hypot(vx, vy) < 1e-6 ? undefined : [vx, vy];
+      patchI.outHandle = nz(a1[0] - P0[0], a1[1] - P0[1]);
+      patchJ.inHandle = nz(c1[0] - P3[0], c1[1] - P3[1]);
+      inserted = {
+        pos: f1,
+        inHandle: nz(d1[0] - f1[0], d1[1] - f1[1]),
+        outHandle: nz(e1[0] - f1[0], e1[1] - f1[1]),
+        broken: false,
+      };
+    }
+    const out: SplineAnchor[] = [];
+    for (let k = 0; k < anchors.length; k++) {
+      let a = anchors[k];
+      if (k === i && !straight) a = { ...a, ...patchI };
+      if (k === j && !straight) a = { ...a, ...patchJ };
+      out.push(a);
+      if (k === i) out.push(inserted);
+    }
+    onChangeRef.current(withSubpathPatch(cur, { anchors: out }));
+    lastAnchorRef.current = i + 1;
+  };
+
   const updateAnchor = (i: number, patch: Partial<SplineAnchor>) => {
     const cur = valueRef.current;
     const anchors = readAnchors(cur);
     const next = withSubpathPatch(cur, {
       anchors: anchors.map((a, idx) => (idx === i ? { ...a, ...patch } : a)),
+    });
+    onChangeRef.current(next);
+  };
+
+  // Patch several anchors in one onChange. Needed when a single gesture
+  // (segment drag, align/even on a multi-selection) must touch more than one
+  // anchor: calling updateAnchor twice in a row would have the second read a
+  // stale value (React hasn't re-rendered yet) and clobber the first.
+  const patchAnchors = (patches: Map<number, Partial<SplineAnchor>>) => {
+    const cur = valueRef.current;
+    const anchors = readAnchors(cur);
+    const next = withSubpathPatch(cur, {
+      anchors: anchors.map((a, idx) => {
+        const p = patches.get(idx);
+        return p ? { ...a, ...p } : a;
+      }),
     });
     onChangeRef.current(next);
   };
@@ -318,12 +673,12 @@ export default function SplineEditorOverlay({
     // deleted index drops out. Without this the selection points at
     // stale slots after a delete.
     if (selectedRef.current.size > 0) {
-      const next = new Set<number>();
+      const nextSel = new Set<number>();
       for (const s of selectedRef.current) {
         if (s === i) continue;
-        next.add(s > i ? s - 1 : s);
+        nextSel.add(s > i ? s - 1 : s);
       }
-      setSelected(next);
+      setSelected(nextSel);
     }
   };
 
@@ -351,13 +706,78 @@ export default function SplineEditorOverlay({
       // undefined so the spread drops them. JSON.stringify omits
       // undefined-valued props on save, so the cleaned anchor
       // round-trips correctly.
-      updateAnchor(i, { inHandle: undefined, outHandle: undefined });
+      updateAnchor(i, { inHandle: undefined, outHandle: undefined, broken: undefined });
     } else {
       // Corner → smooth: auto-tangent from neighbors.
       const { inHandle, outHandle } = autoSmoothHandles(anchors, i);
       updateAnchor(i, { inHandle, outHandle });
     }
   };
+
+  // Resolve which anchors a context-menu action applies to: the whole
+  // selection if the right-clicked anchor is part of a multi-selection,
+  // otherwise just the clicked anchor.
+  const targetsFor = (index: number): number[] => {
+    const sel = selectedRef.current;
+    if (sel.has(index) && sel.size > 1) return [...sel];
+    return [index];
+  };
+
+  const applyHandleOp = (
+    index: number,
+    op: (a: SplineAnchor) => SplineAnchor
+  ) => {
+    const anchors = readAnchors(valueRef.current);
+    const patches = new Map<number, Partial<SplineAnchor>>();
+    for (const idx of targetsFor(index)) {
+      const a = anchors[idx];
+      if (!a) continue;
+      const r = op(a);
+      patches.set(idx, {
+        inHandle: r.inHandle,
+        outHandle: r.outHandle,
+        broken: r.broken,
+      });
+    }
+    if (patches.size) patchAnchors(patches);
+  };
+
+  // --- segment geometry (for hover + direct drag) --------------------------
+
+  // The current subpath's segments as { seg, i, j, d } where `d` is the SVG
+  // path string in client px. Used both to paint hit/hover paths and to
+  // recompute t at drag-start. Memoized on value/rect so it tracks edits.
+  const segments = useMemo(() => {
+    if (!rect) return [] as { seg: number; i: number; j: number; d: string }[];
+    const sub = subpathsOf(value)[EDIT_SUBPATH];
+    const anchors = sub?.anchors ?? [];
+    const closed = sub?.closed ?? false;
+    const n = anchors.length;
+    const count = closed ? n : n - 1;
+    const out: { seg: number; i: number; j: number; d: string }[] = [];
+    for (let s = 0; s < count; s++) {
+      const i = s;
+      const j = (s + 1) % n;
+      const a = anchors[i];
+      const b = anchors[j];
+      const p0 = normToPx(a.pos);
+      const p1 = a.outHandle
+        ? normToPx([a.pos[0] + a.outHandle[0], a.pos[1] + a.outHandle[1]])
+        : p0;
+      const p3 = normToPx(b.pos);
+      const p2 = b.inHandle
+        ? normToPx([b.pos[0] + b.inHandle[0], b.pos[1] + b.inHandle[1]])
+        : p3;
+      out.push({
+        seg: s,
+        i,
+        j,
+        d: `M ${p0.x} ${p0.y} C ${p1.x} ${p1.y}, ${p2.x} ${p2.y}, ${p3.x} ${p3.y}`,
+      });
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, rect]);
 
   // Single effect handles the live pointer stream for ALL drag kinds. Without
   // an active drag the effect does nothing. Delta tracking is in client-px so
@@ -430,6 +850,53 @@ export default function SplineEditorOverlay({
           updateAnchor(drag.index, patch);
           break;
         }
+        case "segment": {
+          // Bend the cubic so it passes under the cursor while the anchors
+          // (P0, P3) stay pinned. The grabbed point depends on the two
+          // interior controls through the Bernstein weights b1, b2; the
+          // constraint b1·ΔP1 + b2·ΔP2 = D is underdetermined, so we take
+          // the minimum-norm least-squares solution — each handle shifts in
+          // proportion to its influence at t. t is cached from drag-start so
+          // the curve doesn't slide under the cursor.
+          const A = anchors[drag.i];
+          const B = anchors[drag.j];
+          if (!A || !B) break;
+          const P0 = A.pos;
+          const P3 = B.pos;
+          const outH = A.outHandle ?? ([0, 0] as [number, number]);
+          const inH = B.inHandle ?? ([0, 0] as [number, number]);
+          const P1: [number, number] = [P0[0] + outH[0], P0[1] + outH[1]];
+          const P2: [number, number] = [P3[0] + inH[0], P3[1] + inH[1]];
+          const bt = bezierAt(P0, P1, P2, P3, drag.t);
+          const Dx = nx - bt[0];
+          const Dy = ny - bt[1];
+          const u = 1 - drag.t;
+          const b1 = 3 * u * u * drag.t;
+          const b2 = 3 * u * drag.t * drag.t;
+          const denom = b1 * b1 + b2 * b2;
+          if (denom < 1e-6) break; // grabbed right at an anchor; nothing to do
+          const k1 = b1 / denom;
+          const k2 = b2 / denom;
+          patchAnchors(
+            new Map<number, Partial<SplineAnchor>>([
+              [
+                drag.i,
+                {
+                  outHandle: [outH[0] + Dx * k1, outH[1] + Dy * k1],
+                  broken: true,
+                },
+              ],
+              [
+                drag.j,
+                {
+                  inHandle: [inH[0] + Dx * k2, inH[1] + Dy * k2],
+                  broken: true,
+                },
+              ],
+            ])
+          );
+          break;
+        }
         case "marquee": {
           setDrag({ ...drag, currentClient: { x: e.clientX, y: e.clientY } });
           break;
@@ -498,9 +965,35 @@ export default function SplineEditorOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drag, rect]);
 
+  // Track the cursor in add mode (when not mid-gesture) to drive the dotted
+  // rubber-band preview of the next segment.
+  useEffect(() => {
+    if (tool !== "add") {
+      setHoverPx(null);
+      return;
+    }
+    const onMove = (e: PointerEvent) =>
+      setHoverPx({ x: e.clientX, y: e.clientY });
+    window.addEventListener("pointermove", onMove);
+    return () => window.removeEventListener("pointermove", onMove);
+  }, [tool]);
+
+  // Close the context menu on any outside mousedown.
+  useEffect(() => {
+    if (!menu) return;
+    const onDown = (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && el.closest("[data-spline-menu]")) return;
+      setMenu(null);
+    };
+    window.addEventListener("mousedown", onDown, true);
+    return () => window.removeEventListener("mousedown", onDown, true);
+  }, [menu]);
+
   const onBackgroundPointerDown = (e: React.PointerEvent<SVGRectElement>) => {
     if (!rect) return;
     if (e.button !== 0) return; // left only; right-click adds nothing
+    setMenu(null);
     e.preventDefault();
     e.stopPropagation();
     if (tool === "select") {
@@ -515,8 +1008,18 @@ export default function SplineEditorOverlay({
       });
       return;
     }
+    // Shift in add mode = insert a point on the nearest existing segment
+    // (split the curve) instead of appending a new endpoint.
+    if (e.shiftKey) {
+      const ins = findInsertOnSpline(e.clientX, e.clientY);
+      if (ins) {
+        insertAnchorOnSegment(ins.i, ins.j, ins.t);
+        return;
+      }
+    }
     const [nx, ny] = clientToNorm(e.clientX, e.clientY);
     const newIdx = addAnchorAt(nx, ny);
+    lastAnchorRef.current = newIdx;
     setDrag({
       kind: "new",
       index: newIdx,
@@ -529,11 +1032,13 @@ export default function SplineEditorOverlay({
     (index: number) => (e: React.PointerEvent<SVGCircleElement>) => {
       if (!rect) return;
       if (e.button !== 0) return;
+      setMenu(null);
       e.preventDefault();
       e.stopPropagation();
       const [nx, ny] = clientToNorm(e.clientX, e.clientY);
       const a = readAnchors(valueRef.current)[index];
       if (!a) return;
+      lastAnchorRef.current = index;
       // Select-mode click resolves the selection up-front so a drag of
       // a freshly-clicked anchor moves the right group. Shift extends.
       // In add mode the selection state isn't surfaced, so leave it
@@ -571,15 +1076,65 @@ export default function SplineEditorOverlay({
     (e: React.PointerEvent<SVGCircleElement>) => {
       if (!rect) return;
       if (e.button !== 0) return;
+      setMenu(null);
       e.preventDefault();
       e.stopPropagation();
+      const a = readAnchors(valueRef.current)[index];
+      const wasBroken = !!a?.broken;
+      lastAnchorRef.current = index;
+      // Alt held on pointerdown *breaks* the anchor persistently — the two
+      // handles become independent and stay that way for future drags too
+      // (fixing the old bug where a later plain drag re-mirrored them). A
+      // smooth (un-broken) anchor mirrors its partner; a broken one moves
+      // each handle alone.
+      if (e.altKey && !wasBroken) updateAnchor(index, { broken: true });
       setDrag({
         kind: "handle",
         index,
         side,
-        // Alt held on pointerdown breaks symmetry for the whole gesture — no
-        // mid-drag flip so the user doesn't accidentally snap handles.
-        symmetric: !e.altKey,
+        symmetric: !e.altKey && !wasBroken,
+        startClient: { x: e.clientX, y: e.clientY },
+      });
+    };
+
+  const onSegmentPointerDown =
+    (seg: { seg: number; i: number; j: number }) =>
+    (e: React.PointerEvent<SVGPathElement>) => {
+      if (!rect) return;
+      if (e.button !== 0) return;
+      if (tool !== "select") return;
+      setMenu(null);
+      e.preventDefault();
+      e.stopPropagation();
+      const anchors = readAnchors(valueRef.current);
+      const A = anchors[seg.i];
+      const B = anchors[seg.j];
+      if (!A || !B) return;
+      // Find the grabbed parameter t by projecting the cursor onto the cubic
+      // in pixel space (so "nearest" matches what the user sees). Cache it so
+      // the curve tracks the cursor without sliding.
+      const p0 = normToPx(A.pos);
+      const p1 = A.outHandle
+        ? normToPx([A.pos[0] + A.outHandle[0], A.pos[1] + A.outHandle[1]])
+        : p0;
+      const p3 = normToPx(B.pos);
+      const p2 = B.inHandle
+        ? normToPx([B.pos[0] + B.inHandle[0], B.pos[1] + B.inHandle[1]])
+        : p3;
+      const t = nearestTOnCubic(
+        [p0.x, p0.y],
+        [p1.x, p1.y],
+        [p2.x, p2.y],
+        [p3.x, p3.y],
+        [e.clientX, e.clientY]
+      );
+      setHoverSeg(seg.seg);
+      setDrag({
+        kind: "segment",
+        seg: seg.seg,
+        i: seg.i,
+        j: seg.j,
+        t,
         startClient: { x: e.clientX, y: e.clientY },
       });
     };
@@ -588,7 +1143,11 @@ export default function SplineEditorOverlay({
     (index: number) => (e: React.MouseEvent<SVGCircleElement>) => {
       e.preventDefault();
       e.stopPropagation();
-      deleteAnchor(index);
+      // Surface which anchor the menu targets. Keep an existing
+      // multi-selection if the clicked anchor is part of it.
+      if (!selectedRef.current.has(index)) setSelected(new Set([index]));
+      lastAnchorRef.current = index;
+      setMenu({ x: e.clientX, y: e.clientY, index });
     };
 
   const onHandleContextMenu =
@@ -602,6 +1161,7 @@ export default function SplineEditorOverlay({
       const cleaned: SplineAnchor = { pos: a.pos };
       if (side === "in" && a.outHandle) cleaned.outHandle = a.outHandle;
       if (side === "out" && a.inHandle) cleaned.inHandle = a.inHandle;
+      if (a.broken) cleaned.broken = a.broken;
       updateAnchor(index, cleaned);
     };
 
@@ -650,10 +1210,70 @@ export default function SplineEditorOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rect, value]);
 
+  // Dotted rubber-band from the last anchor to the cursor (add mode only),
+  // previewing the next point. A corner last anchor (no out handle) draws a
+  // straight line. A weighted last anchor (out handle, from a click-drag)
+  // draws a curve that leaves along the out tangent so the user sees the
+  // approximated curvature of the next segment.
+  //
+  // Two guards keep it from reading as a hook/loop (the earlier version's
+  // failure mode): the leaving tangent length is clamped to the distance to
+  // the cursor so it can't overshoot, and the second control gets a real
+  // arrival tangent (a third of the way back from the cursor toward the
+  // first control) instead of sitting on the endpoint — `cp2 == cursor`
+  // forces the end velocity to zero and curls the tail into a cusp.
+  const rubberD = useMemo(() => {
+    // Hidden while shift-inserting (the insert preview takes over).
+    if (tool !== "add" || drag || !hoverPx || !rect || shiftHeld) return "";
+    const sub = subpathsOf(value)[EDIT_SUBPATH];
+    const anchors = sub?.anchors ?? [];
+    if (anchors.length < 1 || (sub?.closed ?? false)) return "";
+    const last = anchors[anchors.length - 1];
+    const p0 = normToPx(last.pos);
+    if (!last.outHandle) {
+      return `M ${p0.x} ${p0.y} L ${hoverPx.x} ${hoverPx.y}`;
+    }
+    const h = normToPx([
+      last.pos[0] + last.outHandle[0],
+      last.pos[1] + last.outHandle[1],
+    ]);
+    const hx = h.x - p0.x;
+    const hy = h.y - p0.y;
+    const hLen = Math.hypot(hx, hy) || 1;
+    const segLen = Math.hypot(hoverPx.x - p0.x, hoverPx.y - p0.y);
+    const L = Math.min(hLen, segLen); // clamp so it can't overshoot the cursor
+    const cp1x = p0.x + (hx / hLen) * L;
+    const cp1y = p0.y + (hy / hLen) * L;
+    const cp2x = hoverPx.x + (cp1x - hoverPx.x) / 3;
+    const cp2y = hoverPx.y + (cp1y - hoverPx.y) / 3;
+    return `M ${p0.x} ${p0.y} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${hoverPx.x} ${hoverPx.y}`;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool, drag, hoverPx, value, rect, shiftHeld]);
+
+  // Insert-on-path preview: while shift is held in add mode, snap a ghost
+  // point to the nearest spot on the spline so the user sees where a click
+  // would split the curve.
+  const insertPreview = useMemo(() => {
+    if (tool !== "add" || !shiftHeld || drag || !hoverPx || !rect) return null;
+    return findInsertOnSpline(hoverPx.x, hoverPx.y);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool, shiftHeld, drag, hoverPx, value, rect]);
+
   if (!rect) return null;
+
+  const anchors = subpathsOf(value)[EDIT_SUBPATH]?.anchors ?? [];
+  const activeSeg =
+    drag?.kind === "segment" ? drag.seg : hoverSeg !== null ? hoverSeg : null;
+  const activeSegD =
+    activeSeg !== null ? segments.find((s) => s.seg === activeSeg)?.d : undefined;
 
   return (
     <div
+      // Registering as a shortcut scope makes Delete contextual: clicking the
+      // canvas sets the active scope to "spline" (see shortcut-scope.ts), so
+      // the node editor's window-level Delete handler stands down and we delete
+      // points here instead of the graph node.
+      data-shortcut-scope="spline"
       style={{
         position: "fixed",
         inset: 0,
@@ -690,23 +1310,59 @@ export default function SplineEditorOverlay({
           onContextMenu={(e) => e.preventDefault()}
         />
 
+        {/* Invisible per-segment hit paths (select mode only) — drive hover
+            highlighting and direct segment dragging. Drawn beneath the
+            anchor/handle hit rings so grabbing an endpoint still wins. */}
+        {tool === "select" &&
+          segments.map((s) => (
+            <path
+              key={`seg-${s.seg}`}
+              d={s.d}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={SEGMENT_HIT_W}
+              strokeLinecap="round"
+              style={{ cursor: "grab", pointerEvents: "stroke" }}
+              onPointerEnter={() => {
+                if (!drag) setHoverSeg(s.seg);
+              }}
+              onPointerLeave={() => {
+                if (!drag) setHoverSeg((cur) => (cur === s.seg ? null : cur));
+              }}
+              onPointerDown={onSegmentPointerDown(s)}
+              onContextMenu={(e) => e.preventDefault()}
+            />
+          ))}
+
         {/* Path preview — non-interactive; just shows the curve the user
             is authoring. */}
         {pathD && (
           <path
             d={pathD}
             fill="none"
-            stroke="#22d3ee"
+            stroke={COL_PATH}
             strokeWidth={1.2}
-            strokeDasharray="0"
             opacity={0.9}
+            style={{ pointerEvents: "none" }}
+          />
+        )}
+
+        {/* Hovered / dragged segment highlight, painted over the preview. */}
+        {activeSegD && (
+          <path
+            d={activeSegD}
+            fill="none"
+            stroke={COL_SEG_HOVER}
+            strokeWidth={3}
+            opacity={0.55}
+            strokeLinecap="round"
             style={{ pointerEvents: "none" }}
           />
         )}
 
         {/* Handle lines (anchor → handle dot). Drawn beneath the dots so
             the dots sit visually on top. */}
-        {(subpathsOf(value)[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
+        {anchors.map((a, i) => {
           const anchorPx = normToPx(a.pos);
           const lines = [] as ReactElement[];
           if (a.inHandle) {
@@ -721,8 +1377,9 @@ export default function SplineEditorOverlay({
                 y1={anchorPx.y}
                 x2={hp.x}
                 y2={hp.y}
-                stroke="#94a3b8"
+                stroke={COL_HANDLE_LINE}
                 strokeWidth={1}
+                opacity={0.7}
                 style={{ pointerEvents: "none" }}
               />
             );
@@ -739,8 +1396,9 @@ export default function SplineEditorOverlay({
                 y1={anchorPx.y}
                 x2={hp.x}
                 y2={hp.y}
-                stroke="#94a3b8"
+                stroke={COL_HANDLE_LINE}
                 strokeWidth={1}
+                opacity={0.7}
                 style={{ pointerEvents: "none" }}
               />
             );
@@ -759,11 +1417,11 @@ export default function SplineEditorOverlay({
               1. Handle hit rings (transparent, large)
               2. Anchor hit rings (transparent, large) — on top so
                  clicks within anchor radius win
-              3. Handle visual dots (white)
-              4. Anchor visual dots (cyan) — visually on top */}
+              3. Anchor visual marks (square=corner, circle=smooth)
+              4. Handle visual dots — visually on top */}
 
         {/* Pass 1 — handle hit rings */}
-        {(subpathsOf(value)[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
+        {anchors.map((a, i) => {
           const out: ReactElement[] = [];
           if (a.inHandle) {
             const p = normToPx([
@@ -806,7 +1464,7 @@ export default function SplineEditorOverlay({
 
         {/* Pass 2 — anchor hit rings on top, so they intercept clicks
             within their radius even when a handle is nearby. */}
-        {(subpathsOf(value)[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
+        {anchors.map((a, i) => {
           const p = normToPx(a.pos);
           return (
             <circle
@@ -822,32 +1480,48 @@ export default function SplineEditorOverlay({
           );
         })}
 
-        {/* Pass 3 — anchor visual dots (cyan, drawn first of the
-            visual layers so handles can stack on top — matches the
-            previous pre-decoupling visual order). Selected anchors
-            switch to amber so multi-select state is obvious. */}
-        {(subpathsOf(value)[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
+        {/* Pass 3 — anchor visual marks. Corner anchors (no handles) draw
+            as squares; smooth/handled anchors as circles. Blue outline with
+            a faint fill; selected anchors switch to amber. */}
+        {anchors.map((a, i) => {
           const p = normToPx(a.pos);
           const isSel = selected.has(i);
+          const hasHandles = !!a.inHandle || !!a.outHandle;
+          const stroke = isSel ? COL_SEL_STROKE : COL_STROKE;
+          const fill = isSel ? COL_SEL_FILL : COL_FILL;
+          if (hasHandles) {
+            return (
+              <circle
+                key={`av-${i}`}
+                cx={p.x}
+                cy={p.y}
+                r={isSel ? ANCHOR_R + 1 : ANCHOR_R}
+                fill={fill}
+                stroke={stroke}
+                strokeWidth={1.4}
+                style={{ pointerEvents: "none" }}
+              />
+            );
+          }
+          const half = (isSel ? ANCHOR_SQUARE + 2 : ANCHOR_SQUARE) / 2;
           return (
-            <circle
+            <rect
               key={`av-${i}`}
-              cx={p.x}
-              cy={p.y}
-              r={isSel ? ANCHOR_R + 1 : ANCHOR_R}
-              fill={isSel ? "#fbbf24" : "#0ea5e9"}
-              stroke={isSel ? "#7c2d12" : "#f0f9ff"}
+              x={p.x - half}
+              y={p.y - half}
+              width={half * 2}
+              height={half * 2}
+              fill={fill}
+              stroke={stroke}
               strokeWidth={1.4}
               style={{ pointerEvents: "none" }}
             />
           );
         })}
 
-        {/* Pass 4 — handle visual dots, on top of anchor visuals to
-            preserve the original look (handles overlay anchors when
-            their positions overlap). Hit rings are already in pass 1
-            so these are pointer-event-free. */}
-        {(subpathsOf(value)[EDIT_SUBPATH]?.anchors ?? []).map((a, i) => {
+        {/* Pass 4 — handle visual dots, on top of anchor visuals. Hit rings
+            are already in pass 1 so these are pointer-event-free. */}
+        {anchors.map((a, i) => {
           const dots: ReactElement[] = [];
           if (a.inHandle) {
             const p = normToPx([
@@ -860,8 +1534,8 @@ export default function SplineEditorOverlay({
                 cx={p.x}
                 cy={p.y}
                 r={HANDLE_R}
-                fill="#f8fafc"
-                stroke="#0f172a"
+                fill={COL_HANDLE_FILL}
+                stroke={COL_HANDLE_STROKE}
                 strokeWidth={1}
                 style={{ pointerEvents: "none" }}
               />
@@ -878,8 +1552,8 @@ export default function SplineEditorOverlay({
                 cx={p.x}
                 cy={p.y}
                 r={HANDLE_R}
-                fill="#f8fafc"
-                stroke="#0f172a"
+                fill={COL_HANDLE_FILL}
+                stroke={COL_HANDLE_STROKE}
                 strokeWidth={1}
                 style={{ pointerEvents: "none" }}
               />
@@ -887,6 +1561,33 @@ export default function SplineEditorOverlay({
           }
           return dots;
         })}
+
+        {/* Dotted rubber-band preview of the next segment (add mode). */}
+        {rubberD && (
+          <path
+            d={rubberD}
+            fill="none"
+            stroke={COL_RUBBER}
+            strokeWidth={1.2}
+            strokeDasharray="4 4"
+            opacity={0.7}
+            style={{ pointerEvents: "none" }}
+          />
+        )}
+
+        {/* Insert-on-path preview dot (shift held in add mode). Marks where a
+            click would split the curve. */}
+        {insertPreview && (
+          <circle
+            cx={insertPreview.x}
+            cy={insertPreview.y}
+            r={ANCHOR_R + 1}
+            fill={COL_FILL}
+            stroke={COL_STROKE}
+            strokeWidth={1.4}
+            style={{ pointerEvents: "none" }}
+          />
+        )}
 
         {/* Marquee box rendered last so it sits visually on top of the
             anchors / handles while the user drags. */}
@@ -904,54 +1605,229 @@ export default function SplineEditorOverlay({
         )}
       </svg>
 
-      {/* Tool picker, pinned to the canvas's upper-left. Positioned in client
-          coords via `rect` so it stays put through splitter drags / resize /
-          zoom. Lives outside the SVG to keep its hit-testing simple. */}
+      {/* Tool dock, pinned to the viewport panel's upper-left. Positioned in
+          client coords via `hostRect` (the canvas's containing panel) so it
+          docks to the window corner rather than the letterboxed canvas edge,
+          and stays put through splitter drags / resize / zoom. Lives outside
+          the SVG to keep its hit-testing simple. */}
       <div
         style={{
           position: "fixed",
-          left: rect.left + 8,
-          top: rect.top + 8,
+          left: (hostRect ?? rect).left + 8,
+          top: (hostRect ?? rect).top + 8,
           display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
           gap: 4,
           padding: 3,
           background: "rgba(17, 17, 17, 0.9)",
           border: "1px solid #27272a",
-          borderRadius: 4,
+          borderRadius: 6,
           boxShadow: "0 4px 12px rgba(0, 0, 0, 0.35)",
           pointerEvents: "auto",
           fontFamily: "ui-monospace, monospace",
         }}
       >
-        <ToolButton
-          active={tool === "add"}
-          label="Add point (P)"
-          onClick={() => setTool("add")}
-        >
-          <PenIcon />
-        </ToolButton>
-        <ToolButton
-          active={tool === "select"}
-          label="Select point (V)"
-          onClick={() => setTool("select")}
-        >
-          <CursorIcon />
-        </ToolButton>
-        <ToolButton
-          active={
-            subpathsOf(value)[EDIT_SUBPATH]?.closed ?? false
-          }
+        {/* Mode: Add / Select — a vertically stacked segmented pill whose
+            active highlight and hover ghost both slide between the segments. */}
+        <ModeSlider tool={tool} onSelect={setTool} />
+        {/* Divider before the standalone close-loop toggle. */}
+        <div
+          style={{
+            height: 1,
+            width: TOOL_BTN,
+            margin: "1px 0",
+            background: "#3f3f46",
+          }}
+        />
+        {/* Close loop — a stateful toggle, not a mode, so it lives outside the
+            sliding pill and lights up independently. */}
+        <IconToggle
+          active={subpathsOf(value)[EDIT_SUBPATH]?.closed ?? false}
           label="Close loop"
           onClick={toggleClosed}
         >
           <LoopIcon />
-        </ToolButton>
+        </IconToggle>
       </div>
+
+      {/* Anchor context menu. */}
+      {menu && (
+        <div
+          data-spline-menu
+          style={{
+            position: "fixed",
+            left: menu.x,
+            top: menu.y,
+            minWidth: 150,
+            padding: 4,
+            background: "rgba(17, 17, 17, 0.97)",
+            border: "1px solid #3f3f46",
+            borderRadius: 5,
+            boxShadow: "0 6px 18px rgba(0, 0, 0, 0.45)",
+            pointerEvents: "auto",
+            fontFamily: "ui-monospace, monospace",
+            fontSize: 12,
+            zIndex: 10,
+          }}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <MenuItem
+            label="Delete point"
+            onClick={() => {
+              const targets = new Set(targetsFor(menu.index));
+              deleteAnchorIndices(targets);
+              setSelected(new Set());
+              setMenu(null);
+            }}
+          />
+          <MenuItem
+            label="Align handles"
+            onClick={() => {
+              applyHandleOp(menu.index, alignHandles);
+              setMenu(null);
+            }}
+          />
+          <MenuItem
+            label="Even handles"
+            onClick={() => {
+              applyHandleOp(menu.index, evenHandles);
+              setMenu(null);
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }
 
-function ToolButton({
+function MenuItem({ label, onClick }: { label: string; onClick: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "block",
+        width: "100%",
+        textAlign: "left",
+        padding: "5px 9px",
+        background: hover ? "#0ea5e9" : "transparent",
+        color: hover ? "#0b1220" : "#e4e4e7",
+        border: "none",
+        borderRadius: 3,
+        cursor: "pointer",
+        fontFamily: "inherit",
+        fontSize: "inherit",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+// Segment size for the mode pill (square icon buttons sit edge-to-edge so the
+// sliding highlight is contiguous).
+const TOOL_BTN = 26;
+const TOOL_INSET = 2; // gap between a segment edge and its highlight
+
+// Add / Select mode picker. A single active highlight (low-opacity blue fill +
+// blue stroke) slides between the two segments, and a neutral hover ghost
+// slides to whichever segment is hovered — matching the app's PillToggle.
+function ModeSlider({
+  tool,
+  onSelect,
+}: {
+  tool: ToolMode;
+  onSelect: (t: ToolMode) => void;
+}) {
+  const items: { id: ToolMode; label: string; icon: ReactElement }[] = [
+    { id: "add", label: "Add point (P)", icon: <PenIcon /> },
+    { id: "select", label: "Select point (V)", icon: <CursorIcon /> },
+  ];
+  const activeIdx = Math.max(
+    0,
+    items.findIndex((it) => it.id === tool)
+  );
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const ghostIdx = hoverIdx ?? activeIdx;
+  return (
+    <div
+      onMouseLeave={() => setHoverIdx(null)}
+      style={{ position: "relative", display: "flex", flexDirection: "column" }}
+    >
+      {/* Active highlight — slides vertically between segments. */}
+      <div
+        style={{
+          position: "absolute",
+          left: TOOL_INSET,
+          right: TOOL_INSET,
+          top: activeIdx * TOOL_BTN + TOOL_INSET,
+          height: TOOL_BTN - TOOL_INSET * 2,
+          background: COL_FILL,
+          border: `1px solid ${COL_STROKE}`,
+          borderRadius: 4,
+          boxSizing: "border-box",
+          transition: "top 0.16s cubic-bezier(0.4,0,0.2,1)",
+          pointerEvents: "none",
+        }}
+      />
+      {/* Hover ghost — slides to the hovered segment, shown only when hovering
+          a non-active one. */}
+      <div
+        style={{
+          position: "absolute",
+          left: TOOL_INSET,
+          right: TOOL_INSET,
+          top: ghostIdx * TOOL_BTN + TOOL_INSET,
+          height: TOOL_BTN - TOOL_INSET * 2,
+          background: "rgba(255, 255, 255, 0.08)",
+          borderRadius: 4,
+          opacity: hoverIdx !== null && hoverIdx !== activeIdx ? 1 : 0,
+          transition: "top 0.12s ease, opacity 0.12s ease",
+          pointerEvents: "none",
+        }}
+      />
+      {items.map((it, i) => {
+        const active = i === activeIdx;
+        return (
+          <button
+            key={it.id}
+            type="button"
+            title={it.label}
+            aria-label={it.label}
+            aria-pressed={active}
+            onClick={() => onSelect(it.id)}
+            onMouseEnter={() => setHoverIdx(i)}
+            style={{
+              position: "relative",
+              zIndex: 1,
+              width: TOOL_BTN,
+              height: TOOL_BTN,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "transparent",
+              color: active ? COL_STROKE : hoverIdx === i ? "#e4e4e7" : "#a1a1aa",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+              transition: "color 0.12s ease",
+            }}
+          >
+            {it.icon}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Standalone stateful icon toggle (used for Close loop). Low-opacity blue fill
+// + blue stroke when active; a neutral wash on hover.
+function IconToggle({
   active,
   label,
   onClick,
@@ -962,6 +1838,7 @@ function ToolButton({
   onClick: () => void;
   children: ReactElement;
 }) {
+  const [hover, setHover] = useState(false);
   return (
     <button
       type="button"
@@ -969,19 +1846,27 @@ function ToolButton({
       aria-label={label}
       aria-pressed={active}
       onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       style={{
-        width: 26,
-        height: 26,
+        width: TOOL_BTN,
+        height: TOOL_BTN,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: active ? "#0ea5e9" : "transparent",
-        color: active ? "#0b1220" : "#d4d4d8",
-        border: "1px solid",
-        borderColor: active ? "#0ea5e9" : "transparent",
-        borderRadius: 3,
+        background: active
+          ? COL_FILL
+          : hover
+            ? "rgba(255, 255, 255, 0.08)"
+            : "transparent",
+        color: active ? COL_STROKE : hover ? "#e4e4e7" : "#a1a1aa",
+        border: `1px solid ${active ? COL_STROKE : "transparent"}`,
+        borderRadius: 4,
+        boxSizing: "border-box",
         cursor: "pointer",
         padding: 0,
+        transition:
+          "background 0.12s ease, color 0.12s ease, border-color 0.12s ease",
       }}
     >
       {children}

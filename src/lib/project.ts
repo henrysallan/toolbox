@@ -432,6 +432,31 @@ export async function serializeGraph(
   };
 }
 
+// Per-node param back-compat fix-ups applied after media deserialization.
+// Distinct from a schema bump: these are additive param introductions where
+// the new params can be derived from the old ones, so old saves keep their
+// look without a version gate. Mutates `params` in place.
+function migrateLoadedParams(
+  defType: string,
+  params: Record<string, unknown>
+): void {
+  if (defType === "gradient" && params.start_x === undefined) {
+    // Linear gradient gained start/end handle endpoints (replacing the
+    // angle-only control). Seed them from the legacy `angle` so the gradient
+    // renders identically: start/end straddle the canvas centre along the
+    // angle direction (UV, Y-up), which reproduces the old
+    // t = dot(uv - 0.5, dir) + 0.5 projection exactly.
+    const angleDeg = typeof params.angle === "number" ? params.angle : 0;
+    const rad = (angleDeg * Math.PI) / 180;
+    const dx = Math.cos(rad);
+    const dy = Math.sin(rad);
+    params.start_x = 0.5 - 0.5 * dx;
+    params.start_y = 0.5 - 0.5 * dy;
+    params.end_x = 0.5 + 0.5 * dx;
+    params.end_y = 0.5 + 0.5 * dy;
+  }
+}
+
 export async function deserializeGraph(
   saved: SavedProject,
   onProgress?: ProgressCallback
@@ -451,6 +476,7 @@ export async function deserializeGraph(
     const sn = saved.nodes[i];
     const def = getNodeDef(sn.defType);
     const params = await deserializeParams(sn.defType, sn.params);
+    migrateLoadedParams(sn.defType, params);
     for (const [k, v] of Object.entries(params)) {
       if (k.endsWith(MISSING_MEDIA_SUFFIX) && v) {
         missingMedia.push({

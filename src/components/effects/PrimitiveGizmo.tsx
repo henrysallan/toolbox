@@ -19,16 +19,36 @@ export interface PrimitiveGizmoPatch {
   hy?: number;
 }
 
+// Extra context handed to adapters whose param space isn't plain
+// normalized UV — canvas dims for unit conversions, raw param access for
+// enum branches (Auto Layout's hug/fixed axis modes), and the solved
+// container size so hug axes display their actual bounds.
+export interface PrimitiveGizmoEnv {
+  canvasWidth: number;
+  canvasHeight: number;
+  getRaw: (name: string) => unknown;
+  solvedSize?: { width: number; height: number } | null;
+}
+
 export interface PrimitiveGizmoAdapter {
+  // Resize drags anchor the opposite edge/corner (box-style, the center
+  // moves) instead of growing symmetrically around a fixed center.
+  anchorResize?: boolean;
   // Read the shape's center + half-extents from the node's (effective) params.
-  read: (get: (name: string, fallback: number) => number) => {
+  read: (
+    get: (name: string, fallback: number) => number,
+    env: PrimitiveGizmoEnv
+  ) => {
     cx: number;
     cy: number;
     hx: number;
     hy: number;
   };
   // Map a gizmo patch back to [paramName, value] pairs to apply.
-  write: (patch: PrimitiveGizmoPatch) => Array<[string, number]>;
+  write: (
+    patch: PrimitiveGizmoPatch,
+    env: PrimitiveGizmoEnv
+  ) => Array<[string, number | string]>;
 }
 
 // defType → adapter. Add new spline primitives here.
@@ -41,7 +61,7 @@ export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
       hy: g("radiusY", 0.25),
     }),
     write: (p) => {
-      const out: Array<[string, number]> = [];
+      const out: Array<[string, number | string]> = [];
       if (p.cx !== undefined) out.push(["centerX", p.cx]);
       if (p.cy !== undefined) out.push(["centerY", p.cy]);
       if (p.hx !== undefined) out.push(["radiusX", p.hx]);
@@ -57,11 +77,73 @@ export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
       hy: g("height", 0.5) / 2,
     }),
     write: (p) => {
-      const out: Array<[string, number]> = [];
+      const out: Array<[string, number | string]> = [];
       if (p.cx !== undefined) out.push(["originX", p.cx]);
       if (p.cy !== undefined) out.push(["originY", p.cy]);
       if (p.hx !== undefined) out.push(["width", p.hx * 2]);
       if (p.hy !== undefined) out.push(["height", p.hy * 2]);
+      return out;
+    },
+  },
+  // Text box: position rides translateX/Y (the raster centers the box on
+  // the canvas and the node's transform post-pass places it), size is the
+  // box fraction params. Scale/rotate/pivot stay panel-driven — when they
+  // are non-default the gizmo box shows the unscaled layout rect.
+  text: {
+    anchorResize: true,
+    read: (g) => ({
+      cx: 0.5 + g("translateX", 0),
+      cy: 0.5 + g("translateY", 0),
+      hx: Math.max(0.005, g("boxWidth", 1) / 2),
+      hy: Math.max(0.005, g("boxHeight", 1) / 2),
+    }),
+    write: (p) => {
+      const out: Array<[string, number | string]> = [];
+      if (p.cx !== undefined) out.push(["translateX", p.cx - 0.5]);
+      if (p.cy !== undefined) out.push(["translateY", p.cy - 0.5]);
+      if (p.hx !== undefined) out.push(["boxWidth", p.hx * 2]);
+      if (p.hy !== undefined) out.push(["boxHeight", p.hy * 2]);
+      return out;
+    },
+  },
+  // Auto Layout container bounds: dragging moves translateX/Y; resizing
+  // an edge writes that axis's fixed size in layout units AND flips the
+  // axis to "fixed" (a hug axis under direct manipulation becomes
+  // explicit, Figma-style). Hug axes display the solved container size.
+  autolayout: {
+    anchorResize: true,
+    read: (g, env) => {
+      const { canvasWidth: W, canvasHeight: H, getRaw, solvedSize } = env;
+      const unitPx = Math.min(W, H) / 1000;
+      const hx =
+        getRaw("widthMode") !== "fixed" && solvedSize
+          ? solvedSize.width / W / 2
+          : (g("width", 600) * unitPx) / W / 2;
+      const hy =
+        getRaw("heightMode") !== "fixed" && solvedSize
+          ? solvedSize.height / H / 2
+          : (g("height", 600) * unitPx) / H / 2;
+      return {
+        cx: 0.5 + g("translateX", 0),
+        cy: 0.5 + g("translateY", 0),
+        hx: Math.max(0.002, hx),
+        hy: Math.max(0.002, hy),
+      };
+    },
+    write: (p, env) => {
+      const { canvasWidth: W, canvasHeight: H } = env;
+      const pxToUnits = (px: number) => (px * 1000) / Math.min(W, H);
+      const out: Array<[string, number | string]> = [];
+      if (p.cx !== undefined) out.push(["translateX", p.cx - 0.5]);
+      if (p.cy !== undefined) out.push(["translateY", p.cy - 0.5]);
+      if (p.hx !== undefined) {
+        out.push(["width", Math.max(1, Math.round(pxToUnits(p.hx * 2 * W)))]);
+        out.push(["widthMode", "fixed"]);
+      }
+      if (p.hy !== undefined) {
+        out.push(["height", Math.max(1, Math.round(pxToUnits(p.hy * 2 * H)))]);
+        out.push(["heightMode", "fixed"]);
+      }
       return out;
     },
   },
@@ -73,6 +155,10 @@ interface Props {
   cy: number;
   hx: number;
   hy: number;
+  // Box-style resize: the dragged edge/corner follows the pointer and the
+  // opposite side stays anchored (center moves). Default is the legacy
+  // symmetric resize around a fixed center.
+  anchorResize?: boolean;
   onChange: (patch: PrimitiveGizmoPatch) => void;
 }
 
@@ -105,6 +191,7 @@ export default function PrimitiveGizmo({
   cy,
   hx,
   hy,
+  anchorResize = false,
   onChange,
 }: Props) {
   const onChangeRef = useRef(onChange);
@@ -152,6 +239,56 @@ export default function PrimitiveGizmo({
         return;
       }
 
+      if (anchorResize) {
+        // Box-style resize: the dragged edge/corner tracks the pointer,
+        // the opposite side stays anchored, so both center and extents
+        // move. Shift on a corner squares the box off the anchor.
+        const minSize = MIN_HALF * 2;
+        let left = s.cx - s.hx;
+        let right = s.cx + s.hx;
+        let top = s.cy - s.hy;
+        let bottom = s.cy + s.hy;
+        const isCorner = drag.kind.startsWith("corner");
+        const movesL =
+          drag.kind === "edge-l" ||
+          drag.kind === "corner-tl" ||
+          drag.kind === "corner-bl";
+        const movesR =
+          drag.kind === "edge-r" ||
+          drag.kind === "corner-tr" ||
+          drag.kind === "corner-br";
+        const movesT =
+          drag.kind === "edge-t" ||
+          drag.kind === "corner-tl" ||
+          drag.kind === "corner-tr";
+        const movesB =
+          drag.kind === "edge-b" ||
+          drag.kind === "corner-bl" ||
+          drag.kind === "corner-br";
+        if (movesL) left = Math.min(right - minSize, ux);
+        if (movesR) right = Math.max(left + minSize, ux);
+        if (movesT) top = Math.min(bottom - minSize, uy);
+        if (movesB) bottom = Math.max(top + minSize, uy);
+        if (shift && isCorner) {
+          const m = Math.max(right - left, bottom - top);
+          if (movesL) left = right - m;
+          else if (movesR) right = left + m;
+          if (movesT) top = bottom - m;
+          else if (movesB) bottom = top + m;
+        }
+        const patch: PrimitiveGizmoPatch = {};
+        if (movesL || movesR) {
+          patch.cx = (left + right) / 2;
+          patch.hx = (right - left) / 2;
+        }
+        if (movesT || movesB) {
+          patch.cy = (top + bottom) / 2;
+          patch.hy = (bottom - top) / 2;
+        }
+        onChangeRef.current(patch);
+        return;
+      }
+
       // Resize: half-extent = distance from the (fixed) center along each axis.
       const movesX =
         drag.kind === "edge-l" ||
@@ -181,7 +318,7 @@ export default function PrimitiveGizmo({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [drag, rect]);
+  }, [drag, rect, anchorResize]);
 
   if (!rect) return null;
 

@@ -7,11 +7,19 @@ import { getNodeDef } from "@/engine/registry";
 import { paramSocketType } from "@/state/graph";
 import type { NodeDataPayload } from "@/state/graph";
 import type {
+  AutoLayoutItem,
+  GradientPoint,
   LutFileParamValue,
   ParamDef,
   RenderQueueItem,
+  SizeMode,
 } from "@/engine/types";
-import { layerOpacityKey } from "@/engine/conventions";
+import {
+  gpointCKey,
+  gpointXKey,
+  gpointYKey,
+  layerOpacityKey,
+} from "@/engine/conventions";
 import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
@@ -26,8 +34,10 @@ import { colorForSocket } from "./socketColor";
 import LoadGrid from "./LoadGrid";
 import ImageGeneratePanel from "./ImageGeneratePanel";
 import BgRemovePanel from "./BgRemovePanel";
+import SegmentPanel from "./SegmentPanel";
 import ColorCorrectionPanel from "./ColorCorrectionPanel";
 import RgbCurvesPanel from "./RgbCurvesPanel";
+import AutoLayoutPanel from "./AutoLayoutPanel";
 import { StaggerItem } from "./StaggerReveal";
 import {
   COLOR_RAMP_MAX_STOPS,
@@ -51,6 +61,7 @@ import {
 } from "@/nodes/effect/color-correction";
 import {
   diamondStateFor,
+  evaluateKeyframesAt,
   findKeyframeAt,
   isKeyframable,
   removeKeyframeAt,
@@ -194,6 +205,16 @@ interface Props {
   // The Image Generate panel uses this at send-time to package its
   // ref inputs as input_image attachments for OpenAI.
   getRefImageBlob?: (sourceNodeId: string) => Promise<Blob | null>;
+  // Deterministic offline frame-stepper — renders each requested frame
+  // and hands back the named node's pixels. The Segment Anything panel
+  // drives its per-frame bake through this.
+  captureNodeFrames?: (
+    sourceNodeId: string,
+    frames: number[],
+    onFrame: (frame: number, blob: Blob) => Promise<boolean | void>
+  ) => Promise<void>;
+  // Scene length in frames — convenience default for bake-range fields.
+  sceneFrames?: number;
   // Live batch-render state for the Render Queue panel. Null when idle.
   // `nodeId` is the queue node running the batch (progress is ignored for
   // any other node); `activeItemId` is the row currently rendering (null
@@ -374,6 +395,8 @@ export default function ParamPanel({
   projectId,
   edges,
   getRefImageBlob,
+  captureNodeFrames,
+  sceneFrames,
   queueRender,
   onSelectNode,
 }: Props) {
@@ -448,6 +471,19 @@ export default function ParamPanel({
           getRefImageBlob={getRefImageBlob}
           onParamChange={onParamChange}
         />
+      ) : selected && selected.data.defType === "segment-anything" ? (
+        // Segment Anything: dots status + bake range + Bake / Free Bake.
+        // Dots themselves are placed on the canvas (SegmentDotsOverlay).
+        <SegmentPanel
+          key={selected.id}
+          node={selected}
+          edges={edges ?? []}
+          getRefImageBlob={getRefImageBlob}
+          captureNodeFrames={captureNodeFrames}
+          fps={fps}
+          sceneFrames={sceneFrames}
+          onParamChange={onParamChange}
+        />
       ) : selected && selected.data.defType === "color-correction" ? (
         // DaVinci-style primaries panel (4 color wheels + bottom bar).
         <Section label="color correction · primaries">
@@ -460,6 +496,20 @@ export default function ParamPanel({
           key={selected.id}
           node={selected}
           onParamChange={onParamChange}
+        />
+      ) : selected && selected.data.defType === "autolayout" ? (
+        // Figma-style auto-layout panel: direction icons, 3×3 alignment
+        // grid, inline W/H sizing, gap/padding, fill, the per-item list,
+        // and a collapsible canvas-placement block. Keyframable scalars
+        // keep their diamonds.
+        <AutoLayoutPanel
+          key={selected.id}
+          node={selected}
+          onParamChange={onParamChange}
+          currentTick={currentTick}
+          getAnimation={getAnimation}
+          onAnimationChange={onAnimationChange}
+          onSeekTick={onSeekTick}
         />
       ) : selected && selected.data.defType === "render-queue" ? (
         // Batch-render organizer: a reorderable list of the wired Output
@@ -680,8 +730,10 @@ export default function ParamPanel({
               const controlSupported =
                 p.type !== "paint" &&
                 p.type !== "merge_layers" &&
+                p.type !== "autolayout_items" &&
                 p.type !== "curves" &&
                 p.type !== "color_ramp" &&
+                p.type !== "gradient_points" &&
                 p.type !== "spline_anchors" &&
                 p.type !== "file" &&
                 p.type !== "video_file" &&
@@ -748,7 +800,8 @@ export default function ParamPanel({
                       : undefined
                   }
                   layerAnim={
-                    p.type === "merge_layers" &&
+                    (p.type === "merge_layers" ||
+                      p.type === "gradient_points") &&
                     getAnimation &&
                     onAnimationChange
                       ? {
@@ -764,6 +817,22 @@ export default function ParamPanel({
               );
             });
           })()}
+          {/* Spline Draw: keyframe the whole path shape. The spline param is
+              hidden (authored on-canvas), so this row is rendered explicitly
+              rather than via the visible-params loop above. */}
+          {def.type === "spline-draw" && (
+            <PathAnimationRow
+              animation={getAnimation?.(selected.id, "spline")}
+              storedValue={selected.data.params.spline}
+              currentTick={currentTick ?? 0}
+              onAnimationChange={
+                onAnimationChange
+                  ? (next) => onAnimationChange(selected.id, "spline", next)
+                  : undefined
+              }
+              onSeekTick={onSeekTick}
+            />
+          )}
           </Section>
           )}
         </div>
@@ -1710,6 +1779,166 @@ function KeyframeCaret({
         />
       </svg>
     </button>
+  );
+}
+
+// Dedicated "Path Animation" row for the Spline Draw node: keyframes the
+// whole spline shape (anchors lerp between keyframed states). It's just a
+// label + the standard keyframe diamond / carets — the path itself is
+// authored on-canvas, so there's no inline control. The diamond captures the
+// spline *as shown at the playhead* (the interpolated value when between
+// keyframes) so inserting a keyframe never introduces a jump.
+function PathAnimationRow({
+  animation,
+  storedValue,
+  currentTick,
+  onAnimationChange,
+  onSeekTick,
+}: {
+  animation?: KeyframeAnimationBlock;
+  storedValue: unknown;
+  currentTick: number;
+  onAnimationChange?: (next: KeyframeAnimationBlock | undefined) => void;
+  onSeekTick?: (tick: number) => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDocDown = (e: MouseEvent) => {
+      if (!menuRef.current) return;
+      const target = e.target as globalThis.Node | null;
+      if (target && menuRef.current.contains(target)) return;
+      setMenuOpen(false);
+    };
+    window.addEventListener("mousedown", onDocDown);
+    return () => window.removeEventListener("mousedown", onDocDown);
+  }, [menuOpen]);
+
+  const animated = !!animation?.animated;
+  const diamondState = diamondStateFor(animation, currentTick);
+  const captureValue =
+    animation && animation.animated && animation.keyframes.length > 0
+      ? evaluateKeyframesAt(animation, "spline_anchors", currentTick) ??
+        storedValue
+      : storedValue;
+  const kfTicks = animation?.keyframes?.map((k) => k.tick) ?? [];
+  const prevKfTick = kfTicks
+    .filter((t) => t < currentTick)
+    .reduce<number | null>((m, t) => (m === null || t > m ? t : m), null);
+  const nextKfTick = kfTicks
+    .filter((t) => t > currentTick)
+    .reduce<number | null>((m, t) => (m === null || t < m ? t : m), null);
+  const showCarets = !!onSeekTick;
+
+  const handleDiamondClick = () => {
+    if (!onAnimationChange) return;
+    if (!animation || !animation.animated) {
+      onAnimationChange({
+        animated: true,
+        trackVisible: true,
+        keyframes: [
+          { tick: currentTick, value: captureValue, easingOut: "easeInOut" },
+        ],
+      });
+      return;
+    }
+    if (findKeyframeAt(animation, currentTick)) {
+      onAnimationChange(removeKeyframeAt(animation, currentTick));
+    } else {
+      onAnimationChange(
+        upsertKeyframe(animation, currentTick, captureValue, "easeInOut")
+      );
+    }
+  };
+
+  const handleDisableEnable = () => {
+    if (!onAnimationChange) return;
+    if (!animation) {
+      onAnimationChange({ animated: true, trackVisible: true, keyframes: [] });
+    } else {
+      onAnimationChange({ ...animation, animated: !animation.animated });
+    }
+    setMenuOpen(false);
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "3px 0",
+      }}
+    >
+      <span style={{ color: "#8a8a90", flex: 1, minWidth: 0 }}>
+        Path Animation
+      </span>
+      <div style={{ display: "inline-flex", alignItems: "center", gap: 1 }}>
+        {showCarets && (
+          <KeyframeCaret
+            dir="prev"
+            disabled={prevKfTick === null}
+            onClick={() => prevKfTick !== null && onSeekTick?.(prevKfTick)}
+            title={
+              prevKfTick === null
+                ? "No earlier keyframe"
+                : "Jump to previous keyframe"
+            }
+          />
+        )}
+        <div style={{ position: "relative", display: "inline-flex" }}>
+          <KeyframeDiamond
+            state={diamondState}
+            onClick={handleDiamondClick}
+            onContextMenu={() => setMenuOpen((v) => !v)}
+            title={
+              diamondState === "empty"
+                ? "Animate the path"
+                : diamondState === "red"
+                  ? "Remove keyframe at playhead"
+                  : "Insert keyframe at playhead"
+            }
+          />
+          {menuOpen && (
+            <div
+              ref={menuRef}
+              style={{
+                position: "absolute",
+                top: "100%",
+                right: 0,
+                marginTop: 4,
+                background: "#111113",
+                border: "1px solid #1f1f23",
+                borderRadius: 4,
+                padding: 4,
+                zIndex: 1000,
+                display: "flex",
+                flexDirection: "column",
+                minWidth: 160,
+                boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+              }}
+            >
+              <button onClick={handleDisableEnable} style={menuItemStyle()}>
+                {animated ? "Disable animation" : "Enable animation"}
+              </button>
+            </div>
+          )}
+        </div>
+        {showCarets && (
+          <KeyframeCaret
+            dir="next"
+            disabled={nextKfTick === null}
+            onClick={() => nextKfTick !== null && onSeekTick?.(nextKfTick)}
+            title={
+              nextKfTick === null
+                ? "No later keyframe"
+                : "Jump to next keyframe"
+            }
+          />
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -3727,6 +3956,140 @@ function ParamControl({
     );
   }
 
+  if (param.type === "autolayout_items") {
+    const items = Array.isArray(value)
+      ? (value as AutoLayoutItem[])
+      : ((param.default as AutoLayoutItem[]) ?? []);
+    const sizeModes = ["hug", "fixed", "fill"];
+    const fits = ["cover", "contain", "stretch"];
+    // One labeled axis row: mode dropdown + units field (fixed mode only).
+    const axisRow = (
+      item: AutoLayoutItem,
+      axis: "width" | "height"
+    ) => {
+      const modeKey = axis === "width" ? "widthMode" : "heightMode";
+      const mode = item[modeKey];
+      return (
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <span style={{ color: "#71717a", width: 12, flexShrink: 0 }}>
+            {axis === "width" ? "W" : "H"}
+          </span>
+          <Dropdown
+            value={mode}
+            options={sizeModes}
+            onChange={(v) => {
+              const next = items.map((x) =>
+                x.id === item.id ? { ...x, [modeKey]: v as SizeMode } : x
+              );
+              onChange(next);
+            }}
+            style={{ width: 72, flexShrink: 0 }}
+          />
+          {mode === "fixed" && (
+            <NumberField
+              value={item[axis]}
+              onChange={(v) => {
+                const next = items.map((x) =>
+                  x.id === item.id ? { ...x, [axis]: Math.max(0, v) } : x
+                );
+                onChange(next);
+              }}
+              min={0}
+              step={1}
+              width={56}
+            />
+          )}
+        </div>
+      );
+    };
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {items.length === 0 && (
+          <div style={{ color: "#52525b" }}>(no items — use + on node)</div>
+        )}
+        {items.map((item, i) => (
+          <div
+            key={item.id}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+              padding: 6,
+              border: "1px solid #27272a",
+              borderRadius: 3,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <span style={{ color: "#a1a1aa" }}>item {i + 1}</span>
+              <button
+                onClick={() => onChange(items.filter((x) => x.id !== item.id))}
+                title="Remove item"
+                style={{
+                  background: "transparent",
+                  border: "1px solid #3f3f46",
+                  color: "#a1a1aa",
+                  fontSize: 10,
+                  padding: "1px 6px",
+                  borderRadius: 3,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                remove
+              </button>
+            </div>
+            {axisRow(item, "width")}
+            {axisRow(item, "height")}
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span style={{ color: "#71717a", width: 12, flexShrink: 0 }} />
+              <Dropdown
+                value={item.fit}
+                options={fits}
+                onChange={(v) => {
+                  const next = items.map((x) =>
+                    x.id === item.id
+                      ? { ...x, fit: v as AutoLayoutItem["fit"] }
+                      : x
+                  );
+                  onChange(next);
+                }}
+                style={{ width: 72, flexShrink: 0 }}
+              />
+              <label
+                title="Trim the child to its alpha bounding box before layout (image-backed elements only)"
+                style={{
+                  display: "flex",
+                  gap: 4,
+                  alignItems: "center",
+                  color: "#a1a1aa",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={item.trim}
+                  onChange={(e) => {
+                    const next = items.map((x) =>
+                      x.id === item.id ? { ...x, trim: e.target.checked } : x
+                    );
+                    onChange(next);
+                  }}
+                />
+                trim
+              </label>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   if (param.type === "color_ramp") {
     const stops = Array.isArray(value)
       ? (value as ColorRampStop[])
@@ -3735,6 +4098,19 @@ function ParamControl({
       <ColorRampControl
         stops={stops}
         onChange={(next) => onChange(next)}
+      />
+    );
+  }
+
+  if (param.type === "gradient_points") {
+    const points = Array.isArray(value)
+      ? (value as GradientPoint[])
+      : ((param.default as GradientPoint[]) ?? []);
+    return (
+      <GradientPointsControl
+        points={points}
+        onChange={(next) => onChange(next)}
+        layerAnim={layerAnim}
       />
     );
   }
@@ -3783,6 +4159,195 @@ function ParamControl({
   }
 
   return <div style={{ color: "#71717a" }}>(unsupported)</div>;
+}
+
+const GRADIENT_MAX_POINTS = 16;
+
+function newGradientPointId(): string {
+  return "gp-" + Math.random().toString(36).slice(2, 9);
+}
+
+// Hex → straight-alpha RGBA floats [r,g,b,a] in 0..1 — the representation the
+// keyframe engine interpolates colors in (oklab). Used to seed a point's
+// color keyframe from its stored hex value.
+function hexToRgba01Tuple(
+  hex: string
+): [number, number, number, number] {
+  const h = (hex || "#ffffff").replace("#", "");
+  const s = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const r = parseInt(s.slice(0, 2), 16);
+  const g = parseInt(s.slice(2, 4), 16);
+  const b = parseInt(s.slice(4, 6), 16);
+  const a = s.length >= 8 ? parseInt(s.slice(6, 8), 16) : 255;
+  return [
+    (Number.isFinite(r) ? r : 255) / 255,
+    (Number.isFinite(g) ? g : 255) / 255,
+    (Number.isFinite(b) ? b : 255) / 255,
+    (Number.isFinite(a) ? a : 255) / 255,
+  ];
+}
+
+// Editor for the multipoint gradient's `gradient_points` param. One card per
+// point (color + X/Y), with per-point keyframe diamonds against the virtual
+// gpoint_x/y/c:<id> tracks — same contract as the merge-layer opacity diamond.
+function GradientPointsControl({
+  points,
+  onChange,
+  layerAnim,
+}: {
+  points: GradientPoint[];
+  onChange: (next: GradientPoint[]) => void;
+  layerAnim?: LayerAnimApi;
+}) {
+  const update = (id: string, patch: Partial<GradientPoint>) =>
+    onChange(points.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+
+  // Toggle/insert/remove a keyframe on a point's virtual track at the
+  // playhead. `seed` is the value stored when a keyframe is created (a scalar
+  // for x/y, an RGBA tuple for color).
+  const diamond = (key: string, seed: unknown, title: string) => {
+    if (!layerAnim) return null;
+    const block = layerAnim.get(key);
+    const tick = layerAnim.currentTick;
+    return (
+      <KeyframeDiamond
+        state={diamondStateFor(block, tick)}
+        title={title}
+        onClick={() => {
+          if (!block || !block.animated) {
+            layerAnim.set(key, {
+              animated: true,
+              trackVisible: true,
+              keyframes: [{ tick, value: seed, easingOut: "easeInOut" }],
+            });
+          } else if (findKeyframeAt(block, tick)) {
+            layerAnim.set(key, removeKeyframeAt(block, tick));
+          } else {
+            layerAnim.set(key, upsertKeyframe(block, tick, seed, "easeInOut"));
+          }
+        }}
+      />
+    );
+  };
+
+  function addPoint() {
+    if (points.length >= GRADIENT_MAX_POINTS) return;
+    onChange([
+      ...points,
+      { id: newGradientPointId(), x: 0.5, y: 0.5, color: "#ffffff" },
+    ]);
+  }
+
+  function removePoint(id: string) {
+    if (points.length <= 1) return;
+    onChange(points.filter((p) => p.id !== id));
+    // Drop the point's keyframe tracks with it.
+    layerAnim?.set(gpointXKey(id), undefined);
+    layerAnim?.set(gpointYKey(id), undefined);
+    layerAnim?.set(gpointCKey(id), undefined);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {points.length === 0 && (
+        <div style={{ color: "#52525b" }}>(no points — add one)</div>
+      )}
+      {points.map((p, i) => (
+        <div
+          key={p.id}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+            padding: 6,
+            border: "1px solid #27272a",
+            borderRadius: 3,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span style={{ color: "#a1a1aa" }}>point {i + 1}</span>
+            <button
+              onClick={() => removePoint(p.id)}
+              disabled={points.length <= 1}
+              title="Remove point"
+              style={{
+                background: "transparent",
+                border: "1px solid #3f3f46",
+                color: points.length <= 1 ? "#3f3f46" : "#a1a1aa",
+                fontSize: 10,
+                padding: "1px 6px",
+                borderRadius: 3,
+                cursor: points.length <= 1 ? "default" : "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              remove
+            </button>
+          </div>
+          {/* Color row */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <ColorControl
+                value={typeof p.color === "string" ? p.color : "#ffffff"}
+                onChange={(hex) => update(p.id, { color: hex as string })}
+              />
+            </div>
+            {diamond(
+              gpointCKey(p.id),
+              hexToRgba01Tuple(typeof p.color === "string" ? p.color : "#ffffff"),
+              "Keyframe this point's color"
+            )}
+          </div>
+          {/* X / Y row */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ color: "#71717a", width: 10, flexShrink: 0 }}>X</span>
+            <NumberField
+              value={p.x}
+              onChange={(v) => update(p.id, { x: v })}
+              min={-0.5}
+              max={1.5}
+              step={0.001}
+              width={56}
+            />
+            {diamond(gpointXKey(p.id), p.x, "Keyframe this point's X")}
+            <span style={{ color: "#71717a", width: 10, flexShrink: 0 }}>Y</span>
+            <NumberField
+              value={p.y}
+              onChange={(v) => update(p.id, { y: v })}
+              min={-0.5}
+              max={1.5}
+              step={0.001}
+              width={56}
+            />
+            {diamond(gpointYKey(p.id), p.y, "Keyframe this point's Y")}
+          </div>
+        </div>
+      ))}
+      <button
+        onClick={addPoint}
+        disabled={points.length >= GRADIENT_MAX_POINTS}
+        style={{
+          background: "transparent",
+          border: "1px solid #3f3f46",
+          color: points.length >= GRADIENT_MAX_POINTS ? "#3f3f46" : "#a1a1aa",
+          fontSize: 11,
+          padding: "3px 8px",
+          borderRadius: 3,
+          cursor:
+            points.length >= GRADIENT_MAX_POINTS ? "default" : "pointer",
+          fontFamily: "inherit",
+        }}
+      >
+        + add point
+      </button>
+    </div>
+  );
 }
 
 function ColorRampControl({

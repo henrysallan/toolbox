@@ -8,7 +8,7 @@
 // Wire override > keyframes > constant. The evaluator applies that
 // precedence; this module only does the keyframe-evaluation step.
 
-import type { ParamType } from "./types";
+import type { ParamType, SplineSubpath } from "./types";
 
 export const DEFAULT_TICKS_PER_FRAME = 1000;
 export const DEFAULT_FPS = 60;
@@ -142,6 +142,9 @@ export function isKeyframable(type: ParamType): boolean {
     case "color":
     case "boolean":
     case "enum":
+    // The whole spline shape keyframes as one value ("Path Animation" on the
+    // Spline Draw node) — anchors lerp by index between keyframed states.
+    case "spline_anchors":
       return true;
     default:
       return false;
@@ -410,6 +413,59 @@ function lerpArray(a: number[], b: number[], t: number): number[] {
   return out;
 }
 
+// --- spline shape interpolation (Spline Draw "Path Animation") -------------
+//
+// The keyframe value is the node's stored spline `{ subpaths }`. We morph
+// anchor-by-anchor by index: positions and bezier handle offsets lerp. A
+// missing handle is treated as a zero-length one so a handle can smoothly
+// grow/retract across keyframes. Counts are expected to match (the author
+// keyframes, edits point *positions*, keyframes again); on a mismatch we
+// morph the common prefix and keep the "from" anchor for the remainder
+// rather than throwing. Topology flags (closed) snap to the "from" state.
+
+type SplineKfValue = { subpaths: SplineSubpath[] };
+type Handle = [number, number] | undefined;
+
+function lerpHandle(a: Handle, b: Handle, t: number): Handle {
+  if (!a && !b) return undefined;
+  const ax = a?.[0] ?? 0;
+  const ay = a?.[1] ?? 0;
+  const bx = b?.[0] ?? 0;
+  const by = b?.[1] ?? 0;
+  return [ax + (bx - ax) * t, ay + (by - ay) * t];
+}
+
+function lerpSpline(
+  a: SplineKfValue,
+  b: SplineKfValue,
+  t: number
+): SplineKfValue {
+  const aSubs = a?.subpaths ?? [];
+  const bSubs = b?.subpaths ?? [];
+  return {
+    subpaths: aSubs.map((sa, si) => {
+      const sb = bSubs[si];
+      if (!sb) return sa;
+      const aAnch = sa.anchors ?? [];
+      const bAnch = sb.anchors ?? [];
+      const anchors = aAnch.map((aa, i) => {
+        const ba = bAnch[i];
+        if (!ba) return aa;
+        return {
+          pos: [
+            aa.pos[0] + (ba.pos[0] - aa.pos[0]) * t,
+            aa.pos[1] + (ba.pos[1] - aa.pos[1]) * t,
+          ] as [number, number],
+          inHandle: lerpHandle(aa.inHandle, ba.inHandle, t),
+          outHandle: lerpHandle(aa.outHandle, ba.outHandle, t),
+          broken: aa.broken,
+        };
+      });
+      return { ...sa, anchors };
+    }),
+  };
+}
+
 function interpolate(
   paramType: ParamType,
   prev: Keyframe,
@@ -461,6 +517,12 @@ function interpolate(
       const b = next.value as RGBA;
       return colorSpace === "rgb" ? lerpRgba(a, b, t) : lerpRgbaOklab(a, b, t);
     }
+    case "spline_anchors":
+      return lerpSpline(
+        prev.value as SplineKfValue,
+        next.value as SplineKfValue,
+        t
+      );
     default:
       return prev.value;
   }

@@ -1,5 +1,8 @@
 import { coerceValue } from "./coerce";
 import {
+  GPOINT_C_PREFIX,
+  GPOINT_X_PREFIX,
+  GPOINT_Y_PREFIX,
   LAYER_OPACITY_PREFIX,
   MASK_INPUT_NAME,
   withMaskInput,
@@ -417,7 +420,7 @@ function computeNodeFingerprint(
   if (def.stable === false) parts.push("t:" + ctx.time);
   // External-state hook (e.g. the Cursor node mixing in live pointer pos).
   // Runs after the stable-false time stamp so both signals contribute.
-  const extras = def.fingerprintExtras?.(node.params, ctx);
+  const extras = def.fingerprintExtras?.(node.params, ctx, node.id);
   if (extras) parts.push(extras);
   return parts.join("::");
 }
@@ -483,6 +486,34 @@ export function evaluateGraph(
     activeNodeId,
     previewNodeId ? [previewNodeId] : undefined
   );
+
+  // Per-node set of output handles ("primary" / "aux:<name>") that
+  // something consumes this eval: any output wired to a node that will be
+  // evaluated, plus the primary/image of whatever the viewport shows.
+  // Lets nodes skip expensive outputs nobody reads (see ComputeArgs.
+  // consumedOutputs — Text's SDF/spline are the motivating case).
+  const consumedOutputs = new Map<string, Set<string>>();
+  const markConsumed = (nodeId: string, key: string) => {
+    let set = consumedOutputs.get(nodeId);
+    if (!set) {
+      set = new Set();
+      consumedOutputs.set(nodeId, set);
+    }
+    set.add(key);
+  };
+  for (const e of edges) {
+    if (!needed.has(e.target)) continue;
+    const ps = parseSourceHandle(e.sourceHandle);
+    if (!ps) continue;
+    markConsumed(e.source, ps.kind === "primary" ? "primary" : `aux:${ps.name}`);
+  }
+  // The active / preview node's image is shown directly (no edge needed),
+  // so its primary and any image aux count as consumed for display.
+  for (const id of [activeNodeId, previewNodeId]) {
+    if (!id) continue;
+    markConsumed(id, "primary");
+    markConsumed(id, "aux:image");
+  }
 
   // Audio sources whose primary output is wired into an Output node's
   // `audio` socket. Only these play audibly; every other audio source
@@ -707,6 +738,59 @@ export function evaluateGraph(
           }
         }
       }
+      // Virtual per-point keys for a multipoint gradient: gpoint_x/y/c:<id>
+      // animate one point's x / y (scalar) / color (RGBA) inside a
+      // `gradient_points` param. Same clone-and-override contract as layer
+      // opacity above; blocks whose point no longer exists are ignored.
+      const pointsParam = def.params.find((p) => p.type === "gradient_points");
+      if (pointsParam) {
+        let pts:
+          | Array<{ id?: string } & Record<string, unknown>>
+          | null = null;
+        const ensurePts = () => {
+          if (!pts) {
+            const base = node.params[pointsParam.name];
+            pts = Array.isArray(base)
+              ? base.map((p) => ({ ...(p as Record<string, unknown>) }))
+              : [];
+          }
+          return pts;
+        };
+        for (const [key, block] of Object.entries(animation)) {
+          if (!block || !block.animated || block.keyframes.length === 0) {
+            continue;
+          }
+          let prefix: string | null = null;
+          let field: "x" | "y" | "color" | null = null;
+          if (key.startsWith(GPOINT_X_PREFIX)) {
+            prefix = GPOINT_X_PREFIX;
+            field = "x";
+          } else if (key.startsWith(GPOINT_Y_PREFIX)) {
+            prefix = GPOINT_Y_PREFIX;
+            field = "y";
+          } else if (key.startsWith(GPOINT_C_PREFIX)) {
+            prefix = GPOINT_C_PREFIX;
+            field = "color";
+          }
+          if (!prefix || !field) continue;
+          const v = evaluateKeyframesAt(
+            block,
+            field === "color" ? "color" : "scalar",
+            ctx.tick
+          );
+          if (v === undefined) continue;
+          const id = key.slice(prefix.length);
+          const arr = ensurePts();
+          const pt = arr.find((p) => p.id === id);
+          if (pt) {
+            // color resolves to an RGBA tuple (or the stored hex at an exact
+            // keyframe); x/y to a number. The node parses either color form.
+            pt[field] = field === "color" ? v : (v as number);
+            anyAnimated = true;
+            keyframeOverrides[pointsParam.name] = arr;
+          }
+        }
+      }
       if (anyAnimated) {
         // Tick + animated-param-name list are enough — values are
         // determined by (tick, keyframes) and keyframes already
@@ -795,6 +879,7 @@ export function evaluateGraph(
             params: effectiveParams,
             ctx,
             nodeId: id,
+            consumedOutputs: consumedOutputs.get(id),
           }) ?? {};
         }
 

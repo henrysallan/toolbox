@@ -129,6 +129,7 @@ uniform int u_style;
 uniform vec2 u_pixelSize;
 uniform float u_depth;       // px
 uniform float u_soften;      // px (multiplier on the central-diff step)
+uniform float u_feather;     // px (blur radius applied to the height field)
 
 uniform vec3 u_l1Dir;        // unit vector in (x, y, z) — z = up out of page
 uniform float u_l1HiOp;
@@ -149,9 +150,12 @@ uniform float u_jfaRange;
 out vec4 outColor;
 
 float decodeJfaSigned(vec2 uv) {
-  // R channel: [0, 1] with 0.5 = boundary. JFA is y-up; our pipeline
-  // is y-down. Flip Y at sample time.
-  float r = texture(u_height, vec2(uv.x, 1.0 - uv.y)).r;
+  // R channel: [0, 1] with 0.5 = boundary. computeSDF writes the field in
+  // the SAME orientation as the source image (both sampled and written at
+  // v_uv), so we sample straight here — NO Y flip. (A previous flip mirrored
+  // the height field vertically against the shape, so the bevel landed on
+  // the wrong edges for any non-symmetric input.)
+  float r = texture(u_height, uv).r;
   return (r - 0.5) * 2.0 * u_jfaRange;
 }
 
@@ -187,22 +191,50 @@ float heightAt(vec2 uv) {
   return 0.0;
 }
 
+// Height sampled through a small Gaussian blur whose radius is the Feather
+// param (px). Where Soften widens the slope stencil (a wider, but still
+// hard-shouldered, bevel), Feather rounds the height field itself so the
+// relief eases in and falls away smoothly — the difference between a thicker
+// bevel and one that melts into the surface. Emboss gets a soft, creamy
+// relief from it. A 3x3 (1-2-1) kernel spanning ±feather/2 px; skipped
+// entirely when Feather is off so the common case stays single-tap.
+float heightFeathered(vec2 uv) {
+  if (u_feather < 0.5) return heightAt(uv);
+  vec2 r = u_pixelSize * u_feather * 0.5;
+  float s = 0.0;
+  s += heightAt(uv + vec2(-r.x, -r.y)) * 1.0;
+  s += heightAt(uv + vec2( 0.0, -r.y)) * 2.0;
+  s += heightAt(uv + vec2( r.x, -r.y)) * 1.0;
+  s += heightAt(uv + vec2(-r.x,  0.0)) * 2.0;
+  s += heightAt(uv)                    * 4.0;
+  s += heightAt(uv + vec2( r.x,  0.0)) * 2.0;
+  s += heightAt(uv + vec2(-r.x,  r.y)) * 1.0;
+  s += heightAt(uv + vec2( 0.0,  r.y)) * 2.0;
+  s += heightAt(uv + vec2( r.x,  r.y)) * 1.0;
+  return s / 16.0;
+}
+
 vec3 normalAt(vec2 uv) {
   // Step grows with the Soften param — a wider stencil softens the
   // normal (highlights spread over more pixels).
-  vec2 step = u_pixelSize * max(1.0 + u_soften * 0.5, 0.5);
-  float hL = heightAt(uv - vec2(step.x, 0.0));
-  float hR = heightAt(uv + vec2(step.x, 0.0));
-  float hD = heightAt(uv - vec2(0.0, step.y));
-  float hU = heightAt(uv + vec2(0.0, step.y));
-  // x and y components are slope; z is the "up" axis. The constant
-  // 0.5 on z controls the apparent height of the relief — bigger z
-  // = flatter relief. Tied to depth so larger Depth feels more raised.
-  vec3 n = vec3(
-    (hL - hR),
-    (hU - hD),
-    0.5
-  );
+  vec2 step = u_pixelSize * (1.0 + u_soften * 0.5);
+  float hL = heightFeathered(uv - vec2(step.x, 0.0));
+  float hR = heightFeathered(uv + vec2(step.x, 0.0));
+  float hD = heightFeathered(uv - vec2(0.0, step.y));
+  float hU = heightFeathered(uv + vec2(0.0, step.y));
+  // Central-difference gradient of the height field in y-up sample space.
+  // The outward-facing surface normal is the NEGATIVE gradient, so x uses
+  // (left - right) and y uses (down - up) — they must share sign convention
+  // or the relief is lit from opposite vertical/horizontal directions.
+  float gx = (hL - hR) / (2.0 * step.x);
+  float gy = (hD - hU) / (2.0 * step.y);
+  // Normalize the in-plane slope by Depth so Depth controls bevel WIDTH
+  // (how far the ramp reaches) while the face angle stays consistent —
+  // previously a larger Depth gave a flatter, weaker bevel. For Emboss
+  // (raw-luminance height) the same factor lets Depth act as relief
+  // strength. z = 1 is the apparent surface height.
+  float reliefScale = max(u_depth * min(u_pixelSize.x, u_pixelSize.y), 1e-6);
+  vec3 n = vec3(gx * reliefScale, gy * reliefScale, 1.0);
   return normalize(n);
 }
 
@@ -247,11 +279,30 @@ void applyLight(inout vec3 col, vec3 n, vec3 lightDir, float hiOp, float shOp) {
 
 void main() {
   vec4 src = texture(u_src, v_uv);
-  vec3 col = src.rgb;
   vec3 n = normalAt(v_uv);
+
+  float outA = src.a;
+  vec3 base = src.rgb;
+
+  // Outer Bevel and Pillow Emboss raise relief OUTSIDE the source alpha.
+  // If we just copy src.a the rim falls on transparent pixels and the whole
+  // effect is invisible — so widen alpha across the outer band (matching the
+  // height falloff) and light a neutral, premultiplied-to-black base there so
+  // the rim is predictable regardless of upstream RGB in clear pixels.
+  if (u_heightFromJfa == 1 && (u_style == 0 || u_style == 3)) {
+    float d = decodeJfaSigned(v_uv);
+    if (d > 0.0) {
+      float depthN = max(u_depth * min(u_pixelSize.x, u_pixelSize.y), 1e-6);
+      float band = 1.0 - smoothstep(0.0, depthN, d);
+      base = src.rgb * src.a;
+      outA = max(outA, band);
+    }
+  }
+
+  vec3 col = base;
   applyLight(col, n, u_l1Dir, u_l1HiOp, u_l1ShOp);
   applyLight(col, n, u_l2Dir, u_l2HiOp, u_l2ShOp);
-  outColor = vec4(col, src.a);
+  outColor = vec4(col, outA);
 }`;
 
 function lightDirection(angleDeg: number, elevDeg: number): [number, number, number] {
@@ -305,6 +356,16 @@ export const bevelEmbossNode: NodeDefinition = {
       softMax: 8,
       step: 0.1,
       default: 1,
+    },
+    {
+      name: "feather",
+      label: "Feather (px)",
+      type: "scalar",
+      min: 0,
+      max: 64,
+      softMax: 16,
+      step: 0.1,
+      default: 0,
     },
 
     // Light 1
@@ -468,6 +529,7 @@ export const bevelEmbossNode: NodeDefinition = {
 
     const depth = (params.depth as number) ?? 16;
     const soften = (params.soften as number) ?? 1;
+    const feather = (params.feather as number) ?? 0;
 
     const l1Dir = lightDirection(
       (params.l1_angle as number) ?? 135,
@@ -510,6 +572,7 @@ export const bevelEmbossNode: NodeDefinition = {
       );
       gl.uniform1f(gl.getUniformLocation(prog, "u_depth"), depth);
       gl.uniform1f(gl.getUniformLocation(prog, "u_soften"), soften);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_feather"), feather);
 
       gl.uniform3f(
         gl.getUniformLocation(prog, "u_l1Dir"),

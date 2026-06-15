@@ -22,6 +22,7 @@
 //      TIME_DRIVEN_CLIP_TYPES are remapped; everything else is a pure gate
 //      (their keyframes stay on the global clock for now).
 
+import { emptyElement } from "./element";
 import { pointsFromArray } from "./points";
 import type { NodeOutput, RenderContext, SocketType } from "./types";
 
@@ -161,6 +162,9 @@ export function emptyClipOutput(
       return { primary: pointsFromArray([]) };
     case "image_group":
       return { primary: { kind: "image_group", items: [] } };
+    case "element":
+      // Zero-size measure, 1×1 transparent render — layouts skip it.
+      return { primary: emptyElement() };
     default:
       // No representable empty (or a non-data output) — emit nothing.
       return {};

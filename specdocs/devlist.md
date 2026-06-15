@@ -299,9 +299,22 @@ For the layers editor, we would create a new toggle in addition to tracks and gr
 
 
 141. when editing keyframes (in tracks or layers) if the user selects multiple keyframes accross tracks/layers and option + drags them, the keys should stagger themselves with the top keys staying static and the ones underneath being staggered out/in as you drag right/left (importantly the spacing between keys on the same track should stay the same)
-
-142. autolayout nodes. I want to build a node that replicates the autolayout function of Figma. You should pipe in various data streams (kind of like a merge) and then in the parameters panel you should be able to choose between horizontial or vertical. The key settings are alginement (left right top bottom and each corner), and horizontial and vertial padding, and gap. We can replicate the figma layout for those. The thing im not sure exactly how to handle is responsive sizing. In figma, every layer (image, text, or frame basically) has the ability to be fixed size, or hug contents or fill container for its height or width. 
-
-143. Spline boolean node. I want a node that can take two splines and subtract A - B. 
+ 
 
 144. Font database. I want to write a script to fetch and distill all the google fonts into a json. Then for text nodes we should make the font field searchable and when the user selects the font we dynamically load it. I think we use he google api once locally to build the json. Then the other concern is that for certain things we need the actual font file. not sure how to handle that. 
+
+145. 
+
+
+
+
+146. on text node, lets make the actual text input exposable as a socket - we can add a new socket type "string"
+
+147. for the group input and output (inside a layer) we should make it so those cant be deleted. Also, we should make the group output node also have the functionality of the normal output node, becuase sometimes we just want to render/export from inside a layer. 
+
+148. refine bevel and emboss
+
+149. Templates tab in the file menu to add a specific template node network as a starting point.
+
+150. Hover state for bezier points in spline draw
+
