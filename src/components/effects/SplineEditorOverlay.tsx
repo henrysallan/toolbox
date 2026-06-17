@@ -364,6 +364,13 @@ export default function SplineEditorOverlay({
   const [activeSubpath, setActiveSubpath] = useState(0);
   const activeSubpathRef = useRef(activeSubpath);
   activeSubpathRef.current = activeSubpath;
+  // "Sealed" = the user finished drawing the active subpath (Enter / Return).
+  // The next pen background click starts a fresh subpath instead of extending
+  // this one, and the rubber-band preview hides. Reset when a new subpath
+  // starts or the active subpath is re-selected, so you can resume extending.
+  const [penSealed, setPenSealed] = useState(false);
+  const penSealedRef = useRef(penSealed);
+  penSealedRef.current = penSealed;
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
 
   // Switch the active subpath, clearing the anchor selection (indices are
@@ -371,6 +378,8 @@ export default function SplineEditorOverlay({
   const selectSubpath = (i: number) => {
     setActiveSubpath(i);
     setSelected(new Set());
+    // Re-selecting a subpath means you may want to extend it again.
+    setPenSealed(false);
   };
   // Segment under the cursor in select mode (index into the segment list),
   // and the live cursor position used for the add-mode rubber band.
@@ -412,6 +421,16 @@ export default function SplineEditorOverlay({
       else if (e.key === "v" || e.key === "V") setTool("path");
       else if (e.key === "a" || e.key === "A") setTool("subpath");
       else if (e.key === "Escape") {
+        setSelected(new Set());
+        setMenu(null);
+      } else if (e.key === "Enter") {
+        // Finish drawing the current pen subpath: the next pen click starts a
+        // new subpath instead of extending this one. Only when the spline
+        // canvas is the active scope and the pen tool is in use.
+        if (getShortcutScope() !== "spline") return;
+        if (toolRef.current !== "pen") return;
+        e.preventDefault();
+        setPenSealed(true);
         setSelected(new Set());
         setMenu(null);
       } else if (e.key === "Delete" || e.key === "Backspace") {
@@ -887,6 +906,8 @@ export default function SplineEditorOverlay({
     onChangeRef.current({ ...cur, subpaths: newSubs });
     setActiveSubpath(newActive);
     setSelected(new Set());
+    // We're now drawing this fresh subpath — clear any prior "sealed" state.
+    setPenSealed(false);
     return newActive;
   };
 
@@ -1255,7 +1276,9 @@ export default function SplineEditorOverlay({
     // subpath is what the "new" drag tracks (0 for a fresh subpath).
     const active = subpathsOf(valueRef.current)[activeSubpathRef.current];
     let newIdx: number;
-    if (active && !active.closed) {
+    // Extend the active subpath, unless it's closed, sealed (Enter), or there
+    // are none — then start a fresh subpath.
+    if (active && !active.closed && !penSealedRef.current) {
       newIdx = addAnchorAt(nx, ny);
     } else {
       startNewSubpath(nx, ny);
@@ -1524,8 +1547,10 @@ export default function SplineEditorOverlay({
   // first control) instead of sitting on the endpoint — `cp2 == cursor`
   // forces the end velocity to zero and curls the tail into a cusp.
   const rubberD = useMemo(() => {
-    // Hidden while shift-inserting (the insert preview takes over).
-    if (tool !== "pen" || drag || !hoverPx || !rect || shiftHeld) return "";
+    // Hidden while shift-inserting (the insert preview takes over) or after the
+    // active subpath has been sealed (Enter) — there's nothing to extend.
+    if (tool !== "pen" || drag || !hoverPx || !rect || shiftHeld || penSealed)
+      return "";
     const sub = subpathsOf(value)[activeSubpathRef.current];
     const anchors = sub?.anchors ?? [];
     if (anchors.length < 1 || (sub?.closed ?? false)) return "";
@@ -1549,7 +1574,7 @@ export default function SplineEditorOverlay({
     const cp2y = hoverPx.y + (cp1y - hoverPx.y) / 3;
     return `M ${p0.x} ${p0.y} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${hoverPx.x} ${hoverPx.y}`;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, drag, hoverPx, value, rect, shiftHeld, activeSubpath]);
+  }, [tool, drag, hoverPx, value, rect, shiftHeld, activeSubpath, penSealed]);
 
   // Insert-on-path preview: while shift is held in add mode, snap a ghost
   // point to the nearest spot on the spline so the user sees where a click
