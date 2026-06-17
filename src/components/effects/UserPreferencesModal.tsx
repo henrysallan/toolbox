@@ -7,6 +7,7 @@ import {
   testHuggingFaceToken,
   testOpenAIKey,
 } from "@/lib/supabase/user-preferences";
+import { useInputOverride, type InputOverride } from "./input-device";
 
 export interface UserPreferencesModalProps {
   open: boolean;
@@ -43,6 +44,10 @@ export default function UserPreferencesModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Input device is interaction-only and stored locally (per machine), so it
+  // applies immediately and works without signing in.
+  const [inputOverride, setInputOverride] = useInputOverride();
 
   // (Re)load preferences whenever the modal opens.
   useEffect(() => {
@@ -142,6 +147,70 @@ export default function UserPreferencesModal({
           User Preferences
         </div>
 
+        {/* Input device — interaction-only, stored locally (per machine),
+            so it's editable without signing in. */}
+        <div style={{ marginBottom: 16 }}>
+          <div
+            style={{
+              color: "#a1a1aa",
+              fontSize: 10,
+              textTransform: "uppercase",
+              letterSpacing: 1,
+              marginBottom: 6,
+            }}
+          >
+            Input device
+          </div>
+          <div
+            style={{
+              color: "#71717a",
+              fontSize: 11,
+              marginBottom: 8,
+              lineHeight: 1.5,
+            }}
+          >
+            How scroll and middle-drag behave. Auto detects mouse vs trackpad
+            per gesture (mouse wheel zooms; trackpad two-finger scroll pans).
+            Force one if detection guesses wrong. Stored on this device.
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 2,
+              padding: 2,
+              background: "#0a0a0a",
+              border: "1px solid #27272a",
+              borderRadius: 999,
+              width: "fit-content",
+            }}
+          >
+            {(["auto", "mouse", "trackpad"] as const).map((m: InputOverride) => {
+              const on = inputOverride === m;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setInputOverride(m)}
+                  style={{
+                    background: on ? "#3f3f46" : "transparent",
+                    color: on ? "#fafafa" : "#a1a1aa",
+                    border: "none",
+                    borderRadius: 999,
+                    padding: "4px 14px",
+                    fontFamily: "inherit",
+                    fontSize: 11,
+                    textTransform: "capitalize",
+                    cursor: "pointer",
+                  }}
+                >
+                  {m}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ height: 1, background: "#27272a", margin: "0 0 16px" }} />
+
         {!signedIn && (
           <div
             style={{
@@ -154,8 +223,9 @@ export default function UserPreferencesModal({
               lineHeight: 1.5,
             }}
           >
-            Sign in to save preferences. Your settings are stored on
-            the account so they follow you across devices.
+            Sign in to save the API keys below. Your account settings follow
+            you across devices; the input-device choice above stays on this
+            machine.
           </div>
         )}
 

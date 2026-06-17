@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { wheelWantsZoom } from "./input-device";
 
 interface Props {
   playing: boolean;
@@ -142,8 +143,10 @@ export default function PlaybackBar({
       const dx = e.deltaX || 0;
       const dy = e.deltaY || 0;
       const sx = Math.abs(dx) > Math.abs(dy) ? dx : dy;
-      if (e.metaKey || e.ctrlKey) {
-        // Cmd/Ctrl + wheel → horizontal zoom anchored at the cursor.
+      // Zoom on an explicit modifier OR when the device is a mouse (its wheel
+      // zooms); otherwise a trackpad two-finger scroll pans the timeline.
+      if (wheelWantsZoom(e)) {
+        // Wheel → horizontal zoom anchored at the cursor.
         // Negative delta (scroll up / two-fingers up) zooms in.
         const rect = el.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
@@ -163,21 +166,37 @@ export default function PlaybackBar({
     return () => el.removeEventListener("wheel", onWheel);
   }, [pxPerSec, viewOffset, viewSpan, trackWidth]);
 
-  // Middle-click drag also pans.
+  // Middle-drag pans the timeline; Cmd/Ctrl + middle-drag zooms the time axis
+  // about the press point. stopPropagation keeps the preview canvas's
+  // window-level middle-drag handler from also panning the canvas (bug #2).
   useEffect(() => {
     const el = trackRef.current;
     if (!el) return;
     const onDown = (e: PointerEvent) => {
       if (e.button !== 1 || pxPerSec === 0) return;
       e.preventDefault();
+      e.stopPropagation();
+      const rect = el.getBoundingClientRect();
       const startX = e.clientX;
-      let curOffset = 0;
-      setViewOffset((v) => {
-        curOffset = v;
-        return v;
-      });
+      const startY = e.clientY;
+      const anchorX = startX - rect.left;
+      const zoom = e.metaKey || e.ctrlKey;
+      const startOffset = viewOffset;
+      const startSpan = viewSpan;
+      const startPxPerSec = pxPerSec;
+      // Time-point under the press, held fixed while zooming.
+      const tAt = startOffset + anchorX / startPxPerSec;
       const onMove = (ev: PointerEvent) => {
-        setViewOffset(curOffset - (ev.clientX - startX) / pxPerSec);
+        if (zoom) {
+          // Drag up zooms in (shrinks the visible span).
+          const factor = Math.exp((ev.clientY - startY) * 0.005);
+          const nextSpan = Math.max(0.1, Math.min(3600, startSpan * factor));
+          setViewSpanOverride(nextSpan);
+          const nextPxPerSec = trackWidth / nextSpan;
+          setViewOffset(tAt - anchorX / nextPxPerSec);
+        } else {
+          setViewOffset(startOffset - (ev.clientX - startX) / startPxPerSec);
+        }
       };
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);
@@ -188,7 +207,7 @@ export default function PlaybackBar({
     };
     el.addEventListener("pointerdown", onDown);
     return () => el.removeEventListener("pointerdown", onDown);
-  }, [pxPerSec]);
+  }, [pxPerSec, viewOffset, viewSpan, trackWidth]);
 
   const handleTrackMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;

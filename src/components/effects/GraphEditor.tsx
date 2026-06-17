@@ -37,6 +37,7 @@ import {
 import { getNodeDef } from "@/engine/registry";
 import { LAYER_OPACITY_PREFIX } from "@/engine/conventions";
 import { getShortcutScope } from "./shortcut-scope";
+import { wheelWantsZoom, getEffectiveDevice } from "./input-device";
 
 // ---------------------------------------------------------------------
 // Public API
@@ -524,8 +525,24 @@ export function GraphEditor({
       const dx = e.deltaX || 0;
       const dy = e.deltaY || 0;
 
-      if (e.metaKey || e.ctrlKey) {
-        // Cmd/Ctrl + scroll = zoom. Each axis zooms independently
+      if (wheelWantsZoom(e)) {
+        if (getEffectiveDevice() === "mouse") {
+          // Mouse wheel = zoom BOTH axes uniformly about the cursor.
+          const mag = Math.abs(dx) > Math.abs(dy) ? dx : dy;
+          const factor = Math.exp(-mag * 0.0015);
+          const anchorTick = screenToTick(mx);
+          const newPpt = Math.max(1e-6, pixelsPerTick * factor);
+          setPixelsPerTick(newPpt);
+          setViewTickOffset(anchorTick - (mx - PADDING.left) / newPpt);
+          const anchorVal = screenToValue(my);
+          const span = yMaxView - yMinView;
+          const newSpan = Math.max(1e-6, span / factor);
+          const norm = span !== 0 ? (anchorVal - yMinView) / span : 0.5;
+          setYMinView(anchorVal - norm * newSpan);
+          setYMaxView(anchorVal - norm * newSpan + newSpan);
+          return;
+        }
+        // Trackpad + Cmd/Ctrl = zoom. Each axis zooms independently
         // based on its delta sign/magnitude, anchored to the cursor.
         if (dx !== 0) {
           const anchorTick = screenToTick(mx);
@@ -577,6 +594,55 @@ export function GraphEditor({
     screenToTick,
     screenToValue,
   ]);
+
+  // Middle-button pointerdown: block the preview canvas's window-level
+  // middle-drag (bug #2). Plain middle-drag pans via the React onMouseDown
+  // (the compat mousedown still fires); Cmd/Ctrl + middle-drag zooms —
+  // horizontal movement zooms time (X), vertical zooms value (Y), about the
+  // press point. Drag right / up zooms in. Scoped to button 1 so left-button
+  // keyframe interactions are untouched.
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 1) return;
+      e.stopPropagation();
+      if (!(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startPpt = pixelsPerTick;
+      const startMin = yMinView;
+      const startMax = yMaxView;
+      const anchorTick = screenToTick(mx);
+      const anchorVal = screenToValue(my);
+      const onMove = (ev: PointerEvent) => {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        // X (time): drag right zooms in (larger pixels-per-tick).
+        const newPpt = Math.max(1e-6, startPpt * Math.exp(dx * 0.0015));
+        setPixelsPerTick(newPpt);
+        setViewTickOffset(anchorTick - (mx - PADDING.left) / newPpt);
+        // Y (value): drag up (dy < 0) zooms in (smaller value span).
+        const span = startMax - startMin;
+        const newSpan = Math.max(1e-6, span * Math.exp(dy * 0.0015));
+        const norm = span !== 0 ? (anchorVal - startMin) / span : 0.5;
+        setYMinView(anchorVal - norm * newSpan);
+        setYMaxView(anchorVal - norm * newSpan + newSpan);
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    };
+    el.addEventListener("pointerdown", onDown);
+    return () => el.removeEventListener("pointerdown", onDown);
+  }, [pixelsPerTick, yMinView, yMaxView, screenToTick, screenToValue]);
 
   // ----- Keyboard: space / delete / escape / F -----
   useEffect(() => {
@@ -723,6 +789,12 @@ export function GraphEditor({
     shiftAxisRef.current = null;
     const { x, y } = getMousePos(e);
 
+    // Cmd/Ctrl + middle-drag = zoom (owned by the native pointerdown
+    // listener); bail so we don't also start a pan.
+    if (e.button === 1 && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      return;
+    }
     // Space-drag or middle-click → pan.
     if (spaceHeld || e.button === 1) {
       e.preventDefault();

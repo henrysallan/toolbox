@@ -28,6 +28,7 @@ import { DiamondNav } from "./TrackEditor";
 import type { ClipBlock } from "@/engine/clips";
 import { defaultClip, splitClipsAt } from "@/engine/clips";
 import { getShortcutScope } from "./shortcut-scope";
+import { wheelWantsZoom } from "./input-device";
 
 // AE-style layer stack editor (spec §2 "Layers editor"). A lens over
 // the root compositing chain: each row is a layer, top-of-list =
@@ -770,7 +771,9 @@ export function LayersEditor({
       const rect = timelineRef.current?.getBoundingClientRect();
       const dx = e.deltaX || 0;
       const dy = e.deltaY || 0;
-      if ((e.metaKey || e.ctrlKey) && rect) {
+      // Zoom on an explicit modifier OR when the device is a mouse (wheel
+      // zooms about the cursor); otherwise a trackpad two-finger scroll pans.
+      if (wheelWantsZoom(e) && rect) {
         e.preventDefault();
         e.stopPropagation();
         const mx = e.clientX - rect.left;
@@ -798,6 +801,52 @@ export function LayersEditor({
     el.addEventListener("wheel", handler, { passive: false });
     return () => el.removeEventListener("wheel", handler);
   }, [pxToTick, pixelsPerTick]);
+
+  // Middle-drag pans the time axis; Cmd/Ctrl + middle-drag zooms it about the
+  // press point. stopPropagation keeps the preview canvas's window-level
+  // middle-drag from also panning the canvas (bug #2). Scoped to button 1, so
+  // left-button keyframe interactions are untouched.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = timelineRef.current?.getBoundingClientRect();
+      const zoom = e.metaKey || e.ctrlKey;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const anchorX = rect ? startX - rect.left : 0;
+      const startPpt = pixelsPerTick;
+      const startOffset = viewTickOffset;
+      const tickAt = startOffset + anchorX / startPpt;
+      const onMove = (ev: PointerEvent) => {
+        if (zoom) {
+          // Drag up zooms in (larger pixels-per-tick).
+          const factor = Math.exp(-(ev.clientY - startY) * 0.0015);
+          const next = Math.max(
+            MIN_PIXELS_PER_TICK,
+            Math.min(MAX_PIXELS_PER_TICK, startPpt * factor)
+          );
+          setViewTickOffset(Math.max(0, tickAt - anchorX / next));
+          setPixelsPerTick(next);
+        } else {
+          setViewTickOffset(
+            Math.max(0, startOffset - (ev.clientX - startX) / startPpt)
+          );
+        }
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    };
+    el.addEventListener("pointerdown", onDown);
+    return () => el.removeEventListener("pointerdown", onDown);
+  }, [pixelsPerTick, viewTickOffset]);
 
   // Clip window for a layer: the first enabled window, or a full-scene
   // ghost when the layer has no clips (always active).

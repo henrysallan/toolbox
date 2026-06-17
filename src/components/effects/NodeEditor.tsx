@@ -24,6 +24,7 @@ import WireActionOverlay from "./WireActionOverlay";
 import NodeSearchPopup from "./NodeSearchPopup";
 import SimulationZoneUnderlay from "./SimulationZoneUnderlay";
 import { WaypointContext } from "./waypoint-context";
+import { useEffectiveDevice } from "./input-device";
 import { getNodeDef } from "@/engine/registry";
 import {
   defaultBezierCps,
@@ -188,8 +189,52 @@ export default function NodeEditor({
     getNodes: rfGetNodes,
     getEdges: rfGetEdges,
     deleteElements,
+    getViewport,
+    setViewport,
   } = useReactFlow();
   const flowWrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // Cmd/Ctrl + middle-drag = zoom about the press point. React Flow's pan is
+  // driven by d3-zoom on the pane (a `mousedown` listener), so we intercept
+  // the gesture in the capture phase on the wrapper and stop it before d3-zoom
+  // sees it, then drive the viewport ourselves. Scoped to button 1 + a zoom
+  // modifier, so ordinary middle-drag panning (panOnDrag) is untouched.
+  // (Drag right zooms in.) See specdocs/061726_mouse-input-ux.md.
+  useEffect(() => {
+    const el = flowWrapperRef.current;
+    if (!el) return;
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 1 || !(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = el.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const start = getViewport();
+      const startY = e.clientY;
+      // Flow-space point under the cursor, held fixed while zooming.
+      const flowX = (px - start.x) / start.zoom;
+      const flowY = (py - start.y) / start.zoom;
+      const onMove = (ev: MouseEvent) => {
+        // Drag up zooms in.
+        const factor = Math.exp(-(ev.clientY - startY) * 0.005);
+        const nextZoom = Math.max(0.05, Math.min(4, start.zoom * factor));
+        setViewport({
+          x: px - flowX * nextZoom,
+          y: py - flowY * nextZoom,
+          zoom: nextZoom,
+        });
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove, true);
+        window.removeEventListener("mouseup", onUp, true);
+      };
+      window.addEventListener("mousemove", onMove, true);
+      window.addEventListener("mouseup", onUp, true);
+    };
+    el.addEventListener("mousedown", onDown, true);
+    return () => el.removeEventListener("mousedown", onDown, true);
+  }, [getViewport, setViewport]);
 
   // Touch / pen detection for the React Flow gesture model. On
   // mouse, the marquee box-select is on by default and a single-
@@ -203,6 +248,10 @@ export default function NodeEditor({
   // intermittently — flipping back-and-forth would feel unstable.
   // A page reload (or new session) starts fresh in mouse mode.
   const [touchActive, setTouchActive] = useState(false);
+  // Mouse vs trackpad governs the scroll behavior: a mouse wheel zooms,
+  // a trackpad two-finger scroll pans (pinch still zooms). See input-device.ts.
+  const inputDevice = useEffectiveDevice();
+  const mouseScroll = inputDevice === "mouse" && !touchActive;
   useEffect(() => {
     if (touchActive) return;
     const el = flowWrapperRef.current;
@@ -1299,11 +1348,12 @@ export default function NodeEditor({
           reportPane(e.clientX, e.clientY);
           closeContextMenu();
         }}
-        // Figma-style viewport: two-finger scroll pans, pinch zooms,
+        // Figma-style viewport: two-finger trackpad scroll pans, pinch zooms,
         // drag on empty canvas draws a marquee selection. Cmd-scroll still
-        // zooms via the default zoomActivationKeyCode.
-        panOnScroll
-        zoomOnScroll={false}
+        // zooms via the default zoomActivationKeyCode. With a mouse, the wheel
+        // zooms instead (panOnScroll off, zoomOnScroll on).
+        panOnScroll={!mouseScroll}
+        zoomOnScroll={mouseScroll}
         // Mouse: middle button pans, left button draws marquee
         //        (selectionOnDrag).
         // Touch / pen: single-finger drag pans the canvas — marquee

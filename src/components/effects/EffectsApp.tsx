@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import NodeEditor from "./NodeEditor";
 import ParamPanel from "./ParamPanel";
+import { feedWheel, wheelWantsZoom } from "./input-device";
 // import CustomCursor from "./CustomCursor"; // temporarily disabled — using native cursor
 import UserPreferencesModal from "./UserPreferencesModal";
 import PaintOverlay from "./PaintOverlay";
@@ -701,6 +702,16 @@ function EffectsShell({
   // Bind each viewport's wheel + middle-click handlers to its own ref.
   useViewportGestures(v1.viewportRef, v1.setPan, v1.setZoom);
   useViewportGestures(v2.viewportRef, v2.setPan, v2.setZoom);
+  // Mouse-vs-trackpad detection. One capture-phase wheel listener feeds the
+  // sticky detector so every pan/zoom handler shares one device read,
+  // regardless of which surface ultimately consumes the event. See
+  // input-device.ts / specdocs/061726_mouse-input-ux.md.
+  useEffect(() => {
+    const onWheel = (e: WheelEvent) => feedWheel(e);
+    window.addEventListener("wheel", onWheel, { capture: true, passive: true });
+    return () =>
+      window.removeEventListener("wheel", onWheel, { capture: true });
+  }, []);
   // Overlays subscribe to window "resize" to refresh their cached rect.
   // Overlays only ride viewport 1, so only its transform needs to fire
   // the resize event.
@@ -7172,7 +7183,9 @@ function useViewportGestures(
       const cy = rect.top + rect.height / 2;
       const dx = e.deltaX || 0;
       const dy = e.deltaY || 0;
-      const isZoom = e.metaKey || e.ctrlKey;
+      // Zoom on an explicit modifier OR when the active device is a mouse
+      // (whose wheel should zoom rather than pan). See input-device.ts.
+      const isZoom = wheelWantsZoom(e);
       if (isZoom) {
         const mag = Math.abs(dx) > Math.abs(dy) ? dx : dy;
         const factor = Math.exp(-mag * 0.005);
@@ -7208,6 +7221,9 @@ function useViewportGestures(
         return;
       }
       e.preventDefault();
+      // Cmd/Ctrl + middle-drag zooms about the press point; plain middle-drag
+      // pans. (Drag right zooms in.)
+      const zoomDrag = e.metaKey || e.ctrlKey;
       const startX = e.clientX;
       const startY = e.clientY;
       let curPan: [number, number] = [0, 0];
@@ -7215,11 +7231,32 @@ function useViewportGestures(
         curPan = p;
         return p;
       });
+      let curZoom = 1;
+      setZoom((z) => {
+        curZoom = z;
+        return z;
+      });
+      // Press point relative to the viewport center (matches the wheel-zoom
+      // anchoring math), held fixed while zooming.
+      const aX = startX - (rect.left + rect.width / 2);
+      const aY = startY - (rect.top + rect.height / 2);
       const onMove = (ev: PointerEvent) => {
-        setPan([
-          curPan[0] + (ev.clientX - startX),
-          curPan[1] + (ev.clientY - startY),
-        ]);
+        if (zoomDrag) {
+          // Drag up zooms in.
+          const factor = Math.exp(-(ev.clientY - startY) * 0.005);
+          const nextZoom = Math.max(0.1, Math.min(8, curZoom * factor));
+          const ratio = nextZoom / curZoom;
+          setZoom(nextZoom);
+          setPan([
+            curPan[0] * ratio + aX * (1 - ratio),
+            curPan[1] * ratio + aY * (1 - ratio),
+          ]);
+        } else {
+          setPan([
+            curPan[0] + (ev.clientX - startX),
+            curPan[1] + (ev.clientY - startY),
+          ]);
+        }
       };
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);
@@ -7230,7 +7267,7 @@ function useViewportGestures(
     };
     window.addEventListener("pointerdown", onDown);
     return () => window.removeEventListener("pointerdown", onDown);
-  }, [viewportRef, setPan]);
+  }, [viewportRef, setPan, setZoom]);
 
   // Touch / Pencil pan + pinch-zoom on the canvas viewport.
   // Mirrors the wheel handler's pan/zoom semantics so the canvas
