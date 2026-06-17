@@ -3372,6 +3372,59 @@ function HslField({
 // renders a dark, rounded control + a portal popup styled like the rest of
 // the panel. Portal-to-body with fixed positioning avoids the param panel's
 // overflow:auto clipping the list.
+// Segmented pill toggle for enum params declared with `control: "segmented"`.
+// Best for 2–3 mutually-exclusive modes shown inline (e.g. the Output node's
+// Video / Sequence export mode).
+function SegmentedControl({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: Array<string | { value: string; label: string }>;
+  onChange: (v: string) => void;
+}) {
+  const norm = options.map((o) =>
+    typeof o === "string" ? { value: o, label: o } : o
+  );
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 2,
+        padding: 2,
+        background: "#18181b",
+        border: "1px solid #3f3f46",
+        borderRadius: 999,
+      }}
+    >
+      {norm.map((o) => {
+        const on = o.value === value;
+        return (
+          <button
+            key={o.value}
+            onClick={() => onChange(o.value)}
+            style={{
+              flex: 1,
+              background: on ? "#3f3f46" : "transparent",
+              color: on ? "#fafafa" : "#a1a1aa",
+              border: "none",
+              borderRadius: 999,
+              padding: "3px 8px",
+              fontFamily: "inherit",
+              fontSize: 11,
+              textTransform: "capitalize",
+              cursor: "pointer",
+            }}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function Dropdown({
   value,
   options,
@@ -3835,6 +3888,15 @@ function ParamControl({
   if (param.type === "enum") {
     const options = param.options ?? [];
     const current = typeof value === "string" ? value : (param.default as string);
+    if (param.control === "segmented") {
+      return (
+        <SegmentedControl
+          value={current}
+          options={options}
+          onChange={(v) => onChange(v)}
+        />
+      );
+    }
     return (
       <Dropdown
         value={current}

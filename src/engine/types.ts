@@ -910,6 +910,10 @@ export interface ParamDef {
   placeholder?: string;
   // For "string" params: render a textarea instead of a single-line input.
   multiline?: boolean;
+  // For "enum" params: render as a segmented pill toggle instead of a
+  // dropdown. Best for 2–3 mutually exclusive modes shown inline. Purely a
+  // ParamPanel rendering hint — the engine ignores it.
+  control?: "segmented";
   hidden?: boolean;
   // Optional predicate over the node's current params. Returning false hides
   // the row in the UI without affecting the underlying stored value.

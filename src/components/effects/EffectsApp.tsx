@@ -250,6 +250,27 @@ export interface InitialProjectPayload {
   graph: SavedProject;
 }
 
+// Resolve an Output node's animated-export frame range. Half-open
+// [startFrame, endFrame): frame count = end − start. Falls back to the legacy
+// `videoFrames` duration param for any in-memory node that predates the
+// start/end split and never went through deserialize (old saves migrate in
+// project.ts). Shared by exportVideo and exportSequence.
+function resolveFrameRange(params: Record<string, unknown>): {
+  startFrame: number;
+  endFrame: number;
+  durationFrames: number;
+} {
+  const startFrame = Math.max(0, Math.round((params.startFrame as number) ?? 0));
+  const legacyDuration = (params.videoFrames as number) ?? 240;
+  const endRaw = params.endFrame;
+  const endFrame =
+    typeof endRaw === "number"
+      ? Math.round(endRaw)
+      : startFrame + legacyDuration;
+  const durationFrames = Math.max(1, endFrame - startFrame);
+  return { startFrame, endFrame: startFrame + durationFrames, durationFrames };
+}
+
 export default function EffectsApp({
   initialProject,
 }: {
@@ -1080,6 +1101,12 @@ function EffectsShell({
   // continuous loop lets deferred results catch up).
   const offlineRenderingRef = useRef(false);
 
+  // When set, forces the terminal/active node for the render — used by the
+  // export paths so a batch render captures the *specific* Output being
+  // exported, not whatever the user happens to have set Active. Cleared back
+  // to null when the export finishes.
+  const forcedTerminalRef = useRef<string | null>(null);
+
   // Imperative render entry point. Pulls graph + cursor from refs so it
   // can be called both from the React-driven render effect AND from the
   // offline export loops, where we need to step time deterministically
@@ -1105,7 +1132,8 @@ function EffectsShell({
         bypassed: !!n.data.bypassed,
       }));
       const activeNodeId =
-        currentNodes.find((n) => n.data.active)?.id ?? null;
+        forcedTerminalRef.current ??
+        (currentNodes.find((n) => n.data.active)?.id ?? null);
       const activeNodeId2 =
         currentNodes.find((n) => n.data.active2)?.id ?? null;
       // When nothing is explicitly set Active, preview the selected node's
@@ -4008,7 +4036,11 @@ function EffectsShell({
       // and delivers the whole batch at the end.
       opts?: { sink?: (blob: Blob, ext: string) => void }
     ) => {
-      if (recordingRef.current) return;
+      // The re-entrancy lock guards the standalone Export button. Batch (sink)
+      // calls are already serialized by renderQueue's queueRenderingRef, and
+      // recordingRef lags React state between awaited iterations — so don't let
+      // a stale `recording` value abort every item after the first.
+      if (recordingRef.current && !opts?.sink) return;
       const canvas = canvasRef.current;
       const params = getOutputParams(nodeId);
       if (!canvas || !params) return;
@@ -4025,7 +4057,10 @@ function EffectsShell({
         (params.videoQuality as "fast" | "high" | "max") ?? "high";
       const container =
         (params.videoFormat as "mp4" | "webm" | "mov" | "mkv") ?? "mp4";
-      const durationFrames = (params.videoFrames as number) ?? 240;
+      // Frame range, half-open [startFrame, endFrame): count = end − start.
+      // `videoFrames` is the legacy duration param (old saves migrate to
+      // start/end in project.ts, but read it as a fallback here too).
+      const { startFrame, durationFrames } = resolveFrameRange(params);
       const bitrateMbps = (params.videoBitrateMbps as number) ?? 16;
       const base = sanitizeFilename((params.filename as string) ?? "");
       const previewFps = fpsRef.current;
@@ -4068,24 +4103,32 @@ function EffectsShell({
           };
         });
 
-        setTime(0);
-        await new Promise<void>((r) => {
-          requestAnimationFrame(() => requestAnimationFrame(() => r()));
-        });
+        // Capture the specific Output being exported, not whatever node the
+        // user has set Active. The eval effect drives the live canvas during
+        // playback, so route the override through forcedTerminalRef.
+        forcedTerminalRef.current = nodeId;
+        try {
+          setTime(startFrame / previewFps);
+          await new Promise<void>((r) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => r()));
+          });
 
-        setPlaying(true);
-        recorder.start();
-        setRecording({
-          mode: "live",
-          totalSec,
-          startedAt: performance.now(),
-        });
+          setPlaying(true);
+          recorder.start();
+          setRecording({
+            mode: "live",
+            totalSec,
+            startedAt: performance.now(),
+          });
 
-        await new Promise((r) => setTimeout(r, totalSec * 1000));
-        recorder.stop();
-        setPlaying(savedPlaying);
-        setTime(savedTime);
-        setRecording(null);
+          await new Promise((r) => setTimeout(r, totalSec * 1000));
+          recorder.stop();
+        } finally {
+          forcedTerminalRef.current = null;
+          setPlaying(savedPlaying);
+          setTime(savedTime);
+          setRecording(null);
+        }
 
         const blob = await done;
         deliver(blob, picked.ext);
@@ -4102,9 +4145,16 @@ function EffectsShell({
       // (below), so the time-driven eval effect must not also render — see
       // offlineRenderingRef. Without this each frame would render twice.
       offlineRenderingRef.current = true;
+      // Render the specific Output being exported, regardless of which node is
+      // set Active in the UI. Cleared in the finally below.
+      forcedTerminalRef.current = nodeId;
       setRecording({ mode: "offline", label: "Preparing…", progress: 0 });
 
-      const renderAt = async (_frameIndex: number, t: number) => {
+      const renderAt = async (frameIndex: number, _t: number) => {
+        // The exporter counts from 0; offset by startFrame so the export
+        // window is [startFrame, startFrame + durationFrames). Ignore the
+        // exporter's own `t` and compute the real project time here.
+        const t = (startFrame + frameIndex) / exportFps;
         // setTime only advances the visible timeline cursor for progress
         // feedback — with the eval effect guarded by offlineRenderingRef it
         // no longer triggers a redundant render of the same frame.
@@ -4133,7 +4183,8 @@ function EffectsShell({
           try {
             audioBuffer = await renderExportAudioBuffer(
               audioSpec,
-              durationFrames / exportFps
+              durationFrames / exportFps,
+              startFrame / exportFps
             );
           } catch (e) {
             console.warn(
@@ -4220,6 +4271,7 @@ function EffectsShell({
         // Hand rendering back to the eval effect before restoring state, so
         // the restored time/playing values drive a normal render again.
         offlineRenderingRef.current = false;
+        forcedTerminalRef.current = null;
         setPlaying(savedPlaying);
         setTime(savedTime);
         setRecording(null);
@@ -4249,6 +4301,8 @@ function EffectsShell({
       const savedPlaying = playingRef.current;
       setPlaying(false);
       offlineRenderingRef.current = true;
+      // Capture this Output's image, not whatever node is set Active.
+      forcedTerminalRef.current = nodeId;
       try {
         setTime(t);
         const backend = backendRef.current;
@@ -4267,11 +4321,155 @@ function EffectsShell({
         return blob ? { blob, ext: format } : null;
       } finally {
         offlineRenderingRef.current = false;
+        forcedTerminalRef.current = null;
         setPlaying(savedPlaying);
         setTime(savedTime);
       }
     },
     [getOutputParams]
+  );
+
+  // Export an image sequence: render one still per frame across the Output's
+  // [startFrame, endFrame) range and deliver per its `seqDelivery` mode —
+  // single zip (default), streamed into a chosen folder (File System Access),
+  // or one download per frame. Same deterministic two-pass offline render as
+  // renderImageToBlobAtFrame, but takes over rendering once and loops.
+  const exportSequence = useCallback(
+    async (nodeId: string) => {
+      if (recordingRef.current || queueRenderingRef.current) return;
+      const canvas = canvasRef.current;
+      const params = getOutputParams(nodeId);
+      if (!canvas || !params) return;
+
+      const { startFrame, endFrame, durationFrames } = resolveFrameRange(params);
+      if (durationFrames <= 0) {
+        flashToast("End frame must be after start frame");
+        return;
+      }
+      const format = (params.imageFormat as string) ?? "png";
+      const quality = (params.imageQuality as number) ?? 0.92;
+      const useQuality = format === "jpeg" || format === "webp";
+      const delivery =
+        (params.seqDelivery as "zip" | "folder" | "sequential") ?? "zip";
+      const fps = Math.max(
+        1,
+        (params.videoFps as number) ?? fpsRef.current
+      );
+      // Frame number is zero-padded to the width of the last frame (min 4),
+      // e.g. `myrender.0000.png`. Files are named by their true frame index.
+      const base =
+        sanitizeFilename((params.filename as string) ?? "") ||
+        defaultFilename(format).replace(/\.[^.]+$/, "");
+      const pad = Math.max(4, String(Math.max(0, endFrame - 1)).length);
+      const nameFor = (frame: number) =>
+        `${base}.${String(frame).padStart(pad, "0")}.${format}`;
+
+      // Folder mode: prompt for a destination up front (Chromium only).
+      let dirHandle:
+        | {
+            getFileHandle: (
+              n: string,
+              o: { create: boolean }
+            ) => Promise<{
+              createWritable: () => Promise<{
+                write: (b: Blob) => Promise<void>;
+                close: () => Promise<void>;
+              }>;
+            }>;
+          }
+        | null = null;
+      if (delivery === "folder") {
+        const picker = (
+          window as unknown as {
+            showDirectoryPicker?: () => Promise<typeof dirHandle>;
+          }
+        ).showDirectoryPicker;
+        if (!picker) {
+          flashToast("Folder mode needs a Chromium browser");
+          return;
+        }
+        try {
+          dirHandle = await picker();
+        } catch {
+          // User cancelled the folder picker — abort quietly.
+          return;
+        }
+      }
+
+      const savedTime = timeRef.current;
+      const savedPlaying = playingRef.current;
+      setPlaying(false);
+      offlineRenderingRef.current = true;
+      forcedTerminalRef.current = nodeId;
+      setRecording({ mode: "offline", label: "Preparing…", progress: 0 });
+
+      const collected: { blob: Blob; name: string }[] = [];
+      let written = 0;
+      try {
+        for (let i = 0; i < durationFrames; i++) {
+          const frame = startFrame + i;
+          const t = frame / fps;
+          setTime(t);
+          // Two-pass deterministic render: issue any async media seeks, wait
+          // for them to settle, then render again so the encoder captures the
+          // correct frame (matches renderImageToBlobAtFrame / the exporters).
+          const backend = backendRef.current;
+          renderFrameRef.current?.(t, fps, true);
+          const settled = backend
+            ? await awaitMediaSettle(backend.state)
+            : false;
+          if (settled) renderFrameRef.current?.(t, fps, true);
+          // Yield so the GL commands flush before we read pixels back.
+          await new Promise<void>((r) => requestAnimationFrame(() => r()));
+          const blob = await new Promise<Blob | null>((res) =>
+            canvas.toBlob(
+              (b) => res(b),
+              `image/${format}`,
+              useQuality ? quality : undefined
+            )
+          );
+          if (blob) {
+            const name = nameFor(frame);
+            if (delivery === "folder" && dirHandle) {
+              const fh = await dirHandle.getFileHandle(name, { create: true });
+              const w = await fh.createWritable();
+              await w.write(blob);
+              await w.close();
+            } else if (delivery === "sequential") {
+              downloadBlob(blob, name);
+            } else {
+              collected.push({ blob, name });
+            }
+            written++;
+          }
+          setRecording({
+            mode: "offline",
+            label: `Frame ${i + 1}/${durationFrames}`,
+            progress: (i + 1) / durationFrames,
+          });
+        }
+
+        if (delivery === "zip" && collected.length) {
+          setRecording({ mode: "offline", label: "zipping…", progress: 1 });
+          const JSZip = (await import("jszip")).default;
+          const zip = new JSZip();
+          for (const c of collected) zip.file(c.name, c.blob);
+          const zipBlob = await zip.generateAsync({ type: "blob" });
+          downloadBlob(zipBlob, `${base}.zip`);
+        }
+        flashToast(`Rendered ${written} frame${written === 1 ? "" : "s"}`);
+      } catch (err) {
+        console.error("Sequence export failed:", err);
+        flashToast(err instanceof Error ? err.message : "Sequence export failed");
+      } finally {
+        offlineRenderingRef.current = false;
+        forcedTerminalRef.current = null;
+        setPlaying(savedPlaying);
+        setTime(savedTime);
+        setRecording(null);
+      }
+    },
+    [getOutputParams, flashToast]
   );
 
   // Step the offline clock through a list of frames and hand the upstream
@@ -4406,6 +4604,7 @@ function EffectsShell({
 
       const collected: { blob: Blob; name: string }[] = [];
       const usedNames = new Set<string>();
+      const skipped: string[] = [];
       const total = resolved.length;
       try {
         for (let i = 0; i < resolved.length; i++) {
@@ -4441,7 +4640,13 @@ function EffectsShell({
               out.ext = r.ext;
             }
           }
-          if (!out.blob) continue;
+          if (!out.blob) {
+            // Render produced nothing (e.g. the offline encoder bailed). Record
+            // it so the end-of-run toast reports the gap instead of silently
+            // delivering a short batch.
+            skipped.push(output.data.name ?? `item ${i + 1}`);
+            continue;
+          }
 
           // De-dupe filenames within the batch.
           let name = `${baseName}.${out.ext}`;
@@ -4478,12 +4683,18 @@ function EffectsShell({
             "render-queue";
           downloadBlob(zipBlob, `${zipName}.zip`);
         }
-        flashToast(`Rendered ${usedNames.size} item${usedNames.size === 1 ? "" : "s"}`);
+        const done = usedNames.size;
+        flashToast(
+          skipped.length
+            ? `Rendered ${done}/${total} — ${skipped.length} failed: ${skipped.join(", ")}`
+            : `Rendered ${done} item${done === 1 ? "" : "s"}`
+        );
       } catch (err) {
         console.error("Render queue failed:", err);
         flashToast(err instanceof Error ? err.message : "Render queue failed");
       } finally {
         queueRenderingRef.current = false;
+        forcedTerminalRef.current = null;
         setQueueProgress(null);
       }
     },
@@ -4594,18 +4805,19 @@ function EffectsShell({
       const detail = (
         e as CustomEvent<{
           id: string;
-          kind: "image" | "video" | "app" | "queue";
+          kind: "image" | "video" | "sequence" | "app" | "queue";
         }>
       ).detail;
       if (!detail) return;
       if (detail.kind === "image") exportImage(detail.id);
       else if (detail.kind === "video") exportVideo(detail.id);
+      else if (detail.kind === "sequence") exportSequence(detail.id);
       else if (detail.kind === "app") onOpenExportApp(detail.id);
       else if (detail.kind === "queue") renderQueue(detail.id);
     };
     window.addEventListener("effect-node-export", handler);
     return () => window.removeEventListener("effect-node-export", handler);
-  }, [exportImage, exportVideo, onOpenExportApp, renderQueue]);
+  }, [exportImage, exportVideo, exportSequence, onOpenExportApp, renderQueue]);
 
   // --- Save / Load ----------------------------------------------------------
   // Progress budget: serialize/deserialize gets the first 70%, the network

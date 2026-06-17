@@ -246,6 +246,42 @@ export function fbmWithW(
   return a + (b - a) * wf;
 }
 
+// ── Looping noise evolution ────────────────────────────────────────────
+// Drive W-style evolution around a closed loop so an animation returns to
+// its exact starting field at the end of the window — seamless, always
+// forward (no ping-pong). See specdocs/061626_looping-noise-evolution.md.
+//
+// frameNow is the continuous frame (ctx.tick / ctx.ticksPerFrame). The
+// window [start, end] (in frames) is the period; phase wraps in [0, 1).
+export function loopEvolutionPhase(
+  frameNow: number,
+  start: number,
+  end: number
+): number {
+  const period = end - start;
+  if (period <= 0) return 0;
+  let phase = ((frameNow - start) / period) % 1;
+  if (phase < 0) phase += 1;
+  return phase;
+}
+
+// Offset added to the noise sample point: a circle of radius `rate` traced
+// once per window. Because the W mechanism is "translate the sample point
+// by an offset", walking that offset around a circle returns exactly to the
+// start. Returns [0,0] when the window is degenerate or rate is 0.
+export function loopEvolutionOffset(
+  frameNow: number,
+  start: number,
+  end: number,
+  rate: number
+): [number, number] {
+  if (rate === 0) return [0, 0];
+  const period = end - start;
+  if (period <= 0) return [0, 0];
+  const theta = loopEvolutionPhase(frameNow, start, end) * Math.PI * 2;
+  return [rate * Math.cos(theta), rate * Math.sin(theta)];
+}
+
 export function noiseFnFor(type: string): NoiseFn {
   switch (type) {
     case "perlin":

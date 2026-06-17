@@ -24,12 +24,15 @@ export interface ExportAudioSpec {
 }
 
 // Decode + render the file-mode audio into an AudioBuffer covering the
-// export window [0, durationSec). Honors start_offset (sync mode only),
-// loop, and volume by letting an OfflineAudioContext do the looping and
-// any resampling. Returns null for mic mode or when no file is loaded.
+// export window [startSec, startSec + durationSec). Honors start_offset (sync
+// mode only), loop, and volume by letting an OfflineAudioContext do the
+// looping and any resampling. `startSec` shifts the window so an export that
+// begins at a non-zero start frame stays in sync (the rendered buffer still
+// starts at output time 0). Returns null for mic mode or when no file loaded.
 export async function renderExportAudioBuffer(
   spec: ExportAudioSpec,
-  durationSec: number
+  durationSec: number,
+  startSec = 0
 ): Promise<AudioBuffer | null> {
   if (spec.mode !== "file" || !spec.file?.url || durationSec <= 0) return null;
 
@@ -66,9 +69,11 @@ export async function renderExportAudioBuffer(
   src.connect(gain).connect(offline.destination);
 
   // start(when, offset): begin `offset` seconds into the buffer. Only sync
-  // mode applies the start offset; free-run plays from 0. Wrap the offset
-  // into the clip when looping so a large value stays valid.
-  let offset = spec.sync ? spec.startOffset : 0;
+  // mode applies the start offset; free-run plays from 0. `startSec` shifts
+  // the window forward so the export's first frame lands at the right point
+  // in the clip. Wrap the offset into the clip when looping so a large value
+  // stays valid.
+  let offset = (spec.sync ? spec.startOffset : 0) + Math.max(0, startSec);
   if (spec.loop && decoded.duration > 0) {
     offset = ((offset % decoded.duration) + decoded.duration) % decoded.duration;
   } else {

@@ -66,6 +66,13 @@ interface StippleState {
   cellTexture: WebGLTexture | null;
   cellsX: number;
   cellsY: number;
+  // Small RGBA texture the source is downsampled into before readback, so
+  // scatter/relax sample a cell-resolution density field instead of forcing
+  // a full-canvas GPU→CPU read every bake. Reused; reallocated on size change.
+  densityImg: ImageValue | null;
+  // Persistent CPU-bake working buffers — see ensureBakeScratch. Avoids the
+  // per-frame GC churn that made the animated-input packed path stutter.
+  bakeScratch: BakeScratch | null;
   // packed-flow state
   flowDots: FlowDot[];
   lastFlowTime: number;
@@ -434,62 +441,136 @@ function sampleDensityCPU(
 
 interface RawPoint { x: number; y: number; density: number; }
 
+// Persistent CPU-bake working buffers. The animated-input packed path rebakes
+// every frame, so allocating scatter arrays / relax bins / cell data fresh
+// each time was a steady source of GC stutter. These grow monotonically (never
+// shrink) and are reused, mirroring the WebGPU buffer policy in stipple-relax.
+interface BakeScratch {
+  xs: Float32Array;       // point positions, length >= ptCap
+  ys: Float32Array;
+  densities: Float32Array;
+  dx: Float32Array;       // per-point relaxation displacement
+  dy: Float32Array;
+  order: Int32Array;      // CSR-sorted point indices (relax binning)
+  cellCount: Int32Array;  // per-cell counts, then reused as scatter cursor
+  cellStart: Int32Array;  // CSR offsets, length >= cellCap + 1
+  ptList: RawPoint[];     // pooled output objects, mutated in place
+  cellData: Float32Array; // cell-lookup texture data, length >= cellCap * 4
+  ptCap: number;
+  cellCap: number;
+}
+
+function ensureBakeScratch(
+  state: StippleState, maxPts: number, cells: number
+): BakeScratch {
+  let s = state.bakeScratch;
+  if (!s) {
+    s = {
+      xs: new Float32Array(0), ys: new Float32Array(0),
+      densities: new Float32Array(0),
+      dx: new Float32Array(0), dy: new Float32Array(0),
+      order: new Int32Array(0),
+      cellCount: new Int32Array(0), cellStart: new Int32Array(1),
+      ptList: [], cellData: new Float32Array(0),
+      ptCap: 0, cellCap: 0,
+    };
+    state.bakeScratch = s;
+  }
+  if (maxPts > s.ptCap) {
+    s.xs = new Float32Array(maxPts);
+    s.ys = new Float32Array(maxPts);
+    s.densities = new Float32Array(maxPts);
+    s.dx = new Float32Array(maxPts);
+    s.dy = new Float32Array(maxPts);
+    s.order = new Int32Array(maxPts);
+    s.ptCap = maxPts;
+  }
+  if (cells > s.cellCap) {
+    s.cellCount = new Int32Array(cells);
+    s.cellStart = new Int32Array(cells + 1);
+    s.cellData = new Float32Array(cells * 4);
+    s.cellCap = cells;
+  }
+  return s;
+}
+
 // ----- Bake stage 1: density-weighted scatter -----
-// Seeded rejection sampling. Stays on the CPU in every backend so a given
-// seed yields the exact same point set — the GPU path only relaxes this
-// fixed set, never regenerates it.
-function scatterPoints(
+// Seeded rejection sampling into scratch.xs/ys; returns the accepted count.
+// Stays on the CPU in every backend so a given seed yields the exact same
+// point set — the GPU path only relaxes this fixed set, never regenerates it.
+function scatterInto(
+  s: BakeScratch,
   densityImage: Float32Array,
   a: ScatterArgs
-): { xs: number[]; ys: number[] } {
+): number {
   const rng = makeRng(a.seed);
   const maxPts = Math.min(a.targetPoints, a.cellsX * a.cellsY);
   const maxAttempts = maxPts * 40;
-  const xs: number[] = [];
-  const ys: number[] = [];
+  const { xs, ys } = s;
+  let n = 0;
   let attempts = 0;
-  while (xs.length < maxPts && attempts < maxAttempts) {
+  while (n < maxPts && attempts < maxAttempts) {
     const u = rng();
     const v = rng();
     const d = sampleDensityCPU(
       densityImage, a.imgW, a.imgH, u, v, a.invert, a.densityCurve
     );
     if (rng() < d) {
-      xs.push(u);
-      ys.push(v);
+      xs[n] = u;
+      ys[n] = v;
+      n++;
     }
     attempts++;
   }
-  return { xs, ys };
+  return n;
 }
 
 // ----- Bake stage 2 (CPU): relaxation -----
-// Mutates xs/ys in place. Jacobi nearest-neighbour push over a uniform
-// grid whose cell size matches the output cell grid. The WebGPU kernel in
-// engine/webgpu/wgsl/stipple-relax.ts mirrors this exactly; this is the
+// Mutates scratch.xs/ys[0..n) in place. Jacobi nearest-neighbour push over a
+// uniform grid whose cell size matches the output cell grid. The WebGPU kernel
+// in engine/webgpu/wgsl/stipple-relax.ts mirrors this exactly; this is the
 // fallback when WebGPU is unavailable or the point count is small.
-function relaxPositionsCPU(
-  xs: number[], ys: number[],
+//
+// Binning uses a flat CSR counting sort (count → prefix-sum → scatter) instead
+// of a Map<cell, idx[]> rebuilt each iteration: zero allocation, and within a
+// cell the index order is ascending — identical to the old Map's push order —
+// so the nearest-neighbour pick and tie-breaks match the previous CPU bake
+// bit-for-bit (and still converge to the same field as the WGSL kernel).
+function relaxInto(
+  s: BakeScratch, n: number,
   densityImage: Float32Array,
   a: ScatterArgs, r: RelaxArgs
 ): void {
-  const n = xs.length;
   if (r.iterations <= 0 || n <= 1) return;
   const { cellsX, cellsY, imgW, imgH, invert, densityCurve } = a;
+  const cells = cellsX * cellsY;
   const stepBase = computeStepBase(r.relaxStrength, cellsX, cellsY);
+  const { xs, ys, dx, dy, order, cellCount, cellStart } = s;
+
   for (let iter = 0; iter < r.iterations; iter++) {
-    const bins = new Map<number, number[]>();
+    // Count points per cell.
+    cellCount.fill(0, 0, cells);
     for (let i = 0; i < n; i++) {
       const cx = Math.max(0, Math.min(cellsX - 1, Math.floor(xs[i] * cellsX)));
       const cy = Math.max(0, Math.min(cellsY - 1, Math.floor(ys[i] * cellsY)));
-      const key = cy * cellsX + cx;
-      const arr = bins.get(key);
-      if (arr) arr.push(i);
-      else bins.set(key, [i]);
+      cellCount[cy * cellsX + cx]++;
+    }
+    // Prefix-sum into cell start offsets.
+    let acc = 0;
+    for (let c = 0; c < cells; c++) {
+      cellStart[c] = acc;
+      acc += cellCount[c];
+    }
+    cellStart[cells] = acc;
+    // Scatter indices into `order`, reusing cellCount as a per-cell cursor.
+    for (let c = 0; c < cells; c++) cellCount[c] = cellStart[c];
+    for (let i = 0; i < n; i++) {
+      const cx = Math.max(0, Math.min(cellsX - 1, Math.floor(xs[i] * cellsX)));
+      const cy = Math.max(0, Math.min(cellsY - 1, Math.floor(ys[i] * cellsY)));
+      const cell = cy * cellsX + cx;
+      order[cellCount[cell]++] = i;
     }
 
-    const dx = new Float32Array(n);
-    const dy = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const px = xs[i];
       const py = ys[i];
@@ -498,14 +579,16 @@ function relaxPositionsCPU(
       let nearestDist2 = Infinity;
       let nnDx = 0, nnDy = 0;
       for (let oy = -1; oy <= 1; oy++) {
+        const ncy = cy + oy;
+        if (ncy < 0 || ncy >= cellsY) continue;
         for (let ox = -1; ox <= 1; ox++) {
           const ncx = cx + ox;
-          const ncy = cy + oy;
-          if (ncx < 0 || ncy < 0 || ncx >= cellsX || ncy >= cellsY) continue;
-          const bucket = bins.get(ncy * cellsX + ncx);
-          if (!bucket) continue;
-          for (let k = 0; k < bucket.length; k++) {
-            const j = bucket[k];
+          if (ncx < 0 || ncx >= cellsX) continue;
+          const cell = ncy * cellsX + ncx;
+          const start = cellStart[cell];
+          const end = cellStart[cell + 1];
+          for (let k = start; k < end; k++) {
+            const j = order[k];
             if (j === i) continue;
             const ddx = px - xs[j];
             const ddy = py - ys[j];
@@ -525,6 +608,9 @@ function relaxPositionsCPU(
         const ease = 1.0 - localD * 0.85;
         dx[i] = (nnDx / mag) * stepBase * ease;
         dy[i] = (nnDy / mag) * stepBase * ease;
+      } else {
+        dx[i] = 0;
+        dy[i] = 0;
       }
     }
     for (let i = 0; i < n; i++) {
@@ -556,6 +642,36 @@ function finalizePoints(
   return out;
 }
 
+// Pooled variant of finalizePoints for the synchronous CPU bake: re-sample
+// density at scratch.xs/ys[0..n) and write into the reused scratch.ptList
+// (objects mutated in place, length pinned to n) instead of allocating n fresh
+// RawPoints every frame. Returns the list, which becomes state.relaxResultPts.
+function finalizeInto(
+  s: BakeScratch, n: number,
+  densityImage: Float32Array,
+  a: ScatterArgs
+): RawPoint[] {
+  const list = s.ptList;
+  list.length = n;
+  for (let i = 0; i < n; i++) {
+    const u = s.xs[i];
+    const v = s.ys[i];
+    const d = sampleDensityCPU(
+      densityImage, a.imgW, a.imgH, u, v, a.invert, a.densityCurve
+    );
+    s.densities[i] = d;
+    let o = list[i];
+    if (!o) {
+      o = { x: 0, y: 0, density: 0 };
+      list[i] = o;
+    }
+    o.x = u;
+    o.y = v;
+    o.density = d;
+  }
+  return list;
+}
+
 // Bucket raw positions into a cell-lookup texture (RGBA32F).
 //
 //   .rg = baked dot position in UV space
@@ -584,6 +700,66 @@ function buildCellData(
     cellData[idx + 3] = p.life;
   }
   return cellData;
+}
+
+// Static-packed variant of buildCellData: all dots are fully alive (life = 1),
+// so it skips the life logic and writes into a persistent `out` buffer (zeroed
+// each call) — no per-frame Float32Array and no intermediate {...p, life}
+// object array. "Last point in a cell wins", matching buildCellData when every
+// life is equal.
+function fillCellDataStatic(
+  points: RawPoint[],
+  cellsX: number, cellsY: number,
+  out: Float32Array
+): Float32Array {
+  out.fill(0, 0, cellsX * cellsY * 4);
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    const cx = Math.max(0, Math.min(cellsX - 1, Math.floor(p.x * cellsX)));
+    const cy = Math.max(0, Math.min(cellsY - 1, Math.floor(p.y * cellsY)));
+    const idx = (cy * cellsX + cx) * 4;
+    out[idx + 0] = p.x;
+    out[idx + 1] = p.y;
+    out[idx + 2] = p.density;
+    out[idx + 3] = 1;
+  }
+  return out;
+}
+
+// Downsample the source into a small RGBA texture and read that back, instead
+// of reading the whole canvas every bake. Scatter/relax only sample density at
+// ~cell granularity (packed is ≤1 dot/cell), so a (sampW × sampH) field is
+// plenty and the GPU→CPU read shrinks by orders of magnitude. The pooled target
+// is LINEAR, so the blit is a real bilinear box-ish downsample; sampling and
+// readback share the source's v_uv space, so point positions are unaffected.
+// Falls back to a direct full-res read when the sampler isn't actually smaller.
+const FS_DOWNSAMPLE = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+out vec4 outColor;
+void main() { outColor = texture(u_src, v_uv); }`;
+
+function readDensityField(
+  ctx: RenderContext, state: StippleState,
+  src: ImageValue, sampW: number, sampH: number
+): Float32Array {
+  if (sampW >= src.width && sampH >= src.height) {
+    return ctx.readImageToFloat32(src);
+  }
+  let img = state.densityImg;
+  if (!img || img.width !== sampW || img.height !== sampH) {
+    if (img) ctx.releaseTexture(img.texture);
+    img = ctx.allocImage({ width: sampW, height: sampH });
+    state.densityImg = img;
+  }
+  const prog = ctx.getShader("stipple/downsample", FS_DOWNSAMPLE);
+  ctx.drawFullscreen(prog, img, (gl) => {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.texture);
+    gl.uniform1i(gl.getUniformLocation(prog, "u_src"), 0);
+  });
+  return ctx.readImageToFloat32(img);
 }
 
 // =====================================================================
@@ -655,6 +831,7 @@ function ensureRelaxedTargets(
   bakeKey: string,
   a: ScatterArgs,
   r: RelaxArgs,
+  scratch: BakeScratch,
   gpuOk: boolean
 ): { pts: RawPoint[]; gen: number } {
   const stale =
@@ -668,9 +845,14 @@ function ensureRelaxedTargets(
 
   if (useGpu) {
     if (stale && state.relaxBusyKey === null) {
-      const srcData = ctx.readImageToFloat32(src);
-      const { xs, ys } = scatterPoints(srcData, a);
-      if (xs.length === 0) {
+      const srcData = readDensityField(ctx, state, src, a.imgW, a.imgH);
+      // Scatter is synchronous and consumed before any async work, so it can
+      // share the pooled scratch. The relaxed-result objects, however, are
+      // produced in launchGpuRelax's deferred callback — that path keeps
+      // allocating (pooling across async would race), so it uses finalizePoints
+      // on copies of the seed positions.
+      const n = scatterInto(scratch, srcData, a);
+      if (n === 0) {
         // Degenerate scatter (near-white image): nothing to relax. Settle
         // synchronously on the empty set so we don't spin launching jobs.
         state.relaxResultPts = [];
@@ -679,6 +861,8 @@ function ensureRelaxedTargets(
         state.relaxResultGen++;
         relaxPending.set(paramsRef, false);
       } else {
+        const xs = scratch.xs.subarray(0, n);
+        const ys = scratch.ys.subarray(0, n);
         // Seed an un-relaxed result so the first frame before the GPU bake
         // lands shows points rather than a blank / stale image.
         if (!state.relaxResultPts) {
@@ -709,10 +893,10 @@ function ensureRelaxedTargets(
 
   // CPU path: no WebGPU, GPU failed, relax disabled, or below threshold.
   if (stale) {
-    const srcData = ctx.readImageToFloat32(src);
-    const { xs, ys } = scatterPoints(srcData, a);
-    relaxPositionsCPU(xs, ys, srcData, a, r);
-    state.relaxResultPts = finalizePoints(xs, ys, srcData, a);
+    const srcData = readDensityField(ctx, state, src, a.imgW, a.imgH);
+    const n = scatterInto(scratch, srcData, a);
+    relaxInto(scratch, n, srcData, a, r);
+    state.relaxResultPts = finalizeInto(scratch, n, srcData, a);
     state.relaxResultKey = bakeKey;
     state.relaxResultSrc = src.texture;
     state.relaxResultGen++;
@@ -919,6 +1103,15 @@ export const stippleNode: NodeDefinition = {
       visibleIf: (p) => p.mode === "packed" || p.mode === "packed-flow",
     },
     {
+      // Density sampler resolution as a multiple of grid cells. The source is
+      // downsampled to this size before dot positions are computed: lower is
+      // faster (less GPU→CPU readback) but blockier; higher recovers detail up
+      // to the source resolution. The main lever for animated-input speed.
+      name: "samplerResolution", label: "Sampler Resolution", type: "scalar",
+      min: 0.5, max: 8, step: 0.1, default: 2,
+      visibleIf: (p) => p.mode === "packed" || p.mode === "packed-flow",
+    },
+    {
       name: "fadeInTime", label: "Fade In (s)", type: "scalar",
       min: 0.01, max: 5, step: 0.01, default: 0.4,
       visibleIf: (p) => p.mode === "packed-flow",
@@ -1043,6 +1236,7 @@ export const stippleNode: NodeDefinition = {
       if (!state) {
         state = {
           cellTexture: null, cellsX: 0, cellsY: 0,
+          densityImg: null, bakeScratch: null,
           flowDots: [], lastFlowTime: ctx.time,
           relaxResultPts: null, relaxResultKey: "", relaxResultSrc: null,
           relaxResultGen: 0, renderedGen: -1, matchedGen: -1,
@@ -1051,11 +1245,19 @@ export const stippleNode: NodeDefinition = {
         ctx.state[key] = state;
       }
 
+      // Density sampler resolution: a multiple of the cell grid (aspect comes
+      // from the cells), capped at the source so a high value degrades to a
+      // full-res read. Scatter/relax only need ~cell-granular density, so this
+      // is what lets the animated-input bake avoid a full-canvas readback.
+      const samplerResolution = Math.max(0.1, (params.samplerResolution as number) ?? 2);
+      const sampW = Math.max(4, Math.min(src.width, Math.round(realCellsX * samplerResolution)));
+      const sampH = Math.max(4, Math.min(src.height, Math.round(realCellsY * samplerResolution)));
+
       const bakeKey = [
         src.width, src.height,
         pointCount, relaxIterations, relaxStrength.toFixed(3),
         densityCurve.toFixed(3), invert, seed,
-        realCellsX, realCellsY,
+        realCellsX, realCellsY, sampW, sampH,
       ].join("|");
 
       // Kick the WebGPU boot once (async, cached); use the resolved status
@@ -1070,7 +1272,7 @@ export const stippleNode: NodeDefinition = {
       const gpuOk = peekWebGPUDevice(ctx)?.ok === true;
 
       const scatterArgs: ScatterArgs = {
-        imgW: src.width, imgH: src.height,
+        imgW: sampW, imgH: sampH,
         cellsX: realCellsX, cellsY: realCellsY,
         targetPoints: pointCount,
         invert: invert === 1, densityCurve, seed,
@@ -1079,8 +1281,14 @@ export const stippleNode: NodeDefinition = {
         iterations: relaxIterations, relaxStrength,
       };
 
+      const scratch = ensureBakeScratch(
+        state,
+        Math.min(pointCount, realCellsX * realCellsY),
+        realCellsX * realCellsY
+      );
+
       const { pts, gen } = ensureRelaxedTargets(
-        ctx, state, src, params, bakeKey, scatterArgs, relaxArgs, gpuOk
+        ctx, state, src, params, bakeKey, scatterArgs, relaxArgs, scratch, gpuOk
       );
 
       if (mode === "packed-flow") {
@@ -1133,8 +1341,9 @@ export const stippleNode: NodeDefinition = {
         const cellsChanged =
           state.cellsX !== realCellsX || state.cellsY !== realCellsY;
         if (gen !== state.renderedGen || cellsChanged || !state.cellTexture) {
-          const points = pts.map((p) => ({ ...p, life: 1.0 }));
-          const cellData = buildCellData(points, realCellsX, realCellsY);
+          const cellData = fillCellDataStatic(
+            pts, realCellsX, realCellsY, scratch.cellData
+          );
           ensureCellTexture(ctx, state, cellData, realCellsX, realCellsY);
           state.renderedGen = gen;
         }
@@ -1203,6 +1412,7 @@ export const stippleNode: NodeDefinition = {
       // instead of writing into freed state.
       state.disposed = true;
       if (state.cellTexture) ctx.gl.deleteTexture(state.cellTexture);
+      if (state.densityImg) ctx.releaseTexture(state.densityImg.texture);
       if (state.gpu) destroyStippleRelaxGPU(state.gpu);
     }
     delete ctx.state[key];

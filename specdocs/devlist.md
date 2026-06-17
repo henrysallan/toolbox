@@ -22,9 +22,9 @@ compute shaders
 
 
 
-33. audio decomposition - split the audio into low meduium high, one input - audio, 3 audio outputs 
+33. audio decomposition - split the audio into low meduium high, one input - audio, 3 audio outputs. AND a feature im not sure how to accomplish, audio decomp by hz + quantization to certain intervals. The idea is we could have pitch drive a parameter changing.
 
-33.1 sprectral converter for audio. Some set of various alorithims and compositions for taking audio input and outputing a field that we can use to control
+33.1 sprectral converter for audio. Some set of various alorithims and compositions for taking audio input and outputing a scalar field that we can use to control other parameters
 
 
 36. the solid color node should have a vec3 output with its color. We should add a hex input int he parameters section

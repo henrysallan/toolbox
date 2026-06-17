@@ -45,7 +45,55 @@ export const outputNode: NodeDefinition = {
       visibleIf: (p) =>
         p.imageFormat === "jpeg" || p.imageFormat === "webp",
     },
-    // ----- video --------------------------------------------------------
+    // ----- animated export (video / image sequence) --------------------
+    // `exportMode` chooses between a single video file and a PNG/image
+    // sequence (one still per frame). Both share the start/end frame range
+    // and output fps below; the mode-specific params gate on this. See
+    // specdocs/061726_png-sequence-export.md.
+    {
+      name: "exportMode",
+      label: "Export mode",
+      type: "enum",
+      options: ["video", "sequence"],
+      default: "video",
+      control: "segmented",
+    },
+    // Frame range, shared by video and sequence. Half-open [start, end):
+    // frame count = end − start (0..240 = 240 frames). Replaces the legacy
+    // `videoFrames` duration; old saves migrate in project.ts.
+    {
+      name: "startFrame",
+      label: "Start frame",
+      type: "scalar",
+      min: 0,
+      max: 12000,
+      step: 1,
+      default: 0,
+    },
+    {
+      name: "endFrame",
+      label: "End frame",
+      type: "scalar",
+      min: 1,
+      max: 12000,
+      step: 1,
+      default: 240,
+    },
+    {
+      name: "videoFps",
+      label: "Output FPS",
+      type: "scalar",
+      min: 1,
+      max: 120,
+      step: 1,
+      default: 60,
+      // Fast video is locked to the page's render fps because MediaRecorder
+      // reads the live stream. High/Max video and the sequence exporter step
+      // the clock manually, so they get a real, independent fps.
+      visibleIf: (p) =>
+        p.exportMode === "sequence" || p.videoQuality !== "fast",
+    },
+    // ----- video-only ---------------------------------------------------
     // Three quality tiers:
     //   fast — MediaRecorder. Real-time capture, ~25 Mbps cap, every browser.
     //   high — WebCodecs offline. True bitrate, frame-stepped, no drops.
@@ -56,6 +104,7 @@ export const outputNode: NodeDefinition = {
       type: "enum",
       options: ["fast", "high", "max"],
       default: "high",
+      visibleIf: (p) => (p.exportMode ?? "video") === "video",
     },
     {
       name: "videoFormat",
@@ -66,6 +115,7 @@ export const outputNode: NodeDefinition = {
       // validate at export time — anything illegal falls back gracefully.
       options: ["mp4", "webm", "mov", "mkv"],
       default: "mp4",
+      visibleIf: (p) => (p.exportMode ?? "video") === "video",
     },
     {
       name: "videoCodec",
@@ -87,29 +137,8 @@ export const outputNode: NodeDefinition = {
         "prores",
       ],
       default: "avc",
-      visibleIf: (p) => p.videoQuality !== "fast",
-    },
-    {
-      name: "videoFrames",
-      label: "Duration (frames)",
-      type: "scalar",
-      min: 1,
-      max: 12000,
-      step: 1,
-      default: 240,
-    },
-    {
-      name: "videoFps",
-      label: "Output FPS",
-      type: "scalar",
-      min: 1,
-      max: 120,
-      step: 1,
-      default: 60,
-      // Fast mode is locked to the page's render fps because
-      // MediaRecorder reads the live stream. High/Max step the clock
-      // manually so they get a real, independent fps.
-      visibleIf: (p) => p.videoQuality !== "fast",
+      visibleIf: (p) =>
+        (p.exportMode ?? "video") === "video" && p.videoQuality !== "fast",
     },
     {
       name: "videoBitrateMbps",
@@ -119,7 +148,8 @@ export const outputNode: NodeDefinition = {
       max: 200,
       step: 0.5,
       default: 16,
-      visibleIf: (p) => p.videoQuality !== "max",
+      visibleIf: (p) =>
+        (p.exportMode ?? "video") === "video" && p.videoQuality !== "max",
     },
     {
       name: "videoCrf",
@@ -132,6 +162,7 @@ export const outputNode: NodeDefinition = {
       step: 1,
       default: 18,
       visibleIf: (p) =>
+        (p.exportMode ?? "video") === "video" &&
         p.videoQuality === "max" &&
         p.videoCodec !== "prores" &&
         p.videoCodec !== "h264-lossless",
@@ -144,7 +175,21 @@ export const outputNode: NodeDefinition = {
       options: ["proxy", "lt", "standard", "hq", "4444", "4444xq"],
       default: "hq",
       visibleIf: (p) =>
-        p.videoQuality === "max" && p.videoCodec === "prores",
+        (p.exportMode ?? "video") === "video" &&
+        p.videoQuality === "max" &&
+        p.videoCodec === "prores",
+    },
+    // ----- sequence-only ------------------------------------------------
+    // How the per-frame stills are delivered. Mirrors the Render Queue's
+    // `delivery` param (same string values). Frame format/quality come from
+    // the shared `imageFormat` / `imageQuality` params above.
+    {
+      name: "seqDelivery",
+      label: "Delivery",
+      type: "enum",
+      options: ["zip", "folder", "sequential"],
+      default: "zip",
+      visibleIf: (p) => p.exportMode === "sequence",
     },
   ],
   primaryOutput: null,

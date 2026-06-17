@@ -464,6 +464,18 @@ function migrateLoadedParams(
     params.end_x = 0.5 + 0.5 * dx;
     params.end_y = 0.5 + 0.5 * dy;
   }
+  if (
+    defType === "output" &&
+    params.startFrame === undefined &&
+    typeof params.videoFrames === "number"
+  ) {
+    // The Output node replaced the single "Duration (frames)" param
+    // (`videoFrames`) with an explicit start/end frame range. Old saves
+    // started at frame 0 and ran for `videoFrames` frames — half-open
+    // [0, videoFrames) — so seed start/end to reproduce that exactly.
+    params.startFrame = 0;
+    params.endFrame = params.videoFrames;
+  }
 }
 
 export async function deserializeGraph(

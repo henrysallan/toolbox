@@ -1,4 +1,4 @@
-# Toolbox — developer guide (snapshot 2026-06-12)
+# Toolbox — developer guide (snapshot 2026-06-15)
 
 Orientation doc for anyone (human or LLM) picking up this codebase cold.
 It describes what the app is, the architecture, the invariants you must not
@@ -62,6 +62,10 @@ src/
     EffectNode.tsx        The node chrome on the graph canvas (sockets, header, +).
     TrackEditor.tsx / LayersEditor.tsx / PlaybackBar.tsx   timeline UIs.
     *Overlay.tsx, TransformGizmo.tsx, PrimitiveGizmo.tsx   on-canvas editing.
+                          SplineEditorOverlay: multi-subpath pen/edit (Pen /
+                          Path-Select / Sub-path-Select tools + GUI bbox
+                          transform). GradientOverlay: linear/radial/multipoint
+                          handles.
   state/
     graph.ts              NodeDataPayload (what lives in each xyflow node's data).
     graph-ops.ts          ALL structural graph mutations (pure functions). New
@@ -234,7 +238,11 @@ To add a node:
    triangle provides `v_uv`.
 5. If you add a ParamType: types.ts union → ParamPanel renderer →
    keyframes.ts `isKeyframable`? → export-manifest.ts control support? →
-   serialization check (plain JSON or media-envelope?).
+   serialization check (plain JSON or media-envelope?). Array params that need
+   per-item keyframing (`merge_layers`, `gradient_points`) follow the
+   virtual-key pattern: a clone-and-override block in evaluator.ts + an autokey
+   mirror in EffectsApp's `onParamChange` + per-item diamonds in ParamPanel —
+   copy an existing one.
 6. Check the docs page renders it sanely (descriptions come from the def).
 
 ## Animation & time
@@ -246,7 +254,12 @@ To add a node:
 - Keyframes ([keyframes.ts](../src/engine/keyframes.ts)): per-param
   `KeyframeAnimationBlock` on `node.data.animation`; rich easing presets +
   custom bezier (scalar only); color interpolates in oklab by default.
-  Virtual keys exist for merge-layer opacities (`layer_opacity:<id>`).
+  Virtual keys animate per-item sub-values of array params (the array param
+  itself isn't keyframable): merge-layer opacities (`layer_opacity:<id>`) and
+  multipoint-gradient point x/y/color (`gpoint_x/y/c:<id>`). The evaluator
+  resolves them onto a cloned array before compute (see conventions.ts + the
+  two blocks in evaluator.ts); ParamPanel renders a diamond per item;
+  EffectsApp auto-keyframes edits. Color virtual keys store RGBA tuples.
   `Keyframe.value` is `unknown` — most types are scalars/colors/vecs, but
   the whole spline shape keyframes too: Spline Draw's `spline_anchors` param
   is keyframable ("Path Animation" row in ParamPanel), and `interpolate`
@@ -298,6 +311,15 @@ To add a node:
   async GPU work MUST settle synchronously then (see offline-settle.ts and
   the `offline` flag docs in types.ts). Audio mixes down via
   export-audio.ts. Render Queue node batches multiple Outputs.
+- The Output node's animated export has an `exportMode` param (**video** vs
+  **sequence**, a segmented pill — `ParamDef.control: "segmented"`). Sequence
+  = one still per frame (`exportSequence` in EffectsApp), delivered per
+  `seqDelivery` (zip / folder / sequential — same machinery as the Render
+  Queue's `delivery`). Both modes share a **start/end frame range**
+  (`startFrame`/`endFrame`, half-open `[start, end)`), which replaced the
+  legacy `videoFrames` duration — old saves migrate in `migrateLoadedParams`
+  (project.ts). `resolveFrameRange()` derives the range (with `videoFrames`
+  fallback) for both exporters. Spec: 061726_png-sequence-export.md.
 - Exported apps: `buildExportManifest` walks the graph for params marked
   `controlParams` (per-node "user controllable" flags) → manifest of
   panel controls + file inputs; export-packager.ts zips the prebuilt Vite
@@ -365,5 +387,28 @@ src/app/docs + lib/docs/manifest.
   included) recomputes per frame during playback — same cost profile as
   Text→Merge today. Paused/param-edit evals cache normally.
 - Video/audio/font params don't serialize; relink flow covers them.
+- **Serialize/deserialize progress is throttled** to ~5% buckets
+  ([project.ts](../src/lib/project.ts)). The progress callback does a React
+  `setState`; firing it once-per-node inside serialize's tight async loop on a
+  large graph blew past React's nested-update limit → "Maximum update depth
+  exceeded" thrown out of `serializeGraph` → **save crashed**. Don't revert to
+  per-node progress. (The collateral symptom was the error getting blamed on
+  unrelated pointermove `setState`s.)
+- **Image fill for shapes**: the spline rasterizers (Spline Draw, Circle,
+  Rectangle, SVG Source, Spline Boolean, Rasterize Spline) and Text take an
+  optional `fill` **image** input (reuses the `image` socket; mask/element
+  coerce in) with a `fill_fit` enum (window / contain / cover). The fill
+  region is rendered as a coverage mask and composited with the sampled image
+  (stroke over fill) by the shared [spline-fill.ts](../src/engine/spline-fill.ts)
+  `compositeSplineFill` — `spline-raster-aux` routes through it too. Text has
+  its own glyph-coverage variant (`fillMode: "image"`, fill over stroke). The
+  Auto-Layout `element` output keeps flat fill (deferred CPU render, no input
+  texture).
+- **Contextual Delete** uses [shortcut-scope.ts](../src/components/effects/shortcut-scope.ts)
+  (the last-clicked scoped region wins). It tracks BOTH `pointerdown` and
+  `mousedown` in capture phase: overlay handlers that `preventDefault()` their
+  pointerdown suppress the compat mousedown, so without the pointerdown
+  listener a click on a spline point wouldn't claim the `"spline"` scope and
+  Delete would remove the graph node instead of the point.
 - No automated tests; keep modules pure where possible (layout solver,
   graph-ops) so they're testable when a runner lands.

@@ -4,6 +4,7 @@ import {
   disposePlaceholderTex,
   getPlaceholderTex,
 } from "@/engine/placeholder-tex";
+import { loopEvolutionOffset } from "@/engine/noise";
 
 // Worley/Voronoi noise. Computes the distance to the nearest (F1) and
 // second-nearest (F2) feature point on a hashed 2D lattice and exposes
@@ -45,6 +46,7 @@ uniform float u_seed;
 uniform float u_contrast;
 uniform float u_falloff;         // shapes the f1 distance curve
 uniform float u_w;
+uniform vec2  u_animOffset;
 uniform vec3  u_colorA;
 uniform vec3  u_colorB;
 uniform float u_alpha;
@@ -190,7 +192,7 @@ void main() {
   float aspect = u_canvasSize.x / u_canvasSize.y;
   vec2 p = (uv - 0.5) * (u_scale * warpScale);
   p.y /= aspect;
-  p += u_offset + seedOffset;
+  p += u_offset + seedOffset + u_animOffset;
 
   Voro v = voronoi(p);
 
@@ -397,6 +399,50 @@ export const voronoiNode: NodeDefinition = {
       softMax: 10,
       step: 0.01,
       default: 0,
+      visibleIf: (p) => !p.animated,
+    },
+    // Looping evolution. When on, the evolution is driven internally from
+    // scene time along a closed loop, so the window returns to its exact
+    // starting field — a seamless, always-forward loop. Replaces the manual
+    // W slider while active. See specdocs/061626_looping-noise-evolution.md.
+    {
+      name: "animated",
+      label: "Animated",
+      type: "boolean",
+      default: false,
+    },
+    {
+      name: "anim_start",
+      label: "Start (frame)",
+      type: "scalar",
+      min: 0,
+      max: 100000,
+      softMax: 300,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.animated === true,
+    },
+    {
+      name: "anim_end",
+      label: "End (frame)",
+      type: "scalar",
+      min: 1,
+      max: 100000,
+      softMax: 300,
+      step: 1,
+      default: 120,
+      visibleIf: (p) => p.animated === true,
+    },
+    {
+      name: "anim_rate",
+      label: "Rate",
+      type: "scalar",
+      min: 0,
+      max: 10,
+      softMax: 4,
+      step: 0.01,
+      default: 1,
+      visibleIf: (p) => p.animated === true,
     },
     // Warp-field range. When the warp input is connected, the
     // per-pixel luminance is mapped through [lo, hi] and multiplied
@@ -464,6 +510,28 @@ export const voronoiNode: NodeDefinition = {
     const w = (params.w as number) ?? 0;
     const warpLo = (params.warp_lo as number) ?? 0.5;
     const warpHi = (params.warp_hi as number) ?? 2;
+
+    // Looping evolution. When Animated, drive W from scene time along a
+    // closed loop (window [start,end] in frames) so it returns to its exact
+    // starting field — seamless, always forward. Overrides the manual W
+    // slider while active.
+    const animated = (params.animated as boolean) ?? false;
+    let effW = w;
+    let animOffX = 0;
+    let animOffY = 0;
+    if (animated) {
+      const animStart = (params.anim_start as number) ?? 0;
+      const animEnd = (params.anim_end as number) ?? 120;
+      const animRate = (params.anim_rate as number) ?? 1;
+      const frameNow = ctx.tick / ctx.ticksPerFrame;
+      effW = 0;
+      [animOffX, animOffY] = loopEvolutionOffset(
+        frameNow,
+        animStart,
+        animEnd,
+        animRate
+      );
+    }
     const [ar, ag, ab] = hexToRgb((params.color_a as string) ?? "#000000");
     const [br, bg, bb] = hexToRgb((params.color_b as string) ?? "#ffffff");
     const alpha = (params.alpha as number) ?? 1;
@@ -510,7 +578,12 @@ export const voronoiNode: NodeDefinition = {
       gl.uniform1f(gl.getUniformLocation(prog, "u_seed"), seed);
       gl.uniform1f(gl.getUniformLocation(prog, "u_contrast"), contrast);
       gl.uniform1f(gl.getUniformLocation(prog, "u_falloff"), falloff);
-      gl.uniform1f(gl.getUniformLocation(prog, "u_w"), w);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_w"), effW);
+      gl.uniform2f(
+        gl.getUniformLocation(prog, "u_animOffset"),
+        animOffX,
+        animOffY
+      );
       gl.uniform1f(gl.getUniformLocation(prog, "u_invert"), invert);
       gl.uniform3f(gl.getUniformLocation(prog, "u_colorA"), ar, ag, ab);
       gl.uniform3f(gl.getUniformLocation(prog, "u_colorB"), br, bg, bb);
@@ -545,5 +618,10 @@ export const voronoiNode: NodeDefinition = {
   dispose(ctx, nodeId) {
     disposePlaceholderTex(ctx.gl, ctx.state, `voronoi:${nodeId}:uvzero`);
     disposePlaceholderTex(ctx.gl, ctx.state, `voronoi:${nodeId}:warpzero`);
+  },
+
+  // Recompute every frame only while looping; otherwise stay cached.
+  fingerprintExtras(params, ctx) {
+    return params.animated ? `anim:${ctx.tick}` : "";
   },
 };

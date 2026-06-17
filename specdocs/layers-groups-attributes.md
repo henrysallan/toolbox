@@ -5,6 +5,7 @@ Builds on: devlist items 133 / 138
 
 ## Summary
 
+
 Three stacked features that together give the app an After Effects-style layer
 workflow without giving up the single-graph model:
 

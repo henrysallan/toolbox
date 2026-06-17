@@ -10,7 +10,12 @@ import {
   disposePlaceholderTex,
   getPlaceholderTex,
 } from "@/engine/placeholder-tex";
-import { fbmWithW, noiseFnFor } from "@/engine/noise";
+import {
+  fbmWithW,
+  loopEvolutionOffset,
+  loopEvolutionPhase,
+  noiseFnFor,
+} from "@/engine/noise";
 
 // Helper: extract a PositionNode from a `position` socket value. Used
 // by the `field` aux output, whose source position can be wired from
@@ -63,6 +68,7 @@ uniform vec3  u_colorB;
 uniform float u_alpha;
 uniform float u_flowTime;
 uniform float u_w;
+uniform vec2  u_animOffset;
 uniform int u_hasUvIn;
 uniform sampler2D u_uvIn;
 uniform vec2 u_uvConst;
@@ -447,7 +453,7 @@ void main() {
   float aspect = u_canvasSize.x / u_canvasSize.y;
   vec2 p = (uv - 0.5) * u_scale;
   p.y /= aspect;
-  p += u_offset + seedOffset;
+  p += u_offset + seedOffset + u_animOffset;
 
   // Curl outputs a vec2; pack into R/G at 0.5-centered encoding so it
   // visualizes cleanly AND downstream Displace (with channel R/G) sees a
@@ -619,6 +625,51 @@ export const perlinNoiseNode: NodeDefinition = {
       softMax: 10,
       step: 0.01,
       default: 0,
+      visibleIf: (p) => !p.animated,
+    },
+    // Looping evolution. When on, the evolution is driven internally from
+    // scene time along a closed loop, so the window returns to its exact
+    // starting field — a seamless, always-forward loop (no ping-pong).
+    // Replaces the manual W slider while active. See
+    // specdocs/061626_looping-noise-evolution.md.
+    {
+      name: "animated",
+      label: "Animated",
+      type: "boolean",
+      default: false,
+    },
+    {
+      name: "anim_start",
+      label: "Start (frame)",
+      type: "scalar",
+      min: 0,
+      max: 100000,
+      softMax: 300,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.animated === true,
+    },
+    {
+      name: "anim_end",
+      label: "End (frame)",
+      type: "scalar",
+      min: 1,
+      max: 100000,
+      softMax: 300,
+      step: 1,
+      default: 120,
+      visibleIf: (p) => p.animated === true,
+    },
+    {
+      name: "anim_rate",
+      label: "Rate",
+      type: "scalar",
+      min: 0,
+      max: 10,
+      softMax: 4,
+      step: 0.01,
+      default: 1,
+      visibleIf: (p) => p.animated === true,
     },
     {
       name: "contrast",
@@ -640,7 +691,7 @@ export const perlinNoiseNode: NodeDefinition = {
       softMax: 20,
       step: 0.01,
       default: 0,
-      visibleIf: (p) => p.type === "flow",
+      visibleIf: (p) => p.type === "flow" && !p.animated,
     },
     {
       name: "color_a",
@@ -725,6 +776,35 @@ export const perlinNoiseNode: NodeDefinition = {
     const [br, bg, bb] = hexToRgb((params.color_b as string) ?? "#ffffff");
     const alpha = (params.alpha as number) ?? 1;
 
+    // Looping evolution. When Animated, drive W/flow from scene time along a
+    // closed loop (window [start,end] in frames) so it returns to its exact
+    // starting field — seamless, always forward. Overrides the manual W
+    // slider while active; flow type sweeps one full 2π rotation instead.
+    const animated = (params.animated as boolean) ?? false;
+    const isFlow = ((params.type as string) ?? "simplex") === "flow";
+    let effW = w;
+    let effFlow = flowTime;
+    let animOffX = 0;
+    let animOffY = 0;
+    if (animated) {
+      const animStart = (params.anim_start as number) ?? 0;
+      const animEnd = (params.anim_end as number) ?? 120;
+      const animRate = (params.anim_rate as number) ?? 1;
+      const frameNow = ctx.tick / ctx.ticksPerFrame;
+      effW = 0;
+      if (isFlow) {
+        effFlow =
+          loopEvolutionPhase(frameNow, animStart, animEnd) * Math.PI * 2;
+      } else {
+        [animOffX, animOffY] = loopEvolutionOffset(
+          frameNow,
+          animStart,
+          animEnd,
+          animRate
+        );
+      }
+    }
+
     const uvIn = inputs.uv_in;
     const placeholderKey = `perlin-noise:${nodeId}:zero`;
     let uvInMode = 0;
@@ -762,9 +842,9 @@ export const perlinNoiseNode: NodeDefinition = {
     const noiseFn = noiseFnFor((params.type as string) ?? "simplex");
     const valueScalar = fbmWithW(
       noiseFn,
-      sx,
-      sy,
-      w,
+      sx + animOffX,
+      sy + animOffY,
+      effW,
       octaves,
       persistence,
       lacunarity
@@ -783,8 +863,13 @@ export const perlinNoiseNode: NodeDefinition = {
       gl.uniform2f(gl.getUniformLocation(prog, "u_offset"), offX, offY);
       gl.uniform1f(gl.getUniformLocation(prog, "u_seed"), seed);
       gl.uniform1f(gl.getUniformLocation(prog, "u_contrast"), contrast);
-      gl.uniform1f(gl.getUniformLocation(prog, "u_flowTime"), flowTime);
-      gl.uniform1f(gl.getUniformLocation(prog, "u_w"), w);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_flowTime"), effFlow);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_w"), effW);
+      gl.uniform2f(
+        gl.getUniformLocation(prog, "u_animOffset"),
+        animOffX,
+        animOffY
+      );
       gl.uniform3f(gl.getUniformLocation(prog, "u_colorA"), ar, ag, ab);
       gl.uniform3f(gl.getUniformLocation(prog, "u_colorB"), br, bg, bb);
       gl.uniform1f(gl.getUniformLocation(prog, "u_alpha"), alpha);
@@ -840,5 +925,11 @@ export const perlinNoiseNode: NodeDefinition = {
 
   dispose(ctx, nodeId) {
     disposePlaceholderTex(ctx.gl, ctx.state, `perlin-noise:${nodeId}:zero`);
+  },
+
+  // Recompute every frame only while looping; otherwise stay cached as
+  // before (the static W/offset path is unchanged).
+  fingerprintExtras(params, ctx) {
+    return params.animated ? `anim:${ctx.tick}` : "";
   },
 };
