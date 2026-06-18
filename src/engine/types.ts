@@ -1,3 +1,5 @@
+import type { Object3DValue, CameraValue } from "./three-types";
+
 export type SocketType =
   | "image"
   | "mask"
@@ -49,7 +51,14 @@ export type SocketType =
   // "how big do you want to be?" before any GL work happens — the SDF
   // precedent of runtime-only data with the terminal node doing the
   // rendering. Plain `image` wires coerce both ways (coerce.ts).
-  | "element";
+  | "element"
+  // 3D scene sockets (M1). Carry references to retained three.js objects
+  // (object3d) or a CPU camera descriptor (camera). Runtime-only — see
+  // engine/three-types.ts. The 3D context renders these to an `image` at
+  // its Scene Render / Scene Output boundary. `geometry` and `material`
+  // join in M2.
+  | "object3d"
+  | "camera";
 
 export type ImageValue = {
   kind: "image";
@@ -446,7 +455,9 @@ export type SocketValue =
   | SdfValue
   | PositionValue
   | ScalarFieldValue
-  | ElementValue;
+  | ElementValue
+  | Object3DValue
+  | CameraValue;
 
 // SDF AST. Every SDF node's compute() returns one of these — a small
 // data tree, no GL work. The Rasterize node walks the tree, emits a
@@ -951,6 +962,7 @@ export type NodeCategory =
   | "spline"
   | "point"
   | "audio"
+  | "3d"
   | "utility"
   | "effect"
   | "output";

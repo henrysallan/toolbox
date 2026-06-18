@@ -40,6 +40,7 @@ that reuses machinery we already have.
 
 ---
 
+
 ## 2. Core decision: a convergent 3D context, not an ambient scene
 
 The scene is **convergent like the 2D graph**, just with new socket types.

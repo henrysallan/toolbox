@@ -147,6 +147,7 @@ import {
 } from "@/lib/ai/segment-session";
 import PointsOverlay from "./PointsOverlay";
 import WebGPUParticleOverlay from "./WebGPUParticleOverlay";
+import Scene3DViewport from "./Scene3DViewport";
 import { resolveParticleTestCount } from "@/nodes/effect/webgpu-particle-test";
 import { TrackEditor } from "./TrackEditor";
 import { GraphEditor } from "./GraphEditor";
@@ -911,6 +912,10 @@ function EffectsShell({
   currentProjectRef.current = currentProject;
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
+  // When a 3D node is selected, the bound Scene Render id — used to retarget
+  // the preview eval so its scene populates/publishes for the orbit viewport.
+  // Assigned from the `active3DSceneRenderId` memo further down.
+  const viewport3DTargetRef = useRef<string | null>(null);
   const paramViewRef = useRef(paramView);
   paramViewRef.current = paramView;
   const saveStateRef = useRef(saveState);
@@ -1151,7 +1156,12 @@ function EffectsShell({
       // own image (primary image, or its `image` aux) on the canvas — so a
       // freshly-added node (e.g. a spline primitive) is viewable without
       // wiring it to an Output.
-      const previewNodeId = !activeNodeId ? selectedIdRef.current : null;
+      // A 3D selection retargets the preview to its bound Scene Render so
+      // that node evaluates and publishes its scene for the orbit viewport
+      // (the 2D preview it produces sits hidden under the viewport overlay).
+      const previewNodeId = !activeNodeId
+        ? viewport3DTargetRef.current ?? selectedIdRef.current
+        : null;
       const graphEdges: GraphEdge[] = currentEdges.map((e) => ({
         id: e.id,
         source: e.source,
@@ -5666,6 +5676,80 @@ function EffectsShell({
       )
     : undefined;
 
+  // 3D orbit viewport binding (M1b). Active when the selection is a Scene
+  // Render, or a 3D node (object3d/camera output) that feeds one — in which
+  // case we bind to the nearest downstream Scene Render. Drives both the
+  // preview-eval retarget (so the scene publishes) and the overlay mount.
+  const active3DSceneRenderId = useMemo<string | null>(() => {
+    if (!selectedId) return null;
+    const sel = nodes.find((n) => n.id === selectedId);
+    if (!sel) return null;
+    if (sel.data.defType === "scene-render") return sel.id;
+    const out = getNodeDef(sel.data.defType)?.primaryOutput;
+    if (out !== "object3d" && out !== "camera") return null;
+    // BFS forward along edges to the nearest Scene Render.
+    const adj = new Map<string, string[]>();
+    for (const e of edges) {
+      const arr = adj.get(e.source);
+      if (arr) arr.push(e.target);
+      else adj.set(e.source, [e.target]);
+    }
+    const seen = new Set<string>([selectedId]);
+    let frontier = [selectedId];
+    while (frontier.length) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const t of adj.get(id) ?? []) {
+          if (seen.has(t)) continue;
+          seen.add(t);
+          const tn = nodes.find((n) => n.id === t);
+          if (tn?.data.defType === "scene-render") return tn.id;
+          next.push(t);
+        }
+      }
+      frontier = next;
+    }
+    return null;
+  }, [selectedId, nodes, edges]);
+  viewport3DTargetRef.current = active3DSceneRenderId;
+
+  // The Camera node wired into the bound Scene Render's camera input (if
+  // it's a camera-3d we can drive its params from the viewport). Null when
+  // nothing/an unsupported source is wired → viewport's look-through is
+  // then view-only.
+  const active3DCameraNodeId = useMemo<string | null>(() => {
+    if (!active3DSceneRenderId) return null;
+    const e = edges.find(
+      (e) => e.target === active3DSceneRenderId && e.targetHandle === "in:camera"
+    );
+    if (!e) return null;
+    const src = nodes.find((n) => n.id === e.source);
+    return src?.data.defType === "camera-3d" ? src.id : null;
+  }, [active3DSceneRenderId, edges, nodes]);
+
+  // Transform-gizmo target: the selected node, when it's a 3D object with
+  // writable transform params (primitives have pos+rot; lights have pos).
+  // Scene Merge (no transform params) and cameras are excluded.
+  const active3DGizmo = useMemo<{
+    id: string | null;
+    canRotate: boolean;
+    canScale: boolean;
+  }>(() => {
+    const none = { id: null, canRotate: false, canScale: false };
+    if (!selectedId || !active3DSceneRenderId) return none;
+    const n = nodes.find((nn) => nn.id === selectedId);
+    if (!n) return none;
+    const def = getNodeDef(n.data.defType);
+    if (def?.primaryOutput !== "object3d") return none;
+    const hasPos = def.params.some((p) => p.name === "pos_x");
+    if (!hasPos) return none;
+    return {
+      id: selectedId,
+      canRotate: def.params.some((p) => p.name === "rot_x"),
+      canScale: def.params.some((p) => p.name === "scale_x"),
+    };
+  }, [selectedId, active3DSceneRenderId, nodes]);
+
   // Show the pivot gizmo for any selected node whose definition opts in via
   // `supportsTransformGizmo` and exposes the expected param names. Today
   // that's Transform and SVG Source; Text and Auto Layout use the bounds
@@ -6420,6 +6504,17 @@ function EffectsShell({
             <PointsOverlay
               canvas={canvasRef.current}
               value={selectedPoints}
+            />
+          )}
+          {active3DSceneRenderId && backendReady && (
+            <Scene3DViewport
+              canvas={canvasRef.current}
+              sceneRenderId={active3DSceneRenderId}
+              cameraNodeId={active3DCameraNodeId}
+              gizmoNodeId={active3DGizmo.id}
+              gizmoCanRotate={active3DGizmo.canRotate}
+              gizmoCanScale={active3DGizmo.canScale}
+              onParamChange={onParamChange}
             />
           )}
           {webgpuParticleTest && backendReady && (

@@ -40,6 +40,11 @@ export const socketColor: Record<string, string> = {
   // Element wires (Auto Layout) — indigo, distinct from image blue and
   // the vec lavender: an intrinsically-sized renderable, not yet pixels.
   element: "#818cf8",
+  // 3D scene wires. object3d is a warm amber (a placed thing in the
+  // scene); camera a cooler teal-green so the "which view" signal reads
+  // distinctly from the scene contents.
+  object3d: "#f59e0b",
+  camera: "#2dd4bf",
 };
 
 export function colorForSocket(type: string): string {

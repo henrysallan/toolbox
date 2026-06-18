@@ -20,6 +20,19 @@ import { rectangleNode } from "./source/rectangle";
 import { imageGenerateNode } from "./source/image-generate";
 import { shapeCellsNode } from "./source/shape-cells";
 import { frameNode } from "./source/frame";
+import { cube3DTestNode } from "./source/cube-3d-test";
+import {
+  cube3DNode,
+  sphere3DNode,
+  plane3DNode,
+  cylinder3DNode,
+  cone3DNode,
+  torus3DNode,
+} from "./three/primitives";
+import { light3DNode } from "./three/light";
+import { camera3DNode } from "./three/camera";
+import { sceneMergeNode } from "./three/scene-merge";
+import { sceneRenderNode } from "./three/scene-render";
 import { autoLayoutNode } from "./effect/autolayout";
 import { sampleAlongPathNode } from "./effect/sample-along-path";
 import { resampleNode } from "./effect/resample";
@@ -163,6 +176,18 @@ export function registerAllNodes() {
   registerNode(textNode);
   registerNode(cursorNode);
   registerNode(videoNode);
+  registerNode(cube3DTestNode);
+  // 3D node family (M1) — convergent dataflow into Scene Render.
+  registerNode(cube3DNode);
+  registerNode(sphere3DNode);
+  registerNode(plane3DNode);
+  registerNode(cylinder3DNode);
+  registerNode(cone3DNode);
+  registerNode(torus3DNode);
+  registerNode(light3DNode);
+  registerNode(camera3DNode);
+  registerNode(sceneMergeNode);
+  registerNode(sceneRenderNode);
   registerNode(audioSourceNode);
   registerNode(webcamSourceNode);
   registerNode(splineDrawNode);

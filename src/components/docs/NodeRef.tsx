@@ -34,6 +34,7 @@ const CATEGORY_TITLE: Record<NodeCategory, string> = {
   spline: "Spline nodes",
   point: "Point nodes",
   audio: "Audio nodes",
+  "3d": "3D nodes",
   utility: "Utility nodes",
   effect: "Effect nodes",
   output: "Output nodes",
@@ -115,6 +116,8 @@ function CategoryIntro({ category }: { category: NodeCategory }) {
       "Point clouds. Sources generate position sets; modifiers transform them; `copy-to-points` lets you instance any type per point.",
     audio:
       "Audio sources. Their amplitude can be piped into any scalar socket for audio-reactive effects.",
+    "3d":
+      "3D scene nodes — primitives, lights, and cameras that converge into Scene Render, which rasterizes the scene to an image for the 2D graph.",
     utility:
       "Cross-type helpers: scalar math, vec2 packing, grouping, arraying, and polymorphic transforms that work on image / spline / point inputs.",
     effect:
