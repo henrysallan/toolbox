@@ -122,7 +122,7 @@ import {
   renderExportAudioBuffer,
   type ExportAudioSpec,
 } from "@/lib/export-audio";
-import type { AudioFileParamValue } from "@/engine/types";
+import type { AudioFileParamValue, VideoFileParamValue } from "@/engine/types";
 import PublicPrivateConfirm from "./PublicPrivateConfirm";
 import NewProjectConfirm from "./NewProjectConfirm";
 import {
@@ -3955,9 +3955,10 @@ function EffectsShell({
     return node?.data.defType === "output" ? node.data.params : null;
   }, []);
 
-  // The Audio Source feeding the Output node's `audio` socket, distilled to
-  // the params the export muxer needs. Null when nothing is wired in or the
-  // source isn't an Audio Source.
+  // The source feeding the Output node's `audio` socket, distilled to the
+  // params the export muxer needs. Handles both Audio Source (primary audio)
+  // and Video Source (audio aux output). Null when nothing is wired in or the
+  // source isn't an audio-capable node.
   const getOutputAudioSpec = useCallback(
     (outputNodeId: string): ExportAudioSpec | null => {
       const edge = edgesRef.current.find(
@@ -3965,17 +3966,38 @@ function EffectsShell({
       );
       if (!edge) return null;
       const node = nodesRef.current.find((n) => n.id === edge.source);
-      if (!node || node.data.defType !== "audio-source") return null;
+      if (!node) return null;
       const p = node.data.params;
-      return {
-        nodeId: node.id,
-        mode: (p.mode as "file" | "microphone") ?? "file",
-        file: (p.file as AudioFileParamValue | null) ?? null,
-        volume: Math.max(0, Math.min(1, (p.volume as number) ?? 1)),
-        loop: !!p.loop,
-        sync: !!p.sync_to_scene_time,
-        startOffset: (p.start_offset as number) ?? 0,
-      };
+      const volume = Math.max(0, Math.min(1, (p.volume as number) ?? 1));
+      if (node.data.defType === "audio-source") {
+        const file = (p.file as AudioFileParamValue | null) ?? null;
+        return {
+          nodeId: node.id,
+          mode: (p.mode as "file" | "microphone") ?? "file",
+          url: file?.url ?? null,
+          element: file?.element ?? null,
+          volume,
+          loop: !!p.loop,
+          sync: !!p.sync_to_scene_time,
+          startOffset: (p.start_offset as number) ?? 0,
+        };
+      }
+      if (node.data.defType === "video-source") {
+        // Image sequences carry no audio.
+        if ((p.source_kind ?? "video") === "sequence") return null;
+        const file = (p.file as VideoFileParamValue | null) ?? null;
+        return {
+          nodeId: node.id,
+          mode: "file",
+          url: file?.url ?? null,
+          element: file?.video ?? null,
+          volume,
+          loop: !!p.loop,
+          sync: !!p.sync_to_scene_time,
+          startOffset: (p.start_offset as number) ?? 0,
+        };
+      }
+      return null;
     },
     []
   );
@@ -3992,12 +4014,12 @@ function EffectsShell({
           ] as { micStream?: MediaStream } | undefined;
           return st?.micStream?.getAudioTracks?.()[0] ?? null;
         }
-        const el = spec.file?.element as
-          | (HTMLAudioElement & {
+        const el = spec.element as
+          | (HTMLMediaElement & {
               captureStream?: () => MediaStream;
               mozCaptureStream?: () => MediaStream;
             })
-          | undefined;
+          | null;
         if (!el) return null;
         const cs = el.captureStream?.() ?? el.mozCaptureStream?.();
         return cs?.getAudioTracks?.()[0] ?? null;
@@ -4274,6 +4296,11 @@ function EffectsShell({
             codec,
             crf: (params.videoCrf as number) ?? 18,
             proresProfile: proresMap[proresName] ?? 3,
+            // Mirror the Output node's ParamDef default (true): unedited
+            // and pre-existing saves have no stored value, so default to
+            // emitting alpha for 4444/4444xq. The exporter ignores this
+            // for non-4444 profiles.
+            alpha: (params.videoAlpha as boolean) ?? true,
             fps: exportFps,
             durationFrames,
             audioWav: audioBuffer ? audioBufferToWav(audioBuffer) : null,
@@ -4482,6 +4509,83 @@ function EffectsShell({
       } catch (err) {
         console.error("Sequence export failed:", err);
         flashToast(err instanceof Error ? err.message : "Sequence export failed");
+      } finally {
+        offlineRenderingRef.current = false;
+        forcedTerminalRef.current = null;
+        setPlaying(savedPlaying);
+        setTime(savedTime);
+        setRecording(null);
+      }
+    },
+    [getOutputParams, flashToast]
+  );
+
+  // Animated GIF export. Same deterministic offline render scaffold as
+  // exportVideo's high/max tiers (frame-stepped, media-settled), but the
+  // frames are piped through export-gif.ts (ffmpeg palettegen + gifsicle
+  // lossy) instead of a video encoder. No audio. See
+  // specdocs/061826_gif-export-and-image-sequence.md.
+  const exportGif = useCallback(
+    async (nodeId: string) => {
+      if (recordingRef.current || queueRenderingRef.current) return;
+      const canvas = canvasRef.current;
+      const params = getOutputParams(nodeId);
+      if (!canvas || !params) return;
+
+      const { startFrame, durationFrames } = resolveFrameRange(params);
+      if (durationFrames <= 0) {
+        flashToast("End frame must be after start frame");
+        return;
+      }
+      const exportFps = Math.max(1, (params.videoFps as number) ?? fpsRef.current);
+      const base = sanitizeFilename((params.filename as string) ?? "");
+
+      const colors = Math.round((params.gifColors as number) ?? 256);
+      const dither = ((params.gifDither as string) ?? "floyd") as
+        | "none"
+        | "bayer"
+        | "floyd";
+      const lossy = Math.round((params.gifLossy as number) ?? 0);
+      const transparent = !!params.gifTransparent;
+
+      const savedTime = timeRef.current;
+      const savedPlaying = playingRef.current;
+
+      setPlaying(false);
+      offlineRenderingRef.current = true;
+      forcedTerminalRef.current = nodeId;
+      setRecording({ mode: "offline", label: "Preparing…", progress: 0 });
+
+      const renderAt = async (frameIndex: number) => {
+        const t = (startFrame + frameIndex) / exportFps;
+        setTime(t);
+        const backend = backendRef.current;
+        renderFrameRef.current?.(t, exportFps, true);
+        const settled = backend ? await awaitMediaSettle(backend.state) : false;
+        if (settled) renderFrameRef.current?.(t, exportFps, true);
+      };
+
+      try {
+        const { exportGif: runGifExport } = await import("@/lib/export-gif");
+        const result = await runGifExport({
+          canvas,
+          fps: exportFps,
+          durationFrames,
+          colors,
+          dither,
+          lossy,
+          transparent,
+          renderFrame: renderAt,
+          onProgress: (label, progress) =>
+            setRecording({ mode: "offline", label, progress }),
+        });
+        downloadBlob(
+          result.blob,
+          base ? `${base}.${result.ext}` : defaultFilename(result.ext)
+        );
+      } catch (err) {
+        console.error("GIF export failed:", err);
+        flashToast(err instanceof Error ? err.message : "GIF export failed");
       } finally {
         offlineRenderingRef.current = false;
         forcedTerminalRef.current = null;
@@ -4826,19 +4930,20 @@ function EffectsShell({
       const detail = (
         e as CustomEvent<{
           id: string;
-          kind: "image" | "video" | "sequence" | "app" | "queue";
+          kind: "image" | "video" | "sequence" | "gif" | "app" | "queue";
         }>
       ).detail;
       if (!detail) return;
       if (detail.kind === "image") exportImage(detail.id);
       else if (detail.kind === "video") exportVideo(detail.id);
       else if (detail.kind === "sequence") exportSequence(detail.id);
+      else if (detail.kind === "gif") exportGif(detail.id);
       else if (detail.kind === "app") onOpenExportApp(detail.id);
       else if (detail.kind === "queue") renderQueue(detail.id);
     };
     window.addEventListener("effect-node-export", handler);
     return () => window.removeEventListener("effect-node-export", handler);
-  }, [exportImage, exportVideo, exportSequence, onOpenExportApp, renderQueue]);
+  }, [exportImage, exportVideo, exportSequence, exportGif, onOpenExportApp, renderQueue]);
 
   // --- Save / Load ----------------------------------------------------------
   // Progress budget: serialize/deserialize gets the first 70%, the network
@@ -5787,7 +5892,12 @@ function EffectsShell({
     ? nodes.find((n) => {
         if (n.id !== selectedId || n.data.defType !== "gradient") return false;
         const m = (n.data.params.mode as string) ?? "linear";
-        return m === "linear" || m === "radial" || m === "multipoint";
+        if (m === "linear" || m === "radial" || m === "multipoint") return true;
+        // The radial ring wave gets a draggable center handle.
+        return (
+          m === "wave" &&
+          ((n.data.params.wave_mode as string) ?? "linear") === "ring"
+        );
       })
     : undefined;
 
@@ -6741,12 +6851,15 @@ function EffectsShell({
               return typeof raw === "number" ? raw : fallback;
             };
             const rawMode = (node.data.params.mode as string) ?? "linear";
+            const rawWave = (node.data.params.wave_mode as string) ?? "linear";
             const mode =
               rawMode === "radial"
                 ? "radial"
                 : rawMode === "multipoint"
                   ? "multipoint"
-                  : "linear";
+                  : rawMode === "wave" && rawWave === "ring"
+                    ? "ring"
+                    : "linear";
             // Multipoint dots: positions are keyframe-effective (per-point
             // virtual gpoint_x/y tracks), colors are the stored hex.
             const storedPoints =

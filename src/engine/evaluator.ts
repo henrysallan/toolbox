@@ -521,7 +521,10 @@ export function evaluateGraph(
   // each eval so re-wiring takes effect immediately.
   const audioRoutedToOutput = new Set<string>();
   for (const e of edges) {
-    if (e.sourceHandle !== "out:primary" || e.targetHandle !== "in:audio") {
+    if (e.targetHandle !== "in:audio") continue;
+    // Audio Source emits audio on its primary; Video Source emits it on an
+    // `audio` aux output. Both un-mute only when wired here.
+    if (e.sourceHandle !== "out:primary" && e.sourceHandle !== "out:aux:audio") {
       continue;
     }
     const target = byId.get(e.target);

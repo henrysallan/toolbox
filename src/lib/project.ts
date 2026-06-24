@@ -2,6 +2,7 @@ import type { Edge, Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
 import type {
   AudioFileParamValue,
+  ImageSequenceParamValue,
   PaintParamValue,
   VideoFileParamValue,
 } from "@/engine/types";
@@ -173,6 +174,16 @@ async function serializeParams(
             height: v.height,
           } satisfies MediaEnvelope)
         : marker ?? null;
+    } else if (p.type === "model_file") {
+      // The live ObjectURL can't round-trip; persist a lightweight envelope
+      // (filename/size/format) so the panel can show the name and the user
+      // re-picks on load. No relink yet.
+      const m = val as
+        | import("@/engine/types").ModelFileParamValue
+        | null;
+      out[key] = m?.url
+        ? { kind: "model_file", filename: m.filename, size: m.size, format: m.format }
+        : null;
     } else if (p.type === "audio_file") {
       // Same envelope treatment as video_file.
       const a = val as AudioFileParamValue | null;
@@ -187,6 +198,29 @@ async function serializeParams(
             duration: a.duration,
           } satisfies MediaEnvelope)
         : marker ?? null;
+    } else if (p.type === "image_sequence") {
+      // Encoded frame blobs can't round-trip through JSON and a sequence can
+      // be large, so persist only a lightweight descriptor (per-frame
+      // number/filename/size + dims). The frames relink on load — the
+      // multi-file re-pick UI is a follow-up, so for now load resolves this
+      // to null and the user re-picks in the panel. Keeping the descriptor
+      // leaves a record for that future relink path.
+      // See specdocs/061826_gif-export-and-image-sequence.md.
+      const sv = val as ImageSequenceParamValue | null;
+      out[key] = sv?.frames?.length
+        ? {
+            kind: "image_sequence",
+            min: sv.min,
+            max: sv.max,
+            width: sv.width,
+            height: sv.height,
+            frames: sv.frames.map((f) => ({
+              number: f.number,
+              filename: f.filename,
+              size: f.size,
+            })),
+          }
+        : null;
     } else {
       out[key] = val;
     }
@@ -228,6 +262,11 @@ async function deserializeParams(
       }
     } else if (p.type === "font") {
       // Always null on load — user re-uploads the custom font if they need it.
+      out[key] = null;
+    } else if (p.type === "image_sequence") {
+      // Descriptor only — the encoded frames don't persist. Until the
+      // multi-file relink re-pick UI lands, a saved sequence loads empty and
+      // is re-picked from the panel (session-only across reloads).
       out[key] = null;
     } else if (p.type === "video_file" || p.type === "audio_file") {
       // Saved value is an identity envelope (or null from older saves /

@@ -31,6 +31,7 @@ import {
 } from "./three/primitives";
 import { light3DNode } from "./three/light";
 import { camera3DNode } from "./three/camera";
+import { import3DNode } from "./three/import-3d";
 import { sceneMergeNode } from "./three/scene-merge";
 import { sceneRenderNode } from "./three/scene-render";
 import { autoLayoutNode } from "./effect/autolayout";
@@ -71,6 +72,7 @@ import { sharpenNode } from "./effect/sharpen";
 import { grainNode } from "./effect/grain";
 import { bgRemoveNode } from "./effect/bg-remove";
 import { segmentAnythingNode } from "./effect/segment";
+import { depthAnythingNode } from "./effect/depth-anything";
 import { edgeDetectNode } from "./effect/edge-detect";
 import { objectTrackerNode } from "./effect/object-tracker";
 import { handTrackerNode } from "./effect/hand-tracker";
@@ -186,6 +188,7 @@ export function registerAllNodes() {
   registerNode(torus3DNode);
   registerNode(light3DNode);
   registerNode(camera3DNode);
+  registerNode(import3DNode);
   registerNode(sceneMergeNode);
   registerNode(sceneRenderNode);
   registerNode(audioSourceNode);
@@ -235,6 +238,7 @@ export function registerAllNodes() {
   registerNode(grainNode);
   registerNode(bgRemoveNode);
   registerNode(segmentAnythingNode);
+  registerNode(depthAnythingNode);
   registerNode(edgeDetectNode);
   registerNode(objectTrackerNode);
   registerNode(handTrackerNode);

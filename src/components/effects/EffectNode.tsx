@@ -769,7 +769,13 @@ export default function EffectNode({
             }
           />
           <ExportButton
-            label={data.params?.exportMode === "sequence" ? "Sequence" : "Video"}
+            label={
+              data.params?.exportMode === "sequence"
+                ? "Sequence"
+                : data.params?.exportMode === "gif"
+                  ? "GIF"
+                  : "Video"
+            }
             onClick={() =>
               window.dispatchEvent(
                 new CustomEvent("effect-node-export", {
@@ -778,7 +784,9 @@ export default function EffectNode({
                     kind:
                       data.params?.exportMode === "sequence"
                         ? "sequence"
-                        : "video",
+                        : data.params?.exportMode === "gif"
+                          ? "gif"
+                          : "video",
                   },
                 })
               )

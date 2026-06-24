@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from "react";
 
 // On-canvas handles for the Gradient node. Linear mode shows two endpoint
 // handles joined by a line (start → end); radial mode shows a center handle
-// plus a handle on the circle for the radius; multipoint shows one draggable
-// colored dot per point.
+// plus a handle on the circle for the radius; the wave "ring" sub-mode shows
+// just a center handle for the rings; multipoint shows one draggable colored
+// dot per point.
 //
 // IMPORTANT coordinate note: the Gradient shader samples in v_uv, which is
 // Y-UP (v = 0 at the bottom) — the OPPOSITE of the Y-DOWN convention the
@@ -15,7 +16,7 @@ import { useEffect, useRef, useState } from "react";
 // radius in uv reads as an ellipse on a non-square canvas — which is exactly
 // what the shader produces, so we draw it that way.
 
-export type GradientOverlayMode = "linear" | "radial" | "multipoint";
+export type GradientOverlayMode = "linear" | "radial" | "ring" | "multipoint";
 
 export interface GradientOverlayPoint {
   id: string;
@@ -221,6 +222,8 @@ export default function GradientOverlay({
             </>
           );
         })()}
+
+        {mode === "ring" && handle({ kind: "center" }, toPx(centerX, centerY), "#ef4444")}
 
         {mode === "multipoint" &&
           points.map((pt) => {

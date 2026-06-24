@@ -130,7 +130,7 @@ const sz = (name: string, label: string, def: number, max = 5): ParamDef => ({
 export const cube3DNode = makePrimitiveNode({
   type: "cube-3d",
   name: "Cube",
-  description: "A 3D box primitive. Wire into Scene Render (with a Camera) to see it.",
+  description: "A 3D box primitive. Wire into the 3D Scene node (with a Camera) to see it.",
   sizeParams: [sz("size", "Size", 1)],
   buildGeometry: (p) => {
     const s = (p.size as number) ?? 1;

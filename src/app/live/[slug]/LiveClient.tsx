@@ -61,6 +61,12 @@ export default function LiveClient({ slug, name, authorName, graph }: Props) {
       position: n.position,
       data: {
         defType: n.defType,
+        // parentId is what lets flattenGraph reconstruct group/layer
+        // boundaries — without it every layer/group interior is treated
+        // as root-level, the layer `in:content` splice never fires, and
+        // computeNeededSet can't walk behind the active node into its
+        // layers/groups, so interior controls vanish from the manifest.
+        parentId: n.parentId,
         params: n.params,
         exposedParams: n.exposedParams,
         controlParams: n.controlParams,

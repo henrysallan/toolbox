@@ -27,12 +27,13 @@ const FILE_PARAM_TYPES = new Set<ParamType>([
   "font",
 ]);
 
+// The only param types with no inline editor in the shared ParamControl —
+// both are edited on-canvas (paint = brush, spline_anchors = pen tool), so
+// there's no knob to render. Everything else (merge layers, curves, color
+// ramps, gradients, autolayout) now renders via the shared param-controls UI
+// in the live viewer and exported apps, so it flows through as a control.
 const UNSUPPORTED_CONTROL_TYPES = new Set<ParamType>([
   "paint",
-  "merge_layers",
-  "autolayout_items",
-  "curves",
-  "color_ramp",
   "spline_anchors",
 ]);
 

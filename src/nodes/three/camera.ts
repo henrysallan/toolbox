@@ -16,7 +16,7 @@ export const camera3DNode: NodeDefinition = {
   name: "Camera",
   category: "3d",
   description:
-    "A scene camera. Wire it into Scene Render's camera input to choose the view the scene renders from.",
+    "A scene camera. Wire it into the 3D Scene node's camera input to choose the view the scene renders from.",
   backend: "webgl2",
   inputs: [],
   params: [

@@ -178,8 +178,11 @@ export type PointsValue = {
 // ctx.state rather than exchange data through the value.
 export type AudioValue = {
   kind: "audio";
-  element: HTMLAudioElement;
-  source: "file" | "mic";
+  // HTMLMediaElement (not just HTMLAudioElement) so a Video Source can flow
+  // its decoded audio track through this same socket — a <video> is an
+  // HTMLMediaElement and plays audio identically.
+  element: HTMLMediaElement;
+  source: "file" | "mic" | "video";
 };
 
 // Homogeneous image collection. Carries an ordered list of images —
@@ -778,6 +781,7 @@ export type ParamType =
   | "font"
   | "font_variations"
   | "video_file"
+  | "image_sequence"
   | "paint"
   | "merge_layers"
   | "color_ramp"
@@ -786,6 +790,7 @@ export type ParamType =
   | "svg_file"
   | "audio_file"
   | "lut_file"
+  | "model_file"
   | "render_queue"
   // AutoLayoutItem[] — per-slot sizing rows on the Auto Layout node
   // (merge_layers pattern: array param drives dynamic `item:<id>` sockets).
@@ -794,6 +799,17 @@ export type ParamType =
   // merge_layers, the array itself isn't keyframable; each point's x / y /
   // color animate via virtual keys (gpoint_x/y/c:<id> — see conventions.ts).
   | "gradient_points";
+
+// Imported 3D model. The Import 3D node loads the file (GLB/glTF/OBJ) and
+// retains the parsed three.Object3D. Like video/audio, the live ObjectURL
+// can't round-trip a save — it's stripped on serialize and the user re-picks
+// (no relink yet). `format` selects which loader the node uses.
+export interface ModelFileParamValue {
+  url?: string; // object URL (blob:); absent after reload → re-pick
+  filename: string;
+  size?: number;
+  format: "glb" | "gltf" | "obj";
+}
 
 // One color point of a multipoint gradient. Position is normalized UV,
 // Y-UP (matching the Gradient shader's sampling space — the opposite of the
@@ -868,6 +884,32 @@ export interface VideoFileParamValue {
   // (lib/media-relink.ts) and for filename+size matching on manual relink.
   size?: number;
   duration: number;
+  width: number;
+  height: number;
+}
+
+// One frame of an image sequence loaded into the Video Source node. The
+// `number` is the trailing integer parsed from the filename; frames are kept
+// as ENCODED bytes (the Blob), not decoded ImageBitmaps, so a long sequence
+// stays RAM-reasonable — the node decodes the current frame lazily. Not
+// serialized: like video/audio, sequences relink on load (the project stores
+// a lightweight per-frame descriptor and re-picks the files).
+export interface ImageSequenceFrame {
+  number: number;
+  blob: Blob;
+  filename: string;
+  size: number;
+}
+
+export interface ImageSequenceParamValue {
+  // Sorted ascending by `number`.
+  frames: ImageSequenceFrame[];
+  // Numbering bounds and the gap-honoring timeline length
+  // (length = max − min + 1; missing numbers become held frames).
+  min: number;
+  max: number;
+  length: number;
+  // Dimensions of the first decoded frame (the sequence is assumed uniform).
   width: number;
   height: number;
 }

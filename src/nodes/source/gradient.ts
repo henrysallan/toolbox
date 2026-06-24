@@ -1,4 +1,5 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
+import { loopEvolutionPhase } from "@/engine/noise";
 import type {
   GradientPoint,
   ImageValue,
@@ -30,6 +31,8 @@ uniform float u_radius;      // radial
 uniform float u_angleOffset; // polar (radians)
 uniform float u_frequency;   // wave
 uniform float u_phase;       // wave (radians)
+uniform int u_waveRing;      // wave: 0 = linear (directional), 1 = ring (radial)
+uniform float u_aspect;      // wave ring: canvas width/height, keeps rings round
 uniform float u_softness;    // applies to all modes; shapes the t curve
 uniform int u_hasAngleMod;   // 0 or 1
 uniform sampler2D u_angleMod;
@@ -101,9 +104,19 @@ void main() {
     float a = atan(p.y, p.x) + u_angleOffset;
     t = fract(a / (2.0 * PI) + 1.0);
   } else if (u_mode == 3) {
-    // wave: sinusoidal ramp along the direction vector.
-    vec2 d = vec2(cos(angle), sin(angle));
-    float x = dot(uv - 0.5, d);
+    // wave: sinusoidal ramp. The linear sub-mode ramps along the direction
+    // vector (parallel bands). The ring sub-mode ramps along the distance
+    // from u_center, aspect-corrected so the rings stay round on non-square
+    // canvases (concentric rings instead of stripes).
+    float x;
+    if (u_waveRing == 1) {
+      vec2 p = uv - u_center;
+      p.y /= u_aspect;
+      x = length(p);
+    } else {
+      vec2 d = vec2(cos(angle), sin(angle));
+      x = dot(uv - 0.5, d);
+    }
     t = 0.5 + 0.5 * sin(x * u_frequency * 2.0 * PI + u_phase);
   }
 
@@ -206,13 +219,16 @@ export const gradientNode: NodeDefinition = {
   // avoid confusing no-op connections.
   resolveInputs(params) {
     const mode = (params.mode as string) ?? "linear";
+    const waveMode = (params.wave_mode as string) ?? "linear";
     const uv: InputSocketDef = {
       name: "uv_in",
       label: "UV",
       type: "uv",
       required: false,
     };
-    if (mode === "linear" || mode === "wave") {
+    // angle modulation applies to linear and the directional (linear) wave —
+    // not the radial ring wave.
+    if (mode === "linear" || (mode === "wave" && waveMode !== "ring")) {
       return [
         uv,
         {
@@ -233,6 +249,16 @@ export const gradientNode: NodeDefinition = {
       type: "enum",
       options: MODES,
       default: "linear",
+    },
+    // Wave sub-mode: linear = directional parallel bands (the original wave);
+    // ring = concentric radial rings emanating from center_x/center_y.
+    {
+      name: "wave_mode",
+      label: "Sub-mode",
+      type: "enum",
+      options: ["linear", "ring"],
+      default: "linear",
+      visibleIf: (p) => p.mode === "wave",
     },
     { name: "color_a", label: "Color A", type: "color", default: "#000000" },
     { name: "color_b", label: "Color B", type: "color", default: "#ffffff" },
@@ -293,7 +319,9 @@ export const gradientNode: NodeDefinition = {
       max: 360,
       step: 1,
       default: 0,
-      visibleIf: (p) => p.mode === "wave",
+      // Angle only drives the linear wave sub-mode; ring waves are radial.
+      visibleIf: (p) =>
+        p.mode === "wave" && (p.wave_mode ?? "linear") !== "ring",
     },
     {
       name: "angle_mod_amount",
@@ -303,7 +331,9 @@ export const gradientNode: NodeDefinition = {
       max: 360,
       step: 1,
       default: 0,
-      visibleIf: (p) => p.mode === "linear" || p.mode === "wave",
+      visibleIf: (p) =>
+        p.mode === "linear" ||
+        (p.mode === "wave" && (p.wave_mode ?? "linear") !== "ring"),
     },
 
     {
@@ -314,7 +344,10 @@ export const gradientNode: NodeDefinition = {
       max: 1,
       step: 0.01,
       default: 0.5,
-      visibleIf: (p) => p.mode === "radial" || p.mode === "polar",
+      visibleIf: (p) =>
+        p.mode === "radial" ||
+        p.mode === "polar" ||
+        (p.mode === "wave" && (p.wave_mode ?? "linear") === "ring"),
     },
     {
       name: "center_y",
@@ -324,7 +357,10 @@ export const gradientNode: NodeDefinition = {
       max: 1,
       step: 0.01,
       default: 0.5,
-      visibleIf: (p) => p.mode === "radial" || p.mode === "polar",
+      visibleIf: (p) =>
+        p.mode === "radial" ||
+        p.mode === "polar" ||
+        (p.mode === "wave" && (p.wave_mode ?? "linear") === "ring"),
     },
 
     {
@@ -368,6 +404,53 @@ export const gradientNode: NodeDefinition = {
       step: 1,
       default: 0,
       visibleIf: (p) => p.mode === "wave",
+    },
+
+    // Phase animation. When on, the wave's phase is driven internally from
+    // scene time around a closed loop [start, end] (frames): over one window
+    // the phase advances `rate` full cycles, then wraps — seamless when rate
+    // is a whole number (same loopEvolutionPhase mechanism as looping noise).
+    // The static Phase above becomes the starting offset. Works in both wave
+    // sub-modes.
+    {
+      name: "phase_animate",
+      label: "Animate phase",
+      type: "boolean",
+      default: false,
+      visibleIf: (p) => p.mode === "wave",
+    },
+    {
+      name: "phase_start",
+      label: "Start (frame)",
+      type: "scalar",
+      min: 0,
+      max: 100000,
+      softMax: 300,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.mode === "wave" && p.phase_animate === true,
+    },
+    {
+      name: "phase_end",
+      label: "End (frame)",
+      type: "scalar",
+      min: 1,
+      max: 100000,
+      softMax: 300,
+      step: 1,
+      default: 120,
+      visibleIf: (p) => p.mode === "wave" && p.phase_animate === true,
+    },
+    {
+      name: "phase_rate",
+      label: "Rate (cycles/loop)",
+      type: "scalar",
+      min: 0,
+      max: 20,
+      softMax: 8,
+      step: 1,
+      default: 1,
+      visibleIf: (p) => p.mode === "wave" && p.phase_animate === true,
     },
 
     // Multipoint: N color points blended by inverse-distance weighting.
@@ -427,6 +510,14 @@ export const gradientNode: NodeDefinition = {
     delete ctx.state[key];
   },
 
+  // Recompute every frame only while the wave phase is animating; otherwise
+  // stay cached as a static generator.
+  fingerprintExtras(params, ctx) {
+    return params.mode === "wave" && params.phase_animate
+      ? `phaseanim:${ctx.tick}`
+      : "";
+  },
+
   compute({ inputs, params, ctx, nodeId }) {
     const output = ctx.allocImage();
     const mode = modeToInt((params.mode as string) ?? "linear");
@@ -446,6 +537,22 @@ export const gradientNode: NodeDefinition = {
     const softness = (params.softness as number) ?? 1;
     const alpha = (params.alpha as number) ?? 1;
     const angleModAmountDeg = (params.angle_mod_amount as number) ?? 0;
+    const waveRing =
+      ((params.wave_mode as string) ?? "linear") === "ring" ? 1 : 0;
+    const aspect = ctx.height > 0 ? ctx.width / ctx.height : 1;
+
+    // Phase in radians: the static param is the base offset; when phase
+    // animation is on, add the loop's swept phase (rate full turns per
+    // [start, end] window) so the wave scrolls and loops seamlessly.
+    let phaseRad = (phaseDeg * Math.PI) / 180;
+    if ((params.phase_animate as boolean) ?? false) {
+      const pStart = (params.phase_start as number) ?? 0;
+      const pEnd = (params.phase_end as number) ?? 120;
+      const pRate = (params.phase_rate as number) ?? 1;
+      const frameNow = ctx.tick / ctx.ticksPerFrame;
+      phaseRad +=
+        loopEvolutionPhase(frameNow, pStart, pEnd) * pRate * 2 * Math.PI;
+    }
 
     // Multipoint: flatten the (keyframe-resolved) points into padded uniform
     // arrays. Colors arrive as hex (stored) or RGBA tuples (keyframed).
@@ -505,10 +612,9 @@ export const gradientNode: NodeDefinition = {
         (angleOffsetDeg * Math.PI) / 180
       );
       gl.uniform1f(gl.getUniformLocation(prog, "u_frequency"), frequency);
-      gl.uniform1f(
-        gl.getUniformLocation(prog, "u_phase"),
-        (phaseDeg * Math.PI) / 180
-      );
+      gl.uniform1f(gl.getUniformLocation(prog, "u_phase"), phaseRad);
+      gl.uniform1i(gl.getUniformLocation(prog, "u_waveRing"), waveRing);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_aspect"), aspect);
       gl.uniform1f(gl.getUniformLocation(prog, "u_softness"), softness);
       gl.uniform1f(gl.getUniformLocation(prog, "u_alpha"), alpha);
 

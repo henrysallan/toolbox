@@ -3,20 +3,25 @@
 // export window, then hands it to the encoders (mediabunny's
 // AudioBufferSource for the offline tiers; a WAV blob for ffmpeg.wasm).
 //
-// Only file-mode Audio Source can be rendered offline deterministically —
-// we decode the file and let an OfflineAudioContext re-create the exact
-// playback (start offset, looping, volume) for [0, durationSec). Mic input
-// has no offline representation, so it's skipped here and captured live in
-// the Fast (MediaRecorder) path instead.
+// Only url-backed audio (file-mode Audio Source, or a Video Source's audio
+// track) can be rendered offline deterministically — we decode the file and
+// let an OfflineAudioContext re-create the exact playback (start offset,
+// looping, volume) for [0, durationSec). `decodeAudioData` extracts the audio
+// track from a video container (mp4/webm) just as it does from an audio file.
+// Mic input has no offline representation, so it's skipped here and captured
+// live in the Fast (MediaRecorder) path instead.
 
-import type { AudioFileParamValue } from "@/engine/types";
-
-// The playback-relevant slice of an Audio Source node's params, plus the
-// originating node id (needed to reach mic state for the live path).
+// The playback-relevant slice of the node feeding the Output audio socket,
+// plus the originating node id (needed to reach mic state for the live path).
 export interface ExportAudioSpec {
   nodeId: string;
+  // "file" = url-backed, offline-decodable (Audio Source file mode OR Video
+  // Source). "microphone" = live-only, captured in the Fast path.
   mode: "file" | "microphone";
-  file: AudioFileParamValue | null;
+  // ObjectURL of the source media (decoded offline) and the live media
+  // element (captureStream for the Fast path). Null for mic mode.
+  url: string | null;
+  element: HTMLMediaElement | null;
   volume: number;
   loop: boolean;
   sync: boolean;
@@ -34,11 +39,11 @@ export async function renderExportAudioBuffer(
   durationSec: number,
   startSec = 0
 ): Promise<AudioBuffer | null> {
-  if (spec.mode !== "file" || !spec.file?.url || durationSec <= 0) return null;
+  if (spec.mode !== "file" || !spec.url || durationSec <= 0) return null;
 
   // Decode the source file. A throwaway AudioContext is only used to
   // decode; the deterministic render runs in an OfflineAudioContext.
-  const resp = await fetch(spec.file.url);
+  const resp = await fetch(spec.url);
   const encoded = await resp.arrayBuffer();
   const Ctor: typeof AudioContext =
     window.AudioContext ??

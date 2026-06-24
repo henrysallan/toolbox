@@ -54,7 +54,7 @@ export const outputNode: NodeDefinition = {
       name: "exportMode",
       label: "Export mode",
       type: "enum",
-      options: ["video", "sequence"],
+      options: ["video", "sequence", "gif"],
       default: "video",
       control: "segmented",
     },
@@ -88,10 +88,12 @@ export const outputNode: NodeDefinition = {
       step: 1,
       default: 60,
       // Fast video is locked to the page's render fps because MediaRecorder
-      // reads the live stream. High/Max video and the sequence exporter step
-      // the clock manually, so they get a real, independent fps.
+      // reads the live stream. High/Max video, the sequence exporter, and GIF
+      // all step the clock manually, so they get a real, independent fps.
       visibleIf: (p) =>
-        p.exportMode === "sequence" || p.videoQuality !== "fast",
+        p.exportMode === "sequence" ||
+        p.exportMode === "gif" ||
+        p.videoQuality !== "fast",
     },
     // ----- video-only ---------------------------------------------------
     // Three quality tiers:
@@ -179,6 +181,23 @@ export const outputNode: NodeDefinition = {
         p.videoQuality === "max" &&
         p.videoCodec === "prores",
     },
+    {
+      name: "videoAlpha",
+      label: "Transparency (alpha)",
+      type: "boolean",
+      // Only the ProRes 4444 / 4444xq profiles carry an alpha channel, so
+      // the toggle is gated on those. On = straight-alpha 4:4:4 export
+      // (yuva444p10le); off = opaque 4:4:4. Defaults on because picking a
+      // 4444 profile almost always means "I want the alpha." mov/mkv only —
+      // selecting ProRes already forces the container away from mp4/webm.
+      default: true,
+      visibleIf: (p) =>
+        (p.exportMode ?? "video") === "video" &&
+        p.videoQuality === "max" &&
+        p.videoCodec === "prores" &&
+        (p.videoProresProfile === "4444" ||
+          p.videoProresProfile === "4444xq"),
+    },
     // ----- sequence-only ------------------------------------------------
     // How the per-frame stills are delivered. Mirrors the Render Queue's
     // `delivery` param (same string values). Frame format/quality come from
@@ -190,6 +209,57 @@ export const outputNode: NodeDefinition = {
       options: ["zip", "folder", "sequential"],
       default: "zip",
       visibleIf: (p) => p.exportMode === "sequence",
+    },
+    // ----- gif-only -----------------------------------------------------
+    // Animated GIF export. Palette + transparency + dithering come from a
+    // palettegen pass; `gifLossy` drives a lossy-LZW optimization pass
+    // (gifsicle) — the GIF analogue of a compression slider. Frame range +
+    // Output FPS above are shared (GIF delay = round(100/fps) centiseconds).
+    // See specdocs/061826_gif-export-and-image-sequence.md.
+    {
+      name: "gifColors",
+      label: "Colors",
+      type: "scalar",
+      // GIF palettes hold up to 256 entries. Fewer = smaller file, more
+      // banding. This is the color-quantization level.
+      min: 2,
+      max: 256,
+      step: 1,
+      default: 256,
+      visibleIf: (p) => p.exportMode === "gif",
+    },
+    {
+      name: "gifDither",
+      label: "Dithering",
+      type: "enum",
+      // none = flat bands (smallest); bayer = ordered (cheap, structured);
+      // floyd = error-diffusion (smoothest gradients, largest).
+      options: ["none", "bayer", "floyd"],
+      default: "floyd",
+      visibleIf: (p) => p.exportMode === "gif",
+    },
+    {
+      name: "gifLossy",
+      label: "Lossy",
+      type: "scalar",
+      // 0 = lossless LZW. Higher allows more color error between adjacent
+      // pixels for a smaller file (gifsicle --lossy). 30–80 is a sane range;
+      // past ~100 artifacts get visible.
+      min: 0,
+      max: 200,
+      softMax: 100,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.exportMode === "gif",
+    },
+    {
+      name: "gifTransparent",
+      label: "Transparency",
+      type: "boolean",
+      // When on, source alpha below the threshold becomes GIF transparency
+      // (1-bit). When off, the GIF is fully opaque (alpha flattened).
+      default: false,
+      visibleIf: (p) => p.exportMode === "gif",
     },
   ],
   primaryOutput: null,

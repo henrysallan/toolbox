@@ -6,7 +6,7 @@ import type {
   ExportManifestControl,
   ExportManifestFileInput,
 } from "./manifest-types";
-import { ExportParamControl } from "./ExportParamControl";
+import { ParamControl } from "@/lib/param-controls";
 import { registerAudioFile, disposeAudioFile } from "@/lib/audio";
 import { registerCustomFont } from "@/lib/fonts";
 import { parseSvg } from "@/lib/svg-parse";
@@ -346,13 +346,18 @@ function ControlRow({
         <span>{label}</span>
         {driven && <span className="driven-badge">DRIVEN</span>}
       </div>
-      <div className="control-host">
-        <ExportParamControl
-          param={entry.def}
-          value={value}
-          onChange={onChange}
-          disabled={driven}
-        />
+      {/* Reuse the editor's exact param UI. We deliberately pass none of the
+          editor-only affordances (no keyframe diamond/eye, expose icon,
+          control toggle, or `layerAnim` for per-item keyframing) — those only
+          render when their props are supplied, so omitting them strips them.
+          A wire-driven param can't be hand-set, so we disable interaction. */}
+      <div
+        className="control-host"
+        style={
+          driven ? { opacity: 0.5, pointerEvents: "none" } : undefined
+        }
+      >
+        <ParamControl param={entry.def} value={value} onChange={onChange} />
       </div>
     </div>
   );

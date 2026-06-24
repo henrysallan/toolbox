@@ -1,6 +1,9 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
+  AudioValue,
+  ImageSequenceParamValue,
   NodeDefinition,
+  RenderContext,
   UvValue,
   VideoFileParamValue,
 } from "@/engine/types";
@@ -79,6 +82,120 @@ function ensureState(
   return s;
 }
 
+// ── Image-sequence playback state ──────────────────────────────────────
+// Parallel to VideoState but for the sequence source kind. Frames are kept
+// as encoded Blobs in the param value; here we lazily decode the currently-
+// needed frame to a GL texture and keep a small LRU of recent ones so
+// scrubbing back is instant. Offline export registers a settle promise on
+// the in-flight decode so capture waits for the right frame.
+interface SequenceState {
+  tex: WebGLTexture | null; // last-good texture currently being shown
+  hasUploadedFrame: boolean;
+  lastW: number;
+  lastH: number;
+  // Identity of the param value the cache was built for — a new pick resets.
+  valueRef: ImageSequenceParamValue | null;
+  // For each timeline index [0, length), the frames[] array index to show
+  // (forward-filled so gaps hold the previous present frame).
+  resolved: number[];
+  cache: Map<number, WebGLTexture>; // frames[] index → uploaded texture
+  lru: number[]; // frames[] indices, least-recent first
+  pending: Map<number, ImageBitmap>; // decoded, awaiting GL upload
+  decoding: Set<number>; // createImageBitmap in flight
+}
+
+const SEQ_CACHE_CAP = 12;
+
+function ensureSeqState(ctx: RenderContext, nodeId: string): SequenceState {
+  const key = `video-seq:${nodeId}`;
+  const existing = ctx.state[key] as SequenceState | undefined;
+  if (existing) return existing;
+  const s: SequenceState = {
+    tex: null,
+    hasUploadedFrame: false,
+    lastW: 0,
+    lastH: 0,
+    valueRef: null,
+    resolved: [],
+    cache: new Map(),
+    lru: [],
+    pending: new Map(),
+    decoding: new Set(),
+  };
+  ctx.state[key] = s;
+  return s;
+}
+
+// Free every GL texture + decoded bitmap held by a sequence cache. Called on
+// a fresh pick (value identity change) and on dispose.
+function clearSeqCache(gl: WebGL2RenderingContext, s: SequenceState): void {
+  for (const tex of s.cache.values()) gl.deleteTexture(tex);
+  s.cache.clear();
+  s.lru.length = 0;
+  for (const bmp of s.pending.values()) bmp.close();
+  s.pending.clear();
+  s.decoding.clear();
+  s.tex = null;
+  s.hasUploadedFrame = false;
+}
+
+// Forward-fill the timeline→frame map so missing numbers hold the previous
+// present frame (AE-style). frames[] is sorted ascending by `number`.
+function buildResolved(value: ImageSequenceParamValue): number[] {
+  const resolved = new Array<number>(Math.max(1, value.length));
+  let fi = 0;
+  for (let i = 0; i < resolved.length; i++) {
+    const num = value.min + i;
+    while (fi + 1 < value.frames.length && value.frames[fi + 1].number <= num) {
+      fi++;
+    }
+    resolved[i] = fi;
+  }
+  return resolved;
+}
+
+// Create a texture configured like the video upload path (LINEAR, clamp,
+// straight alpha) and upload an ImageBitmap into it.
+function uploadBitmapTexture(
+  gl: WebGL2RenderingContext,
+  bmp: ImageBitmap
+): WebGLTexture {
+  const tex = gl.createTexture();
+  if (!tex) throw new Error("image-sequence: failed to create texture");
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  return tex;
+}
+
+function touchLru(s: SequenceState, idx: number): void {
+  const at = s.lru.indexOf(idx);
+  if (at >= 0) s.lru.splice(at, 1);
+  s.lru.push(idx);
+}
+
+// Evict least-recently-used textures past the cap, never the current index.
+function evictSeq(
+  gl: WebGL2RenderingContext,
+  s: SequenceState,
+  keepIdx: number
+): void {
+  while (s.cache.size > SEQ_CACHE_CAP && s.lru.length > 0) {
+    const victim = s.lru[0] === keepIdx && s.lru.length > 1 ? s.lru[1] : s.lru[0];
+    const at = s.lru.indexOf(victim);
+    if (at >= 0) s.lru.splice(at, 1);
+    const tex = s.cache.get(victim);
+    if (tex) gl.deleteTexture(tex);
+    s.cache.delete(victim);
+    if (victim === keepIdx) break; // safety — shouldn't happen
+  }
+}
+
 export const videoNode: NodeDefinition = {
   type: "video-source",
   name: "Video Source",
@@ -92,7 +209,43 @@ export const videoNode: NodeDefinition = {
   inputs: [{ name: "uv_in", label: "UV", type: "uv", required: false }],
   params: [
     OPACITY_PARAM,
-    { name: "file", label: "Video", type: "video_file", default: null },
+    // Source kind: a single video file, or an image sequence (numbered
+    // stills played as frames). Default "video" so existing saves — which
+    // lack this param — keep their video behavior.
+    {
+      name: "source_kind",
+      label: "Source",
+      type: "enum",
+      options: ["video", "sequence"],
+      default: "video",
+      control: "segmented",
+    },
+    {
+      name: "file",
+      label: "Video",
+      type: "video_file",
+      default: null,
+      visibleIf: (p) => (p.source_kind ?? "video") !== "sequence",
+    },
+    {
+      name: "sequence",
+      label: "Image sequence",
+      type: "image_sequence",
+      default: null,
+      visibleIf: (p) => p.source_kind === "sequence",
+    },
+    // Image sequences have no intrinsic frame rate — this maps scene time to
+    // frame index. Only meaningful for the sequence kind.
+    {
+      name: "seq_fps",
+      label: "Sequence FPS",
+      type: "scalar",
+      min: 1,
+      max: 120,
+      step: 1,
+      default: 24,
+      visibleIf: (p) => p.source_kind === "sequence",
+    },
     {
       name: "fit",
       label: "Fit",
@@ -132,9 +285,30 @@ export const videoNode: NodeDefinition = {
       type: "boolean",
       default: true,
     },
+    // Volume for the video's own audio track. Only reaches the speakers when
+    // the node's `audio` output is wired into the Output node's audio socket
+    // (see the muting logic in compute). Hidden for image sequences, which
+    // carry no audio.
+    {
+      name: "volume",
+      label: "Volume",
+      type: "scalar",
+      min: 0,
+      max: 1,
+      step: 0.01,
+      default: 1,
+      visibleIf: (p) => (p.source_kind ?? "video") !== "sequence",
+    },
   ],
   primaryOutput: "image",
   auxOutputs: [],
+  // The video's audio track rides out an `audio` aux output (parallel to
+  // Audio Source's primary). Image sequences have no audio, so the socket
+  // only appears for the video source kind.
+  resolveAuxOutputs(params) {
+    if ((params.source_kind ?? "video") === "sequence") return [];
+    return [{ name: "audio", type: "audio" }];
+  },
 
   // Mix the video element's currentTime into the fingerprint. Scene-time
   // already busts downstream caches for sync'd playback, but free-running
@@ -148,6 +322,157 @@ export const videoNode: NodeDefinition = {
 
   compute({ inputs, params, ctx, nodeId }) {
     const output = ctx.allocImage();
+
+    // ── Image-sequence path ───────────────────────────────────────────
+    // Independent of the <video> machinery below: map scene time → frame
+    // index (honoring gaps), lazily decode that frame, and draw it through
+    // the same fit shader. Returns early so the video path is untouched.
+    if ((params.source_kind as string) === "sequence") {
+      const gl = ctx.gl;
+      const s = ensureSeqState(ctx, nodeId);
+      const seq = params.sequence as ImageSequenceParamValue | null | undefined;
+      if (!seq || !seq.frames || seq.frames.length === 0) {
+        if (s.valueRef) {
+          clearSeqCache(gl, s);
+          s.valueRef = null;
+        }
+        ctx.clearTarget(output, [0, 0, 0, 1]);
+        return { primary: output };
+      }
+      // Fresh pick → drop the old cache and rebuild the gap-filled map.
+      if (s.valueRef !== seq) {
+        clearSeqCache(gl, s);
+        s.valueRef = seq;
+        s.resolved = buildResolved(seq);
+        s.lastW = seq.width || 0;
+        s.lastH = seq.height || 0;
+      }
+
+      const speed = (params.speed as number) ?? 1;
+      const startOffset = (params.start_offset as number) ?? 0;
+      const seqFps = Math.max(1, (params.seq_fps as number) ?? 24);
+      const length = s.resolved.length;
+
+      let localFrame = Math.floor((ctx.time * speed + startOffset) * seqFps);
+      if (params.loop) {
+        localFrame = ((localFrame % length) + length) % length;
+      } else {
+        localFrame = Math.max(0, Math.min(length - 1, localFrame));
+      }
+      const targetIdx = s.resolved[localFrame] ?? 0;
+
+      let frameTex = s.cache.get(targetIdx) ?? null;
+      if (frameTex) {
+        touchLru(s, targetIdx);
+      } else if (s.pending.has(targetIdx)) {
+        // Decoded last eval — upload to GL now (the GL context is here).
+        const bmp = s.pending.get(targetIdx)!;
+        s.pending.delete(targetIdx);
+        frameTex = uploadBitmapTexture(gl, bmp);
+        s.lastW = bmp.width;
+        s.lastH = bmp.height;
+        bmp.close();
+        s.cache.set(targetIdx, frameTex);
+        touchLru(s, targetIdx);
+        evictSeq(gl, s, targetIdx);
+      } else if (!s.decoding.has(targetIdx)) {
+        // Kick an async decode; show the last-good frame meanwhile. Offline
+        // export settles on it so capture waits for the right frame.
+        if (s.pending.size >= SEQ_CACHE_CAP) {
+          const first = s.pending.keys().next().value;
+          if (first !== undefined) {
+            s.pending.get(first)?.close();
+            s.pending.delete(first);
+          }
+        }
+        s.decoding.add(targetIdx);
+        const p = createImageBitmap(seq.frames[targetIdx].blob)
+          .then((bmp) => {
+            s.pending.set(targetIdx, bmp);
+            s.decoding.delete(targetIdx);
+            // Nudge a re-eval so a paused scrub updates once the decode lands.
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new Event("pipeline-bump"));
+            }
+          })
+          .catch(() => {
+            s.decoding.delete(targetIdx);
+          });
+        if (ctx.offline) pushMediaSettle(ctx, p);
+      }
+
+      if (frameTex) {
+        s.tex = frameTex;
+        s.hasUploadedFrame = true;
+      }
+      if (!s.hasUploadedFrame || !s.tex) {
+        ctx.clearTarget(output, [0, 0, 0, 1]);
+        return { primary: output };
+      }
+
+      // Fit + UV-input + draw (mirrors the video path below).
+      const srcW = s.lastW || seq.width || output.width;
+      const srcH = s.lastH || seq.height || output.height;
+      const imgAspect = srcW / srcH;
+      const outAspect = output.width / output.height;
+      const aspect = imgAspect / outAspect;
+      const fit = (params.fit as string) ?? "cover";
+      let invScale: [number, number];
+      let letterbox = 0;
+      if (fit === "stretch") {
+        invScale = [1, 1];
+      } else if (fit === "cover") {
+        invScale = aspect > 1 ? [1 / aspect, 1] : [1, aspect];
+      } else {
+        invScale = aspect > 1 ? [1, aspect] : [1 / aspect, 1];
+        letterbox = 1;
+      }
+
+      const uvInSeq = inputs.uv_in;
+      const placeholderKeySeq = `video-source:${nodeId}:zero`;
+      let uvInModeSeq = 0;
+      let uvInTexSeq: WebGLTexture = getPlaceholderTex(
+        ctx.gl,
+        ctx.state,
+        placeholderKeySeq
+      );
+      let uvConstSeq: [number, number] = [0, 0];
+      if (uvInSeq) {
+        if (uvInSeq.kind === "uv") {
+          uvInModeSeq = 1;
+          uvInTexSeq = (uvInSeq as UvValue).texture;
+        } else if (uvInSeq.kind === "scalar") {
+          uvInModeSeq = 2;
+          uvConstSeq = [uvInSeq.value, uvInSeq.value];
+        }
+      }
+
+      const progSeq = ctx.getShader("video-source/fit", FS);
+      const curTex = s.tex;
+      ctx.drawFullscreen(progSeq, output, (gl2) => {
+        gl2.activeTexture(gl2.TEXTURE0);
+        gl2.bindTexture(gl2.TEXTURE_2D, curTex);
+        gl2.uniform1i(gl2.getUniformLocation(progSeq, "u_src"), 0);
+        gl2.uniform2f(
+          gl2.getUniformLocation(progSeq, "u_invScale"),
+          invScale[0],
+          invScale[1]
+        );
+        gl2.uniform1f(gl2.getUniformLocation(progSeq, "u_letterbox"), letterbox);
+        gl2.activeTexture(gl2.TEXTURE1);
+        gl2.bindTexture(gl2.TEXTURE_2D, uvInTexSeq);
+        gl2.uniform1i(gl2.getUniformLocation(progSeq, "u_uvIn"), 1);
+        gl2.uniform1i(gl2.getUniformLocation(progSeq, "u_hasUvIn"), uvInModeSeq);
+        gl2.uniform2f(
+          gl2.getUniformLocation(progSeq, "u_uvConst"),
+          uvConstSeq[0],
+          uvConstSeq[1]
+        );
+      });
+
+      return { primary: output };
+    }
+
     const paramFile = params.file as VideoFileParamValue | null | undefined;
     if (!paramFile?.video) {
       ctx.clearTarget(output, [0, 0, 0, 1]);
@@ -157,6 +482,24 @@ export const videoNode: NodeDefinition = {
     const state = ensureState(ctx, nodeId);
     state.videoRef = video;
     video.loop = !!params.loop;
+
+    // Audio: a <video> plays its own audio track. The element is created
+    // muted (lib/video.ts) — un-mute it only while this node's `audio`
+    // output is routed into the Output node's audio socket
+    // (ctx.audioRoutedToOutput, recomputed each eval). When used only for
+    // data (amplitude → param) it keeps advancing but stays silent. This
+    // mirrors Audio Source. The aux value is emitted on every frame the
+    // node renders so downstream analysers see a stable element identity.
+    const audible = ctx.audioRoutedToOutput?.has(nodeId) ?? false;
+    video.volume = Math.max(0, Math.min(1, (params.volume as number) ?? 1));
+    video.muted = !audible;
+    const audioAux = {
+      audio: {
+        kind: "audio",
+        element: video,
+        source: "video",
+      } satisfies AudioValue,
+    };
 
     const sync = !!params.sync_to_scene_time;
     const speed = (params.speed as number) ?? 1;
@@ -289,10 +632,11 @@ export const videoNode: NodeDefinition = {
     }
 
     // If we've never managed to upload, there's no last-good frame to
-    // show — clear to black and bail.
+    // show — clear to black and bail. Audio still flows (it may be loaded
+    // before the first frame decodes).
     if (!state.hasUploadedFrame) {
       ctx.clearTarget(output, [0, 0, 0, 1]);
-      return { primary: output };
+      return { primary: output, aux: audioAux };
     }
 
     // Fit math uses the dimensions of the LAST successful upload. They
@@ -358,7 +702,7 @@ export const videoNode: NodeDefinition = {
       );
     });
 
-    return { primary: output };
+    return { primary: output, aux: audioAux };
   },
 
   dispose(ctx, nodeId) {
@@ -367,5 +711,12 @@ export const videoNode: NodeDefinition = {
     if (state?.tex) ctx.gl.deleteTexture(state.tex);
     delete ctx.state[key];
     disposePlaceholderTex(ctx.gl, ctx.state, `video-source:${nodeId}:zero`);
+    // Image-sequence cache (textures + any in-flight decoded bitmaps).
+    const seqKey = `video-seq:${nodeId}`;
+    const seqState = ctx.state[seqKey] as SequenceState | undefined;
+    if (seqState) {
+      clearSeqCache(ctx.gl, seqState);
+      delete ctx.state[seqKey];
+    }
   },
 };

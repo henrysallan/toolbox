@@ -26,7 +26,9 @@ const FFMPEG_BASE = `https://unpkg.com/@ffmpeg/core@${FFMPEG_CORE_VERSION}/dist/
 let ffmpegSingleton: FFmpeg | null = null;
 let loadPromise: Promise<FFmpeg> | null = null;
 
-async function getFfmpeg(
+// Exported so sibling exporters (GIF) can reuse the one loaded ffmpeg
+// singleton instead of paying a second core download.
+export async function getFfmpeg(
   onProgress?: (label: string, fraction: number) => void
 ): Promise<FFmpeg> {
   if (ffmpegSingleton) return ffmpegSingleton;
@@ -67,6 +69,10 @@ export interface FfmpegExportOptions {
   // Profile selector for ProRes. 0=proxy, 1=lt, 2=standard, 3=hq,
   // 4=4444, 5=4444xq.
   proresProfile: number;
+  // Encode an alpha channel. Only honored for ProRes 4444 / 4444xq
+  // (profile >= 4) — the only codec/profile in this tier that carries
+  // transparency. Ignored otherwise.
+  alpha?: boolean;
   fps: number;
   durationFrames: number;
   renderFrame: (frameIndex: number, timeSec: number) => void | Promise<void>;
@@ -90,7 +96,8 @@ function buildAudioArgs(container: FfmpegContainer): string[] {
 function buildEncoderArgs(
   codec: FfmpegCodec,
   crf: number,
-  proresProfile: number
+  proresProfile: number,
+  alpha: boolean
 ): string[] {
   switch (codec) {
     case "h264":
@@ -118,15 +125,31 @@ function buildEncoderArgs(
         "-preset", "medium",
         "-crf", String(crf),
       ];
-    case "prores":
+    case "prores": {
       // prores_ks is the modern encoder. yuv422p10le is the standard
       // 10-bit 4:2:2 pixel format ProRes consumers expect.
+      //
+      // Alpha lives only in the 4444 / 4444xq profiles (profile >= 4).
+      // When requested there we switch to the alpha-bearing 4:4:4 format
+      // and pin `-alpha_bits 16` (full-precision straight alpha): without
+      // an explicit value some ffmpeg builds resolve alpha_bits to 0 and
+      // silently drop the channel even with a yuva pixel format — which is
+      // exactly how a "4444 export with no alpha" happens. Opaque 4444
+      // uses plain yuv444p10le; lower profiles stay 4:2:2.
+      const wantsAlpha = alpha && proresProfile >= 4;
+      const pixFmt = wantsAlpha
+        ? "yuva444p10le"
+        : proresProfile >= 4
+          ? "yuv444p10le"
+          : "yuv422p10le";
       return [
         "-c:v", "prores_ks",
         "-profile:v", String(proresProfile),
-        "-pix_fmt", proresProfile >= 4 ? "yuva444p10le" : "yuv422p10le",
+        "-pix_fmt", pixFmt,
+        ...(wantsAlpha ? ["-alpha_bits", "16"] : []),
         "-vendor", "apl0",
       ];
+    }
     case "vp9":
       return [
         "-c:v", "libvpx-vp9",
@@ -149,7 +172,7 @@ function buildEncoderArgs(
   }
 }
 
-function canvasToPngBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
+export function canvasToPngBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(async (blob) => {
       if (!blob) {
@@ -206,7 +229,7 @@ export async function exportVideoFfmpeg(
     "-framerate", String(opts.fps),
     "-i", "frame_%06d.png",
     ...(hasAudio ? ["-i", "audio.wav"] : []),
-    ...buildEncoderArgs(opts.codec, opts.crf, opts.proresProfile),
+    ...buildEncoderArgs(opts.codec, opts.crf, opts.proresProfile, opts.alpha ?? false),
     ...(hasAudio ? buildAudioArgs(opts.container) : []),
     ...(hasAudio ? ["-shortest"] : []),
     "-r", String(opts.fps),

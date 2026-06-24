@@ -224,7 +224,13 @@ void main() {
   ivec2 baseCell = ivec2(floor(gridPos));
 
   vec2 pxPos = v_uv * u_resolution;
-  vec4 acc = vec4(u_bgColor, u_bgAlpha);
+  // Composite in PREMULTIPLIED alpha. If we blended straight colors, a
+  // transparent-but-colored background (low bgAlpha, but bgColor e.g. cream)
+  // would bleed its color into the antialiased dot edges — invisible while
+  // bgAlpha is 1, but a pale fringe once the alpha is respected (ProRes 4444
+  // export, any real compositor). Premultiplied "over" keeps edge color = dot
+  // color; we un-premultiply back to straight alpha at the end.
+  vec4 acc = vec4(u_bgColor * u_bgAlpha, u_bgAlpha);
 
   for (int dy = -2; dy <= 2; dy++) {
     for (int dx = -2; dx <= 2; dx++) {
@@ -270,15 +276,18 @@ void main() {
       // boundaries — the derivative is undefined and shows up as the
       // grid-aligned light crosshatch you'd otherwise see.
       float aa = 0.75;
-      float alpha = 1.0 - smoothstep(rAdj - aa, rAdj + aa, dist);
-      if (alpha <= 0.0) continue;
+      float cov = 1.0 - smoothstep(rAdj - aa, rAdj + aa, dist);
+      if (cov <= 0.0) continue;
 
-      acc.rgb = mix(acc.rgb, u_dotColor, alpha);
-      acc.a = max(acc.a, alpha);
+      // Source-over in premultiplied space (see the acc init note above).
+      acc.rgb = u_dotColor * cov + acc.rgb * (1.0 - cov);
+      acc.a   = cov + acc.a * (1.0 - cov);
     }
   }
 
-  outColor = acc;
+  // Un-premultiply back to the engine's straight-alpha convention. Where
+  // nothing was drawn (acc.a ~ 0) the color is irrelevant — emit 0.
+  outColor = acc.a > 1e-5 ? vec4(acc.rgb / acc.a, acc.a) : vec4(0.0);
 }`;
 
 // =====================================================================
@@ -343,7 +352,13 @@ void main() {
   ivec2 baseCell = ivec2(floor(gridPos));
 
   vec2 pxPos = v_uv * u_resolution;
-  vec4 acc = vec4(u_bgColor, u_bgAlpha);
+  // Composite in PREMULTIPLIED alpha. If we blended straight colors, a
+  // transparent-but-colored background (low bgAlpha, but bgColor e.g. cream)
+  // would bleed its color into the antialiased dot edges — invisible while
+  // bgAlpha is 1, but a pale fringe once the alpha is respected (ProRes 4444
+  // export, any real compositor). Premultiplied "over" keeps edge color = dot
+  // color; we un-premultiply back to straight alpha at the end.
+  vec4 acc = vec4(u_bgColor * u_bgAlpha, u_bgAlpha);
 
   for (int dy = -2; dy <= 2; dy++) {
     for (int dx = -2; dx <= 2; dx++) {
@@ -379,15 +394,18 @@ void main() {
       // boundaries — the derivative is undefined and shows up as the
       // grid-aligned light crosshatch you'd otherwise see.
       float aa = 0.75;
-      float alpha = 1.0 - smoothstep(rAdj - aa, rAdj + aa, dist);
-      if (alpha <= 0.0) continue;
+      float cov = 1.0 - smoothstep(rAdj - aa, rAdj + aa, dist);
+      if (cov <= 0.0) continue;
 
-      acc.rgb = mix(acc.rgb, u_dotColor, alpha);
-      acc.a = max(acc.a, alpha);
+      // Source-over in premultiplied space (see the acc init note above).
+      acc.rgb = u_dotColor * cov + acc.rgb * (1.0 - cov);
+      acc.a   = cov + acc.a * (1.0 - cov);
     }
   }
 
-  outColor = acc;
+  // Un-premultiply back to the engine's straight-alpha convention. Where
+  // nothing was drawn (acc.a ~ 0) the color is irrelevant — emit 0.
+  outColor = acc.a > 1e-5 ? vec4(acc.rgb / acc.a, acc.a) : vec4(0.0);
 }`;
 
 function hexToRgb(hex: string): [number, number, number] {

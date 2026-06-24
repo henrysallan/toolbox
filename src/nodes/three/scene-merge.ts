@@ -30,7 +30,7 @@ export const sceneMergeNode: NodeDefinition = {
   type: "scene-merge",
   name: "Scene Merge",
   category: "3d",
-  description: "Combines several 3D objects into one group for Scene Render.",
+  description: "Combines several 3D objects into one group for the 3D Scene node.",
   backend: "webgl2",
   noMaskInput: true,
   inputs: SLOT_INPUTS,

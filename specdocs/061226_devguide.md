@@ -21,7 +21,8 @@ with user-facing control panels ("live links" / exported apps).
   TypeScript, `@xyflow/react` (node editor canvas), Tailwind v4 (postcss),
   Supabase (auth + project rows + image-gen), WebGL2 (engine), WebGPU
   (opt-in compute nodes), ffmpeg.wasm + WebCodecs + mediabunny (export),
-  MediaPipe + HuggingFace transformers (trackers, bg-remove), three.js
+  MediaPipe + HuggingFace transformers (trackers, bg-remove, segment,
+  depth), three.js
   (available; minor), JSZip (.toolbox + export packaging).
 - `AGENTS.md` warning is real: this Next version has breaking changes —
   check `node_modules/next/dist/docs/` before leaning on Next behavior.
@@ -311,15 +312,36 @@ To add a node:
   async GPU work MUST settle synchronously then (see offline-settle.ts and
   the `offline` flag docs in types.ts). Audio mixes down via
   export-audio.ts. Render Queue node batches multiple Outputs.
-- The Output node's animated export has an `exportMode` param (**video** vs
-  **sequence**, a segmented pill — `ParamDef.control: "segmented"`). Sequence
-  = one still per frame (`exportSequence` in EffectsApp), delivered per
-  `seqDelivery` (zip / folder / sequential — same machinery as the Render
+  - **ProRes alpha**: the `videoAlpha` Output param (shown for max-tier
+    ProRes on the 4444/4444xq profiles, default on) drives `prores_ks` to
+    `yuva444p10le` + explicit `-alpha_bits 16` (export-ffmpeg.ts). The
+    `-alpha_bits 16` is load-bearing — without it some ffmpeg builds drop
+    the channel even with a yuva pixel format. Capture preserves straight
+    alpha end-to-end: the WebGL2 context is `premultipliedAlpha:false` and
+    `blitToCanvas` (gl.ts) disables `BLEND` so the present doesn't flatten
+    transparency over its opaque-black clear before the PNG-frame capture.
+- The Output node's animated export has an `exportMode` param (**video** /
+  **sequence** / **gif**, a segmented pill — `ParamDef.control: "segmented"`).
+  Sequence = one still per frame (`exportSequence` in EffectsApp), delivered
+  per `seqDelivery` (zip / folder / sequential — same machinery as the Render
   Queue's `delivery`). Both modes share a **start/end frame range**
   (`startFrame`/`endFrame`, half-open `[start, end)`), which replaced the
   legacy `videoFrames` duration — old saves migrate in `migrateLoadedParams`
   (project.ts). `resolveFrameRange()` derives the range (with `videoFrames`
-  fallback) for both exporters. Spec: 061726_png-sequence-export.md.
+  fallback) for all exporters. Spec: 061726_png-sequence-export.md.
+- **GIF** (`exportMode: "gif"`, `exportGif` in EffectsApp → export-gif.ts):
+  same frame-stepped offline scaffold as high/max video, but frames go through
+  ffmpeg.wasm palettegen/paletteuse (reuses the `getFfmpeg` singleton from
+  export-ffmpeg.ts) for palette size (`gifColors`), dithering (`gifDither`),
+  and 1-bit transparency (`gifTransparent`); then gifsicle-wasm ALWAYS runs a
+  normalize pass (adds `--lossy` when `gifLossy > 0`). The normalize is not
+  optional: raw ffmpeg palettegen GIFs render in browsers but macOS
+  Preview/Quick Look rejects them — gifsicle's output opens there. Opaque GIFs
+  use `-O3`; **transparent GIFs use `--unoptimize --disposal=background`** —
+  macOS ImageIO chokes on inter-frame transparency + "leave previous"
+  disposal, so transparent frames are expanded to self-contained full frames
+  with restore-to-background disposal (larger, but Preview opens them). Falls
+  back to the raw ffmpeg GIF if gifsicle fails. Spec: 061826_gif-export-and-image-sequence.md.
 - Exported apps: `buildExportManifest` walks the graph for params marked
   `controlParams` (per-node "user controllable" flags) → manifest of
   panel controls + file inputs; export-packager.ts zips the prebuilt Vite
@@ -387,6 +409,28 @@ src/app/docs + lib/docs/manifest.
   included) recomputes per frame during playback — same cost profile as
   Text→Merge today. Paused/param-edit evals cache normally.
 - Video/audio/font params don't serialize; relink flow covers them.
+- **Video Source has two source kinds** (`source_kind`: video / sequence). The
+  sequence kind plays numbered stills as frames: `image_sequence` param type
+  (`ImageSequenceParamValue` = encoded frame Blobs + numbering bounds);
+  `registerImageSequence` (lib/image-sequence.ts) parses each filename's
+  trailing integer and sorts. Playback maps scene time → frame via `seq_fps`,
+  **honors numbering gaps** (forward-filled `resolved[]` holds the previous
+  frame), and decodes lazily into a small per-node LRU texture cache (offline
+  export settles on the in-flight `createImageBitmap` like a video seek).
+  Sequences are NOT serialized — project.ts stores a frame descriptor only;
+  the multi-file relink re-pick UI is still a TODO, so a saved sequence loads
+  empty and is re-picked in the panel. Spec: 061826_gif-export-and-image-sequence.md.
+  The video kind also exposes an **`audio` aux output** (via
+  `resolveAuxOutputs`; hidden for the sequence kind) carrying the `<video>`
+  element as an `AudioValue` (`source: "video"`). The element is created
+  `muted` (lib/video.ts) and the node un-mutes it (honoring a `volume` param)
+  only while that output is wired into the Output node's `audio` socket —
+  same `ctx.audioRoutedToOutput` gate as Audio Source, except routing is now
+  detected on `out:aux:audio` too (evaluator.ts). `AudioValue.element` widened
+  to `HTMLMediaElement` and `source` gained `"video"` (coerce's audio→scalar
+  analyser tap treats it like a file element). Offline export decodes the
+  audio track straight from the video's ObjectURL via `decodeAudioData`
+  (`ExportAudioSpec` now carries `url`/`element`, not a typed file value).
 - **Serialize/deserialize progress is throttled** to ~5% buckets
   ([project.ts](../src/lib/project.ts)). The progress callback does a React
   `setState`; firing it once-per-node inside serialize's tight async loop on a
@@ -410,5 +454,24 @@ src/app/docs + lib/docs/manifest.
   pointerdown suppress the compat mousedown, so without the pointerdown
   listener a click on a spline point wouldn't claim the `"spline"` scope and
   Delete would remove the graph node instead of the point.
+- **Browser-ML nodes (bg-remove / Segment / Depth Anything) never run
+  inference in `compute`.** Heavy work (HF Transformers.js) runs from the
+  custom param panel and writes results into a **session store** parked on
+  `globalThis` ([segment-session.ts](../src/lib/ai/segment-session.ts),
+  [depth-session.ts](../src/lib/ai/depth-session.ts)); `compute` only resolves
+  which bitmap applies at `ctx.frame`, uploads it, and runs a shader. Two
+  modes: a **live** single-frame result (Preview / dot-click) and a **bake** —
+  per-frame PNG cache over an in/out range, driven by EffectsApp's generic
+  `captureNodeFrames` frame-stepper, LRU-decoded on playback, settled into the
+  offline-export queue (`pushMediaSettle`) for frame accuracy. Invariants when
+  adding/maintaining one: (a) bakes are **session-only**, deliberately not
+  serialized — params save, the cache doesn't, so reopen → re-bake; (b) key
+  baked frames by the node's **scoped** clock (`recordScopedFrame`/
+  `getScopedFrame`), trusting it only if it advanced across the capture, or a
+  node inside an offset layer freezes at frame 0; (c) fold the session
+  `version` + per-frame readiness into `fingerprintExtras` so a static chain
+  caches as a constant and a baked range re-fingerprints only per frame.
+  Depth Anything specifics in 061926_depth-anything-node.md (incl. the
+  per-frame normalization flicker caveat for video).
 - No automated tests; keep modules pure where possible (layout solver,
   graph-ops) so they're testable when a runner lands.

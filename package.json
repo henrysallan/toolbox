@@ -22,6 +22,7 @@
     "atrament": "^5.1.0",
     "bezier-js": "^6.1.4",
     "d3-delaunay": "^6.0.4",
+    "gifsicle-wasm-browser": "^1.5.19",
     "jszip": "^3.10.1",
     "mediabunny": "^1.41.0",
     "next": "16.2.4",

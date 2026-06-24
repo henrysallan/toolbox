@@ -155,7 +155,7 @@ function setupCamera(rt: SceneRuntime, desc: CameraValue, aspect: number): THREE
 
 export const sceneRenderNode: NodeDefinition = {
   type: "scene-render",
-  name: "Scene Render",
+  name: "3D Scene",
   category: "3d",
   description:
     "Renders the wired 3D objects from the given camera into an image. The convergence point of the 3D context — whatever reaches here is the scene.",

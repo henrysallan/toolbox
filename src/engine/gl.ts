@@ -400,6 +400,12 @@ export function createEngineBackend(
         gl!.viewport(0, 0, w, h);
         gl!.clearColor(0, 0, 0, 1);
         gl!.clear(gl!.COLOR_BUFFER_BIT);
+        // Present is a straight copy: the source already holds the final
+        // composited RGBA with straight alpha. Blending here would mix it
+        // over the opaque-black clear above and flatten alpha to 1 — which
+        // silently kills transparency in PNG-frame captures (ProRes 4444
+        // export, etc.). Force it off so the captured frame keeps real alpha.
+        gl!.disable(gl!.BLEND);
         gl!.useProgram(blitProgram);
         gl!.bindVertexArray(vao);
         gl!.activeTexture(gl!.TEXTURE0);

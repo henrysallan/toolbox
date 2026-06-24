@@ -72,7 +72,7 @@ function getOrCreateAnalyser(
   value: AudioValue
 ): AnalyserEntry | null {
   const map = (ctx.state[ANALYSER_MAP_KEY] ??= new Map()) as Map<
-    HTMLAudioElement,
+    HTMLMediaElement,
     AnalyserEntry
   >;
   const cached = map.get(value.element);
@@ -87,7 +87,7 @@ function getOrCreateAnalyser(
       // `srcObject` carries the MediaStream for mic-mode elements —
       // createMediaStreamSource taps it without interrupting the
       // element's own audible playback path.
-      const stream = (value.element as HTMLAudioElement & {
+      const stream = (value.element as HTMLMediaElement & {
         srcObject: MediaStream | null;
       }).srcObject;
       if (!stream) return null;

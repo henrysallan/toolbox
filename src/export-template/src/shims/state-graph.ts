@@ -30,3 +30,10 @@ export type NodeDataPayload = {
 // Re-export the engine helpers so any code that imports them from
 // `@/state/graph` keeps working through the shim.
 export { paramSocketType, parseTargetHandleKind } from "@engine/graph-helpers";
+
+// `@/state/graph-ops` (aliased to the real module in vite.config) imports
+// this id generator from `@/state/graph`. It's a trivial pure helper, so the
+// shim carries a verbatim copy rather than pulling in the full editor module.
+export function newNodeId(type: string) {
+  return `${type}-${Math.random().toString(36).slice(2, 8)}`;
+}
