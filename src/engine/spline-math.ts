@@ -268,3 +268,263 @@ export function offsetSubpath(
   }
   return { anchors, closed: sub.closed };
 }
+
+// ---------------------------------------------------------------------------
+// Freehand curve fitting — the Pencil tool. Fit a chain of cubic béziers to a
+// sampled polyline (Schneider, "An Algorithm for Automatically Fitting
+// Digitized Curves", Graphics Gems 1990): least-squares fit a cubic to a
+// chord-length-parameterized point run; refine with a few Newton-Raphson
+// reparameterizations when the fit is close; otherwise subdivide at the point
+// of maximum error and recurse. Implemented with plain vector math (no
+// bezier-js — the algorithm is self-contained).
+//
+// Points and `error` live in ONE consistent metric space; the Pencil overlay
+// passes canvas pixels so the tolerance is isotropic on a non-square canvas
+// (rather than skewed by the [0,1]² aspect). Returned anchors are in that SAME
+// space — the caller converts pos/handles to normalized coords.
+// Spec: specdocs/062526_spline-pencil-tool.md.
+// ---------------------------------------------------------------------------
+
+type V2 = [number, number];
+
+const vSub = (a: V2, b: V2): V2 => [a[0] - b[0], a[1] - b[1]];
+const vAdd = (a: V2, b: V2): V2 => [a[0] + b[0], a[1] + b[1]];
+const vScale = (a: V2, s: number): V2 => [a[0] * s, a[1] * s];
+const vDot = (a: V2, b: V2): number => a[0] * b[0] + a[1] * b[1];
+const vLen = (a: V2): number => Math.hypot(a[0], a[1]);
+const vNorm = (a: V2): V2 => {
+  const l = vLen(a);
+  return l > 1e-12 ? [a[0] / l, a[1] / l] : [0, 0];
+};
+
+// Cubic Bernstein basis.
+const B0 = (u: number) => (1 - u) ** 3;
+const B1 = (u: number) => 3 * u * (1 - u) ** 2;
+const B2 = (u: number) => 3 * u * u * (1 - u);
+const B3 = (u: number) => u ** 3;
+
+function cubicAt(c: V2[], t: number): V2 {
+  const b0 = B0(t);
+  const b1 = B1(t);
+  const b2 = B2(t);
+  const b3 = B3(t);
+  return [
+    b0 * c[0][0] + b1 * c[1][0] + b2 * c[2][0] + b3 * c[3][0],
+    b0 * c[0][1] + b1 * c[1][1] + b2 * c[2][1] + b3 * c[3][1],
+  ];
+}
+
+// Drop a near-zero handle offset (storing [0,0] would render a degenerate
+// handle dot on top of the anchor and confuse corner↔smooth detection).
+const nzHandle = (v: V2): V2 | undefined => (vLen(v) < 1e-9 ? undefined : v);
+
+// Strip consecutive near-duplicate samples: chord-length parameterization
+// divides by per-segment length, so coincident points would divide by zero.
+function dedupePolyline(points: V2[], minDist: number): V2[] {
+  if (points.length === 0) return [];
+  const out: V2[] = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    if (vLen(vSub(points[i], out[out.length - 1])) >= minDist) out.push(points[i]);
+  }
+  return out;
+}
+
+// Normalized chord-length parameter (0..1) for pts[first..last].
+function chordParams(pts: V2[], first: number, last: number): number[] {
+  const u: number[] = [0];
+  for (let i = first + 1; i <= last; i++) {
+    u.push(u[u.length - 1] + vLen(vSub(pts[i], pts[i - 1])));
+  }
+  const total = u[u.length - 1] || 1;
+  return u.map((x) => x / total);
+}
+
+// Least-squares fit the two interior control points for the cubic spanning
+// pts[first..last] with fixed endpoint tangents tHat1/tHat2 and the supplied
+// parameterization. Falls back to a Wu/Barsky third-of-chord heuristic when
+// the solve degenerates (collinear / near-zero alpha).
+function generateBezier(
+  pts: V2[],
+  first: number,
+  last: number,
+  u: number[],
+  tHat1: V2,
+  tHat2: V2
+): V2[] {
+  const p0 = pts[first];
+  const p3 = pts[last];
+  const n = last - first + 1;
+  let c00 = 0;
+  let c01 = 0;
+  let c11 = 0;
+  let x0 = 0;
+  let x1 = 0;
+  for (let k = 0; k < n; k++) {
+    const uu = u[k];
+    const a0 = vScale(tHat1, B1(uu));
+    const a1 = vScale(tHat2, B2(uu));
+    c00 += vDot(a0, a0);
+    c01 += vDot(a0, a1);
+    c11 += vDot(a1, a1);
+    // Part of the point fixed by the (clamped) endpoints.
+    const fixed: V2 = [
+      p0[0] * (B0(uu) + B1(uu)) + p3[0] * (B2(uu) + B3(uu)),
+      p0[1] * (B0(uu) + B1(uu)) + p3[1] * (B2(uu) + B3(uu)),
+    ];
+    const tmp = vSub(pts[first + k], fixed);
+    x0 += vDot(a0, tmp);
+    x1 += vDot(a1, tmp);
+  }
+  const detC = c00 * c11 - c01 * c01;
+  const segLen = vLen(vSub(p3, p0));
+  let alphaL = detC === 0 ? 0 : (x0 * c11 - c01 * x1) / detC;
+  let alphaR = detC === 0 ? 0 : (c00 * x1 - x0 * c01) / detC;
+  const eps = 1e-6 * segLen;
+  if (alphaL < eps || alphaR < eps) {
+    const d = segLen / 3;
+    alphaL = d;
+    alphaR = d;
+  }
+  return [p0, vAdd(p0, vScale(tHat1, alphaL)), vAdd(p3, vScale(tHat2, alphaR)), p3];
+}
+
+// One Newton-Raphson step toward the parameter on `cubic` nearest to P.
+function newtonStep(cubic: V2[], P: V2, u: number): number {
+  const q = cubicAt(cubic, u);
+  // Q'(u): degree-2 bézier of 3·(Cᵢ₊₁−Cᵢ).
+  const q1 = [
+    vScale(vSub(cubic[1], cubic[0]), 3),
+    vScale(vSub(cubic[2], cubic[1]), 3),
+    vScale(vSub(cubic[3], cubic[2]), 3),
+  ];
+  const q1u: V2 = [
+    (1 - u) ** 2 * q1[0][0] + 2 * (1 - u) * u * q1[1][0] + u * u * q1[2][0],
+    (1 - u) ** 2 * q1[0][1] + 2 * (1 - u) * u * q1[1][1] + u * u * q1[2][1],
+  ];
+  // Q''(u): degree-1 bézier of 2·(Q'ᵢ₊₁−Q'ᵢ).
+  const q2 = [vScale(vSub(q1[1], q1[0]), 2), vScale(vSub(q1[2], q1[1]), 2)];
+  const q2u: V2 = [
+    (1 - u) * q2[0][0] + u * q2[1][0],
+    (1 - u) * q2[0][1] + u * q2[1][1],
+  ];
+  const diff = vSub(q, P);
+  const num = vDot(diff, q1u);
+  const den = vDot(q1u, q1u) + vDot(diff, q2u);
+  if (Math.abs(den) < 1e-12) return u;
+  return u - num / den;
+}
+
+// Max distance from the fitted cubic to its samples, plus the index that
+// should split the run if the fit is rejected.
+function maxFitError(
+  pts: V2[],
+  first: number,
+  last: number,
+  cubic: V2[],
+  u: number[]
+): { error: number; split: number } {
+  let error = 0;
+  let split = first + Math.floor((last - first) / 2);
+  for (let i = first + 1; i < last; i++) {
+    const d = vLen(vSub(cubicAt(cubic, u[i - first]), pts[i]));
+    if (d > error) {
+      error = d;
+      split = i;
+    }
+  }
+  return { error, split };
+}
+
+function centerTangent(pts: V2[], center: number): V2 {
+  const v1 = vSub(pts[center - 1], pts[center]);
+  const v2 = vSub(pts[center], pts[center + 1]);
+  return vNorm([(v1[0] + v2[0]) / 2, (v1[1] + v2[1]) / 2]);
+}
+
+const FIT_MAX_ITERATIONS = 4;
+// Within this multiple of the tolerance, reparameterize-and-retry before
+// giving up and splitting (a split is a sharper, more expensive change).
+const FIT_ITERATION_BAND = 4;
+
+function fitCubicRun(
+  pts: V2[],
+  first: number,
+  last: number,
+  tHat1: V2,
+  tHat2: V2,
+  error: number,
+  out: V2[][]
+): void {
+  // Two points → exact line; handles a third of the chord along the tangents.
+  if (last - first === 1) {
+    const d = vLen(vSub(pts[last], pts[first])) / 3;
+    out.push([
+      pts[first],
+      vAdd(pts[first], vScale(tHat1, d)),
+      vAdd(pts[last], vScale(tHat2, d)),
+      pts[last],
+    ]);
+    return;
+  }
+  let u = chordParams(pts, first, last);
+  let cubic = generateBezier(pts, first, last, u, tHat1, tHat2);
+  let { error: maxErr, split } = maxFitError(pts, first, last, cubic, u);
+  if (maxErr < error) {
+    out.push(cubic);
+    return;
+  }
+  if (maxErr < error * FIT_ITERATION_BAND) {
+    for (let i = 0; i < FIT_MAX_ITERATIONS; i++) {
+      const uPrime = u.map((uu, k) => newtonStep(cubic, pts[first + k], uu));
+      cubic = generateBezier(pts, first, last, uPrime, tHat1, tHat2);
+      const next = maxFitError(pts, first, last, cubic, uPrime);
+      u = uPrime;
+      if (next.error < error) {
+        out.push(cubic);
+        return;
+      }
+      split = next.split;
+      maxErr = next.error;
+    }
+  }
+  // Split at the worst point; share a center tangent so the join stays smooth.
+  const tc = centerTangent(pts, split);
+  fitCubicRun(pts, first, split, tHat1, tc, error, out);
+  fitCubicRun(pts, split, last, [-tc[0], -tc[1]], tHat2, error, out);
+}
+
+// Assemble a smooth anchor chain from a contiguous run of fitted cubics.
+// Adjacent cubics share an endpoint; the shared anchor takes its inHandle from
+// the previous cubic's CP2 and its outHandle from the next cubic's CP1. Joins
+// are left smooth (broken falsy) — the fit produces collinear-ish tangents at
+// split points.
+function cubicsToAnchors(cubics: V2[][]): SplineAnchor[] {
+  if (cubics.length === 0) return [];
+  const anchors: SplineAnchor[] = [];
+  const head = cubics[0];
+  anchors.push({ pos: [head[0][0], head[0][1]], outHandle: nzHandle(vSub(head[1], head[0])) });
+  for (let k = 0; k < cubics.length; k++) {
+    const c = cubics[k];
+    const anchor: SplineAnchor = {
+      pos: [c[3][0], c[3][1]],
+      inHandle: nzHandle(vSub(c[2], c[3])),
+    };
+    const next = cubics[k + 1];
+    if (next) anchor.outHandle = nzHandle(vSub(next[1], next[0]));
+    anchors.push(anchor);
+  }
+  return anchors;
+}
+
+// Fit a chain of cubic béziers to a freehand polyline within `error` (same
+// units as the points). Returns smooth SplineAnchors in the input space, or
+// [] when there aren't enough distinct samples to make a curve.
+export function fitSplineToPolyline(points: V2[], error: number): SplineAnchor[] {
+  const pts = dedupePolyline(points, Math.max(1e-4, error * 0.25));
+  if (pts.length < 2) return [];
+  const tHat1 = vNorm(vSub(pts[1], pts[0]));
+  const tHat2 = vNorm(vSub(pts[pts.length - 2], pts[pts.length - 1]));
+  const cubics: V2[][] = [];
+  fitCubicRun(pts, 0, pts.length - 1, tHat1, tHat2, error, cubics);
+  return cubicsToAnchors(cubics);
+}

@@ -10,6 +10,7 @@ import {
 import type { SplineAnchor, SplineSubpath } from "@/engine/types";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
 import { aspectCorrectY, aspectUncorrectY } from "@/engine/aspect";
+import { fitSplineToPolyline } from "@/engine/spline-math";
 import { getShortcutScope } from "./shortcut-scope";
 
 // The overlay edits one ACTIVE subpath at a time (anchors/handles/segments),
@@ -26,12 +27,17 @@ import { getShortcutScope } from "./shortcut-scope";
 // Consumers that expect Y-up (future "sample along path" nodes) are
 // responsible for flipping on their side.
 //
-// Three tool modes:
+// Four tool modes:
 //   - "pen"     — pen tool; background click creates an anchor on the active
 //                 subpath (or starts a new subpath when the active one is
 //                 closed); quick click on an existing anchor toggles corner ↔
 //                 smooth (or closes the loop on the first anchor of an open
 //                 path). A dotted rubber-band previews the next segment.
+//   - "pencil"  — freehand draw; drag to sketch a stroke, and on release the
+//                 sampled polyline is fit to a smooth chain of cubic béziers
+//                 (Schneider, engine/spline-math.ts) committed as a NEW
+//                 subpath (auto-closed if the stroke ends near its start). One
+//                 onChange / one undo per stroke. Spec: 062526_spline-pencil-tool.md.
 //   - "path"    — Path Select (filled arrow): click any subpath to select the
 //                 whole path; drag (body or bounding-box handles) moves /
 //                 scales all subpaths, baked into the geometry. No params.
@@ -48,7 +54,7 @@ import { getShortcutScope } from "./shortcut-scope";
 // Right-click an anchor for a context menu (delete / align / even handles);
 // right-click a handle to drop just that handle.
 
-type ToolMode = "pen" | "path" | "subpath";
+type ToolMode = "pen" | "pencil" | "path" | "subpath";
 
 interface Props {
   canvas: HTMLCanvasElement | null;
@@ -76,6 +82,16 @@ const SEGMENT_HIT_W = 12;
 // a rapid double-click don't trip into drag mode and suppress the
 // corner ↔ smooth toggle.
 const DRAG_THRESHOLD = 10;
+
+// Pencil (freehand) tuning, all in canvas px so the fit is isotropic on a
+// non-square canvas. PENCIL_FIT_ERROR is the max distance the fitted bézier
+// may stray from the samples before it subdivides — "slight smoothing". A
+// new sample is kept only when it's this far from the previous one (jitter /
+// duplicate filter). A stroke whose end lands within PENCIL_CLOSE of its start
+// auto-closes the subpath.
+const PENCIL_FIT_ERROR = 2.5;
+const PENCIL_MIN_SAMPLE = 2;
+const PENCIL_CLOSE = 12;
 
 // Palette.
 const COL_STROKE = "#3b82f6"; // anchor outline (blue)
@@ -153,6 +169,12 @@ type DragState =
       startClient: { x: number; y: number };
       startBox: { minX: number; minY: number; maxX: number; maxY: number };
       startValue: SplineParamValue;
+    }
+  | {
+      // Pencil freehand stroke. The captured samples live in `pencilPtsRef`
+      // (mutated in place to avoid an array churn per pointermove); this entry
+      // just keeps the effect's window listeners bound for the gesture.
+      kind: "pencil";
     };
 
 // Bounding-box transform handles (Path Select). Corners scale both axes;
@@ -402,6 +424,14 @@ export default function SplineEditorOverlay({
   // point to the nearest spot on an existing segment; click inserts there).
   const [shiftHeld, setShiftHeld] = useState(false);
 
+  // Pencil (freehand) capture. Raw client-px samples accumulate in the ref
+  // (mutated in place to avoid an array allocation per pointermove); the
+  // version counter bumps each move so the live preview path re-renders. Both
+  // reset at stroke start, consumed at stroke end. Nothing touches `value` /
+  // onChange until release, so the stroke is one undo entry.
+  const pencilPtsRef = useRef<Array<[number, number]>>([]);
+  const [pencilVersion, setPencilVersion] = useState(0);
+
   // P / V switch modes — matching the Photoshop/Figma convention. Skipped
   // while focus is in a text field so typing into the param panel doesn't
   // flip tools under the user.
@@ -418,6 +448,7 @@ export default function SplineEditorOverlay({
         return;
       }
       if (e.key === "p" || e.key === "P") setTool("pen");
+      else if (e.key === "n" || e.key === "N") setTool("pencil");
       else if (e.key === "v" || e.key === "V") setTool("path");
       else if (e.key === "a" || e.key === "A") setTool("subpath");
       else if (e.key === "Escape") {
@@ -493,6 +524,22 @@ export default function SplineEditorOverlay({
       window.removeEventListener("blur", blur);
     };
   }, []);
+
+  // Keep `activeSubpath` in range when the value shrinks underneath us — undo /
+  // redo (and node switches) replace `value` without touching this component
+  // state, so a stale index can point past the end. Every write keys on
+  // `activeSubpathRef` (withSubpathPatch, commitPencilStroke, addAnchorAt…), so
+  // an out-of-range index silently no-ops every edit — e.g. drawing several
+  // pencil strokes then undoing back to empty would leave the pen AND pencil
+  // unable to add anything. Clamp to the last subpath whenever it overflows.
+  useEffect(() => {
+    const count = subpathsOf(value).length;
+    if (count > 0 && activeSubpath > count - 1) {
+      setActiveSubpath(count - 1);
+      setSelected(new Set());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, activeSubpath]);
 
   // Track the canvas's on-screen rectangle the same way TransformGizmo does —
   // ResizeObserver catches splitter resizes and zoom-to-fit changes. Also
@@ -911,6 +958,63 @@ export default function SplineEditorOverlay({
     return newActive;
   };
 
+  // Pencil commit: fit the captured client-px samples to a smooth bézier chain
+  // and drop it in as a new subpath (reusing the active one if it's still
+  // empty — e.g. a fresh node's seed subpath — so we don't leave an orphan).
+  // The fit runs in px so the tolerance is isotropic; pos/handles convert to
+  // normalized after. Auto-closes when the stroke ends near where it started.
+  const commitPencilStroke = () => {
+    const pts = pencilPtsRef.current;
+    // A real drag, not a tap — Pen already covers single clicks.
+    if (!rect || pts.length < 2) return;
+    const fitted = fitSplineToPolyline(pts, PENCIL_FIT_ERROR);
+    if (fitted.length < 2) return;
+    // px → normalized. pos via clientToNorm; a handle is an offset, so it
+    // converts with the per-axis linear scale only (the affine origin cancels);
+    // aspectUncorrectY divides y by aspect, mirrored here by the /aspect on y.
+    const aspect = rect.width / rect.height;
+    const offToNorm = (h?: [number, number]): [number, number] | undefined =>
+      h ? [h[0] / rect.width, h[1] / rect.height / aspect] : undefined;
+    const anchors: SplineAnchor[] = fitted.map((a) => {
+      const out: SplineAnchor = { pos: clientToNorm(a.pos[0], a.pos[1]) };
+      const inH = offToNorm(a.inHandle);
+      const outH = offToNorm(a.outHandle);
+      if (inH) out.inHandle = inH;
+      if (outH) out.outHandle = outH;
+      return out;
+    });
+    const start = pts[0];
+    const end = pts[pts.length - 1];
+    const closed =
+      Math.hypot(end[0] - start[0], end[1] - start[1]) <= PENCIL_CLOSE;
+
+    const cur = valueRef.current;
+    const subs = subpathsOf(cur);
+    const activeIdx = activeSubpathRef.current;
+    // Reuse the active subpath only when it actually EXISTS and is empty (a
+    // fresh node's seed subpath). An out-of-range index — e.g. a stale active
+    // index after undo, before the clamp effect runs — would otherwise read as
+    // "empty" and the .map below would match nothing, dropping the stroke.
+    const reuseEmpty =
+      activeIdx >= 0 &&
+      activeIdx < subs.length &&
+      (subs[activeIdx]?.anchors.length ?? 0) === 0;
+    let newSubs: SplineSubpath[];
+    let newActive: number;
+    if (reuseEmpty) {
+      newSubs = subs.map((s, i) => (i === activeIdx ? { anchors, closed } : s));
+      newActive = activeIdx;
+    } else {
+      newSubs = [...subs, { anchors, closed }];
+      newActive = newSubs.length - 1;
+    }
+    onChangeRef.current({ ...cur, subpaths: newSubs });
+    setActiveSubpath(newActive);
+    setSelected(new Set());
+    setPenSealed(false);
+    lastAnchorRef.current = anchors.length - 1;
+  };
+
   // Remove the active subpath (keeping ≥ 1 — never an empty subpaths array).
   // No-op when only one subpath exists. Clamps the active index to a neighbor.
   const deleteActiveSubpath = () => {
@@ -1148,6 +1252,22 @@ export default function SplineEditorOverlay({
           applyBBoxDrag(drag, nx, ny, e.shiftKey);
           break;
         }
+        case "pencil": {
+          // Accumulate a freehand sample, skipping ones too close to the last
+          // (jitter / duplicate filter — also keeps the fit's chord-length
+          // parameterization away from zero-length segments).
+          const pts = pencilPtsRef.current;
+          const last = pts[pts.length - 1];
+          if (
+            !last ||
+            Math.hypot(e.clientX - last[0], e.clientY - last[1]) >=
+              PENCIL_MIN_SAMPLE
+          ) {
+            pts.push([e.clientX, e.clientY]);
+            setPencilVersion((v) => v + 1);
+          }
+          break;
+        }
       }
     };
 
@@ -1200,6 +1320,18 @@ export default function SplineEditorOverlay({
           setSelected(new Set());
         }
       }
+      if (drag.kind === "pencil") {
+        // Pin the exact release point (it may not have cleared the sample
+        // gate), then fit + commit the stroke and reset the buffer.
+        const pts = pencilPtsRef.current;
+        const last = pts[pts.length - 1];
+        if (!last || last[0] !== e.clientX || last[1] !== e.clientY) {
+          pts.push([e.clientX, e.clientY]);
+        }
+        commitPencilStroke();
+        pencilPtsRef.current = [];
+        setPencilVersion((v) => v + 1);
+      }
       setDrag(null);
     };
 
@@ -1243,6 +1375,15 @@ export default function SplineEditorOverlay({
     setMenu(null);
     e.preventDefault();
     e.stopPropagation();
+    if (tool === "pencil") {
+      // Begin a freehand stroke — seed the sample buffer and let the window
+      // pointer handlers (drag effect) accumulate the rest until release.
+      pencilPtsRef.current = [[e.clientX, e.clientY]];
+      setPencilVersion((v) => v + 1);
+      setSelected(new Set());
+      setDrag({ kind: "pencil" });
+      return;
+    }
     if (tool === "subpath") {
       // Background drag in sub-path mode → marquee. Plain click without
       // movement clears the selection (resolved in onUp).
@@ -1576,6 +1717,19 @@ export default function SplineEditorOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tool, drag, hoverPx, value, rect, shiftHeld, activeSubpath, penSealed]);
 
+  // Live freehand preview: a polyline through the raw captured samples (client
+  // px) while a pencil stroke is in progress. Re-derived each sample via the
+  // version counter; replaced by the fitted curve on release.
+  const pencilD = useMemo(() => {
+    if (drag?.kind !== "pencil") return "";
+    const pts = pencilPtsRef.current;
+    if (pts.length < 2) return "";
+    let d = `M ${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length; i++) d += ` L ${pts[i][0]} ${pts[i][1]}`;
+    return d;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag, pencilVersion]);
+
   // Insert-on-path preview: while shift is held in add mode, snap a ghost
   // point to the nearest spot on the spline so the user sees where a click
   // would split the curve.
@@ -1634,7 +1788,7 @@ export default function SplineEditorOverlay({
           height={rect.height}
           fill="transparent"
           style={{
-            cursor: tool === "pen" ? "crosshair" : "default",
+            cursor: tool === "pen" || tool === "pencil" ? "crosshair" : "default",
             pointerEvents: "auto",
           }}
           onPointerDown={onBackgroundPointerDown}
@@ -1956,6 +2110,21 @@ export default function SplineEditorOverlay({
           />
         )}
 
+        {/* Live freehand stroke preview (pencil mode, mid-drag). Replaced by
+            the fitted bézier curve on release. */}
+        {pencilD && (
+          <path
+            d={pencilD}
+            fill="none"
+            stroke={COL_PATH}
+            strokeWidth={1.6}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity={0.85}
+            style={{ pointerEvents: "none" }}
+          />
+        )}
+
         {/* Insert-on-path preview dot (shift held in add mode). Marks where a
             click would split the curve. */}
         {insertPreview && (
@@ -2220,6 +2389,7 @@ function ModeSlider({
 }) {
   const items: { id: ToolMode; label: string; icon: ReactElement }[] = [
     { id: "pen", label: "Pen (P)", icon: <PenIcon /> },
+    { id: "pencil", label: "Pencil — freehand (N)", icon: <PencilIcon /> },
     { id: "path", label: "Path select (V)", icon: <FilledArrowIcon /> },
     { id: "subpath", label: "Sub-path select (A)", icon: <OutlineArrowIcon /> },
   ];
@@ -2363,6 +2533,35 @@ function PenIcon() {
       />
       <path
         d="M9 4l3 3"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+// Pencil (freehand) — same diagonal implement as the pen, but with a double
+// ferrule band near the eraser instead of the pen's single nib notch, so the
+// two read as distinct glyphs at 14px.
+function PencilIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M11 2l3 3-8 8-4 1 1-4 8-8z"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      <path
+        d="M9.5 3.5l3 3"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <path
+        d="M7.8 5.2l3 3"
         stroke="currentColor"
         strokeWidth="1.4"
         strokeLinecap="round"
