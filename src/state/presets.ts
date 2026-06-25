@@ -22,6 +22,8 @@ import {
   GROUP_OUTPUT_TYPE,
   GROUP_TYPE,
 } from "@/engine/groups";
+import { getNodeDef } from "@/engine/registry";
+import { paramSocketType } from "@/engine/graph-helpers";
 import {
   makeInstanceNode,
   newEdgeId,
@@ -60,11 +62,19 @@ function edge(
 // (no exterior edges) whose outputs the user wires after dropping it in.
 // The shell's parentId is left undefined so cloneSubgraph treats it as the
 // single top-level node and retargets it into the insertion scope.
+// One interior param to surface on the group node.
+interface PromoteSpec {
+  node: GraphNode;
+  param: string;
+  label: string;
+}
+
 function groupFragment(opts: {
   name: string;
   interior: GraphNode[];
   edges: Edge[];
   outputs: GroupOutputSpec[];
+  promote?: PromoteSpec[];
   position?: { x: number; y: number };
 }): { nodes: GraphNode[]; edges: Edge[] } {
   const at = opts.position ?? { x: 240, y: 0 };
@@ -76,16 +86,48 @@ function groupFragment(opts: {
   const groupOutput = makeInstanceNode(GROUP_OUTPUT_TYPE, { x: at.x + 400, y: at.y });
   groupInput.data.parentId = group.id;
   groupOutput.data.parentId = group.id;
-  // Generator group: no external inputs; outputs are the terminal sockets.
-  groupInput.data.params = { sockets: [] };
   groupOutput.data.params = {
     sockets: opts.outputs.map((o) => ({ name: o.name, type: o.type })),
   };
 
   for (const n of opts.interior) n.data.parentId = group.id;
 
+  // Promoted params: each surfaces an interior node's param as an editable,
+  // keyframable slider on the group's panel (and an optional input socket to
+  // drive it) — a Group Input socket wired to the deep node's exposed param,
+  // the same shape the editor's "wire into Group Input" flow produces
+  // (ParamPanel renders these for a group shell). Also flagged as a
+  // controlParam so exported apps / live links get the knob.
+  const inSockets: { name: string; type: SocketType }[] = [];
+  const promoteEdges: Edge[] = [];
+  for (const p of opts.promote ?? []) {
+    const pdef = getNodeDef(p.node.data.defType)?.params.find(
+      (x) => x.name === p.param
+    );
+    const sockType = pdef ? paramSocketType(pdef.type) : null;
+    if (!pdef || !sockType) continue;
+    inSockets.push({ name: p.label, type: sockType });
+    p.node.data.exposedParams = [
+      ...new Set([...(p.node.data.exposedParams ?? []), p.param]),
+    ];
+    p.node.data.controlParams = [
+      ...new Set([...(p.node.data.controlParams ?? []), p.param]),
+    ];
+    promoteEdges.push({
+      id: newEdgeId(),
+      source: groupInput.id,
+      sourceHandle: `out:aux:${p.label}`,
+      target: p.node.id,
+      targetHandle: `in:param:${p.param}`,
+    });
+  }
+  // A generator group has no data inputs of its own; its interface inputs
+  // are exactly the promoted-param sockets.
+  groupInput.data.params = { sockets: inSockets };
+
   const edges: Edge[] = [
     ...opts.edges,
+    ...promoteEdges,
     ...opts.outputs.map((o) => ({
       id: newEdgeId(),
       source: o.from.nodeId,
@@ -97,7 +139,7 @@ function groupFragment(opts: {
 
   // syncGroupInterface writes the {inputs, outputs} interface onto the
   // shell from the boundary sockets and refreshes its socket caches, so the
-  // dropped group renders its output handles ready to wire.
+  // dropped group renders its promoted-param + output handles ready to use.
   const nodes = syncGroupInterface(
     [
       group,
@@ -186,6 +228,10 @@ function buildEnvelope(): { nodes: GraphNode[]; edges: Edge[] } {
   return groupFragment({
     name: "Cover · Envelope",
     interior: [circle, pop, sa, stroke],
+    promote: [
+      { node: pop, param: "count", label: "Points" },
+      { node: sa, param: "k", label: "K" },
+    ],
     edges: [
       edge(circle, "out:primary", pop, "in:path"),
       edge(pop, "out:primary", sa, "in:points"),
@@ -224,6 +270,11 @@ function buildDiffraction(): { nodes: GraphNode[]; edges: Edge[] } {
   return groupFragment({
     name: "Cover · Diffraction",
     interior: [pt, arr, field, dot, ctp, fillN],
+    promote: [
+      { node: arr, param: "countX", label: "Grid X" },
+      { node: arr, param: "countY", label: "Grid Y" },
+      { node: ctp, param: "scale_field_hi", label: "Dot scale" },
+    ],
     edges: [
       edge(pt, "out:primary", arr, "in:instance"),
       edge(arr, "out:primary", ctp, "in:points"),
@@ -270,6 +321,12 @@ function buildIntersGrid(): { nodes: GraphNode[]; edges: Edge[] } {
   return groupFragment({
     name: "Cover · Inters Grid",
     interior: [scatter, circle, ctpC, pt, grid, sq, ctpG, ...tail.nodes],
+    promote: [
+      { node: scatter, param: "count", label: "Shapes" },
+      { node: scatter, param: "seed", label: "Seed" },
+      { node: grid, param: "countX", label: "Grid X" },
+      { node: grid, param: "countY", label: "Grid Y" },
+    ],
     edges: [
       edge(scatter, "out:primary", ctpC, "in:points"),
       edge(circle, "out:primary", ctpC, "in:instance"),
@@ -308,6 +365,11 @@ function buildRectilinear(): { nodes: GraphNode[]; edges: Edge[] } {
   return groupFragment({
     name: "Cover · Rectilinear",
     interior: [scatter, rect, ctpR, xings, marker, ctpM, ...tail.nodes],
+    promote: [
+      { node: scatter, param: "count", label: "Shapes" },
+      { node: scatter, param: "seed", label: "Seed" },
+      { node: xings, param: "density", label: "Nodes" },
+    ],
     edges: [
       edge(scatter, "out:primary", ctpR, "in:points"),
       edge(rect, "out:primary", ctpR, "in:instance"),
@@ -346,6 +408,11 @@ function buildIntersected(): { nodes: GraphNode[]; edges: Edge[] } {
   return groupFragment({
     name: "Cover · Intersected",
     interior: [scatter, circle, ctpC, xings, marker, ctpM, ...tail.nodes],
+    promote: [
+      { node: scatter, param: "count", label: "Circles" },
+      { node: scatter, param: "seed", label: "Seed" },
+      { node: xings, param: "density", label: "Nodes" },
+    ],
     edges: [
       edge(scatter, "out:primary", ctpC, "in:points"),
       edge(circle, "out:primary", ctpC, "in:instance"),

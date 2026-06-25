@@ -217,10 +217,29 @@ Edited:
   - First preset authored: **Cover · Envelope** (`Circle → Points on Path →
     String Art → Stroke`), outputs image + chord spline. Exercises the M1
     `string-art` primitive end-to-end.
-  - **Needs a browser pass:** that the dropped group renders its output
-    sockets, that `points-on-path` on a closed circle feeds String Art a
-    clean ordered ring, and root auto-wrap. Param promotion (knobs on the
-    group node) is deferred to M4 — today tune by diving in (Tab).
+  - First preset shipped: Cover · Envelope. **Needs a browser pass.**
+- **M2 + M3 — all five families (done, 2026-06-25).** Diffraction, Inters
+  Grid, Rectilinear, Intersected added to `state/presets.ts`. Key
+  simplification: every family composites at the spline level via `Collect`
+  (which concatenates spline inputs) + one `Stroke`/`Fill` — **no `Merge`**,
+  no dynamic-socket wiring. A shared `splineRenderTail` helper handles the
+  collect→render→outputs tail.
+- **Group-as-Active preview fix (done, 2026-06-25).** Marking a group (or its
+  Group Output) Active showed "Connect an Output node to preview" because
+  flatten dissolves group shells before eval, so the active id matched no
+  node. Fix: `resolvePreviewProducer` (flatten.ts) remaps a structural
+  Active/preview target to the interior producer feeding the group's image
+  output; the evaluator applies it before flatten + the needed-set and
+  previews the exact resolved handle. Selecting a group now previews it too.
+- **M4 — param promotion + export controls (done, 2026-06-25).** A `promote`
+  option on `groupFragment` surfaces chosen interior params as editable,
+  **keyframable** sliders on the group node's panel (Group Input socket →
+  exposed deep param; ParamPanel renders these for a group shell) and flags
+  them `controlParams` so exported apps / live links get the knobs. Promoted
+  per family: Envelope (Points, K); Diffraction (Grid X/Y, Dot scale); Inters
+  Grid (Shapes, Seed, Grid X/Y); Rectilinear / Intersected (Shapes·Circles,
+  Seed, Nodes). Each promoted param also becomes an optional group input
+  socket you can drive with a Constant/LFO. **Needs a browser pass.**
 
 ## Presets feature (decided design, 2026-06-24)
 

@@ -8,7 +8,7 @@ import {
   withMaskInput,
 } from "./conventions";
 import { getNodeDef } from "./registry";
-import { flattenGraph } from "./flatten";
+import { flattenGraph, resolvePreviewProducer } from "./flatten";
 import { LAYER_TYPE } from "./groups";
 import { paramSocketType, parseTargetHandleKind } from "./graph-helpers";
 import {
@@ -243,6 +243,24 @@ function topoSort(nodes: GraphNode[], edges: GraphEdge[]): string[] {
 // in this set is skipped entirely — no compute, no texture allocation.
 // Exported so callers (export-manifest builder, save flows) can reuse the
 // reachability calculation and stay in sync with what the evaluator does.
+// Read a specific output handle ("out:primary" / "out:aux:<name>") off a
+// node result, returning it only when it holds an image. Lets the preview
+// path show the exact output a group's image socket was fed from after a
+// structural Active/preview target is remapped to its interior producer.
+function pickHandleImage(
+  result: NodeOutput,
+  handle: string | undefined
+): SocketValue | undefined {
+  if (!handle) return undefined;
+  const v =
+    handle === "out:primary"
+      ? result.primary
+      : handle.startsWith("out:aux:")
+        ? result.aux?.[handle.slice("out:aux:".length)]
+        : undefined;
+  return v && v.kind === "image" ? v : undefined;
+}
+
 export function computeNeededSet(
   nodes: GraphNode[],
   edges: GraphEdge[],
@@ -436,6 +454,29 @@ export function evaluateGraph(
   // isn't wired to a terminal) — used to preview the selected node.
   previewNodeId?: string | null
 ): EvalResult {
+  // Group shells and Group Output boundary nodes are dissolved by flatten,
+  // so previewing one directly shows nothing on the canvas. Remap a
+  // structural Active / preview target to the interior producer feeding the
+  // group's image output — BEFORE flatten and the needed-set, so that branch
+  // evaluates even when the group isn't wired to an Output yet. `*Handle`
+  // remembers the exact output that fed the group's image socket.
+  let activeHandle: string | undefined;
+  let previewHandle: string | undefined;
+  if (activeNodeId) {
+    const remap = resolvePreviewProducer(nodes, edges, activeNodeId);
+    if (remap) {
+      activeNodeId = remap.nodeId;
+      activeHandle = remap.handle;
+    }
+  }
+  if (previewNodeId) {
+    const remap = resolvePreviewProducer(nodes, edges, previewNodeId);
+    if (remap) {
+      previewNodeId = remap.nodeId;
+      previewHandle = remap.handle;
+    }
+  }
+
   // Dissolve group structure first — groups are transparent at eval
   // time (see flatten.ts). No-op (same arrays back) for structure-free
   // graphs. `layerOf` maps interior nodes to their enclosing layer for
@@ -974,7 +1015,11 @@ export function evaluateGraph(
     // primary isn't an image but it exposes an `image` aux (e.g. a spline
     // primitive's bundled rasterizer), fall back to that.
     if (activeNodeId && id === activeNodeId) {
-      const img = result.primary ?? inputs[defInputs[0]?.name ?? ""];
+      // When the Active target was remapped from a group, prefer the exact
+      // output handle that fed the group's image socket; otherwise fall
+      // back to primary / first-input / image aux as before.
+      let img = pickHandleImage(result, activeHandle);
+      if (!img) img = result.primary ?? inputs[defInputs[0]?.name ?? ""];
       if (img && img.kind === "image") {
         terminalImage = { nodeId: id, image: img };
       } else if (result.aux?.image?.kind === "image") {
@@ -1004,7 +1049,10 @@ export function evaluateGraph(
   if (!terminalImage && previewNodeId) {
     const out = outputs.get(previewNodeId);
     if (out) {
-      if (out.primary?.kind === "image") {
+      const handleImg = pickHandleImage(out, previewHandle);
+      if (handleImg) {
+        terminalImage = { nodeId: previewNodeId, image: handleImg };
+      } else if (out.primary?.kind === "image") {
         terminalImage = { nodeId: previewNodeId, image: out.primary };
       } else if (out.aux?.image?.kind === "image") {
         terminalImage = { nodeId: previewNodeId, image: out.aux.image };

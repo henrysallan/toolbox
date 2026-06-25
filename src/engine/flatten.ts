@@ -48,6 +48,8 @@ import {
   GROUP_OUTPUT_TYPE,
   GROUP_TYPE,
   LAYER_TYPE,
+  readBoundarySockets,
+  readGroupInterface,
 } from "./groups";
 import { parseTargetHandleKind } from "./graph-helpers";
 
@@ -67,6 +69,72 @@ function auxName(sourceHandle: string): string | null {
 
 function socketKey(nodeId: string, socketName: string): string {
   return `${nodeId} ${socketName}`;
+}
+
+// Walk a source endpoint backward through boundary structure (group shells,
+// group/layer inputs, layer audio splices) until it lands on a real
+// producer. Returns null when the chain dead-ends on an unwired boundary
+// socket (or, defensively, on a cycle in mangled data). Shared by the
+// flatten pass and the preview-target resolver below.
+function resolveBoundarySource(
+  byId: Map<string, GraphNode>,
+  edgeIntoSocket: Map<string, GraphEdge>,
+  outputNodeOf: Map<string, string>,
+  maxHops: number,
+  source: string,
+  sourceHandle: string
+): { source: string; sourceHandle: string } | null {
+  let cur = { source, sourceHandle };
+  for (let hops = 0; hops <= maxHops; hops++) {
+    const n = byId.get(cur.source);
+    if (!n) return null;
+    const name = auxName(cur.sourceHandle);
+    if (n.type === GROUP_TYPE) {
+      // Group shell output → the interior producer wired into the
+      // matching Group Output socket.
+      const interiorId = name != null ? outputNodeOf.get(n.id) : undefined;
+      const inner = interiorId
+        ? edgeIntoSocket.get(socketKey(interiorId, name!))
+        : undefined;
+      if (!inner) return null;
+      cur = { source: inner.source, sourceHandle: inner.sourceHandle };
+    } else if (n.type === GROUP_INPUT_TYPE) {
+      // Interior face of a group/layer input → the exterior producer.
+      // For layers the only Group Input socket is `backdrop`, which
+      // mirrors the layer's exterior `stack` input.
+      const parent = n.parentId ? byId.get(n.parentId) : undefined;
+      const exteriorSocket =
+        parent?.type === LAYER_TYPE
+          ? name === "backdrop"
+            ? "stack"
+            : null
+          : name;
+      const outer =
+        exteriorSocket != null && n.parentId
+          ? edgeIntoSocket.get(socketKey(n.parentId, exteriorSocket))
+          : undefined;
+      if (!outer) return null;
+      cur = { source: outer.source, sourceHandle: outer.sourceHandle };
+    } else if (n.type === LAYER_TYPE && name === "audio") {
+      // Layer audio is a pure splice: the interior Group Output's audio
+      // input wins; an unwired interior falls back to the layer's
+      // exterior audio input (the chain below).
+      const interiorId = outputNodeOf.get(n.id);
+      const inner = interiorId
+        ? edgeIntoSocket.get(socketKey(interiorId, "audio"))
+        : undefined;
+      const next = inner ?? edgeIntoSocket.get(socketKey(n.id, "audio"));
+      if (!next) return null;
+      cur = { source: next.source, sourceHandle: next.sourceHandle };
+    } else if (n.type === GROUP_OUTPUT_TYPE) {
+      // Group Output has no output sockets; appearing as a source means
+      // the data is mangled.
+      return null;
+    } else {
+      return cur;
+    }
+  }
+  return null;
 }
 
 export interface FlattenResult {
@@ -109,66 +177,18 @@ export function flattenGraph(
   }
 
   // Walk a source endpoint backward through boundary structure until it
-  // lands on a real producer. Returns null when the chain dead-ends on
-  // an unwired boundary socket (or, defensively, on a cycle in mangled
-  // data) — the consuming edge is dropped and the consumer sees its
-  // socket default.
-  function resolveSource(
-    source: string,
-    sourceHandle: string
-  ): { source: string; sourceHandle: string } | null {
-    let cur = { source, sourceHandle };
-    for (let hops = 0; hops <= edges.length; hops++) {
-      const n = byId.get(cur.source);
-      if (!n) return null;
-      const name = auxName(cur.sourceHandle);
-      if (n.type === GROUP_TYPE) {
-        // Group shell output → the interior producer wired into the
-        // matching Group Output socket.
-        const interiorId = name != null ? outputNodeOf.get(n.id) : undefined;
-        const inner = interiorId
-          ? edgeIntoSocket.get(socketKey(interiorId, name!))
-          : undefined;
-        if (!inner) return null;
-        cur = { source: inner.source, sourceHandle: inner.sourceHandle };
-      } else if (n.type === GROUP_INPUT_TYPE) {
-        // Interior face of a group/layer input → the exterior producer.
-        // For layers the only Group Input socket is `backdrop`, which
-        // mirrors the layer's exterior `stack` input.
-        const parent = n.parentId ? byId.get(n.parentId) : undefined;
-        const exteriorSocket =
-          parent?.type === LAYER_TYPE
-            ? name === "backdrop"
-              ? "stack"
-              : null
-            : name;
-        const outer =
-          exteriorSocket != null && n.parentId
-            ? edgeIntoSocket.get(socketKey(n.parentId, exteriorSocket))
-            : undefined;
-        if (!outer) return null;
-        cur = { source: outer.source, sourceHandle: outer.sourceHandle };
-      } else if (n.type === LAYER_TYPE && name === "audio") {
-        // Layer audio is a pure splice: the interior Group Output's
-        // audio input wins; an unwired interior falls back to the
-        // layer's exterior audio input (the chain below).
-        const interiorId = outputNodeOf.get(n.id);
-        const inner = interiorId
-          ? edgeIntoSocket.get(socketKey(interiorId, "audio"))
-          : undefined;
-        const next = inner ?? edgeIntoSocket.get(socketKey(n.id, "audio"));
-        if (!next) return null;
-        cur = { source: next.source, sourceHandle: next.sourceHandle };
-      } else if (n.type === GROUP_OUTPUT_TYPE) {
-        // Group Output has no output sockets; appearing as a source
-        // means the data is mangled.
-        return null;
-      } else {
-        return cur;
-      }
-    }
-    return null;
-  }
+  // lands on a real producer (see resolveBoundarySource). Returns null when
+  // the chain dead-ends on an unwired boundary socket — the consuming edge
+  // is dropped and the consumer sees its socket default.
+  const resolveSource = (source: string, sourceHandle: string) =>
+    resolveBoundarySource(
+      byId,
+      edgeIntoSocket,
+      outputNodeOf,
+      edges.length,
+      source,
+      sourceHandle
+    );
 
   // True when this edge's source endpoint needs resolution before it
   // can appear in the flat graph.
@@ -245,4 +265,73 @@ export function flattenGraph(
   }
 
   return { nodes: outNodes, edges: outEdges, layerOf };
+}
+
+// Pick which output socket of a group to preview: the first image/mask-typed
+// one (what the 2D canvas can actually show), else the first declared.
+function preferImageSocket(
+  specs: { name: string; type: string }[]
+): string | undefined {
+  if (specs.length === 0) return undefined;
+  const img = specs.find((s) => s.type === "image" || s.type === "mask");
+  return (img ?? specs[0]).name;
+}
+
+// Resolve a structural preview target — a node-group shell or a Group Output
+// boundary node — to the real interior producer feeding its image output.
+// Flatten dissolves the shell/boundary, so without this the canvas can't
+// preview a group via its Active button (or by selecting it). Returns null
+// for any other node type (Group Input has nothing to preview) or when the
+// chosen output is unwired. The returned `handle` lets the caller read the
+// exact output the group's image socket was fed from.
+export function resolvePreviewProducer(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  targetId: string
+): { nodeId: string; handle: string } | null {
+  const target = nodes.find((n) => n.id === targetId);
+  if (!target) return null;
+  if (target.type !== GROUP_TYPE && target.type !== GROUP_OUTPUT_TYPE) {
+    return null;
+  }
+
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const outputNodeOf = new Map<string, string>();
+  for (const n of nodes) {
+    if (n.type === GROUP_OUTPUT_TYPE && n.parentId) {
+      outputNodeOf.set(n.parentId, n.id);
+    }
+  }
+  const edgeIntoSocket = new Map<string, GraphEdge>();
+  for (const e of edges) {
+    const parsed = parseTargetHandleKind(e.targetHandle);
+    if (parsed?.kind === "input") {
+      edgeIntoSocket.set(socketKey(e.target, parsed.name), e);
+    }
+  }
+
+  // The (Group Output node, socket name) whose interior producer we want.
+  let groupOutputId: string | undefined;
+  let socketName: string | undefined;
+  if (target.type === GROUP_TYPE) {
+    groupOutputId = outputNodeOf.get(target.id);
+    socketName = preferImageSocket(readGroupInterface(target.params).outputs);
+  } else {
+    groupOutputId = target.id;
+    socketName = preferImageSocket(readBoundarySockets(target.params));
+  }
+  if (!groupOutputId || !socketName) return null;
+
+  const into = edgeIntoSocket.get(socketKey(groupOutputId, socketName));
+  if (!into) return null;
+  const resolved = resolveBoundarySource(
+    byId,
+    edgeIntoSocket,
+    outputNodeOf,
+    edges.length,
+    into.source,
+    into.sourceHandle
+  );
+  if (!resolved) return null;
+  return { nodeId: resolved.source, handle: resolved.sourceHandle };
 }
