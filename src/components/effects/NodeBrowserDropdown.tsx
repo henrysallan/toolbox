@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { allNodeDefs } from "@/engine/registry";
+import { PRESETS } from "@/state/presets";
 import type { NodeCategory, NodeSubcategory } from "@/engine/types";
 
 // Menu-bar dropdown that enumerates every registered node. Typed
@@ -172,6 +173,32 @@ export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
           </div>
         );
       })}
+      {/* Presets: canned subgraphs (node-groups). A separate column — these
+          aren't node defs, so they sit outside the NodeCategory machinery.
+          Shown at root too: onAddNode auto-wraps them into a new layer. */}
+      {PRESETS.length > 0 && (
+        <div
+          key="presets"
+          style={{ minWidth: 150, display: "flex", flexDirection: "column" }}
+        >
+          <ColumnHeader>Presets</ColumnHeader>
+          <div
+            style={{ flex: 1, overflowY: "auto", paddingRight: 2 }}
+            className="thin-scrollbar"
+          >
+            {PRESETS.map((p) => (
+              <NodeRow
+                key={p.id}
+                label={p.name}
+                onClick={() => {
+                  onAdd(`preset:${p.id}`);
+                  onClose();
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -67,6 +67,7 @@ import {
   GROUP_TYPE,
   LAYER_TYPE,
 } from "@/engine/groups";
+import { getPreset } from "@/state/presets";
 import { newLayerId, type MergeLayer } from "@/nodes/effect/merge";
 import { defaultAutoLayoutItem } from "@/nodes/effect/autolayout";
 import { newRenderQueueItemId } from "@/nodes/output/render-queue";
@@ -1888,6 +1889,58 @@ function EffectsShell({
         return;
       }
 
+      // Compound: "preset:<id>" inserts a canned subgraph (a node-group)
+      // from the Presets menu. Same insertion path as paste —
+      // cloneSubgraph mints fresh ids and retargets the group shell into
+      // the current scope; at root (a strict layer chain) it auto-wraps
+      // into a new layer just like handlePasteNodes.
+      if (type.startsWith("preset:")) {
+        const preset = getPreset(type.slice("preset:".length));
+        if (!preset) return;
+        const frag = preset.build();
+        let targetScope = currentGroupIdRef.current;
+        let baseNodes = nodesRef.current;
+        let baseEdges = edgesRef.current;
+        let wrapped: string | null = null;
+        if (!targetScope) {
+          const res = createLayer(baseNodes, baseEdges);
+          baseNodes = res.nodes;
+          baseEdges = res.edges;
+          targetScope = res.layerId;
+          wrapped = res.layerId;
+        }
+        const minX = Math.min(...frag.nodes.map((n) => n.position.x));
+        const minY = Math.min(...frag.nodes.map((n) => n.position.y));
+        const offset = { x: pos.x - minX, y: pos.y - minY };
+        const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
+          frag.nodes,
+          frag.edges,
+          offset,
+          { parentId: targetScope }
+        );
+        setNodes([
+          ...baseNodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
+          ...newNodes,
+        ]);
+        setEdges([...baseEdges, ...newEdges]);
+        const groupClone = newNodes.find(
+          (n) => n.data.defType === GROUP_TYPE
+        );
+        if (wrapped) {
+          flashToast("preset added to a new layer");
+          navigateScope(wrapped);
+          // navigateScope clears selection — keep the dropped group selected.
+          setNodes((prev) =>
+            prev.map((n) =>
+              newNodes.some((c) => c.id === n.id) ? { ...n, selected: true } : n
+            )
+          );
+        }
+        if (groupClone) setSelectedId(groupClone.id);
+        setParamView("node");
+        return;
+      }
+
       const newNode = spawnNode(type, pos);
 
       // Auto-wire: the user dropped a live wire on empty pane and
@@ -2047,7 +2100,7 @@ function EffectsShell({
       setSelectedId(newNode.id);
       setParamView("node");
     },
-    [setNodes, setEdges, setSelectedId, setParamView, pushGraph, getGraphSnapshot, spawnNode]
+    [setNodes, setEdges, setSelectedId, setParamView, pushGraph, getGraphSnapshot, spawnNode, navigateScope, flashToast]
   );
 
   // "Convert Editable" (SVG Source param panel): spawn a Spline Draw node

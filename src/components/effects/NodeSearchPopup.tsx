@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { allNodeDefs } from "@/engine/registry";
+import { PRESETS } from "@/state/presets";
 import type { NodeCategory, NodeSubcategory } from "@/engine/types";
 
 // Display order + labels mirror NodeBrowserDropdown so the two add-
@@ -44,6 +45,25 @@ const TYPED_CATEGORIES: ReadonlySet<NodeCategory> = new Set([
   "point",
   "audio",
 ]);
+
+// Preset entries surface under a pseudo-category "presets" — they're canned
+// subgraphs, not node defs, and onAdd routes "preset:<id>" specially.
+function presetDefs(): {
+  type: string;
+  name: string;
+  category: string;
+  description: string;
+}[] {
+  return PRESETS.map((p) => ({
+    type: `preset:${p.id}`,
+    name: p.name,
+    category: "presets",
+    description: p.description,
+  }));
+}
+
+const labelFor = (c: string): string =>
+  c === "presets" ? "Presets" : CATEGORY_LABEL[c as NodeCategory] ?? c;
 
 // Floating "add node" browser. Two modes:
 //
@@ -119,6 +139,7 @@ export default function NodeSearchPopup({
           description:
             "Collects Output nodes into an ordered batch render.",
         } as unknown as (typeof real)[number],
+        ...(presetDefs() as unknown as (typeof real)[number][]),
       ];
     }
     return [
@@ -131,6 +152,7 @@ export default function NodeSearchPopup({
         // Casts to satisfy the rest of NodeDefinition's required fields
         // when iterated; nothing else touches them.
       } as unknown as (typeof real)[number],
+      ...(presetDefs() as unknown as (typeof real)[number][]),
     ];
   }, [atRoot]);
   const byCategory = useMemo(() => {
@@ -143,8 +165,8 @@ export default function NodeSearchPopup({
   }, [defs]);
   const categories = useMemo(
     () =>
-      CATEGORY_ORDER.filter(
-        (c) => (byCategory[c as NodeCategory]?.length ?? 0) > 0
+      [...CATEGORY_ORDER, "presets"].filter(
+        (c) => (byCategory[c]?.length ?? 0) > 0
       ),
     [byCategory]
   );
@@ -300,7 +322,7 @@ export default function NodeSearchPopup({
                     cursor: "default",
                   }}
                 >
-                  <span>{CATEGORY_LABEL[cat as NodeCategory] ?? cat}</span>
+                  <span>{labelFor(cat)}</span>
                   <span style={{ color: active ? "#bfdbfe" : "#52525b" }}>
                     ▶
                   </span>
@@ -385,8 +407,7 @@ export default function NodeSearchPopup({
                 <span>{def.name}</span>
                 {normalized && (
                   <span style={{ color: "#52525b", fontSize: 10 }}>
-                    {CATEGORY_LABEL[def.category as NodeCategory] ??
-                      def.category}
+                    {labelFor(def.category)}
                   </span>
                 )}
               </button>

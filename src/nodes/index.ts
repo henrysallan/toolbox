@@ -104,6 +104,8 @@ import { displaceNode } from "./effect/displace";
 import { arrayNode } from "./effect/array";
 import { proximityMergeNode } from "./effect/proximity-merge";
 import { connectPointsNode } from "./effect/connect-points";
+import { splineIntersectionsNode } from "./effect/spline-intersections";
+import { stringArtNode } from "./effect/string-art";
 import { lissajous2DNode, lissajous3DNode } from "./effect/lissajous";
 import { jitterNode } from "./effect/jitter";
 import { thresholdNode } from "./effect/threshold";
@@ -276,6 +278,8 @@ export function registerAllNodes() {
   registerNode(arrayNode);
   registerNode(proximityMergeNode);
   registerNode(connectPointsNode);
+  registerNode(splineIntersectionsNode);
+  registerNode(stringArtNode);
   registerNode(lissajous2DNode);
   registerNode(lissajous3DNode);
   registerNode(jitterNode);
