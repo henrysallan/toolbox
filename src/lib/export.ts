@@ -1,3 +1,5 @@
+import { platform } from "./platform";
+
 // Browser support for MediaRecorder mime types varies — Chrome and Safari
 // accept H.264-in-mp4 on recent versions, Firefox still only accepts webm.
 // We probe a ranked candidate list at runtime and fall back gracefully.
@@ -48,16 +50,14 @@ export function pickVideoMime(
   return tryList(webmCandidates, "webm") ?? tryList(mp4Candidates, "mp4");
 }
 
+// Single delivery switch-point for the whole app. On web this is the same
+// anchor-download as before (implemented in platform/web.ts); on the Electron
+// build it routes to a native Save dialog + disk write. Kept synchronous /
+// fire-and-forget so the many existing callsites are unchanged.
 export function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  // Revoke after a tick so the browser has time to start the download.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  void platform.saveFile(blob, { suggestedName: filename }).catch((e) => {
+    console.error("saveFile failed:", e);
+  });
 }
 
 // Strips filesystem-unsafe characters and any trailing extension. Empty or

@@ -10,6 +10,7 @@ import {
 import type { SplineAnchor, SplineSubpath } from "@/engine/types";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
 import { aspectCorrectY, aspectUncorrectY } from "@/engine/aspect";
+import { rectsEqual } from "./overlay-rect";
 import { fitSplineToPolyline } from "@/engine/spline-math";
 import { getShortcutScope } from "./shortcut-scope";
 
@@ -552,9 +553,12 @@ export default function SplineEditorOverlay({
       return;
     }
     const host = canvas.parentElement;
+    // Idempotent updates — avoids a ResizeObserver feedback loop (overlay-rect.ts).
     const update = () => {
-      setRect(canvas.getBoundingClientRect());
-      setHostRect((host ?? canvas).getBoundingClientRect());
+      const r = canvas.getBoundingClientRect();
+      setRect((prev) => (rectsEqual(prev, r) ? prev : r));
+      const hr = (host ?? canvas).getBoundingClientRect();
+      setHostRect((prev) => (rectsEqual(prev, hr) ? prev : hr));
     };
     update();
     const ro = new ResizeObserver(update);

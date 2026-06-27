@@ -21,6 +21,22 @@ import {
   resolveAxisAt,
   type AxisInput,
 } from "@/lib/font-axis";
+import {
+  FIELD_PROPS,
+  resolveGlyphAnim,
+  resolveTrackingExtra,
+  type AnimProp,
+  type GlyphFields,
+  type TextAnimators,
+} from "@/engine/text-animators";
+
+// Per-character animators + their field pixel buffers, threaded into the
+// modulated draw path. Present (non-null) forces per-character layout even when
+// every font axis is constant. Fields are sampled at each glyph's centre.
+export interface TextDrawAnim {
+  animators: TextAnimators;
+  fields: Partial<Record<AnimProp, ImageData | null>>;
+}
 
 // One color stop of a text gradient fill. Structurally a subset of the
 // Color Ramp node's ColorRampStop, so the Text node passes its `color_ramp`
@@ -376,7 +392,8 @@ export function drawTextBlock(
   areaH: number,
   maskData: ImageData | null = null,
   originX = 0,
-  originY = 0
+  originY = 0,
+  anim: TextDrawAnim | null = null
 ): void {
   const { size, alignment, leading, letterSpacing } = style;
   c2d.save();
@@ -405,10 +422,11 @@ export function drawTextBlock(
         : originY + areaH / 2 - totalHeight / 2;
   const startY = blockTop + lineHeight / 2;
 
-  if (isStyleAllConstant(style)) {
+  if (isStyleAllConstant(style) && !anim) {
     // FAST PATH — single fillText per line; native canvas2d layout.
     // maskDriven counts as modulated (isAxisDictAllConstant excludes
-    // it), so we never reach here with a maskData payload.
+    // it), so we never reach here with a maskData payload. Active text
+    // animators also force the modulated path (per-char transform/alpha).
     applyAxisStyling(
       canvas,
       c2d,
@@ -439,6 +457,21 @@ export function drawTextBlock(
     // accumulation, which textAlign can't do mid-string).
     c2d.textAlign = "left";
     (c2d as unknown as { letterSpacing?: string }).letterSpacing = "0px";
+    // Global character index across all lines so a cascade / type-on reveals
+    // continuously through wrapped text rather than restarting each line.
+    let globalTotal = 0;
+    for (const l of lines) globalTotal += Array.from(l).length;
+    let globalOffset = 0;
+    // Sample every wired animator field at a glyph centre (absolute canvas px).
+    const sampleFields = (x: number, y: number): GlyphFields => {
+      const f: GlyphFields = {};
+      if (!anim) return f;
+      for (const p of FIELD_PROPS) {
+        const d = anim.fields[p];
+        if (d) f[p] = sampleMask(d, x, y, d.width, d.height);
+      }
+      return f;
+    };
     for (let li = 0; li < lines.length; li++) {
       const line = lines[li];
       const chars = Array.from(line); // codepoint-safe split
@@ -447,8 +480,10 @@ export function drawTextBlock(
       // Pre-measure each char with its axis values applied so alignment
       // uses real advances. Mask sampling for the measure pass uses a
       // rough placeholder (areaW/2, y); the draw pass re-samples at the
-      // actual glyph centre.
+      // actual glyph centre. Per-char tracking (index-driven) is folded
+      // into the advance so alignment stays correct.
       const advances: number[] = [];
+      const tracks: number[] = [];
       let lineWidth = 0;
       for (let i = 0; i < total; i++) {
         const t = total <= 1 ? 0 : i / (total - 1);
@@ -470,9 +505,16 @@ export function drawTextBlock(
         );
         const adv = c2d.measureText(chars[i]).width;
         advances.push(adv);
-        lineWidth += adv + letterSpacing;
+        const trk = anim
+          ? resolveTrackingExtra(anim.animators, globalOffset + i, globalTotal)
+          : 0;
+        tracks.push(trk);
+        lineWidth += adv + letterSpacing + trk;
       }
-      lineWidth -= letterSpacing; // no trailing gap
+      // Drop the trailing inter-glyph gap (letter-spacing + tracking) so the
+      // alignment math sees the true visible width.
+      lineWidth -= letterSpacing;
+      if (total > 0) lineWidth -= tracks[total - 1];
       let cx =
         originX +
         (alignment === "left"
@@ -502,10 +544,32 @@ export function drawTextBlock(
           style.weight ?? 400,
           style.italic ?? false
         );
-        if (stroke) c2d.strokeText(chars[i], cx, y);
-        c2d.fillText(chars[i], cx, y);
-        cx += advances[i] + letterSpacing;
+        if (anim) {
+          // Per-glyph transform + alpha + color from the active animators,
+          // applied about the glyph centre so scale/rotation pivot there.
+          const g = resolveGlyphAnim(
+            anim.animators,
+            globalOffset + i,
+            globalTotal,
+            sampleFields(cxCentre, y)
+          );
+          c2d.save();
+          c2d.globalAlpha = Math.max(0, Math.min(1, g.alpha));
+          if (g.color) c2d.fillStyle = g.color;
+          c2d.translate(cxCentre + g.offsetX, y + g.offsetY);
+          if (g.rotation) c2d.rotate(g.rotation);
+          if (g.scale !== 1) c2d.scale(g.scale, g.scale);
+          c2d.translate(-cxCentre, -y);
+          if (stroke) c2d.strokeText(chars[i], cx, y);
+          c2d.fillText(chars[i], cx, y);
+          c2d.restore();
+        } else {
+          if (stroke) c2d.strokeText(chars[i], cx, y);
+          c2d.fillText(chars[i], cx, y);
+        }
+        cx += advances[i] + letterSpacing + tracks[i];
       }
+      globalOffset += total;
     }
   }
   c2d.restore();

@@ -90,6 +90,11 @@ export interface SavedScene {
   // saving both keeps the loop's *duration* stable even if the
   // project is opened on a machine with a different default FPS.
   fps?: number;
+  // Project render resolution in pixels. Omitted on saves that
+  // predate resolution persistence — leave the user's current
+  // resolution alone in that case (don't snap to a default).
+  width?: number;
+  height?: number;
 }
 
 export interface SavedProject {

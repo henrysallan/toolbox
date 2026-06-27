@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "electron": "electron electron/main.js",
+    "electron:dev": "TOOLBOX_DEV_URL=http://localhost:3000 electron electron/main.js",
     "build:export-template": "node scripts/build-export-template.mjs",
     "install:export-template": "npm --prefix src/export-template install"
   },
@@ -39,8 +41,10 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@webgpu/types": "^0.1.69",
+    "electron": "^42.5.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
+    "ffmpeg-static": "^5.3.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

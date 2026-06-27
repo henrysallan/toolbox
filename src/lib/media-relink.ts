@@ -19,6 +19,8 @@
 // under `<param>${MISSING_MEDIA_SUFFIX}` so an immediate re-save doesn't
 // forget the file.
 
+import { platform } from "./platform";
+
 export interface MediaEnvelope {
   kind: "video_file" | "audio_file";
   filename: string;
@@ -174,6 +176,10 @@ export async function pickMediaFiles(opts: {
   kind: "video" | "audio" | "media";
   multiple?: boolean;
 }): Promise<File[] | "unsupported" | null> {
+  // Electron: use a native Open dialog. (No FSA handle to persist, so silent
+  // re-link on next load isn't available natively yet — a future enhancement
+  // would persist the absolute path instead.)
+  if (platform.isNative) return platform.pickOpenFiles(opts);
   if (!supportsFileHandles()) return "unsupported";
   const picker = (
     window as unknown as { showOpenFilePicker: ShowOpenFilePicker }

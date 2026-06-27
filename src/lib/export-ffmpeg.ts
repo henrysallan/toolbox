@@ -15,6 +15,9 @@
 
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { toBlobURL } from "@ffmpeg/util";
+// Encoder + audio args: single source of truth shared with the Electron native
+// ffmpeg process (electron/ffmpeg.js).
+import { buildAudioArgs, buildEncoderArgs } from "./export-ffmpeg-args";
 
 const FFMPEG_CORE_VERSION = "0.12.10";
 // UMD build, NOT ESM. The ESM build uses relative import() statements
@@ -80,96 +83,6 @@ export interface FfmpegExportOptions {
   // Optional 16-bit PCM WAV bytes covering the export window. When present
   // it's written into the wasm FS and muxed as a second input.
   audioWav?: Uint8Array | null;
-}
-
-// Audio encoder + args per container. AAC for the mp4 family / mkv, Opus
-// for webm. `-shortest` keeps output length tied to the (frame-exact)
-// video when the WAV is a hair longer.
-function buildAudioArgs(container: FfmpegContainer): string[] {
-  if (container === "webm") {
-    return ["-c:a", "libopus", "-b:a", "192k"];
-  }
-  return ["-c:a", "aac", "-b:a", "256k"];
-}
-
-// Maps the simplified UI codec onto an ffmpeg encoder + arg list.
-function buildEncoderArgs(
-  codec: FfmpegCodec,
-  crf: number,
-  proresProfile: number,
-  alpha: boolean
-): string[] {
-  switch (codec) {
-    case "h264":
-      // High profile, slow preset for better quality/size at the
-      // cost of CPU. Pixel format yuv420p for broad compatibility.
-      return [
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-preset", "medium",
-        "-profile:v", "high",
-        "-crf", String(crf),
-      ];
-    case "h264-lossless":
-      // qp=0 is mathematically lossless. yuv444p preserves chroma.
-      return [
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv444p",
-        "-preset", "veryslow",
-        "-qp", "0",
-      ];
-    case "h265":
-      return [
-        "-c:v", "libx265",
-        "-pix_fmt", "yuv420p",
-        "-preset", "medium",
-        "-crf", String(crf),
-      ];
-    case "prores": {
-      // prores_ks is the modern encoder. yuv422p10le is the standard
-      // 10-bit 4:2:2 pixel format ProRes consumers expect.
-      //
-      // Alpha lives only in the 4444 / 4444xq profiles (profile >= 4).
-      // When requested there we switch to the alpha-bearing 4:4:4 format
-      // and pin `-alpha_bits 16` (full-precision straight alpha): without
-      // an explicit value some ffmpeg builds resolve alpha_bits to 0 and
-      // silently drop the channel even with a yuva pixel format — which is
-      // exactly how a "4444 export with no alpha" happens. Opaque 4444
-      // uses plain yuv444p10le; lower profiles stay 4:2:2.
-      const wantsAlpha = alpha && proresProfile >= 4;
-      const pixFmt = wantsAlpha
-        ? "yuva444p10le"
-        : proresProfile >= 4
-          ? "yuv444p10le"
-          : "yuv422p10le";
-      return [
-        "-c:v", "prores_ks",
-        "-profile:v", String(proresProfile),
-        "-pix_fmt", pixFmt,
-        ...(wantsAlpha ? ["-alpha_bits", "16"] : []),
-        "-vendor", "apl0",
-      ];
-    }
-    case "vp9":
-      return [
-        "-c:v", "libvpx-vp9",
-        "-pix_fmt", "yuv420p",
-        "-b:v", "0",
-        "-crf", String(crf),
-        "-row-mt", "1",
-      ];
-    case "av1":
-      // libaom-av1 is slow but ships with mainline ffmpeg. Cpu-used
-      // 4 is a sane middle-ground; lower = slower/better.
-      return [
-        "-c:v", "libaom-av1",
-        "-pix_fmt", "yuv420p",
-        "-crf", String(crf),
-        "-b:v", "0",
-        "-cpu-used", "4",
-        "-row-mt", "1",
-      ];
-  }
 }
 
 export function canvasToPngBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
@@ -292,13 +205,23 @@ export async function exportVideoFfmpeg(
           ? "video/webm"
           : "video/x-matroska";
 
-  // Copy into a freshly-allocated ArrayBuffer-backed view so Blob's
-  // BlobPart type accepts it (a SharedArrayBuffer-backed Uint8Array
-  // would not).
-  const out = new Uint8Array(bytes.byteLength);
-  out.set(bytes);
+  // Hand the decoded bytes to Blob WITHOUT the full-size copy the old code
+  // made. readFile is typed Uint8Array<ArrayBufferLike>, which BlobPart
+  // rejects because ArrayBufferLike includes SharedArrayBuffer — that type
+  // (not any real need) is why the previous version copied into a second
+  // buffer. On our single-threaded core (see top of file) the backing store
+  // is always a regular ArrayBuffer, so narrow to it and pass a zero-copy
+  // view; only the multi-threaded core would hand back a SAB, where we do
+  // copy out. The old unconditional copy doubled peak memory at the tail of
+  // the export and is exactly the kind of allocation that throws "Array
+  // buffer allocation failed" on a multi-GB ProRes render.
+  const buffer = bytes.buffer;
+  const part: BlobPart =
+    buffer instanceof ArrayBuffer
+      ? new Uint8Array(buffer, bytes.byteOffset, bytes.byteLength)
+      : new Uint8Array(bytes); // SAB (MT core only) → copy into a plain buffer
   return {
-    blob: new Blob([out.buffer], { type: mime }),
+    blob: new Blob([part], { type: mime }),
     ext: opts.container,
   };
 }

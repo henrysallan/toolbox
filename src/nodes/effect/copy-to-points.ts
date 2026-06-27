@@ -155,7 +155,14 @@ void main() {
   // Pipeline UV is Y-down; clip space is Y-up. Flip vertically.
   clip.y = -clip.y;
   gl_Position = vec4(clip, 0.0, 1.0);
-  v_uv = u_uvRect.xy + a_pos * u_uvRect.zw;
+  // The whole quad is laid out Y-DOWN — the point center, the clip flip
+  // above, and the content rect (getContentRect reads back row 0 = visual
+  // top) are all Y-down — but GL textures sample Y-UP. Convert v here so
+  // the instance lands upright AND the alpha-bbox crop selects the right
+  // region; sampling the Y-down rect as-is mirrored every copy vertically
+  // (and pulled off-center content from the wrong half of the source).
+  v_uv = vec2(u_uvRect.x + a_pos.x * u_uvRect.z,
+              1.0 - (u_uvRect.y + a_pos.y * u_uvRect.w));
 }`;
 
 const COPY_INST_FS = `#version 300 es
@@ -164,9 +171,8 @@ in vec2 v_uv;
 uniform sampler2D u_src;
 out vec4 outColor;
 void main() {
-  // Sampling the upstream pipeline texture directly — no Y flip
-  // needed (we'd only flip if reading back from a 2D canvas, which
-  // the new GPU path no longer does).
+  // v_uv already carries the Y-down→Y-up conversion (see the VS), so we
+  // sample the upstream pipeline texture directly here.
   outColor = texture(u_src, v_uv);
 }`;
 

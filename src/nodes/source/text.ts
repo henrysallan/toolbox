@@ -16,12 +16,22 @@ import {
   drawTextBlock,
   measureStyledBlock,
   wrapStyledLines,
+  type TextDrawAnim,
   type TextFill,
   type TextGradientStop,
   type TextStroke,
   type TextStyle,
   type VAlign,
 } from "@/engine/text-raster";
+import {
+  FIELD_PROPS,
+  TEXT_ANIMATOR_PARAMS,
+  animatorFieldInputs,
+  animatorsSignature,
+  anyAnimatorActive,
+  parseAnimators,
+  type AnimProp,
+} from "@/engine/text-animators";
 import { CURATED_FONTS, ensureFontLoaded, isFontReady } from "@/lib/fonts";
 import { asAxisDict, hasMaskDriven } from "@/lib/font-axis";
 
@@ -418,7 +428,8 @@ function renderTextLayer(
   params: Record<string, unknown>,
   style: TextStyle,
   maskData: ImageData | null,
-  targetTex: WebGLTexture
+  targetTex: WebGLTexture,
+  anim: TextDrawAnim | null = null
 ): void {
   const W = ctx.width;
   const H = ctx.height;
@@ -441,7 +452,7 @@ function renderTextLayer(
   const originY = H / 2 - boxH / 2;
   const wrap = params.wrap === true;
   const lines = wrapStyledLines(canvas, c2d, style, wrap ? boxW : undefined);
-  drawTextBlock(canvas, c2d, style, lines, boxW, boxH, maskData, originX, originY);
+  drawTextBlock(canvas, c2d, style, lines, boxW, boxH, maskData, originX, originY, anim);
 
   const gl = ctx.gl;
   gl.bindTexture(gl.TEXTURE_2D, targetTex);
@@ -459,12 +470,45 @@ function rasterize(
   // samples the mask at each character's centre so maskDriven axes
   // can interpolate between their endpoints. Null when no mask is
   // wired (or no axis is in maskDriven mode).
-  maskData: ImageData | null = null
+  maskData: ImageData | null = null,
+  // Active text animators (per-char transform/alpha/color) + their field
+  // pixel buffers. Null when no animator is enabled.
+  anim: TextDrawAnim | null = null
 ): void {
   // Single-pass canvas2d render for all (non-image-fill) modes — the
   // mask-driven mode samples per char, not per pixel.
   const style = styleFromParams(params, family);
-  renderTextLayer(ctx, state, params, style, maskData, state.rasterTex);
+  renderTextLayer(ctx, state, params, style, maskData, state.rasterTex, anim);
+}
+
+// Read every wired, field-driven animator's image into a CPU pixel buffer
+// (sampled per glyph at its centre in the rasterizer). Returns the field map
+// plus whether any field is wired (forces a per-frame re-raster like the live
+// mask, since pooled texture identity can't reveal content changes).
+function readAnimatorFields(
+  ctx: RenderContext,
+  state: TextState,
+  params: Record<string, unknown>,
+  inputs: Record<string, { kind: string } | undefined>
+): { fields: Partial<Record<AnimProp, ImageData | null>>; live: boolean } {
+  const fields: Partial<Record<AnimProp, ImageData | null>> = {};
+  let live = false;
+  for (const p of FIELD_PROPS) {
+    if (params[`anim_${p}_enabled`] !== true) continue;
+    if (params[`anim_${p}_driver`] !== "field") continue;
+    const v = inputs[`field_${p}`];
+    if (v && v.kind === "image") {
+      fields[p] = readMaskImageData(
+        ctx,
+        state,
+        v as unknown as ImageValue,
+        ctx.width,
+        ctx.height
+      );
+      live = true;
+    }
+  }
+  return { fields, live };
 }
 
 // Box rect (canvas UV, Y-up) + per-axis sample scale for the image-fill
@@ -640,6 +684,15 @@ export const textNode: NodeDefinition = {
     // flat color. Declared `image`, so mask/element coercions apply.
     { name: "fill", label: "fill", type: "image", required: false },
   ],
+  // Field inputs for field-driven animators appear only when that animator is
+  // enabled with driver = "field" (see animatorFieldInputs).
+  resolveInputs(params) {
+    return [
+      { name: "mask", label: "Mask", type: "image", required: false },
+      { name: "fill", label: "fill", type: "image", required: false },
+      ...animatorFieldInputs(params),
+    ];
+  },
   params: [
     OPACITY_PARAM,
     {
@@ -924,6 +977,10 @@ export const textNode: NodeDefinition = {
       step: 0.001,
       default: 0.5,
     },
+    // Stackable per-character animators (Type On / Opacity / Position / Scale /
+    // Rotation / Tracking / Color). Each: enable toggle → min/max + a keyframable
+    // 0–1 Amount + driver (field/cascade/uniform). See engine/text-animators.ts.
+    ...TEXT_ANIMATOR_PARAMS,
   ],
   primaryOutput: "image",
   auxOutputs: [
@@ -993,12 +1050,31 @@ export const textNode: NodeDefinition = {
     const fillImg = fillIn && fillIn.kind === "image" ? fillIn : null;
     const imageFillActive = (params.fillMode as string) === "image" && !!fillImg;
 
+    // Per-character animators. Active ones force the per-char layout and fold
+    // every animator param (incl. keyframed Amounts) into the raster sig; a
+    // wired field input forces a per-frame re-raster like the live mask.
+    const animActive = anyAnimatorActive(params);
+    const animFieldWired =
+      animActive &&
+      FIELD_PROPS.some(
+        (p) =>
+          params[`anim_${p}_enabled`] === true &&
+          params[`anim_${p}_driver`] === "field" &&
+          inputs[`field_${p}`]?.kind === "image"
+      );
+
     const sig =
       computeRasterSig(params, family, ctx.width, ctx.height) +
       "|" +
       maskSigKey +
       "|imgfill:" +
-      (imageFillActive ? "1" : "0");
+      (imageFillActive ? "1" : "0") +
+      "|anim:" +
+      animatorsSignature(params) +
+      "|animf:" +
+      FIELD_PROPS.map((p) =>
+        inputs[`field_${p}`]?.kind === "image" ? "1" : "0"
+      ).join("");
     const postSig = computePostSig(params);
 
     // Force re-rasterize every frame when maskDriven is in play
@@ -1011,7 +1087,7 @@ export const textNode: NodeDefinition = {
     // re-enters on every pipeline bump; bypassing the sig cache
     // here is what actually makes the mask sampling live.
     const liveMask = maskMode && !!maskImg;
-    const rasterChanged = liveMask || sig !== state.lastSig;
+    const rasterChanged = liveMask || animFieldWired || sig !== state.lastSig;
     const postChanged = postSig !== state.lastPostSig;
 
     if (rasterChanged) {
@@ -1022,6 +1098,18 @@ export const textNode: NodeDefinition = {
         maskMode && maskImg
           ? readMaskImageData(ctx, state, maskImg, ctx.width, ctx.height)
           : null;
+      // Animator config + field buffers (read each wired field once).
+      const anim: TextDrawAnim | null = animActive
+        ? {
+            animators: parseAnimators(params),
+            fields: readAnimatorFields(ctx, state, params, inputs).fields,
+          }
+        : null;
+      // Image-fill coverage/stroke layers must stay clean masks, so the color
+      // animator is dropped there (it would tint the white coverage).
+      const animCoverage: TextDrawAnim | null = anim
+        ? { animators: { ...anim.animators, color: undefined }, fields: anim.fields }
+        : null;
       if (imageFillActive) {
         // Two layers: glyph fill coverage (solid white, no stroke) and the
         // in-raster stroke in its own color. Composited with the image below.
@@ -1034,7 +1122,8 @@ export const textNode: NodeDefinition = {
           params,
           { ...baseStyle, fill: { mode: "solid" }, color: "#ffffff", stroke: null },
           maskData,
-          state.fillCovTex
+          state.fillCovTex,
+          animCoverage
         );
         const strokeOnly = strokeFromParams(params);
         if (strokeOnly) {
@@ -1050,11 +1139,12 @@ export const textNode: NodeDefinition = {
               stroke: strokeOnly,
             },
             maskData,
-            state.strokeLayerTex
+            state.strokeLayerTex,
+            animCoverage
           );
         }
       } else {
-        rasterize(ctx, state, params, family, maskData);
+        rasterize(ctx, state, params, family, maskData, anim);
       }
       state.lastSig = sig;
       // Raster moved → cached sdf/spline are stale.

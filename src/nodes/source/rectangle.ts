@@ -8,6 +8,8 @@ import type {
 import {
   SPLINE_FILL_INPUT,
   SPLINE_RASTER_PARAMS,
+  SPLINE_TRIM_PARAMS,
+  applyTrimParams,
   buildSplineElement,
   disposeSplineRasterAux,
   rasterizeSplineAux,
@@ -136,6 +138,7 @@ export const rectangleNode: NodeDefinition = {
     },
     // Bundled rasterizer — gives the primitive an `image` output so it's
     // immediately viewable.
+    ...SPLINE_TRIM_PARAMS,
     ...SPLINE_RASTER_PARAMS,
   ],
   primaryOutput: "spline",
@@ -155,7 +158,10 @@ export const rectangleNode: NodeDefinition = {
     const h = Math.max(0, (params.height as number) ?? 0.5);
     const r = Math.max(0, (params.corner_radius as number) ?? 0);
     const subpath = makeRectSubpath(cx - w / 2, cy - h / 2, w, h, r);
-    const out: SplineValue = { kind: "spline", subpaths: [subpath] };
+    const out: SplineValue = {
+      kind: "spline",
+      subpaths: applyTrimParams([subpath], params),
+    };
     const fillImage = inputs.fill?.kind === "image" ? inputs.fill : null;
     const image = rasterizeSplineAux(ctx, nodeId, out.subpaths, params, fillImage);
     const element = buildSplineElement(ctx, out.subpaths, params);

@@ -85,6 +85,7 @@ import {
   pickVideoMime,
   sanitizeFilename,
 } from "@/lib/export";
+import { platform, type FolderHandle } from "@/lib/platform";
 import {
   deserializeGraph,
   generateThumbnail,
@@ -350,6 +351,8 @@ function EffectsShell({
         if (scene) {
           if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
           if (scene.fps !== undefined) setFps(scene.fps);
+          if (scene.width !== undefined && scene.height !== undefined)
+            setCanvasRes([scene.width, scene.height]);
         }
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -4320,7 +4323,6 @@ function EffectsShell({
               }),
           });
         } else {
-          const { exportVideoFfmpeg } = await import("@/lib/export-ffmpeg");
           const rawCodec = (params.videoCodec as string) ?? "h264";
           type FC =
             | "h264" | "h264-lossless" | "h265" | "prores" | "vp9" | "av1";
@@ -4336,6 +4338,12 @@ function EffectsShell({
           const proresMap: Record<string, number> = {
             proxy: 0, lt: 1, standard: 2, hq: 3, "4444": 4, "4444xq": 5,
           };
+          const proresProfile = proresMap[proresName] ?? 3;
+          const crf = (params.videoCrf as number) ?? 18;
+          // Mirror the Output node's ParamDef default (true): unedited and
+          // pre-existing saves have no stored value, so default to emitting
+          // alpha for 4444/4444xq. Ignored for non-4444 profiles.
+          const alpha = (params.videoAlpha as boolean) ?? true;
           // ProRes is only compatible with mov/mkv; nudge the user.
           const ffContainer =
             (codec === "prores" && container === "mp4")
@@ -4343,17 +4351,76 @@ function EffectsShell({
               : (codec === "prores" && container === "webm")
                 ? "mov"
                 : container;
+
+          // ---- Native ffmpeg (Electron) ----------------------------------
+          // Stream RGBA frames to a real ffmpeg process: no wasm heap limit,
+          // multi-threaded, writes straight to disk. This is the fix for big
+          // exports. Only the standalone Export path (no Render Queue sink)
+          // uses it for now — batch collection still needs in-memory blobs.
+          if (platform.canEncodeNative && platform.encodeVideo && !opts?.sink) {
+            const session = await platform.encodeVideo(
+              {
+                width: canvas.width,
+                height: canvas.height,
+                fps: exportFps,
+                durationFrames,
+                container: ffContainer,
+                codec,
+                crf,
+                proresProfile,
+                alpha,
+                audioWav: audioBuffer ? audioBufferToWav(audioBuffer) : undefined,
+                suggestedName: base
+                  ? `${base}.${ffContainer}`
+                  : defaultFilename(ffContainer),
+              },
+              (label, frac) =>
+                setRecording({ mode: "offline", label, progress: frac })
+            );
+            if (!session) return; // user cancelled the Save dialog
+            // Offscreen 2D canvas to read straight-alpha RGBA8 (same fidelity
+            // as the wasm path's canvas.toBlob, but skips PNG encode).
+            const rgbaCanvas = document.createElement("canvas");
+            rgbaCanvas.width = canvas.width;
+            rgbaCanvas.height = canvas.height;
+            const rgbaCtx = rgbaCanvas.getContext("2d", {
+              willReadFrequently: true,
+            });
+            try {
+              for (let i = 0; i < durationFrames; i++) {
+                await renderAt(i, 0);
+                await new Promise<void>((r) => requestAnimationFrame(() => r()));
+                rgbaCtx?.clearRect(0, 0, rgbaCanvas.width, rgbaCanvas.height);
+                rgbaCtx?.drawImage(canvas, 0, 0);
+                const data = rgbaCtx?.getImageData(
+                  0, 0, rgbaCanvas.width, rgbaCanvas.height
+                ).data;
+                if (data) await session.writeFrame(new Uint8Array(data.buffer));
+                setRecording({
+                  mode: "offline",
+                  label: `Encoding ${i + 1}/${durationFrames}`,
+                  progress: (i + 1) / durationFrames,
+                });
+              }
+              await session.finish();
+            } catch (e) {
+              await session.abort().catch(() => {});
+              throw e;
+            }
+            flashToast(
+              `Exported ${durationFrames} frame${durationFrames === 1 ? "" : "s"}`
+            );
+            return;
+          }
+
+          const { exportVideoFfmpeg } = await import("@/lib/export-ffmpeg");
           result = await exportVideoFfmpeg({
             canvas,
             container: ffContainer,
             codec,
-            crf: (params.videoCrf as number) ?? 18,
-            proresProfile: proresMap[proresName] ?? 3,
-            // Mirror the Output node's ParamDef default (true): unedited
-            // and pre-existing saves have no stored value, so default to
-            // emitting alpha for 4444/4444xq. The exporter ignores this
-            // for non-4444 profiles.
-            alpha: (params.videoAlpha as boolean) ?? true,
+            crf,
+            proresProfile,
+            alpha,
             fps: exportFps,
             durationFrames,
             audioWav: audioBuffer ? audioBufferToWav(audioBuffer) : null,
@@ -4465,36 +4532,17 @@ function EffectsShell({
       const nameFor = (frame: number) =>
         `${base}.${String(frame).padStart(pad, "0")}.${format}`;
 
-      // Folder mode: prompt for a destination up front (Chromium only).
-      let dirHandle:
-        | {
-            getFileHandle: (
-              n: string,
-              o: { create: boolean }
-            ) => Promise<{
-              createWritable: () => Promise<{
-                write: (b: Blob) => Promise<void>;
-                close: () => Promise<void>;
-              }>;
-            }>;
-          }
-        | null = null;
+      // Folder mode: prompt for a destination up front. Native = OS folder
+      // dialog; web = File System Access (Chromium only).
+      let folder: FolderHandle | null = null;
       if (delivery === "folder") {
-        const picker = (
-          window as unknown as {
-            showDirectoryPicker?: () => Promise<typeof dirHandle>;
-          }
-        ).showDirectoryPicker;
-        if (!picker) {
+        if (!platform.isNative && !("showDirectoryPicker" in window)) {
           flashToast("Folder mode needs a Chromium browser");
           return;
         }
-        try {
-          dirHandle = await picker();
-        } catch {
-          // User cancelled the folder picker — abort quietly.
-          return;
-        }
+        folder = await platform.pickSaveFolder();
+        // null = cancelled (web also returns null if unsupported, handled above).
+        if (!folder) return;
       }
 
       const savedTime = timeRef.current;
@@ -4531,11 +4579,8 @@ function EffectsShell({
           );
           if (blob) {
             const name = nameFor(frame);
-            if (delivery === "folder" && dirHandle) {
-              const fh = await dirHandle.getFileHandle(name, { create: true });
-              const w = await fh.createWritable();
-              await w.write(blob);
-              await w.close();
+            if (delivery === "folder" && folder) {
+              await folder.writeFile(name, blob);
             } else if (delivery === "sequential") {
               downloadBlob(blob, name);
             } else {
@@ -4751,30 +4796,18 @@ function EffectsShell({
 
       queueRenderingRef.current = true;
 
-      // Folder mode: prompt for a destination directory up front.
-      let dirHandle:
-        | { getFileHandle: (n: string, o: { create: boolean }) => Promise<{
-            createWritable: () => Promise<{
-              write: (b: Blob) => Promise<void>;
-              close: () => Promise<void>;
-            }>;
-          }> }
-        | null = null;
+      // Folder mode: prompt for a destination directory up front. Native = OS
+      // folder dialog; web = File System Access (Chromium only).
+      let folder: FolderHandle | null = null;
       if (delivery === "folder") {
-        const picker = (
-          window as unknown as {
-            showDirectoryPicker?: () => Promise<typeof dirHandle>;
-          }
-        ).showDirectoryPicker;
-        if (!picker) {
+        if (!platform.isNative && !("showDirectoryPicker" in window)) {
           queueRenderingRef.current = false;
           flashToast("Folder mode needs a Chromium browser");
           return;
         }
-        try {
-          dirHandle = await picker();
-        } catch {
-          // User cancelled the folder picker — abort quietly.
+        folder = await platform.pickSaveFolder();
+        if (!folder) {
+          // Cancelled (or unsupported on web, handled above).
           queueRenderingRef.current = false;
           return;
         }
@@ -4832,11 +4865,8 @@ function EffectsShell({
           while (usedNames.has(name)) name = `${baseName}-${n++}.${out.ext}`;
           usedNames.add(name);
 
-          if (delivery === "folder" && dirHandle) {
-            const fh = await dirHandle.getFileHandle(name, { create: true });
-            const w = await fh.createWritable();
-            await w.write(out.blob);
-            await w.close();
+          if (delivery === "folder" && folder) {
+            await folder.writeFile(name, out.blob);
           } else if (delivery === "sequential") {
             downloadBlob(out.blob, name);
           } else {
@@ -4907,7 +4937,12 @@ function EffectsShell({
           nodesRef.current,
           edgesRef.current,
           undefined,
-          { loopFrames: loopFramesRef.current, fps: fpsRef.current }
+          {
+            loopFrames: loopFramesRef.current,
+            fps: fpsRef.current,
+            width: canvasResRef.current[0],
+            height: canvasResRef.current[1],
+          }
         );
         const distManifest = (await fetch(
           "/export-template/v1/manifest.json"
@@ -5018,7 +5053,12 @@ function EffectsShell({
           progress: f * SERIALIZE_SHARE,
           tone: "save",
         }),
-      { loopFrames: loopFramesRef.current, fps: fpsRef.current }
+      {
+        loopFrames: loopFramesRef.current,
+        fps: fpsRef.current,
+        width: canvasResRef.current[0],
+        height: canvasResRef.current[1],
+      }
     );
     const canvas = canvasRef.current;
     const thumbnail = canvas ? generateThumbnail(canvas, 256) : null;
@@ -5246,6 +5286,8 @@ function EffectsShell({
         if (scene) {
           if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
           if (scene.fps !== undefined) setFps(scene.fps);
+          if (scene.width !== undefined && scene.height !== undefined)
+            setCanvasRes([scene.width, scene.height]);
         }
         setSelectedId(null);
         setParamView("node");
@@ -5292,7 +5334,12 @@ function EffectsShell({
         edgesRef.current,
         (f) =>
           setProgressStatus({ label: "saving", progress: f * 0.8, tone: "save" }),
-        { loopFrames: loopFramesRef.current, fps: fpsRef.current }
+        {
+          loopFrames: loopFramesRef.current,
+          fps: fpsRef.current,
+          width: canvasResRef.current[0],
+          height: canvasResRef.current[1],
+        }
       );
       const canvas = canvasRef.current;
       const thumbnailDataUrl = canvas ? generateThumbnail(canvas, 256) : null;
@@ -5405,12 +5452,7 @@ function EffectsShell({
   }, [relinkItems, onParamChange, flashToast]);
 
   const handleOpenProjectFile = useCallback(() => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".toolbox,application/zip";
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
+    const processFile = async (file: File) => {
       try {
         setProgressStatus({ label: "loading", progress: 0.1, tone: "load" });
         const { readProjectFile } = await import("@/lib/project-file");
@@ -5432,6 +5474,8 @@ function EffectsShell({
         if (scene) {
           if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
           if (scene.fps !== undefined) setFps(scene.fps);
+          if (scene.width !== undefined && scene.height !== undefined)
+            setCanvasRes([scene.width, scene.height]);
         }
         setSelectedId(null);
         setParamView("node");
@@ -5448,6 +5492,21 @@ function EffectsShell({
       } finally {
         setProgressStatus(null);
       }
+    };
+    // Native: OS Open dialog. Web: <input type="file">.
+    if (platform.isNative) {
+      void platform.pickOpenFiles({ kind: "toolbox" }).then((files) => {
+        const file = files?.[0];
+        if (file) void processFile(file);
+      });
+      return;
+    }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".toolbox,application/zip";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (file) void processFile(file);
     };
     input.click();
   }, [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia]);

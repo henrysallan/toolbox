@@ -107,8 +107,13 @@ export const jitterNode: NodeDefinition = {
   type: "jitter",
   name: "Jitter",
   category: "utility",
+  // Merged into the polymorphic Displace node (effect/displace.ts), which now
+  // warps splines/points as well as images. Kept registered (back-compat
+  // invariant #2) but hidden from the add menus so old projects still load and
+  // render their existing Jitter nodes; new work uses Displace.
+  hidden: true,
   description:
-    "Per-anchor positional jitter. Samples optional X-noise and Y-noise images at each anchor's own UV and displaces by the sampled value mapped to [-1..1] times the strength. Wire one Perlin Noise into both X and Y for diagonal jitter; wire two noises with different seeds for decorrelated 2D scatter. Disconnected inputs give 0 displacement on that axis.",
+    "Deprecated — use Displace (it now warps splines and points too). Per-anchor positional jitter: samples optional X-noise and Y-noise images at each anchor's own UV and displaces by the sampled value mapped to [-1..1] times the strength.",
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   inputs: [

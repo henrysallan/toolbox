@@ -22,6 +22,7 @@ import ImageGeneratePanel from "./ImageGeneratePanel";
 import BgRemovePanel from "./BgRemovePanel";
 import SegmentPanel from "./SegmentPanel";
 import DepthAnythingPanel from "./DepthAnythingPanel";
+import DatamoshPanel from "./DatamoshPanel";
 import ColorCorrectionPanel from "./ColorCorrectionPanel";
 import RgbCurvesPanel from "./RgbCurvesPanel";
 import AutoLayoutPanel from "./AutoLayoutPanel";
@@ -74,6 +75,132 @@ function ExposeIcon({ size = 9 }: { size?: number }) {
 
 function ControlIcon({ size = 11 }: { size?: number }) {
   return <MaskGlyph src="/ControlSymbol.svg" width={size} height={size} />;
+}
+
+// On/off switch pill — a rounded track with a knob that slides right and turns
+// accent-blue when on. Used as a ParamDef group header's enable toggle (in
+// place of a checkbox). Purely visual; the parent owns the click.
+function SwitchPill({ on }: { on: boolean }) {
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        position: "relative",
+        width: 26,
+        height: 15,
+        borderRadius: 999,
+        boxSizing: "border-box",
+        background: on ? "#3b82f6" : "#27272a",
+        border: `1px solid ${on ? "#3b82f6" : "#3f3f46"}`,
+        transition: "background 0.14s ease, border-color 0.14s ease",
+      }}
+    >
+      <span
+        style={{
+          position: "absolute",
+          top: 1,
+          left: on ? 12 : 1,
+          width: 11,
+          height: 11,
+          borderRadius: 999,
+          background: on ? "#fff" : "#a1a1aa",
+          transition: "left 0.14s ease, background 0.14s ease",
+        }}
+      />
+    </span>
+  );
+}
+
+// Collapsible group header bar — a rounded rectangle holding the enable pill,
+// the animator label, and (when there are options) a collapse chevron, all
+// INSIDE the rectangle. Clicking the bar toggles collapse; the pill toggles
+// the underlying boolean (and stops propagation so it doesn't also collapse).
+function GroupHeader({
+  label,
+  enabled,
+  onToggleEnabled,
+  hasChildren,
+  collapsed,
+  onToggleCollapsed,
+}: {
+  label: string;
+  enabled: boolean;
+  onToggleEnabled: () => void;
+  hasChildren: boolean;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}) {
+  return (
+    <div
+      onClick={hasChildren ? onToggleCollapsed : undefined}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "5px 8px",
+        background: "#141414",
+        border: "1px solid #27272a",
+        borderRadius: 6,
+        cursor: hasChildren ? "pointer" : "default",
+        userSelect: "none",
+      }}
+    >
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleEnabled();
+        }}
+        aria-label={`Toggle ${label}`}
+        aria-pressed={enabled}
+        style={{
+          background: "transparent",
+          border: "none",
+          padding: 0,
+          cursor: "pointer",
+          display: "inline-flex",
+          flexShrink: 0,
+        }}
+      >
+        <SwitchPill on={enabled} />
+      </button>
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          fontSize: 11,
+          color: enabled ? "#e4e4e7" : "#a1a1aa",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {label}
+      </span>
+      {hasChildren && (
+        <svg
+          width="9"
+          height="9"
+          viewBox="0 0 8 8"
+          style={{
+            flexShrink: 0,
+            color: "#a1a1aa",
+            transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)",
+            transition: "transform 0.12s ease",
+          }}
+        >
+          <path
+            d="M1 2.5 L4 5.5 L7 2.5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      )}
+    </div>
+  );
 }
 
 // NOTE: Auto-keyframe on parameter edits (spec §2.2 / §2.3) is NOT done
@@ -259,6 +386,20 @@ export default function ParamPanel({
     : undefined;
   const def = selected ? getNodeDef(selected.data.defType) : undefined;
 
+  // Collapsed state for ParamDef groups (e.g. the Text node's per-character
+  // animators), keyed `${nodeId}:${groupId}`. Default expanded; the header
+  // caret toggles it. Purely UI — never touches stored params.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+    () => new Set()
+  );
+  const toggleGroup = (key: string) =>
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
   return (
     <div
       className="no-scrollbar"
@@ -346,6 +487,19 @@ export default function ParamPanel({
           node={selected}
           edges={edges ?? []}
           getRefImageBlob={getRefImageBlob}
+          captureNodeFrames={captureNodeFrames}
+          sceneFrames={sceneFrames}
+          onParamChange={onParamChange}
+        />
+      ) : selected && selected.data.defType === "datamosh" ? (
+        // Datamosh: bake two input clips into the node, drag them to overlap on
+        // a mini-timeline, tune the flow params, then Mosh-bake the result.
+        // Same offline frame-stepper as Depth/Segment, driven on both the input
+        // upstreams (clip bakes) and the node itself (the mosh build).
+        <DatamoshPanel
+          key={selected.id}
+          node={selected}
+          edges={edges ?? []}
           captureNodeFrames={captureNodeFrames}
           sceneFrames={sceneFrames}
           onParamChange={onParamChange}
@@ -610,7 +764,9 @@ export default function ParamPanel({
             if (visible.length === 0) {
               return <div style={{ color: "#52525b" }}>(no parameters)</div>;
             }
-            return visible.map((p, i) => {
+            // One param's row element — shared by standalone rows, group
+            // headers, and grouped children.
+            const renderRow = (p: ParamDef) => {
               const exposable = paramSocketType(p.type) !== null;
               const isExposed = exposedSet.has(p.name);
               const isControlled = controlSet.has(p.name);
@@ -638,7 +794,6 @@ export default function ParamPanel({
                   }
                 : undefined;
               return (
-                <StaggerItem key={`${selected.id}:${p.name}`} index={i}>
                 <ParamRow
                   param={p}
                   value={selected.data.params[p.name]}
@@ -694,6 +849,82 @@ export default function ParamPanel({
                       : undefined
                   }
                 />
+              );
+            };
+
+            // Fold params sharing a `group` id into a collapsible unit headed
+            // by the `groupHeader` param (the rest indent under it). Ungrouped
+            // params render inline, preserving declaration order.
+            type Unit =
+              | { kind: "row"; p: ParamDef }
+              | { kind: "group"; id: string; header: ParamDef | null; children: ParamDef[] };
+            const units: Unit[] = [];
+            const gIndex = new Map<string, number>();
+            for (const p of visible) {
+              if (p.group) {
+                let idx = gIndex.get(p.group);
+                if (idx == null) {
+                  units.push({ kind: "group", id: p.group, header: null, children: [] });
+                  idx = units.length - 1;
+                  gIndex.set(p.group, idx);
+                }
+                const g = units[idx] as Extract<Unit, { kind: "group" }>;
+                if (p.groupHeader) g.header = p;
+                else g.children.push(p);
+              } else {
+                units.push({ kind: "row", p });
+              }
+            }
+
+            return units.map((u, ui) => {
+              if (u.kind === "row") {
+                return (
+                  <StaggerItem key={`${selected.id}:${u.p.name}`} index={ui}>
+                    {renderRow(u.p)}
+                  </StaggerItem>
+                );
+              }
+              const gkey = `${selected.id}:${u.id}`;
+              const collapsed = collapsedGroups.has(gkey);
+              const hasChildren = u.children.length > 0;
+              const header = u.header;
+              const enabled = header
+                ? selected.data.params[header.name] === true
+                : false;
+              const headerLabel = header ? header.label ?? header.name : u.id;
+              return (
+                <StaggerItem key={`g:${selected.id}:${u.id}`} index={ui}>
+                  <div>
+                    {header && (
+                      <GroupHeader
+                        label={headerLabel}
+                        enabled={enabled}
+                        onToggleEnabled={() =>
+                          onParamChange(selected.id, header.name, !enabled)
+                        }
+                        hasChildren={hasChildren}
+                        collapsed={collapsed}
+                        onToggleCollapsed={() => toggleGroup(gkey)}
+                      />
+                    )}
+                    {hasChildren && !collapsed && (
+                      <div
+                        style={{
+                          marginLeft: 6,
+                          paddingLeft: 9,
+                          borderLeft: "1px solid #27272a",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 7,
+                          marginTop: 6,
+                        }}
+                      >
+                        {u.children.map((c) => (
+                          <div key={`${selected.id}:${c.name}`}>{renderRow(c)}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </StaggerItem>
               );
             });

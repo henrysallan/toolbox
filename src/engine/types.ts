@@ -971,6 +971,14 @@ export interface ParamDef {
   // Optional predicate over the node's current params. Returning false hides
   // the row in the UI without affecting the underlying stored value.
   visibleIf?: (params: Record<string, unknown>) => boolean;
+  // Collapsible grouping (ParamPanel-only hint; engine ignores it). Params
+  // sharing a `group` id are rendered nested under the one flagged
+  // `groupHeader: true` (typically a boolean toggle), with a caret on the
+  // header that collapses/expands the rest. Children still obey their own
+  // `visibleIf`, so a disabled group shows just its header. Used by the Text
+  // node's per-character animators to keep the panel scannable.
+  group?: string;
+  groupHeader?: boolean;
 }
 
 export interface ComputeArgs {

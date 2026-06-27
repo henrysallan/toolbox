@@ -318,3 +318,14 @@ For the layers editor, we would create a new toggle in addition to tracks and gr
 
 150. Hover state for bezier points in spline draw
 
+151. Datamosh node. I am not totally sure what the right idea is here. The starting point is that I think this is a node where you need to bake - maybe not! idk we should investigate. And then the next point is that you need to have 2 input layers with time. My thought is that its a node with 2 image sockets. THen in the parameters window we have a little custom UI (we can reuse stuff from the layers panel) where we can drag the two clips around so that they overlap and then the overlap is what gets moshed. We would want lots of control over the moshing, different algorithims parameters etc. 
+
+152. spiral primitives, cross primitive (splines)
+
+153. a bunch of preset stackable/additive text animations. per character type on, image field for position offset, image field for opacity. 
+
+154. abstract preset node for vizualizing bezier handles basically we want to pipe in a spline, and then get new splines out that are 
+
+155. something we are constantly wanting to do is to use noise to push around points or spline points. We have a set position node that i feel like could do this, but it only accepts a vec2 right now. Could we add an 2 image field inputs for X and Y? Is that the right idea?
+
+156. So my new idea is to have a claude API chat that lets us make group nodes. I think the idea of registering a user generated new node is too complex but we could have 1. a simple expression node that lets us type javascript with specialized 

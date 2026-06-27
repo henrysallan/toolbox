@@ -8,6 +8,8 @@ import type {
 import {
   SPLINE_FILL_INPUT,
   SPLINE_RASTER_PARAMS,
+  SPLINE_TRIM_PARAMS,
+  applyTrimParams,
   buildSplineElement,
   disposeSplineRasterAux,
   rasterizeSplineAux,
@@ -105,6 +107,7 @@ export const circleNode: NodeDefinition = {
     },
     // Bundled rasterizer — gives the primitive an `image` output so it's
     // immediately viewable.
+    ...SPLINE_TRIM_PARAMS,
     ...SPLINE_RASTER_PARAMS,
   ],
   primaryOutput: "spline",
@@ -121,7 +124,10 @@ export const circleNode: NodeDefinition = {
     const rx = Math.max(0, (params.radiusX as number) ?? 0.25);
     const ry = Math.max(0, (params.radiusY as number) ?? 0.25);
     const subpath = makeCircleSubpath(cx, cy, rx, ry);
-    const out: SplineValue = { kind: "spline", subpaths: [subpath] };
+    const out: SplineValue = {
+      kind: "spline",
+      subpaths: applyTrimParams([subpath], params),
+    };
     const fillImage = inputs.fill?.kind === "image" ? inputs.fill : null;
     const image = rasterizeSplineAux(ctx, nodeId, out.subpaths, params, fillImage);
     const element = buildSplineElement(ctx, out.subpaths, params);

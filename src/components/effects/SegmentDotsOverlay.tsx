@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { SegmentDot } from "@/lib/ai/segment";
+import { rectsEqual } from "./overlay-rect";
 
 // Click-to-place prompt dots for the Segment Anything node. Mounted while
 // a segment node is selected (same gating as the spline pen overlay).
@@ -39,8 +40,13 @@ export default function SegmentDotsOverlay({
   // with the initial measure deferred to a rAF so the effect body itself
   // doesn't set state).
   useEffect(() => {
+    // Idempotent update — avoids a ResizeObserver feedback loop (overlay-rect.ts).
     const update = () =>
-      setRect(canvas ? canvas.getBoundingClientRect() : null);
+      setRect((prev) => {
+        if (!canvas) return prev === null ? prev : null;
+        const r = canvas.getBoundingClientRect();
+        return rectsEqual(prev, r) ? prev : r;
+      });
     const raf = requestAnimationFrame(update);
     if (!canvas) return () => cancelAnimationFrame(raf);
     const ro = new ResizeObserver(update);

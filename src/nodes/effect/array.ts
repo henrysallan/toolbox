@@ -138,7 +138,7 @@ export const arrayNode: NodeDefinition = {
   name: "Array",
   category: "utility",
   description:
-    "Tile an image, spline, or points into a grid. Image mode supports modulator inputs for per-cell scale/position/rotation variation; spline / point modes emit transformed CPU geometry — feed Jitter or Transform downstream for noise / uniform tweaks.",
+    "Tile an image, spline, or points into a grid. Image mode supports modulator inputs for per-cell scale/position/rotation variation; spline / point modes emit transformed CPU geometry — feed Displace or Transform downstream for noise / uniform tweaks.",
   backend: "webgl2",
   inputs: [{ name: "instance", type: "image", required: true }],
   resolveInputs(params): InputSocketDef[] {

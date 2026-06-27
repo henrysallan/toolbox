@@ -768,6 +768,14 @@ export default function NodeEditor({
     ) {
       return true;
     }
+    // Displace's polymorphic source socket (see isValidConnection).
+    if (
+      targetDefType === "displace" &&
+      targetHandle === "in:image" &&
+      (src === "spline" || src === "points")
+    ) {
+      return true;
+    }
     return false;
   };
 
@@ -1106,6 +1114,18 @@ export default function NodeEditor({
         srcType === "image_group" ||
         srcType === "spline" ||
         srcType === "points")
+    ) {
+      return true;
+    }
+    // Displace's source socket is polymorphic — it accepts image, spline, or
+    // points and retypes itself (and its output) via resolveInputs'
+    // connectedTypes. Allow the spline/points wire even though the socket
+    // reads "image" by default before anything is connected (image→image and
+    // mask/element→image are already permitted above).
+    if (
+      targetNode.data.defType === "displace" &&
+      c.targetHandle === "in:image" &&
+      (srcType === "spline" || srcType === "points")
     ) {
       return true;
     }

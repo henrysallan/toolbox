@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { rectsEqual } from "./overlay-rect";
 import {
   WebGPUTestScene,
   type TestSceneOptions,
@@ -75,7 +76,11 @@ export default function WebGPUParticleOverlay({
       setRect(null);
       return;
     }
-    const update = () => setRect(canvas.getBoundingClientRect());
+    // Idempotent update — avoids a ResizeObserver feedback loop (overlay-rect.ts).
+    const update = () => {
+      const r = canvas.getBoundingClientRect();
+      setRect((prev) => (rectsEqual(prev, r) ? prev : r));
+    };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(canvas);

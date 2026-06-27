@@ -7,6 +7,8 @@ import type {
 } from "@/engine/types";
 import {
   SPLINE_FILL_INPUT,
+  SPLINE_TRIM_PARAMS,
+  applyTrimParams,
   disposeSplineRasterAux,
   rasterizeSplineAux,
 } from "./spline-raster-aux";
@@ -47,6 +49,7 @@ export const splineDrawNode: NodeDefinition = {
       default: EMPTY_SPLINE,
       hidden: true,
     },
+    ...SPLINE_TRIM_PARAMS,
     {
       name: "stroke_enabled",
       label: "Stroke",
@@ -105,9 +108,10 @@ export const splineDrawNode: NodeDefinition = {
   compute({ inputs, params, ctx, nodeId }) {
     const spline =
       (params.spline as SplineParamValue | null | undefined) ?? EMPTY_SPLINE;
+    const subpaths = applyTrimParams(spline.subpaths, params);
     const splineOut: SplineValue = {
       kind: "spline",
-      subpaths: spline.subpaths,
+      subpaths,
     };
 
     const strokeOn = !!params.stroke_enabled;
@@ -121,7 +125,7 @@ export const splineDrawNode: NodeDefinition = {
     const image = rasterizeSplineAux(
       ctx,
       nodeId,
-      spline.subpaths,
+      subpaths,
       params,
       fillImage
     );

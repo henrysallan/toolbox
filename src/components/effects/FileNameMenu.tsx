@@ -56,11 +56,14 @@ export interface FileNameMenuProps {
   onRename: (next: string) => Promise<void> | void;
   // Called after the user confirms the visibility change in the modal.
   onRequestToggleVisibility: (next: boolean) => void;
-  // Save from the dropdown — same semantics as File → Save.
+  // Save the current project in place — same semantics as File → Save.
+  // The dropdown only routes here when the name is unchanged.
   onSave: () => void;
-  // Save a brand-new (unsaved) project directly under the given name —
-  // used so the dropdown's Save doesn't re-prompt for a name the user
-  // already typed here. Handles name collisions like the Save As flow.
+  // Save a project under the given name as a NEW row, then make it the
+  // current project. The dropdown's Save uses this both for a brand-new
+  // (unsaved) project and as a "save as" when the user typed a name that
+  // differs from the current project's. Handles name collisions like the
+  // Save As flow (overwrites a same-named row of the user's).
   onSaveAsNamed: (name: string) => Promise<void> | void;
   // Non-null when the current draft matches another of the user's
   // existing projects (excluding the current row). The Rename button
@@ -441,6 +444,13 @@ export default function FileNameMenu({
               draftTrimmed !== name
                 ? findConflict?.(draftTrimmed) ?? null
                 : null;
+            // The green Save button is a "save as": when the user typed
+            // a name that differs from the current project (or there's
+            // no project row yet) it forks the current graph into a NEW
+            // project under that name. An unchanged name saves progress
+            // to the current row.
+            const savesAsNew =
+              !!draftTrimmed && (!projectId || draftTrimmed !== name);
             return (
               <>
                 {conflict && (
@@ -508,13 +518,16 @@ export default function FileNameMenu({
                     )}
                     <button
                       onClick={() => {
-                        const trimmed = draft.trim();
                         setOpen(false);
-                        // New, unsaved project: save straight away with the
-                        // name the user typed here instead of reopening the
-                        // Save As modal (which would re-prompt for a name).
-                        if (!projectId && trimmed) {
-                          Promise.resolve(onSaveAsNamed(trimmed)).catch(
+                        // "Save as": fork the current graph into a new
+                        // project under the typed name and switch to
+                        // working in it (onSaveAsNamed repoints the
+                        // current-project state) — the original row stays
+                        // put. Use Rename (beside this) to relabel the
+                        // current project in place. An unchanged name just
+                        // saves progress to the current row.
+                        if (savesAsNew) {
+                          Promise.resolve(onSaveAsNamed(draftTrimmed)).catch(
                             () => {}
                           );
                         } else {
@@ -522,6 +535,11 @@ export default function FileNameMenu({
                         }
                       }}
                       disabled={!canEdit}
+                      title={
+                        savesAsNew && projectId
+                          ? "Save a new project under this name and continue working in it. The current project is left unchanged."
+                          : "Save the current project."
+                      }
                       style={{
                         ...btnStyle(),
                         background: "#16a34a",
@@ -531,7 +549,7 @@ export default function FileNameMenu({
                         opacity: canEdit ? 1 : 0.5,
                       }}
                     >
-                      Save
+                      {savesAsNew && projectId ? "Save as" : "Save"}
                     </button>
                   </div>
                 </div>

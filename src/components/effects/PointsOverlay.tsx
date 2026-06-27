@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PointsValue } from "@/engine/types";
 import { aspectCorrectY } from "@/engine/aspect";
+import { rectsEqual } from "./overlay-rect";
 
 // Read-only visualization for a points value. Renders dots via a single
 // canvas2D draw over the preview canvas — no per-point JSX/SVG
@@ -25,10 +26,14 @@ export default function PointsOverlay({ canvas, value }: Props) {
 
   useEffect(() => {
     if (!canvas) {
-      setRect(null);
+      setRect((prev) => (prev === null ? prev : null));
       return;
     }
-    const update = () => setRect(canvas.getBoundingClientRect());
+    // Guard against a ResizeObserver feedback loop — see overlay-rect.ts.
+    const update = () => {
+      const r = canvas.getBoundingClientRect();
+      setRect((prev) => (rectsEqual(prev, r) ? prev : r));
+    };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(canvas);

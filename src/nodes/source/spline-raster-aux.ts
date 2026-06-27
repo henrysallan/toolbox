@@ -21,6 +21,7 @@ import {
   type ElementFit,
 } from "@/engine/element";
 import { OPACITY_PARAM } from "@/engine/conventions";
+import { trimSubpaths } from "@/engine/spline-trim";
 
 // Shared "view this spline" rasterizer bundled into the spline primitive
 // nodes (Circle, Rectangle, …). Each primitive keeps its `spline` output and
@@ -75,6 +76,28 @@ export const SPLINE_RASTER_PARAMS: ParamDef[] = [
   // see OPACITY_PARAM in engine/conventions.
   OPACITY_PARAM,
 ];
+
+// Trim Paths — two scalars that reveal only the [start, end] arc-length window
+// of the primitive's spline (across all subpaths). Both keyframe for free, so
+// animating `trim_end` 0→1 draws the shape on. Spread into a primitive's
+// `params` (geometry params first, then trim, then the raster params), and run
+// the geometry through `applyTrimParams` before output. See spline-trim.ts.
+export const SPLINE_TRIM_PARAMS: ParamDef[] = [
+  { name: "trim_start", label: "Trim start", type: "scalar", min: 0, max: 1, step: 0.001, default: 0 },
+  { name: "trim_end", label: "Trim end", type: "scalar", min: 0, max: 1, step: 0.001, default: 1 },
+];
+
+// Apply the bundled trim params to a set of subpaths. Identity (returns the
+// same array) when trim_start/trim_end are at their 0/1 defaults, so untrimmed
+// primitives pay nothing.
+export function applyTrimParams(
+  subpaths: SplineSubpath[],
+  params: Record<string, unknown>
+): SplineSubpath[] {
+  const s = typeof params.trim_start === "number" ? params.trim_start : 0;
+  const e = typeof params.trim_end === "number" ? params.trim_end : 1;
+  return trimSubpaths(subpaths, s, e);
+}
 
 // Optional image input that drives the fill instead of the flat
 // `fill_color`. Declared as `image`, so the existing mask→image and

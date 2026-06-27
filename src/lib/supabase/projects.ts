@@ -173,6 +173,42 @@ export function invalidateProjectCaches() {
 // mutations (auto-invalidate)
 // ========================================================================
 
+// A Supabase PostgrestError collapses to "Object" / "[object Object]" in the
+// browser console, hiding the actual reason a write failed (statement timeout
+// on a huge jsonb body → code 57014, an unsupported NUL char in the JSON → 22P05,
+// RLS denial, etc.). Expand the useful fields plus the serialized payload size
+// so a failed save is diagnosable instead of opaque. The graph object is only
+// measured here, never mutated.
+function logProjectWriteError(
+  where: string,
+  error: unknown,
+  graph: SavedProject
+): void {
+  const e = (error ?? {}) as {
+    message?: string;
+    code?: string;
+    details?: string;
+    hint?: string;
+  };
+  let bytes = -1;
+  try {
+    bytes = JSON.stringify(graph).length;
+  } catch {
+    // Circular / non-serializable — JSON.stringify would also have failed
+    // before the request, but be defensive so logging never throws.
+  }
+  // eslint-disable-next-line no-console
+  console.error(`${where} failed:`, {
+    message: e.message,
+    code: e.code,
+    details: e.details,
+    hint: e.hint,
+    graphMB: bytes >= 0 ? +(bytes / 1_048_576).toFixed(2) : null,
+    nodes: graph?.nodes?.length,
+    raw: error,
+  });
+}
+
 export async function saveProject(
   name: string,
   graph: SavedProject,
@@ -203,7 +239,7 @@ export async function saveProject(
       is_public: isPublic,
     });
   if (error) {
-    console.error("saveProject failed:", error);
+    logProjectWriteError("saveProject", error, graph);
     // Row insert failed — drop the orphan blob we just uploaded.
     if (thumbnailUrl) await deleteThumbnail(userId, projectId);
     return null;
@@ -246,7 +282,7 @@ export async function updateProject(
     .update(payload)
     .eq("id", id);
   if (error) {
-    console.error("updateProject failed:", error);
+    logProjectWriteError("updateProject", error, graph);
     return false;
   }
   invalidateProjectCaches();

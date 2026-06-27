@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { rectsEqual } from "./overlay-rect";
 
 // On-canvas handles for the Gradient node. Linear mode shows two endpoint
 // handles joined by a line (start → end); radial mode shows a center handle
@@ -82,7 +83,11 @@ export default function GradientOverlay({
       setRect(null);
       return;
     }
-    const update = () => setRect(canvas.getBoundingClientRect());
+    // Idempotent update — avoids a ResizeObserver feedback loop (overlay-rect.ts).
+    const update = () => {
+      const r = canvas.getBoundingClientRect();
+      setRect((prev) => (rectsEqual(prev, r) ? prev : r));
+    };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(canvas);
