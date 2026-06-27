@@ -1,9 +1,25 @@
 # Electron desktop build + native export / file I/O (spec, 2026-06-26)
 
-Status: **draft for review**. Goal of this doc: dual-deploy the existing web
-app as a macOS Electron app whose **only** behavioral difference is that heavy
-export runs through **native ffmpeg** and file open/save goes through **native
-OS dialogs** — with zero duplicated feature work between the two targets.
+Status: **in progress** (updated 2026-06-27). Goal of this doc: dual-deploy the
+existing web app as a macOS Electron app whose **only** behavioral difference is
+that heavy export runs through **native ffmpeg** and file open/save goes through
+**native OS dialogs** — with zero duplicated feature work between the two targets.
+
+Implementation status:
+- **M1 shell + platform adapter** — done.
+- **M2 native file I/O** (save/open/folder dialogs, .toolbox, media relink) — done.
+- **M3 native ffmpeg video export** (rawvideo→stdin streaming) — done; verified.
+- **M3.1 transcode-on-import** — added: videos Electron's Chromium can't decode
+  (10-bit/4:2:2 H.264, HEVC, ProRes) are transcoded via native ffmpeg on import
+  (10-bit→VP9 profile 2, 8-bit→H.264). Not in the original plan; surfaced in testing.
+- **M4 GIF + sequence** — sequence delivery is native via M2; GIF works in the
+  desktop build via the existing ffmpeg.wasm + gifsicle-wasm path (runs fine in
+  Electron's Chromium). Native GIF *encoding* deferred per this doc's own hedge
+  (below) — it's a perf optimization, not a fix, and GIF isn't the pain point.
+- **M5 packaging** — electron-builder config (lean `files`, asarUnpack ffmpeg-static,
+  unsigned mac dmg); `npm run electron:build`. Verified a `--dir` build (app.asar
+  lean, ffmpeg binary unpacked & executable). Notarization still deferred.
+- **M6 docs/devlist** — pending.
 
 ## Problem
 

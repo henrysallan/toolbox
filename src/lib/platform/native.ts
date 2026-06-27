@@ -104,6 +104,13 @@ async function encodeVideo(
   };
 }
 
+async function transcodeVideoForPlayback(
+  bytes: ArrayBuffer,
+  name: string
+): Promise<{ bytes: ArrayBuffer; type: string } | null> {
+  return bridge().transcodeForPlayback({ bytes, name });
+}
+
 export const nativePlatform: Platform = {
   isNative: true,
   get canEncodeNative() {
@@ -113,4 +120,5 @@ export const nativePlatform: Platform = {
   pickSaveFolder,
   pickOpenFiles,
   encodeVideo,
+  transcodeVideoForPlayback,
 };

@@ -70,4 +70,12 @@ export interface Platform {
     spec: NativeVideoEncodeSpec,
     onProgress?: (label: string, fraction: number) => void
   ): Promise<VideoEncodeSession | null>;
+
+  /** Transcode a video the renderer's <video> couldn't decode into a
+   *  Chromium-playable form (native ffmpeg). Returns the playable bytes +
+   *  mime, or null. Only present on the native build. */
+  transcodeVideoForPlayback?(
+    bytes: ArrayBuffer,
+    name: string
+  ): Promise<{ bytes: ArrayBuffer; type: string } | null>;
 }

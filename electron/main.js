@@ -42,6 +42,15 @@ function createWindow() {
     if (DEV_URL) setTimeout(load, 1000);
   });
 
+  // A file dropped outside an app drop-zone would otherwise make the window
+  // navigate to file://… and blank the app. Block file:// navigations only —
+  // https redirects (OAuth, full-page sign-in) must still work.
+  const blockFileNav = (e, url) => {
+    if (url.startsWith("file://")) e.preventDefault();
+  };
+  win.webContents.on("will-navigate", blockFileNav);
+  win.webContents.on("will-frame-navigate", (e) => blockFileNav(e, e.url));
+
   // Open genuinely external links (different origin, e.g. docs) in the system
   // browser. Same-origin popups (and, for now, OAuth provider windows) open
   // in-app so sign-in works. Strict origin-locking is part of the security

@@ -1721,17 +1721,21 @@ function EffectsShell({
         } else if (kind === "video") {
           nodeType = "video-source";
           const mod = await import("@/lib/video");
-          paramValue = await mod.registerVideoFile(file);
+          paramValue = await mod.registerVideoFile(file, flashToast);
         } else {
           nodeType = "audio-source";
           const mod = await import("@/lib/audio");
           paramValue = await mod.registerAudioFile(file);
         }
       } catch (err) {
-        // Bad SVG text, corrupt video metadata, etc. Surface without
-        // crashing the editor — user can retry with a different file.
+        // Bad SVG text, corrupt video metadata, unsupported codec, etc.
+        // Surface without crashing the editor — user can retry with a
+        // different file. Toast so the failure isn't silent.
         // eslint-disable-next-line no-console
-        console.warn(`Failed to load dropped ${kind}:`, err);
+        console.warn(`Failed to load ${kind}:`, err);
+        flashToast(
+          err instanceof Error ? err.message : `Failed to load ${kind}`
+        );
         return;
       }
 
@@ -1778,7 +1782,7 @@ function EffectsShell({
       }
       setNodes((prev) => [...prev, newNode]);
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, spawnNode, navigateScope]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, spawnNode, navigateScope, flashToast]
   );
 
   // Read the upstream node's primary IMAGE output as a PNG blob.

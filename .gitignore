@@ -45,3 +45,6 @@ next-env.d.ts
 /src/export-template/dist-single
 /src/export-template/node_modules
 /public/export-template
+
+# electron-builder output
+/dist-electron

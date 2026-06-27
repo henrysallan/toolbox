@@ -62,6 +62,13 @@ declare global {
     onEncodeProgress(
       cb: (e: { sessionId: string; label: string; fraction: number }) => void
     ): () => void;
+
+    // ---- Transcode-on-import (Milestone 3.1) ------------------------------
+    /** Transcode an undecodable video to a Chromium-playable form. */
+    transcodeForPlayback(opts: {
+      bytes: ArrayBuffer;
+      name: string;
+    }): Promise<{ bytes: ArrayBuffer; type: string } | null>;
   }
 
   interface Window {

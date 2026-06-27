@@ -1,4 +1,5 @@
 import type { VideoFileParamValue } from "@/engine/types";
+import { platform } from "./platform";
 
 // Load a user-picked video file and wire it up so the pipeline re-evaluates
 // on every new frame.
@@ -13,8 +14,34 @@ import type { VideoFileParamValue } from "@/engine/types";
 // The returned value owns the <video> element and its ObjectURL; we don't
 // revoke until the caller replaces or clears the param.
 export async function registerVideoFile(
-  file: File
+  file: File,
+  onStatus?: (message: string) => void
 ): Promise<VideoFileParamValue> {
+  try {
+    return await loadVideoElement(file);
+  } catch (err) {
+    // Desktop fallback: Electron's bundled Chromium decodes fewer formats
+    // than a system browser, so files it can't play (10-bit / 4:2:2 H.264,
+    // HEVC, ProRes, …) fail with MediaError code 4. Transcode via the bundled
+    // native ffmpeg to a Chromium-playable form and retry. Original
+    // filename/size are kept for relink/display.
+    if (platform.canEncodeNative && platform.transcodeVideoForPlayback) {
+      onStatus?.("Transcoding video for playback…");
+      const res = await platform.transcodeVideoForPlayback(
+        await file.arrayBuffer(),
+        file.name
+      );
+      if (res) {
+        const playable = new File([res.bytes], file.name, { type: res.type });
+        const v = await loadVideoElement(playable);
+        return { ...v, filename: file.name, size: file.size };
+      }
+    }
+    throw err;
+  }
+}
+
+async function loadVideoElement(file: File): Promise<VideoFileParamValue> {
   const url = URL.createObjectURL(file);
   const video = document.createElement("video");
   video.src = url;
@@ -31,7 +58,24 @@ export async function registerVideoFile(
     };
     const onErr = () => {
       cleanup();
-      reject(new Error(`Video load failed: ${file.name}`));
+      // Free this failed attempt's ObjectURL before we reject (the transcode
+      // fallback creates a fresh element/URL).
+      try {
+        video.removeAttribute("src");
+        video.load();
+        URL.revokeObjectURL(url);
+      } catch {
+        // best-effort
+      }
+      // Surface the MediaError so codec problems are diagnosable. Code 4
+      // (SRC_NOT_SUPPORTED) typically means the build can't decode this
+      // format — common in Electron, whose bundled Chromium decodes fewer
+      // codecs than a system browser (e.g. HEVC/H.265, ProRes).
+      const me = video.error;
+      const detail = me
+        ? ` (MediaError code ${me.code}${me.message ? `: ${me.message}` : ""})`
+        : "";
+      reject(new Error(`Video load failed: ${file.name}${detail}`));
     };
     const cleanup = () => {
       video.removeEventListener("loadedmetadata", onMeta);

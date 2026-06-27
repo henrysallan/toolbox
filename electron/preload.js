@@ -42,4 +42,7 @@ contextBridge.exposeInMainWorld("toolboxNative", {
     ipcRenderer.on("toolbox:encodeProgress", listener);
     return () => ipcRenderer.removeListener("toolbox:encodeProgress", listener);
   },
+
+  // ---- Transcode-on-import ----
+  transcodeForPlayback: (opts) => ipcRenderer.invoke("toolbox:transcodeForPlayback", opts),
 });

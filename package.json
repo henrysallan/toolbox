@@ -2,6 +2,9 @@
   "name": "toolbox",
   "version": "0.1.0",
   "private": true,
+  "description": "Node-graph motion design tool",
+  "author": "The Collected Works",
+  "main": "electron/main.js",
   "scripts": {
     "dev": "next dev --webpack",
     "build": "next build",
@@ -9,8 +12,31 @@
     "lint": "eslint",
     "electron": "electron electron/main.js",
     "electron:dev": "TOOLBOX_DEV_URL=http://localhost:3000 electron electron/main.js",
+    "electron:build": "electron-builder --mac",
     "build:export-template": "node scripts/build-export-template.mjs",
     "install:export-template": "npm --prefix src/export-template install"
+  },
+  "build": {
+    "appId": "com.thecollectedworks.toolbox",
+    "productName": "Toolbox",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/**/*",
+      "src/lib/export-ffmpeg-args.js",
+      "package.json",
+      "!node_modules/**/*",
+      "node_modules/ffmpeg-static/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**/*"
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.graphics-design",
+      "identity": null
+    }
   },
   "dependencies": {
     "@ffmpeg/ffmpeg": "^0.12.15",
@@ -24,6 +50,7 @@
     "atrament": "^5.1.0",
     "bezier-js": "^6.1.4",
     "d3-delaunay": "^6.0.4",
+    "ffmpeg-static": "^5.3.0",
     "gifsicle-wasm-browser": "^1.5.19",
     "jszip": "^3.10.1",
     "mediabunny": "^1.41.0",
@@ -42,9 +69,9 @@
     "@types/react-dom": "^19",
     "@webgpu/types": "^0.1.69",
     "electron": "^42.5.0",
+    "electron-builder": "^26.15.3",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
-    "ffmpeg-static": "^5.3.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

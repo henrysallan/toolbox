@@ -11,7 +11,13 @@ const fs = require("fs");
 const fsp = require("fs/promises");
 const os = require("os");
 const path = require("path");
-const ffmpegPath = require("ffmpeg-static");
+// In a packaged app the binary is unpacked from the asar (see asarUnpack in
+// package.json build config), so the path ffmpeg-static reports inside
+// app.asar must be redirected to app.asar.unpacked.
+let ffmpegPath = require("ffmpeg-static");
+if (ffmpegPath && ffmpegPath.includes("app.asar")) {
+  ffmpegPath = ffmpegPath.replace("app.asar", "app.asar.unpacked");
+}
 // Shared, validated arg builder — identical codec/ProRes/alpha behavior as the
 // web ffmpeg.wasm path.
 const { buildAudioArgs, buildEncoderArgs } = require("../src/lib/export-ffmpeg-args.js");
@@ -37,6 +43,35 @@ function progress(win, sessionId, label, fraction) {
   if (win && !win.isDestroyed()) {
     win.webContents.send("toolbox:encodeProgress", { sessionId, label, fraction });
   }
+}
+
+// Run ffmpeg to completion; resolve with the stderr tail, reject on failure.
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ffmpegPath, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    proc.stderr.setEncoding("utf8");
+    proc.stderr.on("data", (c) => { stderr = (stderr + c).slice(-8000); });
+    proc.on("error", reject);
+    proc.on("close", (code) =>
+      code === 0 ? resolve(stderr) : reject(new Error(`ffmpeg exited ${code}\n${stderr}`))
+    );
+  });
+}
+
+// Probe the input header. ffmpeg with no output exits non-zero but prints
+// stream info (incl. pixel format) to stderr — that's all we need.
+function probeInput(inPath) {
+  return new Promise((resolve) => {
+    const proc = spawn(ffmpegPath, ["-hide_banner", "-i", inPath], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    proc.stderr.setEncoding("utf8");
+    proc.stderr.on("data", (c) => { stderr += c; });
+    proc.on("error", () => resolve(""));
+    proc.on("close", () => resolve(stderr));
+  });
 }
 
 function register() {
@@ -150,6 +185,49 @@ function register() {
     if (s.audioPath) fsp.unlink(s.audioPath).catch(() => {});
     if (s.filePath) fsp.unlink(s.filePath).catch(() => {}); // drop partial output
     sessions.delete(sessionId);
+  });
+
+  // Transcode a video Chromium can't decode into a playable form. 10-bit
+  // sources go to VP9 profile 2 (preserves depth — matters for gradients);
+  // 8-bit sources take the fast H.264 path.
+  ipcMain.handle("toolbox:transcodeForPlayback", async (_event, { bytes, name }) => {
+    if (!ffmpegAvailable) throw new Error("native ffmpeg unavailable");
+    const id = ++counter;
+    const inExt = (name && path.extname(String(name))) || ".bin";
+    const inPath = path.join(os.tmpdir(), `toolbox-xc-in-${id}${inExt}`);
+    await fsp.writeFile(inPath, Buffer.from(bytes));
+    let outPath = null;
+    try {
+      const info = await probeInput(inPath);
+      const tenBit = /(10le|12le|10be|12be|p010|p016)/i.test(info);
+      let outArgs;
+      let outType;
+      if (tenBit) {
+        outPath = path.join(os.tmpdir(), `toolbox-xc-out-${id}.webm`);
+        outArgs = [
+          "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p10le",
+          "-b:v", "0", "-crf", "20", "-row-mt", "1",
+          "-deadline", "good", "-cpu-used", "5",
+          "-c:a", "libopus",
+        ];
+        outType = "video/webm";
+      } else {
+        outPath = path.join(os.tmpdir(), `toolbox-xc-out-${id}.mp4`);
+        outArgs = [
+          "-c:v", "libx264", "-pix_fmt", "yuv420p",
+          "-preset", "veryfast", "-crf", "18",
+          "-c:a", "aac", "-movflags", "+faststart",
+        ];
+        outType = "video/mp4";
+      }
+      await runFfmpeg(["-y", "-i", inPath, ...outArgs, outPath]);
+      const buf = await fsp.readFile(outPath);
+      const out = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+      return { bytes: out, type: outType };
+    } finally {
+      fsp.unlink(inPath).catch(() => {});
+      if (outPath) fsp.unlink(outPath).catch(() => {});
+    }
   });
 }
 
