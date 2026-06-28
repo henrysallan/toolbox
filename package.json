@@ -29,13 +29,14 @@
       "src/lib/export-ffmpeg-args.js",
       "package.json",
       "!node_modules/**/*",
-      "node_modules/ffmpeg-static/**/*"
+      "node_modules/ffmpeg-static/**/*",
+      ".next/standalone/**/*",
+      ".next/standalone/.next/**/*"
     ],
     "asarUnpack": [
-      "node_modules/ffmpeg-static/**/*"
-    ],
-    "extraResources": [
-      { "from": ".next/standalone", "to": "standalone" }
+      "node_modules/ffmpeg-static/**/*",
+      ".next/standalone/**/*",
+      ".next/standalone/.next/**/*"
     ],
     "mac": {
       "target": [

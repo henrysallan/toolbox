@@ -73,13 +73,31 @@ async function createWindow() {
   // Embedded standalone server.
   const url = serverUrl();
   installWindowGuards(win, url);
+  let ok = false;
   try {
     startServer();
     await waitForReady();
+    ok = true;
   } catch (e) {
     console.error("embedded server failed:", e);
   }
-  win.loadURL(url).catch((e) => console.error("loadURL failed:", e));
+  if (ok) {
+    const load = () => win.loadURL(url).catch(() => {});
+    win.webContents.on("did-fail-load", (_e, code, _d, _u, isMainFrame) => {
+      if (isMainFrame && code !== -3) setTimeout(load, 500);
+    });
+    load();
+  } else {
+    // Surface the failure instead of a silent black screen.
+    const msg =
+      "Toolbox couldn't start its local server. Try relaunching; if it persists, reinstall.";
+    win.loadURL(
+      "data:text/html;charset=utf-8," +
+        encodeURIComponent(
+          `<body style="background:#0a0a0a;color:#eee;font:14px -apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div>${msg}</div></body>`
+        )
+    );
+  }
 }
 
 app.whenReady().then(() => {

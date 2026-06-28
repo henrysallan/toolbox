@@ -18,11 +18,17 @@ const { app } = require("electron");
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.TOOLBOX_SERVER_PORT) || 38274;
 
-// Packaged: extraResources copies .next/standalone → Resources/standalone.
+// Packaged: bundled via files + asarUnpack → Resources/app.asar.unpacked/.next/standalone.
 // Unpackaged (`npm run desktop:prepare && npm run electron`): repo .next/standalone.
 function serverEntry() {
   return app.isPackaged
-    ? path.join(process.resourcesPath, "standalone", "server.js")
+    ? path.join(
+        process.resourcesPath,
+        "app.asar.unpacked",
+        ".next",
+        "standalone",
+        "server.js"
+      )
     : path.join(__dirname, "..", ".next", "standalone", "server.js");
 }
 
