@@ -180,7 +180,7 @@ function depthImageToCanvas(depth: DepthRawImage): HTMLCanvasElement {
 }
 
 function putCanvas(
-  rgba: Uint8ClampedArray,
+  rgba: Uint8ClampedArray<ArrayBuffer>,
   width: number,
   height: number
 ): HTMLCanvasElement {
