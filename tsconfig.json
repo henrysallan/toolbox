@@ -34,6 +34,8 @@
   "exclude": [
     "node_modules",
     "src/export-template",
-    "public/export-template"
+    "public/export-template",
+    ".next/standalone",
+    "dist-electron"
   ]
 }
