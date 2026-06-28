@@ -9,7 +9,7 @@
 // Spec: specdocs/062626_electron-native-export.md
 "use strict";
 
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, shell, ipcMain } = require("electron");
 const path = require("path");
 const { registerFileHandlers } = require("./files");
 const { register: registerFfmpeg } = require("./ffmpeg");
@@ -47,6 +47,9 @@ async function createWindow() {
     height: 1000,
     backgroundColor: "#0a0a0a",
     title: "Toolbox",
+    // Frameless: no native title bar / traffic lights. The app's nav bar is the
+    // title bar (custom window controls + an app-region drag handle).
+    frame: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -100,9 +103,27 @@ async function createWindow() {
   }
 }
 
+// Custom window controls (the renderer draws its own traffic lights since the
+// window is frameless).
+function registerWindowControls() {
+  ipcMain.on("toolbox:win:minimize", (e) =>
+    BrowserWindow.fromWebContents(e.sender)?.minimize()
+  );
+  ipcMain.on("toolbox:win:toggleMaximize", (e) => {
+    const w = BrowserWindow.fromWebContents(e.sender);
+    if (!w) return;
+    if (w.isMaximized()) w.unmaximize();
+    else w.maximize();
+  });
+  ipcMain.on("toolbox:win:close", (e) =>
+    BrowserWindow.fromWebContents(e.sender)?.close()
+  );
+}
+
 app.whenReady().then(() => {
   registerFileHandlers();
   registerFfmpeg();
+  registerWindowControls();
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

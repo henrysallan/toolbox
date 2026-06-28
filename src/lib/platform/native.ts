@@ -111,6 +111,12 @@ async function transcodeVideoForPlayback(
   return bridge().transcodeForPlayback({ bytes, name });
 }
 
+const windowControls = {
+  minimize: () => bridge().window.minimize(),
+  toggleMaximize: () => bridge().window.toggleMaximize(),
+  close: () => bridge().window.close(),
+};
+
 export const nativePlatform: Platform = {
   isNative: true,
   get canEncodeNative() {
@@ -121,4 +127,5 @@ export const nativePlatform: Platform = {
   pickOpenFiles,
   encodeVideo,
   transcodeVideoForPlayback,
+  windowControls,
 };

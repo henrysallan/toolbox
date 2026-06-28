@@ -8,6 +8,7 @@ import FileNameMenu, { type SaveState } from "./FileNameMenu";
 import NodeBrowserDropdown from "./NodeBrowserDropdown";
 import { useUser } from "@/lib/auth-context";
 import { CURRENT_VERSION } from "@/lib/changelog";
+import { platform } from "@/lib/platform";
 
 type MenuItem =
   | {
@@ -365,6 +366,13 @@ export default function MenuBar({
     },
   ];
 
+  // Frameless desktop build: the nav bar is the title bar. Detected after mount
+  // (client-only) so SSR/first-render markup matches and doesn't hydrate-mismatch.
+  const [frameless, setFrameless] = useState(false);
+  useEffect(() => {
+    setFrameless(platform.isNative && !!platform.windowControls);
+  }, []);
+
   return (
     <div
       ref={rootRef}
@@ -403,6 +411,8 @@ export default function MenuBar({
           zIndex: 0,
         }}
       />
+      {/* Custom traffic lights (desktop frameless build), left of the brand. */}
+      {frameless && <WindowControls />}
       {/* Inline undo/redo affordance — always visible (matches the
           desktop convention; also gives iPad/touch users a tappable
           alternative since the keyboard shortcut isn't reachable
@@ -486,7 +496,13 @@ export default function MenuBar({
         onUndo={onUndo}
         onRedo={onRedo}
       />
-      <div style={{ flex: 1 }} />
+      {/* Flexible gap doubles as the window drag handle on desktop. */}
+      <div
+        style={{
+          flex: 1,
+          WebkitAppRegion: frameless ? "drag" : undefined,
+        }}
+      />
       {/* Absolutely centered so the left-menu width and right-cluster
           width don't shift the pill off-center. */}
       <div
@@ -499,6 +515,7 @@ export default function MenuBar({
           display: "flex",
           alignItems: "center",
           pointerEvents: "auto",
+          WebkitAppRegion: frameless ? "no-drag" : undefined,
         }}
       >
         <FileNameMenu
@@ -526,6 +543,62 @@ export default function MenuBar({
         onClose={() => setChangelogOpen(false)}
       />
     </div>
+  );
+}
+
+// Custom macOS-style traffic lights for the frameless desktop build, rendered
+// inside the nav bar (left of the brand) so the bar reads as the title bar.
+function WindowControls() {
+  const wc = platform.windowControls;
+  if (!wc) return null;
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "0 14px",
+        WebkitAppRegion: "no-drag",
+      }}
+    >
+      <TrafficLight color="#ff5f57" hover="#ff453a" label="Close" onClick={() => wc.close()} />
+      <TrafficLight color="#febc2e" hover="#f5a623" label="Minimize" onClick={() => wc.minimize()} />
+      <TrafficLight color="#28c840" hover="#1aab29" label="Zoom" onClick={() => wc.toggleMaximize()} />
+    </div>
+  );
+}
+
+function TrafficLight({
+  color,
+  hover,
+  label,
+  onClick,
+}: {
+  color: string;
+  hover: string;
+  label: string;
+  onClick: () => void;
+}) {
+  const [h, setH] = useState(false);
+  return (
+    <button
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      onMouseEnter={() => setH(true)}
+      onMouseLeave={() => setH(false)}
+      style={{
+        width: 12,
+        height: 12,
+        borderRadius: "50%",
+        background: h ? hover : color,
+        border: "none",
+        padding: 0,
+        margin: 0,
+        cursor: "default",
+        WebkitAppRegion: "no-drag",
+      }}
+    />
   );
 }
 

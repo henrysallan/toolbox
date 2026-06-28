@@ -45,4 +45,11 @@ contextBridge.exposeInMainWorld("toolboxNative", {
 
   // ---- Transcode-on-import ----
   transcodeForPlayback: (opts) => ipcRenderer.invoke("toolbox:transcodeForPlayback", opts),
+
+  // ---- Window controls (frameless desktop) ----
+  window: {
+    minimize: () => ipcRenderer.send("toolbox:win:minimize"),
+    toggleMaximize: () => ipcRenderer.send("toolbox:win:toggleMaximize"),
+    close: () => ipcRenderer.send("toolbox:win:close"),
+  },
 });

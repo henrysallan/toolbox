@@ -78,4 +78,12 @@ export interface Platform {
     bytes: ArrayBuffer,
     name: string
   ): Promise<{ bytes: ArrayBuffer; type: string } | null>;
+
+  /** Frameless-window controls (the renderer draws custom traffic lights).
+   *  Present only on the native desktop build. */
+  windowControls?: {
+    minimize(): void;
+    toggleMaximize(): void;
+    close(): void;
+  };
 }

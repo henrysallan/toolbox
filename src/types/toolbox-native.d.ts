@@ -69,6 +69,13 @@ declare global {
       bytes: ArrayBuffer;
       name: string;
     }): Promise<{ bytes: ArrayBuffer; type: string } | null>;
+
+    // ---- Window controls (frameless desktop) ------------------------------
+    window: {
+      minimize(): void;
+      toggleMaximize(): void;
+      close(): void;
+    };
   }
 
   interface Window {
