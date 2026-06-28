@@ -33,7 +33,9 @@
       "node_modules/ffmpeg-static/**/*"
     ],
     "mac": {
-      "target": "dmg",
+      "target": [
+        { "target": "dmg", "arch": ["arm64"] }
+      ],
       "category": "public.app-category.graphics-design",
       "identity": null
     }
