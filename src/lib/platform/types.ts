@@ -83,7 +83,7 @@ export interface Platform {
    *  Present only on the native desktop build. */
   windowControls?: {
     minimize(): void;
-    toggleMaximize(): void;
+    toggleFullscreen(): void;
     close(): void;
   };
 }

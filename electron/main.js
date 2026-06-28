@@ -109,11 +109,10 @@ function registerWindowControls() {
   ipcMain.on("toolbox:win:minimize", (e) =>
     BrowserWindow.fromWebContents(e.sender)?.minimize()
   );
-  ipcMain.on("toolbox:win:toggleMaximize", (e) => {
+  ipcMain.on("toolbox:win:toggleFullscreen", (e) => {
     const w = BrowserWindow.fromWebContents(e.sender);
     if (!w) return;
-    if (w.isMaximized()) w.unmaximize();
-    else w.maximize();
+    w.setFullScreen(!w.isFullScreen());
   });
   ipcMain.on("toolbox:win:close", (e) =>
     BrowserWindow.fromWebContents(e.sender)?.close()

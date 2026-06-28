@@ -377,7 +377,11 @@ export default function MenuBar({
     <div
       ref={rootRef}
       style={{
-        height: BAR_HEIGHT,
+        // Frameless desktop: add a little breathing room above the bar (no
+        // native title bar). border-box keeps the content row at BAR_HEIGHT.
+        height: BAR_HEIGHT + (frameless ? 2 : 0),
+        paddingTop: frameless ? 2 : 0,
+        boxSizing: "border-box",
         flexShrink: 0,
         background: "#000",
         display: "flex",
@@ -399,9 +403,9 @@ export default function MenuBar({
           left: hl.left,
           // Inset vertically so the pill sits with a little margin top/bottom
           // rather than filling the full button height.
-          top: hl.top + 3,
+          top: hl.top + 2,
           width: hl.width,
-          height: Math.max(0, hl.height - 6),
+          height: Math.max(0, hl.height - 4),
           background: "#2a2a2e",
           borderRadius: 4,
           opacity: hl.visible ? 1 : 0,
@@ -550,9 +554,13 @@ export default function MenuBar({
 // inside the nav bar (left of the brand) so the bar reads as the title bar.
 function WindowControls() {
   const wc = platform.windowControls;
+  // macOS convention: glyphs appear in all three when the group is hovered.
+  const [groupHover, setGroupHover] = useState(false);
   if (!wc) return null;
   return (
     <div
+      onMouseEnter={() => setGroupHover(true)}
+      onMouseLeave={() => setGroupHover(false)}
       style={{
         display: "flex",
         alignItems: "center",
@@ -561,9 +569,18 @@ function WindowControls() {
         WebkitAppRegion: "no-drag",
       }}
     >
-      <TrafficLight color="#ff5f57" hover="#ff453a" label="Close" onClick={() => wc.close()} />
-      <TrafficLight color="#febc2e" hover="#f5a623" label="Minimize" onClick={() => wc.minimize()} />
-      <TrafficLight color="#28c840" hover="#1aab29" label="Zoom" onClick={() => wc.toggleMaximize()} />
+      <TrafficLight
+        color="#ff5f57" hover="#ff453a" glyph="✕" showGlyph={groupHover}
+        label="Close" onClick={() => wc.close()}
+      />
+      <TrafficLight
+        color="#febc2e" hover="#f5a623" glyph="—" showGlyph={groupHover}
+        label="Minimize" onClick={() => wc.minimize()}
+      />
+      <TrafficLight
+        color="#28c840" hover="#1aab29" glyph="⤢" showGlyph={groupHover}
+        label="Fullscreen" onClick={() => wc.toggleFullscreen()}
+      />
     </div>
   );
 }
@@ -571,34 +588,57 @@ function WindowControls() {
 function TrafficLight({
   color,
   hover,
+  glyph,
+  showGlyph,
   label,
   onClick,
 }: {
   color: string;
   hover: string;
+  glyph: string;
+  showGlyph: boolean;
   label: string;
   onClick: () => void;
 }) {
-  const [h, setH] = useState(false);
+  const [over, setOver] = useState(false);
   return (
     <button
       aria-label={label}
       title={label}
       onClick={onClick}
-      onMouseEnter={() => setH(true)}
-      onMouseLeave={() => setH(false)}
+      onMouseEnter={() => setOver(true)}
+      onMouseLeave={() => setOver(false)}
       style={{
         width: 12,
         height: 12,
         borderRadius: "50%",
-        background: h ? hover : color,
+        background: over ? hover : color,
         border: "none",
         padding: 0,
         margin: 0,
         cursor: "default",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        lineHeight: 1,
         WebkitAppRegion: "no-drag",
       }}
-    />
+    >
+      <span
+        style={{
+          fontFamily:
+            "-apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+          fontSize: 8,
+          fontWeight: 700,
+          color: "rgba(0,0,0,0.55)",
+          opacity: showGlyph ? 1 : 0,
+          transition: "opacity 90ms",
+          pointerEvents: "none",
+        }}
+      >
+        {glyph}
+      </span>
+    </button>
   );
 }
 

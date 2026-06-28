@@ -73,7 +73,7 @@ declare global {
     // ---- Window controls (frameless desktop) ------------------------------
     window: {
       minimize(): void;
-      toggleMaximize(): void;
+      toggleFullscreen(): void;
       close(): void;
     };
   }

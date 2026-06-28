@@ -113,7 +113,7 @@ async function transcodeVideoForPlayback(
 
 const windowControls = {
   minimize: () => bridge().window.minimize(),
-  toggleMaximize: () => bridge().window.toggleMaximize(),
+  toggleFullscreen: () => bridge().window.toggleFullscreen(),
   close: () => bridge().window.close(),
 };
 
