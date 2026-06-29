@@ -12,6 +12,7 @@
     "lint": "eslint",
     "electron": "electron electron/main.js",
     "electron:dev": "TOOLBOX_DEV_URL=http://localhost:3000 electron electron/main.js",
+    "dev:desktop": "node scripts/electron-dev.mjs",
     "electron:build": "electron-builder --mac",
     "desktop:prepare": "node scripts/prepare-standalone.mjs",
     "desktop:build": "npm run desktop:prepare && electron-builder --mac",

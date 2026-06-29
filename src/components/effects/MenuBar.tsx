@@ -377,15 +377,16 @@ export default function MenuBar({
     <div
       ref={rootRef}
       style={{
-        // Frameless desktop: add a little breathing room above the bar (no
-        // native title bar). border-box keeps the content row at BAR_HEIGHT.
-        height: BAR_HEIGHT + (frameless ? 2 : 0),
-        paddingTop: frameless ? 2 : 0,
-        boxSizing: "border-box",
+        // Desktop frameless build is a touch taller (no native title bar above)
+        // so the centered items aren't tight against the window's top edge.
+        height: BAR_HEIGHT + (frameless ? 10 : 0),
         flexShrink: 0,
         background: "#000",
         display: "flex",
-        alignItems: "stretch",
+        // Center every item vertically so the traffic lights / avatar /
+        // undo-redo line up with the menu text (they don't all self-center
+        // under `stretch`). Web keeps its existing stretch behavior.
+        alignItems: frameless ? "center" : "stretch",
         fontFamily: "ui-monospace, monospace",
         fontSize: 11,
         color: "#e5e7eb",
@@ -402,7 +403,8 @@ export default function MenuBar({
           position: "absolute",
           left: hl.left,
           // Inset vertically so the pill sits with a little margin top/bottom
-          // rather than filling the full button height.
+          // rather than filling the full button height. The top inset must be
+          // half the height reduction to keep the pill vertically centered.
           top: hl.top + 2,
           width: hl.width,
           height: Math.max(0, hl.height - 4),

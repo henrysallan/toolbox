@@ -55,6 +55,8 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Don't throttle rAF/timers — this is a real-time animation tool.
+      backgroundThrottling: false,
     },
   });
 
