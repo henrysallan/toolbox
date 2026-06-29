@@ -9,6 +9,7 @@ import {
   type ProjectRow,
 } from "@/lib/supabase/projects";
 import RateProjectPopover from "./RateProjectPopover";
+import { platform, type LocalRecent } from "@/lib/platform";
 
 interface RatePopover {
   row: ProjectRow;
@@ -44,7 +45,7 @@ function staggerStyle(shown: boolean, index: number): React.CSSProperties {
   };
 }
 
-type Tab = "private" | "public";
+type Tab = "private" | "public" | "local";
 type View = "grid" | "list";
 type SortKey = "name" | "author" | "date";
 type SortDir = "asc" | "desc";
@@ -63,6 +64,9 @@ interface Props {
   // first grid item (and list row). Used by the landing screen so the
   // grid doubles as the entry point to a fresh, empty project.
   onNewProject?: () => void;
+  // Open a recent local .toolbox by path. Presence (+ a native build)
+  // enables the desktop-only "Local" tab.
+  onLoadLocal?: (path: string) => void;
 }
 
 export default function LoadGrid({
@@ -71,6 +75,7 @@ export default function LoadGrid({
   refreshKey,
   currentUserId,
   onNewProject,
+  onLoadLocal,
 }: Props) {
   // Default to Public when signed out so visitors see something useful;
   // default to Private for signed-in users since that's their own work.
@@ -87,6 +92,14 @@ export default function LoadGrid({
   // Right-click → rate popover. Stored at top-level so it survives
   // re-renders inside the grid/list child views.
   const [ratePopover, setRatePopover] = useState<RatePopover | null>(null);
+
+  // Desktop "Local" tab: detected post-mount (client-only) to avoid a
+  // hydration mismatch. Recents come from the native bridge.
+  const [localEnabled, setLocalEnabled] = useState(false);
+  useEffect(() => {
+    setLocalEnabled(platform.isNative && !!platform.recents && !!onLoadLocal);
+  }, [onLoadLocal]);
+  const [recents, setRecents] = useState<LocalRecent[] | null>(null);
 
   // Open sequence: the panel mounts with everything hidden, then the
   // chrome (tab bar) fades in first. The tiles handle their own
@@ -132,6 +145,19 @@ export default function LoadGrid({
     };
   }, [tab, signedIn, refreshKey, manualRefresh]);
 
+  // Local recents fetch (desktop only).
+  useEffect(() => {
+    if (tab !== "local" || !platform.recents) return;
+    let cancelled = false;
+    setRecents(null);
+    platform.recents.list().then((r) => {
+      if (!cancelled) setRecents(r);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, manualRefresh]);
+
   const sortedRows =
     rows && sortRows(rows, sort, currentUserId ?? null);
 
@@ -166,6 +192,7 @@ export default function LoadGrid({
           tab={tab}
           onTabChange={setTab}
           signedIn={signedIn}
+          showLocal={localEnabled}
           view={view}
           onViewChange={setView}
           onRefresh={() => {
@@ -185,19 +212,31 @@ export default function LoadGrid({
           padding: 12,
         }}
       >
-        <Body
-          tab={tab}
-          view={view}
-          rows={sortedRows}
-          sort={sort}
-          onSort={toggleSort}
-          signedIn={signedIn}
-          currentUserId={currentUserId ?? null}
-          onLoad={onLoad}
-          onRate={(row, x, y) => setRatePopover({ row, x, y })}
-          staggerReady={chromeIn}
-          onNewProject={onNewProject}
-        />
+        {tab === "local" ? (
+          <LocalBody
+            recents={recents}
+            onOpen={(p) => onLoadLocal?.(p)}
+            onRemove={async (p) => {
+              await platform.recents?.remove(p);
+              setManualRefresh((n) => n + 1);
+            }}
+            staggerReady={chromeIn}
+          />
+        ) : (
+          <Body
+            tab={tab}
+            view={view}
+            rows={sortedRows}
+            sort={sort}
+            onSort={toggleSort}
+            signedIn={signedIn}
+            currentUserId={currentUserId ?? null}
+            onLoad={onLoad}
+            onRate={(row, x, y) => setRatePopover({ row, x, y })}
+            staggerReady={chromeIn}
+            onNewProject={onNewProject}
+          />
+        )}
       </div>
       {ratePopover && (
         <RateProjectPopover
@@ -226,6 +265,7 @@ function Toolbar({
   tab,
   onTabChange,
   signedIn,
+  showLocal,
   view,
   onViewChange,
   onRefresh,
@@ -233,6 +273,7 @@ function Toolbar({
   tab: Tab;
   onTabChange: (next: Tab) => void;
   signedIn: boolean;
+  showLocal: boolean;
   view: View;
   onViewChange: (next: View) => void;
   onRefresh: () => void;
@@ -272,6 +313,15 @@ function Toolbar({
         >
           Public
         </MenuTab>
+        {showLocal && (
+          <MenuTab
+            active={tab === "local"}
+            onClick={() => onTabChange("local")}
+            title="Recently opened local .toolbox files on this Mac"
+          >
+            Local
+          </MenuTab>
+        )}
       </div>
       <div style={{ flex: 1 }} />
       <IconButton
@@ -1055,4 +1105,153 @@ function sortRows(
   // Copy — we must not mutate the fetched array; React sees the same
   // reference as data and wouldn't re-render.
   return [...rows].sort(cmp);
+}
+
+// ========================================================================
+// local recents (desktop "Local" tab)
+// ========================================================================
+
+function relTime(ms: number): string {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 60) return "just now";
+  const m = s / 60;
+  if (m < 60) return `${Math.floor(m)}m ago`;
+  const h = m / 60;
+  if (h < 24) return `${Math.floor(h)}h ago`;
+  const d = h / 24;
+  if (d < 7) return `${Math.floor(d)}d ago`;
+  return new Date(ms).toLocaleDateString();
+}
+
+function LocalBody({
+  recents,
+  onOpen,
+  onRemove,
+  staggerReady,
+}: {
+  recents: LocalRecent[] | null;
+  onOpen: (path: string) => void;
+  onRemove: (path: string) => void | Promise<void>;
+  staggerReady: boolean;
+}) {
+  const shown = useStaggerShown(staggerReady && recents !== null);
+  if (recents === null) {
+    return (
+      <div style={{ color: "#71717a", fontSize: 12, padding: 8 }}>Loading…</div>
+    );
+  }
+  if (recents.length === 0) {
+    return (
+      <div
+        style={{ color: "#71717a", fontSize: 12, padding: 8, lineHeight: 1.7 }}
+      >
+        No recent local projects yet.
+        <br />
+        Open or save a .toolbox file and it&apos;ll show up here.
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {recents.map((r, i) => (
+        <LocalRow
+          key={r.path}
+          recent={r}
+          onOpen={onOpen}
+          onRemove={onRemove}
+          style={staggerStyle(shown, i)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function LocalRow({
+  recent,
+  onOpen,
+  onRemove,
+  style,
+}: {
+  recent: LocalRecent;
+  onOpen: (path: string) => void;
+  onRemove: (path: string) => void | Promise<void>;
+  style: React.CSSProperties;
+}) {
+  const [hover, setHover] = useState(false);
+  const name = recent.name.replace(/\.toolbox$/i, "");
+  return (
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        borderRadius: 4,
+        background: hover ? "#19191c" : "transparent",
+        border: `1px solid ${hover ? "#2a2a2e" : "transparent"}`,
+        ...style,
+      }}
+    >
+      <button
+        onClick={() => onOpen(recent.path)}
+        title={recent.path}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          textAlign: "left",
+          background: "transparent",
+          border: "none",
+          padding: "7px 10px",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          color: "#e5e7eb",
+        }}
+      >
+        <div
+          style={{
+            fontSize: 12,
+            color: "#e5e7eb",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {name}
+        </div>
+        <div
+          style={{
+            fontSize: 10,
+            color: "#71717a",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            marginTop: 1,
+          }}
+        >
+          {relTime(recent.lastOpened)} · {recent.path}
+        </div>
+      </button>
+      <button
+        onClick={() => void onRemove(recent.path)}
+        title="Remove from recents"
+        aria-label="Remove from recents"
+        style={{
+          flexShrink: 0,
+          width: 22,
+          height: 22,
+          marginRight: 6,
+          borderRadius: 4,
+          background: "transparent",
+          border: "none",
+          color: hover ? "#a1a1aa" : "transparent",
+          cursor: "pointer",
+          fontSize: 14,
+          lineHeight: 1,
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
 }

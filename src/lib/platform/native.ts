@@ -117,6 +117,12 @@ const windowControls = {
   close: () => bridge().window.close(),
 };
 
+const recents = {
+  list: () => bridge().recents.list(),
+  open: (p: string) => bridge().recents.open(p),
+  remove: (p: string) => bridge().recents.remove(p),
+};
+
 export const nativePlatform: Platform = {
   isNative: true,
   get canEncodeNative() {
@@ -128,4 +134,5 @@ export const nativePlatform: Platform = {
   encodeVideo,
   transcodeVideoForPlayback,
   windowControls,
+  recents,
 };

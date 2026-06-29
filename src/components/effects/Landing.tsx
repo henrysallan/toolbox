@@ -8,6 +8,8 @@ import LoadGrid from "./LoadGrid";
 interface Props {
   // Open a saved project by id (reuses the editor's load path).
   onLoad: (id: string) => void;
+  // Open a recent local .toolbox by path (desktop Local tab).
+  onLoadLocal?: (path: string) => void;
   // Start a fresh, empty project.
   onNewProject: () => void;
 }
@@ -21,7 +23,7 @@ const REVEAL_DELAY_MS = 750;
 // First-load gateway: a centred card with account info on the left and
 // the reused Projects grid on the right. Sits on top of the (already
 // mounted) editor; selecting a project or "New Project" dismisses it.
-export default function Landing({ onLoad, onNewProject }: Props) {
+export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
   const { user, loading } = useUser();
   const signedIn = !!user;
 
@@ -90,6 +92,7 @@ export default function Landing({ onLoad, onNewProject }: Props) {
             signedIn={signedIn}
             currentUserId={user?.id ?? null}
             onLoad={onLoad}
+            onLoadLocal={onLoadLocal}
             onNewProject={onNewProject}
           />
         </div>

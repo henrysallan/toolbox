@@ -52,4 +52,11 @@ contextBridge.exposeInMainWorld("toolboxNative", {
     toggleFullscreen: () => ipcRenderer.send("toolbox:win:toggleFullscreen"),
     close: () => ipcRenderer.send("toolbox:win:close"),
   },
+
+  // ---- Recent local .toolbox files ----
+  recents: {
+    list: () => ipcRenderer.invoke("toolbox:recents:list"),
+    open: (p) => ipcRenderer.invoke("toolbox:recents:open", p),
+    remove: (p) => ipcRenderer.invoke("toolbox:recents:remove", p),
+  },
 });

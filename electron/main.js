@@ -13,6 +13,7 @@ const { app, BrowserWindow, shell, ipcMain } = require("electron");
 const path = require("path");
 const { registerFileHandlers } = require("./files");
 const { register: registerFfmpeg } = require("./ffmpeg");
+const { registerRecentsHandlers } = require("./recents");
 const { startServer, waitForReady, stopServer, serverUrl } = require("./server");
 
 const DEV_URL = process.env.TOOLBOX_DEV_URL || null;
@@ -125,6 +126,7 @@ app.whenReady().then(() => {
   registerFileHandlers();
   registerFfmpeg();
   registerWindowControls();
+  registerRecentsHandlers();
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

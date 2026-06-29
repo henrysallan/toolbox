@@ -5455,8 +5455,10 @@ function EffectsShell({
     }
   }, [relinkItems, onParamChange, flashToast]);
 
-  const handleOpenProjectFile = useCallback(() => {
-    const processFile = async (file: File) => {
+  // Load a .toolbox File into the editor. Shared by the OS Open dialog / file
+  // input and by the desktop "Local" recents tab.
+  const loadToolboxFile = useCallback(
+    async (file: File) => {
       try {
         setProgressStatus({ label: "loading", progress: 0.1, tone: "load" });
         const { readProjectFile } = await import("@/lib/project-file");
@@ -5496,12 +5498,16 @@ function EffectsShell({
       } finally {
         setProgressStatus(null);
       }
-    };
+    },
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia]
+  );
+
+  const handleOpenProjectFile = useCallback(() => {
     // Native: OS Open dialog. Web: <input type="file">.
     if (platform.isNative) {
       void platform.pickOpenFiles({ kind: "toolbox" }).then((files) => {
         const file = files?.[0];
-        if (file) void processFile(file);
+        if (file) void loadToolboxFile(file);
       });
       return;
     }
@@ -5510,10 +5516,26 @@ function EffectsShell({
     input.accept = ".toolbox,application/zip";
     input.onchange = () => {
       const file = input.files?.[0];
-      if (file) void processFile(file);
+      if (file) void loadToolboxFile(file);
     };
     input.click();
-  }, [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia]);
+  }, [loadToolboxFile]);
+
+  // Open a recent local .toolbox (desktop "Local" tab) by its stored path.
+  const handleOpenLocalRecent = useCallback(
+    async (p: string) => {
+      const res = await platform.recents?.open(p);
+      if (!res) {
+        flashToast("Couldn't open — the file may have moved or been deleted.");
+        return;
+      }
+      const name = res.name.toLowerCase().endsWith(".toolbox")
+        ? res.name
+        : `${res.name}.toolbox`;
+      await loadToolboxFile(new File([res.bytes], name, { type: "application/zip" }));
+    },
+    [loadToolboxFile, flashToast]
+  );
 
   // Rename via the file-name pill. If the target name doesn't collide,
   // it's a simple metadata update. If it DOES collide with another of
@@ -6196,6 +6218,7 @@ function EffectsShell({
       signedIn={signedIn}
       currentUserId={user?.id ?? null}
       onLoadProject={handleLoadProject}
+      onLoadLocal={handleOpenLocalRecent}
       loadRefreshKey={loadRefreshKey}
       projectId={currentProject?.id ?? null}
       edges={edges}
@@ -7379,6 +7402,10 @@ function EffectsShell({
           onLoad={(id) => {
             setShowLanding(false);
             handleLoadProject(id);
+          }}
+          onLoadLocal={(p) => {
+            setShowLanding(false);
+            void handleOpenLocalRecent(p);
           }}
           onNewProject={() => {
             setShowLanding(false);

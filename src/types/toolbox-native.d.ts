@@ -76,6 +76,13 @@ declare global {
       toggleFullscreen(): void;
       close(): void;
     };
+
+    // ---- Recent local .toolbox files --------------------------------------
+    recents: {
+      list(): Promise<Array<{ path: string; name: string; lastOpened: number }>>;
+      open(path: string): Promise<{ bytes: ArrayBuffer; name: string } | null>;
+      remove(path: string): Promise<void>;
+    };
   }
 
   interface Window {

@@ -291,6 +291,8 @@ interface Props {
   currentUserId?: string | null;
   // Clicking a project thumbnail triggers load in the parent.
   onLoadProject?: (id: string) => void;
+  // Opening a recent local .toolbox by path (desktop Local tab).
+  onLoadLocal?: (path: string) => void;
   // Bumped by the parent after save/delete so LoadGrid refetches.
   loadRefreshKey?: number;
   // Active project id — needed by AI nodes (Image Generate) that
@@ -372,6 +374,7 @@ export default function ParamPanel({
   signedIn,
   currentUserId,
   onLoadProject,
+  onLoadLocal,
   loadRefreshKey,
   projectId,
   edges,
@@ -430,6 +433,7 @@ export default function ParamPanel({
           signedIn={!!signedIn}
           currentUserId={currentUserId ?? null}
           onLoad={(id) => onLoadProject?.(id)}
+          onLoadLocal={onLoadLocal}
           refreshKey={loadRefreshKey}
         />
       ) : selected && selected.data.defType === "image-generate" ? (

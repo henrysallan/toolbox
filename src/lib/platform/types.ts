@@ -86,4 +86,18 @@ export interface Platform {
     toggleFullscreen(): void;
     close(): void;
   };
+
+  /** Recently-opened local .toolbox files (native desktop only). Recorded
+   *  automatically on .toolbox open/save. */
+  recents?: {
+    list(): Promise<LocalRecent[]>;
+    open(path: string): Promise<{ bytes: ArrayBuffer; name: string } | null>;
+    remove(path: string): Promise<void>;
+  };
+}
+
+export interface LocalRecent {
+  path: string;
+  name: string;
+  lastOpened: number;
 }
