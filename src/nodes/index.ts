@@ -47,6 +47,7 @@ import { resampleNode } from "./effect/resample";
 import { pointsOnPathNode } from "./effect/points-on-path";
 import { offsetPathNode } from "./effect/offset-path";
 import { trimPathNode } from "./effect/trim-path";
+import { roundCornersNode } from "./effect/round-corners";
 import { strokeNode } from "./effect/stroke";
 import { fillNode } from "./effect/fill";
 import { rasterizeSplineNode } from "./effect/rasterize-spline";
@@ -227,6 +228,7 @@ export function registerAllNodes() {
   registerNode(pointsOnPathNode);
   registerNode(offsetPathNode);
   registerNode(trimPathNode);
+  registerNode(roundCornersNode);
   registerNode(strokeNode);
   registerNode(fillNode);
   registerNode(rasterizeSplineNode);

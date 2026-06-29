@@ -568,3 +568,93 @@ export function catmullRomSubpath(points: V2[], closed: boolean): SplineSubpath 
   }
   return { anchors, closed };
 }
+
+// ---------------------------------------------------------------------------
+// Corner rounding — the Round Corners node (Illustrator "Round Corners").
+// Replace each *corner* anchor (one with no handles — straight edges meet here)
+// with a pair of anchors inset along the incoming/outgoing edges, joined by a
+// circular-fillet cubic. The inset distance is
+//   d = min(radius, |prevEdge|/2, |nextEdge|/2)
+// — capping at half of each edge keeps two adjacent corners from overrunning
+// the edge they share. The fillet is a true circular arc tangent to both
+// edges: with the tangent lines meeting at the corner at distance d, the arc
+// radius is R = d / tan(θ/2) where θ is the turn angle, and each bézier handle
+// has length R·(4/3)·tan(θ/4) — the same arc→bézier formula the Arc primitive
+// uses — pointing from each inset anchor back toward the original corner.
+//
+// Anchors that already carry a handle (a curve meets here) pass through
+// untouched — rounding an already-curved join is ill-defined (v1). Closed
+// subpaths round every anchor (neighbors wrap); open subpaths leave the two
+// endpoints alone. radius ≤ 0 is identity. Positions are normalized [0,1]²
+// (no aspect correction — matches the other spline modifiers).
+// Spec: specdocs/062526_node-expansion.md §3.
+// ---------------------------------------------------------------------------
+
+const ROUND_EPS = 1e-6;
+
+function anchorHasHandle(a: SplineAnchor): boolean {
+  return (
+    (a.inHandle != null && (a.inHandle[0] !== 0 || a.inHandle[1] !== 0)) ||
+    (a.outHandle != null && (a.outHandle[0] !== 0 || a.outHandle[1] !== 0))
+  );
+}
+
+function roundSubpath(sub: SplineSubpath, radius: number): SplineSubpath {
+  const anchors = sub.anchors;
+  const n = anchors.length;
+  // Fewer than 3 anchors → no real corner to round (a closed 2-anchor path is
+  // a degenerate back-and-forth). Return a shallow clone unchanged.
+  if (n < 3) return { anchors: anchors.map((a) => ({ ...a })), closed: sub.closed };
+  const out: SplineAnchor[] = [];
+  for (let i = 0; i < n; i++) {
+    const cur = anchors[i];
+    const isEndpoint = !sub.closed && (i === 0 || i === n - 1);
+    if (isEndpoint || anchorHasHandle(cur)) {
+      out.push({ ...cur });
+      continue;
+    }
+    const P = cur.pos;
+    const prev = anchors[(i - 1 + n) % n].pos;
+    const next = anchors[(i + 1) % n].pos;
+    const toPrev = vSub(prev, P); // P → previous neighbor
+    const toNext = vSub(next, P); // P → next neighbor
+    const lenPrev = vLen(toPrev);
+    const lenNext = vLen(toNext);
+    if (lenPrev < ROUND_EPS || lenNext < ROUND_EPS) {
+      out.push({ ...cur });
+      continue;
+    }
+    const uPrev = vScale(toPrev, 1 / lenPrev); // unit P → prev
+    const uNext = vScale(toNext, 1 / lenNext); // unit P → next
+    // Turn angle θ between travel-in (prev→P, i.e. -uPrev) and travel-out
+    // (P→next, i.e. uNext). dot(-uPrev, uNext) = -dot(uPrev, uNext).
+    const cosT = Math.max(-1, Math.min(1, -vDot(uPrev, uNext)));
+    const theta = Math.acos(cosT);
+    // Nearly straight (no corner) or a degenerate 180° spike → leave as-is.
+    if (theta < ROUND_EPS || Math.PI - theta < ROUND_EPS) {
+      out.push({ ...cur });
+      continue;
+    }
+    const d = Math.min(radius, lenPrev / 2, lenNext / 2);
+    if (d < ROUND_EPS) {
+      out.push({ ...cur });
+      continue;
+    }
+    const R = d / Math.tan(theta / 2);
+    const h = R * (4 / 3) * Math.tan(theta / 4);
+    const p1 = vAdd(P, vScale(uPrev, d)); // inset toward prev
+    const p2 = vAdd(P, vScale(uNext, d)); // inset toward next
+    // Both fillet handles point from the inset anchor back toward the corner P.
+    out.push({ pos: p1, outHandle: vScale(uPrev, -h) });
+    out.push({ pos: p2, inHandle: vScale(uNext, -h) });
+  }
+  return { anchors: out, closed: sub.closed };
+}
+
+export function roundCorners(
+  subpaths: SplineSubpath[],
+  radius: number
+): SplineSubpath[] {
+  if (!(radius > 0)) return subpaths;
+  return subpaths.map((s) => roundSubpath(s, radius));
+}
