@@ -9,6 +9,7 @@ import NodeBrowserDropdown from "./NodeBrowserDropdown";
 import { useUser } from "@/lib/auth-context";
 import { CURRENT_VERSION } from "@/lib/changelog";
 import { platform } from "@/lib/platform";
+import WindowControls from "./WindowControls";
 
 type MenuItem =
   | {
@@ -549,98 +550,6 @@ export default function MenuBar({
         onClose={() => setChangelogOpen(false)}
       />
     </div>
-  );
-}
-
-// Custom macOS-style traffic lights for the frameless desktop build, rendered
-// inside the nav bar (left of the brand) so the bar reads as the title bar.
-function WindowControls() {
-  const wc = platform.windowControls;
-  // macOS convention: glyphs appear in all three when the group is hovered.
-  const [groupHover, setGroupHover] = useState(false);
-  if (!wc) return null;
-  return (
-    <div
-      onMouseEnter={() => setGroupHover(true)}
-      onMouseLeave={() => setGroupHover(false)}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "0 14px",
-        WebkitAppRegion: "no-drag",
-      }}
-    >
-      <TrafficLight
-        color="#ff5f57" hover="#ff453a" glyph="✕" showGlyph={groupHover}
-        label="Close" onClick={() => wc.close()}
-      />
-      <TrafficLight
-        color="#febc2e" hover="#f5a623" glyph="—" showGlyph={groupHover}
-        label="Minimize" onClick={() => wc.minimize()}
-      />
-      <TrafficLight
-        color="#28c840" hover="#1aab29" glyph="⤢" showGlyph={groupHover}
-        label="Fullscreen" onClick={() => wc.toggleFullscreen()}
-      />
-    </div>
-  );
-}
-
-function TrafficLight({
-  color,
-  hover,
-  glyph,
-  showGlyph,
-  label,
-  onClick,
-}: {
-  color: string;
-  hover: string;
-  glyph: string;
-  showGlyph: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  const [over, setOver] = useState(false);
-  return (
-    <button
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      onMouseEnter={() => setOver(true)}
-      onMouseLeave={() => setOver(false)}
-      style={{
-        width: 12,
-        height: 12,
-        borderRadius: "50%",
-        background: over ? hover : color,
-        border: "none",
-        padding: 0,
-        margin: 0,
-        cursor: "default",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        lineHeight: 1,
-        WebkitAppRegion: "no-drag",
-      }}
-    >
-      <span
-        style={{
-          fontFamily:
-            "-apple-system, BlinkMacSystemFont, system-ui, sans-serif",
-          fontSize: 8,
-          fontWeight: 700,
-          color: "rgba(0,0,0,0.55)",
-          opacity: showGlyph ? 1 : 0,
-          transition: "opacity 90ms",
-          pointerEvents: "none",
-        }}
-      >
-        {glyph}
-      </span>
-    </button>
   );
 }
 

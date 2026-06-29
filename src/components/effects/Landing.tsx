@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useUser } from "@/lib/auth-context";
 import LoadGrid from "./LoadGrid";
+import WindowControls from "./WindowControls";
 
 interface Props {
   // Open a saved project by id (reuses the editor's load path).
@@ -61,6 +62,22 @@ export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
         fontFamily: "ui-monospace, monospace",
       }}
     >
+      {/* Window controls (frameless desktop) — the menu bar is hidden behind
+          the landing, so surface the traffic lights here, at the same top-left
+          spot the menu bar uses. Self-gates to native; null on web. */}
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          height: 22,
+          display: "flex",
+          alignItems: "center",
+          zIndex: 10,
+        }}
+      >
+        <WindowControls />
+      </div>
       <div
         style={{
           display: "flex",
