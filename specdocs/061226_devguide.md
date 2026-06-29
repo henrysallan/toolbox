@@ -1,4 +1,4 @@
-# Toolbox — developer guide (snapshot 2026-06-15)
+# Toolbox — developer guide (snapshot 2026-06-29)
 
 Orientation doc for anyone (human or LLM) picking up this codebase cold.
 It describes what the app is, the architecture, the invariants you must not
@@ -23,7 +23,9 @@ with user-facing control panels ("live links" / exported apps).
   (opt-in compute nodes), ffmpeg.wasm + WebCodecs + mediabunny (export),
   MediaPipe + HuggingFace transformers (trackers, bg-remove, segment,
   depth), three.js
-  (available; minor), JSZip (.toolbox + export packaging).
+  (available; minor), JSZip (.toolbox + export packaging). Also ships as a
+  **macOS Electron desktop app** (native ffmpeg export, native file I/O,
+  offline) from the same codebase — see "Desktop (Electron) build".
 - `AGENTS.md` warning is real: this Next version has breaking changes —
   check `node_modules/next/dist/docs/` before leaning on Next behavior.
 - No test runner is set up. Verification is manual in the browser.
@@ -80,8 +82,15 @@ src/
     export*.ts            Image/video export, audio mixdown, exported-app manifest+packager.
     live-viewer/          LiveViewer + control panel used by /live and exported apps.
     fonts.ts font-*.ts    Curated font loading, variable-font axis parsing.
+    platform/             Platform-adapter seam (web vs Electron) — see "Desktop
+                          (Electron) build". index.ts → `platform`; web.ts is
+                          today's behavior verbatim; native.ts → window.toolboxNative.
   export-template/        Vite app source for exported standalone apps (built into
                           public/export-template/v1 by scripts/build-export-template.mjs).
+electron/                 Electron desktop shell (NOT part of the Next build): main.js,
+                          preload.js (the toolboxNative bridge), ffmpeg.js (native
+                          export/transcode), files.js (native dialogs), recents.js
+                          (Local tab), server.js (embedded standalone Next server).
 specdocs/                 Design specs + devlist.md (numbered feature backlog).
 ```
 
@@ -348,6 +357,80 @@ To add a node:
   template (public/export-template/v1) with project.json + assets. The
   same manifest powers `/live/[slug]` via lib/live-viewer/LiveViewer.tsx.
   **This is why src/engine + src/nodes must stay self-contained.**
+
+## Desktop (Electron) build
+
+The app ships as **both** the web app and a **macOS Electron app** from one
+codebase. The desktop build's only behavioral differences: heavy export runs
+through **native ffmpeg** (no wasm heap/thread limits), file open/save use
+**native OS dialogs**, and it works **offline**. Full design:
+062626_electron-native-export.md.
+
+- **The seam is `src/lib/platform`** (`platform` from index.ts). Feature code
+  calls `platform.saveFile(...)` / `platform.encodeVideo?.(...)` / etc. and
+  **never branches on web-vs-native itself**. `web.ts` is today's behavior
+  verbatim (so the web target can't regress); `native.ts` forwards to the
+  `window.toolboxNative` bridge. `platform.isNative` is detected by the bridge's
+  presence. Capabilities that are native-only (`encodeVideo`, `windowControls`,
+  `recents`, `transcodeVideoForPlayback`) are **optional** on the interface;
+  callers gate on them. UI that renders differently on desktop detects native
+  **post-mount** (`useEffect`) to avoid SSR hydration mismatches (MenuBar,
+  LoadGrid). `src/engine` + `src/nodes` stay platform-agnostic (invariant #1).
+- **How it's served.** `electron/main.js` loads `TOOLBOX_DEV_URL` (dev) or, by
+  default, spawns the app's own **Next standalone server** (`electron/server.js`,
+  via `ELECTRON_RUN_AS_NODE`) on `127.0.0.1:38274` and loads that. So the desktop
+  app is self-contained/offline-capable but still talks to Supabase over the
+  network when online. `output:'standalone'` is gated behind `DESKTOP_BUILD=1`
+  (next.config.ts) so the Vercel/web build is unchanged.
+- **The bridge** (`electron/preload.js`, contextIsolation + sandbox, no
+  nodeIntegration): narrow, intent-level methods only — `saveFile`,
+  `pickSaveFolder`/`writeFileInFolder`, `pickOpenFiles`, `encodeVideo*`,
+  `transcodeForPlayback`, `window.*` (controls), `recents.*`. Paths are chosen by
+  native dialogs in main, never supplied by the page; bytes cross as ArrayBuffer.
+- **Native export** (`electron/ffmpeg.js`): the renderer keeps the frame loop
+  (engine settle), reads RGBA8 per frame and streams it to a bundled
+  `ffmpeg-static` process via **rawvideo on stdin** (`await`-per-frame
+  backpressure), written straight to the chosen path. Encoder/ProRes/alpha args
+  are the **single source of truth** in `src/lib/export-ffmpeg-args.js`, shared
+  by this and the wasm path (export-ffmpeg.ts). Only the standalone Export's
+  heavy tier routes native; Render Queue still uses wasm.
+- **Transcode-on-import**: Electron's Chromium decodes fewer codecs than a
+  system browser, so undecodable videos (10-bit/4:2:2 H.264, HEVC, ProRes) fail
+  with `MediaError code 4`. `registerVideoFile` (lib/video.ts) falls back to
+  native ffmpeg: 10-bit→VP9 profile 2 (preserves gradients), 8-bit→H.264.
+- **Native file I/O + Local tab.** Save/open/folder go through native dialogs.
+  Recents are **main-owned** (`electron/recents.js`, userData JSON — survives
+  restarts/rebuilds, validates which paths the renderer may read) and recorded
+  automatically whenever a `.toolbox` path is opened/saved (by extension). The
+  desktop-only **Local** tab lives in LoadGrid (so it shows in both the landing
+  modal and the menu→Projects view); `loadToolboxFile` in EffectsApp is the
+  shared open path.
+- **Frameless window**: `frame:false`; the nav bar IS the title bar — MenuBar
+  draws custom traffic lights (close/min/fullscreen via `platform.windowControls`)
+  and uses `-webkit-app-region` (drag on the spacer, no-drag on controls; the
+  CSS prop is augmented in src/types/css.d.ts). `backgroundThrottling:false` so
+  rAF/timers aren't throttled (real-time tool).
+- **Graceful offline**: auth uses `getSession()` (local cache, "signed in
+  offline") not `getUser()`; project lists fail-fast (timeout + `navigator.onLine`
+  + try/catch → empty/cached). Local files + native export work fully offline;
+  curated fonts, ML/tracker nodes, and wasm-GIF still need network (accepted).
+- **Build/run.** `npm run dev:desktop` (one command: next dev + Electron) for UI
+  iteration; `npm run electron`/`electron:dev` for embedded/dev URLs;
+  `npm run desktop:prepare` builds `.next/standalone`; `npm run desktop:build`
+  packages the dmg. NOTE: `npm run electron` serves the **prebuilt**
+  `.next/standalone` — re-run `desktop:prepare` to see source changes there
+  (dev:desktop uses live HMR).
+- **Packaging gotchas** (electron-builder, package.json `build`): pin
+  `mac.target` arch to **arm64** (it targets the build host's node arch, and the
+  studio node is x64-under-Rosetta → wrong-arch app runs slow). `ffmpeg-static`
+  installs per node arch too — force arm64 if node is x64
+  (`npm_config_arch=arm64 node node_modules/ffmpeg-static/install.js`); the real
+  fix is a native arm64 node. The standalone is bundled via **`files` +
+  `asarUnpack`** (not `extraResources`, which silently strips top-level
+  `node_modules`); server path → `Resources/app.asar.unpacked/.next/standalone`.
+  Builds are unsigned (`identity:null`) → Gatekeeper warns; notarization is TODO.
+  OAuth on desktop needs `http://127.0.0.1:38274/auth/callback` allowlisted in
+  Supabase.
 
 ## Invariants — do not break
 
