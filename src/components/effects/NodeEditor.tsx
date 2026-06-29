@@ -46,6 +46,7 @@ function isEnterableScope(defType: string): boolean {
   return defType === GROUP_TYPE || defType === LAYER_TYPE;
 }
 import { getShortcutScope } from "./shortcut-scope";
+import { looksLikeFragmentText } from "@/lib/fragment-clipboard";
 import type { NodeDataPayload } from "@/state/graph";
 
 interface Props {
@@ -70,6 +71,8 @@ interface Props {
   // features it can't perform.
   onDuplicateOnDrag?: (nodeId: string) => void;
   onDetachNode?: (nodeId: string) => void;
+  // Right-click a node-group → "Edit with AI" (opens the AI panel in edit mode).
+  onEditWithAINode?: (nodeId: string) => void;
   onDuplicateNode?: (nodeId: string) => void;
   onDuplicateSelection?: () => void;
   // Shift+M: wrap the currently selected image/mask-output nodes in a
@@ -78,6 +81,9 @@ interface Props {
   onMergeSelection?: () => void;
   onCopyNodes?: () => void;
   onPasteNodes?: () => void;
+  // OS-clipboard text looked like a Toolbox fragment (copied from another tab /
+  // instance, or a shared snippet). Handles the cross-instance paste.
+  onPasteFragmentText?: (text: string) => void;
   // Desktop file drop + clipboard paste — when the user drops an image/
   // video/audio/svg file onto the flow pane, or pastes one from the OS
   // clipboard, we spawn the matching source node with that file already
@@ -155,11 +161,13 @@ export default function NodeEditor({
   onPanePointer,
   onDuplicateOnDrag,
   onDetachNode,
+  onEditWithAINode,
   onDuplicateNode,
   onDuplicateSelection,
   onMergeSelection,
   onCopyNodes,
   onPasteNodes,
+  onPasteFragmentText,
   onAddFileNode,
   onAddImageNodeFromImageGen,
   onCombineWires,
@@ -1007,6 +1015,16 @@ export default function NodeEditor({
       ) {
         return;
       }
+      // Cross-instance fragment paste: the OS clipboard holds a serialized
+      // Toolbox group/recipe (copied from another tab/instance or a shared
+      // snippet). Read it synchronously and route it before the file /
+      // in-memory-clipboard paths.
+      const txt = e.clipboardData?.getData("text/plain") ?? "";
+      if (txt && looksLikeFragmentText(txt) && onPasteFragmentText) {
+        e.preventDefault();
+        onPasteFragmentText(txt);
+        return;
+      }
       const wrapper = flowWrapperRef.current;
       if (!wrapper) return;
       const rect = wrapper.getBoundingClientRect();
@@ -1038,7 +1056,7 @@ export default function NodeEditor({
     };
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
-  }, [onAddFileNode, onPasteNodes, screenToFlowPosition]);
+  }, [onAddFileNode, onPasteNodes, onPasteFragmentText, screenToFlowPosition]);
 
   const isValidConnection = (c: Connection | Edge) => {
     if (!c.sourceHandle || !c.targetHandle) return false;
@@ -1615,6 +1633,13 @@ export default function NodeEditor({
                 }
               : undefined
           }
+          onEditWithAI={
+            onEditWithAINode &&
+            nodes.find((n) => n.id === contextMenu.nodeId)?.data.defType ===
+              GROUP_TYPE
+              ? () => onEditWithAINode(contextMenu.nodeId)
+              : undefined
+          }
         />
       )}
     </div>
@@ -1630,6 +1655,7 @@ function NodeContextMenu({
   onPaste,
   onDuplicate,
   onDetach,
+  onEditWithAI,
 }: {
   x: number;
   y: number;
@@ -1638,6 +1664,7 @@ function NodeContextMenu({
   onPaste?: () => void;
   onDuplicate?: () => void;
   onDetach?: () => void;
+  onEditWithAI?: () => void;
 }) {
   useEffect(() => {
     const onDown = () => onClose();
@@ -1659,6 +1686,7 @@ function NodeContextMenu({
     shortcut?: string;
     onClick?: () => void;
   }> = [
+    ...(onEditWithAI ? [{ label: "✦ Edit with AI", onClick: onEditWithAI }] : []),
     { label: "Copy", shortcut: "⌘C", onClick: onCopy },
     { label: "Paste", shortcut: "⌘V", onClick: onPaste },
     { label: "Duplicate", onClick: onDuplicate },

@@ -99,25 +99,32 @@ generator, (b) the server route, (c) an engine-side validator, and (d) a recipe 
 ## 3. Architecture (three artifacts + a loop)
 
 ```
- user prompt ─▶ /api/generate-recipe (server)
-                   │  system prompt = CATALOG + FEW-SHOTS
-                   ▼
-              Claude API ──▶ RecipeGraph JSON  ◀─┐
-                   │                              │ repair turn
-                   ▼                              │ (errors fed back)
-            validate(RecipeGraph) ───────────────┘
-                   │ ok
-                   ▼
-        buildRecipe(RecipeGraph) ─▶ {nodes, edges}  (groupFragment-wrapped)
-                   │
-                   ▼ client
-        cloneSubgraph(...) ─▶ insert at scope ─▶ canvas
-                   │
-                   └─▶ "Save as recipe" ─▶ library
+ CLIENT (has the engine)                    SERVER (thin Claude proxy)
+ ───────────────────────                    ──────────────────────────
+ buildCatalogDsl() ─┐
+ user prompt ───────┼─▶ POST /api/generate-recipe ─▶ Claude API
+                    │       {catalog, request, repair?}    │ system = preamble
+                    │                                       │   + cached catalog
+                    │   ◀──────── RecipeGraph ◀────────────┘   forced emit_recipe tool
+                    ▼
+   buildRecipe(RecipeGraph) ─▶ {nodes, edges}  (groupFragment-wrapped)
+                    ▼
+   validateGraph(...) ──errors?──▶ re-POST with {repair:{recipe,errors}} ⟲ (≤N)
+                    │ ok
+                    ▼
+   cloneSubgraph(...) ─▶ insert at scope ─▶ canvas   /   "Save as recipe" ─▶ library
 ```
 
-The validator runs **server-side**, so the repair loop never bills the
-client and only valid graphs cross the wire.
+**Architecture decision (forced by the prototype):** build + validate + the
+repair loop run **client-side**, not on the server. The engine (`src/engine` +
+`src/nodes`) is browser-oriented — ~10 node modules touch `document`/WebGL at
+import — so importing it in the Node server runtime crashes. The route is
+therefore a **thin Claude proxy**: it only assembles the prompt and calls
+Claude. The client already hosts the full engine, so it owns `buildRecipe` +
+`validateGraph` and drives the repair loop by re-POSTing prior errors. Trade-off:
+each repair is a round trip, but the proxy stays trivial and the catalog (which
+*can't* be generated server-side without the node tree) is built once on the
+client and sent in — prompt-cached as the system suffix so it's still cheap.
 
 ---
 
@@ -446,14 +453,51 @@ Each leaves a working app.
    *real* types, so the exception list disappears and only the genuine
    coercion table remains — more correct and less to maintain. Engine-pure,
    lint-clean.
-3. **Builder + manual insertion.** `buildRecipe(RecipeGraph)` →
-   `{nodes,edges}` via `makeInstanceNode` + `groupFragment`; wire it into
-   the existing preset insertion path. Hand-write a RecipeGraph, confirm it
-   drops a working group on the canvas. **No LLM yet** — this proves the
-   data path end to end.
-4. **Server route + generate loop.** `/api/generate-recipe`: catalog +
-   few-shots + structured output + the validate/repair loop. Wire a minimal
-   prompt box in the UI. First real generations.
+3. **Builder + manual insertion.** ✅ *Prototyped (data path).*
+   `src/state/recipe-builder.ts` (`buildRecipe(RecipeGraph)` → `{nodes,
+   edges, issues}`). To honor "reuse `groupFragment`", that helper was
+   extracted from presets.ts into `src/state/group-fragment.ts` and extended
+   to wire real **data inputs** (presets only needed promoted-param inputs);
+   presets re-import it and still validate clean (no regression).
+   `scripts/check-builder.mts` proves the **round trip headlessly**: a
+   well-formed RecipeGraph builds with 0 issues and `validateGraph` returns
+   green (group wrapper synthesized, exposed param recorded); bad wiring
+   still builds (trust boundary) but the validator flags `EDGE_TYPE_MISMATCH`;
+   a malformed recipe (unknown type, non-settable param, dangling edge)
+   surfaces the right build issues and still yields a valid survivor graph.
+   Engine/state-pure, lint-clean. **Canvas insertion: ✅ wired** — see the UI
+   bullet under milestone 4. **Deferred to §4 caveat:** the Merge / Auto-Layout
+   dynamic-fan-in special-case (declare N inputs → synthesize `merge_layers`/
+   `autolayout_items`); not yet in `buildRecipe`.
+4. **Server route + generate loop.** ✅ *Prototyped (offline-proven).*
+   - `src/lib/ai/recipe-prompt.ts` — pure preamble + the `emit_recipe` tool
+     schema + system/user builders (`import type` only, so the route never
+     loads the engine).
+   - `src/app/api/generate-recipe/route.ts` — Next 16 route handler, **thin
+     Claude proxy**: `@anthropic-ai/sdk`, `claude-opus-4-8`, forced
+     `tool_choice` on `emit_recipe`, catalog cached as the system suffix.
+   - `src/lib/ai/generate-recipe-client.ts` — `generateRecipe(request)`:
+     builds the catalog DSL (via `formatCatalogDsl`, exported from
+     node-catalog), POSTs, then `buildRecipe` + `validateGraph` + the repair
+     loop (re-POST with prior errors, ≤N). `post` is injectable.
+   - `scripts/check-recipe-loop.mts` proves the loop **without a live call**
+     (fake model): good→1 attempt, bad→good→2 attempts (the validator's
+     `Incompatible wire` error reaches the repair turn), always-bad→gives up
+     after 3 and surfaces the error. Lint-clean; `@anthropic-ai/sdk` added.
+   - **UI + insertion: ✅ wired.** `src/components/effects/RecipePromptModal.tsx`
+     (prompt box: textarea, example chips, busy/error states, ⌘/Ctrl+Enter).
+     `NodeSearchPopup` gets an "AI Recipe…" entry (Shift+A → under Presets,
+     searchable, shown at root too) whose `ai-recipe` pseudo-type opens the
+     modal via an `onAddNode` sentinel. `EffectsApp.handleGenerateRecipe`
+     runs `generateRecipe` → on success inserts the built fragment through the
+     exact preset path (`cloneSubgraph` + root-layer wrap + select + toast);
+     on failure the modal shows the first validator error so the user can
+     refine. Whole project typechecks clean; new files lint-clean.
+   - **Remaining (only blocker for live use):** set `ANTHROPIC_API_KEY` in the
+     server env (`.env.local` today only has Supabase keys), then a real
+     in-app generation. The adaptive-thinking option on the route is omitted
+     for now (forced tool + no-thinking is the lowest-risk untested config) —
+     easy to add once the key is in place to test against.
 5. **Recipe library.** Save/load recipes (Supabase `recipes` table or local
    store); surface as a `recipe:*` Add-menu category. Feed good saves back
    as few-shots.

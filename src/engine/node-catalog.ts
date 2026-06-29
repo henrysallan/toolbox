@@ -113,3 +113,30 @@ export function buildNodeCatalog(
     .map((d) => defToCatalog(d, opts))
     .sort((a, b) => a.type.localeCompare(b.type));
 }
+
+// Compact one-line-per-node DSL — the cached prompt format (~3.4× denser than
+// JSON; see spec §4). One line: `type (Name) [cat/sub] ~dyn: in a:scalar!,b:scalar
+// -> primary aux=x:image | param:type=default(min..max)[opts]`. `~dyn` flags
+// polymorphic nodes; `!` marks required inputs; only settable params are listed.
+export function formatCatalogDsl(nodes: CatalogNode[]): string {
+  return nodes
+    .map((n) => {
+      const ins = n.inputs.map((i) => `${i.name}:${i.type}${i.required ? "!" : ""}`).join(",");
+      const aux = n.aux.length ? ` aux=${n.aux.map((a) => `${a.name}:${a.type}`).join(",")}` : "";
+      const ps = n.params
+        .filter((p) => p.settable)
+        .map((p) => {
+          let s = `${p.name}:${p.type}`;
+          if (p.default !== undefined) s += `=${JSON.stringify(p.default)}`;
+          if (p.options) s += `[${p.options.join("|")}]`;
+          else if (p.min !== undefined || p.max !== undefined) s += `(${p.min ?? ""}..${p.max ?? ""})`;
+          return s;
+        })
+        .join(" ");
+      const sub = n.subcategory ? `/${n.subcategory}` : "";
+      const dyn = n.dynamic ? " ~dyn" : "";
+      const desc = n.description ? `\n    # ${n.description}` : "";
+      return `${n.type} (${n.name}) [${n.category}${sub}]${dyn}: in ${ins} -> ${n.primaryOutput ?? "none"}${aux}${ps ? ` | ${ps}` : ""}${desc}`;
+    })
+    .join("\n");
+}

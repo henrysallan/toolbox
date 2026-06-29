@@ -121,6 +121,14 @@ export default function NodeSearchPopup({
         d.type !== "simulation-start" &&
         d.type !== "simulation-end"
     );
+    // AI Recipe: a pseudo-entry. onAdd routes "ai-recipe" to a prompt modal
+    // that generates a node-group from a text description. Lives with presets.
+    const aiRecipe = {
+      type: "ai-recipe",
+      name: "AI Recipe…",
+      category: "presets",
+      description: "Describe a node group in words and generate it with AI.",
+    } as unknown as (typeof real)[number];
     // Strict root: layers (the compositing chain) and Render Queue live
     // at root scope.
     if (atRoot) {
@@ -139,6 +147,7 @@ export default function NodeSearchPopup({
           description:
             "Collects Output nodes into an ordered batch render.",
         } as unknown as (typeof real)[number],
+        aiRecipe,
         ...(presetDefs() as unknown as (typeof real)[number][]),
       ];
     }
@@ -152,6 +161,7 @@ export default function NodeSearchPopup({
         // Casts to satisfy the rest of NodeDefinition's required fields
         // when iterated; nothing else touches them.
       } as unknown as (typeof real)[number],
+      aiRecipe,
       ...(presetDefs() as unknown as (typeof real)[number][]),
     ];
   }, [atRoot]);

@@ -16,34 +16,14 @@
 // tuned by diving in (Tab).
 
 import type { Edge } from "@xyflow/react";
-import type { SocketType } from "@/engine/types";
-import {
-  GROUP_INPUT_TYPE,
-  GROUP_OUTPUT_TYPE,
-  GROUP_TYPE,
-} from "@/engine/groups";
-import { getNodeDef } from "@/engine/registry";
-import { paramSocketType } from "@/engine/graph-helpers";
-import {
-  makeInstanceNode,
-  newEdgeId,
-  refreshNodeSockets,
-  syncGroupInterface,
-  type GraphNode,
-} from "@/state/graph-ops";
+import { makeInstanceNode, newEdgeId, refreshNodeSockets, type GraphNode } from "@/state/graph-ops";
+import { groupFragment, type GroupOutputSpec } from "@/state/group-fragment";
 
 export interface PresetDef {
   id: string;
   name: string;
   description: string;
   build: () => { nodes: GraphNode[]; edges: Edge[] };
-}
-
-interface GroupOutputSpec {
-  // Interior endpoint feeding the group's output socket.
-  from: { nodeId: string; handle: string };
-  name: string;
-  type: SocketType;
 }
 
 // Build an edge between two fragment nodes (raw handle ids).
@@ -54,102 +34,6 @@ function edge(
   targetHandle: string
 ): Edge {
   return { id: newEdgeId(), source: a.id, sourceHandle, target: b.id, targetHandle };
-}
-
-// Wrap interior nodes in a node-group shell + Group Input / Group Output
-// boundary nodes, with the interior wired to the Group Output's sockets.
-// Mirrors groupSelection's structure but for a standalone generator group
-// (no exterior edges) whose outputs the user wires after dropping it in.
-// The shell's parentId is left undefined so cloneSubgraph treats it as the
-// single top-level node and retargets it into the insertion scope.
-// One interior param to surface on the group node.
-interface PromoteSpec {
-  node: GraphNode;
-  param: string;
-  label: string;
-}
-
-function groupFragment(opts: {
-  name: string;
-  interior: GraphNode[];
-  edges: Edge[];
-  outputs: GroupOutputSpec[];
-  promote?: PromoteSpec[];
-  position?: { x: number; y: number };
-}): { nodes: GraphNode[]; edges: Edge[] } {
-  const at = opts.position ?? { x: 240, y: 0 };
-  const group = makeInstanceNode(GROUP_TYPE, at);
-  group.data.name = opts.name;
-  group.data.parentId = undefined;
-
-  const groupInput = makeInstanceNode(GROUP_INPUT_TYPE, { x: at.x - 400, y: at.y });
-  const groupOutput = makeInstanceNode(GROUP_OUTPUT_TYPE, { x: at.x + 400, y: at.y });
-  groupInput.data.parentId = group.id;
-  groupOutput.data.parentId = group.id;
-  groupOutput.data.params = {
-    sockets: opts.outputs.map((o) => ({ name: o.name, type: o.type })),
-  };
-
-  for (const n of opts.interior) n.data.parentId = group.id;
-
-  // Promoted params: each surfaces an interior node's param as an editable,
-  // keyframable slider on the group's panel (and an optional input socket to
-  // drive it) — a Group Input socket wired to the deep node's exposed param,
-  // the same shape the editor's "wire into Group Input" flow produces
-  // (ParamPanel renders these for a group shell). Also flagged as a
-  // controlParam so exported apps / live links get the knob.
-  const inSockets: { name: string; type: SocketType }[] = [];
-  const promoteEdges: Edge[] = [];
-  for (const p of opts.promote ?? []) {
-    const pdef = getNodeDef(p.node.data.defType)?.params.find(
-      (x) => x.name === p.param
-    );
-    const sockType = pdef ? paramSocketType(pdef.type) : null;
-    if (!pdef || !sockType) continue;
-    inSockets.push({ name: p.label, type: sockType });
-    p.node.data.exposedParams = [
-      ...new Set([...(p.node.data.exposedParams ?? []), p.param]),
-    ];
-    p.node.data.controlParams = [
-      ...new Set([...(p.node.data.controlParams ?? []), p.param]),
-    ];
-    promoteEdges.push({
-      id: newEdgeId(),
-      source: groupInput.id,
-      sourceHandle: `out:aux:${p.label}`,
-      target: p.node.id,
-      targetHandle: `in:param:${p.param}`,
-    });
-  }
-  // A generator group has no data inputs of its own; its interface inputs
-  // are exactly the promoted-param sockets.
-  groupInput.data.params = { sockets: inSockets };
-
-  const edges: Edge[] = [
-    ...opts.edges,
-    ...promoteEdges,
-    ...opts.outputs.map((o) => ({
-      id: newEdgeId(),
-      source: o.from.nodeId,
-      sourceHandle: o.from.handle,
-      target: groupOutput.id,
-      targetHandle: `in:${o.name}`,
-    })),
-  ];
-
-  // syncGroupInterface writes the {inputs, outputs} interface onto the
-  // shell from the boundary sockets and refreshes its socket caches, so the
-  // dropped group renders its promoted-param + output handles ready to use.
-  const nodes = syncGroupInterface(
-    [
-      group,
-      refreshNodeSockets(groupInput),
-      refreshNodeSockets(groupOutput),
-      ...opts.interior,
-    ],
-    group.id
-  );
-  return { nodes, edges };
 }
 
 // Make an interior node with overridden params, then refresh its socket

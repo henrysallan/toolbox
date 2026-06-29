@@ -139,6 +139,22 @@
         ]
       },
       {
+        "name": "trim_start",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_end",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
+      },
+      {
         "name": "stroke_enabled",
         "type": "boolean",
         "settable": true,
@@ -444,6 +460,22 @@
         "type": "scalar",
         "settable": true,
         "default": 0.12,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_start",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_end",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
         "min": 0,
         "max": 1
       },
@@ -1360,6 +1392,75 @@
     "description": "A scene camera. Wire it into the 3D Scene node's camera input to choose the view the scene renders from."
   },
   {
+    "type": "chromatic-aberration",
+    "name": "Chromatic Aberration",
+    "category": "image",
+    "inputs": [
+      {
+        "name": "image",
+        "type": "image",
+        "required": true
+      }
+    ],
+    "primaryOutput": "image",
+    "aux": [],
+    "params": [
+      {
+        "name": "amount",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.004,
+        "min": 0,
+        "max": 0.1
+      },
+      {
+        "name": "mode",
+        "type": "enum",
+        "settable": true,
+        "default": "radial",
+        "options": [
+          "radial",
+          "directional"
+        ]
+      },
+      {
+        "name": "center",
+        "type": "vec2",
+        "settable": true,
+        "default": [
+          0.5,
+          0.5
+        ]
+      },
+      {
+        "name": "falloff",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 2
+      },
+      {
+        "name": "angle",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": -180,
+        "max": 180
+      },
+      {
+        "name": "opacity",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "subcategory": "modifier",
+    "description": "Split the red and blue channels away from green to fake lens dispersion or a glitchy RGB shift. Radial (grows from a center) or directional (uniform angled shift)."
+  },
+  {
     "type": "circle",
     "name": "Circle",
     "category": "spline",
@@ -1410,6 +1511,22 @@
         "type": "scalar",
         "settable": true,
         "default": 0.25,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_start",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_end",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
         "min": 0,
         "max": 1
       },
@@ -2470,6 +2587,22 @@
         "max": 180
       },
       {
+        "name": "trim_start",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_end",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
+      },
+      {
         "name": "stroke_enabled",
         "type": "boolean",
         "settable": true,
@@ -2885,6 +3018,172 @@
       }
     ],
     "description": "A 3D cylinder primitive."
+  },
+  {
+    "type": "datamosh",
+    "name": "Datamosh",
+    "category": "image",
+    "inputs": [
+      {
+        "name": "imageA",
+        "type": "image"
+      },
+      {
+        "name": "imageB",
+        "type": "image"
+      }
+    ],
+    "primaryOutput": "image",
+    "aux": [],
+    "params": [
+      {
+        "name": "engine",
+        "type": "enum",
+        "settable": true,
+        "default": "flow",
+        "options": [
+          "flow",
+          "codec"
+        ]
+      },
+      {
+        "name": "estimator",
+        "type": "enum",
+        "settable": true,
+        "default": "gradient",
+        "options": [
+          "gradient",
+          "residual",
+          "block"
+        ]
+      },
+      {
+        "name": "searchRadius",
+        "type": "scalar",
+        "settable": true,
+        "default": 4,
+        "min": 1,
+        "max": 8
+      },
+      {
+        "name": "flowScale",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.08,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "smear",
+        "type": "scalar",
+        "settable": true,
+        "default": 8,
+        "min": 1,
+        "max": 64
+      },
+      {
+        "name": "decay",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.85,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "refresh",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.05,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "iframeRemoval",
+        "type": "boolean",
+        "settable": true,
+        "default": true
+      },
+      {
+        "name": "pframeDup",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 8
+      },
+      {
+        "name": "aStart",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0
+      },
+      {
+        "name": "aLen",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0
+      },
+      {
+        "name": "bStart",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0
+      },
+      {
+        "name": "bLen",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0
+      },
+      {
+        "name": "sourceInA",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0
+      },
+      {
+        "name": "sourceInB",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0
+      },
+      {
+        "name": "bakeInA",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0
+      },
+      {
+        "name": "bakeOutA",
+        "type": "scalar",
+        "settable": true,
+        "default": 60,
+        "min": 0
+      },
+      {
+        "name": "bakeInB",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0
+      },
+      {
+        "name": "bakeOutB",
+        "type": "scalar",
+        "settable": true,
+        "default": 60,
+        "min": 0
+      }
+    ],
+    "subcategory": "modifier",
+    "description": "Glitch-melt two clips into each other. Wire two image inputs, then in the panel Bake each clip into the node, drag the two clips on the mini-timeline so they overlap, and the overlap is moshed: the incoming clip's motion warps a frozen frame of the outgoing clip (optical-flow advection). Flow Scale sets the smear distance, Smear its length, Decay its falloff, Refresh how fast the real incoming pixels bleed back. Preview plays forward live; Mosh bakes the result for clean scrubbing and export. (Inputs are session-only — reopen → re-bake.)"
   },
   {
     "type": "depth-anything",
@@ -6111,6 +6410,58 @@
     "description": "Render a particles socket as point sprites onto an image. Each particle becomes a soft-edged dot; size, color, and blend mode are uniform."
   },
   {
+    "type": "pixelate",
+    "name": "Pixelate",
+    "category": "image",
+    "inputs": [
+      {
+        "name": "image",
+        "type": "image",
+        "required": true
+      }
+    ],
+    "primaryOutput": "image",
+    "aux": [],
+    "params": [
+      {
+        "name": "size",
+        "type": "scalar",
+        "settable": true,
+        "default": 16,
+        "min": 1,
+        "max": 256
+      },
+      {
+        "name": "shape",
+        "type": "enum",
+        "settable": true,
+        "default": "square",
+        "options": [
+          "square",
+          "circle"
+        ]
+      },
+      {
+        "name": "aspect",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0.25,
+        "max": 4
+      },
+      {
+        "name": "opacity",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "subcategory": "modifier",
+    "description": "Mosaic the image into blocks, sampling each block's center. Square or circular cells; aspect stretches the grid for non-square mosaics."
+  },
+  {
     "type": "plane-3d",
     "name": "Plane",
     "category": "3d",
@@ -6469,6 +6820,22 @@
         "max": 180
       },
       {
+        "name": "trim_start",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_end",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
+      },
+      {
         "name": "stroke_enabled",
         "type": "boolean",
         "settable": true,
@@ -6523,6 +6890,58 @@
     "subcategory": "generator",
     "dynamic": true,
     "description": "Generate a regular polygon as a closed spline — set the number of sides, radius, and rotation."
+  },
+  {
+    "type": "posterize",
+    "name": "Posterize",
+    "category": "image",
+    "inputs": [
+      {
+        "name": "image",
+        "type": "image",
+        "required": true
+      }
+    ],
+    "primaryOutput": "image",
+    "aux": [],
+    "params": [
+      {
+        "name": "levels",
+        "type": "scalar",
+        "settable": true,
+        "default": 6,
+        "min": 2,
+        "max": 32
+      },
+      {
+        "name": "channels",
+        "type": "enum",
+        "settable": true,
+        "default": "rgb",
+        "options": [
+          "rgb",
+          "luma"
+        ]
+      },
+      {
+        "name": "gamma",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0.2,
+        "max": 4
+      },
+      {
+        "name": "opacity",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "subcategory": "modifier",
+    "description": "Quantize the image to a small number of tonal levels for a flat, screen-print / cel-shaded look. Per-channel (rgb) or brightness-only (luma, preserves hue)."
   },
   {
     "type": "proximity-merge",
@@ -6979,6 +7398,22 @@
         "default": 0,
         "min": 0,
         "max": 0.5
+      },
+      {
+        "name": "trim_start",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_end",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
       },
       {
         "name": "stroke_enabled",
@@ -9754,6 +10189,22 @@
         ]
       },
       {
+        "name": "trim_start",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_end",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
+      },
+      {
         "name": "stroke_enabled",
         "type": "boolean",
         "settable": true,
@@ -9942,6 +10393,22 @@
         "name": "spline",
         "type": "spline_anchors",
         "settable": false
+      },
+      {
+        "name": "trim_start",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_end",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
       },
       {
         "name": "stroke_enabled",
@@ -10418,6 +10885,22 @@
         "default": 0,
         "min": -180,
         "max": 180
+      },
+      {
+        "name": "trim_start",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_end",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
       },
       {
         "name": "stroke_enabled",
@@ -12066,6 +12549,40 @@
     "description": "Scale, rotate, and translate the input around a pivot. Works on images, splines, or points. For SDFs use the Position-pipeline operators (Position Translate / Scale / Rotate) — they compose with Position Repeat / Mirror / Polar for tile-local transforms."
   },
   {
+    "type": "trim-path",
+    "name": "Trim Path",
+    "category": "spline",
+    "inputs": [
+      {
+        "name": "path",
+        "type": "spline",
+        "required": true
+      }
+    ],
+    "primaryOutput": "spline",
+    "aux": [],
+    "params": [
+      {
+        "name": "trim_start",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_end",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "subcategory": "modifier",
+    "description": "Reveal only a portion of a path by arc length. Start/end (0–1, across all subpaths) animate a draw-on. Outputs a spline — view it with Stroke or Rasterize Spline."
+  },
+  {
     "type": "vec2-literal",
     "name": "Vec2",
     "category": "utility",
@@ -12503,6 +13020,22 @@
         "default": 16,
         "min": 4,
         "max": 64
+      },
+      {
+        "name": "trim_start",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "trim_end",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
       },
       {
         "name": "stroke_enabled",

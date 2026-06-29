@@ -2,19 +2,24 @@ import { createClient } from "@/lib/supabase/client";
 
 // Editor-wide user preferences.
 // - openaiApiKey: BYO-key for AI nodes (Image Generate).
+// - anthropicApiKey: BYO Claude key for AI Recipe generation. Read
+//   server-side by /api/generate-recipe for the authenticated user.
 // - huggingfaceToken: optional read-only HF token for gated models
 //   (e.g. briaai/RMBG-2.0). Anonymous access works for non-gated
 //   weights; gated repos return 401 without a token.
 //
-// Schema mirrors specdocs/user-preferences-migration.sql.
+// Schema mirrors specdocs/user-preferences-migration.sql (+ the
+// anthropic_api_key column from user-preferences-anthropic-migration.sql).
 
 export interface UserPreferences {
   openaiApiKey: string | null;
+  anthropicApiKey: string | null;
   huggingfaceToken: string | null;
 }
 
 const EMPTY: UserPreferences = {
   openaiApiKey: null,
+  anthropicApiKey: null,
   huggingfaceToken: null,
 };
 
@@ -25,7 +30,7 @@ export async function loadUserPreferences(): Promise<UserPreferences> {
   if (!uid) return EMPTY;
   const { data, error } = await supa
     .from("user_preferences")
-    .select("openai_api_key, hf_token")
+    .select("openai_api_key, hf_token, anthropic_api_key")
     .eq("user_id", uid)
     .maybeSingle();
   if (error) {
@@ -38,6 +43,7 @@ export async function loadUserPreferences(): Promise<UserPreferences> {
   }
   return {
     openaiApiKey: (data?.openai_api_key as string | null) ?? null,
+    anthropicApiKey: (data?.anthropic_api_key as string | null) ?? null,
     huggingfaceToken: (data?.hf_token as string | null) ?? null,
   };
 }
@@ -51,6 +57,7 @@ export async function saveUserPreferences(
   if (!uid) return { ok: false, error: "Not signed in." };
   const payload: Record<string, unknown> = { user_id: uid };
   if ("openaiApiKey" in next) payload.openai_api_key = next.openaiApiKey;
+  if ("anthropicApiKey" in next) payload.anthropic_api_key = next.anthropicApiKey;
   if ("huggingfaceToken" in next) payload.hf_token = next.huggingfaceToken;
   const { error } = await supa
     .from("user_preferences")
@@ -79,6 +86,40 @@ export async function testOpenAIKey(
     return {
       ok: false,
       error: `OpenAI returned ${res.status}${body ? ": " + body.slice(0, 200) : ""}`,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      error: `Network error: ${(e as Error).message ?? "unknown"}`,
+    };
+  }
+}
+
+// Anthropic key validator: hits /v1/models. The
+// `anthropic-dangerous-direct-browser-access` header opts into Anthropic's
+// CORS path so this works from the browser (the key still only goes to
+// Anthropic). A 200 means the key is accepted.
+export async function testAnthropicKey(
+  key: string
+): Promise<{ ok: boolean; error?: string }> {
+  const trimmed = key.trim();
+  if (!trimmed) return { ok: false, error: "Key is empty." };
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/models?limit=1", {
+      method: "GET",
+      headers: {
+        "x-api-key": trimmed,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+    });
+    if (res.ok) return { ok: true };
+    if (res.status === 401)
+      return { ok: false, error: "Invalid API key (401)." };
+    const body = await res.text().catch(() => "");
+    return {
+      ok: false,
+      error: `Anthropic returned ${res.status}${body ? ": " + body.slice(0, 200) : ""}`,
     };
   } catch (e) {
     return {

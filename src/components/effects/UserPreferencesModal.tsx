@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
   loadUserPreferences,
   saveUserPreferences,
+  testAnthropicKey,
   testHuggingFaceToken,
   testOpenAIKey,
 } from "@/lib/supabase/user-preferences";
@@ -37,6 +38,10 @@ export default function UserPreferencesModal({
   const [openaiSavedTail, setOpenaiSavedTail] = useState<string | null>(null);
   const [openaiDirty, setOpenaiDirty] = useState(false);
 
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [anthropicSavedTail, setAnthropicSavedTail] = useState<string | null>(null);
+  const [anthropicDirty, setAnthropicDirty] = useState(false);
+
   const [hfToken, setHfToken] = useState("");
   const [hfSavedTail, setHfSavedTail] = useState<string | null>(null);
   const [hfDirty, setHfDirty] = useState(false);
@@ -54,10 +59,13 @@ export default function UserPreferencesModal({
     if (!open) return;
     setError(null);
     setOpenaiDirty(false);
+    setAnthropicDirty(false);
     setHfDirty(false);
     if (!signedIn) {
       setOpenaiKey("");
       setOpenaiSavedTail(null);
+      setAnthropicKey("");
+      setAnthropicSavedTail(null);
       setHfToken("");
       setHfSavedTail(null);
       return;
@@ -66,9 +74,12 @@ export default function UserPreferencesModal({
     loadUserPreferences()
       .then((prefs) => {
         const ok = prefs.openaiApiKey ?? "";
+        const ak = prefs.anthropicApiKey ?? "";
         const hk = prefs.huggingfaceToken ?? "";
         setOpenaiKey(ok);
         setOpenaiSavedTail(ok ? ok.slice(-4) : null);
+        setAnthropicKey(ak);
+        setAnthropicSavedTail(ak ? ak.slice(-4) : null);
         setHfToken(hk);
         setHfSavedTail(hk ? hk.slice(-4) : null);
       })
@@ -91,9 +102,11 @@ export default function UserPreferencesModal({
     setSaving(true);
     setError(null);
     const trimmedOpenai = openaiKey.trim();
+    const trimmedAnthropic = anthropicKey.trim();
     const trimmedHf = hfToken.trim();
     const res = await saveUserPreferences({
       openaiApiKey: trimmedOpenai === "" ? null : trimmedOpenai,
+      anthropicApiKey: trimmedAnthropic === "" ? null : trimmedAnthropic,
       huggingfaceToken: trimmedHf === "" ? null : trimmedHf,
     });
     setSaving(false);
@@ -241,6 +254,24 @@ export default function UserPreferencesModal({
             setOpenaiDirty(true);
           }}
           onTest={() => testOpenAIKey(openaiKey)}
+          disabled={!signedIn || loading}
+          enterToSave={submit}
+        />
+
+        <div style={{ height: 14 }} />
+
+        <KeyField
+          label="Anthropic (Claude) API Key"
+          description="Used by AI Recipe generation (Shift+A → AI Recipe). Stored on your account (RLS-protected) and read server-side when you generate — not sent anywhere else. Get one at console.anthropic.com. Leave blank to clear."
+          placeholder="sk-ant-…"
+          value={anthropicKey}
+          savedTail={anthropicSavedTail}
+          dirty={anthropicDirty}
+          onChange={(v) => {
+            setAnthropicKey(v);
+            setAnthropicDirty(true);
+          }}
+          onTest={() => testAnthropicKey(anthropicKey)}
           disabled={!signedIn || loading}
           enterToSave={submit}
         />

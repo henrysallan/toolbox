@@ -116,6 +116,13 @@ import {
 } from "@/lib/supabase/projects";
 import { AuthProvider, useUser } from "@/lib/auth-context";
 import SaveModal from "./SaveModal";
+import AiRecipePanel from "./AiRecipePanel";
+import { generateRecipe } from "@/lib/ai/generate-recipe-client";
+import { editGroupRecipe } from "@/lib/ai/edit-recipe-client";
+import {
+  parseFragmentText,
+  writeFragmentToClipboard,
+} from "@/lib/fragment-clipboard";
 import ExportAppModal from "./ExportAppModal";
 import NodeInspectorPopup from "./NodeInspectorPopup";
 import { buildExportManifest } from "@/lib/export-manifest";
@@ -403,7 +410,9 @@ function EffectsShell({
   //     session, so respect whichever view they had open.
   //   • initialProject is present — /p/<slug> route opens straight to
   //     a specific project; the load grid would just hide it.
-  const [paramView, setParamView] = useState<"project" | "node" | "load">(
+  const [paramView, setParamView] = useState<
+    "project" | "node" | "load" | "ai-recipe"
+  >(
     rehydrate?.paramView ?? (initialProject ? "node" : "load")
   );
   // First-load landing gateway. Shown only on a clean visit to `/` —
@@ -540,6 +549,11 @@ function EffectsShell({
   // Bumped after every save so the load grid refetches on next view.
   const [loadRefreshKey, setLoadRefreshKey] = useState(0);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
+  // The group currently being edited by the AI panel (paramView "ai-recipe"
+  // with a target ⇒ edit mode; no target ⇒ generate mode).
+  const [editTarget, setEditTarget] = useState<{ groupId: string; name: string } | null>(null);
+  const editTargetRef = useRef(editTarget);
+  editTargetRef.current = editTarget;
   // User Preferences modal — Toolbox menu → User Preferences. Hosts
   // the BYO OpenAI key for AI-driven nodes plus future editor-wide
   // settings.
@@ -937,7 +951,10 @@ function EffectsShell({
         edges: edgesRef.current,
         currentProject: currentProjectRef.current,
         selectedId: selectedIdRef.current,
-        paramView: paramViewRef.current,
+        // The AI Recipe composer is a transient view — never restore into it
+        // across a docs round-trip; fall back to the node panel.
+        paramView:
+          paramViewRef.current === "ai-recipe" ? "node" : paramViewRef.current,
         saveState: saveStateRef.current,
         canvasRes: canvasResRef.current,
       });
@@ -1851,6 +1868,121 @@ function EffectsShell({
     [pushGraph, getGraphSnapshot, setNodes, spawnNode]
   );
 
+  // AI Recipe: generate a node-group from a text prompt, validate it
+  // client-side (the engine lives here), and insert it on the canvas exactly
+  // like a preset. Mirrors the `preset:*` branch of onAddNode below — kept as
+  // its own callback so onAddNode's huge dependency list stays untouched.
+  const handleGenerateRecipe = useCallback(
+    async (prompt: string): Promise<{ ok: boolean; message?: string }> => {
+      let result;
+      try {
+        result = await generateRecipe(prompt);
+      } catch (e) {
+        return { ok: false, message: (e as Error)?.message ?? "Generation failed." };
+      }
+      if (!result.ok || !result.nodes || !result.edges) {
+        return {
+          ok: false,
+          message: result.errors[0] ?? "Couldn't build a valid recipe from that — try rephrasing.",
+        };
+      }
+
+      pushGraph(getGraphSnapshot());
+      const base = lastPanePointerRef.current ?? { x: 200, y: 200 };
+      const frag = { nodes: result.nodes, edges: result.edges };
+      let targetScope = currentGroupIdRef.current;
+      let baseNodes = nodesRef.current;
+      let baseEdges = edgesRef.current;
+      let wrapped: string | null = null;
+      if (!targetScope) {
+        const res = createLayer(baseNodes, baseEdges);
+        baseNodes = res.nodes;
+        baseEdges = res.edges;
+        targetScope = res.layerId;
+        wrapped = res.layerId;
+      }
+      const minX = Math.min(...frag.nodes.map((n) => n.position.x));
+      const minY = Math.min(...frag.nodes.map((n) => n.position.y));
+      const offset = { x: base.x - minX, y: base.y - minY };
+      const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
+        frag.nodes,
+        frag.edges,
+        offset,
+        { parentId: targetScope }
+      );
+      setNodes([
+        ...baseNodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
+        ...newNodes,
+      ]);
+      setEdges([...baseEdges, ...newEdges]);
+      const groupClone = newNodes.find((n) => n.data.defType === GROUP_TYPE);
+      if (wrapped) {
+        navigateScope(wrapped);
+        setNodes((prev) =>
+          prev.map((n) =>
+            newNodes.some((c) => c.id === n.id) ? { ...n, selected: true } : n
+          )
+        );
+      }
+      if (groupClone) setSelectedId(groupClone.id);
+      setParamView("node");
+      const note = result.warnings.length
+        ? ` (${result.warnings.length} note${result.warnings.length > 1 ? "s" : ""})`
+        : "";
+      flashToast(`recipe added${wrapped ? " to a new layer" : ""}${note}`);
+      return { ok: true };
+    },
+    [pushGraph, getGraphSnapshot, flashToast, navigateScope]
+  );
+
+  // Right-click a group → "Edit with AI": open the AI panel in edit mode
+  // targeting that group.
+  const handleEditWithAI = useCallback((nodeId: string) => {
+    const node = nodesRef.current.find((n) => n.id === nodeId);
+    if (!node || node.data.defType !== GROUP_TYPE) return;
+    setEditTarget({ groupId: nodeId, name: node.data.name || "Group" });
+    setParamView("ai-recipe");
+  }, []);
+
+  // Edit the targeted group from a prompt: extract its fragment, run the
+  // patch through editGroupRecipe (apply + validate + repair), and commit the
+  // result in place — external wires survive because the shell id is unchanged.
+  const handleEditGroup = useCallback(
+    async (prompt: string): Promise<{ ok: boolean; message?: string }> => {
+      const target = editTargetRef.current;
+      if (!target) return { ok: false, message: "No group selected." };
+      const groupId = target.groupId;
+      const fragIds = expandWithDescendants(nodesRef.current, [groupId]);
+      const fragNodes = nodesRef.current.filter((n) => fragIds.has(n.id));
+      const fragEdges = edgesRef.current.filter(
+        (e) => fragIds.has(e.source) && fragIds.has(e.target)
+      );
+      let result;
+      try {
+        result = await editGroupRecipe(groupId, fragNodes, fragEdges, prompt);
+      } catch (e) {
+        return { ok: false, message: (e as Error)?.message ?? "Edit failed." };
+      }
+      if (!result.ok || !result.nodes || !result.edges) {
+        return {
+          ok: false,
+          message: result.errors[0] ?? "Couldn't apply that edit — try rephrasing.",
+        };
+      }
+      pushGraph(getGraphSnapshot());
+      setNodes(nodesRef.current.filter((n) => !fragIds.has(n.id)).concat(result.nodes));
+      setEdges([
+        ...edgesRef.current.filter(
+          (e) => !(fragIds.has(e.source) && fragIds.has(e.target))
+        ),
+        ...result.edges,
+      ]);
+      flashToast(result.summary ? `edit: ${result.summary}` : "group edited");
+      return { ok: true };
+    },
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast]
+  );
+
   const onAddNode = useCallback(
     (
       type: string,
@@ -1860,6 +1992,13 @@ function EffectsShell({
         sourceType: string;
       }
     ) => {
+      // Pseudo-type from the add menu: show the AI Recipe composer in the
+      // params panel instead of inserting a node. (setParamView is a stable
+      // setter, so this adds nothing to the dependency list.)
+      if (type === "ai-recipe") {
+        setParamView("ai-recipe");
+        return;
+      }
       pushGraph(getGraphSnapshot());
       const base = lastPanePointerRef.current ?? { x: 200, y: 200 };
       // A tiny jitter keeps repeated adds from overlapping pixel-for-pixel.
@@ -2189,79 +2328,104 @@ function EffectsShell({
     const internalEdges = edgesRef.current.filter(
       (e) => ids.has(e.source) && ids.has(e.target)
     );
-    clipboardRef.current = {
-      nodes: nodesRef.current
-        .filter((n) => ids.has(n.id))
-        .map((n) => ({ ...n, selected: false })),
-      edges: internalEdges,
-    };
+    const fragNodes = nodesRef.current
+      .filter((n) => ids.has(n.id))
+      .map((n) => ({ ...n, selected: false }));
+    clipboardRef.current = { nodes: fragNodes, edges: internalEdges };
+    // Also publish a portable text envelope to the OS clipboard so the group /
+    // recipe can be pasted into another tab or instance of Toolbox. Best-effort
+    // (no-op in insecure contexts); same-tab paste falls back to clipboardRef.
+    void writeFragmentToClipboard(fragNodes, internalEdges);
   }, []);
+
+  // Shared insert: clone a fragment with fresh ids and drop it into the scope
+  // the user is looking at (auto-wrapping into a new layer at root). Used by
+  // both the in-memory paste and the cross-instance fragment paste.
+  const insertClonedFragment = useCallback(
+    (
+      fragNodes: Node<NodeDataPayload>[],
+      fragEdges: Edge[],
+      toastNew: string
+    ) => {
+      if (fragNodes.length === 0) return;
+      pushGraph(getGraphSnapshot());
+      // Anchor to the last pane-pointer position so it lands where attention
+      // is; fall back to a small fixed offset.
+      const pointer = lastPanePointerRef.current;
+      let offset: { x: number; y: number };
+      if (pointer) {
+        const minX = Math.min(...fragNodes.map((n) => n.position.x));
+        const minY = Math.min(...fragNodes.map((n) => n.position.y));
+        offset = { x: pointer.x - minX, y: pointer.y - minY };
+      } else {
+        offset = { x: 24, y: 24 };
+      }
+      // At root (a strict layer chain) non-layer content auto-wraps into a
+      // fresh layer; otherwise it lands in the current group scope.
+      let targetScope = currentGroupIdRef.current;
+      let baseNodes = nodesRef.current;
+      let baseEdges = edgesRef.current;
+      let wrapped: string | null = null;
+      if (!targetScope && !fragNodes.every((n) => n.data.defType === LAYER_TYPE)) {
+        const res = createLayer(baseNodes, baseEdges);
+        baseNodes = res.nodes;
+        baseEdges = res.edges;
+        targetScope = res.layerId;
+        wrapped = res.layerId;
+      }
+      const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
+        fragNodes,
+        fragEdges,
+        offset,
+        { parentId: targetScope }
+      );
+      setNodes([
+        ...baseNodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
+        ...newNodes,
+      ]);
+      setEdges([...baseEdges, ...newEdges]);
+      if (wrapped) {
+        flashToast(toastNew);
+        navigateScope(wrapped);
+        // navigateScope clears selection; keep the pasted clones selected.
+        setNodes((prev) =>
+          prev.map((n) =>
+            newNodes.some((c) => c.id === n.id) ? { ...n, selected: true } : n
+          )
+        );
+      }
+    },
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, navigateScope]
+  );
 
   const handlePasteNodes = useCallback(() => {
     const clip = clipboardRef.current;
     if (!clip || clip.nodes.length === 0) return;
-    pushGraph(getGraphSnapshot());
-    // Offset the paste. Prefer anchoring to the last pane-pointer position
-    // (so it lands where attention is); fall back to a small fixed offset.
-    const pointer = lastPanePointerRef.current;
-    let offset: { x: number; y: number };
-    if (pointer) {
-      // Shift the whole subgraph so its top-left corner sits at the pointer.
-      const minX = Math.min(...clip.nodes.map((n) => n.position.x));
-      const minY = Math.min(...clip.nodes.map((n) => n.position.y));
-      offset = { x: pointer.x - minX, y: pointer.y - minY };
-    } else {
-      offset = { x: 24, y: 24 };
-    }
-    // Paste lands in the scope the user is looking at, which may differ
-    // from where the copy happened (retarget applies to top-level
-    // clones only; group interiors keep pointing at their cloned
-    // shells). At root — where only layers live — the pasted nodes
-    // auto-wrap into a fresh layer instead.
-    let targetScope = currentGroupIdRef.current;
-    let baseNodes = nodesRef.current;
-    let baseEdges = edgesRef.current;
-    let wrapped: string | null = null;
-    if (
-      !targetScope &&
-      !clip.nodes.every((n) => n.data.defType === LAYER_TYPE)
-    ) {
-      const res = createLayer(baseNodes, baseEdges);
-      baseNodes = res.nodes;
-      baseEdges = res.edges;
-      targetScope = res.layerId;
-      wrapped = res.layerId;
-    }
-    const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
-      clip.nodes,
-      clip.edges,
-      offset,
-      { parentId: targetScope }
-    );
-    setNodes([
-      ...baseNodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
-      ...newNodes,
-    ]);
-    setEdges([...baseEdges, ...newEdges]);
-    if (wrapped) {
-      flashToast("pasted into a new layer");
-      navigateScope(wrapped);
-      // navigateScope clears selection; keep the pasted clones selected
-      // so the user can immediately move them.
-      setNodes((prev) =>
-        prev.map((n) =>
-          newNodes.some((c) => c.id === n.id) ? { ...n, selected: true } : n
-        )
-      );
-    }
-  }, [
-    pushGraph,
-    getGraphSnapshot,
-    setNodes,
-    setEdges,
-    flashToast,
-    navigateScope,
-  ]);
+    insertClonedFragment(clip.nodes, clip.edges, "pasted into a new layer");
+  }, [insertClonedFragment]);
+
+  // Cross-instance paste: the OS clipboard held a Toolbox fragment envelope
+  // (copied from another tab/instance, or pasted from a shared snippet).
+  // Deserialize it through the normal load path, then insert like any paste.
+  const handlePasteFragmentText = useCallback(
+    async (text: string) => {
+      const saved = parseFragmentText(text);
+      if (!saved) return;
+      try {
+        const { nodes: fragNodes, edges: fragEdges } = await deserializeGraph(
+          saved
+        );
+        insertClonedFragment(
+          fragNodes,
+          fragEdges,
+          "pasted a copied group into a new layer"
+        );
+      } catch {
+        flashToast("couldn't paste — unrecognized or invalid fragment");
+      }
+    },
+    [insertClonedFragment, flashToast]
+  );
 
   // Shift+D duplicate: clone every selected node, preserving any edges
   // whose endpoints are both inside the selection. Mirrors copy+paste
@@ -6122,6 +6286,8 @@ function EffectsShell({
       onMergeSelection={handleMergeSelection}
       onCopyNodes={handleCopyNodes}
       onPasteNodes={handlePasteNodes}
+      onPasteFragmentText={handlePasteFragmentText}
+      onEditWithAINode={handleEditWithAI}
       onAddFileNode={onAddFileNode}
       onAddImageNodeFromImageGen={onAddImageNodeFromImageGen}
       onCombineWires={handleCombineWires}
@@ -6191,7 +6357,19 @@ function EffectsShell({
     );
   }, [queueProgress, queueItemProgress]);
 
-  const paramPanelJsx = (
+  const paramPanelJsx = paramView === "ai-recipe" ? (
+    <AiRecipePanel
+      key={editTarget ? `edit:${editTarget.groupId}` : "generate"}
+      signedIn={signedIn}
+      editTarget={editTarget ? { name: editTarget.name } : null}
+      onSubmit={editTarget ? handleEditGroup : handleGenerateRecipe}
+      onClose={() => {
+        setEditTarget(null);
+        setParamView("node");
+      }}
+      onOpenPreferences={() => setUserPrefsOpen(true)}
+    />
+  ) : (
     <ParamPanel
       nodes={nodes}
       selectedId={selectedId}
