@@ -448,32 +448,62 @@ export async function clearRating(projectId: string): Promise<boolean> {
 // Mine only. Relies on RLS to deny cross-user reads; no explicit
 // user_id filter needed on the wire, but we do pass one so the query
 // planner picks up the (user_id) index.
+// Resolve fast on a stalled network instead of hanging the projects UI.
+const LIST_TIMEOUT_MS = 6000;
+function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T> {
+  return Promise.race([
+    Promise.resolve(p),
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error("network timeout")), ms)
+    ),
+  ]);
+}
+
+// True only when the browser is certain there's no network — lets us skip
+// doomed cloud requests for an instant offline UX. `onLine: true` is not a
+// guarantee of real connectivity, so the timeout above is the backstop.
+function definitelyOffline(): boolean {
+  return typeof navigator !== "undefined" && navigator.onLine === false;
+}
+
 export async function listPrivateProjects(): Promise<ProjectRow[]> {
   const supabase = createClient();
-  const { data: userResp } = await supabase.auth.getUser();
-  if (!userResp.user) return [];
-  const uid = userResp.user.id;
-  if (
-    privateListCache &&
-    privateListCache.ownerId === uid &&
-    fresh(privateListCache)
-  ) {
-    return privateListCache.rows;
-  }
-  const { data, error } = await supabase
-    .from("projects")
-    .select(BASE_COLS)
-    .eq("user_id", uid)
-    .order("updated_at", { ascending: false });
-  if (error) {
-    console.error("listPrivateProjects failed:", error);
+  try {
+    // getSession is local (no network); offline it returns the cached session.
+    const { data: sess } = await supabase.auth.getSession();
+    const uid = sess.session?.user?.id;
+    if (!uid) return [];
+    if (
+      privateListCache &&
+      privateListCache.ownerId === uid &&
+      fresh(privateListCache)
+    ) {
+      return privateListCache.rows;
+    }
+    if (definitelyOffline()) {
+      return privateListCache?.ownerId === uid ? privateListCache.rows : [];
+    }
+    const { data, error } = await withTimeout(
+      supabase
+        .from("projects")
+        .select(BASE_COLS)
+        .eq("user_id", uid)
+        .order("updated_at", { ascending: false }),
+      LIST_TIMEOUT_MS
+    );
+    if (error) {
+      console.error("listPrivateProjects failed:", error);
+      return privateListCache?.ownerId === uid ? privateListCache.rows : [];
+    }
+    const rows = (data ?? []).map((r) => ({ ...r, author: null }) as ProjectRow);
+    privateListCache = { rows, fetchedAt: Date.now(), ownerId: uid };
+    return rows;
+  } catch (e) {
+    // Offline / timeout — degrade to empty instead of throwing (which would
+    // leave the grid spinning forever).
+    console.warn("listPrivateProjects unavailable (offline?):", e);
     return [];
   }
-  const rows = (data ?? []).map(
-    (r) => ({ ...r, author: null }) as ProjectRow
-  );
-  privateListCache = { rows, fetchedAt: Date.now(), ownerId: uid };
-  return rows;
 }
 
 // Every is_public=true row, regardless of owner. Works for signed-out
@@ -482,15 +512,20 @@ export async function listPrivateProjects(): Promise<ProjectRow[]> {
 // foreign-key relationship between projects and profiles.
 export async function listPublicProjects(): Promise<ProjectRow[]> {
   if (fresh(publicListCache)) return publicListCache!.rows;
+  if (definitelyOffline()) return publicListCache?.rows ?? [];
   const supabase = createClient();
-  const { data, error } = await supabase
-    .from("projects")
-    .select(BASE_COLS)
-    .eq("is_public", true)
-    .order("updated_at", { ascending: false });
+  try {
+  const { data, error } = await withTimeout(
+    supabase
+      .from("projects")
+      .select(BASE_COLS)
+      .eq("is_public", true)
+      .order("updated_at", { ascending: false }),
+    LIST_TIMEOUT_MS
+  );
   if (error) {
     console.error("listPublicProjects failed:", error);
-    return [];
+    return publicListCache?.rows ?? [];
   }
   const rows = data ?? [];
   if (rows.length === 0) {
@@ -498,10 +533,13 @@ export async function listPublicProjects(): Promise<ProjectRow[]> {
     return [];
   }
   const uids = Array.from(new Set(rows.map((r) => r.user_id)));
-  const { data: profs } = await supabase
-    .from("profiles")
-    .select("id, display_name, avatar_url")
-    .in("id", uids);
+  const { data: profs } = await withTimeout(
+    supabase
+      .from("profiles")
+      .select("id, display_name, avatar_url")
+      .in("id", uids),
+    LIST_TIMEOUT_MS
+  );
   const byId = new Map<string, ProjectAuthor>();
   for (const p of profs ?? [])
     byId.set(p.id as string, p as ProjectAuthor);
@@ -514,6 +552,10 @@ export async function listPublicProjects(): Promise<ProjectRow[]> {
   );
   publicListCache = { rows: enriched, fetchedAt: Date.now() };
   return enriched;
+  } catch (e) {
+    console.warn("listPublicProjects unavailable (offline?):", e);
+    return publicListCache?.rows ?? [];
+  }
 }
 
 // ========================================================================

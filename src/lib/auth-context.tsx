@@ -24,11 +24,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const supabase = createClient();
     let mounted = true;
-    supabase.auth.getUser().then(({ data }) => {
-      if (!mounted) return;
-      setUser(data.user);
-      setLoading(false);
-    });
+    // getSession() reads the cached session from local storage (no network),
+    // so it resolves instantly and works offline — giving a "signed in
+    // (offline)" state from the cached user. getUser() validates over the
+    // network and rejects/stalls when offline, which would leave loading=true
+    // forever and block the landing modal.
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        if (!mounted) return;
+        setUser(data.session?.user ?? null);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setLoading(false);
+      });
     const { data: sub } = supabase.auth.onAuthStateChange((_ev, session) => {
       setUser(session?.user ?? null);
     });
