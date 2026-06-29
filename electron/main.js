@@ -9,7 +9,7 @@
 // Spec: specdocs/062626_electron-native-export.md
 "use strict";
 
-const { app, BrowserWindow, shell, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, nativeImage } = require("electron");
 const path = require("path");
 const { registerFileHandlers } = require("./files");
 const { register: registerFfmpeg } = require("./ffmpeg");
@@ -122,7 +122,25 @@ function registerWindowControls() {
   );
 }
 
+// Dev dock icon. The packaged .app gets its icon from the bundle (build/
+// icon.icns via electron-builder); but `npm run electron` / `dev:desktop` run
+// plain Electron, which would show the generic Electron dock icon. Point the
+// dock at the source PNG in that case (skipped when packaged — the bundled
+// icns already wins, and ../public doesn't exist inside the asar).
+function setDevDockIcon() {
+  if (process.platform !== "darwin" || app.isPackaged || !app.dock) return;
+  try {
+    const img = nativeImage.createFromPath(
+      path.join(__dirname, "..", "public", "ToolboxIcon-iOS-Default-1024x1024@1x.png")
+    );
+    if (!img.isEmpty()) app.dock.setIcon(img);
+  } catch {
+    /* non-fatal */
+  }
+}
+
 app.whenReady().then(() => {
+  setDevDockIcon();
   registerFileHandlers();
   registerFfmpeg();
   registerWindowControls();

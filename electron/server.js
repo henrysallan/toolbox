@@ -3,15 +3,19 @@
 // full route + auth parity (cookies on localhost), and it serves offline.
 // Cloud calls (Supabase) still go over the network and degrade gracefully.
 //
-// The server runs in Electron's bundled Node via ELECTRON_RUN_AS_NODE, so we
-// don't ship a separate node binary. Spec: specdocs/062626_electron-native-export.md
+// The server runs in Electron's bundled Node via `utilityProcess.fork`, so we
+// don't ship a separate node binary. We deliberately do NOT `spawn(process.
+// execPath, …)` with ELECTRON_RUN_AS_NODE: on macOS that relaunches the app's
+// own GUI binary as a second app instance, which gets its own (perpetually
+// bouncing) Dock tile and a fragile lifecycle. `utilityProcess` runs real
+// Node, never creates a Dock tile, and is tied to the app's lifetime.
+// Spec: specdocs/062626_electron-native-export.md
 "use strict";
 
-const { spawn } = require("child_process");
 const http = require("http");
 const path = require("path");
 const fs = require("fs");
-const { app } = require("electron");
+const { app, utilityProcess } = require("electron");
 
 // Pinned so the OAuth redirect URI is stable (allowlist
 // http://127.0.0.1:<port>/auth/callback in Supabase). Overridable for testing.
@@ -45,19 +49,22 @@ function startServer() {
       `standalone server not found at ${entry} — run \`npm run desktop:prepare\` first`
     );
   }
-  child = spawn(process.execPath, [entry], {
+  // utilityProcess.fork runs the standalone server as a managed Node child —
+  // no Dock tile (unlike re-launching process.execPath), and it always runs as
+  // Node so ELECTRON_RUN_AS_NODE isn't needed.
+  child = utilityProcess.fork(entry, [], {
     cwd: path.dirname(entry),
     env: {
       ...process.env,
-      ELECTRON_RUN_AS_NODE: "1",
       NODE_ENV: "production",
       PORT: String(PORT),
       HOSTNAME: HOST,
     },
     stdio: ["ignore", "pipe", "pipe"],
+    serviceName: "toolbox-next-server",
   });
-  child.stdout.on("data", (d) => process.stdout.write(`[next] ${d}`));
-  child.stderr.on("data", (d) => process.stderr.write(`[next] ${d}`));
+  child.stdout?.on("data", (d) => process.stdout.write(`[next] ${d}`));
+  child.stderr?.on("data", (d) => process.stderr.write(`[next] ${d}`));
   child.on("exit", (code) => {
     if (code) console.error(`[next] standalone server exited with code ${code}`);
     child = null;

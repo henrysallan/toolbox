@@ -18,7 +18,9 @@
 /out/
 
 # production
-/build
+/build/*
+# …but keep the electron-builder app icon (buildResources convention)
+!/build/icon.icns
 
 # misc
 .DS_Store

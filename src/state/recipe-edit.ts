@@ -16,11 +16,14 @@ import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
   readGroupInterface,
+  readBoundarySockets,
 } from "@/engine/groups";
+import { paramSocketType } from "@/engine/graph-helpers";
 import {
   makeInstanceNode,
   newEdgeId,
   refreshNodeSockets,
+  syncGroupInterface,
   type GraphNode,
 } from "@/state/graph-ops";
 import {
@@ -138,6 +141,8 @@ export type RecipeEditOp =
   | { op: "remove_node"; node: string }
   | { op: "add_edge"; from: string; to: string }
   | { op: "remove_edge"; from: string; to: string }
+  | { op: "expose_param"; node: string; param: string; label?: string }
+  | { op: "unexpose_param"; node: string; param: string }
   | { op: "rename_node"; node: string; name: string };
 
 export interface RecipeEdit {
@@ -172,6 +177,10 @@ export function applyRecipeEdit(
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const localToReal = new Map<string, string>(); // add_node local id → real id
   const realId = (lid: string) => localToReal.get(lid) ?? lid;
+  let needsSync = false; // an expose/unexpose changed the group interface
+
+  const groupInput = () =>
+    nodes.find((x) => x.data.parentId === groupId && x.data.defType === GROUP_INPUT_TYPE);
 
   const applyParams = (
     n: GraphNode,
@@ -274,6 +283,59 @@ export function applyRecipeEdit(
           err("EDGE_NOT_FOUND", `remove_edge ${op.from} → ${op.to}: no matching edge.`);
         break;
       }
+      case "expose_param": {
+        const n = byId.get(op.node);
+        if (!n) { err("UNKNOWN_NODE", `expose_param: no node "${op.node}".`); break; }
+        if (STRUCTURAL.has(n.data.defType)) { err("PROTECTED_NODE", `expose_param: "${op.node}" is structural.`); break; }
+        const def = getNodeDef(n.data.defType);
+        const pdef = def?.params.find((p) => p.name === op.param);
+        if (!pdef) { err("UNKNOWN_PARAM", `expose_param: ${op.node} has no param "${op.param}".`); break; }
+        const sockType = paramSocketType(pdef.type);
+        if (!sockType) { err("PARAM_NOT_EXPOSABLE", `expose_param: "${op.param}" (${pdef.type}) can't be a socket.`); break; }
+        const gi = groupInput();
+        if (!gi) { err("NO_BOUNDARY", `expose_param: group has no input boundary.`); break; }
+        const label = op.label?.trim() || op.param;
+        const sockets = readBoundarySockets(gi.data.params);
+        if (sockets.some((s) => s.name === label)) { err("DUP_SOCKET", `expose_param: interface socket "${label}" already exists.`); break; }
+        gi.data.params = { ...gi.data.params, sockets: [...sockets, { name: label, type: sockType }] };
+        n.data.exposedParams = [...new Set([...(n.data.exposedParams ?? []), op.param])];
+        n.data.controlParams = [...new Set([...(n.data.controlParams ?? []), op.param])];
+        edges.push({
+          id: newEdgeId(),
+          source: gi.id,
+          sourceHandle: `out:aux:${label}`,
+          target: n.id,
+          targetHandle: `in:param:${op.param}`,
+        });
+        replaceInPlace(refreshNodeSockets(gi));
+        needsSync = true;
+        break;
+      }
+      case "unexpose_param": {
+        const n = byId.get(op.node);
+        if (!n) { err("UNKNOWN_NODE", `unexpose_param: no node "${op.node}".`); break; }
+        const gi = groupInput();
+        const promote = gi
+          ? edges.find(
+              (e) =>
+                e.source === gi.id &&
+                e.target === n.id &&
+                e.targetHandle === `in:param:${op.param}`
+            )
+          : undefined;
+        if (!gi || !promote) { err("NOT_EXPOSED", `unexpose_param: ${op.node}.${op.param} isn't exposed.`); break; }
+        const label = (promote.sourceHandle ?? "").slice("out:aux:".length);
+        gi.data.params = {
+          ...gi.data.params,
+          sockets: readBoundarySockets(gi.data.params).filter((s) => s.name !== label),
+        };
+        edges = edges.filter((e) => e.id !== promote.id);
+        n.data.exposedParams = (n.data.exposedParams ?? []).filter((p) => p !== op.param);
+        n.data.controlParams = (n.data.controlParams ?? []).filter((p) => p !== op.param);
+        replaceInPlace(refreshNodeSockets(gi));
+        needsSync = true;
+        break;
+      }
       case "rename_node": {
         const n = byId.get(op.node);
         if (!n) { err("UNKNOWN_NODE", `rename_node: no node "${op.node}".`); break; }
@@ -283,5 +345,8 @@ export function applyRecipeEdit(
     }
   }
 
-  return { nodes, edges, issues };
+  // Re-sync the shell's interface from the boundary sockets if expose/unexpose
+  // touched it. syncGroupInterface returns an updated nodes array.
+  const finalNodes = needsSync ? syncGroupInterface(nodes, groupId) : nodes;
+  return { nodes: finalNodes, edges, issues };
 }

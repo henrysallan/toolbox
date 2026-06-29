@@ -329,3 +329,22 @@ For the layers editor, we would create a new toggle in addition to tracks and gr
 155. something we are constantly wanting to do is to use noise to push around points or spline points. We have a set position node that i feel like could do this, but it only accepts a vec2 right now. Could we add an 2 image field inputs for X and Y? Is that the right idea?
 
 156. So my new idea is to have a claude API chat that lets us make group nodes. I think the idea of registering a user generated new node is too complex but we could have 1. a simple expression node that lets us type javascript with specialized 
+
+157. need a global saturation and vibrance in the color correction node
+
+158. Another idea - i want to be able to take a node group, pass that group as context to the AI interface, and then use a LLM call to make edits to that node group. THink through what we would need to do to set that up. I am thinking that we would add to the custom right click menu on nodes, for groups we add a "Edit with AI" button. Clicking it opens the ai chat interface and we see the node added as context. Thats the ui now we need to think about what the llm call should look like?
+
+159. Currently when you are inside a layer, you have "group input" and "group output" those are fine, but I want to rename them "Layer Input" and "Layer Output" to differentiate between being inside a group and being inside a layer.
+
+Additionally for layer output, i basically want to add all the functionality of a normal output node, ie i want to allow the user to render stuff while inside a layer and not be forced to go up to the layers context just to render
+
+Additionally all nodes are the same color, but I want to make the layer nodes tinted blue. So the Layer input and output, the layer node itself, those should all be tinted blue.
+
+
+160. Show motion paths for animated position parameters. Lets say we keyframe a X/Y position parameter at time A and then at time B. I want to show a dashed line from the ancor point at time A that leads to the ancor point at time B. This is similar to any other motion graphics package. I want to think through together how we should implement this. The thing that sticks out to me is that for any node (a primitive node or a transform node) the XY positions are disconnected. Maybe that doesnt matter.. not sure. 
+
+161. Nodes that contain multiple subpaths (text node, spline draw, SVG source) we should be able to right click and have a option that says "decompose" and that should give us an individual spline draw node for each piece of the node. So if its a text node it should be by letter, if its spline draw its by subpath etc.
+
+162. I want to improve the landing page. Ill give you a screenshot of what we have and what i want
+
+163. I want to make it more elegant to address a motion brief that needs various exports of the same content. one idea is to make certain node streams use certain node streams. But the more i think about it the more I am thinking we need the notion of a "composition" and then above that "project" - both are higher level than a layer. Currently in the hierarchy a project name is the highest and it just shows the nodegraph of layers. Instead i want that layer view to be a composition view (which we will name). And I want there to be a higher level called the project view. The project view will actually be a new panel that replaces the node edior while active. It will essentially be a folder structure. So a .toolbox is always a full project, though it will start with 1 composition, and inside that 1 layer, and inside that the default nodes. 

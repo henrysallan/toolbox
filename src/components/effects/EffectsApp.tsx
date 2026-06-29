@@ -6803,6 +6803,20 @@ function EffectsShell({
             background: "#050505",
             padding: fullCanvas ? 0 : 12,
             overflow: "hidden",
+            // Confine all on-canvas GUI (transform/primitive/gradient
+            // gizmos, spline pen, points/segment dots, 3D + particle
+            // overlays, text box handles) to the canvas area. Every one of
+            // those overlays is `position: fixed` with viewport-space coords
+            // (canvas.getBoundingClientRect), so it escapes the `overflow:
+            // hidden` above AND jumps to the root stacking context — which is
+            // why it used to paint over the node editor, param panel, and
+            // timeline. `clip-path` is a grouping clip that, unlike
+            // `overflow`, DOES clip fixed descendants, and the stacking
+            // context it establishes traps them here so the surrounding app
+            // chrome always renders on top. It does not reparent their
+            // containing block, so the overlays' viewport-coordinate math is
+            // unchanged. Keep this in sync if the canvas viewport moves.
+            clipPath: "inset(0)",
           }}
         >
           <div

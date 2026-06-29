@@ -118,5 +118,48 @@ const strokeId = id("spline-stroke");
   check("structural (boundary) nodes are protected", r3.issues.some((i) => i.code === "PROTECTED_NODE"));
 }
 
+// --- expose / unexpose a param on the group interface (M4) ---
+{
+  const circleId = id("circle");
+  const giId = id("group-input");
+  const r = applyRecipeEdit(groupId, frag.nodes, frag.edges, {
+    ops: [{ op: "expose_param", node: circleId, param: "radiusX", label: "Radius" }],
+  });
+  const v = validate(r);
+  const gi = r.nodes.find((n) => n.id === giId);
+  const giSockets = ((gi?.data.params as any)?.sockets ?? []) as any[];
+  const shell = r.nodes.find((n) => n.id === groupId);
+  const ifaceInputs = ((shell?.data.params as any)?.interface?.inputs ?? []) as any[];
+  const circle = r.nodes.find((n) => n.id === circleId);
+  const promoteEdge = r.edges.some(
+    (e) => e.source === giId && e.sourceHandle === "out:aux:Radius" && e.target === circleId && e.targetHandle === "in:param:radiusX"
+  );
+
+  console.log("");
+  check("expose: patch applies clean", r.issues.length === 0, JSON.stringify(r.issues));
+  check("expose: group still validates", v.ok && v.issues.filter((i) => i.severity === "error").length === 0);
+  check("expose: group-input gains the socket", giSockets.some((s) => s.name === "Radius"));
+  check("expose: shell interface gains the input", ifaceInputs.some((s) => s.name === "Radius"));
+  check("expose: promote edge + exposedParams set", promoteEdge && (circle?.data.exposedParams ?? []).includes("radiusX"), JSON.stringify({ promoteEdge, exp: circle?.data.exposedParams }));
+
+  // unexpose reverses it.
+  const r2 = applyRecipeEdit(groupId, r.nodes, r.edges, {
+    ops: [{ op: "unexpose_param", node: circleId, param: "radiusX" }],
+  });
+  const gi2Sockets = ((r2.nodes.find((n) => n.id === giId)?.data.params as any)?.sockets ?? []) as any[];
+  const circle2 = r2.nodes.find((n) => n.id === circleId);
+  const promoteGone = !r2.edges.some((e) => e.target === circleId && e.targetHandle === "in:param:radiusX");
+  check(
+    "unexpose: removes socket + edge + flag",
+    !gi2Sockets.some((s) => s.name === "Radius") && promoteGone && !(circle2?.data.exposedParams ?? []).includes("radiusX")
+  );
+  check("unexpose: group still validates", validate(r2).ok);
+  // unexposing a param that was never exposed is reported (would feed repair).
+  const r3 = applyRecipeEdit(groupId, frag.nodes, frag.edges, {
+    ops: [{ op: "unexpose_param", node: circleId, param: "radiusX" }],
+  });
+  check("unexpose of an unexposed param is reported", r3.issues.some((i) => i.code === "NOT_EXPOSED"));
+}
+
 console.log(`\n${failures === 0 ? "ALL GREEN ✅" : `${failures} FAILURE(S) ❌`}`);
 if (failures) process.exit(1);

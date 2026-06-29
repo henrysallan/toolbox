@@ -264,8 +264,13 @@ Each leaves a working app.
    unchanged shell id), one undo step per edit; the panel stays open for the
    next instruction. Whole project typechecks clean; new files lint-clean.
    *Needs an `ANTHROPIC_API_KEY` (same as generate) for a real in-app edit.*
-4. **`expose_param` / `unexpose_param`.** Interface-via-promote ops. *(Not yet —
-   the op set and tool enum are interior-only.)*
+4. **`expose_param` / `unexpose_param`.** ✅ *Shipped.* Interface-via-promote
+   ops in `applyRecipeEdit`: `expose_param` adds a group-input socket
+   (`paramSocketType`), the `out:aux:<label> → in:param:<param>` promote edge,
+   and `exposedParams`/`controlParams`, then `syncGroupInterface` updates the
+   shell; `unexpose_param` reverses it. Non-socketable params, duplicate labels,
+   and unexposed targets are rejected (→ repair). Tool enum + preamble updated;
+   `check-edit.mts` covers expose → validate → unexpose round-trip.
 5. **Chat transcript + multi-turn history.** Iterative refinement. *(Partial:
    the panel stays open and the route/client already accept a `history` array;
    EffectsApp doesn't thread/display a transcript yet.)*

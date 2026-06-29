@@ -44,6 +44,10 @@ const HARD_OP_CODES = new Set([
   "EDGE_NODE_MISSING",
   "EDGE_NOT_FOUND",
   "PROTECTED_NODE",
+  "PARAM_NOT_EXPOSABLE",
+  "DUP_SOCKET",
+  "NO_BOUNDARY",
+  "NOT_EXPOSED",
 ]);
 
 const defaultPost: EditPostFn = async (body) => {

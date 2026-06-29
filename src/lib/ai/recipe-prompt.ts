@@ -170,6 +170,7 @@ export const EDIT_RECIPE_TOOL: Anthropic.Tool = {
             "One op. Include only the fields for its kind: " +
             "set_param{node,param,value} · add_node{id,type,params?} · " +
             "remove_node{node} · add_edge{from,to} · remove_edge{from,to} · " +
+            "expose_param{node,param,label?} · unexpose_param{node,param} · " +
             "rename_node{node,name}.",
           required: ["op"],
           properties: {
@@ -181,6 +182,8 @@ export const EDIT_RECIPE_TOOL: Anthropic.Tool = {
                 "remove_node",
                 "add_edge",
                 "remove_edge",
+                "expose_param",
+                "unexpose_param",
                 "rename_node",
               ],
             },
@@ -198,6 +201,7 @@ export const EDIT_RECIPE_TOOL: Anthropic.Tool = {
               type: "string",
               description: 'Target endpoint "<id>:in:<sock>" | "<id>:param:<name>".',
             },
+            label: { type: "string", description: "Knob label on the group (expose_param)." },
             name: { type: "string", description: "New display name (rename_node)." },
           },
         },
@@ -213,6 +217,7 @@ Rules:
 - Use only node \`type\` strings from the catalog. Wire compatible socket types (coercions: mask↔image, scalar→vec2/3/4/uv, image/mask→scalar, audio→scalar, image↔element; otherwise exact).
 - Only set params marked settable; respect ranges/enum options. A param listed under \`keyframed\` is animated — changing its static value won't take effect, so don't.
 - The group's boundary (its inputs/outputs) is reachable for wiring via \`interface.inputNodeId\` / \`interface.outputNodeId\`, but you may not retune or delete boundary/structural nodes.
+- To surface a param as a knob on the group, use \`expose_param\` (give a short \`label\`); \`unexpose_param\` removes it. Only params with a socket type (scalar/vec/color/boolean) can be exposed.
 - Keep the change minimal and the graph acyclic. Respond by calling edit_recipe exactly once.`;
 
 export function buildEditSystem(catalogDsl: string) {
