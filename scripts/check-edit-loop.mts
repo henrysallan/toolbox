@@ -59,23 +59,44 @@ const BAD: RecipeEdit = {
 // 1. good first try
 {
   let calls = 0;
-  const post = async (_b: EditPostBody) => { calls++; return GOOD; };
+  const post = async (_b: EditPostBody) => { calls++; return { edit: GOOD }; };
   const r = await editGroupRecipe(groupId, frag.nodes, frag.edges, "double the points", { post });
   const pop = r.nodes?.find((n) => n.id === popId);
   check("good-first-try converges in 1 attempt", r.ok && r.attempts === 1 && calls === 1, JSON.stringify({ ok: r.ok, attempts: r.attempts, errors: r.errors }));
   check("the edit actually changed the param", (pop?.data.params as any)?.count === 320);
 }
 
-// 2. bad then good — the repair turn must carry the validator error
+// 2. bad then good — repair carries the validator error; progress is emitted
 {
   const seenRepairs: (string[] | undefined)[] = [];
-  const post = async (b: EditPostBody) => {
-    seenRepairs.push(b.repair?.errors);
-    return b.repair ? GOOD : BAD; // first call (no repair) → BAD; repair call → GOOD
-  };
-  const r = await editGroupRecipe(groupId, frag.nodes, frag.edges, "improve it", { post });
+  const events: { kind: string; text?: string }[] = [];
+  const post = async (b: EditPostBody) =>
+    b.repair ? { edit: GOOD, thinking: "reasoned about the wiring" } : { edit: BAD };
+  const r = await editGroupRecipe(groupId, frag.nodes, frag.edges, "improve it", {
+    post: async (b) => { seenRepairs.push(b.repair?.errors); return post(b); },
+    onProgress: (e) => events.push(e),
+  });
   check("bad-then-good converges in 2 attempts", r.ok && r.attempts === 2, JSON.stringify({ ok: r.ok, attempts: r.attempts }));
   check("repair turn received the type-mismatch error", !!seenRepairs[1]?.some((e) => /Incompatible wire/.test(e)), JSON.stringify(seenRepairs[1]));
+  check("progress trace: request → invalid → request → thinking → applied", events.map((e) => e.kind).join(",") === "request,invalid,request,thinking,applied", events.map((e) => e.kind).join(","));
+  check("progress includes the thinking summary", events.some((e) => e.kind === "thinking" && /reasoned/.test(e.text ?? "")));
+}
+
+// 3. multi-turn: the local-cache transcript round-trips and threads as history
+{
+  const { getTranscript, appendTurn, clearTranscript } = await import("@/state/recipe-chat");
+  clearTranscript(groupId);
+  const seenHistory: ({ instruction: string; summary: string }[] | undefined)[] = [];
+  const post = async (b: EditPostBody) => { seenHistory.push(b.history); return { edit: GOOD }; };
+
+  await editGroupRecipe(groupId, frag.nodes, frag.edges, "first change", { post, history: getTranscript(groupId) });
+  appendTurn(groupId, { instruction: "first change", summary: "did the first thing" });
+  await editGroupRecipe(groupId, frag.nodes, frag.edges, "second change", { post, history: getTranscript(groupId) });
+
+  check("turn 1 sends empty history", Array.isArray(seenHistory[0]) && seenHistory[0]!.length === 0);
+  check("transcript persists turn 1 → sent on turn 2", seenHistory[1]?.length === 1 && seenHistory[1]![0].instruction === "first change");
+  clearTranscript(groupId);
+  check("clear empties the transcript", getTranscript(groupId).length === 0);
 }
 
 console.log(`\n${failures === 0 ? "ALL GREEN ✅" : `${failures} FAILURE(S) ❌`}`);

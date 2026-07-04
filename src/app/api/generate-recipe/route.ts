@@ -49,10 +49,15 @@ export async function POST(req: Request) {
   try {
     message = await client.messages.create({
       model: "claude-opus-4-8",
-      max_tokens: 8000,
+      max_tokens: 12000,
+      // Adaptive thinking (summarized so we can show a little of the reasoning).
+      // tool_choice must be `auto` with thinking on — forced tool use + thinking
+      // is rejected by the API. Opus 4.8 reliably calls the tool given the
+      // "respond by calling … exactly once" instruction in the system prompt.
+      thinking: { type: "adaptive", display: "summarized" },
       system: buildSystem(catalog),
       tools: [RECIPE_TOOL],
-      tool_choice: { type: "tool", name: RECIPE_TOOL.name },
+      tool_choice: { type: "auto" },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       messages: [{ role: "user", content: buildUserContent(userRequest, repair as any) }],
     });
@@ -72,5 +77,11 @@ export async function POST(req: Request) {
   if (!toolUse || toolUse.type !== "tool_use")
     return Response.json({ error: "Model did not emit a recipe." }, { status: 502 });
 
-  return Response.json({ recipe: toolUse.input });
+  const thinking = message.content
+    .map((b) => (b.type === "thinking" ? b.thinking : ""))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+
+  return Response.json({ recipe: toolUse.input, thinking: thinking || undefined });
 }

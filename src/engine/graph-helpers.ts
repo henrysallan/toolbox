@@ -28,6 +28,8 @@ export function paramSocketType(type: ParamType): SocketType | null {
     case "scalar":
     case "boolean":
       return "scalar";
+    case "string":
+      return "string";
     case "vec2":
       return "vec2";
     case "vec3":

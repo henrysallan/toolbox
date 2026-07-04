@@ -8,6 +8,7 @@ const { ipcMain, dialog, BrowserWindow } = require("electron");
 const fs = require("fs/promises");
 const path = require("path");
 const { recordRecent } = require("./recents");
+const { recordOpenedToolbox } = require("./assets");
 
 const isToolbox = (p) => path.extname(String(p)).toLowerCase() === ".toolbox";
 
@@ -65,7 +66,10 @@ function registerFileHandlers() {
     });
     if (canceled || !filePath) return { saved: false };
     await fs.writeFile(filePath, Buffer.from(bytes));
-    if (isToolbox(filePath)) await recordRecent(filePath, path.basename(filePath));
+    if (isToolbox(filePath)) {
+      await recordRecent(filePath, path.basename(filePath));
+      recordOpenedToolbox(filePath);
+    }
     return { saved: true, path: filePath };
   });
 
@@ -102,7 +106,10 @@ function registerFileHandlers() {
       const buf = await fs.readFile(fp);
       const bytes = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
       out.push({ name: path.basename(fp), type: mimeFor(fp), bytes });
-      if (isToolbox(fp)) await recordRecent(fp, path.basename(fp));
+      if (isToolbox(fp)) {
+        await recordRecent(fp, path.basename(fp));
+        recordOpenedToolbox(fp);
+      }
     }
     return out;
   });

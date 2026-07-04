@@ -390,6 +390,8 @@ function socketToParamRaw(
       return sv.kind === "scalar" ? sv.value : undefined;
     case "boolean":
       return sv.kind === "scalar" ? sv.value !== 0 : undefined;
+    case "string":
+      return sv.kind === "string" ? sv.value : undefined;
     case "vec2":
       return sv.kind === "vec2" ? [...sv.value] : undefined;
     case "vec3":

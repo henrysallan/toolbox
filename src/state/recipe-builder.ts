@@ -7,6 +7,7 @@
 import type { Edge } from "@xyflow/react";
 import type { SocketType } from "@/engine/types";
 import { getNodeDef } from "@/engine/registry";
+import { GROUP_TYPE } from "@/engine/groups";
 import { SETTABLE_PARAM_TYPES } from "@/engine/node-catalog";
 import {
   makeInstanceNode,
@@ -190,5 +191,9 @@ export function buildRecipe(rg: RecipeGraph): BuildResult {
     outputs,
     promote,
   });
+  // Mark the group shell as AI-authored so it gets the "Edit with AI" button.
+  for (const n of nodes) {
+    if (n.data.defType === GROUP_TYPE) n.data.aiAuthored = true;
+  }
   return { nodes, edges: groupEdges, issues };
 }

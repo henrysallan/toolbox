@@ -271,9 +271,14 @@ Each leaves a working app.
    shell; `unexpose_param` reverses it. Non-socketable params, duplicate labels,
    and unexposed targets are rejected (→ repair). Tool enum + preamble updated;
    `check-edit.mts` covers expose → validate → unexpose round-trip.
-5. **Chat transcript + multi-turn history.** Iterative refinement. *(Partial:
-   the panel stays open and the route/client already accept a `history` array;
-   EffectsApp doesn't thread/display a transcript yet.)*
+5. **Chat transcript + multi-turn history.** ✅ *Shipped.* A **local-cache**
+   transcript ([recipe-chat.ts](../src/state/recipe-chat.ts): localStorage +
+   in-memory mirror, keyed by group id — never leaves the browser). Each
+   successful edit appends `{instruction, summary}`; the last ~8 turns thread to
+   the model as `history` for follow-up continuity. `AiRecipePanel` renders the
+   transcript as a chat (instruction bubble → summary) above the composer, with
+   a "clear". `check-edit-loop.mts` proves the store round-trips and history
+   threads turn-to-turn.
 6. **(Maybe) raw interface ops** — add/remove group input/output, carefully.
 
 ---
@@ -286,8 +291,9 @@ Each leaves a working app.
   for very large edits where a patch is awkward, or commit fully to patches?
 - **Preview vs immediate apply:** v1 applies immediately + undo. Is a
   diff-preview ("3 changes — apply?") worth it before commit for risky edits?
-- **History persistence:** does the transcript survive a reload (editor-session
-  stash), or is it ephemeral per session?
+- **History persistence:** ✅ *Resolved* — a **local cache** (localStorage,
+  keyed by group id). Survives reloads, stays on the device, no server
+  persistence.
 - **Cross-feature:** "Edit with AI" on a group that's also saved as a recipe
   ([062926_node-group-reuse-and-sharing.md](062926_node-group-reuse-and-sharing.md))
   — edit the instance, or offer "update the saved recipe too"?

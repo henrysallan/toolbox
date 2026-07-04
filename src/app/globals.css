@@ -23,6 +23,16 @@
   }
 }
 
+/* Inter (variable) — used by the landing modal's pills. Single weight axis
+   spanning the file's full range so `font-weight: 680` resolves. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/Inter-VariableFont_opsz,wght.ttf") format("truetype");
+}
+
 /* Far-right menu-bar items (Sign in / account / version / docs) share the
    menu hover treatment: an inset rounded pill that lifts on hover and stays
    lit while its menu is open. (Class-driven so the hover background isn't

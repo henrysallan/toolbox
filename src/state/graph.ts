@@ -18,6 +18,13 @@ export type NodeDataPayload = {
   // its view to one scope at a time. See
   // specdocs/layers-groups-attributes.md.
   parentId?: string;
+  // Composition scoping (v5+): id of the composition this node belongs to.
+  // A project holds multiple compositions and the editor shows one at a
+  // time; orthogonal to `parentId` (which scopes within a composition).
+  // May be undefined on freshly-created runtime nodes until persisted —
+  // serializeGraph tags every node with the active composition on save.
+  // See specdocs/062926_compositions-and-project-view.md.
+  compositionId?: string;
   params: Record<string, unknown>;
   // Per-parameter keyframe animation, keyed by param name. A param is
   // either constant (no entry / `animated:false`), keyframe-animated
@@ -55,7 +62,12 @@ export type NodeDataPayload = {
   // (and vice-versa with `b / ratio`).
   linkedParams?: Record<string, { ratio: number }>;
   error?: string;
-  auxOutputs: { name: string; type: string; disabled?: boolean }[];
+  auxOutputs: {
+    name: string;
+    label?: string;
+    type: string;
+    disabled?: boolean;
+  }[];
   // `hidden` inputs exist for the evaluator only (edges synthesized by
   // the flatten pass, e.g. a layer's `content`) — no handle renders.
   inputs: { name: string; label?: string; type: string; hidden?: boolean }[];
@@ -69,6 +81,16 @@ export type NodeDataPayload = {
   // restores both terminals correctly.
   active2?: boolean;
   bypassed?: boolean;
+  // Set when a group was generated or edited by AI — drives the purple-star
+  // "Edit with AI" button on the node (EffectNode). Persisted with the project.
+  aiAuthored?: boolean;
+  // Display-only overrides computed for the editor view (in scopedNodes) —
+  // NOT serialized. `displayName` relabels a layer's boundary nodes (Layer
+  // Input / Layer Output) and the comp-root Output (Composition Output);
+  // `layerAccent` tints layer nodes + their boundaries blue. See #159 /
+  // specdocs/062926_compositions-and-project-view.md.
+  displayName?: string;
+  layerAccent?: boolean;
   [key: string]: unknown;
 };
 
@@ -86,4 +108,11 @@ export function makeParamTargetHandleId(paramName: string) {
 
 export function newNodeId(type: string) {
   return `${type}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Composition ids (v5+). A project holds an ordered list of compositions;
+// every node carries the id of the composition it lives in. See
+// specdocs/062926_compositions-and-project-view.md.
+export function newCompositionId() {
+  return `comp-${Math.random().toString(36).slice(2, 8)}`;
 }

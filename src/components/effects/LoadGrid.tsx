@@ -295,34 +295,12 @@ function Toolbar({
         userSelect: "none",
       }}
     >
-      <div style={{ display: "flex", gap: 2 }}>
-        <MenuTab
-          active={tab === "private"}
-          disabled={!signedIn}
-          onClick={() => onTabChange("private")}
-          title={
-            signedIn ? "Your saved projects" : "Sign in to see your projects"
-          }
-        >
-          Private
-        </MenuTab>
-        <MenuTab
-          active={tab === "public"}
-          onClick={() => onTabChange("public")}
-          title="Projects shared by the community"
-        >
-          Public
-        </MenuTab>
-        {showLocal && (
-          <MenuTab
-            active={tab === "local"}
-            onClick={() => onTabChange("local")}
-            title="Recently opened local .toolbox files on this Mac"
-          >
-            Local
-          </MenuTab>
-        )}
-      </div>
+      <SegmentedTabs
+        tab={tab}
+        onTabChange={onTabChange}
+        signedIn={signedIn}
+        showLocal={showLocal}
+      />
       <div style={{ flex: 1 }} />
       <IconButton
         onClick={onRefresh}
@@ -353,7 +331,73 @@ function Toolbar({
   );
 }
 
-function MenuTab({
+// Private / Public / (Local, desktop-only) as one segmented toggle pill:
+// a rounded track holding the options, the active one lit blue. Replaces
+// the old row of separate pill buttons.
+function SegmentedTabs({
+  tab,
+  onTabChange,
+  signedIn,
+  showLocal,
+}: {
+  tab: Tab;
+  onTabChange: (next: Tab) => void;
+  signedIn: boolean;
+  showLocal: boolean;
+}) {
+  const items: {
+    key: Tab;
+    label: string;
+    disabled?: boolean;
+    title: string;
+  }[] = [
+    {
+      key: "private",
+      label: "Private",
+      disabled: !signedIn,
+      title: signedIn ? "Your saved projects" : "Sign in to see your projects",
+    },
+    {
+      key: "public",
+      label: "Public",
+      title: "Projects shared by the community",
+    },
+  ];
+  if (showLocal) {
+    items.push({
+      key: "local",
+      label: "Local",
+      title: "Recently opened local .toolbox files on this Mac",
+    });
+  }
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 2,
+        padding: 2,
+        background: "#141416",
+        border: "1px solid #27272a",
+        borderRadius: 999,
+      }}
+    >
+      {items.map((it) => (
+        <Segment
+          key={it.key}
+          active={tab === it.key}
+          disabled={it.disabled}
+          title={it.title}
+          onClick={() => onTabChange(it.key)}
+        >
+          {it.label}
+        </Segment>
+      ))}
+    </div>
+  );
+}
+
+function Segment({
   active,
   disabled,
   onClick,
@@ -367,9 +411,9 @@ function MenuTab({
   children: React.ReactNode;
 }) {
   const [hover, setHover] = useState(false);
-  const hot = hover && !disabled;
-  // Mirrors EffectsApp's DockButton: near-invisible border at rest, a subtle
-  // hover, and a soft blue highlight when active.
+  const hot = hover && !disabled && !active;
+  // Soft blue highlight when active (matching the app's DockButton), a subtle
+  // fill on hover; the track supplies the border so segments stay borderless.
   return (
     <button
       onMouseDown={(e) => {
@@ -383,11 +427,9 @@ function MenuTab({
       onMouseLeave={() => setHover(false)}
       style={{
         padding: "3px 12px",
-        borderRadius: 3,
-        background: active ? "#1b2741" : hot ? "#19191c" : "transparent",
-        border: `1px solid ${
-          active ? "#26375f" : hot ? "#2a2a2e" : "#171719"
-        }`,
+        borderRadius: 999,
+        border: "none",
+        background: active ? "#1b2741" : hot ? "#232327" : "transparent",
         color: disabled
           ? "#3f3f46"
           : active
@@ -399,7 +441,7 @@ function MenuTab({
         fontSize: 11,
         lineHeight: 1,
         cursor: disabled ? "not-allowed" : "pointer",
-        transition: "background 80ms, border-color 80ms, color 80ms",
+        transition: "background 80ms, color 80ms",
       }}
     >
       {children}

@@ -30,6 +30,18 @@ export interface PrimitiveGizmoEnv {
   solvedSize?: { width: number; height: number } | null;
 }
 
+// Describes which two scalar params drive the primitive's on-canvas position
+// and how those param values map to the shape's normalized canvas center. Lets
+// MotionPathOverlay draw/edit the position trajectory without baking each
+// node's coordinate convention into the overlay. `toCenter`/`fromCenter`
+// default to identity (center === param values, e.g. Circle's centerX/Y).
+export interface PrimitiveMotionPath {
+  x: string;
+  y: string;
+  toCenter?: (xVal: number, yVal: number) => { cx: number; cy: number };
+  fromCenter?: (cx: number, cy: number) => { xVal: number; yVal: number };
+}
+
 export interface PrimitiveGizmoAdapter {
   // Resize drags anchor the opposite edge/corner (box-style, the center
   // moves) instead of growing symmetrically around a fixed center.
@@ -49,11 +61,15 @@ export interface PrimitiveGizmoAdapter {
     patch: PrimitiveGizmoPatch,
     env: PrimitiveGizmoEnv
   ) => Array<[string, number | string]>;
+  // Position params for the on-canvas motion path (animated-position
+  // trajectory). Omit for primitives whose position isn't a plain X/Y pair.
+  motionPath?: PrimitiveMotionPath;
 }
 
 // defType → adapter. Add new spline primitives here.
 export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
   circle: {
+    motionPath: { x: "centerX", y: "centerY" },
     read: (g) => ({
       cx: g("centerX", 0.5),
       cy: g("centerY", 0.5),
@@ -70,6 +86,7 @@ export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
     },
   },
   rectangle: {
+    motionPath: { x: "originX", y: "originY" },
     read: (g) => ({
       cx: g("originX", 0.5),
       cy: g("originY", 0.5),
@@ -85,12 +102,39 @@ export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
       return out;
     },
   },
+  // Liquid Glass panel (Shape A): center is posX/posY (normalized, Y-down),
+  // size is width/height fractions. Box-style resize like Text/Auto Layout.
+  // Shape B (the liquid-merge partner) stays panel-driven for now.
+  "liquid-glass": {
+    anchorResize: true,
+    motionPath: { x: "posX", y: "posY" },
+    read: (g) => ({
+      cx: g("posX", 0.5),
+      cy: g("posY", 0.5),
+      hx: Math.max(0.005, g("width", 0.4) / 2),
+      hy: Math.max(0.005, g("height", 0.26) / 2),
+    }),
+    write: (p) => {
+      const out: Array<[string, number | string]> = [];
+      if (p.cx !== undefined) out.push(["posX", p.cx]);
+      if (p.cy !== undefined) out.push(["posY", p.cy]);
+      if (p.hx !== undefined) out.push(["width", p.hx * 2]);
+      if (p.hy !== undefined) out.push(["height", p.hy * 2]);
+      return out;
+    },
+  },
   // Text box: position rides translateX/Y (the raster centers the box on
   // the canvas and the node's transform post-pass places it), size is the
   // box fraction params. Scale/rotate/pivot stay panel-driven — when they
   // are non-default the gizmo box shows the unscaled layout rect.
   text: {
     anchorResize: true,
+    motionPath: {
+      x: "translateX",
+      y: "translateY",
+      toCenter: (x, y) => ({ cx: 0.5 + x, cy: 0.5 + y }),
+      fromCenter: (cx, cy) => ({ xVal: cx - 0.5, yVal: cy - 0.5 }),
+    },
     read: (g) => ({
       cx: 0.5 + g("translateX", 0),
       cy: 0.5 + g("translateY", 0),
@@ -112,6 +156,12 @@ export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
   // explicit, Figma-style). Hug axes display the solved container size.
   autolayout: {
     anchorResize: true,
+    motionPath: {
+      x: "translateX",
+      y: "translateY",
+      toCenter: (x, y) => ({ cx: 0.5 + x, cy: 0.5 + y }),
+      fromCenter: (cx, cy) => ({ xVal: cx - 0.5, yVal: cy - 0.5 }),
+    },
     read: (g, env) => {
       const { canvasWidth: W, canvasHeight: H, getRaw, solvedSize } = env;
       const unitPx = Math.min(W, H) / 1000;

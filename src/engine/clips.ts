@@ -156,6 +156,8 @@ export function emptyClipOutput(
       ctx.clearTarget(uv, [0, 0, 0, 0]);
       return { primary: uv };
     }
+    case "string":
+      return { primary: { kind: "string", value: "" } };
     case "spline":
       return { primary: { kind: "spline", subpaths: [] } };
     case "points":

@@ -3,10 +3,16 @@
 import type { Edge, Node } from "@xyflow/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { NodeDataPayload } from "@/state/graph";
+import type { SavedComposition } from "@/lib/project";
 
 export type GraphSnapshot = {
   nodes: Node<NodeDataPayload>[];
   edges: Edge[];
+  // Composition registry (v5): captured so undo/redo of a composition
+  // create/delete restores the registry (and active selection) alongside
+  // the nodes. Optional — older in-session snapshots may omit it.
+  compositions?: SavedComposition[];
+  activeCompositionId?: string;
 };
 
 export type PaintSnapshot = {

@@ -707,6 +707,10 @@ export const textNode: NodeDefinition = {
       name: "font_family",
       label: "Font",
       type: "enum",
+      // Searchable picker that merges the user's installed (local) fonts with
+      // this curated baseline. `options` is the cross-platform fallback list
+      // used on browsers without the Local Font Access API (Safari/Firefox).
+      control: "font",
       options: CURATED_FONTS,
       default: "Inter",
     },

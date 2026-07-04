@@ -66,6 +66,7 @@ const good: RecipeGraph = {
   // group wrapper present?
   const types = new Set(built.nodes.map((n) => n.data.defType));
   check("group wrapper synthesized", types.has("node-group") && types.has("group-input") && types.has("group-output"));
+  check("group shell marked aiAuthored (gets the star button)", built.nodes.some((n) => n.data.defType === "node-group" && n.data.aiAuthored === true));
   // exposed param recorded?
   const t2 = built.nodes.find((n) => n.data.defType === "transform" && (n.data.params as any).rotate === 45);
   check("exposed param added to exposedParams", !!t2 && (t2.data.exposedParams ?? []).includes("rotate"));

@@ -14,6 +14,7 @@ const path = require("path");
 const { registerFileHandlers } = require("./files");
 const { register: registerFfmpeg } = require("./ffmpeg");
 const { registerRecentsHandlers } = require("./recents");
+const { registerAssetsHandlers } = require("./assets");
 const { startServer, waitForReady, stopServer, serverUrl } = require("./server");
 
 const DEV_URL = process.env.TOOLBOX_DEV_URL || null;
@@ -145,6 +146,7 @@ app.whenReady().then(() => {
   registerFfmpeg();
   registerWindowControls();
   registerRecentsHandlers();
+  registerAssetsHandlers();
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -16,12 +16,19 @@
     "electron:build": "electron-builder --mac",
     "desktop:prepare": "node scripts/prepare-standalone.mjs",
     "desktop:build": "npm run desktop:prepare && electron-builder --mac",
+    "desktop:publish": "npm run desktop:prepare && electron-builder --mac -p always",
     "build:export-template": "node scripts/build-export-template.mjs",
     "install:export-template": "npm --prefix src/export-template install"
   },
   "build": {
     "appId": "com.thecollectedworks.toolbox",
     "productName": "Toolbox",
+    "publish": {
+      "provider": "github",
+      "owner": "henrysallan",
+      "repo": "toolbox",
+      "releaseType": "release"
+    },
     "directories": {
       "output": "dist-electron"
     },
@@ -41,6 +48,7 @@
     ],
     "mac": {
       "icon": "build/icon.icns",
+      "artifactName": "${productName}-${arch}.${ext}",
       "target": [
         {
           "target": "dmg",
@@ -50,7 +58,13 @@
         }
       ],
       "category": "public.app-category.graphics-design",
-      "identity": null
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": {
+        "teamId": "65CW2SYMWS"
+      }
     }
   },
   "dependencies": {

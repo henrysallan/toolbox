@@ -45,6 +45,9 @@ src/
                           drawFullscreen, blitToCanvas, WebGPU bridge helpers.
     evaluator.ts          evaluateGraph(): flatten → toposort → fingerprint cache → compute.
     coerce.ts             Cross-type socket coercions (mask↔image, image→scalar, audio→scalar…).
+    audio-analysis.ts     Shared audio DSP: getAudioFrame() (live AnalyserNode / offline
+                          decoded-buffer), radix-2 FFT, band energy, MPM pitch. Feeds the
+                          audio→scalar coercion AND the Audio Bands/Pitch/Spectral nodes.
     conventions.ts        Universal opacity param + universal mask input helpers.
     registry.ts           registerNode()/getNodeDef() — a Map, nothing more.
     flatten.ts groups.ts  Node-group/layer dissolution pass + group socket plumbing.
@@ -60,7 +63,9 @@ src/
   nodes/                  One file per node def. index.ts registers ~130 defs.
     source/ effect/ sdf/ group/ output/
   components/effects/     The editor UI. EffectsApp.tsx is the shell/orchestrator.
-    NodeEditor.tsx        xyflow wrapper: wires, validation, splice, copy/paste, marquee.
+    NodeEditor.tsx        xyflow wrapper: wires, validation, splice (drop a node
+                          on a wire → A→N→C) + detach-heal (Cmd/Ctrl-drag a
+                          clean-inline node out → A→C reconnects), copy/paste, marquee.
     ParamPanel.tsx        Renders ParamDef[] → controls; all custom param-type UIs.
     EffectNode.tsx        The node chrome on the graph canvas (sockets, header, +).
     TrackEditor.tsx / LayersEditor.tsx / PlaybackBar.tsx   timeline UIs.
@@ -81,7 +86,9 @@ src/
     media-relink.ts       Missing-media handles (video/audio re-pick on load).
     export*.ts            Image/video export, audio mixdown, exported-app manifest+packager.
     live-viewer/          LiveViewer + control panel used by /live and exported apps.
-    fonts.ts font-*.ts    Curated font loading, variable-font axis parsing.
+    fonts.ts font-*.ts    Curated + custom font loading, variable-font axis parsing.
+    local-fonts.ts        OS-installed fonts via queryLocalFonts (Chromium/desktop);
+                          enumerate for the Text picker + read bytes for save-bundling.
     platform/             Platform-adapter seam (web vs Electron) — see "Desktop
                           (Electron) build". index.ts → `platform`; web.ts is
                           today's behavior verbatim; native.ts → window.toolboxNative.
@@ -143,7 +150,10 @@ Wires reference handles `out:primary` / `out:aux:<name>` →
 (deferred intrinsically-sized renderable: measure/render closures,
 runtime-only like sdf — engine/element.ts owns the GL helpers,
 engine/layout.ts the pure solver) · `scalar`, `vec2`,
-`vec3`, `vec4` (CPU values) · `spline` (multi-subpath cubic beziers, CPU) ·
+`vec3`, `vec4` (CPU values) · `string` (plain CPU text — the String node
+emits it; any `string` param exposed as an input socket consumes it, e.g.
+Text's `text`; no cross-type coercions) · `spline` (multi-subpath cubic
+beziers, CPU) ·
 `points` (typed-array SoA + lazy `Point[]` view — producers use
 `makePoints`/`pointsFromArray`, hot consumers read typed arrays) · `audio`
 (live HTMLAudioElement) · `image_group` (ordered ImageValue list; splines/
@@ -155,10 +165,10 @@ work** until SDF Rasterize compiles the tree to one shader · `render`
 
 Coercions ([coerce.ts](../src/engine/coerce.ts)): mask↔image,
 scalar→vec2/3/4/uv-broadcast, image/mask→scalar (1×1 readback), audio→
-scalar (RMS level), image↔element (wrap as full-canvas element / flatten
-centered at natural size; identity-cached in WeakMaps inside
-engine/element.ts). The UI mirrors this list in `canCoerce` /
-`isValidConnection` (NodeEditor.tsx) — **add new coercions in both
+scalar (RMS level, via engine/audio-analysis.ts), image↔element (wrap as
+full-canvas element / flatten centered at natural size; identity-cached in
+WeakMaps inside engine/element.ts). The UI mirrors this list in `canCoerce`
+/ `isValidConnection` (NodeEditor.tsx) — **add new coercions in both
 places**.
 
 ## The evaluator (what actually happens per frame)
@@ -301,8 +311,18 @@ To add a node:
   `CURRENT_SCHEMA = 4` — the version history is documented at the top of
   that file; bump it when the wire shape changes and keep loading old ones.
 - Media (image bitmaps, paint canvases) inline as data-URLs in cloud saves;
-  video/audio/fonts don't serialize — they become "missing media" entries
+  video/audio don't serialize — they become "missing media" entries
   re-picked via MediaRelinkModal ([media-relink.ts](../src/lib/media-relink.ts)).
+- Fonts: uploaded `custom_font` bytes bundle (v5). The Text `font_family`
+  picker (`control:"font"`, [param-controls.tsx](../src/lib/param-controls.tsx))
+  merges the user's **installed local fonts** ([local-fonts.ts](../src/lib/local-fonts.ts),
+  Chromium `queryLocalFonts`) with the curated baseline. A picked local font
+  renders by name while editing and **auto-bundles its bytes on save** (best-
+  effort — sandboxed/commercial faces fall back to name-reference) under a
+  sibling `<param>__fontbundle` envelope that deserialize re-registers under the
+  same family. Curated/web families stay name-referenced (resolve via CDN
+  anywhere). Offline export pre-warms every Text family before the frame loop so
+  the first frames don't capture a fallback face.
 - `.toolbox` files ([project-file.ts](../src/lib/project-file.ts)): zip of
   manifest.json + project.json + thumbnail + content-hashed assets/.
 - Supabase: auth (AuthProvider), `projects` table (private/public, slugs →
@@ -413,7 +433,9 @@ through **native ffmpeg** (no wasm heap/thread limits), file open/save use
 - **Graceful offline**: auth uses `getSession()` (local cache, "signed in
   offline") not `getUser()`; project lists fail-fast (timeout + `navigator.onLine`
   + try/catch → empty/cached). Local files + native export work fully offline;
-  curated fonts, ML/tracker nodes, and wasm-GIF still need network (accepted).
+  curated/web fonts, ML/tracker nodes, and wasm-GIF still need network
+  (accepted). Installed local fonts (desktop is Chromium → `queryLocalFonts`)
+  work offline and are the preferred picker source there.
 - **Build/run.** `npm run dev:desktop` (one command: next dev + Electron) for UI
   iteration; `npm run electron`/`electron:dev` for embedded/dev URLs;
   `npm run desktop:prepare` builds `.next/standalone`; `npm run desktop:build`
@@ -491,7 +513,8 @@ src/app/docs + lib/docs/manifest.
 - Text is `stable:false`, so anything downstream of it (Auto Layout
   included) recomputes per frame during playback — same cost profile as
   Text→Merge today. Paused/param-edit evals cache normally.
-- Video/audio/font params don't serialize; relink flow covers them.
+- Video/audio params don't serialize; relink flow covers them. Fonts DO now
+  (custom + picked-local bundle their bytes — see "Persistence & sharing").
 - **Video Source has two source kinds** (`source_kind`: video / sequence). The
   sequence kind plays numbered stills as frames: `image_sequence` param type
   (`ImageSequenceParamValue` = encoded frame Blobs + numbering bounds);
@@ -514,6 +537,23 @@ src/app/docs + lib/docs/manifest.
   analyser tap treats it like a file element). Offline export decodes the
   audio track straight from the video's ObjectURL via `decodeAudioData`
   (`ExportAudioSpec` now carries `url`/`element`, not a typed file value).
+- **Audio analysis nodes** (Audio Bands, Audio Pitch, Audio Spectral) all
+  read through `getAudioFrame` ([audio-analysis.ts](../src/engine/audio-analysis.ts)),
+  which has two backends behind one API: **live** taps the per-element
+  `AnalyserNode` (one per element, shared with the audio→scalar RMS
+  coercion); **offline** (`ctx.offline`) decodes the source URL to an
+  `AudioBuffer` once and slices the fftSize window centered on
+  `element.currentTime` (the Audio/Video Source seeks it deterministically
+  each frame, so it's the authoritative playhead). The one-time decode is
+  async but `getAudioFrame` is sync, so the first offline frame kicks the
+  decode, registers an **offline-settle** promise, and returns null (nodes
+  emit rest values); the export driver's settle→re-render pass then captures
+  real data. Frames are cached per element per `ctx.frame` so all consumers
+  on one source share a single read/FFT. Mic input has no offline form
+  (returns null). All three nodes are `stable:false` (like LFO); Bands/Pitch
+  keep smoothing/glide state in `ctx.state`; Spectral caches its lookup
+  texture there (deleted in `dispose`). No new SocketType — outputs are
+  `scalar`/`image`. Spec: 062926_audio-analysis.md.
 - **Serialize/deserialize progress is throttled** to ~5% buckets
   ([project.ts](../src/lib/project.ts)). The progress callback does a React
   `setState`; firing it once-per-node inside serialize's tight async loop on a
@@ -556,5 +596,38 @@ src/app/docs + lib/docs/manifest.
   caches as a constant and a baked range re-fingerprints only per frame.
   Depth Anything specifics in 061926_depth-anything-node.md (incl. the
   per-frame normalization flicker caveat for video).
+- **Dynamic input sockets — two patterns.** (1) *Param-backed* (Merge's
+  `merge_layers`, Render Queue's `render_queue`, Collect's `count`): the
+  socket list lives in a param and `resolveInputs(params)` derives sockets
+  from it; the UI re-syncs `data.inputs` on param change. Growth is a
+  manual `+` (an `effect-node-toggle` event). (2) *Auto-grow from edges*
+  (Proximity Join/Merge — 070126_proximity-join-merge.md): a `slots:
+  string[]` param whose value is **derived from the node's edges** by a
+  dedicated `useEffect` in EffectsApp keyed on `edges`, kept equal to
+  (connected sockets) + one trailing empty spare. Wiring the spare mints
+  the next; disconnecting prunes. It's undo-safe *because* it's derived
+  (edges are in history) and writes `data.inputs` without a `pushGraph`
+  snapshot. Why not just read `connectedTypes` in `resolveInputs`? Because
+  the UI socket-refresh path (`refreshNodeSockets`, the param-change
+  handlers) calls `resolveInputs(params)` **without** a `ResolveCtx` —
+  `connectedTypes` is populated only inside the evaluator — so any
+  connection-driven socket *rendering* must be param-backed, not
+  connectedTypes-driven. (connectedTypes is still the right tool for
+  socket *retyping*, e.g. Math/Transform/Displace.)
+- **Simulation Zone is a Start/End pair sharing a `zone_id`** (minted at
+  create time in EffectsApp; re-minted on clone in graph-ops). It's a
+  per-frame feedback loop: End stashes its `state` input in
+  `ctx.state[\`sim-zone:<id>\`]`, Start emits it next frame (or re-seeds
+  from `initial` on frame 0 / a scene-time wrap). Both halves resolve the
+  **same** state blob, so they MUST agree on `kind`
+  (`image | points | spline`) — a mismatch makes `ensureZoneState` tear
+  down and reallocate every frame. Because of that, a `kind` edit on
+  either half is mirrored to its partner (matched by `zone_id`) inside
+  `onParamChange` — the one place param edits fan out to a *second* node.
+  Kinds: `image` ping-pongs two persistent textures; `points`/`spline`
+  are CPU values retained by reference (points as a typed-array
+  `PointsValue`, not the `Point[]` view — the sim hot path never
+  round-trips). Empty zones emit the frozen `EMPTY_POINTS` sentinel, which
+  `ensurePointArray` short-circuits (count 0) so it's never mutated.
 - No automated tests; keep modules pure where possible (layout solver,
   graph-ops) so they're testable when a runner lands.

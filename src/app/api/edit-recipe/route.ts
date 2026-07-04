@@ -53,10 +53,12 @@ export async function POST(req: Request) {
   try {
     message = await client.messages.create({
       model: "claude-opus-4-8",
-      max_tokens: 6000,
+      max_tokens: 12000,
+      // See the generate route: adaptive thinking requires `tool_choice: auto`.
+      thinking: { type: "adaptive", display: "summarized" },
       system: buildEditSystem(catalog),
       tools: [EDIT_RECIPE_TOOL],
-      tool_choice: { type: "tool", name: EDIT_RECIPE_TOOL.name },
+      tool_choice: { type: "auto" },
       messages: [
         {
           role: "user",
@@ -86,5 +88,11 @@ export async function POST(req: Request) {
   if (!toolUse || toolUse.type !== "tool_use")
     return Response.json({ error: "Model did not emit an edit." }, { status: 502 });
 
-  return Response.json({ edit: toolUse.input });
+  const thinking = message.content
+    .map((b) => (b.type === "thinking" ? b.thinking : ""))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+
+  return Response.json({ edit: toolUse.input, thinking: thinking || undefined });
 }

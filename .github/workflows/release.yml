@@ -1,0 +1,66 @@
+# Build, sign, notarize, and publish the macOS desktop app to GitHub Releases.
+#
+# Triggers on a version tag (e.g. `v0.1.0`) — bump package.json's version to
+# match, then `git tag vX.Y.Z && git push origin vX.Y.Z`. Also runnable
+# manually (workflow_dispatch), which publishes the current package version.
+#
+# electron-builder imports the signing cert from CSC_LINK/CSC_KEY_PASSWORD into
+# a temporary keychain, notarizes via the App Store Connect API key, and
+# uploads Toolbox-arm64.dmg (+ latest-mac.yml) to a Release the landing page's
+# Download button points at.
+name: Release desktop app
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # create/update the GitHub Release
+
+jobs:
+  build-mac:
+    # Apple Silicon runner — matches the arm64 dmg target and arm64
+    # ffmpeg-static install.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build export template
+        # public/export-template is gitignored, so build it before the
+        # standalone step copies public/ into the app bundle.
+        run: |
+          npm run install:export-template
+          npm run build:export-template
+
+      - name: Prepare notarization API key
+        run: |
+          echo "${{ secrets.APPLE_API_KEY_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize & publish
+        run: npm run desktop:publish
+        env:
+          # Next build (standalone) needs the public Supabase vars.
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          # Code signing — electron-builder imports this p12 into a temp keychain.
+          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          # The p12 carries two identities; pin the Developer ID one.
+          CSC_NAME: "Developer ID Application: Henry Allan (65CW2SYMWS)"
+          # Notarization (App Store Connect API key).
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Release upload.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

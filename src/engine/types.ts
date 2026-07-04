@@ -9,6 +9,12 @@ export type SocketType =
   | "vec2"
   | "vec3"
   | "vec4"
+  // Plain CPU string. Carries a StringValue (a JS string). Produced by the
+  // String node and by any string-typed param exposed as an input socket
+  // (Text's `text`, Output's filename, etc.); drives those same string params
+  // when wired. No cross-type coercions — string wires only meet string
+  // sockets.
+  | "string"
   | "spline"
   | "points"
   | "audio"
@@ -85,6 +91,7 @@ export type UvValue = {
 };
 
 export type ScalarValue = { kind: "scalar"; value: number };
+export type StringValue = { kind: "string"; value: string };
 export type Vec2Value = { kind: "vec2"; value: [number, number] };
 export type Vec3Value = { kind: "vec3"; value: [number, number, number] };
 export type Vec4Value = {
@@ -444,6 +451,7 @@ export type SocketValue =
   | MaskValue
   | UvValue
   | ScalarValue
+  | StringValue
   | Vec2Value
   | Vec3Value
   | Vec4Value
@@ -761,6 +769,11 @@ export interface InputSocketDef {
 
 export interface OutputSocketDef {
   name: string;
+  // Optional display label shown on the node in place of `name`. Lets a node
+  // keep a stable, machine-friendly socket id (e.g. the CSV node's positional
+  // `col:<index>`) while showing a human label (the column header). Falls back
+  // to `name` when absent.
+  label?: string;
   type: SocketType;
   description?: string;
   // Renders the socket but refuses connections and paints it muted. Used as
@@ -791,6 +804,10 @@ export type ParamType =
   | "audio_file"
   | "lut_file"
   | "model_file"
+  // CsvFileParamValue — a loaded/pasted CSV. Stored inline as raw text (the
+  // `lut_file` pattern), so it round-trips through save/load with no relink.
+  // The CSV node parses it (engine/csv-parse.ts) into per-column outputs.
+  | "csv_file"
   | "render_queue"
   // AutoLayoutItem[] — per-slot sizing rows on the Auto Layout node
   // (merge_layers pattern: array param drives dynamic `item:<id>` sockets).
@@ -798,7 +815,24 @@ export type ParamType =
   // GradientPoint[] — the Gradient node's "multipoint" mode. Like
   // merge_layers, the array itself isn't keyframable; each point's x / y /
   // color animate via virtual keys (gpoint_x/y/c:<id> — see conventions.ts).
-  | "gradient_points";
+  | "gradient_points"
+  // ExprInput[] — the Expression node's named input variables. Same
+  // merge_layers pattern: the array drives the node's dynamic `in:<id>`
+  // sockets (one per variable) and the panel renders an editable name +
+  // default per row. Not keyframable (structural). See
+  // src/nodes/effect/expression.ts.
+  | "expr_inputs";
+
+// One named input variable on the Expression node. `name` is the JS
+// identifier the bound socket value is exposed as inside the expression
+// (e.g. "x"); `default` is the value used when the socket is unwired
+// (defaults to 1). `id` is the stable socket key (`in:<id>`) — never reused
+// across renames so wires survive a name change.
+export interface ExprInput {
+  id: string;
+  name: string;
+  default?: number;
+}
 
 // Imported 3D model. The Import 3D node loads the file (GLB/glTF/OBJ) and
 // retains the parsed three.Object3D. Like video/audio, the live ObjectURL
@@ -840,6 +874,15 @@ export interface RenderQueueItem {
 // text into a GPU 3D texture lazily and caches by reference.
 export interface LutFileParamValue {
   filename: string;
+  text: string;
+}
+
+// A loaded/pasted CSV. Stored as raw text (plus the original file name when
+// loaded from disk) so it round-trips through JSON save/load with no relink —
+// same pattern as LutFileParamValue. The CSV node parses it lazily
+// (engine/csv-parse.ts) and caches the parse by reference.
+export interface CsvFileParamValue {
+  filename?: string;
   text: string;
 }
 
@@ -963,10 +1006,14 @@ export interface ParamDef {
   placeholder?: string;
   // For "string" params: render a textarea instead of a single-line input.
   multiline?: boolean;
-  // For "enum" params: render as a segmented pill toggle instead of a
-  // dropdown. Best for 2–3 mutually exclusive modes shown inline. Purely a
-  // ParamPanel rendering hint — the engine ignores it.
-  control?: "segmented";
+  // For "enum" params: override the default dropdown rendering. Purely a
+  // ParamPanel rendering hint — the engine ignores it, and the value stays a
+  // plain option string either way.
+  //   "segmented" — a pill toggle, best for 2–3 inline modes.
+  //   "font"      — a searchable font picker that merges the user's installed
+  //                 (local) fonts with this param's `options` (the curated
+  //                 baseline). The selected value is just the family name.
+  control?: "segmented" | "font";
   hidden?: boolean;
   // Optional predicate over the node's current params. Returning false hides
   // the row in the UI without affecting the underlying stored value.

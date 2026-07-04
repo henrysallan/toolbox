@@ -7,6 +7,7 @@
 // safe to ship inert in the shared web bundle.
 
 import type {
+  AssetsFolderHandle,
   FolderHandle,
   NativeVideoEncodeSpec,
   Platform,
@@ -123,6 +124,30 @@ const recents = {
   remove: (p: string) => bridge().recents.remove(p),
 };
 
+// Wrap a native scan/pick result as an AssetsFolderHandle whose read() forwards
+// to the bridge (main validates the ref is inside an allowed assets dir).
+function nativeAssetsFolder(r: {
+  name: string;
+  files: AssetsFolderHandle["files"];
+}): AssetsFolderHandle {
+  return {
+    name: r.name,
+    files: r.files,
+    read: (ref: string) => bridge().assets.read(ref),
+  };
+}
+
+const assets = {
+  async scanCurrent(): Promise<AssetsFolderHandle | null> {
+    const r = await bridge().assets.scanCurrent();
+    return r ? nativeAssetsFolder(r) : null;
+  },
+  async pick(): Promise<AssetsFolderHandle | null> {
+    const r = await bridge().assets.pick();
+    return r ? nativeAssetsFolder(r) : null;
+  },
+};
+
 export const nativePlatform: Platform = {
   isNative: true,
   get canEncodeNative() {
@@ -135,4 +160,5 @@ export const nativePlatform: Platform = {
   transcodeVideoForPlayback,
   windowControls,
   recents,
+  assets,
 };

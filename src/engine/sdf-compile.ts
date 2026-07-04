@@ -866,6 +866,33 @@ export interface CompiledSdf {
   uniforms: SdfUniform[];
 }
 
+export interface CompiledSdfSnippet {
+  // Uniform + helper-function declarations to splice into another shader's
+  // global scope.
+  decls: string;
+  // GLSL `float` expression for the signed distance, in terms of a `vec2 p`
+  // sample position (canvas-UV, aspect-correct the caller's choice — same
+  // contract as the Rasterize main() `p`). Distance is in canvas-UV units.
+  distExpr: string;
+  uniforms: SdfUniform[];
+}
+
+// Compile an SDF tree into spliceable fragments instead of a full shader, so a
+// consumer (e.g. Liquid Glass) can evaluate the analytic distance inline —
+// multiple times per pixel for finite-difference normals — at built-in quality,
+// no rasterize/JFA round-trip. Cache the composed program by structuralHash(root).
+export function compileSdfSnippet(root: SdfNode): CompiledSdfSnippet {
+  const state: EmitState = { uniforms: [], helpers: new Set() };
+  const distExpr = emitSdf(root, state);
+  const helperDecls = Array.from(state.helpers)
+    .map((h) => HELPERS[h])
+    .join("\n\n");
+  const uniformDecls = state.uniforms
+    .map((u) => `uniform ${u.type} ${u.name};`)
+    .join("\n");
+  return { decls: `${uniformDecls}\n${helperDecls}`, distExpr, uniforms: state.uniforms };
+}
+
 export type SdfOutputMode =
   | "rasterize"
   | "distance"

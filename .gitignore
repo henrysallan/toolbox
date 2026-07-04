@@ -21,6 +21,8 @@
 /build/*
 # …but keep the electron-builder app icon (buildResources convention)
 !/build/icon.icns
+# …and the mac signing entitlements (needed by the CI release build)
+!/build/entitlements.mac.plist
 
 # misc
 .DS_Store

@@ -1,5 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { NodeDataPayload } from "./graph";
+import type { SavedComposition } from "@/lib/project";
 import type { SaveState } from "@/components/effects/FileNameMenu";
 
 // Module-level survival capsule for editor state across a client-side
@@ -35,6 +36,10 @@ export interface EditorSessionSnapshot {
   paramView: "project" | "node" | "load";
   saveState: SaveState;
   canvasRes: [number, number];
+  // Composition registry (v5) — carried so a docs round-trip restores the
+  // exact compositions and active selection, not just the tagged nodes.
+  compositions: SavedComposition[];
+  activeCompositionId: string;
 }
 
 let stash: EditorSessionSnapshot | null = null;

@@ -47,6 +47,8 @@ export interface MenuBarProps {
   canSaveIncremental: boolean;
   // Opens the cloud project browser (the "Projects…" item).
   onOpenLoad: () => void;
+  // Opens the Assets view in the parameter panel (the "Assets" item).
+  onOpenAssets: () => void;
   // Opens the OS file picker to load a local .toolbox file ("Load…").
   onOpenProjectFile: () => void;
   // Downloads the current project as a self-contained .toolbox file.
@@ -131,6 +133,7 @@ export default function MenuBar({
   onSaveIncremental,
   canSaveIncremental,
   onOpenLoad,
+  onOpenAssets,
   onOpenProjectFile,
   onSaveToFile,
   canvasRes,
@@ -269,6 +272,13 @@ export default function MenuBar({
           kind: "item",
           label: "Projects…",
           onClick: onOpenLoad,
+        },
+        {
+          // Opens the Assets view in the parameter panel — drag assets from
+          // there into the node editor.
+          kind: "item",
+          label: "Assets",
+          onClick: onOpenAssets,
         },
         { kind: "divider" },
         {

@@ -13,7 +13,10 @@ import {
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import NodeEditor from "./NodeEditor";
+import NodeEditor, { PROJECT_CRUMB_ID } from "./NodeEditor";
+import { CompositionTabBar } from "./CompositionTabBar";
+import { ProjectView } from "./ProjectView";
+import { AssetsView, type AssetItem } from "./AssetsView";
 import ParamPanel from "./ParamPanel";
 import { feedWheel, wheelWantsZoom } from "./input-device";
 // import CustomCursor from "./CustomCursor"; // temporarily disabled — using native cursor
@@ -42,17 +45,22 @@ import {
   withMaskInput,
 } from "@/engine/conventions";
 import type { NodeDataPayload } from "@/state/graph";
-import { parseTargetHandleKind } from "@/state/graph";
+import { parseTargetHandleKind, newCompositionId } from "@/state/graph";
 import {
   buildStarterGraph,
+  belongsToComposition,
+  cloneCompositionNodes,
   cloneSubgraph,
   collectDescendantIds,
   connectToVirtualSocket,
+  createComposition,
   createLayer,
   defaultScopeFor,
+  deleteCompositionNodes,
   expandWithDescendants,
   getLayerChain,
   reorderLayers,
+  resolveComposition,
   splitLayer,
   groupSelection,
   makeInstanceNode,
@@ -69,10 +77,12 @@ import {
 } from "@/engine/groups";
 import { getPreset } from "@/state/presets";
 import { newLayerId, type MergeLayer } from "@/nodes/effect/merge";
+import { newExprInput } from "@/nodes/effect/expression";
 import { defaultAutoLayoutItem } from "@/nodes/effect/autolayout";
 import { newRenderQueueItemId } from "@/nodes/output/render-queue";
 import type {
   AutoLayoutItem,
+  ExprInput,
   GradientPoint,
   RenderQueueItem,
   SvgFileParamValue,
@@ -85,13 +95,18 @@ import {
   pickVideoMime,
   sanitizeFilename,
 } from "@/lib/export";
-import { platform, type FolderHandle } from "@/lib/platform";
+import {
+  platform,
+  type FolderHandle,
+  type AssetsFolderHandle,
+} from "@/lib/platform";
 import {
   deserializeGraph,
   generateThumbnail,
   incrementName,
   serializeGraph,
   type SavedProject,
+  type SavedComposition,
 } from "@/lib/project";
 import {
   matchFilesToMissing,
@@ -119,6 +134,13 @@ import SaveModal from "./SaveModal";
 import AiRecipePanel from "./AiRecipePanel";
 import { generateRecipe } from "@/lib/ai/generate-recipe-client";
 import { editGroupRecipe } from "@/lib/ai/edit-recipe-client";
+import type { AiProgress } from "@/lib/ai/ai-progress";
+import {
+  appendTurn as appendEditTurn,
+  clearTranscript as clearEditTranscript,
+  getTranscript as getEditTranscript,
+  type RecipeChatTurn,
+} from "@/state/recipe-chat";
 import {
   parseFragmentText,
   writeFragmentToClipboard,
@@ -145,6 +167,7 @@ import PrimitiveGizmo, {
   PRIMITIVE_GIZMO_ADAPTERS,
   type PrimitiveGizmoEnv,
 } from "./PrimitiveGizmo";
+import MotionPathOverlay from "./MotionPathOverlay";
 import SplineEditorOverlay from "./SplineEditorOverlay";
 import SegmentDotsOverlay from "./SegmentDotsOverlay";
 import GradientOverlay from "./GradientOverlay";
@@ -181,6 +204,67 @@ registerAllNodes();
 const STARTER = buildStarterGraph();
 const INITIAL_NODES: Node<NodeDataPayload>[] = STARTER.nodes;
 const INITIAL_EDGES: Edge[] = STARTER.edges;
+// A fresh project is one composition holding the starter graph (v5). The
+// registry's scene materializes from the live loop/fps/resolution on save.
+const INITIAL_COMPOSITIONS: SavedComposition[] = [
+  { id: STARTER.compositionId, name: "Composition 1" },
+];
+
+// Tag any untagged nodes into a composition. Called when leaving a
+// composition so freshly-created (still-untagged) nodes commit to the comp
+// they were made in, rather than leaking into the next one via the
+// defensive membership predicate. Returns the same array reference when
+// nothing changed, so callers can skip a setState.
+// Editor-only relabel + blue tint for a layer node and its boundary nodes,
+// and "Composition Output" for the comp-root Output (#159). Only overrides a
+// still-default name, so user renames win. `typeById` maps node id → defType.
+function layerDisplayFor(
+  n: Node<NodeDataPayload>,
+  typeById: Map<string, string>
+): { displayName?: string; layerAccent?: boolean } {
+  const t = n.data.defType;
+  if (t === LAYER_TYPE) return { layerAccent: true };
+  const parentType = n.data.parentId ? typeById.get(n.data.parentId) : undefined;
+  if (parentType === LAYER_TYPE) {
+    if (t === GROUP_INPUT_TYPE)
+      return {
+        layerAccent: true,
+        displayName: n.data.name === "Group Input" ? "Layer Input" : undefined,
+      };
+    if (t === GROUP_OUTPUT_TYPE)
+      return {
+        layerAccent: true,
+        displayName: n.data.name === "Group Output" ? "Layer Output" : undefined,
+      };
+  }
+  if (t === "output" && !n.data.parentId && n.data.name === "Output")
+    return { displayName: "Composition Output" };
+  return {};
+}
+
+// Classify an assets-folder file by extension (Assets view + drag-to-create).
+function kindFromExt(ext: string): AssetItem["kind"] {
+  const e = ext.toLowerCase();
+  if (["png", "jpg", "jpeg", "webp", "gif", "bmp"].includes(e)) return "image";
+  if (e === "svg") return "svg";
+  if (["mp4", "mov", "webm", "mkv", "m4v", "avi"].includes(e)) return "video";
+  if (["mp3", "wav", "m4a", "aac", "ogg", "flac"].includes(e)) return "audio";
+  if (["ttf", "otf", "woff", "woff2"].includes(e)) return "font";
+  return "other";
+}
+
+function tagUntaggedInto(
+  nodes: Node<NodeDataPayload>[],
+  compositionId: string
+): Node<NodeDataPayload>[] {
+  let changed = false;
+  const out = nodes.map((n) => {
+    if (n.data.compositionId) return n;
+    changed = true;
+    return { ...n, data: { ...n.data, compositionId } };
+  });
+  return changed ? out : nodes;
+}
 
 // Node label from a loaded file name: drop the extension so the network
 // reads as "sunset" rather than "sunset.jpg". Falls back to the raw name
@@ -326,6 +410,35 @@ function EffectsShell({
     rehydrate?.canvasRes ?? [1024, 1024]
   );
 
+  // Composition registry (v5): the project's compositions and which one is
+  // active. A single composition exists until the Project view (M3/M4) can
+  // create more; everything here is a no-op for that one-comp case but is
+  // the foundation the tab bar / browser build on. The active comp's scene
+  // is materialized from the live loop/fps/resolution at save time.
+  const [compositions, setCompositions] = useState<SavedComposition[]>(
+    rehydrate?.compositions ?? INITIAL_COMPOSITIONS
+  );
+  const [activeCompositionId, setActiveCompositionId] = useState<string>(
+    rehydrate?.activeCompositionId ?? STARTER.compositionId
+  );
+  // Which compositions show as tabs (decision 5). In M3 a project opens with
+  // every composition as a tab; closing removes it from the bar (never
+  // deletes the comp). The Project view (M4) is the home that can reopen one.
+  const [openCompositionIds, setOpenCompositionIds] = useState<string[]>(() =>
+    (rehydrate?.compositions ?? INITIAL_COMPOSITIONS).map((c) => c.id)
+  );
+  // "project" swaps the node editor for the Project view (file browser); the
+  // preview/timeline keep rendering the last-active comp while it's open.
+  const [view, setView] = useState<"editor" | "project">("editor");
+  // Bumped to re-render the Project view's title after a local (file)
+  // project rename — the file name lives on a ref, not reactive state.
+  const [, setProjectNameTick] = useState(0);
+  // External assets folder (the assets/ beside a desktop .toolbox, or a folder
+  // the user picked). Drives the Assets view's "Folder" section. See M-A3.
+  const [assetsFolder, setAssetsFolder] = useState<AssetsFolderHandle | null>(
+    null
+  );
+
   // Media params (video/audio files) the last project load couldn't
   // silently relink — drives the relink modal, which tracks a per-item
   // status (missing / ok / failed) across relink attempts. Reset by
@@ -348,13 +461,25 @@ function EffectsShell({
     let cancelled = false;
     (async () => {
       try {
-        const { nodes: nextNodes, edges: nextEdges, scene, missingMedia } =
-          await deserializeGraph(initialProject.graph);
+        const {
+          nodes: nextNodes,
+          edges: nextEdges,
+          scene,
+          compositions: nextComps,
+          activeCompositionId: nextActiveComp,
+          missingMedia,
+        } = await deserializeGraph(initialProject.graph);
         if (cancelled) return;
         setNodes(nextNodes);
         setEdges(nextEdges);
-        setCurrentGroupId(defaultScopeFor(nextNodes));
+        setCompositions(nextComps);
+        setActiveCompositionId(nextActiveComp);
+        setOpenCompositionIds(nextComps.map((c) => c.id));
+        setView("editor");
+        setAssetsFolder(null);
+        setCurrentGroupId(defaultScopeFor(nextNodes, nextActiveComp));
         setMissingMedia(missingMedia);
+        frameGraph();
         if (scene) {
           if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
           if (scene.fps !== undefined) setFps(scene.fps);
@@ -411,7 +536,7 @@ function EffectsShell({
   //   • initialProject is present — /p/<slug> route opens straight to
   //     a specific project; the load grid would just hide it.
   const [paramView, setParamView] = useState<
-    "project" | "node" | "load" | "ai-recipe"
+    "project" | "node" | "load" | "ai-recipe" | "assets"
   >(
     rehydrate?.paramView ?? (initialProject ? "node" : "load")
   );
@@ -449,6 +574,11 @@ function EffectsShell({
   // pick which subgraph drives which viewport. Toggled via Shift+S or
   // the Window menu.
   const [viewportSplit, setViewportSplit] = useState(false);
+  // Bumped after a project is opened so NodeEditor re-frames the whole
+  // graph (the mount-only `fitView` prop can't catch an in-place node
+  // swap). See NodeEditor's `frameSignal` prop.
+  const [frameGraphSignal, setFrameGraphSignal] = useState(0);
+  const frameGraph = useCallback(() => setFrameGraphSignal((n) => n + 1), []);
   // EffectNode reads this via the same `effect-node-toggle` event bus
   // it already uses for active/bypass — but it also needs the boolean
   // synchronously to decide whether to render the second toggle. Push
@@ -554,6 +684,9 @@ function EffectsShell({
   const [editTarget, setEditTarget] = useState<{ groupId: string; name: string } | null>(null);
   const editTargetRef = useRef(editTarget);
   editTargetRef.current = editTarget;
+  // Local-cache chat transcript for the group being edited (mirrors the store
+  // for rendering; the store is the source of truth).
+  const [editTranscript, setEditTranscript] = useState<RecipeChatTurn[]>([]);
   // User Preferences modal — Toolbox menu → User Preferences. Hosts
   // the BYO OpenAI key for AI-driven nodes plus future editor-wide
   // settings.
@@ -930,6 +1063,14 @@ function EffectsShell({
   currentProjectRef.current = currentProject;
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
+  const compositionsRef = useRef(compositions);
+  compositionsRef.current = compositions;
+  const activeCompositionIdRef = useRef(activeCompositionId);
+  activeCompositionIdRef.current = activeCompositionId;
+  const openCompositionIdsRef = useRef(openCompositionIds);
+  openCompositionIdsRef.current = openCompositionIds;
+  const assetsFolderRef = useRef(assetsFolder);
+  assetsFolderRef.current = assetsFolder;
   // When a 3D node is selected, the bound Scene Render id — used to retarget
   // the preview eval so its scene populates/publishes for the orbit viewport.
   // Assigned from the `active3DSceneRenderId` memo further down.
@@ -954,9 +1095,14 @@ function EffectsShell({
         // The AI Recipe composer is a transient view — never restore into it
         // across a docs round-trip; fall back to the node panel.
         paramView:
-          paramViewRef.current === "ai-recipe" ? "node" : paramViewRef.current,
+          paramViewRef.current === "ai-recipe" ||
+          paramViewRef.current === "assets"
+            ? "node"
+            : paramViewRef.current,
         saveState: saveStateRef.current,
         canvasRes: canvasResRef.current,
+        compositions: compositionsRef.current,
+        activeCompositionId: activeCompositionIdRef.current,
       });
     };
   }, []);
@@ -965,13 +1111,42 @@ function EffectsShell({
     (): GraphSnapshot => ({
       nodes: nodesRef.current,
       edges: edgesRef.current,
+      compositions: compositionsRef.current,
+      activeCompositionId: activeCompositionIdRef.current,
     }),
     []
   );
   const applyGraphSnapshot = useCallback(
     (snap: GraphSnapshot) => {
+      const prevActive = activeCompositionIdRef.current;
       setNodes(snap.nodes);
       setEdges(snap.edges);
+      // Restore the composition registry (v5) so undo/redo of a comp
+      // create/delete stays consistent with the nodes.
+      if (snap.compositions) {
+        const comps = snap.compositions;
+        setCompositions(comps);
+        const ids = new Set(comps.map((c) => c.id));
+        setOpenCompositionIds((prev) => {
+          const next = prev.filter((id) => ids.has(id));
+          if (snap.activeCompositionId && !next.includes(snap.activeCompositionId))
+            next.push(snap.activeCompositionId);
+          return next.length ? next : comps.map((c) => c.id);
+        });
+      }
+      if (snap.activeCompositionId)
+        setActiveCompositionId(snap.activeCompositionId);
+      // Re-scope only when the composition changed or the viewed scope node
+      // vanished (e.g. undoing a comp create that removed the layer we were
+      // in) — normal same-comp undos keep the user's current scope.
+      setCurrentGroupId((cur) => {
+        const activeChanged =
+          !!snap.activeCompositionId && snap.activeCompositionId !== prevActive;
+        const scopeGone = !!cur && !snap.nodes.some((n) => n.id === cur);
+        return activeChanged || scopeGone
+          ? defaultScopeFor(snap.nodes, snap.activeCompositionId)
+          : cur;
+      });
     },
     [setNodes, setEdges]
   );
@@ -1156,8 +1331,14 @@ function EffectsShell({
       const canvas = canvasRef.current;
       if (!backend || !backendReady || !canvas) return;
 
-      const currentNodes = nodesRef.current;
-      const currentEdges = edgesRef.current;
+      // Render only the active composition (v5). resolveComposition is a
+      // no-op for a single composition; with several it isolates the one on
+      // screen so other comps' Outputs / active nodes don't drive the preview.
+      const { nodes: currentNodes, edges: currentEdges } = resolveComposition(
+        nodesRef.current,
+        edgesRef.current,
+        activeCompositionIdRef.current
+      );
       const graphNodes: GraphNode[] = currentNodes.map((n) => ({
         id: n.id,
         type: n.data.defType,
@@ -1394,6 +1575,77 @@ function EffectsShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [errors]);
 
+  // Auto-grow the input sockets of Proximity Join/Merge nodes: keep each
+  // one's `slots` param equal to (connected sockets, in stable order) +
+  // exactly one trailing empty spare. Derived purely from edges, so it's
+  // undo-safe (edges are in history; slots follow them) and needs no
+  // pushGraph snapshot. Runs whenever edges change — connect fills a
+  // spare → next spare appears; disconnect prunes the emptied middle.
+  useEffect(() => {
+    setNodes((prev) => {
+      let changed = false;
+      const next = prev.map((n) => {
+        if (n.data.defType !== "proximity-merge") return n;
+        const raw = n.data.params.slots;
+        const current: string[] =
+          Array.isArray(raw) &&
+          raw.every((x) => typeof x === "string") &&
+          raw.length
+            ? (raw as string[])
+            : ["in"];
+        // Socket names wired into this node (exclude the t + mask inputs).
+        const connected = new Set<string>();
+        for (const e of edges) {
+          if (e.target !== n.id) continue;
+          const parsed = parseTargetHandleKind(e.targetHandle ?? "");
+          if (parsed?.kind !== "input") continue;
+          if (parsed.name === "t" || parsed.name === "mask") continue;
+          connected.add(parsed.name);
+        }
+        // Keep connected slots in their current order, append any newly
+        // connected names, then one empty spare (reuse the existing empty
+        // slot's name while it stays empty so the DOM socket is stable).
+        const kept = current.filter((s) => connected.has(s));
+        for (const name of connected) if (!kept.includes(name)) kept.push(name);
+        let spare = current.find((s) => !connected.has(s));
+        if (spare === undefined || kept.includes(spare)) {
+          let k = 0;
+          const taken = new Set(kept);
+          while (taken.has(`s${k}`)) k++;
+          spare = `s${k}`;
+        }
+        const desired = [...kept, spare];
+        if (
+          desired.length === current.length &&
+          desired.every((s, i) => s === current[i])
+        ) {
+          return n;
+        }
+        changed = true;
+        const def = getNodeDef(n.data.defType);
+        const nextParams = { ...n.data.params, slots: desired };
+        const resolved = def?.resolveInputs?.(nextParams);
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            params: nextParams,
+            inputs: resolved
+              ? withMaskInput(resolved, def).map((i) => ({
+                  name: i.name,
+                  label: i.label,
+                  type: i.type,
+                  hidden: i.hidden,
+                }))
+              : n.data.inputs,
+          },
+        };
+      });
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [edges]);
+
   const onConnect = useCallback(
     (connection: Connection) => {
       pushGraph(getGraphSnapshot());
@@ -1449,6 +1701,7 @@ function EffectsShell({
                 auxOutputs: resolvedAux
                   ? resolvedAux.map((a) => ({
                       name: a.name,
+                      label: a.label,
                       type: a.type,
                       disabled: a.disabled,
                     }))
@@ -1707,6 +1960,48 @@ function EffectsShell({
     }
   }, [nodes, currentGroupId]);
 
+  // Commit a freshly-built source node into the graph. At strict root it
+  // becomes its own layer (named `label`), wired into the layer's Group
+  // Output so it shows immediately; inside a scope it just drops in. Shared
+  // by the file-drop and asset-drop paths. Caller pushes undo first.
+  const placeSourceNode = useCallback(
+    (newNode: Node<NodeDataPayload>, label: string) => {
+      if (!currentGroupIdRef.current) {
+        const res = createLayer(nodesRef.current, edgesRef.current, {
+          name: label,
+        });
+        const go = res.nodes.find(
+          (n) =>
+            n.data.parentId === res.layerId &&
+            n.data.defType === GROUP_OUTPUT_TYPE
+        );
+        newNode.data.parentId = res.layerId;
+        const out = newNode.data.primaryOutput;
+        const goSocket =
+          out === "image" ? "in:image" : out === "audio" ? "in:audio" : null;
+        setNodes([...res.nodes, newNode]);
+        setEdges(
+          go && goSocket
+            ? [
+                ...res.edges,
+                {
+                  id: newEdgeId(),
+                  source: newNode.id,
+                  sourceHandle: "out:primary",
+                  target: go.id,
+                  targetHandle: goSocket,
+                },
+              ]
+            : res.edges
+        );
+        navigateScope(res.layerId);
+        return;
+      }
+      setNodes((prev) => [...prev, newNode]);
+    },
+    [setNodes, setEdges, navigateScope]
+  );
+
   // Create a source node for a dropped / pasted file. Mirrors the
   // per-ParamType registration path ParamPanel uses when the user
   // picks a file interactively — we get the same param value shape
@@ -1763,43 +2058,53 @@ function EffectsShell({
       if (kind === "image" || kind === "video") {
         newNode.data.name = fileLabel(file.name);
       }
-      // Strict root: a media drop at root becomes its own layer (named
-      // after the file), with the source wired into the layer's Group
-      // Output so it shows immediately.
-      if (!currentGroupIdRef.current) {
-        const res = createLayer(nodesRef.current, edgesRef.current, {
-          name: fileLabel(file.name),
-        });
-        const go = res.nodes.find(
-          (n) =>
-            n.data.parentId === res.layerId &&
-            n.data.defType === GROUP_OUTPUT_TYPE
-        );
-        newNode.data.parentId = res.layerId;
-        const out = newNode.data.primaryOutput;
-        const goSocket =
-          out === "image" ? "in:image" : out === "audio" ? "in:audio" : null;
-        setNodes([...res.nodes, newNode]);
-        setEdges(
-          go && goSocket
-            ? [
-                ...res.edges,
-                {
-                  id: newEdgeId(),
-                  source: newNode.id,
-                  sourceHandle: "out:primary",
-                  target: go.id,
-                  targetHandle: goSocket,
-                },
-              ]
-            : res.edges
-        );
-        navigateScope(res.layerId);
-        return;
-      }
-      setNodes((prev) => [...prev, newNode]);
+      placeSourceNode(newNode, fileLabel(file.name));
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, spawnNode, navigateScope, flashToast]
+    [pushGraph, getGraphSnapshot, spawnNode, placeSourceNode, flashToast]
+  );
+
+  // Drag an asset from the Assets panel into the node editor. Folder media
+  // (image/svg/video/audio) read their bytes and route through onAddFileNode
+  // (→ Source node); a font becomes a Text node preset to it. See M-A4.
+  const onAddAssetNode = useCallback(
+    async (
+      payload: { source: string; kind: string; ref: string; name: string },
+      flowPos: { x: number; y: number }
+    ) => {
+      try {
+        if (payload.kind === "font") {
+          pushGraph(getGraphSnapshot());
+          const node = spawnNode("text", flowPos);
+          if (payload.source === "folder") {
+            const folder = assetsFolderRef.current;
+            const r = folder ? await folder.read(payload.ref) : null;
+            if (!r) return void flashToast("Couldn't read that font.");
+            const { registerCustomFontFromBuffer } = await import("@/lib/fonts");
+            const fv = await registerCustomFontFromBuffer(r.bytes, {
+              filename: r.name,
+            });
+            node.data.params = { ...node.data.params, custom_font: fv };
+          } else {
+            node.data.params = {
+              ...node.data.params,
+              custom_font: { family: payload.ref, filename: payload.name },
+            };
+          }
+          node.data.name =
+            (payload.name || "Text").replace(/\.[^/.]+$/, "") || "Text";
+          placeSourceNode(node, node.data.name);
+          return;
+        }
+        // Folder media → its Source node (reuse the file-drop path).
+        const folder = assetsFolderRef.current;
+        const r = folder ? await folder.read(payload.ref) : null;
+        if (!r) return void flashToast("Couldn't read that asset.");
+        await onAddFileNode(new File([r.bytes], r.name, { type: r.type }), flowPos);
+      } catch (err) {
+        flashToast(err instanceof Error ? err.message : "Couldn't add asset");
+      }
+    },
+    [pushGraph, getGraphSnapshot, spawnNode, placeSourceNode, onAddFileNode, flashToast]
   );
 
   // Read the upstream node's primary IMAGE output as a PNG blob.
@@ -1873,10 +2178,13 @@ function EffectsShell({
   // like a preset. Mirrors the `preset:*` branch of onAddNode below — kept as
   // its own callback so onAddNode's huge dependency list stays untouched.
   const handleGenerateRecipe = useCallback(
-    async (prompt: string): Promise<{ ok: boolean; message?: string }> => {
+    async (
+      prompt: string,
+      onProgress?: (e: AiProgress) => void
+    ): Promise<{ ok: boolean; message?: string }> => {
       let result;
       try {
-        result = await generateRecipe(prompt);
+        result = await generateRecipe(prompt, { onProgress });
       } catch (e) {
         return { ok: false, message: (e as Error)?.message ?? "Generation failed." };
       }
@@ -1941,14 +2249,35 @@ function EffectsShell({
     const node = nodesRef.current.find((n) => n.id === nodeId);
     if (!node || node.data.defType !== GROUP_TYPE) return;
     setEditTarget({ groupId: nodeId, name: node.data.name || "Group" });
+    setEditTranscript(getEditTranscript(nodeId));
     setParamView("ai-recipe");
   }, []);
+
+  const handleClearEditTranscript = useCallback(() => {
+    const t = editTargetRef.current;
+    if (!t) return;
+    clearEditTranscript(t.groupId);
+    setEditTranscript([]);
+  }, []);
+
+  // The purple-star button on an AI group (EffectNode) dispatches this event.
+  useEffect(() => {
+    const onAiEdit = (e: Event) => {
+      const id = (e as CustomEvent<{ nodeId: string }>).detail?.nodeId;
+      if (id) handleEditWithAI(id);
+    };
+    window.addEventListener("ai-edit-node", onAiEdit);
+    return () => window.removeEventListener("ai-edit-node", onAiEdit);
+  }, [handleEditWithAI]);
 
   // Edit the targeted group from a prompt: extract its fragment, run the
   // patch through editGroupRecipe (apply + validate + repair), and commit the
   // result in place — external wires survive because the shell id is unchanged.
   const handleEditGroup = useCallback(
-    async (prompt: string): Promise<{ ok: boolean; message?: string }> => {
+    async (
+      prompt: string,
+      onProgress?: (e: AiProgress) => void
+    ): Promise<{ ok: boolean; message?: string }> => {
       const target = editTargetRef.current;
       if (!target) return { ok: false, message: "No group selected." };
       const groupId = target.groupId;
@@ -1957,9 +2286,11 @@ function EffectsShell({
       const fragEdges = edgesRef.current.filter(
         (e) => fragIds.has(e.source) && fragIds.has(e.target)
       );
+      // Recent turns give the model intent continuity for follow-ups.
+      const history = getEditTranscript(groupId).slice(-8);
       let result;
       try {
-        result = await editGroupRecipe(groupId, fragNodes, fragEdges, prompt);
+        result = await editGroupRecipe(groupId, fragNodes, fragEdges, prompt, { history, onProgress });
       } catch (e) {
         return { ok: false, message: (e as Error)?.message ?? "Edit failed." };
       }
@@ -1970,14 +2301,21 @@ function EffectsShell({
         };
       }
       pushGraph(getGraphSnapshot());
-      setNodes(nodesRef.current.filter((n) => !fragIds.has(n.id)).concat(result.nodes));
+      // Mark the (possibly hand-made) group as AI-authored so it keeps the
+      // "Edit with AI" button going forward.
+      const committed = result.nodes.map((n) =>
+        n.id === groupId ? { ...n, data: { ...n.data, aiAuthored: true } } : n
+      );
+      setNodes(nodesRef.current.filter((n) => !fragIds.has(n.id)).concat(committed));
       setEdges([
         ...edgesRef.current.filter(
           (e) => !(fragIds.has(e.source) && fragIds.has(e.target))
         ),
         ...result.edges,
       ]);
-      flashToast(result.summary ? `edit: ${result.summary}` : "group edited");
+      const summary = result.summary ?? "applied your edit";
+      setEditTranscript(appendEditTurn(groupId, { instruction: prompt, summary }));
+      flashToast(`edit: ${summary}`);
       return { ok: true };
     },
     [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast]
@@ -2146,6 +2484,7 @@ function EffectsShell({
             def.resolveAuxOutputs?.(newNode.data.params) ?? def.auxOutputs;
           newNode.data.auxOutputs = resolvedAux.map((a) => ({
             name: a.name,
+            label: a.label,
             type: a.type,
             disabled: a.disabled,
           }));
@@ -2379,9 +2718,21 @@ function EffectsShell({
         offset,
         { parentId: targetScope }
       );
+      // Re-tag everything new (the clones, and any wrap-layer createLayer just
+      // minted) into the active composition — a cross-project fragment carries
+      // its origin's composition tag, which would otherwise be filtered out of
+      // this project's layer chain (v5). Idempotent for same-project pastes.
+      const active = activeCompositionIdRef.current;
+      const tagActive = (n: Node<NodeDataPayload>): Node<NodeDataPayload> =>
+        n.data.compositionId === active
+          ? n
+          : { ...n, data: { ...n.data, compositionId: active } };
       setNodes([
-        ...baseNodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
-        ...newNodes,
+        ...baseNodes.map((n) => {
+          const t = tagActive(n);
+          return t.selected ? { ...t, selected: false } : t;
+        }),
+        ...newNodes.map(tagActive),
       ]);
       setEdges([...baseEdges, ...newEdges]);
       if (wrapped) {
@@ -2917,6 +3268,7 @@ function EffectsShell({
                 def.primaryOutput,
               auxOutputs: nextAux.map((a) => ({
                 name: a.name,
+                label: a.label,
                 type: a.type,
                 disabled: a.disabled,
               })),
@@ -3015,15 +3367,48 @@ function EffectsShell({
   // Strip every edge that touches this node. Used by cmd-drag to "float" a
   // node out of its connections in one gesture.
   const handleDetachNode = useCallback(
-    (nodeId: string) => {
+    (
+      nodeId: string,
+      // Present when NodeEditor found the node cleanly inline — heal the
+      // chain by reconnecting its neighbors (A→C) as the node leaves.
+      // Handles + type-compat are already resolved there (findDetachBridge),
+      // same as the splice path trusts NodeEditor's socket resolution.
+      bridge?: {
+        source: string;
+        sourceHandle: string;
+        target: string;
+        targetHandle: string;
+      } | null
+    ) => {
       const hasEdges = edgesRef.current.some(
         (e) => e.source === nodeId || e.target === nodeId
       );
       if (!hasEdges) return;
       pushGraph(getGraphSnapshot());
-      setEdges((prev) =>
-        prev.filter((e) => e.source !== nodeId && e.target !== nodeId)
-      );
+      setEdges((prev) => {
+        const stripped = prev.filter(
+          (e) => e.source !== nodeId && e.target !== nodeId
+        );
+        if (!bridge) return stripped;
+        // Guard: never double-wire the target's single-input socket
+        // (stripping the node's edges already frees it, so this only
+        // matters if the graph changed underneath us).
+        const occupied = stripped.some(
+          (e) =>
+            e.target === bridge.target && e.targetHandle === bridge.targetHandle
+        );
+        if (occupied) return stripped;
+        return [
+          ...stripped,
+          {
+            id: `e-heal-${nodeId}-${Math.random().toString(36).slice(2, 8)}`,
+            source: bridge.source,
+            sourceHandle: bridge.sourceHandle,
+            target: bridge.target,
+            targetHandle: bridge.targetHandle,
+          },
+        ];
+      });
     },
     [pushGraph, getGraphSnapshot, setEdges]
   );
@@ -3053,8 +3438,68 @@ function EffectsShell({
         );
       }
       const tickAtEdit = currentTick;
+      // Simulation-zone `kind` is a paired property: the Start and End
+      // halves share a zone_id and MUST agree on kind, or ensureZoneState
+      // tears down and reallocates the shared state blob every frame (the
+      // two halves fight over ctx.state[`sim-zone:<id>`]). So a kind edit on
+      // one half mirrors to its partner in the same setNodes pass — one undo
+      // entry. Resolve the partner id up front from the current graph.
+      let zonePartnerId: string | undefined;
+      if (paramName === "kind") {
+        const src = nodesRef.current.find((x) => x.id === nodeId);
+        const dt = src?.data.defType;
+        if (dt === "simulation-start" || dt === "simulation-end") {
+          const zid = src?.data.params.zone_id as string | undefined;
+          if (zid) {
+            const partnerType =
+              dt === "simulation-start"
+                ? "simulation-end"
+                : "simulation-start";
+            zonePartnerId = nodesRef.current.find(
+              (x) =>
+                x.data.defType === partnerType &&
+                (x.data.params.zone_id as string | undefined) === zid
+            )?.id;
+          }
+        }
+      }
       setNodes((prev) =>
         prev.map((n) => {
+          // Zone partner: mirror the kind and re-resolve its sockets so the
+          // input/output socket types stay in lockstep. No autokey — the
+          // enum kind isn't keyframable.
+          if (zonePartnerId && n.id === zonePartnerId) {
+            const pdef = getNodeDef(n.data.defType);
+            const pParams = { ...n.data.params, kind: value };
+            const pResolved = pdef?.resolveInputs?.(pParams);
+            const pResolvedAux = pdef?.resolveAuxOutputs?.(pParams);
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                params: pParams,
+                primaryOutput:
+                  pdef?.resolvePrimaryOutput?.(pParams) ??
+                  n.data.primaryOutput,
+                inputs: pResolved
+                  ? withMaskInput(pResolved, pdef).map((i) => ({
+                      name: i.name,
+                      label: i.label,
+                      type: i.type,
+                      hidden: i.hidden,
+                    }))
+                  : n.data.inputs,
+                auxOutputs: pResolvedAux
+                  ? pResolvedAux.map((a) => ({
+                      name: a.name,
+                      label: a.label,
+                      type: a.type,
+                      disabled: a.disabled,
+                    }))
+                  : n.data.auxOutputs,
+              },
+            };
+          }
           if (n.id !== nodeId) return n;
           // Auto-keyframe: if this param is animated and not driven by a
           // wire, write a keyframe at the current tick instead of (or
@@ -3239,6 +3684,7 @@ function EffectsShell({
               auxOutputs: resolvedAux
                 ? resolvedAux.map((a) => ({
                     name: a.name,
+                    label: a.label,
                     type: a.type,
                     disabled: a.disabled,
                   }))
@@ -3366,6 +3812,52 @@ function EffectsShell({
       );
     },
     [setNodes, pushGraph, getGraphSnapshot, currentTick]
+  );
+
+  // Drag a motion-path point (MotionPathOverlay): write a keyframe to BOTH the
+  // X and Y position param at the dragged point's tick. X/Y are independent
+  // tracks; a point on the path represents the full position at its tick, so a
+  // drag unifies both axes there (inserting a keyframe on whichever track
+  // lacks one at that tick, and enabling animation if needed). The tick comes
+  // from the dragged point, NOT the playhead — so this writes off-playhead and
+  // can't route through onParamChange's autokey. One pushGraph + one setNodes
+  // so the whole drag coalesces into a single undo entry.
+  const onMotionPathPointChange = useCallback(
+    (
+      nodeId: string,
+      xParam: string,
+      yParam: string,
+      tick: number,
+      xVal: number,
+      yVal: number,
+      coalesceKey: string
+    ) => {
+      pushGraph(getGraphSnapshot(), coalesceKey);
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id !== nodeId) return n;
+          const cur = n.data.animation ?? {};
+          const writeAxis = (
+            block: KeyframeAnimationBlock | undefined,
+            val: number
+          ) => {
+            const base = block ?? emptyAnimationBlock();
+            const enabled = base.animated ? base : { ...base, animated: true };
+            return upsertKeyframe(enabled, tick, val, "easeInOut");
+          };
+          const nextAnim = {
+            ...cur,
+            [xParam]: writeAxis(cur[xParam], xVal),
+            [yParam]: writeAxis(cur[yParam], yVal),
+          };
+          return {
+            ...n,
+            data: { ...n.data, animation: nextAnim },
+          };
+        })
+      );
+    },
+    [setNodes, pushGraph, getGraphSnapshot]
   );
 
   // Set/clear a node's timeline clip windows (Track Editor clip bars). Clip
@@ -3512,6 +4004,7 @@ function EffectsShell({
         detail.kind === "mergeAddLayer" ||
         detail.kind === "autolayoutAddItem" ||
         detail.kind === "queueAddItem" ||
+        detail.kind === "exprAddInput" ||
         detail.kind === "trailsReset"
       ) {
         pushGraph(getGraphSnapshot());
@@ -3609,6 +4102,32 @@ function EffectsShell({
             ];
             const def = getNodeDef(n.data.defType);
             const nextParams = { ...n.data.params, items: nextItems };
+            const resolved = def?.resolveInputs?.(nextParams);
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                params: nextParams,
+                inputs: resolved
+                  ? withMaskInput(resolved, def).map((i) => ({
+                      name: i.name,
+                      label: i.label,
+                      type: i.type,
+                      hidden: i.hidden,
+                    }))
+                  : n.data.inputs,
+              },
+            };
+          })
+        );
+      } else if (detail.kind === "exprAddInput") {
+        setNodes((prev) =>
+          prev.map((n) => {
+            if (n.id !== detail.id) return n;
+            const current = (n.data.params.inputs as ExprInput[]) ?? [];
+            const nextInputs: ExprInput[] = [...current, newExprInput(current)];
+            const def = getNodeDef(n.data.defType);
+            const nextParams = { ...n.data.params, inputs: nextInputs };
             const resolved = def?.resolveInputs?.(nextParams);
             return {
               ...n,
@@ -3800,7 +4319,11 @@ function EffectsShell({
           return n && n.data.defType === LAYER_TYPE && !n.data.parentId;
         });
         if (removedRootLayer) {
-          const order = getLayerChain(nodesRef.current, edgesRef.current)
+          const order = getLayerChain(
+            nodesRef.current,
+            edgesRef.current,
+            activeCompositionIdRef.current
+          )
             .map((n) => n.id)
             .filter((id) => !dead.has(id));
           const survivors = nodesRef.current.filter((n) => !dead.has(n.id));
@@ -3854,6 +4377,244 @@ function EffectsShell({
   fpsRef.current = fps;
   const loopFramesRef = useRef(loopFrames);
   loopFramesRef.current = loopFrames;
+
+  // The live loop/fps/resolution ARE the active composition's working scene;
+  // materialize them onto its registry entry when saving (v5). Other comps
+  // keep their stored scenes. Returns the registry to hand to serializeGraph.
+  const compositionsForSave = useCallback(
+    (thumbnail?: string | null): SavedComposition[] => {
+      const scene = {
+        loopFrames: loopFramesRef.current,
+        fps: fpsRef.current,
+        width: canvasResRef.current[0],
+        height: canvasResRef.current[1],
+      };
+      return compositionsRef.current.map((c) =>
+        c.id === activeCompositionIdRef.current
+          ? {
+              ...c,
+              scene,
+              // A truthy thumbnail means a real project save (vs a
+              // switch/create sync) — stamp the edit time then too.
+              ...(thumbnail ? { thumbnail, modifiedAt: Date.now() } : {}),
+            }
+          : c
+      );
+    },
+    []
+  );
+
+  // Apply a composition's scene to the live editor (loop / fps / resolution)
+  // and clamp the playhead into the new loop (decision: comp switch clamps).
+  // A missing scene leaves the current settings untouched.
+  const applyScene = useCallback((scene: SavedComposition["scene"]) => {
+    if (!scene) return;
+    if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
+    if (scene.fps !== undefined) setFps(scene.fps);
+    if (scene.width !== undefined && scene.height !== undefined)
+      setCanvasRes([scene.width, scene.height]);
+    const lf = "loopFrames" in scene ? scene.loopFrames ?? null : null;
+    const f = scene.fps ?? fpsRef.current;
+    if (lf != null && lf > 0 && f > 0) {
+      const loopSecs = lf / f;
+      setTime((t) => (t >= loopSecs ? Math.max(0, loopSecs - 1 / f) : t));
+    }
+  }, []);
+
+  // Switch the active composition (v5). Navigation, not an undoable edit:
+  // commits the outgoing comp's still-untagged nodes (so they don't leak via
+  // the defensive membership predicate) and its live scene, then activates
+  // the target and loads its scene + default scope.
+  const handleSwitchComposition = useCallback(
+    (compId: string) => {
+      if (compId === activeCompositionIdRef.current) return;
+      const outgoing = activeCompositionIdRef.current;
+      const sweptNodes = tagUntaggedInto(nodesRef.current, outgoing);
+      // compositionsForSave materializes the (still-active) outgoing comp's
+      // live scene; every other comp keeps its stored scene.
+      const comps = compositionsForSave();
+      const incoming = comps.find((c) => c.id === compId);
+      if (sweptNodes !== nodesRef.current) setNodes(sweptNodes);
+      setCompositions(comps);
+      setActiveCompositionId(compId);
+      setSelectedId(null);
+      setCurrentGroupId(defaultScopeFor(sweptNodes, compId));
+      applyScene(incoming?.scene);
+    },
+    [compositionsForSave, applyScene, setNodes]
+  );
+
+  // Create a new composition (empty Output + Layer 1), open it as a tab, and
+  // dive into its layer. The new comp inherits the current canvas settings.
+  // Undoable (it adds nodes + a registry entry).
+  const handleCreateComposition = useCallback(() => {
+    pushGraph(getGraphSnapshot());
+    const outgoing = activeCompositionIdRef.current;
+    const sweptNodes = tagUntaggedInto(nodesRef.current, outgoing);
+    const created = createComposition(compositionsRef.current);
+    const newComp: SavedComposition = {
+      ...created.composition,
+      scene: {
+        loopFrames: loopFramesRef.current,
+        fps: fpsRef.current,
+        width: canvasResRef.current[0],
+        height: canvasResRef.current[1],
+      },
+      modifiedAt: Date.now(),
+    };
+    setNodes([...sweptNodes, ...created.nodes]);
+    setEdges([...edgesRef.current, ...created.edges]);
+    // Persist the outgoing comp's live scene, then append the new comp.
+    setCompositions([...compositionsForSave(), newComp]);
+    setActiveCompositionId(created.compositionId);
+    setOpenCompositionIds((prev) =>
+      prev.includes(created.compositionId)
+        ? prev
+        : [...prev, created.compositionId]
+    );
+    setSelectedId(null);
+    setCurrentGroupId(created.layerId);
+    // New comp inherits the current scene → no applyScene needed.
+  }, [pushGraph, getGraphSnapshot, compositionsForSave, setNodes, setEdges]);
+
+  // Close a composition tab — removes it from the bar; the composition stays
+  // in the project (reopen via the Project view, M4). Falls the active
+  // selection back to an adjacent open tab; the last open tab can't close.
+  const handleCloseComposition = useCallback(
+    (compId: string) => {
+      const open = openCompositionIdsRef.current;
+      const next = open.filter((id) => id !== compId);
+      if (next.length === 0) return;
+      if (compId === activeCompositionIdRef.current) {
+        const idx = open.indexOf(compId);
+        handleSwitchComposition(next[Math.min(idx, next.length - 1)]);
+      }
+      setOpenCompositionIds(next);
+    },
+    [handleSwitchComposition]
+  );
+
+  // --- Project view (file browser) ----------------------------------------
+
+  const handleOpenProjectView = useCallback(() => setView("project"), []);
+
+  // Enter a composition from the Project view: open it as a tab, switch to
+  // it, and return to the node editor.
+  const handleEnterComposition = useCallback(
+    (compId: string) => {
+      setOpenCompositionIds((prev) =>
+        prev.includes(compId) ? prev : [...prev, compId]
+      );
+      handleSwitchComposition(compId);
+      setView("editor");
+    },
+    [handleSwitchComposition]
+  );
+
+  // Delete a composition: remove its nodes + registry entry (no guard — if it
+  // was the last/active one we drop into the Project view; a zero-comp
+  // project is legal). Undoable.
+  const handleDeleteComposition = useCallback(
+    (compId: string) => {
+      pushGraph(getGraphSnapshot());
+      // Sweep so the active comp's untagged nodes are removable / kept right.
+      const swept = tagUntaggedInto(
+        nodesRef.current,
+        activeCompositionIdRef.current
+      );
+      const { nodes: nextNodes, edges: nextEdges } = deleteCompositionNodes(
+        swept,
+        edgesRef.current,
+        compId
+      );
+      const nextComps = compositionsRef.current.filter((c) => c.id !== compId);
+      setNodes(nextNodes);
+      setEdges(nextEdges);
+      setCompositions(nextComps);
+      setOpenCompositionIds((prev) => prev.filter((id) => id !== compId));
+      if (compId === activeCompositionIdRef.current) {
+        const fallback = nextComps[0];
+        if (fallback) {
+          setActiveCompositionId(fallback.id);
+          setCurrentGroupId(defaultScopeFor(nextNodes, fallback.id));
+          applyScene(fallback.scene);
+          setView("project");
+        } else {
+          // Empty project — nothing to render; stay in the Project view.
+          setActiveCompositionId("");
+          setCurrentGroupId(undefined);
+          setView("project");
+        }
+        setSelectedId(null);
+      }
+    },
+    [pushGraph, getGraphSnapshot, applyScene, setNodes, setEdges]
+  );
+
+  // Duplicate a composition (deep-copy its graph into a new comp, inserted
+  // right after the source). Opens as a tab. Undoable.
+  const handleDuplicateComposition = useCallback(
+    (compId: string) => {
+      pushGraph(getGraphSnapshot());
+      const swept = tagUntaggedInto(
+        nodesRef.current,
+        activeCompositionIdRef.current
+      );
+      const newId = newCompositionId();
+      const { nodes: clones, edges: clonedEdges } = cloneCompositionNodes(
+        swept,
+        edgesRef.current,
+        compId,
+        newId
+      );
+      const src = compositionsRef.current.find((c) => c.id === compId);
+      const newComp: SavedComposition = {
+        id: newId,
+        name: `${src?.name ?? "Composition"} copy`,
+        scene: src?.scene,
+        thumbnail: src?.thumbnail,
+        modifiedAt: Date.now(),
+      };
+      const idx = compositionsRef.current.findIndex((c) => c.id === compId);
+      const nextComps = [...compositionsRef.current];
+      nextComps.splice(idx + 1, 0, newComp);
+      setNodes([...swept, ...clones]);
+      setEdges([...edgesRef.current, ...clonedEdges]);
+      setCompositions(nextComps);
+      setOpenCompositionIds((prev) =>
+        prev.includes(newId) ? prev : [...prev, newId]
+      );
+    },
+    [pushGraph, getGraphSnapshot, setNodes, setEdges]
+  );
+
+  const handleRenameComposition = useCallback(
+    (compId: string, name: string) => {
+      pushGraph(getGraphSnapshot());
+      setCompositions((prev) =>
+        prev.map((c) => (c.id === compId ? { ...c, name } : c))
+      );
+    },
+    [pushGraph, getGraphSnapshot]
+  );
+
+  const handleReorderCompositions = useCallback((orderedIds: string[]) => {
+    setCompositions((prev) => {
+      const byId = new Map(prev.map((c) => [c.id, c]));
+      const ordered = orderedIds
+        .map((id) => byId.get(id))
+        .filter((c): c is SavedComposition => !!c);
+      const seen = new Set(orderedIds);
+      return [...ordered, ...prev.filter((c) => !seen.has(c.id))];
+    });
+    // Keep the tab order in step with the project order.
+    setOpenCompositionIds((prev) => {
+      const rank = new Map(orderedIds.map((id, i) => [id, i]));
+      return [...prev].sort(
+        (a, b) => (rank.get(a) ?? 1e9) - (rank.get(b) ?? 1e9)
+      );
+    });
+  }, []);
 
   // `mode === "live"` is the MediaRecorder path — banner shows a
   // countdown. `mode === "offline"` is WebCodecs / ffmpeg.wasm — banner
@@ -4041,14 +4802,31 @@ function EffectsShell({
   // edges with a hidden endpoint hide automatically). Identity is
   // preserved for nodes whose flag is already correct so React Flow
   // only re-renders on actual scope changes.
-  const scopedNodes = useMemo(
-    () =>
-      nodes.map((n) => {
-        const hidden = n.data.parentId !== currentGroupId;
-        return !!n.hidden === hidden ? n : { ...n, hidden };
-      }),
-    [nodes, currentGroupId]
-  );
+  const scopedNodes = useMemo(() => {
+    const typeById = new Map(nodes.map((n) => [n.id, n.data.defType]));
+    return nodes.map((n) => {
+      // Hidden unless it's in the current scope AND the active composition
+      // (the comp filter only bites at root, where every comp's root nodes
+      // otherwise coexist; inside a layer the parent check already scopes).
+      const hidden =
+        n.data.parentId !== currentGroupId ||
+        !belongsToComposition(n, activeCompositionId);
+      const disp = layerDisplayFor(n, typeById);
+      const sameHidden = !!n.hidden === hidden;
+      const sameName = n.data.displayName === disp.displayName;
+      const sameAccent = !!n.data.layerAccent === !!disp.layerAccent;
+      if (sameHidden && sameName && sameAccent) return n;
+      return {
+        ...n,
+        hidden,
+        data: {
+          ...n.data,
+          displayName: disp.displayName,
+          layerAccent: disp.layerAccent,
+        },
+      };
+    });
+  }, [nodes, currentGroupId, activeCompositionId]);
 
   // Scope trail for the breadcrumb row: project name at root, then one
   // crumb per group down to the current scope.
@@ -4061,20 +4839,74 @@ function EffectsShell({
       chain.unshift({ id: g.id, name: g.data.name });
       cur = g.data.parentId;
     }
+    const activeComp = compositions.find((c) => c.id === activeCompositionId);
+    // Project crumb (PROJECT_CRUMB_ID) opens the Project view; the
+    // composition crumb (id:null) is the comp's root scope; then the group
+    // chain. See NodeEditor's onNavigateScope / onOpenProject handling.
     return [
-      { id: null, name: currentProject?.name ?? "Untitled" },
+      { id: PROJECT_CRUMB_ID, name: currentProject?.name ?? "Untitled" },
+      { id: null, name: activeComp?.name ?? "Composition 1" },
       ...chain,
     ];
-  }, [nodes, currentGroupId, currentProject]);
+  }, [nodes, currentGroupId, currentProject, compositions, activeCompositionId]);
 
   // --- Layers editor wiring ------------------------------------------------
 
   // Ordered root layer chain (bottom → top) — the Layers editor renders
   // it reversed (top of stack first).
   const layerChain = useMemo(
-    () => getLayerChain(nodes, edges),
-    [nodes, edges]
+    () => getLayerChain(nodes, edges, activeCompositionId),
+    [nodes, edges, activeCompositionId]
   );
+
+  // Assets for the Assets view: bundled custom fonts (M-A2, scanned from the
+  // graph) + the external folder's media files (M-A3).
+  const projectAssets = useMemo<AssetItem[]>(() => {
+    const items: AssetItem[] = [];
+    const fonts = new Map<string, string | undefined>();
+    for (const n of nodes) {
+      for (const v of Object.values(n.data.params ?? {})) {
+        const family = (v as { family?: unknown } | null)?.family;
+        if (typeof family === "string" && family.startsWith("toolbox-custom-")) {
+          if (!fonts.has(family))
+            fonts.set(family, (v as { filename?: string }).filename);
+        }
+      }
+    }
+    for (const [family, filename] of fonts) {
+      items.push({
+        id: `font:${family}`,
+        name: filename ?? "Custom font",
+        kind: "font",
+        source: "bundled",
+        ref: family,
+      });
+    }
+    if (assetsFolder) {
+      for (const f of assetsFolder.files) {
+        const kind = kindFromExt(f.ext);
+        if (kind === "other") continue; // media only (matches native scan)
+        items.push({
+          id: `folder:${f.ref}`,
+          name: f.name,
+          kind,
+          source: "folder",
+          ref: f.ref,
+        });
+      }
+    }
+    return items;
+  }, [nodes, assetsFolder]);
+
+  // Pick an assets folder (web FSA / native dir dialog) for the Folder section.
+  const handlePickAssetsFolder = useCallback(async () => {
+    try {
+      const folder = (await platform.assets?.pick?.()) ?? null;
+      if (folder) setAssetsFolder(folder);
+    } catch {
+      // cancelled / unsupported — leave the current folder
+    }
+  }, []);
 
   const handleReorderLayers = useCallback(
     (orderedBottomToTop: string[]) => {
@@ -4176,7 +5008,24 @@ function EffectsShell({
 
   const getOutputParams = useCallback((nodeId: string) => {
     const node = nodesRef.current.find((n) => n.id === nodeId);
-    return node?.data.defType === "output" ? node.data.params : null;
+    if (!node) return null;
+    if (node.data.defType === "output") return node.data.params;
+    // Layer Output (the fixed group-output inside a layer): render the layer's
+    // interior (forcedTerminal remaps to the interior producer) using the
+    // active composition's Output settings. See #159 / M5b.
+    if (
+      node.data.defType === GROUP_OUTPUT_TYPE &&
+      (node.data.params as { fixed?: boolean })?.fixed === true
+    ) {
+      const out = nodesRef.current.find(
+        (n) =>
+          n.data.defType === "output" &&
+          !n.data.parentId &&
+          belongsToComposition(n, activeCompositionIdRef.current)
+      );
+      return out?.data.params ?? null;
+    }
+    return null;
   }, []);
 
   // The source feeding the Output node's `audio` socket, distilled to the
@@ -4259,6 +5108,20 @@ function EffectsShell({
       const canvas = canvasRef.current;
       const params = getOutputParams(nodeId);
       if (!canvas || !params) return;
+      // Layer Output: the live preview may be showing something else, so
+      // render this layer's interior to the canvas before the snapshot.
+      const node = nodesRef.current.find((n) => n.id === nodeId);
+      if (
+        node?.data.defType === GROUP_OUTPUT_TYPE &&
+        (node.data.params as { fixed?: boolean })?.fixed === true
+      ) {
+        forcedTerminalRef.current = nodeId;
+        try {
+          renderFrame(timeRef.current, fpsRef.current, false);
+        } finally {
+          forcedTerminalRef.current = null;
+        }
+      }
       const format = (params.imageFormat as string) ?? "png";
       const quality = (params.imageQuality as number) ?? 0.92;
       const base = sanitizeFilename((params.filename as string) ?? "");
@@ -4273,7 +5136,7 @@ function EffectsShell({
         useQuality ? quality : undefined
       );
     },
-    [getOutputParams]
+    [getOutputParams, renderFrame]
   );
 
   const copyImageToClipboard = useCallback(async () => {
@@ -4416,6 +5279,33 @@ function EffectsShell({
       // set Active in the UI. Cleared in the finally below.
       forcedTerminalRef.current = nodeId;
       setRecording({ mode: "offline", label: "Preparing…", progress: 0 });
+
+      // Pre-warm fonts before the frame loop. Async font loads (curated/web
+      // families fetched from the CDN) otherwise resolve mid-export, so the
+      // first frames would capture a fallback face; installed/bundled fonts are
+      // already live, making this a no-op for them. Gather every family the
+      // graph's Text nodes reference and await them, bounded so a dead CDN
+      // can't hang the export.
+      {
+        const families = new Set<string>();
+        for (const n of nodesRef.current) {
+          if (n.data?.defType !== "text") continue;
+          const params = n.data.params ?? {};
+          const fam = params.font_family;
+          if (typeof fam === "string" && fam) families.add(fam);
+          const custom = params.custom_font as { family?: string } | null | undefined;
+          if (custom?.family) families.add(custom.family);
+        }
+        if (families.size > 0) {
+          const { ensureFontLoaded } = await import("@/lib/fonts");
+          await Promise.race([
+            Promise.all([...families].map((f) => ensureFontLoaded(f))).then(
+              () => document.fonts.ready
+            ),
+            new Promise((r) => setTimeout(r, 4000)),
+          ]);
+        }
+      }
 
       const renderAt = async (frameIndex: number, _t: number) => {
         // The exporter counts from 0; offset by startFrame so the export
@@ -5110,6 +6000,10 @@ function EffectsShell({
             fps: fpsRef.current,
             width: canvasResRef.current[0],
             height: canvasResRef.current[1],
+          },
+          {
+            compositions: compositionsForSave(),
+            activeCompositionId: activeCompositionIdRef.current,
           }
         );
         const distManifest = (await fetch(
@@ -5178,7 +6072,7 @@ function EffectsShell({
         setExportAppBusy(false);
       }
     },
-    [exportApp, canvasRes, flashToast]
+    [exportApp, canvasRes, flashToast, compositionsForSave]
   );
 
   useEffect(() => {
@@ -5212,6 +6106,8 @@ function EffectsShell({
     mode: "insert" | "update",
     existingId?: string
   ): Promise<{ id: string } | null> {
+    const canvas = canvasRef.current;
+    const thumbnail = canvas ? generateThumbnail(canvas, 256) : null;
     const graph = await serializeGraph(
       nodesRef.current,
       edgesRef.current,
@@ -5226,10 +6122,13 @@ function EffectsShell({
         fps: fpsRef.current,
         width: canvasResRef.current[0],
         height: canvasResRef.current[1],
+      },
+      {
+        // Stamp the active comp's poster onto its registry entry (v5).
+        compositions: compositionsForSave(thumbnail),
+        activeCompositionId: activeCompositionIdRef.current,
       }
     );
-    const canvas = canvasRef.current;
-    const thumbnail = canvas ? generateThumbnail(canvas, 256) : null;
     setProgressStatus({ label: "saving", progress: SERIALIZE_SHARE, tone: "save" });
     if (mode === "update" && existingId) {
       const ok = await updateProjectRow(existingId, graph, thumbnail);
@@ -5432,20 +6331,32 @@ function EffectsShell({
           tone: "load",
         });
         pushGraph(getGraphSnapshot());
-        const { nodes: nextNodes, edges: nextEdges, scene, missingMedia } =
-          await deserializeGraph(
-            saved.graph,
-            (f) =>
-              setProgressStatus({
-                label: "loading",
-                progress: 1 - SERIALIZE_SHARE + f * SERIALIZE_SHARE,
-                tone: "load",
-              })
-          );
+        const {
+          nodes: nextNodes,
+          edges: nextEdges,
+          scene,
+          compositions: nextComps,
+          activeCompositionId: nextActiveComp,
+          missingMedia,
+        } = await deserializeGraph(
+          saved.graph,
+          (f) =>
+            setProgressStatus({
+              label: "loading",
+              progress: 1 - SERIALIZE_SHARE + f * SERIALIZE_SHARE,
+              tone: "load",
+            })
+        );
         setNodes(nextNodes);
         setEdges(nextEdges);
-        setCurrentGroupId(defaultScopeFor(nextNodes));
+        setCompositions(nextComps);
+        setActiveCompositionId(nextActiveComp);
+        setOpenCompositionIds(nextComps.map((c) => c.id));
+        setView("editor");
+        setAssetsFolder(null);
+        setCurrentGroupId(defaultScopeFor(nextNodes, nextActiveComp));
         setMissingMedia(missingMedia);
+        frameGraph();
         // Restore scene-level state (loop length, fps). Pre-v2 saves
         // omit `scene` entirely — leave the user's current values
         // untouched in that case. `loopFrames` can legitimately be
@@ -5482,7 +6393,7 @@ function EffectsShell({
         setProgressStatus(null);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia, frameGraph]
   );
 
   // --- Local .toolbox files (File → Save to File / Load…) ------------------
@@ -5497,6 +6408,8 @@ function EffectsShell({
   const handleSaveToFile = useCallback(async () => {
     try {
       setProgressStatus({ label: "saving", progress: 0.1, tone: "save" });
+      const canvas = canvasRef.current;
+      const thumbnailDataUrl = canvas ? generateThumbnail(canvas, 256) : null;
       const graph = await serializeGraph(
         nodesRef.current,
         edgesRef.current,
@@ -5507,10 +6420,13 @@ function EffectsShell({
           fps: fpsRef.current,
           width: canvasResRef.current[0],
           height: canvasResRef.current[1],
+        },
+        {
+          // Stamp the active comp's poster onto its registry entry (v5).
+          compositions: compositionsForSave(thumbnailDataUrl),
+          activeCompositionId: activeCompositionIdRef.current,
         }
       );
-      const canvas = canvasRef.current;
-      const thumbnailDataUrl = canvas ? generateThumbnail(canvas, 256) : null;
       const name =
         currentProject?.name ?? projectFileNameRef.current ?? "Untitled";
       const { writeProjectFile, TOOLBOX_EXTENSION } = await import(
@@ -5526,7 +6442,7 @@ function EffectsShell({
     } finally {
       setProgressStatus(null);
     }
-  }, [currentProject, flashToast]);
+  }, [currentProject, flashToast, compositionsForSave]);
 
   // Relink-modal action. Two passes, both inside the click's user
   // activation:
@@ -5628,19 +6544,31 @@ function EffectsShell({
         const { readProjectFile } = await import("@/lib/project-file");
         const { name, graph } = await readProjectFile(file);
         pushGraph(getGraphSnapshot());
-        const { nodes: nextNodes, edges: nextEdges, scene, missingMedia } =
-          await deserializeGraph(graph, (f) =>
-            setProgressStatus({
-              label: "loading",
-              progress: 0.1 + f * 0.9,
-              tone: "load",
-            })
-          );
+        const {
+          nodes: nextNodes,
+          edges: nextEdges,
+          scene,
+          compositions: nextComps,
+          activeCompositionId: nextActiveComp,
+          missingMedia,
+        } = await deserializeGraph(graph, (f) =>
+          setProgressStatus({
+            label: "loading",
+            progress: 0.1 + f * 0.9,
+            tone: "load",
+          })
+        );
         suppressNextSelectionViewFlipRef.current = true;
         setNodes(nextNodes);
         setEdges(nextEdges);
-        setCurrentGroupId(defaultScopeFor(nextNodes));
+        setCompositions(nextComps);
+        setActiveCompositionId(nextActiveComp);
+        setOpenCompositionIds(nextComps.map((c) => c.id));
+        setView("editor");
+        setAssetsFolder(null);
+        setCurrentGroupId(defaultScopeFor(nextNodes, nextActiveComp));
         setMissingMedia(missingMedia);
+        frameGraph();
         if (scene) {
           if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
           if (scene.fps !== undefined) setFps(scene.fps);
@@ -5656,6 +6584,13 @@ function EffectsShell({
           file.name.replace(/\.toolbox$/i, "") || name;
         setSaveState("saved");
         setProgressStatus({ label: "loading", progress: 1, tone: "load" });
+        // Desktop: surface the assets/ folder beside the just-opened project
+        // (main armed it when it read the file). Best-effort; web has no path.
+        try {
+          setAssetsFolder((await platform.assets?.scanCurrent?.()) ?? null);
+        } catch {
+          setAssetsFolder(null);
+        }
       } catch (e) {
         console.error("Open project file failed:", e);
         flashToast(e instanceof Error ? e.message : "Could not open project file");
@@ -5663,7 +6598,7 @@ function EffectsShell({
         setProgressStatus(null);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia, frameGraph]
   );
 
   const handleOpenProjectFile = useCallback(() => {
@@ -5762,6 +6697,25 @@ function EffectsShell({
     [signedIn, user, currentProject, findConflict, flashToast]
   );
 
+  // Project-title rename from the Project view. Cloud projects persist via
+  // handleRenameProject; a local/file project just updates its base name
+  // (a ref → bump a tick so the title re-renders).
+  const canRenameProject =
+    !currentProject || (!!user && currentProject.ownerId === user.id);
+  const handleRenameProjectName = useCallback(
+    (name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      if (currentProject) {
+        void handleRenameProject(trimmed);
+      } else {
+        projectFileNameRef.current = trimmed;
+        setProjectNameTick((n) => n + 1);
+      }
+    },
+    [currentProject, handleRenameProject]
+  );
+
   // Visibility toggle: guard on ownership (RLS would reject otherwise)
   // then open the confirm modal. The actual DB write lands inside
   // handleConfirmVisibility after the user OKs the direction.
@@ -5848,17 +6802,23 @@ function EffectsShell({
     suppressNextSelectionViewFlipRef.current = true;
     setNodes(fresh.nodes);
     setEdges(fresh.edges);
+    setCompositions([{ id: fresh.compositionId, name: "Composition 1" }]);
+    setActiveCompositionId(fresh.compositionId);
+    setOpenCompositionIds([fresh.compositionId]);
+    setView("editor");
+    setAssetsFolder(null);
     setCurrentGroupId(fresh.layerId);
     setSelectedId(null);
     setParamView("node");
     setCurrentProject(null);
     projectFileNameRef.current = null;
     setSaveState("saved");
+    frameGraph();
     // Drop any survival snapshot from a prior session — otherwise a
     // docs round-trip after File → New would resurrect the graph
     // the user explicitly walked away from.
     clearEditorSession();
-  }, [setNodes, setEdges]);
+  }, [setNodes, setEdges, frameGraph]);
 
   const handleNewProject = useCallback(() => {
     // Nothing to lose — skip the confirm.
@@ -6261,8 +7221,29 @@ function EffectsShell({
   // layouts only differ in how the pieces are arranged on screen.
   // ---------------------------------------------------------------------
   const nodeEditorJsx = (
-    <NodeEditor
-      nodes={scopedNodes}
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        minHeight: 0,
+      }}
+    >
+      <CompositionTabBar
+        tabs={openCompositionIds
+          .map((id) => compositions.find((c) => c.id === id))
+          .filter((c): c is SavedComposition => !!c)
+          .map((c) => ({ id: c.id, name: c.name }))}
+        activeId={activeCompositionId}
+        onSelect={handleSwitchComposition}
+        onClose={handleCloseComposition}
+        onCreate={handleCreateComposition}
+        onReorder={setOpenCompositionIds}
+        canClose={openCompositionIds.length > 1}
+      />
+      <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        <NodeEditor
+          nodes={scopedNodes}
       edges={edges}
       onNodesChange={onNodesChangeWithHistory}
       onEdgesChange={onEdgesChangeWithHistory}
@@ -6290,6 +7271,7 @@ function EffectsShell({
       onEditWithAINode={handleEditWithAI}
       onAddFileNode={onAddFileNode}
       onAddImageNodeFromImageGen={onAddImageNodeFromImageGen}
+      onAddAssetNode={onAddAssetNode}
       onCombineWires={handleCombineWires}
       onCutWires={handleCutWires}
       onSpliceNode={handleSpliceNode}
@@ -6301,7 +7283,9 @@ function EffectsShell({
       onScopeUp={handleScopeUp}
       breadcrumbs={breadcrumbs}
       onNavigateScope={(id) => navigateScope(id ?? undefined)}
+      onOpenProject={handleOpenProjectView}
       atRoot={currentGroupId == null}
+      frameSignal={frameGraphSignal}
       viewportOverlay={
         inspectIds.length > 0
           ? inspectIds.map((id) => {
@@ -6318,8 +7302,34 @@ function EffectsShell({
             })
           : null
       }
+        />
+      </div>
+    </div>
+  );
+
+  // The Project view replaces the node editor while active. The preview /
+  // timeline keep rendering the last-active composition (decision 4).
+  const projectViewJsx = (
+    <ProjectView
+      projectName={
+        currentProject?.name ?? projectFileNameRef.current ?? "Untitled"
+      }
+      canRenameProject={canRenameProject}
+      compositions={compositions}
+      activeId={activeCompositionId}
+      assets={projectAssets}
+      assetsFolderName={assetsFolder?.name ?? null}
+      onPickAssetsFolder={handlePickAssetsFolder}
+      onRenameProject={handleRenameProjectName}
+      onEnter={handleEnterComposition}
+      onCreate={handleCreateComposition}
+      onDelete={handleDeleteComposition}
+      onDuplicate={handleDuplicateComposition}
+      onRename={handleRenameComposition}
+      onReorder={handleReorderCompositions}
     />
   );
+  const editorPanelJsx = view === "project" ? projectViewJsx : nodeEditorJsx;
 
   // Single 0..1 fraction for the queue item currently rendering. Offline
   // encoders (WebCodecs / ffmpeg) report it per frame via `recording`.
@@ -6362,12 +7372,20 @@ function EffectsShell({
       key={editTarget ? `edit:${editTarget.groupId}` : "generate"}
       signedIn={signedIn}
       editTarget={editTarget ? { name: editTarget.name } : null}
+      transcript={editTranscript}
+      onClearTranscript={handleClearEditTranscript}
       onSubmit={editTarget ? handleEditGroup : handleGenerateRecipe}
       onClose={() => {
         setEditTarget(null);
         setParamView("node");
       }}
       onOpenPreferences={() => setUserPrefsOpen(true)}
+    />
+  ) : paramView === "assets" ? (
+    <AssetsView
+      assets={projectAssets}
+      folderName={assetsFolder?.name ?? null}
+      onPickFolder={handlePickAssetsFolder}
     />
   ) : (
     <ParamPanel
@@ -6689,6 +7707,10 @@ function EffectsShell({
             prev.map((n) => (n.selected ? { ...n, selected: false } : n))
           );
           setParamView("load");
+        }}
+        onOpenAssets={() => {
+          suppressNextSelectionViewFlipRef.current = true;
+          setParamView("assets");
         }}
         onOpenProjectFile={handleOpenProjectFile}
         onSaveToFile={handleSaveToFile}
@@ -7082,30 +8104,71 @@ function EffectsShell({
                 }
               }
             }
+            // Motion-path anchor = the transform's position (translate +
+            // pivot), so the current-frame diamond coincides with the gizmo's
+            // pivot marker. Pivot is read at the playhead (rarely animated).
+            const mpPivotX = effective("pivotX", 0.5);
+            const mpPivotY = effective("pivotY", 0.5);
+            const txConst =
+              typeof activeTransformNode.data.params.translateX === "number"
+                ? activeTransformNode.data.params.translateX
+                : 0;
+            const tyConst =
+              typeof activeTransformNode.data.params.translateY === "number"
+                ? activeTransformNode.data.params.translateY
+                : 0;
             return (
-              <TransformGizmo
-                canvas={canvasRef.current}
-                pivotX={effective("pivotX", 0.5)}
-                pivotY={effective("pivotY", 0.5)}
-                translateX={effective("translateX", 0)}
-                translateY={effective("translateY", 0)}
-                scaleX={effective("scaleX", 1)}
-                scaleY={effective("scaleY", 1)}
-                rotate={effective("rotate", 0)}
-                boundsMin={boundsMin}
-                boundsMax={boundsMax}
-                onChange={(patch) => {
-                  const id = activeTransformNode.id;
-                  // Single coalescing key for the whole drag so a 60-
-                  // frame gizmo manipulation yields one undo entry,
-                  // not one-per-(param × frame).
-                  const key = `gizmo:${id}`;
-                  for (const [k, v] of Object.entries(patch)) {
-                    if (typeof v === "number")
-                      onParamChange(id, k, v, key);
+              <>
+                <TransformGizmo
+                  canvas={canvasRef.current}
+                  pivotX={mpPivotX}
+                  pivotY={mpPivotY}
+                  translateX={effective("translateX", 0)}
+                  translateY={effective("translateY", 0)}
+                  scaleX={effective("scaleX", 1)}
+                  scaleY={effective("scaleY", 1)}
+                  rotate={effective("rotate", 0)}
+                  boundsMin={boundsMin}
+                  boundsMax={boundsMax}
+                  onChange={(patch) => {
+                    const id = activeTransformNode.id;
+                    // Single coalescing key for the whole drag so a 60-
+                    // frame gizmo manipulation yields one undo entry,
+                    // not one-per-(param × frame).
+                    const key = `gizmo:${id}`;
+                    for (const [k, v] of Object.entries(patch)) {
+                      if (typeof v === "number")
+                        onParamChange(id, k, v, key);
+                    }
+                  }}
+                />
+                <MotionPathOverlay
+                  canvas={canvasRef.current}
+                  xBlock={animMap?.["translateX"]}
+                  yBlock={animMap?.["translateY"]}
+                  xConst={txConst}
+                  yConst={tyConst}
+                  toCenter={(x, y) => ({ cx: x + mpPivotX, cy: y + mpPivotY })}
+                  fromCenter={(cx, cy) => ({
+                    xVal: cx - mpPivotX,
+                    yVal: cy - mpPivotY,
+                  })}
+                  aspectCorrect
+                  currentTick={currentTick}
+                  ticksPerFrame={ticksPerFrame}
+                  onPointDrag={(tick, xVal, yVal) =>
+                    onMotionPathPointChange(
+                      activeTransformNode.id,
+                      "translateX",
+                      "translateY",
+                      tick,
+                      xVal,
+                      yVal,
+                      `motionpath:${activeTransformNode.id}`
+                    )
                   }
-                }}
-              />
+                />
+              </>
             );
           })()}
           {/* Shape-primitive handles (Circle, Rectangle, …) — move the
@@ -7147,22 +8210,63 @@ function EffectsShell({
               solvedSize,
             };
             const { cx, cy, hx, hy } = adapter.read(get, env);
+            const mp = adapter.motionPath;
+            const mpToCenter =
+              mp?.toCenter ?? ((x: number, y: number) => ({ cx: x, cy: y }));
+            const mpFromCenter =
+              mp?.fromCenter ??
+              ((cx2: number, cy2: number) => ({ xVal: cx2, yVal: cy2 }));
             return (
-              <PrimitiveGizmo
-                canvas={canvasRef.current}
-                cx={cx}
-                cy={cy}
-                hx={hx}
-                hy={hy}
-                anchorResize={adapter.anchorResize}
-                onChange={(patch) => {
-                  const id = node.id;
-                  const key = `gizmo:${id}`;
-                  for (const [name, value] of adapter.write(patch, env)) {
-                    onParamChange(id, name, value, key);
-                  }
-                }}
-              />
+              <>
+                <PrimitiveGizmo
+                  canvas={canvasRef.current}
+                  cx={cx}
+                  cy={cy}
+                  hx={hx}
+                  hy={hy}
+                  anchorResize={adapter.anchorResize}
+                  onChange={(patch) => {
+                    const id = node.id;
+                    const key = `gizmo:${id}`;
+                    for (const [name, value] of adapter.write(patch, env)) {
+                      onParamChange(id, name, value, key);
+                    }
+                  }}
+                />
+                {mp && (
+                  <MotionPathOverlay
+                    canvas={canvasRef.current}
+                    xBlock={animMap?.[mp.x]}
+                    yBlock={animMap?.[mp.y]}
+                    xConst={
+                      typeof node.data.params[mp.x] === "number"
+                        ? (node.data.params[mp.x] as number)
+                        : 0.5
+                    }
+                    yConst={
+                      typeof node.data.params[mp.y] === "number"
+                        ? (node.data.params[mp.y] as number)
+                        : 0.5
+                    }
+                    toCenter={mpToCenter}
+                    fromCenter={mpFromCenter}
+                    aspectCorrect={false}
+                    currentTick={currentTick}
+                    ticksPerFrame={ticksPerFrame}
+                    onPointDrag={(tick, xVal, yVal) =>
+                      onMotionPathPointChange(
+                        node.id,
+                        mp.x,
+                        mp.y,
+                        tick,
+                        xVal,
+                        yVal,
+                        `motionpath:${node.id}`
+                      )
+                    }
+                  />
+                )}
+              </>
             );
           })()}
           {/* Gradient handles — linear endpoints (line + 2 dots) or the
@@ -7411,7 +8515,7 @@ function EffectsShell({
             >
               {timelineLayoutTab === "params"
                 ? paramPanelJsx
-                : nodeEditorJsx}
+                : editorPanelJsx}
             </section>
           </div>
         ) : (
@@ -7424,7 +8528,7 @@ function EffectsShell({
                 ...PANEL_FRAME,
               }}
             >
-              {nodeEditorJsx}
+              {editorPanelJsx}
             </section>
 
             <Divider

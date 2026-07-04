@@ -2,13 +2,12 @@ import type {
   ImageValue,
   InputSocketDef,
   NodeDefinition,
-  PointsValue,
   RenderContext,
   SocketType,
   SplineValue,
 } from "@/engine/types";
 import { ensureZoneState, type SimZoneKind } from "./simulation-start";
-import { ensurePointArray, pointsFromArray } from "@/engine/points";
+import { EMPTY_POINTS } from "@/engine/points";
 
 // Simulation Zone — End half. Paired with a Simulation Start via a
 // shared `zone_id` param.
@@ -98,7 +97,7 @@ export const simulationEndNode: NodeDefinition = {
     const kind = ((params.kind as string) ?? "image") as SimZoneKind;
     if (!zoneId) {
       if (kind === "points") {
-        return { primary: pointsFromArray([]) satisfies PointsValue };
+        return { primary: EMPTY_POINTS };
       }
       if (kind === "spline") {
         return {
@@ -148,17 +147,13 @@ export const simulationEndNode: NodeDefinition = {
 
     if (state.kind === "points") {
       if (skip || !stateInput || stateInput.kind !== "points") {
-        return {
-          primary: pointsFromArray(state.points) satisfies PointsValue,
-        };
+        return { primary: state.value };
       }
-      // CPU array swap: the input is already a fresh array produced this
-      // frame, so we can just retain it. No copy needed — the state
-      // reference IS the new authoritative value.
-      state.points = ensurePointArray(stateInput);
-      return {
-        primary: pointsFromArray(state.points) satisfies PointsValue,
-      };
+      // Retain the input by reference: it's a fresh, immutable PointsValue
+      // produced by the zone's compute this frame, so the state reference
+      // IS the new authoritative value — no copy or conversion needed.
+      state.value = stateInput;
+      return { primary: state.value };
     }
 
     // spline

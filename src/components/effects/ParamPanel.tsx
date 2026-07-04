@@ -2145,7 +2145,8 @@ function ParamRow({
     param.type === "video_file" ||
     param.type === "image_sequence" ||
     param.type === "model_file" ||
-    param.type === "lut_file";
+    param.type === "lut_file" ||
+    param.type === "csv_file";
 
   const labelEl = (
     <span

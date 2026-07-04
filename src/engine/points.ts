@@ -111,6 +111,11 @@ export function pointsFromArray(pts: Point[]): PointsValue {
 // Idempotent and cheap on re-call. Call this in any UI/inspector path
 // that iterates `value.points` directly.
 export function ensurePointArray(p: PointsValue): Point[] {
+  // Empty value: the view is already `[]`. Return it WITHOUT the
+  // `p.points = out` rebuild below — that assignment would throw on the
+  // frozen shared `EMPTY_POINTS` sentinel (emitted by e.g. an empty
+  // simulation zone). Behaviour-identical to the rebuild for count 0.
+  if (p.count === 0) return p.points;
   if (builtFor.get(p) === p.count && p.points.length === p.count) {
     return p.points;
   }

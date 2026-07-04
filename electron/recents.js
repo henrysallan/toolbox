@@ -8,6 +8,7 @@ const { app, ipcMain } = require("electron");
 const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
+const { recordOpenedToolbox } = require("./assets");
 
 const MAX = 30;
 
@@ -70,6 +71,7 @@ function registerRecentsHandlers() {
     }
     entry.lastOpened = Date.now();
     await writeList(list);
+    recordOpenedToolbox(p);
     return {
       bytes: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
       name: entry.name,

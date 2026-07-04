@@ -98,6 +98,11 @@ export default function EffectNode({
   }, []);
 
   const isQueue = data.defType === "render-queue";
+  // A Layer Output (the fixed group-output inside a layer) gets the Output
+  // node's render buttons too, so you can render a layer from inside it (#159).
+  const isLayerOutput =
+    data.defType === "group-output" &&
+    (data.params as { fixed?: boolean } | undefined)?.fixed === true;
 
   // Render Queue nodes draw an inline progress bar per item row.
   // EffectsApp broadcasts the batch state on `render-queue-progress`
@@ -203,8 +208,17 @@ export default function EffectNode({
     <div
       style={{
         minWidth: isQueue ? 300 : 200,
-        background: "#18181b",
-        border: `1px solid ${selected ? "#60a5fa" : data.error ? "#ef4444" : "#3f3f46"}`,
+        // Layer nodes + their boundary nodes get a faint blue wash (#159).
+        background: data.layerAccent ? "#171b24" : "#18181b",
+        border: `1px solid ${
+          selected
+            ? "#60a5fa"
+            : data.error
+              ? "#ef4444"
+              : data.layerAccent
+                ? "#39507a"
+                : "#3f3f46"
+        }`,
         borderRadius: 6,
         fontFamily:
           'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
@@ -250,6 +264,41 @@ export default function EffectNode({
           {formatMs(evalMs)}
         </div>
       )}
+      {!!data.aiAuthored && (
+        <button
+          className="nodrag"
+          title="Edit with AI"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            window.dispatchEvent(
+              new CustomEvent("ai-edit-node", { detail: { nodeId: id } })
+            );
+          }}
+          style={{
+            position: "absolute",
+            // Hovers just above the node's top-right corner.
+            top: -12,
+            right: -8,
+            width: 20,
+            height: 20,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 999,
+            background: "#1a1430",
+            border: "1px solid #6d28d9",
+            cursor: "pointer",
+            padding: 0,
+            zIndex: 5,
+            boxShadow: "0 1px 4px rgba(0,0,0,0.45)",
+          }}
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="#a78bfa" aria-hidden>
+            <path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z" />
+          </svg>
+        </button>
+      )}
       <div
         style={{
           padding: "6px 8px",
@@ -269,7 +318,7 @@ export default function EffectNode({
             gap: 6,
           }}
         >
-          {data.name}
+          {data.displayName ?? data.name}
           <button
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {
@@ -428,6 +477,22 @@ export default function EffectNode({
                 window.dispatchEvent(
                   new CustomEvent("effect-node-toggle", {
                     detail: { id, kind: "autolayoutAddItem" },
+                  })
+                )
+              }
+            />
+          )}
+          {data.defType === "expression" && (
+            <HeaderToggle
+              on={false}
+              label="+"
+              title="Add input variable"
+              activeBg="#374151"
+              activeFg="#e5e7eb"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("effect-node-toggle", {
+                    detail: { id, kind: "exprAddInput" },
                   })
                 )
               }
@@ -741,7 +806,7 @@ export default function EffectNode({
                     fontStyle: isVirtual ? "italic" : undefined,
                   }}
                 >
-                  {isVirtual ? "new socket" : aux.name}
+                  {isVirtual ? "new socket" : aux.label ?? aux.name}
                 </span>
               </div>
             </Fragment>
@@ -749,7 +814,7 @@ export default function EffectNode({
         })}
       </div>
 
-      {data.defType === "output" && (
+      {(data.defType === "output" || isLayerOutput) && (
         <div
           style={{
             padding: "6px 8px",

@@ -2,6 +2,7 @@ import type { Edge, Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
 import type {
   AudioFileParamValue,
+  FontParamValue,
   ImageSequenceParamValue,
   PaintParamValue,
   VideoFileParamValue,
@@ -18,6 +19,7 @@ import {
 } from "@/lib/media-relink";
 import { LAYER_TYPE } from "@/engine/groups";
 import { makeLayerNodes, newEdgeId } from "@/state/graph-ops";
+import { newCompositionId } from "@/state/graph";
 
 // Bump when the on-wire shape changes. Load path should branch on this.
 //
@@ -36,13 +38,28 @@ import { makeLayerNodes, newEdgeId } from "@/state/graph-ops";
 // "Layer 1" (see autoWrapIntoLayer) — a 1-layer project renders
 // pixel-identically to the original flat graph. Saving always writes
 // the new shape.
-export const CURRENT_SCHEMA = 4;
+//
+// v5 — compositions: a project holds an ordered list of compositions
+// (`compositions` + `activeCompositionId`), and every node carries a
+// `compositionId`. Each composition owns its own scene (resolution / fps /
+// loop). The top-level `scene` is kept as a compat mirror of the *active*
+// composition's scene, for readers that render a single project (live
+// viewer, export template, the .toolbox manifest) without parsing the
+// registry. Loading any save without a `compositions` field (≤v4, or a
+// graph-only fragment) synthesizes one "Composition 1" from `scene` and
+// tags every node into it — renders identically to the pre-composition
+// app. See specdocs/062926_compositions-and-project-view.md.
+export const CURRENT_SCHEMA = 5;
 
 export interface SavedNode {
   id: string;
   defType: string;
   // Group nesting (v3+): id of the enclosing node-group. Absent = root.
   parentId?: string;
+  // Composition (v5+): id of the composition this node belongs to. Absent
+  // on ≤v4 saves — the loader tags every node into the synthesized
+  // "Composition 1". See SavedComposition / deserializeGraph.
+  compositionId?: string;
   position: { x: number; y: number };
   // Display label. Media-source nodes are auto-named after their file,
   // and users can rename nodes — both must survive save/load. Absent on
@@ -68,6 +85,8 @@ export interface SavedNode {
   clips?: ClipBlock[];
   active?: boolean;
   bypassed?: boolean;
+  // Group was generated/edited by AI — drives the "Edit with AI" star button.
+  aiAuthored?: boolean;
 }
 
 export interface SavedEdge {
@@ -97,10 +116,37 @@ export interface SavedScene {
   height?: number;
 }
 
+// One composition (v5+): an independently-renderable layer graph with its
+// own scene settings. A project holds an ordered list of these. The nodes
+// belonging to a composition are those whose `compositionId` matches `id`.
+export interface SavedComposition {
+  id: string;
+  name: string;
+  // Per-composition render settings (resolution / fps / loop). Optional
+  // fields mirror SavedScene; absent ⇒ inherit the app defaults on load.
+  scene?: SavedScene;
+  // Poster for the Project view, captured from the canvas when a project is
+  // saved while this composition is active (a 256px jpeg data-URL). Absent
+  // until first saved in that comp.
+  thumbnail?: string;
+  // Last-edited time (epoch ms) — stamped when the comp is created/duplicated
+  // and when the project is saved while this comp is active. Shown in the
+  // Project view. Absent on older saves.
+  modifiedAt?: number;
+}
+
 export interface SavedProject {
   schemaVersion: number;
+  // v5+: the project's compositions and which one is active. Absent on
+  // ≤v4 saves (the loader synthesizes a single "Composition 1"). An
+  // explicitly empty array is honored (a zero-composition project).
+  compositions?: SavedComposition[];
+  activeCompositionId?: string;
   nodes: SavedNode[];
   edges: SavedEdge[];
+  // Compat mirror of the active composition's scene (see the v5 note at
+  // CURRENT_SCHEMA). Authoritative per-composition scenes live on
+  // `compositions[].scene`.
   scene?: SavedScene;
 }
 
@@ -121,6 +167,27 @@ async function dataUrlToBitmap(url: string): Promise<ImageBitmap> {
   const blob = await resp.blob();
   return createImageBitmap(blob);
 }
+
+// Base64 data-URL from raw bytes (used to bundle custom-font binaries). The
+// `.toolbox` writer extracts any `dataUrl` envelope into a binary asset; the
+// cloud row inlines it. Chunked to avoid blowing the call-stack on
+// String.fromCharCode(...wholeBuffer) for large files.
+function bufferToDataUrl(buffer: ArrayBuffer, mime: string): string {
+  const bytes = new Uint8Array(buffer);
+  let bin = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return `data:${mime};base64,${btoa(bin)}`;
+}
+
+// Sibling key under a node's params that carries the bundled font bytes for a
+// `control:"font"` enum (e.g. `font_family__fontbundle`). The enum value stays
+// a plain family string; this envelope rides alongside so an installed local
+// font can render on a recipient's machine. Never a runtime param — serialize
+// emits it, deserialize consumes it (registers the font) and drops it.
+const FONT_FAMILY_BUNDLE_SUFFIX = "__fontbundle";
 
 // --- param serialization -------------------------------------------------
 
@@ -156,9 +223,55 @@ async function serializeParams(
     } else if (p.type === "file" && val instanceof ImageBitmap) {
       out[key] = { kind: "file", dataUrl: await bitmapToDataUrl(val) };
     } else if (p.type === "font") {
-      // FontFace refs don't survive a page reload — drop custom fonts on
-      // save. On load the text node falls back to the `font_family` enum.
-      out[key] = null;
+      // Bundle the custom font's bytes if we still hold them (the upload path
+      // retains the ArrayBuffer keyed by the synthetic family). The `.toolbox`
+      // writer extracts the `dataUrl` into a binary asset; the cloud row
+      // inlines it. No retained buffer (a curated family, or a font loaded
+      // from a pre-bundling save) ⇒ drop, falling back to the family enum.
+      const fv = val as FontParamValue | null;
+      const buffer = fv?.family
+        ? (await import("@/lib/fonts")).getCustomFontBuffer(fv.family)
+        : undefined;
+      out[key] =
+        fv && buffer
+          ? {
+              kind: "font",
+              family: fv.family,
+              filename: fv.filename,
+              axes: fv.axes,
+              dataUrl: bufferToDataUrl(buffer, "font/ttf"),
+            }
+          : null;
+    } else if (p.type === "enum" && p.control === "font") {
+      // Font-family picker. The value stays a plain family string (back-compat
+      // with the old enum). For PORTABILITY we also bundle the font's bytes
+      // when we can read them — an installed local font won't render on a
+      // recipient's machine, so we embed it under a sibling bundle key.
+      // Curated/web families resolve by name everywhere, so they get no bundle
+      // (getCustomFontBuffer/isLocalFamily both miss). Best-effort: a font whose
+      // bytes are unreadable (sandboxed/commercial) falls back to name-reference.
+      out[key] = val;
+      const family = typeof val === "string" ? val : "";
+      if (family) {
+        const fontsMod = await import("@/lib/fonts");
+        // Already-registered bytes (uploaded, or re-registered from a prior
+        // bundle on load) take the cheap path; otherwise read the installed
+        // font's bytes via the Local Font Access API.
+        let buffer: ArrayBuffer | undefined = fontsMod.getCustomFontBuffer(family);
+        if (!buffer && fontsMod.isLocalFamily(family)) {
+          const bytes = await (
+            await import("@/lib/local-fonts")
+          ).getLocalFontBytes(family);
+          buffer = bytes ?? undefined;
+        }
+        if (buffer) {
+          out[`${key}${FONT_FAMILY_BUNDLE_SUFFIX}`] = {
+            kind: "font",
+            family,
+            dataUrl: bufferToDataUrl(buffer, "font/ttf"),
+          };
+        }
+      }
     } else if (p.type === "video_file") {
       // Live <video> elements + ObjectURLs can't round-trip through JSON.
       // Persist an identity envelope instead so load can auto-relink the
@@ -240,6 +353,22 @@ async function deserializeParams(
   const def = getNodeDef(defType);
   const out: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(params)) {
+    // Font-family byte bundle (sibling of a `control:"font"` enum). Register
+    // the font under its saved family so the plain family string resolves
+    // identically on this machine, then drop it — it's never a runtime param.
+    if (key.endsWith(FONT_FAMILY_BUNDLE_SUFFIX)) {
+      const env = val as { dataUrl?: string; family?: string } | null;
+      if (env?.dataUrl && env.family) {
+        try {
+          const buffer = await (await fetch(env.dataUrl)).arrayBuffer();
+          const { registerCustomFontFromBuffer } = await import("@/lib/fonts");
+          await registerCustomFontFromBuffer(buffer, { family: env.family });
+        } catch {
+          // Unreadable bundle — the family falls back to name-reference.
+        }
+      }
+      continue;
+    }
     const p = def?.params.find((x) => x.name === key);
     if (!p) {
       out[key] = val;
@@ -266,8 +395,26 @@ async function deserializeParams(
         out[key] = null;
       }
     } else if (p.type === "font") {
-      // Always null on load — user re-uploads the custom font if they need it.
+      // Restore a bundled custom font (v5 / assets): decode the bytes and
+      // re-register under the saved family so the Text param resolves
+      // identically. Pre-bundling saves stored `null` ⇒ fall back to the
+      // family enum (unchanged).
+      const env = val as
+        | { kind?: string; dataUrl?: string; family?: string; filename?: string }
+        | null;
       out[key] = null;
+      if (env?.kind === "font" && env.dataUrl) {
+        try {
+          const buffer = await (await fetch(env.dataUrl)).arrayBuffer();
+          const { registerCustomFontFromBuffer } = await import("@/lib/fonts");
+          out[key] = await registerCustomFontFromBuffer(buffer, {
+            family: env.family,
+            filename: env.filename,
+          });
+        } catch {
+          // Corrupt/unreadable font — leave null (falls back to the enum).
+        }
+      }
     } else if (p.type === "image_sequence") {
       // Descriptor only — the encoded frames don't persist. Until the
       // multi-file relink re-pick UI lands, a saved sequence loads empty and
@@ -434,8 +581,36 @@ export async function serializeGraph(
   nodes: Node<NodeDataPayload>[],
   edges: Edge[],
   onProgress?: ProgressCallback,
-  scene?: SavedScene
+  scene?: SavedScene,
+  // Composition registry (v5). Callers that manage compositions pass them
+  // here; graph-only / legacy callers omit it and get a single synthesized
+  // "Composition 1" (see below). `scene` above is the active composition's
+  // scene — kept as a top-level compat mirror.
+  opts?: {
+    compositions?: SavedComposition[];
+    activeCompositionId?: string;
+  }
 ): Promise<SavedProject> {
+  // Resolve the composition registry up front so every node can be tagged.
+  // Synthesize one only when the caller supplies no registry at all (a
+  // provided array — even empty — is honored, so a zero-composition project
+  // stays legal). When synthesizing, reuse an id the nodes already carry (a
+  // loaded v5 project round-tripping) so node tags stay consistent across
+  // save/load even before the editor tracks the registry itself.
+  let compositions = opts?.compositions;
+  let activeCompositionId = opts?.activeCompositionId;
+  if (!compositions) {
+    const existingId = nodes.find((n) => n.data.compositionId)?.data
+      .compositionId;
+    const id = activeCompositionId ?? existingId ?? newCompositionId();
+    compositions = [{ id, name: "Composition 1", scene }];
+    activeCompositionId = id;
+  }
+  activeCompositionId = activeCompositionId ?? compositions[0]?.id;
+  // Compat mirror: the active composition's scene at the top level.
+  const activeScene =
+    compositions.find((c) => c.id === activeCompositionId)?.scene ?? scene;
+
   // Sequential (not Promise.all) so progress is monotonic and the main
   // thread isn't thrashed decoding many large paint canvases in parallel.
   const total = Math.max(1, nodes.length);
@@ -451,6 +626,7 @@ export async function serializeGraph(
       id: n.id,
       defType: n.data.defType,
       parentId: n.data.parentId,
+      compositionId: n.data.compositionId ?? activeCompositionId,
       position: { x: n.position.x, y: n.position.y },
       name: n.data.name,
       params: await serializeParams(n.data.defType, n.data.params),
@@ -461,6 +637,7 @@ export async function serializeGraph(
       clips: n.data.clips,
       active: n.data.active,
       bypassed: n.data.bypassed,
+      aiAuthored: n.data.aiAuthored,
     });
     const bucket = Math.floor(((i + 1) / total) * 20);
     if (bucket !== lastBucket) {
@@ -477,11 +654,14 @@ export async function serializeGraph(
   }));
   return {
     schemaVersion: CURRENT_SCHEMA,
+    compositions,
+    activeCompositionId,
     nodes: savedNodes,
     edges: savedEdges,
-    // Drop the field entirely if no scene info was provided — keeps
-    // the on-disk shape minimal for graph-only callers.
-    ...(scene !== undefined ? { scene } : {}),
+    // Top-level compat mirror of the active composition's scene. Dropped
+    // when there's no scene info, keeping the shape minimal for graph-only
+    // callers (the authoritative per-comp scenes live on `compositions`).
+    ...(activeScene !== undefined ? { scene: activeScene } : {}),
   };
 }
 
@@ -529,11 +709,35 @@ export async function deserializeGraph(
   nodes: Node<NodeDataPayload>[];
   edges: Edge[];
   scene?: SavedScene;
+  // Composition registry (v5). Always populated: ≤v4 / fieldless saves get
+  // a synthesized single "Composition 1". `scene` above mirrors the active
+  // composition's scene for callers that don't manage the registry.
+  compositions: SavedComposition[];
+  activeCompositionId: string;
   // Media params that couldn't be silently relinked (no stored handle /
   // permission not persisted). The editor surfaces these in a relink
   // banner; viewers can ignore the field.
   missingMedia: MissingMedia[];
 }> {
+  // Resolve the composition registry up front so every node can be tagged
+  // into the right composition. A present `compositions` array (even empty)
+  // is authoritative; its absence means a ≤v4 / graph-only save, which
+  // collapses into one "Composition 1" built from the project-level scene.
+  let compositions: SavedComposition[];
+  let activeCompositionId: string;
+  if (Array.isArray(saved.compositions)) {
+    compositions = saved.compositions;
+    activeCompositionId =
+      saved.activeCompositionId ?? compositions[0]?.id ?? "";
+  } else {
+    const id = newCompositionId();
+    compositions = [{ id, name: "Composition 1", scene: saved.scene }];
+    activeCompositionId = id;
+  }
+  const activeScene =
+    compositions.find((c) => c.id === activeCompositionId)?.scene ??
+    saved.scene;
+
   const total = Math.max(1, saved.nodes.length);
   const nodes: Node<NodeDataPayload>[] = [];
   const missingMedia: MissingMedia[] = [];
@@ -570,6 +774,7 @@ export async function deserializeGraph(
       data: {
         defType: sn.defType,
         parentId: sn.parentId,
+        compositionId: sn.compositionId ?? activeCompositionId,
         params,
         exposedParams: sn.exposedParams ?? [],
         controlParams: sn.controlParams ?? [],
@@ -586,6 +791,7 @@ export async function deserializeGraph(
         inputs,
         auxOutputs: auxDefs.map((a) => ({
           name: a.name,
+          label: a.label,
           type: a.type,
           disabled: a.disabled,
         })),
@@ -594,6 +800,7 @@ export async function deserializeGraph(
         terminal: def?.terminal,
         active: sn.active ?? !!def?.terminal,
         bypassed: sn.bypassed ?? false,
+        aiAuthored: sn.aiAuthored,
       },
     } satisfies Node<NodeDataPayload>);
     // Throttle to ~5% buckets — same React update-depth guard as serialize.
@@ -612,17 +819,27 @@ export async function deserializeGraph(
   }));
   // Pre-layers projects wrap into "Layer 1" on load (v4 migration) —
   // done here in the loader so every consumer (editor, live viewer,
-  // export) sees the same canonical shape. Saving writes v4.
+  // export) sees the same canonical shape. Saving writes the current shape.
+  let finalNodes = nodes;
+  let finalEdges = edges;
   if ((saved.schemaVersion ?? 1) < 4) {
     const wrapped = autoWrapIntoLayer(nodes, edges);
-    return {
-      nodes: wrapped.nodes,
-      edges: wrapped.edges,
-      scene: saved.scene,
-      missingMedia,
-    };
+    finalNodes = wrapped.nodes;
+    finalEdges = wrapped.edges;
   }
-  return { nodes, edges, scene: saved.scene, missingMedia };
+  // Tag any node the loop didn't cover — the layer/boundary nodes minted by
+  // autoWrap — into the active composition (the only one for ≤v4 saves).
+  for (const n of finalNodes) {
+    if (!n.data.compositionId) n.data.compositionId = activeCompositionId;
+  }
+  return {
+    nodes: finalNodes,
+    edges: finalEdges,
+    scene: activeScene,
+    compositions,
+    activeCompositionId,
+    missingMedia,
+  };
 }
 
 // --- thumbnail -----------------------------------------------------------

@@ -14,11 +14,13 @@ import { ensurePointArray, pointsFromArray } from "@/engine/points";
 // pivot (1,1) the bottom-right — which matches how the on-canvas gizmo is
 // positioned. The shader flips Y internally to talk to WebGL's Y-up UVs.
 //
-// Mode is polymorphic: `image` applies the affine in GL through an inverse
-// sampling shader; `spline` runs the identical math on CPU anchors so the
-// same gizmo can drive both kinds of data. Mode is an explicit param
-// rather than auto-detected so the socket types are stable before
-// connection (matches how Math switches between scalar/uv).
+// Behavior is polymorphic and derived from the connected input's type (no
+// mode param): an `image` applies the affine in GL through an inverse sampling
+// shader; a `spline` / `points` input runs the identical math on CPU geometry
+// so the same gizmo drives every kind of data. The input socket retypes itself
+// (and the output) via `resolveInputs`/`resolvePrimaryOutput` + `connectedTypes`
+// — same pattern as the Displace node. The legacy `mode` param is kept hidden
+// for save back-compat but no longer read.
 const TRANSFORM_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -38,8 +40,13 @@ void main() {
   // would land here under the forward (translate · pivot-back · rotate · scale · -pivot).
   vec2 uv = v_uv - translate;
   vec2 p = uv - pivot;
-  float c = cos(-u_angle);
-  float s = sin(-u_angle);
+  // Positive u_angle reads as clockwise on screen — matching the on-canvas
+  // gizmo (atan2 in Y-down space) and the spline/point CPU paths. v_uv is
+  // Y-UP while those frames are Y-down, so the inverse-sampling angle is NOT
+  // negated here (negating it would invert image rotation vs every other
+  // mode — the historical bug).
+  float c = cos(u_angle);
+  float s = sin(u_angle);
   p = vec2(c * p.x - s * p.y, s * p.x + c * p.y);
   p /= max(u_scale, vec2(0.0001));
   uv = p + pivot;
@@ -51,12 +58,64 @@ void main() {
   outColor = texture(u_src, uv);
 }`;
 
-function modeOf(
-  params: Record<string, unknown>
+// Map the connected input socket type to a behavior mode. spline → spline,
+// points → point, everything image-like (image / mask / element / nothing) →
+// image. Drives both socket retyping and the compute branch.
+function modeForType(
+  t: SocketType | undefined
 ): "image" | "spline" | "point" {
-  if (params.mode === "spline") return "spline";
-  if (params.mode === "point") return "point";
+  if (t === "spline") return "spline";
+  if (t === "points") return "point";
   return "image";
+}
+
+type AABB = { minX: number; minY: number; maxX: number; maxY: number };
+
+// Local-pivot remap: reinterpret a [0,1] pivot fraction against the geometry's
+// own bounding box so rotate/scale happen about the shape itself. Returns the
+// pivot unchanged when the bbox is degenerate/empty (falls back to global).
+function localPivot(
+  bbox: AABB | null,
+  pivotX: number,
+  pivotY: number
+): { x: number; y: number } {
+  if (!bbox || bbox.maxX <= bbox.minX || bbox.maxY <= bbox.minY) {
+    return { x: pivotX, y: pivotY };
+  }
+  return {
+    x: bbox.minX + pivotX * (bbox.maxX - bbox.minX),
+    y: bbox.minY + pivotY * (bbox.maxY - bbox.minY),
+  };
+}
+
+function splineAABB(s: SplineValue): AABB | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const sub of s.subpaths) {
+    for (const a of sub.anchors) {
+      if (a.pos[0] < minX) minX = a.pos[0];
+      if (a.pos[0] > maxX) maxX = a.pos[0];
+      if (a.pos[1] < minY) minY = a.pos[1];
+      if (a.pos[1] > maxY) maxY = a.pos[1];
+    }
+  }
+  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+}
+
+function pointsAABB(pts: Point[]): AABB | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of pts) {
+    if (p.pos[0] < minX) minX = p.pos[0];
+    if (p.pos[0] > maxX) maxX = p.pos[0];
+    if (p.pos[1] < minY) minY = p.pos[1];
+    if (p.pos[1] > maxY) maxY = p.pos[1];
+  }
+  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
 }
 
 export const transformNode: NodeDefinition = {
@@ -67,15 +126,12 @@ export const transformNode: NodeDefinition = {
     "Scale, rotate, and translate the input around a pivot. Works on images, splines, or points. For SDFs use the Position-pipeline operators (Position Translate / Scale / Rotate) — they compose with Position Repeat / Mirror / Polar for tile-local transforms.",
   backend: "webgl2",
   supportsTransformGizmo: true,
-  // Mode dropdown duplicated on the node header so switching data
-  // types is one click — same pattern the Collect family uses.
-  headerControl: { paramName: "mode" },
-  // Input socket is named "image" for back-compat with saved projects; in
-  // spline / point modes the label updates and the socket type retypes
-  // via resolveInputs.
+  // Input socket is named "image" for back-compat with saved projects; its
+  // type (and label) retype from whatever is connected via resolveInputs +
+  // connectedTypes — image / spline / points.
   inputs: [{ name: "image", type: "image", required: true }],
-  resolveInputs(params): InputSocketDef[] {
-    const mode = modeOf(params);
+  resolveInputs(params, ctx): InputSocketDef[] {
+    const mode = modeForType(ctx?.connectedTypes?.image);
     const t: SocketType =
       mode === "spline" ? "spline" : mode === "point" ? "points" : "image";
     const label =
@@ -91,11 +147,14 @@ export const transformNode: NodeDefinition = {
   },
   params: [
     {
+      // Legacy: behavior is now auto-derived from the connected input type.
+      // Kept (hidden) so old saved projects deserialize unchanged.
       name: "mode",
       label: "Mode",
       type: "enum",
       options: ["image", "spline", "point"],
       default: "image",
+      hidden: true,
     },
     {
       name: "translateX",
@@ -162,10 +221,24 @@ export const transformNode: NodeDefinition = {
       step: 0.001,
       default: 0.5,
     },
+    {
+      // Pivot space (splines/points only; ignored for images, which have no
+      // intrinsic bounds). Global: pivot X/Y are absolute canvas coords.
+      // Local: pivot X/Y are a fraction of the INCOMING geometry's bounding
+      // box (0.5,0.5 = its center), so rotate/scale happen about the shape
+      // wherever an upstream transform placed it — the anchor "follows" the
+      // previous transforms. Translate stays in canvas units either way.
+      name: "space",
+      label: "Pivot space",
+      type: "enum",
+      options: ["global", "local"],
+      control: "segmented",
+      default: "global",
+    },
   ],
   primaryOutput: "image",
-  resolvePrimaryOutput(params): SocketType {
-    const m = modeOf(params);
+  resolvePrimaryOutput(params, ctx): SocketType {
+    const m = modeForType(ctx?.connectedTypes?.image);
     if (m === "spline") return "spline";
     if (m === "point") return "points";
     return "image";
@@ -174,50 +247,55 @@ export const transformNode: NodeDefinition = {
   linkedPairs: [{ a: "scaleX", b: "scaleY" }],
 
   compute({ inputs, params, ctx }) {
-    const mode = modeOf(params);
+    // Behavior follows the actual input value's kind (the evaluator has
+    // already coerced it to the socket type resolveInputs picked).
+    const src = inputs["image"];
     const translateX = (params.translateX as number) ?? 0;
     const translateY = (params.translateY as number) ?? 0;
     const scaleX = Math.max(0.0001, (params.scaleX as number) ?? 1);
     const scaleY = Math.max(0.0001, (params.scaleY as number) ?? 1);
     const rotateDeg = (params.rotate as number) ?? 0;
-    const pivotX = (params.pivotX as number) ?? 0.5;
-    const pivotY = (params.pivotY as number) ?? 0.5;
+    const pivotXParam = (params.pivotX as number) ?? 0.5;
+    const pivotYParam = (params.pivotY as number) ?? 0.5;
+    // Local pivot space (splines/points): pivot is a fraction of the incoming
+    // geometry's bbox, so the shape rotates/scales about itself no matter where
+    // upstream transforms placed it. Image mode has no intrinsic bounds → global.
+    const localSpace = params.space === "local";
 
-    if (mode === "spline") {
-      const src = inputs["image"];
-      if (!src || src.kind !== "spline") {
-        // Nothing to transform — emit an empty spline so downstream nodes
-        // get a well-formed value instead of undefined.
-        const empty: SplineValue = { kind: "spline", subpaths: [] };
-        return { primary: empty };
-      }
-      const out = transformSpline(src, {
+    if (src?.kind === "spline") {
+      const p =
+        localSpace
+          ? localPivot(splineAABB(src), pivotXParam, pivotYParam)
+          : { x: pivotXParam, y: pivotYParam };
+      const out: SplineValue = transformSpline(src, {
         translateX,
         translateY,
         scaleX,
         scaleY,
         rotateDeg,
-        pivotX,
-        pivotY,
+        pivotX: p.x,
+        pivotY: p.y,
       });
       return { primary: out };
     }
 
-    if (mode === "point") {
-      const src = inputs["image"];
-      if (!src || src.kind !== "points") {
-        const empty: PointsValue = pointsFromArray([]);
-        return { primary: empty };
-      }
+    if (src?.kind === "points") {
       // Same affine math as the spline/image paths, applied per
       // point. Point's own `rotation`/`scale` compose with the
       // transform's — additive for rotation, multiplicative for
       // scale — so a Copy-to-Points chain down the line sees the
       // combined effect.
+      const pts = ensurePointArray(src);
+      const p =
+        localSpace
+          ? localPivot(pointsAABB(pts), pivotXParam, pivotYParam)
+          : { x: pivotXParam, y: pivotYParam };
+      const pivotX = p.x;
+      const pivotY = p.y;
       const rad = (rotateDeg * Math.PI) / 180;
       const cos = Math.cos(rad);
       const sin = Math.sin(rad);
-      const transformed: Point[] = ensurePointArray(src).map((p) => {
+      const transformed: Point[] = pts.map((p) => {
         const dx = (p.pos[0] - pivotX) * scaleX;
         const dy = (p.pos[1] - pivotY) * scaleY;
         const rx = cos * dx - sin * dy;
@@ -237,7 +315,6 @@ export const transformNode: NodeDefinition = {
     }
 
     const output = ctx.allocImage();
-    const src = inputs["image"];
     if (!src || src.kind !== "image") {
       ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output };
@@ -257,7 +334,11 @@ export const transformNode: NodeDefinition = {
       );
       gl.uniform2f(gl.getUniformLocation(prog, "u_scale"), scaleX, scaleY);
       gl.uniform1f(gl.getUniformLocation(prog, "u_angle"), angle);
-      gl.uniform2f(gl.getUniformLocation(prog, "u_pivot"), pivotX, pivotY);
+      gl.uniform2f(
+        gl.getUniformLocation(prog, "u_pivot"),
+        pivotXParam,
+        pivotYParam
+      );
     });
 
     return { primary: output };

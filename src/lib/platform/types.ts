@@ -94,10 +94,42 @@ export interface Platform {
     open(path: string): Promise<{ bytes: ArrayBuffer; name: string } | null>;
     remove(path: string): Promise<void>;
   };
+
+  /** External assets folders (the `assets/` next to a .toolbox, or a folder the
+   *  user picks). Capability-gated: desktop auto-scans the sibling folder; web
+   *  (and desktop) can pick one. See specdocs/062926_assets.md. */
+  assets?: {
+    /** The `assets/` folder beside the most-recently-opened .toolbox (desktop).
+     *  null when none exists or no .toolbox was opened this session. */
+    scanCurrent?(): Promise<AssetsFolderHandle | null>;
+    /** Let the user choose an assets folder (web FSA / native dir dialog).
+     *  null = cancelled / unsupported (non-Chromium web). */
+    pick?(): Promise<AssetsFolderHandle | null>;
+  };
 }
 
 export interface LocalRecent {
   path: string;
   name: string;
   lastOpened: number;
+}
+
+/** One file inside an assets folder. `ref` is an opaque handle passed back to
+ *  `read()` — a native absolute path, or the entry name on web. */
+export interface AssetFileRef {
+  ref: string;
+  name: string;
+  ext: string;
+  size?: number;
+}
+
+/** An external assets folder (the `assets/` beside a .toolbox on desktop, or a
+ *  user-picked folder), abstracted over native FS and the File System Access
+ *  API. `files` is a snapshot; bytes are read lazily via `read`. */
+export interface AssetsFolderHandle {
+  readonly name: string;
+  readonly files: AssetFileRef[];
+  read(
+    ref: string
+  ): Promise<{ bytes: ArrayBuffer; name: string; type: string } | null>;
 }

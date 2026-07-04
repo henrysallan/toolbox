@@ -7,6 +7,7 @@ import {
   SelectionMode,
   ViewportPortal,
   useReactFlow,
+  useNodesInitialized,
   type Connection,
   type Edge,
   type Node,
@@ -70,7 +71,18 @@ interface Props {
   // Modifier-drag + clipboard actions. All optional; NodeEditor hides the
   // features it can't perform.
   onDuplicateOnDrag?: (nodeId: string) => void;
-  onDetachNode?: (nodeId: string) => void;
+  // Strip every edge from the node. `bridge` (resolved by findDetachBridge)
+  // is present when the node was cleanly inline — the parent should then
+  // reconnect its neighbors (A→C) so the chain heals as the node leaves.
+  onDetachNode?: (
+    nodeId: string,
+    bridge?: {
+      source: string;
+      sourceHandle: string;
+      target: string;
+      targetHandle: string;
+    } | null
+  ) => void;
   // Right-click a node-group → "Edit with AI" (opens the AI panel in edit mode).
   onEditWithAINode?: (nodeId: string) => void;
   onDuplicateNode?: (nodeId: string) => void;
@@ -100,6 +112,11 @@ interface Props {
   // ImageBitmap in its `file` param.
   onAddImageNodeFromImageGen?: (
     payload: { privatePath: string; format: string },
+    flowPos: { x: number; y: number }
+  ) => void;
+  // Drag an asset (font / folder media) from the Assets panel onto the canvas.
+  onAddAssetNode?: (
+    payload: { source: string; kind: string; ref: string; name: string },
     flowPos: { x: number; y: number }
   ) => void;
   // Wire-gesture actions. `onCombineWires` is called when a shift-drag
@@ -140,15 +157,26 @@ interface Props {
   onUngroupSelection?: () => void;
   onDiveIntoGroup?: (groupId: string) => void;
   onScopeUp?: () => void;
-  // Scope trail for the breadcrumb row: root (project name, id null)
-  // first, current scope last. Rendered only when there is somewhere to
-  // navigate (length > 1) or always — the row itself hides at root.
+  // Scope trail for the breadcrumb row: the Project crumb
+  // (PROJECT_CRUMB_ID) first, then the composition (id null), then the
+  // group chain to the current scope. The row hides at the comp root.
   breadcrumbs?: { id: string | null; name: string }[];
   onNavigateScope?: (groupId: string | null) => void;
+  // Clicking the Project crumb opens the Project view (file browser).
+  onOpenProject?: () => void;
   // True when the editor shows root scope (the strict layer chain) —
   // the add-node popup then offers only the Layer entry.
   atRoot?: boolean;
+  // Bump to re-frame the whole graph. The `fitView` prop only fires at
+  // mount; opening a project swaps the node set in place, so the parent
+  // increments this to ask the editor to fit the freshly-loaded graph
+  // once React Flow has measured it. Initial value (0) is a no-op.
+  frameSignal?: number;
 }
+
+// Sentinel id for the leading breadcrumb crumb that opens the Project view
+// (v5). A real scope id is a node id / null; this never collides.
+export const PROJECT_CRUMB_ID = "__project__";
 
 export default function NodeEditor({
   nodes,
@@ -170,6 +198,7 @@ export default function NodeEditor({
   onPasteFragmentText,
   onAddFileNode,
   onAddImageNodeFromImageGen,
+  onAddAssetNode,
   onCombineWires,
   onCutWires,
   onWaypointDragStart,
@@ -182,7 +211,9 @@ export default function NodeEditor({
   onScopeUp,
   breadcrumbs,
   onNavigateScope,
+  onOpenProject,
   atRoot,
+  frameSignal,
 }: Props) {
   const nodeTypes = useMemo(() => ({ effect: EffectNode }), []);
   // Register JunctionEdge under the default edge type so every edge —
@@ -199,8 +230,34 @@ export default function NodeEditor({
     deleteElements,
     getViewport,
     setViewport,
+    fitView,
   } = useReactFlow();
   const flowWrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // Re-frame the whole graph when the parent bumps `frameSignal` (a project
+  // was opened / a new one seeded → the node set was swapped in place, which
+  // the mount-only `fitView` prop can't catch). `setNodes` is async and React
+  // Flow measures the new nodes a frame or two later, so we can't fit
+  // synchronously: a signal bump *arms* a pending fit, which fires once
+  // `useNodesInitialized` reports every node has real dimensions. This one
+  // effect re-runs on either signal — so it works whether or not
+  // `nodesInitialized` toggles (an already-measured / empty scope stays
+  // constant). Same envelope as the initial fit (maxZoom 1 so a tiny graph
+  // doesn't blow up; padding for breathing room). frameSignal 0 is the initial
+  // value — the `fitView` prop already frames the first mount, so it's a no-op.
+  const nodesInitialized = useNodesInitialized();
+  const pendingFrameRef = useRef(false);
+  const lastFrameSignalRef = useRef(frameSignal);
+  useEffect(() => {
+    if (frameSignal !== undefined && frameSignal !== lastFrameSignalRef.current) {
+      lastFrameSignalRef.current = frameSignal;
+      if (frameSignal !== 0) pendingFrameRef.current = true;
+    }
+    if (pendingFrameRef.current && nodesInitialized) {
+      pendingFrameRef.current = false;
+      void fitView({ maxZoom: 1, padding: 0.25 });
+    }
+  }, [frameSignal, nodesInitialized, fitView]);
 
   // Cmd/Ctrl + middle-drag = zoom about the press point. React Flow's pan is
   // driven by d3-zoom on the pane (a `mousedown` listener), so we intercept
@@ -347,6 +404,36 @@ export default function NodeEditor({
         if (selectedNodes.length === 0) return;
         e.preventDefault();
         onMergeSelection();
+        return;
+      }
+
+      // m (no modifiers) = toggle Bypass on the selected node(s). Reuses the
+      // exact `effect-node-toggle` bus the header "B" button dispatches, so
+      // the shortcut's behavior (and any eval/history side effects) matches
+      // the button. Guarded on !shiftKey so it never collides with Shift+M
+      // (wrap-in-Merge) above. Render Queue has no bypass — it produces
+      // nothing to pass through — matching the button's !isQueue gate.
+      // !e.repeat so holding the key doesn't flicker the toggle on/off.
+      if (
+        !e.repeat &&
+        !e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        (e.key === "m" || e.key === "M")
+      ) {
+        const bypassable = rfGetNodes().filter(
+          (n) => n.selected && n.data?.defType !== "render-queue"
+        );
+        if (bypassable.length === 0) return;
+        e.preventDefault();
+        for (const n of bypassable) {
+          window.dispatchEvent(
+            new CustomEvent("effect-node-toggle", {
+              detail: { id: n.id, kind: "toggleBypass" },
+            })
+          );
+        }
         return;
       }
 
@@ -542,6 +629,47 @@ export default function NodeEditor({
   // handle. onReconnectEnd consults this to decide whether to drop
   // the edge (drop on pane = detach) or leave the rewire alone.
   const reconnectSucceededRef = useRef(false);
+  // React Flow fires onConnectStart for edge reconnects too (synchronously,
+  // right after onReconnectStart), passing the wire's ANCHORED end — for our
+  // target-side reconnects that's the source output, so a reconnect drag is
+  // effectively "pull a wire out of that output." Fuzzy-connect applies to
+  // both. `reconnectOneShotRef` distinguishes a reconnect's onConnectStart
+  // from a fresh one (so a fresh drag can drop a stale reconnect edge);
+  // `reconnectingEdgeRef` holds the wire being re-routed so onConnectEnd can
+  // remove it when a Shift-drop lands the new edge on a different node.
+  const reconnectOneShotRef = useRef(false);
+  const reconnectingEdgeRef = useRef<Edge | null>(null);
+
+  // -------- Shift-drag "fuzzy connect" -----------------------------------
+  // Pull a wire off a socket with Shift held and you don't have to aim at
+  // the exact target handle: a blue ring fades in at the cursor, brightens
+  // while it's over a droppable node, and on release the wire lands on the
+  // first socket of that node which accepts the type (match or coercion).
+  //
+  // `connectDragRef` holds the source handle for the in-flight connection
+  // (set in onConnectStart, cleared in onConnectEnd); `shiftDownRef` tracks
+  // the live Shift state so the ring only shows while Shift is held; the
+  // ring itself is `connectRing` (client coords + whether it's over a node).
+  const connectDragRef = useRef<{
+    fromNodeId: string;
+    fromHandle: string;
+    handleType: "source" | "target";
+  } | null>(null);
+  const shiftDownRef = useRef(false);
+  const [connectRing, setConnectRing] = useState<{
+    x: number;
+    y: number;
+    overNode: boolean;
+  } | null>(null);
+  // Mirror of "is the ring currently shown" so the imperative handlers can
+  // skip redundant setState calls without reading React state.
+  const connectRingShownRef = useRef(false);
+  const hideConnectRing = useCallback(() => {
+    if (connectRingShownRef.current) {
+      connectRingShownRef.current = false;
+      setConnectRing(null);
+    }
+  }, []);
 
   // Decorate edges with `data.spliceHighlight` on the fly — purely UI
   // state, no need to round-trip through the parent's edges state.
@@ -784,6 +912,14 @@ export default function NodeEditor({
     ) {
       return true;
     }
+    // Transform's polymorphic source socket (see isValidConnection).
+    if (
+      targetDefType === "transform" &&
+      targetHandle === "in:image" &&
+      (src === "spline" || src === "points")
+    ) {
+      return true;
+    }
     return false;
   };
 
@@ -933,6 +1069,70 @@ export default function NodeEditor({
     };
   };
 
+  // Inverse of the splice: when a node about to be detached sits cleanly
+  // inline — exactly one incoming edge (from A) and exactly one outgoing
+  // edge (to C), and A's output type can coerce straight into C's input
+  // socket — return the bridge that heals A→C so pulling the node out
+  // doesn't break the chain. Anything ambiguous (a branch, a node with
+  // two inputs, an incompatible A→C pair) returns null and the node just
+  // detaches with dangling neighbors. Mirrors findSpliceCandidate's split
+  // of responsibility: NodeEditor resolves the handles + type-compat, the
+  // parent (onDetachNode) applies the edge surgery.
+  const findDetachBridge = (
+    nodeId: string
+  ): {
+    source: string;
+    sourceHandle: string;
+    target: string;
+    targetHandle: string;
+  } | null => {
+    const incoming = edges.filter((e) => e.target === nodeId);
+    const outgoing = edges.filter((e) => e.source === nodeId);
+    if (incoming.length !== 1 || outgoing.length !== 1) return null;
+    const inE = incoming[0];
+    const outE = outgoing[0];
+    if (!inE.sourceHandle || !outE.targetHandle) return null;
+    // Never bridge a node back to itself.
+    if (inE.source === outE.target) return null;
+
+    const sourceNode = nodes.find((n) => n.id === inE.source);
+    const targetNode = nodes.find((n) => n.id === outE.target);
+    if (!sourceNode || !targetNode) return null;
+
+    // Upstream (A) source socket type.
+    let srcType: string | null = null;
+    if (inE.sourceHandle === "out:primary") {
+      srcType = sourceNode.data.primaryOutput ?? null;
+    } else if (inE.sourceHandle.startsWith("out:aux:")) {
+      const auxName = inE.sourceHandle.slice("out:aux:".length);
+      srcType =
+        sourceNode.data.auxOutputs.find((a) => a.name === auxName)?.type ??
+        null;
+    }
+    // Downstream (C) target socket type.
+    let tgtType: string | null = null;
+    if (outE.targetHandle.startsWith("in:")) {
+      const inputName = outE.targetHandle.startsWith("in:param:")
+        ? outE.targetHandle.slice("in:param:".length)
+        : outE.targetHandle.slice("in:".length);
+      tgtType =
+        targetNode.data.inputs.find((i) => i.name === inputName)?.type ?? null;
+    }
+    if (!srcType || !tgtType) return null;
+    if (
+      !canCoerce(srcType, tgtType, targetNode.data.defType, outE.targetHandle)
+    ) {
+      return null;
+    }
+
+    return {
+      source: inE.source,
+      sourceHandle: inE.sourceHandle,
+      target: outE.target,
+      targetHandle: outE.targetHandle,
+    };
+  };
+
   // Node search popup. Opens at cursor on Shift+A (with cursor over
   // the flow) or when a wire drag is released on empty space. Closes
   // on Esc, outside click, or after picking a node.
@@ -961,6 +1161,49 @@ export default function NodeEditor({
     window.addEventListener("mousemove", onMove);
     return () => window.removeEventListener("mousemove", onMove);
   }, []);
+
+  // Drive the Shift-drag fuzzy-connect ring. Only does work while a
+  // connection is in progress (connectDragRef set); tracks the live Shift
+  // state off the pointer events (authoritative during pointer capture) and
+  // keydown/keyup (so pressing/releasing Shift without moving toggles the
+  // ring too). Whether the cursor is over a droppable node is resolved with
+  // elementFromPoint — the same DOM probe the splice detector uses — so we
+  // don't need the `nodes` array here and the listeners never churn.
+  useEffect(() => {
+    const apply = (clientX: number, clientY: number, shift: boolean) => {
+      shiftDownRef.current = shift;
+      const drag = connectDragRef.current;
+      if (!drag || !shift) {
+        hideConnectRing();
+        return;
+      }
+      const el = document.elementFromPoint(clientX, clientY) as
+        | HTMLElement
+        | null;
+      const nodeEl = el?.closest(".react-flow__node") as HTMLElement | null;
+      const id = nodeEl?.getAttribute("data-id");
+      const overNode = !!id && id !== drag.fromNodeId;
+      connectRingShownRef.current = true;
+      setConnectRing({ x: clientX, y: clientY, overNode });
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (!connectDragRef.current) return;
+      apply(e.clientX, e.clientY, e.shiftKey);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Shift" || !connectDragRef.current) return;
+      const c = lastCursorRef.current;
+      apply(c.x, c.y, e.type === "keydown");
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKey);
+    };
+  }, [hideConnectRing]);
 
   // Shift+A opens the popup when the cursor is inside the node editor
   // and no text field is focused. Skipped when any modifier other than
@@ -1147,7 +1390,101 @@ export default function NodeEditor({
     ) {
       return true;
     }
+    // Transform's source socket is polymorphic the same way — it accepts
+    // image, spline, or points and retypes itself (and its output) from
+    // connectedTypes. Allow the spline/points wire even though the socket
+    // reads "image" before anything connects.
+    if (
+      targetNode.data.defType === "transform" &&
+      c.targetHandle === "in:image" &&
+      (srcType === "spline" || srcType === "points")
+    ) {
+      return true;
+    }
     return false;
+  };
+
+  // The graph node under a client point (excluding `excludeId`), via
+  // elementFromPoint. Used by the Shift-drag fuzzy connect to resolve which
+  // node a wire was released over even when the drop point isn't on a socket.
+  const nodeAtClientPoint = (
+    x: number,
+    y: number,
+    excludeId: string
+  ): Node<NodeDataPayload> | null => {
+    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    const nodeEl = el?.closest(".react-flow__node") as HTMLElement | null;
+    const id = nodeEl?.getAttribute("data-id");
+    if (!id || id === excludeId) return null;
+    return nodes.find((n) => n.id === id) ?? null;
+  };
+
+  // Given the handle a Shift-drag started from and the node it was released
+  // over, pick the first socket on that node that will accept the wire —
+  // reusing `isValidConnection` so the exact same type-match + coercion rules
+  // (and polymorphic/virtual-socket special cases) apply as a manual wire.
+  // Sockets are tried top-to-bottom; unconnected ones win over occupied ones
+  // (onConnect replaces an occupied target, same as dropping on the handle).
+  // Returns a ready-to-apply Connection, or null if nothing accepts it.
+  const buildShiftDropConnection = (
+    drag: {
+      fromNodeId: string;
+      fromHandle: string;
+      handleType: "source" | "target";
+    },
+    targetNode: Node<NodeDataPayload>
+  ): Connection | null => {
+    if (targetNode.id === drag.fromNodeId) return null;
+
+    if (drag.handleType === "source") {
+      // Dragged off an OUTPUT → land on one of the target's inputs. Declared
+      // inputs first (in socket order, including the trailing virtual socket
+      // on group boundaries — onConnect mints a real one), then any exposed
+      // param sockets.
+      const occupied = new Set(
+        edges
+          .filter((e) => e.target === targetNode.id)
+          .map((e) => e.targetHandle)
+      );
+      const handles: string[] = [
+        ...targetNode.data.inputs
+          .filter((i) => !i.hidden)
+          .map((i) => `in:${i.name}`),
+        ...(targetNode.data.exposedParams ?? []).map((p) => `in:param:${p}`),
+      ];
+      const pick = (skipOccupied: boolean): Connection | null => {
+        for (const h of handles) {
+          if (skipOccupied && occupied.has(h)) continue;
+          const conn: Connection = {
+            source: drag.fromNodeId,
+            sourceHandle: drag.fromHandle,
+            target: targetNode.id,
+            targetHandle: h,
+          };
+          if (isValidConnection(conn)) return conn;
+        }
+        return null;
+      };
+      return pick(true) ?? pick(false);
+    }
+
+    // Dragged off an INPUT → land on one of the target's outputs.
+    const handles: string[] = [
+      ...(targetNode.data.primaryOutput ? ["out:primary"] : []),
+      ...targetNode.data.auxOutputs
+        .filter((a) => !a.disabled)
+        .map((a) => `out:aux:${a.name}`),
+    ];
+    for (const h of handles) {
+      const conn: Connection = {
+        source: targetNode.id,
+        sourceHandle: h,
+        target: drag.fromNodeId,
+        targetHandle: drag.fromHandle,
+      };
+      if (isValidConnection(conn)) return conn;
+    }
+    return null;
   };
 
   return (
@@ -1194,6 +1531,25 @@ export default function NodeEditor({
             // Malformed payload — fall through to file handling.
           }
         }
+        // Asset drag from the Assets panel (font / folder media).
+        const assetData = e.dataTransfer.getData("application/x-toolbox-asset");
+        if (assetData && onAddAssetNode) {
+          try {
+            const payload = JSON.parse(assetData) as {
+              source: string;
+              kind: string;
+              ref: string;
+              name: string;
+            };
+            if (payload.ref) {
+              e.preventDefault();
+              onAddAssetNode(payload, flowPos);
+              return;
+            }
+          } catch {
+            // Malformed payload — fall through to file handling.
+          }
+        }
         // OS file drop.
         if (!onAddFileNode) return;
         const files = e.dataTransfer.files;
@@ -1231,28 +1587,101 @@ export default function NodeEditor({
           onEdgesChange([{ type: "remove", id: oldEdge.id }]);
           onConnect(newConnection);
         }}
-        onReconnectStart={() => {
+        onConnectStart={(event, { nodeId, handleId, handleType }) => {
+          // Record the source handle so onConnectEnd knows what to wire and
+          // the ring effect knows a connection is live. Arm the ring right
+          // away if Shift is already held ("hold Shift before you drag").
+          // This fires for reconnects too — those carry the wire's anchored
+          // end, which is exactly what we want to pull from. A fresh drag
+          // (not a reconnect) drops any stale reconnect-edge reference.
+          const isReconnect = reconnectOneShotRef.current;
+          reconnectOneShotRef.current = false;
+          if (!isReconnect) reconnectingEdgeRef.current = null;
+          if (!nodeId || !handleId || !handleType) {
+            connectDragRef.current = null;
+            return;
+          }
+          connectDragRef.current = {
+            fromNodeId: nodeId,
+            fromHandle: handleId,
+            handleType: handleType as "source" | "target",
+          };
+          const me = event as MouseEvent;
+          const shift = !!me.shiftKey;
+          shiftDownRef.current = shift;
+          if (shift) {
+            const x = typeof me.clientX === "number" ? me.clientX : lastCursorRef.current.x;
+            const y = typeof me.clientY === "number" ? me.clientY : lastCursorRef.current.y;
+            connectRingShownRef.current = true;
+            setConnectRing({ x, y, overNode: false });
+          }
+        }}
+        onReconnectStart={(_event, edge) => {
           reconnectSucceededRef.current = false;
+          // Marks the onConnectStart that fires next as a reconnect and
+          // remembers which wire is being re-routed (so a Shift-drop onto a
+          // different node can remove it — see onConnectEnd).
+          reconnectOneShotRef.current = true;
+          reconnectingEdgeRef.current = edge;
         }}
         onReconnectEnd={(_event, oldEdge) => {
-          // Drop on empty pane = detach. onReconnect didn't fire,
-          // so the success flag is still false — interpret as
-          // "user wanted to disconnect" and remove the edge.
+          // Drop on empty pane = detach. onReconnect didn't fire (precise
+          // handle) and onConnectEnd's Shift-drop didn't claim it either, so
+          // the success flag is still false — remove the edge.
           if (!reconnectSucceededRef.current) {
             onEdgesChange([{ type: "remove", id: oldEdge.id }]);
           }
           reconnectSucceededRef.current = false;
+          reconnectingEdgeRef.current = null;
         }}
         onConnectEnd={(event, conn) => {
+          // The gesture is over — tear down the ring and grab the source
+          // handle we stashed at connect-start (whether this was a Shift-drag
+          // is decided by the live Shift state at release).
+          const drag = connectDragRef.current;
+          connectDragRef.current = null;
+          const shiftDrag = !!drag && shiftDownRef.current;
+          hideConnectRing();
+
+          // A precise handle drop already produced the edge via onConnect.
+          if (conn?.toHandle) return;
+
+          const ce = event as MouseEvent;
+          const x = typeof ce.clientX === "number" ? ce.clientX : 0;
+          const y = typeof ce.clientY === "number" ? ce.clientY : 0;
+
+          // Shift-drop over a node body → land on its first accepting socket
+          // (no need to hit the exact handle). Works both for a fresh wire
+          // and for re-routing an existing one (reconnect drag). Only falls
+          // through to the node-search popup when released on empty pane.
+          if (shiftDrag && drag) {
+            const targetNode = nodeAtClientPoint(x, y, drag.fromNodeId);
+            if (targetNode) {
+              const built = buildShiftDropConnection(drag, targetNode);
+              if (built) {
+                // Re-routing an existing wire: drop its old edge as we add
+                // the new one, and flag the reconnect as handled so
+                // onReconnectEnd doesn't also detach it. Mirrors the
+                // precise-reconnect path (onReconnect above).
+                const reEdge = reconnectingEdgeRef.current;
+                if (reEdge) {
+                  reconnectSucceededRef.current = true;
+                  onEdgesChange([{ type: "remove", id: reEdge.id }]);
+                }
+                onConnect(built);
+              }
+              // Over a node (compatible or not) — the gesture is consumed;
+              // don't open the search popup. If nothing accepted a reconnect
+              // drag, onReconnectEnd still detaches the old wire.
+              return;
+            }
+          }
+
           // If the wire was dropped on empty pane (toHandle is null on
           // the FinalConnectionState), pop the search so the user can
           // immediately browse a node to land the wire on. We also
           // stash the source handle details so the picked node gets
           // auto-wired from this same source.
-          if (conn?.toHandle) return;
-          const ce = event as MouseEvent;
-          const x = typeof ce.clientX === "number" ? ce.clientX : 0;
-          const y = typeof ce.clientY === "number" ? ce.clientY : 0;
           const flowPos = screenToFlowPosition({ x, y });
           onPanePointer?.(flowPos);
           let pendingWire:
@@ -1321,7 +1750,7 @@ export default function NodeEditor({
             onDuplicateOnDrag(node.id);
           }
           if ((e.metaKey || e.ctrlKey) && onDetachNode) {
-            onDetachNode(node.id);
+            onDetachNode(node.id, findDetachBridge(node.id));
           }
           setSpliceCandidate(null);
         }}
@@ -1410,6 +1839,13 @@ export default function NodeEditor({
         multiSelectionKeyCode={["Shift", "Meta", "Control"]}
         selectionKeyCode={null}
         fitView
+        // Cap the initial fit so a project with a single small node (a fresh
+        // "Layer 1", or an opened project whose graph is tiny) doesn't get
+        // blown up toward maxZoom to fill the viewport — that reads as "opened
+        // way too zoomed in". maxZoom 1 keeps nodes at natural size or smaller;
+        // fitView still zooms *out* freely to frame large graphs. Padding
+        // leaves a little breathing room around the framed content.
+        fitViewOptions={{ maxZoom: 1, padding: 0.25 }}
         // Open up the zoom + pan envelope. Defaults are minZoom 0.5
         // and a tight translateExtent that walls off the empty area
         // around the graph; both feel cramped for the kind of large
@@ -1441,6 +1877,19 @@ export default function NodeEditor({
         <PenHoverCursor
           x={penHover.x}
           y={penHover.y}
+          wrapper={flowWrapperRef.current}
+        />
+      )}
+
+      {/* Shift-drag fuzzy-connect ring. Fades in at the cursor while a wire
+          is being pulled with Shift held, and brightens over a droppable
+          node. Purely visual (pointer-events: none) — the actual landing is
+          done in onConnectEnd. */}
+      {connectRing && (
+        <ConnectDropRing
+          x={connectRing.x}
+          y={connectRing.y}
+          over={connectRing.overNode}
           wrapper={flowWrapperRef.current}
         />
       )}
@@ -1572,7 +2021,9 @@ export default function NodeEditor({
                   label={crumb.name}
                   current={isCurrent}
                   onTap={() => {
-                    if (!isCurrent) onNavigateScope(crumb.id);
+                    if (isCurrent) return;
+                    if (crumb.id === PROJECT_CRUMB_ID) onOpenProject?.();
+                    else onNavigateScope(crumb.id);
                   }}
                 />
               </Fragment>
@@ -1629,7 +2080,10 @@ export default function NodeEditor({
           onDetach={
             onDetachNode
               ? () => {
-                  onDetachNode(contextMenu.nodeId);
+                  onDetachNode(
+                    contextMenu.nodeId,
+                    findDetachBridge(contextMenu.nodeId)
+                  );
                 }
               : undefined
           }
@@ -1942,6 +2396,57 @@ function PenHoverCursor({
         background: "rgba(255, 255, 255, 0.08)",
         pointerEvents: "none",
         zIndex: 60,
+      }}
+    />
+  );
+}
+
+// Shift-drag fuzzy-connect ring. A blue circle glued to the cursor while a
+// wire is being pulled with Shift held: dim by default, brighter + glowing
+// while it's over a droppable node (so the user can see the drop will land).
+// Fades in on mount (rAF flip so the opacity transition runs) and grows /
+// brightens on the `over` state. Purely visual — pointer-events: none so it
+// never intercepts the elementFromPoint node probe underneath it.
+function ConnectDropRing({
+  x,
+  y,
+  over,
+  wrapper,
+}: {
+  x: number;
+  y: number;
+  over: boolean;
+  wrapper: HTMLDivElement | null;
+}) {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  if (!wrapper) return null;
+  const rect = wrapper.getBoundingClientRect();
+  const localX = x - rect.left;
+  const localY = y - rect.top;
+  const size = over ? 48 : 40;
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: localX,
+        top: localY,
+        width: size,
+        height: size,
+        marginLeft: -size / 2,
+        marginTop: -size / 2,
+        borderRadius: "50%",
+        border: `2px solid ${over ? "#93c5fd" : "rgba(96, 165, 250, 0.75)"}`,
+        background: over ? "rgba(96, 165, 250, 0.18)" : "rgba(96, 165, 250, 0.07)",
+        boxShadow: over ? "0 0 14px 2px rgba(96, 165, 250, 0.7)" : "none",
+        opacity: shown ? 1 : 0,
+        transition:
+          "opacity 120ms ease, width 90ms ease, height 90ms ease, margin 90ms ease, background 90ms ease, border-color 90ms ease, box-shadow 90ms ease",
+        pointerEvents: "none",
+        zIndex: 55,
       }}
     />
   );

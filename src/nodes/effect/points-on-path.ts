@@ -98,7 +98,7 @@ export const pointsOnPathNode: NodeDefinition = {
   category: "point",
   subcategory: "generator",
   description:
-    "Emit N evenly-spaced positions along a spline. Primary output is a `points` value for direct wiring into Copy-to-Points / Set Position / etc. Aux outputs: a UV texture of positions (one pixel per point) and a dot visualization image.",
+    "Emit N evenly-spaced positions along a spline. Optionally aligns each point's rotation to the path tangent or normal, so Copy-to-Points orients copies along the path. Primary output is a `points` value for direct wiring into Copy-to-Points / Set Position / etc. Aux outputs: a UV texture of positions (one pixel per point) and a dot visualization image.",
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [
@@ -111,6 +111,31 @@ export const pointsOnPathNode: NodeDefinition = {
       softMax: 64,
       step: 1,
       default: 24,
+    },
+    {
+      // Bake a per-point orientation into each point's `rotation`
+      // attribute from the path's local direction, so downstream
+      // Copy-to-Points / Transform orients each copy along the path.
+      // `tangent` = angle of travel; `normal` = perpendicular (+90°).
+      // `off` leaves rotation at 0 (back-compat with older saves).
+      name: "align",
+      label: "Align to path",
+      type: "enum",
+      options: ["off", "tangent", "normal"],
+      control: "segmented",
+      default: "off",
+    },
+    {
+      // Extra spin added on top of the aligned angle (degrees). Handy to
+      // flip a normal 180° or nudge the facing. Hidden when not aligning.
+      name: "align_offset",
+      label: "Angle offset",
+      type: "scalar",
+      min: -180,
+      max: 180,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.align !== "off",
     },
     {
       name: "dot_radius",
@@ -157,6 +182,20 @@ export const pointsOnPathNode: NodeDefinition = {
       Math.min(MAX_POINTS, Math.floor((params.count as number) ?? 24))
     );
     const positions: Array<[number, number]> = [];
+    // Per-point orientation (radians), baked from the path tangent when
+    // `align` is on. Parallel to `positions` for the sampled prefix.
+    const rotations: number[] = [];
+    // Resolve the alignment mode once. tangent is a unit vec2 in the same
+    // normalized Y-DOWN space as positions, so atan2(ty, tx) is the angle
+    // that orients a shape's +X axis along the direction of travel.
+    const align = (params.align as string) ?? "off";
+    const alignOffsetRad = (((params.align_offset as number) ?? 0) * Math.PI) / 180;
+    const angleFor = (tangent: [number, number]): number => {
+      if (align === "off") return 0;
+      const base = Math.atan2(tangent[1], tangent[0]);
+      const normal = align === "normal" ? Math.PI / 2 : 0;
+      return base + normal + alignOffsetRad;
+    };
     // Track how many of those positions are actual samples vs. the
     // zero padding below — the points aux output needs to know so it
     // doesn't emit `count` phantom points at (0,0) when the input is
@@ -174,6 +213,7 @@ export const pointsOnPathNode: NodeDefinition = {
           const t = count === 1 ? 0 : i / divisor;
           const s = sampleSplineAt(src, lengths, t);
           positions.push(s.pos);
+          rotations.push(angleFor(s.tangent));
         }
         sampledCount = count;
       }
@@ -254,9 +294,9 @@ export const pointsOnPathNode: NodeDefinition = {
     // Use `sampledCount` rather than `count` so missing / empty
     // inputs yield an empty points value instead of a stack at origin.
     const pointsValue: PointsValue = pointsFromArray(
-      positions.slice(0, sampledCount).map((p) => ({
+      positions.slice(0, sampledCount).map((p, i) => ({
         pos: [p[0], p[1]],
-        rotation: 0,
+        rotation: rotations[i],
         scale: [1, 1],
       }))
     );

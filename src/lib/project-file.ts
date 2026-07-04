@@ -162,7 +162,13 @@ export async function writeProjectFile(
         assets.push(asset);
         zip.file(`assets/${id}.${ext}`, bytes);
       }
-      node.params[key] = { kind: val.kind, asset: id } satisfies AssetRef;
+      // Swap the inline `dataUrl` for an asset reference, preserving any
+      // other envelope fields (e.g. a font's family/filename/axes) so they
+      // survive the round-trip.
+      const ref: Record<string, unknown> = { ...val };
+      delete ref.dataUrl;
+      ref.asset = id;
+      node.params[key] = ref;
     }
   }
 
@@ -249,10 +255,12 @@ export async function readProjectFile(
         continue;
       }
       const b64 = await entry.async("base64");
-      node.params[key] = {
-        kind: val.kind,
-        dataUrl: `data:${meta.mime};base64,${b64}`,
-      };
+      // Re-inline the bytes as a `dataUrl`, restoring any other envelope
+      // fields the writer preserved (font family/filename/axes, etc.).
+      const restored: Record<string, unknown> = { ...val };
+      delete restored.asset;
+      restored.dataUrl = `data:${meta.mime};base64,${b64}`;
+      node.params[key] = restored;
     }
   }
 

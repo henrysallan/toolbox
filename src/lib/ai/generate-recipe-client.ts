@@ -11,6 +11,7 @@ import { buildNodeCatalog, formatCatalogDsl } from "@/engine/node-catalog";
 import { validateGraph, type ValNode, type ValEdge } from "@/engine/graph-validation";
 import { buildRecipe, type RecipeGraph } from "@/state/recipe-builder";
 import type { GraphNode } from "@/state/graph-ops";
+import type { AiProgress } from "@/lib/ai/ai-progress";
 
 export interface GenerateResult {
   ok: boolean;
@@ -27,7 +28,11 @@ export interface PostBody {
   request: string;
   repair?: { recipe: RecipeGraph; errors: string[] };
 }
-export type PostFn = (body: PostBody) => Promise<RecipeGraph>;
+export interface PostResult {
+  recipe: RecipeGraph;
+  thinking?: string;
+}
+export type PostFn = (body: PostBody) => Promise<PostResult>;
 
 // Build issues that are worth a repair turn (structurally broke the recipe).
 // Soft issues (a non-settable/unknown param the builder just dropped) are
@@ -50,7 +55,7 @@ const defaultPost: PostFn = async (body) => {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
-  return data.recipe as RecipeGraph;
+  return { recipe: data.recipe as RecipeGraph, thinking: data.thinking as string | undefined };
 };
 
 export function buildCatalogDsl(): string {
@@ -59,7 +64,7 @@ export function buildCatalogDsl(): string {
 
 export async function generateRecipe(
   request: string,
-  opts?: { maxRepairs?: number; post?: PostFn }
+  opts?: { maxRepairs?: number; post?: PostFn; onProgress?: (e: AiProgress) => void }
 ): Promise<GenerateResult> {
   const post = opts?.post ?? defaultPost;
   const maxRepairs = opts?.maxRepairs ?? 2;
@@ -71,9 +76,12 @@ export async function generateRecipe(
 
   while (attempts <= maxRepairs) {
     attempts++;
+    opts?.onProgress?.({ kind: "request", attempt: attempts });
     let recipe: RecipeGraph;
     try {
-      recipe = await post({ catalog, request, repair });
+      const r = await post({ catalog, request, repair });
+      recipe = r.recipe;
+      if (r.thinking) opts?.onProgress?.({ kind: "thinking", attempt: attempts, text: r.thinking });
     } catch (e) {
       return { ok: false, attempts, errors: [`generation failed: ${(e as Error).message}`], warnings: [] };
     }
@@ -103,9 +111,11 @@ export async function generateRecipe(
     ];
 
     if (errors.length === 0) {
+      opts?.onProgress?.({ kind: "applied", attempt: attempts, summary: recipe.name });
       return { ok: true, attempts, recipe, nodes: built.nodes, edges: built.edges, errors: [], warnings };
     }
 
+    opts?.onProgress?.({ kind: "invalid", attempt: attempts, errors });
     last = { ok: false, attempts, recipe, errors, warnings };
     repair = { recipe, errors };
   }

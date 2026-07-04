@@ -25,7 +25,11 @@ import {
 import { paramSocketType, parseTargetHandleKind } from "@/engine/graph-helpers";
 import type { ParamType, SocketType } from "@/engine/types";
 import type { ClipBlock } from "@/engine/clips";
-import { newNodeId, type NodeDataPayload } from "@/state/graph";
+import {
+  newNodeId,
+  newCompositionId,
+  type NodeDataPayload,
+} from "@/state/graph";
 
 // A parameter promoted up to a group/layer's interface via a Group
 // Input "new socket" wired into a deep node's exposed param. The
@@ -106,6 +110,7 @@ export function makeInstanceNode(
       auxOutputs: (def.resolveAuxOutputs?.(params) ?? def.auxOutputs).map(
         (a) => ({
           name: a.name,
+          label: a.label,
           type: a.type,
           disabled: a.disabled,
         })
@@ -164,7 +169,12 @@ export function refreshNodeSockets(n: GraphNode): GraphNode {
       })),
       auxOutputs: (
         def.resolveAuxOutputs?.(n.data.params) ?? def.auxOutputs
-      ).map((a) => ({ name: a.name, type: a.type, disabled: a.disabled })),
+      ).map((a) => ({
+        name: a.name,
+        label: a.label,
+        type: a.type,
+        disabled: a.disabled,
+      })),
       primaryOutput:
         def.resolvePrimaryOutput?.(n.data.params) ?? def.primaryOutput,
     },
@@ -955,6 +965,7 @@ export function buildStarterGraph(): {
   nodes: GraphNode[];
   edges: Edge[];
   layerId: string;
+  compositionId: string;
 } {
   const output = makeInstanceNode("output", { x: 640, y: 120 });
   const { layer, groupInput, groupOutput } = makeLayerNodes("Layer 1", {
@@ -991,10 +1002,165 @@ export function buildStarterGraph(): {
       targetHandle: "in:image",
     },
   ];
+  // Tag the whole starter graph into one fresh composition so a brand-new
+  // project carries stable composition ids before its first save (v5).
+  const compositionId = newCompositionId();
+  const nodes = [output, layer, groupInput, groupOutput, imageSrc, bloom];
+  for (const n of nodes) n.data.compositionId = compositionId;
   return {
-    nodes: [output, layer, groupInput, groupOutput, imageSrc, bloom],
+    nodes,
     edges,
     layerId: layer.id,
+    compositionId,
+  };
+}
+
+// --- compositions (v5) ------------------------------------------------------
+
+// Build the graph for a brand-new (user-created) composition: an Output fed
+// by one empty "Layer 1". Unlike buildStarterGraph it carries no demo
+// content — a fresh comp is a clean slate. All nodes are tagged into the
+// given composition id.
+export function buildEmptyComposition(compositionId: string): {
+  nodes: GraphNode[];
+  edges: Edge[];
+  layerId: string;
+} {
+  const output = makeInstanceNode("output", { x: 640, y: 120 });
+  const { layer, groupInput, groupOutput } = makeLayerNodes("Layer 1", {
+    x: 340,
+    y: 120,
+  });
+  groupInput.position = { x: -260, y: 80 };
+  groupOutput.position = { x: 640, y: 80 };
+  const edges: Edge[] = [
+    {
+      id: newEdgeId(),
+      source: layer.id,
+      sourceHandle: "out:primary",
+      target: output.id,
+      targetHandle: "in:image",
+    },
+  ];
+  const nodes = [output, layer, groupInput, groupOutput];
+  for (const n of nodes) n.data.compositionId = compositionId;
+  return { nodes, edges, layerId: layer.id };
+}
+
+// Default name for the next composition: "Composition N", N chosen to avoid
+// colliding with existing "Composition <n>" names (and never below
+// count + 1).
+function nextCompositionName(existing: readonly { name: string }[]): string {
+  let max = 0;
+  for (const c of existing) {
+    const m = /^Composition (\d+)$/.exec(c.name);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return `Composition ${Math.max(max + 1, existing.length + 1)}`;
+}
+
+// Mint a new composition: a fresh id, an empty starter graph tagged into it,
+// and the registry entry (no scene — the caller seeds it from the current
+// canvas). Pure: the caller splices nodes/edges into the project and appends
+// the composition to the registry.
+export function createComposition(
+  existing: readonly { name: string }[],
+  name?: string
+): {
+  compositionId: string;
+  nodes: GraphNode[];
+  edges: Edge[];
+  layerId: string;
+  composition: { id: string; name: string };
+} {
+  const compositionId = newCompositionId();
+  const built = buildEmptyComposition(compositionId);
+  return {
+    compositionId,
+    nodes: built.nodes,
+    edges: built.edges,
+    layerId: built.layerId,
+    composition: { id: compositionId, name: name ?? nextCompositionName(existing) },
+  };
+}
+
+// Remove every node belonging to a composition (and the edges touching
+// them). The caller drops the composition from the registry separately —
+// graph-ops owns the node/edge graph, EffectsApp owns the registry array.
+// Expects nodes to be tagged (sweep untagged into the active comp first).
+export function deleteCompositionNodes(
+  nodes: GraphNode[],
+  edges: Edge[],
+  compositionId: string
+): { nodes: GraphNode[]; edges: Edge[] } {
+  const removed = new Set(
+    nodes
+      .filter((n) => n.data.compositionId === compositionId)
+      .map((n) => n.id)
+  );
+  return {
+    nodes: nodes.filter((n) => !removed.has(n.id)),
+    edges: edges.filter(
+      (e) => !removed.has(e.source) && !removed.has(e.target)
+    ),
+  };
+}
+
+// Clone every node of one composition into a new composition id (fresh node
+// ids, internal edges remapped, parentId structure preserved). Returns only
+// the clones; the caller splices them into the graph and adds the registry
+// entry. Expects the source comp's nodes to be tagged.
+export function cloneCompositionNodes(
+  nodes: GraphNode[],
+  edges: Edge[],
+  sourceCompositionId: string,
+  targetCompositionId: string
+): { nodes: GraphNode[]; edges: Edge[] } {
+  const source = nodes.filter(
+    (n) => n.data.compositionId === sourceCompositionId
+  );
+  const { nodes: clones, edges: clonedEdges } = cloneSubgraph(
+    source,
+    edges,
+    { x: 0, y: 0 }
+  );
+  for (const n of clones) {
+    n.data.compositionId = targetCompositionId;
+    n.selected = false;
+  }
+  return { nodes: clones, edges: clonedEdges };
+}
+
+// Composition membership. A node belongs to a composition when its tag
+// matches it — or when it is untagged (defensive: freshly-created runtime
+// nodes are tagged lazily, and a single-composition project may carry no
+// tags at all before its first save). Passing `undefined` disables the
+// filter entirely (legacy / whole-project callers). See
+// specdocs/062926_compositions-and-project-view.md.
+export function belongsToComposition(
+  node: GraphNode,
+  compositionId: string | undefined
+): boolean {
+  if (!compositionId) return true;
+  return !node.data.compositionId || node.data.compositionId === compositionId;
+}
+
+// Restrict a graph to one composition's nodes and the edges between them.
+// This is the eval / export seam for per-composition rendering: today a
+// no-op for the single composition that exists, and the inline point where
+// a `composition` reference (precomp) would expand later. Edges with an
+// endpoint outside the composition are dropped.
+export function resolveComposition(
+  nodes: GraphNode[],
+  edges: Edge[],
+  compositionId: string | undefined
+): { nodes: GraphNode[]; edges: Edge[] } {
+  if (!compositionId) return { nodes, edges };
+  const keep = nodes.filter((n) => belongsToComposition(n, compositionId));
+  const ids = new Set(keep.map((n) => n.id));
+  return {
+    nodes: keep,
+    edges: edges.filter((e) => ids.has(e.source) && ids.has(e.target)),
   };
 }
 
@@ -1004,17 +1170,25 @@ export function buildStarterGraph(): {
 // last feeds Output). Derived by walking the primary Output's image
 // feed down through each layer's `stack` input. Root layers not in the
 // chain (orphans from a delete/duplicate) are appended on top so the
-// Layers editor never silently hides one.
+// Layers editor never silently hides one. `compositionId`, when given,
+// scopes the chain to that composition (v5) — a no-op for a single comp.
 export function getLayerChain(
   nodes: GraphNode[],
-  edges: Edge[]
+  edges: Edge[],
+  compositionId?: string
 ): GraphNode[] {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const isRootLayer = (n: GraphNode | undefined): n is GraphNode =>
-    !!n && n.data.defType === LAYER_TYPE && !n.data.parentId;
+    !!n &&
+    n.data.defType === LAYER_TYPE &&
+    !n.data.parentId &&
+    belongsToComposition(n, compositionId);
 
   const output = nodes.find(
-    (n) => n.data.defType === "output" && !n.data.parentId
+    (n) =>
+      n.data.defType === "output" &&
+      !n.data.parentId &&
+      belongsToComposition(n, compositionId)
   );
   const sourceInto = (target: string, handle: string) =>
     edges.find((e) => e.target === target && e.targetHandle === handle)
@@ -1162,9 +1336,15 @@ export function splitLayer(
 // Which scope the editor should open after loading a graph: inside the
 // layer when there's exactly one (the common single-layer project feels
 // like the pre-layers app), at root otherwise.
-export function defaultScopeFor(nodes: GraphNode[]): string | undefined {
+export function defaultScopeFor(
+  nodes: GraphNode[],
+  compositionId?: string
+): string | undefined {
   const rootLayers = nodes.filter(
-    (n) => n.data.defType === LAYER_TYPE && !n.data.parentId
+    (n) =>
+      n.data.defType === LAYER_TYPE &&
+      !n.data.parentId &&
+      belongsToComposition(n, compositionId)
   );
   return rootLayers.length === 1 ? rootLayers[0].id : undefined;
 }

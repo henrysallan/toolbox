@@ -15,6 +15,7 @@ import {
   rasterizeSplineAux,
   resolveSplineRasterAux,
 } from "./spline-raster-aux";
+import { transformSpline } from "@/engine/spline-transform";
 
 // Generate a rectangle (optionally with rounded corners) as a closed
 // spline. Corner radius uses the same kappa approximation as Circle so
@@ -136,6 +137,19 @@ export const rectangleNode: NodeDefinition = {
       step: 0.001,
       default: 0,
     },
+    {
+      // Rotation about the rectangle's own center (originX/originY). Degrees,
+      // same +CW convention as the Transform node and gizmo. The PrimitiveGizmo
+      // box stays axis-aligned (no rotation handle yet) — this is a param-only
+      // control.
+      name: "rotate",
+      label: "Rotate (°)",
+      type: "scalar",
+      min: -360,
+      max: 360,
+      step: 0.5,
+      default: 0,
+    },
     // Bundled rasterizer — gives the primitive an `image` output so it's
     // immediately viewable.
     ...SPLINE_TRIM_PARAMS,
@@ -158,10 +172,23 @@ export const rectangleNode: NodeDefinition = {
     const h = Math.max(0, (params.height as number) ?? 0.5);
     const r = Math.max(0, (params.corner_radius as number) ?? 0);
     const subpath = makeRectSubpath(cx - w / 2, cy - h / 2, w, h, r);
-    const out: SplineValue = {
+    let out: SplineValue = {
       kind: "spline",
       subpaths: applyTrimParams([subpath], params),
     };
+    // Rotate about the rectangle's own center so the shape spins in place.
+    const rotateDeg = (params.rotate as number) ?? 0;
+    if (rotateDeg !== 0) {
+      out = transformSpline(out, {
+        translateX: 0,
+        translateY: 0,
+        scaleX: 1,
+        scaleY: 1,
+        rotateDeg,
+        pivotX: cx,
+        pivotY: cy,
+      });
+    }
     const fillImage = inputs.fill?.kind === "image" ? inputs.fill : null;
     const image = rasterizeSplineAux(ctx, nodeId, out.subpaths, params, fillImage);
     const element = buildSplineElement(ctx, out.subpaths, params);

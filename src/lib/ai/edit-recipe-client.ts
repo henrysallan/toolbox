@@ -14,6 +14,7 @@ import {
 } from "@/state/recipe-edit";
 import type { GraphNode } from "@/state/graph-ops";
 import { buildCatalogDsl } from "@/lib/ai/generate-recipe-client";
+import type { AiProgress } from "@/lib/ai/ai-progress";
 
 export interface EditResult {
   ok: boolean;
@@ -32,7 +33,11 @@ export interface EditPostBody {
   history?: { instruction: string; summary: string }[];
   repair?: { edit: RecipeEdit; errors: string[] };
 }
-export type EditPostFn = (body: EditPostBody) => Promise<RecipeEdit>;
+export interface EditPostResult {
+  edit: RecipeEdit;
+  thinking?: string;
+}
+export type EditPostFn = (body: EditPostBody) => Promise<EditPostResult>;
 
 // Apply issues that broke the patch (worth a repair turn). Soft issues (an
 // ignored unknown/non-settable param) become warnings.
@@ -58,7 +63,7 @@ const defaultPost: EditPostFn = async (body) => {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
-  return data.edit as RecipeEdit;
+  return { edit: data.edit as RecipeEdit, thinking: data.thinking as string | undefined };
 };
 
 export async function editGroupRecipe(
@@ -70,6 +75,7 @@ export async function editGroupRecipe(
     maxRepairs?: number;
     history?: { instruction: string; summary: string }[];
     post?: EditPostFn;
+    onProgress?: (e: AiProgress) => void;
   }
 ): Promise<EditResult> {
   const post = opts?.post ?? defaultPost;
@@ -83,9 +89,12 @@ export async function editGroupRecipe(
 
   while (attempts <= maxRepairs) {
     attempts++;
+    opts?.onProgress?.({ kind: "request", attempt: attempts });
     let edit: RecipeEdit;
     try {
-      edit = await post({ catalog, groupSpec, instruction, history: opts?.history, repair });
+      const r = await post({ catalog, groupSpec, instruction, history: opts?.history, repair });
+      edit = r.edit;
+      if (r.thinking) opts?.onProgress?.({ kind: "thinking", attempt: attempts, text: r.thinking });
     } catch (e) {
       return { ok: false, attempts, errors: [`edit failed: ${(e as Error).message}`], warnings: [] };
     }
@@ -116,6 +125,7 @@ export async function editGroupRecipe(
     ];
 
     if (errors.length === 0) {
+      opts?.onProgress?.({ kind: "applied", attempt: attempts, summary: edit.summary });
       return {
         ok: true,
         attempts,
@@ -127,6 +137,7 @@ export async function editGroupRecipe(
       };
     }
 
+    opts?.onProgress?.({ kind: "invalid", attempt: attempts, errors });
     last = { ok: false, attempts, summary: edit.summary, errors, warnings };
     repair = { edit, errors };
   }

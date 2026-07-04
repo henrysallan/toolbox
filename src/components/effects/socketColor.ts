@@ -10,6 +10,9 @@ export const socketColor: Record<string, string> = {
   spline: "#22d3ee",
   points: "#fb923c",
   audio: "#ec4899",
+  // String wires — lime. A plain text value, distinct from scalar's pure
+  // yellow and scalar_field's amber so a string signal reads as its own type.
+  string: "#a3e635",
   // Image groups reuse the image hue but shift darker so a grouped
   // wire reads as related-but-distinct from a single image. Spline
   // and points no longer have a distinct group type — they carry

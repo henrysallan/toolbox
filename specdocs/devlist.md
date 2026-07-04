@@ -23,8 +23,21 @@ compute shaders
 
 
 33. audio decomposition - split the audio into low meduium high, one input - audio, 3 audio outputs. AND a feature im not sure how to accomplish, audio decomp by hz + quantization to certain intervals. The idea is we could have pitch drive a parameter changing.
+    DONE (v1) — Audio Bands node (Low/Mid/High energy as 3 scalar outputs + a
+    `level` primary; crossovers, smoothing, linear/dB). Pitch via Audio Pitch node
+    (McLeod NSDF detection → quantize chromatic/scale/EDO → output MIDI / normalized /
+    Hz, with confidence gate, hold, and glide). Bands emit SCALARS, not audible
+    filtered streams (hearable band-split deferred — needs an AudioValue filter
+    extension). Shared engine/audio-analysis.ts; frame-accurate in offline export.
+    Spec: 062926_audio-analysis.md.
 
 33.1 sprectral converter for audio. Some set of various alorithims and compositions for taking audio input and outputing a scalar field that we can use to control other parameters
+    DONE (v1) — Audio Spectral node: FFT → spectrum image (a spatial scalar field,
+    coerces to mask) under linear / log / mel / waveform / chroma AND a 2D spectrogram
+    (log-frequency × scrolling time history — accumulated live, reconstructed
+    deterministically offline). Params: resolution, history rows, dB window, contrast,
+    temporal smoothing, orientation, mirror. Feed it into Displace / Copy-to-Points /
+    gradients / SDF fields. Frame-accurate offline. Spec: 062926_audio-analysis.md.
 
 
 36. the solid color node should have a vec3 output with its color. We should add a hex input int he parameters section
@@ -49,6 +62,13 @@ compute shaders
 49. Some way to do metaballs
 
 50. some way to do proximity join/merge for splines (accept multiple splines or a spline group as input)
+    DONE — extended the Proximity Join/Merge node (type "proximity-merge").
+    Adds an `op` toggle: JOIN stitches open subpath endpoints within the
+    distance into continuous / closed paths (real topology change), SNAP
+    keeps the original centroid clustering. Inputs auto-grow (always one
+    spare empty socket; a single socket also takes a Collect'd spline
+    group); animate/`t` slides parts together and commits at t=1.
+    Spec: specdocs/070126_proximity-join-merge.md. (Also covers #71.)
 
 51. Right click menu in load page (projects panel) that lets you rate a project. we should count the ratings in the database and then average them and show that rating with the number of ratings
 
@@ -72,6 +92,9 @@ compute shaders
 70. a split viewport. Add the ability to split the viewport into 2. When the view port is split, every node gets an additional toggle - so "A" for active becomes, "A1" and "A2" which designates if its active in editor 1 or 2. The split should be 2 viewports stacked. 
 
 71. Id like to add a node that basically does a proximity merge for sets of splines. like a metaball effect but more general purpose so it could work on open splines as well. Do you understand? provide a few strategies for this node
+    DONE — see #50 / the Proximity Join/Merge node. JOIN mode works on
+    open splines (endpoint stitching). Pure metaball blobbing (implicit-
+    surface fusion) is still a separate idea — see #49.
 
 72. In the window node add "Generate Node" this should open a modal that is essentially a text input field with an explanation of whats happening. It will have a loading bar for when the api call is happening, and it would be cool to actually show the node their in the modal in place of the loading bar when its done. This interface will be a Claude api call and heres how it works. We let a user ask for a node. We include in their prompt, a claude.md instruction file for exactly how to write new nodes for our system. Idk if this feature will work well as we are saying claude must 1 shot it with only the markdown file as guidance. We will see.
 
@@ -101,6 +124,16 @@ So I think you should first set up the modal, the infrastructure for calling the
 85. for curve primitives (circle and rectangle for now) 
 
 86. add point and spline compatibility to the simulation zone
+    DONE — the Simulation Start/End nodes already carried a `kind` toggle
+    (image | points | spline) with per-kind state; the missing piece was
+    that the two halves' `kind` didn't stay in sync. Now an edit to `kind`
+    on either half mirrors to its paired half (matched by shared zone_id)
+    in the same undo step, re-resolving the partner's socket types — so
+    switching a zone to points/spline no longer requires flipping both
+    dropdowns and can't silently thrash the shared state blob on a
+    mismatch. Also stored the points state as a typed-array PointsValue
+    (no per-frame Point[] round-trip through the sim hot path) and made
+    the frozen EMPTY_POINTS sentinel safe to pass through ensurePointArray.
 
 
 88. the timeline has issues when 
@@ -252,7 +285,7 @@ Ok big feature idea. I want to make the viewport much more interactive.
 
 First, for all shape primitives (lets start with just spline generators (circle rectangle etc) I want to include transform handles (like a gizmo that can manipulate the parameters of the primitive - reuse stuff from the transform node where possible)
 
-Then I want to develop a system where if we have no nodes selected, we can actually click inside the canvas area to select a node. Multiple repeated clicks in close succession dives deeper into lower layers. This probably has a ton of edge cases. we can think through some of them together first before implementing. I think it makes most sense to limit this selection process to primitive nodes that have transform handles.
+Then I want to develop a system where if we have no nodes selected, we can actually click inside the canvas area to select a node. Multiple repeated clicks in close succession dives deeper into lower layers. This probably has a ton of edge cases. we can think through some of them together first before implementing. I think it makes most sense to limit this selection process to primitive nodes that have transform handles?
 
 
 
@@ -301,7 +334,7 @@ For the layers editor, we would create a new toggle in addition to tracks and gr
 141. when editing keyframes (in tracks or layers) if the user selects multiple keyframes accross tracks/layers and option + drags them, the keys should stagger themselves with the top keys staying static and the ones underneath being staggered out/in as you drag right/left (importantly the spacing between keys on the same track should stay the same)
  
 
-144. Font database. I want to write a script to fetch and distill all the google fonts into a json. Then for text nodes we should make the font field searchable and when the user selects the font we dynamically load it. I think we use he google api once locally to build the json. Then the other concern is that for certain things we need the actual font file. not sure how to handle that. 
+144. Font database. I want to write a script to fetch and distill all the google fonts into a json. Then for text nodes we should make the font field searchable and when the user selects the font we dynamically load it. I think we use he google api once locally to build the json. Then the other concern is that for certain things we need the actual font file. not sure how to handle that - can we download and save to database and serve it? how costly to add hosted (on supabase) fonts as users request them?
 
 145. 
 
@@ -324,7 +357,7 @@ For the layers editor, we would create a new toggle in addition to tracks and gr
 
 153. a bunch of preset stackable/additive text animations. per character type on, image field for position offset, image field for opacity. 
 
-154. abstract preset node for vizualizing bezier handles basically we want to pipe in a spline, and then get new splines out that are 
+154. abstract preset node for vizualizing bezier handles basically we want to pipe in a spline, and then get new splines out that are the handle visualization. Spec: 062926_bezier-handles-node.md (Bezier Handles node: spline in → image + spline out; path overlay + handle lines + anchor/handle dots, each independently styled incl. dashed/dotted + fill).
 
 155. something we are constantly wanting to do is to use noise to push around points or spline points. We have a set position node that i feel like could do this, but it only accepts a vec2 right now. Could we add an 2 image field inputs for X and Y? Is that the right idea?
 
@@ -342,9 +375,27 @@ Additionally all nodes are the same color, but I want to make the layer nodes ti
 
 
 160. Show motion paths for animated position parameters. Lets say we keyframe a X/Y position parameter at time A and then at time B. I want to show a dashed line from the ancor point at time A that leads to the ancor point at time B. This is similar to any other motion graphics package. I want to think through together how we should implement this. The thing that sticks out to me is that for any node (a primitive node or a transform node) the XY positions are disconnected. Maybe that doesnt matter.. not sure. 
+    DONE (v1) — MotionPathOverlay draws a dashed trajectory + draggable keyframe diamonds on the selected gizmo node (Transform/SVG Source + Circle/Rectangle/Text/Auto Layout/Liquid Glass). The "disconnected XY" reality is fine: we sample both tracks independently, so the path shows whatever curvature the separate easing produces; a dot drag writes BOTH axes at that tick. No spatial bezier handles (the curve isn't editable as a bezier — only the keyframe points). Spec: specdocs/062926_motion-paths.md.
 
 161. Nodes that contain multiple subpaths (text node, spline draw, SVG source) we should be able to right click and have a option that says "decompose" and that should give us an individual spline draw node for each piece of the node. So if its a text node it should be by letter, if its spline draw its by subpath etc.
 
 162. I want to improve the landing page. Ill give you a screenshot of what we have and what i want
 
-163. I want to make it more elegant to address a motion brief that needs various exports of the same content. one idea is to make certain node streams use certain node streams. But the more i think about it the more I am thinking we need the notion of a "composition" and then above that "project" - both are higher level than a layer. Currently in the hierarchy a project name is the highest and it just shows the nodegraph of layers. Instead i want that layer view to be a composition view (which we will name). And I want there to be a higher level called the project view. The project view will actually be a new panel that replaces the node edior while active. It will essentially be a folder structure. So a .toolbox is always a full project, though it will start with 1 composition, and inside that 1 layer, and inside that the default nodes. 
+163. I want to make it more elegant to address a motion brief that needs various exports of the same content. one idea is to make certain node streams use certain node streams. But 
+
+the more i think about it the more I am thinking we need the notion of a "composition" and then above that "project" - both are higher level than a layer. Currently in the hierarchy a project name is the highest and it just shows the nodegraph of layers. Instead i want that layer view to be a composition view (which we will name). And I want there to be a higher level called the project view. The project view will actually be a new panel that replaces the node edior while active. It will essentially be a file browser showing the structure of the .toolbox project file. So a .toolbox is always a full project, though it will start with 1 composition, and inside that 1 layer, and inside that the default nodes. 
+
+so .toolbox (or a online project file) is a project.
+inside a project are compositions - this is the highest level view ie the root. 
+inside each composition, is the layers graph.
+inside each layer is a nodegraph.
+
+Let me know if you understand. 
+
+
+
+164. The ability to export a nodegraph as a single react component, maybe this involves LLM call idk.
+
+165. The sample along path outputs the tangent as a vec2, but im not sure the right way to use that on for example, a copy to points? like if i am copying a spline to every point on a path and i want to align the rotation to the tangent or the normal of the path.. how do i do that
+
+166. In the node editor when i drag a node away, it doesnt maintain the connection/relink the ajoining nodes - can we fix that?

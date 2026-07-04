@@ -83,6 +83,24 @@ declare global {
       open(path: string): Promise<{ bytes: ArrayBuffer; name: string } | null>;
       remove(path: string): Promise<void>;
     };
+
+    // ---- External assets folders (assets spec) ----------------------------
+    assets: {
+      /** Scan the assets/ folder beside the most-recently-opened .toolbox. */
+      scanCurrent(): Promise<{
+        name: string;
+        files: Array<{ ref: string; name: string; ext: string; size?: number }>;
+      } | null>;
+      /** Native folder picker → its file listing (or null if cancelled). */
+      pick(): Promise<{
+        name: string;
+        files: Array<{ ref: string; name: string; ext: string; size?: number }>;
+      } | null>;
+      /** Read one file (by ref/abs-path) from a scanned/picked assets dir. */
+      read(
+        ref: string
+      ): Promise<{ bytes: ArrayBuffer; name: string; type: string } | null>;
+    };
   }
 
   interface Window {

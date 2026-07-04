@@ -59,7 +59,7 @@ const check = (label: string, cond: boolean, detail = "") => {
 // 1. good first try
 {
   let calls = 0;
-  const post = async (_b: PostBody) => { calls++; return GOOD; };
+  const post = async (_b: PostBody) => { calls++; return { recipe: GOOD }; };
   const r = await generateRecipe("spin an image", { post });
   check("good-first-try converges in 1 attempt", r.ok && r.attempts === 1 && calls === 1, JSON.stringify({ ok: r.ok, attempts: r.attempts, errors: r.errors }));
 }
@@ -69,7 +69,7 @@ const check = (label: string, cond: boolean, detail = "") => {
   const seenRepairs: (string[] | undefined)[] = [];
   const post = async (b: PostBody) => {
     seenRepairs.push(b.repair?.errors);
-    return b.repair ? GOOD : BAD; // first call (no repair) → BAD; repair call → GOOD
+    return b.repair ? { recipe: GOOD } : { recipe: BAD };
   };
   const r = await generateRecipe("make something", { post });
   check("bad-then-good converges in 2 attempts", r.ok && r.attempts === 2, JSON.stringify({ ok: r.ok, attempts: r.attempts }));
@@ -78,7 +78,7 @@ const check = (label: string, cond: boolean, detail = "") => {
 
 // 3. always bad — gives up after maxRepairs+1 attempts, returns the errors
 {
-  const post = async (_b: PostBody) => BAD;
+  const post = async (_b: PostBody) => ({ recipe: BAD });
   const r = await generateRecipe("never works", { post, maxRepairs: 2 });
   check("always-bad gives up after 3 attempts", !r.ok && r.attempts === 3, JSON.stringify({ ok: r.ok, attempts: r.attempts }));
   check("failure surfaces the blocking error", r.errors.some((e) => /Incompatible wire/.test(e)), JSON.stringify(r.errors));

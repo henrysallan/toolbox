@@ -59,4 +59,11 @@ contextBridge.exposeInMainWorld("toolboxNative", {
     open: (p) => ipcRenderer.invoke("toolbox:recents:open", p),
     remove: (p) => ipcRenderer.invoke("toolbox:recents:remove", p),
   },
+
+  // ---- External assets folders ----
+  assets: {
+    scanCurrent: () => ipcRenderer.invoke("toolbox:assets:scanCurrent"),
+    pick: () => ipcRenderer.invoke("toolbox:assets:pick"),
+    read: (ref) => ipcRenderer.invoke("toolbox:assets:read", ref),
+  },
 });

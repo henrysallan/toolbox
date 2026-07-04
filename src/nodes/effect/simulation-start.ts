@@ -2,14 +2,13 @@ import type {
   ImageValue,
   InputSocketDef,
   NodeDefinition,
-  Point,
   PointsValue,
   RenderContext,
   SocketType,
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
-import { ensurePointArray, pointsFromArray } from "@/engine/points";
+import { clonePoints, EMPTY_POINTS } from "@/engine/points";
 
 // Simulation Zone — Start half.
 //
@@ -29,12 +28,12 @@ import { ensurePointArray, pointsFromArray } from "@/engine/points";
 //
 //   - image   : ping-pong pair of persistent GL textures. End blits
 //               its `state` input into writeTex then swaps refs.
-//   - points  : a single CPU array of Point — End just replaces it.
+//   - points  : a single typed-array PointsValue — End just replaces it.
 //   - spline  : a single CPU array of SplineSubpath — same idea.
 //
 // CPU-side kinds don't need ping-pong because their inputs are
-// already immutable arrays produced fresh each frame; the previous
-// frame's array can be dropped as soon as the new one is stored.
+// already immutable values produced fresh each frame; the previous
+// frame's value can be dropped as soon as the new one is stored.
 
 const COPY_FS = `#version 300 es
 precision highp float;
@@ -62,8 +61,11 @@ interface SimZoneStateImage {
 
 interface SimZoneStatePoints {
   kind: "points";
-  // Single CPU array — replaced wholesale each frame by End.
-  points: Point[];
+  // Single typed-array PointsValue — replaced wholesale each frame by
+  // End. Stored in the typed-array shape (not the legacy Point[] view)
+  // so the hot per-frame path never round-trips through Point objects;
+  // End retains the fresh value by reference, Start re-emits it.
+  value: PointsValue;
   initialized: boolean;
   lastTime: number;
 }
@@ -135,7 +137,7 @@ export function ensureZoneState(
   if (kind === "points") {
     const state: SimZoneStatePoints = {
       kind: "points",
-      points: [],
+      value: EMPTY_POINTS,
       initialized: false,
       lastTime: ctx.time,
     };
@@ -231,7 +233,7 @@ export const simulationStartNode: NodeDefinition = {
     if (!zoneId) {
       // Unconfigured pair — emit an empty value of the right kind.
       if (kind === "points") {
-        return { primary: pointsFromArray([]) satisfies PointsValue };
+        return { primary: EMPTY_POINTS };
       }
       if (kind === "spline") {
         return {
@@ -282,16 +284,16 @@ export const simulationStartNode: NodeDefinition = {
     if (state.kind === "points") {
       if (shouldReset) {
         const initial = inputs.initial;
-        state.points =
+        // Snapshot the seed so the zone evolves its own copy — the
+        // `initial` upstream keeps producing its (possibly cached) value.
+        state.value =
           initial && initial.kind === "points"
-            ? ensurePointArray(initial).map(clonePoint)
-            : [];
+            ? clonePoints(initial)
+            : EMPTY_POINTS;
         state.initialized = true;
       }
       state.lastTime = ctx.time;
-      return {
-        primary: pointsFromArray(state.points) satisfies PointsValue,
-      };
+      return { primary: state.value };
     }
 
     // spline
@@ -320,15 +322,6 @@ export const simulationStartNode: NodeDefinition = {
     void _nodeId;
   },
 };
-
-function clonePoint(p: Point): Point {
-  return {
-    pos: [p.pos[0], p.pos[1]],
-    rotation: p.rotation,
-    scale: p.scale ? [p.scale[0], p.scale[1]] : undefined,
-    groupIndex: p.groupIndex,
-  };
-}
 
 function cloneSubpath(sp: SplineSubpath): SplineSubpath {
   return {

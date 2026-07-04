@@ -11,11 +11,15 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type {
   AutoLayoutItem,
+  CsvFileParamValue,
+  ExprInput,
   GradientPoint,
   LutFileParamValue,
   ParamDef,
   SizeMode,
 } from "@/engine/types";
+import { parseCsv, type CsvDelimiter } from "@/engine/csv-parse";
+import { newExprInput } from "@/nodes/effect/expression";
 import {
   gpointCKey,
   gpointXKey,
@@ -708,6 +712,101 @@ export function LutFileControl({
         <LoadedFilePill thumb={<LutSwatch />} name={current.filename} />
       )}
     </div>
+  );
+}
+
+// CSV param control. Loads a .csv file OR takes pasted text; stores the raw
+// text inline (round-trips through save/load, no relink). Shows a live
+// "rows × cols" summary using the sibling hasHeader/delimiter params so the
+// user gets immediate feedback that the file parsed. The spreadsheet preview
+// is milestone 2.
+export function CsvFileControl({
+  value,
+  onChange,
+  allParams,
+}: {
+  value: unknown;
+  onChange: (v: unknown) => void;
+  allParams?: Record<string, unknown>;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const current = (value as CsvFileParamValue | null) ?? null;
+  const text = current?.text ?? "";
+  const parsed = parseCsv(current, {
+    hasHeader: allParams?.hasHeader !== false,
+    delimiter: (allParams?.delimiter as CsvDelimiter) ?? "auto",
+  });
+  const summary =
+    text.trim() === ""
+      ? "no data"
+      : `${parsed.rowCount} row${parsed.rowCount === 1 ? "" : "s"} × ${parsed.columns.length} col${parsed.columns.length === 1 ? "" : "s"}`;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".csv,text/csv,text/plain"
+        style={{ display: "none" }}
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          const t = await file.text();
+          onChange({ filename: file.name, text: t } satisfies CsvFileParamValue);
+          // Allow re-picking the same file (onChange won't fire otherwise).
+          e.target.value = "";
+        }}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <LoadFileButton
+          label="Load .csv"
+          onClick={() => inputRef.current?.click()}
+        />
+        {current?.filename && (
+          <LoadedFilePill thumb={<CsvSwatch />} name={current.filename} />
+        )}
+        <span style={{ color: "#71717a", fontSize: 10 }}>{summary}</span>
+      </div>
+      <textarea
+        value={text}
+        placeholder="or paste CSV here…"
+        spellCheck={false}
+        onChange={(e) =>
+          onChange({
+            filename: current?.filename,
+            text: e.target.value,
+          } satisfies CsvFileParamValue)
+        }
+        rows={4}
+        style={{
+          width: "100%",
+          minHeight: 64,
+          resize: "vertical",
+          background: "#0a0a0a",
+          border: "1px solid #27272a",
+          color: "#e5e7eb",
+          fontFamily: "ui-monospace, monospace",
+          fontSize: 10,
+          padding: "4px 6px",
+          boxSizing: "border-box",
+          lineHeight: 1.4,
+          whiteSpace: "pre",
+          overflowWrap: "normal",
+        }}
+      />
+    </div>
+  );
+}
+
+// Tiny grid glyph standing in for a loaded CSV.
+export function CsvSwatch({ size = 22 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 22 22" style={{ flex: "0 0 auto" }}>
+      <rect x="2.5" y="3.5" width="17" height="15" rx="2" fill="#0f172a" stroke="#334155" />
+      <line x1="2.5" y1="8.5" x2="19.5" y2="8.5" stroke="#334155" />
+      <line x1="8" y1="3.5" x2="8" y2="18.5" stroke="#334155" />
+      <line x1="13.5" y1="3.5" x2="13.5" y2="18.5" stroke="#334155" />
+    </svg>
   );
 }
 
@@ -1557,6 +1656,291 @@ export function Dropdown({
   );
 }
 
+// Searchable font picker for enum params declared with `control: "font"`.
+// Merges the user's installed (local) fonts — enumerated lazily on first open,
+// degrading to nothing on non-Chromium browsers — with the curated baseline
+// passed in `options`. The committed value is just the family-name string, so
+// it stays back-compatible with the plain `font_family` enum.
+export function FontPicker({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  // null = not yet enumerated; [] = unsupported / denied.
+  const [local, setLocal] = useState<{ family: string }[] | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(
+    null
+  );
+
+  // Load the current family's bytes (curated → Google CDN; local/system →
+  // no-op) so the trigger button previews in the right face.
+  useEffect(() => {
+    if (!value) return;
+    let cancelled = false;
+    void import("@/lib/fonts").then((m) => {
+      if (!cancelled) m.ensureFontLoaded(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [value]);
+
+  // Enumerate installed fonts on first open (queryLocalFonts needs a user
+  // gesture the first time — the click that opens us satisfies it).
+  useEffect(() => {
+    if (!open) return;
+    const el = btnRef.current;
+    if (el) {
+      const r = el.getBoundingClientRect();
+      setRect({ left: r.left, top: r.bottom + 2, width: r.width });
+    }
+    if (local === null) {
+      void import("@/lib/local-fonts").then(async (m) => {
+        const cached = m.cachedLocalFonts();
+        setLocal(cached ?? (await m.enumerateLocalFonts()));
+      });
+    }
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as globalThis.Node | null;
+      if (btnRef.current?.contains(t as globalThis.Node)) return;
+      if (popRef.current?.contains(t as globalThis.Node)) return;
+      setOpen(false);
+    };
+    // Scrolling/resizing invalidates the fixed popup position — close. (Don't
+    // close on the search input's own scroll; that bubbles through `true`
+    // capture, so we only listen on window.)
+    const onScroll = (e: Event) => {
+      if (popRef.current?.contains(e.target as globalThis.Node)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    const onResize = () => setOpen(false);
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, local]);
+
+  // Merge installed + curated (installed first), dedup by family name.
+  const merged = (() => {
+    const out: { family: string; installed: boolean }[] = [];
+    const seen = new Set<string>();
+    for (const f of local ?? []) {
+      if (seen.has(f.family)) continue;
+      seen.add(f.family);
+      out.push({ family: f.family, installed: true });
+    }
+    for (const f of options) {
+      if (seen.has(f)) continue;
+      seen.add(f);
+      out.push({ family: f, installed: false });
+    }
+    return out;
+  })();
+
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? merged.filter((m) => m.family.toLowerCase().includes(q))
+    : merged;
+  // Cap the rendered rows so a machine with thousands of fonts stays snappy;
+  // the search box is the escape hatch for anything past the cap.
+  const CAP = 300;
+  const shown = filtered.slice(0, CAP);
+  const overflow = filtered.length - shown.length;
+
+  const pick = (family: string) => {
+    onChange(family);
+    void import("@/lib/fonts").then((m) => m.ensureFontLoaded(family));
+    setOpen(false);
+    setSearch("");
+  };
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 4,
+          width: "100%",
+          height: 20,
+          background: "#0a0a0a",
+          border: `1px solid ${open ? "#3f3f46" : "#27272a"}`,
+          borderRadius: 4,
+          color: "#c4c4c8",
+          fontFamily: value ? `"${value}", inherit` : "inherit",
+          fontSize: 11,
+          padding: "0 6px",
+          cursor: "pointer",
+          boxSizing: "border-box",
+          textAlign: "left",
+        }}
+      >
+        <span
+          style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        >
+          {value || "Inter"}
+        </span>
+        <svg
+          width={8}
+          height={5}
+          viewBox="0 0 8 5"
+          style={{ flexShrink: 0, color: "#71717a" }}
+          aria-hidden
+        >
+          <polyline
+            points="1,1 4,4 7,1"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+      {open &&
+        rect &&
+        createPortal(
+          <div
+            ref={popRef}
+            style={{
+              position: "fixed",
+              left: rect.left,
+              top: rect.top,
+              width: Math.max(rect.width, 200),
+              background: "#111113",
+              border: "1px solid #27272a",
+              borderRadius: 4,
+              boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+              zIndex: 10000,
+              padding: 3,
+            }}
+          >
+            <input
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={
+                local === null
+                  ? "loading fonts…"
+                  : `search ${merged.length} fonts…`
+              }
+              style={{
+                width: "100%",
+                height: 22,
+                background: "#0a0a0a",
+                border: "1px solid #27272a",
+                borderRadius: 3,
+                color: "#e5e7eb",
+                fontFamily: "inherit",
+                fontSize: 11,
+                padding: "0 6px",
+                marginBottom: 3,
+                boxSizing: "border-box",
+                outline: "none",
+              }}
+            />
+            <div
+              className="thin-scrollbar"
+              style={{ maxHeight: 240, overflowY: "auto" }}
+            >
+              {shown.map((o) => {
+                const sel = o.family === value;
+                return (
+                  <button
+                    key={o.family}
+                    type="button"
+                    onClick={() => pick(o.family)}
+                    onMouseEnter={(e) => {
+                      if (!sel) e.currentTarget.style.background = "#18181b";
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!sel) e.currentTarget.style.background = "transparent";
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "baseline",
+                      justifyContent: "space-between",
+                      gap: 8,
+                      width: "100%",
+                      textAlign: "left",
+                      background: sel ? "#1f1f23" : "transparent",
+                      border: "none",
+                      color: sel ? "#facc15" : "#c4c4c8",
+                      // Preview each row in its own family. Installed/system
+                      // render immediately; curated render once loaded.
+                      fontFamily: `"${o.family}", sans-serif`,
+                      fontSize: 12,
+                      padding: "4px 7px",
+                      borderRadius: 3,
+                      cursor: "pointer",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    <span
+                      style={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {o.family}
+                    </span>
+                    {!o.installed && (
+                      <span
+                        style={{
+                          flexShrink: 0,
+                          color: "#52525b",
+                          fontFamily: "inherit",
+                          fontSize: 9,
+                        }}
+                      >
+                        web
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+              {shown.length === 0 && (
+                <div style={{ color: "#52525b", fontSize: 10, padding: "6px 7px" }}>
+                  no match
+                </div>
+              )}
+              {overflow > 0 && (
+                <div style={{ color: "#52525b", fontSize: 9, padding: "4px 7px" }}>
+                  +{overflow} more — refine search
+                </div>
+              )}
+            </div>
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
+
 export function menuItemStyle(active?: boolean): React.CSSProperties {
   return {
     background: active ? "#1f1f23" : "transparent",
@@ -1698,6 +2082,12 @@ export function ParamControl({
 
   if (param.type === "lut_file") {
     return <LutFileControl value={value} onChange={onChange} />;
+  }
+
+  if (param.type === "csv_file") {
+    return (
+      <CsvFileControl value={value} onChange={onChange} allParams={allParams} />
+    );
   }
 
   if (param.type === "svg_file") {
@@ -1863,6 +2253,11 @@ export function ParamControl({
         />
       );
     }
+    if (param.control === "font") {
+      return (
+        <FontPicker value={current} options={options} onChange={(v) => onChange(v)} />
+      );
+    }
     return (
       <Dropdown
         value={current}
@@ -2014,6 +2409,111 @@ export function ParamControl({
             </div>
           </div>
         ))}
+      </div>
+    );
+  }
+
+  if (param.type === "expr_inputs") {
+    const list = Array.isArray(value)
+      ? (value as ExprInput[])
+      : ((param.default as ExprInput[]) ?? []);
+    const update = (next: ExprInput[]) => onChange(next);
+    // Keep names identifier-safe so they can be used verbatim as the
+    // expression's variable names (the node also validates at compile time).
+    const sanitizeName = (raw: string) => {
+      let s = raw.replace(/[^A-Za-z0-9_$]/g, "");
+      if (/^[0-9]/.test(s)) s = "_" + s;
+      return s;
+    };
+    const removeBtn: React.CSSProperties = {
+      background: "transparent",
+      border: "1px solid #3f3f46",
+      color: "#a1a1aa",
+      fontSize: 12,
+      lineHeight: 1,
+      padding: "2px 7px",
+      borderRadius: 3,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      flexShrink: 0,
+    };
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {list.length === 0 && (
+          <div style={{ color: "#52525b" }}>(no inputs)</div>
+        )}
+        {list.map((e) => (
+          <div
+            key={e.id}
+            style={{ display: "flex", gap: 6, alignItems: "center" }}
+          >
+            <input
+              value={e.name}
+              spellCheck={false}
+              placeholder="name"
+              onChange={(ev) =>
+                update(
+                  list.map((x) =>
+                    x.id === e.id
+                      ? { ...x, name: sanitizeName(ev.target.value) }
+                      : x
+                  )
+                )
+              }
+              style={{
+                flex: 1,
+                minWidth: 0,
+                background: "#0c0c0e",
+                border: "1px solid #27272a",
+                color: "#e4e4e7",
+                borderRadius: 3,
+                padding: "3px 6px",
+                fontFamily: "inherit",
+                fontSize: 11,
+              }}
+              title="Variable name used in the expression"
+            />
+            <span
+              style={{ color: "#52525b", fontSize: 10, flexShrink: 0 }}
+              title="Value used when this input is not wired"
+            >
+              def
+            </span>
+            <NumberField
+              value={e.default ?? 1}
+              onChange={(v) =>
+                update(
+                  list.map((x) => (x.id === e.id ? { ...x, default: v } : x))
+                )
+              }
+              step={0.01}
+              width={52}
+            />
+            <button
+              onClick={() => update(list.filter((x) => x.id !== e.id))}
+              title="Remove input"
+              style={removeBtn}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button
+          onClick={() => update([...list, newExprInput(list)])}
+          style={{
+            background: "transparent",
+            border: "1px dashed #3f3f46",
+            color: "#a1a1aa",
+            fontSize: 11,
+            padding: "4px 8px",
+            borderRadius: 3,
+            cursor: "pointer",
+            fontFamily: "inherit",
+            alignSelf: "flex-start",
+          }}
+        >
+          + Add input
+        </button>
       </div>
     );
   }
