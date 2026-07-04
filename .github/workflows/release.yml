@@ -47,6 +47,23 @@ jobs:
           echo "${{ secrets.APPLE_API_KEY_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
           echo "APPLE_API_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
 
+      - name: Ensure GitHub release exists
+        # electron-builder uploads the dmg + blockmap in parallel; if the
+        # release doesn't exist yet, both race to create it and the dmg gets
+        # orphaned. Pre-creating it means both uploads just attach.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          VERSION="v$(node -p "require('./package.json').version")"
+          if gh release view "$VERSION" -R "$REPO" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists."
+          else
+            echo "Creating release $VERSION…"
+            gh release create "$VERSION" -R "$REPO" --title "$VERSION" \
+              --notes "Toolbox $VERSION — macOS desktop app (Apple Silicon, signed & notarized)."
+          fi
+
       - name: Build, sign, notarize & publish
         run: npm run desktop:publish
         env:
