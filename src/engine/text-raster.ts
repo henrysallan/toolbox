@@ -29,6 +29,8 @@ import {
   type GlyphFields,
   type TextAnimators,
 } from "@/engine/text-animators";
+import { measureSpline, sampleSplineAt } from "@/engine/spline-math";
+import type { SplineValue } from "@/engine/types";
 
 // Per-character animators + their field pixel buffers, threaded into the
 // modulated draw path. Present (non-null) forces per-character layout even when
@@ -36,6 +38,20 @@ import {
 export interface TextDrawAnim {
   animators: TextAnimators;
   fields: Partial<Record<AnimProp, ImageData | null>>;
+}
+
+// Text-on-path layout. Present (non-null) lays every glyph along `path` — a
+// spline in normalized [0,1]² Y-DOWN, mapped to canvas px — instead of the box
+// baseline, and forces the modulated per-glyph draw regardless of font axes.
+// `align`/`offset` position the run along the arc length; `side` shifts it
+// perpendicular; `flip` reverses direction. See §4 of
+// specdocs/062526_node-expansion.md.
+export interface TextPathLayout {
+  path: SplineValue;
+  align: "start" | "center" | "end";
+  offset: number; // 0..1 slide along the path
+  side: "on" | "above" | "below";
+  flip: boolean;
 }
 
 // One color stop of a text gradient fill. Structurally a subset of the
@@ -377,12 +393,182 @@ function resolveFillStyle(
   return grad;
 }
 
+// Sample a spline into a canvas-pixel arc-length table for text-on-path. The
+// spline is normalized [0,1]² Y-DOWN; each sample maps to canvas px
+// (sx*W, sy*H) and we accumulate PIXEL arc length. Doing this in px (rather
+// than the spline's normalized length, which is anisotropic on non-square
+// canvases) makes glyph advances — which are in px — map correctly to path
+// positions, and yields the glyph rotation directly with no tangent
+// conversion. The subpaths concatenate into one continuous domain (same as
+// sampleSplineAt), matching the spec's single arc-length domain.
+interface PathSampler {
+  totalPx: number;
+  at(s: number): { x: number; y: number; angle: number };
+}
+
+function buildPathSampler(
+  path: SplineValue,
+  W: number,
+  H: number,
+  samples = 512
+): PathSampler {
+  const lengths = measureSpline(path);
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const cum: number[] = [0];
+  const N = Math.max(2, samples);
+  for (let i = 0; i <= N; i++) {
+    const r = sampleSplineAt(path, lengths, i / N);
+    const x = r.pos[0] * W;
+    const y = r.pos[1] * H;
+    xs.push(x);
+    ys.push(y);
+    if (i > 0) cum.push(cum[i - 1] + Math.hypot(x - xs[i - 1], y - ys[i - 1]));
+  }
+  const totalPx = cum[cum.length - 1];
+  return {
+    totalPx,
+    at(sRaw: number) {
+      const s = Math.max(0, Math.min(totalPx, sRaw));
+      // Binary search the cumulative table for the segment containing s.
+      let lo = 1;
+      let hi = cum.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (cum[mid] < s) lo = mid + 1;
+        else hi = mid;
+      }
+      const i1 = lo;
+      const i0 = i1 - 1;
+      const segLen = cum[i1] - cum[i0] || 1e-6;
+      const f = (s - cum[i0]) / segLen;
+      const x = xs[i0] + (xs[i1] - xs[i0]) * f;
+      const y = ys[i0] + (ys[i1] - ys[i0]) * f;
+      const angle = Math.atan2(ys[i1] - ys[i0], xs[i1] - xs[i0]);
+      return { x, y, angle };
+    },
+  };
+}
+
+// Lay a single glyph run along `layout.path` (canvas-px space). Path text
+// ignores wrapping / line breaks — all lines flatten into one run joined by
+// spaces. Per glyph: advance-accumulate the arc-length position, sample the
+// path point + tangent, draw the glyph centred and rotated to the tangent,
+// shifted perpendicular by `side`. Animator glyph transforms (when `anim`)
+// stack ON TOP of the path transform (per spec). Glyphs past either end clamp
+// to the endpoint (sampleSplineAt/the px table both clamp) — AE-style
+// "clamp-and-stop".
+function drawGlyphsAlongPath(
+  canvas: HTMLCanvasElement,
+  c2d: CanvasRenderingContext2D,
+  style: TextStyle,
+  lines: string[],
+  layout: TextPathLayout,
+  maskData: ImageData | null,
+  anim: TextDrawAnim | null,
+  stroke: TextStroke | null
+): void {
+  const W = canvas.width;
+  const H = canvas.height;
+  const { size, letterSpacing } = style;
+  const sampler = buildPathSampler(layout.path, W, H);
+  const totalPx = sampler.totalPx;
+  if (totalPx <= 0) return;
+
+  const chars = Array.from(lines.join(" "));
+  const total = chars.length;
+  if (total === 0) return;
+
+  c2d.textAlign = "left";
+  (c2d as unknown as { letterSpacing?: string }).letterSpacing = "0px";
+
+  const sampleFields = (x: number, y: number): GlyphFields => {
+    const f: GlyphFields = {};
+    if (!anim) return f;
+    for (const p of FIELD_PROPS) {
+      const d = anim.fields[p];
+      if (d) f[p] = sampleMask(d, x, y, d.width, d.height);
+    }
+    return f;
+  };
+
+  // Pre-measure advances + tracking with per-glyph axis styling so the
+  // along-path spacing matches the visible glyph widths.
+  const advances: number[] = [];
+  const tracks: number[] = [];
+  let textWidth = 0;
+  for (let i = 0; i < total; i++) {
+    const t = total <= 1 ? 0 : i / (total - 1);
+    applyAxisStyling(
+      canvas, c2d, style.fontAxes, style.axesDict, t, i,
+      style.family, size, null, style.weight ?? 400, style.italic ?? false
+    );
+    const adv = c2d.measureText(chars[i]).width;
+    advances.push(adv);
+    const trk = anim ? resolveTrackingExtra(anim.animators, i, total) : 0;
+    tracks.push(trk);
+    textWidth += adv + letterSpacing + trk;
+  }
+  // Trailing inter-glyph gap doesn't count toward the visible run width.
+  textWidth -= letterSpacing + tracks[total - 1];
+
+  // Start arc-length by align, then slide by `offset` (fraction of full path).
+  let start =
+    layout.align === "start"
+      ? 0
+      : layout.align === "end"
+        ? totalPx - textWidth
+        : (totalPx - textWidth) / 2;
+  start += layout.offset * totalPx;
+
+  // Perpendicular shift. Baseline is "middle", so "on" centres the glyph on
+  // the path; above/below push it a half-em to either side.
+  const sideShift =
+    layout.side === "above" ? -size * 0.5 : layout.side === "below" ? size * 0.5 : 0;
+
+  let cursor = start;
+  for (let i = 0; i < total; i++) {
+    const t = total <= 1 ? 0 : i / (total - 1);
+    const adv = advances[i];
+    const centre = cursor + adv / 2;
+    // Flip reads from the far end and turns each glyph to face the new way.
+    const s = layout.flip ? totalPx - centre : centre;
+    const sample = sampler.at(s);
+    const angle = layout.flip ? sample.angle + Math.PI : sample.angle;
+    const mVal = maskData ? sampleMask(maskData, sample.x, sample.y, W, H) : null;
+    applyAxisStyling(
+      canvas, c2d, style.fontAxes, style.axesDict, t, i,
+      style.family, size, mVal, style.weight ?? 400, style.italic ?? false
+    );
+    c2d.save();
+    c2d.translate(sample.x, sample.y);
+    c2d.rotate(angle);
+    if (sideShift) c2d.translate(0, sideShift);
+    if (anim) {
+      const g = resolveGlyphAnim(
+        anim.animators, i, total, sampleFields(sample.x, sample.y)
+      );
+      c2d.globalAlpha = Math.max(0, Math.min(1, g.alpha));
+      if (g.color) c2d.fillStyle = g.color;
+      c2d.translate(g.offsetX, g.offsetY);
+      if (g.rotation) c2d.rotate(g.rotation);
+      if (g.scale !== 1) c2d.scale(g.scale, g.scale);
+    }
+    // Draw centred on the path point (textAlign left ⇒ shift left by half adv).
+    if (stroke) c2d.strokeText(chars[i], -adv / 2, 0);
+    c2d.fillText(chars[i], -adv / 2, 0);
+    c2d.restore();
+    cursor += adv + letterSpacing + tracks[i];
+  }
+}
+
 // Draw a block of (already wrapped) lines into the canvas, horizontally
 // aligned across areaW and vertically aligned across areaH (style.vAlign),
 // with the area's top-left at (originX, originY) — the box model. The caller owns
 // canvas sizing and clearing. `maskData`, when present, drives maskDriven
 // axes per glyph (modulated path only); it's sampled in absolute canvas
-// coordinates, so origin offsets keep mask-driven styling aligned.
+// coordinates, so origin offsets keep mask-driven styling aligned. When
+// `pathLayout` is present, glyphs lay along its spline instead of the box.
 export function drawTextBlock(
   canvas: HTMLCanvasElement,
   c2d: CanvasRenderingContext2D,
@@ -393,7 +579,8 @@ export function drawTextBlock(
   maskData: ImageData | null = null,
   originX = 0,
   originY = 0,
-  anim: TextDrawAnim | null = null
+  anim: TextDrawAnim | null = null,
+  pathLayout: TextPathLayout | null = null
 ): void {
   const { size, alignment, leading, letterSpacing } = style;
   c2d.save();
@@ -408,6 +595,17 @@ export function drawTextBlock(
     c2d.lineWidth = stroke.width;
     c2d.lineJoin = stroke.join;
     c2d.miterLimit = 2;
+  }
+
+  // Text-on-path: a wired spline (≥1 usable subpath) takes over layout,
+  // ignoring the box/wrap/vAlign model below.
+  if (
+    pathLayout &&
+    pathLayout.path.subpaths.some((sp) => sp.anchors.length >= 2)
+  ) {
+    drawGlyphsAlongPath(canvas, c2d, style, lines, pathLayout, maskData, anim, stroke);
+    c2d.restore();
+    return;
   }
 
   const lineHeight = size * leading;

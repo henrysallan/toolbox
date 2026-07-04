@@ -19,6 +19,7 @@ import {
   type TextDrawAnim,
   type TextFill,
   type TextGradientStop,
+  type TextPathLayout,
   type TextStroke,
   type TextStyle,
   type VAlign,
@@ -227,6 +228,12 @@ function computeRasterSig(
     bw: params.boxWidth,
     bh: params.boxHeight,
     w: params.wrap,
+    // Text-on-path params (path presence itself is folded in at compute).
+    pe: params.path_enabled,
+    pal: params.path_align,
+    po: params.path_offset,
+    psd: params.path_side,
+    pf: params.path_flip,
     // Variable-font axes — included so a slider drag re-rasterizes.
     v: params.font_variations,
     W,
@@ -429,7 +436,8 @@ function renderTextLayer(
   style: TextStyle,
   maskData: ImageData | null,
   targetTex: WebGLTexture,
-  anim: TextDrawAnim | null = null
+  anim: TextDrawAnim | null = null,
+  pathLayout: TextPathLayout | null = null
 ): void {
   const W = ctx.width;
   const H = ctx.height;
@@ -450,9 +458,12 @@ function renderTextLayer(
   const boxH = Math.max(1, Math.min(2, (params.boxHeight as number) ?? 1) * H);
   const originX = W / 2 - boxW / 2;
   const originY = H / 2 - boxH / 2;
-  const wrap = params.wrap === true;
+  // Path mode owns layout — no word-wrap (it flattens to one along-path run).
+  const wrap = params.wrap === true && !pathLayout;
   const lines = wrapStyledLines(canvas, c2d, style, wrap ? boxW : undefined);
-  drawTextBlock(canvas, c2d, style, lines, boxW, boxH, maskData, originX, originY, anim);
+  drawTextBlock(
+    canvas, c2d, style, lines, boxW, boxH, maskData, originX, originY, anim, pathLayout
+  );
 
   const gl = ctx.gl;
   gl.bindTexture(gl.TEXTURE_2D, targetTex);
@@ -473,12 +484,14 @@ function rasterize(
   maskData: ImageData | null = null,
   // Active text animators (per-char transform/alpha/color) + their field
   // pixel buffers. Null when no animator is enabled.
-  anim: TextDrawAnim | null = null
+  anim: TextDrawAnim | null = null,
+  // Text-on-path layout. Null when no path is wired / path mode is off.
+  pathLayout: TextPathLayout | null = null
 ): void {
   // Single-pass canvas2d render for all (non-image-fill) modes — the
   // mask-driven mode samples per char, not per pixel.
   const style = styleFromParams(params, family);
-  renderTextLayer(ctx, state, params, style, maskData, state.rasterTex, anim);
+  renderTextLayer(ctx, state, params, style, maskData, state.rasterTex, anim, pathLayout);
 }
 
 // Read every wired, field-driven animator's image into a CPU pixel buffer
@@ -683,6 +696,9 @@ export const textNode: NodeDefinition = {
     // interiors are filled with this image (per `fill_fit`) instead of a
     // flat color. Declared `image`, so mask/element coercions apply.
     { name: "fill", label: "fill", type: "image", required: false },
+    // Optional path — wire a spline to lay the text ALONG it (Text on Path).
+    // With nothing wired the node lays out in its box exactly as before.
+    { name: "path", label: "Path", type: "spline", required: false },
   ],
   // Field inputs for field-driven animators appear only when that animator is
   // enabled with driver = "field" (see animatorFieldInputs).
@@ -690,6 +706,7 @@ export const textNode: NodeDefinition = {
     return [
       { name: "mask", label: "Mask", type: "image", required: false },
       { name: "fill", label: "fill", type: "image", required: false },
+      { name: "path", label: "Path", type: "spline", required: false },
       ...animatorFieldInputs(params),
     ];
   },
@@ -913,6 +930,53 @@ export const textNode: NodeDefinition = {
       type: "boolean",
       default: false,
     },
+    // Text on Path (spec 062526_node-expansion §4). Wire a spline into the
+    // `path` input to lay the glyphs along it; these params tune the run.
+    // `path_enabled` (default on) doubles as the collapsible group header and
+    // an off-switch — turn it off to keep box layout even with a spline wired.
+    // Box params (boxWidth/boxHeight/wrap) are ignored while path mode is
+    // active. The Auto Layout `element` output stays box layout regardless.
+    {
+      name: "path_enabled",
+      label: "Text on Path",
+      type: "boolean",
+      default: true,
+      group: "path",
+      groupHeader: true,
+    },
+    {
+      name: "path_align",
+      label: "Align",
+      type: "enum",
+      options: ["start", "center", "end"],
+      default: "center",
+      group: "path",
+    },
+    {
+      name: "path_offset",
+      label: "Offset",
+      type: "scalar",
+      min: 0,
+      max: 1,
+      step: 0.001,
+      default: 0,
+      group: "path",
+    },
+    {
+      name: "path_side",
+      label: "Side",
+      type: "enum",
+      options: ["on", "above", "below"],
+      default: "on",
+      group: "path",
+    },
+    {
+      name: "path_flip",
+      label: "Flip direction",
+      type: "boolean",
+      default: false,
+      group: "path",
+    },
     // Built-in transform — applied as a post-pass after the box layout.
     // The bounds gizmo drives translateX/Y (box position); scale /
     // rotate / pivot stay panel-and-keyframe-driven.
@@ -1054,6 +1118,31 @@ export const textNode: NodeDefinition = {
     const fillImg = fillIn && fillIn.kind === "image" ? fillIn : null;
     const imageFillActive = (params.fillMode as string) === "image" && !!fillImg;
 
+    // Text on Path: a wired `path` spline (with a usable subpath) lays the
+    // glyphs along it, unless `path_enabled` is turned off. Box params are
+    // ignored while active. The layout is rebuilt into TextPathLayout for the
+    // raster core.
+    const pathIn = inputs.path;
+    const pathSpline =
+      pathIn &&
+      pathIn.kind === "spline" &&
+      (pathIn as SplineValue).subpaths.some((sp) => sp.anchors.length >= 2)
+        ? (pathIn as SplineValue)
+        : null;
+    const pathActive = params.path_enabled !== false && !!pathSpline;
+    const pathLayout: TextPathLayout | null = pathActive
+      ? {
+          path: pathSpline!,
+          align: ((params.path_align as string) ?? "center") as
+            | "start"
+            | "center"
+            | "end",
+          offset: (params.path_offset as number) ?? 0,
+          side: ((params.path_side as string) ?? "on") as "on" | "above" | "below",
+          flip: params.path_flip === true,
+        }
+      : null;
+
     // Per-character animators. Active ones force the per-char layout and fold
     // every animator param (incl. keyframed Amounts) into the raster sig; a
     // wired field input forces a per-frame re-raster like the live mask.
@@ -1078,7 +1167,9 @@ export const textNode: NodeDefinition = {
       "|animf:" +
       FIELD_PROPS.map((p) =>
         inputs[`field_${p}`]?.kind === "image" ? "1" : "0"
-      ).join("");
+      ).join("") +
+      "|path:" +
+      (pathActive ? "1" : "0");
     const postSig = computePostSig(params);
 
     // Force re-rasterize every frame when maskDriven is in play
@@ -1091,7 +1182,12 @@ export const textNode: NodeDefinition = {
     // re-enters on every pipeline bump; bypassing the sig cache
     // here is what actually makes the mask sampling live.
     const liveMask = maskMode && !!maskImg;
-    const rasterChanged = liveMask || animFieldWired || sig !== state.lastSig;
+    // A wired path may animate (keyframed Spline Draw, live geometry), and CPU
+    // spline values can't be diffed by texture identity — so force a re-raster
+    // every eval while path mode is active, same as liveMask / wired fields.
+    const livePath = pathActive;
+    const rasterChanged =
+      liveMask || animFieldWired || livePath || sig !== state.lastSig;
     const postChanged = postSig !== state.lastPostSig;
 
     if (rasterChanged) {
@@ -1127,7 +1223,8 @@ export const textNode: NodeDefinition = {
           { ...baseStyle, fill: { mode: "solid" }, color: "#ffffff", stroke: null },
           maskData,
           state.fillCovTex,
-          animCoverage
+          animCoverage,
+          pathLayout
         );
         const strokeOnly = strokeFromParams(params);
         if (strokeOnly) {
@@ -1144,11 +1241,12 @@ export const textNode: NodeDefinition = {
             },
             maskData,
             state.strokeLayerTex,
-            animCoverage
+            animCoverage,
+            pathLayout
           );
         }
       } else {
-        rasterize(ctx, state, params, family, maskData, anim);
+        rasterize(ctx, state, params, family, maskData, anim, pathLayout);
       }
       state.lastSig = sig;
       // Raster moved → cached sdf/spline are stale.

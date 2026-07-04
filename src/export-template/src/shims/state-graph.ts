@@ -37,3 +37,9 @@ export { paramSocketType, parseTargetHandleKind } from "@engine/graph-helpers";
 export function newNodeId(type: string) {
   return `${type}-${Math.random().toString(36).slice(2, 8)}`;
 }
+
+// graph-ops also mints composition ids (v5+). Verbatim copy of the real
+// helper so the export-template bundle doesn't pull in the editor module.
+export function newCompositionId() {
+  return `comp-${Math.random().toString(36).slice(2, 8)}`;
+}
