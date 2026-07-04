@@ -53,11 +53,12 @@ jobs:
           # Next build (standalone) needs the public Supabase vars.
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          # Code signing — electron-builder imports this p12 into a temp keychain.
+          # Code signing — electron-builder imports this p12 into a temp keychain
+          # and auto-selects the "Developer ID Application" cert for the dmg
+          # (the p12 also carries an Apple Development cert, which it ignores for
+          # distribution builds).
           CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
-          # The p12 carries two identities; pin the Developer ID one.
-          CSC_NAME: "Developer ID Application: Henry Allan (65CW2SYMWS)"
           # Notarization (App Store Connect API key).
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
