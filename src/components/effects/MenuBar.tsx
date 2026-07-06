@@ -518,10 +518,13 @@ export default function MenuBar({
         onUndo={onUndo}
         onRedo={onRedo}
       />
-      {/* Flexible gap doubles as the window drag handle on desktop. */}
+      {/* Flexible gap doubles as the window drag handle on desktop. Must fill
+          the full bar height — under the frameless `alignItems:center` an empty
+          flex child collapses to 0px tall, leaving nothing to grab. */}
       <div
         style={{
           flex: 1,
+          alignSelf: "stretch",
           WebkitAppRegion: frameless ? "drag" : undefined,
         }}
       />
