@@ -148,6 +148,30 @@ job. Land a devlist entry.
 - **Web can't regress**: `windowControls` absent on web ⇒ no controls render;
   `os` there is cosmetic and unused.
 
+## Windows CI shakedown (resolved on the first v0.2.0 run)
+
+The mac path was battle-tested; the first Windows CI run surfaced two
+Windows-only failures, both now fixed:
+
+1. **export-template build** — `scripts/build-export-template.mjs` launched the
+   Tier-A build with a bash env prefix (`BUILD_SINGLEFILE=1 npx vite build …`),
+   which cmd.exe can't parse. Fixed by passing the var via `execSync`'s `env`
+   option. (Same class as the `electron:dev` prefix; that one stays mac-only.)
+2. **electron-builder 7-Zip packaging** — `@huggingface/transformers` (a
+   browser-only ML lib, dynamically imported in `src/lib/ai/*`, never used by
+   the Next server) was traced into the standalone server bundle, and on Windows
+   its deep node_modules path produced a broken partial trace-copy that 7-Zip
+   failed on ("cannot find the path specified"). Enabling `LongPathsEnabled`
+   alone did **not** fix it (kept as cheap insurance in the workflow). The real
+   fix: `outputFileTracingExcludes` (DESKTOP_BUILD-gated) drops it from the
+   desktop trace, with an electron-builder `files` negation as a packaging
+   backstop. The renderer still loads it from the compiled client chunks, so the
+   server copy was dead weight — this also slims both installers. Verified
+   locally that the standalone no longer contains `@huggingface`.
+
+Result: v0.2.0 ships both `Toolbox-arm64.dmg` and `Toolbox-Setup.exe`; the
+`releases/latest/download/` URLs behind the landing buttons resolve (200).
+
 ## Open / deferred
 
 - Windows code signing (cert + CI secrets) — deferred; structure is ready.
