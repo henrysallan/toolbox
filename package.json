@@ -42,7 +42,8 @@
       "!node_modules/**/*",
       "node_modules/ffmpeg-static/**/*",
       ".next/standalone/**/*",
-      ".next/standalone/.next/**/*"
+      ".next/standalone/.next/**/*",
+      "!.next/standalone/.next/node_modules/@huggingface/**"
     ],
     "asarUnpack": [
       "node_modules/ffmpeg-static/**/*",
