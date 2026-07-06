@@ -31,27 +31,31 @@ void main() {
   outColor = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
 }`;
 
-// Renders positions into the aux UV texture. Positions come in as a uniform
-// vec2 array; for pixel i (of `count` pixels) we emit its position as RG.
-// Max array size 256 — WebGL 2 guarantees space for this and it covers
-// every realistic path-scatter use case.
-const MAX_POINTS = 256;
+// Renders positions into the aux UV texture. Positions are sampled from an
+// RGBA32F data texture (width = count, height = 1; RG = x,y) by texel index via
+// texelFetch — NOT a fixed-size uniform array, so there's no GPU
+// uniform-array ceiling and count scales up to MAX_POINTS. The output stays a
+// pooled RGBA16F `uv` texture (same precision as the old uniform-array path).
+const MAX_POINTS = 4096;
 const POSITIONS_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
-uniform vec2 u_positions[${MAX_POINTS}];
+uniform highp sampler2D u_positions;
 uniform int u_count;
 out vec4 outColor;
 void main() {
   int idx = int(floor(v_uv.x * float(u_count)));
   idx = clamp(idx, 0, u_count - 1);
-  vec2 p = u_positions[idx];
+  vec2 p = texelFetch(u_positions, ivec2(idx, 0), 0).xy;
   outColor = vec4(p.x, p.y, 0.0, 1.0);
 }`;
 
 interface PointsState {
   vizCanvas: HTMLCanvasElement;
   vizTex: WebGLTexture | null;
+  // RGBA32F data texture holding the sampled positions (width = count, 1 row);
+  // sampled by POSITIONS_FS. Re-specified each eval when count changes.
+  posDataTex: WebGLTexture | null;
   lastSig: string | null;
 }
 
@@ -83,9 +87,21 @@ function ensureState(ctx: RenderContext, nodeId: string): PointsState {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.bindTexture(gl.TEXTURE_2D, null);
+  // Positions data texture — NEAREST + CLAMP; sampled by exact texel index, so
+  // no filtering/wrap ever comes into play. Data (RGBA32F) is uploaded per eval.
+  const posTex = gl.createTexture();
+  if (!posTex)
+    throw new Error("points-on-path: failed to create positions data texture");
+  gl.bindTexture(gl.TEXTURE_2D, posTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindTexture(gl.TEXTURE_2D, null);
   const s: PointsState = {
     vizCanvas: document.createElement("canvas"),
     vizTex: tex,
+    posDataTex: posTex,
     lastSig: null,
   };
   ctx.state[key] = s;
@@ -108,7 +124,7 @@ export const pointsOnPathNode: NodeDefinition = {
       type: "scalar",
       min: 1,
       max: MAX_POINTS,
-      softMax: 64,
+      softMax: 1024,
       step: 1,
       default: 24,
     },
@@ -200,8 +216,8 @@ export const pointsOnPathNode: NodeDefinition = {
     const H = ctx.height;
     const state = ensureState(ctx, nodeId);
 
-    // Collect sample positions (normalized Y-DOWN). Cap at MAX_POINTS so the
-    // shader's uniform array size stays in bounds.
+    // Collect sample positions (normalized Y-DOWN). Bounded by MAX_POINTS as a
+    // sanity ceiling (the positions data texture + CPU points scale to it).
     const count = Math.max(
       1,
       Math.min(MAX_POINTS, Math.floor((params.count as number) ?? 24))
@@ -256,9 +272,6 @@ export const pointsOnPathNode: NodeDefinition = {
         sampledCount = count;
       }
     }
-    // Pad with zeros so the uniform upload is always full-sized (avoids
-    // re-linking the shader when count changes).
-    while (positions.length < MAX_POINTS) positions.push([0, 0]);
 
     // ---- Primary: visualization image ----
     const showViz = !!params.show_viz;
@@ -317,14 +330,35 @@ export const pointsOnPathNode: NodeDefinition = {
     // ---- Aux: positions UV texture, width=count, height=1 ----
     const positionsTex: UvValue = ctx.allocUv({ width: count, height: 1 });
     const posProg = ctx.getShader("points-on-path/positions", POSITIONS_FS);
-    // Flatten to Float32Array — uniform2fv accepts sequential (x,y) pairs.
-    const flat = new Float32Array(MAX_POINTS * 2);
-    for (let i = 0; i < MAX_POINTS; i++) {
-      flat[i * 2] = positions[i][0];
-      flat[i * 2 + 1] = positions[i][1];
+    // Upload the sampled positions into the RGBA32F data texture (count×1,
+    // RG = x,y) that the shader reads by texel index. Any unsampled tail (from
+    // a missing input) stays zero. Replaces the old vec2[256] uniform array,
+    // so the ceiling is MAX_POINTS with no GPU uniform-array limit.
+    const data = new Float32Array(count * 4);
+    const n = Math.min(positions.length, count);
+    for (let i = 0; i < n; i++) {
+      data[i * 4] = positions[i][0];
+      data[i * 4 + 1] = positions[i][1];
+      data[i * 4 + 3] = 1;
     }
+    const glp = ctx.gl;
+    glp.bindTexture(glp.TEXTURE_2D, state.posDataTex);
+    glp.texImage2D(
+      glp.TEXTURE_2D,
+      0,
+      glp.RGBA32F,
+      count,
+      1,
+      0,
+      glp.RGBA,
+      glp.FLOAT,
+      data
+    );
+    glp.bindTexture(glp.TEXTURE_2D, null);
     ctx.drawFullscreen(posProg, positionsTex, (gl2) => {
-      gl2.uniform2fv(gl2.getUniformLocation(posProg, "u_positions"), flat);
+      gl2.activeTexture(gl2.TEXTURE0);
+      gl2.bindTexture(gl2.TEXTURE_2D, state.posDataTex);
+      gl2.uniform1i(gl2.getUniformLocation(posProg, "u_positions"), 0);
       gl2.uniform1i(gl2.getUniformLocation(posProg, "u_count"), count);
     });
 
@@ -349,6 +383,7 @@ export const pointsOnPathNode: NodeDefinition = {
     const key = `points-on-path:${nodeId}`;
     const state = ctx.state[key] as PointsState | undefined;
     if (state?.vizTex) ctx.gl.deleteTexture(state.vizTex);
+    if (state?.posDataTex) ctx.gl.deleteTexture(state.posDataTex);
     delete ctx.state[key];
   },
 };
