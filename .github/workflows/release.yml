@@ -93,6 +93,17 @@ jobs:
     needs: ensure-release
     runs-on: windows-latest
     steps:
+      - name: Enable Windows long paths
+        # Next's output tracing bundles deep node_modules paths (e.g.
+        # @huggingface/transformers) that exceed the legacy 260-char MAX_PATH.
+        # Without long-path support, `next build` writes them incompletely and
+        # electron-builder's 7-Zip packaging step then fails with "cannot find
+        # the path specified". Enable before any checkout/install/build writes.
+        shell: pwsh
+        run: |
+          reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f
+          git config --system core.longpaths true
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
