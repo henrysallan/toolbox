@@ -56,6 +56,7 @@ import { strokeNode } from "./effect/stroke";
 import { fillNode } from "./effect/fill";
 import { rasterizeSplineNode } from "./effect/rasterize-spline";
 import { splineBooleanNode } from "./effect/spline-boolean";
+import { splineMergeNode } from "./effect/spline-merge";
 import { splineMorphNode } from "./effect/spline-morph";
 import { pointNode } from "./source/point";
 import { scatterPointsNode } from "./effect/scatter-points";
@@ -245,6 +246,7 @@ export function registerAllNodes() {
   registerNode(fillNode);
   registerNode(rasterizeSplineNode);
   registerNode(splineBooleanNode);
+  registerNode(splineMergeNode);
   registerNode(splineMorphNode);
   registerNode(pointNode);
   registerNode(scatterPointsNode);

@@ -59,15 +59,24 @@ void main() {
   outColor = vec4(m, m, m, 1.0);
 }`;
 
+// Image → mask is luminance WEIGHTED BY COVERAGE (alpha). For an opaque
+// image (alpha == 1 everywhere: noise, gradients, photos) this is exactly the
+// old luminance behavior — no regression. For a shape drawn on transparency
+// (Rectangle/Circle/Text/SVG rasters, SDF fills) the alpha term zeroes the
+// transparent surround (so the mask is the silhouette, not whatever stale RGB
+// sits in the cleared region) and passes the drawn coverage through. Net: a
+// bright-filled shape mattes by its shape; a grayscale image still mattes by
+// brightness. (A dark-*colored* fill still reads dim — use a light fill, or
+// the shape's alpha via a coverage source, if you want color-independent.)
 const IMAGE_TO_MASK_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_src;
 out vec4 outColor;
 void main() {
-  vec3 c = texture(u_src, v_uv).rgb;
-  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  outColor = vec4(l, 0.0, 0.0, 1.0);
+  vec4 c = texture(u_src, v_uv);
+  float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
+  outColor = vec4(l * c.a, 0.0, 0.0, 1.0);
 }`;
 
 export function coerceValue(

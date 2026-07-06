@@ -671,6 +671,26 @@ export default function NodeEditor({
     }
   }, []);
 
+  // -------- Shift-drag from a NODE BODY ----------------------------------
+  // Same fuzzy-connect idea, but the wire is pulled from the node itself
+  // rather than a socket: hold Shift and drag off a node's body and we draw a
+  // straight line from its first output to the cursor (plus the same ring),
+  // then on release over another node wire that output into the first socket
+  // that accepts it. Driven by a capture-phase pointerdown interceptor (below)
+  // — React Flow would otherwise move/multiselect the node. `nodeConnect`
+  // holds the live line + ring; `processNodeDropRef` is refreshed each render
+  // so the mount-once interceptor always resolves against the current graph.
+  const [nodeConnect, setNodeConnect] = useState<{
+    originX: number;
+    originY: number;
+    x: number;
+    y: number;
+    overNode: boolean;
+  } | null>(null);
+  const processNodeDropRef = useRef<
+    (originId: string, clientX: number, clientY: number) => void
+  >(() => {});
+
   // Decorate edges with `data.spliceHighlight` on the fly — purely UI
   // state, no need to round-trip through the parent's edges state.
   // JunctionEdge picks up the flag and boosts its stroke. We also
@@ -1205,6 +1225,104 @@ export default function NodeEditor({
     };
   }, [hideConnectRing]);
 
+  // Shift-drag from a node BODY starts a connection. Intercepted in the
+  // capture phase on the wrapper — the same technique the Cmd+middle-drag
+  // zoom uses — so React Flow never sees the pointerdown and can't move or
+  // multiselect the node. We defer the decision on a small threshold: a plain
+  // Shift-click still toggles the node's selection (the multiselect we
+  // swallowed), while a drag draws a line from the node's first output to the
+  // cursor and, on release over another node, wires it up. Drags from a socket
+  // handle (the existing gesture) and node controls (`.nodrag`) are left alone.
+  useEffect(() => {
+    const el = flowWrapperRef.current;
+    if (!el) return;
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0 || !e.shiftKey) return;
+      const targetEl = e.target as HTMLElement | null;
+      if (!targetEl) return;
+      if (targetEl.closest(".react-flow__handle")) return;
+      if (targetEl.closest(".nodrag")) return;
+      const nodeEl = targetEl.closest(".react-flow__node") as HTMLElement | null;
+      const originId = nodeEl?.getAttribute("data-id");
+      if (!nodeEl || !originId) return;
+
+      // Take over from React Flow for this gesture.
+      e.preventDefault();
+      e.stopPropagation();
+
+      const origin = rfGetNodes().find((n) => n.id === originId) as
+        | Node<NodeDataPayload>
+        | undefined;
+      // First output handle (primary, else first live aux) — the line anchor.
+      let outHandle: string | null = null;
+      if (origin) {
+        if (origin.data.primaryOutput) outHandle = "out:primary";
+        else {
+          const aux = origin.data.auxOutputs.find((a) => !a.disabled);
+          if (aux) outHandle = `out:aux:${aux.name}`;
+        }
+      }
+      // Anchor the line at the first output socket; fall back to the node's
+      // right-center if it has no rendered output handle.
+      const anchor: Pt =
+        (outHandle ? handleCenter(originId, outHandle) : null) ??
+        (() => {
+          const r = nodeEl.getBoundingClientRect();
+          return [r.right, r.top + r.height / 2] as Pt;
+        })();
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let dragging = false;
+      const THRESHOLD = 4;
+
+      const onMove = (ev: PointerEvent) => {
+        if (
+          !dragging &&
+          Math.hypot(ev.clientX - startX, ev.clientY - startY) < THRESHOLD
+        ) {
+          return;
+        }
+        dragging = true;
+        const under = document.elementFromPoint(
+          ev.clientX,
+          ev.clientY
+        ) as HTMLElement | null;
+        const overId = under
+          ?.closest(".react-flow__node")
+          ?.getAttribute("data-id");
+        setNodeConnect({
+          originX: anchor[0],
+          originY: anchor[1],
+          x: ev.clientX,
+          y: ev.clientY,
+          overNode: !!overId && overId !== originId,
+        });
+      };
+      const onUp = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", onMove, true);
+        window.removeEventListener("pointerup", onUp, true);
+        setNodeConnect(null);
+        if (dragging) {
+          processNodeDropRef.current(originId, ev.clientX, ev.clientY);
+        } else {
+          // Plain Shift-click → additive toggle-select (React Flow's
+          // multiselect, which we intercepted). onSelectionChange fans this
+          // back out to onSelectNode.
+          rfSetNodes((nodes) =>
+            nodes.map((n) =>
+              n.id === originId ? { ...n, selected: !n.selected } : n
+            )
+          );
+        }
+      };
+      window.addEventListener("pointermove", onMove, true);
+      window.addEventListener("pointerup", onUp, true);
+    };
+    el.addEventListener("pointerdown", onDown, true);
+    return () => el.removeEventListener("pointerdown", onDown, true);
+  }, [rfGetNodes, rfSetNodes]);
+
   // Shift+A opens the popup when the cursor is inside the node editor
   // and no text field is focused. Skipped when any modifier other than
   // Shift is held, so combos like Cmd+Shift+A pass through.
@@ -1485,6 +1603,40 @@ export default function NodeEditor({
       if (isValidConnection(conn)) return conn;
     }
     return null;
+  };
+
+  // Node-body drag: wire the origin's first output that connects into the
+  // target's first accepting socket. Tries the origin's outputs in order
+  // (primary first) and reuses buildShiftDropConnection for the target side.
+  const buildNodeConnection = (
+    originNode: Node<NodeDataPayload>,
+    targetNode: Node<NodeDataPayload>
+  ): Connection | null => {
+    const outHandles = [
+      ...(originNode.data.primaryOutput ? ["out:primary"] : []),
+      ...originNode.data.auxOutputs
+        .filter((a) => !a.disabled)
+        .map((a) => `out:aux:${a.name}`),
+    ];
+    for (const h of outHandles) {
+      const conn = buildShiftDropConnection(
+        { fromNodeId: originNode.id, fromHandle: h, handleType: "source" },
+        targetNode
+      );
+      if (conn) return conn;
+    }
+    return null;
+  };
+
+  // Refreshed every render so the mount-once pointerdown interceptor resolves
+  // the drop against the live graph (nodes/edges) without re-subscribing.
+  processNodeDropRef.current = (originId, clientX, clientY) => {
+    const origin = nodes.find((n) => n.id === originId);
+    if (!origin) return;
+    const targetNode = nodeAtClientPoint(clientX, clientY, originId);
+    if (!targetNode) return;
+    const conn = buildNodeConnection(origin, targetNode);
+    if (conn) onConnect(conn);
   };
 
   return (
@@ -1892,6 +2044,29 @@ export default function NodeEditor({
           over={connectRing.overNode}
           wrapper={flowWrapperRef.current}
         />
+      )}
+
+      {/* Shift-drag-from-node line + ring. The straight line runs from the
+          origin node's first output to the cursor (React Flow draws no
+          connection line here since this gesture bypasses its connection
+          system), and the same ring brightens over a droppable node. */}
+      {nodeConnect && (
+        <>
+          <NodeConnectLine
+            x1={nodeConnect.originX}
+            y1={nodeConnect.originY}
+            x2={nodeConnect.x}
+            y2={nodeConnect.y}
+            over={nodeConnect.overNode}
+            wrapper={flowWrapperRef.current}
+          />
+          <ConnectDropRing
+            x={nodeConnect.x}
+            y={nodeConnect.y}
+            over={nodeConnect.overNode}
+            wrapper={flowWrapperRef.current}
+          />
+        </>
       )}
 
       {/* Fixed corner action stack — pinned upper-left of the editor.
@@ -2449,6 +2624,53 @@ function ConnectDropRing({
         zIndex: 55,
       }}
     />
+  );
+}
+
+// Straight wire preview for the Shift-drag-from-node gesture: origin output →
+// cursor. A full-wrapper SVG overlay (pointer-events: none so it never blocks
+// the elementFromPoint node probe); coordinates are wrapper-local. Brightens
+// to match the ring while the cursor is over a droppable node.
+function NodeConnectLine({
+  x1,
+  y1,
+  x2,
+  y2,
+  over,
+  wrapper,
+}: {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  over: boolean;
+  wrapper: HTMLDivElement | null;
+}) {
+  if (!wrapper) return null;
+  const rect = wrapper.getBoundingClientRect();
+  return (
+    <svg
+      style={{
+        position: "absolute",
+        left: 0,
+        top: 0,
+        width: "100%",
+        height: "100%",
+        pointerEvents: "none",
+        zIndex: 54,
+        overflow: "visible",
+      }}
+    >
+      <line
+        x1={x1 - rect.left}
+        y1={y1 - rect.top}
+        x2={x2 - rect.left}
+        y2={y2 - rect.top}
+        stroke={over ? "#93c5fd" : "rgba(96, 165, 250, 0.85)"}
+        strokeWidth={2}
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }
 

@@ -207,7 +207,7 @@ export default function EffectNode({
   return (
     <div
       style={{
-        minWidth: isQueue ? 300 : 200,
+        minWidth: isQueue ? 300 : data.defType === "collect" ? 240 : 200,
         // Layer nodes + their boundary nodes get a faint blue wash (#159).
         background: data.layerAccent ? "#171b24" : "#18181b",
         border: `1px solid ${
@@ -461,6 +461,22 @@ export default function EffectNode({
                 window.dispatchEvent(
                   new CustomEvent("effect-node-toggle", {
                     detail: { id, kind: "mergeAddLayer" },
+                  })
+                )
+              }
+            />
+          )}
+          {data.defType === "collect" && (
+            <HeaderToggle
+              on={false}
+              label="+"
+              title="Add input"
+              activeBg="#374151"
+              activeFg="#e5e7eb"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("effect-node-toggle", {
+                    detail: { id, kind: "collectAddInput" },
                   })
                 )
               }

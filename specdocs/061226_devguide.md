@@ -66,6 +66,11 @@ src/
     NodeEditor.tsx        xyflow wrapper: wires, validation, splice (drop a node
                           on a wire → A→N→C) + detach-heal (Cmd/Ctrl-drag a
                           clean-inline node out → A→C reconnects), copy/paste, marquee.
+                          Shift-drag "fuzzy connect": pull a wire from a socket
+                          (or the whole node body — capture-phase interceptor)
+                          with Shift held → blue ring + line, drop over any node
+                          to land on its first accepting socket (buildShiftDrop-
+                          Connection / buildNodeConnection).
     ParamPanel.tsx        Renders ParamDef[] → controls; all custom param-type UIs.
     EffectNode.tsx        The node chrome on the graph canvas (sockets, header, +).
     TrackEditor.tsx / LayersEditor.tsx / PlaybackBar.tsx   timeline UIs.
@@ -169,7 +174,11 @@ scalar (RMS level, via engine/audio-analysis.ts), image↔element (wrap as
 full-canvas element / flatten centered at natural size; identity-cached in
 WeakMaps inside engine/element.ts). The UI mirrors this list in `canCoerce`
 / `isValidConnection` (NodeEditor.tsx) — **add new coercions in both
-places**.
+places**. `image→mask` is **luminance × alpha** (coverage-weighted): opaque
+grayscale (noise/gradients) reads as its old luminance, but a shape drawn on
+transparency (Rectangle/Circle/Text/SVG rasters) mattes by its silhouette,
+not by whatever RGB sits in the cleared surround. A dark-*colored* fill still
+reads dim — matte with a light fill for a clean cutout.
 
 ## The evaluator (what actually happens per frame)
 
@@ -193,9 +202,13 @@ places**.
      fingerprints + animation block + (`stable:false` ⇒ ctx.time) +
      `fingerprintExtras`. Cache hit ⇒ reuse previous `NodeOutput`
      verbatim, skip compute.
-   - Post-passes the evaluator owns: universal mask blend, universal
-     `opacity` param (declare `OPACITY_PARAM` and image outputs fade for
-     free — never implement opacity in a node).
+   - Post-passes the evaluator owns: universal mask (the appended `mask`
+     input — see conventions.ts). With a base image input wired it **blends**
+     `mix(base, output, m)` (reveal an effect through the mask); with none
+     (pure sources) it **mattes** `output*m`. A def can force matte-only with
+     `noMaskBase` (Text does — its `fill`/`morph_mask` image inputs aren't
+     blend bases). Also the universal `opacity` param (declare `OPACITY_PARAM`
+     and image outputs fade for free — never implement opacity in a node).
    - `ComputeArgs.consumedOutputs`: the set of this node's output handles
      (`"primary"`, `"aux:<name>"`) that something actually reads this eval
      (wired to an evaluated node, or shown by the viewport). A node can
@@ -304,12 +317,25 @@ To add a node:
   Output (since schema v4; older saves auto-wrap into "Layer 1").
 - Params deep inside a group can be promoted to its interface
   (`resolvePromotedParams` in graph-ops.ts).
+- A layer's interior **Layer Input** node (`group-input`, reserved
+  `backdrop`) mints extra sockets like any group. Those surface as real
+  input sockets on the layer node in the parent composition via
+  `layer.resolveInputs` (reads the synced `interface` param, same as
+  `node-group`) — `backdrop` itself stays represented by the exterior
+  `stack` input. The flatten pass routes each minted input straight through
+  to its interior consumers: `resolveBoundarySource` maps a non-`backdrop`
+  Layer Input socket to the same-named exterior input on the layer node (the
+  layer shell computes only the blend; these extra inputs are pure
+  passthrough). Back-compat: old layers have no `interface`, so they resolve
+  to just `stack`/`content`/`audio`.
 
 ## Persistence & sharing
 
 - `serializeGraph`/`deserializeGraph` ([project.ts](../src/lib/project.ts)),
-  `CURRENT_SCHEMA = 4` — the version history is documented at the top of
+  `CURRENT_SCHEMA = 6` — the version history is documented at the top of
   that file; bump it when the wire shape changes and keep loading old ones.
+  (v6 renamed Text's `mask` input to `morph_mask` and migrates old
+  `in:mask`→`in:morph_mask` edges on load — see below.)
 - Media (image bitmaps, paint canvases) inline as data-URLs in cloud saves;
   video/audio don't serialize — they become "missing media" entries
   re-picked via MediaRelinkModal ([media-relink.ts](../src/lib/media-relink.ts)).
@@ -380,11 +406,12 @@ To add a node:
 
 ## Desktop (Electron) build
 
-The app ships as **both** the web app and a **macOS Electron app** from one
-codebase. The desktop build's only behavioral differences: heavy export runs
-through **native ffmpeg** (no wasm heap/thread limits), file open/save use
-**native OS dialogs**, and it works **offline**. Full design:
-062626_electron-native-export.md.
+The app ships as **both** the web app and a native **Electron desktop app**
+(**macOS** arm64 + **Windows** x64) from one codebase. The desktop build's only
+behavioral differences: heavy export runs through **native ffmpeg** (no wasm
+heap/thread limits), file open/save use **native OS dialogs**, and it works
+**offline**. Full design: 062626_electron-native-export.md; the Windows target +
+native window controls: 070626_windows-desktop-build.md.
 
 - **The seam is `src/lib/platform`** (`platform` from index.ts). Feature code
   calls `platform.saveFile(...)` / `platform.encodeVideo?.(...)` / etc. and
@@ -426,10 +453,17 @@ through **native ffmpeg** (no wasm heap/thread limits), file open/save use
   modal and the menu→Projects view); `loadToolboxFile` in EffectsApp is the
   shared open path.
 - **Frameless window**: `frame:false`; the nav bar IS the title bar — MenuBar
-  draws custom traffic lights (close/min/fullscreen via `platform.windowControls`)
-  and uses `-webkit-app-region` (drag on the spacer, no-drag on controls; the
-  CSS prop is augmented in src/types/css.d.ts). `backgroundThrottling:false` so
-  rAF/timers aren't throttled (real-time tool).
+  (and the Landing screen) render `WindowControls`, which branches on
+  **`platform.os`** (surfaced from the bridge's `process.platform`): macOS
+  traffic lights on the **left** (close/min/fullscreen), or Windows caption
+  buttons flush in the **top-right** (min/maximize-restore/close, Segoe Fluent
+  Icons glyphs). All controls go through `platform.windowControls`
+  (`minimize`/`toggleMaximize`/`toggleFullscreen`/`close` + `isMaximized`/
+  `onMaximizeChange` so the maximize↔restore glyph tracks native maximize —
+  Snap, Win+Up). `-webkit-app-region` (drag on the spacer, no-drag on controls;
+  the CSS prop is augmented in src/types/css.d.ts). `backgroundThrottling:false`
+  so rAF/timers aren't throttled (real-time tool). Spec:
+  070626_windows-desktop-build.md.
 - **Graceful offline**: auth uses `getSession()` (local cache, "signed in
   offline") not `getUser()`; project lists fail-fast (timeout + `navigator.onLine`
   + try/catch → empty/cached). Local files + native export work fully offline;
@@ -439,9 +473,12 @@ through **native ffmpeg** (no wasm heap/thread limits), file open/save use
 - **Build/run.** `npm run dev:desktop` (one command: next dev + Electron) for UI
   iteration; `npm run electron`/`electron:dev` for embedded/dev URLs;
   `npm run desktop:prepare` builds `.next/standalone`; `npm run desktop:build`
-  packages the dmg. NOTE: `npm run electron` serves the **prebuilt**
-  `.next/standalone` — re-run `desktop:prepare` to see source changes there
-  (dev:desktop uses live HMR).
+  packages the mac dmg, `npm run desktop:build:win` the Windows NSIS installer
+  (`:publish`/`:publish:win` variants add `-p always` to upload to GitHub
+  Releases). NOTE: `npm run electron` serves the **prebuilt** `.next/standalone`
+  — re-run `desktop:prepare` to see source changes there (dev:desktop uses live
+  HMR). On Windows, dev via `dev:desktop` or `electron` (`electron:dev`'s bash
+  env-prefix is mac-only).
 - **Packaging gotchas** (electron-builder, package.json `build`): pin
   `mac.target` arch to **arm64** (it targets the build host's node arch, and the
   studio node is x64-under-Rosetta → wrong-arch app runs slow). `ffmpeg-static`
@@ -453,6 +490,15 @@ through **native ffmpeg** (no wasm heap/thread limits), file open/save use
   Builds are unsigned (`identity:null`) → Gatekeeper warns; notarization is TODO.
   OAuth on desktop needs `http://127.0.0.1:38274/auth/callback` allowlisted in
   Supabase.
+  - **Windows** (`build.win` = nsis/x64, `build.nsis` = assisted installer,
+    `build/icon.ico`): the shared `files`/`asarUnpack`/`publish` config applies
+    as-is; `npm ci` on a Windows runner fetches the win32 `ffmpeg.exe`
+    automatically. Currently **unsigned** → users bypass a SmartScreen "unknown
+    publisher" prompt (signing is wired-ready but deferred; no arm64 target
+    yet). CI (`.github/workflows/release.yml`) is three jobs on a `v*` tag:
+    `ensure-release` (ubuntu, pre-creates the Release so the two OS jobs don't
+    race to create it), `build-mac` (macos-14, signed/notarized dmg), `build-win`
+    (windows-latest, unsigned nsis exe). Both build jobs `needs: ensure-release`.
 
 ## Invariants — do not break
 
@@ -513,6 +559,27 @@ src/app/docs + lib/docs/manifest.
 - Text is `stable:false`, so anything downstream of it (Auto Layout
   included) recomputes per frame during playback — same cost profile as
   Text→Merge today. Paused/param-edit evals cache normally.
+- **Text has two mask-ish inputs, don't confuse them.** The pink `mask`
+  socket is the universal matte (appended by withMaskInput; matte-only via
+  `noMaskBase`) — wire a shape/image in to cut the text to it. The blue
+  `morph_mask` socket (a plain `image` input, labelled "Morph") is the
+  variable-font morph driver, consumed only when an axis is in maskDriven
+  mode. `morph_mask` was named `mask` pre-v6 — that's why the schema bumped
+  and old `in:mask` Text edges migrate to `in:morph_mask` on load.
+- **Text on Path** (spec 062526_node-expansion §4): wire a spline into the
+  Text node's `path` input to lay glyphs along it. It's built into the Text
+  node — no separate node — reusing the raster stack. `path_enabled` (default
+  on, doubles as the collapsible group header + off-switch) gates it;
+  `path_align`/`path_offset`/`path_side`/`path_flip` tune the run. The engine
+  side is `drawGlyphsAlongPath` in [text-raster.ts](../src/engine/text-raster.ts):
+  it forces the modulated per-glyph draw, builds a **canvas-pixel** arc-length
+  table from the spline (`buildPathSampler` — measured in px, not the spline's
+  anisotropic normalized length, so advances map right on non-square canvases),
+  and draws each glyph centred + rotated to the path tangent. Animator glyph
+  transforms stack on top. A wired path forces a per-frame re-raster (`livePath`,
+  like `liveMask`) since CPU splines can animate and can't be diffed by texture
+  identity. Scope: primary raster only (the `element` output stays box layout);
+  subpaths concatenate into one arc-length domain; no word-wrap in path mode.
 - Video/audio params don't serialize; relink flow covers them. Fonts DO now
   (custom + picked-local bundle their bytes — see "Persistence & sharing").
 - **Video Source has two source kinds** (`source_kind`: video / sequence). The
@@ -571,6 +638,20 @@ src/app/docs + lib/docs/manifest.
   its own glyph-coverage variant (`fillMode: "image"`, fill over stroke). The
   Auto-Layout `element` output keeps flat fill (deferred CPU render, no input
   texture).
+- **Overlapping-spline compositing** (spec 070526; the Copy-to-Points→Rasterize
+  flow). Three knobs: (1) **Spline Merge** node ([spline-merge.ts](../src/nodes/effect/spline-merge.ts))
+  — single-input self-combine of all subpaths of ONE spline via
+  `splineSelfMerge` in [engine/spline-boolean.ts](../src/engine/spline-boolean.ts)
+  (union = merged silhouette, vs. `splineToGeom`'s even-odd XOR of subpaths;
+  also intersect/exclude). Union treats each subpath as solid, so intra-shape
+  holes fill in. (2) Rasterize Spline's **`overlap`** param: `flatten` (legacy —
+  all fills then all strokes, the "x-ray") vs `layered` (per-subpath fill+stroke
+  in draw order, so a later shape occludes earlier strokes). (3) Rasterize
+  Spline's **`fill_source: ramp`** — per-subpath fill color from a `color_ramp`,
+  indexed by `ramp_by` (index / seeded random / groupIndex). Ramp sampling is
+  the CPU helper `sampleColorRamp` in the engine-side [color-ramp.ts](../src/engine/color-ramp.ts)
+  (where `ColorRampStop`/`COLOR_RAMP_MAX_STOPS` now canonically live — the Color
+  Ramp node re-exports them). A wired `fill` image still overrides the ramp.
 - **Contextual Delete** uses [shortcut-scope.ts](../src/components/effects/shortcut-scope.ts)
   (the last-clicked scoped region wins). It tracks BOTH `pointerdown` and
   `mousedown` in capture phase: overlay handlers that `preventDefault()` their
@@ -613,7 +694,21 @@ src/app/docs + lib/docs/manifest.
   `connectedTypes` is populated only inside the evaluator — so any
   connection-driven socket *rendering* must be param-backed, not
   connectedTypes-driven. (connectedTypes is still the right tool for
-  socket *retyping*, e.g. Math/Transform/Displace.)
+  socket *retyping*, e.g. Math/Transform/Displace.) **Caveat for mode-less
+  poly nodes:** Math/Copy-to-Points anchor their retype on a stored `mode`
+  param (onConnect flips it), so their sockets stay correct across refreshes.
+  **Transform and Displace have NO mode param** — they retype inputs *and*
+  primary output purely from `connectedTypes`. Nothing in the generic UI
+  refresh hands those resolvers a `connectedTypes` map, so their stored
+  `data.primaryOutput` would sit at "image" forever — the engine displaces a
+  wired spline fine, but you couldn't wire the *output* into a spline consumer
+  (and the param-change handler re-reset it every edit). Fixed by a dedicated
+  edges + output-type-signature-keyed `useEffect` in EffectsApp
+  (`CONNECTED_TYPE_RETYPE_NODES`) that recomputes their `connectedTypes` from
+  the current graph (small fixpoint for chains) and writes the resolved
+  inputs/primaryOutput/aux back into `data`; the param-change path skips
+  re-resolving these two so it can't clobber it. Add any future mode-less
+  connectedTypes-retyping node to that set.
 - **Simulation Zone is a Start/End pair sharing a `zone_id`** (minted at
   create time in EffectsApp; re-minted on clone in graph-ops). It's a
   per-frame feedback loop: End stashes its `state` input in

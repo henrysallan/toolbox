@@ -49,7 +49,14 @@ import { newCompositionId } from "@/state/graph";
 // graph-only fragment) synthesizes one "Composition 1" from `scene` and
 // tags every node into it — renders identically to the pre-composition
 // app. See specdocs/062926_compositions-and-project-view.md.
-export const CURRENT_SCHEMA = 5;
+//
+// v6 — Text matte mask: the Text node's `mask` input (a variable-font
+// morph driver) was renamed to `morph_mask`, freeing the name `mask` for
+// the universal matte mask that withMaskInput appends to every image
+// source. Loading a ≤v5 save rewrites Text edges targeting `in:mask` to
+// `in:morph_mask` so their font-morph wiring is preserved (see
+// deserializeGraph). No param changes.
+export const CURRENT_SCHEMA = 6;
 
 export interface SavedNode {
   id: string;
@@ -688,6 +695,33 @@ function migrateLoadedParams(
     params.end_x = 0.5 + 0.5 * dx;
     params.end_y = 0.5 + 0.5 * dy;
   }
+  if (defType === "scene-time" && params.rate === undefined) {
+    // Ping-pong speed switched from `period` (half-cycle, i.e. min→max time, in
+    // the selected unit) to `rate` (full min→max→min cycles per unit). A full
+    // cycle is 2·period, so rate = 1 / (2·period). Applies regardless of mode
+    // (period was only used by ping-pong; harmless otherwise).
+    const period = typeof params.period === "number" ? params.period : 2;
+    params.rate = period > 0 ? 1 / (2 * period) : 0.25;
+    delete params.period;
+    if (params.mode === "pingpong") {
+      // Ping-pong no longer applies the global scale/offset; `amplitude` (a
+      // swing multiplier around the range centre) replaces the old `scale`.
+      // Old output was `(lo + t·span)·scale + offset` — a linear remap of the
+      // ramp — so fold scale/offset into min/max to preserve it exactly, set
+      // amplitude 1, and neutralize scale/offset (so switching to a scale-using
+      // mode later starts clean). Correct for any easing: the fold is a linear
+      // remap of the (possibly eased) ramp, which easing doesn't disturb.
+      const scale = typeof params.scale === "number" ? params.scale : 1;
+      const offset = typeof params.offset === "number" ? params.offset : 0;
+      const lo = typeof params.min === "number" ? params.min : 0;
+      const hi = typeof params.max === "number" ? params.max : 1;
+      params.min = lo * scale + offset;
+      params.max = hi * scale + offset;
+      params.amplitude = 1;
+      params.scale = 1;
+      params.offset = 0;
+    }
+  }
   if (
     defType === "output" &&
     params.startFrame === undefined &&
@@ -817,6 +851,22 @@ export async function deserializeGraph(
     target: se.target,
     targetHandle: se.targetHandle ?? undefined,
   }));
+  // v6 migration: Text's `mask` input (font-morph driver) became
+  // `morph_mask` so the name `mask` is now the universal matte. A ≤v5 save's
+  // `in:mask` edges into a Text node were morph wiring — rewrite them to
+  // `in:morph_mask` so they keep driving the font morph and don't silently
+  // become matte masks. Gated on the schema version so a fresh v6 save's real
+  // matte edges (`in:mask`) are left untouched.
+  if ((saved.schemaVersion ?? 1) < 6) {
+    const textNodeIds = new Set(
+      saved.nodes.filter((n) => n.defType === "text").map((n) => n.id)
+    );
+    for (const e of edges) {
+      if (e.targetHandle === "in:mask" && textNodeIds.has(e.target)) {
+        e.targetHandle = "in:morph_mask";
+      }
+    }
+  }
   // Pre-layers projects wrap into "Layer 1" on load (v4 migration) —
   // done here in the loader so every consumer (editor, live viewer,
   // export) sees the same canonical shape. Saving writes the current shape.

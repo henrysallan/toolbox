@@ -677,7 +677,7 @@ export const textNode: NodeDefinition = {
   category: "image",
   subcategory: "generator",
   description:
-    "Renders text with a built-in transform. Primary is the rasterized image; aux exposes an SDF (jump-flood) and a vector path socket (coming soon).",
+    "Renders text with a built-in transform. Wire a spline into the Path input to lay the text along it (Text on Path). Primary is the rasterized image; aux exposes an SDF (jump-flood) and the glyph outline as a spline.",
   backend: "webgl2",
   // Unstable so font-load pipeline bumps re-enter compute; a local signature
   // cache inside the compute skips re-rasterization when nothing changed.
@@ -686,12 +686,13 @@ export const textNode: NodeDefinition = {
   // "text" entry): drag the box, resize edges/corners with the opposite
   // side anchored. The legacy symmetric transform gizmo is off.
   inputs: [
-    // Optional mask image — consumed only when at least one axis
-    // is in maskMorph mode. The rasterizer renders the text twice
-    // (axis endpoints A and B) and the GPU blend pass mixes
-    // per-pixel using mask.r. Wire any image-producing node (SDF
-    // Rasterize, Image Source, Gradient, etc.) in here.
-    { name: "mask", label: "Mask", type: "image", required: false },
+    // Variable-font MORPH driver (NOT a matte). Consumed only when at least
+    // one axis is in maskMorph mode: the rasterizer renders the text twice
+    // (axis endpoints A and B) and the GPU blend pass mixes per-pixel using
+    // its .r channel. Named `morph_mask` (was `mask` pre-v11) so the socket
+    // literally called `mask` is the universal matte that withMaskInput
+    // appends — see the v11 edge migration in project.ts.
+    { name: "morph_mask", label: "Morph", type: "image", required: false },
     // Optional fill image — when wired and fillMode is "image", the glyph
     // interiors are filled with this image (per `fill_fit`) instead of a
     // flat color. Declared `image`, so mask/element coercions apply.
@@ -700,11 +701,15 @@ export const textNode: NodeDefinition = {
     // With nothing wired the node lays out in its box exactly as before.
     { name: "path", label: "Path", type: "spline", required: false },
   ],
+  // Force the universal `mask` input to matte (multiply alpha) — Text is a
+  // source, so its `fill`/`morph_mask` image inputs must NOT be treated as a
+  // blend base by the mask post-pass. See noMaskBase in types.ts.
+  noMaskBase: true,
   // Field inputs for field-driven animators appear only when that animator is
   // enabled with driver = "field" (see animatorFieldInputs).
   resolveInputs(params) {
     return [
-      { name: "mask", label: "Mask", type: "image", required: false },
+      { name: "morph_mask", label: "Morph", type: "image", required: false },
       { name: "fill", label: "fill", type: "image", required: false },
       { name: "path", label: "Path", type: "spline", required: false },
       ...animatorFieldInputs(params),
@@ -1097,13 +1102,14 @@ export const textNode: NodeDefinition = {
     }
 
     // Mask-driven dispatch. When any axis is in `maskDriven` mode
-    // we read the mask socket back to CPU once and sample it per
+    // we read the morph-mask socket back to CPU once and sample it per
     // character during the per-char layout. The mask's texture
     // identity goes into the sig so wiring / unwiring the socket
-    // reliably re-renders.
+    // reliably re-renders. (This is the font-morph driver, not the
+    // universal matte mask — that one is applied by the evaluator.)
     const axesDict = asAxisDict(params.font_variations);
     const maskMode = hasMaskDriven(axesDict);
-    const maskIn = inputs.mask;
+    const maskIn = inputs.morph_mask;
     const maskImg =
       maskIn && maskIn.kind === "image" ? maskIn : null;
     const maskSigKey = maskMode

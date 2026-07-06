@@ -49,13 +49,15 @@ function outputTypeFor(mode: Mode): SocketType {
   return "image_group";
 }
 
-// Renamed from "Group" (2026-06) to free the name for node groups
-// (subgraph nesting). The old type string stays registered as a load
-// alias in nodes/index.ts; groupIndex metadata keeps its name since
-// it's per-item identity, not nesting.
+// Display name history: "Group" → "Collect" (2026-06, to free "Group" for
+// node-group subgraph nesting) → "Combine" (2026-07, to avoid colliding with
+// Proximity Merge's "Join" mode; "Collect" read as a near-synonym of Join).
+// The internal type string stays "collect" (immutable node identity — saves
+// reference it; the "group" load alias in nodes/index.ts also stays). The
+// groupIndex metadata keeps its name since it's per-item identity, not nesting.
 export const collectNode: NodeDefinition = {
   type: "collect",
-  name: "Collect",
+  name: "Combine",
   category: "utility",
   description:
     "Bundle N homogeneous inputs. For images, produces an image_group. For splines and points, concatenates into a single value with per-subpath / per-point groupIndex metadata matching the socket order (a=0, b=1, c=2…). Nodes that don't understand groupIndex just treat the output as a normal spline/points value; Select by Index and Count Indices key off the tags.",

@@ -205,6 +205,7 @@ export default function LoadGrid({
         />
       </div>
       <div
+        className="thin-scrollbar"
         style={{
           flex: 1,
           minHeight: 0,

@@ -9,7 +9,23 @@ import {
   makeZeroTex,
   type SplineFillFit,
 } from "@/engine/spline-fill";
+import {
+  sampleColorRamp,
+  type ColorRampInterp,
+  type ColorRampStop,
+} from "@/engine/color-ramp";
 import { SPLINE_FILL_INPUT } from "@/nodes/source/spline-raster-aux";
+
+// Deterministic per-subpath hash → [0, 1) for the "random" ramp mode.
+// Index-stable so a static spline keeps its color assignment; the seed
+// reshuffles. Same mix as Copy to Points' hash01.
+function hash01(index: number, seed: number): number {
+  let h = (index * 374761393 + seed * 668265263) | 0;
+  h = (h ^ (h >>> 13)) | 0;
+  h = Math.imul(h, 1274126177);
+  h = h ^ (h >>> 16);
+  return (h >>> 0) / 4294967296;
+}
 
 // One-shot rasterizer that does Fill + Stroke in a single Canvas2D pass.
 // Equivalent to wiring a Fill into a Stroke through a Merge, but skips
@@ -99,17 +115,13 @@ function drawSplineFill(
   }
 }
 
-// Stroke the spline with the configured style (solid / dashed / dotted),
-// cap / join / miter, in `stroke_color`.
-function drawSplineStroke(
+// Apply the configured stroke style (solid / dashed / dotted, cap / join /
+// miter, `stroke_color`) to the 2D context. Split out so both the combined
+// stroke (flatten mode) and the per-subpath stroke (layered mode) share it.
+function applyStrokeStyle(
   c2d: CanvasRenderingContext2D,
-  subpaths: SplineSubpath[],
-  params: Record<string, unknown>,
-  W: number,
-  H: number
+  params: Record<string, unknown>
 ) {
-  const path = buildPath2D(subpaths, W, H, !!params.close_open_paths);
-  if (!path) return;
   const style = (params.style as string) ?? "solid";
   c2d.lineWidth = Math.max(0, (params.thickness as number) ?? 4);
   c2d.strokeStyle = hexToRgba((params.stroke_color as string) ?? "#000000");
@@ -131,7 +143,126 @@ function drawSplineStroke(
     c2d.setLineDash([]);
     c2d.lineCap = (params.cap as CanvasLineCap) ?? ("round" as CanvasLineCap);
   }
+}
+
+// Stroke the whole spline (all subpaths) in one pass, in `stroke_color`.
+function drawSplineStroke(
+  c2d: CanvasRenderingContext2D,
+  subpaths: SplineSubpath[],
+  params: Record<string, unknown>,
+  W: number,
+  H: number
+) {
+  const path = buildPath2D(subpaths, W, H, !!params.close_open_paths);
+  if (!path) return;
+  applyStrokeStyle(c2d, params);
   c2d.stroke(path);
+}
+
+// Builds a per-subpath fill-color resolver. With `fill_source: "ramp"` each
+// subpath samples the `fill_ramp` by its ordinal index / a seeded hash / its
+// groupIndex; otherwise every subpath uses the flat `fill_color`.
+function makeFillColorFn(
+  subpaths: SplineSubpath[],
+  params: Record<string, unknown>
+): (i: number, sub: SplineSubpath) => string {
+  const flat = hexToRgba((params.fill_color as string) ?? "#ffffff");
+  if ((params.fill_source as string) !== "ramp") return () => flat;
+
+  const stops = Array.isArray(params.fill_ramp)
+    ? (params.fill_ramp as ColorRampStop[])
+    : [];
+  const interp = ((params.ramp_interp as string) ?? "linear") as ColorRampInterp;
+  const by = (params.ramp_by as string) ?? "index";
+  const seed = Math.floor((params.ramp_seed as number) ?? 0);
+  const N = subpaths.length;
+
+  let groups: number[] = [];
+  if (by === "group") {
+    const set = new Set<number>();
+    for (const s of subpaths) set.add(s.groupIndex ?? 0);
+    groups = Array.from(set).sort((a, b) => a - b);
+  }
+
+  return (i, sub) => {
+    let t: number;
+    if (by === "random") {
+      t = hash01(i, seed);
+    } else if (by === "group") {
+      const gi = groups.indexOf(sub.groupIndex ?? 0);
+      t = groups.length > 1 ? gi / (groups.length - 1) : 0;
+    } else {
+      t = N > 1 ? i / (N - 1) : 0;
+    }
+    return sampleColorRamp(stops, t, interp);
+  };
+}
+
+// Draw the flat (non-image) fill + stroke composite into the 2D context,
+// honoring the overlap mode:
+//   flatten — all fills, then all strokes on top (subpath strokes always
+//             visible — the classic "x-ray" over the union fill).
+//   layered — each subpath filled then stroked in order, so a later shape's
+//             opaque fill occludes earlier shapes' strokes (solid stacking).
+// Per-subpath fill color comes from makeFillColorFn (flat or ramp).
+function drawSplineFlat(
+  c2d: CanvasRenderingContext2D,
+  subpaths: SplineSubpath[],
+  params: Record<string, unknown>,
+  W: number,
+  H: number,
+  enableFill: boolean,
+  enableStroke: boolean
+) {
+  const fillColorAt = makeFillColorFn(subpaths, params);
+  const useRamp = (params.fill_source as string) === "ramp";
+  const layered = (params.overlap as string) === "layered";
+  const closeStroke = !!params.close_open_paths;
+
+  if (layered) {
+    for (let i = 0; i < subpaths.length; i++) {
+      const sub = subpaths[i];
+      if (enableFill) {
+        const p = buildPath2D([sub], W, H, true);
+        if (p) {
+          c2d.fillStyle = fillColorAt(i, sub);
+          c2d.fill(p);
+        }
+      }
+      if (enableStroke) {
+        const p = buildPath2D([sub], W, H, closeStroke);
+        if (p) {
+          applyStrokeStyle(c2d, params);
+          c2d.stroke(p);
+        }
+      }
+    }
+    return;
+  }
+
+  // flatten: all fills first, then all strokes on top.
+  if (enableFill) {
+    // Ramp needs distinct per-subpath colors, and stacked subpaths union;
+    // both draw per subpath. Only flat-color + stack-off collapses to one
+    // even-odd fill (nested subpaths punch holes).
+    if (useRamp || params.stack_subpaths !== false) {
+      for (let i = 0; i < subpaths.length; i++) {
+        const sub = subpaths[i];
+        const p = buildPath2D([sub], W, H, true);
+        if (p) {
+          c2d.fillStyle = fillColorAt(i, sub);
+          c2d.fill(p);
+        }
+      }
+    } else {
+      const p = buildPath2D(subpaths, W, H, true);
+      if (p) {
+        c2d.fillStyle = fillColorAt(0, subpaths[0]);
+        c2d.fill(p, (params.fill_rule as CanvasFillRule) ?? "evenodd");
+      }
+    }
+  }
+  if (enableStroke) drawSplineStroke(c2d, subpaths, params, W, H);
 }
 
 export const rasterizeSplineNode: NodeDefinition = {
@@ -149,6 +280,20 @@ export const rasterizeSplineNode: NodeDefinition = {
     SPLINE_FILL_INPUT,
   ],
   params: [
+    // ---- Overlap ----
+    // How overlapping subpaths composite. "flatten" (legacy) draws all fills
+    // then all strokes on top, so every stroke floats over the union fill
+    // (the "x-ray" look). "layered" fills + strokes each subpath in order, so
+    // a later shape's opaque fill occludes earlier shapes' strokes — solid
+    // stacked cards, the intended combo with a per-spline ramp fill.
+    {
+      name: "overlap",
+      label: "Overlap",
+      type: "enum",
+      options: ["flatten", "layered"],
+      default: "flatten",
+    },
+
     // ---- Fill ----
     {
       name: "enable_fill",
@@ -156,12 +301,70 @@ export const rasterizeSplineNode: NodeDefinition = {
       type: "boolean",
       default: true,
     },
+    // Flat color vs. a per-subpath color ramp. Ramp colors each subpath by
+    // its ordinal index / a seeded hash / its groupIndex (see ramp_by). A
+    // wired `fill` image still overrides both.
+    {
+      name: "fill_source",
+      label: "Fill source",
+      type: "enum",
+      options: ["flat", "ramp"],
+      default: "flat",
+      visibleIf: (p) => p.enable_fill !== false,
+    },
     {
       name: "fill_color",
       label: "Fill color",
       type: "color",
       default: "#ffffff",
-      visibleIf: (p) => p.enable_fill !== false,
+      visibleIf: (p) =>
+        p.enable_fill !== false && p.fill_source !== "ramp",
+    },
+    {
+      name: "fill_ramp",
+      label: "Fill ramp",
+      type: "color_ramp",
+      default: [
+        { id: "stop-a", position: 0, color: "#ffffff" },
+        { id: "stop-b", position: 1, color: "#000000" },
+      ] as ColorRampStop[],
+      visibleIf: (p) =>
+        p.enable_fill !== false && p.fill_source === "ramp",
+    },
+    // Which value drives each subpath's position along the ramp.
+    //   index  — ordinal 0→N-1 mapped left→right (gradient across copies)
+    //   random — seeded per-subpath hash (scattered; seed reshuffles)
+    //   group  — the subpath's groupIndex, normalized over distinct groups
+    {
+      name: "ramp_by",
+      label: "Ramp by",
+      type: "enum",
+      options: ["index", "random", "group"],
+      default: "index",
+      visibleIf: (p) =>
+        p.enable_fill !== false && p.fill_source === "ramp",
+    },
+    {
+      name: "ramp_seed",
+      label: "Seed",
+      type: "scalar",
+      min: 0,
+      max: 9999,
+      step: 1,
+      default: 0,
+      visibleIf: (p) =>
+        p.enable_fill !== false &&
+        p.fill_source === "ramp" &&
+        p.ramp_by === "random",
+    },
+    {
+      name: "ramp_interp",
+      label: "Ramp interpolation",
+      type: "enum",
+      options: ["linear", "ease", "constant"],
+      default: "linear",
+      visibleIf: (p) =>
+        p.enable_fill !== false && p.fill_source === "ramp",
     },
     {
       name: "fill_fit",
@@ -171,12 +374,17 @@ export const rasterizeSplineNode: NodeDefinition = {
       default: "window",
       visibleIf: (p) => p.enable_fill !== false,
     },
+    // Stack/fill-rule only matter for the flatten mode with a flat color —
+    // layered and ramp both draw per subpath.
     {
       name: "stack_subpaths",
       label: "Stack subpaths",
       type: "boolean",
       default: true,
-      visibleIf: (p) => p.enable_fill !== false,
+      visibleIf: (p) =>
+        p.enable_fill !== false &&
+        p.overlap !== "layered" &&
+        p.fill_source !== "ramp",
     },
     {
       name: "fill_rule",
@@ -185,7 +393,10 @@ export const rasterizeSplineNode: NodeDefinition = {
       options: ["evenodd", "nonzero"],
       default: "evenodd",
       visibleIf: (p) =>
-        p.enable_fill !== false && p.stack_subpaths === false,
+        p.enable_fill !== false &&
+        p.stack_subpaths === false &&
+        p.overlap !== "layered" &&
+        p.fill_source !== "ramp",
     },
 
     // ---- Stroke ----
@@ -316,8 +527,14 @@ export const rasterizeSplineNode: NodeDefinition = {
       const sig = JSON.stringify({
         mode: "flat",
         subRef: src.subpaths,
+        ov: params.overlap,
         ef: enableFill,
+        fsrc: params.fill_source,
         fc: params.fill_color,
+        ramp: params.fill_source === "ramp" ? params.fill_ramp : null,
+        rby: params.ramp_by,
+        rseed: params.ramp_seed,
+        rint: params.ramp_interp,
         stack: params.stack_subpaths,
         fr: params.fill_rule,
         es: enableStroke,
@@ -343,18 +560,15 @@ export const rasterizeSplineNode: NodeDefinition = {
         const c2d = canvas.getContext("2d");
         if (c2d) {
           c2d.clearRect(0, 0, W, H);
-          // Fill first so the stroke sits on top.
-          if (enableFill) {
-            drawSplineFill(
-              c2d,
-              src.subpaths,
-              params,
-              W,
-              H,
-              hexToRgba((params.fill_color as string) ?? "#ffffff")
-            );
-          }
-          if (enableStroke) drawSplineStroke(c2d, src.subpaths, params, W, H);
+          drawSplineFlat(
+            c2d,
+            src.subpaths,
+            params,
+            W,
+            H,
+            enableFill,
+            enableStroke
+          );
           uploadCanvas(gl, state.rasterTex!, canvas);
         }
         state.lastSig = sig;

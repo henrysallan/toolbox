@@ -5,7 +5,11 @@
 //   uniform  → t = Amount                       (whole-word)
 //   field    → t = Amount × field(glyphCentre)  (Amount masters a spatial image)
 //   cascade  → t = sweep(Amount, charIndex, …)  (range-selector / type-on)
-// and the property value is `lerp(min, max, t)`. Animators stack additively.
+// then an optional per-animator Easing shapes that t: `t = ease(t)`. Doing this
+// AFTER the cascade split is what makes each glyph ease individually — easing
+// the master Amount upstream (e.g. a Scene Time ping-pong wired into Amount)
+// only warps the group wavefront, not the per-glyph curve. The property value
+// is `lerp(min, max, t)`. Animators stack additively.
 // See specdocs/062526_text-animators.md.
 //
 // Pure module — no GL, no DOM. The Text node parses params into TextAnimators
@@ -13,6 +17,7 @@
 // resolved per-glyph result in its modulated (per-character) draw path.
 
 import type { InputSocketDef, ParamDef } from "@/engine/types";
+import { EASING_OPTIONS, applyEasing } from "@/engine/easing";
 
 // Property keys. `typeon` is a fixed 0→1 opacity reveal (always cascade);
 // `tracking` is index-driven only (it changes advances, so it can't sample a
@@ -44,14 +49,23 @@ interface CascadeCfg {
   seed: number;
 }
 
-interface BaseCfg extends CascadeCfg {
+// Per-character easing applied to the driver's 0→1 output. Shaping the value
+// AFTER the cascade split (`ease(sweep(...))`) is what makes each glyph ease
+// individually — easing the master Amount upstream (e.g. via Scene Time) only
+// warps the group wavefront. `linear` intensity 1 = identity (no change).
+interface EaseCfg {
+  easing: string;
+  easeIntensity: number;
+}
+
+interface BaseCfg extends CascadeCfg, EaseCfg {
   enabled: boolean;
   amount: number;
   driver: AnimDriver;
 }
 
 export interface TextAnimators {
-  typeon?: CascadeCfg & { enabled: boolean; amount: number };
+  typeon?: CascadeCfg & EaseCfg & { enabled: boolean; amount: number };
   opacity?: BaseCfg & { min: number; max: number };
   position?: BaseCfg & { minX: number; maxX: number; minY: number; maxY: number };
   scale?: BaseCfg & { min: number; max: number };
@@ -117,15 +131,23 @@ function sweep(amount: number, i: number, total: number, c: CascadeCfg): number 
 }
 
 function driveT(c: BaseCfg, i: number, total: number, field: number | null): number {
+  let t: number;
   switch (c.driver) {
     case "field":
-      return clamp01(c.amount * (field ?? 1));
+      t = clamp01(c.amount * (field ?? 1));
+      break;
     case "cascade":
-      return sweep(c.amount, i, total, c);
+      t = sweep(c.amount, i, total, c);
+      break;
     case "uniform":
     default:
-      return clamp01(c.amount);
+      t = clamp01(c.amount);
+      break;
   }
+  // Ease the per-character value (identity at `linear`). For `cascade` this
+  // eases each glyph through its own window; for `uniform`/`field` it shapes
+  // the shared response.
+  return applyEasing(c.easing, t, c.easeIntensity);
 }
 
 // hex (#rgb / #rrggbb) → [r,g,b] 0..255; null on parse failure.
@@ -180,7 +202,8 @@ export function resolveGlyphAnim(
   };
 
   if (anim.typeon?.enabled) {
-    out.alpha *= sweep(anim.typeon.amount, i, total, anim.typeon);
+    const t = sweep(anim.typeon.amount, i, total, anim.typeon);
+    out.alpha *= applyEasing(anim.typeon.easing, t, anim.typeon.easeIntensity);
   }
   if (anim.opacity?.enabled) {
     const t = driveT(anim.opacity, i, total, fields.opacity ?? null);
@@ -221,12 +244,20 @@ function cascadeFrom(params: Record<string, unknown>, p: AnimProp): CascadeCfg {
   };
 }
 
+function easeFrom(params: Record<string, unknown>, p: AnimProp): EaseCfg {
+  return {
+    easing: str(params[`anim_${p}_easing`], "linear"),
+    easeIntensity: num(params[`anim_${p}_ease_intensity`], 1),
+  };
+}
+
 function baseFrom(params: Record<string, unknown>, p: AnimProp): BaseCfg {
   return {
     enabled: bool(params[`anim_${p}_enabled`]),
     amount: num(params[`anim_${p}_amount`], 1),
     driver: str(params[`anim_${p}_driver`], "uniform") as AnimDriver,
     ...cascadeFrom(params, p),
+    ...easeFrom(params, p),
   };
 }
 
@@ -236,6 +267,7 @@ export function parseAnimators(params: Record<string, unknown>): TextAnimators {
       enabled: bool(params.anim_typeon_enabled),
       amount: num(params.anim_typeon_amount, 1),
       ...cascadeFrom(params, "typeon"),
+      ...easeFrom(params, "typeon"),
     },
     opacity: {
       ...baseFrom(params, "opacity"),
@@ -390,6 +422,32 @@ function commonRows(
       step: 1,
       default: 0,
       visibleIf: isRandom,
+      group: p,
+    },
+    // Per-character easing on the driver's 0→1 output — this is what eases each
+    // glyph individually (vs. easing the Amount upstream, which only warps the
+    // group wavefront). Defaults to `linear` so existing animators are
+    // unchanged.
+    {
+      name: `anim_${p}_easing`,
+      label: `Easing`,
+      type: "enum",
+      options: EASING_OPTIONS,
+      default: "linear",
+      visibleIf: en,
+      group: p,
+    },
+    {
+      name: `anim_${p}_ease_intensity`,
+      label: `Easing intensity`,
+      type: "scalar",
+      min: 0,
+      max: 3,
+      softMax: 2,
+      step: 0.01,
+      default: 1,
+      // Only meaningful once a non-linear curve is chosen.
+      visibleIf: (q) => en(q) && q[`anim_${p}_easing`] !== "linear",
       group: p,
     }
   );

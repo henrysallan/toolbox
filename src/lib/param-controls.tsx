@@ -1520,19 +1520,25 @@ export function Dropdown({
       if (popRef.current?.contains(t as globalThis.Node)) return;
       setOpen(false);
     };
-    // Any scroll (the panel, a parent) or resize invalidates the fixed
-    // position — simplest correct behavior is to close.
+    // A scroll of the panel or a parent invalidates the fixed position, so
+    // close — but NOT when the scroll happens inside the popup's own option
+    // list (that capture-phase event bubbles through `true`), or the list
+    // could never be scrolled.
+    const onScroll = (e: Event) => {
+      if (popRef.current?.contains(e.target as globalThis.Node)) return;
+      setOpen(false);
+    };
     const onMove = () => setOpen(false);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
     window.addEventListener("mousedown", onDown);
-    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onMove);
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onMove);
       window.removeEventListener("keydown", onKey);
     };
@@ -1955,6 +1961,57 @@ export function menuItemStyle(active?: boolean): React.CSSProperties {
   };
 }
 
+// Clickable toggle pill — the interactive control for `boolean` params. Matches
+// the display-only SwitchPill used by the collapsible group-enable headers
+// (ParamPanel) so the two read as the same control across the app.
+export function TogglePill({
+  on,
+  onChange,
+  disabled,
+}: {
+  on: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      style={{
+        display: "inline-block",
+        position: "relative",
+        width: 26,
+        height: 15,
+        borderRadius: 999,
+        boxSizing: "border-box",
+        padding: 0,
+        flexShrink: 0,
+        background: on ? "#3b82f6" : "#27272a",
+        border: `1px solid ${on ? "#3b82f6" : "#3f3f46"}`,
+        cursor: disabled ? "default" : "pointer",
+        transition: "background 0.14s ease, border-color 0.14s ease",
+      }}
+    >
+      <span
+        style={{
+          position: "absolute",
+          top: 1,
+          left: on ? 12 : 1,
+          width: 11,
+          height: 11,
+          borderRadius: 999,
+          background: on ? "#fff" : "#a1a1aa",
+          transition: "left 0.14s ease, background 0.14s ease",
+          pointerEvents: "none",
+        }}
+      />
+    </button>
+  );
+}
+
 export function ParamControl({
   param,
   value,
@@ -2008,13 +2065,7 @@ export function ParamControl({
   }
 
   if (param.type === "boolean") {
-    return (
-      <input
-        type="checkbox"
-        checked={!!value}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-    );
+    return <TogglePill on={!!value} onChange={onChange} />;
   }
 
   if (param.type === "string") {

@@ -100,15 +100,13 @@ function resolveBoundarySource(
       cur = { source: inner.source, sourceHandle: inner.sourceHandle };
     } else if (n.type === GROUP_INPUT_TYPE) {
       // Interior face of a group/layer input → the exterior producer.
-      // For layers the only Group Input socket is `backdrop`, which
-      // mirrors the layer's exterior `stack` input.
+      // Layers map the reserved `backdrop` socket onto the exterior `stack`
+      // input; any other (user-minted) Layer Input socket has a same-named
+      // exterior input on the layer node (layer.resolveInputs surfaces it),
+      // so it resolves by name just like a plain group's sockets.
       const parent = n.parentId ? byId.get(n.parentId) : undefined;
       const exteriorSocket =
-        parent?.type === LAYER_TYPE
-          ? name === "backdrop"
-            ? "stack"
-            : null
-          : name;
+        parent?.type === LAYER_TYPE && name === "backdrop" ? "stack" : name;
       const outer =
         exteriorSocket != null && n.parentId
           ? edgeIntoSocket.get(socketKey(n.parentId, exteriorSocket))

@@ -1,4 +1,10 @@
-import type { ImageValue, NodeDefinition } from "@/engine/types";
+import type {
+  ImageValue,
+  InputSocketDef,
+  NodeDefinition,
+  SocketType,
+} from "@/engine/types";
+import { readGroupInterface } from "@/engine/groups";
 import {
   BLEND_FS,
   BLEND_MODE_ORDER,
@@ -43,6 +49,30 @@ export const layerNode: NodeDefinition = {
     { name: "content", type: "image", required: false, hidden: true },
     { name: "audio", type: "audio", required: false },
   ],
+  // Fixed interface (stack / hidden content / audio) PLUS any extra input
+  // sockets the user minted on the interior Layer Input node. graph-ops'
+  // syncGroupInterface writes those onto the layer node's `interface` param
+  // (same as a plain group), and — like node-group.resolveInputs — we surface
+  // them here so the composition can wire into the layer's interior. The
+  // reserved `backdrop` socket is already represented by `stack`, so it's
+  // excluded; the flatten pass (resolveBoundarySource) splices each minted
+  // input straight through to its interior consumers at eval time.
+  resolveInputs(params): InputSocketDef[] {
+    const fixed: InputSocketDef[] = [
+      { name: "stack", type: "image", required: false },
+      { name: "content", type: "image", required: false, hidden: true },
+      { name: "audio", type: "audio", required: false },
+    ];
+    // Names already owned by the fixed interface — `backdrop` maps to `stack`,
+    // so skip it too. Collisions are dropped rather than duplicated.
+    const used = new Set([...fixed.map((i) => i.name), "backdrop"]);
+    for (const s of readGroupInterface(params).inputs) {
+      if (used.has(s.name)) continue;
+      used.add(s.name);
+      fixed.push({ name: s.name, type: s.type as SocketType, required: false });
+    }
+    return fixed;
+  },
   params: [
     {
       name: "blendMode",

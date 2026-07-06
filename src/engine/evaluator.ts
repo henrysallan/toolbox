@@ -942,9 +942,13 @@ export function evaluateGraph(
           result.primary &&
           result.primary.kind === "image"
         ) {
-          const firstImgInput = defInputs.find(
-            (i) => i.type === "image" && i.name !== MASK_INPUT_NAME
-          );
+          // `noMaskBase` sources (e.g. Text) always matte — never treat one
+          // of their image inputs as a blend base.
+          const firstImgInput = def.noMaskBase
+            ? undefined
+            : defInputs.find(
+                (i) => i.type === "image" && i.name !== MASK_INPUT_NAME
+              );
           const base = firstImgInput ? inputs[firstImgInput.name] : undefined;
           const baseImg =
             base && base.kind === "image" ? (base as ImageValue) : undefined;

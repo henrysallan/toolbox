@@ -55,7 +55,7 @@ export const proximityMergeNode: NodeDefinition = {
   name: "Proximity Join/Merge",
   category: "utility",
   description:
-    "Combine multiple splines (or point sets) and weld the parts that fall within a distance threshold in UV space. Join stitches open subpath endpoints into continuous / closed paths (a real topology change); Snap clusters nearby anchors/points to their shared centroid. Inputs auto-grow — there's always one spare empty socket — and a single socket also accepts a Collect'd spline group. Animate exposes a `t` scalar (0..1) that slides parts together, committing the join/collapse at t=1 with no pop.",
+    "Combine multiple splines (or point sets) and weld the parts that fall within a distance threshold in UV space. Join stitches open subpath endpoints into continuous / closed paths (a real topology change); Snap clusters nearby anchors/points to their shared centroid. Inputs auto-grow — there's always one spare empty socket — and a single socket also accepts a spline group from the Combine node. Animate exposes a `t` scalar (0..1) that slides parts together, committing the join/collapse at t=1 with no pop.",
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   inputs: [{ name: "in", type: "spline", required: false }],

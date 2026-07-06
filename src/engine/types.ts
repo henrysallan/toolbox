@@ -1101,6 +1101,14 @@ export interface NodeDefinition {
   // engine/conventions.ts). For organizational nodes (Render Queue) that
   // produce no image a mask socket is meaningless.
   noMaskInput?: boolean;
+  // Force the universal `mask` input to always MATTE (multiply the output's
+  // alpha) rather than blend the output against the node's first image input.
+  // The default mask post-pass treats a node's first non-mask image input as
+  // a "base" and does `mix(base, output, mask)` — correct for effects (reveal
+  // the effect through the mask), wrong for image SOURCES that happen to take
+  // image inputs for other purposes (Text's `fill`/font-morph inputs). Such
+  // nodes set this so the mask cuts the source out by its own alpha.
+  noMaskBase?: boolean;
   // When false, the evaluator will not cache this node's output — it is
   // assumed to read time or other external state that isn't captured by its
   // params/inputs fingerprint. Defaults to true (cacheable).

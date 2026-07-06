@@ -19,6 +19,10 @@ import { subpathToBeziers } from "./spline-math";
 
 export type SplineBooleanOp = "subtract" | "union" | "intersect" | "exclude";
 
+// Self-combine op for a single spline's own subpaths (Spline Merge). Unlike
+// the A/B boolean above, this reduces all subpaths of ONE spline together.
+export type SplineMergeOp = "union" | "intersect" | "exclude";
+
 // polygon-clipping rounds coordinates to a grid derived from their
 // magnitude; [0,1] inputs sit right at the precision floor. Work in a
 // scaled-up integer-ish space and divide back out on the way home.
@@ -146,6 +150,53 @@ export function splineBoolean(
       break;
     default:
       result = [];
+  }
+  return geomToSpline(result);
+}
+
+// Self-combine ALL subpaths of a single spline under one op and return the
+// resulting (polygonal) spline. This is the difference from `splineToGeom`,
+// which XORs subpaths together (even-odd fill): here `union` reduces every
+// subpath's filled region into a true merged silhouette (overlaps disappear
+// instead of punching even-odd holes), so a stroke of the result traces one
+// clean outer outline. `intersect` keeps only the region common to all
+// subpaths; `exclude` is the even-odd XOR (i.e. the old splineToGeom
+// behavior, exposed as an op).
+//
+// Caveat: every subpath is treated as a solid region, so holes inside a
+// single instance (e.g. the centre of an "O") fill in under `union`. That's
+// the intended silhouette behavior for scattered/copied shapes.
+export function splineSelfMerge(
+  spline: SplineValue,
+  op: SplineMergeOp,
+  steps: number
+): SplineValue {
+  const rings = spline.subpaths
+    .filter((s) => s.anchors.length >= 2)
+    .map((s) => subpathToRing(s, steps))
+    .filter((r) => r.length >= 3);
+  if (rings.length === 0) return { kind: "spline", subpaths: [] };
+
+  // Each subpath becomes its own single-ring polygon; combine them all.
+  // First arg is required (non-rest), so split it off the spread — same
+  // shape as splineToGeom's xor call.
+  const geoms = rings.map((r) => [r] as [Ring]);
+  const [first, ...rest] = geoms;
+  let result: MultiPolygon;
+  switch (op) {
+    case "intersect":
+      // A single subpath just self-cleans; two or more intersect down.
+      result = polygonClipping.intersection(first, ...rest);
+      break;
+    case "exclude":
+      result = polygonClipping.xor(first, ...rest);
+      break;
+    case "union":
+    default:
+      // union() with no rest self-cleans a lone ring (resolves
+      // self-intersections), matching splineToGeom's single-ring path.
+      result = polygonClipping.union(first, ...rest);
+      break;
   }
   return geomToSpline(result);
 }

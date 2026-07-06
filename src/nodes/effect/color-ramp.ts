@@ -1,15 +1,13 @@
 import type { NodeDefinition } from "@/engine/types";
-
-export interface ColorRampStop {
-  id: string;
-  position: number; // 0..1
-  color: string;    // hex, e.g. "#ff00aa"
-  // Per-stop opacity in [0, 1]. Optional so stops saved before alpha
-  // support keep working — treat `undefined` as fully opaque.
-  alpha?: number;
-}
-
-export const COLOR_RAMP_MAX_STOPS = 16;
+// The canonical model now lives engine-side (engine/color-ramp.ts) so engine
+// rasterizers can sample a ramp without an engine→nodes import. Re-exported
+// here for back-compat with existing importers (shape-cells, param-controls).
+import {
+  COLOR_RAMP_MAX_STOPS,
+  type ColorRampStop,
+} from "@/engine/color-ramp";
+export { COLOR_RAMP_MAX_STOPS };
+export type { ColorRampStop };
 
 export function newStopId(): string {
   return `stop-${Math.random().toString(36).slice(2, 8)}`;

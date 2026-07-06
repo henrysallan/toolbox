@@ -194,7 +194,7 @@ import {
   type ProjectTimeline,
 } from "@/engine/keyframes";
 import type { ClipBlock } from "@/engine/clips";
-import type { PointsValue } from "@/engine/types";
+import type { PointsValue, SocketType, ResolveCtx } from "@/engine/types";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
 
 registerAllNodes();
@@ -365,6 +365,14 @@ function resolveFrameRange(params: Record<string, unknown>): {
   const durationFrames = Math.max(1, endFrame - startFrame);
   return { startFrame, endFrame: startFrame + durationFrames, durationFrames };
 }
+
+// Node types that retype their inputs AND primary output purely from
+// `connectedTypes` (what's wired in) with NO stored `mode` param to fall back
+// on. Copy-to-Points / Math also retype, but they're param-backed (onConnect
+// flips their `mode`), so their stored sockets stay correct. These two have no
+// such anchor, so an edges-keyed effect must resolve + write their sockets, and
+// the param-change path must not overwrite them without `connectedTypes`.
+const CONNECTED_TYPE_RETYPE_NODES = new Set(["transform", "displace"]);
 
 export default function EffectsApp({
   initialProject,
@@ -1645,6 +1653,124 @@ function EffectsShell({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [edges]);
+
+  // Sync the socket types of the connectedTypes-retyping nodes that have NO
+  // stored `mode` param (Transform, Displace). Their inputs + primary output
+  // retype from whatever's wired (image / spline / points) via resolveInputs /
+  // resolvePrimaryOutput reading `connectedTypes` — but the generic socket-
+  // refresh paths call those resolvers WITHOUT a connectedTypes map, so the
+  // node's stored `data.primaryOutput` stays "image". Consequence: the engine
+  // displaces/transforms a wired spline correctly, but the node's OUTPUT socket
+  // still reads "image" in the UI, so you can't wire the result into a spline
+  // consumer. Derive the types from edges here (undo-safe — edges are in
+  // history; no pushGraph needed) and write the resolved sockets back. The
+  // small fixpoint lets a chain of these nodes (Transform → Displace) converge
+  // in one pass.
+  // Re-run the poly-socket sync when edges change OR any node's output type
+  // changes — an upstream mode flip (Copy-to-Points image→spline, Math) can
+  // change what a Transform/Displace sees without touching edges. Positions /
+  // most param edits don't alter this string, so drags don't re-run it; the
+  // effect's changed-guard makes the extra run a no-op once converged.
+  const polyOutTypeSig = useMemo(
+    () => nodes.map((n) => `${n.id}:${n.data.primaryOutput ?? ""}`).join("|"),
+    [nodes]
+  );
+  useEffect(() => {
+    setNodes((prev) => {
+      if (!prev.some((n) => CONNECTED_TYPE_RETYPE_NODES.has(n.data.defType))) {
+        return prev;
+      }
+      const byId = new Map(prev.map((n) => [n.id, n]));
+      // Working map of each node's resolved primary-output type, seeded from
+      // the stored values and iterated so poly-node chains settle.
+      const outType = new Map<string, string | null | undefined>();
+      for (const n of prev) {
+        outType.set(n.id, n.data.primaryOutput);
+      }
+      const connectedTypesOf = (
+        nodeId: string
+      ): Record<string, SocketType | undefined> => {
+        const ct: Record<string, SocketType | undefined> = {};
+        for (const e of edges) {
+          if (e.target !== nodeId) continue;
+          const tp = parseTargetHandleKind(e.targetHandle ?? "");
+          if (tp?.kind !== "input") continue;
+          const src = byId.get(e.source);
+          if (!src) continue;
+          let t: string | null | undefined;
+          if (e.sourceHandle === "out:primary") {
+            t = outType.get(src.id);
+          } else if (e.sourceHandle?.startsWith("out:aux:")) {
+            const an = e.sourceHandle.slice("out:aux:".length);
+            t = src.data.auxOutputs.find((a) => a.name === an)?.type;
+          }
+          if (t) ct[tp.name] = t as SocketType;
+        }
+        return ct;
+      };
+      for (let pass = 0; pass < prev.length; pass++) {
+        let moved = false;
+        for (const n of prev) {
+          if (!CONNECTED_TYPE_RETYPE_NODES.has(n.data.defType)) continue;
+          const def = getNodeDef(n.data.defType);
+          if (!def) continue;
+          const rc: ResolveCtx = { connectedTypes: connectedTypesOf(n.id) };
+          const next =
+            def.resolvePrimaryOutput?.(n.data.params, rc) ?? def.primaryOutput;
+          if (outType.get(n.id) !== next) {
+            outType.set(n.id, next);
+            moved = true;
+          }
+        }
+        if (!moved) break;
+      }
+      let changed = false;
+      const nextNodes = prev.map((n) => {
+        if (!CONNECTED_TYPE_RETYPE_NODES.has(n.data.defType)) return n;
+        const def = getNodeDef(n.data.defType);
+        if (!def) return n;
+        const rc: ResolveCtx = { connectedTypes: connectedTypesOf(n.id) };
+        const nextPrimary =
+          def.resolvePrimaryOutput?.(n.data.params, rc) ?? def.primaryOutput;
+        const nextInputs = withMaskInput(
+          def.resolveInputs?.(n.data.params, rc) ?? def.inputs,
+          def
+        ).map((i) => ({
+          name: i.name,
+          label: i.label,
+          type: i.type,
+          hidden: i.hidden,
+        }));
+        const nextAux = (
+          def.resolveAuxOutputs?.(n.data.params) ?? def.auxOutputs
+        ).map((a) => ({
+          name: a.name,
+          label: a.label,
+          type: a.type,
+          disabled: a.disabled,
+        }));
+        if (
+          n.data.primaryOutput === nextPrimary &&
+          JSON.stringify(n.data.inputs) === JSON.stringify(nextInputs) &&
+          JSON.stringify(n.data.auxOutputs) === JSON.stringify(nextAux)
+        ) {
+          return n;
+        }
+        changed = true;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            primaryOutput: nextPrimary,
+            inputs: nextInputs,
+            auxOutputs: nextAux,
+          },
+        };
+      });
+      return changed ? nextNodes : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [edges, polyOutTypeSig]);
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -3646,10 +3772,18 @@ function EffectsShell({
               }
             }
           }
-          const resolved = def?.resolveInputs?.(nextParams);
-          const nextPrimary =
-            def?.resolvePrimaryOutput?.(nextParams) ?? n.data.primaryOutput;
-          const resolvedAux = def?.resolveAuxOutputs?.(nextParams);
+          // Transform / Displace retype purely from connectedTypes (no stored
+          // mode) — the edges-keyed effect owns their sockets. Re-resolving
+          // here WITHOUT connectedTypes would reset their output back to
+          // "image" on every param edit, so leave their sockets untouched.
+          const connTyped = CONNECTED_TYPE_RETYPE_NODES.has(n.data.defType);
+          const resolved = connTyped ? undefined : def?.resolveInputs?.(nextParams);
+          const nextPrimary = connTyped
+            ? n.data.primaryOutput
+            : def?.resolvePrimaryOutput?.(nextParams) ?? n.data.primaryOutput;
+          const resolvedAux = connTyped
+            ? undefined
+            : def?.resolveAuxOutputs?.(nextParams);
           // Loading a clip renames the node to the file (extension dropped)
           // so the network reads as "sunset" / "clip-03" instead of a wall
           // of identical "Image Source" labels. Image bitmaps stash the
@@ -4005,6 +4139,7 @@ function EffectsShell({
         detail.kind === "autolayoutAddItem" ||
         detail.kind === "queueAddItem" ||
         detail.kind === "exprAddInput" ||
+        detail.kind === "collectAddInput" ||
         detail.kind === "trailsReset"
       ) {
         pushGraph(getGraphSnapshot());
@@ -4157,6 +4292,37 @@ function EffectsShell({
             ];
             const def = getNodeDef(n.data.defType);
             const nextParams = { ...n.data.params, items: nextItems };
+            const resolved = def?.resolveInputs?.(nextParams);
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                params: nextParams,
+                inputs: resolved
+                  ? withMaskInput(resolved, def).map((i) => ({
+                      name: i.name,
+                      label: i.label,
+                      type: i.type,
+                      hidden: i.hidden,
+                    }))
+                  : n.data.inputs,
+              },
+            };
+          })
+        );
+      } else if (detail.kind === "collectAddInput") {
+        // Combine (collect) grows via its `count` param (1–26). Bump it by
+        // one and re-resolve sockets — same shape as the other socket-adders.
+        setNodes((prev) =>
+          prev.map((n) => {
+            if (n.id !== detail.id) return n;
+            const cur = Math.max(
+              1,
+              Math.floor((n.data.params.count as number) ?? 2)
+            );
+            const nextCount = Math.min(26, cur + 1);
+            const def = getNodeDef(n.data.defType);
+            const nextParams = { ...n.data.params, count: nextCount };
             const resolved = def?.resolveInputs?.(nextParams);
             return {
               ...n,
