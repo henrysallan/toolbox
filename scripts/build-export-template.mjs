@@ -29,9 +29,15 @@ const SOURCE_INCLUDE = [
   "src",
 ];
 
-function run(cmd, cwd) {
+function run(cmd, cwd, extraEnv) {
   console.log(`[build-export-template] $ ${cmd}`);
-  execSync(cmd, { cwd, stdio: "inherit" });
+  // Env passed via the `env` option (not a `VAR=1 cmd` shell prefix) so it works
+  // on Windows cmd.exe too, not just POSIX shells.
+  execSync(cmd, {
+    cwd,
+    stdio: "inherit",
+    env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+  });
 }
 
 function listFilesRecursive(root, base = root) {
@@ -89,7 +95,9 @@ console.log("[build-export-template] Building Tier B (dist/)…");
 run("npx vite build --outDir dist --emptyOutDir", TEMPLATE_DIR);
 
 console.log("[build-export-template] Building Tier A (single-file)…");
-run("BUILD_SINGLEFILE=1 npx vite build --outDir dist-single --emptyOutDir", TEMPLATE_DIR);
+run("npx vite build --outDir dist-single --emptyOutDir", TEMPLATE_DIR, {
+  BUILD_SINGLEFILE: "1",
+});
 
 // --- assemble public/export-template/v1/ -----------------------------------
 
