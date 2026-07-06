@@ -1583,17 +1583,23 @@ function EffectsShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [errors]);
 
-  // Auto-grow the input sockets of Proximity Join/Merge nodes: keep each
-  // one's `slots` param equal to (connected sockets, in stable order) +
-  // exactly one trailing empty spare. Derived purely from edges, so it's
-  // undo-safe (edges are in history; slots follow them) and needs no
-  // pushGraph snapshot. Runs whenever edges change — connect fills a
-  // spare → next spare appears; disconnect prunes the emptied middle.
+  // Auto-grow the input sockets of Proximity Join/Merge and Spline Interpolate
+  // nodes: keep each one's `slots` param equal to (connected sockets, in stable
+  // order) + exactly one trailing empty spare. Derived purely from edges, so
+  // it's undo-safe (edges are in history; slots follow them) and needs no
+  // pushGraph snapshot. Runs whenever edges change — connect fills a spare →
+  // next spare appears; disconnect prunes the emptied middle. (The `t`/`mask`
+  // name exclusions below are for Proximity Merge; Spline Interpolate has
+  // neither input, so they're inert there.)
   useEffect(() => {
     setNodes((prev) => {
       let changed = false;
       const next = prev.map((n) => {
-        if (n.data.defType !== "proximity-merge") return n;
+        if (
+          n.data.defType !== "proximity-merge" &&
+          n.data.defType !== "spline-interpolate"
+        )
+          return n;
         const raw = n.data.params.slots;
         const current: string[] =
           Array.isArray(raw) &&

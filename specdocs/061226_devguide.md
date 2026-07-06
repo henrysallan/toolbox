@@ -681,11 +681,13 @@ src/app/docs + lib/docs/manifest.
   `merge_layers`, Render Queue's `render_queue`, Collect's `count`): the
   socket list lives in a param and `resolveInputs(params)` derives sockets
   from it; the UI re-syncs `data.inputs` on param change. Growth is a
-  manual `+` (an `effect-node-toggle` event). (2) *Auto-grow from edges*
-  (Proximity Join/Merge — 070126_proximity-join-merge.md): a `slots:
-  string[]` param whose value is **derived from the node's edges** by a
-  dedicated `useEffect` in EffectsApp keyed on `edges`, kept equal to
-  (connected sockets) + one trailing empty spare. Wiring the spare mints
+  manual `+` (an `effect-node-toggle` event; Combine/collect also grows this
+  way via a `collectAddInput` bump of its `count` param). (2) *Auto-grow from
+  edges* (Proximity Join/Merge — 070126_proximity-join-merge.md; and Spline
+  Interpolate — 070626_spline-interpolate.md — which share the effect): a
+  `slots: string[]` param whose value is **derived from the node's edges** by a
+  dedicated `useEffect` in EffectsApp keyed on `edges` (guarded on those two
+  `defType`s), kept equal to (connected sockets) + one trailing empty spare. Wiring the spare mints
   the next; disconnecting prunes. It's undo-safe *because* it's derived
   (edges are in history) and writes `data.inputs` without a `pushGraph`
   snapshot. Why not just read `connectedTypes` in `resolveInputs`? Because

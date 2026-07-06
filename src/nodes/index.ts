@@ -58,6 +58,7 @@ import { rasterizeSplineNode } from "./effect/rasterize-spline";
 import { splineBooleanNode } from "./effect/spline-boolean";
 import { splineMergeNode } from "./effect/spline-merge";
 import { splineMorphNode } from "./effect/spline-morph";
+import { splineInterpolateNode } from "./effect/spline-interpolate";
 import { pointNode } from "./source/point";
 import { scatterPointsNode } from "./effect/scatter-points";
 import { copyToPointsNode } from "./effect/copy-to-points";
@@ -248,6 +249,7 @@ export function registerAllNodes() {
   registerNode(splineBooleanNode);
   registerNode(splineMergeNode);
   registerNode(splineMorphNode);
+  registerNode(splineInterpolateNode);
   registerNode(pointNode);
   registerNode(scatterPointsNode);
   registerNode(copyToPointsNode);

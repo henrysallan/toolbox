@@ -98,7 +98,7 @@ export const pointsOnPathNode: NodeDefinition = {
   category: "point",
   subcategory: "generator",
   description:
-    "Emit N evenly-spaced positions along a spline. Optionally aligns each point's rotation to the path tangent or normal, so Copy-to-Points orients copies along the path. Primary output is a `points` value for direct wiring into Copy-to-Points / Set Position / etc. Aux outputs: a UV texture of positions (one pixel per point) and a dot visualization image.",
+    "Emit N evenly-spaced positions along a spline. Optionally aligns each point's rotation to the path tangent or normal, so Copy-to-Points orients copies along the path. Turn on Animate to slide the points along the path with the Offset slider — points that reach the end wrap back to the start (a continuous stream; keyframe Offset or wire a Scene Time / LFO ramp to drive it). Primary output is a `points` value for direct wiring into Copy-to-Points / Set Position / etc. Aux outputs: a UV texture of positions (one pixel per point) and a dot visualization image.",
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [
@@ -111,6 +111,31 @@ export const pointsOnPathNode: NodeDefinition = {
       softMax: 64,
       step: 1,
       default: 24,
+    },
+    {
+      // Slide points along the path (see `offset`). Off = the original
+      // static distribution (back-compat with every existing save).
+      name: "animate",
+      label: "Animate",
+      type: "boolean",
+      default: false,
+    },
+    {
+      // Fraction of the total arc length to slide every point along the
+      // path; wraps at the end so a point leaving the tip re-enters at the
+      // start (0..1 = one full loop). Keyframe it or wire a Scene Time / LFO
+      // ramp for continuous flow. Values outside [0,1] (from a wire) wrap
+      // too; negative runs the stream backward. In animate mode points are
+      // distributed as a uniform loop (count divisions) so they stay evenly
+      // spaced across the wrap seam instead of colliding at a shared endpoint.
+      name: "offset",
+      label: "Offset",
+      type: "scalar",
+      min: 0,
+      max: 1,
+      step: 0.001,
+      default: 0,
+      visibleIf: (p) => !!p.animate,
     },
     {
       // Bake a per-point orientation into each point's `rotation`
@@ -201,16 +226,29 @@ export const pointsOnPathNode: NodeDefinition = {
     // doesn't emit `count` phantom points at (0,0) when the input is
     // missing.
     let sampledCount = 0;
+    const animate = !!params.animate;
+    const offset = (params.offset as number) ?? 0;
     if (src && src.kind === "spline") {
       const lengths = measureSpline(src);
       if (lengths.total > 0) {
-        // Distribute: for open paths, include both endpoints. For a closed
-        // spline, the last sample would coincide with the first, so stop
+        // Static distribution: for open paths, include both endpoints; for a
+        // closed spline the last sample would coincide with the first, so stop
         // just before that to avoid a duplicate.
         const hasClosed = src.subpaths.some((s) => s.closed);
         const divisor = hasClosed ? count : Math.max(1, count - 1);
         for (let i = 0; i < count; i++) {
-          const t = count === 1 ? 0 : i / divisor;
+          let t: number;
+          if (animate) {
+            // Uniform loop (divisor = count) so points stay evenly spaced
+            // across the wrap seam; slide by `offset` and wrap into [0,1).
+            // A point crossing t=1 re-enters at t=0 — the "kill at the end,
+            // respawn at the start" behavior (a seam-free circulation on a
+            // closed path; a visible teleport on an open one, as intended).
+            t = i / count + offset;
+            t -= Math.floor(t);
+          } else {
+            t = count === 1 ? 0 : i / divisor;
+          }
           const s = sampleSplineAt(src, lengths, t);
           positions.push(s.pos);
           rotations.push(angleFor(s.tangent));
