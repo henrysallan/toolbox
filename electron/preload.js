@@ -49,8 +49,15 @@ contextBridge.exposeInMainWorld("toolboxNative", {
   // ---- Window controls (frameless desktop) ----
   window: {
     minimize: () => ipcRenderer.send("toolbox:win:minimize"),
+    toggleMaximize: () => ipcRenderer.send("toolbox:win:toggleMaximize"),
     toggleFullscreen: () => ipcRenderer.send("toolbox:win:toggleFullscreen"),
     close: () => ipcRenderer.send("toolbox:win:close"),
+    isMaximized: () => ipcRenderer.invoke("toolbox:win:isMaximized"),
+    onMaximizeChange: (cb) => {
+      const listener = (_e, val) => cb(!!val);
+      ipcRenderer.on("toolbox:win:maximize-changed", listener);
+      return () => ipcRenderer.removeListener("toolbox:win:maximize-changed", listener);
+    },
   },
 
   // ---- Recent local .toolbox files ----

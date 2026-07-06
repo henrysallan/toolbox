@@ -52,6 +52,11 @@ export interface VideoEncodeSession {
 export interface Platform {
   /** True inside Electron (the native bridge is present). */
   readonly isNative: boolean;
+  /** Host OS. On the native build this is the real `process.platform`; on web
+   *  it's a best-effort guess and unused (window controls don't render there).
+   *  Used only by the title-bar surface to pick control chrome (mac traffic
+   *  lights vs. Windows caption buttons). */
+  readonly os: "mac" | "windows" | "linux";
   /** True when `encodeVideo` will actually run a native encoder. */
   readonly canEncodeNative: boolean;
 
@@ -79,12 +84,19 @@ export interface Platform {
     name: string
   ): Promise<{ bytes: ArrayBuffer; type: string } | null>;
 
-  /** Frameless-window controls (the renderer draws custom traffic lights).
-   *  Present only on the native desktop build. */
+  /** Frameless-window controls (the renderer draws its own title-bar controls —
+   *  macOS traffic lights or Windows caption buttons). Present only on the
+   *  native desktop build. */
   windowControls?: {
     minimize(): void;
+    /** Toggle maximize/restore (Windows caption button). */
+    toggleMaximize(): void;
     toggleFullscreen(): void;
     close(): void;
+    /** Current maximized state, for the initial maximize/restore glyph. */
+    isMaximized(): Promise<boolean>;
+    /** Subscribe to native maximize/restore changes; returns an unsubscribe fn. */
+    onMaximizeChange(cb: (maximized: boolean) => void): () => void;
   };
 
   /** Recently-opened local .toolbox files (native desktop only). Recorded

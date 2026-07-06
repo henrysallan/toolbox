@@ -139,6 +139,15 @@ async function pickAssetsFolder(): Promise<AssetsFolderHandle | null> {
 
 export const webPlatform: Platform = {
   isNative: false,
+  // Cosmetic only on web (window controls don't render); best-effort sniff so
+  // any future OS-conditional web UI has a value. SSR-safe (guards navigator).
+  get os() {
+    if (typeof navigator === "undefined") return "mac";
+    const s = `${navigator.userAgent} ${navigator.platform}`.toLowerCase();
+    if (s.includes("win")) return "windows";
+    if (s.includes("linux") || s.includes("android")) return "linux";
+    return "mac";
+  },
   canEncodeNative: false,
   saveFile,
   pickSaveFolder,

@@ -19,8 +19,9 @@
 
 # production
 /build/*
-# …but keep the electron-builder app icon (buildResources convention)
+# …but keep the electron-builder app icons (buildResources convention)
 !/build/icon.icns
+!/build/icon.ico
 # …and the mac signing entitlements (needed by the CI release build)
 !/build/entitlements.mac.plist
 

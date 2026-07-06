@@ -114,8 +114,12 @@ async function transcodeVideoForPlayback(
 
 const windowControls = {
   minimize: () => bridge().window.minimize(),
+  toggleMaximize: () => bridge().window.toggleMaximize(),
   toggleFullscreen: () => bridge().window.toggleFullscreen(),
   close: () => bridge().window.close(),
+  isMaximized: () => bridge().window.isMaximized(),
+  onMaximizeChange: (cb: (maximized: boolean) => void) =>
+    bridge().window.onMaximizeChange(cb),
 };
 
 const recents = {
@@ -150,6 +154,10 @@ const assets = {
 
 export const nativePlatform: Platform = {
   isNative: true,
+  get os() {
+    const p = typeof window !== "undefined" ? window.toolboxNative?.platform : undefined;
+    return p === "win32" ? "windows" : p === "darwin" ? "mac" : "linux";
+  },
   get canEncodeNative() {
     return !!(typeof window !== "undefined" && window.toolboxNative?.canEncodeNative);
   },

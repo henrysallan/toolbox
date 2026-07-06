@@ -1,13 +1,14 @@
-# Build, sign, notarize, and publish the macOS desktop app to GitHub Releases.
+# Build & publish the desktop apps (macOS + Windows) to GitHub Releases.
 #
 # Triggers on a version tag (e.g. `v0.1.0`) — bump package.json's version to
 # match, then `git tag vX.Y.Z && git push origin vX.Y.Z`. Also runnable
 # manually (workflow_dispatch), which publishes the current package version.
 #
-# electron-builder imports the signing cert from CSC_LINK/CSC_KEY_PASSWORD into
-# a temporary keychain, notarizes via the App Store Connect API key, and
-# uploads Toolbox-arm64.dmg (+ latest-mac.yml) to a Release the landing page's
-# Download button points at.
+#   ensure-release → pre-creates the GitHub Release once (both OS jobs then just
+#                    attach their artifacts, instead of racing to create it).
+#   build-mac      → signs + notarizes the arm64 dmg (App Store Connect API key).
+#   build-win      → builds the x64 NSIS installer (unsigned for now — users get
+#                    a SmartScreen "unknown publisher" prompt they can bypass).
 name: Release desktop app
 
 on:
@@ -20,7 +21,29 @@ permissions:
   contents: write # create/update the GitHub Release
 
 jobs:
+  # Pre-create the Release so the parallel mac + win jobs (and electron-builder's
+  # own parallel artifact + blockmap uploads) all just attach to it. Two jobs
+  # each running `gh release create` would otherwise collide.
+  ensure-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure GitHub release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          VERSION="v$(node -p "require('./package.json').version")"
+          if gh release view "$VERSION" -R "$REPO" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists."
+          else
+            echo "Creating release $VERSION…"
+            gh release create "$VERSION" -R "$REPO" --title "$VERSION" \
+              --notes "Toolbox $VERSION — desktop app (macOS Apple Silicon, signed & notarized; Windows x64 installer)."
+          fi
+
   build-mac:
+    needs: ensure-release
     # Apple Silicon runner — matches the arm64 dmg target and arm64
     # ffmpeg-static install.
     runs-on: macos-14
@@ -47,23 +70,6 @@ jobs:
           echo "${{ secrets.APPLE_API_KEY_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
           echo "APPLE_API_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
 
-      - name: Ensure GitHub release exists
-        # electron-builder uploads the dmg + blockmap in parallel; if the
-        # release doesn't exist yet, both race to create it and the dmg gets
-        # orphaned. Pre-creating it means both uploads just attach.
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          VERSION="v$(node -p "require('./package.json').version")"
-          if gh release view "$VERSION" -R "$REPO" >/dev/null 2>&1; then
-            echo "Release $VERSION already exists."
-          else
-            echo "Creating release $VERSION…"
-            gh release create "$VERSION" -R "$REPO" --title "$VERSION" \
-              --notes "Toolbox $VERSION — macOS desktop app (Apple Silicon, signed & notarized)."
-          fi
-
       - name: Build, sign, notarize & publish
         run: npm run desktop:publish
         env:
@@ -81,4 +87,36 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # Release upload.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-win:
+    needs: ensure-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        # npm ci also runs ffmpeg-static's install.js, which fetches the
+        # win32-x64 ffmpeg.exe bundled into the app.
+        run: npm ci
+
+      - name: Build export template
+        # Bash so a failure in the first command fails the step (PowerShell only
+        # surfaces the last command's exit code). Git Bash ships on the runner.
+        shell: bash
+        run: |
+          npm run install:export-template
+          npm run build:export-template
+
+      - name: Build & publish
+        # No signing yet — electron-builder builds an unsigned NSIS installer.
+        run: npm run desktop:publish:win
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

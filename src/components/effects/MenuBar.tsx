@@ -380,8 +380,12 @@ export default function MenuBar({
   // Frameless desktop build: the nav bar is the title bar. Detected after mount
   // (client-only) so SSR/first-render markup matches and doesn't hydrate-mismatch.
   const [frameless, setFrameless] = useState(false);
+  // Windows draws its caption buttons flush in the top-RIGHT corner; macOS keeps
+  // its traffic lights on the LEFT. Detected post-mount alongside `frameless`.
+  const [isWindows, setIsWindows] = useState(false);
   useEffect(() => {
     setFrameless(platform.isNative && !!platform.windowControls);
+    setIsWindows(platform.isNative && platform.os === "windows");
   }, []);
 
   return (
@@ -428,8 +432,9 @@ export default function MenuBar({
           zIndex: 0,
         }}
       />
-      {/* Custom traffic lights (desktop frameless build), left of the brand. */}
-      {frameless && <WindowControls />}
+      {/* macOS traffic lights (desktop frameless build), left of the brand.
+          Windows renders its caption buttons on the right instead (below). */}
+      {frameless && !isWindows && <WindowControls />}
       {/* Inline undo/redo affordance — always visible (matches the
           desktop convention; also gives iPad/touch users a tappable
           alternative since the keyboard shortcut isn't reachable
@@ -555,6 +560,9 @@ export default function MenuBar({
       </div>
       {showFps && <FpsCounter />}
       <AccountMenu />
+      {/* Windows caption buttons (desktop frameless build) — flush in the
+          top-right corner, the rightmost element in the bar. */}
+      {frameless && isWindows && <WindowControls />}
       <ChangelogPopover
         open={changelogOpen}
         onClose={() => setChangelogOpen(false)}

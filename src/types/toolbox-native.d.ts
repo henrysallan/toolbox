@@ -73,8 +73,14 @@ declare global {
     // ---- Window controls (frameless desktop) ------------------------------
     window: {
       minimize(): void;
+      /** Toggle maximize/restore (Windows caption button). */
+      toggleMaximize(): void;
       toggleFullscreen(): void;
       close(): void;
+      /** Current maximized state — for the initial caption-button glyph. */
+      isMaximized(): Promise<boolean>;
+      /** Subscribe to native maximize/restore changes; returns an unsubscribe fn. */
+      onMaximizeChange(cb: (maximized: boolean) => void): () => void;
     };
 
     // ---- Recent local .toolbox files --------------------------------------

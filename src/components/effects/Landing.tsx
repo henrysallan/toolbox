@@ -30,8 +30,11 @@ const INTER = '"Inter", system-ui, -apple-system, sans-serif';
 // exact name — so it never needs updating per release. The artifact name is
 // pinned (no version) in package.json's build.mac.artifactName. 404s until
 // the first release is published (`npm run desktop:publish`).
-const DOWNLOAD_URL =
+// Version-less asset names so the "latest release" redirect is a stable URL.
+const DOWNLOAD_MAC =
   "https://github.com/henrysallan/toolbox/releases/latest/download/Toolbox-arm64.dmg";
+const DOWNLOAD_WIN =
+  "https://github.com/henrysallan/toolbox/releases/latest/download/Toolbox-Setup.exe";
 
 // First-load gateway: the reused Projects grid in a centred card, with a
 // header row floating just above it — a "Welcome to Toolbox" pill (and, on
@@ -51,10 +54,16 @@ export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
   // The Mac Download button is web-only. Detect native post-mount to avoid
   // an SSR hydration mismatch (renders nothing until we know).
   const [isWeb, setIsWeb] = useState(false);
+  // Windows caption buttons sit top-right; macOS traffic lights top-left.
+  const [isWindows, setIsWindows] = useState(false);
+  // Web download button: lead with the visitor's OS (sniffed from navigator).
+  const [downloadWin, setDownloadWin] = useState(false);
   useEffect(() => {
     const id = requestAnimationFrame(() => setShown(true));
     const t = setTimeout(() => setRevealed(true), REVEAL_DELAY_MS);
     setIsWeb(!platform.isNative);
+    setIsWindows(platform.isNative && platform.os === "windows");
+    setDownloadWin(platform.os === "windows");
     return () => {
       cancelAnimationFrame(id);
       clearTimeout(t);
@@ -81,14 +90,16 @@ export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
       }}
     >
       {/* Window controls (frameless desktop) — the menu bar is hidden behind
-          the landing, so surface the traffic lights here, at the same top-left
-          spot the menu bar uses. Self-gates to native; null on web. */}
+          the landing, so surface them here at the same corner the menu bar uses:
+          top-left on macOS (traffic lights), top-right on Windows (caption
+          buttons). Self-gates to native; null on web. */}
       <div
         style={{
           position: "absolute",
           top: 0,
-          left: 0,
-          height: 22,
+          left: isWindows ? undefined : 0,
+          right: isWindows ? 0 : undefined,
+          height: isWindows ? 32 : 22,
           display: "flex",
           alignItems: "center",
           zIndex: 10,
@@ -97,44 +108,50 @@ export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
         <WindowControls />
       </div>
 
-      {/* Download button — pinned to the browser window's upper-right corner
-          (web only; greyed until desktop hosting exists). */}
+      {/* Download — pinned to the browser window's upper-right corner (web
+          only). Leads with the visitor's OS; the other platform sits below as a
+          quieter link so both builds stay one click away. */}
       {isWeb && (
-        <a
-          href={DOWNLOAD_URL}
-          title="Download Toolbox for macOS (Apple Silicon)"
+        <div
           style={{
             position: "absolute",
             top: 16,
             right: 16,
             zIndex: 10,
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 7,
-            height: 40,
-            padding: "0 16px",
-            background: "transparent",
-            border: "1px solid #3f3f46",
-            borderRadius: 999,
-            fontFamily: INTER,
-            fontWeight: 500,
-            fontSize: 13,
-            color: "#d4d4d8",
-            cursor: "pointer",
-            textDecoration: "none",
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "#19191c";
-            e.currentTarget.style.color = "#fafafa";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "transparent";
-            e.currentTarget.style.color = "#d4d4d8";
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-end",
+            gap: 6,
           }}
         >
-          <AppleMark />
-          Download
-        </a>
+          <DownloadPill
+            href={downloadWin ? DOWNLOAD_WIN : DOWNLOAD_MAC}
+            os={downloadWin ? "windows" : "mac"}
+          />
+          <a
+            href={downloadWin ? DOWNLOAD_MAC : DOWNLOAD_WIN}
+            title={
+              downloadWin
+                ? "Download Toolbox for macOS (Apple Silicon)"
+                : "Download Toolbox for Windows (x64)"
+            }
+            style={{
+              fontFamily: INTER,
+              fontSize: 11,
+              color: "#71717a",
+              textDecoration: "none",
+              cursor: "pointer",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = "#d4d4d8";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = "#71717a";
+            }}
+          >
+            Also for {downloadWin ? "macOS" : "Windows"}
+          </a>
+        </div>
       )}
 
       <div
@@ -391,6 +408,57 @@ function AppleMark() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
       <path d="M11.18 8.48c-.02-1.5 1.22-2.22 1.28-2.26-.7-1.02-1.79-1.16-2.17-1.18-.92-.09-1.8.54-2.27.54-.47 0-1.19-.53-1.96-.51-1 .01-1.94.59-2.46 1.49-1.05 1.82-.27 4.5.75 5.98.5.72 1.09 1.53 1.87 1.5.75-.03 1.03-.48 1.94-.48.9 0 1.16.48 1.96.47.81-.01 1.32-.73 1.81-1.46.57-.83.81-1.64.82-1.68-.02-.01-1.57-.6-1.59-2.39-.01-.01 0 .01 0 .01l.29-.02zm-1.5-4.4c.41-.5.69-1.2.61-1.9-.59.02-1.31.4-1.74.9-.38.43-.71 1.13-.62 1.8.66.05 1.33-.34 1.75-.8z" />
+    </svg>
+  );
+}
+
+// The primary download button — a rounded pill matching the visitor's OS.
+function DownloadPill({ href, os }: { href: string; os: "mac" | "windows" }) {
+  const isWin = os === "windows";
+  return (
+    <a
+      href={href}
+      title={
+        isWin
+          ? "Download Toolbox for Windows (x64)"
+          : "Download Toolbox for macOS (Apple Silicon)"
+      }
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 7,
+        height: 40,
+        padding: "0 16px",
+        background: "transparent",
+        border: "1px solid #3f3f46",
+        borderRadius: 999,
+        fontFamily: INTER,
+        fontWeight: 500,
+        fontSize: 13,
+        color: "#d4d4d8",
+        cursor: "pointer",
+        textDecoration: "none",
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = "#19191c";
+        e.currentTarget.style.color = "#fafafa";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "transparent";
+        e.currentTarget.style.color = "#d4d4d8";
+      }}
+    >
+      {isWin ? <WindowsMark /> : <AppleMark />}
+      Download for {isWin ? "Windows" : "macOS"}
+    </a>
+  );
+}
+
+function WindowsMark() {
+  // Simplified four-pane Windows mark, monochrome to match AppleMark.
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M0 0h7v7H0zM9 0h7v7H9zM0 9h7v7H0zM9 9h7v7H9z" />
     </svg>
   );
 }

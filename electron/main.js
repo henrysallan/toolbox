@@ -62,6 +62,16 @@ async function createWindow() {
     },
   });
 
+  // Broadcast maximize/restore so the renderer's Windows caption buttons can
+  // swap the maximize↔restore glyph — this covers native paths too (Win+Up,
+  // Snap, double-clicking the drag region), not just our own toggle button.
+  const sendMaxState = () => {
+    if (!win.isDestroyed())
+      win.webContents.send("toolbox:win:maximize-changed", win.isMaximized());
+  };
+  win.on("maximize", sendMaxState);
+  win.on("unmaximize", sendMaxState);
+
   if (DEV_URL || REMOTE_URL) {
     const url = DEV_URL || REMOTE_URL;
     installWindowGuards(win, url);
@@ -112,6 +122,16 @@ async function createWindow() {
 function registerWindowControls() {
   ipcMain.on("toolbox:win:minimize", (e) =>
     BrowserWindow.fromWebContents(e.sender)?.minimize()
+  );
+  // Maximize/restore toggle (the Windows caption button; also usable on macOS).
+  ipcMain.on("toolbox:win:toggleMaximize", (e) => {
+    const w = BrowserWindow.fromWebContents(e.sender);
+    if (!w) return;
+    if (w.isMaximized()) w.unmaximize();
+    else w.maximize();
+  });
+  ipcMain.handle("toolbox:win:isMaximized", (e) =>
+    !!BrowserWindow.fromWebContents(e.sender)?.isMaximized()
   );
   ipcMain.on("toolbox:win:toggleFullscreen", (e) => {
     const w = BrowserWindow.fromWebContents(e.sender);

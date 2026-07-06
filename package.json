@@ -14,9 +14,12 @@
     "electron:dev": "TOOLBOX_DEV_URL=http://localhost:3000 electron electron/main.js",
     "dev:desktop": "node scripts/electron-dev.mjs",
     "electron:build": "electron-builder --mac",
+    "electron:build:win": "electron-builder --win",
     "desktop:prepare": "node scripts/prepare-standalone.mjs",
     "desktop:build": "npm run desktop:prepare && electron-builder --mac",
+    "desktop:build:win": "npm run desktop:prepare && electron-builder --win",
     "desktop:publish": "npm run desktop:prepare && electron-builder --mac -p always",
+    "desktop:publish:win": "npm run desktop:prepare && electron-builder --win -p always",
     "build:export-template": "node scripts/build-export-template.mjs",
     "install:export-template": "npm --prefix src/export-template install"
   },
@@ -63,6 +66,24 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "notarize": true
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "artifactName": "${productName}-Setup.${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-Setup.${ext}"
     }
   },
   "dependencies": {
