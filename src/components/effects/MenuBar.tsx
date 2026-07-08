@@ -10,6 +10,8 @@ import { useUser } from "@/lib/auth-context";
 import { CURRENT_VERSION } from "@/lib/changelog";
 import { platform } from "@/lib/platform";
 import WindowControls from "./WindowControls";
+import UpdateToast from "./UpdateToast";
+import { useDesktopUpdates } from "./useDesktopUpdates";
 
 type MenuItem =
   | {
@@ -218,12 +220,59 @@ export default function MenuBar({
     };
   }, [openId]);
 
+  // Desktop auto-update: one state-driven slot in the Toolbox menu, right
+  // under the version row (spec 070826_desktop-auto-update.md). Hidden on web
+  // (no `updates` capability); native detected post-mount like `frameless`.
+  const upd = useDesktopUpdates();
+  const [canUpdate, setCanUpdate] = useState(false);
+  useEffect(() => {
+    setCanUpdate(platform.isNative && !!platform.updates);
+  }, []);
+  const [updateToastDismissed, setUpdateToastDismissed] = useState(false);
+  const updPhase = upd.status.phase;
+  useEffect(() => {
+    // A new download un-dismisses the toast (progress should be visible again).
+    if (updPhase === "downloading") setUpdateToastDismissed(false);
+  }, [updPhase]);
+  const updateItems: MenuItem[] = [];
+  if (canUpdate) {
+    const s = upd.status;
+    switch (s.phase) {
+      case "checking":
+        updateItems.push({ kind: "item", label: "Checking for Updates…", disabled: true });
+        break;
+      case "upToDate":
+        updateItems.push({ kind: "item", label: "Up to Date ✓", disabled: true });
+        break;
+      case "available":
+        updateItems.push({
+          kind: "item",
+          label: `Update Toolbox to v${s.version ?? "…"}`,
+          onClick: upd.download,
+        });
+        break;
+      case "downloading":
+        updateItems.push({
+          kind: "item",
+          label: `Downloading update… ${Math.round(s.percent)}%`,
+          disabled: true,
+        });
+        break;
+      case "ready":
+        updateItems.push({ kind: "item", label: "Restart to Update", onClick: upd.install });
+        break;
+      default:
+        updateItems.push({ kind: "item", label: "Check for Updates…", onClick: upd.check });
+    }
+  }
+
   const menus: MenuDef[] = [
     {
       id: "toolbox",
       label: "Toolbox",
       items: [
         { kind: "item", label: `Toolbox v${CURRENT_VERSION}`, disabled: true },
+        ...updateItems,
         { kind: "divider" },
         {
           kind: "item",
@@ -570,6 +619,14 @@ export default function MenuBar({
         open={changelogOpen}
         onClose={() => setChangelogOpen(false)}
       />
+      {/* Update download/ready toast (desktop auto-update). */}
+      {!updateToastDismissed && (
+        <UpdateToast
+          status={upd.status}
+          onInstall={upd.install}
+          onDismiss={() => setUpdateToastDismissed(true)}
+        />
+      )}
     </div>
   );
 }

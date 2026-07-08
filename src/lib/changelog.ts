@@ -11,6 +11,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.3.0",
+    date: "2026-07-08",
+    added: [
+      "Windows desktop app — the same app as a native Windows build (x64 installer): native ffmpeg export, native file dialogs, works offline. Windows-native caption buttons (minimize / maximize / close) sit top-right in the title bar; the landing page's download button now leads with your OS and links the other platform below.",
+      "Desktop auto-update (macOS + Windows) — Toolbox checks for a new release quietly after launch (and on demand via Toolbox → Check for Updates…). When one is out, \"Update Toolbox\" appears in the Toolbox menu; it downloads with a corner progress toast (differential — only changed blocks, not the full installer), then \"Restart to Update\" installs and relaunches. A downloaded update also installs on the next normal quit.",
+    ],
+    changed: [
+      "macOS desktop builds are signed + notarized, and every release ships the mac dmg and Windows installer together from CI.",
+      "Frameless title bar: window dragging fixed — the empty bar area is a full-height drag region (it previously collapsed to zero height, so there was nothing to grab).",
+    ],
+  },
+  {
     version: "0.1.0",
     date: "2026-06-08",
     added: [

@@ -83,6 +83,26 @@ declare global {
       onMaximizeChange(cb: (maximized: boolean) => void): () => void;
     };
 
+    // ---- Desktop auto-update -----------------------------------------------
+    updates: {
+      /** Trigger a feed check; results arrive via onState pushes. */
+      check(): Promise<void>;
+      /** Start downloading the available update (progress via onState). */
+      download(): Promise<void>;
+      /** Quit, silently install the downloaded update, relaunch. */
+      install(): void;
+      /** Subscribe to update-state pushes; returns an unsubscribe fn. */
+      onState(
+        cb: (s: {
+          state: "checking" | "available" | "none" | "downloading" | "ready" | "error";
+          version?: string;
+          percent?: number;
+          bytesPerSecond?: number;
+          message?: string;
+        }) => void
+      ): () => void;
+    };
+
     // ---- Recent local .toolbox files --------------------------------------
     recents: {
       list(): Promise<Array<{ path: string; name: string; lastOpened: number }>>;

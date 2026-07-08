@@ -19,6 +19,9 @@
 
 # production
 /build/*
+# desktop updater vendor bundle (built by desktop:prepare via esbuild)
+/electron/vendor/
+
 # …but keep the electron-builder app icons (buildResources convention)
 !/build/icon.icns
 !/build/icon.ico

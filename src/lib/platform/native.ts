@@ -12,6 +12,7 @@ import type {
   NativeVideoEncodeSpec,
   Platform,
   SaveFileOptions,
+  UpdateState,
   VideoEncodeSession,
 } from "./types";
 
@@ -122,6 +123,20 @@ const windowControls = {
     bridge().window.onMaximizeChange(cb),
 };
 
+// Optional-chained: an older shell (pre-updater bridge) loading a newer remote
+// renderer simply lacks the capability — check() then resolves inert.
+const updates = {
+  check: async () => {
+    await bridge().updates?.check();
+  },
+  download: async () => {
+    await bridge().updates?.download();
+  },
+  install: () => bridge().updates?.install(),
+  onState: (cb: (s: UpdateState) => void) =>
+    bridge().updates?.onState(cb) ?? (() => {}),
+};
+
 const recents = {
   list: () => bridge().recents.list(),
   open: (p: string) => bridge().recents.open(p),
@@ -167,6 +182,7 @@ export const nativePlatform: Platform = {
   encodeVideo,
   transcodeVideoForPlayback,
   windowControls,
+  updates,
   recents,
   assets,
 };

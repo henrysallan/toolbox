@@ -60,6 +60,18 @@ contextBridge.exposeInMainWorld("toolboxNative", {
     },
   },
 
+  // ---- Desktop auto-update ----
+  updates: {
+    check: () => ipcRenderer.invoke("toolbox:update:check"),
+    download: () => ipcRenderer.invoke("toolbox:update:download"),
+    install: () => ipcRenderer.send("toolbox:update:install"),
+    onState: (cb) => {
+      const listener = (_e, s) => cb(s);
+      ipcRenderer.on("toolbox:update:state", listener);
+      return () => ipcRenderer.removeListener("toolbox:update:state", listener);
+    },
+  },
+
   // ---- Recent local .toolbox files ----
   recents: {
     list: () => ipcRenderer.invoke("toolbox:recents:list"),

@@ -99,6 +99,20 @@ export interface Platform {
     onMaximizeChange(cb: (maximized: boolean) => void): () => void;
   };
 
+  /** Desktop auto-update (electron-updater over GitHub Releases). Present only
+   *  on the native build; no-ops in dev/unpackaged runs (check reports "none").
+   *  State is push-driven: subscribe via onState. Spec: 070826_desktop-auto-update.md. */
+  updates?: {
+    /** Trigger a feed check; the outcome arrives via onState. */
+    check(): Promise<void>;
+    /** Download the available update; progress arrives via onState. */
+    download(): Promise<void>;
+    /** Quit, silently install, relaunch. */
+    install(): void;
+    /** Subscribe to update-state pushes; returns an unsubscribe fn. */
+    onState(cb: (s: UpdateState) => void): () => void;
+  };
+
   /** Recently-opened local .toolbox files (native desktop only). Recorded
    *  automatically on .toolbox open/save. */
   recents?: {
@@ -118,6 +132,19 @@ export interface Platform {
      *  null = cancelled / unsupported (non-Chromium web). */
     pick?(): Promise<AssetsFolderHandle | null>;
   };
+}
+
+/** One pushed update-state payload (see Platform.updates). */
+export interface UpdateState {
+  state: "checking" | "available" | "none" | "downloading" | "ready" | "error";
+  /** Target version (available / ready). */
+  version?: string;
+  /** Download progress 0–100 (downloading). */
+  percent?: number;
+  /** Download speed in bytes/s (downloading). */
+  bytesPerSecond?: number;
+  /** Error description (error). */
+  message?: string;
 }
 
 export interface LocalRecent {
