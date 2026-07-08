@@ -69,6 +69,19 @@ function buildEncoderArgs(codec, crf, proresProfile, alpha) {
         "-vendor", "apl0",
       ];
     }
+    case "qtrle":
+      // QuickTime Animation (RLE): lossless 8-bit RGBA with a STRAIGHT alpha
+      // channel that After Effects AND DaVinci Resolve both read reliably —
+      // unlike ffmpeg's ProRes 4444 alpha, whose signaling neither app fully
+      // honors (Resolve ignores the channel, AE decodes it opaque). RLE
+      // compresses flat/transparent runs extremely well (great for cutout
+      // motion graphics — often smaller than ProRes) but can balloon on busy
+      // full-frame content. Always alpha-bearing; `alpha`/`crf` don't apply.
+      // mov container only (forced by the caller, like ProRes).
+      return [
+        "-c:v", "qtrle",
+        "-pix_fmt", "argb",
+      ];
     case "vp9":
       return [
         "-c:v", "libvpx-vp9",

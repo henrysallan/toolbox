@@ -1,4 +1,5 @@
 import type { Object3DValue, CameraValue } from "./three-types";
+import type { TextStyle } from "./text-raster";
 
 export type SocketType =
   | "image"
@@ -19,6 +20,14 @@ export type SocketType =
   | "points"
   | "audio"
   | "image_group"
+  // Live, still-editable text. Carries a TextInstanceValue — a resolved
+  // base TextStyle + a set of variant strings — so text can be placed and
+  // varied per-copy (string / size / weight / leading / font) *before* it's
+  // committed to a raster. Produced by the Text node's `instances` aux;
+  // consumed by Copy to Points (which retypes its `instance` socket to it,
+  // picks a string per copy, applies per-copy typographic modulation, and
+  // re-rasterizes). Data-only, no cross-type coercions (like `string`).
+  | "text_instance"
   // Particle-engine sockets. `force`, `emitter`, and `collider` carry
   // small CPU-side descriptor structs (the actual sim runs as
   // fragment-shader GPGPU inside the Particle Simulator). `particles`
@@ -205,6 +214,20 @@ export type AudioValue = {
 export type ImageGroupValue = {
   kind: "image_group";
   items: ImageValue[];
+};
+
+// Live text ready to be placed at points and varied per copy. Carries a
+// resolved base style plus the variant string set — NOT a raster, so a
+// consumer (Copy to Points) can re-derive each copy's TextStyle (override
+// size / weight / leading / font, swap the string) and rasterize per copy,
+// where each copy's index / position finally exists. `base.text` is ignored
+// by placement consumers — the displayed string comes from `strings`.
+// v1: variants differ only by string; a future widening can carry per-variant
+// style overrides.
+export type TextInstanceValue = {
+  kind: "text_instance";
+  base: TextStyle;
+  strings: string[];
 };
 
 // =====================================================================
@@ -459,6 +482,7 @@ export type SocketValue =
   | PointsValue
   | AudioValue
   | ImageGroupValue
+  | TextInstanceValue
   | ForceValue
   | EmitterValue
   | ColliderValue

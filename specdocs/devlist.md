@@ -399,3 +399,13 @@ Let me know if you understand.
 165. The sample along path outputs the tangent as a vec2, but im not sure the right way to use that on for example, a copy to points? like if i am copying a spline to every point on a path and i want to align the rotation to the tangent or the normal of the path.. how do i do that
 
 166. In the node editor when i drag a node away, it doesnt maintain the connection/relink the ajoining nodes - can we fix that?
+
+167. Vary the DUPLICATES when you copy text to points (size, weight, leading, font, tracking, and the string shown), driven by index / groupIndex / seeded random / a field sampled at each copy's position / keyframed time. Not a pile of new nodes — enrich the two we have. Text gets string variants + a new `text_instance` output socket carrying {base style + variant strings}. Copy to Points auto-accepts `text_instance` (new sockets appear only when connected), picks the per-copy string with its existing pick_mode, and applies per-copy typographic modulation (each channel driven by index/group/random/field), then re-rasterizes text per copy. Net new = one socket type, zero new node files. Single-string is first-class (modulate typography with no variants). The per-glyph "drive an animation with an image field" idea is separate and already exists via the animator `field` driver. Spec: specdocs/070726_text-instances.md.
+
+167. the voronoi animated toggle should animate the evoloution, rather than whatever is being animated right now.
+
+168. For the shift + click drag in the node editor currently we just do it when we click and drag from a socket, but im thinking we could just allow it from a node, hold shift before clicking a node, and we draw a straight line from the origin node to the cursor and just attempt to connect the first socket output to the relevant socket input. 
+
+169. currently we build the along path function for text into the text node. but i want to allow that 
+
+170. potentially add a pie menu to easily open projects, assets, save. We swap

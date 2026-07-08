@@ -127,7 +127,11 @@ export const outputNode: NodeDefinition = {
       // and validate at export time instead.
       //   fast: not used (MediaRecorder picks)
       //   high: avc, hevc, vp9, av1
-      //   max:  h264, h264-lossless, h265, prores, vp9, av1
+      //   max:  h264, h264-lossless, h265, prores, qtrle, vp9, av1
+      // qtrle = QuickTime Animation: lossless RGBA with a straight alpha
+      // channel that After Effects AND DaVinci Resolve both read (ffmpeg's
+      // ProRes 4444 alpha isn't reliably honored by either). Max tier only,
+      // forced to a .mov container; always alpha-bearing.
       options: [
         "avc",
         "hevc",
@@ -137,6 +141,7 @@ export const outputNode: NodeDefinition = {
         "h264-lossless",
         "h265",
         "prores",
+        "qtrle",
       ],
       default: "avc",
       visibleIf: (p) =>
@@ -167,6 +172,7 @@ export const outputNode: NodeDefinition = {
         (p.exportMode ?? "video") === "video" &&
         p.videoQuality === "max" &&
         p.videoCodec !== "prores" &&
+        p.videoCodec !== "qtrle" &&
         p.videoCodec !== "h264-lossless",
     },
     {

@@ -920,7 +920,8 @@ export default function NodeEditor({
       (src === "image" ||
         src === "image_group" ||
         src === "spline" ||
-        src === "points")
+        src === "points" ||
+        src === "text_instance")
     ) {
       return true;
     }
@@ -1492,7 +1493,8 @@ export default function NodeEditor({
       (srcType === "image" ||
         srcType === "image_group" ||
         srcType === "spline" ||
-        srcType === "points")
+        srcType === "points" ||
+        srcType === "text_instance")
     ) {
       return true;
     }

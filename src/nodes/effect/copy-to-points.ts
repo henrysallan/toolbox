@@ -12,6 +12,7 @@ import type {
 } from "@/engine/types";
 import { transformSubpath } from "@/engine/spline-transform";
 import { ensurePointArray, pointsFromArray } from "@/engine/points";
+import { renderStyledTextToImage } from "@/engine/text-raster";
 
 // Duplicate an "instance" at every target point.
 //
@@ -229,12 +230,19 @@ interface CopyState {
   // transforms; skip the pack and upload.
   lastPoints: PointsValue | null;
   lastOrderKey: string;
+  // DOM-attached scratch canvas for text-mode per-copy rasterizing (must
+  // be attached for variable-font axes to resolve — see text.ts). Lazily
+  // created; only text-mode users pay for it.
+  textCanvas: HTMLCanvasElement | null;
 }
 
-function modeOf(params: Record<string, unknown>): "image" | "spline" | "point" {
+function modeOf(
+  params: Record<string, unknown>
+): "image" | "spline" | "point" | "text" {
   const m = params.mode;
   if (m === "spline") return "spline";
   if (m === "point") return "point";
+  if (m === "text") return "text";
   return "image";
 }
 
@@ -257,9 +265,28 @@ function ensureState(ctx: RenderContext, nodeId: string): CopyState {
     instXformBuf: null,
     lastPoints: null,
     lastOrderKey: "",
+    textCanvas: null,
   };
   ctx.state[key] = s;
   return s;
+}
+
+// DOM-attached scratch canvas for text-mode rasterizing. Attached off-screen
+// so Chromium resolves variable-font axes (same requirement as the Text node).
+function ensureTextCanvas(state: CopyState): HTMLCanvasElement {
+  if (state.textCanvas) return state.textCanvas;
+  const canvas = document.createElement("canvas");
+  canvas.setAttribute("data-toolbox-text-raster", "1");
+  canvas.style.position = "fixed";
+  canvas.style.left = "-99999px";
+  canvas.style.top = "-99999px";
+  canvas.style.pointerEvents = "none";
+  canvas.style.visibility = "hidden";
+  if (typeof document !== "undefined" && document.body) {
+    document.body.appendChild(canvas);
+  }
+  state.textCanvas = canvas;
+  return canvas;
 }
 
 // Instances per row-pair in the transform data texture. 2048 is the
@@ -676,7 +703,13 @@ export const copyToPointsNode: NodeDefinition = {
   resolveInputs(params, ctx): InputSocketDef[] {
     const mode = modeOf(params);
     let instType: SocketType =
-      mode === "spline" ? "spline" : mode === "point" ? "points" : "image";
+      mode === "spline"
+        ? "spline"
+        : mode === "point"
+          ? "points"
+          : mode === "text"
+            ? "text_instance"
+            : "image";
     // Image mode also accepts a homogeneous image group — one variant
     // per item, selected per point by the pick mode. The socket retypes
     // to follow what's actually wired (the evaluator's coercion layer
@@ -712,7 +745,10 @@ export const copyToPointsNode: NodeDefinition = {
       name: "mode",
       label: "Instance type",
       type: "enum",
-      options: ["image", "spline", "point"],
+      // "text" is engaged by wiring a Text node's `instances` output; the
+      // instance socket retypes to text_instance and each copy is
+      // rasterized from the carried style.
+      options: ["image", "spline", "point", "text"],
       default: "image",
     },
     // How to choose which instance variant lands on each target point.
@@ -1085,22 +1121,50 @@ export const copyToPointsNode: NodeDefinition = {
     // than the old implementation past ~50 points.
     const output = ctx.allocImage();
     const instIn = inputs.instance;
-    // Single image or a homogeneous image group — group items are
-    // variants, one chosen per point by the pick mode ("all" stamps
-    // every item at every point).
-    const items: ImageValue[] =
-      instIn?.kind === "image_group"
-        ? instIn.items
-        : instIn?.kind === "image"
-          ? [instIn]
-          : [];
+    // Text mode rasterizes the carried style per variant string into pooled
+    // textures we OWN (release after compositing). Every other mode reads the
+    // instance texture(s) from upstream — never release those.
+    let items: ImageValue[];
+    let ownedItems = false;
+    if (mode === "text") {
+      const ti = instIn?.kind === "text_instance" ? instIn : null;
+      const strings = ti?.strings ?? [];
+      if (ti && strings.length > 0) {
+        const canvas = ensureTextCanvas(state);
+        // Milestone 1: one raster per variant string, shared base style. Per-
+        // copy typographic modulation (size/weight/leading/font) is a later
+        // milestone; string variants already land per point via the pick_mode
+        // machinery below (the same M>1 path image groups use).
+        items = strings.map((s) =>
+          renderStyledTextToImage(ctx, canvas, { ...ti.base, text: s })
+        );
+        ownedItems = true;
+      } else {
+        items = [];
+      }
+    } else {
+      // Single image or a homogeneous image group — group items are
+      // variants, one chosen per point by the pick mode ("all" stamps
+      // every item at every point).
+      items =
+        instIn?.kind === "image_group"
+          ? instIn.items
+          : instIn?.kind === "image"
+            ? [instIn]
+            : [];
+    }
+    const releaseOwned = () => {
+      if (ownedItems) for (const it of items) ctx.releaseTexture(it.texture);
+    };
     if (items.length === 0 || ptCount === 0) {
+      releaseOwned();
       ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output };
     }
     if (!ensureInstResources(ctx, state)) {
       // Shader compile / GL alloc failed — emit empty rather than
       // crashing the pipeline.
+      releaseOwned();
       ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output };
     }
@@ -1375,6 +1439,7 @@ export const copyToPointsNode: NodeDefinition = {
     );
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
+    releaseOwned();
     return { primary: output };
   },
 
@@ -1392,6 +1457,9 @@ export const copyToPointsNode: NodeDefinition = {
       if (state.instQuadVbo) gl.deleteBuffer(state.instQuadVbo);
       if (state.instFbo) gl.deleteFramebuffer(state.instFbo);
       if (state.instXformTex) gl.deleteTexture(state.instXformTex);
+      if (state.textCanvas?.parentNode) {
+        state.textCanvas.parentNode.removeChild(state.textCanvas);
+      }
     }
     delete ctx.state[key];
   },

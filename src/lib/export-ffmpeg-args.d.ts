@@ -7,6 +7,7 @@ export type FfmpegCodec =
   | "h264-lossless"
   | "h265"
   | "prores"
+  | "qtrle"
   | "vp9"
   | "av1";
 

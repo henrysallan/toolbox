@@ -18,6 +18,10 @@ export const socketColor: Record<string, string> = {
   // and points no longer have a distinct group type — they carry
   // groupIndex metadata on the base value.
   image_group: "#1d4ed8",
+  // Live text carrier (Text → Copy to Points) — fuchsia. A text-family
+  // cousin of string's lime, but clearly its own pipeline: it holds a
+  // style + variant strings, not a plain value.
+  text_instance: "#e879f9",
   // Particle-engine sockets. Forces and emitters are descriptor
   // socket types — distinct from data sockets, so warm-tinted to set
   // them apart from the cool image/spline pipeline.

@@ -30,7 +30,13 @@ import {
   type TextAnimators,
 } from "@/engine/text-animators";
 import { measureSpline, sampleSplineAt } from "@/engine/spline-math";
-import type { SplineValue } from "@/engine/types";
+import { uploadCanvasToImage } from "@/engine/element";
+import type {
+  ImageValue,
+  RenderContext,
+  SplineValue,
+  TextInstanceValue,
+} from "@/engine/types";
 
 // Per-character animators + their field pixel buffers, threaded into the
 // modulated draw path. Present (non-null) forces per-character layout even when
@@ -771,4 +777,65 @@ export function drawTextBlock(
     }
   }
   c2d.restore();
+}
+
+// =====================================================================
+// Text-instance helpers (Text → Copy to Points)
+// =====================================================================
+
+// A minimal upright style for empty `text_instance` values (gated clips,
+// missing font). `strings: []` means placement consumers render nothing.
+export const DEFAULT_TEXT_STYLE: TextStyle = {
+  text: "",
+  family: "sans-serif",
+  size: 64,
+  color: "#ffffff",
+  alignment: "center",
+  leading: 1.2,
+  letterSpacing: 0,
+  axesDict: {},
+};
+
+export function emptyTextInstance(): TextInstanceValue {
+  return { kind: "text_instance", base: DEFAULT_TEXT_STYLE, strings: [] };
+}
+
+// Render a styled text block to a tight (hug) intrinsic-size ImageValue —
+// measured to its natural bounds, drawn once, uploaded (Y-flipped) to a pooled
+// texture. `canvas` MUST be DOM-attached for variable-font axes to resolve.
+// `maxWidth` (px) enables word-wrap; undefined = single run, no wrap. Box
+// layout only (no animators / path) — the per-copy raster for Copy to Points'
+// text mode. The returned ImageValue's texture is owned by the caller (release
+// it once composited).
+export function renderStyledTextToImage(
+  rctx: RenderContext,
+  canvas: HTMLCanvasElement,
+  style: TextStyle,
+  maxWidth?: number
+): ImageValue {
+  const c2d = canvas.getContext("2d");
+  if (!c2d) {
+    const out = rctx.allocImage({ width: 1, height: 1 });
+    rctx.clearTarget(out, [0, 0, 0, 0]);
+    return out;
+  }
+  // Metrics are independent of the canvas backing-store size, so measure
+  // first, then size the canvas to the tight block bounds.
+  const measureLines = wrapStyledLines(canvas, c2d, style, maxWidth);
+  const m = measureStyledBlock(canvas, c2d, style, measureLines);
+  const w = Math.max(1, Math.ceil(m.width));
+  const h = Math.max(1, Math.ceil(m.height));
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  // Resizing the backing store resets 2D state — re-fetch the context.
+  const c2 = canvas.getContext("2d");
+  if (!c2) {
+    const out = rctx.allocImage({ width: w, height: h });
+    rctx.clearTarget(out, [0, 0, 0, 0]);
+    return out;
+  }
+  c2.clearRect(0, 0, w, h);
+  const lines = wrapStyledLines(canvas, c2, style, maxWidth);
+  drawTextBlock(canvas, c2, style, lines, w, h, null);
+  return uploadCanvasToImage(rctx, canvas);
 }

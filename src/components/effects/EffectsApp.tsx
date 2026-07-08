@@ -1858,6 +1858,7 @@ function EffectsShell({
         image_group: "image",
         spline: "spline",
         points: "point",
+        text_instance: "text",
       };
       const shouldPromoteCopy =
         targetNode?.data.defType === "copy-to-points" &&
@@ -2588,7 +2589,9 @@ function EffectsShell({
                   ? "spline"
                   : srcType === "points"
                     ? "point"
-                    : null;
+                    : srcType === "text_instance"
+                      ? "text"
+                      : null;
             if (nextMode && newNode.data.params.mode !== nextMode) {
               newNode.data.params = {
                 ...newNode.data.params,
@@ -2663,7 +2666,8 @@ function EffectsShell({
               (srcType === "image" ||
                 srcType === "image_group" ||
                 srcType === "spline" ||
-                srcType === "points")
+                srcType === "points" ||
+                srcType === "text_instance")
             ) {
               targetInput = "instance";
             }
@@ -3366,13 +3370,15 @@ function EffectsShell({
           args.inputName === "instance"
         ) {
           const nextMode =
-            srcType === "image"
+            srcType === "image" || srcType === "image_group"
               ? "image"
               : srcType === "spline"
                 ? "spline"
                 : srcType === "points"
                   ? "point"
-                  : null;
+                  : srcType === "text_instance"
+                    ? "text"
+                    : null;
           if (nextMode && nextParams.mode !== nextMode) {
             nextParams = { ...nextParams, mode: nextMode };
           }
@@ -5555,9 +5561,9 @@ function EffectsShell({
         } else {
           const rawCodec = (params.videoCodec as string) ?? "h264";
           type FC =
-            | "h264" | "h264-lossless" | "h265" | "prores" | "vp9" | "av1";
+            | "h264" | "h264-lossless" | "h265" | "prores" | "qtrle" | "vp9" | "av1";
           const ffAllowed: FC[] = [
-            "h264", "h264-lossless", "h265", "prores", "vp9", "av1",
+            "h264", "h264-lossless", "h265", "prores", "qtrle", "vp9", "av1",
           ];
           // If the user left a webcodecs-only codec selected when
           // switching to Max, fall back to h264 silently.
@@ -5574,13 +5580,14 @@ function EffectsShell({
           // pre-existing saves have no stored value, so default to emitting
           // alpha for 4444/4444xq. Ignored for non-4444 profiles.
           const alpha = (params.videoAlpha as boolean) ?? true;
-          // ProRes is only compatible with mov/mkv; nudge the user.
+          // ProRes and QuickTime Animation (qtrle) want a QuickTime container;
+          // nudge mp4/webm → mov. (qtrle is the universal-alpha codec that AE
+          // and Resolve both read — see export-ffmpeg-args.js.)
+          const needsMov = codec === "prores" || codec === "qtrle";
           const ffContainer =
-            (codec === "prores" && container === "mp4")
+            needsMov && (container === "mp4" || container === "webm")
               ? "mov"
-              : (codec === "prores" && container === "webm")
-                ? "mov"
-                : container;
+              : container;
 
           // ---- Native ffmpeg (Electron) ----------------------------------
           // Stream RGBA frames to a real ffmpeg process: no wasm heap limit,

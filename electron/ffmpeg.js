@@ -26,7 +26,7 @@ const ffmpegAvailable = !!ffmpegPath && fs.existsSync(ffmpegPath);
 
 // Only these reach the spawned command line — the renderer can't smuggle
 // arbitrary ffmpeg flags. Output path comes from a main-controlled dialog.
-const ALLOWED_CODECS = new Set(["h264", "h264-lossless", "h265", "prores", "vp9", "av1"]);
+const ALLOWED_CODECS = new Set(["h264", "h264-lossless", "h265", "prores", "qtrle", "vp9", "av1"]);
 const ALLOWED_CONTAINERS = new Set(["mp4", "mov", "webm", "mkv"]);
 
 const EXT_FILTER = {

@@ -8,12 +8,14 @@ import type {
   RenderContext,
   SdfValue,
   SplineValue,
+  TextInstanceValue,
 } from "@/engine/types";
 import { computeSDF } from "@/engine/sdf";
 import { emptyElement, uploadCanvasToImage } from "@/engine/element";
 import { marchingSquares } from "@/engine/marching-squares";
 import {
   drawTextBlock,
+  emptyTextInstance,
   measureStyledBlock,
   wrapStyledLines,
   type TextDrawAnim,
@@ -1075,6 +1077,12 @@ export const textNode: NodeDefinition = {
       description:
         "The text as an intrinsically-sized element for Auto Layout. Measures to tight line bounds and word-wraps when the layout constrains its width (a fill-width slot in a vertical layout reflows live). The node's built-in transform params do NOT apply here — the layout owns placement.",
     },
+    {
+      name: "instances",
+      type: "text_instance",
+      description:
+        "The text as live, still-editable data (its resolved style) for Copy to Points' text mode. Wire it into Copy to Points to place the text at every point and vary size / weight / leading / font / string per copy. Carries the style, not a raster, so per-copy typographic changes are possible where the box-layout element output can't be modified.",
+    },
   ],
 
   compute({ inputs, params, ctx, nodeId, consumedOutputs }) {
@@ -1097,7 +1105,12 @@ export const textNode: NodeDefinition = {
       state.spline = { kind: "spline", subpaths: [] };
       return {
         primary: state.primary,
-        aux: { sdf: emptySdf(), spline: state.spline, element: emptyElement() },
+        aux: {
+          sdf: emptySdf(),
+          spline: state.spline,
+          element: emptyElement(),
+          instances: emptyTextInstance(),
+        },
       };
     }
 
@@ -1353,9 +1366,18 @@ export const textNode: NodeDefinition = {
       preferredSizing: { width: "hug", height: "hug" },
     };
 
+    // Live-text carrier for Copy to Points' text mode. Cheap to build (an
+    // object with the resolved style + the display string) — no GL — so it's
+    // always emitted, ungated. `base.text` doubles as the single variant.
+    const instances: TextInstanceValue = {
+      kind: "text_instance",
+      base: style,
+      strings: [style.text],
+    };
+
     return {
       primary: state.primary,
-      aux: { sdf: sdfOut, spline: state.spline, element },
+      aux: { sdf: sdfOut, spline: state.spline, element, instances },
     };
   },
 

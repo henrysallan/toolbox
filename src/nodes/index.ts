@@ -65,6 +65,7 @@ import { copyToPointsNode } from "./effect/copy-to-points";
 import { remapNode } from "./effect/remap";
 import { modulatePointsNode } from "./effect/modulate-points";
 import { modulateSplinesNode } from "./effect/modulate-splines";
+import { pointExpressionNode } from "./effect/point-expression";
 import { simulationStartNode } from "./effect/simulation-start";
 import { simulationEndNode } from "./effect/simulation-end";
 import { pointEmitterNode } from "./effect/emitter-point";
@@ -256,6 +257,7 @@ export function registerAllNodes() {
   registerNode(remapNode);
   registerNode(modulatePointsNode);
   registerNode(modulateSplinesNode);
+  registerNode(pointExpressionNode);
   registerNode(simulationStartNode);
   registerNode(simulationEndNode);
   registerNode(pointEmitterNode);

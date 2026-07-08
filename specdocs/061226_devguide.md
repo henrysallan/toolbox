@@ -470,6 +470,19 @@ native window controls: 070626_windows-desktop-build.md.
   curated/web fonts, ML/tracker nodes, and wasm-GIF still need network
   (accepted). Installed local fonts (desktop is Chromium → `queryLocalFonts`)
   work offline and are the preferred picker source there.
+- **Auto-update** (spec 070826_desktop-auto-update.md): `electron-updater`
+  over the GitHub Releases feed (`latest*.yml` + blockmaps → differential
+  downloads). Main-side `electron/updater.js` broadcasts one
+  `toolbox:update:state` payload; the seam exposes an optional `updates`
+  capability; `useDesktopUpdates` + the Toolbox-menu slot + `UpdateToast`
+  are the UI. Checks quietly ~10s after launch + manual "Check for Updates…";
+  download is user-initiated; `quitAndInstall(true,true)` restarts. Gotchas:
+  electron-updater ships as an **esbuild vendor bundle**
+  (`electron/vendor/`, built by `desktop:prepare` — node_modules are excluded
+  from the app package); mac updates install from the **zip** target (added
+  alongside dmg; Squirrel needs it + a signed app); dev/unpackaged runs no-op.
+  A release now bumps **three** version spots: package.json, a new entry in
+  src/lib/changelog.ts (`CURRENT_VERSION`), and the git tag.
 - **Build/run.** `npm run dev:desktop` (one command: next dev + Electron) for UI
   iteration; `npm run electron`/`electron:dev` for embedded/dev URLs;
   `npm run desktop:prepare` builds `.next/standalone`; `npm run desktop:build`
@@ -726,5 +739,22 @@ src/app/docs + lib/docs/manifest.
   `PointsValue`, not the `Point[]` view — the sim hot path never
   round-trips). Empty zones emit the frozen `EMPTY_POINTS` sentinel, which
   `ensurePointArray` short-circuits (count 0) so it's never mutated.
+- **Per-point field logic lives in Point Expression** (`point-expression`,
+  spec 070726_point-expression-node.md). The engine has no general per-element
+  field system like Blender geometry nodes — a `PointsValue`'s attributes are
+  baked at generation and otherwise vary per-point only via image-field
+  sampling (Modulate Points / Sample Texture at Points / Displace). Point
+  Expression is the one exception: a `"use strict"` JS block run **once per
+  point** with `index/count/groupIndex/px/py/rot0/sx0/sy0` + the frame clock +
+  wired uniforms + optional `path`-spline sampling
+  (`pathPos/pathLen/pathAngle`), writing `x/y/sx/sy/scale/rot` and culling via
+  `keep` (count shrinks — Blender Delete-Geometry parity). `rand(seed)` is a
+  frame-independent triple32 hash (index-stable windows/gates — the "Random
+  Value hashed on Index" primitive); `random()` varies per frame. Mirrors the
+  scalar Expression node's compile/env/`fingerprintExtras`; reuses the
+  `expr_inputs` param UI (type-driven in param-controls.tsx, no ParamPanel
+  work). The scalar Expression node stays once-per-frame. Strict mode means
+  intermediates need `let`/`const` (bare assignment throws → fails safe to
+  passthrough).
 - No automated tests; keep modules pure where possible (layout solver,
   graph-ops) so they're testable when a runner lands.

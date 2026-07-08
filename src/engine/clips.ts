@@ -23,6 +23,7 @@
 //      (their keyframes stay on the global clock for now).
 
 import { emptyElement } from "./element";
+import { emptyTextInstance } from "./text-raster";
 import { pointsFromArray } from "./points";
 import type { NodeOutput, RenderContext, SocketType } from "./types";
 
@@ -164,6 +165,8 @@ export function emptyClipOutput(
       return { primary: pointsFromArray([]) };
     case "image_group":
       return { primary: { kind: "image_group", items: [] } };
+    case "text_instance":
+      return { primary: emptyTextInstance() };
     case "element":
       // Zero-size measure, 1×1 transparent render — layouts skip it.
       return { primary: emptyElement() };
