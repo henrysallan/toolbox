@@ -12,7 +12,6 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import {
-  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -134,7 +133,7 @@ import {
   type MissingMedia,
 } from "@/lib/media-relink";
 import { registerImageOriginal } from "@/lib/image-bytes";
-import { playbackClock, useClock } from "@/state/playback-clock";
+import { playbackClock } from "@/state/playback-clock";
 import MediaRelinkModal, {
   type RelinkItem,
   type RelinkStatus,
@@ -186,15 +185,14 @@ import {
   writeEditorSession,
 } from "@/state/editor-session";
 import type { SaveState } from "./FileNameMenu";
-import TransformGizmo from "./TransformGizmo";
-import PrimitiveGizmo, {
-  PRIMITIVE_GIZMO_ADAPTERS,
-  type PrimitiveGizmoEnv,
-} from "./PrimitiveGizmo";
-import MotionPathOverlay from "./MotionPathOverlay";
-import SplineEditorOverlay from "./SplineEditorOverlay";
+import { PRIMITIVE_GIZMO_ADAPTERS } from "./PrimitiveGizmo";
+import {
+  GradientOverlayAtTick,
+  PrimitiveGizmoAtTick,
+  SplineEditorOverlayAtTick,
+  TransformGizmoAtTick,
+} from "./GizmoTickOverlays";
 import SegmentDotsOverlay from "./SegmentDotsOverlay";
-import GradientOverlay from "./GradientOverlay";
 import type { SegmentDot } from "@/lib/ai/segment";
 import {
   clearLiveSegment,
@@ -219,7 +217,6 @@ import {
 } from "@/engine/keyframes";
 import type { ClipBlock } from "@/engine/clips";
 import type { PointsValue, SocketType, ResolveCtx } from "@/engine/types";
-import type { SplineParamValue } from "@/nodes/source/spline-draw";
 
 registerAllNodes();
 
@@ -1014,16 +1011,15 @@ function EffectsShell({
   }, []);
 
   // Timeline / playback state. The clock lives in the playback-clock
-  // STORE (specdocs/071026_clock-store.md), not React state — these
-  // subscriptions re-render the shell per store change, preserving
-  // today's behavior until consumers detach one by one (migration step
-  // 3); the payoff is that detached consumers subscribe to exactly what
-  // they need instead of riding a shell-wide setState 60×/s.
-  const time = useClock((s) => s.time);
-  const playing = useClock((s) => s.playing);
+  // STORE (specdocs/071026_clock-store.md), not React state, and the
+  // shell does NOT subscribe to it — playback no longer re-renders the
+  // ~10k-line shell per frame. Consumers that track the playhead
+  // (PlaybackBar, TrackEditor, the gizmo overlays, …) each hold their own
+  // `useClock` subscription; the shell's own logic reads
+  // `playbackClock.get()` at run time.
   // Writers keep the setState signature (value or updater) so the ~30
-  // existing call sites — transport, seeks, the rAF advancer, export
-  // save/restore — stay verbatim.
+  // existing call sites — transport, seeks, export save/restore — stay
+  // verbatim.
   const setTime = useCallback(
     (v: number | ((t: number) => number)) => {
       playbackClock.set({
@@ -1056,17 +1052,11 @@ function EffectsShell({
   // by the keyframe evaluator and Track Editor for exact equality.
   const ticksPerFrame = DEFAULT_TICKS_PER_FRAME;
   // Keep the store's tick derivation in sync with the project fps.
+  // Callbacks that need the tick *at call time* (autokey) read
+  // `playbackClock.get().tick` directly.
   useEffect(() => {
     playbackClock.configure({ fps, ticksPerFrame });
   }, [fps, ticksPerFrame]);
-  const currentTick = Math.round(time * fps * ticksPerFrame);
-  // Ref mirror for callbacks that only need the tick *at call time*
-  // (autokey). Reading the ref instead of closing over `currentTick`
-  // keeps their identities stable during playback — otherwise every
-  // rAF time tick mints new handler identities for ParamPanel, the
-  // gizmos, and the `effect-node-param` window listener.
-  const currentTickRef = useRef(currentTick);
-  currentTickRef.current = currentTick;
   const sceneDurationTicks =
     (loopFrames != null && loopFrames > 0 ? loopFrames : fps * 5) *
     ticksPerFrame;
@@ -1118,18 +1108,13 @@ function EffectsShell({
   const [collapsedTrackNodes, setCollapsedTrackNodes] = useState<Set<string>>(
     new Set()
   );
-  // During scrubbing the RAF advancer is suspended so the drag can set time
+  // During scrubbing the RAF driver is suspended so the drag can set time
   // directly without a running playback stepping on the mouse. `playing`
   // itself isn't touched, so clearing `scrubbing` restores the prior state —
   // a timeline that was paused before the drag stays paused.
+  // (playbackActiveRef — the cursor-bump gate — is kept in sync by the
+  // playback driver's store subscription, further down.)
   const [scrubbing, setScrubbing] = useState(false);
-  // Keep the cursor-bump effect's "should I bump?" check in sync with
-  // playback. The renderFrame loop already runs every frame while
-  // playing, so an extra cursor-driven re-render is redundant — and
-  // was the source of the runaway re-render loop.
-  useEffect(() => {
-    playbackActiveRef.current = playing && !scrubbing;
-  }, [playing, scrubbing]);
 
   // Refs let the history hook read the latest graph state without having to
   // thread it through every undoable action's dependency list.
@@ -1418,6 +1403,14 @@ function EffectsShell({
   // to null when the export finishes.
   const forcedTerminalRef = useRef<string | null>(null);
 
+  // Preview dots for any selected node whose primary output is a points
+  // value. Refreshed by renderFrame after each interactive render pass.
+  // Stored as the typed-array PointsValue (not a materialized Point[])
+  // so PointsOverlay can read positions without a per-frame alloc.
+  const [selectedPoints, setSelectedPoints] = useState<PointsValue | null>(
+    null
+  );
+
   // Imperative render entry point. Pulls graph + cursor from refs so it
   // can be called both from the React-driven render effect AND from the
   // offline export loops, where we need to step time deterministically
@@ -1592,76 +1585,123 @@ function EffectsShell({
           "Set a node Active 2 to preview here."
         );
       }
+
+      // Refresh PointsOverlay's dots from this pass. Lived in a [time]-dep
+      // effect before the shell detached from the clock; running after
+      // every interactive render keeps the same cadence. Offline export
+      // frames skip it (per-frame setState churn with no visible overlay).
+      // Bails on same-reference so a points selection doesn't burn a shell
+      // re-render per frame when the dots haven't changed.
+      if (!offlineRenderingRef.current) {
+        const selId = selectedIdRef.current;
+        const primary = selId
+          ? evalCacheRef.current.get(selId)?.output.primary
+          : undefined;
+        if (primary && primary.kind === "points") {
+          setSelectedPoints((prev) => (prev === primary ? prev : primary));
+        } else {
+          setSelectedPoints((prev) => (prev === null ? prev : null));
+        }
+      }
     },
     [backendReady]
   );
   const renderFrameRef = useRef(renderFrame);
   renderFrameRef.current = renderFrame;
 
+  // STATE-driven eval: graph edits, params (structFp), fps, pipeline bumps
+  // (font load / video frame / image gen), cursor moves, and selection
+  // changes re-render the current frame. Clock-driven renders (playback,
+  // seeks, scrubs) come from the imperative driver below — `time` and
+  // `playing` are store state, not React state, and are read at run time.
   useEffect(() => {
     if (offlineRenderingRef.current) return;
-    renderFrame(time, fps, playing && !scrubbing);
+    const clock = playbackClock.get();
+    renderFrame(clock.time, fps, clock.playing && !scrubbing);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     structFp,
     backendReady,
-    time,
     fps,
     pipelineBumpKey,
     cursorTick,
-    playing,
     scrubbing,
     // Re-render when the selection changes so the selected-node preview
     // (when nothing is set Active) updates on the canvas.
     selectedId,
   ]);
 
-  // Capture the selected node's points output after each pipeline run so
-  // PointsOverlay has fresh dots to draw. Reads the evaluator cache
-  // directly — it holds the most recent NodeOutput per node regardless
-  // of whether the eval effect ran on the same tick as the selection
-  // change. Dep list tracks both selection and pipeline invalidation.
+  // CLOCK-driven eval — the playback driver, imperative and outside React
+  // (clock-store spec, shell detach). While playing, a rAF loop advances
+  // the store clock by real elapsed dt (so a dropped frame doesn't shorten
+  // scene duration; `loopFrames / fps` defines the wrap point in seconds,
+  // and the wrap is what sim zones watch to re-seed) and calls renderFrame
+  // directly. While paused or scrubbing, any time/playing write to the
+  // store — transport seeks, timeline scrubs, export state restores —
+  // schedules ONE coalesced render on the next animation frame with a
+  // false playing hint, exactly what the old eval effect's `time`/`playing`
+  // deps produced. Detached consumers (playheads, diamonds, readouts)
+  // re-render through their own store subscriptions.
   useEffect(() => {
-    if (!selectedId) {
-      setSelectedPoints((prev) => (prev === null ? prev : null));
-      return;
-    }
-    const entry = evalCacheRef.current.get(selectedId);
-    const primary = entry?.output.primary;
-    if (primary && primary.kind === "points") {
-      // Bail when the same reference comes back so we don't burn a
-      // re-render per playback frame just because the eval output
-      // is a new object that contains the same data.
-      setSelectedPoints((prev) => (prev === primary ? prev : primary));
-    } else {
-      setSelectedPoints((prev) => (prev === null ? prev : null));
-    }
-  }, [selectedId, structFp, time, pipelineBumpKey, cursorTick]);
-
-  // Wall-clock RAF playback. `time` is measured in seconds and advances by
-  // real elapsed dt each frame (so a dropped frame doesn't shorten scene
-  // duration). The optional `loopFrames` value, divided by the current `fps`,
-  // defines the wrap point in seconds. Scrubbing suspends the advancer.
-  useEffect(() => {
-    if (!playing || scrubbing) return;
-    let raf = 0;
-    let prev = performance.now();
-    const tick = (now: number) => {
+    let raf = 0; // playing-loop handle
+    let oneShot = 0; // pending paused-render handle
+    let prev = 0;
+    const step = (now: number) => {
+      raf = requestAnimationFrame(step);
       const dt = (now - prev) / 1000;
       prev = now;
-      setTime((t) => {
-        let next = t + dt;
-        if (loopFrames != null) {
-          const loopSecs = loopFrames / fps;
-          if (loopSecs > 0 && next >= loopSecs) next = next % loopSecs;
-        }
-        return next;
-      });
-      raf = requestAnimationFrame(tick);
+      let next = playbackClock.get().time + dt;
+      if (loopFrames != null) {
+        const loopSecs = loopFrames / fps;
+        if (loopSecs > 0 && next >= loopSecs) next = next % loopSecs;
+      }
+      playbackClock.set({ time: next });
+      if (!offlineRenderingRef.current) {
+        renderFrameRef.current(next, fps, true);
+      }
     };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [playing, scrubbing, loopFrames, fps]);
+    // Start/stop the loop to match the play state; returns whether it's
+    // running. Also keeps the cursor-bump gate in sync (its old
+    // [playing, scrubbing] effect can't fire anymore — the shell doesn't
+    // re-render on play state).
+    const syncLoop = () => {
+      const active = playbackClock.get().playing && !scrubbing;
+      playbackActiveRef.current = active;
+      if (active && !raf) {
+        if (oneShot) {
+          cancelAnimationFrame(oneShot);
+          oneShot = 0;
+        }
+        prev = performance.now();
+        raf = requestAnimationFrame(step);
+      } else if (!active && raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+      return active;
+    };
+    let last = playbackClock.get();
+    const onStoreChange = () => {
+      const s = playbackClock.get();
+      const changed = s.time !== last.time || s.playing !== last.playing;
+      last = s;
+      if (syncLoop() || !changed || oneShot) return;
+      oneShot = requestAnimationFrame(() => {
+        oneShot = 0;
+        // Re-check at fire time: an export can take over rendering
+        // between the store write and this frame.
+        if (offlineRenderingRef.current) return;
+        renderFrameRef.current(playbackClock.get().time, fps, false);
+      });
+    };
+    const unsub = playbackClock.subscribe(onStoreChange);
+    syncLoop();
+    return () => {
+      unsub();
+      if (raf) cancelAnimationFrame(raf);
+      if (oneShot) cancelAnimationFrame(oneShot);
+    };
+  }, [scrubbing, loopFrames, fps]);
 
   // Propagate errors back into node data for rendering.
   useEffect(() => {
@@ -3654,7 +3694,7 @@ function EffectsShell({
           coalesceKey ?? `param:${nodeId}:${paramName}`
         );
       }
-      const tickAtEdit = currentTickRef.current;
+      const tickAtEdit = playbackClock.get().tick;
       // Simulation-zone `kind` is a paired property: the Start and End
       // halves share a zone_id and MUST agree on kind, or ensureZoneState
       // tears down and reallocates the shared state blob every frame (the
@@ -4054,7 +4094,7 @@ function EffectsShell({
       coalesceKey?: string
     ) => {
       pushGraph(getGraphSnapshot(), coalesceKey ?? `anim:${nodeId}:${paramName}`);
-      const tickAtEdit = currentTickRef.current;
+      const tickAtEdit = playbackClock.get().tick;
       setNodes((prev) =>
         prev.map((n) => {
           if (n.id !== nodeId) return n;
@@ -4691,10 +4731,21 @@ function EffectsShell({
   // MediaRecorder reads the canvas. That keeps us to a single code path and
   // zero dependencies; the tradeoff vs. offline WebCodecs encoding is that
   // recording is real-time and any dropped frames show up in the output.
-  const timeRef = useRef(time);
-  timeRef.current = time;
-  const playingRef = useRef(playing);
-  playingRef.current = playing;
+  // timeRef/playingRef are live mirrors of the store clock for the export
+  // drivers and MCP handlers below, which read `.current` at call time.
+  // Subscription-synced, not render-synced — the shell doesn't re-render
+  // on clock changes anymore.
+  const timeRef = useRef(playbackClock.get().time);
+  const playingRef = useRef(playbackClock.get().playing);
+  useEffect(() => {
+    const sync = () => {
+      const s = playbackClock.get();
+      timeRef.current = s.time;
+      playingRef.current = s.playing;
+    };
+    sync();
+    return playbackClock.subscribe(sync);
+  }, []);
   const fpsRef = useRef(fps);
   fpsRef.current = fps;
   const loopFramesRef = useRef(loopFrames);
@@ -4710,8 +4761,14 @@ function EffectsShell({
       canvasWidth: canvasRes[0],
       canvasHeight: canvasRes[1],
       fps,
-      frame: Math.round(time * fps),
-      playing,
+      // Live getters: get_status can arrive mid-playback, long after this
+      // object was built (the shell no longer re-renders with the clock).
+      get frame() {
+        return Math.round(playbackClock.get().time * fps);
+      },
+      get playing() {
+        return playbackClock.get().playing;
+      },
       loopFrames: loopFrames != null && loopFrames > 0 ? loopFrames : fps * 5,
       selectedNodeId: selectedId,
       scope: currentGroupId ?? "root",
@@ -7752,25 +7809,6 @@ function EffectsShell({
       })
     : undefined;
 
-  // The spline to show in the pen-tool overlay at the current playhead. When
-  // "Path Animation" is keyframed, that's the interpolated shape (so the
-  // editor handles sit on the rendered/animated curve and on-canvas edits
-  // branch from what's displayed — autokey then writes a keyframe here);
-  // otherwise the stored constant.
-  const activeSplineValue: SplineParamValue | null = (() => {
-    if (!activeSplineNode) return null;
-    const stored =
-      (activeSplineNode.data.params.spline as SplineParamValue | undefined) ?? {
-        subpaths: [{ anchors: [], closed: false }],
-      };
-    const block = activeSplineNode.data.animation?.spline;
-    if (block && block.animated && block.keyframes.length > 0) {
-      const v = evaluateKeyframesAt(block, "spline_anchors", currentTick);
-      if (v) return v as SplineParamValue;
-    }
-    return stored;
-  })();
-
   // Dot-prompt overlay: active whenever a Segment Anything node in dots
   // mode is selected (the auto modes are point-free). Clicks place/remove
   // dots; each edit re-runs the live (single-frame) segmentation against
@@ -7791,14 +7829,6 @@ function EffectsShell({
   const webgpuParticleTest = useMemo(
     () => nodes.find((n) => n.data.defType === "webgpu-particle-test"),
     [nodes]
-  );
-
-  // Preview dots for any selected node whose primary output is a points
-  // value. Populated by the pipeline-eval effect after each render pass.
-  // Stored as the typed-array PointsValue (not a materialized Point[])
-  // so PointsOverlay can read positions without a per-frame alloc.
-  const [selectedPoints, setSelectedPoints] = useState<PointsValue | null>(
-    null
   );
 
   // ---------------------------------------------------------------------
@@ -7935,10 +7965,21 @@ function EffectsShell({
 
   // Single 0..1 fraction for the queue item currently rendering. Offline
   // encoders (WebCodecs / ffmpeg) report it per frame via `recording`.
-  // Realtime MediaRecorder captures report nothing, but they play the
-  // timeline live — the app re-renders every frame — so elapsed wall time
-  // over the capture window is exact (the playhead itself can wrap when
-  // the project loop is shorter than the capture, so don't use `time`).
+  // Realtime MediaRecorder captures report nothing; elapsed wall time over
+  // the capture window stands in (the playhead itself can wrap when the
+  // project loop is shorter than the capture, so don't use the clock).
+  // The shell no longer re-renders during playback, so pulse a few
+  // re-renders per second while a live capture runs to keep the wall-time
+  // readout moving.
+  const [, setLiveCapturePulse] = useState(0);
+  useEffect(() => {
+    if (recording?.mode !== "live") return;
+    const id = window.setInterval(
+      () => setLiveCapturePulse((n) => n + 1),
+      200
+    );
+    return () => window.clearInterval(id);
+  }, [recording?.mode]);
   const queueItemProgress = !queueProgress
     ? null
     : recording?.mode === "offline"
@@ -8618,16 +8659,10 @@ function EffectsShell({
             />
           )}
           {activeSplineNode && backendReady && (
-            <SplineEditorOverlay
+            <SplineEditorOverlayAtTick
+              node={activeSplineNode}
               canvas={canvasRef.current}
-              value={
-                activeSplineValue ?? {
-                  subpaths: [{ anchors: [], closed: false }],
-                }
-              }
-              onChange={(next) =>
-                onParamChange(activeSplineNode.id, "spline", next)
-              }
+              onParamChange={onParamChange}
             />
           )}
           {activeSegmentNode && backendReady && (
@@ -8658,292 +8693,51 @@ function EffectsShell({
               }}
             />
           )}
-          {backendReady && transformGizmoNodes.map((gizmoNode) => {
-            // Read the effective param value at the current playhead.
-            // For animated params, this returns the keyframe-evaluated
-            // value so the on-canvas handles track the animation as the
-            // user scrubs. For constant or wired params, falls back to
-            // the stored constant.
-            const animMap = gizmoNode.data.animation;
-            const effective = (name: string, fallback: number): number => {
-              const block = animMap?.[name];
-              if (block && block.animated && block.keyframes.length > 0) {
-                const v = evaluateKeyframesAt(block, "scalar", currentTick);
-                if (typeof v === "number") return v;
+          {backendReady && transformGizmoNodes.map((gizmoNode) => (
+            <TransformGizmoAtTick
+              key={gizmoNode.id}
+              node={gizmoNode}
+              canvas={canvasRef.current}
+              boundsSourceId={
+                gizmoNode.data.params.mode === "spline"
+                  ? edges.find(
+                      (e) =>
+                        e.target === gizmoNode.id &&
+                        e.targetHandle === "in:image"
+                    )?.source
+                  : undefined
               }
-              const raw = gizmoNode.data.params[name];
-              return typeof raw === "number" ? raw : fallback;
-            };
-            // Spline-mode bounds: hug the actual spline geometry instead
-            // of the unit canvas box. We pull the spline value off the
-            // upstream node's most recent eval result; if the upstream
-            // hasn't evaluated yet (or isn't a spline), fall back to
-            // canvas bounds. Anchors-only AABB — close enough at typical
-            // spline densities and avoids per-frame Bézier eval.
-            let boundsMin: [number, number] | undefined;
-            let boundsMax: [number, number] | undefined;
-            const isSplineMode = gizmoNode.data.params.mode === "spline";
-            if (isSplineMode) {
-              const inEdge = edges.find(
-                (e) =>
-                  e.target === gizmoNode.id && e.targetHandle === "in:image"
-              );
-              const srcOut = inEdge
-                ? evalCacheRef.current.get(inEdge.source)
-                : undefined;
-              const splineVal = srcOut?.output?.primary;
-              if (splineVal && splineVal.kind === "spline") {
-                let minX = Infinity;
-                let minY = Infinity;
-                let maxX = -Infinity;
-                let maxY = -Infinity;
-                for (const sub of splineVal.subpaths) {
-                  for (const a of sub.anchors) {
-                    if (a.pos[0] < minX) minX = a.pos[0];
-                    if (a.pos[0] > maxX) maxX = a.pos[0];
-                    if (a.pos[1] < minY) minY = a.pos[1];
-                    if (a.pos[1] > maxY) maxY = a.pos[1];
-                  }
-                }
-                if (Number.isFinite(minX) && maxX - minX > 1e-4 && maxY - minY > 1e-4) {
-                  boundsMin = [minX, minY];
-                  boundsMax = [maxX, maxY];
-                }
-              }
-            }
-            // Motion-path anchor = the transform's position (translate +
-            // pivot), so the current-frame diamond coincides with the gizmo's
-            // pivot marker. Pivot is read at the playhead (rarely animated).
-            const mpPivotX = effective("pivotX", 0.5);
-            const mpPivotY = effective("pivotY", 0.5);
-            const txConst =
-              typeof gizmoNode.data.params.translateX === "number"
-                ? gizmoNode.data.params.translateX
-                : 0;
-            const tyConst =
-              typeof gizmoNode.data.params.translateY === "number"
-                ? gizmoNode.data.params.translateY
-                : 0;
-            return (
-              <Fragment key={gizmoNode.id}>
-                <TransformGizmo
-                  canvas={canvasRef.current}
-                  pivotX={mpPivotX}
-                  pivotY={mpPivotY}
-                  translateX={effective("translateX", 0)}
-                  translateY={effective("translateY", 0)}
-                  scaleX={effective("scaleX", 1)}
-                  scaleY={effective("scaleY", 1)}
-                  rotate={effective("rotate", 0)}
-                  boundsMin={boundsMin}
-                  boundsMax={boundsMax}
-                  boxTranslate={multiGizmo}
-                  onChange={(patch) => {
-                    const id = gizmoNode.id;
-                    // Single coalescing key for the whole drag so a 60-
-                    // frame gizmo manipulation yields one undo entry,
-                    // not one-per-(param × frame).
-                    const key = `gizmo:${id}`;
-                    for (const [k, v] of Object.entries(patch)) {
-                      if (typeof v === "number")
-                        onParamChange(id, k, v, key);
-                    }
-                  }}
-                />
-                <MotionPathOverlay
-                  canvas={canvasRef.current}
-                  xBlock={animMap?.["translateX"]}
-                  yBlock={animMap?.["translateY"]}
-                  xConst={txConst}
-                  yConst={tyConst}
-                  toCenter={(x, y) => ({ cx: x + mpPivotX, cy: y + mpPivotY })}
-                  fromCenter={(cx, cy) => ({
-                    xVal: cx - mpPivotX,
-                    yVal: cy - mpPivotY,
-                  })}
-                  aspectCorrect
-                  ticksPerFrame={ticksPerFrame}
-                  onPointDrag={(tick, xVal, yVal) =>
-                    onMotionPathPointChange(
-                      gizmoNode.id,
-                      "translateX",
-                      "translateY",
-                      tick,
-                      xVal,
-                      yVal,
-                      `motionpath:${gizmoNode.id}`
-                    )
-                  }
-                />
-              </Fragment>
-            );
-          })}
+              evalCacheRef={evalCacheRef}
+              multiGizmo={multiGizmo}
+              ticksPerFrame={ticksPerFrame}
+              onParamChange={onParamChange}
+              onMotionPathPointChange={onMotionPathPointChange}
+            />
+          ))}
           {/* Shape-primitive handles (Circle, Rectangle, …) — move the
-              center, drag edges/corners to resize. Reads effective
-              (keyframe-aware) params; writes coalesce into one undo entry. */}
-          {backendReady && primitiveGizmoNodes.map((node) => {
-            const adapter = PRIMITIVE_GIZMO_ADAPTERS[node.data.defType];
-            if (!adapter) return null;
-            const animMap = node.data.animation;
-            const get = (name: string, fallback: number): number => {
-              const block = animMap?.[name];
-              if (block && block.animated && block.keyframes.length > 0) {
-                const v = evaluateKeyframesAt(block, "scalar", currentTick);
-                if (typeof v === "number") return v;
-              }
-              const raw = node.data.params[name];
-              return typeof raw === "number" ? raw : fallback;
-            };
-            // Solved container px size — lets Auto Layout's hug axes
-            // display their actual bounds. The aux element's measure is
-            // pure CPU; the cache entry is from the latest eval.
-            let solvedSize: { width: number; height: number } | null = null;
-            if (node.data.defType === "autolayout") {
-              const out = evalCacheRef.current.get(node.id)?.output;
-              const el = out?.aux?.element;
-              if (el && el.kind === "element") {
-                try {
-                  solvedSize = el.measure({});
-                } catch {
-                  solvedSize = null;
-                }
-              }
-            }
-            const env: PrimitiveGizmoEnv = {
-              canvasWidth: canvasRes[0],
-              canvasHeight: canvasRes[1],
-              getRaw: (name) => node.data.params[name],
-              solvedSize,
-            };
-            const { cx, cy, hx, hy } = adapter.read(get, env);
-            const mp = adapter.motionPath;
-            const mpToCenter =
-              mp?.toCenter ?? ((x: number, y: number) => ({ cx: x, cy: y }));
-            const mpFromCenter =
-              mp?.fromCenter ??
-              ((cx2: number, cy2: number) => ({ xVal: cx2, yVal: cy2 }));
-            return (
-              <Fragment key={node.id}>
-                <PrimitiveGizmo
-                  canvas={canvasRef.current}
-                  cx={cx}
-                  cy={cy}
-                  hx={hx}
-                  hy={hy}
-                  anchorResize={adapter.anchorResize}
-                  onChange={(patch) => {
-                    const id = node.id;
-                    const key = `gizmo:${id}`;
-                    for (const [name, value] of adapter.write(patch, env)) {
-                      onParamChange(id, name, value, key);
-                    }
-                  }}
-                />
-                {mp && (
-                  <MotionPathOverlay
-                    canvas={canvasRef.current}
-                    xBlock={animMap?.[mp.x]}
-                    yBlock={animMap?.[mp.y]}
-                    xConst={
-                      typeof node.data.params[mp.x] === "number"
-                        ? (node.data.params[mp.x] as number)
-                        : 0.5
-                    }
-                    yConst={
-                      typeof node.data.params[mp.y] === "number"
-                        ? (node.data.params[mp.y] as number)
-                        : 0.5
-                    }
-                    toCenter={mpToCenter}
-                    fromCenter={mpFromCenter}
-                    aspectCorrect={false}
-                    ticksPerFrame={ticksPerFrame}
-                    onPointDrag={(tick, xVal, yVal) =>
-                      onMotionPathPointChange(
-                        node.id,
-                        mp.x,
-                        mp.y,
-                        tick,
-                        xVal,
-                        yVal,
-                        `motionpath:${node.id}`
-                      )
-                    }
-                  />
-                )}
-              </Fragment>
-            );
-          })}
+              center, drag edges/corners to resize. */}
+          {backendReady && primitiveGizmoNodes.map((node) => (
+            <PrimitiveGizmoAtTick
+              key={node.id}
+              node={node}
+              canvas={canvasRef.current}
+              canvasWidth={canvasRes[0]}
+              canvasHeight={canvasRes[1]}
+              evalCacheRef={evalCacheRef}
+              ticksPerFrame={ticksPerFrame}
+              onParamChange={onParamChange}
+              onMotionPathPointChange={onMotionPathPointChange}
+            />
+          ))}
           {/* Gradient handles — linear endpoints (line + 2 dots) or the
-              radial center/radius. Reads keyframe-aware params; writes
-              coalesce into one undo entry per drag. Gradient param space is
-              Y-up UV; the overlay flips Y. */}
-          {activeGradientNode && backendReady && (() => {
-            const node = activeGradientNode;
-            const animMap = node.data.animation;
-            const get = (name: string, fallback: number): number => {
-              const block = animMap?.[name];
-              if (block && block.animated && block.keyframes.length > 0) {
-                const v = evaluateKeyframesAt(block, "scalar", currentTick);
-                if (typeof v === "number") return v;
-              }
-              const raw = node.data.params[name];
-              return typeof raw === "number" ? raw : fallback;
-            };
-            const rawMode = (node.data.params.mode as string) ?? "linear";
-            const rawWave = (node.data.params.wave_mode as string) ?? "linear";
-            const mode =
-              rawMode === "radial"
-                ? "radial"
-                : rawMode === "multipoint"
-                  ? "multipoint"
-                  : rawMode === "wave" && rawWave === "ring"
-                    ? "ring"
-                    : "linear";
-            // Multipoint dots: positions are keyframe-effective (per-point
-            // virtual gpoint_x/y tracks), colors are the stored hex.
-            const storedPoints =
-              (node.data.params.points as GradientPoint[] | undefined) ?? [];
-            const effPoints = storedPoints.map((pt) => ({
-              id: pt.id,
-              x: get(gpointXKey(pt.id), pt.x),
-              y: get(gpointYKey(pt.id), pt.y),
-              color: typeof pt.color === "string" ? pt.color : "#ffffff",
-            }));
-            return (
-              <GradientOverlay
-                canvas={canvasRef.current}
-                mode={mode}
-                startX={get("start_x", 0)}
-                startY={get("start_y", 0.5)}
-                endX={get("end_x", 1)}
-                endY={get("end_y", 0.5)}
-                centerX={get("center_x", 0.5)}
-                centerY={get("center_y", 0.5)}
-                radius={get("radius", 0.5)}
-                points={effPoints}
-                onChange={(updates) => {
-                  const id = node.id;
-                  const key = `gizmo:${id}`;
-                  for (const [name, value] of updates) {
-                    onParamChange(id, name, value, key);
-                  }
-                }}
-                onPointChange={(pointId, x, y) => {
-                  // Update only the dragged point's x/y in the STORED array
-                  // (not the effective positions), so other keyframed points
-                  // aren't baked. Autokey mirrors x/y when their tracks are on.
-                  const stored =
-                    (node.data.params.points as GradientPoint[] | undefined) ??
-                    [];
-                  const next = stored.map((p) =>
-                    p.id === pointId ? { ...p, x, y } : p
-                  );
-                  onParamChange(node.id, "points", next, `gizmo:${node.id}`);
-                }}
-              />
-            );
-          })()}
+              radial center/radius. */}
+          {activeGradientNode && backendReady && (
+            <GradientOverlayAtTick
+              node={activeGradientNode}
+              canvas={canvasRef.current}
+              onParamChange={onParamChange}
+            />
+          )}
           {/* Track Editor dock — anchored to the bottom edge of the canvas
               area. Toggled by the curves button in the PlaybackBar (next to
               Play). Suppressed in timeline-layout mode, where the dock body

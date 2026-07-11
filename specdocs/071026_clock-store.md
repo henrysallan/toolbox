@@ -125,26 +125,57 @@ export interface ClockState {
    Each still re-renders per frame BY DESIGN (playheads/diamonds/path
    dot); the follow-up leaf-subscription pass (per-lane `<Playhead/>`
    children, per-diamond subscriptions) is optional polish.
-   REMAINING — the shell detach (the high-blast-radius commit, do
-   fresh): EffectsApp's own render still consumes the clock in four
-   `evaluateKeyframesAt(..., currentTick)` gizmo-derivation blocks
-   (~:7768, :8671, :8791, :8887 — move into the gizmo components or a
-   subscribed wrapper), the eval effect (`renderFrame(time, fps, …)` on
-   `[time, fps, playing, …]` — becomes the rAF driver's imperative call,
-   with a re-audit of every paused-interaction trigger), and the
-   `currentTick`/`currentTickRef` derivation (ref reads move to
-   `playbackClock.get().tick`). Only after those does removing the
-   shell's `useClock(time/playing)` subscriptions stop EffectsShell
-   re-rendering during playback.
-4. **Cleanup:** delete `timeRef/playingRef` mirrors that the store
-   obsoletes; this also clears a large slice of the 127 "refs during
-   render" lint errors — flip the CI lint job to blocking when the count
-   hits zero.
+   ✅ SHELL DETACH landed 07-11 — EffectsApp no longer subscribes to the
+   clock at all (`useClock` gone from the shell):
+   - The four gizmo-derivation blocks moved to `GizmoTickOverlays.tsx`
+     (TransformGizmoAtTick, PrimitiveGizmoAtTick, GradientOverlayAtTick,
+     SplineEditorOverlayAtTick) — each subscribes to the tick itself and
+     owns its keyframe-at-playhead derivation; the shell passes tick-free
+     props (node, canvas, callbacks, evalCacheRef, spline-mode
+     boundsSourceId).
+   - Eval scheduling split in two: a STATE-driven effect (deps structFp,
+     backendReady, fps, pipelineBumpKey, cursorTick, scrubbing,
+     selectedId — reads time/playing via `playbackClock.get()`) and the
+     imperative CLOCK driver: one effect owns a rAF loop while
+     `playing && !scrubbing` (advance store clock with the old wrap logic
+     verbatim, call `renderFrameRef.current(next, fps, true)`), plus a
+     store subscription that schedules ONE coalesced rAF render (hint
+     false) for any paused/scrubbing time-or-playing change — seeks,
+     scrubs, pause itself, export restores. The subscription also keeps
+     `playbackActiveRef` (cursor-bump gate) in sync, replacing its
+     [playing, scrubbing] effect. Every old eval-effect dep was
+     re-audited; export `finally` blocks already clear
+     `offlineRenderingRef` BEFORE restoring time/playing, so the one-shot
+     drives the restored render (it re-checks the flag at fire time).
+   - The selectedPoints (PointsOverlay) capture moved from its
+     [time]-dep effect into the tail of renderFrame (skipped for offline
+     export frames), keeping the same cadence on every trigger path.
+   - `currentTick`/`currentTickRef` deleted; autokey reads
+     `playbackClock.get().tick` at edit time. `timeRef`/`playingRef`
+     became store-SUBSCRIPTION-synced mirrors (still needed as refs by
+     the export drivers + MCP handlers, but no longer render-synced).
+     MCP `get_status` frame/playing became live getters into the store.
+   - Detach casualty handled: the live-capture (MediaRecorder) progress
+     readout relied on per-frame shell re-renders for its wall-clock
+     fraction — a 200ms interval pulse while `recording?.mode === "live"`
+     keeps it moving.
+   Verified: typecheck clean, 6/6 checks green, lint errors identical to
+   baseline (2 pre-existing), warnings 15 vs 16. Deliberate deltas, all
+   invisible-or-better: scrub renders coalesce to one per display frame;
+   the first playing-hint render after Play lands on the next rAF
+   (~16ms) instead of synchronously.
+4. **Cleanup:** `timeRef/playingRef` survived the detach as
+   subscription-synced mirrors (the export drivers + MCP handlers consume
+   them as MutableRefObjects) — the remaining cleanup is teaching those
+   consumers to read `playbackClock.get()` directly, then deleting the
+   mirrors. The render-synced ref writes are already gone; flip the CI
+   lint job to blocking when the "refs during render" error count hits
+   zero.
 
-Step 2 is the highest-blast-radius commit; keep it revertable (one
-commit, no consumer changes mixed in).
+Step 3's shell detach was the highest-blast-radius commit; it shipped
+alone (07-11) so it stays revertable.
 
-## Smoke script (after steps 2 and 4)
+## Smoke script (after steps 2 and 4 — and re-run after the 07-11 shell detach)
 
 Play/pause/seek/scrub; loop wrap with a Simulation Zone (re-seeds);
 autokey while playing and while paused (key lands at the visible tick);
