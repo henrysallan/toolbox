@@ -117,6 +117,9 @@ export const simulationEndNode: NodeDefinition = {
         // Pass through — emit read tex (what Start emitted this frame).
         // No swap, so next frame's Start sees the same state.
         return {
+          // Persistent ping-pong state — the evaluator must not release it
+          // (see NodeOutput.ownsTextures).
+          ownsTextures: false,
           primary: {
             kind: "image",
             texture: state.readTex,
@@ -136,6 +139,9 @@ export const simulationEndNode: NodeDefinition = {
       state.readTex = state.writeTex;
       state.writeTex = tmp;
       return {
+        // Persistent ping-pong state — the evaluator must not release it
+        // (see NodeOutput.ownsTextures).
+        ownsTextures: false,
         primary: {
           kind: "image",
           texture: state.readTex,

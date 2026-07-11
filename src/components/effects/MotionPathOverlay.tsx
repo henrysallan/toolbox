@@ -7,6 +7,7 @@ import {
   type KeyframeAnimationBlock,
 } from "@/engine/keyframes";
 import { rectsEqual } from "./overlay-rect";
+import { useClock } from "@/state/playback-clock";
 
 // On-canvas motion path for a node's animated position. Draws a dashed line
 // through the interpolated (x(t), y(t)) trajectory and a draggable diamond at
@@ -37,7 +38,6 @@ interface Props {
   // Whether the canvas aspect-corrects Y (Transform gizmo) or maps linearly
   // (spline primitives). Must match the host gizmo's `toPx`.
   aspectCorrect: boolean;
-  currentTick: number;
   // Ticks per frame — used to space the equal-time speed dots (~one per frame).
   ticksPerFrame: number;
   // Commit a drag: set both axes' keyframe at `tick` to (xVal, yVal).
@@ -77,10 +77,12 @@ export default function MotionPathOverlay({
   toCenter,
   fromCenter,
   aspectCorrect,
-  currentTick,
   ticksPerFrame,
   onPointDrag,
 }: Props) {
+  // Clock read from the playback store (clock-store spec, step 3) — the
+  // playhead dot on the path tracks the tick per frame by design.
+  const currentTick = useClock((s) => s.tick);
   // The drag handler reads these off-render; ref them so the rapid
   // pointermove subscription doesn't re-bind on every render. (Everything
   // else is read directly during render.)

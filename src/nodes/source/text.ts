@@ -1104,6 +1104,9 @@ export const textNode: NodeDefinition = {
       state.splineValid = false;
       state.spline = { kind: "spline", subpaths: [] };
       return {
+        // Textures live in this node's persistent state (redrawn in place) —
+        // the evaluator must not release them (see NodeOutput.ownsTextures).
+        ownsTextures: false,
         primary: state.primary,
         aux: {
           sdf: emptySdf(),
@@ -1376,6 +1379,9 @@ export const textNode: NodeDefinition = {
     };
 
     return {
+      // Textures live in this node's persistent state (redrawn in place) —
+      // the evaluator must not release them (see NodeOutput.ownsTextures).
+      ownsTextures: false,
       primary: state.primary,
       aux: { sdf: sdfOut, spline: state.spline, element, instances },
     };

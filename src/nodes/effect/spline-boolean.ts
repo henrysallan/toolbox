@@ -6,6 +6,7 @@ import type {
   SplineValue,
 } from "@/engine/types";
 import {
+  clipSplineByRegion,
   splineBoolean,
   type SplineBooleanOp,
 } from "@/engine/spline-boolean";
@@ -15,12 +16,23 @@ import {
   rasterizeSplineAux,
 } from "@/nodes/source/spline-raster-aux";
 
-// Boolean combination of two splines' filled regions. Defaults to
-// Subtract (A − B): the area inside A but outside B — i.e. B cuts a hole
-// in A. Also unions, intersects, and excludes (XOR). The result is a
-// (polygonal) spline; an optional rasterized image is exposed exactly
-// like the spline primitives (Spline Draw / SVG Source) when stroke or
-// fill is enabled — including the optional `fill` image input.
+// Boolean combination of two splines. Defaults to Subtract (A − B) on the
+// FILLED REGIONS: the area inside A but outside B — i.e. B cuts a hole in
+// A. Also unions, intersects, and excludes (XOR). The result there is a
+// (polygonal) spline.
+//
+// For subtract/intersect, `treat_a` flips A's interpretation to a LINE:
+// A's curves are cut where they cross B's region and only the pieces
+// outside (subtract → gaps in the stroke) or inside (intersect → the
+// overlapping arcs) survive — see clipSplineByRegion. Line output keeps
+// A's true bezier geometry (no polygonalization) and closed loops become
+// open arcs, so it feeds Stroke / Trim Path cleanly. Fill still rasterizes
+// open pieces by auto-closing them (same as Spline Draw) — usually you
+// want stroke-only in line mode.
+//
+// An optional rasterized image is exposed exactly like the spline
+// primitives (Spline Draw / SVG Source) when stroke or fill is enabled —
+// including the optional `fill` image input.
 
 const EMPTY_SPLINE: SplineValue = { kind: "spline", subpaths: [] };
 
@@ -46,7 +58,7 @@ export const splineBooleanNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Boolean of two splines' filled regions. Subtract (A − B) cuts B out of A; also union, intersect, and exclude (XOR). Outputs a spline, plus an image when stroke or fill is on.",
+    "Boolean of two splines. Subtract (A − B) cuts B out of A's filled region; also union, intersect, and exclude (XOR). For subtract/intersect, 'Treat A as line' cuts A's curves instead — gaps where B covers them (subtract) or only the covered arcs (intersect), keeping true bezier geometry. Outputs a spline, plus an image when stroke or fill is on.",
   backend: "webgl2",
   inputs: [
     { name: "a", type: "spline", required: true, label: "A (base)" },
@@ -64,6 +76,20 @@ export const splineBooleanNode: NodeDefinition = {
       type: "enum",
       options: ["subtract", "union", "intersect", "exclude"],
       default: "subtract",
+    },
+    // Line mode — only meaningful when B carves A directionally. Default
+    // "shape" preserves the pre-param behavior for old saves (invariant #2).
+    {
+      name: "treat_a",
+      label: "Treat A as",
+      type: "enum",
+      options: ["shape", "line"],
+      control: "segmented",
+      default: "shape",
+      visibleIf: (p) => {
+        const op = (p.operation as string) ?? "subtract";
+        return op === "subtract" || op === "intersect";
+      },
     },
     {
       // Line segments per curve when flattening for the boolean.
@@ -140,6 +166,9 @@ export const splineBooleanNode: NodeDefinition = {
       b && b.kind === "spline" ? b : EMPTY_SPLINE;
 
     const op = ((params.operation as string) ?? "subtract") as SplineBooleanOp;
+    const lineMode =
+      ((params.treat_a as string) ?? "shape") === "line" &&
+      (op === "subtract" || op === "intersect");
     const steps = Math.max(
       3,
       Math.round((params.resolution as number) ?? 24)
@@ -147,15 +176,23 @@ export const splineBooleanNode: NodeDefinition = {
 
     const state = ensureState(ctx, nodeId);
 
-    // Recompute the boolean only when geometry / op / resolution change.
+    // Recompute the boolean only when geometry / op / mode / resolution change.
     const boolSig = JSON.stringify({
       a: aSpline.subpaths,
       b: bSpline.subpaths,
       op,
+      lineMode,
       steps,
     });
     if (boolSig !== state.lastBoolSig) {
-      state.result = splineBoolean(aSpline, bSpline, op, steps);
+      state.result = lineMode
+        ? clipSplineByRegion(
+            aSpline,
+            bSpline,
+            op === "subtract" ? "outside" : "inside",
+            steps
+          )
+        : splineBoolean(aSpline, bSpline, op, steps);
       state.lastBoolSig = boolSig;
     }
     const resultSpline = state.result;

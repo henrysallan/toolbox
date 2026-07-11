@@ -113,5 +113,39 @@ const malformed: RecipeGraph = {
   check("survivor graph still validates", r.ok, r.issues.filter((i) => i.severity === "error").map((e) => e.code).join(","));
 }
 
+// --- 4. Param VALUE vetting: bad values are rejected (BAD_PARAM_VALUE, a
+// blocking code → repair turn); out-of-hard-range scalars clamp like the UI.
+const badValues: RecipeGraph = {
+  name: "Bad Values",
+  nodes: [
+    {
+      id: "t",
+      type: "transform",
+      params: { rotate: "abc", scaleX: Infinity, translateX: 0.25 },
+    },
+    { id: "g", type: "gradient", params: { mode: "bogus-mode" } },
+    { id: "t2", type: "transform", params: { rotate: 720 } },
+  ],
+  edges: [{ from: "g:out", to: "t:in:image" }],
+  outputs: [{ name: "image", from: "t:out", type: "image" }],
+};
+{
+  const built = buildRecipe(badValues);
+  const bad = built.issues.filter((i) => i.code === "BAD_PARAM_VALUE");
+  console.log(`\n[bad-values]  BAD_PARAM_VALUE issues: ${bad.length}`);
+  check("string into scalar rejected", bad.some((i) => i.message.includes("t.rotate")), JSON.stringify(built.issues));
+  check("Infinity into scalar rejected", bad.some((i) => i.message.includes("t.scaleX")));
+  check("non-option enum rejected", bad.some((i) => i.message.includes("g.mode")));
+  const t = built.nodes.find((n) => n.data.defType === "transform");
+  check("valid sibling value still lands", (t?.data.params as any)?.translateX === 0.25);
+  check("rejected values left at default", (t?.data.params as any)?.rotate !== "abc" && (t?.data.params as any)?.scaleX !== Infinity);
+  const t2 = built.nodes.find(
+    (n) => n.data.defType === "transform" && (n.data.params as any).translateX !== 0.25
+  );
+  check("out-of-range scalar clamps to hard max", (t2?.data.params as any)?.rotate === 360, `rotate=${(t2?.data.params as any)?.rotate}`);
+  const r = validateGraph(adapt(built).nodes, adapt(built).edges);
+  check("vetted graph still validates", r.ok, r.issues.filter((i) => i.severity === "error").map((e) => e.code).join(","));
+}
+
 console.log(`\n${failures === 0 ? "ALL GREEN ✅" : `${failures} FAILURE(S) ❌`}`);
 if (failures) process.exit(1);

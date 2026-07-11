@@ -1,9 +1,10 @@
 "use client";
 
 import type { Edge, Node } from "@xyflow/react";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { getNodeDef } from "@/engine/registry";
 import { paramSocketType } from "@/state/graph";
+import { useClock } from "@/state/playback-clock";
 import type { NodeDataPayload } from "@/state/graph";
 import type { ParamDef, RenderQueueItem } from "@/engine/types";
 import {
@@ -38,7 +39,8 @@ import {
 } from "@/engine/keyframes";
 import KeyframeDiamond from "./KeyframeDiamond";
 import TrackVisibilityEye from "./TrackVisibilityEye";
-import { Dropdown, ParamControl, menuItemStyle, type LayerAnimApi } from "@/lib/param-controls";
+import { Dropdown, ParamControl, menuItemStyle, type LayerAnimApi, type RampIoApi } from "@/lib/param-controls";
+import { parseRampParamKey } from "@/engine/conventions";
 
 // Expose / Control toggle glyphs. Referenced from public/ via CSS mask so the
 // silhouette recolors to the button's `currentColor` (active/inactive states)
@@ -254,9 +256,6 @@ interface Props {
   // driving it. The row is rendered read-only with a "driven" indicator.
   isParamDriven: (nodeId: string, paramName: string) => boolean;
   // Current playhead tick (integer). Used by the keyframe-diamond to
-  // decide insert vs remove at the current time. Defaults to 0 for
-  // callers that haven't migrated to the tick model yet.
-  currentTick?: number;
   // Lookup for the per-parameter animation block on a node. Returns
   // undefined when the parameter has no animation data yet.
   getAnimation?: (
@@ -348,7 +347,11 @@ const RES_PRESETS: Array<{ label: string; w: number; h: number }> = [
   { label: "3840 × 2160", w: 3840, h: 2160 },
 ];
 
-export default function ParamPanel({
+// Memoized (export at the bottom). The clock-store subscription inside
+// still re-renders it per frame while PLAYING (keyframe diamonds track the
+// playhead — the leaf-subscription follow-up fixes that); the memo removes
+// the paused-interaction storms (canvas pointermove bumps, shell state).
+function ParamPanel({
   nodes,
   selectedId,
   mode,
@@ -364,7 +367,6 @@ export default function ParamPanel({
   onParamRangeChange,
   onToggleParamLink,
   isParamDriven,
-  currentTick = 0,
   getAnimation,
   onAnimationChange,
   onSeekTick,
@@ -384,6 +386,11 @@ export default function ParamPanel({
   queueRender,
   onSelectNode,
 }: Props) {
+  // Clock read from the playback store (clock-store spec, step 3): drives
+  // keyframe diamonds + animated readouts. Still a whole-panel re-render
+  // per frame while playing — pushing this into the diamond/readout
+  // leaves is the follow-up optimization.
+  const currentTick = useClock((s) => s.tick);
   const selected = selectedId
     ? nodes.find((n) => n.id === selectedId)
     : undefined;
@@ -763,6 +770,16 @@ export default function ParamPanel({
               // them to un-toggle, even when `visibleIf` would otherwise hide.
               if (exposedSet.has(p.name)) return true;
               if (controlSet.has(p.name)) return true;
+              // Same rule for per-stop ramp exposures/controls — their
+              // virtual names embed the owning param's name.
+              if (p.type === "color_ramp") {
+                for (const s of exposedSet) {
+                  if (parseRampParamKey(s)?.paramName === p.name) return true;
+                }
+                for (const s of controlSet) {
+                  if (parseRampParamKey(s)?.paramName === p.name) return true;
+                }
+              }
               return p.visibleIf?.(selected.data.params) ?? true;
             });
             if (visible.length === 0) {
@@ -841,7 +858,8 @@ export default function ParamPanel({
                   }
                   layerAnim={
                     (p.type === "merge_layers" ||
-                      p.type === "gradient_points") &&
+                      p.type === "gradient_points" ||
+                      p.type === "color_ramp") &&
                     getAnimation &&
                     onAnimationChange
                       ? {
@@ -849,6 +867,19 @@ export default function ParamPanel({
                           get: (key) => getAnimation(selected.id, key),
                           set: (key, next) =>
                             onAnimationChange(selected.id, key, next),
+                        }
+                      : undefined
+                  }
+                  rampIo={
+                    p.type === "color_ramp"
+                      ? {
+                          isExposed: (key) => exposedSet.has(key),
+                          isDriven: (key) => isParamDriven(selected.id, key),
+                          toggleExposed: (key) =>
+                            onToggleParamExposed(selected.id, key),
+                          isControlled: (key) => controlSet.has(key),
+                          toggleControl: (key) =>
+                            onToggleParamControl(selected.id, key),
                         }
                       : undefined
                   }
@@ -1996,6 +2027,7 @@ function ParamRow({
   keyframable = false,
   onAnimationChange,
   layerAnim,
+  rampIo,
 }: {
   param: ParamDef;
   value: unknown;
@@ -2043,6 +2075,8 @@ function ParamRow({
   onAnimationChange?: (next: KeyframeAnimationBlock | undefined) => void;
   // Composite-param keyframing (merge layers) — see LayerAnimApi.
   layerAnim?: LayerAnimApi;
+  // Per-stop expose/control toggles for color ramps — see RampIoApi.
+  rampIo?: RampIoApi;
 }) {
   const label = param.label ?? param.name;
   const [menuOpen, setMenuOpen] = useState(false);
@@ -2313,6 +2347,7 @@ function ParamRow({
         rangeOverride={rangeOverride}
         onRangeChange={onRangeChange}
         layerAnim={layerAnim}
+        rampIo={rampIo}
       />
     </div>
   );
@@ -2541,3 +2576,5 @@ function ChainIcon({ linked }: { linked: boolean }) {
     </svg>
   );
 }
+
+export default memo(ParamPanel);

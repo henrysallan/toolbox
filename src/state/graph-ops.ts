@@ -146,6 +146,23 @@ export function cloneNode(
   };
 }
 
+// Param update + socket refresh in one step: the shape EffectsApp's
+// param-change handlers need. Use THIS instead of hand-rolling the
+// resolveInputs / withMaskInput / resolveAuxOutputs dance at call sites —
+// the inline copies drifted (one dropped aux-output re-resolution;
+// riskfix-plan 070826 §5). Not for connectedTypes-driven retyping — that
+// path needs a ResolveCtx the UI doesn't have (see the devguide's
+// "Dynamic input sockets" note).
+export function withUpdatedParams(
+  n: GraphNode,
+  nextParams: Record<string, unknown>
+): GraphNode {
+  return refreshNodeSockets({
+    ...n,
+    data: { ...n.data, params: nextParams },
+  });
+}
+
 // Recompute a node's cached socket arrays (data.inputs / auxOutputs /
 // primaryOutput) from its def resolvers and current params. Call after
 // any params change made outside the param-panel path, which keeps

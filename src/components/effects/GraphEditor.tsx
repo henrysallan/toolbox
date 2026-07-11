@@ -35,6 +35,7 @@ import {
   ticksToFrames,
 } from "@/engine/keyframes";
 import { getNodeDef } from "@/engine/registry";
+import { useClock } from "@/state/playback-clock";
 import { LAYER_OPACITY_PREFIX } from "@/engine/conventions";
 import { getShortcutScope } from "./shortcut-scope";
 import { wheelWantsZoom, getEffectiveDevice } from "./input-device";
@@ -48,7 +49,6 @@ interface GraphEditorProps {
     import("@/state/graph").NodeDataPayload
   >[];
   timeline: ProjectTimeline;
-  currentTick: number;
   onAnimationChange(
     nodeId: string,
     paramName: string,
@@ -190,12 +190,14 @@ type ModalTransform =
 export function GraphEditor({
   nodes,
   timeline,
-  currentTick,
   onAnimationChange,
   onScrub,
   normalizeY = false,
   refitVersion = 0,
 }: GraphEditorProps) {
+  // Clock read from the playback store (clock-store spec, step 3) — this
+  // editor re-renders per frame by design (playhead line).
+  const currentTick = useClock((s) => s.tick);
   // Collect all scalar tracks whose `graphVisible` toggle is on. The
   // graph icon on each track row in the Track Editor flips this flag.
   const visibleTracks = useMemo(() => {

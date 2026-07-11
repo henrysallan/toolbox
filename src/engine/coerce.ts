@@ -1,9 +1,12 @@
 import { getAudioFrame, rms } from "./audio-analysis";
 import { elementToCanvasImage, wrapImageAsElement } from "./element";
+import { buildPath2D } from "./spline-raster";
 import type {
+  MaskValue,
   RenderContext,
   SocketType,
   SocketValue,
+  SplineValue,
 } from "./types";
 
 // Shared 1×1 scratch canvas for the image/mask → scalar readback. Lives
@@ -79,6 +82,72 @@ void main() {
   outColor = vec4(l * c.a, 0.0, 0.0, 1.0);
 }`;
 
+// Spline → mask rasterizes the shape's filled silhouette (even-odd, open
+// subpaths closed for fill — same rules as the primitives' bundled raster)
+// into a canvas-sized coverage mask. Identity-cached per SplineValue: a
+// cache-hit upstream returns the same object, so a static shape pays the
+// canvas fill + upload once; an animated one re-rasterizes per recompute,
+// same cost profile as Rasterize Spline.
+const splineMaskCache = new WeakMap<SplineValue, MaskValue>();
+const SPLINE_MASK_CANVAS_KEY = "__coerce_spline_mask_canvas__";
+
+// Canvas memory is row-0-top; flip Y to the pipeline's Y-up convention.
+// Coverage = r * a like image→mask, so antialiased edges stay soft.
+const SPLINE_TO_MASK_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+out vec4 outColor;
+void main() {
+  vec4 c = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
+  outColor = vec4(c.r * c.a, 0.0, 0.0, 1.0);
+}`;
+
+function splineToMask(value: SplineValue, ctx: RenderContext): MaskValue | undefined {
+  const cached = splineMaskCache.get(value);
+  if (cached && cached.width === ctx.width && cached.height === ctx.height) {
+    return cached;
+  }
+  let canvas = ctx.state[SPLINE_MASK_CANVAS_KEY] as HTMLCanvasElement | undefined;
+  if (!canvas) {
+    canvas = document.createElement("canvas");
+    ctx.state[SPLINE_MASK_CANVAS_KEY] = canvas;
+  }
+  if (canvas.width !== ctx.width) canvas.width = ctx.width;
+  if (canvas.height !== ctx.height) canvas.height = ctx.height;
+  const c2d = canvas.getContext("2d");
+  if (!c2d) return undefined;
+  c2d.clearRect(0, 0, canvas.width, canvas.height);
+  const path = buildPath2D(value.subpaths, canvas.width, canvas.height, true);
+  if (path) {
+    c2d.fillStyle = "#ffffff";
+    c2d.fill(path, "evenodd");
+  }
+
+  const gl = ctx.gl;
+  const tmp = gl.createTexture();
+  if (!tmp) return undefined;
+  gl.bindTexture(gl.TEXTURE_2D, tmp);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+
+  const out = ctx.allocMask();
+  const program = ctx.getShader("__spline_to_mask__", SPLINE_TO_MASK_FS);
+  ctx.drawFullscreen(program, out, (gl2) => {
+    gl2.activeTexture(gl2.TEXTURE0);
+    gl2.bindTexture(gl2.TEXTURE_2D, tmp);
+    gl2.uniform1i(gl2.getUniformLocation(program, "u_src"), 0);
+  });
+  gl.deleteTexture(tmp);
+  splineMaskCache.set(value, out);
+  return out;
+}
+
 export function coerceValue(
   value: SocketValue | undefined,
   target: SocketType,
@@ -107,6 +176,14 @@ export function coerceValue(
       gl.uniform1i(gl.getUniformLocation(program, "u_src"), 0);
     });
     return out;
+  }
+
+  // Spline → mask: the shape as its filled silhouette. This is what lets a
+  // primitive (Rectangle, Circle, Spline Draw…) wire straight into any mask
+  // socket — the universal matte, Merge's per-layer masks — without routing
+  // through its raster aux output or a Rasterize Spline node.
+  if (value.kind === "spline" && target === "mask") {
+    return splineToMask(value, ctx);
   }
 
   if (value.kind === "scalar") {

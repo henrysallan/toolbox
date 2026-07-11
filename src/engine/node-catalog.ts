@@ -24,6 +24,92 @@ export const SETTABLE_PARAM_TYPES: ReadonlySet<ParamType> = new Set([
   "string",
 ]);
 
+// Vet an LLM-supplied VALUE against its ParamDef. The builder/edit paths
+// check param names and settable types; without this, values crossed the
+// trust boundary unchecked — `"abc"` into a scalar, 1e999 (JSON → Infinity),
+// a non-option enum — and, worse, serialized verbatim into saved projects.
+// Rejections surface as BAD_PARAM_VALUE build issues (blocking, so the
+// repair loop fixes them); out-of-hard-range scalars are clamped like the
+// UI's sliders rather than rejected.
+const MAX_STRING_LEN = 20_000;
+const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+function finiteVec(v: unknown, arity: number): v is number[] {
+  return (
+    Array.isArray(v) &&
+    v.length === arity &&
+    v.every((x) => typeof x === "number" && Number.isFinite(x))
+  );
+}
+
+export function vetParamValue(
+  pdef: ParamDef,
+  value: unknown
+): { ok: true; value: unknown } | { ok: false; reason: string } {
+  switch (pdef.type) {
+    case "scalar": {
+      if (typeof value !== "number" || !Number.isFinite(value))
+        return { ok: false, reason: "expected a finite number" };
+      let v = value;
+      if (pdef.min !== undefined) v = Math.max(pdef.min, v);
+      // softMax is a UI soft ceiling — values beyond it are legitimate;
+      // only the hard max clamps, matching the slider behavior.
+      if (pdef.max !== undefined) v = Math.min(pdef.max, v);
+      return { ok: true, value: v };
+    }
+    case "boolean":
+      return typeof value === "boolean"
+        ? { ok: true, value }
+        : { ok: false, reason: "expected true/false" };
+    case "enum": {
+      if (typeof value !== "string")
+        return { ok: false, reason: "expected an option string" };
+      // Font-family enums are open-world (locally installed fonts merge into
+      // the option list at runtime) — membership can't be enforced there.
+      if (
+        pdef.options &&
+        pdef.control !== "font" &&
+        !pdef.options.includes(value)
+      )
+        return {
+          ok: false,
+          reason: `not an option (choose from: ${pdef.options.join(", ")})`,
+        };
+      return { ok: true, value };
+    }
+    case "string":
+      if (typeof value !== "string")
+        return { ok: false, reason: "expected a string" };
+      if (value.length > MAX_STRING_LEN)
+        return { ok: false, reason: `string too long (max ${MAX_STRING_LEN})` };
+      return { ok: true, value };
+    case "color":
+      // Stored form is a hex string; keyframe machinery also produces RGBA
+      // tuples, so accept both.
+      if (typeof value === "string" && HEX_COLOR.test(value))
+        return { ok: true, value };
+      if (finiteVec(value, 4) || finiteVec(value, 3))
+        return { ok: true, value };
+      return { ok: false, reason: "expected \"#rrggbb\" (or an RGBA tuple)" };
+    case "vec2":
+      return finiteVec(value, 2)
+        ? { ok: true, value }
+        : { ok: false, reason: "expected [x, y] finite numbers" };
+    case "vec3":
+      return finiteVec(value, 3)
+        ? { ok: true, value }
+        : { ok: false, reason: "expected [x, y, z] finite numbers" };
+    case "vec4":
+      return finiteVec(value, 4)
+        ? { ok: true, value }
+        : { ok: false, reason: "expected [x, y, z, w] finite numbers" };
+    default:
+      // Not an LLM-settable type — callers gate on SETTABLE_PARAM_TYPES
+      // before vetting, so this is unreachable in practice.
+      return { ok: false, reason: `type "${pdef.type}" is not settable` };
+  }
+}
+
 export interface CatalogSocket {
   name: string;
   type: string;

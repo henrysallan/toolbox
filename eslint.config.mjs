@@ -12,7 +12,19 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Built artifacts and vendored bundles — not ours to lint.
+    "src/export-template/dist/**",
+    "src/export-template/node_modules/**",
+    "public/export-template/**",
+    "electron/vendor/**",
+    "dist-electron/**",
   ]),
+  // Electron main-process files are CommonJS by design (they run unbundled
+  // in Electron's Node; ESM would need a build step for no benefit).
+  {
+    files: ["electron/**/*.js"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
 ]);
 
 export default eslintConfig;

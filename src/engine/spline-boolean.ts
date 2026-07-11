@@ -3,8 +3,10 @@
 // engine and pull the type names separately.
 import polygonClipping from "polygon-clipping";
 import type { MultiPolygon, Ring } from "polygon-clipping";
+import type { Bezier } from "bezier-js";
 import type { SplineAnchor, SplineSubpath, SplineValue } from "./types";
 import { subpathToBeziers } from "./spline-math";
+import { cubicsToSubpath } from "./spline-trim";
 
 // Geometric boolean operations on splines. Splines are bezier paths in
 // [0,1]² Y-DOWN; a "boolean" only makes sense on the filled REGIONS they
@@ -199,4 +201,231 @@ export function splineSelfMerge(
       break;
   }
   return geomToSpline(result);
+}
+
+// ---------------------------------------------------------------------------
+// Line mode ("Treat A as: line") — clip a spline's CURVES by another
+// spline's filled region. Unlike the area booleans above, the subject is
+// not a region: each subpath is cut where it crosses the cutter's boundary
+// and only the pieces on the requested side survive — gaps in the stroke,
+// not cutouts in the fill. Kept geometry stays TRUE BEZIER: crossings are
+// found on the flattened curve (same `steps` resolution as the area path)
+// but the ORIGINAL cubics are split at the crossing parameters. Closed
+// subpaths that get cut become open arcs — the piece running through the
+// closed seam is stitched continuous (one arc, no cap break); untouched
+// subpaths pass through by reference; groupIndex tags survive. Each piece
+// is classified by its own midpoint (even-odd, so cutter holes behave),
+// which keeps tangential grazes from flipping everything downstream.
+// ---------------------------------------------------------------------------
+
+interface ClipEdge {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+// All boundary edges of a MultiPolygon (scaled coords). polygon-clipping
+// rings may or may not repeat the first point — normalize either way.
+function geomEdges(geom: MultiPolygon): ClipEdge[] {
+  const edges: ClipEdge[] = [];
+  for (const poly of geom) {
+    for (const ring of poly) {
+      let n = ring.length;
+      if (n < 3) continue;
+      const a0 = ring[0];
+      const aN = ring[n - 1];
+      if (Math.abs(a0[0] - aN[0]) < 1e-9 && Math.abs(a0[1] - aN[1]) < 1e-9) n--;
+      for (let i = 0; i < n; i++) {
+        const a = ring[i];
+        const b = ring[(i + 1) % n];
+        if (Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9) continue;
+        edges.push({
+          x1: a[0],
+          y1: a[1],
+          x2: b[0],
+          y2: b[1],
+          minX: Math.min(a[0], b[0]),
+          minY: Math.min(a[1], b[1]),
+          maxX: Math.max(a[0], b[0]),
+          maxY: Math.max(a[1], b[1]),
+        });
+      }
+    }
+  }
+  return edges;
+}
+
+// Even-odd point-in-region over every ring of the MultiPolygon (scaled
+// coords). Counting across outer rings AND holes together IS the even-odd
+// rule, so holes read as outside.
+function pointInGeom(geom: MultiPolygon, x: number, y: number): boolean {
+  let inside = false;
+  for (const poly of geom) {
+    for (const ring of poly) {
+      const n = ring.length;
+      for (let i = 0, j = n - 1; i < n; j = i++) {
+        const yi = ring[i][1];
+        const yj = ring[j][1];
+        if (yi > y === yj > y) continue;
+        const xCross =
+          ring[j][0] + ((y - yj) / (yi - yj)) * (ring[i][0] - ring[j][0]);
+        if (x < xCross) inside = !inside;
+      }
+    }
+  }
+  return inside;
+}
+
+// Intersection parameter of the sub-segment (ax,ay)→(bx,by) with `e`, as
+// u ∈ [0,1] along the sub-segment — or null when they miss.
+function subSegHit(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  e: ClipEdge
+): number | null {
+  const den = (ax - bx) * (e.y1 - e.y2) - (ay - by) * (e.x1 - e.x2);
+  if (Math.abs(den) < 1e-12) return null;
+  const t = ((ax - e.x1) * (e.y1 - e.y2) - (ay - e.y1) * (e.x1 - e.x2)) / den;
+  const u = ((ax - e.x1) * (ay - by) - (ay - e.y1) * (ax - bx)) / den;
+  const eps = 1e-9;
+  if (t < -eps || t > 1 + eps || u < -eps || u > 1 + eps) return null;
+  return Math.max(0, Math.min(1, t));
+}
+
+// Clip `subject`'s curves by `cutter`'s filled region, keeping the pieces
+// on the given side. Returns the subject unchanged (same object) when the
+// cutter is empty and we keep the outside.
+export function clipSplineByRegion(
+  subject: SplineValue,
+  cutter: SplineValue,
+  keep: "outside" | "inside",
+  steps: number
+): SplineValue {
+  if (subject.subpaths.length === 0) return subject;
+  const geom = splineToGeom(cutter, steps);
+  if (geom.length === 0) {
+    return keep === "outside" ? subject : { kind: "spline", subpaths: [] };
+  }
+  const edges = geomEdges(geom);
+  const lutN = Math.max(2, steps);
+
+  const out: SplineSubpath[] = [];
+  const keepPiece = (inside: boolean) =>
+    keep === "inside" ? inside : !inside;
+
+  for (const sub of subject.subpaths) {
+    const segs = subpathToBeziers(sub);
+    const segCount = segs.length;
+    if (segCount === 0) continue;
+
+    // Global crossing parameters g ∈ (0, segCount): cubic index + local t.
+    const cuts: number[] = [];
+    for (let si = 0; si < segCount; si++) {
+      const lut = segs[si].curve.getLUT(lutN);
+      // Cubic-level AABB quick-reject against each edge.
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const p of lut) {
+        const sx = p.x * SCALE;
+        const sy = p.y * SCALE;
+        if (sx < minX) minX = sx;
+        if (sy < minY) minY = sy;
+        if (sx > maxX) maxX = sx;
+        if (sy > maxY) maxY = sy;
+      }
+      for (const e of edges) {
+        if (e.minX > maxX || e.maxX < minX || e.minY > maxY || e.maxY < minY) {
+          continue;
+        }
+        for (let k = 0; k < lut.length - 1; k++) {
+          const u = subSegHit(
+            lut[k].x * SCALE,
+            lut[k].y * SCALE,
+            lut[k + 1].x * SCALE,
+            lut[k + 1].y * SCALE,
+            e
+          );
+          if (u === null) continue;
+          const g = si + (k + u) / (lut.length - 1);
+          if (g > 1e-6 && g < segCount - 1e-6) cuts.push(g);
+        }
+      }
+    }
+    cuts.sort((a, b) => a - b);
+    // Dedupe near-identical crossings (a hit at a LUT vertex registers on
+    // both adjacent sub-segments; a hit at a shared ring vertex on both
+    // edges). Precision is ~1/steps anyway; each piece's midpoint test is
+    // authoritative, so merging near-cuts only drops sliver pieces.
+    const unique: number[] = [];
+    for (const g of cuts) {
+      if (unique.length === 0 || g - unique[unique.length - 1] > 1e-3) {
+        unique.push(g);
+      }
+    }
+
+    const midOf = (g: number): boolean => {
+      const gi = Math.min(segCount - 1, Math.floor(g % segCount));
+      const t = (g % segCount) - gi;
+      const p = segs[gi].curve.get(t);
+      return pointInGeom(geom, p.x * SCALE, p.y * SCALE);
+    };
+
+    if (unique.length === 0) {
+      // No crossings — the whole subpath is on one side. Keep by reference
+      // (closed flag + handles intact).
+      if (keepPiece(midOf(segCount / 2))) out.push(sub);
+      continue;
+    }
+
+    // Spans between consecutive cuts. Closed subpaths wrap: the last span
+    // continues through the seam into the first (one continuous arc).
+    const spans: Array<[number, number]> = [];
+    if (sub.closed) {
+      for (let i = 0; i < unique.length; i++) {
+        const ga = unique[i];
+        const gb = i + 1 < unique.length ? unique[i + 1] : segCount + unique[0];
+        spans.push([ga, gb]);
+      }
+    } else {
+      spans.push([0, unique[0]]);
+      for (let i = 0; i + 1 < unique.length; i++) {
+        spans.push([unique[i], unique[i + 1]]);
+      }
+      spans.push([unique[unique.length - 1], segCount]);
+    }
+
+    for (const [ga, gb] of spans) {
+      if (gb - ga <= 1e-6) continue;
+      if (!keepPiece(midOf((ga + gb) / 2))) continue;
+      // Original cubics split at the span ends; whole cubics pass as-is.
+      const curves: Bezier[] = [];
+      for (let gi = Math.floor(ga); gi < gb - 1e-9; gi++) {
+        const idx = gi % segCount;
+        const lo = Math.max(0, ga - gi);
+        const hi = Math.min(1, gb - gi);
+        if (hi - lo <= 1e-6) continue;
+        curves.push(
+          lo <= 1e-9 && hi >= 1 - 1e-9
+            ? segs[idx].curve
+            : segs[idx].curve.split(lo, hi)
+        );
+      }
+      const piece = cubicsToSubpath(curves);
+      if (piece && piece.anchors.length >= 2) {
+        if (sub.groupIndex !== undefined) piece.groupIndex = sub.groupIndex;
+        out.push(piece);
+      }
+    }
+  }
+
+  return { kind: "spline", subpaths: out };
 }

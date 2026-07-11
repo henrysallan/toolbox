@@ -49,6 +49,9 @@ src/
                           decoded-buffer), radix-2 FFT, band energy, MPM pitch. Feeds the
                           audio→scalar coercion AND the Audio Bands/Pitch/Spectral nodes.
     conventions.ts        Universal opacity param + universal mask input helpers.
+    exr/                  OpenEXR import: vendored EXRLoader fork (exr-core.js,
+                          multilayer/DWA fixes), layer grouping, worker decode
+                          pool. See "EXR import + color pipeline" sharp edge.
     registry.ts           registerNode()/getNodeDef() — a Map, nothing more.
     flatten.ts groups.ts  Node-group/layer dissolution pass + group socket plumbing.
     layout.ts             Auto Layout: layout units + pure Figma-semantics solver.
@@ -73,12 +76,32 @@ src/
                           Connection / buildNodeConnection).
     ParamPanel.tsx        Renders ParamDef[] → controls; all custom param-type UIs.
     EffectNode.tsx        The node chrome on the graph canvas (sockets, header, +).
+                          Also hosts ON-NODE param controls (first: the Color
+                          node's per-output swatches → ColorPickerPopover, a
+                          compact HSV picker + hex + eyedropper anchored inside
+                          the node div; edits dispatch `effect-node-param`,
+                          which routes through onParamChange so undo/autokey/
+                          socket-resolve fire naturally). The picker lives in
+                          lib/color-picker-popover.tsx and is the UNIVERSAL
+                          color UI: ColorControl's swatch opens it via
+                          ColorSwatchPicker (fixed-position portal, Dropdown
+                          dismiss rules) everywhere — param panel, gradient
+                          points, ramp stops, live viewer, exported apps — in
+                          place of the native browser picker. Spec:
+                          071026_color-node-multi-output.md.
     TrackEditor.tsx / LayersEditor.tsx / PlaybackBar.tsx   timeline UIs.
     *Overlay.tsx, TransformGizmo.tsx, PrimitiveGizmo.tsx   on-canvas editing.
                           SplineEditorOverlay: multi-subpath pen/edit (Pen /
                           Path-Select / Sub-path-Select tools + GUI bbox
                           transform). GradientOverlay: linear/radial/multipoint
-                          handles.
+                          handles. Multi-select shows one gizmo per selected
+                          transform/primitive node, each editing only its own
+                          params (TransformGizmo swaps its canvas-wide translate
+                          rect for its bounds polygon via `boxTranslate` so
+                          stacked gizmos don't fight; topmost handle wins on
+                          overlap). Spline Draw / Gradient / Paint / Segment
+                          overlays stay single-selection. Spec:
+                          070826_multiselect-gizmos.md.
   state/
     graph.ts              NodeDataPayload (what lives in each xyflow node's data).
     graph-ops.ts          ALL structural graph mutations (pure functions). New
@@ -94,6 +117,10 @@ src/
     fonts.ts font-*.ts    Curated + custom font loading, variable-font axis parsing.
     local-fonts.ts        OS-installed fonts via queryLocalFonts (Chromium/desktop);
                           enumerate for the Text picker + read bytes for save-bundling.
+    mcp-bridge/           Editor side of the Claude MCP bridge: WS client + command
+                          registry (React side: useMcpBridge + McpPairingDialog;
+                          server: scripts/mcp-server.mjs via `npm run mcp`; e2e:
+                          `npm run check:mcp`). Spec: 070926_claude-mcp-bridge.md.
     platform/             Platform-adapter seam (web vs Electron) — see "Desktop
                           (Electron) build". index.ts → `platform`; web.ts is
                           today's behavior verbatim; native.ts → window.toolboxNative.
@@ -169,16 +196,27 @@ work** until SDF Rasterize compiles the tree to one shader · `render`
 (inert organizational link Output→Render Queue).
 
 Coercions ([coerce.ts](../src/engine/coerce.ts)): mask↔image,
-scalar→vec2/3/4/uv-broadcast, image/mask→scalar (1×1 readback), audio→
+spline→mask (the shape's filled silhouette — even-odd, open subpaths closed
+for fill, aspect-corrected, canvas-sized; identity-cached per SplineValue so
+a static shape rasterizes once — this is what lets a Rectangle/Circle wire
+straight into any mask socket), scalar→vec2/3/4/uv-broadcast,
+image/mask→scalar (1×1 readback), audio→
 scalar (RMS level, via engine/audio-analysis.ts), image↔element (wrap as
 full-canvas element / flatten centered at natural size; identity-cached in
-WeakMaps inside engine/element.ts). The UI mirrors this list in `canCoerce`
-/ `isValidConnection` (NodeEditor.tsx) — **add new coercions in both
-places**. `image→mask` is **luminance × alpha** (coverage-weighted): opaque
+WeakMaps inside engine/element.ts). The editor-side "can this wire land
+here" checks are SINGLE-SOURCED in engine/graph-validation.ts: `coercible`
+(the pure type table, also used by AI-recipe validation) and
+`editorCanCoerce` (adds the polymorphic defType exceptions — Math uv,
+Copy-to-Points instance, Displace/Transform source). NodeEditor's
+`isValidConnection` + splice check and EffectsApp's wire-drop auto-connect
+all call it — **add new coercions in coerce.ts (runtime) + coercible
+(editor/validator); add polymorphic socket exceptions in editorCanCoerce
+only.** `image→mask` is **luminance × alpha** (coverage-weighted): opaque
 grayscale (noise/gradients) reads as its old luminance, but a shape drawn on
 transparency (Rectangle/Circle/Text/SVG rasters) mattes by its silhouette,
 not by whatever RGB sits in the cleared surround. A dark-*colored* fill still
-reads dim — matte with a light fill for a clean cutout.
+reads dim — matte with a light fill for a clean cutout (or wire the spline
+itself: spline→mask is styling-independent).
 
 ## The evaluator (what actually happens per frame)
 
@@ -207,7 +245,12 @@ reads dim — matte with a light fill for a clean cutout.
      `mix(base, output, m)` (reveal an effect through the mask); with none
      (pure sources) it **mattes** `output*m`. A def can force matte-only with
      `noMaskBase` (Text does — its `fill`/`morph_mask` image inputs aren't
-     blend bases). Also the universal `opacity` param (declare `OPACITY_PARAM`
+     blend bases). Merge opts out entirely (`noMaskInput`) — it declares its
+     own `mask`-typed socket under every image input (`mask:base`,
+     `mask:<layerId>`), each the matte for that layer (multiplies the
+     layer's effective alpha in BLEND_FS, exactly like a per-pixel opacity;
+     see 070926_merge-layer-masks.md). Also the universal `opacity` param
+     (declare `OPACITY_PARAM`
      and image outputs fade for free — never implement opacity in a node).
    - `ComputeArgs.consumedOutputs`: the set of this node's output handles
      (`"primary"`, `"aux:<name>"`) that something actually reads this eval
@@ -251,7 +294,9 @@ documented there): `type` (immutable once shipped — saves reference it),
 plus dynamic variants (`resolveInputs`, `resolvePrimaryOutput`,
 `resolveAuxOutputs` — keyed off params and `connectedTypes`), `compute`,
 optional `init`/`dispose`/`fingerprintExtras`/`stable`/`terminal`/
-`noMaskInput`/`hidden`, UI hints (`supportsTransformGizmo` — requires the
+`noMaskInput`/`hidden`/`validateParams` (static param sanity check run by
+the AI-recipe validator only — Point Expression smoke-runs its kernel
+there), UI hints (`supportsTransformGizmo` — requires the
 7 standard transform params; `headerControl` — enum dropdown on the node
 header; `linkedPairs` — chain-lock two scalars).
 
@@ -272,10 +317,11 @@ To add a node:
 5. If you add a ParamType: types.ts union → ParamPanel renderer →
    keyframes.ts `isKeyframable`? → export-manifest.ts control support? →
    serialization check (plain JSON or media-envelope?). Array params that need
-   per-item keyframing (`merge_layers`, `gradient_points`) follow the
-   virtual-key pattern: a clone-and-override block in evaluator.ts + an autokey
-   mirror in EffectsApp's `onParamChange` + per-item diamonds in ParamPanel —
-   copy an existing one.
+   per-item keyframing (`merge_layers`, `gradient_points`, `color_ramp`)
+   follow the virtual-key pattern: a clone-and-override block in evaluator.ts
+   + an autokey mirror in EffectsApp's `onParamChange` + per-item diamonds in
+   ParamPanel — copy an existing one. `color_ramp` additionally supports
+   per-item expose/control via the same virtual names (see § Animation).
 6. Check the docs page renders it sanely (descriptions come from the def).
 
 ## Animation & time
@@ -288,11 +334,21 @@ To add a node:
   `KeyframeAnimationBlock` on `node.data.animation`; rich easing presets +
   custom bezier (scalar only); color interpolates in oklab by default.
   Virtual keys animate per-item sub-values of array params (the array param
-  itself isn't keyframable): merge-layer opacities (`layer_opacity:<id>`) and
-  multipoint-gradient point x/y/color (`gpoint_x/y/c:<id>`). The evaluator
+  itself isn't keyframable): merge-layer opacities (`layer_opacity:<id>`),
+  multipoint-gradient point x/y/color (`gpoint_x/y/c:<id>`), and color-ramp
+  stop color/alpha/position (`ramp_c/a/p:<paramName>:<stopId>` — ramp keys
+  embed the param name since a def may declare several ramps). The evaluator
   resolves them onto a cloned array before compute (see conventions.ts + the
-  two blocks in evaluator.ts); ParamPanel renders a diamond per item;
+  three blocks in evaluator.ts); ParamPanel renders a diamond per item;
   EffectsApp auto-keyframes edits. Color virtual keys store RGBA tuples.
+  Ramp stops go further: the same virtual names are valid `exposedParams`
+  entries (per-stop input sockets — vec4 for color, scalar for
+  alpha/position; wire > keyframe per FIELD) and `controlParams` entries
+  (per-stop knobs in exported apps — the manifest synthesizes a
+  color/scalar ParamDef and the live viewer patches the stop in place).
+  Removing a stop drops its tracks, exposures, controls, and edges in the
+  same `onParamChange` pass. Spec:
+  071026_ramp-stop-keyframe-expose-control.md.
   `Keyframe.value` is `unknown` — most types are scalars/colors/vecs, but
   the whole spline shape keyframes too: Spline Draw's `spline_anchors` param
   is keyframable ("Path Animation" row in ParamPanel), and `interpolate`
@@ -332,10 +388,15 @@ To add a node:
 ## Persistence & sharing
 
 - `serializeGraph`/`deserializeGraph` ([project.ts](../src/lib/project.ts)),
-  `CURRENT_SCHEMA = 6` — the version history is documented at the top of
+  `CURRENT_SCHEMA = 8` — the version history is documented at the top of
   that file; bump it when the wire shape changes and keep loading old ones.
   (v6 renamed Text's `mask` input to `morph_mask` and migrates old
-  `in:mask`→`in:morph_mask` edges on load — see below.)
+  `in:mask`→`in:morph_mask` edges on load — see below. v7 removed Merge's
+  universal mask in favor of per-layer mask sockets; an old Merge `in:mask`
+  edge fans out into one `in:mask:<layerId>` edge per layer on load —
+  equivalent output under source-over. See 070926_merge-layer-masks.md.
+  v8 added the `{kind:"exr"}` original-bytes envelope for EXR stills on
+  Image Source — see 070926_exr-color-pipeline.md.)
 - Media (image bitmaps, paint canvases) inline as data-URLs in cloud saves;
   video/audio don't serialize — they become "missing media" entries
   re-picked via MediaRelinkModal ([media-relink.ts](../src/lib/media-relink.ts)).
@@ -375,6 +436,19 @@ To add a node:
     alpha end-to-end: the WebGL2 context is `premultipliedAlpha:false` and
     `blitToCanvas` (gl.ts) disables `BLEND` so the present doesn't flatten
     transparency over its opaque-black clear before the PNG-frame capture.
+    **Caveat: ffmpeg's `prores_ks` alpha is not reliably read by NLEs.** The
+    file is spec-correct (verified `yuva444p12le`, alpha data intact) but
+    DaVinci Resolve ignores the channel (Apple-QuickTime signaling mismatch)
+    and After Effects decodes it opaque. For cross-app alpha use **qtrle**
+    (below), not ProRes.
+  - **Universal alpha (`qtrle`)**: the QuickTime Animation codec (max-tier
+    `videoCodec: "qtrle"`, `-c:v qtrle -pix_fmt argb` in export-ffmpeg-args.js)
+    is the alpha delivery format that AE **and** Resolve both read. Lossless
+    8-bit RGBA, straight alpha, always alpha-bearing (no `videoAlpha` toggle,
+    no CRF), forced to a `.mov` container (like ProRes). RLE compresses
+    transparent/flat runs extremely well (often smaller than ProRes for cutout
+    graphics) but balloons on busy full-frame content — PNG/EXR sequence is the
+    escape hatch there. Shares both encode paths (wasm + native ffmpeg).
 - The Output node's animated export has an `exportMode` param (**video** /
   **sequence** / **gif**, a segmented pill — `ParamDef.control: "segmented"`).
   Sequence = one still per frame (`exportSequence` in EffectsApp), delivered
@@ -617,6 +691,43 @@ src/app/docs + lib/docs/manifest.
   analyser tap treats it like a file element). Offline export decodes the
   audio track straight from the video's ObjectURL via `decodeAudioData`
   (`ExportAudioSpec` now carries `url`/`element`, not a typed file value).
+- **EXR import + color pipeline** (spec 070926_exr-color-pipeline.md).
+  Image Source and Video Source's sequence kind accept OpenEXR — single or
+  multilayer, DWAA/DWAB/ZIP(S)/PIZ/RLE/PXR24/B44 — with a per-node layer
+  dropdown (`exr_layer`: a `control:"exr_layer"` enum whose options come
+  from the loaded file's header, which is stored on the media param value)
+  and an un-premultiply toggle (EXR is associated-alpha; the engine is
+  straight-alpha). The decoder is a **vendored fork of three's EXRLoader**
+  in [src/engine/exr/](../src/engine/exr/) (engine-side so exports carry
+  it): `parseExrHeader` is header-only (~1ms at 4K, run at pick time),
+  `decodeExrLayerAsync` decodes one layer to straight-alpha RGBA Float32
+  (rows top-first like ImageBitmap; HDR intact) on a worker pool
+  (min(4, cores−2), ping-handshake before jobs since buffers TRANSFER,
+  sync fallback when workers can't load — the single-file exported app
+  can't inline the worker chunk). The fork fixes paths upstream never hit
+  (it rejected multilayer files outright): DWA's unknown-rule channel
+  block is now read (float Z/Normal channels live there — upstream never
+  even skipped it, garbling ALL channels), one DWA CSC set per layer
+  prefix with shared AC/DC stream counters, channel-planar RLE/UNKNOWN
+  buffer layouts, per-channel byte sizes for mixed HALF/FLOAT files (ZIP +
+  PIZ), and float-DCT half→float expansion. Verified against
+  Blender-rendered multilayer DWAA/ZIP/PIZ with ffmpeg as an independent
+  cross-decoder. Costs (measured, M2 MBP-class): 4K×15-channel multilayer
+  ≈ 4.2s/frame DWAA, ≈ 2.1s ZIP — chunk decompression covers ALL channels
+  regardless of the selected layer, so realtime raw playback is out;
+  sequences lean on a **byte-budgeted** texture LRU (512MB; a 4K RGBA16F
+  frame is ~66MB) + 3-frame decode-ahead, and hold the last-good frame
+  when starved. Offline export stays exact via settles. UINT channels
+  (cryptomatte) and deep files are rejected with clear errors. EXR stills
+  serialize their ORIGINAL bytes (`{kind:"exr"}` envelope, schema v8);
+  EXR sequences relink like any sequence. Image Source is cached, so its
+  async decode readiness rides `fingerprintExtras` (upload key + pending
+  flag). Color pipeline: the **Color Space** node does analytic
+  conversions (sRGB / Linear sRGB / ACEScg / ACES2065-1 / Rec.709 /
+  Gamma 2.2 / Display P3) with optional ACES (Hill fit) / AgX / Filmic
+  (Hable) view transforms applied in scene-linear; **Apply LUT** gained a
+  log2 HDR shaper + 16F volume so `ociobakelut` shaper+cube LUTs grade
+  scene-linear footage (and 8-bit banding is gone).
 - **Audio analysis nodes** (Audio Bands, Audio Pitch, Audio Spectral) all
   read through `getAudioFrame` ([audio-analysis.ts](../src/engine/audio-analysis.ts)),
   which has two backends behind one API: **live** taps the per-element
@@ -650,7 +761,13 @@ src/app/docs + lib/docs/manifest.
   `compositeSplineFill` — `spline-raster-aux` routes through it too. Text has
   its own glyph-coverage variant (`fillMode: "image"`, fill over stroke). The
   Auto-Layout `element` output keeps flat fill (deferred CPU render, no input
-  texture).
+  texture). **Rasterize Spline** additionally routes the wired image per two
+  toggles (`image_fill` default on, `image_stroke` default off — defaults =
+  legacy fills-only): the compositor grew optional `strokeFromImage` (stroke
+  alpha = coverage, recolored by the sampled image) and `fillPrecolored`
+  (the fill layer arrives as finished colors — how ramp/flat fills survive
+  when the image drives only the stroke) flags; omitting them reproduces the
+  old behavior for every other caller.
 - **Overlapping-spline compositing** (spec 070526; the Copy-to-Points→Rasterize
   flow). Three knobs: (1) **Spline Merge** node ([spline-merge.ts](../src/nodes/effect/spline-merge.ts))
   — single-input self-combine of all subpaths of ONE spline via
@@ -695,7 +812,13 @@ src/app/docs + lib/docs/manifest.
   socket list lives in a param and `resolveInputs(params)` derives sockets
   from it; the UI re-syncs `data.inputs` on param change. Growth is a
   manual `+` (an `effect-node-toggle` event; Combine/collect also grows this
-  way via a `collectAddInput` bump of its `count` param). (2) *Auto-grow from
+  way via a `collectAddInput` bump of its `count` param). The Color node
+  (`color-literal`) applies the same pattern to OUTPUTS: a `count` param
+  (1..8) unlocks declared `color2..color8` params (each a first-class color
+  param — keyframe/expose/control for free) and `resolveAuxOutputs` mints a
+  vec4 output per extra color; the `+` (`colorAddOutput`) bumps count, and
+  shrinking count via panel drops edges to the removed outputs in
+  onParamChange. Spec: 071026_color-node-multi-output.md. (2) *Auto-grow from
   edges* (Proximity Join/Merge — 070126_proximity-join-merge.md; and Spline
   Interpolate — 070626_spline-interpolate.md — which share the effect): a
   `slots: string[]` param whose value is **derived from the node's edges** by a
@@ -746,15 +869,32 @@ src/app/docs + lib/docs/manifest.
   sampling (Modulate Points / Sample Texture at Points / Displace). Point
   Expression is the one exception: a `"use strict"` JS block run **once per
   point** with `index/count/groupIndex/px/py/rot0/sx0/sy0` + the frame clock +
-  wired uniforms + optional `path`-spline sampling
-  (`pathPos/pathLen/pathAngle`), writing `x/y/sx/sy/scale/rot` and culling via
-  `keep` (count shrinks — Blender Delete-Geometry parity). `rand(seed)` is a
-  frame-independent triple32 hash (index-stable windows/gates — the "Random
-  Value hashed on Index" primitive); `random()` varies per frame. Mirrors the
-  scalar Expression node's compile/env/`fingerprintExtras`; reuses the
-  `expr_inputs` param UI (type-driven in param-controls.tsx, no ParamPanel
-  work). The scalar Expression node stays once-per-frame. Strict mode means
+  optional `path`-spline sampling (`pathPos/pathLen/pathAngle`), writing
+  `x/y/sx/sy/scale/rot` and culling via `keep` (count shrinks — Blender
+  Delete-Geometry parity). `rand(seed)` is a frame-independent triple32 hash
+  (index-stable windows/gates — the "Random Value hashed on Index" primitive);
+  `random()` varies per frame. **Tunables are Houdini-style channels**:
+  `ch("name", default)` reads a named slider input (wired scalar ?? slider ??
+  inline default), and the panel **Sync** button (`ParamDef.channelSync`) scans
+  the expression for `ch(…)` calls and mints the sliders (`syncChannelInputs`,
+  add-only). Channels are read via `ch()` — **never bare variables** — so a
+  channel name can't collide with a built-in (`ch("x")` is fine); the kernel
+  signature is fixed `(__env, __pt)`. Reuses the `expr_inputs` param UI
+  (type-driven in param-controls.tsx). The scalar Expression node stays
+  once-per-frame and keeps its bare-variable inputs. Strict mode means
   intermediates need `let`/`const` (bare assignment throws → fails safe to
-  passthrough).
+  passthrough). At runtime only the compiled epilogue's exact 7-tuple counts
+  as a result — a user `return` of any other shape keeps the point unchanged
+  (a returned short array used to leave `keep` undefined and cull every
+  point). **AI recipes can author the expression** (`expression` is a
+  settable string): `buildRecipe`/`applyRecipeEdit` auto-run the channel
+  Sync on an authored/patched expression (`syncExpressionChannels` in
+  recipe-builder.ts — `expr_inputs` itself isn't LLM-settable), recipe
+  edges/inputs may target a channel by NAME (`pe:in:speed` —
+  `resolveChannelHandle` aliases onto the id-based socket; literal sockets
+  win collisions), and the def's `validateParams` hook compiles + smoke-runs
+  the kernel during recipe validation so undeclared temps and `return`-style
+  code come back as repairable `PARAM_INVALID` errors instead of silently
+  no-oping.
 - No automated tests; keep modules pure where possible (layout solver,
   graph-ops) so they're testable when a runner lands.

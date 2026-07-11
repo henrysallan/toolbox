@@ -13,6 +13,7 @@ import {
   type KeyframeAnimationBlock,
 } from "@/engine/keyframes";
 import KeyframeDiamond from "./KeyframeDiamond";
+import { ColorSwatchPicker } from "@/lib/color-picker-popover";
 
 // Figma-style parameters panel for the Auto Layout node: an icon direction
 // toggle, a 3×3 alignment grid, inline W/H sizing, gap + spacing, padding,
@@ -257,18 +258,14 @@ function ColorSwatch({
   onChange: (v: string) => void;
 }) {
   return (
-    <input
-      type="color"
+    <ColorSwatchPicker
       value={value}
-      onChange={(e) => onChange(e.target.value)}
-      style={{
+      onChange={onChange}
+      swatchStyle={{
         width: 28,
         height: 24,
-        padding: 0,
         border: `1px solid ${BORDER}`,
         borderRadius: 6,
-        background: "none",
-        cursor: "pointer",
       }}
     />
   );

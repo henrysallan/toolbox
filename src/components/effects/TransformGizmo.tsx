@@ -30,6 +30,11 @@ interface Props {
   // since the relevant "shape" is the canvas itself.
   boundsMin?: [number, number];
   boundsMax?: [number, number];
+  // Restrict the translate drag surface to the gizmo's bounds polygon
+  // instead of the whole canvas. Multi-select renders several gizmos at
+  // once — stacked canvas-wide rects would all feed the topmost gizmo,
+  // so each box only grabs drags that start inside it.
+  boxTranslate?: boolean;
 }
 
 type DragKind =
@@ -87,6 +92,7 @@ export default function TransformGizmo({
   onChange,
   boundsMin,
   boundsMax,
+  boxTranslate = false,
 }: Props) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -630,21 +636,35 @@ export default function TransformGizmo({
           pointerEvents: "none",
         }}
       >
-        {/* Canvas-wide translate drag area. Drawn first so every handle
-            (corners, edges, rotation ring, pivot dot) paints on top and
-            wins pointer events — dragging empty canvas translates. */}
-        <rect
-          x={rect.left}
-          y={rect.top}
-          width={rect.width}
-          height={rect.height}
-          fill="transparent"
-          style={{
-            cursor: drag?.kind === "translate" ? "grabbing" : "grab",
-            pointerEvents: "auto",
-          }}
-          onPointerDown={startDrag("translate")}
-        />
+        {/* Translate drag area — canvas-wide for a lone gizmo (dragging
+            empty canvas translates), the bounds polygon in multi-select
+            (boxTranslate). Drawn first so every handle (corners, edges,
+            rotation grips, pivot dot) paints on top and wins pointer
+            events. */}
+        {boxTranslate ? (
+          <polygon
+            points={polygonPoints}
+            fill="transparent"
+            style={{
+              cursor: drag?.kind === "translate" ? "grabbing" : "grab",
+              pointerEvents: "auto",
+            }}
+            onPointerDown={startDrag("translate")}
+          />
+        ) : (
+          <rect
+            x={rect.left}
+            y={rect.top}
+            width={rect.width}
+            height={rect.height}
+            fill="transparent"
+            style={{
+              cursor: drag?.kind === "translate" ? "grabbing" : "grab",
+              pointerEvents: "auto",
+            }}
+            onPointerDown={startDrag("translate")}
+          />
+        )}
 
         {/* Dotted bounding box outline */}
         <polygon

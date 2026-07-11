@@ -272,6 +272,9 @@ export const simulationStartNode: NodeDefinition = {
       }
       state.lastTime = ctx.time;
       return {
+        // The texture is the zone's persistent ping-pong state — the
+        // evaluator must not release it (see NodeOutput.ownsTextures).
+        ownsTextures: false,
         primary: {
           kind: "image",
           texture: state.readTex,

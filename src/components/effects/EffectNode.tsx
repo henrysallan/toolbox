@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useState } from "react";
 import {
   Handle,
   Position,
@@ -12,6 +12,13 @@ import { getNodeDef } from "@/engine/registry";
 import { paramSocketType } from "@/state/graph";
 import type { NodeDataPayload } from "@/state/graph";
 import type { SocketType } from "@/engine/types";
+import {
+  parseRampParamKey,
+  rampFieldSocketType,
+} from "@/engine/conventions";
+import type { ColorRampStop } from "@/engine/color-ramp";
+import { MAX_COLORS, getExtractedPalette } from "@/nodes/source/color-literal";
+import { ColorPickerPopover } from "@/lib/color-picker-popover";
 import { colorForSocket } from "./socketColor";
 import { VIRTUAL_SOCKET } from "@/engine/groups";
 
@@ -43,11 +50,10 @@ function formatMs(v: number): string {
   return Math.round(v) + "ms";
 }
 
-export default function EffectNode({
-  id,
-  data,
-  selected,
-}: NodeProps<EffectNodeType>) {
+// Memoized: xyflow re-renders its NodeWrapper for every node whenever any
+// pane-level handler prop changes identity; the memo stops that cascade here
+// as long as this node's own props (id/data/selected) are unchanged.
+function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   // Per-node compute time, surfaced when the Window-menu "Show
   // Node Timings" toggle is on. EffectsApp dispatches a
   // `node-timings` event after each pipeline eval; we pick our
@@ -140,13 +146,35 @@ export default function EffectNode({
 
   // Resolve exposed-param sockets by pulling current def info. Only params
   // whose type maps to a data socket (scalar/vec*/color/bool) produce a
-  // socket; anything else silently drops.
+  // socket; anything else silently drops. Virtual ramp-stop names
+  // (ramp_c/a/p:<param>:<stopId> — engine/conventions) resolve to a
+  // vec4/scalar socket labeled by the stop's sorted position, matching the
+  // "stop · n/N" numbering in the param panel.
   const exposedSockets: ExposedSocket[] = useMemo(() => {
     const def = getNodeDef(data.defType);
     if (!def) return [];
     const names = data.exposedParams ?? [];
     const out: ExposedSocket[] = [];
     for (const name of names) {
+      const rk = parseRampParamKey(name);
+      if (rk) {
+        const p = def.params.find(
+          (x) => x.name === rk.paramName && x.type === "color_ramp"
+        );
+        if (!p) continue;
+        const raw = data.params[rk.paramName];
+        const stops = Array.isArray(raw) ? (raw as ColorRampStop[]) : [];
+        const idx = [...stops]
+          .sort((a, b) => a.position - b.position)
+          .findIndex((s) => s.id === rk.stopId);
+        const stopTag = idx >= 0 ? ` ${idx + 1}` : "";
+        out.push({
+          name,
+          label: `${p.label ?? p.name} · ${rk.field}${stopTag}`,
+          socketType: rampFieldSocketType(rk.field),
+        });
+        continue;
+      }
       const p = def.params.find((x) => x.name === name);
       if (!p) continue;
       const st = paramSocketType(p.type);
@@ -154,7 +182,7 @@ export default function EffectNode({
       out.push({ name, label: p.label ?? p.name, socketType: st });
     }
     return out;
-  }, [data.defType, data.exposedParams]);
+  }, [data.defType, data.exposedParams, data.params]);
 
   // React Flow caches handle positions per node and only re-measures on
   // resize. A socket *rename* swaps handle ids without changing the
@@ -188,6 +216,45 @@ export default function EffectNode({
     );
   };
 
+  // Color node on-node controls: one swatch per color output; clicking a
+  // swatch opens the picker popover anchored under its row. `pickerFor`
+  // holds the color param name being edited (null = closed). Spec:
+  // 071026_color-node-multi-output.md.
+  const isColorNode = data.defType === "color-literal";
+  const [pickerFor, setPickerFor] = useState<string | null>(null);
+  const colorHexFor = (paramName: string): string => {
+    const v = data.params[paramName];
+    return typeof v === "string" ? v : "#ffffff";
+  };
+  const colorNodeCount = isColorNode
+    ? Math.max(1, Math.floor((data.params.count as number) ?? 1))
+    : 1;
+  // Palette mode: with an image wired into the Color node, compute
+  // extracts a palette and announces it via "color-node-palette". The
+  // swatches mirror it read-only — the stored params are inert while the
+  // image drives the outputs. Initial state reads the session store:
+  // compute only re-runs on cache misses, so a remounting node can't
+  // count on the event ever re-firing.
+  const [palette, setPalette] = useState<string[] | null>(() =>
+    isColorNode ? getExtractedPalette(id) : null
+  );
+  useEffect(() => {
+    if (!isColorNode) return;
+    const onPalette = (e: Event) => {
+      const detail = (
+        e as CustomEvent<{ nodeId: string; colors: string[] | null }>
+      ).detail;
+      if (!detail || detail.nodeId !== id) return;
+      setPalette(detail.colors);
+      if (detail.colors) setPickerFor(null);
+    };
+    window.addEventListener("color-node-palette", onPalette);
+    return () => window.removeEventListener("color-node-palette", onPalette);
+  }, [isColorNode, id]);
+  // Swatch color: extracted palette wins over the stored param while active.
+  const swatchHexFor = (n: number, paramName: string): string =>
+    palette?.[Math.min(n - 1, palette.length - 1)] ?? colorHexFor(paramName);
+
   // Mirrors the queue-panel row logic: rows before the active item are
   // done, the active one shows its export fraction (or an indeterminate
   // dim fill), rows after are pending. activeItemId === null while a
@@ -207,7 +274,13 @@ export default function EffectNode({
   return (
     <div
       style={{
-        minWidth: isQueue ? 300 : data.defType === "collect" ? 240 : 200,
+        minWidth: isQueue
+          ? 300
+          : data.defType === "collect"
+            ? 240
+            : isColorNode
+              ? 220
+              : 200,
         // Layer nodes + their boundary nodes get a faint blue wash (#159).
         background: data.layerAccent ? "#171b24" : "#18181b",
         border: `1px solid ${
@@ -482,6 +555,22 @@ export default function EffectNode({
               }
             />
           )}
+          {isColorNode && colorNodeCount < MAX_COLORS && (
+            <HeaderToggle
+              on={false}
+              label="+"
+              title="Add color output"
+              activeBg="#374151"
+              activeFg="#e5e7eb"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("effect-node-toggle", {
+                    detail: { id, kind: "colorAddOutput" },
+                  })
+                )
+              }
+            />
+          )}
           {data.defType === "autolayout" && (
             <HeaderToggle
               on={false}
@@ -744,6 +833,18 @@ export default function EffectNode({
                 paddingRight: 14,
               }}
             >
+              {isColorNode && (
+                <ColorSwatchButton
+                  color={swatchHexFor(1, "color")}
+                  title={
+                    palette
+                      ? "Palette from image — disconnect to edit"
+                      : "Edit color"
+                  }
+                  disabled={!!palette}
+                  onClick={() => setPickerFor("color")}
+                />
+              )}
               <span
                 style={{ color: colorForSocket(data.primaryOutput!), fontSize: 9 }}
               >
@@ -806,6 +907,21 @@ export default function EffectNode({
                   opacity: disabled ? 0.5 : 1,
                 }}
               >
+                {isColorNode && !isVirtual && (
+                  <ColorSwatchButton
+                    color={swatchHexFor(
+                      parseInt(aux.name.slice("color".length), 10) || 1,
+                      aux.name
+                    )}
+                    title={
+                      palette
+                        ? "Palette from image — disconnect to edit"
+                        : `Edit ${aux.label ?? aux.name}`
+                    }
+                    disabled={!!palette}
+                    onClick={() => setPickerFor(aux.name)}
+                  />
+                )}
                 {!isVirtual && (
                   <span
                     style={{
@@ -828,6 +944,33 @@ export default function EffectNode({
             </Fragment>
           );
         })}
+
+        {isColorNode &&
+          pickerFor &&
+          (() => {
+            // Anchor the popover just under the row whose swatch opened
+            // it. Color N sits at row N-1 (primary is color 1, aux
+            // colorN follows in order).
+            const n =
+              pickerFor === "color"
+                ? 1
+                : parseInt(pickerFor.slice("color".length), 10) || 1;
+            const rowTop = PAD_Y + (n - 1) * ROW_H;
+            return (
+              <ColorPickerPopover
+                value={colorHexFor(pickerFor)}
+                onChange={(hex) =>
+                  window.dispatchEvent(
+                    new CustomEvent("effect-node-param", {
+                      detail: { id, name: pickerFor, value: hex },
+                    })
+                  )
+                }
+                onClose={() => setPickerFor(null)}
+                style={{ top: rowTop + ROW_H + 2, right: 8 }}
+              />
+            );
+          })()}
       </div>
 
       {(data.defType === "output" || isLayerOutput) && (
@@ -994,6 +1137,46 @@ function HeaderToggle({
   );
 }
 
+// On-node color swatch (Color node output rows) — clicking opens the
+// picker popover for that output's param. Checker underlay is unnecessary:
+// param colors are RGB hex (alpha is a separate param).
+function ColorSwatchButton({
+  color,
+  title,
+  onClick,
+  disabled,
+}: {
+  color: string;
+  title: string;
+  onClick: () => void;
+  // Palette mode (image wired) — the swatch is a readout, not an editor.
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      className="nodrag"
+      title={title}
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!disabled) onClick();
+      }}
+      style={{
+        width: 14,
+        height: 14,
+        flexShrink: 0,
+        borderRadius: 3,
+        background: color,
+        border: "1px solid rgba(0,0,0,0.55)",
+        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.14)",
+        cursor: disabled ? "default" : "pointer",
+        padding: 0,
+      }}
+    />
+  );
+}
+
 // Visual dot rendered as a child of the larger transparent Handle.
 // pointerEvents: none so all clicks fall through to the Handle for
 // React Flow's connection logic.
@@ -1025,3 +1208,5 @@ function SocketDot({
     />
   );
 }
+
+export default memo(EffectNode);

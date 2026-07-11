@@ -10,7 +10,7 @@
 
 import type { Edge } from "@xyflow/react";
 import { getNodeDef } from "@/engine/registry";
-import { SETTABLE_PARAM_TYPES } from "@/engine/node-catalog";
+import { SETTABLE_PARAM_TYPES, vetParamValue } from "@/engine/node-catalog";
 import {
   GROUP_TYPE,
   GROUP_INPUT_TYPE,
@@ -27,11 +27,16 @@ import {
   type GraphNode,
 } from "@/state/graph-ops";
 import {
+  resolveChannelHandle,
+  resolveOrdinalHandle,
   splitEndpoint,
+  syncExpressionChannels,
   toSourceHandle,
   toTargetHandle,
+  vetMergeLayers,
   type BuildIssue,
 } from "@/state/recipe-builder";
+import type { MergeLayer } from "@/nodes/effect/merge";
 
 // node-group / group-input / group-output are structural plumbing — ops may
 // wire to the boundary (add_edge) but may not retune or delete it.
@@ -43,6 +48,7 @@ const STRUCTURAL = new Set([GROUP_TYPE, GROUP_INPUT_TYPE, GROUP_OUTPUT_TYPE]);
 export interface GroupSpecNode {
   id: string;
   type: string;
+  name?: string; // display name, when it differs from the def default
   params: Record<string, unknown>; // settable values only
   exposed: string[];
   keyframed: string[]; // params whose static value won't take effect (animated)
@@ -76,16 +82,34 @@ export function groupToSpec(
   nodes: GraphNode[],
   edges: Edge[]
 ): GroupSpec {
+  return graphToSpec(nodes, edges, groupId);
+}
+
+// Generalization of groupToSpec to any scope: pass a group/layer id for its
+// interior, or omit `scopeId` for the ROOT composition (the layer chain +
+// Output). Root has no boundary nodes, so `interface` comes back empty —
+// used by the MCP bridge's get_graph.
+export function graphToSpec(
+  nodes: GraphNode[],
+  edges: Edge[],
+  scopeId?: string
+): GroupSpec {
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const shell = byId.get(groupId);
+  const shell = scopeId ? byId.get(scopeId) : undefined;
+  // Boundary nodes are plumbing (the `interface` field describes them), but
+  // group/layer SHELLS are real spec nodes — hiding them made the root scope
+  // look empty and left nested groups undiscoverable (their ids are what
+  // get_graph/edit ops scope into). applyRecipeEdit still refuses to retune
+  // or delete them (STRUCTURAL guard).
+  const BOUNDARY = new Set([GROUP_INPUT_TYPE, GROUP_OUTPUT_TYPE]);
   const interior = nodes.filter(
-    (n) => n.data.parentId === groupId && !STRUCTURAL.has(n.data.defType)
+    (n) => n.data.parentId === scopeId && !BOUNDARY.has(n.data.defType)
   );
   const inputNode = nodes.find(
-    (n) => n.data.parentId === groupId && n.data.defType === GROUP_INPUT_TYPE
+    (n) => scopeId && n.data.parentId === scopeId && n.data.defType === GROUP_INPUT_TYPE
   );
   const outputNode = nodes.find(
-    (n) => n.data.parentId === groupId && n.data.defType === GROUP_OUTPUT_TYPE
+    (n) => scopeId && n.data.parentId === scopeId && n.data.defType === GROUP_OUTPUT_TYPE
   );
 
   const specNodes: GroupSpecNode[] = interior.map((n) => {
@@ -100,14 +124,15 @@ export function groupToSpec(
     return {
       id: n.id,
       type: n.data.defType,
+      ...(n.data.name ? { name: n.data.name } : {}),
       params,
       exposed: n.data.exposedParams ?? [],
       keyframed,
     };
   });
 
-  // Edges fully inside the group (interior ↔ interior, and interior ↔ boundary).
-  const inGroup = (id: string) => byId.get(id)?.data.parentId === groupId;
+  // Edges fully inside the scope (interior ↔ interior, and interior ↔ boundary).
+  const inGroup = (id: string) => byId.get(id)?.data.parentId === scopeId;
   const groupEdges = edges
     .filter((e) => inGroup(e.source) && inGroup(e.target))
     .map((e) => ({
@@ -120,7 +145,7 @@ export function groupToSpec(
     : { inputs: [], outputs: [] };
 
   return {
-    name: shell?.data.name ?? "Group",
+    name: scopeId ? (shell?.data.name ?? "Group") : "root",
     nodes: specNodes,
     edges: groupEdges,
     interface: {
@@ -195,13 +220,43 @@ export function applyRecipeEdit(
         err("UNKNOWN_PARAM", `${label}.${k}: no such param.`);
         continue;
       }
+      if (pdef.type === "merge_layers") {
+        // Restricted [{mode?, opacity?}, …] shape; ids preserved BY INDEX
+        // from the current list so existing layer wires never dangle.
+        const mvet = vetMergeLayers(v, next[k] as MergeLayer[] | undefined);
+        if (!mvet.ok) {
+          err("BAD_PARAM_VALUE", `${label}.${k}: ${mvet.reason}.`);
+          continue;
+        }
+        next[k] = mvet.value;
+        continue;
+      }
       if (!SETTABLE_PARAM_TYPES.has(pdef.type)) {
         err("PARAM_NOT_SETTABLE", `${label}.${k}: type "${pdef.type}" is not settable.`);
         continue;
       }
-      next[k] = v;
+      const vet = vetParamValue(pdef, v);
+      if (!vet.ok) {
+        err("BAD_PARAM_VALUE", `${label}.${k}: ${vet.reason}.`);
+        continue;
+      }
+      // Spec §7: a static value on a keyframed param is a silent no-op at
+      // eval (keyframes win) — surface a note instead of silently accepting.
+      const anim = n.data.animation as
+        | Record<string, { animated?: boolean }>
+        | undefined;
+      if (anim?.[k]?.animated) {
+        err(
+          "PARAM_KEYFRAMED",
+          `${label}.${k}: param is keyframed — the static value won't take effect while the animation is active.`
+        );
+      }
+      next[k] = vet.value;
     }
-    n.data.params = next;
+    // A patched expression mints its ch()/pick() tunables (add-only), same as
+    // buildRecipe — the callers' refreshNodeSockets picks up the new sockets.
+    n.data.params =
+      "expression" in params ? syncExpressionChannels(def, next) : next;
   };
 
   const replaceInPlace = (updated: GraphNode) => {
@@ -240,6 +295,11 @@ export function applyRecipeEdit(
         const n = byId.get(op.node);
         if (!n) { err("UNKNOWN_NODE", `remove_node: no node "${op.node}".`); break; }
         if (STRUCTURAL.has(n.data.defType)) { err("PROTECTED_NODE", `remove_node: "${op.node}" is structural.`); break; }
+        // The scope being edited can't delete itself — for node-groups the
+        // STRUCTURAL check above covers it, but a LAYER shell isn't
+        // structural (its params are editable), and removing it would
+        // orphan its whole interior.
+        if (op.node === groupId) { err("PROTECTED_NODE", `remove_node: "${op.node}" is the scope being edited.`); break; }
         const i = nodes.findIndex((x) => x.id === op.node);
         if (i >= 0) nodes.splice(i, 1);
         byId.delete(op.node);
@@ -250,7 +310,7 @@ export function applyRecipeEdit(
         const s = splitEndpoint(op.from);
         const t = splitEndpoint(op.to);
         const sh = s && toSourceHandle(s.rest);
-        const th = t && toTargetHandle(t.rest);
+        let th = t && toTargetHandle(t.rest);
         const srcId = s && realId(s.lid);
         const tgtId = t && realId(t.lid);
         if (!s || !t || !sh || !th || !srcId || !tgtId) {
@@ -261,20 +321,40 @@ export function applyRecipeEdit(
           err("EDGE_NODE_MISSING", `add_edge ${op.from} → ${op.to}: references an unknown node.`);
           break;
         }
+        // Expression channels are addressed by name (ids are unknowable to
+        // the LLM); alias onto the id-based socket, same as buildRecipe.
+        const tgtNode = byId.get(tgtId)!;
+        const tdef = getNodeDef(tgtNode.data.defType);
+        if (tdef) th = resolveChannelHandle(tdef, tgtNode.data.params, th);
         edges.push({ id: newEdgeId(), source: srcId, sourceHandle: sh, target: tgtId, targetHandle: th });
+        // A wire into a param socket only renders when the param is in
+        // exposedParams (EffectNode derives handles from it) — without this
+        // mirror of buildRecipe's behavior the edge validates green, drives
+        // the param at eval, and is invisible/undisconnectable in the editor.
+        // (remove_edge deliberately does NOT unexpose: an exposed-but-unwired
+        // param socket is a normal state the user may want kept.)
+        if (th.startsWith("in:param:")) {
+          const pname = th.slice("in:param:".length);
+          tgtNode.data.exposedParams = [
+            ...new Set([...(tgtNode.data.exposedParams ?? []), pname]),
+          ];
+        }
         break;
       }
       case "remove_edge": {
         const s = splitEndpoint(op.from);
         const t = splitEndpoint(op.to);
         const sh = s && toSourceHandle(s.rest);
-        const th = t && toTargetHandle(t.rest);
+        let th = t && toTargetHandle(t.rest);
         const srcId = s && realId(s.lid);
         const tgtId = t && realId(t.lid);
         if (!s || !t || !sh || !th || !srcId || !tgtId) {
           err("BAD_ENDPOINT", `remove_edge ${op.from} → ${op.to}: malformed endpoint.`);
           break;
         }
+        const tgtNode = byId.get(tgtId);
+        const tdef = tgtNode && getNodeDef(tgtNode.data.defType);
+        if (tgtNode && tdef) th = resolveChannelHandle(tdef, tgtNode.data.params, th);
         const before = edges.length;
         edges = edges.filter(
           (e) => !(e.source === srcId && e.sourceHandle === sh && e.target === tgtId && e.targetHandle === th)

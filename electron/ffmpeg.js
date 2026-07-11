@@ -39,6 +39,24 @@ const EXT_FILTER = {
 const sessions = new Map();
 let counter = 0;
 
+// Kill an in-flight encode: SIGKILL the ffmpeg child and drop its partial
+// output. Shared by the renderer's explicit abort and the quit-time sweep.
+function abortSession(sessionId) {
+  const s = sessions.get(sessionId);
+  if (!s) return;
+  try { s.proc.stdin.destroy(); } catch { /* ignore */ }
+  try { s.proc.kill("SIGKILL"); } catch { /* ignore */ }
+  if (s.audioPath) fsp.unlink(s.audioPath).catch(() => {});
+  if (s.filePath) fsp.unlink(s.filePath).catch(() => {}); // drop partial output
+  sessions.delete(sessionId);
+}
+
+// Quit-time sweep: without it, closing the app mid-export leaves an orphaned
+// ffmpeg process writing a truncated file to the user-chosen path.
+function killAllSessions() {
+  for (const id of [...sessions.keys()]) abortSession(id);
+}
+
 function progress(win, sessionId, label, fraction) {
   if (win && !win.isDestroyed()) {
     win.webContents.send("toolbox:encodeProgress", { sessionId, label, fraction });
@@ -178,13 +196,7 @@ function register() {
   });
 
   ipcMain.handle("toolbox:encodeVideoAbort", async (_event, sessionId) => {
-    const s = sessions.get(sessionId);
-    if (!s) return;
-    try { s.proc.stdin.destroy(); } catch { /* ignore */ }
-    try { s.proc.kill("SIGKILL"); } catch { /* ignore */ }
-    if (s.audioPath) fsp.unlink(s.audioPath).catch(() => {});
-    if (s.filePath) fsp.unlink(s.filePath).catch(() => {}); // drop partial output
-    sessions.delete(sessionId);
+    abortSession(sessionId);
   });
 
   // Transcode a video Chromium can't decode into a playable form. 10-bit
@@ -231,4 +243,4 @@ function register() {
   });
 }
 
-module.exports = { register, ffmpegAvailable };
+module.exports = { register, ffmpegAvailable, killAllSessions };

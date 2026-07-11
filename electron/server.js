@@ -52,14 +52,25 @@ function startServer() {
   // utilityProcess.fork runs the standalone server as a managed Node child —
   // no Dock tile (unlike re-launching process.execPath), and it always runs as
   // Node so ELECTRON_RUN_AS_NODE isn't needed.
+  //
+  // Env is an explicit ALLOWLIST, not `...process.env`: the server listens on
+  // loopback where any local process can reach it, so secrets exported in the
+  // launching shell (e.g. ANTHROPIC_API_KEY) must not leak into API routes.
+  // NEXT_PUBLIC_* are build-time-inlined anyway; the rest is process plumbing.
+  const env = {
+    NODE_ENV: "production",
+    PORT: String(PORT),
+    HOSTNAME: HOST,
+  };
+  for (const k of ["PATH", "HOME", "TMPDIR", "LANG", "TZ"]) {
+    if (process.env[k] !== undefined) env[k] = process.env[k];
+  }
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith("NEXT_PUBLIC_")) env[k] = v;
+  }
   child = utilityProcess.fork(entry, [], {
     cwd: path.dirname(entry),
-    env: {
-      ...process.env,
-      NODE_ENV: "production",
-      PORT: String(PORT),
-      HOSTNAME: HOST,
-    },
+    env,
     stdio: ["ignore", "pipe", "pipe"],
     serviceName: "toolbox-next-server",
   });

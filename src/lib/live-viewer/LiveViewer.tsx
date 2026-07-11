@@ -9,6 +9,8 @@ import {
   type GraphNode,
 } from "@/engine/evaluator";
 import { parseTargetHandleKind } from "@/engine/graph-helpers";
+import { colorValueToHex, parseRampParamKey } from "@/engine/conventions";
+import type { ColorRampStop } from "@/engine/color-ramp";
 import type { ImageValue } from "@/engine/types";
 import { registerAllNodes } from "@/nodes";
 import { deserializeGraph, type SavedProject } from "@/lib/project";
@@ -244,7 +246,33 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
       if (graph) {
         const node = graph.graphNodes.find((n) => n.id === ref.nodeId);
         if (node) {
-          node.params[ref.paramName] = value;
+          // Per-stop ramp controls carry a virtual paramName
+          // (ramp_c/a/p:<param>:<stopId> — engine/conventions): patch the
+          // stop inside the owning color_ramp param instead of writing a
+          // literal param the node would never read.
+          const rk = parseRampParamKey(ref.paramName);
+          if (rk) {
+            const base = node.params[rk.paramName];
+            const stops = Array.isArray(base)
+              ? (base as ColorRampStop[]).map((s) => ({ ...s }))
+              : [];
+            const stop = stops.find((s) => s.id === rk.stopId);
+            if (stop) {
+              if (rk.field === "color") {
+                stop.color = colorValueToHex(value, stop.color);
+              } else if (
+                typeof value === "number" &&
+                Number.isFinite(value)
+              ) {
+                const v = Math.max(0, Math.min(1, value));
+                if (rk.field === "alpha") stop.alpha = v;
+                else stop.position = v;
+              }
+              node.params[rk.paramName] = stops;
+            }
+          } else {
+            node.params[ref.paramName] = value;
+          }
         }
       }
       const next = new Map(paramValuesRef.current);

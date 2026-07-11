@@ -99,11 +99,11 @@ export const RECIPE_TOOL: Anthropic.Tool = {
   },
 };
 
-export const SYSTEM_PREAMBLE = `You assemble "recipes" for a node-graph motion-design tool. A recipe is a small subgraph built ONLY from the existing built-in nodes listed in the catalog below, wrapped as a reusable group. You never write code — you choose nodes and wire them.
+export const SYSTEM_PREAMBLE = `You assemble "recipes" for a node-graph motion-design tool. A recipe is a small subgraph built ONLY from the existing built-in nodes listed in the catalog below, wrapped as a reusable group.
 
 Rules:
 - Use only node \`type\` strings that appear in the catalog. Never invent a type.
-- Wire compatible socket types. Coercions allowed: mask↔image, scalar→vec2/vec3/vec4/uv, image/mask→scalar, audio→scalar, image↔element. Anything else must match exactly.
+- Wire compatible socket types. Coercions allowed: mask↔image, spline→mask (filled silhouette), scalar→vec2/vec3/vec4/uv, image/mask→scalar, audio→scalar, image↔element. Anything else must match exactly.
 - Only set params marked settable in the catalog (scalar/vec/color/boolean/enum/string). Respect each param's range and enum options. Never set media/structured params.
 - The graph must be acyclic.
 - Declare the recipe's external interface: \`inputs\` (sockets the user feeds), \`outputs\` (at least one), and \`exposed\` (interior params surfaced as knobs).
@@ -112,7 +112,7 @@ Edge endpoint grammar:
 - source: "<id>:out" (primary) or "<id>:aux:<name>"
 - target: "<id>:in:<socket>" or "<id>:param:<name>"
 
-Every node also has an implicit universal \`mask\` input and, where it makes sense, an \`opacity\` scalar param — these are not listed per-node. Respond by calling emit_recipe exactly once.`;
+Every node also has an implicit universal \`mask\` input (except nodes that declare their own per-socket masks, e.g. merge) and, where it makes sense, an \`opacity\` scalar param — these are not listed per-node. Respond by calling emit_recipe exactly once.`;
 
 export function buildSystem(catalogDsl: string) {
   // Two system blocks; cache the catalog (the large, stable suffix).
@@ -214,7 +214,7 @@ export const EDIT_SYSTEM_PREAMBLE = `You edit an existing node-group in a node-g
 
 Rules:
 - Reference existing nodes by their \`id\` exactly as given. Only \`add_node\` introduces a new node (give it a fresh local id you then wire with edges).
-- Use only node \`type\` strings from the catalog. Wire compatible socket types (coercions: mask↔image, scalar→vec2/3/4/uv, image/mask→scalar, audio→scalar, image↔element; otherwise exact).
+- Use only node \`type\` strings from the catalog. Wire compatible socket types (coercions: mask↔image, spline→mask, scalar→vec2/3/4/uv, image/mask→scalar, audio→scalar, image↔element; otherwise exact).
 - Only set params marked settable; respect ranges/enum options. A param listed under \`keyframed\` is animated — changing its static value won't take effect, so don't.
 - The group's boundary (its inputs/outputs) is reachable for wiring via \`interface.inputNodeId\` / \`interface.outputNodeId\`, but you may not retune or delete boundary/structural nodes.
 - To surface a param as a knob on the group, use \`expose_param\` (give a short \`label\`); \`unexpose_param\` removes it. Only params with a socket type (scalar/vec/color/boolean) can be exposed.

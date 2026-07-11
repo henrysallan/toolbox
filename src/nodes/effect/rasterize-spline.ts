@@ -271,12 +271,13 @@ export const rasterizeSplineNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Rasterize a spline as fill, stroke, or both in a single pass. Fill draws underneath the stroke. Toggle each independently.",
+    "Rasterize a spline as fill, stroke, or both in a single pass. Fill draws underneath the stroke. Toggle each independently. A wired fill image can drive the fill, the stroke, or both via the Image → fill / Image → stroke toggles.",
   backend: "webgl2",
   inputs: [
     { name: "path", type: "spline", required: true },
-    // Optional fill image — fills the spline with that image (per fill_fit)
-    // instead of the flat fill color when wired and Fill is on.
+    // Optional fill image — sampled (per fill_fit) by whichever passes the
+    // image_fill / image_stroke toggles route it to. Defaults (fill on,
+    // stroke off) reproduce the original fills-only behavior.
     SPLINE_FILL_INPUT,
   ],
   params: [
@@ -374,6 +375,17 @@ export const rasterizeSplineNode: NodeDefinition = {
       default: "window",
       visibleIf: (p) => p.enable_fill !== false,
     },
+    // Which passes sample a wired `fill` image. Fill defaults ON (the
+    // pre-toggle behavior — invariant #2); stroke defaults OFF. With
+    // image→fill off the flat/ramp fill color renders as usual and the
+    // image can drive the stroke alone. No-ops with nothing wired.
+    {
+      name: "image_fill",
+      label: "Image → fill",
+      type: "boolean",
+      default: true,
+      visibleIf: (p) => p.enable_fill !== false,
+    },
     // Stack/fill-rule only matter for the flatten mode with a flat color —
     // layered and ramp both draw per subpath.
     {
@@ -411,6 +423,15 @@ export const rasterizeSplineNode: NodeDefinition = {
       label: "Stroke color",
       type: "color",
       default: "#000000",
+      visibleIf: (p) => p.enable_stroke !== false,
+    },
+    // See image_fill above — lets the wired `fill` image color the stroke
+    // (its coverage stays the configured thickness/style/dashes).
+    {
+      name: "image_stroke",
+      label: "Image → stroke",
+      type: "boolean",
+      default: false,
       visibleIf: (p) => p.enable_stroke !== false,
     },
     {
@@ -518,11 +539,14 @@ export const rasterizeSplineNode: NodeDefinition = {
     const enableFill = params.enable_fill !== false;
     const enableStroke = params.enable_stroke !== false;
 
-    const fillImage =
-      enableFill && inputs.fill?.kind === "image" ? inputs.fill : null;
-    const hasImageFill = !!fillImage;
+    // Which passes the wired image drives (image_fill defaults on — the
+    // pre-toggle behavior; image_stroke defaults off).
+    const wiredImage = inputs.fill?.kind === "image" ? inputs.fill : null;
+    const imgToFill = !!wiredImage && enableFill && params.image_fill !== false;
+    const imgToStroke =
+      !!wiredImage && enableStroke && params.image_stroke === true;
 
-    if (!hasImageFill) {
+    if (!imgToFill && !imgToStroke) {
       // --- Flat path: bake fill (under) + stroke (over) into one canvas. ---
       const sig = JSON.stringify({
         mode: "flat",
@@ -583,16 +607,29 @@ export const rasterizeSplineNode: NodeDefinition = {
       return { primary: output };
     }
 
-    // --- Image-fill path: coverage + stroke layers, composite the image. ---
+    // --- Image path: fill + stroke layers, composite the wired image into
+    // whichever passes sample it. ---
     if (!state.fillTex) state.fillTex = makeTex(gl);
     if (!state.strokeTex) state.strokeTex = makeTex(gl);
     if (!state.zeroTex) state.zeroTex = makeZeroTex(gl);
 
-    // Coverage + stroke don't depend on the image pixels or fill color, so
-    // dragging only the upstream image re-composites without re-rastering.
+    // The layers don't depend on the image pixels, so dragging only the
+    // upstream image re-composites without re-rastering. (When the image
+    // doesn't drive the fill, the fill layer bakes its real colors — those
+    // params join the signature.)
     const sig = JSON.stringify({
       mode: "img",
       subRef: src.subpaths,
+      imf: imgToFill,
+      ims: imgToStroke,
+      ef: enableFill,
+      ov: params.overlap,
+      fsrc: params.fill_source,
+      fc: params.fill_color,
+      ramp: params.fill_source === "ramp" ? params.fill_ramp : null,
+      rby: params.ramp_by,
+      rseed: params.ramp_seed,
+      rint: params.ramp_interp,
       stack: params.stack_subpaths,
       fr: params.fill_rule,
       es: enableStroke,
@@ -617,11 +654,18 @@ export const rasterizeSplineNode: NodeDefinition = {
       }
       const c2d = canvas.getContext("2d");
       if (c2d) {
-        // Fill coverage (white-on-transparent), honoring stack / fill rule.
+        // Fill layer: coverage (white-on-transparent) when the image drives
+        // the fill; otherwise the finished flat/ramp fill in its real colors,
+        // passed to the compositor as a precolored layer.
         c2d.clearRect(0, 0, W, H);
-        drawSplineFill(c2d, src.subpaths, params, W, H, "#ffffff");
+        if (imgToFill) {
+          drawSplineFill(c2d, src.subpaths, params, W, H, "#ffffff");
+        } else if (enableFill) {
+          drawSplineFlat(c2d, src.subpaths, params, W, H, true, false);
+        }
         uploadCanvas(gl, state.fillTex, canvas);
-        // Stroke layer in its own color.
+        // Stroke layer in its own color (its alpha is the coverage the
+        // compositor recolors when image→stroke is on).
         c2d.clearRect(0, 0, W, H);
         if (enableStroke) drawSplineStroke(c2d, src.subpaths, params, W, H);
         uploadCanvas(gl, state.strokeTex, canvas);
@@ -631,13 +675,17 @@ export const rasterizeSplineNode: NodeDefinition = {
 
     const fit = ((params.fill_fit as string) ?? "window") as SplineFillFit;
     compositeSplineFill(ctx, output, {
-      fillMaskTex: state.fillTex,
+      fillMaskTex: enableFill ? state.fillTex : state.zeroTex,
       strokeTex: enableStroke ? state.strokeTex : null,
-      fillImage,
+      fillImage: wiredImage,
       fillColorHex: (params.fill_color as string) ?? "#ffffff",
       fit,
       subpaths: src.subpaths,
       zeroTex: state.zeroTex,
+      // With image→fill off, the fill layer is already its final colors
+      // (or zeroTex when fill is disabled) — use it verbatim.
+      fillPrecolored: !imgToFill,
+      strokeFromImage: imgToStroke,
     });
     return { primary: output };
   },

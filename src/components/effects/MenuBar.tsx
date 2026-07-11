@@ -118,6 +118,10 @@ export interface MenuBarProps {
   // Toolbox menu — application-scoped, distinct from the per-project
   // settings that live in Project Settings.
   onOpenUserPreferences: () => void;
+  // Claude MCP bridge (spec 070926_claude-mcp-bridge.md): connection state
+  // drives the Toolbox-menu label; the toggle connects/disconnects.
+  mcpStatus: "off" | "connecting" | "pairing" | "connected";
+  onToggleMcpBridge: () => void;
 }
 
 const BAR_HEIGHT = 22;
@@ -164,6 +168,8 @@ export default function MenuBar({
   timelineLayout,
   onToggleTimelineLayout,
   onOpenUserPreferences,
+  mcpStatus,
+  onToggleMcpBridge,
 }: MenuBarProps) {
   const { user } = useUser();
   const signedIn = !!user;
@@ -294,6 +300,19 @@ export default function MenuBar({
           kind: "item",
           label: "Project Settings…",
           onClick: onOpenProjectSettings,
+        },
+        { kind: "divider" },
+        {
+          kind: "item",
+          label:
+            mcpStatus === "connected"
+              ? "● Claude Connected — Disconnect"
+              : mcpStatus === "connecting"
+                ? "Connecting to Claude… (Cancel)"
+                : mcpStatus === "pairing"
+                  ? "Cancel Claude Pairing"
+                  : "Connect to Claude…",
+          onClick: onToggleMcpBridge,
         },
       ],
     },

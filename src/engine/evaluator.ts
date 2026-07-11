@@ -1,11 +1,15 @@
 import { coerceValue } from "./coerce";
 import {
+  colorValueToHex,
   GPOINT_C_PREFIX,
   GPOINT_X_PREFIX,
   GPOINT_Y_PREFIX,
   LAYER_OPACITY_PREFIX,
   MASK_INPUT_NAME,
+  parseRampParamKey,
+  rampFieldSocketType,
   withMaskInput,
+  type RampStopField,
 } from "./conventions";
 import { getNodeDef } from "./registry";
 import { flattenGraph, resolvePreviewProducer } from "./flatten";
@@ -146,6 +150,16 @@ export interface CachedEntry {
 
 export type EvalCache = Map<string, CachedEntry>;
 
+// Textures produced by UNCACHEABLE nodes (stable:false, bypassed) this eval.
+// They never enter the cache, so eviction can't release them — without this
+// they'd only be reclaimed when the JS GC happens to collect the wrapper
+// (a playing Video Source orphans a full-canvas texture EVERY eval). They
+// must survive until the frame is blitted, so each eval releases the
+// PREVIOUS eval's set on entry. Keyed per cache so split-viewport / offline
+// evals don't release each other's textures mid-frame; entries die with
+// their cache (backend swap discards both cache and GL context together).
+const transientsByCache = new WeakMap<EvalCache, WebGLTexture[]>();
+
 // Snapshot of one node's resolved inputs for the data inspector. Outputs
 // are already in `EvalResult.outputs`; inputs aren't otherwise retained
 // after eval, so we capture them here only for ids the caller asks about.
@@ -196,6 +210,12 @@ function stableStringify(v: unknown): string {
   }
   if (typeof HTMLCanvasElement !== "undefined" && v instanceof HTMLCanvasElement) {
     return opaqueId(v, "cnv");
+  }
+  // Encoded media bytes (EXR stills, sequence frames): identity token, like
+  // bitmaps — re-picking a file must re-fingerprint even when the metadata
+  // around it (filename/dims/layers) happens to match.
+  if (typeof Blob !== "undefined" && v instanceof Blob) {
+    return opaqueId(v, "blob");
   }
   if (t === "object") {
     const entries = Object.entries(v as Record<string, unknown>).sort(
@@ -397,11 +417,61 @@ function socketToParamRaw(
     case "vec3":
       return sv.kind === "vec3" ? [...sv.value] : undefined;
     case "vec4":
-    case "color":
       return sv.kind === "vec4" ? [...sv.value] : undefined;
+    case "color":
+      // Color params store hex — normalize the wired vec4 so compute
+      // functions never see a tuple (they'd crash on hexToRgba et al).
+      // The tuple's alpha is dropped; param colors are RGB.
+      return sv.kind === "vec4"
+        ? colorValueToHex([...sv.value], "#000000")
+        : undefined;
     default:
       return undefined;
   }
+}
+
+// Tear down per-node persistent state (`ctx.state["<type>:<nodeId>"]`, per
+// the convention in types.ts) for nodes NOT in `keep` — or for every node
+// when `keep` is null. Runs the def's `dispose` (which frees GL textures,
+// DOM canvases, media elements), then deletes any leftover keys for that
+// node so the sweep converges even if a dispose is incomplete. Keys whose
+// first segment isn't a registered node type (engine-internal `__…__` keys,
+// `sim-zone:<zoneId>` shared state) are left alone.
+function sweepNodeState(
+  ctx: RenderContext,
+  keep: ReadonlySet<string> | null
+): void {
+  const state = ctx.state as Record<string, unknown>;
+  const disposed = new Set<string>();
+  for (const key of Object.keys(state)) {
+    const i = key.indexOf(":");
+    if (i <= 0) continue;
+    const type = key.slice(0, i);
+    const rest = key.slice(i + 1);
+    const j = rest.indexOf(":");
+    const nodeId = j === -1 ? rest : rest.slice(0, j);
+    if (!nodeId || (keep && keep.has(nodeId))) continue;
+    const def = getNodeDef(type);
+    if (!def) continue;
+    const pairKey = `${type}:${nodeId}`;
+    if (disposed.has(pairKey)) continue;
+    disposed.add(pairKey);
+    try {
+      def.dispose?.(ctx, nodeId);
+    } catch (e) {
+      console.error(`[eval] dispose failed for ${pairKey}:`, e);
+    }
+    for (const k of Object.keys(state)) {
+      if (k === pairKey || k.startsWith(pairKey + ":")) delete state[k];
+    }
+  }
+}
+
+// Full teardown of all per-node state — call before discarding a backend
+// (resolution change, editor unmount) so DOM-side resources (Text's hidden
+// canvases, media elements) don't outlive the GL context they belonged to.
+export function disposeAllNodeState(ctx: RenderContext): void {
+  sweepNodeState(ctx, null);
 }
 
 function releaseCachedTextures(ctx: RenderContext, entry: CachedEntry): void {
@@ -462,6 +532,21 @@ export function evaluateGraph(
   // group's image output — BEFORE flatten and the needed-set, so that branch
   // evaluates even when the group isn't wired to an Output yet. `*Handle`
   // remembers the exact output that fed the group's image socket.
+  // Pre-flatten node-id set — the reference for "does this node still
+  // exist" in the end-of-eval state sweep (flatten dissolves group shells,
+  // so the post-flatten array under-counts live nodes).
+  const presentIds = new Set(nodes.map((n) => n.id));
+
+  // Release the previous eval's uncacheable-output textures (see
+  // transientsByCache). Their consumers (downstream computes, the blit)
+  // all finished within that eval, so this is the earliest safe point.
+  const prevTransients = transientsByCache.get(cache);
+  if (prevTransients) {
+    for (const t of prevTransients) ctx.releaseTexture(t);
+  }
+  const evalTransients: WebGLTexture[] = [];
+  transientsByCache.set(cache, evalTransients);
+
   let activeHandle: string | undefined;
   let previewHandle: string | undefined;
   if (activeNodeId) {
@@ -694,11 +779,28 @@ export function evaluateGraph(
     // node). FP includes a per-param entry so (connect/disconnect) and
     // (source value change) both bust correctly.
     const paramOverrides: Record<string, unknown> = {};
+    // Wired per-stop ramp overrides (virtual `ramp_*` exposed names —
+    // conventions.ts). Collected here but applied AFTER keyframe resolution
+    // below, so a wire wins per field without clobbering other fields'
+    // keyframed values on the same stops array.
+    const rampWireOverrides: Array<{
+      paramName: string;
+      stopId: string;
+      field: RampStopField;
+      value: unknown;
+    }> = [];
     const exposedParams = node.exposedParams ?? [];
     for (const pname of exposedParams) {
-      const pdef = def.params.find((p) => p.name === pname);
+      const rampKey = parseRampParamKey(pname);
+      const pdef = rampKey
+        ? def.params.find(
+            (p) => p.name === rampKey.paramName && p.type === "color_ramp"
+          )
+        : def.params.find((p) => p.name === pname);
       if (!pdef) continue;
-      const socketType = paramSocketType(pdef.type);
+      const socketType = rampKey
+        ? rampFieldSocketType(rampKey.field)
+        : paramSocketType(pdef.type);
       if (!socketType) continue;
       const incoming = edges.find((e) => {
         if (e.target !== id) return false;
@@ -728,8 +830,18 @@ export function evaluateGraph(
       inputFpParts.push(`param:${pname}=${srcFp}/${handleTag}`);
       const coerced = coerceValue(raw, socketType, ctx);
       if (coerced) {
-        const rawValue = socketToParamRaw(coerced, pdef.type);
-        if (rawValue !== undefined) paramOverrides[pname] = rawValue;
+        if (rampKey) {
+          const rawValue = socketToParamRaw(
+            coerced,
+            rampKey.field === "color" ? "color" : "scalar"
+          );
+          if (rawValue !== undefined) {
+            rampWireOverrides.push({ ...rampKey, value: rawValue });
+          }
+        } else {
+          const rawValue = socketToParamRaw(coerced, pdef.type);
+          if (rawValue !== undefined) paramOverrides[pname] = rawValue;
+        }
       }
     }
 
@@ -750,7 +862,20 @@ export function evaluateGraph(
         if (!block || !block.animated || block.keyframes.length === 0) continue;
         anyAnimated = true;
         const v = evaluateKeyframesAt(block, pdef.type, ctx.tick);
-        if (v !== undefined) keyframeOverrides[pdef.name] = v;
+        if (v !== undefined) {
+          // Interpolated colors come back as 0..1 RGBA tuples — normalize
+          // to the hex form the param stores (same contract as the wired
+          // path in socketToParamRaw).
+          keyframeOverrides[pdef.name] =
+            pdef.type === "color"
+              ? colorValueToHex(
+                  v,
+                  typeof node.params[pdef.name] === "string"
+                    ? (node.params[pdef.name] as string)
+                    : "#000000"
+                )
+              : v;
+        }
       }
       // Virtual per-layer opacity keys ("layer_opacity:<id>") animate a
       // single layer's opacity inside a merge_layers param. The array
@@ -837,11 +962,87 @@ export function evaluateGraph(
           }
         }
       }
+      // Virtual per-stop keys for color ramps: ramp_c/a/p:<param>:<stopId>
+      // animate one stop's color (RGBA) / alpha / position inside a
+      // `color_ramp` param. Same clone-and-override contract as the two
+      // blocks above; keys whose param or stop no longer exists are ignored.
+      {
+        const clones = new Map<string, Array<Record<string, unknown>>>();
+        for (const [key, block] of Object.entries(animation)) {
+          if (!block || !block.animated || block.keyframes.length === 0) {
+            continue;
+          }
+          const rk = parseRampParamKey(key);
+          if (!rk) continue;
+          const pdef = def.params.find(
+            (p) => p.name === rk.paramName && p.type === "color_ramp"
+          );
+          if (!pdef) continue;
+          const v = evaluateKeyframesAt(
+            block,
+            rk.field === "color" ? "color" : "scalar",
+            ctx.tick
+          );
+          if (v === undefined) continue;
+          let stops = clones.get(pdef.name);
+          if (!stops) {
+            const base = node.params[pdef.name];
+            stops = Array.isArray(base)
+              ? base.map((s) => ({ ...(s as Record<string, unknown>) }))
+              : [];
+            clones.set(pdef.name, stops);
+          }
+          const stop = stops.find((s) => s.id === rk.stopId);
+          if (!stop) continue;
+          if (rk.field === "color") {
+            // Resolves to an RGBA tuple (or the stored hex at an exact
+            // keyframe); the stop model stores hex.
+            stop.color = colorValueToHex(
+              v,
+              typeof stop.color === "string" ? stop.color : "#000000"
+            );
+          } else {
+            if (typeof v !== "number" || !Number.isFinite(v)) continue;
+            stop[rk.field] = Math.max(0, Math.min(1, v));
+          }
+          anyAnimated = true;
+          keyframeOverrides[pdef.name] = stops;
+        }
+      }
       if (anyAnimated) {
         // Tick + animated-param-name list are enough — values are
         // determined by (tick, keyframes) and keyframes already
         // contribute via stableStringify(node.animation) below.
         inputFpParts.push(`anim:${ctx.tick}`);
+      }
+    }
+
+    // Wired per-stop ramp overrides apply on top of the keyframe-resolved
+    // stops (wire > keyframe per FIELD — other fields keep their keyframed
+    // values). The clone starts from the keyframe result when one exists.
+    if (rampWireOverrides.length > 0) {
+      const cloned = new Map<string, Array<Record<string, unknown>>>();
+      for (const o of rampWireOverrides) {
+        let stops = cloned.get(o.paramName);
+        if (!stops) {
+          const base =
+            keyframeOverrides[o.paramName] ?? node.params[o.paramName];
+          stops = Array.isArray(base)
+            ? base.map((s) => ({ ...(s as Record<string, unknown>) }))
+            : [];
+          cloned.set(o.paramName, stops);
+          paramOverrides[o.paramName] = stops;
+        }
+        const stop = stops.find((s) => s.id === o.stopId);
+        if (!stop) continue;
+        if (o.field === "color") {
+          stop.color = colorValueToHex(
+            o.value,
+            typeof stop.color === "string" ? stop.color : "#000000"
+          );
+        } else if (typeof o.value === "number" && Number.isFinite(o.value)) {
+          stop[o.field] = Math.max(0, Math.min(1, o.value));
+        }
       }
     }
 
@@ -929,6 +1130,18 @@ export function evaluateGraph(
           }) ?? {};
         }
 
+        // Node-declared ownership: outputs whose textures live in ctx.state
+        // (NodeOutput.ownsTextures === false — Text, Cursor, Simulation
+        // Zones) must never be released by the evaluator; the node's own
+        // dispose tears them down.
+        if (result.ownsTextures === false) ownsTextures = false;
+        // The mask/opacity post-passes below REPLACE outputs with freshly
+        // allocated textures — those are evaluator-owned even when the
+        // originals were state-backed. Track replacements so the transient
+        // collection can release them.
+        let primaryReplaced = false;
+        let auxReplaced: Set<string> | null = null;
+
         // Apply the universal mask input after compute. Not applied to
         // bypassed nodes or when result has no image primary. With a base
         // image input present, masks blend between base and effect; without
@@ -953,8 +1166,9 @@ export function evaluateGraph(
           const baseImg =
             base && base.kind === "image" ? (base as ImageValue) : undefined;
           const masked = applyMask(ctx, result.primary, maskIn, baseImg);
-          ctx.releaseTexture(result.primary.texture);
+          if (ownsTextures) ctx.releaseTexture(result.primary.texture);
           result = { ...result, primary: masked };
+          primaryReplaced = true;
         }
 
         // Universal per-node opacity (see OPACITY_PARAM in conventions):
@@ -972,16 +1186,22 @@ export function evaluateGraph(
           const o = Math.max(0, opacity);
           if (result.primary?.kind === "image") {
             const faded = applyOpacity(ctx, result.primary, o);
-            ctx.releaseTexture(result.primary.texture);
+            // A mask-pass replacement is ours to release even when the
+            // node's original textures were state-backed.
+            if (ownsTextures || primaryReplaced) {
+              ctx.releaseTexture(result.primary.texture);
+            }
             result = { ...result, primary: faded };
+            primaryReplaced = true;
           }
           if (result.aux) {
             let nextAux: typeof result.aux | null = null;
             for (const [name, value] of Object.entries(result.aux)) {
               if (value?.kind !== "image") continue;
               const faded = applyOpacity(ctx, value, o);
-              ctx.releaseTexture(value.texture);
+              if (ownsTextures) ctx.releaseTexture(value.texture);
               (nextAux ??= { ...result.aux })[name] = faded;
+              (auxReplaced ??= new Set()).add(name);
             }
             if (nextAux) result = { ...result, aux: nextAux };
           }
@@ -993,10 +1213,33 @@ export function evaluateGraph(
         if (cacheable) {
           if (prev) releaseCachedTextures(ctx, prev);
           cache.set(id, { fingerprint, output: result, ownsTextures });
-        } else if (prev) {
-          // No longer cacheable (e.g., user toggled bypass on). Evict.
-          releaseCachedTextures(ctx, prev);
-          cache.delete(id);
+        } else {
+          if (prev) {
+            // No longer cacheable (e.g., user toggled bypass on). Evict.
+            releaseCachedTextures(ctx, prev);
+            cache.delete(id);
+          }
+          // Uncacheable output: nothing will ever evict it, so its owned
+          // textures go to the transient set, released at the start of the
+          // NEXT eval (they must outlive this frame's downstream reads and
+          // the blit). Excluded: state-backed outputs (ownsTextures false)
+          // and borrowed passthroughs (bypass / gated layer); included:
+          // post-pass replacements, which are always evaluator-owned.
+          const seen = new Set<WebGLTexture>();
+          const collect = (v: SocketValue | undefined, owned: boolean) => {
+            if (!owned || !v) return;
+            if (v.kind !== "image" && v.kind !== "mask" && v.kind !== "uv")
+              return;
+            if (seen.has(v.texture)) return;
+            seen.add(v.texture);
+            evalTransients.push(v.texture);
+          };
+          collect(result.primary, ownsTextures || primaryReplaced);
+          if (result.aux) {
+            for (const [name, v] of Object.entries(result.aux)) {
+              collect(v, ownsTextures || (auxReplaced?.has(name) ?? false));
+            }
+          }
         }
       } catch (e) {
         errors[id] = e instanceof Error ? e.message : String(e);
@@ -1076,6 +1319,12 @@ export function evaluateGraph(
       cache.delete(id);
     }
   }
+
+  // Tear down persistent state for nodes deleted from the graph. The cache
+  // eviction above misses them when they were never cacheable (stable:false
+  // — exactly the heavy state owners: Text, video, sims), so sweep by the
+  // state-key convention against the pre-flatten id set.
+  sweepNodeState(ctx, presentIds);
 
   return { outputs, terminalImage, errors, fingerprints, timings, inspectInputs };
 }

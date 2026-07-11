@@ -1,0 +1,40 @@
+# CI — the hard gates are typecheck + the offline check scripts (they guard
+# the AI recipe trust boundary: builder whitelist, graph validator, edit ops,
+# repair loops). Lint is a separate advisory job until the repo-wide React 19
+# hooks-rule cleanup lands (riskfix-plan 070826, "Order of attack" §2).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      # --ignore-scripts: typecheck + the check scripts need no postinstall
+      # binaries (electron, ffmpeg-static) — skipping them is faster and
+      # keeps CI off arbitrary install scripts.
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm run check
+
+  lint:
+    runs-on: ubuntu-latest
+    # Advisory only: ~1.6k pre-existing errors (React 19 hooks rules vs the
+    # codebase's ref-mirror pattern). Flip to blocking after the cleanup.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run lint

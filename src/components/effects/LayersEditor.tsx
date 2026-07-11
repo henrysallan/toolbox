@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import type { Edge, Node } from "@xyflow/react";
 import { getNodeDef } from "@/engine/registry";
 import type { NodeDataPayload } from "@/state/graph";
+import { useClock } from "@/state/playback-clock";
 import type {
   KeyframeAnimationBlock,
   ProjectTimeline,
@@ -90,7 +91,6 @@ export interface LayersEditorProps {
   // editor renders it reversed so the top of the stack is the top row.
   layers: Node<NodeDataPayload>[];
   timeline: ProjectTimeline;
-  currentTick: number;
   selectedId: string | null;
   onScrub(tick: number): void;
   onClipChange(nodeId: string, next: ClipBlock[] | undefined): void;
@@ -189,7 +189,6 @@ type Drag =
 export function LayersEditor({
   layers,
   timeline,
-  currentTick,
   selectedId,
   onScrub,
   onClipChange,
@@ -205,6 +204,9 @@ export function LayersEditor({
   onAnimationChange,
   fitVersion,
 }: LayersEditorProps) {
+  // Clock read from the playback store (clock-store spec, step 3) — this
+  // editor re-renders per frame by design (playhead over the layer bars).
+  const currentTick = useClock((s) => s.tick);
   // Display order: top of stack first.
   const display = useMemo(() => [...layers].reverse(), [layers]);
 

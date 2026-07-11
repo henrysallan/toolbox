@@ -129,7 +129,10 @@ export const layerNode: NodeDefinition = {
       ctx.clearTarget(base, [0, 0, 0, 0]);
       baseOwned = true;
     }
-    const blend = ctx.getShader("merge/blend", BLEND_FS);
+    // Key kept in sync with merge.ts (bumped when the matte uniforms landed
+    // — getShader caches by key alone). The layer node never sets u_hasMatte,
+    // which defaults to 0 = no matte.
+    const blend = ctx.getShader("merge/blend-v2", BLEND_FS);
     ctx.drawFullscreen(blend, output, (gl) => {
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, base!.texture);

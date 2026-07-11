@@ -8,6 +8,12 @@ import type {
   ImageSequenceFrame,
   ImageSequenceParamValue,
 } from "@/engine/types";
+import {
+  groupExrLayers,
+  isExrBytes,
+  isExrFilename,
+  parseExrHeader,
+} from "@/engine/exr";
 
 // Last run of digits before the extension (or end of name).
 // "shot_v2_0042.png" → 42; "frame007" → 7; "plate.0100.exr" → 100.
@@ -46,21 +52,43 @@ export async function registerImageSequence(
   const min = frames[0].number;
   const max = frames[frames.length - 1].number;
 
-  // Decode only the first frame to learn the sequence's dimensions.
+  // EXR sequences: header-parse the first frame (cheap, no pixel decode) for
+  // dims + the grouped layer list that drives the node's layer dropdown.
+  // Sniff by magic bytes with a filename fallback for empty reads.
+  let exr: ImageSequenceParamValue["exr"];
   let width = 0;
   let height = 0;
-  try {
-    const bmp = await createImageBitmap(frames[0].blob);
-    width = bmp.width;
-    height = bmp.height;
-    bmp.close();
-  } catch {
-    // Undecodable first frame — dims fall back to 0; the node will retry
-    // decoding per-frame and clear to black until one lands.
+  const firstBytes = await frames[0].blob
+    .slice(0, 4)
+    .arrayBuffer()
+    .catch(() => null);
+  if (
+    (firstBytes && isExrBytes(firstBytes)) ||
+    (!firstBytes && isExrFilename(frames[0].filename))
+  ) {
+    try {
+      const header = parseExrHeader(await frames[0].blob.arrayBuffer());
+      exr = { layers: groupExrLayers(header) };
+      width = header.parts[0]?.width ?? 0;
+      height = header.parts[0]?.height ?? 0;
+    } catch (e) {
+      console.warn("EXR sequence: first-frame header parse failed:", e);
+    }
+  } else {
+    // Decode only the first frame to learn the sequence's dimensions.
+    try {
+      const bmp = await createImageBitmap(frames[0].blob);
+      width = bmp.width;
+      height = bmp.height;
+      bmp.close();
+    } catch {
+      // Undecodable first frame — dims fall back to 0; the node will retry
+      // decoding per-frame and clear to black until one lands.
+    }
   }
 
   return {
-    value: { frames, min, max, length: max - min + 1, width, height },
+    value: { frames, min, max, length: max - min + 1, width, height, exr },
     skipped,
   };
 }

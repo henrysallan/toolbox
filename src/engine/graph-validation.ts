@@ -59,12 +59,65 @@ export function coercible(src: string, tgt: string): boolean {
   if (src === tgt) return true;
   if (src === "mask" && tgt === "image") return true;
   if (src === "image" && tgt === "mask") return true;
+  // Spline → mask: the coercion layer rasterizes the shape's filled
+  // silhouette to a coverage mask.
+  if (src === "spline" && tgt === "mask") return true;
+  // Scalar broadcasts into vec/uv sockets ((s,s) for uv).
   if (src === "scalar" && (tgt === "vec2" || tgt === "vec3" || tgt === "vec4" || tgt === "uv"))
     return true;
+  // Image/mask → scalar: center-pixel R-channel sample at eval time.
   if ((src === "image" || src === "mask") && tgt === "scalar") return true;
+  // Audio → scalar: AnalyserNode RMS level.
   if (src === "audio" && tgt === "scalar") return true;
+  // Image ↔ element: wrap as full-canvas element / flatten to image.
   if (src === "image" && tgt === "element") return true;
   if (src === "element" && tgt === "image") return true;
+  return false;
+}
+
+// `coercible` + the def-specific POLYMORPHIC exceptions: sockets that will
+// RETYPE to accept these sources (via resolveInputs' connectedTypes, with
+// onConnect flipping mode params where needed), even though the socket's
+// resting type says otherwise. Every editor-side "can this wire land here"
+// check must use THIS — the table had drifted into five hand-copies
+// (NodeEditor's isValidConnection + splice canCoerce, EffectsApp's
+// wire-drop auto-connect, this file, coerce.ts) and the EffectsApp copy
+// was already missing Transform/Displace (riskfix-plan 070826 §5).
+// coerce.ts stays the RUNTIME truth for plain type coercions; the
+// polymorphic rows never reach it (the socket has retyped by eval time).
+export function editorCanCoerce(
+  src: string,
+  tgt: string,
+  targetDefType?: string,
+  targetHandle?: string
+): boolean {
+  if (coercible(src, tgt)) return true;
+  if (!targetDefType) return false;
+  // Math accepts UV even while in scalar mode — onConnect flips the mode
+  // param so the socket becomes properly typed on the next render.
+  if (targetDefType === "math" && src === "uv" && tgt === "scalar") return true;
+  // Copy to Points' `instance` socket accepts any instanceable source
+  // regardless of current mode (onConnect syncs `mode` to the wire).
+  if (
+    targetDefType === "copy-to-points" &&
+    targetHandle === "in:instance" &&
+    (src === "image" ||
+      src === "image_group" ||
+      src === "spline" ||
+      src === "points" ||
+      src === "text_instance")
+  )
+    return true;
+  // Displace / Transform source sockets are polymorphic — they accept
+  // image, spline, or points and retype themselves (and their outputs)
+  // from connectedTypes; the socket just reads "image" before anything
+  // connects.
+  if (
+    (targetDefType === "displace" || targetDefType === "transform") &&
+    targetHandle === "in:image" &&
+    (src === "spline" || src === "points")
+  )
+    return true;
   return false;
 }
 
@@ -180,10 +233,21 @@ export function validateGraph(nodes: ValNode[], edges: ValEdge[]): ValResult {
   const warn = (code: string, message: string, extra?: Partial<ValIssue>) =>
     issues.push({ severity: "warning", code, message, ...extra });
 
-  // 1. Node types exist.
+  // 1. Node types exist + per-def static param checks (validateParams).
   for (const n of nodes) {
-    if (!getNodeDef(n.defType))
+    const def = getNodeDef(n.defType);
+    if (!def) {
       err("NODE_UNKNOWN_TYPE", `Unknown node type "${n.defType}".`, { nodeId: n.id });
+      continue;
+    }
+    if (def.validateParams) {
+      try {
+        for (const msg of def.validateParams(n.params ?? {}))
+          err("PARAM_INVALID", `Node ${n.id} (${n.defType}): ${msg}`, { nodeId: n.id });
+      } catch {
+        // A param check must never crash the validator.
+      }
+    }
   }
 
   // 2. Edges reference real nodes + well-formed handles.

@@ -72,7 +72,8 @@ export interface EngineBackend {
     cursor?: CursorState,
     playing?: boolean,
     timeline?: { tick: number; ticksPerFrame: number; fps: number },
-    offline?: boolean
+    offline?: boolean,
+    wedgeIndex?: number
   ): RenderContext;
   destroy(): void;
 }
@@ -328,7 +329,8 @@ export function createEngineBackend(
     cursor?: CursorState,
     playing = false,
     timeline?: { tick: number; ticksPerFrame: number; fps: number },
-    offline = false
+    offline = false,
+    wedgeIndex?: number
   ): RenderContext {
     const tpf = timeline?.ticksPerFrame ?? 1000;
     const renderFps = timeline?.fps ?? (frame > 0 && time > 0 ? frame / time : 60);
@@ -348,6 +350,7 @@ export function createEngineBackend(
       fps: renderFps,
       playing,
       offline,
+      wedgeIndex,
       cursor: cursor ?? { x: 0.5, y: 0.5, active: false },
       state: persistentState,
       allocImage(opts) {

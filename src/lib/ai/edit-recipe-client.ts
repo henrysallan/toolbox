@@ -41,7 +41,7 @@ export type EditPostFn = (body: EditPostBody) => Promise<EditPostResult>;
 
 // Apply issues that broke the patch (worth a repair turn). Soft issues (an
 // ignored unknown/non-settable param) become warnings.
-const HARD_OP_CODES = new Set([
+export const HARD_OP_CODES = new Set([
   "UNKNOWN_NODE",
   "UNKNOWN_TYPE",
   "DUP_ID",
@@ -53,6 +53,10 @@ const HARD_OP_CODES = new Set([
   "DUP_SOCKET",
   "NO_BOUNDARY",
   "NOT_EXPOSED",
+  // A rejected param VALUE (wrong type / non-option enum / non-finite
+  // number) means the edit doesn't do what the model intended — worth a
+  // repair turn. (PARAM_KEYFRAMED stays soft: it's a heads-up, not a break.)
+  "BAD_PARAM_VALUE",
 ]);
 
 const defaultPost: EditPostFn = async (body) => {

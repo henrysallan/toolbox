@@ -105,6 +105,12 @@ So I think you should first set up the modal, the infrastructure for calling the
 74. cmd + n for the new button/action
 
 74. shortest path node
+    DONE — Shortest Path node, points-first: routes through a point cloud
+    (hops within a max distance) from a start position to an end position
+    or end group, snapped positions wireable (Point/Cursor); visited
+    points ride an aux output. A `spline` mode walks a wired network's
+    own curved segments instead (groups or seeded-random endpoint pairs).
+    See #173. Spec: specdocs/071026_spline-points-nodes.md.
 
 75. Index selection nodes. Logic noded (if then and or not equal not equal)
 
@@ -409,3 +415,19 @@ Let me know if you understand.
 169. currently we build the along path function for text into the text node. but i want to allow that 
 
 170. potentially add a pie menu to easily open projects, assets, save. We swap
+
+171. Relax node (for points and splines)
+    DONE — Relax node (utility, mode header control): points = push-apart
+    de-clumping within a radius (spatial hash, deterministic); spline =
+    per-subpath Laplacian smoothing (endpoints pinned, closed wraps).
+    iterations + mix on both. Spec: specdocs/071026_spline-points-nodes.md.
+
+172. I actually want to expand the color node with a + button to add multiple outputs/colors to a single node. Also i want to start developing some actual controls on the node itself so we can control them there the idea being that we could have the color square and click it to open the color picker directly over the node. 
+
+
+173. points to spline, shortest path (select two spline groups or select random groups by size) Set spline type (makes a spline bezier/cubic/linear),
+    DONE — all three shipped (+ #171's Relax) 2026-07-10. Points to Spline
+    (chain by index order, one subpath per groupIndex, linear/smooth);
+    Set Spline Type (linear strips handles / smooth catmull-rom auto
+    handles + tension); Shortest Path (see #74). Spec:
+    specdocs/071026_spline-points-nodes.md.

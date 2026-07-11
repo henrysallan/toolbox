@@ -18,7 +18,7 @@ import {
   type OnNodesChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EffectNode from "./EffectNode";
 import JunctionEdge from "./JunctionEdge";
 import WireActionOverlay from "./WireActionOverlay";
@@ -35,12 +35,17 @@ import {
 } from "@/engine/wire-geometry";
 import { paramSocketType, parseTargetHandleKind } from "@/state/graph";
 import {
+  parseRampParamKey,
+  rampFieldSocketType,
+} from "@/engine/conventions";
+import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
   GROUP_TYPE,
   LAYER_TYPE,
   VIRTUAL_SOCKET,
 } from "@/engine/groups";
+import { editorCanCoerce } from "@/engine/graph-validation";
 
 // Node types you can dive into with Tab / double-click.
 function isEnterableScope(defType: string): boolean {
@@ -178,7 +183,11 @@ interface Props {
 // (v5). A real scope id is a node id / null; this never collides.
 export const PROJECT_CRUMB_ID = "__project__";
 
-export default function NodeEditor({
+// Memoized (export at the bottom): EffectsApp re-renders on every rAF tick
+// during playback; with stable prop identities (EffectsApp memoizes /
+// useCallbacks them) the memo keeps the whole xyflow tree out of those
+// frames entirely.
+function NodeEditor({
   nodes,
   edges,
   onNodesChange,
@@ -625,6 +634,47 @@ export default function NodeEditor({
   const spliceRef = useRef<typeof spliceCandidate>(null);
   spliceRef.current = spliceCandidate;
 
+  // Render-refreshed bodies + stable shells for the ReactFlow per-node
+  // handlers (assigned just before the JSX return; see the comment there).
+  type RfNode = Node<NodeDataPayload>;
+  const nodeDragStartRef = useRef<(e: React.MouseEvent, node: RfNode) => void>(
+    () => {}
+  );
+  const nodeDragRef = useRef<
+    (e: React.MouseEvent, node: RfNode, dragged: RfNode[]) => void
+  >(() => {});
+  const nodeDragStopRef = useRef<
+    (e: React.MouseEvent, node: RfNode, dragged: RfNode[]) => void
+  >(() => {});
+  const nodeContextMenuRef = useRef<
+    (e: React.MouseEvent, node: RfNode) => void
+  >(() => {});
+  const nodeDoubleClickRef = useRef<
+    (e: React.MouseEvent, node: RfNode) => void
+  >(() => {});
+  const stableNodeDragStart = useCallback(
+    (e: React.MouseEvent, node: RfNode) => nodeDragStartRef.current(e, node),
+    []
+  );
+  const stableNodeDrag = useCallback(
+    (e: React.MouseEvent, node: RfNode, dragged: RfNode[]) =>
+      nodeDragRef.current(e, node, dragged),
+    []
+  );
+  const stableNodeDragStop = useCallback(
+    (e: React.MouseEvent, node: RfNode, dragged: RfNode[]) =>
+      nodeDragStopRef.current(e, node, dragged),
+    []
+  );
+  const stableNodeContextMenu = useCallback(
+    (e: React.MouseEvent, node: RfNode) => nodeContextMenuRef.current(e, node),
+    []
+  );
+  const stableNodeDoubleClick = useCallback(
+    (e: React.MouseEvent, node: RfNode) => nodeDoubleClickRef.current(e, node),
+    []
+  );
+
   // Set by onReconnect when a drag-detach actually lands on a new
   // handle. onReconnectEnd consults this to decide whether to drop
   // the edge (drop on pane = detach) or leave the rewire alone.
@@ -889,60 +939,10 @@ export default function NodeEditor({
     };
   }, [gMove, screenToFlowPosition, onNodesChange, exitGCommit, exitGCancel]);
 
-  // Coercion rules for splice compatibility. Same set `isValidConnection`
-  // uses when the user draws a wire manually. Duplicated here because
-  // isValidConnection is scoped to a single connection's Connection
-  // object; the splice check needs to probe arbitrary (src, tgt) pairs
-  // against hypothetical target nodes.
-  const canCoerce = (
-    src: string,
-    tgt: string,
-    targetDefType?: string,
-    targetHandle?: string
-  ): boolean => {
-    if (src === tgt) return true;
-    if (src === "mask" && tgt === "image") return true;
-    if (src === "image" && tgt === "mask") return true;
-    if (
-      src === "scalar" &&
-      (tgt === "vec2" || tgt === "vec3" || tgt === "vec4" || tgt === "uv")
-    )
-      return true;
-    if (src === "uv" && tgt === "scalar" && targetDefType === "math")
-      return true;
-    if ((src === "image" || src === "mask") && tgt === "scalar") return true;
-    if (src === "audio" && tgt === "scalar") return true;
-    if (src === "image" && tgt === "element") return true;
-    if (src === "element" && tgt === "image") return true;
-    if (
-      targetDefType === "copy-to-points" &&
-      targetHandle === "in:instance" &&
-      (src === "image" ||
-        src === "image_group" ||
-        src === "spline" ||
-        src === "points" ||
-        src === "text_instance")
-    ) {
-      return true;
-    }
-    // Displace's polymorphic source socket (see isValidConnection).
-    if (
-      targetDefType === "displace" &&
-      targetHandle === "in:image" &&
-      (src === "spline" || src === "points")
-    ) {
-      return true;
-    }
-    // Transform's polymorphic source socket (see isValidConnection).
-    if (
-      targetDefType === "transform" &&
-      targetHandle === "in:image" &&
-      (src === "spline" || src === "points")
-    ) {
-      return true;
-    }
-    return false;
-  };
+  // Coercion rules for splice compatibility — the shared table
+  // (engine/graph-validation.ts editorCanCoerce), same as
+  // isValidConnection uses for manually drawn wires.
+  const canCoerce = editorCanCoerce;
 
   // Look for the nearest edge the given node could splice into.
   // Returns null if no edge is close enough or none are type-compatible.
@@ -1447,81 +1447,15 @@ export default function NodeEditor({
     const tgtType = resolveTargetSocketType(targetNode, c.targetHandle);
     if (!srcType || !tgtType) return false;
 
-    if (srcType === tgtType) return true;
-    if (srcType === "mask" && tgtType === "image") return true;
-    if (srcType === "image" && tgtType === "mask") return true;
-    if (srcType === "scalar" && (tgtType === "vec2" || tgtType === "vec3" || tgtType === "vec4")) return true;
-    // Scalar broadcasts into a UV socket as (s, s) — the compute function on
-    // the target node is expected to handle both kinds.
-    if (srcType === "scalar" && tgtType === "uv") return true;
-    // Image / mask → scalar. The evaluator's coercion layer samples the
-    // source's center pixel (R channel) at eval time. Lets users drive
-    // any scalar input or exposed scalar param with noise, gradient, or
-    // any other image source without an explicit sampling node.
-    if ((srcType === "image" || srcType === "mask") && tgtType === "scalar") {
-      return true;
-    }
-    // Audio → scalar. The coercion layer taps the element through a
-    // WebAudio AnalyserNode and emits the RMS amplitude. Lets users
-    // drive any scalar with audio level — Transform scale, Math op, etc.
-    if (srcType === "audio" && tgtType === "scalar") {
-      return true;
-    }
-    // Image ↔ element. Forward: any image chain wires straight into an
-    // Auto Layout slot (the coercion wraps the texture as a full-canvas
-    // element). Backward: an element flattens to a centered canvas-sized
-    // image so element outputs feed every existing image consumer.
-    if (srcType === "image" && tgtType === "element") return true;
-    if (srcType === "element" && tgtType === "image") return true;
-    // Math nodes accept UV even while in scalar mode — onConnect flips the
-    // mode param to uv so the socket becomes properly typed on next render.
-    if (
-      srcType === "uv" &&
-      tgtType === "scalar" &&
-      targetNode.data.defType === "math"
-    ) {
-      return true;
-    }
-    // Copy to Points accepts any of {image, image_group, spline,
-    // points} on its `instance` socket regardless of current mode.
-    // onConnect flips `mode` to match the incoming type so the socket
-    // retypes correctly (image_group → image mode; the socket itself
-    // retypes via resolveInputs' connectedTypes).
-    if (
-      targetNode.data.defType === "copy-to-points" &&
-      c.targetHandle === "in:instance" &&
-      (srcType === "image" ||
-        srcType === "image_group" ||
-        srcType === "spline" ||
-        srcType === "points" ||
-        srcType === "text_instance")
-    ) {
-      return true;
-    }
-    // Displace's source socket is polymorphic — it accepts image, spline, or
-    // points and retypes itself (and its output) via resolveInputs'
-    // connectedTypes. Allow the spline/points wire even though the socket
-    // reads "image" by default before anything is connected (image→image and
-    // mask/element→image are already permitted above).
-    if (
-      targetNode.data.defType === "displace" &&
-      c.targetHandle === "in:image" &&
-      (srcType === "spline" || srcType === "points")
-    ) {
-      return true;
-    }
-    // Transform's source socket is polymorphic the same way — it accepts
-    // image, spline, or points and retypes itself (and its output) from
-    // connectedTypes. Allow the spline/points wire even though the socket
-    // reads "image" before anything connects.
-    if (
-      targetNode.data.defType === "transform" &&
-      c.targetHandle === "in:image" &&
-      (srcType === "spline" || srcType === "points")
-    ) {
-      return true;
-    }
-    return false;
+    // Shared coercion table + polymorphic defType exceptions — the single
+    // source in engine/graph-validation.ts (rationale for each row lives
+    // there).
+    return editorCanCoerce(
+      srcType,
+      tgtType,
+      targetNode.data.defType,
+      c.targetHandle
+    );
   };
 
   // The graph node under a client point (excluding `excludeId`), via
@@ -1640,6 +1574,76 @@ export default function NodeEditor({
     const conn = buildNodeConnection(origin, targetNode);
     if (conn) onConnect(conn);
   };
+
+  // ReactFlow forwards the node drag/mouse handlers into EVERY NodeWrapper,
+  // so an identity change re-renders all nodes on the canvas. Their bodies
+  // capture per-render helpers (findSpliceCandidate reads nodes/edges), so
+  // they can't be useCallback'd directly — instead the bodies live in refs
+  // refreshed after every commit and ReactFlow gets never-changing shells.
+  // (Effect-refreshed, not render-assigned: pointer events always arrive
+  // after the commit's effects have run, so the bodies are never stale.
+  // No dep array — refreshes every commit by design.)
+  useEffect(() => {
+  nodeDragStartRef.current = (e, node) => {
+    // Alt = duplicate-on-drag (the clone takes the node's edges; React Flow
+    // keeps dragging the original as a fresh disconnected copy).
+    // Cmd/Ctrl = detach — strip every edge from this node. Combinable.
+    if (e.altKey && onDuplicateOnDrag) {
+      onDuplicateOnDrag(node.id);
+    }
+    if ((e.metaKey || e.ctrlKey) && onDetachNode) {
+      onDetachNode(node.id, findDetachBridge(node.id));
+    }
+    setSpliceCandidate(null);
+  };
+  nodeDragRef.current = (_e, node, dragged) => {
+    // Only splice-highlight on a single-node drag. Marquee drags that move
+    // many nodes at once shouldn't suddenly splice one into a random edge.
+    if (dragged.length !== 1) {
+      if (spliceRef.current) setSpliceCandidate(null);
+      return;
+    }
+    const found = findSpliceCandidate(node.id);
+    const prev = spliceRef.current;
+    if (!found) {
+      if (prev) setSpliceCandidate(null);
+      return;
+    }
+    if (
+      !prev ||
+      prev.edgeId !== found.edgeId ||
+      prev.inputName !== found.inputName ||
+      prev.outputHandle !== found.outputHandle
+    ) {
+      setSpliceCandidate(found);
+    }
+  };
+  nodeDragStopRef.current = (_e, node, dragged) => {
+    const candidate = spliceRef.current;
+    setSpliceCandidate(null);
+    if (!candidate) return;
+    if (dragged.length !== 1) return;
+    onSpliceNode?.({
+      nodeId: node.id,
+      edgeId: candidate.edgeId,
+      inputName: candidate.inputName,
+      outputHandle: candidate.outputHandle,
+    });
+  };
+  nodeContextMenuRef.current = (e, node) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, nodeId: node.id });
+  };
+  nodeDoubleClickRef.current = (_e, node) => {
+    // Double-click a group or layer node = dive in (same as Tab).
+    if (
+      onDiveIntoGroup &&
+      isEnterableScope((node.data as NodeDataPayload).defType)
+    ) {
+      onDiveIntoGroup(node.id);
+    }
+  };
+  });
 
   return (
     <WaypointContext.Provider value={waypointActions}>
@@ -1895,67 +1899,11 @@ export default function NodeEditor({
           const first = sel.nodes[0];
           onSelectNode(first?.id ?? null);
         }}
-        onNodeDragStart={(e, node) => {
-          // Alt = duplicate-on-drag (the clone takes the node's edges;
-          // React Flow keeps dragging the original as a fresh disconnected
-          // copy). Cmd/Ctrl = detach — strip every edge from this node.
-          // Both can be combined.
-          if (e.altKey && onDuplicateOnDrag) {
-            onDuplicateOnDrag(node.id);
-          }
-          if ((e.metaKey || e.ctrlKey) && onDetachNode) {
-            onDetachNode(node.id, findDetachBridge(node.id));
-          }
-          setSpliceCandidate(null);
-        }}
-        onNodeDrag={(_e, node, dragged) => {
-          // Only splice-highlight on a single-node drag. Marquee drags
-          // that move many nodes at once shouldn't suddenly splice one
-          // of them into a random edge.
-          if (dragged.length !== 1) {
-            if (spliceRef.current) setSpliceCandidate(null);
-            return;
-          }
-          const found = findSpliceCandidate(node.id);
-          const prev = spliceRef.current;
-          if (!found) {
-            if (prev) setSpliceCandidate(null);
-            return;
-          }
-          if (
-            !prev ||
-            prev.edgeId !== found.edgeId ||
-            prev.inputName !== found.inputName ||
-            prev.outputHandle !== found.outputHandle
-          ) {
-            setSpliceCandidate(found);
-          }
-        }}
-        onNodeDragStop={(_e, node, dragged) => {
-          const candidate = spliceRef.current;
-          setSpliceCandidate(null);
-          if (!candidate) return;
-          if (dragged.length !== 1) return;
-          onSpliceNode?.({
-            nodeId: node.id,
-            edgeId: candidate.edgeId,
-            inputName: candidate.inputName,
-            outputHandle: candidate.outputHandle,
-          });
-        }}
-        onNodeContextMenu={(e, node) => {
-          e.preventDefault();
-          setContextMenu({ x: e.clientX, y: e.clientY, nodeId: node.id });
-        }}
-        onNodeDoubleClick={(_e, node) => {
-          // Double-click a group or layer node = dive in (same as Tab).
-          if (
-            onDiveIntoGroup &&
-            isEnterableScope((node.data as NodeDataPayload).defType)
-          ) {
-            onDiveIntoGroup(node.id);
-          }
-        }}
+        onNodeDragStart={stableNodeDragStart}
+        onNodeDrag={stableNodeDrag}
+        onNodeDragStop={stableNodeDragStop}
+        onNodeContextMenu={stableNodeContextMenu}
+        onNodeDoubleClick={stableNodeDoubleClick}
         onPaneContextMenu={(e) => {
           // Right-click on empty pane — close any open node menu so it
           // doesn't linger past its node.
@@ -2426,9 +2374,18 @@ function resolveTargetSocketType(
     return node.data.inputs.find((i) => i.name === parsed.name)?.type ?? null;
   }
   // Exposed-param sockets — look up the def to find the underlying param's
-  // ParamType and map it to its driving SocketType.
+  // ParamType and map it to its driving SocketType. Virtual ramp-stop
+  // names (ramp_c/a/p:<param>:<stopId>) type by field: vec4 for color,
+  // scalar for alpha/position.
   const def = getNodeDef(node.data.defType);
   if (!def) return null;
+  const rk = parseRampParamKey(parsed.name);
+  if (rk) {
+    const rampParam = def.params.find(
+      (x) => x.name === rk.paramName && x.type === "color_ramp"
+    );
+    return rampParam ? rampFieldSocketType(rk.field) : null;
+  }
   const p = def.params.find((x) => x.name === parsed.name);
   if (!p) return null;
   return paramSocketType(p.type);
@@ -2676,3 +2633,5 @@ function NodeConnectLine({
   );
 }
 
+
+export default memo(NodeEditor);

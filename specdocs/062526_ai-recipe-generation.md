@@ -320,6 +320,20 @@ broken graph. This loop is entirely server-side and needs no browser.
 it *looks right*. That gap is the optional screenshot loop (§10) and,
 failing that, the user's eyes.
 
+**Addendum (2026-07-09) — per-def param checks.** `validateGraph` step 1 now
+also calls the def's optional `validateParams(params)` hook (types.ts) and
+reports each returned message as a `PARAM_INVALID` error. First implementer:
+Point Expression, which compiles + smoke-runs its per-point kernel so
+expression code that would fail *silently* at runtime (strict-mode
+ReferenceErrors, `return`-style blocks) reaches the repair loop. Relatedly,
+the generate preamble's "You never write code" rule was dropped (expression
+params are authored code), `buildRecipe`/`applyRecipeEdit` auto-mint
+ch()/pick() channels for authored expressions since `expr_inputs` isn't
+settable, and channel sockets are addressable by channel NAME in recipe
+edges/inputs (`pe:in:speed` — `resolveChannelHandle` aliases onto the
+id-based socket, since ids are minted at build time and unknowable to the
+LLM) — see 070726_point-expression-node.md, addendum.
+
 ---
 
 ## 7. Param authoring constraints

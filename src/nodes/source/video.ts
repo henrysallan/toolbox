@@ -12,6 +12,12 @@ import {
   getPlaceholderTex,
 } from "@/engine/placeholder-tex";
 import { pushMediaSettle, videoSeekSettle } from "@/engine/offline-settle";
+import {
+  decodeExrLayerAsync,
+  exrDecodeBacklog,
+  findExrLayer,
+  type ExrDecodeResult,
+} from "@/engine/exr";
 
 // Video source. Each frame: optionally sync the <video> element's clock to
 // ctx.time, upload whatever's currently decoded to a GL texture, then draw
@@ -95,16 +101,29 @@ interface SequenceState {
   lastH: number;
   // Identity of the param value the cache was built for — a new pick resets.
   valueRef: ImageSequenceParamValue | null;
+  // EXR frames decode per (layer, unpremultiply); a change invalidates every
+  // cached texture. Empty string for bitmap sequences.
+  exrKey: string;
   // For each timeline index [0, length), the frames[] array index to show
   // (forward-filled so gaps hold the previous present frame).
   resolved: number[];
   cache: Map<number, WebGLTexture>; // frames[] index → uploaded texture
+  cacheBytes: Map<number, number>; // frames[] index → GPU byte estimate
+  totalBytes: number;
   lru: number[]; // frames[] indices, least-recent first
-  pending: Map<number, ImageBitmap>; // decoded, awaiting GL upload
-  decoding: Set<number>; // createImageBitmap in flight
+  // Decoded, awaiting GL upload — ImageBitmap for stills, float RGBA for EXR.
+  pending: Map<number, ImageBitmap | ExrDecodeResult>;
+  decoding: Set<number>; // decode in flight
 }
 
-const SEQ_CACHE_CAP = 12;
+// Pending decodes are capped by count; uploaded textures by a byte budget —
+// counting frames is the wrong unit when a 4K RGBA16F frame is ~66MB but a
+// 720p bitmap is ~3.7MB. The budget always keeps at least the current frame.
+const SEQ_PENDING_CAP = 8;
+const SEQ_CACHE_BYTES = 512 * 1024 * 1024;
+// Frames to decode ahead of the playhead during playback (EXR only — decode
+// is seconds-per-frame at 4K, so playback survives on cache + held frames).
+const SEQ_DECODE_AHEAD = 3;
 
 function ensureSeqState(ctx: RenderContext, nodeId: string): SequenceState {
   const key = `video-seq:${nodeId}`;
@@ -116,8 +135,11 @@ function ensureSeqState(ctx: RenderContext, nodeId: string): SequenceState {
     lastW: 0,
     lastH: 0,
     valueRef: null,
+    exrKey: "",
     resolved: [],
     cache: new Map(),
+    cacheBytes: new Map(),
+    totalBytes: 0,
     lru: [],
     pending: new Map(),
     decoding: new Set(),
@@ -126,13 +148,17 @@ function ensureSeqState(ctx: RenderContext, nodeId: string): SequenceState {
   return s;
 }
 
-// Free every GL texture + decoded bitmap held by a sequence cache. Called on
-// a fresh pick (value identity change) and on dispose.
+// Free every GL texture + decoded frame held by a sequence cache. Called on
+// a fresh pick (value identity change), an EXR layer switch, and on dispose.
 function clearSeqCache(gl: WebGL2RenderingContext, s: SequenceState): void {
   for (const tex of s.cache.values()) gl.deleteTexture(tex);
   s.cache.clear();
+  s.cacheBytes.clear();
+  s.totalBytes = 0;
   s.lru.length = 0;
-  for (const bmp of s.pending.values()) bmp.close();
+  for (const decoded of s.pending.values()) {
+    if (decoded instanceof ImageBitmap) decoded.close();
+  }
   s.pending.clear();
   s.decoding.clear();
   s.tex = null;
@@ -173,26 +199,64 @@ function uploadBitmapTexture(
   return tex;
 }
 
+// HDR sibling of uploadBitmapTexture: straight-alpha float RGBA → RGBA16F
+// (filterable in core WebGL2; values > 1 survive). Rows are already in
+// ImageBitmap order, so the same fit-shader Y-flip applies.
+function uploadFloatTexture(
+  gl: WebGL2RenderingContext,
+  frame: ExrDecodeResult
+): WebGLTexture {
+  const tex = gl.createTexture();
+  if (!tex) throw new Error("exr-sequence: failed to create texture");
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA16F,
+    frame.width,
+    frame.height,
+    0,
+    gl.RGBA,
+    gl.FLOAT,
+    frame.data
+  );
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  return tex;
+}
+
 function touchLru(s: SequenceState, idx: number): void {
   const at = s.lru.indexOf(idx);
   if (at >= 0) s.lru.splice(at, 1);
   s.lru.push(idx);
 }
 
-// Evict least-recently-used textures past the cap, never the current index.
+// Record a cached texture's GPU byte estimate for the eviction budget.
+function recordCacheBytes(s: SequenceState, idx: number, bytes: number): void {
+  s.totalBytes += bytes - (s.cacheBytes.get(idx) ?? 0);
+  s.cacheBytes.set(idx, bytes);
+}
+
+// Evict least-recently-used textures past the byte budget, never the
+// current index.
 function evictSeq(
   gl: WebGL2RenderingContext,
   s: SequenceState,
   keepIdx: number
 ): void {
-  while (s.cache.size > SEQ_CACHE_CAP && s.lru.length > 0) {
-    const victim = s.lru[0] === keepIdx && s.lru.length > 1 ? s.lru[1] : s.lru[0];
+  while (s.totalBytes > SEQ_CACHE_BYTES && s.lru.length > 1) {
+    const victim = s.lru[0] === keepIdx ? s.lru[1] : s.lru[0];
     const at = s.lru.indexOf(victim);
     if (at >= 0) s.lru.splice(at, 1);
     const tex = s.cache.get(victim);
     if (tex) gl.deleteTexture(tex);
     s.cache.delete(victim);
-    if (victim === keepIdx) break; // safety — shouldn't happen
+    s.totalBytes -= s.cacheBytes.get(victim) ?? 0;
+    s.cacheBytes.delete(victim);
   }
 }
 
@@ -245,6 +309,33 @@ export const videoNode: NodeDefinition = {
       step: 1,
       default: 24,
       visibleIf: (p) => p.source_kind === "sequence",
+    },
+    // EXR sequences only: which layer/AOV of a multilayer file feeds the
+    // image output. Options come from the loaded file's header (the
+    // `exr_layer` control reads them off the sequence param value); the
+    // stored value is the layer's stable id, "" = the default (first) layer.
+    {
+      name: "exr_layer",
+      label: "Layer",
+      type: "enum",
+      options: [],
+      control: "exr_layer",
+      default: "",
+      visibleIf: (p) =>
+        p.source_kind === "sequence" &&
+        !!(p.sequence as ImageSequenceParamValue | null)?.exr,
+    },
+    // EXR stores associated (premultiplied) alpha; the engine is straight-
+    // alpha. Off = trust the file to be straight already (rare) or preserve
+    // premultiplied compositing math downstream.
+    {
+      name: "exr_unpremultiply",
+      label: "Un-premultiply alpha",
+      type: "boolean",
+      default: true,
+      visibleIf: (p) =>
+        p.source_kind === "sequence" &&
+        !!(p.sequence as ImageSequenceParamValue | null)?.exr,
     },
     {
       name: "fit",
@@ -339,10 +430,19 @@ export const videoNode: NodeDefinition = {
         ctx.clearTarget(output, [0, 0, 0, 1]);
         return { primary: output };
       }
+      // EXR decode identity: layer + alpha handling. A change invalidates
+      // every cached texture (they were packed for the old selection).
+      const exrLayer = seq.exr
+        ? findExrLayer(seq.exr.layers, params.exr_layer as string)
+        : undefined;
+      const exrUnpremult = (params.exr_unpremultiply as boolean) ?? true;
+      const exrKey = seq.exr ? `${exrLayer?.id ?? ""}|${exrUnpremult}` : "";
+
       // Fresh pick → drop the old cache and rebuild the gap-filled map.
-      if (s.valueRef !== seq) {
+      if (s.valueRef !== seq || s.exrKey !== exrKey) {
         clearSeqCache(gl, s);
         s.valueRef = seq;
+        s.exrKey = exrKey;
         s.resolved = buildResolved(seq);
         s.lastW = seq.width || 0;
         s.lastH = seq.height || 0;
@@ -361,44 +461,89 @@ export const videoNode: NodeDefinition = {
       }
       const targetIdx = s.resolved[localFrame] ?? 0;
 
-      let frameTex = s.cache.get(targetIdx) ?? null;
-      if (frameTex) {
-        touchLru(s, targetIdx);
-      } else if (s.pending.has(targetIdx)) {
-        // Decoded last eval — upload to GL now (the GL context is here).
-        const bmp = s.pending.get(targetIdx)!;
-        s.pending.delete(targetIdx);
-        frameTex = uploadBitmapTexture(gl, bmp);
-        s.lastW = bmp.width;
-        s.lastH = bmp.height;
-        bmp.close();
-        s.cache.set(targetIdx, frameTex);
-        touchLru(s, targetIdx);
-        evictSeq(gl, s, targetIdx);
-      } else if (!s.decoding.has(targetIdx)) {
-        // Kick an async decode; show the last-good frame meanwhile. Offline
-        // export settles on it so capture waits for the right frame.
-        if (s.pending.size >= SEQ_CACHE_CAP) {
+      // Kick an async decode for a frame index; show the last-good frame
+      // meanwhile. Offline export settles on the current frame's decode so
+      // capture waits for the right pixels. Shared by the playhead frame and
+      // the playback decode-ahead below.
+      const kickDecode = (idx: number, settle: boolean) => {
+        if (s.cache.has(idx) || s.pending.has(idx) || s.decoding.has(idx)) {
+          return;
+        }
+        if (s.pending.size >= SEQ_PENDING_CAP) {
+          if (!settle) return; // ahead-decodes yield; the playhead evicts
           const first = s.pending.keys().next().value;
           if (first !== undefined) {
-            s.pending.get(first)?.close();
+            const decoded = s.pending.get(first);
+            if (decoded instanceof ImageBitmap) decoded.close();
             s.pending.delete(first);
           }
         }
-        s.decoding.add(targetIdx);
-        const p = createImageBitmap(seq.frames[targetIdx].blob)
-          .then((bmp) => {
-            s.pending.set(targetIdx, bmp);
-            s.decoding.delete(targetIdx);
+        s.decoding.add(idx);
+        const decode: Promise<ImageBitmap | ExrDecodeResult> = seq.exr
+          ? seq.frames[idx].blob
+              .arrayBuffer()
+              .then((buf) =>
+                decodeExrLayerAsync(buf, {
+                  layer: exrLayer,
+                  unpremultiply: exrUnpremult,
+                })
+              )
+          : createImageBitmap(seq.frames[idx].blob);
+        const p = decode
+          .then((decoded) => {
+            // A layer switch may have reset the cache mid-flight — drop stale
+            // results instead of parking them under the new key.
+            if (s.valueRef !== seq || s.exrKey !== exrKey) return;
+            s.pending.set(idx, decoded);
+            s.decoding.delete(idx);
             // Nudge a re-eval so a paused scrub updates once the decode lands.
             if (typeof window !== "undefined") {
               window.dispatchEvent(new Event("pipeline-bump"));
             }
           })
-          .catch(() => {
-            s.decoding.delete(targetIdx);
+          .catch((e) => {
+            s.decoding.delete(idx);
+            if (seq.exr) console.warn("EXR frame decode failed:", e);
           });
-        if (ctx.offline) pushMediaSettle(ctx, p);
+        if (settle && ctx.offline) pushMediaSettle(ctx, p);
+      };
+
+      let frameTex = s.cache.get(targetIdx) ?? null;
+      if (frameTex) {
+        touchLru(s, targetIdx);
+      } else if (s.pending.has(targetIdx)) {
+        // Decoded last eval — upload to GL now (the GL context is here).
+        const decoded = s.pending.get(targetIdx)!;
+        s.pending.delete(targetIdx);
+        if (decoded instanceof ImageBitmap) {
+          frameTex = uploadBitmapTexture(gl, decoded);
+          s.lastW = decoded.width;
+          s.lastH = decoded.height;
+          recordCacheBytes(s, targetIdx, decoded.width * decoded.height * 4);
+          decoded.close();
+        } else {
+          frameTex = uploadFloatTexture(gl, decoded);
+          s.lastW = decoded.width;
+          s.lastH = decoded.height;
+          recordCacheBytes(s, targetIdx, decoded.width * decoded.height * 8);
+        }
+        s.cache.set(targetIdx, frameTex);
+        touchLru(s, targetIdx);
+        evictSeq(gl, s, targetIdx);
+      } else {
+        kickDecode(targetIdx, true);
+      }
+
+      // Decode-ahead: EXR decode costs seconds per 4K frame, so while
+      // playing, keep the worker pool primed with the next few frames.
+      // Modest and backlog-aware — the playhead's own decode always wins.
+      if (seq.exr && ctx.playing && !ctx.offline && exrDecodeBacklog() < 4) {
+        for (let ahead = 1; ahead <= SEQ_DECODE_AHEAD; ahead++) {
+          let f = localFrame + ahead;
+          if (params.loop) f = ((f % length) + length) % length;
+          else if (f >= length) break;
+          kickDecode(s.resolved[f] ?? 0, false);
+        }
       }
 
       if (frameTex) {

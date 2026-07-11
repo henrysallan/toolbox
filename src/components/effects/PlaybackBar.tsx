@@ -2,10 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { wheelWantsZoom } from "./input-device";
+import { useClock } from "@/state/playback-clock";
 
 interface Props {
-  playing: boolean;
-  time: number;
   fps: number;
   loopFrames: number | null;
   onPlayPause: () => void;
@@ -39,8 +38,6 @@ function pickFrameTickInterval(viewSpanFrames: number, trackWidthPx: number) {
 }
 
 export default function PlaybackBar({
-  playing,
-  time,
   fps,
   loopFrames,
   onPlayPause,
@@ -52,6 +49,11 @@ export default function PlaybackBar({
   tracksOpen,
   onToggleTracks,
 }: Props) {
+  // Clock reads come straight from the playback store — this component
+  // re-renders per frame BY DESIGN (it draws the playhead + frame
+  // readout); subscribing here keeps that off the shell's props.
+  const time = useClock((s) => s.time);
+  const playing = useClock((s) => s.playing);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
   // Cursor x (px within the track) while hovering — drives the faded

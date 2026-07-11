@@ -17,14 +17,21 @@ import type {
   LutFileParamValue,
   ParamDef,
   SizeMode,
+  WedgeValueItem,
 } from "@/engine/types";
 import { parseCsv, type CsvDelimiter } from "@/engine/csv-parse";
+import { registerImageOriginal } from "@/lib/image-bytes";
 import { newExprInput } from "@/nodes/effect/expression";
+import { newWedgeValueId } from "@/nodes/source/wedge";
+import { syncChannelInputs } from "@/nodes/effect/point-expression";
 import {
   gpointCKey,
   gpointXKey,
   gpointYKey,
   layerOpacityKey,
+  rampAlphaKey,
+  rampColorKey,
+  rampPositionKey,
 } from "@/engine/conventions";
 import {
   COLOR_RAMP_MAX_STOPS,
@@ -51,6 +58,7 @@ import {
   type KeyframeAnimationBlock,
 } from "@/engine/keyframes";
 import KeyframeDiamond from "@/components/effects/KeyframeDiamond";
+import { ColorSwatchPicker } from "@/lib/color-picker-popover";
 
 export function DampenedRangeInput(
   props: Omit<
@@ -299,6 +307,11 @@ export function ImageFileControl({
     typeof ImageBitmap !== "undefined" && value instanceof ImageBitmap
       ? value
       : null;
+  const exr =
+    value && typeof value === "object" && !(value instanceof ImageBitmap) &&
+    (value as { kind?: string }).kind === "exr"
+      ? (value as import("@/engine/types").ExrImageParamValue)
+      : null;
   const fileName = bitmap
     ? (bitmap as unknown as { fileName?: string }).fileName ?? "image"
     : null;
@@ -309,12 +322,41 @@ export function ImageFileControl({
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,.exr"
         style={{ display: "none" }}
         onChange={async (e) => {
           const file = e.target.files?.[0];
           if (!file) return;
+          // EXR stills (magic-byte sniff, filename fallback): keep the
+          // original bytes as the canonical source, header-parse for the
+          // layer dropdown — the node decodes lazily via engine/exr.
+          const head = new Uint8Array(
+            await file.slice(0, 4).arrayBuffer().catch(() => new ArrayBuffer(0))
+          );
+          const { isExrBytes, isExrFilename } = await import("@/engine/exr");
+          if (head.length ? isExrBytes(head) : isExrFilename(file.name)) {
+            try {
+              const { parseExrHeader, groupExrLayers } = await import(
+                "@/engine/exr"
+              );
+              const header = parseExrHeader(await file.arrayBuffer());
+              onChange({
+                kind: "exr",
+                blob: file,
+                filename: file.name,
+                layers: groupExrLayers(header),
+                width: header.parts[0]?.width ?? 0,
+                height: header.parts[0]?.height ?? 0,
+              } satisfies import("@/engine/types").ExrImageParamValue);
+            } catch (err) {
+              console.error("EXR load failed:", err);
+            }
+            return;
+          }
           const bmp = await createImageBitmap(file);
+          // Keep the encoded source bytes so save inlines the original
+          // file instead of a ~10× PNG re-encode of the decoded bitmap.
+          registerImageOriginal(bmp, file);
           try {
             (bmp as unknown as { fileName?: string }).fileName = file.name;
           } catch {
@@ -331,10 +373,30 @@ export function ImageFileControl({
       {bitmap && fileName && (
         <LoadedFilePill thumb={<BitmapThumb bitmap={bitmap} />} name={fileName} />
       )}
+      {exr && (
+        <LoadedFilePill thumb={<ExrSwatch />} name={exr.filename ?? "exr"} />
+      )}
       {bitmap && (
         <MatchAspectButton width={bitmap.width} height={bitmap.height} />
       )}
+      {exr && <MatchAspectButton width={exr.width} height={exr.height} />}
     </div>
+  );
+}
+
+// Tiny HDR-ish gradient swatch for the loaded-EXR pill (no decoded bitmap to
+// thumbnail without paying a full decode).
+function ExrSwatch() {
+  return (
+    <div
+      style={{
+        width: 24,
+        height: 24,
+        borderRadius: 4,
+        background:
+          "linear-gradient(135deg, #18181b 0%, #3f3f46 45%, #fafafa 100%)",
+      }}
+    />
   );
 }
 
@@ -480,7 +542,7 @@ export function ImageSequenceControl({
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,.exr"
         multiple
         style={{ display: "none" }}
         onChange={async (e) => {
@@ -924,6 +986,21 @@ export interface LayerAnimApi {
   set: (key: string, next: KeyframeAnimationBlock | undefined) => void;
 }
 
+// Per-stop expose / control access for ColorRampControl. Keys are the
+// virtual ramp names (`ramp_c/a/p:<param>:<stopId>` — engine/conventions):
+// exposing adds an input socket on the node, controlling adds a knob to the
+// exported app's panel. Editor-only — the live viewer / exported apps pass
+// nothing and the buttons don't render.
+export interface RampIoApi {
+  isExposed: (key: string) => boolean;
+  // True when the exposed socket currently has an incoming wire — the
+  // field's inline control renders read-only.
+  isDriven: (key: string) => boolean;
+  toggleExposed: (key: string) => void;
+  isControlled: (key: string) => boolean;
+  toggleControl: (key: string) => void;
+}
+
 export function normalizeHex(s: string): string | null {
   let h = s.trim().replace(/^#/, "");
   if (/^[0-9a-fA-F]{3}$/.test(h)) h = h.split("").map((c) => c + c).join("");
@@ -1059,21 +1136,12 @@ export function ColorControl({
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
-      <input
-        type="color"
+      {/* Swatch opens the app's custom picker (SV square + hue + hex +
+          eyedropper) instead of the native browser dialog. */}
+      <ColorSwatchPicker
         value={hex}
-        onChange={(e) => commitHex(e.target.value)}
+        onChange={(h) => commitHex(h)}
         title="Pick a color"
-        style={{
-          width: 22,
-          height: 18,
-          padding: 0,
-          border: "1px solid #27272a",
-          borderRadius: 3,
-          background: "transparent",
-          flexShrink: 0,
-          cursor: "pointer",
-        }}
       />
       <input
         type="text"
@@ -2020,6 +2088,7 @@ export function ParamControl({
   rangeOverride,
   onRangeChange,
   layerAnim,
+  rampIo,
 }: {
   param: ParamDef;
   value: unknown;
@@ -2033,6 +2102,8 @@ export function ParamControl({
   ) => void;
   // Composite-param keyframing (merge layers) — see LayerAnimApi.
   layerAnim?: LayerAnimApi;
+  // Per-stop expose/control toggles for color ramps — see RampIoApi.
+  rampIo?: RampIoApi;
 }) {
   if (param.type === "scalar") {
     const num = typeof value === "number" ? value : (param.default as number);
@@ -2309,6 +2380,42 @@ export function ParamControl({
         <FontPicker value={current} options={options} onChange={(v) => onChange(v)} />
       );
     }
+    if (param.control === "exr_layer") {
+      // Options come from the sibling media param's EXR layer list (the
+      // sequence value on Video Source, the file value on Image Source) —
+      // never from `options`. The stored value is the layer's stable id; an
+      // id missing from the current file falls back to the default layer.
+      const seq = allParams?.sequence as
+        | import("@/engine/types").ImageSequenceParamValue
+        | null
+        | undefined;
+      const file = allParams?.file as
+        | import("@/engine/types").ExrImageParamValue
+        | ImageBitmap
+        | null
+        | undefined;
+      const layers =
+        seq?.exr?.layers ??
+        (file &&
+        typeof file === "object" &&
+        !(file instanceof ImageBitmap) &&
+        file.kind === "exr"
+          ? file.layers
+          : []);
+      if (!layers.length) {
+        return <div style={{ color: "#52525b" }}>(no EXR loaded)</div>;
+      }
+      const effective = layers.some((l) => l.id === current)
+        ? current
+        : layers[0].id;
+      return (
+        <Dropdown
+          value={effective}
+          options={layers.map((l) => ({ value: l.id, label: l.label }))}
+          onChange={(v) => onChange(v)}
+        />
+      );
+    }
     return (
       <Dropdown
         value={current}
@@ -2488,16 +2595,55 @@ export function ParamControl({
       fontFamily: "inherit",
       flexShrink: 0,
     };
+    // Point Expression channels render as the standard scalar slider / enum
+    // dropdown. `channelDef` is the INFERRED base range (the "reset" fallback,
+    // derived from the default); an explicit range from ch(…, min, max) or the
+    // right-click editor rides on top as a `rangeOverride` (see channelRange),
+    // so the standard SliderRangeEditor's diff-vs-default logic works unchanged.
+    const channelDef = (e: ExprInput): ParamDef => {
+      if (e.options && e.options.length) {
+        return {
+          name: e.name,
+          type: "enum",
+          options: e.options,
+          default: e.options[0] ?? "",
+        };
+      }
+      const d = typeof e.default === "number" ? e.default : 0;
+      const inferMin = d < 0 ? d * 2 : 0;
+      const inferMax = d === 0 ? 1 : Math.abs(d) * 2;
+      const step =
+        e.step ??
+        (inferMax >= 100 ? 1 : inferMax >= 10 ? 0.1 : inferMax >= 1 ? 0.01 : 0.001);
+      return {
+        name: e.name,
+        type: "scalar",
+        default: d,
+        min: inferMin,
+        max: inferMax,
+        step,
+      };
+    };
+    // The channel's explicit range (from ch args or the right-click editor),
+    // as a rangeOverride. Undefined when nothing's set ⇒ slider uses the
+    // inferred base. Right-clicking the slider edits these via onRangeChange.
+    const channelRange = (
+      e: ExprInput
+    ): { min?: number; max?: number; softMax?: number } | undefined => {
+      const r: { min?: number; max?: number; softMax?: number } = {};
+      if (e.min !== undefined) r.min = e.min;
+      if (e.max !== undefined) r.max = e.max;
+      if (e.softMax !== undefined) r.softMax = e.softMax;
+      return Object.keys(r).length ? r : undefined;
+    };
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {list.length === 0 && (
           <div style={{ color: "#52525b" }}>(no inputs)</div>
         )}
-        {list.map((e) => (
-          <div
-            key={e.id}
-            style={{ display: "flex", gap: 6, alignItems: "center" }}
-          >
+        {list.map((e) => {
+          const isChannel = !!param.channelSync;
+          const nameField = (
             <input
               value={e.name}
               spellCheck={false}
@@ -2512,8 +2658,9 @@ export function ParamControl({
                 )
               }
               style={{
-                flex: 1,
-                minWidth: 0,
+                ...(isChannel
+                  ? { width: 76, flexShrink: 0 }
+                  : { flex: 1, minWidth: 0 }),
                 background: "#0c0c0e",
                 border: "1px solid #27272a",
                 color: "#e4e4e7",
@@ -2522,27 +2669,186 @@ export function ParamControl({
                 fontFamily: "inherit",
                 fontSize: 11,
               }}
-              title="Variable name used in the expression"
+              title={
+                isChannel
+                  ? 'Channel name — matches ch("…") / pick("…") in the expression'
+                  : "Variable name used in the expression"
+              }
             />
-            <span
-              style={{ color: "#52525b", fontSize: 10, flexShrink: 0 }}
-              title="Value used when this input is not wired"
+          );
+          const removeButton = (
+            <button
+              onClick={() => update(list.filter((x) => x.id !== e.id))}
+              title="Remove"
+              style={removeBtn}
             >
-              def
+              ×
+            </button>
+          );
+          if (isChannel) {
+            return (
+              <div
+                key={e.id}
+                style={{ display: "flex", gap: 6, alignItems: "center" }}
+              >
+                {nameField}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <ParamControl
+                    param={channelDef(e)}
+                    value={e.default}
+                    rangeOverride={channelRange(e)}
+                    onChange={(v) =>
+                      update(
+                        list.map((x) =>
+                          x.id === e.id
+                            ? { ...x, default: v as number | string }
+                            : x
+                        )
+                      )
+                    }
+                    onRangeChange={(next) =>
+                      update(
+                        list.map((x) =>
+                          x.id === e.id
+                            ? {
+                                ...x,
+                                min: next?.min,
+                                max: next?.max,
+                                softMax: next?.softMax,
+                              }
+                            : x
+                        )
+                      )
+                    }
+                  />
+                </div>
+                {removeButton}
+              </div>
+            );
+          }
+          return (
+            <div
+              key={e.id}
+              style={{ display: "flex", gap: 6, alignItems: "center" }}
+            >
+              {nameField}
+              <span
+                style={{ color: "#52525b", fontSize: 10, flexShrink: 0 }}
+                title="Value used when this input is not wired"
+              >
+                def
+              </span>
+              <NumberField
+                value={typeof e.default === "number" ? e.default : 1}
+                onChange={(v) =>
+                  update(
+                    list.map((x) => (x.id === e.id ? { ...x, default: v } : x))
+                  )
+                }
+                step={0.01}
+                width={52}
+              />
+              {removeButton}
+            </div>
+          );
+        })}
+        <div style={{ display: "flex", gap: 6, alignSelf: "flex-start" }}>
+          <button
+            onClick={() => update([...list, newExprInput(list)])}
+            style={{
+              background: "transparent",
+              border: "1px dashed #3f3f46",
+              color: "#a1a1aa",
+              fontSize: 11,
+              padding: "4px 8px",
+              borderRadius: 3,
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            + Add input
+          </button>
+          {param.channelSync && (
+            <button
+              // Scan the sibling `expression` param for ch("name", default)
+              // calls and add a matching slider for each new one (add-only).
+              onClick={() => {
+                const next = syncChannelInputs(
+                  list,
+                  (allParams?.expression as string) ?? ""
+                );
+                if (next !== list) update(next);
+              }}
+              title='Add controls for ch(…) sliders and pick(…) dropdowns in the expression'
+              style={{
+                background: "transparent",
+                border: "1px solid #3f3f46",
+                color: "#a1a1aa",
+                fontSize: 11,
+                padding: "4px 8px",
+                borderRadius: 3,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              ⟳ Sync
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (param.type === "wedge_values") {
+    // The Wedge node's explicit value list — one row per batch-render
+    // variation. Scalar rows only for now (the node's `type` param will key
+    // color/vec2/string row editors when those land). Index labels double as
+    // the mapping to `{i}` filename tokens / the Preview index.
+    const list = Array.isArray(value)
+      ? (value as WedgeValueItem[])
+      : ((param.default as WedgeValueItem[]) ?? []);
+    const update = (next: WedgeValueItem[]) => onChange(next);
+    const removeBtn: React.CSSProperties = {
+      background: "transparent",
+      border: "1px solid #3f3f46",
+      color: "#a1a1aa",
+      fontSize: 12,
+      lineHeight: 1,
+      padding: "2px 7px",
+      borderRadius: 3,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      flexShrink: 0,
+    };
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {list.length === 0 && (
+          <div style={{ color: "#52525b" }}>(no values — batch renders once)</div>
+        )}
+        {list.map((item, i) => (
+          <div
+            key={item.id}
+            style={{ display: "flex", gap: 6, alignItems: "center" }}
+          >
+            <span
+              style={{ color: "#52525b", fontSize: 10, width: 22, flexShrink: 0 }}
+              title={`Variation ${i} — emitted when the batch index is ${i}`}
+            >
+              {i}
             </span>
             <NumberField
-              value={e.default ?? 1}
+              value={typeof item.value === "number" ? item.value : 0}
               onChange={(v) =>
                 update(
-                  list.map((x) => (x.id === e.id ? { ...x, default: v } : x))
+                  list.map((x) => (x.id === item.id ? { ...x, value: v } : x))
                 )
               }
               step={0.01}
-              width={52}
+              width={64}
             />
             <button
-              onClick={() => update(list.filter((x) => x.id !== e.id))}
-              title="Remove input"
+              onClick={() => update(list.filter((x) => x.id !== item.id))}
+              title="Remove"
               style={removeBtn}
             >
               ×
@@ -2550,7 +2856,21 @@ export function ParamControl({
           </div>
         ))}
         <button
-          onClick={() => update([...list, newExprInput(list)])}
+          onClick={() => {
+            // Seed the new row one step past the last two values' delta
+            // (1 when there's no trend) — matches the common "0, 1, 2, …"
+            // seed-list case without a dedicated range mode round-trip.
+            const nums = list.map((x) =>
+              typeof x.value === "number" ? x.value : 0
+            );
+            const last = nums[nums.length - 1] ?? -1;
+            const delta =
+              nums.length >= 2 ? last - nums[nums.length - 2] : 1;
+            update([
+              ...list,
+              { id: newWedgeValueId(), value: last + (delta || 1) },
+            ]);
+          }}
           style={{
             background: "transparent",
             border: "1px dashed #3f3f46",
@@ -2563,7 +2883,7 @@ export function ParamControl({
             alignSelf: "flex-start",
           }}
         >
-          + Add input
+          + Add value
         </button>
       </div>
     );
@@ -2711,6 +3031,9 @@ export function ParamControl({
       <ColorRampControl
         stops={stops}
         onChange={(next) => onChange(next)}
+        paramName={param.name}
+        layerAnim={layerAnim}
+        rampIo={rampIo}
       />
     );
   }
@@ -2963,12 +3286,110 @@ export function GradientPointsControl({
   );
 }
 
+// Expose / Control glyphs for the per-stop ramp buttons — same public/ SVG
+// mask technique as ParamPanel's row buttons (silhouette recolors via
+// currentColor). Editor-only: these render only when a RampIoApi is passed.
+function RampMaskGlyph({
+  src,
+  width,
+  height,
+}: {
+  src: string;
+  width: number;
+  height: number;
+}) {
+  const mask = `url(${src}) no-repeat center / contain`;
+  return (
+    <span
+      aria-hidden
+      style={{
+        display: "inline-block",
+        width,
+        height,
+        backgroundColor: "currentColor",
+        WebkitMask: mask,
+        mask,
+      }}
+    />
+  );
+}
+
+// Expose + Control toggle pair for one ramp-stop field. Mirrors the colors
+// and semantics of a param row's toggles, sized down to sit inline next to
+// the field's control.
+function RampIoButtons({ keyName, io }: { keyName: string; io: RampIoApi }) {
+  const exposed = io.isExposed(keyName);
+  const controlled = io.isControlled(keyName);
+  const base: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: "1px solid #27272a",
+    width: 16,
+    height: 16,
+    padding: 0,
+    boxSizing: "border-box",
+    borderRadius: 3,
+    cursor: "pointer",
+    fontFamily: "inherit",
+    flexShrink: 0,
+  };
+  return (
+    <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+      <button
+        onClick={() => io.toggleExposed(keyName)}
+        title={
+          exposed
+            ? "Remove the input socket for this stop value"
+            : "Add an input socket for this stop value on the node"
+        }
+        style={{
+          ...base,
+          background: exposed ? "#1e3a8a" : "transparent",
+          color: exposed ? "#bfdbfe" : "#71717a",
+        }}
+      >
+        <RampMaskGlyph
+          src="/ExposeSymbol.svg"
+          width={5 * (1060 / 420)}
+          height={5}
+        />
+      </button>
+      <button
+        onClick={() => io.toggleControl(keyName)}
+        title={
+          controlled
+            ? "Remove this stop value from the exported app's control panel"
+            : "Show this stop value as a knob in the exported app's control panel"
+        }
+        style={{
+          ...base,
+          background: controlled ? "#065f46" : "transparent",
+          color: controlled ? "#a7f3d0" : "#71717a",
+        }}
+      >
+        <RampMaskGlyph src="/ControlSymbol.svg" width={10} height={10} />
+      </button>
+    </div>
+  );
+}
+
 export function ColorRampControl({
   stops,
   onChange,
+  paramName,
+  layerAnim,
+  rampIo,
 }: {
   stops: ColorRampStop[];
   onChange: (next: ColorRampStop[]) => void;
+  // Param the ramp lives in — needed to build the virtual per-stop keys
+  // (ramp_c/a/p:<param>:<stopId>). Optional: without it (or without the
+  // APIs below) the per-stop keyframe/expose/control affordances hide and
+  // the control degrades to the plain ramp editor (live viewer).
+  paramName?: string;
+  layerAnim?: LayerAnimApi;
+  rampIo?: RampIoApi;
 }) {
   const barRef = useRef<HTMLDivElement>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -3043,6 +3464,38 @@ export function ColorRampControl({
   function updateStop(id: string, patch: Partial<ColorRampStop>) {
     onChange(stops.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }
+
+  // Toggle/insert/remove a keyframe on a stop field's virtual track at the
+  // playhead — gpoint pattern (see GradientPointsControl). Color keyframes
+  // store RGBA tuples for the keyframe engine's color interpolation.
+  const diamond = (key: string, seed: unknown, title: string) => {
+    if (!layerAnim) return null;
+    const block = layerAnim.get(key);
+    const tick = layerAnim.currentTick;
+    return (
+      <KeyframeDiamond
+        state={diamondStateFor(block, tick)}
+        title={title}
+        onClick={() => {
+          if (!block || !block.animated) {
+            layerAnim.set(key, {
+              animated: true,
+              trackVisible: true,
+              keyframes: [{ tick, value: seed, easingOut: "easeInOut" }],
+            });
+          } else if (findKeyframeAt(block, tick)) {
+            layerAnim.set(key, removeKeyframeAt(block, tick));
+          } else {
+            layerAnim.set(key, upsertKeyframe(block, tick, seed, "easeInOut"));
+          }
+        }}
+      />
+    );
+  };
+
+  // A wired (driven) field renders read-only, mirroring a driven param row.
+  const drivenStyle = (key: string): React.CSSProperties =>
+    rampIo?.isDriven(key) ? { opacity: 0.5, pointerEvents: "none" } : {};
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -3138,99 +3591,167 @@ export function ColorRampControl({
                 remove
               </button>
             </div>
-            <div
-              style={{
-                display: "flex",
-                gap: 6,
-                alignItems: "center",
-              }}
-            >
-              <span style={{ color: "#71717a", minWidth: 50 }}>color</span>
-              <input
-                type="color"
-                value={selected.color}
-                onChange={(e) =>
-                  updateStop(selected.id, { color: e.target.value })
-                }
-                style={{ width: "100%", height: 22 }}
-              />
-            </div>
-            <div
-              style={{
-                display: "flex",
-                gap: 6,
-                alignItems: "center",
-              }}
-            >
-              <span style={{ color: "#71717a", minWidth: 50 }}>alpha</span>
-              <DampenedRangeInput
-                min={0}
-                max={1}
-                step={0.01}
-                value={selected.alpha ?? 1}
-                onChange={(v) => updateStop(selected.id, { alpha: v })}
-                style={{ flex: 1 }}
-              />
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.01}
-                value={selected.alpha ?? 1}
-                onChange={(e) =>
-                  updateStop(selected.id, {
-                    alpha: parseFloat(e.target.value),
-                  })
-                }
-                style={{
-                  width: 56,
-                  background: "#0a0a0a",
-                  border: "1px solid #27272a",
-                  color: "#e5e7eb",
-                  fontFamily: "inherit",
-                  fontSize: 11,
-                  padding: "2px 4px",
-                }}
-              />
-            </div>
-            <div
-              style={{
-                display: "flex",
-                gap: 6,
-                alignItems: "center",
-              }}
-            >
-              <span style={{ color: "#71717a", minWidth: 50 }}>position</span>
-              <DampenedRangeInput
-                min={0}
-                max={1}
-                step={0.001}
-                value={selected.position}
-                onChange={(v) => updateStop(selected.id, { position: v })}
-                style={{ flex: 1 }}
-              />
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.001}
-                value={selected.position}
-                onChange={(e) =>
-                  updateStop(selected.id, {
-                    position: parseFloat(e.target.value),
-                  })
-                }
-                style={{
-                  width: 56,
-                  background: "#0a0a0a",
-                  border: "1px solid #27272a",
-                  color: "#e5e7eb",
-                  fontFamily: "inherit",
-                  fontSize: 11,
-                  padding: "2px 4px",
-                }}
-              />
-            </div>
+            {(() => {
+              // Virtual per-stop keys — only buildable when the host passed
+              // the param name (editor); the live viewer renders plain rows.
+              const keys = paramName
+                ? {
+                    color: rampColorKey(paramName, selected.id),
+                    alpha: rampAlphaKey(paramName, selected.id),
+                    position: rampPositionKey(paramName, selected.id),
+                  }
+                : null;
+              return (
+                <>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 6,
+                      alignItems: "center",
+                    }}
+                  >
+                    <span style={{ color: "#71717a", minWidth: 50 }}>
+                      color
+                    </span>
+                    <div
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        ...(keys ? drivenStyle(keys.color) : {}),
+                      }}
+                    >
+                      <ColorControl
+                        value={selected.color}
+                        onChange={(hex) =>
+                          updateStop(selected.id, { color: hex as string })
+                        }
+                      />
+                    </div>
+                    {keys &&
+                      diamond(
+                        keys.color,
+                        hexToRgba01Tuple(
+                          typeof selected.color === "string"
+                            ? selected.color
+                            : "#ffffff"
+                        ),
+                        "Keyframe this stop's color"
+                      )}
+                    {keys && rampIo && (
+                      <RampIoButtons keyName={keys.color} io={rampIo} />
+                    )}
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 6,
+                      alignItems: "center",
+                    }}
+                  >
+                    <span style={{ color: "#71717a", minWidth: 50 }}>
+                      alpha
+                    </span>
+                    <DampenedRangeInput
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={selected.alpha ?? 1}
+                      onChange={(v) => updateStop(selected.id, { alpha: v })}
+                      style={{
+                        flex: 1,
+                        ...(keys ? drivenStyle(keys.alpha) : {}),
+                      }}
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={selected.alpha ?? 1}
+                      onChange={(e) =>
+                        updateStop(selected.id, {
+                          alpha: parseFloat(e.target.value),
+                        })
+                      }
+                      style={{
+                        width: 48,
+                        background: "#0a0a0a",
+                        border: "1px solid #27272a",
+                        color: "#e5e7eb",
+                        fontFamily: "inherit",
+                        fontSize: 11,
+                        padding: "2px 4px",
+                        ...(keys ? drivenStyle(keys.alpha) : {}),
+                      }}
+                    />
+                    {keys &&
+                      diamond(
+                        keys.alpha,
+                        selected.alpha ?? 1,
+                        "Keyframe this stop's alpha"
+                      )}
+                    {keys && rampIo && (
+                      <RampIoButtons keyName={keys.alpha} io={rampIo} />
+                    )}
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 6,
+                      alignItems: "center",
+                    }}
+                  >
+                    <span style={{ color: "#71717a", minWidth: 50 }}>
+                      position
+                    </span>
+                    <DampenedRangeInput
+                      min={0}
+                      max={1}
+                      step={0.001}
+                      value={selected.position}
+                      onChange={(v) =>
+                        updateStop(selected.id, { position: v })
+                      }
+                      style={{
+                        flex: 1,
+                        ...(keys ? drivenStyle(keys.position) : {}),
+                      }}
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.001}
+                      value={selected.position}
+                      onChange={(e) =>
+                        updateStop(selected.id, {
+                          position: parseFloat(e.target.value),
+                        })
+                      }
+                      style={{
+                        width: 48,
+                        background: "#0a0a0a",
+                        border: "1px solid #27272a",
+                        color: "#e5e7eb",
+                        fontFamily: "inherit",
+                        fontSize: 11,
+                        padding: "2px 4px",
+                        ...(keys ? drivenStyle(keys.position) : {}),
+                      }}
+                    />
+                    {keys &&
+                      diamond(
+                        keys.position,
+                        selected.position,
+                        "Keyframe this stop's position"
+                      )}
+                    {keys && rampIo && (
+                      <RampIoButtons keyName={keys.position} io={rampIo} />
+                    )}
+                  </div>
+                </>
+              );
+            })()}
           </div>
         ) : (
           <div style={{ color: "#52525b" }}>(click the bar to add a stop)</div>

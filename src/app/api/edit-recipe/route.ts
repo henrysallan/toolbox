@@ -10,9 +10,12 @@ import {
   buildEditSystem,
   buildEditUserContent,
 } from "@/lib/ai/recipe-prompt";
-import { resolveAnthropicKey } from "@/lib/ai/anthropic-key";
+import { resolveRecipeAuth } from "@/lib/ai/anthropic-key";
 
 export const runtime = "nodejs";
+// Multi-turn edits with adaptive thinking regularly run past a minute —
+// without this the platform default can kill the request mid-generation.
+export const maxDuration = 300;
 
 interface Body {
   catalog?: string;
@@ -38,17 +41,11 @@ export async function POST(req: Request) {
   if (!instruction || typeof instruction !== "string")
     return Response.json({ error: "Missing `instruction`." }, { status: 400 });
 
-  const apiKey = await resolveAnthropicKey();
-  if (!apiKey)
-    return Response.json(
-      {
-        error:
-          "No Anthropic API key. Add one in User Preferences (sign in first), or set ANTHROPIC_API_KEY on the server.",
-      },
-      { status: 500 }
-    );
+  const auth = await resolveRecipeAuth();
+  if (!auth.ok)
+    return Response.json({ error: auth.error }, { status: auth.status });
 
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic({ apiKey: auth.apiKey });
   let message: Anthropic.Message;
   try {
     message = await client.messages.create({

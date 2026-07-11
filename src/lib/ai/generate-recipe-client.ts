@@ -37,7 +37,7 @@ export type PostFn = (body: PostBody) => Promise<PostResult>;
 // Build issues that are worth a repair turn (structurally broke the recipe).
 // Soft issues (a non-settable/unknown param the builder just dropped) are
 // surfaced as warnings, not retried — the node still works at its default.
-const HARD_BUILD_CODES = new Set([
+export const HARD_BUILD_CODES = new Set([
   "UNKNOWN_TYPE",
   "DUP_ID",
   "BAD_EDGE",
@@ -45,6 +45,10 @@ const HARD_BUILD_CODES = new Set([
   "BAD_OUTPUT",
   "BAD_EXPOSED",
   "NO_OUTPUT",
+  // A rejected param VALUE (wrong type / non-option enum / non-finite
+  // number) means the recipe doesn't do what the model intended — worth a
+  // repair turn, unlike the dropped-param soft issues.
+  "BAD_PARAM_VALUE",
 ]);
 
 const defaultPost: PostFn = async (body) => {

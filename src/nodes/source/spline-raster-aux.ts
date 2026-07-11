@@ -77,14 +77,20 @@ export const SPLINE_RASTER_PARAMS: ParamDef[] = [
   OPACITY_PARAM,
 ];
 
-// Trim Paths — two scalars that reveal only the [start, end] arc-length window
-// of the primitive's spline (across all subpaths). Both keyframe for free, so
-// animating `trim_end` 0→1 draws the shape on. Spread into a primitive's
-// `params` (geometry params first, then trim, then the raster params), and run
-// the geometry through `applyTrimParams` before output. See spline-trim.ts.
+// Trim Paths — scalars that reveal only the [start, end] arc-length window
+// of the primitive's spline (across all subpaths). All keyframe for free, so
+// animating `trim_end` 0→1 draws the shape on. `trim_offset` slides the whole
+// window along the path cyclically (wraps at the seam — the trimmed piece can
+// straddle it, re-emerging at the start while the rest still shows at the
+// end); it's unbounded mod 1, so keyframing 0→N orbits N times (the ±1 panel
+// range is one loop each way — right-click the slider or wire a scalar for
+// more). Spread into a primitive's `params` (geometry params first, then
+// trim, then the raster params), and run the geometry through
+// `applyTrimParams` before output. See spline-trim.ts.
 export const SPLINE_TRIM_PARAMS: ParamDef[] = [
   { name: "trim_start", label: "Trim start", type: "scalar", min: 0, max: 1, step: 0.001, default: 0 },
   { name: "trim_end", label: "Trim end", type: "scalar", min: 0, max: 1, step: 0.001, default: 1 },
+  { name: "trim_offset", label: "Trim offset", type: "scalar", min: -1, max: 1, step: 0.001, default: 0 },
 ];
 
 // Apply the bundled trim params to a set of subpaths. Identity (returns the
@@ -96,7 +102,8 @@ export function applyTrimParams(
 ): SplineSubpath[] {
   const s = typeof params.trim_start === "number" ? params.trim_start : 0;
   const e = typeof params.trim_end === "number" ? params.trim_end : 1;
-  return trimSubpaths(subpaths, s, e);
+  const o = typeof params.trim_offset === "number" ? params.trim_offset : 0;
+  return trimSubpaths(subpaths, s, e, o);
 }
 
 // Optional image input that drives the fill instead of the flat

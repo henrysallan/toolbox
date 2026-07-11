@@ -1,4 +1,9 @@
-import type { ImageValue, InputSocketDef, NodeDefinition } from "@/engine/types";
+import type {
+  ImageValue,
+  InputSocketDef,
+  MaskValue,
+  NodeDefinition,
+} from "@/engine/types";
 
 export type BlendMode =
   | "mix"
@@ -117,10 +122,29 @@ void main() {
   outColor = texture(u_src, v_uv);
 }`;
 
+// Blit with a per-pixel matte: alpha is multiplied by the mask's coverage,
+// RGB passes through (straight-alpha convention — coverage is all a matte
+// touches). Used for the base input's mask, both on the no-layers fast
+// path and as the pre-pass that mattes the base before the blend chain.
+const MATTE_BLIT_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform sampler2D u_matte;
+out vec4 outColor;
+void main() {
+  vec4 c = texture(u_src, v_uv);
+  float m = texture(u_matte, v_uv).r;
+  outColor = vec4(c.rgb, c.a * m);
+}`;
+
 // Layer `b` is composited over base `a` with a Porter-Duff "src over dst"
 // that respects per-pixel layer alpha (scaled by the opacity slider). The
 // selected blend mode is applied to RGB first; source-over then decides how
 // much of that blended RGB reaches the output based on the effective alpha.
+// A wired per-layer matte multiplies into the effective alpha exactly like
+// a per-pixel opacity slider (u_hasMatte defaults to 0, so consumers that
+// never set it — the Layer node — keep the un-matted behavior).
 //
 // Formulas match the widely-cited Photoshop / Krita set; division-based
 // modes guard the denominator so backgrounds don't explode to infinity on
@@ -130,8 +154,10 @@ precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_base;
 uniform sampler2D u_layer;
+uniform sampler2D u_matte;
 uniform float u_opacity;
 uniform int u_mode;
+uniform int u_hasMatte;
 out vec4 outColor;
 
 vec3 overlayCh(vec3 a, vec3 b) {
@@ -208,7 +234,8 @@ void main() {
   else if (u_mode == 28) blended = clamp(min(a.rgb, b.rgb) - max(a.rgb, b.rgb) + vec3(1.0), 0.0, 1.0); // phoenix
   else blended = b.rgb;
 
-  float srcA = clamp(b.a * u_opacity, 0.0, 1.0);
+  float matte = u_hasMatte == 1 ? texture(u_matte, v_uv).r : 1.0;
+  float srcA = clamp(b.a * u_opacity * matte, 0.0, 1.0);
   float outA = srcA + a.a * (1.0 - srcA);
   vec3 outRgb;
   if (outA < 1e-4) {
@@ -262,19 +289,35 @@ export const mergeNode: NodeDefinition = {
   name: "Merge",
   category: "image",
   subcategory: "modifier",
-  description: "Blends a base image with one or more layer images.",
+  description:
+    "Blends a base image with one or more layer images. Every image input " +
+    "carries its own mask input underneath — the matte for that layer " +
+    "(multiplies its per-pixel coverage, like a track matte).",
   backend: "webgl2",
-  inputs: [{ name: "base", type: "image", required: true }],
+  // Masks are per-image sockets here; the evaluator's universal matte would
+  // be redundant (and ambiguous) stacked on top of them.
+  noMaskInput: true,
+  inputs: [
+    { name: "base", type: "image", required: true },
+    { name: "mask:base", label: "base mask", type: "mask", required: false },
+  ],
   resolveInputs(params) {
     const layers = (params.layers as MergeLayer[]) ?? [];
     const result: InputSocketDef[] = [
       { name: "base", type: "image", required: true },
+      { name: "mask:base", label: "base mask", type: "mask", required: false },
     ];
     layers.forEach((l, i) => {
       result.push({
         name: `layer:${l.id}`,
         label: `layer ${i + 1}`,
         type: "image",
+        required: false,
+      });
+      result.push({
+        name: `mask:${l.id}`,
+        label: `mask ${i + 1}`,
+        type: "mask",
         required: false,
       });
     });
@@ -299,27 +342,66 @@ export const mergeNode: NodeDefinition = {
       return { primary: output };
     }
 
+    const maskFor = (key: string): MaskValue | null => {
+      const m = inputs[`mask:${key}`];
+      return m && m.kind === "mask" ? m : null;
+    };
+    const baseMatte = maskFor("base");
+
     const layers = (params.layers as MergeLayer[]) ?? [];
-    const connected: Array<{ layer: MergeLayer; img: ImageValue }> = [];
+    const connected: Array<{
+      layer: MergeLayer;
+      img: ImageValue;
+      matte: MaskValue | null;
+    }> = [];
     for (const l of layers) {
       const v = inputs[`layer:${l.id}`];
-      if (v && v.kind === "image") connected.push({ layer: l, img: v });
+      if (v && v.kind === "image") {
+        connected.push({ layer: l, img: v, matte: maskFor(l.id) });
+      }
     }
 
-    const blitProg = ctx.getShader("merge/blit", BLIT_FS);
-    if (connected.length === 0) {
-      ctx.drawFullscreen(blitProg, output, (gl) => {
+    // Base matte applies before the blend chain: with layers it renders the
+    // matted base into a temp that seeds the chain (released by the loop's
+    // current !== base check); with none it mattes straight into the output.
+    const matteBase = (dest: ImageValue) => {
+      const prog = ctx.getShader("merge/matte-blit", MATTE_BLIT_FS);
+      ctx.drawFullscreen(prog, dest, (gl) => {
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, base.texture);
-        gl.uniform1i(gl.getUniformLocation(blitProg, "u_src"), 0);
+        gl.uniform1i(gl.getUniformLocation(prog, "u_src"), 0);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, baseMatte!.texture);
+        gl.uniform1i(gl.getUniformLocation(prog, "u_matte"), 1);
       });
+    };
+
+    if (connected.length === 0) {
+      if (baseMatte) {
+        matteBase(output);
+      } else {
+        const blitProg = ctx.getShader("merge/blit", BLIT_FS);
+        ctx.drawFullscreen(blitProg, output, (gl) => {
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, base.texture);
+          gl.uniform1i(gl.getUniformLocation(blitProg, "u_src"), 0);
+        });
+      }
       return { primary: output };
     }
 
-    const blendProg = ctx.getShader("merge/blend", BLEND_FS);
+    // Key bumped with the matte uniforms so a hot-reloaded session can't be
+    // served the pre-matte program (getShader caches by key alone). Keep in
+    // sync with layer.ts, which shares this shader.
+    const blendProg = ctx.getShader("merge/blend-v2", BLEND_FS);
     let current: ImageValue = base;
+    if (baseMatte) {
+      const matted = ctx.allocImage();
+      matteBase(matted);
+      current = matted;
+    }
     for (let i = 0; i < connected.length; i++) {
-      const { layer, img } = connected[i];
+      const { layer, img, matte } = connected[i];
       const isLast = i === connected.length - 1;
       const dest = isLast ? output : ctx.allocImage();
       ctx.drawFullscreen(blendProg, dest, (gl) => {
@@ -329,6 +411,16 @@ export const mergeNode: NodeDefinition = {
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, img.texture);
         gl.uniform1i(gl.getUniformLocation(blendProg, "u_layer"), 1);
+        // The matte sampler needs a valid binding even when unused (some
+        // drivers evaluate both ternary branches) — the layer image is a
+        // harmless stand-in.
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, matte ? matte.texture : img.texture);
+        gl.uniform1i(gl.getUniformLocation(blendProg, "u_matte"), 2);
+        gl.uniform1i(
+          gl.getUniformLocation(blendProg, "u_hasMatte"),
+          matte ? 1 : 0
+        );
         gl.uniform1f(
           gl.getUniformLocation(blendProg, "u_opacity"),
           layer.opacity

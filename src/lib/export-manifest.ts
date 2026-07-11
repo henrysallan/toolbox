@@ -3,6 +3,8 @@ import { computeNeededSet, type GraphEdge, type GraphNode } from "@/engine/evalu
 import { flattenGraph } from "@/engine/flatten";
 import { getNodeDef } from "@/engine/registry";
 import type { ParamDef, ParamType } from "@/engine/types";
+import { parseRampParamKey } from "@/engine/conventions";
+import type { ColorRampStop } from "@/engine/color-ramp";
 import type { NodeDataPayload } from "@/state/graph";
 import type {
   ExportManifest,
@@ -135,6 +137,75 @@ export function buildExportManifest(
     };
 
     for (const paramName of controlParams) {
+      // Per-stop ramp controls (`ramp_c/a/p:<param>:<stopId>` — see
+      // engine/conventions) synthesize a color / 0..1-scalar ParamDef
+      // with the stop's current value as the default. The live viewer
+      // recognizes the virtual paramName and patches the stop in place.
+      const rampKey = parseRampParamKey(paramName);
+      if (rampKey) {
+        const rampDef = def.params.find(
+          (p) => p.name === rampKey.paramName && p.type === "color_ramp"
+        );
+        const stopsRaw = node.data.params[rampKey.paramName];
+        const stops = Array.isArray(stopsRaw)
+          ? (stopsRaw as ColorRampStop[])
+          : [];
+        const stop = stops.find((s) => s.id === rampKey.stopId);
+        if (!rampDef || !stop) {
+          warnings.push({
+            kind: "control-on-missing-param",
+            nodeId: node.id,
+            paramName,
+            message: `Node "${def.name}" has a control toggle on "${paramName}" but that ramp stop no longer exists.`,
+          });
+          continue;
+        }
+        const dupKey = `${node.id}::${paramName}`;
+        if (seenControlKeys.has(dupKey)) {
+          warnings.push({
+            kind: "duplicate-control",
+            nodeId: node.id,
+            paramName,
+            message: `Ramp stop control "${paramName}" on "${def.name}" is marked as a control more than once.`,
+          });
+          continue;
+        }
+        seenControlKeys.add(dupKey);
+        const idx = [...stops]
+          .sort((a, b) => a.position - b.position)
+          .findIndex((s) => s.id === rampKey.stopId);
+        const label = `${rampDef.label ?? rampDef.name} · ${rampKey.field}${
+          idx >= 0 ? ` ${idx + 1}` : ""
+        }`;
+        const synth: ParamDef =
+          rampKey.field === "color"
+            ? {
+                name: paramName,
+                label,
+                type: "color",
+                default:
+                  typeof stop.color === "string" ? stop.color : "#ffffff",
+              }
+            : {
+                name: paramName,
+                label,
+                type: "scalar",
+                min: 0,
+                max: 1,
+                step: rampKey.field === "alpha" ? 0.01 : 0.001,
+                default:
+                  rampKey.field === "alpha" ? stop.alpha ?? 1 : stop.position,
+              };
+        controls.push({
+          nodeId: node.id,
+          nodeName: ensureNodeName(),
+          paramName,
+          paramType: synth.type,
+          label,
+          def: synth,
+        });
+        continue;
+      }
       const paramDef = def.params.find((p) => p.name === paramName);
       if (!paramDef) {
         warnings.push({

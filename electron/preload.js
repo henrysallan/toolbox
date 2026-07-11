@@ -10,6 +10,22 @@
 
 const { contextBridge, ipcRenderer } = require("electron");
 
+// Origin gate: only expose the bridge on the app's own origin. The preload
+// runs for EVERY navigation in this webContents — including the OAuth
+// full-page redirect chain (Supabase → Google → back) that will-navigate
+// deliberately allows — and an off-origin page must never see
+// window.toolboxNative. Main passes the app origin via additionalArguments.
+const appOriginArg = process.argv.find((a) =>
+  a.startsWith("--toolbox-app-origin=")
+);
+const appOrigin = appOriginArg
+  ? appOriginArg.slice("--toolbox-app-origin=".length)
+  : null;
+if (!appOrigin || window.location.origin !== appOrigin) {
+  // Foreign origin (or misconfigured launch): expose nothing.
+  return;
+}
+
 // Probe native ffmpeg availability once, synchronously, so the renderer's
 // platform adapter can gate on canEncodeNative before attempting an encode.
 let caps = { canEncodeNative: false };

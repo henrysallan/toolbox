@@ -251,23 +251,40 @@ export async function saveProject(
 // Overwrites graph + thumbnail on an existing project row. Name and
 // visibility are preserved — use renameProject or setProjectVisibility
 // for those. `updated_at` is bumped explicitly so the load grid reorders.
+export interface UpdateProjectResult {
+  ok: boolean;
+  // The compare-and-swap matched zero rows: another window/machine saved
+  // this project since `expectedUpdatedAt` was read. Nothing was written.
+  conflict?: boolean;
+  // The row's updated_at after a successful write — carry it forward as
+  // the next save's expectedUpdatedAt.
+  updatedAt?: string;
+}
+
 export async function updateProject(
   id: string,
   graph: SavedProject,
-  thumbnail: string | null
-): Promise<boolean> {
+  thumbnail: string | null,
+  // Optimistic concurrency: the row's updated_at as of when this editor
+  // loaded (or last saved) it. When provided, the UPDATE also matches on
+  // it — zero rows updated ⇒ conflict, and the newer row is left intact.
+  // Omit to keep the old last-writer-wins behavior (e.g. the overwrite-
+  // by-name path, which targets a row this editor never loaded).
+  expectedUpdatedAt?: string
+): Promise<UpdateProjectResult> {
   const supabase = createClient();
   const { data: userResp } = await supabase.auth.getUser();
-  if (!userResp.user) return false;
+  if (!userResp.user) return { ok: false };
   const userId = userResp.user.id;
   // Upload first so the thumbnail column is only touched when we've
   // actually got a fresh URL to point at. If the upload fails we
   // still push the graph through — users don't want a save blocked
   // by transient storage errors — and leave the old thumbnail in
   // place by omitting it from the update payload.
+  const updatedAt = new Date().toISOString();
   let payload: Record<string, unknown> = {
     graph,
-    updated_at: new Date().toISOString(),
+    updated_at: updatedAt,
   };
   if (thumbnail) {
     const url = await uploadThumbnail(userId, id, thumbnail);
@@ -277,49 +294,61 @@ export async function updateProject(
     // (we generally pass a data URL), but respect the contract.
     payload = { ...payload, thumbnail: null };
   }
-  const { error } = await supabase
-    .from("projects")
-    .update(payload)
-    .eq("id", id);
+  let query = supabase.from("projects").update(payload).eq("id", id);
+  if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
+  const { data, error } = await query.select("id");
   if (error) {
     logProjectWriteError("updateProject", error, graph);
-    return false;
+    return { ok: false };
+  }
+  if (expectedUpdatedAt && (!data || data.length === 0)) {
+    // Row exists (this editor loaded it) but its updated_at moved on.
+    return { ok: false, conflict: true };
   }
   invalidateProjectCaches();
-  return true;
+  return { ok: true, updatedAt };
 }
 
 // Rename without touching graph/thumbnail so typing in the menu-bar
-// name pill doesn't cost a full serialize.
+// name pill doesn't cost a full serialize. Returns the row's new
+// updated_at (it bumps here!) so the editor can keep its save guard in
+// sync — or null on failure. Non-empty string is truthy, so boolean-style
+// call sites keep working.
 export async function renameProject(
   id: string,
   name: string
-): Promise<boolean> {
+): Promise<string | null> {
   const supabase = createClient();
+  const updatedAt = new Date().toISOString();
   const { error } = await supabase
     .from("projects")
-    .update({ name, updated_at: new Date().toISOString() })
+    .update({ name, updated_at: updatedAt })
     .eq("id", id);
   if (error) {
     console.error("renameProject failed:", error);
-    return false;
+    return null;
   }
   invalidateProjectCaches();
-  return true;
+  return updatedAt;
 }
 
 export async function setProjectVisibility(
   id: string,
   isPublic: boolean
-): Promise<{ ok: true; slug: string | null } | { ok: false }> {
+): Promise<
+  // updatedAt: the row bumps its version here — the editor feeds it back
+  // into its save guard (see updateProject's expectedUpdatedAt).
+  { ok: true; slug: string | null; updatedAt: string } | { ok: false }
+> {
   const supabase = createClient();
   // Going public mints a slug if one doesn't already exist; going private
   // explicitly clears it (the DB trigger does the same as a safety net).
   // We pass the slug through the same UPDATE so visibility + slug stay
   // atomically consistent — no half-published rows.
+  const updatedAt = new Date().toISOString();
   const payload: Record<string, unknown> = {
     is_public: isPublic,
-    updated_at: new Date().toISOString(),
+    updated_at: updatedAt,
   };
   let resolvedSlug: string | null = null;
   if (isPublic) {
@@ -346,7 +375,7 @@ export async function setProjectVisibility(
     return { ok: false };
   }
   invalidateProjectCaches();
-  return { ok: true, slug: isPublic ? resolvedSlug : null };
+  return { ok: true, slug: isPublic ? resolvedSlug : null, updatedAt };
 }
 
 export async function deleteProject(id: string): Promise<boolean> {
@@ -571,6 +600,10 @@ export interface LoadedProject {
   // The /p/<slug> editor link and /live/<slug> client view both
   // need this. Null when the project isn't currently public.
   public_slug: string | null;
+  // Row version as of this load — feed to updateProject's
+  // expectedUpdatedAt so a save from a stale window is detected
+  // instead of silently clobbering the newer row.
+  updated_at: string | null;
 }
 
 // Server-side variant: resolves a public project by its URL slug. Takes
@@ -622,7 +655,7 @@ export async function loadProject(id: string): Promise<LoadedProject | null> {
   const supabase = createClient();
   const { data, error } = await supabase
     .from("projects")
-    .select("name, graph, is_public, user_id, public_slug")
+    .select("name, graph, is_public, user_id, public_slug, updated_at")
     .eq("id", id)
     .single();
   if (error) {
@@ -648,6 +681,7 @@ export async function loadProject(id: string): Promise<LoadedProject | null> {
     user_id: data.user_id as string,
     author,
     public_slug: (data.public_slug as string | null) ?? null,
+    updated_at: (data.updated_at as string | null) ?? null,
   };
   loadedCache.set(id, { project, fetchedAt: Date.now() });
   return project;

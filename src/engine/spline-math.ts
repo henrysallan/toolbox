@@ -529,44 +529,62 @@ export function fitSplineToPolyline(points: V2[], error: number): SplineAnchor[]
   return cubicsToAnchors(cubics);
 }
 
-// Build a smooth interpolating subpath through `points` via a uniform
-// Catmull-Rom → Bézier conversion: the tangent at Pᵢ is (Pᵢ₊₁ − Pᵢ₋₁)/2, so
-// each anchor's symmetric handles are ±(Pᵢ₊₁ − Pᵢ₋₁)/6. The curve passes
-// through every point (unlike a least-squares fit). For an open curve the
-// endpoints get a one-sided tangent; closed curves wrap. Points are in the
-// SplineValue's normalized space. Used by the parametric primitives (Spiral,
-// Sine Wave). Fewer than 2 points → a plain corner-anchor subpath.
-export function catmullRomSubpath(points: V2[], closed: boolean): SplineSubpath {
-  const n = points.length;
-  if (n < 2) {
-    return {
-      anchors: points.map((p) => ({ pos: [p[0], p[1]] as V2 })),
-      closed,
-    };
-  }
+// Rewrite the in/out handles of existing anchors with catmull-rom auto
+// handles: the tangent at Pᵢ is (Pᵢ₊₁ − Pᵢ₋₁)/2, so each anchor gets
+// symmetric handles ±tension·(Pᵢ₊₁ − Pᵢ₋₁)/6. Open endpoints get a one-sided
+// handle toward their single neighbor; closed subpaths wrap. tension 1 is
+// plain catmull-rom, 0 collapses to a polyline, > 1 overshoots. Positions
+// are copied, never mutated — returns fresh anchors. Shared by
+// catmullRomSubpath (the parametric primitives) and Set Spline Type.
+export function autoSmoothHandles(
+  anchors: SplineAnchor[],
+  closed: boolean,
+  tension = 1
+): SplineAnchor[] {
+  const n = anchors.length;
+  if (n < 2) return anchors.map((a) => ({ pos: [a.pos[0], a.pos[1]] as V2 }));
   const at = (i: number): V2 =>
-    closed ? points[((i % n) + n) % n] : points[Math.max(0, Math.min(n - 1, i))];
-  const anchors: SplineAnchor[] = [];
+    closed
+      ? anchors[((i % n) + n) % n].pos
+      : anchors[Math.max(0, Math.min(n - 1, i))].pos;
+  const out: SplineAnchor[] = [];
   for (let i = 0; i < n; i++) {
-    const p = points[i];
+    const p = anchors[i].pos;
     const a: SplineAnchor = { pos: [p[0], p[1]] };
     if (!closed && i === 0) {
-      const next = points[1];
-      a.outHandle = [(next[0] - p[0]) / 3, (next[1] - p[1]) / 3];
+      const next = anchors[1].pos;
+      a.outHandle = [
+        ((next[0] - p[0]) / 3) * tension,
+        ((next[1] - p[1]) / 3) * tension,
+      ];
     } else if (!closed && i === n - 1) {
-      const prev = points[n - 2];
-      a.inHandle = [(prev[0] - p[0]) / 3, (prev[1] - p[1]) / 3];
+      const prev = anchors[n - 2].pos;
+      a.inHandle = [
+        ((prev[0] - p[0]) / 3) * tension,
+        ((prev[1] - p[1]) / 3) * tension,
+      ];
     } else {
       const prev = at(i - 1);
       const next = at(i + 1);
-      const hx = (next[0] - prev[0]) / 6;
-      const hy = (next[1] - prev[1]) / 6;
+      const hx = ((next[0] - prev[0]) / 6) * tension;
+      const hy = ((next[1] - prev[1]) / 6) * tension;
       a.outHandle = [hx, hy];
       a.inHandle = [-hx, -hy];
     }
-    anchors.push(a);
+    out.push(a);
   }
-  return { anchors, closed };
+  return out;
+}
+
+// Build a smooth interpolating subpath through `points` via a uniform
+// Catmull-Rom → Bézier conversion (see autoSmoothHandles). The curve passes
+// through every point (unlike a least-squares fit). Points are in the
+// SplineValue's normalized space. Used by the parametric primitives (Spiral,
+// Sine Wave) and Points to Spline. Fewer than 2 points → a plain
+// corner-anchor subpath.
+export function catmullRomSubpath(points: V2[], closed: boolean): SplineSubpath {
+  const corner = points.map((p) => ({ pos: [p[0], p[1]] as V2 }));
+  return { anchors: autoSmoothHandles(corner, closed), closed };
 }
 
 // ---------------------------------------------------------------------------

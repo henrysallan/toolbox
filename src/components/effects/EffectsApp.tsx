@@ -11,7 +11,14 @@ import {
   type Node,
   type NodeChange,
 } from "@xyflow/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import NodeEditor, { PROJECT_CRUMB_ID } from "./NodeEditor";
 import { CompositionTabBar } from "./CompositionTabBar";
@@ -32,6 +39,7 @@ import { getNodeDef } from "@/engine/registry";
 import { createEngineBackend, type EngineBackend } from "@/engine/gl";
 import { awaitMediaSettle } from "@/engine/offline-settle";
 import {
+  disposeAllNodeState,
   evaluateGraph,
   type EvalCache,
   type GraphEdge,
@@ -42,8 +50,12 @@ import {
   gpointXKey,
   gpointYKey,
   layerOpacityKey,
+  rampAlphaKey,
+  rampColorKey,
+  rampPositionKey,
   withMaskInput,
 } from "@/engine/conventions";
+import type { ColorRampStop } from "@/engine/color-ramp";
 import type { NodeDataPayload } from "@/state/graph";
 import { parseTargetHandleKind, newCompositionId } from "@/state/graph";
 import {
@@ -68,6 +80,7 @@ import {
   removeGroupSocket,
   renameGroupSocket,
   ungroupNode,
+  withUpdatedParams,
 } from "@/state/graph-ops";
 import {
   GROUP_INPUT_TYPE,
@@ -75,11 +88,16 @@ import {
   GROUP_TYPE,
   LAYER_TYPE,
 } from "@/engine/groups";
+import { editorCanCoerce } from "@/engine/graph-validation";
 import { getPreset } from "@/state/presets";
 import { newLayerId, type MergeLayer } from "@/nodes/effect/merge";
+import { MAX_COLORS, colorParamName } from "@/nodes/source/color-literal";
 import { newExprInput } from "@/nodes/effect/expression";
 import { defaultAutoLayoutItem } from "@/nodes/effect/autolayout";
 import { newRenderQueueItemId } from "@/nodes/output/render-queue";
+import { WEDGE_TYPE, wedgeIterationCount } from "@/nodes/source/wedge";
+import { flattenGraph } from "@/engine/flatten";
+import { resolveWedgeName } from "@/lib/export-naming";
 import type {
   AutoLayoutItem,
   ExprInput,
@@ -115,6 +133,8 @@ import {
   readStoredMediaFile,
   type MissingMedia,
 } from "@/lib/media-relink";
+import { registerImageOriginal } from "@/lib/image-bytes";
+import { playbackClock, useClock } from "@/state/playback-clock";
 import MediaRelinkModal, {
   type RelinkItem,
   type RelinkStatus,
@@ -132,6 +152,10 @@ import {
 import { AuthProvider, useUser } from "@/lib/auth-context";
 import SaveModal from "./SaveModal";
 import AiRecipePanel from "./AiRecipePanel";
+import McpPairingDialog from "./McpPairingDialog";
+import { useMcpBridge } from "./useMcpBridge";
+import { buildMcpHandlers } from "./mcp-handlers";
+import type { BridgeHandlers } from "@/lib/mcp-bridge";
 import { generateRecipe } from "@/lib/ai/generate-recipe-client";
 import { editGroupRecipe } from "@/lib/ai/edit-recipe-client";
 import type { AiProgress } from "@/lib/ai/ai-progress";
@@ -773,6 +797,12 @@ function EffectsShell({
         // row (used for the "by <name>" hint). null when it's the
         // viewer's own project.
         authorName: string | null;
+        // Row version (projects.updated_at) this editor is based on —
+        // set at load and after each save, passed to updateProject as
+        // the compare-and-swap guard so a stale window can't silently
+        // clobber a save made elsewhere. Absent/null = no guard (e.g. a
+        // freshly inserted row, or pre-plumbing paths).
+        updatedAt?: string | null;
       }
     | null
   >(
@@ -983,9 +1013,41 @@ function EffectsShell({
     };
   }, []);
 
-  // Timeline / playback state.
-  const [playing, setPlaying] = useState(false);
-  const [time, setTime] = useState(0);
+  // Timeline / playback state. The clock lives in the playback-clock
+  // STORE (specdocs/071026_clock-store.md), not React state — these
+  // subscriptions re-render the shell per store change, preserving
+  // today's behavior until consumers detach one by one (migration step
+  // 3); the payoff is that detached consumers subscribe to exactly what
+  // they need instead of riding a shell-wide setState 60×/s.
+  const time = useClock((s) => s.time);
+  const playing = useClock((s) => s.playing);
+  // Writers keep the setState signature (value or updater) so the ~30
+  // existing call sites — transport, seeks, the rAF advancer, export
+  // save/restore — stay verbatim.
+  const setTime = useCallback(
+    (v: number | ((t: number) => number)) => {
+      playbackClock.set({
+        time: typeof v === "function" ? v(playbackClock.get().time) : v,
+      });
+    },
+    []
+  );
+  const setPlaying = useCallback(
+    (v: boolean | ((p: boolean) => boolean)) => {
+      playbackClock.set({
+        playing:
+          typeof v === "function" ? v(playbackClock.get().playing) : v,
+      });
+    },
+    []
+  );
+  // A fresh editor mount starts at t=0, paused — same as the old
+  // useState(0)/useState(false). The module store would otherwise carry
+  // the previous mount's playhead across a docs round-trip (the
+  // editor-session stash deliberately doesn't include time).
+  useEffect(() => {
+    playbackClock.set({ time: 0, playing: false });
+  }, []);
   const [fps, setFps] = useState(60);
   const [loopFrames, setLoopFrames] = useState<number | null>(null);
   // Per-parameter keyframe time model. `time` (seconds) remains the
@@ -993,15 +1055,28 @@ function EffectsShell({
   // the integer tick representation derived from time × fps × tpf, used
   // by the keyframe evaluator and Track Editor for exact equality.
   const ticksPerFrame = DEFAULT_TICKS_PER_FRAME;
+  // Keep the store's tick derivation in sync with the project fps.
+  useEffect(() => {
+    playbackClock.configure({ fps, ticksPerFrame });
+  }, [fps, ticksPerFrame]);
   const currentTick = Math.round(time * fps * ticksPerFrame);
+  // Ref mirror for callbacks that only need the tick *at call time*
+  // (autokey). Reading the ref instead of closing over `currentTick`
+  // keeps their identities stable during playback — otherwise every
+  // rAF time tick mints new handler identities for ParamPanel, the
+  // gizmos, and the `effect-node-param` window listener.
+  const currentTickRef = useRef(currentTick);
+  currentTickRef.current = currentTick;
   const sceneDurationTicks =
     (loopFrames != null && loopFrames > 0 ? loopFrames : fps * 5) *
     ticksPerFrame;
-  const projectTimeline: ProjectTimeline = {
-    ticksPerFrame,
-    fps,
-    sceneDurationTicks,
-  };
+  // Memoized: this object goes to LayersEditor/TrackEditor/GraphEditor as a
+  // prop — a fresh identity every render (i.e. every rAF tick during
+  // playback) would defeat any memoization below it.
+  const projectTimeline: ProjectTimeline = useMemo(
+    () => ({ ticksPerFrame, fps, sceneDurationTicks }),
+    [ticksPerFrame, fps, sceneDurationTicks]
+  );
   // Track Editor + Graph Editor UI state.
   const [trackEditorOpen, setTrackEditorOpen] = useState(false);
   const [trackEditorHeight, setTrackEditorHeight] = useState(280);
@@ -1233,6 +1308,14 @@ function EffectsShell({
       backendRef.current = backend;
       setBackendReady(true);
       return () => {
+        // Run every node's dispose before dropping the backend: GL textures
+        // die with the context either way, but DOM-side state (Text's hidden
+        // canvases, media elements) would otherwise outlive it.
+        try {
+          disposeAllNodeState(backend.makeContext(0, 0));
+        } catch (e) {
+          console.error("node-state dispose on backend teardown failed", e);
+        }
         backend.destroy();
         backendRef.current = null;
         setBackendReady(false);
@@ -1321,6 +1404,14 @@ function EffectsShell({
   // continuous loop lets deferred results catch up).
   const offlineRenderingRef = useRef(false);
 
+  // Wedge batch-render iteration. Set by the batch export driver around each
+  // variation's render (exportWedged) and flowed into ctx.wedgeIndex by
+  // renderFrame; undefined during normal editing, so Wedge nodes emit their
+  // `preview` value. Never a React state — it must not trigger renders, and
+  // the export loops read it synchronously. See
+  // specdocs/071026_wedge-render-batching.md.
+  const wedgeIndexRef = useRef<number | undefined>(undefined);
+
   // When set, forces the terminal/active node for the render — used by the
   // export paths so a batch render captures the *specific* Output being
   // exported, not whatever the user happens to have set Active. Cleared back
@@ -1391,7 +1482,8 @@ function EffectsShell({
           ticksPerFrame: tpf,
           fps: renderFps,
         },
-        offlineRenderingRef.current
+        offlineRenderingRef.current,
+        wedgeIndexRef.current
       );
       const inspectSet = inspectIdsRef.current;
       const result = evaluateGraph(
@@ -1636,24 +1728,7 @@ function EffectsShell({
           return n;
         }
         changed = true;
-        const def = getNodeDef(n.data.defType);
-        const nextParams = { ...n.data.params, slots: desired };
-        const resolved = def?.resolveInputs?.(nextParams);
-        return {
-          ...n,
-          data: {
-            ...n.data,
-            params: nextParams,
-            inputs: resolved
-              ? withMaskInput(resolved, def).map((i) => ({
-                  name: i.name,
-                  label: i.label,
-                  type: i.type,
-                  hidden: i.hidden,
-                }))
-              : n.data.inputs,
-          },
-        };
+        return withUpdatedParams(n, { ...n.data.params, slots: desired });
       });
       return changed ? next : prev;
     });
@@ -1808,39 +1883,11 @@ function EffectsShell({
         sourceOutputType(sourceNode, connection.sourceHandle ?? null) === "uv";
       if (shouldPromoteMath && targetNode) {
         setNodes((prev) =>
-          prev.map((n) => {
-            if (n.id !== targetNode.id) return n;
-            const nextParams = { ...n.data.params, mode: "uv" };
-            const def = getNodeDef(n.data.defType);
-            const resolved = def?.resolveInputs?.(nextParams);
-            const nextPrimary =
-              def?.resolvePrimaryOutput?.(nextParams) ?? n.data.primaryOutput;
-            const resolvedAux = def?.resolveAuxOutputs?.(nextParams);
-            return {
-              ...n,
-              data: {
-                ...n.data,
-                params: nextParams,
-                primaryOutput: nextPrimary,
-                inputs: resolved
-                  ? withMaskInput(resolved, def).map((i) => ({
-                      name: i.name,
-                      label: i.label,
-                      type: i.type,
-                      hidden: i.hidden,
-                    }))
-                  : n.data.inputs,
-                auxOutputs: resolvedAux
-                  ? resolvedAux.map((a) => ({
-                      name: a.name,
-                      label: a.label,
-                      type: a.type,
-                      disabled: a.disabled,
-                    }))
-                  : n.data.auxOutputs,
-              },
-            };
-          })
+          prev.map((n) =>
+            n.id === targetNode.id
+              ? withUpdatedParams(n, { ...n.data.params, mode: "uv" })
+              : n
+          )
         );
       }
 
@@ -1869,30 +1916,13 @@ function EffectsShell({
       if (shouldPromoteCopy && targetNode && srcForCopy) {
         const nextMode = copySocketTypeToMode[srcForCopy];
         setNodes((prev) =>
-          prev.map((n) => {
-            if (n.id !== targetNode.id) return n;
-            const nextParams = { ...n.data.params, mode: nextMode };
-            const def = getNodeDef(n.data.defType);
-            const resolved = def?.resolveInputs?.(nextParams);
-            const nextPrimary =
-              def?.resolvePrimaryOutput?.(nextParams) ?? n.data.primaryOutput;
-            return {
-              ...n,
-              data: {
-                ...n.data,
-                params: nextParams,
-                primaryOutput: nextPrimary,
-                inputs: resolved
-                  ? withMaskInput(resolved, def).map((i) => ({
-                      name: i.name,
-                      label: i.label,
-                      type: i.type,
-                      hidden: i.hidden,
-                    }))
-                  : n.data.inputs,
-              },
-            };
-          })
+          prev.map((n) =>
+            n.id === targetNode.id
+              ? // withUpdatedParams also re-resolves aux outputs — this
+                // inline copy had drifted and skipped them.
+                withUpdatedParams(n, { ...n.data.params, mode: nextMode })
+              : n
+          )
         );
       }
 
@@ -2050,6 +2080,23 @@ function EffectsShell({
     []
   );
 
+  // ---- Claude MCP bridge (spec 070926_claude-mcp-bridge.md) ----
+  // The handler map is assembled further down (buildMcpHandlers needs
+  // callbacks that aren't declared yet — commitRecipeFragment,
+  // onParamChange, the time/fps/playing refs); the bridge reads it through
+  // this ref at command time, so declaration order only matters here.
+  const mcpHandlersRef = useRef<BridgeHandlers>({});
+  const mcp = useMcpBridge(mcpHandlersRef);
+  const mcpState = mcp.status.state;
+  const prevMcpStateRef = useRef(mcpState);
+  useEffect(() => {
+    const prev = prevMcpStateRef.current;
+    prevMcpStateRef.current = mcpState;
+    if (prev === mcpState) return;
+    if (mcpState === "connected") flashToast("Claude connected");
+    else if (prev === "connected") flashToast("Claude disconnected");
+  }, [mcpState, flashToast]);
+
   // Change scope and drop the selection — selected nodes from the old
   // scope would be hidden but still selected (Delete would eat them
   // invisibly).
@@ -2152,6 +2199,9 @@ function EffectsShell({
         if (kind === "image") {
           nodeType = "image-source";
           const bmp = await createImageBitmap(file);
+          // Keep the encoded source bytes so save inlines the original file
+          // instead of a ~10× PNG re-encode of the decoded bitmap.
+          registerImageOriginal(bmp, file);
           // Stash the file name on the bitmap for the param panel chip
           // (cosmetic; the GL upload ignores it).
           try {
@@ -2295,6 +2345,7 @@ function EffectsShell({
           return;
         }
         const bitmap = await createImageBitmap(blob);
+        registerImageOriginal(bitmap, blob);
         pushGraph(getGraphSnapshot());
         const newNode = spawnNode("image-source", flowPos);
         newNode.data.params = { ...newNode.data.params, file: bitmap };
@@ -2306,34 +2357,26 @@ function EffectsShell({
     [pushGraph, getGraphSnapshot, setNodes, spawnNode]
   );
 
-  // AI Recipe: generate a node-group from a text prompt, validate it
-  // client-side (the engine lives here), and insert it on the canvas exactly
-  // like a preset. Mirrors the `preset:*` branch of onAddNode below — kept as
-  // its own callback so onAddNode's huge dependency list stays untouched.
-  const handleGenerateRecipe = useCallback(
-    async (
-      prompt: string,
-      onProgress?: (e: AiProgress) => void
-    ): Promise<{ ok: boolean; message?: string }> => {
-      let result;
-      try {
-        result = await generateRecipe(prompt, { onProgress });
-      } catch (e) {
-        return { ok: false, message: (e as Error)?.message ?? "Generation failed." };
-      }
-      if (!result.ok || !result.nodes || !result.edges) {
-        return {
-          ok: false,
-          message: result.errors[0] ?? "Couldn't build a valid recipe from that — try rephrasing.",
-        };
-      }
-
+  // Commit a built recipe fragment (group shell + boundary + interior) onto
+  // the canvas: undo snapshot, scope resolution, clone with fresh ids,
+  // select. Shared by the in-app AI panel (handleGenerateRecipe) and the MCP
+  // bridge's insert_recipe. The scope is re-read at commit time — for the
+  // panel that's tens of seconds after submit, and if the user deleted the
+  // scope mid-flight, inserting under it would orphan the new nodes (dangling
+  // parentId). Fall back to root, which wraps into a fresh layer.
+  const commitRecipeFragment = useCallback(
+    (
+      frag: { nodes: Node<NodeDataPayload>[]; edges: Edge[] },
+      warningCount: number
+    ): { groupId: string | null; wrapped: boolean } => {
       pushGraph(getGraphSnapshot());
       const base = lastPanePointerRef.current ?? { x: 200, y: 200 };
-      const frag = { nodes: result.nodes, edges: result.edges };
       let targetScope = currentGroupIdRef.current;
       let baseNodes = nodesRef.current;
       let baseEdges = edgesRef.current;
+      if (targetScope && !baseNodes.some((n) => n.id === targetScope)) {
+        targetScope = undefined;
+      }
       let wrapped: string | null = null;
       if (!targetScope) {
         const res = createLayer(baseNodes, baseEdges);
@@ -2367,13 +2410,43 @@ function EffectsShell({
       }
       if (groupClone) setSelectedId(groupClone.id);
       setParamView("node");
-      const note = result.warnings.length
-        ? ` (${result.warnings.length} note${result.warnings.length > 1 ? "s" : ""})`
+      const note = warningCount
+        ? ` (${warningCount} note${warningCount > 1 ? "s" : ""})`
         : "";
       flashToast(`recipe added${wrapped ? " to a new layer" : ""}${note}`);
-      return { ok: true };
+      return { groupId: groupClone?.id ?? null, wrapped: !!wrapped };
     },
     [pushGraph, getGraphSnapshot, flashToast, navigateScope]
+  );
+
+  // AI Recipe: generate a node-group from a text prompt, validate it
+  // client-side (the engine lives here), and insert it on the canvas exactly
+  // like a preset. Mirrors the `preset:*` branch of onAddNode below — kept as
+  // its own callback so onAddNode's huge dependency list stays untouched.
+  const handleGenerateRecipe = useCallback(
+    async (
+      prompt: string,
+      onProgress?: (e: AiProgress) => void
+    ): Promise<{ ok: boolean; message?: string }> => {
+      let result;
+      try {
+        result = await generateRecipe(prompt, { onProgress });
+      } catch (e) {
+        return { ok: false, message: (e as Error)?.message ?? "Generation failed." };
+      }
+      if (!result.ok || !result.nodes || !result.edges) {
+        return {
+          ok: false,
+          message: result.errors[0] ?? "Couldn't build a valid recipe from that — try rephrasing.",
+        };
+      }
+      commitRecipeFragment(
+        { nodes: result.nodes, edges: result.edges },
+        result.warnings.length
+      );
+      return { ok: true };
+    },
+    [commitRecipeFragment]
   );
 
   // Right-click a group → "Edit with AI": open the AI panel in edit mode
@@ -2431,6 +2504,36 @@ function EffectsShell({
         return {
           ok: false,
           message: result.errors[0] ?? "Couldn't apply that edit — try rephrasing.",
+        };
+      }
+      // The LLM round-trip takes tens of seconds and nothing locks the
+      // editor, so re-check at commit time that the submit-time fragment is
+      // still exactly the live one. Committing a stale fragment would
+      // silently revert the user's mid-flight edits inside the group — or
+      // resurrect the group if they deleted it. Graph edits replace node
+      // `data` objects and mint fresh edge ids, so data-identity + edge-id
+      // sequences are a precise "unchanged" test (pure canvas moves replace
+      // the node wrapper but keep `data`, and are fine to commit over).
+      const liveTarget = editTargetRef.current;
+      const liveFragIds = expandWithDescendants(nodesRef.current, [groupId]);
+      const liveFragNodes = nodesRef.current.filter((n) => liveFragIds.has(n.id));
+      const liveFragEdges = edgesRef.current.filter(
+        (e) => liveFragIds.has(e.source) && liveFragIds.has(e.target)
+      );
+      const unchanged =
+        liveTarget?.groupId === groupId &&
+        nodesRef.current.some((n) => n.id === groupId) &&
+        liveFragNodes.length === fragNodes.length &&
+        liveFragNodes.every(
+          (n, i) => n.id === fragNodes[i].id && n.data === fragNodes[i].data
+        ) &&
+        liveFragEdges.length === fragEdges.length &&
+        liveFragEdges.every((e, i) => e.id === fragEdges[i].id);
+      if (!unchanged) {
+        return {
+          ok: false,
+          message:
+            "The group changed while the edit was running — nothing was applied. Try again.",
         };
       }
       pushGraph(getGraphSnapshot());
@@ -2635,41 +2738,17 @@ function EffectsShell({
             }
           }
           if (!targetInput) {
-            const canCoerce = (s: string, t: string): boolean => {
-              if (s === t) return true;
-              if (s === "mask" && t === "image") return true;
-              if (s === "image" && t === "mask") return true;
-              if (
-                s === "scalar" &&
-                (t === "vec2" || t === "vec3" || t === "vec4" || t === "uv")
-              )
-                return true;
-              if (s === "uv" && t === "scalar" && def.type === "math")
-                return true;
-              if ((s === "image" || s === "mask") && t === "scalar")
-                return true;
-              if (s === "audio" && t === "scalar") return true;
-              if (s === "image" && t === "element") return true;
-              if (s === "element" && t === "image") return true;
-              return false;
-            };
+            // Shared coercion table + polymorphic defType exceptions
+            // (engine/graph-validation.ts). This used to be a private
+            // hand-copy that had drifted — it was missing the Transform/
+            // Displace polymorphic rows, so dropping a spline/points wire
+            // on the pane and picking those from the search silently
+            // failed to auto-wire while a direct socket drop worked.
             for (const i of resolvedInputs) {
-              if (canCoerce(srcType, i.type)) {
+              if (editorCanCoerce(srcType, i.type, def.type, `in:${i.name}`)) {
                 targetInput = i.name;
                 break;
               }
-            }
-            // Copy-to-Points instance socket is permissive by design.
-            if (
-              !targetInput &&
-              def.type === "copy-to-points" &&
-              (srcType === "image" ||
-                srcType === "image_group" ||
-                srcType === "spline" ||
-                srcType === "points" ||
-                srcType === "text_instance")
-            ) {
-              targetInput = "instance";
             }
           }
 
@@ -3575,7 +3654,7 @@ function EffectsShell({
           coalesceKey ?? `param:${nodeId}:${paramName}`
         );
       }
-      const tickAtEdit = currentTick;
+      const tickAtEdit = currentTickRef.current;
       // Simulation-zone `kind` is a paired property: the Start and End
       // halves share a zone_id and MUST agree on kind, or ensureZoneState
       // tears down and reallocates the shared state blob every frame (the
@@ -3601,42 +3680,66 @@ function EffectsShell({
           }
         }
       }
+      // Color-ramp stop removal: a shrinking `color_ramp` array drops the
+      // removed stops' virtual keyframe tracks, exposedParams/controlParams
+      // entries, and any edges feeding their sockets — same edit, so one
+      // undo restores stop + tracks + sockets together.
+      let removedRampKeys: Set<string> | null = null;
+      {
+        const src = nodesRef.current.find((x) => x.id === nodeId);
+        const pdefType = src
+          ? getNodeDef(src.data.defType)?.params.find(
+              (p) => p.name === paramName
+            )?.type
+          : undefined;
+        if (pdefType === "color_ramp" && Array.isArray(value)) {
+          const before =
+            (src?.data.params[paramName] as ColorRampStop[] | undefined) ?? [];
+          const kept = new Set((value as ColorRampStop[]).map((s) => s.id));
+          const removed = before.filter((s) => !kept.has(s.id));
+          if (removed.length > 0) {
+            removedRampKeys = new Set(
+              removed.flatMap((s) => [
+                rampColorKey(paramName, s.id),
+                rampAlphaKey(paramName, s.id),
+                rampPositionKey(paramName, s.id),
+              ])
+            );
+          }
+        }
+      }
+      // Color node shrink: lowering `count` removes the trailing color
+      // outputs — drop any edges wired to them in the same edit.
+      let removedColorHandles: Set<string> | null = null;
+      if (paramName === "count") {
+        const src = nodesRef.current.find((x) => x.id === nodeId);
+        if (
+          src?.data.defType === "color-literal" &&
+          typeof value === "number"
+        ) {
+          const before = Math.max(
+            1,
+            Math.floor((src.data.params.count as number) ?? 1)
+          );
+          const after = Math.max(
+            1,
+            Math.min(MAX_COLORS, Math.floor(value))
+          );
+          if (after < before) {
+            removedColorHandles = new Set();
+            for (let n = after + 1; n <= before; n++) {
+              removedColorHandles.add(`out:aux:${colorParamName(n)}`);
+            }
+          }
+        }
+      }
       setNodes((prev) =>
         prev.map((n) => {
           // Zone partner: mirror the kind and re-resolve its sockets so the
           // input/output socket types stay in lockstep. No autokey — the
           // enum kind isn't keyframable.
           if (zonePartnerId && n.id === zonePartnerId) {
-            const pdef = getNodeDef(n.data.defType);
-            const pParams = { ...n.data.params, kind: value };
-            const pResolved = pdef?.resolveInputs?.(pParams);
-            const pResolvedAux = pdef?.resolveAuxOutputs?.(pParams);
-            return {
-              ...n,
-              data: {
-                ...n.data,
-                params: pParams,
-                primaryOutput:
-                  pdef?.resolvePrimaryOutput?.(pParams) ??
-                  n.data.primaryOutput,
-                inputs: pResolved
-                  ? withMaskInput(pResolved, pdef).map((i) => ({
-                      name: i.name,
-                      label: i.label,
-                      type: i.type,
-                      hidden: i.hidden,
-                    }))
-                  : n.data.inputs,
-                auxOutputs: pResolvedAux
-                  ? pResolvedAux.map((a) => ({
-                      name: a.name,
-                      label: a.label,
-                      type: a.type,
-                      disabled: a.disabled,
-                    }))
-                  : n.data.auxOutputs,
-              },
-            };
+            return withUpdatedParams(n, { ...n.data.params, kind: value });
           }
           if (n.id !== nodeId) return n;
           // Auto-keyframe: if this param is animated and not driven by a
@@ -3728,6 +3831,49 @@ function EffectsShell({
                 );
               }
             }
+            // Per-stop color/alpha/position auto-keyframe (color ramps):
+            // same contract as gradient points above; keys embed the param
+            // name (ramp_c/a/p:<param>:<stopId> — see engine/conventions).
+            if (pdefType === "color_ramp") {
+              const before =
+                (n.data.params[paramName] as ColorRampStop[] | undefined) ??
+                [];
+              for (const stop of value as ColorRampStop[]) {
+                const prev = before.find((b) => b.id === stop.id);
+                if (!prev) continue;
+                const tryKey = (
+                  key: string,
+                  changed: boolean,
+                  kfValue: unknown
+                ) => {
+                  if (!changed) return;
+                  const blk = nextAnimation?.[key];
+                  if (blk?.animated) {
+                    nextAnimation = {
+                      ...nextAnimation,
+                      [key]: upsertKeyframe(blk, tickAtEdit, kfValue, "easeInOut"),
+                    };
+                  }
+                };
+                tryKey(
+                  rampColorKey(paramName, stop.id),
+                  prev.color !== stop.color,
+                  hexToRgba01Tuple(
+                    typeof stop.color === "string" ? stop.color : "#ffffff"
+                  )
+                );
+                tryKey(
+                  rampAlphaKey(paramName, stop.id),
+                  (prev.alpha ?? 1) !== (stop.alpha ?? 1),
+                  stop.alpha ?? 1
+                );
+                tryKey(
+                  rampPositionKey(paramName, stop.id),
+                  prev.position !== stop.position,
+                  stop.position
+                );
+              }
+            }
           }
           const nextParams = { ...n.data.params, [paramName]: value };
           const def = getNodeDef(n.data.defType);
@@ -3811,11 +3957,28 @@ function EffectsShell({
                   : undefined;
             if (raw) nextName = fileLabel(raw);
           }
+          // Removed stops take their virtual tracks and per-stop
+          // expose/control entries with them (edges are dropped below,
+          // outside this setNodes pass).
+          let nextExposed = n.data.exposedParams;
+          let nextControls = n.data.controlParams;
+          if (removedRampKeys) {
+            const dead = removedRampKeys;
+            if (nextAnimation) {
+              nextAnimation = Object.fromEntries(
+                Object.entries(nextAnimation).filter(([k]) => !dead.has(k))
+              );
+            }
+            nextExposed = nextExposed?.filter((p) => !dead.has(p));
+            nextControls = nextControls?.filter((p) => !dead.has(p));
+          }
           return {
             ...n,
             data: {
               ...n.data,
               name: nextName,
+              exposedParams: nextExposed,
+              controlParams: nextControls,
               params: nextParams,
               animation: nextAnimation,
               primaryOutput: nextPrimary,
@@ -3839,8 +4002,36 @@ function EffectsShell({
           };
         })
       );
+      if (removedRampKeys) {
+        const deadHandles = new Set(
+          [...removedRampKeys].map((k) => `in:param:${k}`)
+        );
+        setEdges((prev) =>
+          prev.filter(
+            (e) =>
+              !(
+                e.target === nodeId &&
+                e.targetHandle &&
+                deadHandles.has(e.targetHandle)
+              )
+          )
+        );
+      }
+      if (removedColorHandles) {
+        const dead = removedColorHandles;
+        setEdges((prev) =>
+          prev.filter(
+            (e) =>
+              !(
+                e.source === nodeId &&
+                e.sourceHandle &&
+                dead.has(e.sourceHandle)
+              )
+          )
+        );
+      }
     },
-    [setNodes, pushGraph, getGraphSnapshot, currentTick]
+    [setNodes, setEdges, pushGraph, getGraphSnapshot]
   );
 
   // Per-parameter animation block read/write. Used by ParamPanel and the
@@ -3863,7 +4054,7 @@ function EffectsShell({
       coalesceKey?: string
     ) => {
       pushGraph(getGraphSnapshot(), coalesceKey ?? `anim:${nodeId}:${paramName}`);
-      const tickAtEdit = currentTick;
+      const tickAtEdit = currentTickRef.current;
       setNodes((prev) =>
         prev.map((n) => {
           if (n.id !== nodeId) return n;
@@ -3957,7 +4148,7 @@ function EffectsShell({
         })
       );
     },
-    [setNodes, pushGraph, getGraphSnapshot, currentTick]
+    [setNodes, pushGraph, getGraphSnapshot]
   );
 
   // Drag a motion-path point (MotionPathOverlay): write a keyframe to BOTH the
@@ -4119,7 +4310,7 @@ function EffectsShell({
   useEffect(() => {
     setEdges((prev) => {
       const byId = new Map(nodes.map((n) => [n.id, n]));
-      return prev.filter((e) => {
+      const kept = prev.filter((e) => {
         const src = byId.get(e.source);
         if (src && e.sourceHandle?.startsWith("out:aux:")) {
           const auxName = e.sourceHandle.slice("out:aux:".length);
@@ -4136,6 +4327,10 @@ function EffectsShell({
         // param socket: keep if the param is still in the node's exposedParams
         return (tgt.data.exposedParams ?? []).includes(parsed.name);
       });
+      // Almost every run prunes nothing — return the same array so `edges`
+      // identity is stable and downstream memos/effects keyed on it don't
+      // re-fire on every node change (e.g. per pointermove during a drag).
+      return kept.length === prev.length ? prev : kept;
     });
   }, [nodes, setEdges]);
 
@@ -4152,6 +4347,7 @@ function EffectsShell({
         detail.kind === "queueAddItem" ||
         detail.kind === "exprAddInput" ||
         detail.kind === "collectAddInput" ||
+        detail.kind === "colorAddOutput" ||
         detail.kind === "trailsReset"
       ) {
         pushGraph(getGraphSnapshot());
@@ -4218,24 +4414,10 @@ function EffectsShell({
               ...current,
               { id: newLayerId(), mode: "normal", opacity: 1 },
             ];
-            const def = getNodeDef(n.data.defType);
-            const nextParams = { ...n.data.params, layers: nextLayers };
-            const resolved = def?.resolveInputs?.(nextParams);
-            return {
-              ...n,
-              data: {
-                ...n.data,
-                params: nextParams,
-                inputs: resolved
-                  ? withMaskInput(resolved, def).map((i) => ({
-                      name: i.name,
-                      label: i.label,
-                      type: i.type,
-                      hidden: i.hidden,
-                    }))
-                  : n.data.inputs,
-              },
-            };
+            return withUpdatedParams(n, {
+              ...n.data.params,
+              layers: nextLayers,
+            });
           })
         );
       } else if (detail.kind === "autolayoutAddItem") {
@@ -4247,24 +4429,10 @@ function EffectsShell({
               ...current,
               defaultAutoLayoutItem(),
             ];
-            const def = getNodeDef(n.data.defType);
-            const nextParams = { ...n.data.params, items: nextItems };
-            const resolved = def?.resolveInputs?.(nextParams);
-            return {
-              ...n,
-              data: {
-                ...n.data,
-                params: nextParams,
-                inputs: resolved
-                  ? withMaskInput(resolved, def).map((i) => ({
-                      name: i.name,
-                      label: i.label,
-                      type: i.type,
-                      hidden: i.hidden,
-                    }))
-                  : n.data.inputs,
-              },
-            };
+            return withUpdatedParams(n, {
+              ...n.data.params,
+              items: nextItems,
+            });
           })
         );
       } else if (detail.kind === "exprAddInput") {
@@ -4273,24 +4441,10 @@ function EffectsShell({
             if (n.id !== detail.id) return n;
             const current = (n.data.params.inputs as ExprInput[]) ?? [];
             const nextInputs: ExprInput[] = [...current, newExprInput(current)];
-            const def = getNodeDef(n.data.defType);
-            const nextParams = { ...n.data.params, inputs: nextInputs };
-            const resolved = def?.resolveInputs?.(nextParams);
-            return {
-              ...n,
-              data: {
-                ...n.data,
-                params: nextParams,
-                inputs: resolved
-                  ? withMaskInput(resolved, def).map((i) => ({
-                      name: i.name,
-                      label: i.label,
-                      type: i.type,
-                      hidden: i.hidden,
-                    }))
-                  : n.data.inputs,
-              },
-            };
+            return withUpdatedParams(n, {
+              ...n.data.params,
+              inputs: nextInputs,
+            });
           })
         );
       } else if (detail.kind === "queueAddItem") {
@@ -4302,24 +4456,28 @@ function EffectsShell({
               ...current,
               { id: newRenderQueueItemId(), kind: "video", frame: 0 },
             ];
-            const def = getNodeDef(n.data.defType);
-            const nextParams = { ...n.data.params, items: nextItems };
-            const resolved = def?.resolveInputs?.(nextParams);
-            return {
-              ...n,
-              data: {
-                ...n.data,
-                params: nextParams,
-                inputs: resolved
-                  ? withMaskInput(resolved, def).map((i) => ({
-                      name: i.name,
-                      label: i.label,
-                      type: i.type,
-                      hidden: i.hidden,
-                    }))
-                  : n.data.inputs,
-              },
-            };
+            return withUpdatedParams(n, {
+              ...n.data.params,
+              items: nextItems,
+            });
+          })
+        );
+      } else if (detail.kind === "colorAddOutput") {
+        // Color node grows via its `count` param (1..MAX_COLORS). Unlike
+        // the socket-adders above this mints an OUTPUT — re-resolve aux
+        // outputs rather than inputs.
+        setNodes((prev) =>
+          prev.map((n) => {
+            if (n.id !== detail.id) return n;
+            const cur = Math.max(
+              1,
+              Math.floor((n.data.params.count as number) ?? 1)
+            );
+            const nextCount = Math.min(MAX_COLORS, cur + 1);
+            return withUpdatedParams(n, {
+              ...n.data.params,
+              count: nextCount,
+            });
           })
         );
       } else if (detail.kind === "collectAddInput") {
@@ -4333,24 +4491,10 @@ function EffectsShell({
               Math.floor((n.data.params.count as number) ?? 2)
             );
             const nextCount = Math.min(26, cur + 1);
-            const def = getNodeDef(n.data.defType);
-            const nextParams = { ...n.data.params, count: nextCount };
-            const resolved = def?.resolveInputs?.(nextParams);
-            return {
-              ...n,
-              data: {
-                ...n.data,
-                params: nextParams,
-                inputs: resolved
-                  ? withMaskInput(resolved, def).map((i) => ({
-                      name: i.name,
-                      label: i.label,
-                      type: i.type,
-                      hidden: i.hidden,
-                    }))
-                  : n.data.inputs,
-              },
-            };
+            return withUpdatedParams(n, {
+              ...n.data.params,
+              count: nextCount,
+            });
           })
         );
       }
@@ -4555,6 +4699,42 @@ function EffectsShell({
   fpsRef.current = fps;
   const loopFramesRef = useRef(loopFrames);
   loopFramesRef.current = loopFrames;
+
+  // Claude MCP bridge handlers (spec 070926_claude-mcp-bridge.md; the ref +
+  // connection live near flashToast above). Rebuilt every render so handlers
+  // capture fresh state; assembled here because it needs the clock refs
+  // directly above plus commitRecipeFragment / onParamChange / renderFrame.
+  mcpHandlersRef.current = buildMcpHandlers({
+    status: {
+      projectName: currentProject?.name ?? "Untitled",
+      canvasWidth: canvasRes[0],
+      canvasHeight: canvasRes[1],
+      fps,
+      frame: Math.round(time * fps),
+      playing,
+      loopFrames: loopFrames != null && loopFrames > 0 ? loopFrames : fps * 5,
+      selectedNodeId: selectedId,
+      scope: currentGroupId ?? "root",
+    },
+    nodesRef,
+    edgesRef,
+    canvasRef,
+    timeRef,
+    fpsRef,
+    playingRef,
+    forcedTerminalRef,
+    renderFrame,
+    setPlaying,
+    setTime,
+    onParamChange,
+    onAnimationChange,
+    pushGraph,
+    getGraphSnapshot,
+    setNodes,
+    setEdges,
+    commitRecipeFragment,
+    flashToast,
+  });
 
   // The live loop/fps/resolution ARE the active composition's working scene;
   // materialize them onto its registry entry when saving (v5). Other comps
@@ -5340,9 +5520,14 @@ function EffectsShell({
     async (
       nodeId: string,
       // When `sink` is provided (batch render), the finished blob is handed
-      // back instead of being downloaded — the Render Queue collects them
-      // and delivers the whole batch at the end.
-      opts?: { sink?: (blob: Blob, ext: string) => void }
+      // back instead of being downloaded — the Render Queue and the wedge
+      // batch driver collect them and deliver at the end. `labelPrefix`
+      // prepends batch position ("Variation 2/5 — ") to the offline
+      // progress-banner labels.
+      opts?: {
+        sink?: (blob: Blob, ext: string) => void;
+        labelPrefix?: string;
+      }
     ) => {
       // The re-entrancy lock guards the standalone Export button. Batch (sink)
       // calls are already serialized by renderQueue's queueRenderingRef, and
@@ -5456,7 +5641,8 @@ function EffectsShell({
       // Render the specific Output being exported, regardless of which node is
       // set Active in the UI. Cleared in the finally below.
       forcedTerminalRef.current = nodeId;
-      setRecording({ mode: "offline", label: "Preparing…", progress: 0 });
+      const lp = opts?.labelPrefix ?? "";
+      setRecording({ mode: "offline", label: `${lp}Preparing…`, progress: 0 });
 
       // Pre-warm fonts before the frame loop. Async font loads (curated/web
       // families fetched from the CDN) otherwise resolve mid-export, so the
@@ -5554,7 +5740,7 @@ function EffectsShell({
             onProgress: (label, frac) =>
               setRecording({
                 mode: "offline",
-                label,
+                label: `${lp}${label}`,
                 progress: frac,
               }),
           });
@@ -5612,7 +5798,7 @@ function EffectsShell({
                   : defaultFilename(ffContainer),
               },
               (label, frac) =>
-                setRecording({ mode: "offline", label, progress: frac })
+                setRecording({ mode: "offline", label: `${lp}${label}`, progress: frac })
             );
             if (!session) return; // user cancelled the Save dialog
             // Offscreen 2D canvas to read straight-alpha RGBA8 (same fidelity
@@ -5635,7 +5821,7 @@ function EffectsShell({
                 if (data) await session.writeFrame(new Uint8Array(data.buffer));
                 setRecording({
                   mode: "offline",
-                  label: `Encoding ${i + 1}/${durationFrames}`,
+                  label: `${lp}Encoding ${i + 1}/${durationFrames}`,
                   progress: (i + 1) / durationFrames,
                 });
               }
@@ -5663,7 +5849,7 @@ function EffectsShell({
             audioWav: audioBuffer ? audioBufferToWav(audioBuffer) : null,
             renderFrame: renderAt,
             onProgress: (label, frac) =>
-              setRecording({ mode: "offline", label, progress: frac }),
+              setRecording({ mode: "offline", label: `${lp}${label}`, progress: frac }),
           });
         }
 
@@ -5732,6 +5918,149 @@ function EffectsShell({
       }
     },
     [getOutputParams]
+  );
+
+  // Wedge batch size for an Output: flatten (so wedges inside groups/layers
+  // and wires into exposed params are plain edges), then reverse-BFS from the
+  // Output — the same reachability walk evaluation uses, so a wedge counts
+  // exactly when it can affect the rendered image. Batches ZIP across wedges:
+  // size = max(counts); each wedge clamps the shared index to its own count
+  // (last value holds). 1 = no batch. Note: a Layer Output's fixed
+  // group-output id dissolves in the flatten pass, so wedge batching applies
+  // to real Output nodes only — layer-output exports fall through to the
+  // plain single-render path.
+  const resolveWedgeBatch = useCallback((outputNodeId: string) => {
+    const { nodes: compNodes, edges: compEdges } = resolveComposition(
+      nodesRef.current,
+      edgesRef.current,
+      activeCompositionIdRef.current
+    );
+    const graphNodes: GraphNode[] = compNodes.map((n) => ({
+      id: n.id,
+      type: n.data.defType,
+      parentId: n.data.parentId,
+      params: n.data.params,
+      exposedParams: n.data.exposedParams,
+      animation: n.data.animation,
+      clips: n.data.clips,
+      bypassed: !!n.data.bypassed,
+    }));
+    const graphEdges: GraphEdge[] = compEdges.map((e) => ({
+      id: e.id,
+      source: e.source,
+      sourceHandle: e.sourceHandle ?? "out:primary",
+      target: e.target,
+      targetHandle: e.targetHandle ?? "in:image",
+    }));
+    const flat = flattenGraph(graphNodes, graphEdges);
+    const byId = new Map(flat.nodes.map((n) => [n.id, n]));
+    const incoming = new Map<string, string[]>();
+    for (const e of flat.edges) {
+      const list = incoming.get(e.target);
+      if (list) list.push(e.source);
+      else incoming.set(e.target, [e.source]);
+    }
+    let count = 1;
+    const seen = new Set<string>([outputNodeId]);
+    const stack = [outputNodeId];
+    while (stack.length) {
+      const id = stack.pop()!;
+      const node = byId.get(id);
+      if (node?.type === WEDGE_TYPE && !node.bypassed) {
+        count = Math.max(count, wedgeIterationCount(node.params));
+      }
+      for (const src of incoming.get(id) ?? []) {
+        if (!seen.has(src)) {
+          seen.add(src);
+          stack.push(src);
+        }
+      }
+    }
+    return count;
+  }, []);
+
+  // Standalone Export with wedges upstream: render the whole tree once per
+  // variation (ctx.wedgeIndex stepping 0..count−1 via wedgeIndexRef) and
+  // deliver iterated filenames (resolveWedgeName's {i} tokens). No wedges ⇒
+  // falls through to the plain single-render paths unchanged. Delivery is
+  // sequential downloads (the Render Queue's default); route the Output
+  // through a Render Queue for zip/folder delivery of heavy batches. The eval
+  // cache is NOT cleared between variations — branches that don't depend on a
+  // wedge render once and stay cached for the whole batch.
+  const exportWedged = useCallback(
+    async (nodeId: string, kind: "image" | "video") => {
+      const total = resolveWedgeBatch(nodeId);
+      if (total <= 1) {
+        if (kind === "image") exportImage(nodeId);
+        else await exportVideo(nodeId);
+        return;
+      }
+      if (recordingRef.current || queueRenderingRef.current) return;
+      // Reuse the queue's serialization lock — a wedge batch is a queue-of-
+      // one rendered N times, and the same "don't interleave batches" rule
+      // applies in both directions.
+      queueRenderingRef.current = true;
+      const params = getOutputParams(nodeId);
+      const node = nodesRef.current.find((n) => n.id === nodeId);
+      const rawBase =
+        sanitizeFilename((params?.filename as string) ?? "") ||
+        sanitizeFilename(node?.data.name ?? "") ||
+        "export";
+      const usedNames = new Set<string>();
+      let done = 0;
+      try {
+        for (let v = 0; v < total; v++) {
+          wedgeIndexRef.current = v;
+          const out: { blob: Blob | null; ext: string } = {
+            blob: null,
+            ext: "",
+          };
+          if (kind === "video") {
+            await exportVideo(nodeId, {
+              sink: (b, e) => {
+                out.blob = b;
+                out.ext = e;
+              },
+              labelPrefix: `Variation ${v + 1}/${total} — `,
+            });
+          } else {
+            const frame = Math.floor(timeRef.current * fpsRef.current);
+            const r = await renderImageToBlobAtFrame(nodeId, frame);
+            if (r) {
+              out.blob = r.blob;
+              out.ext = r.ext;
+            }
+          }
+          if (!out.blob) continue;
+          const resolved = resolveWedgeName(rawBase, v, total);
+          let name = `${resolved}.${out.ext}`;
+          let n = 2;
+          while (usedNames.has(name)) name = `${resolved}-${n++}.${out.ext}`;
+          usedNames.add(name);
+          downloadBlob(out.blob, name);
+          done++;
+        }
+        flashToast(
+          done === total
+            ? `Rendered ${done} variation${done === 1 ? "" : "s"}`
+            : `Rendered ${done}/${total} variations`
+        );
+      } catch (err) {
+        console.error("Wedge batch failed:", err);
+        flashToast(err instanceof Error ? err.message : "Wedge batch failed");
+      } finally {
+        wedgeIndexRef.current = undefined;
+        queueRenderingRef.current = false;
+      }
+    },
+    [
+      resolveWedgeBatch,
+      exportImage,
+      exportVideo,
+      renderImageToBlobAtFrame,
+      getOutputParams,
+      flashToast,
+    ]
   );
 
   // Export an image sequence: render one still per frame across the Output's
@@ -6263,8 +6592,10 @@ function EffectsShell({
         }>
       ).detail;
       if (!detail) return;
-      if (detail.kind === "image") exportImage(detail.id);
-      else if (detail.kind === "video") exportVideo(detail.id);
+      // Image/video route through the wedge batch driver, which falls back
+      // to the plain single-render paths when no Wedge nodes are upstream.
+      if (detail.kind === "image") exportWedged(detail.id, "image");
+      else if (detail.kind === "video") exportWedged(detail.id, "video");
       else if (detail.kind === "sequence") exportSequence(detail.id);
       else if (detail.kind === "gif") exportGif(detail.id);
       else if (detail.kind === "app") onOpenExportApp(detail.id);
@@ -6272,7 +6603,7 @@ function EffectsShell({
     };
     window.addEventListener("effect-node-export", handler);
     return () => window.removeEventListener("effect-node-export", handler);
-  }, [exportImage, exportVideo, exportSequence, exportGif, onOpenExportApp, renderQueue]);
+  }, [exportWedged, exportSequence, exportGif, onOpenExportApp, renderQueue]);
 
   // --- Save / Load ----------------------------------------------------------
   // Progress budget: serialize/deserialize gets the first 70%, the network
@@ -6309,9 +6640,44 @@ function EffectsShell({
       }
     );
     setProgressStatus({ label: "saving", progress: SERIALIZE_SHARE, tone: "save" });
+    // Pre-flight the row size. Oversized jsonb bodies don't fail fast — they
+    // hang ~30s into the Supabase statement timeout (57014, see
+    // logProjectWriteError) and can leave a truncated row. Fail immediately
+    // with the actionable alternative instead; warn on approach.
+    const approxMb = JSON.stringify(graph).length / (1024 * 1024);
+    if (approxMb > 50) {
+      throw new Error(
+        `Project is ~${Math.round(approxMb)}MB — too large for cloud save. Use File → Save to File (.toolbox).`
+      );
+    }
+    if (approxMb > 16) {
+      flashToast(
+        `large project (~${Math.round(approxMb)}MB) — cloud saves may be slow`
+      );
+    }
     if (mode === "update" && existingId) {
-      const ok = await updateProjectRow(existingId, graph, thumbnail);
-      if (!ok) return null;
+      // Compare-and-swap only when updating the row THIS editor loaded —
+      // the overwrite-by-name path targets a row we never loaded, so it
+      // keeps last-writer-wins.
+      const expected =
+        existingId === currentProject?.id
+          ? currentProject?.updatedAt ?? undefined
+          : undefined;
+      const res = await updateProjectRow(existingId, graph, thumbnail, expected);
+      if (res.conflict) {
+        throw new Error(
+          "This project was saved from another window — reload it (or Save As a copy) before saving here."
+        );
+      }
+      if (!res.ok) return null;
+      // Carry the new row version forward so the next save's guard matches.
+      if (res.updatedAt) {
+        setCurrentProject((prev) =>
+          prev && prev.id === existingId
+            ? { ...prev, updatedAt: res.updatedAt }
+            : prev
+        );
+      }
       setProgressStatus({ label: "saving", progress: 1, tone: "save" });
       return { id: existingId };
     }
@@ -6429,7 +6795,7 @@ function EffectsShell({
         // was previously swallowed, leaving only a bare "save failed".
         console.error("save failed (copy):", e);
         setSaveState("error");
-        flashToast("save failed");
+        flashToast(e instanceof Error ? e.message : "save failed");
         return "failed";
       } finally {
         setProgressStatus(null);
@@ -6455,7 +6821,7 @@ function EffectsShell({
       // previously swallowed, leaving only a bare "save failed" with no clue.
       console.error("save failed (update):", e);
       setSaveState("error");
-      flashToast("save failed");
+      flashToast(e instanceof Error ? e.message : "save failed");
       return "failed";
     } finally {
       setProgressStatus(null);
@@ -6490,8 +6856,9 @@ function EffectsShell({
       setSaveState("saved");
       setLoadRefreshKey((n) => n + 1);
       flashToast(`saved as ${newName}`);
-    } catch {
+    } catch (e) {
       setSaveState("error");
+      flashToast(e instanceof Error ? e.message : "save failed");
     } finally {
       setProgressStatus(null);
     }
@@ -6509,7 +6876,6 @@ function EffectsShell({
           progress: 1 - SERIALIZE_SHARE,
           tone: "load",
         });
-        pushGraph(getGraphSnapshot());
         const {
           nodes: nextNodes,
           edges: nextEdges,
@@ -6526,6 +6892,10 @@ function EffectsShell({
               tone: "load",
             })
         );
+        // Only snapshot the outgoing graph once the incoming one has
+        // deserialized — a failed load must not insert an undo entry or
+        // dirty the save pill.
+        pushGraph(getGraphSnapshot());
         setNodes(nextNodes);
         setEdges(nextEdges);
         setCompositions(nextComps);
@@ -6562,17 +6932,21 @@ function EffectsShell({
             user && saved.user_id === user.id
               ? null
               : saved.author?.display_name ?? null,
+          updatedAt: saved.updated_at,
         });
         // Load applies a graph snapshot via setNodes/setEdges, which
         // doesn't flow through pushGraph — so saveState isn't auto-
         // flipped to "dirty". Explicitly mark clean.
         setSaveState("saved");
         setProgressStatus({ label: "loading", progress: 1, tone: "load" });
+      } catch (e) {
+        console.error("[load] cloud project load failed:", e);
+        flashToast(e instanceof Error ? e.message : "Could not load project");
       } finally {
         setProgressStatus(null);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia, frameGraph]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia, frameGraph, flashToast]
   );
 
   // --- Local .toolbox files (File → Save to File / Load…) ------------------
@@ -6722,7 +7096,6 @@ function EffectsShell({
         setProgressStatus({ label: "loading", progress: 0.1, tone: "load" });
         const { readProjectFile } = await import("@/lib/project-file");
         const { name, graph } = await readProjectFile(file);
-        pushGraph(getGraphSnapshot());
         const {
           nodes: nextNodes,
           edges: nextEdges,
@@ -6737,6 +7110,9 @@ function EffectsShell({
             tone: "load",
           })
         );
+        // Snapshot the outgoing graph only after a successful deserialize —
+        // a failed open must not insert an undo entry or dirty the pill.
+        pushGraph(getGraphSnapshot());
         suppressNextSelectionViewFlipRef.current = true;
         setNodes(nextNodes);
         setEdges(nextEdges);
@@ -6862,13 +7238,15 @@ function EffectsShell({
         }
         return;
       }
-      const ok = await renameProjectRow(currentProject.id, trimmed);
-      if (!ok) {
+      const renamedAt = await renameProjectRow(currentProject.id, trimmed);
+      if (!renamedAt) {
         setSaveState("error");
         flashToast("rename failed");
         return;
       }
-      setCurrentProject({ ...currentProject, name: trimmed });
+      // Rename bumps the row's updated_at — mirror it or the next save's
+      // compare-and-swap would false-conflict.
+      setCurrentProject({ ...currentProject, name: trimmed, updatedAt: renamedAt });
       setLoadRefreshKey((n) => n + 1);
       flashToast(`renamed to ${trimmed}`);
     },
@@ -6931,6 +7309,9 @@ function EffectsShell({
       // public-flip, cleared on private-flip) so the file-name menu's
       // "Copy editor link" button lights up immediately, no reload.
       publicSlug: result.slug,
+      // The toggle bumps updated_at — mirror it so the next save's
+      // compare-and-swap doesn't false-conflict.
+      updatedAt: result.updatedAt,
     });
     flashToast(next ? "now public" : "now private");
     setLoadRefreshKey((n) => n + 1);
@@ -7301,23 +7682,52 @@ function EffectsShell({
   // that's Transform and SVG Source; Text and Auto Layout use the bounds
   // gizmo instead (PRIMITIVE_GIZMO_ADAPTERS), which resizes against an
   // anchored opposite edge rather than scaling around a pivot.
+  //
+  // Multi-select: every selected gizmo-capable node renders its handles at
+  // once (spec 070826_multiselect-gizmos.md), so these derive LISTS from
+  // the nodes' `selected` flags (the same source Cmd+G reads). `selectedId`
+  // is unioned in as a fallback for programmatic selects that haven't
+  // echoed through ReactFlow yet — that keeps single-selection behavior
+  // identical to the old selectedId-only lookup.
+  const selectedGizmoCandidates = useMemo(() => {
+    const sel = nodes.filter((n) => n.selected);
+    if (selectedId && !sel.some((n) => n.id === selectedId)) {
+      const n = nodes.find((nn) => nn.id === selectedId);
+      if (n) sel.push(n);
+    }
+    return sel;
+  }, [nodes, selectedId]);
+  const transformGizmoNodes = useMemo(
+    () =>
+      selectedGizmoCandidates.filter(
+        (n) => !!getNodeDef(n.data.defType)?.supportsTransformGizmo
+      ),
+    [selectedGizmoCandidates]
+  );
+  // On-canvas shape handles for selected spline primitives (Circle,
+  // Rectangle, …). Driven by the adapter map so new primitives opt in
+  // there without touching this wiring.
+  const primitiveGizmoNodes = useMemo(
+    () =>
+      selectedGizmoCandidates.filter(
+        (n) => !!PRIMITIVE_GIZMO_ADAPTERS[n.data.defType]
+      ),
+    [selectedGizmoCandidates]
+  );
+  // With 2+ gizmos up, TransformGizmo trades its canvas-wide translate
+  // surface for its bounds polygon so stacked gizmos don't fight over
+  // empty-canvas drags.
+  const multiGizmo =
+    transformGizmoNodes.length + primitiveGizmoNodes.length > 1;
+
+  // The TransformContextBar (flip H/V) stays bound to the single primary
+  // selection, as does the ParamPanel.
   const activeTransformNode = selectedId
     ? nodes.find((n) => {
         if (n.id !== selectedId) return false;
         const def = getNodeDef(n.data.defType);
         return !!def?.supportsTransformGizmo;
       })
-    : undefined;
-
-  // On-canvas shape handles for a selected spline primitive (Circle,
-  // Rectangle, …). Driven by the adapter map so new primitives opt in
-  // there without touching this wiring.
-  const activePrimitiveNode = selectedId
-    ? nodes.find(
-        (n) =>
-          n.id === selectedId &&
-          !!PRIMITIVE_GIZMO_ADAPTERS[n.data.defType]
-      )
     : undefined;
 
   // Pen-tool overlay: active whenever a Spline Draw node is selected.
@@ -7399,6 +7809,28 @@ function EffectsShell({
   // a single source of truth for the props each receives so the
   // layouts only differ in how the pieces are arranged on screen.
   // ---------------------------------------------------------------------
+  // Stable identities for NodeEditor's function props — inline closures
+  // here would re-mint every render (every rAF tick during playback) and
+  // defeat NodeEditor's memo. All three touch only refs / stable setters.
+  const handleSelectNode = useCallback((id: string | null) => {
+    if (suppressNextSelectionViewFlipRef.current) {
+      suppressNextSelectionViewFlipRef.current = false;
+      return;
+    }
+    setSelectedId(id);
+    if (id) setParamView("node");
+  }, []);
+  const handlePanePointer = useCallback(
+    (p: { x: number; y: number }) => {
+      lastPanePointerRef.current = p;
+    },
+    []
+  );
+  const handleNavigateScope = useCallback(
+    (id: string | null) => navigateScope(id ?? undefined),
+    [navigateScope]
+  );
+
   const nodeEditorJsx = (
     <div
       style={{
@@ -7427,18 +7859,9 @@ function EffectsShell({
       onNodesChange={onNodesChangeWithHistory}
       onEdgesChange={onEdgesChangeWithHistory}
       onConnect={onConnect}
-      onSelectNode={(id) => {
-        if (suppressNextSelectionViewFlipRef.current) {
-          suppressNextSelectionViewFlipRef.current = false;
-          return;
-        }
-        setSelectedId(id);
-        if (id) setParamView("node");
-      }}
+      onSelectNode={handleSelectNode}
       onAddNode={onAddNode}
-      onPanePointer={(p) => {
-        lastPanePointerRef.current = p;
-      }}
+      onPanePointer={handlePanePointer}
       onDuplicateOnDrag={handleDuplicateOnDrag}
       onDetachNode={handleDetachNode}
       onDuplicateNode={handleDuplicateNode}
@@ -7461,7 +7884,7 @@ function EffectsShell({
       onDiveIntoGroup={handleDiveIntoGroup}
       onScopeUp={handleScopeUp}
       breadcrumbs={breadcrumbs}
-      onNavigateScope={(id) => navigateScope(id ?? undefined)}
+      onNavigateScope={handleNavigateScope}
       onOpenProject={handleOpenProjectView}
       atRoot={currentGroupId == null}
       frameSignal={frameGraphSignal}
@@ -7546,6 +7969,32 @@ function EffectsShell({
     );
   }, [queueProgress, queueItemProgress]);
 
+  // Stable identities for ParamPanel's non-primitive props — inline
+  // closures/objects would re-mint every render and defeat its memo.
+  const handleSeekTick = useCallback(
+    (tick: number) => onSeek(tick / (fps * ticksPerFrame)),
+    [onSeek, fps, ticksPerFrame]
+  );
+  const handlePanelSelectNode = useCallback((nodeId: string) => {
+    setNodes((prev) =>
+      prev.map((n) => ({ ...n, selected: n.id === nodeId }))
+    );
+    setSelectedId(nodeId);
+    setParamView("node");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const queueRenderInfo = useMemo(
+    () =>
+      queueProgress
+        ? {
+            nodeId: queueProgress.nodeId,
+            activeItemId: queueProgress.itemId,
+            itemProgress: queueItemProgress,
+          }
+        : null,
+    [queueProgress, queueItemProgress]
+  );
+
   const paramPanelJsx = paramView === "ai-recipe" ? (
     <AiRecipePanel
       key={editTarget ? `edit:${editTarget.groupId}` : "generate"}
@@ -7583,10 +8032,9 @@ function EffectsShell({
       onParamRangeChange={onParamRangeChange}
       onToggleParamLink={onToggleParamLink}
       isParamDriven={isParamDriven}
-      currentTick={currentTick}
       getAnimation={getAnimation}
       onAnimationChange={onAnimationChange}
-      onSeekTick={(tick) => onSeek(tick / (fps * ticksPerFrame))}
+      onSeekTick={handleSeekTick}
       onRenameNode={handleRenameNode}
       onRenameGroupSocket={handleRenameGroupSocket}
       onRemoveGroupSocket={handleRemoveGroupSocket}
@@ -7602,22 +8050,8 @@ function EffectsShell({
       sceneFrames={
         loopFrames != null && loopFrames > 0 ? loopFrames : fps * 5
       }
-      queueRender={
-        queueProgress
-          ? {
-              nodeId: queueProgress.nodeId,
-              activeItemId: queueProgress.itemId,
-              itemProgress: queueItemProgress,
-            }
-          : null
-      }
-      onSelectNode={(nodeId) => {
-        setNodes((prev) =>
-          prev.map((n) => ({ ...n, selected: n.id === nodeId }))
-        );
-        setSelectedId(nodeId);
-        setParamView("node");
-      }}
+      queueRender={queueRenderInfo}
+      onSelectNode={handlePanelSelectNode}
     />
   );
 
@@ -7708,7 +8142,6 @@ function EffectsShell({
           <LayersEditor
             layers={layerChain}
             timeline={projectTimeline}
-            currentTick={currentTick}
             selectedId={selectedId}
             onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
             onClipChange={onClipChange}
@@ -7745,8 +8178,6 @@ function EffectsShell({
             allNodes={nodes}
             edges={edges}
             timeline={projectTimeline}
-            currentTick={currentTick}
-            playing={playing}
             onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
             onAnimationChange={onAnimationChange}
             onClipChange={onClipChange}
@@ -7777,7 +8208,6 @@ function EffectsShell({
             // interior nodes outside the current scope).
             nodes={nodes}
             timeline={projectTimeline}
-            currentTick={currentTick}
             onAnimationChange={onAnimationChange}
             onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
             normalizeY={graphNormalizeY}
@@ -7790,8 +8220,6 @@ function EffectsShell({
 
   const playbackBarJsx = !fullCanvas && (
     <PlaybackBar
-      playing={playing}
-      time={time}
       fps={fps}
       loopFrames={loopFrames}
       onPlayPause={onPlayPause}
@@ -7927,6 +8355,8 @@ function EffectsShell({
         timelineLayout={timelineLayout}
         onToggleTimelineLayout={() => setTimelineLayout((v) => !v)}
         onOpenUserPreferences={() => setUserPrefsOpen(true)}
+        mcpStatus={mcp.status.state}
+        onToggleMcpBridge={mcp.toggle}
       />
       </div>
       </div>
@@ -8228,20 +8658,20 @@ function EffectsShell({
               }}
             />
           )}
-          {activeTransformNode && backendReady && (() => {
+          {backendReady && transformGizmoNodes.map((gizmoNode) => {
             // Read the effective param value at the current playhead.
             // For animated params, this returns the keyframe-evaluated
             // value so the on-canvas handles track the animation as the
             // user scrubs. For constant or wired params, falls back to
             // the stored constant.
-            const animMap = activeTransformNode.data.animation;
+            const animMap = gizmoNode.data.animation;
             const effective = (name: string, fallback: number): number => {
               const block = animMap?.[name];
               if (block && block.animated && block.keyframes.length > 0) {
                 const v = evaluateKeyframesAt(block, "scalar", currentTick);
                 if (typeof v === "number") return v;
               }
-              const raw = activeTransformNode.data.params[name];
+              const raw = gizmoNode.data.params[name];
               return typeof raw === "number" ? raw : fallback;
             };
             // Spline-mode bounds: hug the actual spline geometry instead
@@ -8252,13 +8682,11 @@ function EffectsShell({
             // spline densities and avoids per-frame Bézier eval.
             let boundsMin: [number, number] | undefined;
             let boundsMax: [number, number] | undefined;
-            const isSplineMode =
-              activeTransformNode.data.params.mode === "spline";
+            const isSplineMode = gizmoNode.data.params.mode === "spline";
             if (isSplineMode) {
               const inEdge = edges.find(
                 (e) =>
-                  e.target === activeTransformNode.id &&
-                  e.targetHandle === "in:image"
+                  e.target === gizmoNode.id && e.targetHandle === "in:image"
               );
               const srcOut = inEdge
                 ? evalCacheRef.current.get(inEdge.source)
@@ -8289,15 +8717,15 @@ function EffectsShell({
             const mpPivotX = effective("pivotX", 0.5);
             const mpPivotY = effective("pivotY", 0.5);
             const txConst =
-              typeof activeTransformNode.data.params.translateX === "number"
-                ? activeTransformNode.data.params.translateX
+              typeof gizmoNode.data.params.translateX === "number"
+                ? gizmoNode.data.params.translateX
                 : 0;
             const tyConst =
-              typeof activeTransformNode.data.params.translateY === "number"
-                ? activeTransformNode.data.params.translateY
+              typeof gizmoNode.data.params.translateY === "number"
+                ? gizmoNode.data.params.translateY
                 : 0;
             return (
-              <>
+              <Fragment key={gizmoNode.id}>
                 <TransformGizmo
                   canvas={canvasRef.current}
                   pivotX={mpPivotX}
@@ -8309,8 +8737,9 @@ function EffectsShell({
                   rotate={effective("rotate", 0)}
                   boundsMin={boundsMin}
                   boundsMax={boundsMax}
+                  boxTranslate={multiGizmo}
                   onChange={(patch) => {
-                    const id = activeTransformNode.id;
+                    const id = gizmoNode.id;
                     // Single coalescing key for the whole drag so a 60-
                     // frame gizmo manipulation yields one undo entry,
                     // not one-per-(param × frame).
@@ -8333,28 +8762,26 @@ function EffectsShell({
                     yVal: cy - mpPivotY,
                   })}
                   aspectCorrect
-                  currentTick={currentTick}
                   ticksPerFrame={ticksPerFrame}
                   onPointDrag={(tick, xVal, yVal) =>
                     onMotionPathPointChange(
-                      activeTransformNode.id,
+                      gizmoNode.id,
                       "translateX",
                       "translateY",
                       tick,
                       xVal,
                       yVal,
-                      `motionpath:${activeTransformNode.id}`
+                      `motionpath:${gizmoNode.id}`
                     )
                   }
                 />
-              </>
+              </Fragment>
             );
-          })()}
+          })}
           {/* Shape-primitive handles (Circle, Rectangle, …) — move the
               center, drag edges/corners to resize. Reads effective
               (keyframe-aware) params; writes coalesce into one undo entry. */}
-          {activePrimitiveNode && backendReady && (() => {
-            const node = activePrimitiveNode;
+          {backendReady && primitiveGizmoNodes.map((node) => {
             const adapter = PRIMITIVE_GIZMO_ADAPTERS[node.data.defType];
             if (!adapter) return null;
             const animMap = node.data.animation;
@@ -8396,7 +8823,7 @@ function EffectsShell({
               mp?.fromCenter ??
               ((cx2: number, cy2: number) => ({ xVal: cx2, yVal: cy2 }));
             return (
-              <>
+              <Fragment key={node.id}>
                 <PrimitiveGizmo
                   canvas={canvasRef.current}
                   cx={cx}
@@ -8430,7 +8857,6 @@ function EffectsShell({
                     toCenter={mpToCenter}
                     fromCenter={mpFromCenter}
                     aspectCorrect={false}
-                    currentTick={currentTick}
                     ticksPerFrame={ticksPerFrame}
                     onPointDrag={(tick, xVal, yVal) =>
                       onMotionPathPointChange(
@@ -8445,9 +8871,9 @@ function EffectsShell({
                     }
                   />
                 )}
-              </>
+              </Fragment>
             );
-          })()}
+          })}
           {/* Gradient handles — linear endpoints (line + 2 dots) or the
               radial center/radius. Reads keyframe-aware params; writes
               coalesce into one undo entry per drag. Gradient param space is
@@ -8806,6 +9232,13 @@ function EffectsShell({
         onSave={handleSaveAsWithMaybeReset}
         findConflict={(name) => findConflict(name)}
       />
+      {mcp.status.state === "pairing" && (
+        <McpPairingDialog
+          code={mcp.status.code}
+          onConfirm={mcp.confirmPairing}
+          onCancel={mcp.cancelPairing}
+        />
+      )}
       {(() => {
         if (!exportApp) return null;
         const node = nodes.find((n) => n.id === exportApp.outputNodeId);

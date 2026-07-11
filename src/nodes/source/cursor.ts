@@ -285,6 +285,9 @@ export const cursorNode: NodeDefinition = {
     });
 
     return {
+      // Textures live in this node's persistent state (redrawn in place) —
+      // the evaluator must not release them (see NodeOutput.ownsTextures).
+      ownsTextures: false,
       primary: state.primary!,
       aux: {
         velocity: state.velocity!,

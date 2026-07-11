@@ -17,11 +17,14 @@ export type SplineFillFit = "window" | "contain" | "cover";
 export const SPLINE_COMPOSITE_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
-uniform sampler2D u_fillMask;  // coverage (alpha), row-0-top
+uniform sampler2D u_fillMask;  // coverage (alpha) — or a straight-alpha
+                               // COLOR layer when u_fillPrecolored == 1
 uniform sampler2D u_stroke;    // stroke color straight-alpha, row-0-top
 uniform sampler2D u_fillImage; // straight-alpha fill image, Y-up canvas space
 uniform int u_hasStroke;
 uniform int u_hasFillImage;
+uniform int u_fillPrecolored;  // use u_fillMask as the finished fill layer
+uniform int u_strokeFromImage; // recolor the stroke by the sampled image
 uniform vec4 u_fillColor;      // straight-alpha solid fill fallback
 uniform int u_fit;             // 0 window, 1 contain, 2 cover
 uniform vec2 u_uvMin;          // shape bbox in canvas UV (Y-up)
@@ -39,9 +42,9 @@ vec4 over(vec4 s, vec4 d) {
 
 void main() {
   vec2 m = vec2(v_uv.x, 1.0 - v_uv.y);   // sample CPU canvases (row-0-top)
-  float cov = texture(u_fillMask, m).a;
 
-  vec4 col;
+  // Sample the wired image once — the fill and/or the stroke may use it.
+  vec4 imgCol = vec4(0.0);
   if (u_hasFillImage == 1) {
     vec2 uv;
     if (u_fit == 0) {
@@ -50,18 +53,27 @@ void main() {
       vec2 local = (v_uv - u_uvMin) / max(u_uvSize, vec2(1e-6));
       uv = (local - 0.5) * u_fitScale + 0.5;
     }
-    col = texture(u_fillImage, uv);
+    imgCol = texture(u_fillImage, uv);
     // contain: anything outside the fitted image is letterbox (transparent).
     if (u_fit == 1 &&
         (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))))) {
-      col = vec4(0.0);
+      imgCol = vec4(0.0);
     }
-  } else {
-    col = u_fillColor;
   }
-  vec4 fill = vec4(col.rgb, col.a * cov);
+
+  vec4 fill;
+  if (u_fillPrecolored == 1) {
+    fill = texture(u_fillMask, m);        // finished color layer, use as-is
+  } else {
+    float cov = texture(u_fillMask, m).a;
+    vec4 col = u_hasFillImage == 1 ? imgCol : u_fillColor;
+    fill = vec4(col.rgb, col.a * cov);
+  }
 
   vec4 stroke = u_hasStroke == 1 ? texture(u_stroke, m) : vec4(0.0);
+  // Stroke alpha is its coverage regardless of its baked color, so the
+  // image can recolor it in place.
+  if (u_strokeFromImage == 1) stroke = vec4(imgCol.rgb, stroke.a * imgCol.a);
   outColor = over(stroke, fill);          // stroke over fill
 }`;
 
@@ -180,6 +192,15 @@ export function makeZeroTex(gl: WebGL2RenderingContext): WebGLTexture {
 // optional wired fill image into `target`. `strokeTex` null ⇒ no stroke;
 // `fillImage` null ⇒ flat `fillColorHex`. `zeroTex` is a 1×1 placeholder for
 // the unused samplers.
+//
+// Two optional routing flags (Rasterize Spline's image→fill / image→stroke
+// toggles; defaults reproduce the original behavior for every caller):
+//  - `fillPrecolored` — `fillMaskTex` is a FINISHED straight-alpha color
+//    layer (flat or ramp fill baked by the caller), used as-is instead of
+//    coverage × (image | fillColor). Lets the image drive the stroke alone.
+//  - `strokeFromImage` — the stroke layer's alpha is treated as coverage
+//    and its color replaced by the sampled image (same fit mapping as the
+//    fill). Only meaningful with a wired `fillImage`.
 export function compositeSplineFill(
   ctx: RenderContext,
   target: ImageValue,
@@ -191,6 +212,8 @@ export function compositeSplineFill(
     fit: SplineFillFit;
     subpaths: SplineSubpath[];
     zeroTex: WebGLTexture;
+    fillPrecolored?: boolean;
+    strokeFromImage?: boolean;
   }
 ): void {
   const { fillMaskTex, strokeTex, fillImage, fillColorHex, fit, subpaths, zeroTex } =
@@ -199,7 +222,8 @@ export function compositeSplineFill(
   const fitU = fit === "window" || !hasImage ? null : splineFitUniforms(subpaths, ctx.width, ctx.height, fit);
   const [fr, fg, fb, fa] = hexToRgba01(fillColorHex);
 
-  const prog = ctx.getShader("spline-fill/composite", SPLINE_COMPOSITE_FS);
+  // Key bumped with the shader source (getShader caches by key alone).
+  const prog = ctx.getShader("spline-fill/composite2", SPLINE_COMPOSITE_FS);
   ctx.drawFullscreen(prog, target, (gl) => {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, fillMaskTex);
@@ -215,6 +239,14 @@ export function compositeSplineFill(
 
     gl.uniform1i(gl.getUniformLocation(prog, "u_hasStroke"), strokeTex ? 1 : 0);
     gl.uniform1i(gl.getUniformLocation(prog, "u_hasFillImage"), hasImage ? 1 : 0);
+    gl.uniform1i(
+      gl.getUniformLocation(prog, "u_fillPrecolored"),
+      opts.fillPrecolored ? 1 : 0
+    );
+    gl.uniform1i(
+      gl.getUniformLocation(prog, "u_strokeFromImage"),
+      opts.strokeFromImage && strokeTex ? 1 : 0
+    );
     gl.uniform4f(gl.getUniformLocation(prog, "u_fillColor"), fr, fg, fb, fa);
     gl.uniform1i(
       gl.getUniformLocation(prog, "u_fit"),

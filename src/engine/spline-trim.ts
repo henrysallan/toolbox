@@ -5,15 +5,21 @@ import { measureSpline, measureSubpath } from "./spline-math";
 // Trim Paths — keep only the arc-length window [start, end] of a spline,
 // measured across ALL subpaths concatenated into one length domain (After
 // Effects "Trim Paths → Trim Multiple Shapes: Simultaneously"). Animating the
-// window (keyframed scalars) draws a stroke on/off. Pure, engine-side; the
-// boundary cubics are split with bezier-js. See specdocs/062526_node-expansion.md.
+// window (keyframed scalars) draws a stroke on/off. An optional `offset`
+// slides the whole window along the domain cyclically (AE's Offset): the
+// window wraps at the ends, so a shifted window can straddle the seam — part
+// re-emerging at the start while the rest still shows at the end. Offset is
+// unbounded (taken mod 1), so keyframing 0→N loops the trim N times. Pure,
+// engine-side; the boundary cubics are split with bezier-js. See
+// specdocs/062526_node-expansion.md.
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 
 // Rebuild an OPEN subpath from a contiguous chain of bezier-js cubics. Each
 // cubic contributes its endpoint as an anchor; in/out handles come from the
 // adjacent control points — the same reconstruction `offsetSubpath` uses.
-function cubicsToSubpath(curves: Bezier[]): SplineSubpath | null {
+// Exported for the other cut-a-curve consumers (spline-boolean's line mode).
+export function cubicsToSubpath(curves: Bezier[]): SplineSubpath | null {
   if (curves.length === 0) return null;
   const anchors: SplineAnchor[] = [];
   const head = curves[0].points;
@@ -74,24 +80,15 @@ function trimSubpathByLength(
   return cubicsToSubpath(curves);
 }
 
-// Trim a spline (as subpaths) to the arc-length fraction window [start, end].
-// A partially-included closed subpath becomes open. Returns the input
-// unchanged when not trimming (identity fast-path), or [] when the window is
-// empty (including start >= end).
-export function trimSubpaths(
+// Extract one non-wrapping window [s, e] (fractions, 0 ≤ s < e ≤ 1) using a
+// pre-computed measurement. The per-subpath loop of the original trim.
+function trimWindow(
   subpaths: SplineSubpath[],
-  start: number,
-  end: number
+  lengths: ReturnType<typeof measureSpline>,
+  s: number,
+  e: number
 ): SplineSubpath[] {
-  if (!subpaths || subpaths.length === 0) return subpaths;
-  const s = clamp01(Number.isFinite(start) ? start : 0);
-  const e = clamp01(Number.isFinite(end) ? end : 1);
-  if (s <= 0 && e >= 1) return subpaths; // identity — nothing trimmed
-  if (e - s <= 1e-9) return []; // empty window
-
-  const lengths = measureSpline({ kind: "spline", subpaths } as SplineValue);
   const total = lengths.total;
-  if (total <= 0) return subpaths;
   const loLen = s * total;
   const hiLen = e * total;
 
@@ -116,4 +113,81 @@ export function trimSubpaths(
     if (trimmed && trimmed.anchors.length >= 2) out.push(trimmed);
   }
   return out;
+}
+
+// Join two open cut pieces that meet at the wrap seam into one continuous
+// open subpath: `a` ends exactly where `b` begins (the closed loop's own
+// start/end anchor), so the joint anchor takes a's arriving in-handle and
+// b's departing out-handle.
+function joinAtSeam(a: SplineSubpath, b: SplineSubpath): SplineSubpath {
+  const aEnd = a.anchors[a.anchors.length - 1];
+  const bStart = b.anchors[0];
+  const joint: SplineAnchor = { pos: bStart.pos };
+  if (aEnd.inHandle) joint.inHandle = aEnd.inHandle;
+  if (bStart.outHandle) joint.outHandle = bStart.outHandle;
+  return {
+    anchors: [...a.anchors.slice(0, -1), joint, ...b.anchors.slice(1)],
+    closed: false,
+  };
+}
+
+// Trim a spline (as subpaths) to the arc-length fraction window [start, end],
+// optionally slid along the domain by `offset` (cyclic, any value — taken
+// mod 1). A partially-included closed subpath becomes open. When the shifted
+// window wraps past the end of the domain it re-enters at the start, emitting
+// the tail piece then the head piece; if the seam falls inside a single
+// closed loop the two pieces are stitched into one continuous subpath (so a
+// stroke sliding around a circle never shows cap breaks). Returns the input
+// unchanged when not trimming (identity fast-path), or [] when the window is
+// empty (including start >= end).
+export function trimSubpaths(
+  subpaths: SplineSubpath[],
+  start: number,
+  end: number,
+  offset = 0
+): SplineSubpath[] {
+  if (!subpaths || subpaths.length === 0) return subpaths;
+  const s = clamp01(Number.isFinite(start) ? start : 0);
+  const e = clamp01(Number.isFinite(end) ? end : 1);
+  if (s <= 0 && e >= 1) return subpaths; // full window — offset can't matter
+  if (e - s <= 1e-9) return []; // empty window
+
+  const oRaw = Number.isFinite(offset) ? offset : 0;
+  let o = oRaw - Math.floor(oRaw); // wrap to [0, 1)
+  if (o <= 1e-9 || o >= 1 - 1e-9) o = 0;
+
+  const lengths = measureSpline({ kind: "spline", subpaths } as SplineValue);
+  if (lengths.total <= 0) return subpaths;
+  if (o === 0) return trimWindow(subpaths, lengths, s, e);
+
+  let lo = s + o;
+  if (lo >= 1) lo -= 1; // s ≤ 1 and o < 1, so one subtract re-enters [0, 1)
+  const hi = lo + (e - s);
+  if (hi <= 1) return trimWindow(subpaths, lengths, lo, hi);
+
+  // Window straddles the seam: emit [lo, 1] then [0, hi−1].
+  const tail = 1 - lo > 1e-9 ? trimWindow(subpaths, lengths, lo, 1) : [];
+  const head = hi - 1 > 1e-9 ? trimWindow(subpaths, lengths, 0, hi - 1) : [];
+
+  // The seam joins the END of the last nonzero-length subpath to the START
+  // of the first — the same physical point only when they're one closed
+  // loop. (Both pieces are then guaranteed genuine open cuts: a window with
+  // an interior edge can't wholly contain a subpath spanning the domain.)
+  let firstIdx = -1;
+  let lastIdx = -1;
+  for (let i = 0; i < subpaths.length; i++) {
+    if (lengths.perSubpath[i].total <= 0) continue;
+    if (firstIdx < 0) firstIdx = i;
+    lastIdx = i;
+  }
+  const seamInsideLoop =
+    firstIdx >= 0 && firstIdx === lastIdx && !!subpaths[firstIdx].closed;
+  if (seamInsideLoop && tail.length > 0 && head.length > 0) {
+    return [
+      ...tail.slice(0, -1),
+      joinAtSeam(tail[tail.length - 1], head[0]),
+      ...head.slice(1),
+    ];
+  }
+  return [...tail, ...head];
 }

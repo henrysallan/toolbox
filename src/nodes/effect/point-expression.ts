@@ -36,22 +36,34 @@ import {
 //   PATH (optional `path` spline input):
 //                     pathCount(), pathLen(sub?), pathPos(factor, sub?),
 //                     pathX/pathY/pathAngle(factor, sub?)
+//   CHANNELS:         Houdini-style tunables. ch("name", default[, min, max])
+//                     returns a slider value (wireable); pick("name", "optA",
+//                     "optB", …) returns a dropdown selection string. Both
+//                     return the inline default until the control exists. The
+//                     panel "Sync" button scans the source for ch(…)/pick(…)
+//                     and mints the matching slider / dropdown (rendered via
+//                     the standard param control). Because channel names are
+//                     STRINGS (never JS identifiers in scope) they can't
+//                     collide with built-ins — ch("x") is fine.
 //
 // The block uses assignments (not `return`). Final scale = sx*scale, sy*scale.
 // Points with a falsy `keep` are dropped — count shrinks, matching Blender's
 // Delete Geometry (Copy to Points then instances fewer copies).
 
-// Named-var socket helpers reused from the scalar Expression node.
+// Reused from the scalar Expression node: newExprInput (panel "+") is
+// re-exported for EffectsApp; newExprInputId mints stable socket keys for
+// channels the Sync button discovers.
 export { newExprInput } from "./expression";
+import { newExprInputId } from "./expression";
 
 // Recompute the cache every frame only when the source is time-dependent —
 // same predicate as expression.ts. `rand` is deliberately NOT here (it's
 // frame-independent), so an index-hashed-only expression caches statically.
 const TIME_RE = /\b(t|time|frame|random)\b/;
-const IDENT_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 const DEFAULT_EXPRESSION = `// read:  index, count, groupIndex, px, py, rot0, sx0, sy0
 // write: x, y, rot, sx, sy, scale, keep   (declare temps with let/const)
+// tunables: ch("name", default) — then hit Sync to make sliders
 x = px;
 y = py;`;
 
@@ -162,11 +174,25 @@ function makePathEnv(
 function makeEnv(
   ctx: RenderContext,
   nodeId: string,
-  path: PathEnv
+  path: PathEnv,
+  channels: Record<string, number | string>
 ): Record<string, unknown> {
   const M = Math;
   const rng = mulberry32(hashString(nodeId) ^ ((ctx.frame >>> 0) + 0x9e3779b9));
   return {
+    // Houdini-style channels: the named control's value if it exists (wired or
+    // its slider/dropdown value), else the inline fallback — so the expression
+    // is valid before you Sync + create the control. Trailing args to ch()
+    // (min, max) are metadata the Sync scanner reads; ignored at eval.
+    ch: (name: string, def = 0) => {
+      const v = channels[name];
+      return typeof v === "number" ? v : Number.isFinite(def) ? def : 0;
+    },
+    // Dropdown channel — returns the selected option string, else the default.
+    pick: (name: string, def = "") => {
+      const v = channels[name];
+      return typeof v === "string" ? v : def;
+    },
     t: ctx.time,
     time: ctx.time,
     frame: ctx.frame,
@@ -224,7 +250,8 @@ const ENV_KEYS = Object.keys(
   makeEnv(
     { time: 0, frame: 0, fps: 60 } as RenderContext,
     "sample",
-    makePathEnv(null, null)
+    makePathEnv(null, null),
+    {}
   )
 ).join(",");
 
@@ -242,14 +269,14 @@ interface PointCtx {
   sy0: number;
 }
 
-// Compiled function: (…namedVars, __env, __pt) → [x, y, sx, sy, scale, rot,
-// keep] (keep as 0/1). The block runs against writable locals initialised from
-// the point; we read them back after.
-type CompiledFn = (...args: unknown[]) => unknown;
+// Compiled function: (__env, __pt) → [x, y, sx, sy, scale, rot, keep] (keep as
+// 0/1). The block runs against writable locals initialised from the point; we
+// read them back after. Channel inputs are read via ch() from __env, never
+// injected as parameters — so nothing user-named lands in the kernel's scope.
+type CompiledFn = (env: unknown, pt: unknown) => unknown;
 
 interface Compiled {
   source: string;
-  varsKey: string;
   fn: CompiledFn | null;
   error: string | null;
 }
@@ -277,28 +304,15 @@ function warnOnce(state: ExprState, nodeId: string): void {
   state.lastWarned = state.error;
 }
 
-function compile(source: string, varNames: string[]): Compiled {
-  const varsKey = varNames.join(",");
-  for (const n of varNames) {
-    if (!IDENT_RE.test(n)) {
-      return { source, varsKey, fn: null, error: `Invalid variable name: "${n}"` };
-    }
-  }
-  const seen = new Set<string>();
-  for (const n of varNames) {
-    if (seen.has(n)) {
-      return { source, varsKey, fn: null, error: `Duplicate variable: "${n}"` };
-    }
-    seen.add(n);
-  }
+function compile(source: string): Compiled {
   const body = source.trim();
   try {
     // Per-point locals are declared from __pt; the user's block mutates the
     // writable ones; we return the packed result. A stray `return` in the
     // user block early-exits → we detect the non-array below and keep the
-    // point unchanged.
+    // point unchanged. No user-controlled identifiers enter this scope
+    // (channels are read via ch()), so there's no collision surface.
     const fn = new Function(
-      ...varNames,
       "__env",
       "__pt",
       `"use strict";
@@ -308,15 +322,112 @@ let x=px,y=py,rot=rot0,sx=sx0,sy=sy0,scale=1,keep=true;
 ${body}
 return [x,y,sx,sy,scale,rot,keep?1:0];`
     ) as CompiledFn;
-    return { source, varsKey, fn, error: null };
+    return { source, fn, error: null };
   } catch (e) {
     return {
       source,
-      varsKey,
       fn: null,
       error: e instanceof Error ? e.message : String(e),
     };
   }
+}
+
+// Scan an expression for channel references so the Sync button can mint the
+// matching controls (string-literal names → zero false positives):
+//   ch("name", default, min, max)   → scalar slider  (min/max optional)
+//   pick("name", "optA", "optB", …) → dropdown (first option is the default)
+export interface ChannelRef {
+  name: string;
+  kind: "scalar" | "enum";
+  default?: number | string;
+  min?: number;
+  max?: number;
+  options?: string[];
+}
+
+const CH_RE =
+  /\bch\s*\(\s*(['"])([A-Za-z_$][\w$]*)\1\s*(?:,\s*(-?\d*\.?\d+(?:[eE][-+]?\d+)?))?\s*(?:,\s*(-?\d*\.?\d+(?:[eE][-+]?\d+)?))?\s*(?:,\s*(-?\d*\.?\d+(?:[eE][-+]?\d+)?))?/g;
+const PICK_RE =
+  /\bpick\s*\(\s*(['"])([A-Za-z_$][\w$]*)\1\s*((?:,\s*(['"])[^'"]*\4)+)/g;
+const STR_LIT_RE = /(['"])([^'"]*)\1/g;
+
+function numOrUndef(s: string | undefined): number | undefined {
+  if (s === undefined) return undefined;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+export function scanChannelRefs(source: string): ChannelRef[] {
+  const out: ChannelRef[] = [];
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+
+  CH_RE.lastIndex = 0;
+  while ((m = CH_RE.exec(source)) !== null) {
+    const name = m[2];
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push({
+      name,
+      kind: "scalar",
+      default: numOrUndef(m[3]),
+      min: numOrUndef(m[4]),
+      max: numOrUndef(m[5]),
+    });
+  }
+
+  PICK_RE.lastIndex = 0;
+  while ((m = PICK_RE.exec(source)) !== null) {
+    const name = m[2];
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const options: string[] = [];
+    let s: RegExpExecArray | null;
+    STR_LIT_RE.lastIndex = 0;
+    while ((s = STR_LIT_RE.exec(m[3])) !== null) options.push(s[2]);
+    out.push({
+      name,
+      kind: "enum",
+      options,
+      default: options[0] ?? "",
+    });
+  }
+
+  return out;
+}
+
+// Merge channel references from `source` into an existing input list. Add-only
+// (Houdini's "create from channel references"): new channels are appended with
+// their inline default + control metadata; existing ones keep their id, wires,
+// and user-tuned value. Callers prune with the row × button. Returns the SAME
+// array (referentially) when nothing changed, so the panel skips a no-op write.
+export function syncChannelInputs(
+  existing: ExprInput[],
+  source: string
+): ExprInput[] {
+  const have = new Set(existing.map((e) => e.name));
+  const additions: ExprInput[] = [];
+  for (const ref of scanChannelRefs(source)) {
+    if (have.has(ref.name)) continue;
+    have.add(ref.name);
+    if (ref.kind === "enum") {
+      additions.push({
+        id: newExprInputId(),
+        name: ref.name,
+        default: (ref.default as string) ?? "",
+        options: ref.options ?? [],
+      });
+    } else {
+      additions.push({
+        id: newExprInputId(),
+        name: ref.name,
+        default: (ref.default as number) ?? 1,
+        ...(ref.min !== undefined ? { min: ref.min } : {}),
+        ...(ref.max !== undefined ? { max: ref.max } : {}),
+      });
+    }
+  }
+  return additions.length === 0 ? existing : [...existing, ...additions];
 }
 
 function toNum(v: unknown, fallback = 0): number {
@@ -343,8 +454,14 @@ export const pointExpressionNode: NodeDefinition = {
     "Set `keep=false` to cull a point. Wire a spline into `path` to sample " +
     "guide curves with pathPos(factor, sub) / pathLen(sub) / pathAngle(...). " +
     "Deterministic rand(seed) hashes on index for stable per-point randomness; " +
-    "random() varies per frame. This is the per-element field primitive — the " +
-    "per-point counterpart to the once-per-frame Expression node.",
+    "random() varies per frame. Mark tunables with ch(\"name\", default) " +
+    "(sliders) or pick(\"name\", \"optA\", \"optB\") (dropdowns) and hit Sync to " +
+    "turn them into standard controls you can drive. Every ch() channel is " +
+    "also a wireable scalar input socket addressed by its channel name — " +
+    "e.g. with ch(\"speed\", 600) in the expression, wire an LFO or audio " +
+    "level into the `speed` input to drive it. This is the per-element " +
+    "field primitive — the per-point counterpart to the once-per-frame " +
+    "Expression node.",
   backend: "webgl2",
   // Pure CPU eval. fingerprintExtras folds ctx.time in only when the source is
   // time-dependent, so static per-point expressions cache as constants.
@@ -359,20 +476,29 @@ export const pointExpressionNode: NodeDefinition = {
     return [
       { name: "points", type: "points", required: true },
       { name: "path", type: "spline", required: false, label: "Path" },
-      ...entries.map<InputSocketDef>((e) => ({
-        name: `in:${e.id}`,
-        label: e.name,
-        type: "scalar",
-        required: false,
-      })),
+      // Scalar (ch) channels get a wireable socket; enum (pick) channels are
+      // panel-only dropdowns.
+      ...entries
+        .filter((e) => !e.options)
+        .map<InputSocketDef>((e) => ({
+          name: `in:${e.id}`,
+          label: e.name,
+          type: "scalar",
+          required: false,
+        })),
     ];
   },
   params: [
     {
       name: "inputs",
-      label: "Inputs",
+      label: "Channels",
       type: "expr_inputs",
       default: [],
+      // Show the "Sync" button: scan the expression for ch(…) calls and mint
+      // the matching sliders. Read `expression` (the sibling param) for the
+      // source. Channels are read via ch("name") — never bare variables — so
+      // no name can collide with a built-in.
+      channelSync: true,
     },
     {
       name: "expression",
@@ -400,17 +526,11 @@ export const pointExpressionNode: NodeDefinition = {
 
     const entries = (params.inputs as ExprInput[]) ?? [];
     const source = (params.expression as string) ?? "";
-    const varNames = entries.map((e) => e.name);
     const onErrorZero = (params.on_error as string) === "zero";
 
     const state = getState(ctx, nodeId);
-    const varsKey = varNames.join(",");
-    if (
-      !state.compiled ||
-      state.compiled.source !== source ||
-      state.compiled.varsKey !== varsKey
-    ) {
-      state.compiled = compile(source, varNames);
+    if (!state.compiled || state.compiled.source !== source) {
+      state.compiled = compile(source);
       state.error = state.compiled.error;
       warnOnce(state, nodeId);
     }
@@ -420,12 +540,24 @@ export const pointExpressionNode: NodeDefinition = {
       return { primary: src };
     }
 
-    // Named uniform args (wired scalar wins, else the per-socket default).
-    const baseArgs: unknown[] = entries.map((e) => {
-      const sock = inputs[`in:${e.id}`];
-      if (sock && sock.kind === "scalar") return sock.value;
-      return e.default ?? 1;
-    });
+    // Channel values by name. Enum (pick) channels carry a selected string and
+    // have no socket; scalar (ch) channels take the wired scalar if present,
+    // else the slider default. Read in the expression via ch()/pick().
+    const channels: Record<string, number | string> = {};
+    for (const e of entries) {
+      if (e.options) {
+        channels[e.name] =
+          typeof e.default === "string" ? e.default : (e.options[0] ?? "");
+      } else {
+        const sock = inputs[`in:${e.id}`];
+        channels[e.name] =
+          sock && sock.kind === "scalar"
+            ? sock.value
+            : typeof e.default === "number"
+              ? e.default
+              : 0;
+      }
+    }
 
     // Path env (measured once per frame).
     const pathSrc =
@@ -434,7 +566,7 @@ export const pointExpressionNode: NodeDefinition = {
       pathSrc,
       pathSrc ? measureSpline(pathSrc) : null
     );
-    const env = makeEnv(ctx, nodeId, pathEnv);
+    const env = makeEnv(ctx, nodeId, pathEnv, channels);
 
     const n = src.count;
     const inPos = src.positions;
@@ -481,8 +613,12 @@ export const pointExpressionNode: NodeDefinition = {
       let rotOut = rot0;
       let keep = true;
       try {
-        const raw = fn(...baseArgs, env, pt);
-        if (Array.isArray(raw)) {
+        const raw = fn(env, pt);
+        // Only the compiled epilogue's packed 7-tuple counts as a result. A
+        // user `return` replaces it — and a returned shorter array (e.g.
+        // `return [x, y]`) would leave raw[6] undefined and cull EVERY point
+        // — so anything else keeps the point as-is.
+        if (Array.isArray(raw) && raw.length === 7) {
           x = toNum(raw[0], px);
           y = toNum(raw[1], py);
           const sx = toNum(raw[2], sx0);
@@ -493,7 +629,6 @@ export const pointExpressionNode: NodeDefinition = {
           rotOut = toNum(raw[5], rot0);
           keep = !!raw[6];
         }
-        // Non-array (e.g. the user block `return`ed) → keep the point as-is.
       } catch (e) {
         if (!runtimeErr) {
           state.error = e instanceof Error ? e.message : String(e);
@@ -553,6 +688,50 @@ export const pointExpressionNode: NodeDefinition = {
   fingerprintExtras(params, ctx) {
     const src = (params.expression as string) ?? "";
     return TIME_RE.test(src) ? `t:${ctx.time}` : "";
+  },
+
+  // AI-recipe gate (graph-validation.ts calls this; it never runs during
+  // evaluation). Compile + smoke-run the kernel once against a dummy point so
+  // expression code that fails SILENTLY at runtime — a strict-mode
+  // ReferenceError from an undeclared temp, or a user `return` replacing the
+  // packed result — comes back as a repairable validation error instead of a
+  // recipe that quietly does nothing.
+  validateParams(params) {
+    const raw = params.expression;
+    if (raw !== undefined && typeof raw !== "string")
+      return ["expression must be a string of JavaScript."];
+    const compiled = compile(raw ?? "");
+    if (!compiled.fn)
+      return [`expression does not compile: ${compiled.error ?? "unknown error"}`];
+    const pt: PointCtx = {
+      index: 0,
+      count: 1,
+      groupIndex: 0,
+      px: 0.5,
+      py: 0.5,
+      rot0: 0,
+      sx0: 1,
+      sy0: 1,
+    };
+    try {
+      const env = makeEnv(
+        { time: 0, frame: 0, fps: 60 } as RenderContext,
+        "validate",
+        makePathEnv(null, null),
+        {}
+      );
+      const result = compiled.fn(env, pt);
+      if (!Array.isArray(result) || result.length !== 7)
+        return [
+          "expression must use assignments (x = …, y = …, keep = …), not `return` — a returned value replaces the point outputs and the expression does nothing.",
+        ];
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return [
+        `expression throws when run (${msg}) — declare temporaries with let/const and assign to the writable outputs x, y, rot, sx, sy, scale, keep.`,
+      ];
+    }
+    return [];
   },
 
   dispose(ctx, nodeId) {

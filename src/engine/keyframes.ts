@@ -379,6 +379,33 @@ function oklabToRgb(L: number, a: number, b: number): [number, number, number] {
   ];
 }
 
+// Color keyframe values arrive in two forms: 0..1 RGBA tuples (gradient
+// point / ramp stop virtual keys seed tuples) and hex strings (literal
+// color params keyframe their stored value verbatim). Interpolation math
+// needs tuples, so coerce here — a hex string parses to [r,g,b,1].
+function toRgbaTuple(v: unknown): RGBA {
+  if (Array.isArray(v) && v.length >= 3) {
+    return [
+      typeof v[0] === "number" ? v[0] : 0,
+      typeof v[1] === "number" ? v[1] : 0,
+      typeof v[2] === "number" ? v[2] : 0,
+      typeof v[3] === "number" ? v[3] : 1,
+    ];
+  }
+  if (typeof v === "string") {
+    let h = v.replace("#", "");
+    if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+    const n = parseInt(h.slice(0, 6) || "0", 16);
+    return [
+      ((n >> 16) & 0xff) / 255,
+      ((n >> 8) & 0xff) / 255,
+      (n & 0xff) / 255,
+      1,
+    ];
+  }
+  return [0, 0, 0, 1];
+}
+
 function lerpRgba(a: RGBA, b: RGBA, t: number): RGBA {
   return [
     a[0] + (b[0] - a[0]) * t,
@@ -513,8 +540,8 @@ function interpolate(
     case "vec4":
       return lerpArray(prev.value as number[], next.value as number[], t);
     case "color": {
-      const a = prev.value as RGBA;
-      const b = next.value as RGBA;
+      const a = toRgbaTuple(prev.value);
+      const b = toRgbaTuple(next.value);
       return colorSpace === "rgb" ? lerpRgba(a, b, t) : lerpRgbaOklab(a, b, t);
     }
     case "spline_anchors":

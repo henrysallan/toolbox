@@ -776,6 +776,14 @@ export type SdfValue = {
 export interface NodeOutput {
   primary?: SocketValue;
   aux?: Record<string, SocketValue>;
+  // Set `false` when the returned texture-backed values live in the node's
+  // persistent `ctx.state` (redrawn in place across evals — e.g. Text's
+  // raster, a Simulation Zone's ping-pong buffer) rather than being freshly
+  // allocated this compute. The evaluator then never releases them: not in
+  // the universal mask/opacity post-passes, not as end-of-eval transients,
+  // and not on cache eviction. State textures are torn down by the node's
+  // own `dispose`. Default (absent/true): the evaluator owns the textures.
+  ownsTextures?: boolean;
 }
 
 export interface InputSocketDef {
@@ -845,7 +853,11 @@ export type ParamType =
   // sockets (one per variable) and the panel renders an editable name +
   // default per row. Not keyframable (structural). See
   // src/nodes/effect/expression.ts.
-  | "expr_inputs";
+  | "expr_inputs"
+  // WedgeValueItem[] — the Wedge node's explicit value list (one row per
+  // batch-render variation). Plain-JSON serialization, not keyframable.
+  // See src/nodes/source/wedge.ts + specdocs/071026_wedge-render-batching.md.
+  | "wedge_values";
 
 // One named input variable on the Expression node. `name` is the JS
 // identifier the bound socket value is exposed as inside the expression
@@ -855,7 +867,29 @@ export type ParamType =
 export interface ExprInput {
   id: string;
   name: string;
-  default?: number;
+  // Current/default value. Number for the scalar Expression node and for
+  // Point Expression's ch() channels; a string for Point Expression's pick()
+  // (enum) channels.
+  default?: number | string;
+  // Point Expression channels only (auto-populated by the Sync button from
+  // ch(…, min, max) / pick(…, ...options)) so each row renders as the standard
+  // scalar slider or enum dropdown instead of a bare number field. Absent for
+  // the scalar Expression node (its rows keep the simple name + number field).
+  min?: number;
+  max?: number;
+  softMax?: number;
+  step?: number;
+  options?: string[]; // present ⇒ enum (dropdown); `default` is a string
+}
+
+// One row of a Wedge node's explicit value list. `value`'s runtime shape is
+// keyed by the node's `type` param: number (scalar), [x,y] (vec2), RGBA hex
+// string (color — same stored form as color params), or plain string. The
+// scalar-only v1 UI writes numbers; the union is declared up front so the
+// param type doesn't churn when the other row editors land.
+export interface WedgeValueItem {
+  id: string;
+  value: number | string | [number, number];
 }
 
 // Imported 3D model. The Import 3D node loads the file (GLB/glTF/OBJ) and
@@ -979,6 +1013,27 @@ export interface ImageSequenceParamValue {
   // Dimensions of the first decoded frame (the sequence is assumed uniform).
   width: number;
   height: number;
+  // Present when the frames are EXR files (magic-byte sniffed at pick time):
+  // the first frame's grouped layer list, driving the Video Source node's
+  // layer dropdown. Frames decode through engine/exr instead of
+  // createImageBitmap. See specdocs/070926_exr-color-pipeline.md.
+  exr?: {
+    layers: import("@/engine/exr/layers").ExrLayer[];
+  };
+}
+
+// A single EXR still loaded into Image Source's `file` param (which holds a
+// plain ImageBitmap for ordinary images — compute branches on `kind`). The
+// original bytes are the canonical source: layer switches re-decode from
+// them, and serialization persists exactly these bytes (an `exr` data-URL
+// envelope — the `.toolbox` writer extracts it into a binary asset).
+export interface ExrImageParamValue {
+  kind: "exr";
+  blob: Blob;
+  filename?: string;
+  layers: import("@/engine/exr/layers").ExrLayer[];
+  width: number;
+  height: number;
 }
 
 export interface FontParamValue {
@@ -1030,6 +1085,10 @@ export interface ParamDef {
   placeholder?: string;
   // For "string" params: render a textarea instead of a single-line input.
   multiline?: boolean;
+  // For "expr_inputs" params: show a "Sync" button that scans the node's
+  // sibling `expression` param for ch("name", default) channel references and
+  // mints the matching slider inputs (Houdini-style). See Point Expression.
+  channelSync?: boolean;
   // For "enum" params: override the default dropdown rendering. Purely a
   // ParamPanel rendering hint — the engine ignores it, and the value stays a
   // plain option string either way.
@@ -1037,7 +1096,10 @@ export interface ParamDef {
   //   "font"      — a searchable font picker that merges the user's installed
   //                 (local) fonts with this param's `options` (the curated
   //                 baseline). The selected value is just the family name.
-  control?: "segmented" | "font";
+  //   "exr_layer" — a dropdown whose options come from the EXR layer list on
+  //                 the node's sibling media param (`sequence`/`file`), not
+  //                 from `options`. The value is the layer's stable id.
+  control?: "segmented" | "font" | "exr_layer";
   hidden?: boolean;
   // Optional predicate over the node's current params. Returning false hides
   // the row in the UI without affecting the underlying stored value.
@@ -1198,6 +1260,14 @@ export interface NodeDefinition {
     ctx: RenderContext,
     nodeId?: string
   ) => string;
+  // Static sanity check of a node's params, run by the AI-recipe validator
+  // (graph-validation.ts) — never during evaluation. Return human-readable
+  // problems (empty array = fine); each becomes a validation error the
+  // generate/repair loop can fix. Point Expression compiles + smoke-runs its
+  // kernel here so expression code that fails silently at runtime (a
+  // strict-mode ReferenceError from an undeclared temp, a user `return`)
+  // surfaces as a repairable error instead of a no-op recipe.
+  validateParams?: (params: Record<string, unknown>) => string[];
 }
 
 // Pointer position in canvas-normalized UV. `active` is true while the
@@ -1244,6 +1314,13 @@ export interface RenderContext {
   // Realtime playback leaves this false (the continuous loop lets deferred
   // results catch up).
   offline: boolean;
+  // Wedge batch-render iteration index. Set ONLY by the batch export driver
+  // (one full render per variation); undefined everywhere else — editor
+  // preview, live viewer, exported apps — where the Wedge node falls back to
+  // its `preview` param. A node that reads this must fold the resolved value
+  // into `fingerprintExtras` so caches bust between variations. See
+  // specdocs/071026_wedge-render-batching.md.
+  wedgeIndex?: number;
   cursor: CursorState;
   state: Record<string, unknown>;
   allocImage(opts?: { width?: number; height?: number }): ImageValue;

@@ -12,7 +12,7 @@
 const { app, BrowserWindow, shell, ipcMain, nativeImage } = require("electron");
 const path = require("path");
 const { registerFileHandlers } = require("./files");
-const { register: registerFfmpeg } = require("./ffmpeg");
+const { register: registerFfmpeg, killAllSessions } = require("./ffmpeg");
 const { registerRecentsHandlers } = require("./recents");
 const { registerAssetsHandlers } = require("./assets");
 const { registerUpdater } = require("./updater");
@@ -22,14 +22,25 @@ const DEV_URL = process.env.TOOLBOX_DEV_URL || null;
 const REMOTE_URL = process.env.TOOLBOX_REMOTE_URL || null;
 
 function installWindowGuards(win, originUrl) {
-  // A file dropped outside an app drop-zone would otherwise navigate the window
-  // to file://… and blank the app. Block file:// only — https/localhost
-  // redirects (OAuth, full-page sign-in) must still work.
-  const blockFileNav = (e, url) => {
-    if (url.startsWith("file://")) e.preventDefault();
+  const appOrigin = new URL(originUrl).origin;
+  // Navigation policy: same-origin always; off-origin only over https —
+  // that keeps the OAuth full-page redirect chain working (Supabase →
+  // provider → back to the callback) while blocking file:// (a file dropped
+  // outside a drop-zone would blank the app), custom schemes, and plain-http
+  // third parties. Off-origin pages get no native bridge either way: the
+  // preload's origin gate (preload.js) refuses to expose toolboxNative there.
+  const guardNav = (e, url) => {
+    try {
+      const u = new URL(url);
+      if (u.origin === appOrigin) return;
+      if (u.protocol === "https:") return;
+    } catch {
+      /* unparseable — block */
+    }
+    e.preventDefault();
   };
-  win.webContents.on("will-navigate", blockFileNav);
-  win.webContents.on("will-frame-navigate", (e) => blockFileNav(e, e.url));
+  win.webContents.on("will-navigate", guardNav);
+  win.webContents.on("will-frame-navigate", (e) => guardNav(e, e.url));
 
   // Same-origin popups (incl. OAuth) open in-app; genuinely external links go
   // to the system browser.
@@ -45,6 +56,10 @@ function installWindowGuards(win, originUrl) {
 }
 
 async function createWindow() {
+  // The app URL is knowable up front in every mode (serverUrl() is pure), so
+  // the preload can receive the app origin at window construction — it gates
+  // the toolboxNative bridge to this origin.
+  const appUrl = DEV_URL || REMOTE_URL || serverUrl();
   const win = new BrowserWindow({
     width: 1600,
     height: 1000,
@@ -60,6 +75,9 @@ async function createWindow() {
       sandbox: true,
       // Don't throttle rAF/timers — this is a real-time animation tool.
       backgroundThrottling: false,
+      additionalArguments: [
+        `--toolbox-app-origin=${new URL(appUrl).origin}`,
+      ],
     },
   });
 
@@ -74,7 +92,7 @@ async function createWindow() {
   win.on("unmaximize", sendMaxState);
 
   if (DEV_URL || REMOTE_URL) {
-    const url = DEV_URL || REMOTE_URL;
+    const url = appUrl;
     installWindowGuards(win, url);
     // The dev server may not be listening yet (or you start them in either
     // order). Retry on failure so start order never matters; only in dev — a
@@ -89,7 +107,7 @@ async function createWindow() {
   }
 
   // Embedded standalone server.
-  const url = serverUrl();
+  const url = appUrl;
   installWindowGuards(win, url);
   let ok = false;
   try {
@@ -175,8 +193,12 @@ app.whenReady().then(() => {
   });
 });
 
-app.on("before-quit", () => stopServer());
+app.on("before-quit", () => {
+  killAllSessions();
+  stopServer();
+});
 app.on("window-all-closed", () => {
+  killAllSessions();
   stopServer();
   // macOS apps conventionally stay alive until Cmd+Q.
   if (process.platform !== "darwin") app.quit();

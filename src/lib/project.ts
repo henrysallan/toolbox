@@ -17,6 +17,8 @@ import {
   type MediaEnvelope,
   type MissingMedia,
 } from "@/lib/media-relink";
+import { getImageOriginal, registerImageOriginal } from "@/lib/image-bytes";
+import { isExrImageValue } from "@/engine/exr";
 import { LAYER_TYPE } from "@/engine/groups";
 import { makeLayerNodes, newEdgeId } from "@/state/graph-ops";
 import { newCompositionId } from "@/state/graph";
@@ -56,7 +58,23 @@ import { newCompositionId } from "@/state/graph";
 // source. Loading a ≤v5 save rewrites Text edges targeting `in:mask` to
 // `in:morph_mask` so their font-morph wiring is preserved (see
 // deserializeGraph). No param changes.
-export const CURRENT_SCHEMA = 6;
+//
+// v7 — Merge per-layer masks: Merge dropped the universal mask input
+// (noMaskInput) in favor of one mask socket per image input — `mask:base`
+// and `mask:<layerId>`, the matte for that layer. The old universal mask
+// blended mix(base, merged, m), which for source-over compositing equals
+// matting every layer by m while the base stays un-matted — so loading a
+// ≤v6 save fans a Merge's `in:mask` edge out into one `in:mask:<layerId>`
+// edge per layer (see deserializeGraph). No param changes.
+//
+// v8 — EXR stills: Image Source's `file` param can hold an EXR
+// (ExrImageParamValue) and serializes it as a `{ kind: "exr", dataUrl }`
+// envelope of the ORIGINAL file bytes (the decoded float pixels don't fit
+// the PNG envelope; the bytes are the canonical source anyway). The
+// `.toolbox` writer extracts it into a binary asset like any dataUrl
+// envelope. Older builds don't know the kind and load the param as empty.
+// See specdocs/070926_exr-color-pipeline.md.
+export const CURRENT_SCHEMA = 8;
 
 export interface SavedNode {
   id: string;
@@ -204,7 +222,12 @@ const FONT_FAMILY_BUNDLE_SUFFIX = "__fontbundle";
 
 async function serializeParams(
   defType: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  // Families already bundled in THIS save (shared across nodes by
+  // serializeGraph). Registration is global on load — one bundle per family
+  // makes every same-family param resolve — so re-inlining the full TTF per
+  // Text node only multiplied row size. Absent (fragment callers): no dedup.
+  bundledFamilies?: Set<string>
 ): Promise<Record<string, unknown>> {
   const def = getNodeDef(defType);
   const out: Record<string, unknown> = {};
@@ -228,7 +251,30 @@ async function serializeParams(
         out[key] = null;
       }
     } else if (p.type === "file" && val instanceof ImageBitmap) {
-      out[key] = { kind: "file", dataUrl: await bitmapToDataUrl(val) };
+      // Prefer the ORIGINAL encoded bytes (registered at import/load) over a
+      // PNG re-encode of the decoded bitmap — a camera JPEG re-encoded to
+      // PNG inflates ~10×, which is what used to blow cloud rows past the
+      // statement timeout. Fallback keeps unregistered bitmaps saving.
+      const original = getImageOriginal(val);
+      out[key] = {
+        kind: "file",
+        dataUrl: original
+          ? bufferToDataUrl(
+              await original.arrayBuffer(),
+              original.type || "image/png"
+            )
+          : await bitmapToDataUrl(val),
+      };
+    } else if (p.type === "file" && isExrImageValue(val)) {
+      // EXR still (v8): the original bytes ARE the canonical source — float
+      // pixels don't fit the PNG envelope, and layers re-derive from the
+      // header on load. The `.toolbox` writer extracts the dataUrl into a
+      // binary asset; cloud rows inline it.
+      out[key] = {
+        kind: "exr",
+        filename: val.filename,
+        dataUrl: bufferToDataUrl(await val.blob.arrayBuffer(), "image/x-exr"),
+      };
     } else if (p.type === "font") {
       // Bundle the custom font's bytes if we still hold them (the upload path
       // retains the ArrayBuffer keyed by the synthetic family). The `.toolbox`
@@ -259,7 +305,7 @@ async function serializeParams(
       // bytes are unreadable (sandboxed/commercial) falls back to name-reference.
       out[key] = val;
       const family = typeof val === "string" ? val : "";
-      if (family) {
+      if (family && !bundledFamilies?.has(family)) {
         const fontsMod = await import("@/lib/fonts");
         // Already-registered bytes (uploaded, or re-registered from a prior
         // bundle on load) take the cheap path; otherwise read the installed
@@ -277,6 +323,7 @@ async function serializeParams(
             family,
             dataUrl: bufferToDataUrl(buffer, "font/ttf"),
           };
+          bundledFamilies?.add(family);
         }
       }
     } else if (p.type === "video_file") {
@@ -383,23 +430,62 @@ async function deserializeParams(
     }
     if (p.type === "paint") {
       const envelope = val as { kind?: string; dataUrl?: string } | null;
+      out[key] = null;
       if (envelope?.kind === "paint" && envelope.dataUrl) {
-        const canvas = document.createElement("canvas");
-        const bmp = await dataUrlToBitmap(envelope.dataUrl);
-        canvas.width = bmp.width;
-        canvas.height = bmp.height;
-        canvas.getContext("2d")?.drawImage(bmp, 0, 0);
-        const snapshot = await createImageBitmap(canvas);
-        out[key] = { canvas, snapshot } satisfies PaintParamValue;
-      } else {
-        out[key] = null;
+        try {
+          const canvas = document.createElement("canvas");
+          const bmp = await dataUrlToBitmap(envelope.dataUrl);
+          canvas.width = bmp.width;
+          canvas.height = bmp.height;
+          canvas.getContext("2d")?.drawImage(bmp, 0, 0);
+          const snapshot = await createImageBitmap(canvas);
+          out[key] = { canvas, snapshot } satisfies PaintParamValue;
+        } catch (e) {
+          // Corrupt/truncated data-URL (e.g. a save cut short by a row-size
+          // failure) — degrade to an empty paint layer instead of failing
+          // the whole project load.
+          console.warn(`[load] unreadable paint data for ${defType}.${key}`, e);
+        }
       }
     } else if (p.type === "file") {
-      const envelope = val as { kind?: string; dataUrl?: string } | null;
+      const envelope = val as
+        | { kind?: string; dataUrl?: string; filename?: string }
+        | null;
+      out[key] = null;
       if (envelope?.kind === "file" && envelope.dataUrl) {
-        out[key] = await dataUrlToBitmap(envelope.dataUrl);
-      } else {
-        out[key] = null;
+        try {
+          const blob = await (await fetch(envelope.dataUrl)).blob();
+          const bmp = await createImageBitmap(blob);
+          // Keep the loaded bytes as this bitmap's originals so a re-save
+          // round-trips them instead of re-encoding to PNG.
+          registerImageOriginal(bmp, blob);
+          out[key] = bmp;
+        } catch (e) {
+          // Corrupt/truncated image data — load the node without its image
+          // (user re-picks) rather than failing the whole project.
+          console.warn(`[load] unreadable image data for ${defType}.${key}`, e);
+        }
+      } else if (envelope?.kind === "exr" && envelope.dataUrl) {
+        // EXR still (v8): the envelope carries the original file bytes —
+        // rebuild the runtime value by re-parsing the header (dims + layer
+        // list re-derive; the layer *selection* lives in its own param).
+        try {
+          const buf = await (await fetch(envelope.dataUrl)).arrayBuffer();
+          const { parseExrHeader, groupExrLayers } = await import(
+            "@/engine/exr"
+          );
+          const header = parseExrHeader(buf);
+          out[key] = {
+            kind: "exr",
+            blob: new Blob([buf], { type: "image/x-exr" }),
+            filename: envelope.filename,
+            layers: groupExrLayers(header),
+            width: header.parts[0]?.width ?? 0,
+            height: header.parts[0]?.height ?? 0,
+          } satisfies import("@/engine/types").ExrImageParamValue;
+        } catch (e) {
+          console.warn(`[load] unreadable EXR data for ${defType}.${key}`, e);
+        }
       }
     } else if (p.type === "font") {
       // Restore a bundled custom font (v5 / assets): decode the bytes and
@@ -627,6 +713,7 @@ export async function serializeGraph(
   // queue inside this tight async loop and trips "Maximum update depth
   // exceeded" (→ the save throws). ~5% buckets cap it at ≤21 calls.
   let lastBucket = -1;
+  const bundledFamilies = new Set<string>();
   for (let i = 0; i < nodes.length; i++) {
     const n = nodes[i];
     savedNodes.push({
@@ -636,7 +723,7 @@ export async function serializeGraph(
       compositionId: n.data.compositionId ?? activeCompositionId,
       position: { x: n.position.x, y: n.position.y },
       name: n.data.name,
-      params: await serializeParams(n.data.defType, n.data.params),
+      params: await serializeParams(n.data.defType, n.data.params, bundledFamilies),
       exposedParams: n.data.exposedParams,
       controlParams: n.data.controlParams,
       paramOverrides: n.data.paramOverrides,
@@ -865,6 +952,34 @@ export async function deserializeGraph(
       if (e.targetHandle === "in:mask" && textNodeIds.has(e.target)) {
         e.targetHandle = "in:morph_mask";
       }
+    }
+  }
+  // v7 migration: Merge lost its universal mask input in favor of per-layer
+  // mask sockets. The old semantics — mix(base, merged, m) — equal matting
+  // every layer by m under source-over, so the one old edge fans out into a
+  // `in:mask:<layerId>` edge per layer (base stays un-matted: it was visible
+  // where m=0 before). A zero-layer Merge's mask edge just drops — it had no
+  // visual effect (the merged output WAS the base).
+  if ((saved.schemaVersion ?? 1) < 7) {
+    const mergeLayersById = new Map(
+      saved.nodes
+        .filter((n) => n.defType === "merge")
+        .map((n) => [
+          n.id,
+          (n.params?.layers as Array<{ id: string }> | undefined) ?? [],
+        ])
+    );
+    for (let i = edges.length - 1; i >= 0; i--) {
+      const e = edges[i];
+      if (e.targetHandle !== "in:mask") continue;
+      const layers = mergeLayersById.get(e.target);
+      if (!layers) continue;
+      const fanned = layers.map((l, j) => ({
+        ...e,
+        id: `${e.id}::mask${j}`,
+        targetHandle: `in:mask:${l.id}`,
+      }));
+      edges.splice(i, 1, ...fanned);
     }
   }
   // Pre-layers projects wrap into "Layer 1" on load (v4 migration) —

@@ -89,24 +89,23 @@ export function parseCubeLut(text: string): ParsedCubeLut | null {
   };
 }
 
-// Bake any parsed LUT into a flat size³ RGBA8 array ready for `texImage3D`
-// (x=R fastest, y=G, z=B). 1D LUTs are expanded into a 3D grid by applying
-// each channel's curve independently — so the node only ever deals with a
-// single 3D-texture sampling path.
-export function lutToRgba8Volume(
+// Bake any parsed LUT into a flat size³ RGBA float array ready for
+// `texImage3D` as RGBA16F (x=R fastest, y=G, z=B). Float (not 8-bit) so
+// subtle grades don't band and LUT outputs > 1 survive. 1D LUTs are expanded
+// into a 3D grid by applying each channel's curve independently — so the
+// node only ever deals with a single 3D-texture sampling path.
+export function lutToFloatVolume(
   lut: ParsedCubeLut,
   out3dSize = 33
-): { size: number; data: Uint8Array } {
-  const to8 = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
-
+): { size: number; data: Float32Array } {
   if (lut.dim === 3) {
     const n = lut.size;
-    const data = new Uint8Array(n * n * n * 4);
+    const data = new Float32Array(n * n * n * 4);
     for (let i = 0; i < n * n * n; i++) {
-      data[i * 4 + 0] = to8(lut.data[i * 3 + 0]);
-      data[i * 4 + 1] = to8(lut.data[i * 3 + 1]);
-      data[i * 4 + 2] = to8(lut.data[i * 3 + 2]);
-      data[i * 4 + 3] = 255;
+      data[i * 4 + 0] = lut.data[i * 3 + 0];
+      data[i * 4 + 1] = lut.data[i * 3 + 1];
+      data[i * 4 + 2] = lut.data[i * 3 + 2];
+      data[i * 4 + 3] = 1;
     }
     return { size: n, data };
   }
@@ -114,7 +113,7 @@ export function lutToRgba8Volume(
   // 1D → 3D: sample the per-channel curves with linear interpolation.
   const n = out3dSize;
   const src = lut.size;
-  const data = new Uint8Array(n * n * n * 4);
+  const data = new Float32Array(n * n * n * 4);
   const sample = (channel: number, t: number): number => {
     const f = t * (src - 1);
     const i0 = Math.floor(f);
@@ -131,10 +130,10 @@ export function lutToRgba8Volume(
       const gv = sample(1, y / (n - 1));
       for (let x = 0; x < n; x++) {
         const rv = sample(0, x / (n - 1));
-        data[p++] = to8(rv);
-        data[p++] = to8(gv);
-        data[p++] = to8(bv);
-        data[p++] = 255;
+        data[p++] = rv;
+        data[p++] = gv;
+        data[p++] = bv;
+        data[p++] = 1;
       }
     }
   }

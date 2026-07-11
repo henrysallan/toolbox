@@ -5,7 +5,18 @@ import {
   renderRegionToRect,
   type ElementFit,
 } from "@/engine/element";
-import type { ElementValue, NodeDefinition } from "@/engine/types";
+import type {
+  ElementValue,
+  ExrImageParamValue,
+  NodeDefinition,
+} from "@/engine/types";
+import {
+  decodeExrLayerAsync,
+  findExrLayer,
+  isExrImageValue,
+  type ExrDecodeResult,
+} from "@/engine/exr";
+import { pushMediaSettle } from "@/engine/offline-settle";
 
 // u_hasUvIn: 0 = no UV field connected (use v_uv), 1 = UV texture, 2 = scalar
 // broadcast (whole frame samples the same point). Fit math runs on the
@@ -43,6 +54,42 @@ interface SourceState {
   // UV field is connected (WebGL requires every declared sampler to be
   // bound to something).
   zeroTex: WebGLTexture | null;
+  // ── EXR still state ──────────────────────────────────────────────────
+  // The param value the EXR state belongs to (a new pick resets), the
+  // decode identity we want / have uploaded (layer id + unpremultiply), a
+  // landed-but-not-yet-uploaded decode, and the uploaded texture's true
+  // pixel size. The node is cached (stable), so fingerprintExtras folds
+  // wantKey/uploadedKey/pending into the fingerprint — a decode landing
+  // re-fingerprints and the next eval uploads it.
+  exrRef: ExrImageParamValue | null;
+  exrWantKey: string | null;
+  exrUploadedKey: string | null;
+  exrPending: ExrDecodeResult | null;
+  exrW: number;
+  exrH: number;
+}
+
+function ensureState(
+  ctx: import("@/engine/types").RenderContext,
+  nodeId: string
+): SourceState {
+  const stateKey = `image-source:${nodeId}`;
+  let st = ctx.state[stateKey] as SourceState | undefined;
+  if (!st) {
+    st = {
+      bitmapRef: null,
+      tex: null,
+      zeroTex: null,
+      exrRef: null,
+      exrWantKey: null,
+      exrUploadedKey: null,
+      exrPending: null,
+      exrW: 0,
+      exrH: 0,
+    };
+    ctx.state[stateKey] = st;
+  }
+  return st;
 }
 
 export const imageSourceNode: NodeDefinition = {
@@ -50,7 +97,8 @@ export const imageSourceNode: NodeDefinition = {
   name: "Image Source",
   category: "image",
   subcategory: "generator",
-  description: "Uploads an image and produces it as the canonical output.",
+  description:
+    "Uploads an image and produces it as the canonical output. Accepts EXR files (single or multilayer, scene-linear HDR) with a layer picker.",
   backend: "webgl2",
   inputs: [
     { name: "uv_in", label: "UV", type: "uv", required: false },
@@ -58,6 +106,27 @@ export const imageSourceNode: NodeDefinition = {
   params: [
     OPACITY_PARAM,
     { name: "file", label: "Image", type: "file", default: null },
+    // EXR files only: which layer/AOV feeds the output. Options come from
+    // the loaded file's header (the `exr_layer` control reads them off the
+    // `file` value); stored value is the layer's stable id, "" = default.
+    {
+      name: "exr_layer",
+      label: "Layer",
+      type: "enum",
+      options: [],
+      control: "exr_layer",
+      default: "",
+      visibleIf: (p) => isExrImageValue(p.file),
+    },
+    // EXR stores associated (premultiplied) alpha; the engine is straight-
+    // alpha. Off = trust the file / keep premultiplied math downstream.
+    {
+      name: "exr_unpremultiply",
+      label: "Un-premultiply alpha",
+      type: "boolean",
+      default: true,
+      visibleIf: (p) => isExrImageValue(p.file),
+    },
     {
       name: "fit",
       label: "Fit",
@@ -76,51 +145,151 @@ export const imageSourceNode: NodeDefinition = {
     },
   ],
 
+  // The node is cached (stable); an EXR decode lands asynchronously, so its
+  // progress has to show up in the fingerprint or the cached black frame
+  // would stick. wantKey changes on layer/alpha edits, "p" appears when a
+  // decode lands, uploadedKey once it's on the GPU.
+  fingerprintExtras(params, ctx, nodeId) {
+    if (!isExrImageValue(params.file)) return "";
+    const st = ctx.state[`image-source:${nodeId}`] as SourceState | undefined;
+    if (!st) return "exr:";
+    return `exr:${st.exrUploadedKey ?? ""}${st.exrPending ? "|p" : ""}`;
+  },
+
   compute({ inputs, params, ctx, nodeId }) {
     const output = ctx.allocImage();
-    const bitmap = params.file as ImageBitmap | null | undefined;
+    const gl = ctx.gl;
+    const fileVal = params.file as
+      | ImageBitmap
+      | ExrImageParamValue
+      | null
+      | undefined;
 
-    if (!bitmap) {
+    // Resolve (texture, source px size) from either source kind.
+    let srcTex: WebGLTexture | null = null;
+    let srcW = 0;
+    let srcH = 0;
+
+    if (isExrImageValue(fileVal)) {
+      const st = ensureState(ctx, nodeId);
+      const layer = findExrLayer(fileVal.layers, params.exr_layer as string);
+      const unpremultiply = (params.exr_unpremultiply as boolean) ?? true;
+      const wantKey = `${layer?.id ?? ""}|${unpremultiply}`;
+
+      if (st.exrRef !== fileVal) {
+        // New file picked — drop everything from the previous one.
+        st.exrRef = fileVal;
+        st.exrWantKey = null;
+        st.exrUploadedKey = null;
+        st.exrPending = null;
+        if (st.tex) {
+          gl.deleteTexture(st.tex);
+          st.tex = null;
+        }
+        st.bitmapRef = null;
+      }
+
+      if (st.exrWantKey !== wantKey) {
+        // Layer / alpha selection changed (or first eval) — kick a decode.
+        // The last-good texture keeps showing until the new one lands.
+        st.exrWantKey = wantKey;
+        st.exrPending = null;
+        const p = fileVal.blob
+          .arrayBuffer()
+          .then((buf) => decodeExrLayerAsync(buf, { layer, unpremultiply }))
+          .then((res) => {
+            if (st.exrRef !== fileVal || st.exrWantKey !== wantKey) return;
+            st.exrPending = res;
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new Event("pipeline-bump"));
+            }
+          })
+          .catch((e) => {
+            console.warn("EXR still decode failed:", e);
+          });
+        if (ctx.offline) pushMediaSettle(ctx, p);
+      }
+
+      if (st.exrPending) {
+        // Landed since last eval — upload as RGBA16F (HDR values intact,
+        // straight alpha, rows already in ImageBitmap order).
+        const res = st.exrPending;
+        st.exrPending = null;
+        if (st.tex) gl.deleteTexture(st.tex);
+        const tex = gl.createTexture();
+        if (!tex) throw new Error("image-source: failed to create texture");
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          0,
+          gl.RGBA16F,
+          res.width,
+          res.height,
+          0,
+          gl.RGBA,
+          gl.FLOAT,
+          res.data
+        );
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        st.tex = tex;
+        st.exrW = res.width;
+        st.exrH = res.height;
+        st.exrUploadedKey = wantKey;
+      }
+
+      srcTex = st.tex;
+      srcW = st.exrW;
+      srcH = st.exrH;
+    } else if (fileVal instanceof ImageBitmap) {
+      const bitmap = fileVal;
+      const st = ensureState(ctx, nodeId);
+      if (st.bitmapRef !== bitmap || !st.tex) {
+        if (st.tex) gl.deleteTexture(st.tex);
+        const tex = gl.createTexture();
+        if (!tex) throw new Error("image-source: failed to create texture");
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          0,
+          gl.RGBA,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          bitmap
+        );
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        st.tex = tex;
+        st.bitmapRef = bitmap;
+        st.exrRef = null;
+        st.exrUploadedKey = null;
+      }
+      srcTex = st.tex;
+      srcW = bitmap.width;
+      srcH = bitmap.height;
+    }
+
+    if (!srcTex || !srcW || !srcH) {
       ctx.clearTarget(output, [0, 0, 0, 1]);
       return { primary: output, aux: { element: emptyElement() } };
     }
 
-    const stateKey = `image-source:${nodeId}`;
-    const gl = ctx.gl;
-    let cached = ctx.state[stateKey] as SourceState | undefined;
-    if (!cached || cached.bitmapRef !== bitmap) {
-      if (cached?.tex) gl.deleteTexture(cached.tex);
-      const tex = gl.createTexture();
-      if (!tex) throw new Error("image-source: failed to create texture");
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        bitmap
-      );
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.bindTexture(gl.TEXTURE_2D, null);
-      cached = {
-        bitmapRef: bitmap,
-        tex,
-        zeroTex: cached?.zeroTex ?? null,
-      };
-      ctx.state[stateKey] = cached;
-    }
-    if (!cached.zeroTex) {
-      cached.zeroTex = makeZeroTex(gl);
+    const st = ensureState(ctx, nodeId);
+    if (!st.zeroTex) {
+      st.zeroTex = makeZeroTex(gl);
     }
 
     const uvIn = inputs.uv_in;
     let uvInMode = 0;
-    let uvInTex: WebGLTexture | null = cached.zeroTex;
+    let uvInTex: WebGLTexture | null = st.zeroTex;
     let uvConst: [number, number] = [0, 0];
     if (uvIn) {
       if (uvIn.kind === "uv") {
@@ -132,7 +301,7 @@ export const imageSourceNode: NodeDefinition = {
       }
     }
 
-    const imgAspect = bitmap.width / bitmap.height;
+    const imgAspect = srcW / srcH;
     const outAspect = output.width / output.height;
     const alpha = imgAspect / outAspect;
     const fit = (params.fit as string) ?? "cover";
@@ -149,9 +318,11 @@ export const imageSourceNode: NodeDefinition = {
     }
 
     const prog = ctx.getShader("image-source/fit", FIT_FS);
+    const boundTex = srcTex;
+    const boundUvTex = uvInTex;
     ctx.drawFullscreen(prog, output, (gl2) => {
       gl2.activeTexture(gl2.TEXTURE0);
-      gl2.bindTexture(gl2.TEXTURE_2D, cached!.tex);
+      gl2.bindTexture(gl2.TEXTURE_2D, boundTex);
       gl2.uniform1i(gl2.getUniformLocation(prog, "u_src"), 0);
       gl2.uniform2f(
         gl2.getUniformLocation(prog, "u_invScale"),
@@ -161,7 +332,7 @@ export const imageSourceNode: NodeDefinition = {
       gl2.uniform1f(gl2.getUniformLocation(prog, "u_letterbox"), letterbox);
 
       gl2.activeTexture(gl2.TEXTURE1);
-      gl2.bindTexture(gl2.TEXTURE_2D, uvInTex);
+      gl2.bindTexture(gl2.TEXTURE_2D, boundUvTex);
       gl2.uniform1i(gl2.getUniformLocation(prog, "u_uvIn"), 1);
       gl2.uniform1i(gl2.getUniformLocation(prog, "u_hasUvIn"), uvInMode);
       gl2.uniform2f(
@@ -171,13 +342,13 @@ export const imageSourceNode: NodeDefinition = {
       );
     });
 
-    // Auto Layout element: natural size is the bitmap's own pixels.
-    // Render samples the uploaded bitmap texture directly — the negative-
+    // Auto Layout element: natural size is the source's own pixels.
+    // Render samples the uploaded texture directly — the negative-
     // height region flips its Y-down rows into engine orientation, same
     // job FIT_FS's `1.0 - s.y` does for the primary.
-    const srcTex = cached.tex!;
-    const srcW = bitmap.width;
-    const srcH = bitmap.height;
+    const elemTex = srcTex;
+    const elemW = srcW;
+    const elemH = srcH;
     const nodeFit = fit as ElementFit;
     const element: ElementValue = {
       kind: "element",
@@ -185,11 +356,11 @@ export const imageSourceNode: NodeDefinition = {
       // ratio and scales with the layout, instead of pinning to the full
       // bitmap resolution (which is what made fill+cover blow up when the
       // container got wide).
-      measure: (c) => aspectFitMeasure(srcW, srcH, c),
+      measure: (c) => aspectFitMeasure(elemW, elemH, c),
       render: (rctx, width, height, opts) =>
         renderRegionToRect(
           rctx,
-          { texture: srcTex, width: srcW, height: srcH },
+          { texture: elemTex, width: elemW, height: elemH },
           { x: 0, y: 1, width: 1, height: -1 },
           width,
           height,
