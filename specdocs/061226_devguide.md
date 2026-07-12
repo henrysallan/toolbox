@@ -622,6 +622,15 @@ explore the relevant engine/UI code → write/iterate a spec with the owner
 → implement in milestones. In-app user-facing docs live under
 src/app/docs + lib/docs/manifest.
 
+Verification gates (also CI, `.github/workflows/ci.yml`, on every push/PR):
+`npm run typecheck` and `npm run check` (the six offline check-*.mts
+scripts guarding the AI-recipe trust boundary) are hard gates. Lint gates
+through a **ratchet** — `npm run lint:ratchet` fails only when a file
+gains errors beyond `scripts/lint-baseline.json` (pre-existing React 19
+hooks-rule errors are grandfathered; warnings never gate). After fixing
+errors, tighten with `npm run lint:ratchet -- --update` and commit the
+baseline. Spec: 070826_riskfix-plan.md §2.
+
 ## Known sharp edges (today)
 
 - EffectsApp.tsx (~7.2k lines) and ParamPanel.tsx (~5.6k) are the two
@@ -846,7 +855,13 @@ src/app/docs + lib/docs/manifest.
   the current graph (small fixpoint for chains) and writes the resolved
   inputs/primaryOutput/aux back into `data`; the param-change path skips
   re-resolving these two so it can't clobber it. Add any future mode-less
-  connectedTypes-retyping node to that set.
+  connectedTypes-retyping node to that set. **AI recipes/edits can author
+  pattern-(1) merge stacks** (070926_claude-mcp-bridge.md §4c): `layers`
+  accepts [{mode, opacity}, …] via `vetMergeLayers` (ids minted, or
+  preserved by index on edit so wires survive), edge targets `in:layerN` /
+  `in:maskN` alias onto the real id sockets with auto-grow
+  (`resolveOrdinalHandle`, gated on the `merge_layers` param type), and
+  `graphToSpec` surfaces resolved sockets for any dynamic def.
 - **Simulation Zone is a Start/End pair sharing a `zone_id`** (minted at
   create time in EffectsApp; re-minted on clone in graph-ops). It's a
   per-frame feedback loop: End stashes its `state` input in

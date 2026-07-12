@@ -215,6 +215,27 @@ studio use case now.
    ✅ **Shipped 2026-07-10**: play/pause/seek (seek = setTime; the paused
    evaluator re-renders on state change).
 
+4c. **Merge authoring** (added 2026-07-11, owner-requested — "Claude has
+   trouble with the merge node"). Merge's sockets are minted per layer
+   (`layer:<id>`) from the non-settable `merge_layers` param, so the model
+   could neither see, size, nor wire the stack. Three affordances
+   (recipe-builder.ts / recipe-edit.ts — shared by MCP AND the in-app AI):
+   - `params.layers` accepts a RESTRICTED shape, [{mode?, opacity?}, …]
+     (`vetMergeLayers`): blend modes validated against BLEND_MODE_ORDER,
+     opacity 0–1, ids minted — or preserved BY INDEX when the node already
+     has layers, so rewiring a stack never dangles existing wires.
+   - Ordinal wiring: edge targets `in:layer1`/`in:mask2`… alias onto the
+     real id sockets (`resolveOrdinalHandle`), auto-growing the stack when
+     layerN points past the end (build + edit add_edge; remove_edge aliases
+     without growing). Gated on the param TYPE (`merge_layers`), so any
+     future node using the pattern inherits it.
+   - Read-out: `graphToSpec` now includes `inputs` (the RESOLVED socket
+     list) for any dynamic def — Merge, Point Expression channels, etc. —
+     plus the `merge_layers` param value (plain JSON), so get_graph shows
+     real socket names and per-layer modes.
+   Preambles/tool contracts updated (SYSTEM_PREAMBLE, EDIT_SYSTEM_PREAMBLE,
+   RECIPE_CONTRACT, merge def description → catalog).
+
 4b. **Animation + motion vision** (added 2026-07-10, owner-requested):
    - `get_keyframes({nodeId, param?})` — a track's keys as {frame, value,
      easing}, or (no param) the whole-node overview: every keyed track +

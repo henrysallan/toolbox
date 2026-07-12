@@ -49,9 +49,13 @@ export interface GroupSpecNode {
   id: string;
   type: string;
   name?: string; // display name, when it differs from the def default
-  params: Record<string, unknown>; // settable values only
+  params: Record<string, unknown>; // settable values (+ merge_layers, read-only-ish)
   exposed: string[];
   keyframed: string[]; // params whose static value won't take effect (animated)
+  // Resolved input sockets — included only for DYNAMIC defs (resolveInputs),
+  // whose real socket names (merge "layer:<id>", expression channels
+  // "in:<id>") are minted per node and can't be read off the catalog.
+  inputs?: { name: string; type: string; label?: string }[];
 }
 export interface GroupSpec {
   name: string;
@@ -118,9 +122,29 @@ export function graphToSpec(
     for (const p of def?.params ?? []) {
       if (SETTABLE_PARAM_TYPES.has(p.type) && n.data.params[p.name] !== undefined)
         params[p.name] = n.data.params[p.name];
+      // merge_layers is plain JSON ({id, mode, opacity}[]) — showing it
+      // gives the model the layer ids/modes it needs to patch a Merge.
+      if (p.type === "merge_layers" && n.data.params[p.name] !== undefined)
+        params[p.name] = n.data.params[p.name];
     }
     const anim = (n.data.animation ?? {}) as Record<string, { animated?: boolean }>;
     const keyframed = Object.keys(anim).filter((k) => anim[k]?.animated);
+    // Dynamic defs mint their socket names per node — surface the resolved
+    // list so the model can wire without guessing.
+    let inputs: GroupSpecNode["inputs"];
+    if (def?.resolveInputs) {
+      let ins = def.inputs;
+      try {
+        ins = def.resolveInputs(n.data.params);
+      } catch {
+        ins = def.inputs;
+      }
+      inputs = ins.map((i) => ({
+        name: i.name,
+        type: i.type,
+        ...(i.label ? { label: i.label } : {}),
+      }));
+    }
     return {
       id: n.id,
       type: n.data.defType,
@@ -128,6 +152,7 @@ export function graphToSpec(
       params,
       exposed: n.data.exposedParams ?? [],
       keyframed,
+      ...(inputs ? { inputs } : {}),
     };
   });
 
@@ -321,11 +346,19 @@ export function applyRecipeEdit(
           err("EDGE_NODE_MISSING", `add_edge ${op.from} → ${op.to}: references an unknown node.`);
           break;
         }
-        // Expression channels are addressed by name (ids are unknowable to
-        // the LLM); alias onto the id-based socket, same as buildRecipe.
+        // Merge ordinals ("in:layer2" — grows the layer list + refreshes
+        // sockets when needed) and expression channels by name alias onto
+        // the real id-based sockets, same as buildRecipe.
         const tgtNode = byId.get(tgtId)!;
         const tdef = getNodeDef(tgtNode.data.defType);
-        if (tdef) th = resolveChannelHandle(tdef, tgtNode.data.params, th);
+        if (tdef) {
+          const ord = resolveOrdinalHandle(tdef, tgtNode.data.params, th);
+          if (ord.params !== tgtNode.data.params) {
+            tgtNode.data.params = ord.params;
+            replaceInPlace(refreshNodeSockets(tgtNode));
+          }
+          th = resolveChannelHandle(tdef, ord.params, ord.handle);
+        }
         edges.push({ id: newEdgeId(), source: srcId, sourceHandle: sh, target: tgtId, targetHandle: th });
         // A wire into a param socket only renders when the param is in
         // exposedParams (EffectNode derives handles from it) — without this
@@ -354,7 +387,12 @@ export function applyRecipeEdit(
         }
         const tgtNode = byId.get(tgtId);
         const tdef = tgtNode && getNodeDef(tgtNode.data.defType);
-        if (tgtNode && tdef) th = resolveChannelHandle(tdef, tgtNode.data.params, th);
+        if (tgtNode && tdef) {
+          // Ordinal aliasing WITHOUT growth — removing "in:layer5" on a
+          // 2-layer merge shouldn't mint three layers as a side effect.
+          const ord = resolveOrdinalHandle(tdef, tgtNode.data.params, th, { grow: false });
+          th = resolveChannelHandle(tdef, tgtNode.data.params, ord.handle);
+        }
         const before = edges.length;
         edges = edges.filter(
           (e) => !(e.source === srcId && e.sourceHandle === sh && e.target === tgtId && e.targetHandle === th)

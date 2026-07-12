@@ -292,7 +292,12 @@ export const mergeNode: NodeDefinition = {
   description:
     "Blends a base image with one or more layer images. Every image input " +
     "carries its own mask input underneath — the matte for that layer " +
-    "(multiplies its per-pixel coverage, like a track matte).",
+    "(multiplies its per-pixel coverage, like a track matte). In AI " +
+    "recipes/edits: size the stack by setting `layers` to " +
+    "[{mode, opacity}, …] (ids are minted automatically), and wire inputs " +
+    "ordinally — layer1, layer2, … (mask1, mask2, … for the mattes) — " +
+    "they resolve to the real per-layer sockets, growing the stack when " +
+    "layerN points past the end.",
   backend: "webgl2",
   // Masks are per-image sockets here; the evaluator's universal matte would
   // be redundant (and ambiguous) stacked on top of them.

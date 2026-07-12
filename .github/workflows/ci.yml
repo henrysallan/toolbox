@@ -1,7 +1,7 @@
 # CI — the hard gates are typecheck + the offline check scripts (they guard
 # the AI recipe trust boundary: builder whitelist, graph validator, edit ops,
-# repair loops). Lint is a separate advisory job until the repo-wide React 19
-# hooks-rule cleanup lands (riskfix-plan 070826, "Order of attack" §2).
+# repair loops). Lint gates through a ratchet: pre-existing errors are
+# baselined, only NEW errors fail (riskfix-plan 070826, "Order of attack" §2).
 name: CI
 
 on:
@@ -27,9 +27,12 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    # Advisory only: ~1.6k pre-existing errors (React 19 hooks rules vs the
-    # codebase's ref-mirror pattern). Flip to blocking after the cleanup.
-    continue-on-error: true
+    # BLOCKING, but ratcheted: fails only when a file gains lint errors
+    # beyond the committed baseline (scripts/lint-baseline.json). The
+    # pre-existing errors (React 19 hooks rules vs the ref-mirror pattern)
+    # are grandfathered; fix some, then tighten with
+    # `npm run lint:ratchet -- --update`. When the baseline hits zero,
+    # switch this step to plain `npm run lint`.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,4 +40,4 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run lint
+      - run: npm run lint:ratchet

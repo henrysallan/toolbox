@@ -187,7 +187,9 @@ server.registerTool(
   {
     description:
       "The current node graph as JSON: nodes (id, type, display name, " +
-      "settable param values, exposed + keyframed params), edges " +
+      "settable param values, exposed + keyframed params, and — for " +
+      "dynamic-socket nodes like Merge or Point Expression — the REAL " +
+      "resolved input sockets under `inputs`), edges " +
       "(\"<id>:out\"/\"<id>:aux:<name>\" → \"<id>:in:<socket>\"/" +
       "\"<id>:param:<name>\"), and the scope's boundary interface. Omit " +
       "`scope` for the root composition (the layer chain); pass a group or " +
@@ -254,7 +256,11 @@ const RECIPE_CONTRACT =
   "graph must be acyclic. Expression/Point Expression `expression` params " +
   "are JavaScript: assignments only (never `return`), declare temporaries " +
   "with let/const. Point Expression ch(\"name\", default) channels become " +
-  "sliders automatically AND are wireable by name (\"<id>:in:<channelName>\").";
+  "sliders automatically AND are wireable by name (\"<id>:in:<channelName>\"). " +
+  "Merge nodes: size the stack with params.layers = [{mode, opacity}, …] " +
+  "and wire ordinally — \"<id>:in:layer1\", \"<id>:in:layer2\", … " +
+  "(\"<id>:in:mask1\", … for per-layer mattes); wiring layerN past the end " +
+  "grows the stack.";
 
 server.registerTool(
   "insert_recipe",

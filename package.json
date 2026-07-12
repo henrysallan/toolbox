@@ -10,6 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "lint:ratchet": "tsx scripts/lint-ratchet.mts",
     "typecheck": "tsc --noEmit",
     "check": "tsx scripts/check-validator.mts && tsx scripts/check-builder.mts && tsx scripts/check-edit.mts && tsx scripts/check-fragment-roundtrip.mts && tsx scripts/check-recipe-loop.mts && tsx scripts/check-edit-loop.mts",
     "mcp": "node scripts/mcp-server.mjs",

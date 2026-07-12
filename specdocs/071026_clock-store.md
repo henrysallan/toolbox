@@ -168,9 +168,12 @@ export interface ClockState {
    subscription-synced mirrors (the export drivers + MCP handlers consume
    them as MutableRefObjects) — the remaining cleanup is teaching those
    consumers to read `playbackClock.get()` directly, then deleting the
-   mirrors. The render-synced ref writes are already gone; flip the CI
-   lint job to blocking when the "refs during render" error count hits
-   zero.
+   mirrors. The render-synced ref writes are already gone. (07-12: CI
+   lint now gates through the ratchet — scripts/lint-ratchet.mts vs
+   scripts/lint-baseline.json — so it's already blocking for NEW errors;
+   as ref-mirror fixes land, tighten with
+   `npm run lint:ratchet -- --update`, and at zero swap in plain
+   `npm run lint`.)
 
 Step 3's shell detach was the highest-blast-radius commit; it shipped
 alone (07-11) so it stays revertable.

@@ -265,6 +265,14 @@ symlink in an assets dir.
      tripping on the codebase's ref-mirror pattern. Flip the job to
      blocking after that cleanup (naturally pairs with the area-4
      clock-store milestone, which removes most ref mirrors).
+   - 07-12 UPDATE: the lint job is now **blocking via a ratchet**
+     (`npm run lint:ratchet`, scripts/lint-ratchet.mts): per-file error
+     counts are baselined in scripts/lint-baseline.json (134 errors / 34
+     files at capture) and CI fails only when a file gains errors beyond
+     its allowance — new errors can't hide behind unrelated fixes, and
+     the red-✗-on-every-push problem is gone. After fixing errors, tighten
+     with `npm run lint:ratchet -- --update` (commit the baseline). At
+     zero, drop the ratchet for plain `npm run lint`. Warnings never gate.
 3. **Engine texture lifecycle (area 1)** — ✅ core landed 07-09:
    - `NodeOutput.ownsTextures?: false` (types.ts): declared by nodes whose
      output textures live in ctx.state. Flagged after a full audit of all
