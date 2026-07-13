@@ -151,7 +151,6 @@ const MONOSPACE_STACK =
 interface AsciiState {
   atlasCanvas: HTMLCanvasElement;
   atlasTex: WebGLTexture | null;
-  tempCanvas: HTMLCanvasElement;
   atlasSig: string | null;
   lastGroupRefs: WebGLTexture[] | null;
   atlasCount: number;
@@ -177,7 +176,6 @@ function ensureState(ctx: RenderContext, nodeId: string): AsciiState {
   const s: AsciiState = {
     atlasCanvas: document.createElement("canvas"),
     atlasTex: tex,
-    tempCanvas: document.createElement("canvas"),
     atlasSig: null,
     lastGroupRefs: null,
     atlasCount: 0,
@@ -220,19 +218,13 @@ function buildImageSetAtlas(
   const ctx2d = c.getContext("2d");
   if (!ctx2d) return 0;
   ctx2d.clearRect(0, 0, c.width, c.height);
-  state.tempCanvas.width = SLOT;
-  state.tempCanvas.height = SLOT;
   for (let i = 0; i < items.length; i++) {
-    try {
-      // Blit the GPU texture into the temp canvas at slot size, then
-      // compose the temp canvas into the atlas. N round-trips, but
-      // fine for typical group sizes (< 50).
-      ctx.blitToCanvas(items[i], state.tempCanvas);
-      ctx2d.drawImage(state.tempCanvas, i * SLOT, 0);
-    } catch {
-      // Leave the slot transparent on failure. Shader will just render
-      // the background there.
-    }
+    // Read each GPU texture back at slot size and stamp it into the
+    // atlas. N readbacks, but fine for typical group sizes (< 50).
+    // Failed readbacks leave the slot transparent; the shader just
+    // renders the background there.
+    const data = ctx.readImagePixels(items[i], SLOT, SLOT);
+    if (data) ctx2d.putImageData(new ImageData(data, SLOT, SLOT), i * SLOT, 0);
   }
   return count;
 }

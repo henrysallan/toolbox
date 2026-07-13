@@ -1,27 +1,39 @@
 import type {
   ImageValue,
+  InputSocketDef,
   NodeDefinition,
   Point,
   PointsValue,
   RenderContext,
+  SocketType,
+  SplineValue,
 } from "@/engine/types";
 import { pointsFromArray } from "@/engine/points";
+import { buildPath2D } from "@/engine/spline-raster";
 
 // Scatter N points across the canvas. When a density input is attached,
-// uses rejection sampling on the image's R channel (brighter = more
+// uses rejection sampling on the density's R channel (brighter = more
 // likely to accept). No density → uniform random.
 //
-// Density readback happens once per compute via blitToCanvas into a small
-// offscreen 2D canvas, so we can sample CPU-side without stalling the
-// GPU on a float-texture readback path.
+// The density socket is polymorphic:
+//   image  — GPU texture read back once per compute via readImagePixels
+//            at ≤256px (rejection sampling only needs relative weights,
+//            not resolution).
+//   spline — the shape's filled silhouette, rasterized DIRECTLY at the
+//            same ≤256px on a CPU canvas. No full-res rasterize, no GPU
+//            upload, no readback — wiring a spline (Circle, Copy to
+//            Points output…) straight in skips the whole
+//            Rasterize Spline → texture → readback round trip.
 
 interface ScatterState {
-  readbackCanvas: HTMLCanvasElement;
-  // Cache the last density + readback so a scatter that doesn't depend on
-  // a density input (or whose density hasn't changed) doesn't re-blit.
-  lastDensityTex: WebGLTexture | null;
-  lastW: number;
-  lastH: number;
+  // Spline-density path only: tiny CPU canvas the silhouette rasterizes
+  // into at readback size. Lazily created.
+  rasterCanvas: HTMLCanvasElement | null;
+  // Identity of the density source `data` was built from — the ImageValue's
+  // texture, or the SplineValue reference (the evaluator hands back the
+  // same object while the upstream node is cache-hit, so a static density
+  // reuses the buffer and an animated one rebuilds it).
+  lastDensityKey: WebGLTexture | SplineValue | null;
   data: Uint8ClampedArray | null;
   dataW: number;
   dataH: number;
@@ -44,10 +56,8 @@ function ensureState(ctx: RenderContext, nodeId: string): ScatterState {
   const existing = ctx.state[key] as ScatterState | undefined;
   if (existing) return existing;
   const s: ScatterState = {
-    readbackCanvas: document.createElement("canvas"),
-    lastDensityTex: null,
-    lastW: 0,
-    lastH: 0,
+    rasterCanvas: null,
+    lastDensityKey: null,
     data: null,
     dataW: 0,
     dataH: 0,
@@ -56,53 +66,88 @@ function ensureState(ctx: RenderContext, nodeId: string): ScatterState {
   return s;
 }
 
+// Aspect-preserving downsample dims, ≤256 on the long edge.
+function fitReadback(w: number, h: number): { W: number; H: number } {
+  const MAX = 256;
+  const aspect = w / h;
+  if (w >= h) {
+    const W = Math.min(MAX, w);
+    return { W, H: Math.max(1, Math.round(W / aspect)) };
+  }
+  const H = Math.min(MAX, h);
+  return { W: Math.max(1, Math.round(H * aspect)), H };
+}
+
+interface DensityBuffer {
+  data: Uint8ClampedArray;
+  W: number;
+  H: number;
+}
+
 function readbackDensity(
   ctx: RenderContext,
   density: ImageValue,
   state: ScatterState
-): { data: Uint8ClampedArray; W: number; H: number } | null {
-  // Downsample to a max of 256×256 so the CPU-side sample loop stays
-  // cheap. Rejection sampling only needs relative weights, not resolution.
-  const MAX = 256;
-  const aspect = density.width / density.height;
-  let W: number;
-  let H: number;
-  if (density.width >= density.height) {
-    W = Math.min(MAX, density.width);
-    H = Math.max(1, Math.round(W / aspect));
-  } else {
-    H = Math.min(MAX, density.height);
-    W = Math.max(1, Math.round(H * aspect));
-  }
-  const canvas = state.readbackCanvas;
-  if (canvas.width !== W || canvas.height !== H) {
-    canvas.width = W;
-    canvas.height = H;
-  }
-  // Cache hit: same texture, same dims — reuse the already-populated data.
+): DensityBuffer | null {
+  const { W, H } = fitReadback(density.width, density.height);
   if (
-    state.lastDensityTex === density.texture &&
+    state.lastDensityKey === density.texture &&
     state.dataW === W &&
     state.dataH === H &&
     state.data
   ) {
     return { data: state.data, W, H };
   }
-  try {
-    ctx.blitToCanvas(density, canvas);
-  } catch {
-    return null;
-  }
-  const ctx2d = canvas.getContext("2d");
-  if (!ctx2d) return null;
-  const img = ctx2d.getImageData(0, 0, W, H);
-  state.data = img.data;
+  const data = ctx.readImagePixels(density, W, H);
+  if (!data) return null;
+  state.data = data;
   state.dataW = W;
   state.dataH = H;
-  state.lastDensityTex = density.texture;
-  state.lastW = density.width;
-  state.lastH = density.height;
-  return { data: img.data, W, H };
+  state.lastDensityKey = density.texture;
+  return { data, W, H };
+}
+
+// Spline density: rasterize the filled silhouette straight into the
+// readback buffer's resolution. Subpaths fill individually (union), same
+// as Rasterize Spline's stack-subpaths default — overlapping copies from
+// Copy to Points merge instead of punching even-odd holes into each
+// other. buildPath2D applies the standard y aspect-correction, and the
+// canvas keeps the render aspect, so the silhouette lands exactly where
+// a full-res Rasterize Spline → density wire would have put it.
+function rasterizeSplineDensity(
+  ctx: RenderContext,
+  density: SplineValue,
+  state: ScatterState
+): DensityBuffer | null {
+  const { W, H } = fitReadback(ctx.width, ctx.height);
+  if (
+    state.lastDensityKey === density &&
+    state.dataW === W &&
+    state.dataH === H &&
+    state.data
+  ) {
+    return { data: state.data, W, H };
+  }
+  const canvas =
+    state.rasterCanvas ?? (state.rasterCanvas = document.createElement("canvas"));
+  if (canvas.width !== W || canvas.height !== H) {
+    canvas.width = W;
+    canvas.height = H;
+  }
+  const c2d = canvas.getContext("2d", { willReadFrequently: true });
+  if (!c2d) return null;
+  c2d.clearRect(0, 0, W, H);
+  c2d.fillStyle = "#ffffff";
+  for (const sub of density.subpaths) {
+    const path = buildPath2D([sub], W, H, true);
+    if (path) c2d.fill(path);
+  }
+  const data = c2d.getImageData(0, 0, W, H).data;
+  state.data = data;
+  state.dataW = W;
+  state.dataH = H;
+  state.lastDensityKey = density;
+  return { data, W, H };
 }
 
 export const scatterPointsNode: NodeDefinition = {
@@ -111,7 +156,7 @@ export const scatterPointsNode: NodeDefinition = {
   category: "point",
   subcategory: "generator",
   description:
-    "Scatter N points across the canvas, optionally weighted by a density image (brighter pixels = more points). Deterministic — same seed, same layout.",
+    "Scatter N points across the canvas, optionally weighted by a density input (brighter pixels = more points). Wire an image, or a spline directly — the spline's filled silhouette is the density, sampled without rasterizing to a texture. Deterministic — same seed, same layout.",
   backend: "webgl2",
   inputs: [
     {
@@ -121,6 +166,13 @@ export const scatterPointsNode: NodeDefinition = {
       required: false,
     },
   ],
+  // The density socket adapts to what's wired in — image (default) or
+  // spline. It just reads "image" before anything connects.
+  resolveInputs(_params, rctx): InputSocketDef[] {
+    const t = rctx?.connectedTypes?.density;
+    const type: SocketType = t === "spline" ? "spline" : "image";
+    return [{ name: "density", label: "Density", type, required: false }];
+  },
   params: [
     {
       name: "count",
@@ -183,7 +235,7 @@ export const scatterPointsNode: NodeDefinition = {
   auxOutputs: [],
 
   compute({ inputs, params, ctx, nodeId }) {
-    const density = inputs.density as ImageValue | undefined;
+    const density = inputs.density as ImageValue | SplineValue | undefined;
     const count = Math.max(
       1,
       Math.floor((params.count as number) ?? 100)
@@ -207,8 +259,11 @@ export const scatterPointsNode: NodeDefinition = {
       return { pos: [x, y], rotation: rot, scale: [s, s] };
     };
 
-    if (density && density.kind === "image") {
-      const readback = readbackDensity(ctx, density, state);
+    if (density && (density.kind === "image" || density.kind === "spline")) {
+      const readback =
+        density.kind === "image"
+          ? readbackDensity(ctx, density, state)
+          : rasterizeSplineDensity(ctx, density, state);
       if (readback) {
         const { data, W, H } = readback;
         // Rejection sampling. Cap attempts so pathological density maps

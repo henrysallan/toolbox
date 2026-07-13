@@ -59,10 +59,13 @@ const EXPECTED_TOOLS = [
   "get_catalog",
   "get_graph",
   "get_keyframes",
+  "get_node_source",
   "get_status",
   "insert_recipe",
+  "read_source",
   "screenshot",
   "screenshot_strip",
+  "search_source",
   "set_keyframes",
   "set_param",
   "transport",
@@ -73,6 +76,32 @@ check(
   "tools listed",
   tools.tools.map((t) => t.name).sort().join(",") === EXPECTED_TOOLS.join(","),
   tools.tools.map((t) => t.name).join(",")
+);
+
+// --- 0. source tools work with NO editor connected (they read the checkout,
+//        not the bridge) ---
+const src1 = await client.callTool({ name: "get_node_source", arguments: { type: "spline-merge" } });
+check(
+  "get_node_source reads a node def + lists engine imports",
+  !isError(src1) &&
+    textOf(src1).includes("src/nodes/effect/spline-merge.ts") &&
+    textOf(src1).includes("engine imports:") &&
+    textOf(src1).includes("splineSelfMerge"),
+  textOf(src1).split("\n")[0]
+);
+const src2 = await client.callTool({ name: "get_node_source", arguments: { type: "spline-merg" } });
+check("get_node_source suggests near-misses on a typo", isError(src2) && textOf(src2).includes("spline-merge"), textOf(src2).slice(0, 70));
+const src3 = await client.callTool({ name: "read_source", arguments: { path: "src/engine/coerce.ts", start: 1, end: 3 } });
+check("read_source returns a line-numbered range", !isError(src3) && /\n\s*1\t/.test(textOf(src3)) && !/\n\s*4\t/.test(textOf(src3)), textOf(src3).split("\n")[0]);
+const src4 = await client.callTool({ name: "read_source", arguments: { path: "../../../etc/passwd" } });
+check("read_source rejects path traversal", isError(src4) && textOf(src4).includes("outside the readable scope"));
+const src5 = await client.callTool({ name: "read_source", arguments: { path: "src/components/effects/EffectsApp.tsx" } });
+check("read_source rejects out-of-scope files", isError(src5) && textOf(src5).includes("outside the readable scope"));
+const src6 = await client.callTool({ name: "search_source", arguments: { pattern: "splineSelfMerge", glob: "*.ts" } });
+check(
+  "search_source finds definitions + usages",
+  !isError(src6) && textOf(src6).includes("spline-boolean.ts") && textOf(src6).includes("spline-merge.ts"),
+  textOf(src6).split("\n").find((l) => l.startsWith("//")) ?? ""
 );
 
 // --- 1. no editor connected → friendly error ---

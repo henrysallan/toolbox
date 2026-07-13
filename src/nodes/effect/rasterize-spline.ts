@@ -14,6 +14,7 @@ import {
   type ColorRampInterp,
   type ColorRampStop,
 } from "@/engine/color-ramp";
+import { resolveStrokePx, strokeUnitsParam } from "@/engine/stroke-units";
 import { SPLINE_FILL_INPUT } from "@/nodes/source/spline-raster-aux";
 
 // Deterministic per-subpath hash → [0, 1) for the "random" ramp mode.
@@ -25,6 +26,23 @@ function hash01(index: number, seed: number): number {
   h = Math.imul(h, 1274126177);
   h = h ^ (h >>> 16);
   return (h >>> 0) / 4294967296;
+}
+
+// Mean anchor position (normalized [0,1] Y-DOWN) — a cheap stand-in for a
+// subpath's centroid. Used by the `position` ramp mode to key color on WHERE
+// a region sits rather than its array index, so the color is stable when the
+// subpath count/order churns frame to frame (Spline Merge Flow re-extracts its
+// contours every frame, so index-based color flickers; centroid-based doesn't).
+function subpathCentroid(sub: SplineSubpath): [number, number] {
+  const a = sub.anchors;
+  if (a.length === 0) return [0.5, 0.5];
+  let cx = 0;
+  let cy = 0;
+  for (const an of a) {
+    cx += an.pos[0];
+    cy += an.pos[1];
+  }
+  return [cx / a.length, cy / a.length];
 }
 
 // One-shot rasterizer that does Fill + Stroke in a single Canvas2D pass.
@@ -120,10 +138,15 @@ function drawSplineFill(
 // stroke (flatten mode) and the per-subpath stroke (layered mode) share it.
 function applyStrokeStyle(
   c2d: CanvasRenderingContext2D,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  W: number
 ) {
   const style = (params.style as string) ?? "solid";
-  c2d.lineWidth = Math.max(0, (params.thickness as number) ?? 4);
+  const units = params.units;
+  c2d.lineWidth = Math.max(
+    0,
+    resolveStrokePx((params.thickness as number) ?? 4, units, W)
+  );
   c2d.strokeStyle = hexToRgba((params.stroke_color as string) ?? "#000000");
   c2d.lineJoin =
     (params.join as CanvasLineJoin) ?? ("round" as CanvasLineJoin);
@@ -131,12 +154,21 @@ function applyStrokeStyle(
     c2d.miterLimit = (params.miter_limit as number) ?? 10;
   }
   if (style === "dashed") {
-    const dash = Math.max(0.5, (params.dash_length as number) ?? 10);
-    const gap = Math.max(0.5, (params.dash_gap as number) ?? 8);
+    const dash = Math.max(
+      0.5,
+      resolveStrokePx((params.dash_length as number) ?? 10, units, W)
+    );
+    const gap = Math.max(
+      0.5,
+      resolveStrokePx((params.dash_gap as number) ?? 8, units, W)
+    );
     c2d.setLineDash([dash, gap]);
     c2d.lineCap = (params.cap as CanvasLineCap) ?? ("round" as CanvasLineCap);
   } else if (style === "dotted") {
-    const spacing = Math.max(1, (params.dot_spacing as number) ?? 12);
+    const spacing = Math.max(
+      1,
+      resolveStrokePx((params.dot_spacing as number) ?? 12, units, W)
+    );
     c2d.setLineDash([0, spacing]);
     c2d.lineCap = "round";
   } else {
@@ -155,7 +187,7 @@ function drawSplineStroke(
 ) {
   const path = buildPath2D(subpaths, W, H, !!params.close_open_paths);
   if (!path) return;
-  applyStrokeStyle(c2d, params);
+  applyStrokeStyle(c2d, params, W);
   c2d.stroke(path);
 }
 
@@ -175,6 +207,7 @@ function makeFillColorFn(
   const interp = ((params.ramp_interp as string) ?? "linear") as ColorRampInterp;
   const by = (params.ramp_by as string) ?? "index";
   const seed = Math.floor((params.ramp_seed as number) ?? 0);
+  const angleRad = (((params.ramp_angle as number) ?? 0) * Math.PI) / 180;
   const N = subpaths.length;
 
   let groups: number[] = [];
@@ -184,6 +217,12 @@ function makeFillColorFn(
     groups = Array.from(set).sort((a, b) => a - b);
   }
 
+  // position mode: project each centroid onto the gradient axis, normalized
+  // so the unit square maps to [0,1] exactly (no overshoot at diagonal angles).
+  const ca = Math.cos(angleRad);
+  const sa = Math.sin(angleRad);
+  const projHalf = 0.5 * (Math.abs(ca) + Math.abs(sa)) || 1;
+
   return (i, sub) => {
     let t: number;
     if (by === "random") {
@@ -191,6 +230,10 @@ function makeFillColorFn(
     } else if (by === "group") {
       const gi = groups.indexOf(sub.groupIndex ?? 0);
       t = groups.length > 1 ? gi / (groups.length - 1) : 0;
+    } else if (by === "position") {
+      const [cx, cy] = subpathCentroid(sub);
+      const proj = (cx - 0.5) * ca + (cy - 0.5) * sa;
+      t = Math.min(1, Math.max(0, 0.5 + proj / (2 * projHalf)));
     } else {
       t = N > 1 ? i / (N - 1) : 0;
     }
@@ -232,7 +275,7 @@ function drawSplineFlat(
       if (enableStroke) {
         const p = buildPath2D([sub], W, H, closeStroke);
         if (p) {
-          applyStrokeStyle(c2d, params);
+          applyStrokeStyle(c2d, params, W);
           c2d.stroke(p);
         }
       }
@@ -333,14 +376,20 @@ export const rasterizeSplineNode: NodeDefinition = {
         p.enable_fill !== false && p.fill_source === "ramp",
     },
     // Which value drives each subpath's position along the ramp.
-    //   index  — ordinal 0→N-1 mapped left→right (gradient across copies)
-    //   random — seeded per-subpath hash (scattered; seed reshuffles)
-    //   group  — the subpath's groupIndex, normalized over distinct groups
+    //   index    — ordinal 0→N-1 mapped left→right (gradient across copies)
+    //   random   — seeded per-subpath hash (scattered; seed reshuffles)
+    //   group    — the subpath's groupIndex, normalized over distinct groups
+    //   position — the subpath's centroid projected on a steerable axis
+    //              (ramp_angle). Color tracks WHERE a region is, not its array
+    //              index, so it stays put when the subpath count/order churns
+    //              frame to frame — the fix for the color flicker you get
+    //              rasterizing Spline Merge Flow's regions (which are re-
+    //              extracted, so index/count jump every frame).
     {
       name: "ramp_by",
       label: "Ramp by",
       type: "enum",
-      options: ["index", "random", "group"],
+      options: ["index", "random", "group", "position"],
       default: "index",
       visibleIf: (p) =>
         p.enable_fill !== false && p.fill_source === "ramp",
@@ -357,6 +406,21 @@ export const rasterizeSplineNode: NodeDefinition = {
         p.enable_fill !== false &&
         p.fill_source === "ramp" &&
         p.ramp_by === "random",
+    },
+    {
+      // Gradient axis for `position` mode, in degrees. 0 = left→right (color
+      // by centroid x), 90 = top→bottom (by y), any angle in between.
+      name: "ramp_angle",
+      label: "Gradient angle",
+      type: "scalar",
+      min: -180,
+      max: 180,
+      step: 1,
+      default: 0,
+      visibleIf: (p) =>
+        p.enable_fill !== false &&
+        p.fill_source === "ramp" &&
+        p.ramp_by === "position",
     },
     {
       name: "ramp_interp",
@@ -436,7 +500,7 @@ export const rasterizeSplineNode: NodeDefinition = {
     },
     {
       name: "thickness",
-      label: "Thickness (px)",
+      label: "Thickness",
       type: "scalar",
       min: 0,
       max: 200,
@@ -445,6 +509,10 @@ export const rasterizeSplineNode: NodeDefinition = {
       default: 4,
       visibleIf: (p) => p.enable_stroke !== false,
     },
+    // px = absolute pixels (legacy); % = percent of canvas width, so the
+    // stroke keeps its look at any resolution (#174). Applies to thickness
+    // and the dash/dot metrics below.
+    strokeUnitsParam("units", (p) => p.enable_stroke !== false),
     {
       name: "style",
       label: "Style",
@@ -455,7 +523,7 @@ export const rasterizeSplineNode: NodeDefinition = {
     },
     {
       name: "dash_length",
-      label: "Dash length (px)",
+      label: "Dash length",
       type: "scalar",
       min: 0.5,
       max: 200,
@@ -466,7 +534,7 @@ export const rasterizeSplineNode: NodeDefinition = {
     },
     {
       name: "dash_gap",
-      label: "Dash gap (px)",
+      label: "Dash gap",
       type: "scalar",
       min: 0.5,
       max: 200,
@@ -477,7 +545,7 @@ export const rasterizeSplineNode: NodeDefinition = {
     },
     {
       name: "dot_spacing",
-      label: "Dot spacing (px)",
+      label: "Dot spacing",
       type: "scalar",
       min: 1,
       max: 200,
@@ -558,12 +626,14 @@ export const rasterizeSplineNode: NodeDefinition = {
         ramp: params.fill_source === "ramp" ? params.fill_ramp : null,
         rby: params.ramp_by,
         rseed: params.ramp_seed,
+        rangle: params.ramp_by === "position" ? params.ramp_angle : null,
         rint: params.ramp_interp,
         stack: params.stack_subpaths,
         fr: params.fill_rule,
         es: enableStroke,
         sc: params.stroke_color,
         t: params.thickness,
+        u: params.units,
         st: params.style,
         dl: params.dash_length,
         dg: params.dash_gap,
@@ -635,6 +705,7 @@ export const rasterizeSplineNode: NodeDefinition = {
       es: enableStroke,
       sc: params.stroke_color,
       t: params.thickness,
+      u: params.units,
       st: params.style,
       dl: params.dash_length,
       dg: params.dash_gap,

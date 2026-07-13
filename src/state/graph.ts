@@ -91,6 +91,13 @@ export type NodeDataPayload = {
   // specdocs/062926_compositions-and-project-view.md.
   displayName?: string;
   layerAccent?: boolean;
+  // User-resized node box, in flow (canvas) px, set by dragging the
+  // bottom-left resize grip on the node. Absent ⇒ auto: width falls back to
+  // the per-type content `minWidth`, height to the content-driven body. Both
+  // persist with the project (serialize passes them through — additive, no
+  // schema bump). Editor-only; the engine never reads them.
+  uiWidth?: number;
+  uiHeight?: number;
   [key: string]: unknown;
 };
 

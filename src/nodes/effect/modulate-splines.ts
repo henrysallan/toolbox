@@ -19,41 +19,15 @@ import type {
 // "Transform Instances" pattern — each copy lives in its own subpath
 // and gets modulated per-instance via a field image.
 
-interface SamplerState {
-  scaleCanvas?: HTMLCanvasElement;
-  rotCanvas?: HTMLCanvasElement;
-}
-
-function ensureState(ctx: RenderContext, nodeId: string): SamplerState {
-  const key = `modulate-splines:${nodeId}`;
-  let s = ctx.state[key] as SamplerState | undefined;
-  if (!s) {
-    s = {};
-    ctx.state[key] = s;
-  }
-  return s;
-}
-
 function buildLumaSampler(
   ctx: RenderContext,
-  canvas: HTMLCanvasElement,
   img: ImageValue
 ): ((u: number, v: number) => number) | null {
   if (img.width <= 0 || img.height <= 0) return null;
-  if (canvas.width !== img.width || canvas.height !== img.height) {
-    canvas.width = img.width;
-    canvas.height = img.height;
-  }
-  try {
-    ctx.blitToCanvas(img, canvas);
-  } catch {
-    return null;
-  }
-  const c2d = canvas.getContext("2d", { willReadFrequently: true });
-  if (!c2d) return null;
-  const data = c2d.getImageData(0, 0, canvas.width, canvas.height).data;
-  const w = canvas.width;
-  const h = canvas.height;
+  const data = ctx.readImagePixels(img);
+  if (!data) return null;
+  const w = img.width;
+  const h = img.height;
   return (u: number, v: number): number => {
     // Subpath centroid UVs are Y-DOWN. Sample directly without flipping.
     const px = Math.max(0, Math.min(w - 1, Math.floor(u * w)));
@@ -224,7 +198,7 @@ export const modulateSplinesNode: NodeDefinition = {
   primaryOutput: "spline",
   auxOutputs: [],
 
-  compute({ inputs, params, ctx, nodeId }) {
+  compute({ inputs, params, ctx }) {
     const src = inputs.splines;
     if (!src || src.kind !== "spline") {
       const empty: SplineValue = { kind: "spline", subpaths: [] };
@@ -244,20 +218,13 @@ export const modulateSplinesNode: NodeDefinition = {
     const scaleHi = (params.scale_field_hi as number) ?? 1.5;
     const rotAmount = (params.rotate_field_amount as number) ?? Math.PI;
 
-    const state = ensureState(ctx, nodeId);
     let scaleSampler: ((u: number, v: number) => number) | null = null;
     if (inputs.scale_field?.kind === "image") {
-      const c =
-        state.scaleCanvas ?? document.createElement("canvas");
-      state.scaleCanvas = c;
-      scaleSampler = buildLumaSampler(ctx, c, inputs.scale_field);
+      scaleSampler = buildLumaSampler(ctx, inputs.scale_field);
     }
     let rotSampler: ((u: number, v: number) => number) | null = null;
     if (inputs.rotate_field?.kind === "image") {
-      const c =
-        state.rotCanvas ?? document.createElement("canvas");
-      state.rotCanvas = c;
-      rotSampler = buildLumaSampler(ctx, c, inputs.rotate_field);
+      rotSampler = buildLumaSampler(ctx, inputs.rotate_field);
     }
 
     const outSubpaths: SplineSubpath[] = src.subpaths.map((sub) => {

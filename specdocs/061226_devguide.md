@@ -42,7 +42,9 @@ src/
   engine/                 The render engine. SELF-CONTAINED — see invariant #1.
     types.ts              SocketType/SocketValue/NodeDefinition/RenderContext. READ FIRST.
     gl.ts                 EngineBackend: hidden WebGL2 canvas, texture pool, shader cache,
-                          drawFullscreen, blitToCanvas, WebGPU bridge helpers.
+                          drawFullscreen, blitToCanvas, readImagePixels (CPU pixel
+                          readbacks — FBO + readPixels; never blitToCanvas+getImageData,
+                          which resizes the context's canvas), WebGPU bridge helpers.
     evaluator.ts          evaluateGraph(): flatten → toposort → fingerprint cache → compute.
     coerce.ts             Cross-type socket coercions (mask↔image, image→scalar, audio→scalar…).
     audio-analysis.ts     Shared audio DSP: getAudioFrame() (live AnalyserNode / offline
@@ -121,6 +123,12 @@ src/
                           registry (React side: useMcpBridge + McpPairingDialog;
                           server: scripts/mcp-server.mjs via `npm run mcp`; e2e:
                           `npm run check:mcp`). Spec: 070926_claude-mcp-bridge.md.
+                          scripts/mcp-source.mjs adds server-side, bridge-free
+                          source-reading tools (get_node_source / read_source /
+                          search_source over src/nodes + src/engine, local
+                          checkout with a GitHub-tag skew fallback) so Claude can
+                          read node/engine code to explain behavior + tree-building.
+                          Spec: 071226_mcp-node-source-tools.md.
     platform/             Platform-adapter seam (web vs Electron) — see "Desktop
                           (Electron) build". index.ts → `platform`; web.ts is
                           today's behavior verbatim; native.ts → window.toolboxNative.
@@ -207,7 +215,8 @@ WeakMaps inside engine/element.ts). The editor-side "can this wire land
 here" checks are SINGLE-SOURCED in engine/graph-validation.ts: `coercible`
 (the pure type table, also used by AI-recipe validation) and
 `editorCanCoerce` (adds the polymorphic defType exceptions — Math uv,
-Copy-to-Points instance, Displace/Transform source). NodeEditor's
+Copy-to-Points instance, Displace/Transform source, Scatter Points
+density←spline). NodeEditor's
 `isValidConnection` + splice check and EffectsApp's wire-drop auto-connect
 all call it — **add new coercions in coerce.ts (runtime) + coercible
 (editor/validator); add polymorphic socket exceptions in editorCanCoerce
@@ -911,5 +920,36 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   the kernel during recipe validation so undeclared temps and `return`-style
   code come back as repairable `PARAM_INVALID` errors instead of silently
   no-oping.
+- **Multi-stroke + float curves + stroke units** (spec
+  071226_multi-stroke.md). The `float_curve` ParamType is a single
+  monotone-cubic 0..1→0..1 curve (`CurvePoint[]`, plain JSON, NOT
+  keyframable/exposable) whose model lives engine-side in
+  [float-curve.ts](../src/engine/float-curve.ts) — the RGB Curves /
+  Color Correction math re-exports from there, and the generic
+  `FloatCurveEditor` in param-controls.tsx is the one curve-chart UI
+  (CurvesControl wraps it per channel; remount via `key` to clear its
+  selection). Multi-stroke offsets live in
+  [spline-repeat.ts](../src/engine/spline-repeat.ts)
+  (`buildRepeatStrokes`): fixed-band model (offset_i = width ×
+  spacingCurve(i/(N−1))), offsets computed in canvas-PIXEL space so rings
+  stay uniform on non-square canvases (distance unit = canvas-width
+  fraction), closed subpaths winding-normalized via shoelace sign so
+  `outer` always expands (open paths: inner/outer = left/right of
+  travel). Consumed by the **Repeat Path** node (`spline-repeat`,
+  spline→spline, tags each ring's subpaths with `groupIndex` = ring) and
+  the **Stroke** node's collapsible Repeats group (per-ring
+  thickness/opacity falloff curves + optional color ramp; two-tier
+  signature so styling edits re-stroke cached Path2Ds without re-running
+  bezier-js offsets). Known limit: parallel curves self-intersect at
+  concave regions once offset exceeds curvature radius (same as Offset
+  Path). Shipping this fixed a latent `offsetSubpath` bug that also bit
+  the Offset Path node: bezier-js's offset() NaNs on handle-less
+  (polyline) segments — the shared fix synthesizes 1/3-chord handles
+  (identical geometry) before offsetting (`solidifyForOffset` in
+  spline-math.ts). Stroke metrics (thickness, dash/dot) on Stroke / Rasterize
+  Spline / Spline Draw / the primitives' bundled rasterizer now take a
+  px-vs-`%` units toggle ([stroke-units.ts](../src/engine/stroke-units.ts),
+  % = canvas-width fraction — the #174 fix; default stays `px` so old
+  saves render byte-identical).
 - No automated tests; keep modules pure where possible (layout solver,
   graph-ops) so they're testable when a runner lands.

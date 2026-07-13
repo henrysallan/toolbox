@@ -23,6 +23,20 @@ void main() {
   outColor = texture(u_src, v_uv);
 }`;
 
+// Y-flipped blit for readImagePixels. readPixels returns rows starting at
+// framebuffer y=0 (the visual bottom), while every CPU consumer expects
+// canvas ImageData row order (row 0 = visual top — what the old
+// blitToCanvas + getImageData recipe produced). Flipping at draw time makes
+// the readPixels output come back top-down with no CPU row shuffle.
+const READBACK_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+out vec4 outColor;
+void main() {
+  outColor = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
+}`;
+
 function compileShader(
   gl: WebGL2RenderingContext,
   type: number,
@@ -236,6 +250,93 @@ export function createEngineBackend(
   }
 
   const blitProgram = getShader("__blit__", BLIT_FS);
+  const readbackProgram = getShader("__readback__", READBACK_FS);
+
+  // ---- CPU pixel readback --------------------------------------------
+  // Replaces the blitToCanvas + getImageData recipe for nodes that need
+  // image pixels on the CPU (scatter density, point samplers, content
+  // rects…). That recipe resized hiddenCanvas — the canvas hosting this
+  // GL context — to the readback size, reallocating the default
+  // framebuffer up to twice per frame (readback size, then back to
+  // preview size at present). Rendering into a pooled offscreen RGBA8
+  // target and calling readPixels leaves hiddenCanvas alone entirely.
+  //
+  // Targets are RGBA8 regardless of the source's RGBA16F: readPixels with
+  // UNSIGNED_BYTE needs a normalized-byte framebuffer, and byte output is
+  // what every consumer wants anyway (ImageData parity). Pool is keyed by
+  // size — a handful of nodes each read at one stable size per frame, so
+  // the map stays tiny; it's emptied wholesale if it ever grows past 8.
+  const readbackTargets = new Map<string, WebGLTexture>();
+  const readbackFbo = gl.createFramebuffer();
+  if (!readbackFbo) throw new Error("Failed to create readback FBO");
+
+  function readImagePixelsInternal(
+    image: ImageValue,
+    width?: number,
+    height?: number
+  ): Uint8ClampedArray<ArrayBuffer> | null {
+    const w = Math.max(1, Math.floor(width ?? image.width));
+    const h = Math.max(1, Math.floor(height ?? image.height));
+    const key = `${w}x${h}`;
+    let tex = readbackTargets.get(key);
+    if (!tex) {
+      if (readbackTargets.size >= 8) {
+        for (const t of readbackTargets.values()) gl!.deleteTexture(t);
+        readbackTargets.clear();
+      }
+      const created = gl!.createTexture();
+      if (!created) return null;
+      gl!.bindTexture(gl!.TEXTURE_2D, created);
+      gl!.texImage2D(
+        gl!.TEXTURE_2D,
+        0,
+        gl!.RGBA8,
+        w,
+        h,
+        0,
+        gl!.RGBA,
+        gl!.UNSIGNED_BYTE,
+        null
+      );
+      gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_MIN_FILTER, gl!.NEAREST);
+      gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_MAG_FILTER, gl!.NEAREST);
+      gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_WRAP_S, gl!.CLAMP_TO_EDGE);
+      gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_WRAP_T, gl!.CLAMP_TO_EDGE);
+      gl!.bindTexture(gl!.TEXTURE_2D, null);
+      readbackTargets.set(key, created);
+      tex = created;
+    }
+
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, readbackFbo);
+    gl!.framebufferTexture2D(
+      gl!.FRAMEBUFFER,
+      gl!.COLOR_ATTACHMENT0,
+      gl!.TEXTURE_2D,
+      tex,
+      0
+    );
+    if (gl!.checkFramebufferStatus(gl!.FRAMEBUFFER) !== gl!.FRAMEBUFFER_COMPLETE) {
+      gl!.bindFramebuffer(gl!.FRAMEBUFFER, null);
+      return null;
+    }
+    gl!.viewport(0, 0, w, h);
+    gl!.disable(gl!.DEPTH_TEST);
+    gl!.disable(gl!.BLEND);
+    gl!.useProgram(readbackProgram);
+    gl!.bindVertexArray(vao);
+    gl!.activeTexture(gl!.TEXTURE0);
+    gl!.bindTexture(gl!.TEXTURE_2D, image.texture);
+    gl!.uniform1i(gl!.getUniformLocation(readbackProgram, "u_src"), 0);
+    gl!.drawArrays(gl!.TRIANGLES, 0, 3);
+    gl!.bindVertexArray(null);
+
+    const bytes = new Uint8Array(w * h * 4);
+    gl!.readPixels(0, 0, w, h, gl!.RGBA, gl!.UNSIGNED_BYTE, bytes);
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, null);
+    // Zero-copy view — values are already 0..255 so clamping semantics
+    // are moot; the type just matches ImageData.data for drop-in reuse.
+    return new Uint8ClampedArray(bytes.buffer);
+  }
 
   function allocTexture(
     w: number,
@@ -448,6 +549,7 @@ export function createEngineBackend(
       getWebGPUDevice,
       readImageToFloat32: readImageToFloat32Internal,
       uploadFloat32ToImage: uploadFloat32ToImageInternal,
+      readImagePixels: readImagePixelsInternal,
     };
   }
 
@@ -471,6 +573,9 @@ export function createEngineBackend(
     destroy() {
       shaderCache.forEach((p) => gl!.deleteProgram(p));
       shaderCache.clear();
+      readbackTargets.forEach((t) => gl!.deleteTexture(t));
+      readbackTargets.clear();
+      gl!.deleteFramebuffer(readbackFbo);
       gl!.deleteVertexArray(vao);
       gl!.deleteShader(sharedVs);
       gl!.deleteFramebuffer(fbo);

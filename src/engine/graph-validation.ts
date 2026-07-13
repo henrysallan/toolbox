@@ -118,6 +118,16 @@ export function editorCanCoerce(
     (src === "spline" || src === "points")
   )
     return true;
+  // Scatter Points' density socket accepts a spline directly — its filled
+  // silhouette becomes the density, sampled on the CPU at readback size
+  // (no Rasterize Spline → texture → readback round trip). The socket
+  // reads "image" until something connects.
+  if (
+    targetDefType === "scatter-points" &&
+    targetHandle === "in:density" &&
+    src === "spline"
+  )
+    return true;
   return false;
 }
 

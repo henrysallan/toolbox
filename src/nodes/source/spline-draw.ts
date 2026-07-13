@@ -1,4 +1,5 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
+import { strokeUnitsParam } from "@/engine/stroke-units";
 import type {
   NodeDefinition,
   OutputSocketDef,
@@ -58,7 +59,7 @@ export const splineDrawNode: NodeDefinition = {
     },
     {
       name: "stroke_thickness",
-      label: "Thickness (px)",
+      label: "Thickness",
       type: "scalar",
       min: 0,
       max: 200,
@@ -67,6 +68,10 @@ export const splineDrawNode: NodeDefinition = {
       default: 4,
       visibleIf: (p) => !!p.stroke_enabled,
     },
+    // px = absolute pixels (legacy); % = percent of canvas width, so the
+    // stroke keeps its look at any resolution (#174). Read by the shared
+    // rasterizeSplineAux.
+    strokeUnitsParam("stroke_units", (p) => !!p.stroke_enabled),
     {
       name: "stroke_color",
       label: "Stroke color",

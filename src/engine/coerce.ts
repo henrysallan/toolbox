@@ -9,25 +9,8 @@ import type {
   SplineValue,
 } from "./types";
 
-// Shared 1×1 scratch canvas for the image/mask → scalar readback. Lives
-// on ctx.state so it persists across evals without re-allocating, and
-// gets torn down with the render context. Each eval reuses the same
-// canvas; content is overwritten by blitToCanvas.
-const SCRATCH_KEY = "__coerce_scratch_1x1__";
-
-function getScratchCanvas(ctx: RenderContext): HTMLCanvasElement {
-  const existing = ctx.state[SCRATCH_KEY] as HTMLCanvasElement | undefined;
-  if (existing) return existing;
-  const canvas = document.createElement("canvas");
-  canvas.width = 1;
-  canvas.height = 1;
-  ctx.state[SCRATCH_KEY] = canvas;
-  return canvas;
-}
-
-// Sample the representative value of an image-like texture by blitting it
-// through a 1×1 framebuffer (the WebGL hiddenCanvas inside blitToCanvas
-// resizes to match the target), then reading that one pixel back. The
+// Sample the representative value of an image-like texture by rendering
+// it into a 1×1 readback target and pulling that one pixel back. The
 // sampled UV is the fullscreen triangle's fragment center ≈ (0.5, 0.5),
 // so for smooth inputs (noise, gradients) this is the visual "middle
 // value." For high-contrast images it's just whatever single pixel the
@@ -37,18 +20,12 @@ function sampleImageRed(
   value: { texture: WebGLTexture; width: number; height: number },
   ctx: RenderContext
 ): number | null {
-  const canvas = getScratchCanvas(ctx);
-  try {
-    ctx.blitToCanvas(
-      { kind: "image", texture: value.texture, width: value.width, height: value.height },
-      canvas
-    );
-  } catch {
-    return null;
-  }
-  const c2d = canvas.getContext("2d");
-  if (!c2d) return null;
-  const data = c2d.getImageData(0, 0, 1, 1).data;
+  const data = ctx.readImagePixels(
+    { kind: "image", texture: value.texture, width: value.width, height: value.height },
+    1,
+    1
+  );
+  if (!data) return null;
   return data[0] / 255;
 }
 

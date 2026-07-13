@@ -11,6 +11,19 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.4.1",
+    date: "2026-07-13",
+    added: [
+      "Multi-stroke: a new Repeat Path node emits N parallel-offset copies of a spline (composable into Stroke / Trim / Boolean / Rasterize), plus a Repeats section right on the Stroke node with per-repeat thickness and opacity falloff and a color ramp across the set. Both are driven by a new float-curve editor — a reusable 0–1 → 0–1 curve control for shaping spacing and falloff.",
+      "Spline Merge gains a Flow (\"liquid\") mode — instead of a hard per-frame boolean, the merged silhouette behaves like a fluid surface that chases the union: bridges swell and snap as shapes approach, and necks stretch and thin as they part.",
+      "On-node editing: the String and Text nodes now have an editable text box directly on the node body, the Constant node has an inline value slider, and every node has a resize grip on its lower-left corner — drag to resize (the size is saved with the project, double-click to reset).",
+      "Claude MCP bridge can now read the engine — new node-source tools let the assistant pull a node's actual source and the engine helpers it calls, so it can explain node behavior and build graphs from ground truth instead of the catalog summary.",
+    ],
+    changed: [
+      "Stroke metrics (thickness, dash / dot lengths) get a units toggle — px (default) or % of canvas — so a stroke no longer changes weight when you change the canvas resolution. Spline Draw and Rasterize Spline share the same resolution-independent path.",
+    ],
+  },
+  {
     version: "0.3.0",
     date: "2026-07-08",
     added: [

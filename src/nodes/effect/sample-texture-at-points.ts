@@ -28,19 +28,6 @@ type Target = (typeof TARGET_OPTIONS)[number];
 const BLEND_OPTIONS = ["replace", "multiply", "add"] as const;
 type Blend = (typeof BLEND_OPTIONS)[number];
 
-interface ScratchState {
-  scratchCanvas: HTMLCanvasElement;
-}
-
-function ensureState(ctx: RenderContext, nodeId: string): ScratchState {
-  const key = `sample-texture-at-points:${nodeId}`;
-  const existing = ctx.state[key] as ScratchState | undefined;
-  if (existing) return existing;
-  const s: ScratchState = { scratchCanvas: document.createElement("canvas") };
-  ctx.state[key] = s;
-  return s;
-}
-
 interface ImageBuffer {
   data: Uint8ClampedArray;
   w: number;
@@ -49,31 +36,17 @@ interface ImageBuffer {
 
 function readImage(
   ctx: RenderContext,
-  canvas: HTMLCanvasElement,
   img: { texture: WebGLTexture; width: number; height: number }
 ): ImageBuffer | null {
   if (img.width <= 0 || img.height <= 0) return null;
-  if (canvas.width !== img.width || canvas.height !== img.height) {
-    canvas.width = img.width;
-    canvas.height = img.height;
-  }
-  try {
-    ctx.blitToCanvas(
-      {
-        kind: "image",
-        texture: img.texture,
-        width: img.width,
-        height: img.height,
-      },
-      canvas
-    );
-  } catch {
-    return null;
-  }
-  const c2d = canvas.getContext("2d", { willReadFrequently: true });
-  if (!c2d) return null;
-  const imgData = c2d.getImageData(0, 0, canvas.width, canvas.height);
-  return { data: imgData.data, w: canvas.width, h: canvas.height };
+  const data = ctx.readImagePixels({
+    kind: "image",
+    texture: img.texture,
+    width: img.width,
+    height: img.height,
+  });
+  if (!data) return null;
+  return { data, w: img.width, h: img.height };
 }
 
 function pickChannel(buf: ImageBuffer, ch: Channel, u: number, v: number): number {
@@ -158,7 +131,7 @@ export const sampleTextureAtPointsNode: NodeDefinition = {
   primaryOutput: "points",
   auxOutputs: [],
 
-  compute({ inputs, params, ctx, nodeId }) {
+  compute({ inputs, params, ctx }) {
     const src = inputs.points;
     if (!src || src.kind !== "points") {
       const empty: PointsValue = {
@@ -183,8 +156,7 @@ export const sampleTextureAtPointsNode: NodeDefinition = {
     const lo = (params.lo as number) ?? 0;
     const hi = (params.hi as number) ?? 1;
 
-    const state = ensureState(ctx, nodeId);
-    const buf = readImage(ctx, state.scratchCanvas, img);
+    const buf = readImage(ctx, img);
     if (!buf) return { primary: src };
 
     const n = src.count;

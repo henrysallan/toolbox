@@ -109,38 +109,17 @@ interface FieldBuffer {
   h: number;
 }
 
-function ensureCanvas(ctx: RenderContext, nodeId: string): HTMLCanvasElement {
-  const key = `displace:${nodeId}`;
-  const existing = ctx.state[key] as HTMLCanvasElement | undefined;
-  if (existing) return existing;
-  const c = document.createElement("canvas");
-  ctx.state[key] = c;
-  return c;
-}
-
 // Read a displacement image into a CPU pixel buffer (one readback per eval).
 function readFieldToBuffer(
   ctx: RenderContext,
-  canvas: HTMLCanvasElement,
   img: { texture: WebGLTexture; width: number; height: number }
 ): FieldBuffer | null {
   if (img.width <= 0 || img.height <= 0) return null;
-  if (canvas.width !== img.width || canvas.height !== img.height) {
-    canvas.width = img.width;
-    canvas.height = img.height;
-  }
-  try {
-    ctx.blitToCanvas(
-      { kind: "image", texture: img.texture, width: img.width, height: img.height },
-      canvas
-    );
-  } catch {
-    return null;
-  }
-  const c2d = canvas.getContext("2d", { willReadFrequently: true });
-  if (!c2d) return null;
-  const imgData = c2d.getImageData(0, 0, canvas.width, canvas.height);
-  return { data: imgData.data, w: canvas.width, h: canvas.height };
+  const data = ctx.readImagePixels(
+    { kind: "image", texture: img.texture, width: img.width, height: img.height }
+  );
+  if (!data) return null;
+  return { data, w: img.width, h: img.height };
 }
 
 // Sample one channel (0..1) at UV. UV is Y-DOWN for splines/points and the
@@ -254,7 +233,7 @@ export const displaceNode: NodeDefinition = {
   },
   auxOutputs: [],
 
-  compute({ inputs, params, ctx, nodeId }) {
+  compute({ inputs, params, ctx }) {
     const src = inputs.image;
     const disp = inputs.displacement;
     const channelX = channelToInt((params.channelX as string) ?? "r");
@@ -267,7 +246,7 @@ export const displaceNode: NodeDefinition = {
     if (src && (src.kind === "spline" || src.kind === "points")) {
       const buf =
         disp && disp.kind === "image"
-          ? readFieldToBuffer(ctx, ensureCanvas(ctx, nodeId), disp)
+          ? readFieldToBuffer(ctx, disp)
           : null;
       // No field wired (or unreadable) → pass through unchanged.
       const offsetAt = (x: number, y: number): [number, number] => {

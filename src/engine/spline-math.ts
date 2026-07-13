@@ -216,6 +216,29 @@ export function resampleSubpath(
   return { anchors, closed: sub.closed };
 }
 
+// bezier-js's offset() needs non-degenerate control points: a handle-less
+// (or zero-handle) straight segment maps to a cubic with cp1 === p0, whose
+// derivative — hence normal — vanishes at the endpoints, and the offset
+// translates by a NaN normal. Synthesize 1/3-chord handles (identical
+// geometry) on such segments before offsetting.
+function solidifyForOffset(sub: SplineSubpath): SplineSubpath {
+  const n = sub.anchors.length;
+  const anchors = sub.anchors.map((a) => ({ ...a }));
+  const zero = (h?: [number, number]) => !h || (h[0] === 0 && h[1] === 0);
+  const seg = (i: number, j: number) => {
+    const a = anchors[i];
+    const b = anchors[j];
+    const dx = b.pos[0] - a.pos[0];
+    const dy = b.pos[1] - a.pos[1];
+    if (dx === 0 && dy === 0) return; // zero-length: nothing to orient by
+    if (zero(a.outHandle)) a.outHandle = [dx / 3, dy / 3];
+    if (zero(b.inHandle)) b.inHandle = [-dx / 3, -dy / 3];
+  };
+  for (let i = 0; i < n - 1; i++) seg(i, i + 1);
+  if (sub.closed && n >= 2) seg(n - 1, 0);
+  return { ...sub, anchors };
+}
+
 // Parallel-curve offset via bezier-js. The library's .offset(d) on a single
 // cubic returns an array of cubics (may subdivide around high-curvature
 // regions). We reassemble them into a single subpath, stitching handles at
@@ -225,7 +248,7 @@ export function offsetSubpath(
   distance: number
 ): SplineSubpath | null {
   if (distance === 0) return sub;
-  const segments = subpathToBeziers(sub);
+  const segments = subpathToBeziers(solidifyForOffset(sub));
   if (segments.length === 0) return null;
   const outCurves: Bezier[] = [];
   for (const seg of segments) {

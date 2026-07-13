@@ -171,12 +171,6 @@ interface TextState {
   strokeLayerTex: WebGLTexture | null;
   zeroTex: WebGLTexture | null;
   composite: ImageValue | null;
-  // Off-screen canvas used to read back the `mask` input's pixels
-  // when any axis is in `maskDriven` mode. The rasterizer blits
-  // the mask into this canvas at our own resolution, then
-  // `getImageData` to sample the mask at each glyph's centre.
-  // Allocated lazily.
-  maskReadCanvas: HTMLCanvasElement | null;
   primary: ImageValue;
   sdf: MaskValue;
   // Cached marching-squares contour of the current text raster.
@@ -292,7 +286,6 @@ function ensureState(ctx: RenderContext, nodeId: string): TextState {
     strokeLayerTex: null,
     zeroTex: null,
     composite: null,
-    maskReadCanvas: null,
     primary: ctx.allocImage(),
     sdf: ctx.allocMask(),
     spline: { kind: "spline", subpaths: [] },
@@ -307,32 +300,18 @@ function ensureState(ctx: RenderContext, nodeId: string): TextState {
   return state;
 }
 
-// Blit the mask image to a CPU-readable 2D canvas at the
-// rasterizer's native resolution, then pull the pixel buffer.
-// Returns an ImageData for direct (x, y) sampling, or null if
-// the mask isn't usable. Allocates the readback canvas lazily on
-// the state so we don't churn one per frame.
+// Read the mask image back to CPU pixels at the rasterizer's native
+// resolution. Returns an ImageData for direct (x, y) sampling, or null
+// if the mask isn't usable.
 function readMaskImageData(
   ctx: RenderContext,
-  state: TextState,
   mask: ImageValue,
   W: number,
   H: number
 ): ImageData | null {
-  if (!state.maskReadCanvas) {
-    state.maskReadCanvas = document.createElement("canvas");
-  }
-  const c = state.maskReadCanvas;
-  if (c.width !== W) c.width = W;
-  if (c.height !== H) c.height = H;
-  try {
-    ctx.blitToCanvas(mask, c);
-    const c2d = c.getContext("2d");
-    if (!c2d) return null;
-    return c2d.getImageData(0, 0, W, H);
-  } catch {
-    return null;
-  }
+  const data = ctx.readImagePixels(mask, W, H);
+  if (!data) return null;
+  return new ImageData(data, W, H);
 }
 
 function resizeStateIfNeeded(ctx: RenderContext, state: TextState): void {
@@ -502,7 +481,6 @@ function rasterize(
 // mask, since pooled texture identity can't reveal content changes).
 function readAnimatorFields(
   ctx: RenderContext,
-  state: TextState,
   params: Record<string, unknown>,
   inputs: Record<string, { kind: string } | undefined>
 ): { fields: Partial<Record<AnimProp, ImageData | null>>; live: boolean } {
@@ -515,7 +493,6 @@ function readAnimatorFields(
     if (v && v.kind === "image") {
       fields[p] = readMaskImageData(
         ctx,
-        state,
         v as unknown as ImageValue,
         ctx.width,
         ctx.height
@@ -1218,13 +1195,13 @@ export const textNode: NodeDefinition = {
       // each maskDriven axis's `a` endpoint in that case).
       const maskData =
         maskMode && maskImg
-          ? readMaskImageData(ctx, state, maskImg, ctx.width, ctx.height)
+          ? readMaskImageData(ctx, maskImg, ctx.width, ctx.height)
           : null;
       // Animator config + field buffers (read each wired field once).
       const anim: TextDrawAnim | null = animActive
         ? {
             animators: parseAnimators(params),
-            fields: readAnimatorFields(ctx, state, params, inputs).fields,
+            fields: readAnimatorFields(ctx, params, inputs).fields,
           }
         : null;
       // Image-fill coverage/stroke layers must stay clean masks, so the color

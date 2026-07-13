@@ -15,6 +15,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
+import { createSourceReader } from "./mcp-source.mjs";
 
 const VERSION = "0.1.0";
 const PORT = Number(process.env.TOOLBOX_MCP_PORT ?? 38275);
@@ -134,6 +135,16 @@ function callEditor(cmd, args = {}, timeoutMs = CMD_TIMEOUT_MS) {
 // so the model can read and react (repair loop).
 // ---------------------------------------------------------------------------
 const server = new McpServer({ name: "toolbox", version: VERSION });
+
+// Source-reading tools (spec 071226_mcp-node-source-tools.md). These read the
+// repo checkout directly — no bridge round-trip, so they work unpaired. The
+// paired editor's version (when it differs from this checkout) triggers the
+// GitHub-tag fallback so Claude reads the code the user is actually running.
+const source = createSourceReader();
+const pairedAppVersion = () => (editor?.paired ? editor.appVersion : null);
+function sourceResult(r) {
+  return r.error ? toolError(new Error(r.error)) : textResult(r.text);
+}
 
 function textResult(value) {
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 1);
@@ -476,6 +487,78 @@ server.registerTool(
   async (args) => {
     try {
       return textResult(await callEditor("transport", args));
+    } catch (e) {
+      return toolError(e);
+    }
+  }
+);
+
+server.registerTool(
+  "get_node_source",
+  {
+    description:
+      "Read the actual source of a node from the public repo — use this to " +
+      "understand HOW a node works beyond its catalog summary, or to explain " +
+      "to the user exactly how to build a tree. Pass a `type` from " +
+      "get_catalog; returns the node's definition file (line-numbered) plus " +
+      "the `@/engine/*` helpers it imports (the real math usually lives " +
+      "there — follow up with read_source). Prefer get_catalog for a quick " +
+      "interface check; reach here when you need behavior, not just sockets. " +
+      "Cite file:line when explaining behavior to the user.",
+    inputSchema: {
+      type: z.string().describe("A node type string from get_catalog (e.g. \"spline-merge\")."),
+    },
+  },
+  async ({ type }) => {
+    try {
+      return sourceResult(await source.getNodeSource({ type, appVersion: pairedAppVersion() }));
+    } catch (e) {
+      return toolError(e);
+    }
+  }
+);
+
+server.registerTool(
+  "read_source",
+  {
+    description:
+      "Read a file from the engine or node source (scope: src/nodes/ + " +
+      "src/engine/ — where node behavior and the shared math live, e.g. " +
+      "coerce.ts, types.ts, evaluator.ts, spline-boolean.ts). Line-numbered; " +
+      "pass `start`/`end` (1-based, inclusive) to read a slice of a big file. " +
+      "Use get_node_source first to find the right file for a node.",
+    inputSchema: {
+      path: z.string().describe("Repo-relative path under src/nodes/ or src/engine/."),
+      start: z.number().optional().describe("First line (1-based, inclusive)."),
+      end: z.number().optional().describe("Last line (1-based, inclusive)."),
+    },
+  },
+  async ({ path, start, end }) => {
+    try {
+      return sourceResult(await source.readSource({ path, start, end, appVersion: pairedAppVersion() }));
+    } catch (e) {
+      return toolError(e);
+    }
+  }
+);
+
+server.registerTool(
+  "search_source",
+  {
+    description:
+      "Regex-search the engine + node source (src/nodes/ + src/engine/) and " +
+      "get `path:line: text` matches — the way to FIND where something is " +
+      "defined or used before reading it (a symbol, a socket type, a coercion, " +
+      "a shader key). `pattern` is a JavaScript regex source; optional `glob` " +
+      "filters paths (e.g. \"*.ts\", \"src/engine/*\"). Capped at 200 matches.",
+    inputSchema: {
+      pattern: z.string().describe("JavaScript regex source (case-sensitive)."),
+      glob: z.string().optional().describe("Path filter, e.g. \"*.ts\" or \"src/engine/*\"."),
+    },
+  },
+  async ({ pattern, glob }) => {
+    try {
+      return sourceResult(await source.searchSource({ pattern, glob, appVersion: pairedAppVersion() }));
     } catch (e) {
       return toolError(e);
     }

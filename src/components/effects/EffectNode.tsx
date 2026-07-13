@@ -1,9 +1,11 @@
 "use client";
 
-import { Fragment, memo, useEffect, useMemo, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   Handle,
   Position,
+  useNodeConnections,
+  useReactFlow,
   useUpdateNodeInternals,
   type Node,
   type NodeProps,
@@ -19,6 +21,7 @@ import {
 import type { ColorRampStop } from "@/engine/color-ramp";
 import { MAX_COLORS, getExtractedPalette } from "@/nodes/source/color-literal";
 import { ColorPickerPopover } from "@/lib/color-picker-popover";
+import { MiniBarSlider, NumberField } from "@/lib/param-controls";
 import { colorForSocket } from "./socketColor";
 import { VIRTUAL_SOCKET } from "@/engine/groups";
 
@@ -34,6 +37,24 @@ const HANDLE_SIZE = 10;
 // catches clicks without making the port look chunky. Capped just
 // below ROW_H (22) so adjacent rows don't have overlapping hitboxes.
 const HANDLE_HIT = 20;
+
+// Node types that surface an editable text box directly on the node body,
+// mapped to the string param it edits. Both params are declared
+// `multiline: true`, so the on-node control is a <textarea>. Edits route
+// through the shared `effect-node-param` event (→ onParamChange), same as
+// the header dropdowns and Color swatches.
+const STRING_INPUT_PARAMS: Record<string, string> = {
+  "string-literal": "value",
+  text: "text",
+};
+
+// Node types that surface an inline scalar slider on the node body, mapped to
+// the scalar param it drives. Reuses the ParamPanel slider visuals
+// (MiniBarSlider + NumberField) at node scale; edits route through the same
+// `effect-node-param` event.
+const SCALAR_INPUT_PARAMS: Record<string, string> = {
+  constant: "value",
+};
 
 interface ExposedSocket {
   name: string;
@@ -210,6 +231,114 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   const active2 = !!data.active2;
   const bypassed = !!data.bypassed;
 
+  // On-node text box: String source (`value`) and Text node (`text`) render
+  // an editable box on the node body. The placeholder comes from the def.
+  const stringInputParam: string | undefined = STRING_INPUT_PARAMS[data.defType];
+  const stringPlaceholder = useMemo(() => {
+    if (!stringInputParam) return undefined;
+    const def = getNodeDef(data.defType);
+    return def?.params.find((p) => p.name === stringInputParam)?.placeholder;
+  }, [data.defType, stringInputParam]);
+
+  // On-node scalar slider (Constant). Range mirrors the ParamPanel logic —
+  // per-node paramOverride wins, softMax caps the slider (number field keeps
+  // the full range as the escape hatch) — but a very-negative hard min is
+  // clamped into a usable span so the on-node bar isn't pinned to one end.
+  const scalarInputParam: string | undefined = SCALAR_INPUT_PARAMS[data.defType];
+  const scalarConfig = useMemo(() => {
+    if (!scalarInputParam) return null;
+    const def = getNodeDef(data.defType);
+    const p = def?.params.find((x) => x.name === scalarInputParam);
+    if (!p || p.type !== "scalar") return null;
+    const ov = data.paramOverrides?.[scalarInputParam];
+    const min = ov?.min ?? p.min ?? 0;
+    const max = ov?.max ?? p.max ?? 1;
+    const step = p.step ?? 0.01;
+    const sliderMax = ov?.softMax ?? p.softMax ?? max;
+    const sliderMin = Math.max(min, -sliderMax);
+    return { min, max, step, sliderMin, sliderMax };
+  }, [data.defType, scalarInputParam, data.paramOverrides]);
+
+  // Content-driven minimum width (the auto size when unresized). Reused as
+  // the outer div's minWidth AND the resize clamp floor.
+  const minWidth = isQueue
+    ? 300
+    : data.defType === "collect"
+      ? 240
+      : data.defType === "color-literal"
+        ? 220
+        : 200;
+
+  // Bottom-left resize grip. Drag = live local preview (the outer div grows +
+  // a transform keeps the RIGHT edge anchored while the LEFT edge follows the
+  // cursor); a single commit on pointer-up dispatches `effect-node-resize`,
+  // which EffectsApp turns into one setNodes + one undo step (size on
+  // data.uiWidth/uiHeight, plus position.x shifted so the right edge holds).
+  const nodeRef = useRef<HTMLDivElement>(null);
+  const rf = useReactFlow();
+  const [resizeDrag, setResizeDrag] = useState<{
+    w: number;
+    h: number;
+    tx: number;
+  } | null>(null);
+
+  const onResizeStart = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const el = nodeRef.current;
+    if (!el) return;
+    const zoom = rf.getZoom() || 1;
+    const rect = el.getBoundingClientRect();
+    // getBoundingClientRect is post-zoom (screen px); divide back to flow px.
+    const startW = rect.width / zoom;
+    const startH = rect.height / zoom;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const minH = 40;
+    let latest = { w: startW, h: startH, tx: 0 };
+    const onMove = (ev: PointerEvent) => {
+      const dxFlow = (ev.clientX - startX) / zoom;
+      const dyFlow = (ev.clientY - startY) / zoom;
+      const w = Math.max(minWidth, startW - dxFlow); // left edge follows cursor
+      const h = Math.max(minH, startH + dyFlow); // bottom edge follows cursor
+      const tx = startW - w; // shift so the right edge stays put
+      latest = { w, h, tx };
+      setResizeDrag({ w, h, tx });
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setResizeDrag(null);
+      window.dispatchEvent(
+        new CustomEvent("effect-node-resize", {
+          detail: {
+            id,
+            width: Math.round(latest.w),
+            height: Math.round(latest.h),
+            dx: latest.tx,
+          },
+        })
+      );
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  // Double-click the grip clears the override → back to auto content size.
+  const onResizeReset = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    window.dispatchEvent(
+      new CustomEvent("effect-node-resize", { detail: { id, reset: true } })
+    );
+  };
+
+  // Re-measure handle positions after a committed resize (right-side sockets
+  // moved with the width; left sockets moved with a left-edge resize) so wires
+  // stay attached — same re-measure the socket-rename path relies on.
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [data.uiWidth, data.uiHeight, id, updateNodeInternals]);
+
   const dispatch = (kind: "toggleActive" | "toggleActive2" | "toggleBypass") => {
     window.dispatchEvent(
       new CustomEvent("effect-node-toggle", { detail: { id, kind } })
@@ -273,14 +402,21 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
 
   return (
     <div
+      ref={nodeRef}
       style={{
-        minWidth: isQueue
-          ? 300
-          : data.defType === "collect"
-            ? 240
-            : isColorNode
-              ? 220
-              : 200,
+        minWidth,
+        // User-resized box (bottom-left grip) → explicit size; a live drag
+        // previews from local state. Absent ⇒ auto (minWidth / content height).
+        width: resizeDrag ? resizeDrag.w : data.uiWidth,
+        height: resizeDrag ? resizeDrag.h : data.uiHeight,
+        // Keep the right edge anchored while the left edge follows the cursor
+        // during a drag; removed on commit (position.x absorbs the shift).
+        transform: resizeDrag ? `translateX(${resizeDrag.tx}px)` : undefined,
+        // A node with an on-node text box lays out as a flex column so the
+        // textarea can flex to fill a resized (taller) body. Other node types
+        // stay in block flow — an over-tall box just leaves bottom space.
+        display: stringInputParam ? "flex" : undefined,
+        flexDirection: stringInputParam ? "column" : undefined,
         // Layer nodes + their boundary nodes get a faint blue wash (#159).
         background: data.layerAccent ? "#171b24" : "#18181b",
         border: `1px solid ${
@@ -973,6 +1109,55 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           })()}
       </div>
 
+      {stringInputParam && (
+        <div
+          style={{
+            padding: "6px 8px",
+            borderTop: "1px solid #27272a",
+            // Fill the remaining height of a resized node so the textarea can
+            // grow with it; minHeight:0 lets it shrink inside the flex column.
+            flex: "1 1 auto",
+            minHeight: 0,
+            display: "flex",
+          }}
+        >
+          <NodeStringInput
+            id={id}
+            paramName={stringInputParam}
+            value={
+              typeof data.params[stringInputParam] === "string"
+                ? (data.params[stringInputParam] as string)
+                : ""
+            }
+            placeholder={stringPlaceholder}
+          />
+        </div>
+      )}
+
+      {scalarInputParam && scalarConfig && (
+        <div
+          style={{
+            padding: "6px 8px",
+            borderTop: "1px solid #27272a",
+          }}
+        >
+          <NodeScalarSlider
+            id={id}
+            paramName={scalarInputParam}
+            value={
+              typeof data.params[scalarInputParam] === "number"
+                ? (data.params[scalarInputParam] as number)
+                : 0
+            }
+            min={scalarConfig.min}
+            max={scalarConfig.max}
+            step={scalarConfig.step}
+            sliderMin={scalarConfig.sliderMin}
+            sliderMax={scalarConfig.sliderMax}
+          />
+        </div>
+      )}
+
       {(data.defType === "output" || isLayerOutput) && (
         <div
           style={{
@@ -1056,6 +1241,64 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           </button>
         </div>
       )}
+
+      <ResizeGrip
+        active={!!resizeDrag || selected}
+        onPointerDown={onResizeStart}
+        onDoubleClick={onResizeReset}
+      />
+    </div>
+  );
+}
+
+// Bottom-left resize handle. A quiet corner target that brightens when the
+// node is selected or being dragged. `nodrag` so grabbing it resizes the
+// node instead of moving it.
+function ResizeGrip({
+  active,
+  onPointerDown,
+  onDoubleClick,
+}: {
+  active: boolean;
+  onPointerDown: (e: React.PointerEvent) => void;
+  onDoubleClick: (e: React.MouseEvent) => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      className="nodrag"
+      title="Drag to resize · double-click to reset"
+      onPointerDown={onPointerDown}
+      onDoubleClick={onDoubleClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        position: "absolute",
+        left: 0,
+        bottom: 0,
+        width: 16,
+        height: 16,
+        cursor: "nesw-resize",
+        display: "flex",
+        alignItems: "flex-end",
+        justifyContent: "flex-start",
+        padding: 3,
+        // The bottom-left rounding matches the node corner so the hit area
+        // doesn't poke past it.
+        borderBottomLeftRadius: 6,
+        zIndex: 4,
+        opacity: hover ? 0.95 : active ? 0.6 : 0.28,
+        transition: "opacity 120ms ease",
+      }}
+    >
+      <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden>
+        <path
+          d="M0 8 L8 0 M0 8 L4 8 M0 8 L0 4"
+          stroke="#a1a1aa"
+          strokeWidth="1"
+          fill="none"
+        />
+      </svg>
     </div>
   );
 }
@@ -1089,6 +1332,181 @@ function ExportButton({
     >
       {label}
     </button>
+  );
+}
+
+// Editable text box rendered on the node body (String source + Text node).
+// Buffered-controlled: a local value backs the textarea while the user is
+// editing so the round-trip through effect-node-param → onParamChange →
+// re-render can't jump the caret. External changes (undo, a wired string
+// driving the param, AI edits) are adopted only while NOT focused. When the
+// param is exposed and wired, the wire wins at eval — so the box goes
+// read-only and shows the stored value greyed to avoid a silent no-op edit.
+function NodeStringInput({
+  id,
+  paramName,
+  value,
+  placeholder,
+}: {
+  id: string;
+  paramName: string;
+  value: string;
+  placeholder?: string;
+}) {
+  const [text, setText] = useState(value);
+  const editing = useRef(false);
+  // Only this node's own `in:param:<name>` target handle; [] when the param
+  // isn't exposed (no such handle) — so unexposed String/Text stays editable.
+  const conns = useNodeConnections({
+    handleType: "target",
+    handleId: `in:param:${paramName}`,
+  });
+  const wired = conns.length > 0;
+
+  // Adopt external value changes only when the user isn't typing here, so
+  // fast keystrokes never get clobbered by a stale prop from an in-flight
+  // store update.
+  useEffect(() => {
+    if (!editing.current) setText(value);
+  }, [value]);
+
+  return (
+    <textarea
+      className="nodrag"
+      value={wired ? value : text}
+      readOnly={wired}
+      placeholder={placeholder}
+      spellCheck={false}
+      rows={3}
+      onFocus={() => {
+        editing.current = true;
+      }}
+      onBlur={() => {
+        editing.current = false;
+        // Resync to the canonical value in case onParamChange normalized it.
+        setText(value);
+      }}
+      // Keep canvas interactions from firing while interacting with the box:
+      // no node drag / marquee / shift-drag connect, and no editor keyboard
+      // shortcuts (Backspace/Delete deleting the node, Space, Cmd-C/V/A…).
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+      onChange={(e) => {
+        const next = e.target.value;
+        setText(next);
+        window.dispatchEvent(
+          new CustomEvent("effect-node-param", {
+            detail: { id, name: paramName, value: next },
+          })
+        );
+      }}
+      style={{
+        width: "100%",
+        minHeight: 48,
+        // Fill a resized node's body (Feature B); box-sizing so the padding
+        // doesn't overflow the node width.
+        height: "100%",
+        boxSizing: "border-box",
+        resize: "none",
+        background: "#0e0e11",
+        color: wired ? "#71717a" : "#e5e7eb",
+        border: "1px solid #27272a",
+        borderRadius: 4,
+        fontFamily: "inherit",
+        fontSize: 11,
+        lineHeight: 1.4,
+        padding: "4px 6px",
+        outline: "none",
+      }}
+    />
+  );
+}
+
+// Inline scalar slider on the node body (Constant). Reuses the ParamPanel
+// slider visuals (MiniBarSlider) + scrub number field at node scale. Both
+// controls buffer their own interaction state and rAF-coalesce, so edits are
+// just forwarded through effect-node-param → onParamChange. Wrapped in
+// `nodrag` + propagation stops so dragging the bar / scrubbing the number
+// doesn't move or delete the node. When the param is exposed and wired, the
+// wire wins at eval — so we show a greyed read-only value instead.
+function NodeScalarSlider({
+  id,
+  paramName,
+  value,
+  min,
+  max,
+  step,
+  sliderMin,
+  sliderMax,
+}: {
+  id: string;
+  paramName: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  sliderMin: number;
+  sliderMax: number;
+}) {
+  const conns = useNodeConnections({
+    handleType: "target",
+    handleId: `in:param:${paramName}`,
+  });
+  const wired = conns.length > 0;
+  const emit = (v: number) =>
+    window.dispatchEvent(
+      new CustomEvent("effect-node-param", {
+        detail: { id, name: paramName, value: v },
+      })
+    );
+
+  if (wired) {
+    return (
+      <div
+        title="Driven by a wired input"
+        style={{
+          height: 20,
+          display: "flex",
+          alignItems: "center",
+          paddingLeft: 6,
+          borderRadius: 6,
+          boxShadow: "inset 0 0 0 1px #232327",
+          background: "#0f0f11",
+          color: "#71717a",
+          fontSize: 11,
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {Number.isInteger(value) ? value : Number(value.toFixed(3))}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="nodrag"
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+      style={{ display: "flex", gap: 4, alignItems: "center" }}
+    >
+      <MiniBarSlider
+        value={value}
+        min={sliderMin}
+        max={sliderMax}
+        step={step}
+        onChange={emit}
+      />
+      <NumberField
+        value={value}
+        onChange={emit}
+        min={min}
+        max={max}
+        step={step}
+        width={44}
+      />
+    </div>
   );
 }
 

@@ -112,6 +112,11 @@ export interface SavedNode {
   bypassed?: boolean;
   // Group was generated/edited by AI — drives the "Edit with AI" star button.
   aiAuthored?: boolean;
+  // User-resized node box (flow px) via the bottom-left grip. Absent ⇒ the
+  // node auto-sizes. Additive/optional — old saves simply lack them, so no
+  // schema bump. Editor-only; the engine never reads these.
+  uiWidth?: number;
+  uiHeight?: number;
 }
 
 export interface SavedEdge {
@@ -732,6 +737,8 @@ export async function serializeGraph(
       active: n.data.active,
       bypassed: n.data.bypassed,
       aiAuthored: n.data.aiAuthored,
+      uiWidth: n.data.uiWidth,
+      uiHeight: n.data.uiHeight,
     });
     const bucket = Math.floor(((i + 1) / total) * 20);
     if (bucket !== lastBucket) {
@@ -922,6 +929,8 @@ export async function deserializeGraph(
         active: sn.active ?? !!def?.terminal,
         bypassed: sn.bypassed ?? false,
         aiAuthored: sn.aiAuthored,
+        uiWidth: sn.uiWidth,
+        uiHeight: sn.uiHeight,
       },
     } satisfies Node<NodeDataPayload>);
     // Throttle to ~5% buckets — same React update-depth guard as serialize.

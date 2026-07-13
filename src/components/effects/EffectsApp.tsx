@@ -387,13 +387,20 @@ function resolveFrameRange(params: Record<string, unknown>): {
   return { startFrame, endFrame: startFrame + durationFrames, durationFrames };
 }
 
-// Node types that retype their inputs AND primary output purely from
-// `connectedTypes` (what's wired in) with NO stored `mode` param to fall back
-// on. Copy-to-Points / Math also retype, but they're param-backed (onConnect
-// flips their `mode`), so their stored sockets stay correct. These two have no
-// such anchor, so an edges-keyed effect must resolve + write their sockets, and
-// the param-change path must not overwrite them without `connectedTypes`.
-const CONNECTED_TYPE_RETYPE_NODES = new Set(["transform", "displace"]);
+// Node types that retype their input sockets purely from `connectedTypes`
+// (what's wired in) with NO stored `mode` param to fall back on. Copy-to-
+// Points / Math also retype, but they're param-backed (onConnect flips their
+// `mode`), so their stored sockets stay correct. These have no such anchor, so
+// an edges-keyed effect must resolve + write their sockets, and the param-
+// change path must not overwrite them without `connectedTypes`. Transform /
+// Displace also retype their primary OUTPUT to match; Scatter Points only
+// retypes its `density` input (its output is always `points`) — the resync
+// handles both since it reads each node's own resolvePrimaryOutput.
+const CONNECTED_TYPE_RETYPE_NODES = new Set([
+  "transform",
+  "displace",
+  "scatter-points",
+]);
 
 export default function EffectsApp({
   initialProject,
@@ -4586,6 +4593,51 @@ function EffectsShell({
     window.addEventListener("effect-node-param", handler);
     return () => window.removeEventListener("effect-node-param", handler);
   }, [onParamChange]);
+
+  // Node resize grip (bottom-left corner on every node). Fires once per drag,
+  // on pointer-up, with the final flow-space size + the x-shift that keeps the
+  // right edge anchored (the left edge moved). One pushGraph + one setNodes =
+  // one undo step. `reset` clears the override back to auto content sizing.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (
+        e as CustomEvent<{
+          id: string;
+          width?: number;
+          height?: number;
+          dx?: number;
+          reset?: boolean;
+        }>
+      ).detail;
+      if (!detail) return;
+      pushGraph(getGraphSnapshot());
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id !== detail.id) return n;
+          if (detail.reset) {
+            const nextData = { ...n.data };
+            delete nextData.uiWidth;
+            delete nextData.uiHeight;
+            return { ...n, data: nextData };
+          }
+          return {
+            ...n,
+            position: {
+              ...n.position,
+              x: n.position.x + (detail.dx ?? 0),
+            },
+            data: {
+              ...n.data,
+              uiWidth: detail.width,
+              uiHeight: detail.height,
+            },
+          };
+        })
+      );
+    };
+    window.addEventListener("effect-node-resize", handler);
+    return () => window.removeEventListener("effect-node-resize", handler);
+  }, [setNodes, pushGraph, getGraphSnapshot]);
 
   const onToggleParamExposed = useCallback(
     (nodeId: string, paramName: string) => {

@@ -51,6 +51,10 @@ import {
   type CurvesValue,
 } from "@/nodes/effect/color-correction";
 import {
+  sanitizeFloatCurve,
+  type CurvePoint,
+} from "@/engine/float-curve";
+import {
   diamondStateFor,
   findKeyframeAt,
   removeKeyframeAt,
@@ -3061,6 +3065,24 @@ export function ParamControl({
     );
   }
 
+  if (param.type === "float_curve") {
+    const defaultPoints = Array.isArray(param.default)
+      ? (param.default as CurvePoint[])
+      : [];
+    const points = sanitizeFloatCurve(
+      value ?? param.default,
+      defaultPoints[0]?.y ?? 0,
+      defaultPoints[defaultPoints.length - 1]?.y ?? 1
+    );
+    return (
+      <FloatCurveControl
+        points={points}
+        defaultPoints={defaultPoints}
+        onChange={(next) => onChange(next)}
+      />
+    );
+  }
+
   if (
     param.type === "vec2" ||
     param.type === "vec3" ||
@@ -3848,26 +3870,30 @@ export const CURVE_CHANNEL_LABELS: Record<CurveChannel, string> = {
 // before it's removed. Matches the Blender/Photoshop drag-off-chart gesture.
 export const CURVE_DRAG_OFF_THRESHOLD = 40;
 
-export function CurvesControl({
-  curves,
+// Generic single-channel curve editor: an SVG chart editing one CurvePoint[]
+// (monotone cubic, x/y clamped 0..1). The RGB Curves control wraps this per
+// channel; the `float_curve` param type renders it directly. Interactions:
+// click empty chart to add, drag to move, drag far off-chart (or the remove
+// button) to delete. Selection state is internal — remount (`key`) to clear.
+export function FloatCurveEditor({
+  points,
   onChange,
+  color = "#e5e7eb",
 }: {
-  curves: CurvesValue;
-  onChange: (next: CurvesValue) => void;
+  points: CurvePoint[];
+  onChange: (next: CurvePoint[]) => void;
+  color?: string;
 }) {
-  const [activeCh, setActiveCh] = useState<CurveChannel>("rgb");
   const [dragId, setDragId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
-  const curvesRef = useRef(curves);
-  curvesRef.current = curves;
-  const activeChRef = useRef(activeCh);
-  activeChRef.current = activeCh;
+  const pointsRef = useRef(points);
+  pointsRef.current = points;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
-  // Map svg pixel coords <-> curve (0..1) coords. The chart is inset by
+  // Map svg viewBox coords <-> curve (0..1) coords. The chart is inset by
   // CURVE_PAD so points on the 0/1 edges are still easy to grab.
   function svgToCurve(x: number, y: number): { x: number; y: number } {
     const span = CURVE_SIZE - 2 * CURVE_PAD;
@@ -3884,54 +3910,58 @@ export function CurvesControl({
     };
   }
 
+  // Client px → svg viewBox units (the svg renders at panel width, which
+  // may differ from the 200-unit viewBox).
+  function clientToSvg(e: { clientX: number; clientY: number }): {
+    x: number;
+    y: number;
+  } {
+    const svg = svgRef.current;
+    if (!svg) return { x: 0, y: 0 };
+    const rect = svg.getBoundingClientRect();
+    const scale = rect.width > 0 ? CURVE_SIZE / rect.width : 1;
+    return {
+      x: (e.clientX - rect.left) * scale,
+      y: (e.clientY - rect.top) * scale,
+    };
+  }
+
   useEffect(() => {
     if (!dragId) return;
     const onMove = (e: PointerEvent) => {
-      const svg = svgRef.current;
-      if (!svg) return;
-      const rect = svg.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const py = e.clientY - rect.top;
+      const sp = clientToSvg(e);
       const offChart =
-        py < -CURVE_DRAG_OFF_THRESHOLD ||
-        py > CURVE_SIZE + CURVE_DRAG_OFF_THRESHOLD;
-      const curr = curvesRef.current;
-      const ch = activeChRef.current;
-      const chPts = curr[ch];
-      if (offChart && chPts.length > 2) {
+        sp.y < -CURVE_DRAG_OFF_THRESHOLD ||
+        sp.y > CURVE_SIZE + CURVE_DRAG_OFF_THRESHOLD;
+      const pts = pointsRef.current;
+      if (offChart && pts.length > 2) {
         // Mark the dragged point for imminent removal on pointer up.
         return;
       }
       const cc = svgToCurve(
-        Math.max(0, Math.min(CURVE_SIZE, px)),
-        Math.max(0, Math.min(CURVE_SIZE, py))
+        Math.max(0, Math.min(CURVE_SIZE, sp.x)),
+        Math.max(0, Math.min(CURVE_SIZE, sp.y))
       );
       const nx = Math.max(0, Math.min(1, cc.x));
       const ny = Math.max(0, Math.min(1, cc.y));
-      const next = chPts.map((p) =>
+      const next = pts.map((p) =>
         p.id === dragId ? { ...p, x: nx, y: ny } : p
       );
       // Keep points sorted by x after moves so rendering/eval stays consistent.
       next.sort((a, b) => a.x - b.x);
-      onChangeRef.current({ ...curr, [ch]: next });
+      onChangeRef.current(next);
     };
     const onUp = (e: PointerEvent) => {
       // If released off-chart (and we have more than 2 points), remove the
       // dragged point — classic curve editor gesture.
-      const svg = svgRef.current;
-      if (svg) {
-        const rect = svg.getBoundingClientRect();
-        const py = e.clientY - rect.top;
-        const offChart =
-          py < -CURVE_DRAG_OFF_THRESHOLD ||
-          py > CURVE_SIZE + CURVE_DRAG_OFF_THRESHOLD;
-        const curr = curvesRef.current;
-        const ch = activeChRef.current;
-        if (offChart && curr[ch].length > 2) {
-          const next = curr[ch].filter((p) => p.id !== dragId);
-          onChangeRef.current({ ...curr, [ch]: next });
-          setSelectedId(null);
-        }
+      const sp = clientToSvg(e);
+      const offChart =
+        sp.y < -CURVE_DRAG_OFF_THRESHOLD ||
+        sp.y > CURVE_SIZE + CURVE_DRAG_OFF_THRESHOLD;
+      const pts = pointsRef.current;
+      if (offChart && pts.length > 2) {
+        onChangeRef.current(pts.filter((p) => p.id !== dragId));
+        setSelectedId(null);
       }
       setDragId(null);
     };
@@ -3941,9 +3971,9 @@ export function CurvesControl({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dragId]);
 
-  const points = curves[activeCh];
   const tangents = computeMonotoneTangents(points);
 
   // Build the curve path by sampling the monotone cubic densely.
@@ -3953,7 +3983,9 @@ export function CurvesControl({
     const t = i / SAMPLES;
     const y = evalMonotoneCubic(points, tangents, t);
     const sp = curveToSvg(t, Math.max(0, Math.min(1, y)));
-    pathSegments.push(`${i === 0 ? "M" : "L"} ${sp.x.toFixed(2)} ${sp.y.toFixed(2)}`);
+    pathSegments.push(
+      `${i === 0 ? "M" : "L"} ${sp.x.toFixed(2)} ${sp.y.toFixed(2)}`
+    );
   }
   const pathD = pathSegments.join(" ");
 
@@ -3963,56 +3995,14 @@ export function CurvesControl({
     const nx = Math.max(0, Math.min(1, cc.x));
     const ny = Math.max(0, Math.min(1, cc.y));
     const id = newCurvePointId();
-    const next = [...points, { id, x: nx, y: ny }].sort(
-      (a, b) => a.x - b.x
-    );
-    onChange({ ...curves, [activeCh]: next });
+    const next = [...points, { id, x: nx, y: ny }].sort((a, b) => a.x - b.x);
+    onChange(next);
     setSelectedId(id);
     setDragId(id);
   }
 
-  function resetChannel(ch: CurveChannel) {
-    onChange({ ...curves, [ch]: defaultCurveChannel() });
-    setSelectedId(null);
-  }
-
-  function resetAll() {
-    onChange(defaultCurvesValue());
-    setSelectedId(null);
-  }
-
-  const color = CURVE_CHANNEL_COLORS[activeCh];
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <div style={{ display: "flex", gap: 4 }}>
-        {CURVE_CHANNELS.map((ch) => {
-          const active = ch === activeCh;
-          return (
-            <button
-              key={ch}
-              onClick={() => {
-                setActiveCh(ch);
-                setSelectedId(null);
-              }}
-              style={{
-                flex: 1,
-                padding: "3px 0",
-                background: active ? CURVE_CHANNEL_COLORS[ch] : "#18181b",
-                color: active ? "#0a0a0a" : CURVE_CHANNEL_COLORS[ch],
-                border: `1px solid ${CURVE_CHANNEL_COLORS[ch]}`,
-                borderRadius: 3,
-                fontFamily: "inherit",
-                fontSize: 11,
-                cursor: "pointer",
-              }}
-            >
-              {CURVE_CHANNEL_LABELS[ch]}
-            </button>
-          );
-        })}
-      </div>
-
       <svg
         ref={svgRef}
         width={CURVE_SIZE}
@@ -4020,8 +4010,8 @@ export function CurvesControl({
         viewBox={`0 0 ${CURVE_SIZE} ${CURVE_SIZE}`}
         onPointerDown={(e) => {
           if (e.target !== e.currentTarget) return;
-          const rect = e.currentTarget.getBoundingClientRect();
-          addPointAtSvg(e.clientX - rect.left, e.clientY - rect.top);
+          const sp = clientToSvg(e);
+          addPointAtSvg(sp.x, sp.y);
         }}
         style={{
           display: "block",
@@ -4106,91 +4096,177 @@ export function CurvesControl({
         })}
       </svg>
 
-      {selectedId && (() => {
-        const pt = points.find((p) => p.id === selectedId);
-        if (!pt) return null;
-        const idx = points.findIndex((p) => p.id === selectedId);
-        return (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 4,
-              padding: 6,
-              border: "1px solid #27272a",
-              borderRadius: 3,
-            }}
-          >
-            <div style={{ color: "#a1a1aa" }}>
-              point {idx + 1}/{points.length}
-            </div>
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <span style={{ color: "#71717a", minWidth: 14 }}>x</span>
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.001}
-                value={pt.x}
-                onChange={(e) => {
-                  const v = Math.max(
-                    0,
-                    Math.min(1, parseFloat(e.target.value))
-                  );
-                  if (Number.isNaN(v)) return;
-                  const next = points
-                    .map((q) => (q.id === pt.id ? { ...q, x: v } : q))
-                    .sort((a, b) => a.x - b.x);
-                  onChange({ ...curves, [activeCh]: next });
-                }}
-                style={inputStyle()}
-              />
-              <span style={{ color: "#71717a", minWidth: 14 }}>y</span>
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.001}
-                value={pt.y}
-                onChange={(e) => {
-                  const v = Math.max(
-                    0,
-                    Math.min(1, parseFloat(e.target.value))
-                  );
-                  if (Number.isNaN(v)) return;
-                  const next = points.map((q) =>
-                    q.id === pt.id ? { ...q, y: v } : q
-                  );
-                  onChange({ ...curves, [activeCh]: next });
-                }}
-                style={inputStyle()}
-              />
-            </div>
-            <button
-              onClick={() => {
-                if (points.length <= 2) return;
-                const next = points.filter((q) => q.id !== pt.id);
-                onChange({ ...curves, [activeCh]: next });
-                setSelectedId(null);
-              }}
-              disabled={points.length <= 2}
+      {selectedId &&
+        (() => {
+          const pt = points.find((p) => p.id === selectedId);
+          if (!pt) return null;
+          const idx = points.findIndex((p) => p.id === selectedId);
+          return (
+            <div
               style={{
-                marginTop: 2,
-                background: "transparent",
-                border: "1px solid #3f3f46",
-                color: points.length <= 2 ? "#3f3f46" : "#a1a1aa",
-                fontSize: 10,
-                padding: "2px 6px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                padding: 6,
+                border: "1px solid #27272a",
                 borderRadius: 3,
-                cursor: points.length <= 2 ? "not-allowed" : "pointer",
-                fontFamily: "inherit",
               }}
             >
-              remove
+              <div style={{ color: "#a1a1aa" }}>
+                point {idx + 1}/{points.length}
+              </div>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <span style={{ color: "#71717a", minWidth: 14 }}>x</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.001}
+                  value={pt.x}
+                  onChange={(e) => {
+                    const v = Math.max(
+                      0,
+                      Math.min(1, parseFloat(e.target.value))
+                    );
+                    if (Number.isNaN(v)) return;
+                    const next = points
+                      .map((q) => (q.id === pt.id ? { ...q, x: v } : q))
+                      .sort((a, b) => a.x - b.x);
+                    onChange(next);
+                  }}
+                  style={inputStyle()}
+                />
+                <span style={{ color: "#71717a", minWidth: 14 }}>y</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.001}
+                  value={pt.y}
+                  onChange={(e) => {
+                    const v = Math.max(
+                      0,
+                      Math.min(1, parseFloat(e.target.value))
+                    );
+                    if (Number.isNaN(v)) return;
+                    const next = points.map((q) =>
+                      q.id === pt.id ? { ...q, y: v } : q
+                    );
+                    onChange(next);
+                  }}
+                  style={inputStyle()}
+                />
+              </div>
+              <button
+                onClick={() => {
+                  if (points.length <= 2) return;
+                  const next = points.filter((q) => q.id !== pt.id);
+                  onChange(next);
+                  setSelectedId(null);
+                }}
+                disabled={points.length <= 2}
+                style={{
+                  marginTop: 2,
+                  background: "transparent",
+                  border: "1px solid #3f3f46",
+                  color: points.length <= 2 ? "#3f3f46" : "#a1a1aa",
+                  fontSize: 10,
+                  padding: "2px 6px",
+                  borderRadius: 3,
+                  cursor: points.length <= 2 ? "not-allowed" : "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                remove
+              </button>
+            </div>
+          );
+        })()}
+
+      <div style={{ color: "#52525b", fontSize: 10 }}>
+        click to add · drag to move · drag far off-chart to remove
+      </div>
+    </div>
+  );
+}
+
+// The `float_curve` param type's row control: the generic editor plus a
+// reset-to-default button (fresh point ids so reset never aliases the
+// ParamDef's default array).
+export function FloatCurveControl({
+  points,
+  defaultPoints,
+  onChange,
+}: {
+  points: CurvePoint[];
+  defaultPoints: CurvePoint[];
+  onChange: (next: CurvePoint[]) => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <FloatCurveEditor points={points} onChange={onChange} />
+      <button
+        onClick={() =>
+          onChange(defaultPoints.map((p) => ({ ...p, id: newCurvePointId() })))
+        }
+        style={buttonStyle()}
+      >
+        reset
+      </button>
+    </div>
+  );
+}
+
+export function CurvesControl({
+  curves,
+  onChange,
+}: {
+  curves: CurvesValue;
+  onChange: (next: CurvesValue) => void;
+}) {
+  const [activeCh, setActiveCh] = useState<CurveChannel>("rgb");
+
+  function resetChannel(ch: CurveChannel) {
+    onChange({ ...curves, [ch]: defaultCurveChannel() });
+  }
+
+  function resetAll() {
+    onChange(defaultCurvesValue());
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", gap: 4 }}>
+        {CURVE_CHANNELS.map((ch) => {
+          const active = ch === activeCh;
+          return (
+            <button
+              key={ch}
+              onClick={() => setActiveCh(ch)}
+              style={{
+                flex: 1,
+                padding: "3px 0",
+                background: active ? CURVE_CHANNEL_COLORS[ch] : "#18181b",
+                color: active ? "#0a0a0a" : CURVE_CHANNEL_COLORS[ch],
+                border: `1px solid ${CURVE_CHANNEL_COLORS[ch]}`,
+                borderRadius: 3,
+                fontFamily: "inherit",
+                fontSize: 11,
+                cursor: "pointer",
+              }}
+            >
+              {CURVE_CHANNEL_LABELS[ch]}
             </button>
-          </div>
-        );
-      })()}
+          );
+        })}
+      </div>
+
+      <FloatCurveEditor
+        key={activeCh}
+        points={curves[activeCh]}
+        color={CURVE_CHANNEL_COLORS[activeCh]}
+        onChange={(next) => onChange({ ...curves, [activeCh]: next })}
+      />
 
       <div style={{ display: "flex", gap: 4 }}>
         <button
@@ -4202,9 +4278,6 @@ export function CurvesControl({
         <button onClick={resetAll} style={buttonStyle()}>
           reset all
         </button>
-      </div>
-      <div style={{ color: "#52525b", fontSize: 10 }}>
-        click to add · drag to move · drag far off-chart to remove
       </div>
     </div>
   );

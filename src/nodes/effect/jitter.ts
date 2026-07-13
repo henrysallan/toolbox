@@ -38,63 +38,29 @@ import { ensurePointArray, pointsFromArray } from "@/engine/points";
 
 type Mode = "spline" | "points";
 
-interface JitterState {
-  // One scratch 2D canvas, reused across both noise reads. We
-  // getImageData once per noise input (which copies the pixel
-  // bytes) so the canvas can be overwritten on the second blit
-  // without losing the first read's data.
-  scratchCanvas: HTMLCanvasElement;
-}
-
 interface ImageBuffer {
   data: Uint8ClampedArray;
   w: number;
   h: number;
 }
 
-function ensureState(ctx: RenderContext, nodeId: string): JitterState {
-  const key = `jitter:${nodeId}`;
-  const existing = ctx.state[key] as JitterState | undefined;
-  if (existing) return existing;
-  const s: JitterState = {
-    scratchCanvas: document.createElement("canvas"),
-  };
-  ctx.state[key] = s;
-  return s;
-}
-
 function readImageToBuffer(
   ctx: RenderContext,
-  canvas: HTMLCanvasElement,
   img: { texture: WebGLTexture; width: number; height: number }
 ): ImageBuffer | null {
   if (img.width <= 0 || img.height <= 0) return null;
-  if (canvas.width !== img.width || canvas.height !== img.height) {
-    canvas.width = img.width;
-    canvas.height = img.height;
-  }
-  try {
-    ctx.blitToCanvas(
-      { kind: "image", texture: img.texture, width: img.width, height: img.height },
-      canvas
-    );
-  } catch {
-    return null;
-  }
-  const c2d = canvas.getContext("2d", { willReadFrequently: true });
-  if (!c2d) return null;
-  const imgData = c2d.getImageData(0, 0, canvas.width, canvas.height);
-  return { data: imgData.data, w: canvas.width, h: canvas.height };
+  const data = ctx.readImagePixels(
+    { kind: "image", texture: img.texture, width: img.width, height: img.height }
+  );
+  if (!data) return null;
+  return { data, w: img.width, h: img.height };
 }
 
-// Returns the R channel sampled at UV (0..1), Y-flipped to match
-// the codebase's Y-DOWN convention vs. canvas Y-down rows. Output
-// is in [0, 1].
+// Returns the R channel sampled at UV (0..1). Output is in [0, 1].
 function sampleR(buf: ImageBuffer, u: number, v: number): number {
   const px = Math.max(0, Math.min(buf.w - 1, Math.floor(u * buf.w)));
-  // Canvas rows go top→bottom; UV is Y-down for splines/points but
-  // the canvas content from blitToCanvas is also row-0-top → no
-  // explicit Y flip needed here for our internal pipeline.
+  // UV is Y-down for splines/points and readImagePixels returns rows
+  // top-down (ImageData order) → no explicit Y flip needed here.
   const py = Math.max(0, Math.min(buf.h - 1, Math.floor(v * buf.h)));
   return buf.data[(py * buf.w + px) * 4] / 255;
 }
@@ -169,26 +135,18 @@ export const jitterNode: NodeDefinition = {
   },
   auxOutputs: [],
 
-  compute({ inputs, params, ctx, nodeId }) {
+  compute({ inputs, params, ctx }) {
     const mode = ((params.mode as string) ?? "spline") as Mode;
     const sx = (params.strength_x as number) ?? 0.05;
     const sy = (params.strength_y as number) ?? 0.05;
-    const state = ensureState(ctx, nodeId);
 
     const noiseX = inputs.noise_x;
     const noiseY = inputs.noise_y;
-    // Read each connected noise into its own CPU buffer. The same
-    // scratch canvas gets reused across both reads — getImageData
-    // copies the bytes out, so the first read's data persists past
-    // the second blit.
+    // Read each connected noise into its own CPU buffer.
     const bufX =
-      noiseX?.kind === "image"
-        ? readImageToBuffer(ctx, state.scratchCanvas, noiseX)
-        : null;
+      noiseX?.kind === "image" ? readImageToBuffer(ctx, noiseX) : null;
     const bufY =
-      noiseY?.kind === "image"
-        ? readImageToBuffer(ctx, state.scratchCanvas, noiseY)
-        : null;
+      noiseY?.kind === "image" ? readImageToBuffer(ctx, noiseY) : null;
 
     // Per-anchor displacement: 0.5 maps to zero shift, 0 → -strength,
     // 1 → +strength. That symmetry keeps jitter visually centered.

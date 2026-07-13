@@ -431,3 +431,39 @@ Let me know if you understand.
     Set Spline Type (linear strips handles / smooth catmull-rom auto
     handles + tension); Shortest Path (see #74). Spec:
     specdocs/071026_spline-points-nodes.md.
+
+174. it seems that the spline rasterizer for the stroke thickness changes when we change canvas resoloution. Can you fix that?
+    DONE (code) 2026-07-12 — px/% units toggle (% = canvas-width fraction,
+    resolution-independent) on Stroke / Rasterize Spline / Spline Draw /
+    the primitives' bundled rasterizer, via engine/stroke-units.ts.
+    Default stays px (old saves unchanged); needs an in-browser pass.
+    Spec: specdocs/071226_multi-stroke.md.
+
+175. Id like to expand the stroke effects availible. One idea is multi stroke, repeated strokes with options for repeat inner, repeat outer, how many repeats. spacing, with a float curve interface to control spacing. 
+    DONE (code) 2026-07-12 — Repeat Path node (spline→spline offset
+    copies, groupIndex-tagged rings) + Stroke node Repeats group
+    (spacing/thickness/opacity float curves + color ramp across rings) +
+    new generic float_curve param type (engine/float-curve.ts, editor
+    shared with RGB Curves). Typecheck/check/lint green; needs an
+    in-browser pass. Spec: specdocs/071226_multi-stroke.md.
+
+176. svg output nodes, take a spline export and svg at a given frame.
+
+177. interested in a compute shader that can do the combine splines type operation (a sillouette from multiple overlapping splines) but where it is more simulation like and lets pop-y and snapping. like there is a natural adaptive flow
+    SPEC DRAFTED 2026-07-12 — flow mode on Spline Merge (field-based liquid
+    union: blurred coverage target + temporal relaxation + curvature flow,
+    ping-pong fragment shaders, no compute shader needed; spline stays
+    primary via marching-squares readback). Spec:
+    specdocs/071226_spline-merge-flow.md.
+
+178. for our MCP server, it would be interesting if there were tools specifically designed to pull the code for nodes from the github which is public. then claude could dive into the code when it needs a deeper understanding of how a node works and it can also provide information to the user on specifically how to build trees.
+    DONE 2026-07-12 — three server-side read-only tools (no bridge
+    round-trip): get_node_source (catalog type → def file + engine-import
+    pointers), read_source (scoped to src/nodes + src/engine), search_source
+    (grep over the same scope). Local checkout first; GitHub raw pinned to
+    the paired app's version tag as the skew fallback. scripts/mcp-source.mjs
+    + three tools in scripts/mcp-server.mjs; check:mcp covers them. Spec:
+    specdocs/071226_mcp-node-source-tools.md.
+
+
+179. When 

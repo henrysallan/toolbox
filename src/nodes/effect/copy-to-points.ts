@@ -198,10 +198,6 @@ interface UvRect {
 const FULL_RECT: UvRect = { x: 0, y: 0, w: 1, h: 1 };
 
 interface CopyState {
-  // Scratch canvas for CPU readbacks (pick / field samplers, content
-  // rects). Created lazily so graphs without image-driven CPU sampling
-  // don't allocate.
-  pickCanvas: HTMLCanvasElement | null;
   samplers: Partial<Record<SamplerSlot, LumaSamplerEntry>>;
   // Alpha-bbox cache for the content-center anchor, keyed on ImageValue
   // identity (same contract as the sampler cache). WeakMap so group
@@ -251,7 +247,6 @@ function ensureState(ctx: RenderContext, nodeId: string): CopyState {
   const existing = ctx.state[key] as CopyState | undefined;
   if (existing) return existing;
   const s: CopyState = {
-    pickCanvas: null,
     samplers: {},
     contentRects: new WeakMap(),
     instProgram: null,
@@ -403,13 +398,13 @@ function ensureInstResources(ctx: RenderContext, state: CopyState): boolean {
 }
 
 // Builds (and caches) a luminance sampler from an image input. The
-// source is blitted DOWNSAMPLED to ≤256px on the long edge before the
+// source is rendered DOWNSAMPLED to ≤256px on the long edge before the
 // CPU readback — pick / field sources are low-frequency selectors, so
-// full-resolution getImageData (~8 MB at 1080p, per eval) is pure
-// waste. Same recipe as Scatter Points' density readback. Cached per
-// slot keyed on the ImageValue identity: while the upstream node is
-// cached the evaluator hands back the same object, so an animated
-// source misses (new value each frame) and a static one hits.
+// full-resolution readback (~8 MB at 1080p, per eval) is pure waste.
+// Same recipe as Scatter Points' density readback. Cached per slot
+// keyed on the ImageValue identity: while the upstream node is cached
+// the evaluator hands back the same object, so an animated source
+// misses (new value each frame) and a static one hits.
 function getLumaSampler(
   ctx: RenderContext,
   state: CopyState,
@@ -430,22 +425,8 @@ function getLumaSampler(
     h = Math.min(MAX, img.height);
     w = Math.max(1, Math.round(h * aspect));
   }
-  const canvas = state.pickCanvas ?? document.createElement("canvas");
-  state.pickCanvas = canvas;
-  if (canvas.width !== w || canvas.height !== h) {
-    canvas.width = w;
-    canvas.height = h;
-  }
-  try {
-    ctx.blitToCanvas(img, canvas);
-  } catch {
-    return null;
-  }
-  const c2d = canvas.getContext("2d", { willReadFrequently: true });
-  if (!c2d) return null;
-  // getImageData copies, so the shared scratch canvas can be reused by
-  // the next slot's build within the same eval.
-  const data = c2d.getImageData(0, 0, w, h).data;
+  const data = ctx.readImagePixels(img, w, h);
+  if (!data) return null;
   const sample: LumaSampler = (u, v) => {
     // Point/subpath UVs are Y-DOWN (matches canvas image-data row
     // order — row 0 = visual top). Sample directly without flipping.
@@ -537,48 +518,37 @@ function getContentRect(
       h = Math.min(MAX, img.height);
       w = Math.max(1, Math.round(h * aspect));
     }
-    const canvas = state.pickCanvas ?? document.createElement("canvas");
-    state.pickCanvas = canvas;
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w;
-      canvas.height = h;
-    }
-    try {
-      ctx.blitToCanvas(img, canvas);
-      const c2d = canvas.getContext("2d", { willReadFrequently: true });
-      if (c2d) {
-        const data = c2d.getImageData(0, 0, w, h).data;
-        let minX = w;
-        let minY = h;
-        let maxX = -1;
-        let maxY = -1;
-        for (let y = 0; y < h; y++) {
-          for (let x = 0; x < w; x++) {
-            if (data[(y * w + x) * 4 + 3] > 0) {
-              if (x < minX) minX = x;
-              if (x > maxX) maxX = x;
-              if (y < minY) minY = y;
-              if (y > maxY) maxY = y;
-            }
+    const data = ctx.readImagePixels(img, w, h);
+    if (data) {
+      let minX = w;
+      let minY = h;
+      let maxX = -1;
+      let maxY = -1;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (data[(y * w + x) * 4 + 3] > 0) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
           }
         }
-        if (maxX >= 0) {
-          // Pad one downsampled texel so soft edges don't clip.
-          minX = Math.max(0, minX - 1);
-          minY = Math.max(0, minY - 1);
-          maxX = Math.min(w - 1, maxX + 1);
-          maxY = Math.min(h - 1, maxY + 1);
-          rect = {
-            x: minX / w,
-            y: minY / h,
-            w: (maxX - minX + 1) / w,
-            h: (maxY - minY + 1) / h,
-          };
-        }
       }
-    } catch {
-      // Readback failed — full rect keeps rendering correct.
+      if (maxX >= 0) {
+        // Pad one downsampled texel so soft edges don't clip.
+        minX = Math.max(0, minX - 1);
+        minY = Math.max(0, minY - 1);
+        maxX = Math.min(w - 1, maxX + 1);
+        maxY = Math.min(h - 1, maxY + 1);
+        rect = {
+          x: minX / w,
+          y: minY / h,
+          w: (maxX - minX + 1) / w,
+          h: (maxY - minY + 1) / h,
+        };
+      }
     }
+    // Failed readback leaves the full rect, which keeps rendering correct.
   }
   state.contentRects.set(img, rect);
   return rect;
@@ -1244,8 +1214,8 @@ export const copyToPointsNode: NodeDefinition = {
     }
 
     // Content rects must be resolved BEFORE any GL state is set up —
-    // getContentRect does a blitToCanvas readback that clobbers GL
-    // bindings.
+    // getContentRect's readImagePixels pass rebinds program / FBO /
+    // texture state.
     const rects: UvRect[] =
       anchorMode === "content center"
         ? items.map((item) => getContentRect(ctx, state, item))

@@ -21,6 +21,7 @@ import {
   type ElementFit,
 } from "@/engine/element";
 import { OPACITY_PARAM } from "@/engine/conventions";
+import { resolveStrokePx, strokeUnitsParam } from "@/engine/stroke-units";
 import { trimSubpaths } from "@/engine/spline-trim";
 
 // Shared "view this spline" rasterizer bundled into the spline primitive
@@ -36,7 +37,7 @@ export const SPLINE_RASTER_PARAMS: ParamDef[] = [
   { name: "stroke_enabled", label: "Stroke", type: "boolean", default: true },
   {
     name: "stroke_thickness",
-    label: "Thickness (px)",
+    label: "Thickness",
     type: "scalar",
     min: 0,
     max: 200,
@@ -45,6 +46,9 @@ export const SPLINE_RASTER_PARAMS: ParamDef[] = [
     default: 4,
     visibleIf: (p) => !!p.stroke_enabled,
   },
+  // px = absolute pixels (legacy); % = percent of canvas width, so the
+  // stroke keeps its look at any resolution (#174).
+  strokeUnitsParam("stroke_units", (p) => !!p.stroke_enabled),
   {
     name: "stroke_color",
     label: "Stroke color",
@@ -238,6 +242,7 @@ export function rasterizeSplineAux(
       p: subpaths,
       se: strokeOn,
       st: params.stroke_thickness,
+      su: params.stroke_units,
       sc: params.stroke_color,
       fe: fillOn,
       fc: params.fill_color,
@@ -265,7 +270,11 @@ export function rasterizeSplineAux(
           if (strokeOn) {
             c2d.lineWidth = Math.max(
               0,
-              (params.stroke_thickness as number) ?? 4
+              resolveStrokePx(
+                (params.stroke_thickness as number) ?? 4,
+                params.stroke_units,
+                W
+              )
             );
             c2d.strokeStyle = hexToRgba(
               (params.stroke_color as string) ?? "#ffffff"
@@ -304,6 +313,7 @@ export function rasterizeSplineAux(
     p: subpaths,
     se: strokeOn,
     st: params.stroke_thickness,
+    su: params.stroke_units,
     sc: params.stroke_color,
     W,
     H,
@@ -330,7 +340,14 @@ export function rasterizeSplineAux(
       if (strokeOn) {
         const strokePath = buildPath2D(subpaths, W, H, false);
         if (strokePath) {
-          c2d.lineWidth = Math.max(0, (params.stroke_thickness as number) ?? 4);
+          c2d.lineWidth = Math.max(
+            0,
+            resolveStrokePx(
+              (params.stroke_thickness as number) ?? 4,
+              params.stroke_units,
+              W
+            )
+          );
           c2d.strokeStyle = hexToRgba(
             (params.stroke_color as string) ?? "#ffffff"
           );
@@ -402,7 +419,14 @@ export function buildSplineElement(
   const strokeColor = strokeOn
     ? hexToRgba((params.stroke_color as string) ?? "#ffffff")
     : null;
-  const strokeThickness = Math.max(0, (params.stroke_thickness as number) ?? 4);
+  const strokeThickness = Math.max(
+    0,
+    resolveStrokePx(
+      (params.stroke_thickness as number) ?? 4,
+      params.stroke_units,
+      ctx.width
+    )
+  );
 
   return {
     kind: "element",

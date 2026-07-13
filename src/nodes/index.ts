@@ -49,6 +49,7 @@ import { sampleAlongPathNode } from "./effect/sample-along-path";
 import { resampleNode } from "./effect/resample";
 import { pointsOnPathNode } from "./effect/points-on-path";
 import { offsetPathNode } from "./effect/offset-path";
+import { repeatPathNode } from "./effect/repeat-path";
 import { trimPathNode } from "./effect/trim-path";
 import { roundCornersNode } from "./effect/round-corners";
 import { bezierHandlesNode } from "./effect/bezier-handles";
@@ -247,6 +248,7 @@ export function registerAllNodes() {
   registerNode(resampleNode);
   registerNode(pointsOnPathNode);
   registerNode(offsetPathNode);
+  registerNode(repeatPathNode);
   registerNode(trimPathNode);
   registerNode(roundCornersNode);
   registerNode(bezierHandlesNode);

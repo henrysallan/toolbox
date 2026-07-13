@@ -18,19 +18,6 @@ import type {
 // for the kept points; their indices in the output are sequential
 // starting at 0 (i.e. the input order is kept, gaps closed up).
 
-interface ScratchState {
-  scratchCanvas: HTMLCanvasElement;
-}
-
-function ensureState(ctx: RenderContext, nodeId: string): ScratchState {
-  const key = `filter-points:${nodeId}`;
-  const existing = ctx.state[key] as ScratchState | undefined;
-  if (existing) return existing;
-  const s: ScratchState = { scratchCanvas: document.createElement("canvas") };
-  ctx.state[key] = s;
-  return s;
-}
-
 interface ImageBuffer {
   data: Uint8ClampedArray;
   w: number;
@@ -39,31 +26,17 @@ interface ImageBuffer {
 
 function readImage(
   ctx: RenderContext,
-  canvas: HTMLCanvasElement,
   img: { texture: WebGLTexture; width: number; height: number }
 ): ImageBuffer | null {
   if (img.width <= 0 || img.height <= 0) return null;
-  if (canvas.width !== img.width || canvas.height !== img.height) {
-    canvas.width = img.width;
-    canvas.height = img.height;
-  }
-  try {
-    ctx.blitToCanvas(
-      {
-        kind: "image",
-        texture: img.texture,
-        width: img.width,
-        height: img.height,
-      },
-      canvas
-    );
-  } catch {
-    return null;
-  }
-  const c2d = canvas.getContext("2d", { willReadFrequently: true });
-  if (!c2d) return null;
-  const imgData = c2d.getImageData(0, 0, canvas.width, canvas.height);
-  return { data: imgData.data, w: canvas.width, h: canvas.height };
+  const data = ctx.readImagePixels({
+    kind: "image",
+    texture: img.texture,
+    width: img.width,
+    height: img.height,
+  });
+  if (!data) return null;
+  return { data, w: img.width, h: img.height };
 }
 
 function sampleLuma(buf: ImageBuffer, u: number, v: number): number {
@@ -170,7 +143,7 @@ export const filterPointsNode: NodeDefinition = {
   primaryOutput: "points",
   auxOutputs: [],
 
-  compute({ inputs, params, ctx, nodeId }) {
+  compute({ inputs, params, ctx }) {
     const src = inputs.points;
     if (!src || src.kind !== "points") {
       return { primary: emptyPoints() };
@@ -211,8 +184,7 @@ export const filterPointsNode: NodeDefinition = {
         return { primary: src };
       }
       const threshold = (params.threshold as number) ?? 0.5;
-      const state = ensureState(ctx, nodeId);
-      const buf = readImage(ctx, state.scratchCanvas, maskImg);
+      const buf = readImage(ctx, maskImg);
       if (!buf) return { primary: src };
       for (let i = 0; i < n; i++) {
         const x = src.positions[i * 2];

@@ -4,6 +4,20 @@ import type {
   RenderContext,
 } from "@/engine/types";
 import { buildPath2D, hexToRgba } from "@/engine/spline-raster";
+import {
+  defaultFloatCurve,
+  sampleFloatCurve,
+  sanitizeFloatCurve,
+} from "@/engine/float-curve";
+import {
+  buildRepeatStrokes,
+  type RepeatDirection,
+} from "@/engine/spline-repeat";
+import {
+  sampleColorRamp,
+  type ColorRampStop,
+} from "@/engine/color-ramp";
+import { resolveStrokePx, strokeUnitsParam } from "@/engine/stroke-units";
 
 // Rasterize a spline's outline. Output is transparent everywhere except
 // the stroked pixels — composite over other layers with a Merge node.
@@ -12,6 +26,12 @@ import { buildPath2D, hexToRgba } from "@/engine/spline-raster";
 // signature of the params + input identity lets us skip re-rasterizing
 // when nothing has changed (spline values round-trip by reference, so the
 // object identity IS the signature for the input).
+//
+// Repeats (spec 071226_multi-stroke.md): the stroke can draw as N
+// parallel-offset rings via engine/spline-repeat.ts, with per-ring styling
+// (thickness/opacity falloff curves, color ramp). Geometry is cached on a
+// second signature tier so styling-only edits re-stroke cached Path2Ds
+// without re-running the bezier offsets.
 
 const STROKE_FS = `#version 300 es
 precision highp float;
@@ -22,10 +42,18 @@ void main() {
   outColor = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
 }`;
 
+interface StrokeRing {
+  t: number;
+  path: Path2D;
+}
+
 interface StrokeState {
   rasterCanvas: HTMLCanvasElement;
   rasterTex: WebGLTexture | null;
   lastSig: string | null;
+  // Geometry tier: offset rings survive styling-only re-rasters.
+  ringGeomSig: string | null;
+  rings: StrokeRing[] | null;
 }
 
 function ensureState(ctx: RenderContext, nodeId: string): StrokeState {
@@ -45,10 +73,15 @@ function ensureState(ctx: RenderContext, nodeId: string): StrokeState {
     rasterCanvas: document.createElement("canvas"),
     rasterTex: tex,
     lastSig: null,
+    ringGeomSig: null,
+    rings: null,
   };
   ctx.state[key] = s;
   return s;
 }
+
+const repeatsVisible = (p: Record<string, unknown>) =>
+  ((p.repeats as number) ?? 1) > 1;
 
 export const strokeNode: NodeDefinition = {
   type: "spline-stroke",
@@ -56,7 +89,7 @@ export const strokeNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Render a spline as a stroked outline. Three styles: solid (continuous), dashed (alternating dashes and gaps), dotted (round dots at a fixed spacing). Stack multiple Stroke nodes through Merge for offset/outline effects.",
+    "Render a spline as a stroked outline. Three styles: solid (continuous), dashed (alternating dashes and gaps), dotted (round dots at a fixed spacing). Repeats draws N parallel-offset rings — inner/outer/both, a band width, and a spacing curve placing each ring within the band (closed shapes always expand outward regardless of draw direction; for open paths inner/outer mean left/right of travel). Per-ring styling: thickness and opacity falloff curves, plus an optional color ramp across the rings.",
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [
@@ -68,7 +101,7 @@ export const strokeNode: NodeDefinition = {
     },
     {
       name: "thickness",
-      label: "Thickness (px)",
+      label: "Thickness",
       type: "scalar",
       min: 0,
       max: 200,
@@ -76,6 +109,10 @@ export const strokeNode: NodeDefinition = {
       step: 0.5,
       default: 4,
     },
+    // px = absolute pixels (legacy, resolution-dependent); % = percent of
+    // canvas width, so the stroke keeps its look at any resolution (#174).
+    // Applies to thickness and the dash/dot metrics below.
+    strokeUnitsParam("units"),
     {
       name: "style",
       label: "Style",
@@ -85,7 +122,7 @@ export const strokeNode: NodeDefinition = {
     },
     {
       name: "dash_length",
-      label: "Dash length (px)",
+      label: "Dash length",
       type: "scalar",
       min: 0.5,
       max: 200,
@@ -96,7 +133,7 @@ export const strokeNode: NodeDefinition = {
     },
     {
       name: "dash_gap",
-      label: "Dash gap (px)",
+      label: "Dash gap",
       type: "scalar",
       min: 0.5,
       max: 200,
@@ -107,7 +144,7 @@ export const strokeNode: NodeDefinition = {
     },
     {
       name: "dot_spacing",
-      label: "Dot spacing (px)",
+      label: "Dot spacing",
       type: "scalar",
       min: 1,
       max: 200,
@@ -150,6 +187,86 @@ export const strokeNode: NodeDefinition = {
       type: "boolean",
       default: false,
     },
+    // ── Repeats (multi-stroke) ─────────────────────────────────────────
+    {
+      name: "repeats",
+      label: "Repeats",
+      type: "scalar",
+      min: 1,
+      max: 32,
+      softMax: 8,
+      step: 1,
+      default: 1,
+      group: "repeats",
+      groupHeader: true,
+    },
+    {
+      name: "repeat_direction",
+      label: "Direction",
+      type: "enum",
+      options: ["outer", "inner", "both"],
+      default: "outer",
+      visibleIf: repeatsVisible,
+      group: "repeats",
+    },
+    {
+      name: "repeat_width",
+      label: "Band width",
+      type: "scalar",
+      min: 0,
+      max: 0.5,
+      softMax: 0.2,
+      step: 0.001,
+      default: 0.05,
+      visibleIf: repeatsVisible,
+      group: "repeats",
+    },
+    {
+      name: "repeat_spacing",
+      label: "Spacing",
+      type: "float_curve",
+      default: defaultFloatCurve(0, 1),
+      visibleIf: repeatsVisible,
+      group: "repeats",
+    },
+    {
+      name: "repeat_thickness",
+      label: "Thickness falloff",
+      type: "float_curve",
+      default: defaultFloatCurve(1, 1),
+      visibleIf: repeatsVisible,
+      group: "repeats",
+    },
+    {
+      name: "repeat_opacity",
+      label: "Opacity falloff",
+      type: "float_curve",
+      default: defaultFloatCurve(1, 1),
+      visibleIf: repeatsVisible,
+      group: "repeats",
+    },
+    {
+      name: "repeat_color_mode",
+      label: "Ring color",
+      type: "enum",
+      options: ["solid", "ramp"],
+      default: "solid",
+      control: "segmented",
+      visibleIf: repeatsVisible,
+      group: "repeats",
+    },
+    {
+      name: "repeat_colors",
+      label: "Ring ramp",
+      type: "color_ramp",
+      default: [
+        { id: "stop-a", position: 0, color: "#ffffff" },
+        { id: "stop-b", position: 1, color: "#000000" },
+      ] as ColorRampStop[],
+      visibleIf: (p) =>
+        repeatsVisible(p) && p.repeat_color_mode === "ramp",
+      group: "repeats",
+    },
   ],
   primaryOutput: "image",
   auxOutputs: [],
@@ -166,14 +283,32 @@ export const strokeNode: NodeDefinition = {
     const W = ctx.width;
     const H = ctx.height;
 
-    // Signature covers everything that changes the raster output. The
-    // spline value itself rides the input reference — when the upstream
+    const repeats = Math.max(1, Math.round((params.repeats as number) ?? 1));
+    const closeOpen = !!params.close_open_paths;
+    const spacingCurve = sanitizeFloatCurve(params.repeat_spacing, 0, 1);
+
+    // Geometry-tier signature: everything that changes the ring Path2Ds.
+    // The spline value itself rides the input reference — when the upstream
     // evaluator re-emits, it's typically a new object, which busts this
     // cache naturally.
-    const sig = JSON.stringify({
+    const geomSig = JSON.stringify({
       subRef: src.subpaths,
+      n: repeats,
+      dir: repeats > 1 ? params.repeat_direction : 0,
+      w: repeats > 1 ? params.repeat_width : 0,
+      sc: repeats > 1 ? spacingCurve : 0,
+      close: closeOpen,
+      W,
+      H,
+    });
+
+    // Full signature adds styling — covers everything that changes the
+    // raster output.
+    const sig = JSON.stringify({
+      g: geomSig,
       c: params.color,
       t: params.thickness,
+      u: params.units,
       st: params.style,
       dl: params.dash_length,
       dg: params.dash_gap,
@@ -181,12 +316,42 @@ export const strokeNode: NodeDefinition = {
       cap: params.cap,
       jn: params.join,
       ml: params.miter_limit,
-      close: !!params.close_open_paths,
-      W,
-      H,
+      rtc: repeats > 1 ? params.repeat_thickness : 0,
+      roc: repeats > 1 ? params.repeat_opacity : 0,
+      rcm: repeats > 1 ? params.repeat_color_mode : 0,
+      rcl:
+        repeats > 1 && params.repeat_color_mode === "ramp"
+          ? params.repeat_colors
+          : 0,
     });
 
     if (sig !== state.lastSig) {
+      if (geomSig !== state.ringGeomSig || !state.rings) {
+        // repeats === 1 keeps the legacy single-path build — no offset
+        // math, identical output to the pre-repeats node.
+        if (repeats <= 1) {
+          const path = buildPath2D(src.subpaths, W, H, closeOpen);
+          state.rings = path ? [{ t: 0, path }] : [];
+        } else {
+          const strokes = buildRepeatStrokes(src.subpaths, {
+            count: repeats,
+            direction:
+              (params.repeat_direction as RepeatDirection) ?? "outer",
+            width: (params.repeat_width as number) ?? 0.05,
+            spacingCurve,
+            widthPx: W,
+            heightPx: H,
+          });
+          const rings: StrokeRing[] = [];
+          for (const s of strokes) {
+            const path = buildPath2D(s.subpaths, W, H, closeOpen);
+            if (path) rings.push({ t: s.t, path });
+          }
+          state.rings = rings;
+        }
+        state.ringGeomSig = geomSig;
+      }
+
       const canvas = state.rasterCanvas;
       if (canvas.width !== W || canvas.height !== H) {
         canvas.width = W;
@@ -195,13 +360,13 @@ export const strokeNode: NodeDefinition = {
       const c2d = canvas.getContext("2d");
       if (c2d) {
         c2d.clearRect(0, 0, W, H);
-        const closeOpen = !!params.close_open_paths;
-        const path = buildPath2D(src.subpaths, W, H, closeOpen);
-        if (path) {
+        if (state.rings && state.rings.length > 0) {
           const style = (params.style as string) ?? "solid";
-          const thickness = Math.max(0, (params.thickness as number) ?? 4);
-          c2d.lineWidth = thickness;
-          c2d.strokeStyle = hexToRgba((params.color as string) ?? "#ffffff");
+          const units = params.units;
+          const thickness = Math.max(
+            0,
+            resolveStrokePx((params.thickness as number) ?? 4, units, W)
+          );
           c2d.lineJoin =
             (params.join as CanvasLineJoin) ?? ("round" as CanvasLineJoin);
           if (params.join === "miter") {
@@ -214,16 +379,19 @@ export const strokeNode: NodeDefinition = {
           if (style === "dashed") {
             const dash = Math.max(
               0.5,
-              (params.dash_length as number) ?? 10
+              resolveStrokePx((params.dash_length as number) ?? 10, units, W)
             );
-            const gap = Math.max(0.5, (params.dash_gap as number) ?? 8);
+            const gap = Math.max(
+              0.5,
+              resolveStrokePx((params.dash_gap as number) ?? 8, units, W)
+            );
             c2d.setLineDash([dash, gap]);
             c2d.lineCap =
               (params.cap as CanvasLineCap) ?? ("round" as CanvasLineCap);
           } else if (style === "dotted") {
             const spacing = Math.max(
               1,
-              (params.dot_spacing as number) ?? 12
+              resolveStrokePx((params.dot_spacing as number) ?? 12, units, W)
             );
             c2d.setLineDash([0, spacing]);
             c2d.lineCap = "round";
@@ -232,7 +400,48 @@ export const strokeNode: NodeDefinition = {
             c2d.lineCap =
               (params.cap as CanvasLineCap) ?? ("round" as CanvasLineCap);
           }
-          c2d.stroke(path);
+
+          // Per-ring styling. repeats === 1 resolves to the plain
+          // color/thickness/alpha so the legacy path stays exact.
+          const thicknessCurve = sanitizeFloatCurve(
+            params.repeat_thickness,
+            1,
+            1
+          );
+          const opacityCurve = sanitizeFloatCurve(
+            params.repeat_opacity,
+            1,
+            1
+          );
+          const stops =
+            repeats > 1 && params.repeat_color_mode === "ramp"
+              ? ((params.repeat_colors as ColorRampStop[]) ?? [])
+              : null;
+          const solid = hexToRgba((params.color as string) ?? "#ffffff");
+
+          for (const ring of state.rings) {
+            const w =
+              repeats > 1
+                ? thickness * sampleFloatCurve(thicknessCurve, ring.t)
+                : thickness;
+            const a =
+              repeats > 1
+                ? Math.max(
+                    0,
+                    Math.min(1, sampleFloatCurve(opacityCurve, ring.t))
+                  )
+                : 1;
+            // Canvas ignores a lineWidth of 0 (keeps the previous value),
+            // so skip invisible rings explicitly.
+            if (w <= 0 || a <= 0) continue;
+            c2d.lineWidth = w;
+            c2d.strokeStyle = stops
+              ? sampleColorRamp(stops, ring.t)
+              : solid;
+            c2d.globalAlpha = a;
+            c2d.stroke(ring.path);
+          }
+          c2d.globalAlpha = 1;
         }
         const gl = ctx.gl;
         gl.bindTexture(gl.TEXTURE_2D, state.rasterTex);

@@ -831,6 +831,13 @@ export type ParamType =
   | "merge_layers"
   | "color_ramp"
   | "curves"
+  // CurvePoint[] (engine/float-curve.ts) — a single monotone-cubic curve
+  // mapping x∈[0,1] → y∈[0,1]. Generic "shape this falloff" knob (multi-
+  // stroke spacing/thickness/opacity). Plain-JSON serialization, not
+  // keyframable. The ParamDef `default` carries the endpoint choice —
+  // defaultFloatCurve(0,1) linear ramp, defaultFloatCurve(1,1) flat
+  // identity multiplier.
+  | "float_curve"
   | "spline_anchors"
   | "svg_file"
   | "audio_file"
@@ -1386,4 +1393,21 @@ export interface RenderContext {
     width: number,
     height: number
   ): ImageValue;
+
+  // Read an image back to CPU memory as RGBA8 bytes in canvas ImageData
+  // row order (row 0 = visual top). Renders into a small pooled offscreen
+  // framebuffer at the requested size (GPU downsample, LINEAR-filtered
+  // like any texture sample) and readPixels from there — the drop-in
+  // replacement for the old blitToCanvas + getImageData recipe, which
+  // resized hiddenCanvas (reallocating the context's default framebuffer
+  // twice per frame) and round-tripped pixels through premultiplied 2D
+  // canvas memory. Omitted dimensions default to the image's own. Still
+  // a synchronous GPU stall — read at the smallest size that works and
+  // cache the result while inputs are unchanged. Returns null if the
+  // readback framebuffer can't be built.
+  readImagePixels(
+    image: ImageValue,
+    width?: number,
+    height?: number
+  ): Uint8ClampedArray<ArrayBuffer> | null;
 }
