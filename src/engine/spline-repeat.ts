@@ -1,5 +1,9 @@
 import type { SplineAnchor, SplineSubpath } from "./types";
 import { offsetSubpath } from "./spline-math";
+import {
+  resolveSubpathOverlaps,
+  type OverlapStyle,
+} from "./spline-offset-resolve";
 import { type CurvePoint, sampleFloatCurve } from "./float-curve";
 
 // Multi-stroke offset engine, shared by the Repeat Path node (spline→spline)
@@ -32,6 +36,10 @@ export interface RepeatStrokeOpts {
   spacingCurve: CurvePoint[];
   widthPx: number;
   heightPx: number;
+  // Optional self-overlap resolve for the offset rings (sharp-corner bowties,
+  // collapsed inner offsets). Applied per ring in px space. `smoothing` is a
+  // 0..1 fraction of the ring's offset distance used as the fillet radius.
+  overlap?: { style: OverlapStyle; smoothing: number };
 }
 
 // One ring of the multi-stroke. `t` is the normalized repeat index
@@ -117,12 +125,22 @@ function offsetSubpathsPx(
   scaled: { sub: SplineSubpath; expandSign: number }[],
   distancePx: number,
   sx: number,
-  sy: number
+  sy: number,
+  overlap?: { style: OverlapStyle; smoothing: number }
 ): SplineSubpath[] {
   const out: SplineSubpath[] = [];
   for (const { sub, expandSign } of scaled) {
-    const off = offsetSubpath(sub, distancePx * expandSign);
+    let off = offsetSubpath(sub, distancePx * expandSign);
     if (!off) continue;
+    // Resolve self-overlaps while still in px space (isotropic tolerances /
+    // fillet radius). A fully-inverted closed ring resolves to null → dropped.
+    if (overlap && overlap.style !== "keep") {
+      off = resolveSubpathOverlaps(off, {
+        style: overlap.style,
+        filletRadius: overlap.smoothing * Math.abs(distancePx),
+      });
+      if (!off) continue;
+    }
     // Scale back to normalized space, re-carrying the source subpath's
     // non-geometry fields (groupIndex tags survive the round-trip).
     out.push({ ...sub, ...scaleSubpath(off, 1 / sx, 1 / sy) });
@@ -161,7 +179,7 @@ export function buildRepeatStrokes(
       });
       return;
     }
-    const offs = offsetSubpathsPx(scaled, distancePx, sx, sy);
+    const offs = offsetSubpathsPx(scaled, distancePx, sx, sy, opts.overlap);
     if (offs.length > 0) strokes.push({ t, subpaths: offs });
   };
 

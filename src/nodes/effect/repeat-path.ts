@@ -4,6 +4,7 @@ import {
   buildRepeatStrokes,
   type RepeatDirection,
 } from "@/engine/spline-repeat";
+import type { OverlapStyle } from "@/engine/spline-offset-resolve";
 
 // Multi-stroke geometry: emit N parallel-offset copies of the input path
 // (spec: 071226_multi-stroke.md). Fixed-band model — `count` strokes span a
@@ -21,7 +22,7 @@ export const repeatPathNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Repeat a path as parallel-offset copies — count, inner/outer/both direction, band width, and a spacing curve that places each copy within the band. Closed shapes are winding-normalized (outer always expands); for open paths inner/outer mean left/right of the travel direction. Each copy is tagged with its own group index.",
+    "Repeat a path as parallel-offset copies — count, inner/outer/both direction, band width, and a spacing curve that places each copy within the band. Closed shapes are winding-normalized (outer always expands); for open paths inner/outer mean left/right of the travel direction. Each copy is tagged with its own group index. When sharp corners make an offset copy overlap itself, the Overlap mode cuts the crossing loop — Sharp resolves it to a single point, Smooth rounds the cut.",
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [
@@ -58,6 +59,24 @@ export const repeatPathNode: NodeDefinition = {
       type: "float_curve",
       default: defaultFloatCurve(0, 1),
     },
+    {
+      name: "overlap",
+      label: "Overlap",
+      type: "enum",
+      options: ["keep", "sharp", "smooth"],
+      default: "keep",
+      control: "segmented",
+    },
+    {
+      name: "smoothing",
+      label: "Smoothing",
+      type: "scalar",
+      min: 0,
+      max: 1,
+      step: 0.01,
+      default: 0.5,
+      visibleIf: (p) => p.overlap === "smooth",
+    },
   ],
   primaryOutput: "spline",
   auxOutputs: [],
@@ -75,6 +94,10 @@ export const repeatPathNode: NodeDefinition = {
       spacingCurve: sanitizeFloatCurve(params.spacing_curve, 0, 1),
       widthPx: ctx.width,
       heightPx: ctx.height,
+      overlap: {
+        style: (params.overlap as OverlapStyle) ?? "keep",
+        smoothing: (params.smoothing as number) ?? 0.5,
+      },
     });
     const out: SplineValue = {
       kind: "spline",

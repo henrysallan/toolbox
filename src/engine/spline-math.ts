@@ -109,6 +109,41 @@ export interface SampleResult {
   tangent: [number, number]; // unit vector (or [0,0] if undefined)
 }
 
+// Unit tangent of a cubic at parameter t, robust to the degenerate case where
+// bezier-js's analytic derivative vanishes. A straight, handle-less segment is
+// stored as a cubic with cp1 === p0 and cp2 === p3, whose derivative is exactly
+// zero at t=0 and t=1 — so a naive `derivative(t)` returns (0,0) at every
+// segment/subpath endpoint and callers lose the orientation there (points snap
+// to angle 0). Fall back through: derivative nudged into the interior (recovers
+// a straight segment, whose derivative is nonzero for 0<t<1), then a small
+// finite-difference chord (curved-but-degenerate), then the whole-segment
+// endpoint chord. Returns [0,0] only for a genuinely zero-length curve.
+function curveTangent(curve: Bezier, t: number): [number, number] {
+  const norm = (dx: number, dy: number): [number, number] | null => {
+    const m = Math.hypot(dx, dy);
+    return m > 1e-9 ? [dx / m, dy / m] : null;
+  };
+  const d = curve.derivative(t);
+  let r = norm(d.x, d.y);
+  if (!r) {
+    const ti = Math.min(0.999, Math.max(0.001, t));
+    const di = curve.derivative(ti);
+    r = norm(di.x, di.y);
+  }
+  if (!r) {
+    const h = 1e-3;
+    const a = curve.get(Math.max(0, t - h));
+    const b = curve.get(Math.min(1, t + h));
+    r = norm(b.x - a.x, b.y - a.y);
+  }
+  if (!r) {
+    const p0 = curve.points[0];
+    const p3 = curve.points[curve.points.length - 1];
+    r = norm(p3.x - p0.x, p3.y - p0.y);
+  }
+  return r ?? [0, 0];
+}
+
 // Sample the spline at global arc-length parameter t ∈ [0,1]. Clamps out-of-
 // range values so callers don't have to special-case endpoints. Picks the
 // right segment by cumulative length, then delegates to bezier-js for the
@@ -151,11 +186,7 @@ export function sampleSplineAt(
   const local = seg.length > 0 ? (lenInSub - prevCum) / seg.length : 0;
   const tSeg = Math.max(0, Math.min(1, local));
   const p = seg.curve.get(tSeg);
-  const d = seg.curve.derivative(tSeg);
-  const mag = Math.hypot(d.x, d.y);
-  const tx = mag > 1e-9 ? d.x / mag : 0;
-  const ty = mag > 1e-9 ? d.y / mag : 0;
-  return { pos: [p.x, p.y], tangent: [tx, ty] };
+  return { pos: [p.x, p.y], tangent: curveTangent(seg.curve, tSeg) };
 }
 
 // Resample a subpath to `count` anchors evenly spaced along arc length.
@@ -192,24 +223,35 @@ export function resampleSubpath(
     const local = seg.length > 0 ? (targetLen - prevCum) / seg.length : 0;
     const tSeg = Math.max(0, Math.min(1, local));
     const p = seg.curve.get(tSeg);
-    const d = seg.curve.derivative(tSeg);
-    const mag = Math.hypot(d.x, d.y);
-    samples.push({
-      pos: [p.x, p.y],
-      tangent:
-        mag > 1e-9 ? [d.x / mag, d.y / mag] : [0, 0],
-    });
+    samples.push({ pos: [p.x, p.y], tangent: curveTangent(seg.curve, tSeg) });
   }
-  // Handle length = 1/3 of the local spacing, matching the "auto smooth"
-  // Illustrator default. For uneven segment lengths the handles stretch a
-  // bit but keep the original curvature reasonably intact.
-  const spacing = m.total / divisor;
-  const handleLen = spacing / 3;
-  const anchors: SplineAnchor[] = samples.map((s) => {
+  // Handle length is LOCAL: 1/3 of the straight-line distance to the neighbour
+  // on each side (out ← next chord, in ← prev chord). NOT the global mean
+  // spacing. Even arc-length sampling bunches anchors where the curve bends
+  // tightly, so a mean-length handle overshoots its close neighbour, folds the
+  // rebuilt cubic into a loop/cusp, and flips the sampled tangent ~180° there
+  // (and shows a visible kink). Scaling each handle to its own side's chord
+  // keeps both handles on a segment ≤ chord/3, so the segment can't self-fold —
+  // the tangent field stays continuous and copies orient smoothly along it.
+  const last = samples.length - 1;
+  const chord = (i: number, j: number): number =>
+    Math.hypot(
+      samples[i].pos[0] - samples[j].pos[0],
+      samples[i].pos[1] - samples[j].pos[1]
+    );
+  const anchors: SplineAnchor[] = samples.map((s, i) => {
     const a: SplineAnchor = { pos: s.pos };
     if (s.tangent[0] !== 0 || s.tangent[1] !== 0) {
-      a.outHandle = [s.tangent[0] * handleLen, s.tangent[1] * handleLen];
-      a.inHandle = [-s.tangent[0] * handleLen, -s.tangent[1] * handleLen];
+      // Neighbours wrap on a closed subpath; an open end reuses its one
+      // neighbour for the missing side so both handles stay defined.
+      let prevD = i > 0 ? chord(i, i - 1) : sub.closed ? chord(i, last) : NaN;
+      let nextD = i < last ? chord(i, i + 1) : sub.closed ? chord(i, 0) : NaN;
+      if (Number.isNaN(prevD)) prevD = nextD;
+      if (Number.isNaN(nextD)) nextD = prevD;
+      const outLen = nextD / 3;
+      const inLen = prevD / 3;
+      a.outHandle = [s.tangent[0] * outLen, s.tangent[1] * outLen];
+      a.inHandle = [-s.tangent[0] * inLen, -s.tangent[1] * inLen];
     }
     return a;
   });

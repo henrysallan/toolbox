@@ -38,7 +38,11 @@ import {
   newStopId,
   type ColorRampStop,
 } from "@/nodes/effect/color-ramp";
-import { BLEND_MODE_ORDER, blendModeLabel } from "@/nodes/effect/merge";
+import {
+  BLEND_MODE_ORDER,
+  blendModeLabel,
+  type MergeLayer,
+} from "@/nodes/effect/merge";
 import {
   CURVE_CHANNELS,
   computeMonotoneTangents,
@@ -2440,138 +2444,14 @@ export function ParamControl({
 
   if (param.type === "merge_layers") {
     const layers = Array.isArray(value)
-      ? (value as Array<{ id: string; mode: string; opacity: number }>)
-      : ((param.default as Array<{ id: string; mode: string; opacity: number }>) ?? []);
-    const modes = BLEND_MODE_ORDER;
+      ? (value as MergeLayer[])
+      : ((param.default as MergeLayer[]) ?? []);
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {layers.length === 0 && (
-          <div style={{ color: "#52525b" }}>(no layers — use + on node)</div>
-        )}
-        {layers.map((l, i) => (
-          <div
-            key={l.id}
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 4,
-              padding: 6,
-              border: "1px solid #27272a",
-              borderRadius: 3,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <span style={{ color: "#a1a1aa" }}>layer {i + 1}</span>
-              <button
-                onClick={() => {
-                  const next = layers.filter((x) => x.id !== l.id);
-                  onChange(next);
-                  // Drop the layer's opacity keyframes with it.
-                  layerAnim?.set(layerOpacityKey(l.id), undefined);
-                }}
-                title="Remove layer"
-                style={{
-                  background: "transparent",
-                  border: "1px solid #3f3f46",
-                  color: "#a1a1aa",
-                  fontSize: 10,
-                  padding: "1px 6px",
-                  borderRadius: 3,
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                }}
-              >
-                remove
-              </button>
-            </div>
-            {/* Blend mode + opacity share one line: dropdown first, then
-                a bar slider + number field styled like the main scalar
-                sliders. */}
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <Dropdown
-                value={l.mode}
-                options={modes.map((m) => ({ value: m, label: blendModeLabel(m) }))}
-                onChange={(v) => {
-                  const next = layers.map((x) =>
-                    x.id === l.id ? { ...x, mode: v } : x
-                  );
-                  onChange(next);
-                }}
-                style={{ width: 96, flexShrink: 0 }}
-              />
-              <MiniBarSlider
-                min={0}
-                max={1}
-                step={0.01}
-                value={l.opacity}
-                onChange={(v) => {
-                  const next = layers.map((x) =>
-                    x.id === l.id ? { ...x, opacity: v } : x
-                  );
-                  onChange(next);
-                }}
-                title="Opacity — hold Shift to fine-tune"
-              />
-              <NumberField
-                value={l.opacity}
-                onChange={(v) => {
-                  const next = layers.map((x) =>
-                    x.id === l.id ? { ...x, opacity: v } : x
-                  );
-                  onChange(next);
-                }}
-                min={0}
-                max={1}
-                step={0.01}
-                width={44}
-              />
-              {layerAnim &&
-                (() => {
-                  // Same diamond contract as scalar rows, against the
-                  // layer's virtual animation key. Once animated, slider
-                  // edits auto-keyframe via EffectsApp's onParamChange.
-                  const key = layerOpacityKey(l.id);
-                  const block = layerAnim.get(key);
-                  const tick = layerAnim.currentTick;
-                  return (
-                    <KeyframeDiamond
-                      state={diamondStateFor(block, tick)}
-                      title="Keyframe this layer's opacity"
-                      onClick={() => {
-                        if (!block || !block.animated) {
-                          layerAnim.set(key, {
-                            animated: true,
-                            trackVisible: true,
-                            keyframes: [
-                              {
-                                tick,
-                                value: l.opacity,
-                                easingOut: "easeInOut",
-                              },
-                            ],
-                          });
-                        } else if (findKeyframeAt(block, tick)) {
-                          layerAnim.set(key, removeKeyframeAt(block, tick));
-                        } else {
-                          layerAnim.set(
-                            key,
-                            upsertKeyframe(block, tick, l.opacity, "easeInOut")
-                          );
-                        }
-                      }}
-                    />
-                  );
-                })()}
-            </div>
-          </div>
-        ))}
-      </div>
+      <MergeLayersControl
+        layers={layers}
+        onChange={(next) => onChange(next)}
+        layerAnim={layerAnim}
+      />
     );
   }
 
@@ -3143,6 +3023,281 @@ export function hexToRgba01Tuple(
     (Number.isFinite(b) ? b : 255) / 255,
     (Number.isFinite(a) ? a : 255) / 255,
   ];
+}
+
+// Grip glyph for the merge-layer drag handle.
+function GripIcon() {
+  return (
+    <svg width={10} height={14} viewBox="0 0 10 14" fill="currentColor">
+      {[3, 7, 11].map((cy) =>
+        [3, 7].map((cx) => (
+          <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r={1} />
+        ))
+      )}
+    </svg>
+  );
+}
+
+// Eye glyph for the per-layer bypass toggle (open = compositing, slashed =
+// bypassed). Mirrors the LayersEditor eye so the metaphor reads the same.
+function MergeEyeIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      width={13}
+      height={13}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.25}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M1 7 C2.5 4 4.5 3 7 3 C9.5 3 11.5 4 13 7 C11.5 10 9.5 11 7 11 C4.5 11 2.5 10 1 7 Z" />
+      <circle cx="7" cy="7" r="1.8" />
+      {!open && <path d="M2 12 L12 2" />}
+    </svg>
+  );
+}
+
+// Editor for the Merge node's `merge_layers` param. One card per layer (blend
+// mode + opacity + keyframe diamond), plus a grip handle to drag-reorder the
+// stack and an eye toggle to bypass a layer. Reordering rewrites the array,
+// which re-derives the node's `layer:<id>`/`mask:<id>` socket order via
+// resolveInputs (wires reference ids, so they follow their layer); bypass sets
+// `enabled:false`, skipped in merge.ts's blend chain but keeping the socket.
+export function MergeLayersControl({
+  layers,
+  onChange,
+  layerAnim,
+}: {
+  layers: MergeLayer[];
+  onChange: (next: MergeLayer[]) => void;
+  layerAnim?: LayerAnimApi;
+}) {
+  const modes = BLEND_MODE_ORDER;
+  const [dragId, setDragId] = useState<string | null>(null);
+  // Row elements keyed by layer id, for hit-testing the reorder drag.
+  const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  // Latest layers for the pointermove handler — avoids re-subscribing per move.
+  const layersRef = useRef(layers);
+  layersRef.current = layers;
+
+  useEffect(() => {
+    if (!dragId) return;
+    const onMove = (e: PointerEvent) => {
+      const cur = layersRef.current;
+      const from = cur.findIndex((l) => l.id === dragId);
+      if (from < 0) return;
+      // Insertion index = number of OTHER rows whose vertical midpoint sits
+      // above the pointer. That count is exactly where the dragged row lands
+      // in the array once it's been spliced out.
+      let to = 0;
+      for (const l of cur) {
+        if (l.id === dragId) continue;
+        const el = rowRefs.current.get(l.id);
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        if (e.clientY > r.top + r.height / 2) to++;
+      }
+      to = Math.max(0, Math.min(cur.length - 1, to));
+      if (to === from) return;
+      const next = [...cur];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      onChange(next);
+    };
+    const onUp = () => setDragId(null);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragId, onChange]);
+
+  const patch = (id: string, p: Partial<MergeLayer>) =>
+    onChange(layers.map((x) => (x.id === id ? { ...x, ...p } : x)));
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {layers.length === 0 && (
+        <div style={{ color: "#52525b" }}>(no layers — use + on node)</div>
+      )}
+      {layers.map((l, i) => {
+        const enabled = l.enabled !== false;
+        const dragging = dragId === l.id;
+        return (
+          <div
+            key={l.id}
+            ref={(el) => {
+              if (el) rowRefs.current.set(l.id, el);
+              else rowRefs.current.delete(l.id);
+            }}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+              padding: 6,
+              border: "1px solid #27272a",
+              borderRadius: 3,
+              background: dragging ? "#1c1c20" : undefined,
+              opacity: dragging ? 0.6 : 1,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <div
+                style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}
+              >
+                <span
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    setDragId(l.id);
+                  }}
+                  title="Drag to reorder"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    color: "#52525b",
+                    cursor: "grab",
+                    touchAction: "none",
+                    flexShrink: 0,
+                  }}
+                >
+                  <GripIcon />
+                </span>
+                <button
+                  onClick={() => patch(l.id, { enabled: !enabled })}
+                  title={enabled ? "Bypass this layer" : "Enable this layer"}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "transparent",
+                    border: "none",
+                    padding: 0,
+                    cursor: "pointer",
+                    color: enabled ? "#a1a1aa" : "#52525b",
+                    flexShrink: 0,
+                  }}
+                >
+                  <MergeEyeIcon open={enabled} />
+                </button>
+                <span
+                  style={{
+                    color: enabled ? "#a1a1aa" : "#5b5b62",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  layer {i + 1}
+                  {!enabled && (
+                    <span style={{ color: "#52525b" }}> (bypassed)</span>
+                  )}
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  const next = layers.filter((x) => x.id !== l.id);
+                  onChange(next);
+                  // Drop the layer's opacity keyframes with it.
+                  layerAnim?.set(layerOpacityKey(l.id), undefined);
+                }}
+                title="Remove layer"
+                style={{
+                  background: "transparent",
+                  border: "1px solid #3f3f46",
+                  color: "#a1a1aa",
+                  fontSize: 10,
+                  padding: "1px 6px",
+                  borderRadius: 3,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  flexShrink: 0,
+                }}
+              >
+                remove
+              </button>
+            </div>
+            {/* Blend mode + opacity share one line: dropdown first, then a bar
+                slider + number field styled like the main scalar sliders. Dimmed
+                while bypassed (still editable — set up before enabling). */}
+            <div
+              style={{
+                display: "flex",
+                gap: 6,
+                alignItems: "center",
+                opacity: enabled ? 1 : 0.5,
+              }}
+            >
+              <Dropdown
+                value={l.mode}
+                options={modes.map((m) => ({ value: m, label: blendModeLabel(m) }))}
+                onChange={(v) => patch(l.id, { mode: v as MergeLayer["mode"] })}
+                style={{ width: 96, flexShrink: 0 }}
+              />
+              <MiniBarSlider
+                min={0}
+                max={1}
+                step={0.01}
+                value={l.opacity}
+                onChange={(v) => patch(l.id, { opacity: v })}
+                title="Opacity — hold Shift to fine-tune"
+              />
+              <NumberField
+                value={l.opacity}
+                onChange={(v) => patch(l.id, { opacity: v })}
+                min={0}
+                max={1}
+                step={0.01}
+                width={44}
+              />
+              {layerAnim &&
+                (() => {
+                  // Same diamond contract as scalar rows, against the layer's
+                  // virtual animation key. Once animated, slider edits
+                  // auto-keyframe via EffectsApp's onParamChange.
+                  const key = layerOpacityKey(l.id);
+                  const block = layerAnim.get(key);
+                  const tick = layerAnim.currentTick;
+                  return (
+                    <KeyframeDiamond
+                      state={diamondStateFor(block, tick)}
+                      title="Keyframe this layer's opacity"
+                      onClick={() => {
+                        if (!block || !block.animated) {
+                          layerAnim.set(key, {
+                            animated: true,
+                            trackVisible: true,
+                            keyframes: [
+                              { tick, value: l.opacity, easingOut: "easeInOut" },
+                            ],
+                          });
+                        } else if (findKeyframeAt(block, tick)) {
+                          layerAnim.set(key, removeKeyframeAt(block, tick));
+                        } else {
+                          layerAnim.set(
+                            key,
+                            upsertKeyframe(block, tick, l.opacity, "easeInOut")
+                          );
+                        }
+                      }}
+                    />
+                  );
+                })()}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 // Editor for the multipoint gradient's `gradient_points` param. One card per

@@ -56,8 +56,10 @@ export default function EditorBasicsPage() {
         <LI>Drag from an output socket to an input to create a wire.</LI>
         <LI>Drag a node over an existing wire to splice it in.</LI>
         <LI>
-          <Kbd>Alt</Kbd>+drag on a wire cuts it; <Kbd>Shift</Kbd>+drag
-          merges two wires at a junction.
+          <Kbd>Alt</Kbd>+drag on a wire cuts it; <Kbd>Shift</Kbd>+drag across
+          wires (or double-clicking a wire) drops a <em>reroute</em> node — a
+          dot that tidies wiring. Delete it to remove its wires; drop a new
+          wire on its left to swap its input.
         </LI>
         <LI>
           To detach a node from its neighbors entirely: select it and{" "}

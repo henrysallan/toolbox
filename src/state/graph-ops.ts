@@ -22,7 +22,11 @@ import {
   type GroupInterface,
   type GroupSocketSpec,
 } from "@/engine/groups";
-import { paramSocketType, parseTargetHandleKind } from "@/engine/graph-helpers";
+import {
+  paramSocketType,
+  parseTargetHandleKind,
+  REROUTE_TYPE,
+} from "@/engine/graph-helpers";
 import type { ParamType, SocketType } from "@/engine/types";
 import type { ClipBlock } from "@/engine/clips";
 import {
@@ -94,7 +98,9 @@ export function makeInstanceNode(
   const resolved = withMaskInput(def.resolveInputs?.(params) ?? def.inputs, def);
   return {
     id: newNodeId(type),
-    type: "effect",
+    // Reroutes render through the dedicated dot component (RerouteNode);
+    // every other node uses the standard EffectNode chrome.
+    type: type === REROUTE_TYPE ? "reroute" : "effect",
     position,
     data: {
       defType: type,
@@ -143,6 +149,78 @@ export function cloneNode(
       exposedParams: n.data.exposedParams ? [...n.data.exposedParams] : [],
       controlParams: n.data.controlParams ? [...n.data.controlParams] : [],
     },
+  };
+}
+
+// Insert reroute nodes onto existing edges — the Shift-drag / double-click-a-
+// wire gesture (specdocs/071326_reroute-node.md). The listed edges are grouped
+// by their shared (source, sourceHandle); each group gets ONE reroute placed
+// near `anchor` (staggered when there are several), with the shared source
+// feeding the reroute's `value` input and every member edge re-pointed to
+// leave the reroute's output. A reroute inherits its source's scope
+// (parentId + compositionId) so it lands in the same group/composition as the
+// wire. Returns the updated arrays plus the new reroute ids (to select them).
+export function insertReroutesOnEdges(
+  nodes: GraphNode[],
+  edges: Edge[],
+  edgeIds: string[],
+  anchor: { x: number; y: number }
+): { nodes: GraphNode[]; edges: Edge[]; rerouteIds: string[] } {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const wanted = new Set(edgeIds);
+  const groups = new Map<
+    string,
+    { source: string; sourceHandle: string; memberIds: string[] }
+  >();
+  for (const e of edges) {
+    if (!wanted.has(e.id) || !e.sourceHandle) continue;
+    const key = `${e.source}::${e.sourceHandle}`;
+    const g = groups.get(key);
+    if (g) g.memberIds.push(e.id);
+    else
+      groups.set(key, {
+        source: e.source,
+        sourceHandle: e.sourceHandle,
+        memberIds: [e.id],
+      });
+  }
+  if (groups.size === 0) return { nodes, edges, rerouteIds: [] };
+
+  const newNodes: GraphNode[] = [];
+  const feedEdges: Edge[] = [];
+  const rerouteIds: string[] = [];
+  const memberToReroute = new Map<string, string>();
+  let gi = 0;
+  for (const g of groups.values()) {
+    const src = byId.get(g.source);
+    const r = makeInstanceNode(REROUTE_TYPE, {
+      x: anchor.x,
+      y: anchor.y + gi * 30,
+    });
+    r.data.parentId = src?.data.parentId;
+    r.data.compositionId = src?.data.compositionId;
+    newNodes.push(r);
+    rerouteIds.push(r.id);
+    feedEdges.push({
+      id: newEdgeId(),
+      source: g.source,
+      sourceHandle: g.sourceHandle,
+      target: r.id,
+      targetHandle: "in:value",
+    });
+    for (const mid of g.memberIds) memberToReroute.set(mid, r.id);
+    gi++;
+  }
+
+  const nextEdges = edges.map((e) => {
+    const rid = memberToReroute.get(e.id);
+    return rid ? { ...e, source: rid, sourceHandle: "out:primary" } : e;
+  });
+
+  return {
+    nodes: [...nodes, ...newNodes],
+    edges: [...nextEdges, ...feedEdges],
+    rerouteIds,
   };
 }
 

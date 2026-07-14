@@ -18,8 +18,16 @@ import {
   type MissingMedia,
 } from "@/lib/media-relink";
 import { getImageOriginal, registerImageOriginal } from "@/lib/image-bytes";
+import {
+  bitmapToPngDataUrl,
+  blobToDataUrl,
+  bufferToDataUrl,
+  primeBitmapDataUrl,
+  primeBlobDataUrl,
+} from "@/lib/data-url";
 import { isExrImageValue } from "@/engine/exr";
 import { LAYER_TYPE } from "@/engine/groups";
+import { REROUTE_TYPE } from "@/engine/graph-helpers";
 import { makeLayerNodes, newEdgeId } from "@/state/graph-ops";
 import { newCompositionId } from "@/state/graph";
 
@@ -74,7 +82,17 @@ import { newCompositionId } from "@/state/graph";
 // `.toolbox` writer extracts it into a binary asset like any dataUrl
 // envelope. Older builds don't know the kind and load the param as empty.
 // See specdocs/070926_exr-color-pipeline.md.
-export const CURRENT_SCHEMA = 8;
+//
+// v9 — cloud asset refs: a media envelope MAY carry `{ asset: <sha256>,
+// ext }` instead of `dataUrl`, pointing at a content-addressed object in
+// the `project-assets` Storage bucket. The cloud save path
+// (lib/supabase/project-assets.ts) extracts inline data-URLs to Storage and
+// leaves refs; load rewrites refs back to public Storage URLs BEFORE
+// deserialize, so deserializeGraph is unchanged and ≤v8 inline saves load
+// untouched (no `asset` field ⇒ no-op). A v9 save may still be fully inline
+// (fallback when Storage is unavailable). See
+// specdocs/071426_cloud-asset-storage.md.
+export const CURRENT_SCHEMA = 9;
 
 export interface SavedNode {
   id: string;
@@ -181,16 +199,11 @@ export interface SavedProject {
 }
 
 // --- image helpers -------------------------------------------------------
-
-async function bitmapToDataUrl(bmp: ImageBitmap): Promise<string> {
-  const canvas = document.createElement("canvas");
-  canvas.width = bmp.width;
-  canvas.height = bmp.height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("2d context unavailable");
-  ctx.drawImage(bmp, 0, 0);
-  return canvas.toDataURL("image/png");
-}
+//
+// All bytes→data-URL encoding goes through lib/data-url.ts: native encoders
+// cached per source object (Blob/ArrayBuffer/ImageBitmap), so an unchanged
+// asset costs ~0ms on every save after the first. See
+// specdocs/071426_save-optimization.md.
 
 async function dataUrlToBitmap(url: string): Promise<ImageBitmap> {
   const resp = await fetch(url);
@@ -198,18 +211,41 @@ async function dataUrlToBitmap(url: string): Promise<ImageBitmap> {
   return createImageBitmap(blob);
 }
 
-// Base64 data-URL from raw bytes (used to bundle custom-font binaries). The
-// `.toolbox` writer extracts any `dataUrl` envelope into a binary asset; the
-// cloud row inlines it. Chunked to avoid blowing the call-stack on
-// String.fromCharCode(...wholeBuffer) for large files.
-function bufferToDataUrl(buffer: ArrayBuffer, mime: string): string {
-  const bytes = new Uint8Array(buffer);
-  let bin = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return `data:${mime};base64,${btoa(bin)}`;
+// Only genuine data: URLs may seed the Tier-1 encode caches — a v9 asset-ref
+// load resolves envelopes to https: Storage URLs, and caching one of those
+// as an asset's "data-URL" would make the next save emit a non-`data:`
+// string that isInlineAsset rejects, silently dropping the asset from the
+// row. On the storage path priming is skipped; the first re-save re-encodes
+// to a real data: URL (Tier-1 cache miss) → same content hash → no
+// re-upload. See specdocs/071426_cloud-asset-storage.md.
+function isDataUrl(url: string): boolean {
+  return url.startsWith("data:");
+}
+
+// Decode a `{kind:"file"}` image envelope's dataUrl (a `data:` URL from an
+// inline/`.toolbox` save, or an `https:` Storage URL from a v9 cloud save)
+// to an ImageBitmap. Registers the loaded bytes as the bitmap's originals so
+// a re-save round-trips them, and seeds the encode cache for `data:` URLs
+// only (a storage URL must not poison the cache — see isDataUrl). Shared by
+// the inline load path below and the streamed-media loader in EffectsApp.
+export async function decodeImageFileEnvelope(
+  dataUrl: string
+): Promise<ImageBitmap> {
+  const blob = await (await fetch(dataUrl)).blob();
+  const bmp = await createImageBitmap(blob);
+  registerImageOriginal(bmp, blob);
+  if (isDataUrl(dataUrl)) primeBlobDataUrl(blob, dataUrl);
+  return bmp;
+}
+
+// A media param whose fetch was deferred at load (a v9 Storage-hosted image
+// on a `deferRemoteMedia` load). The caller streams these in after the graph
+// is interactive and shows a per-node spinner meanwhile. The envelope's
+// `dataUrl` is the (https) Storage URL to fetch.
+export interface PendingMedia {
+  nodeId: string;
+  paramName: string;
+  envelope: { kind?: string; dataUrl?: string; filename?: string };
 }
 
 // Sibling key under a node's params that carries the bundled font bytes for a
@@ -246,8 +282,16 @@ async function serializeParams(
       continue;
     }
     if (p.type === "paint") {
+      // Encode from the committed SNAPSHOT bitmap, not the live canvas: the
+      // canvas mutates in place, but every mutation path (stroke ticks,
+      // fills, resize, undo/redo) mints a fresh snapshot via
+      // createImageBitmap — so snapshot identity keys the encode cache and
+      // the cached bytes can never go stale. `snapshot: null` only occurs on
+      // a freshly-bootstrapped empty canvas — encode it directly (cheap).
       const pv = val as PaintParamValue | null;
-      if (pv?.canvas instanceof HTMLCanvasElement) {
+      if (pv?.snapshot) {
+        out[key] = { kind: "paint", dataUrl: bitmapToPngDataUrl(pv.snapshot) };
+      } else if (pv?.canvas instanceof HTMLCanvasElement) {
         out[key] = {
           kind: "paint",
           dataUrl: pv.canvas.toDataURL("image/png"),
@@ -264,11 +308,8 @@ async function serializeParams(
       out[key] = {
         kind: "file",
         dataUrl: original
-          ? bufferToDataUrl(
-              await original.arrayBuffer(),
-              original.type || "image/png"
-            )
-          : await bitmapToDataUrl(val),
+          ? await blobToDataUrl(original, "image/png")
+          : bitmapToPngDataUrl(val),
       };
     } else if (p.type === "file" && isExrImageValue(val)) {
       // EXR still (v8): the original bytes ARE the canonical source — float
@@ -278,7 +319,7 @@ async function serializeParams(
       out[key] = {
         kind: "exr",
         filename: val.filename,
-        dataUrl: bufferToDataUrl(await val.blob.arrayBuffer(), "image/x-exr"),
+        dataUrl: await blobToDataUrl(val.blob, "image/x-exr"),
       };
     } else if (p.type === "font") {
       // Bundle the custom font's bytes if we still hold them (the upload path
@@ -297,7 +338,7 @@ async function serializeParams(
               family: fv.family,
               filename: fv.filename,
               axes: fv.axes,
-              dataUrl: bufferToDataUrl(buffer, "font/ttf"),
+              dataUrl: await bufferToDataUrl(buffer, "font/ttf"),
             }
           : null;
     } else if (p.type === "enum" && p.control === "font") {
@@ -326,7 +367,7 @@ async function serializeParams(
           out[`${key}${FONT_FAMILY_BUNDLE_SUFFIX}`] = {
             kind: "font",
             family,
-            dataUrl: bufferToDataUrl(buffer, "font/ttf"),
+            dataUrl: await bufferToDataUrl(buffer, "font/ttf"),
           };
           bundledFamilies?.add(family);
         }
@@ -407,7 +448,12 @@ async function serializeParams(
 
 async function deserializeParams(
   defType: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  // When provided, Storage-hosted (`https:`) image files are NOT fetched
+  // here — `onDefer` is called with the envelope and the param is left null,
+  // so the caller can stream the image in after the graph is interactive
+  // (see PendingMedia). Inline `data:` images always decode synchronously.
+  defer?: { onDefer: (paramName: string, envelope: PendingMedia["envelope"]) => void }
 ): Promise<Record<string, unknown>> {
   const def = getNodeDef(defType);
   const out: Record<string, unknown> = {};
@@ -444,6 +490,11 @@ async function deserializeParams(
           canvas.height = bmp.height;
           canvas.getContext("2d")?.drawImage(bmp, 0, 0);
           const snapshot = await createImageBitmap(canvas);
+          // Seed the encode cache: an untouched paint layer re-saves the
+          // exact bytes it loaded, with no re-encode. (Skipped for storage
+          // URLs — see isDataUrl.)
+          if (isDataUrl(envelope.dataUrl))
+            primeBitmapDataUrl(snapshot, envelope.dataUrl);
           out[key] = { canvas, snapshot } satisfies PaintParamValue;
         } catch (e) {
           // Corrupt/truncated data-URL (e.g. a save cut short by a row-size
@@ -458,17 +509,19 @@ async function deserializeParams(
         | null;
       out[key] = null;
       if (envelope?.kind === "file" && envelope.dataUrl) {
-        try {
-          const blob = await (await fetch(envelope.dataUrl)).blob();
-          const bmp = await createImageBitmap(blob);
-          // Keep the loaded bytes as this bitmap's originals so a re-save
-          // round-trips them instead of re-encoding to PNG.
-          registerImageOriginal(bmp, blob);
-          out[key] = bmp;
-        } catch (e) {
-          // Corrupt/truncated image data — load the node without its image
-          // (user re-picks) rather than failing the whole project.
-          console.warn(`[load] unreadable image data for ${defType}.${key}`, e);
+        if (defer && !isDataUrl(envelope.dataUrl)) {
+          // Storage-hosted image on a streaming load — don't block on the
+          // network fetch. The caller streams it in and shows a spinner; the
+          // param stays null (renders empty) until it lands.
+          defer.onDefer(key, envelope);
+        } else {
+          try {
+            out[key] = await decodeImageFileEnvelope(envelope.dataUrl);
+          } catch (e) {
+            // Corrupt/truncated image data — load the node without its image
+            // (user re-picks) rather than failing the whole project.
+            console.warn(`[load] unreadable image data for ${defType}.${key}`, e);
+          }
         }
       } else if (envelope?.kind === "exr" && envelope.dataUrl) {
         // EXR still (v8): the envelope carries the original file bytes —
@@ -480,9 +533,15 @@ async function deserializeParams(
             "@/engine/exr"
           );
           const header = parseExrHeader(buf);
+          const blob = new Blob([buf], { type: "image/x-exr" });
+          // Seed the encode cache — EXR originals are often tens of MB, the
+          // most expensive thing to re-base64 on every save. (Skipped for
+          // storage URLs — see isDataUrl.)
+          if (isDataUrl(envelope.dataUrl))
+            primeBlobDataUrl(blob, envelope.dataUrl);
           out[key] = {
             kind: "exr",
-            blob: new Blob([buf], { type: "image/x-exr" }),
+            blob,
             filename: envelope.filename,
             layers: groupExrLayers(header),
             width: header.parts[0]?.width ?? 0,
@@ -832,7 +891,12 @@ function migrateLoadedParams(
 
 export async function deserializeGraph(
   saved: SavedProject,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  // `deferRemoteMedia`: don't block the load on Storage-hosted (v9) image
+  // fetches — return them in `pendingMedia` for the caller to stream in
+  // after the graph is interactive. Off by default, so viewers / `.toolbox`
+  // / fragment loads keep their synchronous behavior.
+  opts?: { deferRemoteMedia?: boolean }
 ): Promise<{
   nodes: Node<NodeDataPayload>[];
   edges: Edge[];
@@ -846,6 +910,9 @@ export async function deserializeGraph(
   // permission not persisted). The editor surfaces these in a relink
   // banner; viewers can ignore the field.
   missingMedia: MissingMedia[];
+  // Storage-hosted images whose fetch was deferred (only when
+  // `deferRemoteMedia` is set). Empty otherwise. The caller streams these in.
+  pendingMedia: PendingMedia[];
 }> {
   // Resolve the composition registry up front so every node can be tagged
   // into the right composition. A present `compositions` array (even empty)
@@ -869,11 +936,21 @@ export async function deserializeGraph(
   const total = Math.max(1, saved.nodes.length);
   const nodes: Node<NodeDataPayload>[] = [];
   const missingMedia: MissingMedia[] = [];
+  const pendingMedia: PendingMedia[] = [];
   let lastProgressBucket = -1;
   for (let i = 0; i < saved.nodes.length; i++) {
     const sn = saved.nodes[i];
     const def = getNodeDef(sn.defType);
-    const params = await deserializeParams(sn.defType, sn.params);
+    const params = await deserializeParams(
+      sn.defType,
+      sn.params,
+      opts?.deferRemoteMedia
+        ? {
+            onDefer: (paramName, envelope) =>
+              pendingMedia.push({ nodeId: sn.id, paramName, envelope }),
+          }
+        : undefined
+    );
     migrateLoadedParams(sn.defType, params);
     for (const [k, v] of Object.entries(params)) {
       if (k.endsWith(MISSING_MEDIA_SUFFIX) && v) {
@@ -897,7 +974,9 @@ export async function deserializeGraph(
       : [];
     nodes.push({
       id: sn.id,
-      type: "effect",
+      // Reroutes render as a dot (RerouteNode); everything else uses the
+      // standard EffectNode chrome. Keyed off the saved defType.
+      type: sn.defType === REROUTE_TYPE ? "reroute" : "effect",
       position: sn.position,
       data: {
         defType: sn.defType,
@@ -1013,6 +1092,7 @@ export async function deserializeGraph(
     compositions,
     activeCompositionId,
     missingMedia,
+    pendingMedia,
   };
 }
 

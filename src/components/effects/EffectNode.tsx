@@ -23,6 +23,7 @@ import { MAX_COLORS, getExtractedPalette } from "@/nodes/source/color-literal";
 import { ColorPickerPopover } from "@/lib/color-picker-popover";
 import { MiniBarSlider, NumberField } from "@/lib/param-controls";
 import { colorForSocket } from "./socketColor";
+import { Spinner } from "./Spinner";
 import { VIRTUAL_SOCKET } from "@/engine/groups";
 
 type EffectNodeType = Node<NodeDataPayload, "effect">;
@@ -108,6 +109,20 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
       window.removeEventListener("node-timings", onTimings);
       if (raf) cancelAnimationFrame(raf);
     };
+  }, [id]);
+
+  // Media-loading state: EffectsApp streams v9 Storage images in after the
+  // graph is interactive and broadcasts the still-loading node ids via
+  // `node-media-loading`. We pick our own id out of the set to show a
+  // spinner on the node header until this node's image lands.
+  const [mediaLoading, setMediaLoading] = useState(false);
+  useEffect(() => {
+    const onLoading = (e: Event) => {
+      const set = (e as CustomEvent<Set<string>>).detail;
+      setMediaLoading(!!set && set.has(id));
+    };
+    window.addEventListener("node-media-loading", onLoading);
+    return () => window.removeEventListener("node-media-loading", onLoading);
   }, [id]);
 
   // Mirror EffectsApp's split-viewport state. EffectsApp dispatches a
@@ -527,6 +542,14 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             gap: 6,
           }}
         >
+          {mediaLoading && (
+            <span
+              title="Loading image…"
+              style={{ display: "inline-flex", color: "#93c5fd" }}
+            >
+              <Spinner size={11} stroke={1.6} arc={0.28} />
+            </span>
+          )}
           {data.displayName ?? data.name}
           <button
             onMouseDown={(e) => e.stopPropagation()}

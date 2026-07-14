@@ -20,11 +20,12 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EffectNode from "./EffectNode";
+import RerouteNode from "./RerouteNode";
 import JunctionEdge from "./JunctionEdge";
+// (waypoint-context retired with the junction waypoint — reroute is a node now)
 import WireActionOverlay from "./WireActionOverlay";
 import NodeSearchPopup from "./NodeSearchPopup";
 import SimulationZoneUnderlay from "./SimulationZoneUnderlay";
-import { WaypointContext } from "./waypoint-context";
 import { useEffectiveDevice } from "./input-device";
 import { getNodeDef } from "@/engine/registry";
 import {
@@ -125,20 +126,14 @@ interface Props {
     flowPos: { x: number; y: number }
   ) => void;
   // Wire-gesture actions. `onCombineWires` is called when a shift-drag
-  // crosses ≥2 edges sharing a source; the caller is expected to stamp a
-  // junction waypoint on each of the listed edges. `onCutWires` is called
-  // with every edge id that an alt-drag crossed.
+  // crosses one or more edges; the caller drops a reroute node on the crossed
+  // wire(s) at `midpointFlow` (specdocs/071326_reroute-node.md). `onCutWires`
+  // is called with every edge id that an alt-drag crossed.
   onCombineWires?: (
     edgeIds: string[],
     midpointFlow: [number, number]
   ) => void;
   onCutWires?: (edgeIds: string[]) => void;
-  // Waypoint drag on an existing junction dot. `start` pushes undo once
-  // per gesture; `move` fires on every pointermove and the parent is
-  // expected to move every edge whose waypoint sits near the dragged one
-  // (cluster lookup by proximity).
-  onWaypointDragStart?: (edgeId: string) => void;
-  onWaypointDrag?: (edgeId: string, newFlowPos: [number, number]) => void;
   // Fires on drag-stop when a single dragged node has been positioned
   // over a compatible edge — NodeEditor has already checked that the
   // node's sockets can splice in. Parent is expected to remove the
@@ -210,8 +205,6 @@ function NodeEditor({
   onAddAssetNode,
   onCombineWires,
   onCutWires,
-  onWaypointDragStart,
-  onWaypointDrag,
   onSpliceNode,
   viewportOverlay,
   onGroupSelection,
@@ -224,7 +217,10 @@ function NodeEditor({
   atRoot,
   frameSignal,
 }: Props) {
-  const nodeTypes = useMemo(() => ({ effect: EffectNode }), []);
+  const nodeTypes = useMemo(
+    () => ({ effect: EffectNode, reroute: RerouteNode }),
+    []
+  );
   // Register JunctionEdge under the default edge type so every edge —
   // including ones that predate waypoints — flows through it. The
   // component renders identically to React Flow's default bezier when no
@@ -596,17 +592,6 @@ function NodeEditor({
     [onCutWires]
   );
 
-  // Stable context value so JunctionEdge doesn't re-render on every
-  // parent update. The inner handlers themselves are stable useCallbacks
-  // from the parent, so memoizing here just avoids fresh object identity.
-  const waypointActions = useMemo(
-    () => ({
-      onDragStart: (edgeId: string) => onWaypointDragStart?.(edgeId),
-      onDrag: (edgeId: string, pos: [number, number]) =>
-        onWaypointDrag?.(edgeId, pos),
-    }),
-    [onWaypointDragStart, onWaypointDrag]
-  );
   const reportPane = (clientX: number, clientY: number) => {
     if (!onPanePointer) return;
     const pos = screenToFlowPosition({ x: clientX, y: clientY });
@@ -1324,6 +1309,25 @@ function NodeEditor({
     return () => el.removeEventListener("pointerdown", onDown, true);
   }, [rfGetNodes, rfSetNodes]);
 
+  // Open the node-search popup at a screen point, clamped into the
+  // editor so a request from outside it (e.g. the pie menu opened over
+  // the canvas) still lands somewhere sensible. Shared by Shift+A and
+  // the pie menu's "Add Node" item.
+  const openNodeSearchAt = useCallback(
+    (sx: number, sy: number) => {
+      const wrapper = flowWrapperRef.current;
+      if (!wrapper) return;
+      const rect = wrapper.getBoundingClientRect();
+      const x = Math.min(Math.max(sx, rect.left + 8), rect.right - 8);
+      const y = Math.min(Math.max(sy, rect.top + 8), rect.bottom - 8);
+      // Seed the flow-coord pointer so the added node drops where the
+      // popup opens (not where the mouse drifts while the popup is up).
+      onPanePointer?.(screenToFlowPosition({ x, y }));
+      setNodePopup({ x: x + 4, y: y + 4 });
+    },
+    [screenToFlowPosition, onPanePointer],
+  );
+
   // Shift+A opens the popup when the cursor is inside the node editor
   // and no text field is focused. Skipped when any modifier other than
   // Shift is held, so combos like Cmd+Shift+A pass through.
@@ -1349,15 +1353,25 @@ function NodeEditor({
         return;
       }
       e.preventDefault();
-      // Seed the flow-coord pointer so the added node drops where the
-      // popup opens (not where the mouse drifts while the popup is up).
-      const flowPos = screenToFlowPosition({ x, y });
-      onPanePointer?.(flowPos);
-      setNodePopup({ x: x + 4, y: y + 4 });
+      openNodeSearchAt(x, y);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [screenToFlowPosition, onPanePointer]);
+  }, [openNodeSearchAt]);
+
+  // The pie menu's "Add Node" item opens this same popup via a window
+  // event carrying the pie's screen origin. Spec: 071326_pie-menu.md.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const d = (e as CustomEvent).detail as
+        | { x?: number; y?: number }
+        | undefined;
+      if (!d || typeof d.x !== "number" || typeof d.y !== "number") return;
+      openNodeSearchAt(d.x, d.y);
+    };
+    window.addEventListener("toolbox:open-node-search", onOpen);
+    return () => window.removeEventListener("toolbox:open-node-search", onOpen);
+  }, [openNodeSearchAt]);
 
   // Window-level `paste` listener. Replaces the old Cmd+V keydown path
   // so we can inspect the clipboard for files before deciding what to
@@ -1646,7 +1660,6 @@ function NodeEditor({
   });
 
   return (
-    <WaypointContext.Provider value={waypointActions}>
     <div
       ref={flowWrapperRef}
       data-shortcut-scope="node"
@@ -1736,6 +1749,18 @@ function NodeEditor({
         onNodesChange={onNodesChange as (c: NodeChange[]) => void}
         onEdgesChange={onEdgesChange as (c: EdgeChange[]) => void}
         onConnect={onConnect}
+        onEdgeDoubleClick={(event, edge) => {
+          // Double-click a wire → drop a reroute node on it at the click
+          // point (source → reroute → target). Reuses the same insertion
+          // path as the Shift-drag gesture.
+          if (!onCombineWires) return;
+          event.stopPropagation();
+          const pos = screenToFlowPosition({
+            x: event.clientX,
+            y: event.clientY,
+          });
+          onCombineWires([edge.id], [pos.x, pos.y]);
+        }}
         onReconnect={(oldEdge, newConnection) => {
           // User dragged the edge end onto a different handle. Drop
           // the original edge and let onConnect produce the new one
@@ -2222,7 +2247,6 @@ function NodeEditor({
         />
       )}
     </div>
-    </WaypointContext.Provider>
   );
 }
 

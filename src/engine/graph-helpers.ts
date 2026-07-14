@@ -6,6 +6,12 @@
 
 import type { ParamType, SocketType } from "./types";
 
+// The reroute node's type string. A wire-organizing passthrough (rendered as
+// a dot) that flattenGraph dissolves before evaluation — see
+// specdocs/071326_reroute-node.md. Lives here (engine-side) so flatten.ts can
+// reference it without importing from src/nodes (invariant #1).
+export const REROUTE_TYPE = "reroute";
+
 // Parse a React-Flow target handle ID. Regular input sockets are `in:<name>`;
 // exposed param sockets are `in:param:<name>`. Returns null for unrecognized.
 export function parseTargetHandleKind(

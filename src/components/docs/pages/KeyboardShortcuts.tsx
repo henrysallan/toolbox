@@ -36,7 +36,7 @@ const NODE_GRAPH: Shortcut[] = [
   { keys: <><Kbd>Alt</Kbd>+drag a node</>, action: "Duplicate-on-drag — clones the node, keeping its edges on the original." },
   { keys: <><Kbd>Cmd</Kbd>+drag a node</>, action: "Detach — strips all incoming and outgoing edges." },
   { keys: <><Kbd>Alt</Kbd>+drag a wire</>, action: "Cut the wire." },
-  { keys: <><Kbd>Shift</Kbd>+drag a wire</>, action: "Merge two wires at a junction." },
+  { keys: <><Kbd>Shift</Kbd>+drag across wires</>, action: "Drop a reroute node on the wires (double-click a wire also inserts one)." },
   { keys: "Middle-click drag", action: "Pan the graph." },
   { keys: "Scroll", action: "Zoom the graph." },
 ];

@@ -14,7 +14,11 @@
 
 import type { SocketType, ResolveCtx } from "./types";
 import { getNodeDef } from "./registry";
-import { parseTargetHandleKind, paramSocketType } from "./graph-helpers";
+import {
+  parseTargetHandleKind,
+  paramSocketType,
+  REROUTE_TYPE,
+} from "./graph-helpers";
 import { withMaskInput } from "./conventions";
 
 // Minimal structural node shape — both the engine GraphNode ({id, type, params})
@@ -93,6 +97,11 @@ export function editorCanCoerce(
 ): boolean {
   if (coercible(src, tgt)) return true;
   if (!targetDefType) return false;
+  // A reroute's single `value` input is a wildcard — it accepts any source
+  // and retypes its output to match (connectedTypes retyping, like Transform/
+  // Displace). Its resting type reads "image" before anything connects, so
+  // without this a spline/points/etc. couldn't land on a fresh reroute.
+  if (targetDefType === REROUTE_TYPE) return true;
   // Math accepts UV even while in scalar mode — onConnect flips the mode
   // param so the socket becomes properly typed on the next render.
   if (targetDefType === "math" && src === "uv" && tgt === "scalar") return true;

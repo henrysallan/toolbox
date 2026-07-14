@@ -51,7 +51,7 @@ import {
   readBoundarySockets,
   readGroupInterface,
 } from "./groups";
-import { parseTargetHandleKind } from "./graph-helpers";
+import { parseTargetHandleKind, REROUTE_TYPE } from "./graph-helpers";
 
 function isStructuralType(type: string): boolean {
   return (
@@ -60,6 +60,19 @@ function isStructuralType(type: string): boolean {
     type === GROUP_OUTPUT_TYPE
   );
 }
+
+// Types the flatten pass removes from the evaluated graph, splicing their
+// edges straight through: group structure (above) plus the reroute node — a
+// pure wire waypoint whose single `value` input resolves to its output. See
+// specdocs/071326_reroute-node.md.
+function isDissolvedType(type: string): boolean {
+  return isStructuralType(type) || type === REROUTE_TYPE;
+}
+
+// The socket a dissolved node's output resolves back through. Reroute carries
+// its lone `value` input to its output; group structure is handled by
+// resolveBoundarySource's own cases.
+const REROUTE_INPUT = "value";
 
 function auxName(sourceHandle: string): string | null {
   return sourceHandle.startsWith("out:aux:")
@@ -89,7 +102,14 @@ function resolveBoundarySource(
     const n = byId.get(cur.source);
     if (!n) return null;
     const name = auxName(cur.sourceHandle);
-    if (n.type === GROUP_TYPE) {
+    if (n.type === REROUTE_TYPE) {
+      // Reroute output → the producer wired into its `value` input. An
+      // unwired reroute dead-ends (its downstream edges drop, like any
+      // unwired boundary). Chains of reroutes collapse via this same loop.
+      const inner = edgeIntoSocket.get(socketKey(n.id, REROUTE_INPUT));
+      if (!inner) return null;
+      cur = { source: inner.source, sourceHandle: inner.sourceHandle };
+    } else if (n.type === GROUP_TYPE) {
       // Group shell output → the interior producer wired into the
       // matching Group Output socket.
       const interiorId = name != null ? outputNodeOf.get(n.id) : undefined;
@@ -150,7 +170,7 @@ export function flattenGraph(
   edges: GraphEdge[]
 ): FlattenResult {
   const hasStructure = nodes.some(
-    (n) => isStructuralType(n.type) || n.type === LAYER_TYPE
+    (n) => isDissolvedType(n.type) || n.type === LAYER_TYPE
   );
   if (!hasStructure) {
     return { nodes, edges, layerOf: EMPTY_LAYER_OF };
@@ -193,17 +213,19 @@ export function flattenGraph(
   function sourceNeedsResolve(e: GraphEdge): boolean {
     const src = byId.get(e.source);
     if (!src) return false;
-    if (isStructuralType(src.type)) return true;
+    if (isDissolvedType(src.type)) return true;
     return src.type === LAYER_TYPE && auxName(e.sourceHandle) === "audio";
   }
 
-  const outNodes = nodes.filter((n) => !isStructuralType(n.type));
+  const outNodes = nodes.filter((n) => !isDissolvedType(n.type));
   const outEdges: GraphEdge[] = [];
   for (const e of edges) {
     const target = byId.get(e.target);
-    if (target && isStructuralType(target.type)) {
-      // Edges into structure are consumed by source resolution of the
-      // edges on the far side of the boundary — except a layer's
+    if (target && isDissolvedType(target.type)) {
+      // Edges into structure (and reroutes) are consumed by source
+      // resolution of the edges on the far side — a reroute's `value` input
+      // edge is walked back through by resolveBoundarySource when its output
+      // is resolved, so it's simply dropped here — except a layer's
       // content: the interior result wired into the layer's Group
       // Output `image` socket becomes the layer node's hidden
       // `content` input (the layer computes the blend itself).
@@ -289,7 +311,11 @@ export function resolvePreviewProducer(
 ): { nodeId: string; handle: string } | null {
   const target = nodes.find((n) => n.id === targetId);
   if (!target) return null;
-  if (target.type !== GROUP_TYPE && target.type !== GROUP_OUTPUT_TYPE) {
+  if (
+    target.type !== GROUP_TYPE &&
+    target.type !== GROUP_OUTPUT_TYPE &&
+    target.type !== REROUTE_TYPE
+  ) {
     return null;
   }
 
@@ -306,6 +332,24 @@ export function resolvePreviewProducer(
     if (parsed?.kind === "input") {
       edgeIntoSocket.set(socketKey(e.target, parsed.name), e);
     }
+  }
+
+  // A reroute is dissolved at eval, so previewing it directly shows nothing —
+  // remap to whatever feeds its `value` input (walking reroute chains).
+  if (target.type === REROUTE_TYPE) {
+    const into = edgeIntoSocket.get(socketKey(target.id, REROUTE_INPUT));
+    if (!into) return null;
+    const resolved = resolveBoundarySource(
+      byId,
+      edgeIntoSocket,
+      outputNodeOf,
+      edges.length,
+      into.source,
+      into.sourceHandle
+    );
+    return resolved
+      ? { nodeId: resolved.source, handle: resolved.sourceHandle }
+      : null;
   }
 
   // The (Group Output node, socket name) whose interior producer we want.

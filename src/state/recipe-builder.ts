@@ -170,7 +170,11 @@ export function vetMergeLayers(
     };
   const out: MergeLayer[] = [];
   for (let i = 0; i < value.length; i++) {
-    const raw = value[i] as { mode?: unknown; opacity?: unknown } | null;
+    const raw = value[i] as {
+      mode?: unknown;
+      opacity?: unknown;
+      enabled?: unknown;
+    } | null;
     if (raw === null || typeof raw !== "object")
       return { ok: false, reason: `entry ${i} must be an object` };
     const mode = raw.mode === undefined ? (existing?.[i]?.mode ?? "normal") : raw.mode;
@@ -183,10 +187,16 @@ export function vetMergeLayers(
       raw.opacity === undefined ? (existing?.[i]?.opacity ?? 1) : raw.opacity;
     if (typeof opacity !== "number" || !(opacity >= 0 && opacity <= 1))
       return { ok: false, reason: `entry ${i}: opacity must be a number in 0–1` };
+    if (raw.enabled !== undefined && typeof raw.enabled !== "boolean")
+      return { ok: false, reason: `entry ${i}: enabled must be a boolean` };
+    const enabled =
+      raw.enabled === undefined ? existing?.[i]?.enabled : raw.enabled;
     out.push({
       id: existing?.[i]?.id ?? newLayerId(),
       mode: mode as BlendMode,
       opacity,
+      // Omit when enabled (the default) so the authored shape stays minimal.
+      ...(enabled === false ? { enabled: false } : {}),
     });
   }
   return { ok: true, value: out };

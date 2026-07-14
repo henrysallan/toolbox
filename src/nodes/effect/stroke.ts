@@ -13,6 +13,7 @@ import {
   buildRepeatStrokes,
   type RepeatDirection,
 } from "@/engine/spline-repeat";
+import type { OverlapStyle } from "@/engine/spline-offset-resolve";
 import {
   sampleColorRamp,
   type ColorRampStop,
@@ -230,6 +231,27 @@ export const strokeNode: NodeDefinition = {
       group: "repeats",
     },
     {
+      name: "repeat_overlap",
+      label: "Overlap",
+      type: "enum",
+      options: ["keep", "sharp", "smooth"],
+      default: "keep",
+      control: "segmented",
+      visibleIf: repeatsVisible,
+      group: "repeats",
+    },
+    {
+      name: "repeat_smoothing",
+      label: "Smoothing",
+      type: "scalar",
+      min: 0,
+      max: 1,
+      step: 0.01,
+      default: 0.5,
+      visibleIf: (p) => repeatsVisible(p) && p.repeat_overlap === "smooth",
+      group: "repeats",
+    },
+    {
       name: "repeat_thickness",
       label: "Thickness falloff",
       type: "float_curve",
@@ -297,6 +319,11 @@ export const strokeNode: NodeDefinition = {
       dir: repeats > 1 ? params.repeat_direction : 0,
       w: repeats > 1 ? params.repeat_width : 0,
       sc: repeats > 1 ? spacingCurve : 0,
+      ov: repeats > 1 ? params.repeat_overlap : 0,
+      ovs:
+        repeats > 1 && params.repeat_overlap === "smooth"
+          ? params.repeat_smoothing
+          : 0,
       close: closeOpen,
       W,
       H,
@@ -341,6 +368,10 @@ export const strokeNode: NodeDefinition = {
             spacingCurve,
             widthPx: W,
             heightPx: H,
+            overlap: {
+              style: (params.repeat_overlap as OverlapStyle) ?? "keep",
+              smoothing: (params.repeat_smoothing as number) ?? 0.5,
+            },
           });
           const rings: StrokeRing[] = [];
           for (const s of strokes) {

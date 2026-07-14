@@ -415,6 +415,11 @@ Let me know if you understand.
 169. currently we build the along path function for text into the text node. but i want to allow that 
 
 170. potentially add a pie menu to easily open projects, assets, save. We swap
+    SPEC'D 2026-07-13 — Shift+Space radial menu, opens at cursor. Hybrid
+    Blender-style select (flick-and-release OR tap-and-click), 7 items
+    (Save / Open Projects / Assets / New Project / Full Canvas / Split
+    Viewport / Add Node), config-driven registry. House design language
+    (zinc/blue inline hex, mono, pills). Spec: specdocs/071326_pie-menu.md.
 
 171. Relax node (for points and splines)
     DONE — Relax node (utility, mode header control): points = push-apart
@@ -422,7 +427,7 @@ Let me know if you understand.
     per-subpath Laplacian smoothing (endpoints pinned, closed wraps).
     iterations + mix on both. Spec: specdocs/071026_spline-points-nodes.md.
 
-172. I actually want to expand the color node with a + button to add multiple outputs/colors to a single node. Also i want to start developing some actual controls on the node itself so we can control them there the idea being that we could have the color square and click it to open the color picker directly over the node. 
+172. DONE I actually want to expand the color node with a + button to add multiple outputs/colors to a single node. Also i want to start developing some actual controls on the node itself so we can control them there the idea being that we could have the color square and click it to open the color picker directly over the node. 
 
 
 173. points to spline, shortest path (select two spline groups or select random groups by size) Set spline type (makes a spline bezier/cubic/linear),
@@ -466,4 +471,23 @@ Let me know if you understand.
     specdocs/071226_mcp-node-source-tools.md.
 
 
-179. When 
+179. For merge node: drag to reorder handles on each layer in parameters window. Also just a bypass toggle on each layer. 
+    DONE (code) 2026-07-13 — merge_layers control extracted into
+    MergeLayersControl (param-controls.tsx): per-layer grip handle
+    drag-reorders the stack (rewrites the layers array → resolveInputs
+    re-derives the layer:<id>/mask:<id> socket order; wires reference ids so
+    they follow their layer) + eye toggle sets `enabled:false`, skipped in
+    merge.ts's blend chain but keeping the socket/wire. `enabled?:boolean`
+    added to MergeLayer (optional = enabled, back-compat with old saves) and
+    preserved through vetMergeLayers (AI authoring shape). Typecheck/check/
+    lint green; needs an in-browser pass.
+
+180. the reroute function is kinda glitchy. Deleting should remove all wires. we should be able to connect a new wire on the left side, and have it switch the input wire for the reroute. We should be able to select the reroute itself and copy paste delete it.
+    DONE 2026-07-13 — replaced the edge-metadata junction/waypoint with a
+    first-class reroute NODE (rendered as a dot, dissolved at flatten time so
+    eval is unchanged). Delete removes all its wires, dropping a new wire on
+    its left swaps the input, and select/copy-paste all come from node
+    machinery — the three asks. Created by repurposing Shift-drag-across-wires
+    (source→reroute→targets, any count) or double-clicking a wire. Also fixes
+    the latent bug that junctions never survived save (edge `data` isn't
+    serialized) — reroute nodes persist. Spec: specdocs/071326_reroute-node.md.

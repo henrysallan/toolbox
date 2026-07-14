@@ -29,6 +29,14 @@
 
 import JSZip from "jszip";
 import type { SavedProject } from "./project";
+import {
+  dataUrlToBytes,
+  isAssetRef,
+  isInlineAsset,
+  mimeToExt,
+  PRECOMPRESSED_MIMES,
+  sha256Hex,
+} from "./asset-envelope";
 
 // Bump when the container layout changes in a non-back-compatible way.
 // The reader refuses files with a HIGHER formatVersion than it knows.
@@ -61,70 +69,11 @@ export interface ToolboxManifest {
   assets: ToolboxAsset[];
 }
 
-// An asset-bearing param after extraction. Mirrors the inline envelope
-// ({ kind, dataUrl }) but points at an asset id instead.
-interface AssetRef {
-  kind?: string;
-  asset: string;
-}
-
-// --- data-url <-> bytes --------------------------------------------------
-
-function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; mime: string } {
-  const comma = dataUrl.indexOf(",");
-  const header = dataUrl.slice(5, comma); // strip leading "data:"
-  const mime = header.split(";")[0] || "application/octet-stream";
-  const isBase64 = header.includes(";base64");
-  const dataPart = dataUrl.slice(comma + 1);
-  if (isBase64) {
-    const bin = atob(dataPart);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return { bytes, mime };
-  }
-  // URL-encoded (non-base64) data URLs are rare here but cheap to support.
-  const bytes = new TextEncoder().encode(decodeURIComponent(dataPart));
-  return { bytes, mime };
-}
-
-const MIME_TO_EXT: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/webp": "webp",
-  "image/gif": "gif",
-};
-
-function mimeToExt(mime: string): string {
-  return MIME_TO_EXT[mime] ?? "bin";
-}
-
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-// Detect the inline asset envelope serializeParams emits: an object with a
-// `data:` URL under `dataUrl` (paint layers, image files).
-function isInlineAsset(
-  val: unknown
-): val is { kind?: string; dataUrl: string } {
-  return (
-    !!val &&
-    typeof val === "object" &&
-    typeof (val as { dataUrl?: unknown }).dataUrl === "string" &&
-    (val as { dataUrl: string }).dataUrl.startsWith("data:")
-  );
-}
-
-function isAssetRef(val: unknown): val is AssetRef {
-  return (
-    !!val &&
-    typeof val === "object" &&
-    typeof (val as { asset?: unknown }).asset === "string"
-  );
-}
+// Asset envelope primitives (isInlineAsset / isAssetRef / dataUrlToBytes /
+// sha256Hex / mimeToExt / PRECOMPRESSED_MIMES) are shared with the cloud
+// Storage path — see lib/asset-envelope.ts. STORE-vs-DEFLATE for the zip
+// uses PRECOMPRESSED_MIMES below (already-compressed bytes gain ~nothing
+// from DEFLATE and STORE is still a standard zip every reader handles).
 
 // --- write ---------------------------------------------------------------
 
@@ -145,14 +94,19 @@ export async function writeProjectFile(
   const assets: ToolboxAsset[] = [];
   const seen = new Map<string, ToolboxAsset>(); // hash -> asset (dedup)
 
-  // Clone so we don't mutate the caller's graph while swapping envelopes
-  // for references.
-  const graph = structuredClone(opts.graph) as SavedProject;
+  // Clone just what we mutate (the params records) so the caller's graph
+  // stays untouched — structuredClone walked the whole tree, copying the
+  // multi-MB data-URL strings along with it. The envelope objects
+  // themselves are copied via `{ ...val }` below before being edited.
+  const graph: SavedProject = {
+    ...opts.graph,
+    nodes: opts.graph.nodes.map((n) => ({ ...n, params: { ...n.params } })),
+  };
 
   for (const node of graph.nodes) {
     for (const [key, val] of Object.entries(node.params)) {
       if (!isInlineAsset(val)) continue;
-      const { bytes, mime } = dataUrlToBytes(val.dataUrl);
+      const { bytes, mime } = await dataUrlToBytes(val.dataUrl);
       const id = await sha256Hex(bytes);
       let asset = seen.get(id);
       if (!asset) {
@@ -160,7 +114,9 @@ export async function writeProjectFile(
         asset = { id, mime, ext, bytes: bytes.length };
         seen.set(id, asset);
         assets.push(asset);
-        zip.file(`assets/${id}.${ext}`, bytes);
+        zip.file(`assets/${id}.${ext}`, bytes, {
+          compression: PRECOMPRESSED_MIMES.has(mime) ? "STORE" : "DEFLATE",
+        });
       }
       // Swap the inline `dataUrl` for an asset reference, preserving any
       // other envelope fields (e.g. a font's family/filename/axes) so they
@@ -174,9 +130,9 @@ export async function writeProjectFile(
 
   let thumbnail: string | undefined;
   if (opts.thumbnailDataUrl) {
-    const { bytes } = dataUrlToBytes(opts.thumbnailDataUrl);
+    const { bytes } = await dataUrlToBytes(opts.thumbnailDataUrl);
     thumbnail = "thumbnail.jpg";
-    zip.file(thumbnail, bytes);
+    zip.file(thumbnail, bytes, { compression: "STORE" });
   }
 
   const now = new Date().toISOString();

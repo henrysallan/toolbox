@@ -116,33 +116,24 @@ export default function WireActionOverlay({
       const crossed = findCrossedEdges(edgesRef.current, d.start, end);
       if (d.mode === "cut") {
         if (crossed.length > 0) onCut(crossed.map((c) => c.id));
-      } else {
-        // Combine: group by source identity, keep only groups with ≥2
-        // edges — that's the contract ("combine when ≥2 wires share a
-        // source").
-        const bySource = new Map<string, typeof crossed>();
-        for (const c of crossed) {
-          const key = `${c.source}::${c.sourceHandle ?? ""}`;
-          const arr = bySource.get(key) ?? [];
-          arr.push(c);
-          bySource.set(key, arr);
-        }
-        const groupsToCombine: string[] = [];
-        for (const arr of bySource.values()) {
-          if (arr.length >= 2) groupsToCombine.push(...arr.map((c) => c.id));
-        }
-        if (groupsToCombine.length > 0) {
-          // Waypoint in FLOW coords so it zooms with the viewport.
-          const midScreen: Pt = [
-            (d.start[0] + end[0]) / 2,
-            (d.start[1] + end[1]) / 2,
-          ];
-          const midFlow = screenToFlowPosition({
-            x: midScreen[0],
-            y: midScreen[1],
-          });
-          onCombine(groupsToCombine, [midFlow.x, midFlow.y]);
-        }
+      } else if (crossed.length > 0) {
+        // Combine: drop a reroute on every crossed wire. Downstream
+        // (insertReroutesOnEdges) groups them by shared source and mints one
+        // reroute per group, so a single crossed wire reroutes too — no ≥2
+        // requirement anymore. Anchor in FLOW coords so it zooms with the
+        // viewport.
+        const midScreen: Pt = [
+          (d.start[0] + end[0]) / 2,
+          (d.start[1] + end[1]) / 2,
+        ];
+        const midFlow = screenToFlowPosition({
+          x: midScreen[0],
+          y: midScreen[1],
+        });
+        onCombine(
+          crossed.map((c) => c.id),
+          [midFlow.x, midFlow.y]
+        );
       }
       setDrag(null);
     };

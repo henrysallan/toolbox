@@ -11,6 +11,20 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.4.3",
+    date: "2026-07-14",
+    added: [
+      "Pie menu — Shift+Space opens a radial quick-action ring around the cursor for the whole-app actions (Save, Open Projects, Assets, Add Node, Split Viewport, Full Canvas, New Project). Blender-style: flick a direction and release, or tap and click.",
+      "Reroute node — the wire junction is now a first-class node (rendered as a minimal dot) instead of edge metadata, so it selects, copies / pastes, and deletes like any other node while cleanly routing a wire around your graph.",
+      "Point Labels — turn a points value into text: format each point's own data (position, index, rotation, scale, group, or a custom template) and render it as a label sitting on that point. 10 points → 10 coordinate readouts on the dots.",
+      "Offset overlap resolve — Repeat Path, Offset Path, and the Stroke Repeats gain an Overlap mode: Keep (raw, default), Sharp (cut the self-overlaps that form on concave corners down to a single clean intersection), or Smooth (that cut, then a fillet so the join is a curve).",
+    ],
+    changed: [
+      "Saving is dramatically faster, especially on media-heavy projects: unchanged images / paint / EXR / fonts are no longer re-encoded on every save, and cloud media now lives in de-duplicated, content-addressed Storage — a re-save uploads only what actually changed, and the old project-size cap on cloud saves is gone.",
+      "Loading streams in: a cloud project's graph is interactive immediately while its images load from Storage in the background, each node showing a spinner until its image lands. Saving and loading now show a spinning-arc status indicator.",
+    ],
+  },
+  {
     version: "0.4.1",
     date: "2026-07-13",
     added: [

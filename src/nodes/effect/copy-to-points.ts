@@ -38,6 +38,8 @@ import { renderStyledTextToImage } from "@/engine/text-raster";
 //                (noise → spatial assortment)
 //   random       seeded per-point hash, no wiring needed
 //   cycle        round-robin by target point index
+//   by index     pair variant i with target point i (1:1, clamped) —
+//                lands Points-to-Text's string[i] on point[i]
 //   target group pair the target point's own groupIndex with the
 //                matching variant
 // Nodes saved before pick_mode existed behaved image-driven whenever a
@@ -479,6 +481,11 @@ function chooseVariantGroup(opts: {
     }
     case "cycle":
       return distinct[opts.index % n];
+    case "by index":
+      // Pair target point i with variant i (1:1), clamping the tail so a
+      // longer/shorter variant set still resolves. This is the parallel
+      // pairing Points-to-Text relies on: string[i] lands on point[i].
+      return distinct[Math.min(n - 1, opts.index)];
     case "target group": {
       // Pair the target point's own groupIndex with the matching
       // instance group; indices outside the instance's set wrap so
@@ -732,7 +739,9 @@ export const copyToPointsNode: NodeDefinition = {
       name: "pick_mode",
       label: "Variant pick",
       type: "enum",
-      options: ["all", "image", "random", "cycle", "target group"],
+      // "by index" pairs variant i with target point i (1:1, clamped) — the
+      // parallel pairing that lands Points-to-Text's string[i] on point[i].
+      options: ["all", "image", "random", "cycle", "by index", "target group"],
       default: "all",
     },
     {

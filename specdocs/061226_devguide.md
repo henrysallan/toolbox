@@ -55,7 +55,9 @@ src/
                           multilayer/DWA fixes), layer grouping, worker decode
                           pool. See "EXR import + color pipeline" sharp edge.
     registry.ts           registerNode()/getNodeDef() — a Map, nothing more.
-    flatten.ts groups.ts  Node-group/layer dissolution pass + group socket plumbing.
+    flatten.ts groups.ts  Node-group/layer/reroute dissolution pass + group socket
+                          plumbing (reroute = a dot-rendered passthrough node
+                          spliced out at eval; 071326_reroute-node.md).
     layout.ts             Auto Layout: layout units + pure Figma-semantics solver.
     element.ts            Element-socket GL helpers: wrap/flatten coercions, positioned
                           source-over compositing, alpha-bbox trim, canvas upload.
@@ -75,7 +77,11 @@ src/
                           (or the whole node body — capture-phase interceptor)
                           with Shift held → blue ring + line, drop over any node
                           to land on its first accepting socket (buildShiftDrop-
-                          Connection / buildNodeConnection).
+                          Connection / buildNodeConnection). Shift-drag ACROSS
+                          wires (or double-click a wire) drops a Reroute node
+                          (RerouteNode.tsx — a dot; insertReroutesOnEdges in
+                          graph-ops) that reorganizes wiring: source→reroute→
+                          targets, dissolved at flatten. Spec: 071326_reroute-node.md.
     ParamPanel.tsx        Renders ParamDef[] → controls; all custom param-type UIs.
     EffectNode.tsx        The node chrome on the graph canvas (sockets, header, +).
                           Also hosts ON-NODE param controls (first: the Color
@@ -397,7 +403,7 @@ To add a node:
 ## Persistence & sharing
 
 - `serializeGraph`/`deserializeGraph` ([project.ts](../src/lib/project.ts)),
-  `CURRENT_SCHEMA = 8` — the version history is documented at the top of
+  `CURRENT_SCHEMA = 9` — the version history is documented at the top of
   that file; bump it when the wire shape changes and keep loading old ones.
   (v6 renamed Text's `mask` input to `morph_mask` and migrates old
   `in:mask`→`in:morph_mask` edges on load — see below. v7 removed Merge's
@@ -405,10 +411,65 @@ To add a node:
   edge fans out into one `in:mask:<layerId>` edge per layer on load —
   equivalent output under source-over. See 070926_merge-layer-masks.md.
   v8 added the `{kind:"exr"}` original-bytes envelope for EXR stills on
-  Image Source — see 070926_exr-color-pipeline.md.)
-- Media (image bitmaps, paint canvases) inline as data-URLs in cloud saves;
-  video/audio don't serialize — they become "missing media" entries
-  re-picked via MediaRelinkModal ([media-relink.ts](../src/lib/media-relink.ts)).
+  Image Source — see 070926_exr-color-pipeline.md. v9 lets a media envelope
+  carry `{asset:<sha256>, ext}` instead of `dataUrl` — cloud media in
+  Storage; see the cloud-asset bullet below.)
+- Media (image bitmaps, paint canvases) inline as data-URLs; video/audio
+  don't serialize — they become "missing media" entries re-picked via
+  MediaRelinkModal ([media-relink.ts](../src/lib/media-relink.ts)).
+- **Cloud media = content-addressed Storage (v9, Tier 2).** The cloud save
+  path ([supabase/project-assets.ts](../src/lib/supabase/project-assets.ts))
+  post-processes serialize's inline graph: extract each asset → upload the
+  ones **not already present** to the public `project-assets` bucket
+  (`<user>/<project>/<sha256>.<ext>`) → leave `{asset,ext}` refs in the row.
+  Unchanged media re-hashes to an existing object = zero upload; the DB row
+  stays tiny (no more 50MB cap / statement-timeout). Load rewrites refs →
+  public Storage URLs (`resolveAssetRefs`) BEFORE deserialize, so the
+  deserializer (which `fetch()`es `dataUrl`) is unchanged and ≤v8 inline
+  saves load untouched. **Streamed load:** the editor passes
+  `deserializeGraph(..., { deferRemoteMedia: true })`, which returns those
+  Storage images in `pendingMedia` instead of blocking on them — the graph is
+  interactive immediately and EffectsApp's `streamPendingMedia` fetches them
+  in parallel, patching each into its node when it lands and showing a
+  per-node spinner (`node-media-loading` event) meanwhile. A save awaits the
+  in-flight batch (`mediaLoadRef`) so a not-yet-loaded image never serializes
+  to null; a stream that fails keeps its envelope so the ref still
+  round-trips. Viewers / `.toolbox` / fragment loads omit the flag and stay
+  synchronous. The [Spinner](../src/components/effects/Spinner.tsx) (smooth
+  linear arc) drives both this and the save/load ProgressBanner. **Rollout-safe:** upload falls back to the inline
+  graph if Storage errors (e.g. the bucket's migration hasn't been run), so
+  saves keep working the old way until `specdocs/project-assets-migration.sql`
+  is applied, then switch automatically. Delete removes the project prefix;
+  a won-CAS re-save prunes its own orphans. **Privacy note:** the bucket is
+  public, so a private project's media is unguessable-path-public (content
+  hash + UUID), same trust level as thumbnails. Spec:
+  071426_cloud-asset-storage.md.
+- All bytes→data-URL encoding goes through [data-url.ts](../src/lib/data-url.ts):
+  native encoders cached per source object (Blob / ArrayBuffer / ImageBitmap)
+  in WeakMaps, seeded on load — an unchanged asset costs ~0ms on every save
+  after the first, and re-saves emit byte-identical data-URLs (stable
+  `.toolbox` asset hashes). Paint serializes from the committed **snapshot**
+  bitmap (every stroke/fill/resize/undo mints a fresh one), never the live
+  canvas. INVARIANT: media param values are replace-only — mint a new
+  Blob/bitmap for new content, never mutate behind an existing reference, or
+  the cache serves stale bytes. Priming only accepts `data:` URLs (a v9
+  storage-URL load skips it). The `.toolbox` writer STOREs pre-compressed
+  mimes (png/jpeg/webp/gif/exr) instead of re-DEFLATing them. The asset-
+  envelope vocabulary (`isInlineAsset`/`isAssetRef`/hash/ext) is shared by
+  the `.toolbox` and cloud paths in
+  [asset-envelope.ts](../src/lib/asset-envelope.ts). Spec:
+  071426_save-optimization.md.
+- All bytes→data-URL encoding goes through [data-url.ts](../src/lib/data-url.ts):
+  native encoders cached per source object (Blob / ArrayBuffer / ImageBitmap)
+  in WeakMaps, seeded on load — an unchanged asset costs ~0ms on every save
+  after the first, and re-saves emit byte-identical data-URLs (stable
+  `.toolbox` asset hashes). Paint serializes from the committed **snapshot**
+  bitmap (every stroke/fill/resize/undo mints a fresh one), never the live
+  canvas. INVARIANT: media param values are replace-only — mint a new
+  Blob/bitmap for new content, never mutate behind an existing reference, or
+  the cache serves stale bytes. The `.toolbox` writer STOREs pre-compressed
+  mimes (png/jpeg/webp/gif/exr) instead of re-DEFLATing them. Spec:
+  071426_save-optimization.md.
 - Fonts: uploaded `custom_font` bytes bundle (v5). The Text `font_family`
   picker (`control:"font"`, [param-controls.tsx](../src/lib/param-controls.tsx))
   merges the user's **installed local fonts** ([local-fonts.ts](../src/lib/local-fonts.ts),
@@ -864,7 +925,8 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   the current graph (small fixpoint for chains) and writes the resolved
   inputs/primaryOutput/aux back into `data`; the param-change path skips
   re-resolving these two so it can't clobber it. Add any future mode-less
-  connectedTypes-retyping node to that set. **AI recipes/edits can author
+  connectedTypes-retyping node to that set (the **Reroute** node is one — its
+  wildcard `value` input + output adopt whatever's wired in). **AI recipes/edits can author
   pattern-(1) merge stacks** (070926_claude-mcp-bridge.md §4c): `layers`
   accepts [{mode, opacity}, …] via `vetMergeLayers` (ids minted, or
   preserved by index on edit so wires survive), edge targets `in:layerN` /
@@ -940,9 +1002,20 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   the **Stroke** node's collapsible Repeats group (per-ring
   thickness/opacity falloff curves + optional color ramp; two-tier
   signature so styling edits re-stroke cached Path2Ds without re-running
-  bezier-js offsets). Known limit: parallel curves self-intersect at
-  concave regions once offset exceeds curvature radius (same as Offset
-  Path). Shipping this fixed a latent `offsetSubpath` bug that also bit
+  bezier-js offsets). The concave-region self-overlap is now resolvable:
+  an **Overlap** enum (`keep`/`sharp`/`smooth`, default `keep` — no schema
+  bump) on Offset Path, Repeat Path, and Stroke's Repeats runs
+  `resolveSubpathOverlaps` ([spline-offset-resolve.ts](../src/engine/spline-offset-resolve.ts))
+  — a cubic-exact loop cull that finds every self-crossing (bezier-js
+  `selfintersects`/`intersects`) and skips the geometry between each
+  crossing's two feet (sharp = one corner point; smooth adds a local
+  junction fillet). Runs in px space for isotropic tolerances; closed rings
+  rotate to a loop-free seam first, and a fully-inverted ring resolves to
+  null (dropped). Stroke plumbs the two params into its `geomSig` so ring
+  Path2Ds re-cache. Loop-cull only — a collapsed inner offset simplifies to
+  one clean closed subpath rather than splitting into islands. Spec:
+  071426_offset-overlap-resolve.md. Shipping the multi-stroke work fixed a
+  latent `offsetSubpath` bug that also bit
   the Offset Path node: bezier-js's offset() NaNs on handle-less
   (polyline) segments — the shared fix synthesizes 1/3-chord handles
   (identical geometry) before offsetting (`solidifyForOffset` in

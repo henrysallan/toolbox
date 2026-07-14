@@ -677,7 +677,8 @@ export function TrackEditor(props: TrackEditorProps) {
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea") return;
 
-      if (e.code === "Space" && !spaceDownRef.current) {
+      if (e.code === "Space" && !spaceDownRef.current && !e.shiftKey) {
+        // !shiftKey so Shift+Space (the pie menu chord) never starts a pan.
         spaceDownRef.current = true;
         setSpaceDown(true);
         e.preventDefault();

@@ -1,5 +1,27 @@
 import { createClient } from "@/lib/supabase/client";
 import type { SavedProject } from "@/lib/project";
+import {
+  deleteProjectAssets,
+  pruneProjectAssets,
+  resolveAssetRefs,
+  uploadGraphAssets,
+} from "@/lib/supabase/project-assets";
+
+// Practical ceiling for the jsonb `graph` column. After Tier 2, media lives
+// in Storage and the row is tiny, so this only bites the inline FALLBACK
+// path (Storage unavailable — e.g. the bucket's SQL migration hasn't been
+// run) on a very large project. Thrown from the row writers with an
+// actionable hint; the editor surfaces the message.
+const MAX_ROW_MB = 45;
+
+function guardRowSize(graph: SavedProject): void {
+  const mb = JSON.stringify(graph).length / (1024 * 1024);
+  if (mb > MAX_ROW_MB) {
+    throw new Error(
+      `Project is ~${Math.round(mb)}MB — too large for cloud save. Use File → Save to File (.toolbox).`
+    );
+  }
+}
 
 export interface ProjectAuthor {
   id: string;
@@ -224,6 +246,15 @@ export async function saveProject(
   // insert-then-upload-then-update alternative. Worst case on a hard
   // failure is an orphan blob, which is cheap.
   const projectId = crypto.randomUUID();
+  // Assets first, row last: upload media to Storage and reduce the graph to
+  // content-addressed refs (falls back to the inline graph if Storage is
+  // unavailable). A failed insert below then leaves only cheap orphan
+  // objects, never a row pointing at missing assets.
+  const { graph: rowGraph } = await uploadGraphAssets(supabase, graph, {
+    userId,
+    projectId,
+  });
+  guardRowSize(rowGraph);
   let thumbnailUrl: string | null = null;
   if (thumbnail) {
     thumbnailUrl = await uploadThumbnail(userId, projectId, thumbnail);
@@ -234,12 +265,12 @@ export async function saveProject(
       id: projectId,
       user_id: userId,
       name,
-      graph,
+      graph: rowGraph,
       thumbnail: thumbnailUrl,
       is_public: isPublic,
     });
   if (error) {
-    logProjectWriteError("saveProject", error, graph);
+    logProjectWriteError("saveProject", error, rowGraph);
     // Row insert failed — drop the orphan blob we just uploaded.
     if (thumbnailUrl) await deleteThumbnail(userId, projectId);
     return null;
@@ -276,14 +307,22 @@ export async function updateProject(
   const { data: userResp } = await supabase.auth.getUser();
   if (!userResp.user) return { ok: false };
   const userId = userResp.user.id;
-  // Upload first so the thumbnail column is only touched when we've
-  // actually got a fresh URL to point at. If the upload fails we
-  // still push the graph through — users don't want a save blocked
-  // by transient storage errors — and leave the old thumbnail in
-  // place by omitting it from the update payload.
+  // Assets first, row last: upload media to Storage and reduce the graph to
+  // content-addressed refs (unchanged media re-hashes to existing objects =
+  // zero upload; falls back to the inline graph if Storage is unavailable).
+  const {
+    graph: rowGraph,
+    usedStorage,
+    keepFilenames,
+  } = await uploadGraphAssets(supabase, graph, { userId, projectId: id });
+  guardRowSize(rowGraph);
+  // Upload the thumbnail so the thumbnail column is only touched when we've
+  // actually got a fresh URL to point at. If the upload fails we still push
+  // the graph through — users don't want a save blocked by transient storage
+  // errors — and leave the old thumbnail in place by omitting it.
   const updatedAt = new Date().toISOString();
   let payload: Record<string, unknown> = {
-    graph,
+    graph: rowGraph,
     updated_at: updatedAt,
   };
   if (thumbnail) {
@@ -298,12 +337,21 @@ export async function updateProject(
   if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
   const { data, error } = await query.select("id");
   if (error) {
-    logProjectWriteError("updateProject", error, graph);
+    logProjectWriteError("updateProject", error, rowGraph);
     return { ok: false };
   }
   if (expectedUpdatedAt && (!data || data.length === 0)) {
     // Row exists (this editor loaded it) but its updated_at moved on.
     return { ok: false, conflict: true };
+  }
+  // Prune orphaned assets (media dropped/replaced by this save). Gated on a
+  // won compare-and-swap (expectedUpdatedAt present + matched): we're then
+  // the authoritative latest, so nothing else references what we prune. The
+  // last-writer-wins overwrite-by-name path has no CAS, so it skips prune
+  // (its orphans are cheap). Best-effort, and not awaited — never block the
+  // save on cleanup.
+  if (usedStorage && expectedUpdatedAt) {
+    void pruneProjectAssets(supabase, { userId, projectId: id }, keepFilenames);
   }
   invalidateProjectCaches();
   return { ok: true, updatedAt };
@@ -388,7 +436,11 @@ export async function deleteProject(id: string): Promise<boolean> {
     return false;
   }
   // Best-effort — orphans are cheap, but clean up when we can.
-  if (userId) await deleteThumbnail(userId, id);
+  if (userId) {
+    await deleteThumbnail(userId, id);
+    // Per-project asset prefix — one bulk removal, no refcounting needed.
+    await deleteProjectAssets(supabase, { userId, projectId: id });
+  }
   invalidateProjectCaches();
   return true;
 }
@@ -642,7 +694,13 @@ export async function loadPublicProjectBySlug(
   return {
     id: data.id as string,
     name: data.name as string,
-    graph: data.graph as SavedProject,
+    // Resolve v9 asset refs against the OWNER's folder (data.user_id), not
+    // the viewer's — public assets live under the author's prefix. No-op on
+    // ≤v8 inline graphs.
+    graph: resolveAssetRefs(client, data.graph as SavedProject, {
+      userId: data.user_id as string,
+      projectId: data.id as string,
+    }),
     user_id: data.user_id as string,
     author,
     public_slug: slug,
@@ -676,7 +734,12 @@ export async function loadProject(id: string): Promise<LoadedProject | null> {
   }
   const project: LoadedProject = {
     name: data.name as string,
-    graph: data.graph as SavedProject,
+    // Rewrite v9 asset refs → public Storage URLs so the deserializer
+    // fetches media lazily. No-op on ≤v8 inline graphs.
+    graph: resolveAssetRefs(supabase, data.graph as SavedProject, {
+      userId: data.user_id as string,
+      projectId: id,
+    }),
     is_public: !!data.is_public,
     user_id: data.user_id as string,
     author,

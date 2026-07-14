@@ -710,7 +710,8 @@ export function GraphEditor({
       // editor (which has its own G-move, Delete, etc.) don't double-fire.
       if (getShortcutScope() !== "graph") return;
 
-      if (e.key === " " && !inInput) {
+      if (e.key === " " && !inInput && !e.shiftKey) {
+        // !shiftKey so Shift+Space (the pie menu chord) never starts a pan.
         setSpaceHeld(true);
         e.preventDefault();
       }

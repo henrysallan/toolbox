@@ -111,6 +111,11 @@ export interface MergeLayer {
   id: string;
   mode: BlendMode;
   opacity: number;
+  // Per-layer bypass. `false` skips the layer in the blend chain (its input
+  // socket stays, so the wire is preserved — it's just not composited).
+  // Optional/undefined = enabled, so old saves (which never wrote it) keep
+  // compositing every layer.
+  enabled?: boolean;
 }
 
 export const BLIT_FS = `#version 300 es
@@ -360,6 +365,9 @@ export const mergeNode: NodeDefinition = {
       matte: MaskValue | null;
     }> = [];
     for (const l of layers) {
+      // A bypassed layer keeps its socket (wire preserved) but is skipped
+      // here, so it never enters the blend chain.
+      if (l.enabled === false) continue;
       const v = inputs[`layer:${l.id}`];
       if (v && v.kind === "image") {
         connected.push({ layer: l, img: v, matte: maskFor(l.id) });

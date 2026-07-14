@@ -28,11 +28,22 @@ import { feedWheel, wheelWantsZoom } from "./input-device";
 // import CustomCursor from "./CustomCursor"; // temporarily disabled — using native cursor
 import UserPreferencesModal from "./UserPreferencesModal";
 import PaintOverlay from "./PaintOverlay";
+import { Spinner } from "./Spinner";
 import PlaybackBar from "./PlaybackBar";
 import MenuBar from "./MenuBar";
 import Landing from "./Landing";
 import ViewportMenuBar from "./ViewportMenuBar";
 import TransformContextBar from "./TransformContextBar";
+import PieMenu, { type PieMenuItem } from "./PieMenu";
+import {
+  SaveIcon,
+  ProjectsIcon,
+  AssetsIcon,
+  NewProjectIcon,
+  FullCanvasIcon,
+  SplitViewportIcon,
+  AddNodeIcon,
+} from "./pie-menu-icons";
 import { registerAllNodes } from "@/nodes";
 import { getNodeDef } from "@/engine/registry";
 import { createEngineBackend, type EngineBackend } from "@/engine/gl";
@@ -70,6 +81,7 @@ import {
   deleteCompositionNodes,
   expandWithDescendants,
   getLayerChain,
+  insertReroutesOnEdges,
   reorderLayers,
   resolveComposition,
   splitLayer,
@@ -118,10 +130,12 @@ import {
   type AssetsFolderHandle,
 } from "@/lib/platform";
 import {
+  decodeImageFileEnvelope,
   deserializeGraph,
   generateThumbnail,
   incrementName,
   serializeGraph,
+  type PendingMedia,
   type SavedProject,
   type SavedComposition,
 } from "@/lib/project";
@@ -400,6 +414,9 @@ const CONNECTED_TYPE_RETYPE_NODES = new Set([
   "transform",
   "displace",
   "scatter-points",
+  // Reroute: a wildcard passthrough whose `value` input + output adopt the
+  // type wired in. See specdocs/071326_reroute-node.md.
+  "reroute",
 ]);
 
 export default function EffectsApp({
@@ -487,6 +504,68 @@ function EffectsShell({
     );
   }, []);
 
+  // Streamed media (v9 Storage images). A cloud load returns these deferred
+  // rather than blocking on their network fetch, so the graph is interactive
+  // immediately; we fetch them in parallel here and patch each into its node
+  // when it lands. `mediaLoadRef` holds the in-flight batch so a save can
+  // await it (never serialize a not-yet-loaded image to null). Node ids still
+  // loading are broadcast via `node-media-loading` for the per-node spinner.
+  const mediaLoadRef = useRef<Promise<void> | null>(null);
+  const streamPendingMedia = useCallback(
+    (pending: PendingMedia[]) => {
+      if (pending.length === 0) {
+        mediaLoadRef.current = null;
+        window.dispatchEvent(
+          new CustomEvent("node-media-loading", { detail: new Set<string>() })
+        );
+        return;
+      }
+      let left = pending.slice();
+      const emit = () =>
+        window.dispatchEvent(
+          new CustomEvent("node-media-loading", {
+            detail: new Set(left.map((p) => p.nodeId)),
+          })
+        );
+      emit();
+      const patch = (nodeId: string, paramName: string, value: unknown) =>
+        setNodes((prev) =>
+          prev.map((n) =>
+            n.id === nodeId
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    params: { ...n.data.params, [paramName]: value },
+                  },
+                }
+              : n
+          )
+        );
+      const one = async (pm: PendingMedia) => {
+        try {
+          const bmp = await decodeImageFileEnvelope(pm.envelope.dataUrl ?? "");
+          patch(pm.nodeId, pm.paramName, bmp);
+        } catch (e) {
+          console.warn(`[load] streamed image failed for ${pm.nodeId}`, e);
+          // Keep the envelope in the param so a re-save preserves the ref
+          // (it round-trips as a Storage URL) instead of dropping the image.
+          patch(pm.nodeId, pm.paramName, pm.envelope);
+        } finally {
+          left = left.filter((x) => x !== pm);
+          emit();
+          // Nudge the engine to re-evaluate now that a texture is available.
+          window.dispatchEvent(new Event("pipeline-bump"));
+        }
+      };
+      const promise = Promise.allSettled(pending.map(one)).then(() => {
+        if (mediaLoadRef.current === promise) mediaLoadRef.current = null;
+      });
+      mediaLoadRef.current = promise;
+    },
+    [setNodes]
+  );
+
   // /p/<slug> bootstrap. Runs once on mount when initialProject was
   // supplied; deserializes the saved graph and seeds the editor.
   // The graph payload was loaded server-side and passed in, so we
@@ -504,7 +583,10 @@ function EffectsShell({
           compositions: nextComps,
           activeCompositionId: nextActiveComp,
           missingMedia,
-        } = await deserializeGraph(initialProject.graph);
+          pendingMedia,
+        } = await deserializeGraph(initialProject.graph, undefined, {
+          deferRemoteMedia: true,
+        });
         if (cancelled) return;
         setNodes(nextNodes);
         setEdges(nextEdges);
@@ -515,6 +597,7 @@ function EffectsShell({
         setAssetsFolder(null);
         setCurrentGroupId(defaultScopeFor(nextNodes, nextActiveComp));
         setMissingMedia(missingMedia);
+        streamPendingMedia(pendingMedia);
         frameGraph();
         if (scene) {
           if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
@@ -592,6 +675,10 @@ function EffectsShell({
   // is hidden. Toggled via the F shortcut or the Window menu's "Full
   // Canvas" item. Esc exits.
   const [fullCanvas, setFullCanvas] = useState(false);
+  // Radial quick-action "pie" menu (Shift+Space, opens at the cursor).
+  // Holds the screen-px origin where the chord was pressed, or null when
+  // closed. Spec: specdocs/071326_pie-menu.md.
+  const [pieMenu, setPieMenu] = useState<{ x: number; y: number } | null>(null);
   // After-Effects-style layout. When on, the page splits into a
   // tabbed Parameters / Node Editor pane on the left, a canvas on
   // the right, an always-visible Tracks editor stretching across
@@ -662,6 +749,13 @@ function EffectsShell({
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         e.preventDefault();
         setFullCanvas((v) => !v);
+      } else if (e.key === " " && e.shiftKey) {
+        // Shift+Space → open the radial pie menu at the cursor. Guard
+        // against key auto-repeat so a held chord opens it exactly once.
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.repeat) return;
+        e.preventDefault();
+        setPieMenu({ x: lastPointerRef.current.x, y: lastPointerRef.current.y });
       } else if (e.key === " ") {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         e.preventDefault();
@@ -942,6 +1036,11 @@ function EffectsShell({
   // Live cursor position in canvas UV. The ref carries the fresh value so
   // the render context always sees the current pointer; `cursorTick` is a
   // rAF-throttled state bump so paused pipelines re-evaluate on move.
+  // Raw screen-px cursor position, tracked on every pointermove — the
+  // keydown that opens the pie menu carries no mouse coords, so we read
+  // the last-known pointer from here. Also the origin the pie's "Add
+  // Node" item hands to the node-search popup.
+  const lastPointerRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const cursorRef = useRef<{ x: number; y: number; active: boolean }>({
     x: 0.5,
     y: 0.5,
@@ -986,6 +1085,7 @@ function EffectsShell({
       });
     };
     const onMove = (e: PointerEvent) => {
+      lastPointerRef.current = { x: e.clientX, y: e.clientY };
       const canvas = canvasRef.current;
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
@@ -3402,29 +3502,36 @@ function EffectsShell({
     [pushGraph, getGraphSnapshot, setNodes, setEdges]
   );
 
-  // Wire-gesture actions from NodeEditor. `combine` stamps a junction
-  // waypoint on each listed edge (data.waypoint in flow coords — renders
-  // as a shared trunk + dot). `cut` removes the listed edges outright.
+  // Wire-gesture actions from NodeEditor. `combine` drops a reroute node on
+  // the crossed wires (grouped by shared source → one reroute each, source →
+  // reroute → targets); `cut` removes the listed edges outright. The reroute
+  // is a real node — select/copy/paste/delete/input-swap all come for free
+  // (specdocs/071326_reroute-node.md).
   const handleCombineWires = useCallback(
     (edgeIds: string[], midpointFlow: [number, number]) => {
       if (edgeIds.length === 0) return;
+      const res = insertReroutesOnEdges(
+        nodesRef.current,
+        edgesRef.current,
+        edgeIds,
+        { x: midpointFlow[0], y: midpointFlow[1] }
+      );
+      if (res.rerouteIds.length === 0) return;
       pushGraph(getGraphSnapshot());
-      const idSet = new Set(edgeIds);
-      setEdges((prev) =>
-        prev.map((e) =>
-          idSet.has(e.id)
-            ? {
-                ...e,
-                data: {
-                  ...(e.data ?? {}),
-                  waypoint: midpointFlow,
-                },
-              }
-            : e
+      const newIds = new Set(res.rerouteIds);
+      // Select the fresh reroute(s) so they're immediately actionable.
+      setNodes(
+        res.nodes.map((n) =>
+          newIds.has(n.id)
+            ? { ...n, selected: true }
+            : n.selected
+              ? { ...n, selected: false }
+              : n
         )
       );
+      setEdges(res.edges);
     },
-    [pushGraph, getGraphSnapshot, setEdges]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges]
   );
   const handleCutWires = useCallback(
     (edgeIds: string[]) => {
@@ -3572,60 +3679,6 @@ function EffectsShell({
       ]);
     },
     [pushGraph, getGraphSnapshot, setEdges, setNodes]
-  );
-
-  // Waypoint drag: start pushes a single undo snapshot for the whole
-  // gesture; each `onDrag` call moves every edge whose waypoint clusters
-  // near the dragged edge's waypoint, so junctions stay intact under
-  // drag. The cluster is resolved once per drag from the snapshot that
-  // existed at drag-start (captured in a ref) — recomputing the cluster
-  // on every move would let edges "leak" out as waypoints diverge
-  // mid-drag.
-  const waypointDragClusterRef = useRef<Set<string> | null>(null);
-  const handleWaypointDragStart = useCallback(
-    (edgeId: string) => {
-      const edge = edgesRef.current.find((e) => e.id === edgeId);
-      const wp = edge?.data?.waypoint as [number, number] | undefined;
-      if (!wp) {
-        waypointDragClusterRef.current = new Set();
-        return;
-      }
-      // Cluster tolerance is generous — any edges within 2 flow units
-      // (< 1 pixel at most zoom levels) of each other count as "the same
-      // junction." After a combine gesture the waypoints are pixel-
-      // identical, so this is effectively a set-equality check.
-      const cluster = new Set<string>();
-      for (const e of edgesRef.current) {
-        const ewp = e.data?.waypoint as [number, number] | undefined;
-        if (!ewp) continue;
-        if (Math.hypot(ewp[0] - wp[0], ewp[1] - wp[1]) < 2) {
-          cluster.add(e.id);
-        }
-      }
-      waypointDragClusterRef.current = cluster;
-      pushGraph(getGraphSnapshot());
-    },
-    [pushGraph, getGraphSnapshot]
-  );
-  const handleWaypointDrag = useCallback(
-    (_edgeId: string, newFlowPos: [number, number]) => {
-      const cluster = waypointDragClusterRef.current;
-      if (!cluster || cluster.size === 0) return;
-      setEdges((prev) =>
-        prev.map((e) =>
-          cluster.has(e.id)
-            ? {
-                ...e,
-                data: {
-                  ...(e.data ?? {}),
-                  waypoint: newFlowPos,
-                },
-              }
-            : e
-        )
-      );
-    },
-    [setEdges]
   );
 
   // Strip every edge that touches this node. Used by cmd-drag to "float" a
@@ -6725,6 +6778,10 @@ function EffectsShell({
     mode: "insert" | "update",
     existingId?: string
   ): Promise<{ id: string } | null> {
+    // Wait out any in-flight streamed images so serialize never captures a
+    // not-yet-loaded image as null. Failed streams settle to their envelope,
+    // which round-trips — so this resolves even if a fetch errored.
+    if (mediaLoadRef.current) await mediaLoadRef.current;
     const canvas = canvasRef.current;
     const thumbnail = canvas ? generateThumbnail(canvas, 256) : null;
     const graph = await serializeGraph(
@@ -6749,19 +6806,15 @@ function EffectsShell({
       }
     );
     setProgressStatus({ label: "saving", progress: SERIALIZE_SHARE, tone: "save" });
-    // Pre-flight the row size. Oversized jsonb bodies don't fail fast — they
-    // hang ~30s into the Supabase statement timeout (57014, see
-    // logProjectWriteError) and can leave a truncated row. Fail immediately
-    // with the actionable alternative instead; warn on approach.
+    // Heads-up on the INLINE media size. Post-Tier-2 the DB row is tiny
+    // (media lives in Storage as refs), so this no longer gates the save —
+    // the real ceiling is enforced on the final row inside the row writers
+    // (guardRowSize), which only bites the rare inline-fallback path. A large
+    // inline size still predicts a slow FIRST save while new assets upload.
     const approxMb = JSON.stringify(graph).length / (1024 * 1024);
-    if (approxMb > 50) {
-      throw new Error(
-        `Project is ~${Math.round(approxMb)}MB — too large for cloud save. Use File → Save to File (.toolbox).`
-      );
-    }
     if (approxMb > 16) {
       flashToast(
-        `large project (~${Math.round(approxMb)}MB) — cloud saves may be slow`
+        `large project (~${Math.round(approxMb)}MB) — first save may be slow`
       );
     }
     if (mode === "update" && existingId) {
@@ -6992,6 +7045,7 @@ function EffectsShell({
           compositions: nextComps,
           activeCompositionId: nextActiveComp,
           missingMedia,
+          pendingMedia,
         } = await deserializeGraph(
           saved.graph,
           (f) =>
@@ -6999,7 +7053,8 @@ function EffectsShell({
               label: "loading",
               progress: 1 - SERIALIZE_SHARE + f * SERIALIZE_SHARE,
               tone: "load",
-            })
+            }),
+          { deferRemoteMedia: true }
         );
         // Only snapshot the outgoing graph once the incoming one has
         // deserialized — a failed load must not insert an undo entry or
@@ -7014,6 +7069,8 @@ function EffectsShell({
         setAssetsFolder(null);
         setCurrentGroupId(defaultScopeFor(nextNodes, nextActiveComp));
         setMissingMedia(missingMedia);
+        // Stream Storage-hosted images in after the graph is interactive.
+        streamPendingMedia(pendingMedia);
         frameGraph();
         // Restore scene-level state (loop length, fps). Pre-v2 saves
         // omit `scene` entirely — leave the user's current values
@@ -7055,7 +7112,7 @@ function EffectsShell({
         setProgressStatus(null);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia, frameGraph, flashToast]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia, streamPendingMedia, frameGraph, flashToast]
   );
 
   // --- Local .toolbox files (File → Save to File / Load…) ------------------
@@ -7069,6 +7126,9 @@ function EffectsShell({
 
   const handleSaveToFile = useCallback(async () => {
     try {
+      // Wait out streamed images so a not-yet-loaded image doesn't serialize
+      // as null (same guard as the cloud save path).
+      if (mediaLoadRef.current) await mediaLoadRef.current;
       setProgressStatus({ label: "saving", progress: 0.1, tone: "save" });
       const canvas = canvasRef.current;
       const thumbnailDataUrl = canvas ? generateThumbnail(canvas, 256) : null;
@@ -7502,6 +7562,83 @@ function EffectsShell({
   // saveState changes.
   const handleNewProjectRef = useRef(handleNewProject);
   handleNewProjectRef.current = handleNewProject;
+
+  // Pie-menu items (config-driven registry). Each `run()` calls an
+  // existing handler — the pie is just a fast radial launcher. The two
+  // paramView entries replicate the MenuBar's onOpenLoad/onOpenAssets
+  // logic (suppress the selection→view flip, clear selection). "Add
+  // Node" hands the pie's origin to the node-search popup via a window
+  // event the NodeEditor listens for. Spec: specdocs/071326_pie-menu.md.
+  const pieItems = useMemo<PieMenuItem[]>(
+    () => [
+      {
+        id: "save",
+        label: "Save",
+        hint: "⌘S",
+        icon: SaveIcon,
+        disabled: !signedIn,
+        run: () => {
+          void handleSave();
+        },
+      },
+      {
+        id: "projects",
+        label: "Open Projects",
+        icon: ProjectsIcon,
+        run: () => {
+          suppressNextSelectionViewFlipRef.current = true;
+          setSelectedId(null);
+          setNodes((prev) =>
+            prev.map((n) => (n.selected ? { ...n, selected: false } : n)),
+          );
+          setParamView("load");
+        },
+      },
+      {
+        id: "assets",
+        label: "Assets",
+        icon: AssetsIcon,
+        run: () => {
+          suppressNextSelectionViewFlipRef.current = true;
+          setParamView("assets");
+        },
+      },
+      {
+        id: "add-node",
+        label: "Add Node",
+        hint: "⇧A",
+        icon: AddNodeIcon,
+        run: () => {
+          window.dispatchEvent(
+            new CustomEvent("toolbox:open-node-search", {
+              detail: { ...lastPointerRef.current },
+            }),
+          );
+        },
+      },
+      {
+        id: "split",
+        label: "Split Viewport",
+        hint: "⇧S",
+        icon: SplitViewportIcon,
+        run: () => setViewportSplit((v) => !v),
+      },
+      {
+        id: "full-canvas",
+        label: "Full Canvas",
+        hint: "F",
+        icon: FullCanvasIcon,
+        run: () => setFullCanvas((v) => !v),
+      },
+      {
+        id: "new",
+        label: "New Project",
+        icon: NewProjectIcon,
+        run: () => handleNewProjectRef.current(),
+      },
+    ],
+    [signedIn, handleSave, setNodes],
+  );
 
   const handleNewConfirmSave = useCallback(async () => {
     if (!signedIn || !user) {
@@ -7959,8 +8096,6 @@ function EffectsShell({
       onCombineWires={handleCombineWires}
       onCutWires={handleCutWires}
       onSpliceNode={handleSpliceNode}
-      onWaypointDragStart={handleWaypointDragStart}
-      onWaypointDrag={handleWaypointDrag}
       onGroupSelection={handleGroupSelection}
       onUngroupSelection={handleUngroupSelection}
       onDiveIntoGroup={handleDiveIntoGroup}
@@ -9066,6 +9201,14 @@ function EffectsShell({
           {playbackBarJsx}
         </div>
       )}
+      {pieMenu && (
+        <PieMenu
+          key={`${pieMenu.x},${pieMenu.y}`}
+          origin={pieMenu}
+          items={pieItems}
+          onClose={() => setPieMenu(null)}
+        />
+      )}
       <SaveModal
         open={saveModalOpen}
         onClose={() => {
@@ -9217,8 +9360,18 @@ function ProgressBanner({
         pointerEvents: "none",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-        <span>{status.label}</span>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <Spinner size={12} stroke={2} color="#f0fdf4" arc={0.28} />
+          {status.label}
+        </span>
         <span style={{ fontVariantNumeric: "tabular-nums" }}>{pct}%</span>
       </div>
       <div
