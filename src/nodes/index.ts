@@ -89,6 +89,7 @@ import { circleColliderNode } from "./effect/collider-circle";
 import { lineColliderNode } from "./effect/collider-line";
 import { imageMaskColliderNode } from "./effect/collider-image-mask";
 import { reactionDiffusionNode } from "./effect/reaction-diffusion";
+import { watercolorInkNode } from "./effect/watercolor-ink";
 import { accumulatorNode } from "./effect/accumulator";
 import { sharpenNode } from "./effect/sharpen";
 import { grainNode } from "./effect/grain";
@@ -290,6 +291,7 @@ export function registerAllNodes() {
   registerNode(particlesToImageNode);
   registerNode(webgpuParticleTestNode);
   registerNode(reactionDiffusionNode);
+  registerNode(watercolorInkNode);
   registerNode(accumulatorNode);
   registerNode(sharpenNode);
   registerNode(grainNode);
