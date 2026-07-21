@@ -7,6 +7,7 @@ import type {
   PaintParamValue,
   VideoFileParamValue,
 } from "@/engine/types";
+import { DEFAULT_BRUSH_SETTINGS } from "@/engine/types";
 import type { AnimationMap } from "@/engine/keyframes";
 import type { ClipBlock } from "@/engine/clips";
 import { getNodeDef } from "@/engine/registry";
@@ -489,7 +490,13 @@ async function deserializeParams(
           canvas.width = bmp.width;
           canvas.height = bmp.height;
           canvas.getContext("2d")?.drawImage(bmp, 0, 0);
-          const snapshot = await createImageBitmap(canvas);
+          // premultiplyAlpha "none": paint snapshots must be straight-alpha
+          // (WebGL ignores the UNPACK premultiply flag for ImageBitmaps; a
+          // premultiplied upload double-applies alpha downstream). Matches
+          // the editor's snapshot path in paint-editor/PaintOverlay.
+          const snapshot = await createImageBitmap(canvas, {
+            premultiplyAlpha: "none",
+          });
           // Seed the encode cache: an untouched paint layer re-saves the
           // exact bytes it loaded, with no re-encode. (Skipped for storage
           // URLs — see isDataUrl.)
@@ -874,6 +881,22 @@ function migrateLoadedParams(
       params.scale = 1;
       params.offset = 0;
     }
+  }
+  if (defType === "paint") {
+    // The paint toolkit (071926_paint-toolkit.md) added bg_mode; new nodes
+    // default to "transparent", but old saves composited over the background
+    // color — pin them to "color" so they render identically.
+    if (params.bg_mode === undefined) params.bg_mode = "color";
+    // Atrament's stroke smoothing (`softness`) became the brush blob's
+    // `smoothing` field; `erase` became the dock's eraser tool (dropped).
+    if (params.brush === undefined && typeof params.softness === "number") {
+      params.brush = {
+        ...DEFAULT_BRUSH_SETTINGS,
+        smoothing: Math.max(0, Math.min(1, params.softness)),
+      };
+    }
+    delete params.softness;
+    delete params.erase;
   }
   if (
     defType === "output" &&

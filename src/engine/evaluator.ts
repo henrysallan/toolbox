@@ -13,7 +13,7 @@ import {
 } from "./conventions";
 import { getNodeDef } from "./registry";
 import { flattenGraph, resolvePreviewProducer } from "./flatten";
-import { LAYER_TYPE } from "./groups";
+import { ITERATE_EDGE_PREFIX, ITERATE_TYPE, LAYER_TYPE } from "./groups";
 import { paramSocketType, parseTargetHandleKind } from "./graph-helpers";
 import {
   evaluateKeyframesAt,
@@ -403,7 +403,8 @@ function connectedTypesFor(
 // number[]). Returns undefined if the socket type can't drive the param.
 function socketToParamRaw(
   sv: SocketValue,
-  paramType: ParamType
+  paramType: ParamType,
+  alphaColor = false
 ): unknown | undefined {
   switch (paramType) {
     case "scalar":
@@ -421,9 +422,10 @@ function socketToParamRaw(
     case "color":
       // Color params store hex — normalize the wired vec4 so compute
       // functions never see a tuple (they'd crash on hexToRgba et al).
-      // The tuple's alpha is dropped; param colors are RGB.
+      // The tuple's alpha survives as `#rrggbbaa` only for defs that
+      // opt in (`ParamDef.alpha`); everywhere else it's dropped.
       return sv.kind === "vec4"
-        ? colorValueToHex([...sv.value], "#000000")
+        ? colorValueToHex([...sv.value], "#000000", alphaColor)
         : undefined;
     default:
       return undefined;
@@ -515,6 +517,32 @@ function computeNodeFingerprint(
   return parts.join("::");
 }
 
+// ctx.state key under which the evaluator stashes each Iterate shell's
+// interior subgraph + fingerprint hash for the shell's compute /
+// fingerprintExtras to read. The colon-free key is invisible to
+// sweepNodeState. See specdocs/071826_iterate-node.md.
+export const ITERATE_STASH_KEY = "__iterate-interiors__";
+export type IterateStash = Map<
+  string,
+  { nodes: GraphNode[]; edges: GraphEdge[]; hash: string }
+>;
+
+// Release everything a private (nested-eval) cache holds: cached owned
+// textures plus the last eval's transient set. Used by the Iterate
+// shell's dispose — the outer evaluator's eviction never sees private
+// caches.
+export function disposeEvalCache(ctx: RenderContext, cache: EvalCache): void {
+  const transients = transientsByCache.get(cache);
+  if (transients) {
+    for (const t of transients) ctx.releaseTexture(t);
+    transientsByCache.delete(cache);
+  }
+  for (const entry of cache.values()) {
+    releaseCachedTextures(ctx, entry);
+  }
+  cache.clear();
+}
+
 export function evaluateGraph(
   nodes: GraphNode[],
   edges: GraphEdge[],
@@ -524,8 +552,26 @@ export function evaluateGraph(
   inspectIds?: ReadonlySet<string>,
   // Optional node to also evaluate (so its output is available even when it
   // isn't wired to a terminal) — used to preview the selected node.
-  previewNodeId?: string | null
+  previewNodeId?: string | null,
+  // nested: this is an Iterate shell's private interior evaluation. Skips
+  // the global side effects that belong to the outer pass only: the
+  // end-of-eval state sweep (its keep-set would be just the interior ids,
+  // disposing every other node's state) and audio routing.
+  // extraTargets: additional node ids to force into the needed set (and
+  // mark output-consumed) — the Iterate shell's multi-socket collection
+  // evaluates several tap producers in one pass.
+  // extraConsumed: specific output handles ("primary" / "aux:<name>") to
+  // mark consumed beyond what wires imply — the socket-peek popover reads
+  // an output that may be unwired, and consumedOutputs-gating nodes (Text)
+  // would otherwise skip building it.
+  opts?: {
+    nested?: boolean;
+    extraTargets?: string[];
+    extraConsumed?: ReadonlyMap<string, readonly string[]>;
+  }
 ): EvalResult {
+  const nested = opts?.nested === true;
+  const extraTargets = opts?.extraTargets ?? [];
   // Group shells and Group Output boundary nodes are dissolved by flatten,
   // so previewing one directly shows nothing on the canvas. Remap a
   // structural Active / preview target to the interior producer feeding the
@@ -572,19 +618,108 @@ export function evaluateGraph(
   nodes = flat.nodes;
   const layerOf = flat.layerOf;
 
+  // Stash Iterate interiors for the shells' computes, with a hash the
+  // shell's fingerprintExtras folds in — the shell's own fingerprint
+  // can't see interior params, so interior edits must bust it here.
+  // Time joins the hash when the interior is time-driven (a stable:false
+  // def, or any keyframed interior node) so animation inside an Iterate
+  // advances at an honest K× cost while static interiors stay cached.
+  if (flat.iterateInteriors) {
+    // Outer pass: fresh map (stale shells drop). Nested pass that itself
+    // contains Iterate shells (a nested Iterate — rejected at compute, but
+    // present structurally): MERGE into the outer stash rather than
+    // clobbering it mid-outer-eval.
+    const existing = nested
+      ? (ctx.state[ITERATE_STASH_KEY] as IterateStash | undefined)
+      : undefined;
+    const stash: IterateStash = existing ?? new Map();
+    for (const [shellId, interior] of flat.iterateInteriors) {
+      const parts: string[] = [];
+      let timeDriven = false;
+      for (const n of interior.nodes) {
+        parts.push(
+          n.id,
+          n.type,
+          n.bypassed ? "B" : "C",
+          stableStringify(n.params),
+          n.animation ? "a:" + stableStringify(n.animation) : "_"
+        );
+        if (getNodeDef(n.type)?.stable === false) timeDriven = true;
+        if (n.animation) {
+          for (const block of Object.values(n.animation)) {
+            if (block?.animated && block.keyframes.length > 0) {
+              timeDriven = true;
+              break;
+            }
+          }
+        }
+      }
+      for (const e of interior.edges) {
+        parts.push(e.source, e.sourceHandle, e.target, e.targetHandle);
+      }
+      if (timeDriven) parts.push("t:" + ctx.tick);
+      stash.set(shellId, { ...interior, hash: parts.join("|") });
+    }
+    ctx.state[ITERATE_STASH_KEY] = stash;
+  } else if (!nested) {
+    delete ctx.state[ITERATE_STASH_KEY];
+  }
+
   // Per-layer time offset for this pass, from the layer's clip windows:
   // interior local time is `globalTick − inTick + sourceInTick` of the
-  // active (or first) window, so sliding a layer slides its interior
+  // active (or nearest) window, so sliding a layer slides its interior
   // animation. Layers outside every window are gated: the layer node
   // passes its stack through, and dropping its `content` edge here
   // removes the whole interior from the needed set for free.
+  //
+  // PRE-ROLL: a gated layer whose next window starts within
+  // PREROLL_SECONDS keeps its `content` edge, so its interior evaluates
+  // invisibly ahead of the cut — with the interior clock PINNED to the
+  // window's entry tick (its sourceInTick) and ctx.preroll set. Media
+  // park exactly on the first frame the cut reveals (Video seeks once,
+  // paused; Audio holds paused at the entry point), shaders compile, and
+  // cacheable nodes fingerprint at the fixed entry tick so they compute
+  // once and cache-hit until the cut. Without this every cut evaluated
+  // the incoming interior cold and hard-seeked its videos exactly at the
+  // boundary — visible dropped frames. The layer shell itself stays a
+  // gated passthrough, so nothing shows early.
+  const PREROLL_SECONDS = 0.5;
+  // A nested pass (Iterate interiors) has no layers of its own, but the
+  // shell may itself be computing inside a pre-rolling layer — its members
+  // must inherit the flag or a video member would play during pre-roll.
+  const inheritedPreroll = nested && ctx.preroll === true;
   const layerOffsets = new Map<string, number>();
   const gatedLayers = new Set<string>();
+  // Layer id → interior entry tick of the upcoming window being pre-rolled.
+  const prerollLayers = new Map<string, number>();
+  const prerollTicks = Math.round(
+    PREROLL_SECONDS * ctx.fps * ctx.ticksPerFrame
+  );
   for (const n of nodes) {
     if (n.type !== LAYER_TYPE) continue;
     const res = resolveClipAt(n.clips, ctx.tick);
     if (res.gated) gatedLayers.add(n.id);
-    const ref = res.active ?? n.clips?.find((c) => c.enabled);
+    // Clock reference: the active window, else the next upcoming enabled
+    // window (so gated interiors — pre-roll, attribute exports — run on
+    // the clock of the window they're about to enter), else the last one
+    // behind the playhead.
+    let ref = res.active;
+    if (!ref) {
+      let next: ClipBlock | undefined;
+      let last: ClipBlock | undefined;
+      for (const c of n.clips ?? []) {
+        if (!c.enabled) continue;
+        if (c.inTick > ctx.tick) {
+          if (!next || c.inTick < next.inTick) next = c;
+        } else if (!last || c.inTick > last.inTick) {
+          last = c;
+        }
+      }
+      ref = next ?? last;
+      if (res.gated && next && next.inTick - ctx.tick <= prerollTicks) {
+        prerollLayers.set(n.id, next.sourceInTick);
+      }
+    }
     layerOffsets.set(n.id, ref ? ref.inTick - ref.sourceInTick : 0);
   }
   edges =
@@ -592,7 +727,11 @@ export function evaluateGraph(
       ? flat.edges
       : flat.edges.filter(
           (e) =>
-            !(e.targetHandle === "in:content" && gatedLayers.has(e.target))
+            !(
+              e.targetHandle === "in:content" &&
+              gatedLayers.has(e.target) &&
+              !prerollLayers.has(e.target)
+            )
         );
 
   const order = topoSort(nodes, edges);
@@ -612,7 +751,9 @@ export function evaluateGraph(
     nodes,
     edges,
     activeNodeId,
-    previewNodeId ? [previewNodeId] : undefined
+    previewNodeId || extraTargets.length > 0
+      ? [...(previewNodeId ? [previewNodeId] : []), ...extraTargets]
+      : undefined
   );
 
   // Per-node set of output handles ("primary" / "aux:<name>") that
@@ -636,31 +777,42 @@ export function evaluateGraph(
     markConsumed(e.source, ps.kind === "primary" ? "primary" : `aux:${ps.name}`);
   }
   // The active / preview node's image is shown directly (no edge needed),
-  // so its primary and any image aux count as consumed for display.
-  for (const id of [activeNodeId, previewNodeId]) {
+  // so its primary and any image aux count as consumed for display. Extra
+  // targets (Iterate collection taps) are read the same way.
+  for (const id of [activeNodeId, previewNodeId, ...extraTargets]) {
     if (!id) continue;
     markConsumed(id, "primary");
     markConsumed(id, "aux:image");
+  }
+  if (opts?.extraConsumed) {
+    for (const [nodeId, keys] of opts.extraConsumed) {
+      for (const k of keys) markConsumed(nodeId, k);
+    }
   }
 
   // Audio sources whose primary output is wired into an Output node's
   // `audio` socket. Only these play audibly; every other audio source
   // keeps advancing its element (for data) but stays muted. Recomputed
   // each eval so re-wiring takes effect immediately.
-  const audioRoutedToOutput = new Set<string>();
-  for (const e of edges) {
-    if (e.targetHandle !== "in:audio") continue;
-    // Audio Source emits audio on its primary; Video Source emits it on an
-    // `audio` aux output. Both un-mute only when wired here.
-    if (e.sourceHandle !== "out:primary" && e.sourceHandle !== "out:aux:audio") {
-      continue;
+  if (!nested) {
+    const audioRoutedToOutput = new Set<string>();
+    for (const e of edges) {
+      if (e.targetHandle !== "in:audio") continue;
+      // Audio Source emits audio on its primary; Video Source emits it on an
+      // `audio` aux output. Both un-mute only when wired here.
+      if (
+        e.sourceHandle !== "out:primary" &&
+        e.sourceHandle !== "out:aux:audio"
+      ) {
+        continue;
+      }
+      const target = byId.get(e.target);
+      if (target && getNodeDef(target.type)?.type === "output") {
+        audioRoutedToOutput.add(e.source);
+      }
     }
-    const target = byId.get(e.target);
-    if (target && getNodeDef(target.type)?.type === "output") {
-      audioRoutedToOutput.add(e.source);
-    }
+    ctx.audioRoutedToOutput = audioRoutedToOutput;
   }
-  ctx.audioRoutedToOutput = audioRoutedToOutput;
   // Cache of resolved primary output types in topo order. Used by
   // `connectedTypesFor` so polymorphic nodes (Math, Lerp, …) can
   // reshape their own sockets based on what's wired into them.
@@ -691,13 +843,19 @@ export function evaluateGraph(
     // every node is at most one offset from the global clock. The scoped
     // tick drives this node's clip gating, keyframe evaluation, and
     // every ctx.tick/time/frame read during its compute; ctx is restored
-    // at the end of the iteration.
+    // at the end of the iteration. A PRE-ROLLING interior instead runs
+    // pinned to its upcoming window's entry tick (see prerollLayers
+    // above), warming exactly the state the cut will reveal.
     const enclosingLayer = layerOf.get(id);
     const layerOffset = enclosingLayer
       ? layerOffsets.get(enclosingLayer) ?? 0
       : 0;
-    const scopedTick = globalTick - layerOffset;
-    if (layerOffset !== 0) {
+    const prerollEntry = enclosingLayer
+      ? prerollLayers.get(enclosingLayer)
+      : undefined;
+    ctx.preroll = inheritedPreroll || prerollEntry !== undefined;
+    const scopedTick = prerollEntry ?? globalTick - layerOffset;
+    if (scopedTick !== globalTick) {
       ctx.tick = scopedTick;
       ctx.frame = Math.floor(scopedTick / ctx.ticksPerFrame);
       ctx.time = scopedTick / (ctx.ticksPerFrame * ctx.fps);
@@ -773,6 +931,36 @@ export function evaluateGraph(
       inputFpParts.push(`${inputDef.name}=${srcFp}/${handleTag}`);
     }
 
+    // Iterate shells: undeclared per-edge `zi__e_<edgeId>` inputs carry
+    // direct crossing-wire values (flatten mirrors exterior→member edges
+    // here — 071926_iterate-zone-view.md, "stay as wired"). Raw and
+    // UNCOERCED: the member's socket does its own coercion when the
+    // nested feed node re-emits the value.
+    if (node.type === ITERATE_TYPE) {
+      for (const e of edges) {
+        if (e.target !== id) continue;
+        const parsed = parseTargetHandleKind(e.targetHandle);
+        if (
+          parsed?.kind !== "input" ||
+          !parsed.name.startsWith(ITERATE_EDGE_PREFIX)
+        ) {
+          continue;
+        }
+        const srcOut = outputs.get(e.source);
+        const p = parseSourceHandle(e.sourceHandle);
+        const raw =
+          p?.kind === "primary"
+            ? srcOut?.primary
+            : p?.kind === "aux"
+              ? srcOut?.aux?.[p.name]
+              : undefined;
+        inputs[parsed.name] = raw;
+        inputFpParts.push(
+          `${parsed.name}=${fingerprints.get(e.source) ?? "_"}`
+        );
+      }
+    }
+
     // Resolve exposed-param overrides. Each exposed param with a connected
     // edge substitutes its value into the params map passed to compute.
     // Disconnected exposed params are no-ops (just a visible socket on the
@@ -839,7 +1027,7 @@ export function evaluateGraph(
             rampWireOverrides.push({ ...rampKey, value: rawValue });
           }
         } else {
-          const rawValue = socketToParamRaw(coerced, pdef.type);
+          const rawValue = socketToParamRaw(coerced, pdef.type, pdef.alpha);
           if (rawValue !== undefined) paramOverrides[pname] = rawValue;
         }
       }
@@ -872,7 +1060,8 @@ export function evaluateGraph(
                   v,
                   typeof node.params[pdef.name] === "string"
                     ? (node.params[pdef.name] as string)
-                    : "#000000"
+                    : "#000000",
+                  pdef.alpha
                 )
               : v;
         }
@@ -1282,14 +1471,15 @@ export function evaluateGraph(
       }
     }
 
-    // Restore the global clock if this node ran on clip-local or
-    // layer-local time.
-    if (timeDriven || layerOffset !== 0) {
+    // Restore the global clock if this node ran on clip-local,
+    // layer-local, or pre-roll-pinned time.
+    if (timeDriven || scopedTick !== globalTick) {
       ctx.tick = globalTick;
       ctx.time = globalTime;
       ctx.frame = globalFrame;
     }
   }
+  ctx.preroll = inheritedPreroll;
 
   // Preview fallback: if nothing claimed the canvas (no active node, no
   // connected terminal image), show the selected node's own image — its
@@ -1323,8 +1513,11 @@ export function evaluateGraph(
   // Tear down persistent state for nodes deleted from the graph. The cache
   // eviction above misses them when they were never cacheable (stable:false
   // — exactly the heavy state owners: Text, video, sims), so sweep by the
-  // state-key convention against the pre-flatten id set.
-  sweepNodeState(ctx, presentIds);
+  // state-key convention against the pre-flatten id set. Never inside a
+  // nested (Iterate-interior) pass — its keep-set would be just the
+  // interior ids, disposing every other node's state. Iterate interiors
+  // themselves survive the OUTER sweep because presentIds is pre-flatten.
+  if (!nested) sweepNodeState(ctx, presentIds);
 
   return { outputs, terminalImage, errors, fingerprints, timings, inspectInputs };
 }

@@ -1,8 +1,9 @@
 "use client";
 
 import type { Edge, Node } from "@xyflow/react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { getNodeDef } from "@/engine/registry";
+import { resolveWedgeBatchInfo } from "@/lib/wedge-batch";
 import { paramSocketType } from "@/state/graph";
 import { useClock } from "@/state/playback-clock";
 import type { NodeDataPayload } from "@/state/graph";
@@ -27,6 +28,7 @@ import DatamoshPanel from "./DatamoshPanel";
 import ColorCorrectionPanel from "./ColorCorrectionPanel";
 import RgbCurvesPanel from "./RgbCurvesPanel";
 import AutoLayoutPanel from "./AutoLayoutPanel";
+import { PaintBrushSection } from "./paint-editor/BrushEditor";
 import { StaggerItem } from "./StaggerReveal";
 import {
   diamondStateFor,
@@ -40,7 +42,7 @@ import {
 import KeyframeDiamond from "./KeyframeDiamond";
 import TrackVisibilityEye from "./TrackVisibilityEye";
 import { Dropdown, ParamControl, menuItemStyle, type LayerAnimApi, type RampIoApi } from "@/lib/param-controls";
-import { parseRampParamKey } from "@/engine/conventions";
+import { animatedValueAt, parseRampParamKey } from "@/engine/conventions";
 
 // Expose / Control toggle glyphs. Referenced from public/ via CSS mask so the
 // silhouette recolors to the button's `currentColor` (active/inactive states)
@@ -561,22 +563,32 @@ function ParamPanel({
         // interface sockets. New sockets are added by wiring into the
         // dashed virtual port on the node itself.
         // Fixed boundaries (layer interiors) render read-only — their
-        // interface is part of the layer contract.
-        <GroupSocketsPanel
-          key={selected.id}
-          node={selected}
-          isInput={selected.data.defType === GROUP_INPUT_TYPE}
-          onRename={
-            onRenameGroupSocket && !isFixedBoundary(selected.data.params)
-              ? (o, n) => onRenameGroupSocket(selected.id, o, n)
-              : undefined
-          }
-          onRemove={
-            onRemoveGroupSocket && !isFixedBoundary(selected.data.params)
-              ? (n) => onRemoveGroupSocket(selected.id, n)
-              : undefined
-          }
-        />
+        // interface is part of the layer contract. A Layer Output (a fixed
+        // group-output) additionally gets its own export settings below.
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <GroupSocketsPanel
+            key={selected.id}
+            node={selected}
+            isInput={selected.data.defType === GROUP_INPUT_TYPE}
+            onRename={
+              onRenameGroupSocket && !isFixedBoundary(selected.data.params)
+                ? (o, n) => onRenameGroupSocket(selected.id, o, n)
+                : undefined
+            }
+            onRemove={
+              onRemoveGroupSocket && !isFixedBoundary(selected.data.params)
+                ? (n) => onRemoveGroupSocket(selected.id, n)
+                : undefined
+            }
+          />
+          {selected.data.defType === GROUP_OUTPUT_TYPE &&
+            isFixedBoundary(selected.data.params) && (
+              <LayerOutputExportSettings
+                node={selected}
+                onParamChange={onParamChange}
+              />
+            )}
+        </div>
       ) : selected && def ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {(def.type === GROUP_TYPE || def.type === LAYER_TYPE) &&
@@ -589,19 +601,23 @@ function ParamPanel({
                 />
               </Section>
             )}
-          {def.type === GROUP_TYPE &&
+          {(def.type === GROUP_TYPE || def.type === LAYER_TYPE) &&
             (() => {
-              // The group's interface, viewed from the shell — a clean
-              // parameters list. Editing the interface (rename / remove
-              // / add) happens on the Group Input / Group Output nodes
-              // inside the group; here a socket renders as its param's
+              // The group/layer's interface, viewed from the shell — a
+              // clean parameters list. Editing the interface (rename /
+              // remove / add) happens on the interior Group/Layer Input /
+              // Output nodes; here a socket renders as its param's
               // real widget (slider / dropdown / color …) when it feeds
               // an interior node's exposed param, or as a minimal
               // dot + name row otherwise. Widget edits write through to
               // the interior node — a remote control, not a second copy
               // of the value. When the shell socket is wired from
               // outside, the wire wins and the widget reads as driven —
-              // same rule as exposed params.
+              // same rule as exposed params. For layers, the reserved
+              // fixed-interface sockets (stack / content / backdrop /
+              // audio) are filtered out so only user-minted inputs show,
+              // and the output-socket editor is hidden (the layer's
+              // output interface is a fixed contract, not user-editable).
               const groupInput = nodes.find(
                 (n) =>
                   n.data.parentId === selected.id &&
@@ -613,13 +629,25 @@ function ParamPanel({
                   n.data.defType === GROUP_OUTPUT_TYPE
               );
               const allEdges = edges ?? [];
+              // Reserved fixed-interface sockets are empty for a plain
+              // group and backdrop/etc. for a layer — filtering them keeps
+              // the layer contract out of the editable-param list while
+              // leaving group behavior unchanged. Same filter as
+              // resolvePromotedParams.
+              const reserved = new Set(
+                groupInput ? readReservedSockets(groupInput.data.params) : []
+              );
               const inputSockets = groupInput
-                ? readBoundarySockets(groupInput.data.params)
+                ? readBoundarySockets(groupInput.data.params).filter(
+                    (s) => !reserved.has(s.name)
+                  )
                 : [];
               return (
                 <>
                   {groupInput && (
-                    <Section label="group inputs">
+                    <Section
+                      label={def.type === LAYER_TYPE ? "layer inputs" : "group inputs"}
+                    >
                       {inputSockets.length === 0 ? (
                         <div style={{ color: "#52525b" }}>(no sockets yet)</div>
                       ) : (
@@ -698,12 +726,13 @@ function ParamPanel({
                         })
                       )}
                       <div style={{ color: "#52525b", fontSize: 10 }}>
-                        Wire into the dashed “new socket” port on Group Input
+                        Wire into the dashed “new socket” port on{" "}
+                        {def.type === LAYER_TYPE ? "Layer Input" : "Group Input"}{" "}
                         to add one.
                       </div>
                     </Section>
                   )}
-                  {groupOutput && (
+                  {def.type === GROUP_TYPE && groupOutput && (
                     <GroupSocketsPanel
                       key={groupOutput.id}
                       node={groupOutput}
@@ -757,6 +786,15 @@ function ParamPanel({
               Export GLB →
             </button>
           )}
+          {/* Wedge batch readout: this Output has Wedge nodes upstream, so
+              its Export/Render runs the whole range once per variation. */}
+          {selected.data.defType === "output" && (
+            <OutputWedgeReadout
+              nodes={nodes}
+              edges={edges ?? []}
+              outputId={selected.id}
+            />
+          )}
           {/* Group shells have no def params — their name + interface
               sections above are the whole panel. */}
           {def.type !== GROUP_TYPE && (
@@ -798,7 +836,9 @@ function ParamPanel({
               // those two dim the toggle. Mirrors UNSUPPORTED_CONTROL_TYPES
               // in export-manifest.ts.
               const controlSupported =
-                p.type !== "paint" && p.type !== "spline_anchors";
+                p.type !== "paint" &&
+                p.type !== "spline_anchors" &&
+                p.type !== "brush_settings";
               const override = selected.data.paramOverrides?.[p.name];
               // Resolve chain-link UI state for this param. A param can
               // appear in at most one pair (linked pairs are exclusive
@@ -980,6 +1020,17 @@ function ParamPanel({
               onSeekTick={onSeekTick}
             />
           )}
+          {/* Paint: brush preset chips + the Brush Editor window. The brush
+              blob param is hidden (edited via the editor window / on-canvas
+              tools), so this block is the panel surface for it. `key` resets
+              the open/preset state per node instance. */}
+          {def.type === "paint" && (
+            <PaintBrushSection
+              key={selected.id}
+              node={selected}
+              onParamChange={onParamChange}
+            />
+          )}
           {/* SVG Source: convert the imported paths into an editable Spline
               Draw node (bakes the current transform + copies stroke/fill). */}
           {def.type === "svg-source" && onConvertToEditable && (
@@ -1009,11 +1060,110 @@ function ParamPanel({
               Convert Editable
             </button>
           )}
+          {/* Keyer sample mode: the drawn color selection. Colors are
+              sampled on-canvas (KeyerSampleOverlay); this row shows the
+              set as swatches — click one to remove it, Clear resets. */}
+          {def.type === "keyer" &&
+            selected.data.params.mode === "sample" && (
+              <KeyerSamplesRow
+                value={selected.data.params.sample_colors}
+                onChange={(next) =>
+                  onParamChange(selected.id, "sample_colors", next)
+                }
+              />
+            )}
           </Section>
           )}
         </div>
       ) : (
         <div style={{ color: "#52525b" }}>Select a node to edit parameters.</div>
+      )}
+    </div>
+  );
+}
+
+// Keyer sample-mode selection row: the sampled color set as removable
+// swatches. Sampling itself happens on the canvas (KeyerSampleOverlay) —
+// this row is the manager (inspect / prune / clear). Takes the raw param
+// value and narrows here: inlining the Array.isArray ternary at the call
+// site made the React Compiler skip ParamPanel ("existing memoization
+// could not be preserved").
+function KeyerSamplesRow({
+  value,
+  onChange,
+}: {
+  value: unknown;
+  onChange: (next: string[]) => void;
+}) {
+  const colors = Array.isArray(value)
+    ? value.filter((c): c is string => typeof c === "string")
+    : [];
+  return (
+    <div
+      style={{
+        padding: 8,
+        background: "#111113",
+        border: "1px solid #1f1f23",
+        borderRadius: 4,
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <span style={{ color: "#d4d4d8" }}>
+          sampled colors ({colors.length})
+        </span>
+        {colors.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onChange([])}
+            style={{
+              background: "none",
+              border: "1px solid #3f3f46",
+              color: "#a1a1aa",
+              borderRadius: 4,
+              padding: "2px 8px",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              fontSize: 11,
+            }}
+            title="Remove all sampled colors"
+          >
+            clear
+          </button>
+        )}
+      </div>
+      {colors.length === 0 ? (
+        <div style={{ color: "#52525b" }}>
+          Drag across the canvas to sample the colors to key out.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {colors.map((c, i) => (
+            <button
+              key={`${c}:${i}`}
+              type="button"
+              onClick={() => onChange(colors.filter((_, j) => j !== i))}
+              style={{
+                width: 16,
+                height: 16,
+                borderRadius: 3,
+                border: "1px solid rgba(255,255,255,0.25)",
+                background: c,
+                cursor: "pointer",
+                padding: 0,
+              }}
+              title={`${c} — click to remove`}
+            />
+          ))}
+        </div>
       )}
     </div>
   );
@@ -1339,6 +1489,45 @@ function GroupSocketsPanel({
   );
 }
 
+// Export settings for a Layer Output (the fixed `group-output` inside a
+// layer). It carries its own independent copy of the composition Output's
+// export config on the node instance, so a layer can be rendered in a
+// different form than the comp. We render the canonical EXPORT_PARAMS list
+// (the Output def's params) as plain rows — export config isn't scene
+// animation, so no keyframe / expose affordances. Values + visibleIf
+// evaluate against defaults-merged params so a layer saved before this
+// feature (missing keys) still renders a complete, correct panel; the
+// first edit materializes the real key. See
+// specdocs/071526_layer-output-export-settings.md.
+function LayerOutputExportSettings({
+  node,
+  onParamChange,
+}: {
+  node: Node<NodeDataPayload>;
+  onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
+}) {
+  const params = getNodeDef("output")?.params ?? [];
+  const defaults: Record<string, unknown> = {};
+  for (const p of params) defaults[p.name] = p.default;
+  const merged = { ...defaults, ...node.data.params };
+  const visible = params.filter(
+    (p) => !p.hidden && (p.visibleIf?.(merged) ?? true)
+  );
+  return (
+    <Section label="export · settings">
+      {visible.map((p) => (
+        <ParamRow
+          key={p.name}
+          param={p}
+          value={merged[p.name]}
+          allParams={merged}
+          onChange={(v) => onParamChange(node.id, p.name, v)}
+        />
+      ))}
+    </Section>
+  );
+}
+
 function Section({
   label,
   children,
@@ -1368,6 +1557,41 @@ function Section({
     </div>
   );
 }
+
+// "Export renders N variations" pill for Output nodes with Wedge nodes
+// upstream. Its own memo()'d component (not a useMemo in the panel body) so
+// the flatten+BFS walk only re-runs when the graph arrays actually change —
+// per-tick panel re-renders during playback skip it entirely. Renders
+// nothing when there's no batch (resolveWedgeBatchInfo fast-paths to 1 for
+// wedge-free graphs).
+const OutputWedgeReadout = memo(function OutputWedgeReadout({
+  nodes,
+  edges,
+  outputId,
+}: {
+  nodes: Node<NodeDataPayload>[];
+  edges: Edge[];
+  outputId: string;
+}) {
+  const count = resolveWedgeBatchInfo(nodes, edges, outputId).count;
+  if (count <= 1) return null;
+  return (
+    <div
+      style={{
+        color: "#a5b4fc",
+        background: "#1e1b4b",
+        border: "1px solid #312e81",
+        borderRadius: 4,
+        padding: "5px 8px",
+        fontSize: 10,
+        letterSpacing: 0.3,
+      }}
+      title="Wedge nodes upstream — Export renders every variation with iterated filenames ({i} / {wedge:Name} tokens in Filename; auto _{i:3} suffix otherwise)"
+    >
+      Export renders {count} wedge variations
+    </div>
+  );
+});
 
 // Shared rounded "Load X" button — blue stroke, dark-blue fill, hover lift.
 function RenderQueuePanel({
@@ -1401,6 +1625,23 @@ function RenderQueuePanel({
     );
     return edge ? nodes.find((n) => n.id === edge.source) ?? null : null;
   };
+
+  // ×N wedge-variation badge per row: an Output with Wedge nodes upstream
+  // renders once per variation, so its row delivers N files. Cheap when the
+  // graph has no wedges (resolveWedgeBatchInfo fast-paths to 1).
+  const wedgeCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const item of (node.data.params.items as RenderQueueItem[]) ?? []) {
+      const edge = edges.find(
+        (e) => e.target === node.id && e.targetHandle === `in:item:${item.id}`
+      );
+      const outId = edge?.source;
+      if (outId && !m.has(outId)) {
+        m.set(outId, resolveWedgeBatchInfo(nodes, edges, outId).count);
+      }
+    }
+    return m;
+  }, [node.data.params.items, node.id, nodes, edges]);
 
   const setItems = (next: RenderQueueItem[]) =>
     onParamChange(node.id, "items", next);
@@ -1663,6 +1904,22 @@ function RenderQueuePanel({
                     }}
                   >
                     (wire an Output node)
+                  </span>
+                )}
+                {out && (wedgeCounts.get(out.id) ?? 1) > 1 && (
+                  <span
+                    title={`${wedgeCounts.get(out.id)} wedge variations — this row renders ${wedgeCounts.get(out.id)} files`}
+                    style={{
+                      color: "#a5b4fc",
+                      background: "#1e1b4b",
+                      border: "1px solid #312e81",
+                      borderRadius: 999,
+                      fontSize: 9,
+                      padding: "1px 6px",
+                      flexShrink: 0,
+                    }}
+                  >
+                    ×{wedgeCounts.get(out.id)}
                   </span>
                 )}
                 {out && (
@@ -2099,6 +2356,17 @@ function ParamRow({
     ? diamondStateFor(animation, currentTick)
     : "empty";
 
+  // Animated readout: a keyframed param displays its evaluated value at the
+  // playhead, so the control follows scrubbing/playback instead of freezing
+  // at the stored constant. Driven params keep the stored value (the wire
+  // wins over keyframes and the row is dimmed anyway). Edits round-trip:
+  // autokey writes the edit as a keyframe at this same tick, so the evaluated
+  // display equals what the user just set.
+  const displayValue =
+    keyframable && !driven
+      ? animatedValueAt(animation, param.type, currentTick, value, param.alpha)
+      : value;
+
   // Nearest keyframe ticks on either side of the playhead, for the carets.
   const kfTicks = animation?.keyframes?.map((k) => k.tick) ?? [];
   const prevKfTick = kfTicks
@@ -2122,7 +2390,7 @@ function ParamRow({
         animated: true,
         trackVisible: true,
         keyframes: [
-          { tick: currentTick, value, easingOut: "easeInOut" },
+          { tick: currentTick, value: displayValue, easingOut: "easeInOut" },
         ],
       });
       return;
@@ -2130,8 +2398,11 @@ function ParamRow({
     if (findKeyframeAt(animation, currentTick)) {
       onAnimationChange(removeKeyframeAt(animation, currentTick));
     } else {
+      // Capture the evaluated value, not the stored constant — inserting a
+      // key mid-segment must pin the curve's current value (same contract
+      // as TrackEditor's toggleKeyAtPlayhead).
       onAnimationChange(
-        upsertKeyframe(animation, currentTick, value, "easeInOut")
+        upsertKeyframe(animation, currentTick, displayValue, "easeInOut")
       );
     }
   };
@@ -2341,7 +2612,7 @@ function ParamRow({
     >
       <ParamControl
         param={param}
-        value={value}
+        value={displayValue}
         allParams={allParams}
         onChange={onChange}
         rangeOverride={rangeOverride}

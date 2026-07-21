@@ -12,6 +12,9 @@ import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
   GROUP_TYPE,
+  ITERATE_INPUT_SOCKETS,
+  ITERATE_INPUT_TYPE,
+  ITERATE_TYPE,
   LAYER_INPUT_SOCKETS,
   LAYER_OUTPUT_SOCKETS,
   LAYER_TYPE,
@@ -285,14 +288,35 @@ export function syncGroupInterface(
   nodes: GraphNode[],
   groupId: string
 ): GraphNode[] {
+  // Iterate zones have no separate output boundary (the shell's own
+  // minted sockets are the collect taps), and their input boundary is
+  // the Iteration Input node — whose reserved iteration sockets
+  // (index/t/random) are interior-provided and stay OUT of the
+  // interface (only passthroughs surface, as the shell's hidden zi__
+  // inputs).
+  const isIterate =
+    nodes.find((n) => n.id === groupId)?.data.defType === ITERATE_TYPE;
   const groupInput = nodes.find(
-    (n) => n.data.parentId === groupId && n.data.defType === GROUP_INPUT_TYPE
+    (n) =>
+      n.data.parentId === groupId &&
+      n.data.defType === (isIterate ? ITERATE_INPUT_TYPE : GROUP_INPUT_TYPE)
   );
-  const groupOutput = nodes.find(
-    (n) => n.data.parentId === groupId && n.data.defType === GROUP_OUTPUT_TYPE
-  );
+  const groupOutput = isIterate
+    ? undefined
+    : nodes.find(
+        (n) =>
+          n.data.parentId === groupId &&
+          n.data.defType === GROUP_OUTPUT_TYPE
+      );
+  const reserved = groupInput
+    ? new Set(readReservedSockets(groupInput.data.params))
+    : new Set<string>();
   const iface: GroupInterface = {
-    inputs: groupInput ? readBoundarySockets(groupInput.data.params) : [],
+    inputs: groupInput
+      ? readBoundarySockets(groupInput.data.params).filter(
+          (s) => !isIterate || !reserved.has(s.name)
+        )
+      : [],
     outputs: groupOutput ? readBoundarySockets(groupOutput.data.params) : [],
   };
   return nodes.map((n) => {
@@ -740,6 +764,80 @@ export function connectToVirtualSocket(
   const target = byId.get(conn.target);
   if (!source || !target) return null;
 
+  // Member output → the Iterate shell's virtual input: mints the
+  // collect socket (071926_iterate-zone-view.md rev 3). The shell's own
+  // `sockets` param holds it; the matching grouped aux output appears
+  // via resolveAuxOutputs. Single-collect for now — the virtual port
+  // only renders while no socket exists.
+  if (
+    target.data.defType === ITERATE_TYPE &&
+    conn.targetHandle === `in:${VIRTUAL_SOCKET}`
+  ) {
+    const type = (sourceSocketType(source, conn.sourceHandle ?? "") ??
+      "image") as SocketType;
+    const base =
+      conn.sourceHandle?.startsWith("out:aux:") === true
+        ? conn.sourceHandle.slice("out:aux:".length)
+        : type;
+    const name = uniqueSocketName(
+      base,
+      new Set(readBoundarySockets(target.data.params).map((s) => s.name))
+    );
+    const sockets = [
+      ...readBoundarySockets(target.data.params),
+      { name, type },
+    ];
+    return {
+      nodes: applyBoundarySockets(nodes, target, sockets),
+      edges: [
+        ...edges,
+        {
+          id: newEdgeId(),
+          source: conn.source,
+          sourceHandle: conn.sourceHandle,
+          target: conn.target,
+          targetHandle: `in:${name}`,
+        },
+      ],
+    };
+  }
+
+  // Exterior output → the Iteration Input's virtual input: mints a
+  // passthrough socket (paired exterior `in:` face + interior aux
+  // output) and lands the exterior wire on it.
+  if (
+    target.data.defType === ITERATE_INPUT_TYPE &&
+    conn.targetHandle === `in:${VIRTUAL_SOCKET}`
+  ) {
+    const type = (sourceSocketType(source, conn.sourceHandle ?? "") ??
+      "image") as SocketType;
+    const base =
+      conn.sourceHandle?.startsWith("out:aux:") === true
+        ? conn.sourceHandle.slice("out:aux:".length)
+        : type;
+    const used = new Set(
+      readBoundarySockets(target.data.params).map((s) => s.name)
+    );
+    const name = uniqueSocketName(base, used);
+    const sockets = [
+      ...readBoundarySockets(target.data.params),
+      { name, type },
+    ];
+    return {
+      nodes: applyBoundarySockets(nodes, target, sockets),
+      edges: [
+        ...edges,
+        {
+          id: newEdgeId(),
+          source: conn.source,
+          sourceHandle: conn.sourceHandle,
+          target: conn.target,
+          targetHandle: `in:${name}`,
+        },
+      ],
+    };
+  }
+
   // Interior output → Group Output's virtual input: new group output.
   if (
     target.data.defType === GROUP_OUTPUT_TYPE &&
@@ -774,9 +872,11 @@ export function connectToVirtualSocket(
     };
   }
 
-  // Group Input's virtual output → interior input: new group input.
+  // Group Input's (or Iteration Input's) virtual output → interior
+  // input: new group input / passthrough socket minted from the inside.
   if (
-    source.data.defType === GROUP_INPUT_TYPE &&
+    (source.data.defType === GROUP_INPUT_TYPE ||
+      source.data.defType === ITERATE_INPUT_TYPE) &&
     conn.sourceHandle === `out:aux:${VIRTUAL_SOCKET}`
   ) {
     const parsed = parseTargetHandleKind(conn.targetHandle ?? "");
@@ -923,6 +1023,382 @@ export function removeGroupSocket(
   };
 }
 
+// --- iterate ----------------------------------------------------------------
+
+// Zone auto-interface (071926_iterate-zone-view.md): a wire drawn
+// straight across an Iterate's boundary mints the boundary socket and
+// routes the data through it, instead of rejecting the connection.
+//
+//   exterior → member:   exterior → (shell in:<name>)  +
+//                        (Iteration Input out:aux:<name>) → member
+//   member → exterior:   member → (Iteration Output in:<name>)  +
+//                        (shell out:aux:<name>) → exterior
+//
+// Returns null when the connection isn't an iterate-boundary crossing —
+// the caller falls through to its normal connect path. member→exterior
+// only applies while the Iteration Output has NO sockets yet: the first
+// output socket is the collected result, and additional outputs aren't
+// collected (the exterior face carries the GROUPED type — image becomes
+// image_group — which is also why the editor's validation gates that
+// direction on the grouped type being acceptable to the target).
+export function connectAcrossIterateBoundary(
+  nodes: GraphNode[],
+  edges: Edge[],
+  conn: VirtualConnection
+): { nodes: GraphNode[]; edges: Edge[] } | null {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const source = byId.get(conn.source);
+  const target = byId.get(conn.target);
+  if (!source || !target) return null;
+
+  // exterior → member is NOT routed here anymore: the wire stays exactly
+  // as drawn ("stay as wired" — 071926_iterate-zone-view.md); flatten
+  // mirrors it onto a per-edge hidden shell input and the shell's
+  // compute feeds the value into each iteration. Only member → exterior
+  // needs a real boundary socket, because the exiting value changes
+  // TYPE (it's the grouped collection).
+
+  // member → exterior: the source lives in an Iterate whose shell sits
+  // in the target's scope. Mint a collect socket on the shell (every
+  // collect socket gets its own grouped output) and route through it —
+  // reusing an existing tap when this exact member output already has
+  // one. Wiring a member straight INTO the shell is the direct tap, not
+  // a routing case.
+  const sShell = source.data.parentId
+    ? byId.get(source.data.parentId)
+    : undefined;
+  if (
+    sShell?.data.defType === ITERATE_TYPE &&
+    target.id !== sShell.id &&
+    target.data.parentId === sShell.data.parentId &&
+    source.data.defType !== ITERATE_INPUT_TYPE
+  ) {
+    const existingTap = edges.find(
+      (e) =>
+        e.target === sShell.id &&
+        e.source === conn.source &&
+        e.sourceHandle === conn.sourceHandle &&
+        e.targetHandle?.startsWith("in:") === true
+    );
+    if (existingTap) {
+      const name = existingTap.targetHandle!.slice("in:".length);
+      return {
+        nodes,
+        edges: [
+          ...edges,
+          {
+            id: newEdgeId(),
+            source: sShell.id,
+            sourceHandle: `out:aux:${name}`,
+            target: conn.target,
+            targetHandle: conn.targetHandle,
+          },
+        ],
+      };
+    }
+    const type = (sourceSocketType(source, conn.sourceHandle ?? "") ??
+      "image") as SocketType;
+    const base =
+      conn.sourceHandle?.startsWith("out:aux:") === true
+        ? conn.sourceHandle.slice("out:aux:".length)
+        : type;
+    const name = uniqueSocketName(
+      base,
+      new Set(readBoundarySockets(sShell.data.params).map((s) => s.name))
+    );
+    return {
+      nodes: applyBoundarySockets(nodes, sShell, [
+        ...readBoundarySockets(sShell.data.params),
+        { name, type },
+      ]),
+      edges: [
+        ...edges,
+        {
+          id: newEdgeId(),
+          source: conn.source,
+          sourceHandle: conn.sourceHandle,
+          target: sShell.id,
+          targetHandle: `in:${name}`,
+        },
+        {
+          id: newEdgeId(),
+          source: sShell.id,
+          sourceHandle: `out:aux:${name}`,
+          target: conn.target,
+          targetHandle: conn.targetHandle,
+        },
+      ],
+    };
+  }
+
+  return null;
+}
+
+// Absorb an exterior node — and the part of its upstream chain that
+// depends on the zone's iteration values — into an Iterate zone. This
+// is the "build outside, then pipe it in" flow
+// (071926_iterate-zone-view.md): wires from the Iteration Input's
+// values (index/t/random) to exterior nodes are allowed as PENDING
+// wires; when one of those chains is piped into the Iteration Output,
+// this op expands the zone to include it. Pure; returns null when
+// nothing applies or the required closure contains unabsorbable nodes
+// (layers, outputs, other zones' machinery).
+//
+// Crossing edges after the absorb:
+//  - inputs from nodes that STAY outside keep their wires exactly as
+//    drawn — flatten mirrors them per-edge onto the shell and the
+//    compute feeds them into each iteration ("stay as wired");
+//  - outputs from absorbed nodes to consumers that stay outside mint
+//    collect sockets on the shell (deduped) — the exiting value changes
+//    TYPE (grouped collection), so an explicit socket is honest there;
+//  - pending iteration wires into the absorbed chain simply come alive
+//    (member → member now); pending wires to nodes outside the closure
+//    stay pending.
+export function absorbIntoIterateZone(
+  nodes: GraphNode[],
+  edges: Edge[],
+  shellId: string,
+  rootId: string
+): { nodes: GraphNode[]; edges: Edge[] } | null {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const shell = byId.get(shellId);
+  if (!shell || shell.data.defType !== ITERATE_TYPE) return null;
+  const scope = shell.data.parentId;
+  const root = byId.get(rootId);
+  if (!root || root.data.parentId !== scope) return null;
+
+  const UNABSORBABLE = new Set<string>([
+    LAYER_TYPE,
+    ITERATE_TYPE,
+    ITERATE_INPUT_TYPE,
+    GROUP_INPUT_TYPE,
+    GROUP_OUTPUT_TYPE,
+    "output",
+    "render-queue",
+  ]);
+  if (UNABSORBABLE.has(root.data.defType)) return null;
+
+  // Existing members (direct or via nested plain groups).
+  const isMember = (id: string): boolean => {
+    let cur = byId.get(id)?.data.parentId;
+    for (let hops = 0; cur && hops < nodes.length; hops++) {
+      if (cur === shellId) return true;
+      cur = byId.get(cur)?.data.parentId;
+    }
+    return false;
+  };
+
+  // Exterior nodes already downstream of the zone's iteration values
+  // (via pending wires) — these can't stay outside if the piped chain
+  // passes through them.
+  const iterDep = new Set<string>();
+  {
+    const frontier: string[] = [];
+    const addDep = (id: string) => {
+      if (iterDep.has(id)) return;
+      iterDep.add(id);
+      frontier.push(id);
+    };
+    for (const e of edges) {
+      if (!isMember(e.source)) continue;
+      const t = byId.get(e.target);
+      if (t && t.data.parentId === scope && t.id !== shellId) addDep(t.id);
+    }
+    while (frontier.length > 0) {
+      const id = frontier.pop()!;
+      for (const e of edges) {
+        if (e.source !== id) continue;
+        const t = byId.get(e.target);
+        if (t && t.data.parentId === scope && t.id !== shellId) addDep(t.id);
+      }
+    }
+  }
+
+  // Closure: the root plus its upstream exterior nodes that are
+  // iteration-dependent. Non-dependent upstream stays outside (its
+  // values are the same every iteration — passthroughs cover it).
+  const cluster = new Set<string>([rootId]);
+  const stack = [rootId];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    for (const e of edges) {
+      if (e.target !== id) continue;
+      const s = byId.get(e.source);
+      if (!s || cluster.has(s.id)) continue;
+      if (s.data.parentId !== scope) continue;
+      if (!iterDep.has(s.id)) continue;
+      if (UNABSORBABLE.has(s.data.defType)) return null;
+      cluster.add(s.id);
+      stack.push(s.id);
+    }
+  }
+
+  let outNodes = nodes.map((n) =>
+    cluster.has(n.id)
+      ? { ...n, data: { ...n.data, parentId: shellId } }
+      : n
+  );
+  const inZone = (id: string) => cluster.has(id) || isMember(id);
+
+  // Heal outbound crossing edges. Dedupe keys are "source|sourceHandle";
+  // existing taps pre-seed the map so re-absorbing near an existing
+  // collect socket reuses it.
+  const tapSockets = [...readBoundarySockets(shell.data.params)];
+  const tapUsed = new Set(tapSockets.map((s) => s.name));
+  const tapNames = new Map<string, string>();
+  for (const e of edges) {
+    if (e.target === shellId && e.targetHandle?.startsWith("in:") === true) {
+      tapNames.set(
+        `${e.source}|${e.sourceHandle}`,
+        e.targetHandle.slice("in:".length)
+      );
+    }
+  }
+  const tapMinted = new Set(tapNames.values());
+
+  const outEdges: Edge[] = [];
+  const extraEdges: Edge[] = [];
+  for (const e of edges) {
+    const sIn = inZone(e.source);
+    const tIn = inZone(e.target);
+    if (sIn === tIn || e.target === shellId || (!sIn && tIn)) {
+      // Same side, a collect tap, or an inbound crossing wire — inbound
+      // wires stay exactly as drawn (flatten feeds them per-edge).
+      outEdges.push(e);
+      continue;
+    }
+    // sIn && !tIn — a member's output crossing out.
+    if (!cluster.has(e.source)) {
+      // A pre-existing pending iteration wire to a node that stayed
+      // outside the closure: keep pending.
+      outEdges.push(e);
+      continue;
+    }
+    // Newly absorbed node feeding an exterior consumer: collect route
+    // (the consumer now receives the GROUPED result).
+    const key = `${e.source}|${e.sourceHandle}`;
+    let name = tapNames.get(key);
+    if (!name) {
+      const src = byId.get(e.source);
+      const type = (src
+        ? sourceSocketType(src, e.sourceHandle ?? "") ?? "image"
+        : "image") as SocketType;
+      name = uniqueSocketName(
+        e.sourceHandle?.startsWith("out:aux:") === true
+          ? e.sourceHandle.slice("out:aux:".length)
+          : type,
+        tapUsed
+      );
+      tapUsed.add(name);
+      tapSockets.push({ name, type });
+      tapNames.set(key, name);
+    }
+    if (!tapMinted.has(name)) {
+      tapMinted.add(name);
+      outEdges.push({
+        ...e,
+        target: shellId,
+        targetHandle: `in:${name}`,
+      });
+    }
+    extraEdges.push({
+      id: newEdgeId(),
+      source: shellId,
+      sourceHandle: `out:aux:${name}`,
+      target: e.target,
+      targetHandle: e.targetHandle,
+    });
+  }
+
+  // Apply the minted collect sockets.
+  if (tapSockets.length > readBoundarySockets(shell.data.params).length) {
+    outNodes = applyBoundarySockets(outNodes, shell, tapSockets);
+  }
+
+  return { nodes: outNodes, edges: [...outEdges, ...extraEdges] };
+}
+
+// Zone-view drop-to-reparent (071926_iterate-zone-view.md): move one
+// node into / out of an Iterate scope by dragging it across the zone
+// boundary. Pure; returns null when the move is illegal — boundary
+// nodes never move, the target scope must not be the node itself or a
+// descendant of it (cycle), and every edge touching the node must stay
+// scope-legal after the move (its other endpoint already in the target
+// scope). Wired nodes therefore refuse to cross the boundary — the
+// caller toasts "disconnect first". Moving a group/iterate shell
+// carries its subtree for free (descendants' parentId chains are
+// relative and untouched).
+export function reparentNode(
+  nodes: GraphNode[],
+  edges: Edge[],
+  nodeId: string,
+  newParentId: string | undefined
+): { nodes: GraphNode[] } | null {
+  const n = nodes.find((x) => x.id === nodeId);
+  if (!n) return null;
+  const t = n.data.defType;
+  if (
+    t === GROUP_INPUT_TYPE ||
+    t === GROUP_OUTPUT_TYPE ||
+    t === ITERATE_INPUT_TYPE
+  ) {
+    return null;
+  }
+  if (n.data.parentId === newParentId) return null;
+  const byId = new Map(nodes.map((x) => [x.id, x]));
+  // Cycle guard: the new scope may not sit inside the moved node's own
+  // subtree.
+  let cur = newParentId;
+  for (let guard = 0; cur && guard < nodes.length; guard++) {
+    if (cur === nodeId) return null;
+    cur = byId.get(cur)?.data.parentId;
+  }
+  for (const e of edges) {
+    if (e.source !== nodeId && e.target !== nodeId) continue;
+    const other = byId.get(e.source === nodeId ? e.target : e.source);
+    if (other && other.data.parentId !== newParentId) return null;
+  }
+  return {
+    nodes: nodes.map((x) =>
+      x.id === nodeId
+        ? { ...x, data: { ...x.data, parentId: newParentId } }
+        : x
+    ),
+  };
+}
+
+// New empty Iterate zone: exactly two nodes
+// (071926_iterate-zone-view.md rev 3). The Iteration Input carries the
+// loop params (count / seed / random range) and the reserved iteration
+// sockets; the Iteration Output ("iterate" — the computing shell)
+// starts socketless: wiring a member into its virtual input mints the
+// collect socket, whose type picks the collection form.
+export function makeIterateNodes(position: { x: number; y: number }): {
+  iterate: GraphNode;
+  iterateInput: GraphNode;
+} {
+  const iterate = makeInstanceNode(ITERATE_TYPE, {
+    x: position.x + 840,
+    y: position.y,
+  });
+  const iterateInput = makeInstanceNode(ITERATE_INPUT_TYPE, position);
+  iterateInput.data.parentId = iterate.id;
+  iterateInput.data.params = {
+    ...iterateInput.data.params,
+    sockets: [...ITERATE_INPUT_SOCKETS],
+    reserved: ITERATE_INPUT_SOCKETS.map((s) => s.name),
+  };
+  iterate.data.params = {
+    ...iterate.data.params,
+    sockets: [],
+    interface: { inputs: [], outputs: [] } satisfies GroupInterface,
+  };
+  return {
+    iterate: refreshNodeSockets(iterate),
+    iterateInput: refreshNodeSockets(iterateInput),
+  };
+}
+
 // --- layers -----------------------------------------------------------------
 
 // New empty layer: the layer node plus its fixed-interface boundary
@@ -952,7 +1428,20 @@ export function makeLayerNodes(
     reserved: ["backdrop"],
   };
   groupOutput.data.parentId = layer.id;
-  groupOutput.data.params = { sockets: [...LAYER_OUTPUT_SOCKETS], fixed: true };
+  // A Layer Output carries its own independent export config (filename,
+  // format, codec, frame range, …) so a layer can be rendered in a
+  // different form than the composition. Seed the same defaults the
+  // composition Output ships with, read from its registered def — the
+  // canonical EXPORT_PARAMS list (see 071526_layer-output-export-settings.md).
+  // `sockets`/`fixed` come last so a future export param can't shadow them.
+  const exportDefaults: Record<string, unknown> = {};
+  for (const p of getNodeDef("output")?.params ?? [])
+    exportDefaults[p.name] = p.default;
+  groupOutput.data.params = {
+    ...exportDefaults,
+    sockets: [...LAYER_OUTPUT_SOCKETS],
+    fixed: true,
+  };
   return {
     layer,
     groupInput: refreshNodeSockets(groupInput),

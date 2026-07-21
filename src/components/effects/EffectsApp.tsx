@@ -27,10 +27,10 @@ import ParamPanel from "./ParamPanel";
 import { feedWheel, wheelWantsZoom } from "./input-device";
 // import CustomCursor from "./CustomCursor"; // temporarily disabled — using native cursor
 import UserPreferencesModal from "./UserPreferencesModal";
-import PaintOverlay from "./PaintOverlay";
-import { Spinner } from "./Spinner";
+import PaintOverlay from "./paint-editor/PaintOverlay";
 import PlaybackBar from "./PlaybackBar";
 import MenuBar from "./MenuBar";
+import { type ConsoleEntry } from "./MessageConsole";
 import Landing from "./Landing";
 import ViewportMenuBar from "./ViewportMenuBar";
 import TransformContextBar from "./TransformContextBar";
@@ -72,8 +72,10 @@ import {
   buildStarterGraph,
   belongsToComposition,
   cloneCompositionNodes,
+  absorbIntoIterateZone,
   cloneSubgraph,
   collectDescendantIds,
+  connectAcrossIterateBoundary,
   connectToVirtualSocket,
   createComposition,
   createLayer,
@@ -87,7 +89,9 @@ import {
   splitLayer,
   groupSelection,
   makeInstanceNode,
+  makeIterateNodes,
   newEdgeId,
+  reparentNode,
   removeGroupSocket,
   renameGroupSocket,
   ungroupNode,
@@ -97,6 +101,7 @@ import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
   GROUP_TYPE,
+  ITERATE_TYPE,
   LAYER_TYPE,
 } from "@/engine/groups";
 import { editorCanCoerce } from "@/engine/graph-validation";
@@ -106,9 +111,16 @@ import { MAX_COLORS, colorParamName } from "@/nodes/source/color-literal";
 import { newExprInput } from "@/nodes/effect/expression";
 import { defaultAutoLayoutItem } from "@/nodes/effect/autolayout";
 import { newRenderQueueItemId } from "@/nodes/output/render-queue";
-import { WEDGE_TYPE, wedgeIterationCount } from "@/nodes/source/wedge";
-import { flattenGraph } from "@/engine/flatten";
-import { resolveWedgeName } from "@/lib/export-naming";
+import { wedgeTokenValue } from "@/nodes/source/wedge";
+import {
+  resolveWedgeBatchInfo,
+  type WedgeBatchInfo,
+} from "@/lib/wedge-batch";
+import {
+  resolveWedgeName,
+  stripWedgeTokens,
+  type WedgeTokenSource,
+} from "@/lib/export-naming";
 import type {
   AutoLayoutItem,
   ExprInput,
@@ -184,6 +196,7 @@ import {
 } from "@/lib/fragment-clipboard";
 import ExportAppModal from "./ExportAppModal";
 import NodeInspectorPopup from "./NodeInspectorPopup";
+import SocketPeekPopover from "./SocketPeekPopover";
 import { buildExportManifest } from "@/lib/export-manifest";
 import {
   audioBufferToWav,
@@ -207,6 +220,9 @@ import {
   TransformGizmoAtTick,
 } from "./GizmoTickOverlays";
 import SegmentDotsOverlay from "./SegmentDotsOverlay";
+import KeyerSampleOverlay, {
+  type KeyerSourcePixels,
+} from "./KeyerSampleOverlay";
 import type { SegmentDot } from "@/lib/ai/segment";
 import {
   clearLiveSegment,
@@ -414,6 +430,9 @@ const CONNECTED_TYPE_RETYPE_NODES = new Set([
   "transform",
   "displace",
   "scatter-points",
+  // Mirror: spline-resting `source` retypes to points (and its output
+  // follows). See specdocs/072026_mirror-node.md.
+  "mirror",
   // Reroute: a wildcard passthrough whose `value` input + output adopt the
   // type wired in. See specdocs/071326_reroute-node.md.
   "reroute",
@@ -875,6 +894,116 @@ function EffectsShell({
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
   }, [inspectIds]);
+  // Output-socket peek (hover an output handle ~2s — EffectNode dispatches
+  // `socket-peek`, SocketPeekPopover renders). While set, the eval loop
+  // forces the peeked node into the needed set (extraTargets) and marks the
+  // hovered handle consumed (extraConsumed) so unwired branches and gated
+  // aux outputs produce real data. The ref mirrors state so renderFrame
+  // reads the current target without re-subscribing.
+  const [socketPeek, setSocketPeek] = useState<{
+    nodeId: string;
+    handle: string;
+    anchorY: number;
+  } | null>(null);
+  const socketPeekRef = useRef<typeof socketPeek>(null);
+  socketPeekRef.current = socketPeek;
+  const peekHideTimerRef = useRef<number | null>(null);
+  const clearSocketPeek = useCallback(() => {
+    if (peekHideTimerRef.current !== null) {
+      window.clearTimeout(peekHideTimerRef.current);
+      peekHideTimerRef.current = null;
+    }
+    socketPeekRef.current = null;
+    setSocketPeek(null);
+  }, []);
+  // Popover hover grace: entering the popover cancels a pending hide
+  // (the pointer traveled from the socket into the panel), leaving it
+  // dismisses immediately.
+  const holdSocketPeek = useCallback(() => {
+    if (peekHideTimerRef.current !== null) {
+      window.clearTimeout(peekHideTimerRef.current);
+      peekHideTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => {
+    const onPeek = (e: Event) => {
+      const detail = (
+        e as CustomEvent<{
+          id: string;
+          handle: string;
+          anchorY?: number;
+          hide?: boolean;
+        }>
+      ).detail;
+      if (!detail) return;
+      if (detail.hide) {
+        const cur = socketPeekRef.current;
+        if (!cur || cur.nodeId !== detail.id || cur.handle !== detail.handle) {
+          return;
+        }
+        // Grace window before hiding so the pointer can reach the popover.
+        if (peekHideTimerRef.current !== null) {
+          window.clearTimeout(peekHideTimerRef.current);
+        }
+        peekHideTimerRef.current = window.setTimeout(() => {
+          peekHideTimerRef.current = null;
+          socketPeekRef.current = null;
+          setSocketPeek(null);
+        }, 250);
+        return;
+      }
+      if (peekHideTimerRef.current !== null) {
+        window.clearTimeout(peekHideTimerRef.current);
+        peekHideTimerRef.current = null;
+      }
+      const next = {
+        nodeId: detail.id,
+        handle: detail.handle,
+        anchorY: detail.anchorY ?? 0,
+      };
+      // Ref first: the pipeline-bump eval below must already see the
+      // target when it runs.
+      socketPeekRef.current = next;
+      setSocketPeek(next);
+      window.dispatchEvent(new Event("pipeline-bump"));
+    };
+    window.addEventListener("socket-peek", onPeek);
+    return () => window.removeEventListener("socket-peek", onPeek);
+  }, []);
+  // Deleting (or scoping away) the peeked node closes the popover — its
+  // EffectNode unmount also dispatches a hide, this covers replace-graph
+  // paths (undo, load) that swap node arrays wholesale.
+  useEffect(() => {
+    if (socketPeek && !nodes.some((n) => n.id === socketPeek.nodeId)) {
+      clearSocketPeek();
+    }
+  }, [nodes, socketPeek, clearSocketPeek]);
+  // CPU readback for the peek popover's texture thumbnails — the engine's
+  // pooled readback FBO, never blitToCanvas+getImageData (which resizes
+  // the hidden canvas).
+  const readPeekPixels = useCallback(
+    (
+      image:
+        | import("@/engine/types").ImageValue
+        | import("@/engine/types").MaskValue
+        | import("@/engine/types").UvValue,
+      width: number,
+      height: number
+    ) => {
+      const backend = backendRef.current;
+      if (!backend) return null;
+      // readImagePixels types ImageValue but samples any texture-backed
+      // value — mask/uv share the {texture,width,height} shape.
+      return backend
+        .makeContext(0, 0)
+        .readImagePixels(
+          image as import("@/engine/types").ImageValue,
+          width,
+          height
+        );
+    },
+    []
+  );
   // When set, plain "Save" silently overwrites this row; cleared only by
   // switching to a different project (Load or Save As creating a new row).
   const [currentProject, setCurrentProject] = useState<
@@ -1041,10 +1170,16 @@ function EffectsShell({
   // the last-known pointer from here. Also the origin the pie's "Add
   // Node" item hands to the node-search popup.
   const lastPointerRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const cursorRef = useRef<{ x: number; y: number; active: boolean }>({
+  const cursorRef = useRef<{
+    x: number;
+    y: number;
+    active: boolean;
+    pressed: boolean;
+  }>({
     x: 0.5,
     y: 0.5,
     active: false,
+    pressed: false,
   });
   const [cursorTick, setCursorTick] = useState(0);
   // Mirror playback flags into a ref so the pointermove listener
@@ -1054,6 +1189,7 @@ function EffectsShell({
   useEffect(() => {
     let rafId: number | null = null;
     let lastBumpedActive = false;
+    let lastBumpedPressed = false;
     let lastBumpedX = -1;
     let lastBumpedY = -1;
     const scheduleBump = () => {
@@ -1073,12 +1209,14 @@ function EffectsShell({
         const c = cursorRef.current;
         if (
           c.active === lastBumpedActive &&
+          c.pressed === lastBumpedPressed &&
           Math.abs(c.x - lastBumpedX) < 1e-4 &&
           Math.abs(c.y - lastBumpedY) < 1e-4
         ) {
           return;
         }
         lastBumpedActive = c.active;
+        lastBumpedPressed = c.pressed;
         lastBumpedX = c.x;
         lastBumpedY = c.y;
         setCursorTick((n) => n + 1);
@@ -1096,7 +1234,7 @@ function EffectsShell({
       const y = 1 - yDom;
       const inside = x >= 0 && x <= 1 && yDom >= 0 && yDom <= 1;
       const prev = cursorRef.current;
-      cursorRef.current = { x, y, active: inside };
+      cursorRef.current = { x, y, active: inside, pressed: prev.pressed };
       // Only nudge a re-render when the pointer is actually inside
       // the canvas (or just left it). Pointer movement anywhere else
       // on the page has no bearing on what the pipeline produces, so
@@ -1108,11 +1246,38 @@ function EffectsShell({
       cursorRef.current = { ...prev, active: false };
       if (prev.active) scheduleBump();
     };
+    // Primary-button press that STARTS inside the preview canvas box =
+    // the drawing gesture (ctx.cursor.pressed — Cursor Trail Points).
+    // Capture phase so overlay handlers that preventDefault their
+    // pointerdown can't hide the press from the pipeline.
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const xr = (e.clientX - rect.left) / rect.width;
+      const yr = (e.clientY - rect.top) / rect.height;
+      if (xr < 0 || xr > 1 || yr < 0 || yr > 1) return;
+      cursorRef.current = { ...cursorRef.current, pressed: true };
+      scheduleBump();
+    };
+    const onUp = () => {
+      const prev = cursorRef.current;
+      if (!prev.pressed) return;
+      cursorRef.current = { ...prev, pressed: false };
+      scheduleBump();
+    };
     window.addEventListener("pointermove", onMove);
     document.addEventListener("pointerleave", onLeave);
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
     return () => {
       window.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerleave", onLeave);
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
       if (rafId != null) cancelAnimationFrame(rafId);
     };
   }, []);
@@ -1330,7 +1495,11 @@ function EffectsShell({
   // the just-restored canvas and swap it in.
   const onPaintRestore = useCallback(
     (nodeId: string, canvas: HTMLCanvasElement) => {
-      createImageBitmap(canvas).then((bmp) => {
+      // premultiplyAlpha "none": paint snapshots must be straight-alpha —
+      // WebGL ignores UNPACK_PREMULTIPLY_ALPHA_WEBGL for ImageBitmaps, and a
+      // premultiplied upload double-applies alpha downstream (grey fringes
+      // on soft strokes). Matches paint-editor/PaintOverlay's snapshot().
+      createImageBitmap(canvas, { premultiplyAlpha: "none" }).then((bmp) => {
         setNodes((prev) =>
           prev.map((n) =>
             n.id === nodeId
@@ -1586,6 +1755,27 @@ function EffectsShell({
         wedgeIndexRef.current
       );
       const inspectSet = inspectIdsRef.current;
+      // Socket peek: force the peeked node to evaluate (it may be on a
+      // disconnected branch) and mark the hovered handle consumed so
+      // consumedOutputs-gating nodes build it. Skipped during offline
+      // export — no popover is visible and the forced branch would only
+      // slow the render.
+      const peek = offlineRenderingRef.current ? null : socketPeekRef.current;
+      const peekOpts = peek
+        ? {
+            extraTargets: [peek.nodeId],
+            extraConsumed: new Map([
+              [
+                peek.nodeId,
+                [
+                  peek.handle === "out:primary"
+                    ? "primary"
+                    : peek.handle.replace(/^out:/, ""),
+                ],
+              ],
+            ]),
+          }
+        : undefined;
       const result = evaluateGraph(
         graphNodes,
         graphEdges,
@@ -1593,9 +1783,13 @@ function EffectsShell({
         evalCacheRef.current,
         activeNodeId,
         inspectSet.size > 0 ? inspectSet : undefined,
-        previewNodeId
+        previewNodeId,
+        peekOpts
       );
       lastEvalOutputsRef.current = result.outputs;
+      // Re-render the peek popover with this pass's value (rAF-coalesced,
+      // same tick as the inspector popups).
+      if (peek) scheduleInspectBump();
       // Bail when the error set is unchanged. evaluateGraph returns a
       // fresh object every frame, so a naive setErrors(result.errors)
       // changes the reference every render — and triggers the
@@ -2004,6 +2198,56 @@ function EffectsShell({
     (connection: Connection) => {
       pushGraph(getGraphSnapshot());
 
+      // Piping an EXTERIOR node into an Iteration Output absorbs it —
+      // and its iteration-dependent upstream chain (the nodes with
+      // pending index/t/random wires) — into the zone
+      // (071926_iterate-zone-view.md: build outside, pipe in, the
+      // highlight grows). Land the wire first (virtual mint or plain
+      // edge), then expand membership; crossing edges heal through the
+      // boundary machinery inside the absorb op.
+      {
+        const tgt = nodesRef.current.find((n) => n.id === connection.target);
+        const src = nodesRef.current.find((n) => n.id === connection.source);
+        if (
+          tgt?.data.defType === ITERATE_TYPE &&
+          src &&
+          src.data.parentId === tgt.data.parentId
+        ) {
+          const base = connectToVirtualSocket(
+            nodesRef.current,
+            edgesRef.current,
+            connection
+          ) ?? {
+            nodes: nodesRef.current,
+            edges: [
+              ...edgesRef.current.filter(
+                (e) =>
+                  !(
+                    e.target === connection.target &&
+                    e.targetHandle === connection.targetHandle
+                  )
+              ),
+              {
+                id: newEdgeId(),
+                source: connection.source,
+                sourceHandle: connection.sourceHandle,
+                target: connection.target,
+                targetHandle: connection.targetHandle,
+              },
+            ],
+          };
+          const absorbed = absorbIntoIterateZone(
+            base.nodes,
+            base.edges,
+            tgt.id,
+            src.id
+          );
+          setNodes(absorbed?.nodes ?? base.nodes);
+          setEdges(absorbed?.edges ?? base.edges);
+          return;
+        }
+      }
+
       // Wiring into a virtual boundary socket (Group Input / Group
       // Output's trailing "+") mints a real socket typed after the far
       // end and lands the edge there instead.
@@ -2015,6 +2259,22 @@ function EffectsShell({
       if (virtual) {
         setNodes(virtual.nodes);
         setEdges(virtual.edges);
+        return;
+      }
+
+      // A wire drawn across an Iterate zone's boundary auto-mints the
+      // boundary socket and routes through it
+      // (071926_iterate-zone-view.md — auto-interface).
+      const zoneRouted = connectAcrossIterateBoundary(
+        nodesRef.current,
+        edgesRef.current,
+        connection
+      );
+      if (zoneRouted) {
+        // No toast needed — the minted boundary socket + the two landed
+        // wires make the routing visible in place.
+        setNodes(zoneRouted.nodes);
+        setEdges(zoneRouted.edges);
         return;
       }
 
@@ -2212,11 +2472,25 @@ function EffectsShell({
 
   // Declared up here (ahead of the clipboard / structural handlers that
   // consume them) — a brief status toast and the group-scope navigation
-  // primitives.
+  // primitives. The toast renders as a compact chip in the MenuBar's
+  // right cluster (left of the account button); every message is also
+  // appended to `consoleLog`, the history shown by the chip's draggable
+  // console window (MessageConsole.tsx).
   const [toast, setToast] = useState<string | null>(null);
+  const [consoleLog, setConsoleLog] = useState<ConsoleEntry[]>([]);
+  const consoleIdRef = useRef(0);
   const toastTimeoutRef = useRef<number | null>(null);
   const flashToast = useCallback((message: string) => {
     setToast(message);
+    setConsoleLog((prev) => {
+      const next = prev.concat({
+        id: ++consoleIdRef.current,
+        text: message,
+        at: Date.now(),
+      });
+      // Cap the history so a long session can't grow it unbounded.
+      return next.length > 200 ? next.slice(next.length - 200) : next;
+    });
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     toastTimeoutRef.current = window.setTimeout(() => setToast(null), 1500);
   }, []);
@@ -2276,6 +2550,33 @@ function EffectsShell({
     const g = nodesRef.current.find((n) => n.id === cur);
     navigateScope(g?.data.parentId);
   }, [navigateScope]);
+
+  // Zone-view drop-to-reparent (071926_iterate-zone-view.md): NodeEditor
+  // hit-tests the drag against expanded zone rects; legality
+  // (boundary/cycle/wire rules) lives in the pure graph-op.
+  const handleReparentNode = useCallback(
+    (nodeId: string, newParentId: string | undefined) => {
+      const res = reparentNode(
+        nodesRef.current,
+        edgesRef.current,
+        nodeId,
+        newParentId
+      );
+      if (!res) {
+        flashToast("can't cross the zone boundary with wires attached");
+        return;
+      }
+      pushGraph(getGraphSnapshot());
+      setNodes(res.nodes);
+      const shell = nodesRef.current.find((n) => n.id === newParentId);
+      flashToast(
+        shell?.data.defType === ITERATE_TYPE
+          ? "moved into the zone"
+          : "moved out of the zone"
+      );
+    },
+    [pushGraph, getGraphSnapshot, setNodes, flashToast]
+  );
 
   // If the scope group vanishes from the graph (undo of the group's
   // creation, deletion from outside, project load), fall back to root.
@@ -2465,6 +2766,39 @@ function EffectsShell({
       return await new Promise<Blob | null>((resolve) => {
         tmp.toBlob((b) => resolve(b), "image/png");
       });
+    },
+    []
+  );
+
+  // Read the Keyer node's wired input image as CPU pixels for the
+  // draw-to-sample overlay (sample mode). Reads the upstream's last eval
+  // output — same freshness contract as getRefImageBlob — through
+  // readImagePixels (the sanctioned readback; blitToCanvas+getImageData
+  // resizes the engine's hidden canvas). Downsampled: color sampling
+  // doesn't need full res, and the stroke captures once per pointerdown.
+  const getKeyerSourcePixels = useCallback(
+    (keyerNodeId: string): KeyerSourcePixels | null => {
+      const inEdge = edgesRef.current.find(
+        (e) => e.target === keyerNodeId && e.targetHandle === "in:image"
+      );
+      if (!inEdge) return null;
+      const out =
+        evalCacheRef.current.get(inEdge.source)?.output ??
+        lastEvalOutputsRef.current?.get(inEdge.source);
+      const handle = inEdge.sourceHandle ?? "out:primary";
+      const val = handle.startsWith("out:aux:")
+        ? out?.aux?.[handle.slice("out:aux:".length)]
+        : out?.primary;
+      if (!val || typeof val !== "object" || !("kind" in val)) return null;
+      if (val.kind !== "image") return null;
+      const backend = backendRef.current;
+      if (!backend) return null;
+      const ctx = backend.makeContext(0, 0);
+      const scale = Math.min(1, 512 / Math.max(val.width, val.height));
+      const w = Math.max(1, Math.round(val.width * scale));
+      const h = Math.max(1, Math.round(val.height * scale));
+      const data = ctx.readImagePixels(val, w, h);
+      return data ? { data, width: w, height: h } : null;
     },
     []
   );
@@ -2734,6 +3068,20 @@ function EffectsShell({
         setNodes(res.nodes);
         setEdges(res.edges);
         setSelectedId(res.layerId);
+        setParamView("node");
+        return;
+      }
+
+      // Compound: "iterate" creates the Iterate shell + its boundary
+      // trio in the current scope (071826_iterate-node.md). The body
+      // renders inline as a zone immediately (071926_iterate-zone-view.md)
+      // — build the varied subgraph right there. Auto-wire doesn't apply
+      // — the shell has no sockets until the user mints them inside.
+      if (type === "iterate") {
+        const { iterate, iterateInput } = makeIterateNodes(pos);
+        iterate.data.parentId = currentGroupIdRef.current;
+        setNodes((prev) => [...prev, iterate, iterateInput]);
+        setSelectedId(iterateInput.id);
         setParamView("node");
         return;
       }
@@ -5162,8 +5510,9 @@ function EffectsShell({
   } | null>(null);
   const queueRenderingRef = useRef(false);
 
-  // Drives the save/load progress banner. `progress` is a 0..1 value; the
-  // banner renders it as a percentage plus a thin fill bar.
+  // Drives the save/load progress readout in the MenuBar's status chip
+  // (MessageConsole). `progress` is a 0..1 value; the chip renders it as
+  // a spinner + percentage plus a thin fill bar.
   const [progressStatus, setProgressStatus] = useState<{
     label: string;
     progress: number;
@@ -5172,7 +5521,7 @@ function EffectsShell({
 
   // Nodes that do async work (model downloads, etc.) dispatch
   // `node-progress` events. EffectsApp listens and forwards to the same
-  // banner used for save/load so the user gets consistent progress UX
+  // chip used for save/load so the user gets consistent progress UX
   // regardless of which subsystem is loading.
   useEffect(() => {
     const onProgress = (e: Event) => {
@@ -5322,15 +5671,35 @@ function EffectsShell({
   // edges with a hidden endpoint hide automatically). Identity is
   // preserved for nodes whose flag is already correct so React Flow
   // only re-renders on actual scope changes.
+  //
+  // Iterate zone (071926_iterate-zone-view.md): an Iterate shell ALWAYS
+  // renders its children inline in its own scope (positions are already
+  // parent-space — scoping is purely a visibility filter), so
+  // visibility recurses through Iterate shells. There is no collapsed
+  // view and no diving in; membership stays parentId.
   const scopedNodes = useMemo(() => {
     const typeById = new Map(nodes.map((n) => [n.id, n.data.defType]));
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const visibleCache = new Map<string, boolean>();
+    const isVisible = (n: (typeof nodes)[number]): boolean => {
+      const cached = visibleCache.get(n.id);
+      if (cached !== undefined) return cached;
+      let v: boolean;
+      if (n.data.parentId === currentGroupId) {
+        // Direct scope: comp filter only bites at root, where every
+        // comp's root nodes otherwise coexist.
+        v = belongsToComposition(n, activeCompositionId);
+      } else {
+        // Zone-visible: parent is an Iterate shell that is itself
+        // visible.
+        const p = n.data.parentId ? byId.get(n.data.parentId) : undefined;
+        v = !!p && p.data.defType === ITERATE_TYPE && isVisible(p);
+      }
+      visibleCache.set(n.id, v);
+      return v;
+    };
     return nodes.map((n) => {
-      // Hidden unless it's in the current scope AND the active composition
-      // (the comp filter only bites at root, where every comp's root nodes
-      // otherwise coexist; inside a layer the parent check already scopes).
-      const hidden =
-        n.data.parentId !== currentGroupId ||
-        !belongsToComposition(n, activeCompositionId);
+      const hidden = !isVisible(n);
       const disp = layerDisplayFor(n, typeById);
       const sameHidden = !!n.hidden === hidden;
       const sameName = n.data.displayName === disp.displayName;
@@ -5532,18 +5901,13 @@ function EffectsShell({
     if (node.data.defType === "output") return node.data.params;
     // Layer Output (the fixed group-output inside a layer): render the layer's
     // interior (forcedTerminal remaps to the interior producer) using the
-    // active composition's Output settings. See #159 / M5b.
+    // layer's OWN export settings, stored on the node instance — independent
+    // of the composition Output. See 071526_layer-output-export-settings.md.
     if (
       node.data.defType === GROUP_OUTPUT_TYPE &&
       (node.data.params as { fixed?: boolean })?.fixed === true
     ) {
-      const out = nodesRef.current.find(
-        (n) =>
-          n.data.defType === "output" &&
-          !n.data.parentId &&
-          belongsToComposition(n, activeCompositionIdRef.current)
-      );
-      return out?.data.params ?? null;
+      return node.data.params;
     }
     return null;
   }, []);
@@ -5644,7 +6008,12 @@ function EffectsShell({
       }
       const format = (params.imageFormat as string) ?? "png";
       const quality = (params.imageQuality as number) ?? 0.92;
-      const base = sanitizeFilename((params.filename as string) ?? "");
+      // {i} tokens resolve to 0 in a single render — never leak literally.
+      const base = resolveWedgeName(
+        sanitizeFilename((params.filename as string) ?? ""),
+        0,
+        1
+      );
       const mime = `image/${format}`;
       const useQuality = format === "jpeg" || format === "webp";
       canvas.toBlob(
@@ -5717,7 +6086,13 @@ function EffectsShell({
       // start/end in project.ts, but read it as a fallback here too).
       const { startFrame, durationFrames } = resolveFrameRange(params);
       const bitrateMbps = (params.videoBitrateMbps as number) ?? 16;
-      const base = sanitizeFilename((params.filename as string) ?? "");
+      // {i} tokens resolve to 0 in a single render (batch runs name their
+      // files in the driver via `sink`, so this base is single-render only).
+      const base = resolveWedgeName(
+        sanitizeFilename((params.filename as string) ?? ""),
+        0,
+        1
+      );
       const previewFps = fpsRef.current;
       const exportFps =
         quality === "fast"
@@ -6082,64 +6457,15 @@ function EffectsShell({
     [getOutputParams]
   );
 
-  // Wedge batch size for an Output: flatten (so wedges inside groups/layers
-  // and wires into exposed params are plain edges), then reverse-BFS from the
-  // Output — the same reachability walk evaluation uses, so a wedge counts
-  // exactly when it can affect the rendered image. Batches ZIP across wedges:
-  // size = max(counts); each wedge clamps the shared index to its own count
-  // (last value holds). 1 = no batch. Note: a Layer Output's fixed
-  // group-output id dissolves in the flatten pass, so wedge batching applies
-  // to real Output nodes only — layer-output exports fall through to the
-  // plain single-render path.
-  const resolveWedgeBatch = useCallback((outputNodeId: string) => {
-    const { nodes: compNodes, edges: compEdges } = resolveComposition(
-      nodesRef.current,
-      edgesRef.current,
-      activeCompositionIdRef.current
-    );
-    const graphNodes: GraphNode[] = compNodes.map((n) => ({
-      id: n.id,
-      type: n.data.defType,
-      parentId: n.data.parentId,
-      params: n.data.params,
-      exposedParams: n.data.exposedParams,
-      animation: n.data.animation,
-      clips: n.data.clips,
-      bypassed: !!n.data.bypassed,
-    }));
-    const graphEdges: GraphEdge[] = compEdges.map((e) => ({
-      id: e.id,
-      source: e.source,
-      sourceHandle: e.sourceHandle ?? "out:primary",
-      target: e.target,
-      targetHandle: e.targetHandle ?? "in:image",
-    }));
-    const flat = flattenGraph(graphNodes, graphEdges);
-    const byId = new Map(flat.nodes.map((n) => [n.id, n]));
-    const incoming = new Map<string, string[]>();
-    for (const e of flat.edges) {
-      const list = incoming.get(e.target);
-      if (list) list.push(e.source);
-      else incoming.set(e.target, [e.source]);
-    }
-    let count = 1;
-    const seen = new Set<string>([outputNodeId]);
-    const stack = [outputNodeId];
-    while (stack.length) {
-      const id = stack.pop()!;
-      const node = byId.get(id);
-      if (node?.type === WEDGE_TYPE && !node.bypassed) {
-        count = Math.max(count, wedgeIterationCount(node.params));
-      }
-      for (const src of incoming.get(id) ?? []) {
-        if (!seen.has(src)) {
-          seen.add(src);
-          stack.push(src);
-        }
-      }
-    }
-    return count;
-  }, []);
+  // Wedge batch for an Output — count + the reachable wedges (for
+  // {wedge:Name} filename tokens). The real work is the shared pure helper
+  // in lib/wedge-batch.ts (the UI readouts use it too); this wrapper just
+  // binds the live graph refs.
+  const resolveWedgeBatch = useCallback(
+    (outputNodeId: string): WedgeBatchInfo =>
+      resolveWedgeBatchInfo(nodesRef.current, edgesRef.current, outputNodeId),
+    []
+  );
 
   // Standalone Export with wedges upstream: render the whole tree once per
   // variation (ctx.wedgeIndex stepping 0..count−1 via wedgeIndexRef) and
@@ -6151,7 +6477,8 @@ function EffectsShell({
   // wedge render once and stay cached for the whole batch.
   const exportWedged = useCallback(
     async (nodeId: string, kind: "image" | "video") => {
-      const total = resolveWedgeBatch(nodeId);
+      const batch = resolveWedgeBatch(nodeId);
+      const total = batch.count;
       if (total <= 1) {
         if (kind === "image") exportImage(nodeId);
         else await exportVideo(nodeId);
@@ -6194,7 +6521,12 @@ function EffectsShell({
             }
           }
           if (!out.blob) continue;
-          const resolved = resolveWedgeName(rawBase, v, total);
+          const resolved = resolveWedgeName(
+            rawBase,
+            v,
+            total,
+            wedgeTokensAt(batch, v)
+          );
           let name = `${resolved}.${out.ext}`;
           let n = 2;
           while (usedNames.has(name)) name = `${resolved}-${n++}.${out.ext}`;
@@ -6257,8 +6589,12 @@ function EffectsShell({
         sanitizeFilename((params.filename as string) ?? "") ||
         defaultFilename(format).replace(/\.[^.]+$/, "");
       const pad = Math.max(4, String(Math.max(0, endFrame - 1)).length);
-      const nameFor = (frame: number) =>
-        `${base}.${String(frame).padStart(pad, "0")}.${format}`;
+      // Wedge variations: the whole frame range renders once per variation,
+      // with the variation's iterated base naming its frames. All variations
+      // share ONE delivery — a single zip / one picked folder — so a batch is
+      // one download, not N.
+      const batch = resolveWedgeBatch(nodeId);
+      const wedgeTotal = batch.count;
 
       // Folder mode: prompt for a destination up front. Native = OS folder
       // dialog; web = File System Access (Chromium only).
@@ -6281,46 +6617,58 @@ function EffectsShell({
       setRecording({ mode: "offline", label: "Preparing…", progress: 0 });
 
       const collected: { blob: Blob; name: string }[] = [];
+      const totalFrames = wedgeTotal * durationFrames;
       let written = 0;
       try {
-        for (let i = 0; i < durationFrames; i++) {
-          const frame = startFrame + i;
-          const t = frame / fps;
-          setTime(t);
-          // Two-pass deterministic render: issue any async media seeks, wait
-          // for them to settle, then render again so the encoder captures the
-          // correct frame (matches renderImageToBlobAtFrame / the exporters).
-          const backend = backendRef.current;
-          renderFrameRef.current?.(t, fps, true);
-          const settled = backend
-            ? await awaitMediaSettle(backend.state)
-            : false;
-          if (settled) renderFrameRef.current?.(t, fps, true);
-          // Yield so the GL commands flush before we read pixels back.
-          await new Promise<void>((r) => requestAnimationFrame(() => r()));
-          const blob = await new Promise<Blob | null>((res) =>
-            canvas.toBlob(
-              (b) => res(b),
-              `image/${format}`,
-              useQuality ? quality : undefined
-            )
+        for (let v = 0; v < wedgeTotal; v++) {
+          wedgeIndexRef.current = wedgeTotal > 1 ? v : undefined;
+          const vbase = resolveWedgeName(
+            base,
+            v,
+            wedgeTotal,
+            wedgeTokensAt(batch, v)
           );
-          if (blob) {
-            const name = nameFor(frame);
-            if (delivery === "folder" && folder) {
-              await folder.writeFile(name, blob);
-            } else if (delivery === "sequential") {
-              downloadBlob(blob, name);
-            } else {
-              collected.push({ blob, name });
+          const vprefix =
+            wedgeTotal > 1 ? `Variation ${v + 1}/${wedgeTotal} — ` : "";
+          for (let i = 0; i < durationFrames; i++) {
+            const frame = startFrame + i;
+            const t = frame / fps;
+            setTime(t);
+            // Two-pass deterministic render: issue any async media seeks, wait
+            // for them to settle, then render again so the encoder captures the
+            // correct frame (matches renderImageToBlobAtFrame / the exporters).
+            const backend = backendRef.current;
+            renderFrameRef.current?.(t, fps, true);
+            const settled = backend
+              ? await awaitMediaSettle(backend.state)
+              : false;
+            if (settled) renderFrameRef.current?.(t, fps, true);
+            // Yield so the GL commands flush before we read pixels back.
+            await new Promise<void>((r) => requestAnimationFrame(() => r()));
+            const blob = await new Promise<Blob | null>((res) =>
+              canvas.toBlob(
+                (b) => res(b),
+                `image/${format}`,
+                useQuality ? quality : undefined
+              )
+            );
+            if (blob) {
+              const name = `${vbase}.${String(frame).padStart(pad, "0")}.${format}`;
+              if (delivery === "folder" && folder) {
+                await folder.writeFile(name, blob);
+              } else if (delivery === "sequential") {
+                downloadBlob(blob, name);
+              } else {
+                collected.push({ blob, name });
+              }
+              written++;
             }
-            written++;
+            setRecording({
+              mode: "offline",
+              label: `${vprefix}Frame ${i + 1}/${durationFrames}`,
+              progress: (v * durationFrames + i + 1) / totalFrames,
+            });
           }
-          setRecording({
-            mode: "offline",
-            label: `Frame ${i + 1}/${durationFrames}`,
-            progress: (i + 1) / durationFrames,
-          });
         }
 
         if (delivery === "zip" && collected.length) {
@@ -6329,13 +6677,16 @@ function EffectsShell({
           const zip = new JSZip();
           for (const c of collected) zip.file(c.name, c.blob);
           const zipBlob = await zip.generateAsync({ type: "blob" });
-          downloadBlob(zipBlob, `${base}.zip`);
+          // One zip spans every variation, so its name strips {i} tokens
+          // rather than resolving them to a single index.
+          downloadBlob(zipBlob, `${stripWedgeTokens(base)}.zip`);
         }
         flashToast(`Rendered ${written} frame${written === 1 ? "" : "s"}`);
       } catch (err) {
         console.error("Sequence export failed:", err);
         flashToast(err instanceof Error ? err.message : "Sequence export failed");
       } finally {
+        wedgeIndexRef.current = undefined;
         offlineRenderingRef.current = false;
         forcedTerminalRef.current = null;
         setPlaying(savedPlaying);
@@ -6343,7 +6694,7 @@ function EffectsShell({
         setRecording(null);
       }
     },
-    [getOutputParams, flashToast]
+    [getOutputParams, resolveWedgeBatch, flashToast]
   );
 
   // Animated GIF export. Same deterministic offline render scaffold as
@@ -6391,28 +6742,51 @@ function EffectsShell({
         if (settled) renderFrameRef.current?.(t, exportFps, true);
       };
 
+      // Wedge variations: one GIF per variation, sequential downloads with
+      // iterated names (an unnamed batch still needs distinct names, so the
+      // Output's node name backstops the timestamp fallback).
+      const batch = resolveWedgeBatch(nodeId);
+      const wedgeTotal = batch.count;
+      const node = nodesRef.current.find((n) => n.id === nodeId);
+      const batchBase =
+        base || sanitizeFilename(node?.data.name ?? "") || "export";
+
       try {
         const { exportGif: runGifExport } = await import("@/lib/export-gif");
-        const result = await runGifExport({
-          canvas,
-          fps: exportFps,
-          durationFrames,
-          colors,
-          dither,
-          lossy,
-          transparent,
-          renderFrame: renderAt,
-          onProgress: (label, progress) =>
-            setRecording({ mode: "offline", label, progress }),
-        });
-        downloadBlob(
-          result.blob,
-          base ? `${base}.${result.ext}` : defaultFilename(result.ext)
-        );
+        for (let v = 0; v < wedgeTotal; v++) {
+          wedgeIndexRef.current = wedgeTotal > 1 ? v : undefined;
+          const vprefix =
+            wedgeTotal > 1 ? `Variation ${v + 1}/${wedgeTotal} — ` : "";
+          const result = await runGifExport({
+            canvas,
+            fps: exportFps,
+            durationFrames,
+            colors,
+            dither,
+            lossy,
+            transparent,
+            renderFrame: renderAt,
+            onProgress: (label, progress) =>
+              setRecording({
+                mode: "offline",
+                label: `${vprefix}${label}`,
+                progress,
+              }),
+          });
+          downloadBlob(
+            result.blob,
+            wedgeTotal > 1
+              ? `${resolveWedgeName(batchBase, v, wedgeTotal, wedgeTokensAt(batch, v))}.${result.ext}`
+              : base
+                ? `${resolveWedgeName(base, 0, 1)}.${result.ext}`
+                : defaultFilename(result.ext)
+          );
+        }
       } catch (err) {
         console.error("GIF export failed:", err);
         flashToast(err instanceof Error ? err.message : "GIF export failed");
       } finally {
+        wedgeIndexRef.current = undefined;
         offlineRenderingRef.current = false;
         forcedTerminalRef.current = null;
         setPlaying(savedPlaying);
@@ -6420,7 +6794,7 @@ function EffectsShell({
         setRecording(null);
       }
     },
-    [getOutputParams, flashToast]
+    [getOutputParams, resolveWedgeBatch, flashToast]
   );
 
   // Step the offline clock through a list of frames and hand the upstream
@@ -6545,61 +6919,96 @@ function EffectsShell({
       const usedNames = new Set<string>();
       const skipped: string[] = [];
       const total = resolved.length;
+      // Wedge variations multiply each row: an Output with wedges upstream
+      // renders once per variation into the same delivery. Resolved up front
+      // so the end-of-run toast can report files, not rows.
+      const wedgeBatches = resolved.map(({ output }) =>
+        output
+          ? resolveWedgeBatch(output.id)
+          : ({ count: 1, wedges: [] } as WedgeBatchInfo)
+      );
+      const totalFiles = wedgeBatches.reduce((a, b) => a + b.count, 0);
       try {
         for (let i = 0; i < resolved.length; i++) {
           const { item, output } = resolved[i];
           if (!output) continue;
-          setQueueProgress({
-            index: i,
-            total,
-            name: output.data.name ?? "output",
-            nodeId: queueNodeId,
-            itemId: item.id,
-          });
+          const displayName = output.data.name ?? "output";
           const p = output.data.params;
           const baseName =
             sanitizeFilename((p.filename as string) ?? "") ||
             (output.data.name ?? `item-${i + 1}`);
+          const wedgeBatch = wedgeBatches[i];
+          const wedgeTotal = wedgeBatch.count;
 
-          const out: { blob: Blob | null; ext: string } = {
-            blob: null,
-            ext: "",
-          };
-          if (item.kind === "video") {
-            await exportVideo(output.id, {
-              sink: (b, e) => {
-                out.blob = b;
-                out.ext = e;
-              },
+          for (let v = 0; v < wedgeTotal; v++) {
+            wedgeIndexRef.current = wedgeTotal > 1 ? v : undefined;
+            setQueueProgress({
+              index: i,
+              total,
+              name:
+                wedgeTotal > 1
+                  ? `${displayName} · ${v + 1}/${wedgeTotal}`
+                  : displayName,
+              nodeId: queueNodeId,
+              itemId: item.id,
             });
-          } else {
-            const r = await renderImageToBlobAtFrame(output.id, item.frame);
-            if (r) {
-              out.blob = r.blob;
-              out.ext = r.ext;
+
+            const out: { blob: Blob | null; ext: string } = {
+              blob: null,
+              ext: "",
+            };
+            if (item.kind === "video") {
+              await exportVideo(output.id, {
+                sink: (b, e) => {
+                  out.blob = b;
+                  out.ext = e;
+                },
+                labelPrefix:
+                  wedgeTotal > 1
+                    ? `Variation ${v + 1}/${wedgeTotal} — `
+                    : undefined,
+              });
+            } else {
+              const r = await renderImageToBlobAtFrame(output.id, item.frame);
+              if (r) {
+                out.blob = r.blob;
+                out.ext = r.ext;
+              }
+            }
+            if (!out.blob) {
+              // Render produced nothing (e.g. the offline encoder bailed).
+              // Record it so the end-of-run toast reports the gap instead of
+              // silently delivering a short batch.
+              skipped.push(
+                wedgeTotal > 1
+                  ? `${displayName} (variation ${v + 1})`
+                  : displayName
+              );
+              continue;
+            }
+
+            // Iterated name per variation ({i} tokens / auto _{i:3} suffix),
+            // then de-dupe within the batch.
+            const iterated = resolveWedgeName(
+              baseName,
+              v,
+              wedgeTotal,
+              wedgeTokensAt(wedgeBatch, v)
+            );
+            let name = `${iterated}.${out.ext}`;
+            let n = 2;
+            while (usedNames.has(name)) name = `${iterated}-${n++}.${out.ext}`;
+            usedNames.add(name);
+
+            if (delivery === "folder" && folder) {
+              await folder.writeFile(name, out.blob);
+            } else if (delivery === "sequential") {
+              downloadBlob(out.blob, name);
+            } else {
+              collected.push({ blob: out.blob, name });
             }
           }
-          if (!out.blob) {
-            // Render produced nothing (e.g. the offline encoder bailed). Record
-            // it so the end-of-run toast reports the gap instead of silently
-            // delivering a short batch.
-            skipped.push(output.data.name ?? `item ${i + 1}`);
-            continue;
-          }
-
-          // De-dupe filenames within the batch.
-          let name = `${baseName}.${out.ext}`;
-          let n = 2;
-          while (usedNames.has(name)) name = `${baseName}-${n++}.${out.ext}`;
-          usedNames.add(name);
-
-          if (delivery === "folder" && folder) {
-            await folder.writeFile(name, out.blob);
-          } else if (delivery === "sequential") {
-            downloadBlob(out.blob, name);
-          } else {
-            collected.push({ blob: out.blob, name });
-          }
+          wedgeIndexRef.current = undefined;
         }
 
         if (delivery === "zip" && collected.length) {
@@ -6622,19 +7031,26 @@ function EffectsShell({
         const done = usedNames.size;
         flashToast(
           skipped.length
-            ? `Rendered ${done}/${total} — ${skipped.length} failed: ${skipped.join(", ")}`
-            : `Rendered ${done} item${done === 1 ? "" : "s"}`
+            ? `Rendered ${done}/${totalFiles} — ${skipped.length} failed: ${skipped.join(", ")}`
+            : `Rendered ${done} file${done === 1 ? "" : "s"}`
         );
       } catch (err) {
         console.error("Render queue failed:", err);
         flashToast(err instanceof Error ? err.message : "Render queue failed");
       } finally {
+        wedgeIndexRef.current = undefined;
         queueRenderingRef.current = false;
         forcedTerminalRef.current = null;
         setQueueProgress(null);
       }
     },
-    [resolveQueueItems, exportVideo, renderImageToBlobAtFrame, flashToast]
+    [
+      resolveQueueItems,
+      resolveWedgeBatch,
+      exportVideo,
+      renderImageToBlobAtFrame,
+      flashToast,
+    ]
   );
 
   const onOpenExportApp = useCallback(
@@ -7376,7 +7792,7 @@ function EffectsShell({
       const conflict = findConflict(trimmed, currentProject.id);
       if (conflict) {
         // Overwrite flow: serialize current graph into the target row.
-        // Reuse the save-progress banner so the UX matches a save.
+        // Reuse the save-progress chip so the UX matches a save.
         try {
           const ok = await saveToRow(trimmed, "update", conflict.id);
           if (!ok) {
@@ -8011,6 +8427,18 @@ function EffectsShell({
       )
     : undefined;
 
+  // Draw-to-sample overlay: active whenever a Keyer node in sample mode is
+  // selected (the other modes are pointer-free). Dragging on the canvas
+  // scrubs colors from the node's input into its `sample_colors` param.
+  const activeKeyerNode = selectedId
+    ? nodes.find(
+        (n) =>
+          n.id === selectedId &&
+          n.data.defType === "keyer" &&
+          (n.data.params.mode as string) === "sample"
+      )
+    : undefined;
+
   // WebGPU Particle Test (Phase 0 spike). Presence-driven: the overlay
   // mounts whenever any node of this type exists in the graph, no
   // selection required. We only support one at a time — extras would
@@ -8099,6 +8527,7 @@ function EffectsShell({
       onGroupSelection={handleGroupSelection}
       onUngroupSelection={handleUngroupSelection}
       onDiveIntoGroup={handleDiveIntoGroup}
+      onReparentNode={handleReparentNode}
       onScopeUp={handleScopeUp}
       breadcrumbs={breadcrumbs}
       onNavigateScope={handleNavigateScope}
@@ -8106,8 +8535,9 @@ function EffectsShell({
       atRoot={currentGroupId == null}
       frameSignal={frameGraphSignal}
       viewportOverlay={
-        inspectIds.length > 0
-          ? inspectIds.map((id) => {
+        inspectIds.length > 0 || socketPeek ? (
+          <>
+            {inspectIds.map((id) => {
               const n = nodes.find((x) => x.id === id);
               if (!n) return null;
               void inspectTick;
@@ -8118,8 +8548,38 @@ function EffectsShell({
                   snapshot={inspectSnapshotsRef.current.get(id)}
                 />
               );
-            })
-          : null
+            })}
+            {(() => {
+              if (!socketPeek) return null;
+              const n = nodes.find((x) => x.id === socketPeek.nodeId);
+              if (!n) return null;
+              // Re-read on every inspect bump — each eval refreshes the
+              // popover with the value it just produced.
+              void inspectTick;
+              const out =
+                evalCacheRef.current.get(socketPeek.nodeId)?.output ??
+                lastEvalOutputsRef.current?.get(socketPeek.nodeId);
+              const value =
+                socketPeek.handle === "out:primary"
+                  ? out?.primary
+                  : out?.aux?.[socketPeek.handle.slice("out:aux:".length)];
+              return (
+                <SocketPeekPopover
+                  key={`peek-${socketPeek.nodeId}-${socketPeek.handle}`}
+                  node={n}
+                  handle={socketPeek.handle}
+                  anchorY={socketPeek.anchorY}
+                  value={value}
+                  evaluated={!!out}
+                  canvasAspect={canvasRes[0] / canvasRes[1]}
+                  readPixels={readPeekPixels}
+                  onPointerEnter={holdSocketPeek}
+                  onPointerLeave={clearSocketPeek}
+                />
+              );
+            })()}
+          </>
+        ) : null
       }
         />
       </div>
@@ -8585,6 +9045,9 @@ function EffectsShell({
         onOpenUserPreferences={() => setUserPrefsOpen(true)}
         mcpStatus={mcp.status.state}
         onToggleMcpBridge={mcp.toggle}
+        statusToast={toast}
+        consoleLog={consoleLog}
+        progressStatus={progressStatus}
       />
       </div>
       </div>
@@ -8794,6 +9257,7 @@ function EffectsShell({
               nodeId={activePaintNode.id}
               params={activePaintNode.data.params}
               canvasRes={canvasRes}
+              previewCanvas={canvasRef.current}
               onParamChange={onParamChange}
               onStrokeCommit={(nodeId, canvas, before) =>
                 pushPaint({ nodeId, canvas, imageData: before })
@@ -8878,6 +9342,22 @@ function EffectsShell({
                   );
                 }
               }}
+            />
+          )}
+          {activeKeyerNode && backendReady && (
+            <KeyerSampleOverlay
+              canvas={canvasRef.current}
+              colors={
+                Array.isArray(activeKeyerNode.data.params.sample_colors)
+                  ? (activeKeyerNode.data.params.sample_colors as string[])
+                  : []
+              }
+              onChange={(next) =>
+                onParamChange(activeKeyerNode.id, "sample_colors", next)
+              }
+              getSourcePixels={() =>
+                getKeyerSourcePixels(activeKeyerNode.id)
+              }
             />
           )}
           {backendReady && transformGizmoNodes.map((gizmoNode) => (
@@ -8989,7 +9469,6 @@ function EffectsShell({
           )}
           {recording && <RecordingBanner state={recording} />}
           {queueProgress && <QueueBanner state={queueProgress} />}
-          {progressStatus && <ProgressBanner status={progressStatus} />}
           <MediaRelinkModal
             open={relinkItems.length > 0}
             items={relinkItems}
@@ -8997,27 +9476,6 @@ function EffectsShell({
             onRelink={relinkMissingMedia}
             onClose={() => setRelinkItems([])}
           />
-          {toast && (
-            <div
-              style={{
-                position: "absolute",
-                top: 20,
-                left: 20,
-                padding: "4px 10px",
-                background: "rgba(22, 163, 74, 0.95)",
-                color: "#dcfce7",
-                border: "1px solid #22c55e",
-                borderRadius: 4,
-                fontFamily: "ui-monospace, monospace",
-                fontSize: 11,
-                letterSpacing: 0.5,
-                boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
-                pointerEvents: "none",
-              }}
-            >
-              {toast}
-            </div>
-          )}
         </div>
       </section>
 
@@ -9328,72 +9786,6 @@ function newSaveHint(
     return `Saving will fork a private copy named "${currentProject.name}_copy".`;
   }
   return `Save will overwrite "${currentProject.name}".`;
-}
-
-function ProgressBanner({
-  status,
-}: {
-  status: { label: string; progress: number; tone: "save" | "load" };
-}) {
-  const pct = Math.max(0, Math.min(100, Math.round(status.progress * 100)));
-  const isSave = status.tone === "save";
-  const bg = isSave ? "rgba(22, 163, 74, 0.9)" : "rgba(37, 99, 235, 0.9)";
-  const border = isSave ? "#22c55e" : "#3b82f6";
-  const fillFg = isSave ? "#86efac" : "#93c5fd";
-  return (
-    <div
-      style={{
-        position: "absolute",
-        top: 20,
-        left: "50%",
-        transform: "translateX(-50%)",
-        minWidth: 160,
-        padding: "6px 12px",
-        background: bg,
-        color: "#f0fdf4",
-        border: `1px solid ${border}`,
-        borderRadius: 4,
-        fontFamily: "ui-monospace, monospace",
-        fontSize: 11,
-        letterSpacing: 0.5,
-        boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
-        pointerEvents: "none",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-        }}
-      >
-        <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          <Spinner size={12} stroke={2} color="#f0fdf4" arc={0.28} />
-          {status.label}
-        </span>
-        <span style={{ fontVariantNumeric: "tabular-nums" }}>{pct}%</span>
-      </div>
-      <div
-        style={{
-          marginTop: 4,
-          height: 3,
-          background: "rgba(0,0,0,0.35)",
-          borderRadius: 2,
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            width: `${pct}%`,
-            height: "100%",
-            background: fillFg,
-            transition: "width 80ms linear",
-          }}
-        />
-      </div>
-    </div>
-  );
 }
 
 // Pan/zoom state for one preview viewport. Owns its own ref + state so
@@ -10142,6 +10534,15 @@ function DockButton({
 // Outer batch banner for the Render Queue — sits just above the per-item
 // RecordingBanner so the user sees both "Item 2/5" and that item's own
 // progress at once.
+// {wedge:Name} filename-token sources for batch iteration `v` — each
+// reachable wedge's display name paired with its value at that iteration.
+function wedgeTokensAt(batch: WedgeBatchInfo, v: number): WedgeTokenSource[] {
+  return batch.wedges.map((w) => ({
+    name: w.name,
+    value: wedgeTokenValue(w.params, v),
+  }));
+}
+
 function QueueBanner({
   state,
 }: {

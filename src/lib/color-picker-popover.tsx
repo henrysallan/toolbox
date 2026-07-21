@@ -28,13 +28,39 @@ function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
-function normalizeHex(s: string): string | null {
+// Local twin of param-controls' normalizeHex/hexAlpha01/withHexAlpha —
+// param-controls imports ColorSwatchPicker from here, so importing back
+// would cycle. Same contract: alpha-enabled hosts keep an 8-digit
+// `#rrggbbaa` (opaque `ff` collapses to 6-digit); everyone else strips.
+function normalizeHex(s: string, opts?: { alpha?: boolean }): string | null {
   let h = s.trim().replace(/^#/, "");
   if (/^[0-9a-fA-F]{3}$/.test(h)) h = h.split("").map((c) => c + c).join("");
+  else if (opts?.alpha && /^[0-9a-fA-F]{4}$/.test(h))
+    h = h.split("").map((c) => c + c).join("");
   if (/^[0-9a-fA-F]{6}$/.test(h)) return "#" + h.toLowerCase();
-  if (/^[0-9a-fA-F]{8}$/.test(h)) return "#" + h.slice(0, 6).toLowerCase();
+  if (/^[0-9a-fA-F]{8}$/.test(h)) {
+    if (opts?.alpha && !/ff$/i.test(h)) return "#" + h.toLowerCase();
+    return "#" + h.slice(0, 6).toLowerCase();
+  }
   return null;
 }
+
+function hexAlpha01(hex: string): number {
+  const h = hex.replace("#", "");
+  if (h.length < 8) return 1;
+  const a = parseInt(h.slice(6, 8), 16);
+  return Number.isFinite(a) ? a / 255 : 1;
+}
+
+function withHexAlpha(hex6: string, a01: number): string {
+  const byte = Math.max(0, Math.min(255, Math.round(a01 * 255)));
+  if (byte >= 255) return hex6;
+  return hex6 + byte.toString(16).padStart(2, "0");
+}
+
+// Checkerboard underlay that makes translucency visible on swatches and
+// the alpha strip (layered UNDER a color gradient via multi-background).
+const CHECKER = "repeating-conic-gradient(#52525b 0% 25%, #27272a 0% 50%)";
 
 // HSV (h 0..360, s/v 0..1) <-> hex. Pickers conventionally work in HSV —
 // the SV square maps x → saturation, y → value.
@@ -88,9 +114,11 @@ interface EyeDropperCtor {
 }
 
 // Popover footprint — the portal wrapper uses these to clamp/flip against
-// the viewport. Keep in sync with the layout below.
+// the viewport. Keep in sync with the layout below (the alpha variant
+// adds the alpha strip row + its gap).
 export const PICKER_WIDTH = 184;
 export const PICKER_HEIGHT = 172;
+export const PICKER_HEIGHT_ALPHA = PICKER_HEIGHT + 18;
 
 export function ColorPickerPopover({
   value,
@@ -98,6 +126,7 @@ export function ColorPickerPopover({
   onClose,
   style,
   ignoreRefs,
+  alpha = false,
 }: {
   value: string;
   onChange: (hex: string) => void;
@@ -107,9 +136,12 @@ export function ColorPickerPopover({
   // Elements exempt from the outside-press dismiss — pass the opener
   // button so its click can TOGGLE the popover instead of close+reopen.
   ignoreRefs?: Array<React.RefObject<HTMLElement | null>>;
+  // Alpha-enabled hosts (ParamDef.alpha colors): adds an alpha strip and
+  // emits 8-digit `#rrggbbaa` while translucent.
+  alpha?: boolean;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const hex = normalizeHex(value) ?? "#ffffff";
+  const hex = normalizeHex(value, { alpha }) ?? "#ffffff";
 
   // Local HSV + hex-draft state so drags and partial typing don't fight
   // the controlled value (same resync pattern as ColorControl): an
@@ -118,29 +150,33 @@ export function ColorPickerPopover({
   const [hsv, setHsv] = useState<[number, number, number]>(() =>
     hexToHsv(hex)
   );
+  const [a01, setA01] = useState(() => hexAlpha01(hex));
   const [hexDraft, setHexDraft] = useState(hex);
   const lastHexRef = useRef(hex);
   useEffect(() => {
     if (hex !== lastHexRef.current) {
       lastHexRef.current = hex;
       setHsv(hexToHsv(hex));
+      setA01(hexAlpha01(hex));
       setHexDraft(hex);
     }
   }, [hex]);
 
   const emit = useCallback(
-    (next: [number, number, number]) => {
+    (next: [number, number, number], nextA: number) => {
       setHsv(next);
-      const nextHex = hsvToHex(next[0], next[1], next[2]);
+      setA01(nextA);
+      const rgb = hsvToHex(next[0], next[1], next[2]);
+      const nextHex = alpha ? withHexAlpha(rgb, nextA) : rgb;
       lastHexRef.current = nextHex;
       setHexDraft(nextHex);
       onChange(nextHex);
     },
-    [onChange]
+    [onChange, alpha]
   );
 
   const commitHex = (raw: string) => {
-    const norm = normalizeHex(raw);
+    const norm = normalizeHex(raw, { alpha });
     if (!norm) {
       setHexDraft(lastHexRef.current);
       return;
@@ -148,6 +184,7 @@ export function ColorPickerPopover({
     lastHexRef.current = norm;
     setHexDraft(norm);
     setHsv(hexToHsv(norm));
+    setA01(hexAlpha01(norm));
     onChange(norm);
   };
 
@@ -209,6 +246,11 @@ export function ColorPickerPopover({
 
   const [h, s, v] = hsv;
   const hueColor = hsvToHex(h, 1, 1);
+  // Current color sans/with alpha, from committed state (not the hex
+  // draft, which may be mid-typing garbage) — drives the alpha strip
+  // gradient and the preview swatch.
+  const rgbCur = hsvToHex(h, s, v);
+  const previewHex = alpha ? withHexAlpha(rgbCur, a01) : rgbCur;
   const eyeDropperCtor = (
     globalThis as { EyeDropper?: EyeDropperCtor }
   ).EyeDropper;
@@ -252,7 +294,9 @@ export function ColorPickerPopover({
     >
       {/* Saturation (x) / value (y) square over the current hue. */}
       <div
-        onPointerDown={(e) => startDrag(e, (nx, ny) => emit([h, nx, 1 - ny]))}
+        onPointerDown={(e) =>
+          startDrag(e, (nx, ny) => emit([h, nx, 1 - ny], a01))
+        }
         style={{
           position: "relative",
           height: 110,
@@ -282,7 +326,7 @@ export function ColorPickerPopover({
       </div>
       {/* Hue strip. */}
       <div
-        onPointerDown={(e) => startDrag(e, (nx) => emit([nx * 360, s, v]))}
+        onPointerDown={(e) => startDrag(e, (nx) => emit([nx * 360, s, v], a01))}
         style={{
           position: "relative",
           height: 12,
@@ -308,17 +352,62 @@ export function ColorPickerPopover({
           }}
         />
       </div>
+      {/* Alpha strip — transparent→current color over a checkerboard. */}
+      {alpha && (
+        <div
+          onPointerDown={(e) => startDrag(e, (nx) => emit(hsv, nx))}
+          style={{
+            position: "relative",
+            height: 12,
+            borderRadius: 3,
+            background: `linear-gradient(to right, ${rgbCur}00, ${rgbCur}), ${CHECKER}`,
+            backgroundSize: "auto, 8px 8px",
+            cursor: "ew-resize",
+            touchAction: "none",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              left: `${a01 * 100}%`,
+              top: -2,
+              width: 4,
+              height: 16,
+              transform: "translateX(-50%)",
+              borderRadius: 2,
+              background: "#fff",
+              boxShadow: "0 0 0 1px rgba(0,0,0,0.6)",
+              pointerEvents: "none",
+            }}
+          />
+        </div>
+      )}
       <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
         <span
           aria-hidden
-          style={{
-            width: 18,
-            height: 18,
-            flexShrink: 0,
-            borderRadius: 3,
-            background: hexDraft,
-            border: "1px solid #3f3f46",
-          }}
+          style={
+            alpha
+              ? {
+                  width: 18,
+                  height: 18,
+                  flexShrink: 0,
+                  borderRadius: 3,
+                  // Composed from committed state (hexDraft may be
+                  // mid-typing garbage); layered over the checkerboard
+                  // so translucency reads at a glance.
+                  background: `linear-gradient(${previewHex}, ${previewHex}), ${CHECKER}`,
+                  backgroundSize: "auto, 6px 6px",
+                  border: "1px solid #3f3f46",
+                }
+              : {
+                  width: 18,
+                  height: 18,
+                  flexShrink: 0,
+                  borderRadius: 3,
+                  background: hexDraft,
+                  border: "1px solid #3f3f46",
+                }
+          }
         />
         <input
           type="text"
@@ -340,7 +429,13 @@ export function ColorPickerPopover({
             onClick={() => {
               new eyeDropperCtor()
                 .open()
-                .then((res) => commitHex(res.sRGBHex))
+                // EyeDropper only reports opaque sRGB — keep the current
+                // alpha rather than resetting it to 1.
+                .then((res) =>
+                  commitHex(
+                    alpha ? withHexAlpha(res.sRGBHex, a01) : res.sRGBHex
+                  )
+                )
                 .catch(() => {
                   /* user canceled — no-op */
                 });
@@ -381,16 +476,23 @@ export function ColorSwatchPicker({
   onChange,
   title = "Pick a color",
   swatchStyle,
+  alpha = false,
+  disabled = false,
 }: {
   value: string;
   onChange: (hex: string) => void;
   title?: string;
   swatchStyle?: React.CSSProperties;
+  // Alpha-enabled hosts: checkerboard swatch + the popover's alpha strip.
+  alpha?: boolean;
+  // Renders the swatch inert (driven params in the live viewer).
+  disabled?: boolean;
 }) {
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-  const hex = normalizeHex(value) ?? "#ffffff";
+  const hex = normalizeHex(value, { alpha }) ?? "#ffffff";
+  const pickerHeight = alpha ? PICKER_HEIGHT_ALPHA : PICKER_HEIGHT;
 
   const openAtSwatch = () => {
     const r = btnRef.current?.getBoundingClientRect();
@@ -402,8 +504,8 @@ export function ColorSwatchPicker({
     );
     const below = r.bottom + 4;
     const top =
-      below + PICKER_HEIGHT > window.innerHeight - M
-        ? Math.max(M, r.top - PICKER_HEIGHT - 4)
+      below + pickerHeight > window.innerHeight - M
+        ? Math.max(M, r.top - pickerHeight - 4)
         : below;
     setPos({ left, top });
   };
@@ -431,8 +533,10 @@ export function ColorSwatchPicker({
         ref={btnRef}
         type="button"
         title={title}
+        disabled={disabled}
         onClick={(e) => {
           e.stopPropagation();
+          if (disabled) return;
           if (pos) setPos(null);
           else openAtSwatch();
         }}
@@ -442,7 +546,12 @@ export function ColorSwatchPicker({
           padding: 0,
           border: "1px solid #27272a",
           borderRadius: 3,
-          background: hex,
+          // Alpha-enabled swatches layer the (possibly translucent) color
+          // over a checkerboard; 8-digit hex is valid CSS.
+          background: alpha
+            ? `linear-gradient(${hex}, ${hex}), ${CHECKER}`
+            : hex,
+          backgroundSize: alpha ? "auto, 6px 6px" : undefined,
           flexShrink: 0,
           cursor: "pointer",
           ...swatchStyle,
@@ -456,6 +565,7 @@ export function ColorSwatchPicker({
               onChange={onChange}
               onClose={() => setPos(null)}
               ignoreRefs={[btnRef]}
+              alpha={alpha}
               style={{
                 position: "fixed",
                 left: pos.left,

@@ -1,4 +1,5 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
+import { roundCornersPerAnchor } from "@/engine/spline-math";
 import { strokeUnitsParam } from "@/engine/stroke-units";
 import type {
   NodeDefinition,
@@ -72,11 +73,14 @@ export const splineDrawNode: NodeDefinition = {
     // stroke keeps its look at any resolution (#174). Read by the shared
     // rasterizeSplineAux.
     strokeUnitsParam("stroke_units", (p) => !!p.stroke_enabled),
+    // alpha: rendered by the shared rasterizeSplineAux, whose paths are
+    // 8-digit-safe (see SPLINE_RASTER_PARAMS in spline-raster-aux.ts).
     {
       name: "stroke_color",
       label: "Stroke color",
       type: "color",
       default: "#ffffff",
+      alpha: true,
       visibleIf: (p) => !!p.stroke_enabled,
     },
     {
@@ -90,6 +94,7 @@ export const splineDrawNode: NodeDefinition = {
       label: "Fill color",
       type: "color",
       default: "#ffffff",
+      alpha: true,
       visibleIf: (p) => !!p.fill_enabled,
     },
     {
@@ -113,7 +118,14 @@ export const splineDrawNode: NodeDefinition = {
   compute({ inputs, params, ctx, nodeId }) {
     const spline =
       (params.spline as SplineParamValue | null | undefined) ?? EMPTY_SPLINE;
-    const subpaths = applyTrimParams(spline.subpaths, params);
+    // Live Corners: resolve per-anchor cornerRadius fillets BEFORE trim, so
+    // trim (and everything downstream) operates on the geometry the user
+    // sees. Identity (same array reference) when no anchor carries a radius.
+    // Spec: 071926_spline-draw-authoring-upgrade.md M1.
+    const subpaths = applyTrimParams(
+      roundCornersPerAnchor(spline.subpaths),
+      params
+    );
     const splineOut: SplineValue = {
       kind: "spline",
       subpaths,

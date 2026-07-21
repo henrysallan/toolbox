@@ -2,6 +2,7 @@ import type {
   ImageValue,
   NodeDefinition,
   RenderContext,
+  SplineSubpath,
 } from "@/engine/types";
 import { buildPath2D, hexToRgba } from "@/engine/spline-raster";
 import {
@@ -16,8 +17,15 @@ import {
 import type { OverlapStyle } from "@/engine/spline-offset-resolve";
 import {
   sampleColorRamp,
+  type ColorRampInterp,
   type ColorRampStop,
 } from "@/engine/color-ramp";
+import {
+  makeSubpathColorFn,
+  makeSubpathDriverFn,
+  type ColorRampBy,
+  type SubpathColorConfig,
+} from "@/engine/spline-color-source";
 import { resolveStrokePx, strokeUnitsParam } from "@/engine/stroke-units";
 
 // Rasterize a spline's outline. Output is transparent everywhere except
@@ -43,9 +51,17 @@ void main() {
   outColor = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
 }`;
 
+// One offset ring. `path` is all its subpaths merged (single-color stroking,
+// exact legacy behavior). `subPaths` keeps them separate so a per-subpath
+// color source can stroke each in its own ramp color.
+interface RingSubPath {
+  path: Path2D;
+  sub: SplineSubpath;
+}
 interface StrokeRing {
   t: number;
   path: Path2D;
+  subPaths: RingSubPath[];
 }
 
 interface StrokeState {
@@ -90,15 +106,81 @@ export const strokeNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Render a spline as a stroked outline. Three styles: solid (continuous), dashed (alternating dashes and gaps), dotted (round dots at a fixed spacing). Repeats draws N parallel-offset rings — inner/outer/both, a band width, and a spacing curve placing each ring within the band (closed shapes always expand outward regardless of draw direction; for open paths inner/outer mean left/right of travel). Per-ring styling: thickness and opacity falloff curves, plus an optional color ramp across the rings.",
+    "Render a spline as a stroked outline. Three styles: solid (continuous), dashed (alternating dashes and gaps), dotted (round dots at a fixed spacing). Color source can be a flat color or a per-subpath ramp keyed by index, seeded random, group, or centroid position — the same sourcing the fill has. Thickness source varies each subpath's width the same way (a lo→hi multiplier on the base thickness) — with Copy to Points' 'Tag copies: copy index', every copy gets its own stroke weight. Repeats draws N parallel-offset rings — inner/outer/both, a band width, and a spacing curve placing each ring within the band (closed shapes always expand outward regardless of draw direction; for open paths inner/outer mean left/right of travel). Per-ring styling: thickness and opacity falloff curves, plus an optional color ramp across the rings (which takes precedence over the per-subpath color source).",
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [
+    // Color source, mirroring Rasterize Spline's fill source. `flat` is a
+    // single color; `ramp` colors each of the input spline's subpaths from a
+    // color ramp keyed by index / seeded random / groupIndex / centroid
+    // position — the same options the fill has. With Repeats, a per-ring color
+    // ramp (below) takes precedence over the per-subpath source.
+    {
+      name: "color_source",
+      label: "Color source",
+      type: "enum",
+      options: ["flat", "ramp"],
+      default: "flat",
+      control: "segmented",
+    },
+    // alpha: consumed via hexToRgba (solid) and spline-color-source's
+    // flatColor — both 8-digit-safe; the raster signature keys on the hex.
     {
       name: "color",
       label: "Color",
       type: "color",
       default: "#ffffff",
+      alpha: true,
+      visibleIf: (p) => p.color_source !== "ramp",
+    },
+    {
+      name: "color_ramp",
+      label: "Color ramp",
+      type: "color_ramp",
+      default: [
+        { id: "stop-a", position: 0, color: "#ffffff" },
+        { id: "stop-b", position: 1, color: "#000000" },
+      ] as ColorRampStop[],
+      visibleIf: (p) => p.color_source === "ramp",
+    },
+    // Which value drives each subpath's position along the ramp (see
+    // Rasterize Spline's Ramp by): index / seeded random / groupIndex /
+    // centroid projected on a steerable axis.
+    {
+      name: "ramp_by",
+      label: "Ramp by",
+      type: "enum",
+      options: ["index", "random", "group", "position"],
+      default: "index",
+      visibleIf: (p) => p.color_source === "ramp",
+    },
+    {
+      name: "ramp_seed",
+      label: "Seed",
+      type: "scalar",
+      min: 0,
+      max: 9999,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.color_source === "ramp" && p.ramp_by === "random",
+    },
+    {
+      name: "ramp_angle",
+      label: "Gradient angle",
+      type: "scalar",
+      min: -180,
+      max: 180,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.color_source === "ramp" && p.ramp_by === "position",
+    },
+    {
+      name: "ramp_interp",
+      label: "Ramp interpolation",
+      type: "enum",
+      options: ["linear", "ease", "constant"],
+      default: "linear",
+      visibleIf: (p) => p.color_source === "ramp",
     },
     {
       name: "thickness",
@@ -114,6 +196,75 @@ export const strokeNode: NodeDefinition = {
     // canvas width, so the stroke keeps its look at any resolution (#174).
     // Applies to thickness and the dash/dot metrics below.
     strokeUnitsParam("units"),
+    // Per-subpath thickness, mirroring the color source: `vary` maps each
+    // subpath's driver t (same index/random/group/position semantics —
+    // one shared resolver in engine/spline-color-source.ts) linearly into
+    // a lo→hi multiplier on the base thickness. Pairs with Copy to
+    // Points' "Tag copies: copy index" for per-copy stroke weights.
+    // Spec: 071826_copy-identity-stroke-width.md.
+    {
+      name: "thickness_source",
+      label: "Thickness source",
+      type: "enum",
+      options: ["uniform", "vary"],
+      default: "uniform",
+      control: "segmented",
+    },
+    {
+      name: "thickness_by",
+      label: "Vary by",
+      type: "enum",
+      options: ["index", "random", "group", "position"],
+      default: "random",
+      visibleIf: (p) => p.thickness_source === "vary",
+    },
+    {
+      name: "thickness_seed",
+      label: "Seed",
+      type: "scalar",
+      min: 0,
+      max: 9999,
+      step: 1,
+      default: 0,
+      visibleIf: (p) =>
+        p.thickness_source === "vary" && p.thickness_by === "random",
+    },
+    {
+      name: "thickness_angle",
+      label: "Gradient angle",
+      type: "scalar",
+      min: -180,
+      max: 180,
+      step: 1,
+      default: 0,
+      visibleIf: (p) =>
+        p.thickness_source === "vary" && p.thickness_by === "position",
+    },
+    // Multipliers on the base thickness at driver t = 0 / 1. The 0.5–1.5
+    // default is the house "shrink half / grow half" range (same as Copy
+    // to Points' scale field lo/hi).
+    {
+      name: "thickness_lo",
+      label: "Thickness — low ×",
+      type: "scalar",
+      min: 0,
+      max: 4,
+      softMax: 2,
+      step: 0.01,
+      default: 0.5,
+      visibleIf: (p) => p.thickness_source === "vary",
+    },
+    {
+      name: "thickness_hi",
+      label: "Thickness — high ×",
+      type: "scalar",
+      min: 0,
+      max: 4,
+      softMax: 2,
+      step: 0.01,
+      default: 1.5,
+      visibleIf: (p) => p.thickness_source === "vary",
+    },
     {
       name: "style",
       label: "Style",
@@ -331,10 +482,33 @@ export const strokeNode: NodeDefinition = {
 
     // Full signature adds styling — covers everything that changes the
     // raster output.
+    const colorRamp = params.color_source === "ramp";
+    const thicknessVary = params.thickness_source === "vary";
     const sig = JSON.stringify({
       g: geomSig,
       c: params.color,
+      // Per-subpath color source (flat / ramp by index|random|group|position).
+      csrc: params.color_source,
+      cr: colorRamp ? params.color_ramp : 0,
+      cby: colorRamp ? params.ramp_by : 0,
+      cseed: colorRamp && params.ramp_by === "random" ? params.ramp_seed : 0,
+      cang: colorRamp && params.ramp_by === "position" ? params.ramp_angle : 0,
+      cint: colorRamp ? params.ramp_interp : 0,
       t: params.thickness,
+      // Per-subpath thickness source (uniform / vary by index|random|
+      // group|position × lo..hi) — gated like the color entries.
+      tsrc: params.thickness_source,
+      tby: thicknessVary ? params.thickness_by : 0,
+      tseed:
+        thicknessVary && params.thickness_by === "random"
+          ? params.thickness_seed
+          : 0,
+      tang:
+        thicknessVary && params.thickness_by === "position"
+          ? params.thickness_angle
+          : 0,
+      tlo: thicknessVary ? params.thickness_lo : 0,
+      thi: thicknessVary ? params.thickness_hi : 0,
       u: params.units,
       st: params.style,
       dl: params.dash_length,
@@ -354,11 +528,26 @@ export const strokeNode: NodeDefinition = {
 
     if (sig !== state.lastSig) {
       if (geomSig !== state.ringGeomSig || !state.rings) {
+        // Build one ring's merged Path2D plus a per-subpath list (so a
+        // per-subpath color source can stroke each subpath in its own color).
+        const buildRing = (
+          subs: SplineSubpath[],
+          t: number
+        ): StrokeRing | null => {
+          const merged = buildPath2D(subs, W, H, closeOpen);
+          if (!merged) return null;
+          const subPaths: RingSubPath[] = [];
+          for (const sub of subs) {
+            const p = buildPath2D([sub], W, H, closeOpen);
+            if (p) subPaths.push({ path: p, sub });
+          }
+          return { t, path: merged, subPaths };
+        };
         // repeats === 1 keeps the legacy single-path build — no offset
         // math, identical output to the pre-repeats node.
         if (repeats <= 1) {
-          const path = buildPath2D(src.subpaths, W, H, closeOpen);
-          state.rings = path ? [{ t: 0, path }] : [];
+          const ring = buildRing(src.subpaths, 0);
+          state.rings = ring ? [ring] : [];
         } else {
           const strokes = buildRepeatStrokes(src.subpaths, {
             count: repeats,
@@ -375,8 +564,8 @@ export const strokeNode: NodeDefinition = {
           });
           const rings: StrokeRing[] = [];
           for (const s of strokes) {
-            const path = buildPath2D(s.subpaths, W, H, closeOpen);
-            if (path) rings.push({ t: s.t, path });
+            const ring = buildRing(s.subpaths, s.t);
+            if (ring) rings.push(ring);
           }
           state.rings = rings;
         }
@@ -444,11 +633,42 @@ export const strokeNode: NodeDefinition = {
             1,
             1
           );
-          const stops =
+          // Color resolution has two independent axes:
+          //  - per-RING ramp (Repeats' `repeat_color_mode`) — one color per
+          //    offset ring, existing behavior.
+          //  - per-SUBPATH source (`color_source`) — one color per input
+          //    subpath (flat or a ramp by index/random/group/position).
+          // The per-ring ramp wins when both are on (documented precedence).
+          const repeatStops =
             repeats > 1 && params.repeat_color_mode === "ramp"
               ? ((params.repeat_colors as ColorRampStop[]) ?? [])
               : null;
+          const perSubpath = params.color_source === "ramp" && !repeatStops;
+          const colorCfg: SubpathColorConfig = {
+            source: perSubpath ? "ramp" : "flat",
+            flatColor: (params.color as string) ?? "#ffffff",
+            stops: Array.isArray(params.color_ramp)
+              ? (params.color_ramp as ColorRampStop[])
+              : [],
+            by: ((params.ramp_by as ColorRampBy) ?? "index"),
+            seed: Math.floor((params.ramp_seed as number) ?? 0),
+            angleDeg: (params.ramp_angle as number) ?? 0,
+            interp: ((params.ramp_interp as string) ?? "linear") as ColorRampInterp,
+          };
           const solid = hexToRgba((params.color as string) ?? "#ffffff");
+          // Per-subpath thickness (`thickness_source: vary`): driver t →
+          // lo..hi multiplier on the ring width. Forces the per-subpath
+          // stroke loop even with a flat color — Canvas lineWidth is
+          // context state, one value per stroke() call.
+          const widthLo = (params.thickness_lo as number) ?? 0.5;
+          const widthHi = (params.thickness_hi as number) ?? 1.5;
+          const widthCfg = thicknessVary
+            ? {
+                by: (params.thickness_by as ColorRampBy) ?? "random",
+                seed: Math.floor((params.thickness_seed as number) ?? 0),
+                angleDeg: (params.thickness_angle as number) ?? 0,
+              }
+            : null;
 
           for (const ring of state.rings) {
             const w =
@@ -466,11 +686,36 @@ export const strokeNode: NodeDefinition = {
             // so skip invisible rings explicitly.
             if (w <= 0 || a <= 0) continue;
             c2d.lineWidth = w;
-            c2d.strokeStyle = stops
-              ? sampleColorRamp(stops, ring.t)
-              : solid;
             c2d.globalAlpha = a;
-            c2d.stroke(ring.path);
+            if (perSubpath || widthCfg) {
+              // Per-subpath stroking: own ramp color and/or own width.
+              const subs = ring.subPaths.map((sp) => sp.sub);
+              const colorAt = perSubpath
+                ? makeSubpathColorFn(subs, colorCfg)
+                : null;
+              const widthAt = widthCfg
+                ? makeSubpathDriverFn(subs, widthCfg)
+                : null;
+              const ringColor = repeatStops
+                ? sampleColorRamp(repeatStops, ring.t)
+                : solid;
+              ring.subPaths.forEach((sp, i) => {
+                if (widthAt) {
+                  const ww =
+                    w * (widthLo + (widthHi - widthLo) * widthAt(i, sp.sub));
+                  if (ww <= 0) return;
+                  c2d.lineWidth = ww;
+                }
+                c2d.strokeStyle = colorAt ? colorAt(i, sp.sub) : ringColor;
+                c2d.stroke(sp.path);
+              });
+            } else {
+              // Single color for the whole ring (flat, or the per-ring ramp).
+              c2d.strokeStyle = repeatStops
+                ? sampleColorRamp(repeatStops, ring.t)
+                : solid;
+              c2d.stroke(ring.path);
+            }
           }
           c2d.globalAlpha = 1;
         }

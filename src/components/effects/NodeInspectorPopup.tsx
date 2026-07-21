@@ -188,7 +188,10 @@ function SocketRow({
   );
 }
 
-function ValueSummary({ value }: { value: SocketValue | undefined }) {
+// One-line textual summary of a socket value. Shared with the
+// socket-peek popover (SocketPeekPopover.tsx), which adds visual
+// previews on top of the same summary line.
+export function ValueSummary({ value }: { value: SocketValue | undefined }) {
   if (!value) {
     return <span style={{ color: "#52525b" }}>—</span>;
   }
@@ -215,8 +218,24 @@ function ValueSummary({ value }: { value: SocketValue | undefined }) {
       return <span>audio · {value.source === "mic" ? "mic" : "file"}</span>;
     case "image_group":
       return <ImageGroupSummary value={value} />;
+    case "string":
+      return (
+        <span>
+          string · &quot;
+          {value.value.length > 40
+            ? value.value.slice(0, 40) + "…"
+            : value.value}
+          &quot;
+        </span>
+      );
     default:
-      return <span style={{ color: "#52525b" }}>?</span>;
+      // Runtime-only kinds (sdf, element, particles, …) — name the kind
+      // rather than rendering an opaque "?".
+      return (
+        <span style={{ color: "#a1a1aa" }}>
+          {(value as { kind?: string }).kind ?? "?"}
+        </span>
+      );
   }
 }
 

@@ -66,7 +66,16 @@ export const fillNode: NodeDefinition = {
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [
-    { name: "color", label: "Color", type: "color", default: "#ffffff" },
+    // alpha: the raster path is 8-digit-safe end to end — hexToRgba
+    // parses `#rrggbbaa` into the Canvas fillStyle, the signature keys on
+    // the raw hex, and the upload stays straight-alpha.
+    {
+      name: "color",
+      label: "Color",
+      type: "color",
+      default: "#ffffff",
+      alpha: true,
+    },
     {
       name: "stack_subpaths",
       label: "Stack subpaths",

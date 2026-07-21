@@ -102,6 +102,12 @@ async function loadVideoElement(file: File): Promise<VideoFileParamValue> {
       dispatch();
     };
     rvfc.call(video, loop);
+    // rvfc fires only when a NEW frame is presented — a completed seek that
+    // lands inside the currently-displayed source frame presents nothing, so
+    // rvfc alone can miss it. `seeked` always fires, and the re-eval it
+    // forces is what lets the seek coalescing in nodes/source/video.ts chain
+    // to the freshest playhead target instead of stalling mid-scrub.
+    video.addEventListener("seeked", dispatch);
   } else {
     video.addEventListener("timeupdate", dispatch);
     video.addEventListener("seeked", dispatch);

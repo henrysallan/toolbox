@@ -59,6 +59,30 @@ const FIBER_B_FLOOR = 0.05;
 const K_DRIED = 0.9;
 const K_WET = 0.55;
 
+// Resolution independence. The CA's laws are per-CELL, so a bigger grid
+// natively shrinks every visual length scale relative to the canvas:
+// blooms spread fewer canvas-fractions per frame, washes dry after
+// covering less relative distance, fibers shorten — "2048 never looks
+// as good as 1024" no matter the sliders. All cell-scale quantities are
+// therefore normalized to a REFERENCE grid, simScale =
+// sqrt(cells)/REF_CELLS. Crucially the water update is a degenerate
+// LAPLACIAN RELAXATION — the surface diffuses, radius ∝ cell·√substeps,
+// NOT a ballistic front — so holding relative spread needs substeps ×
+// simScale² (linear scaling leaves 2× grids ~30% slow, verified by
+// eye). Per-substep rates (evap, rewet, continuous contact strength)
+// divide by the same simScale² so scene-time behavior holds; beta needs
+// NO scaling (β·substeps·cell² is then constant — the cancellation also
+// retires its stability-cap caveat); fibers scale in length (×
+// simScale) at conserved total fiber material (count ÷ simScale beyond
+// the area term). REF_CELLS = 512 = the default-resolution sweet spot
+// the model was tuned at, so existing setups keep their exact look and
+// other sizes now match it. Cost is honest: substeps × simScale² on top
+// of quadratic pixel growth (2048@0.5 ≈ 16× the reference); the substep
+// cap below degrades spread speed gracefully past simScale ≈ 2.8 — drop
+// `resolution` instead.
+const REF_CELLS = 512;
+const MAX_SUBSTEPS = 48;
+
 // ---- shaders ------------------------------------------------------------
 
 // All sim passes run at sim resolution with source and target the same
@@ -206,6 +230,7 @@ uniform sampler2D u_state;
 uniform sampler2D u_dried;
 uniform float u_evap;
 uniform float u_rewet;
+uniform float u_fade;    // per-substep fade factor (1 = off)
 out vec4 outColor;
 
 void main() {
@@ -216,28 +241,49 @@ void main() {
     outColor = vec4(0.0, vec3(0.0));
   } else {
     vec3 D = texelFetch(u_dried, p, 0).rgb;
-    outColor = vec4(W2, s.yzw + u_rewet * D);
+    outColor = vec4(W2, (s.yzw + u_rewet * D) * u_fade);
   }
 }`;
 
-// Pass 4b — fixing. Cells that just dried bank their suspended ink into
-// the dried accumulator; cells that stay wet give up the re-wetted
-// fraction 4a lifted (same inputs, same test — exactly conservative).
+// Pass 4b — fixing + fade + lifetime. Cells that just dried bank their
+// suspended ink into the dried accumulator; cells that stay wet give up
+// the re-wetted fraction 4a lifted (same inputs, same test — exactly
+// conservative; both sides of the transfer scale by the same u_fade, so
+// fading doesn't unbalance it). The dried buffer's alpha channel is an
+// AGE clock (seconds since fresh pigment landed): the dry test is a
+// STATE that recurs every substep, so the clock resets only when actual
+// ink is banked — otherwise dried marks would reset forever and
+// lifetime could never fire. Past u_lifetime the mark dissolves by
+// u_dissolve per substep. Fade and lifetime are deliberately
+// non-conservative (like evaporation for water).
 const FIX_D_FS = `#version 300 es
 precision highp float;
 uniform sampler2D u_state;   // post-diffusion wet state
 uniform sampler2D u_dried;
 uniform float u_evap;
 uniform float u_rewet;
+uniform float u_fade;        // per-substep fade factor (1 = off)
+uniform float u_dt;          // seconds per substep
+uniform float u_lifetime;    // seconds; 0 = infinite
+uniform float u_dissolve;    // per-substep dissolve factor past lifetime
 out vec4 outColor;
 
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
   vec4 s = texelFetch(u_state, p, 0);
-  vec3 D = texelFetch(u_dried, p, 0).rgb;
-  if (s.x - u_evap <= 0.0) D += s.yzw;
-  else D -= u_rewet * D;
-  outColor = vec4(D, 1.0);
+  vec4 d = texelFetch(u_dried, p, 0);
+  vec3 D = d.rgb;
+  float age = d.a + u_dt;
+  if (s.x - u_evap <= 0.0) {
+    vec3 fresh = s.yzw;
+    D += fresh;
+    if (dot(fresh, vec3(1.0)) > 1e-5) age = 0.0;
+  } else {
+    D -= u_rewet * D;
+  }
+  D *= u_fade;
+  if (u_lifetime > 0.0 && age > u_lifetime) D *= u_dissolve;
+  outColor = vec4(D, age);
 }`;
 
 // Deposition — brush/paper CONTACT. Two pacing modes share this shader
@@ -280,8 +326,12 @@ precision highp float;
 uniform sampler2D u_state;
 uniform sampler2D u_deposit;  // canvas-res mask, linear-sampled
 uniform sampler2D u_color;    // canvas-res image, linear-sampled
+uniform sampler2D u_water;    // canvas-res mask — reservoir head field
+uniform sampler2D u_ink;      // canvas-res mask — concentration field
 uniform int u_hasDeposit;
 uniform int u_hasColor;
+uniform int u_hasWater;
+uniform int u_hasInk;
 uniform vec3 u_sigmaParam;    // normalized -ln(ink_color)
 uniform float u_head;         // reservoir water level at full coverage
 uniform float u_strength;     // 0.25·α continuous; 1.0 = sampled full stamp
@@ -294,8 +344,17 @@ void main() {
   vec4 s = texelFetch(u_state, p, 0);
   vec2 uv = (vec2(p) + 0.5) / vec2(sz);
   vec4 col = texture(u_color, uv);
-  float cov = u_hasDeposit == 1 ? texture(u_deposit, uv).r
-                                : clamp(col.a, 0.0, 1.0);
+  // Coverage: deposit mask > color alpha > full sheet (the last so a
+  // water map wired alone pre-wets without needing a deposit wire).
+  float cov = u_hasDeposit == 1
+    ? texture(u_deposit, uv).r
+    : (u_hasColor == 1 ? clamp(col.a, 0.0, 1.0) : 1.0);
+  // Delivery fields (spec §5.1): water map scales the reservoir HEAD
+  // per cell (how wet), ink map scales pigment CONCENTRATION (how
+  // inky). Ink still rides water — an ink map over dry cells delivers
+  // nothing, which is the dry-brush limit, not a bug.
+  float waterField = u_hasWater == 1 ? texture(u_water, uv).r : 1.0;
+  float inkField = u_hasInk == 1 ? texture(u_ink, uv).r : 1.0;
   // Straight-alpha discipline: RGB under zero/low alpha is arbitrary in
   // this engine (stale pool contents, a Merge's base color under a
   // transparent stack...), so it must NEVER be read as pigment — a
@@ -309,8 +368,8 @@ void main() {
   vec3 sigma = u_hasColor == 1
     ? log(clamp(inkRgb, ${SIGMA_MIN_T}, 1.0)) / log(${SIGMA_MIN_T}) * ca
     : u_sigmaParam;
-  float dW = max(0.0, u_strength * (cov * u_head - s.x));
-  outColor = vec4(s.x + dW, s.yzw + dW * u_conc * sigma);
+  float dW = max(0.0, u_strength * (cov * waterField * u_head - s.x));
+  outColor = vec4(s.x + dW, s.yzw + dW * u_conc * inkField * sigma);
 }`;
 
 // Render — upsample the reduced-res sim to full canvas and Beer–Lambert
@@ -411,7 +470,8 @@ function generatePaper(
   simW: number,
   simH: number,
   fiberCount: number,
-  seed: number
+  seed: number,
+  simScale: number
 ): Float32Array {
   const data = new Float32Array(simW * simH * 4);
   for (let i = 0; i < simW * simH; i++) {
@@ -419,14 +479,24 @@ function generatePaper(
     data[i * 4 + 1] = PAPER_C0;
   }
   const rand = mulberry32(seed);
-  const count = Math.round((fiberCount * (simW * simH)) / (1024 * 1024));
+  // Fibers hold their CANVAS-relative length across resolutions
+  // (len × simScale) at conserved total fiber material per cell
+  // (count ÷ simScale beyond the area term) — a finer grid gets
+  // proportionally more, longer, thinner fibers rather than a
+  // different-looking sheet.
+  const len = Math.max(2, Math.round(FIBER_LEN * simScale));
+  const count = Math.round(
+    (fiberCount * (simW * simH)) /
+      (1024 * 1024) /
+      Math.max(simScale, 1e-3)
+  );
   for (let f = 0; f < count; f++) {
     const x0 = rand() * simW;
     const y0 = rand() * simH;
     const theta = rand() * Math.PI;
     const dx = Math.cos(theta);
     const dy = Math.sin(theta);
-    for (let t = 0; t < FIBER_LEN; t++) {
+    for (let t = 0; t < len; t++) {
       const x = Math.round(x0 + dx * t);
       const y = Math.round(y0 + dy * t);
       if (x < 0 || y < 0 || x >= simW || y >= simH) continue;
@@ -555,7 +625,7 @@ export const watercolorInkNode: NodeDefinition = {
   category: "image",
   subcategory: "generator",
   description:
-    "Cellular-automaton watercolor / sumi ink simulation (Zhang et al. 1999). Wire any mask/spline/shape into `deposit` to lay down ink; water spreads through fibrous paper (nijimi), suspended ink rides and diffuses with it, and ink fixes permanently where the water dries. Wire an image into `color` and the deposited ink keeps its hues (white = clear water; with `deposit` unwired the image's alpha doubles as coverage). Low concentration = thin ink that wicks far along fibers; high = dense marks. Sample rate 0 = continuous contact; above 0, the input (e.g. a video frame) is stamped as a full wash every 1/rate seconds and left to bloom/dry between stamps. Plays while the timeline runs; restarting the timeline clears the sheet.",
+    "Cellular-automaton watercolor / sumi ink simulation (Zhang et al. 1999). Wire any mask/spline/shape into `deposit` to lay down ink; water spreads through fibrous paper (nijimi), suspended ink rides and diffuses with it, and ink fixes permanently where the water dries. Wire an image into `color` and the deposited ink keeps its hues (white = clear water; with `deposit` unwired the image's alpha doubles as coverage). Low concentration = thin ink that wicks far along fibers; high = dense marks. `water map` scales the delivered water per cell (wired alone = pre-wet the sheet, wet-on-wet); `ink map` scales pigment concentration per cell (needs water to ride — dry areas deliver nothing). Sample rate 0 = continuous contact; above 0, the input (e.g. a video frame) is stamped as a full wash every 1/rate seconds and left to bloom/dry between stamps. Plays while the timeline runs; restarting the timeline clears the sheet.",
   backend: "webgl2",
   // Self-iterating — output depends on accumulated substeps, not just
   // current params. Time is mixed into the fingerprint below.
@@ -563,6 +633,8 @@ export const watercolorInkNode: NodeDefinition = {
   inputs: [
     { name: "deposit", type: "mask", required: false },
     { name: "color", type: "image", required: false },
+    { name: "water_map", label: "water map", type: "mask", required: false },
+    { name: "ink_map", label: "ink map", type: "mask", required: false },
   ],
   // Like Reaction Diffusion: `drive_by_scene_time` swaps the ctx.playing
   // gate for a wired monotonic scalar (Scene Time, Accumulator, Math...).
@@ -570,6 +642,8 @@ export const watercolorInkNode: NodeDefinition = {
     const base: InputSocketDef[] = [
       { name: "deposit", type: "mask", required: false },
       { name: "color", type: "image", required: false },
+      { name: "water_map", label: "water map", type: "mask", required: false },
+      { name: "ink_map", label: "ink map", type: "mask", required: false },
     ];
     if (params.drive_by_scene_time) {
       base.push({ name: "time", type: "scalar", required: false });
@@ -639,6 +713,34 @@ export const watercolorInkNode: NodeDefinition = {
       max: 0.05,
       step: 0.0005,
       default: 0,
+    },
+    {
+      name: "fade",
+      label: "Fade / sec",
+      type: "scalar",
+      min: 0,
+      max: 1,
+      step: 0.005,
+      default: 0,
+    },
+    {
+      name: "lifetime",
+      label: "Dried lifetime (s)",
+      type: "scalar",
+      min: 0,
+      max: 60,
+      step: 0.1,
+      default: 0,
+    },
+    {
+      name: "dissolve",
+      label: "Dissolve (s)",
+      type: "scalar",
+      min: 0.05,
+      max: 10,
+      step: 0.05,
+      default: 1,
+      visibleIf: (p) => ((p.lifetime as number) ?? 0) > 0,
     },
     {
       name: "substeps_per_frame",
@@ -755,6 +857,9 @@ export const watercolorInkNode: NodeDefinition = {
     const rez = Math.max(0.1, Math.min(1, (params.resolution as number) ?? 0.5));
     const simW = Math.max(4, Math.round(ctx.width * rez));
     const simH = Math.max(4, Math.round(ctx.height * rez));
+    // Reference cell scale — see the REF_CELLS note. 1.0 at a 512² sim
+    // (1024 canvas at the default 0.5 resolution).
+    const simScale = Math.sqrt(simW * simH) / REF_CELLS;
     const state = ensureState(ctx, nodeId, simW, simH);
 
     // Paper regenerates when seed/coarseness change (and implicitly on
@@ -765,7 +870,7 @@ export const watercolorInkNode: NodeDefinition = {
     if (!state.paper || state.paperKey !== paperKey) {
       if (state.paper) ctx.releaseTexture(state.paper.texture);
       state.paper = ctx.uploadFloat32ToImage(
-        generatePaper(simW, simH, fiberCount, seed),
+        generatePaper(simW, simH, fiberCount, seed, simScale),
         simW,
         simH
       );
@@ -821,36 +926,72 @@ export const watercolorInkNode: NodeDefinition = {
         : null;
     const colorImg =
       inputs.color && inputs.color.kind === "image" ? inputs.color : null;
+    const waterMap =
+      inputs.water_map && inputs.water_map.kind === "mask"
+        ? inputs.water_map
+        : null;
+    const inkMap =
+      inputs.ink_map && inputs.ink_map.kind === "mask"
+        ? inputs.ink_map
+        : null;
     const head = Math.max(0, (params.deposit_water as number) ?? 60);
     const conc = Math.max(
       0,
       Math.min(1, (params.dip_concentration as number) ?? 0.5)
     );
-    const depositing = (deposit || colorImg) != null && head > 0;
+    // A water map alone deposits too (clear pre-wetting at cov = 1); an
+    // ink map alone can't — pigment needs carrier water to ride.
+    const depositing =
+      (deposit || colorImg || waterMap) != null && head > 0;
     const sampleRate = Math.max(0, (params.sample_rate as number) ?? 0);
     const ink = hexToRgb01(colorValueToHex(params.ink_color, "#000000"));
     // Same normalized optical density as the shader's image path.
     const sigmaOf = (c: number) =>
       Math.log(Math.max(c, SIGMA_MIN_T)) / Math.log(SIGMA_MIN_T);
 
-    // --- substeps ---
+    // --- substeps (resolution-normalized; see the REF_CELLS note) ---
+    // Water spreads DIFFUSIVELY (radius ∝ cell·√substeps), so holding
+    // relative bloom speed needs substeps × simScale²; per-substep
+    // rates (evap, rewet, contact) divide by the same factor to hold
+    // scene-time behavior; beta cancels exactly and stays raw.
+    const dynScale = simScale * simScale;
     const substeps = active
-      ? Math.max(1, Math.floor((params.substeps_per_frame as number) ?? 6))
+      ? Math.max(
+          1,
+          Math.min(
+            MAX_SUBSTEPS,
+            Math.round(
+              ((params.substeps_per_frame as number) ?? 6) * dynScale
+            )
+          )
+        )
       : 0;
     if (substeps > 0) {
       const alpha = Math.max(
         0.05,
         Math.min(1, (params.alpha as number) ?? 0.8)
       );
-      const beta = Math.max(0, Math.min(0.25, (params.beta as number) ?? 0.12));
-      const evap = Math.max(
+      const beta = Math.max(
         0,
-        Math.min(0.05, (params.evap_rate as number) ?? 0.004)
+        Math.min(0.25, (params.beta as number) ?? 0.12)
       );
-      const rewet = Math.max(
-        0,
-        Math.min(0.05, (params.rewet as number) ?? 0)
-      );
+      const evap =
+        Math.max(0, Math.min(0.05, (params.evap_rate as number) ?? 0.004)) /
+        dynScale;
+      const rewet =
+        Math.max(0, Math.min(0.05, (params.rewet as number) ?? 0)) /
+        dynScale;
+      // Fade / lifetime are authored in SECONDS, converted to
+      // per-substep factors here — framerate- and resolution-
+      // independent by construction (dtSub already reflects the
+      // simScale²-scaled substep count).
+      const dtSub = 1 / (Math.max(ctx.fps, 1) * substeps);
+      const fade = Math.max(0, Math.min(1, (params.fade as number) ?? 0));
+      const fadeFactor = fade > 0 ? Math.pow(1 - fade, dtSub) : 1;
+      const lifetime = Math.max(0, (params.lifetime as number) ?? 0);
+      const dissolve = Math.max(0.05, (params.dissolve as number) ?? 1);
+      // Decays a mark to 1% over `dissolve` seconds once expired.
+      const dissolveFactor = Math.pow(0.01, dtSub / dissolve);
       const fluxAProg = ctx.getShader("watercolor/flux-a", fluxSource("a"));
       const fluxBProg = ctx.getShader("watercolor/flux-b", fluxSource("b"));
       const applyProg = ctx.getShader("watercolor/apply", APPLY_FS);
@@ -867,9 +1008,12 @@ export const watercolorInkNode: NodeDefinition = {
         const cSrc = state.bufs[state.readIdx];
         const cDst = state.bufs[(state.readIdx ^ 1) as 0 | 1];
         // Every sampler needs a valid binding — reuse whichever input
-        // exists for the missing one; the u_has* flags gate its use.
-        const depositTex = (deposit ?? colorImg)!.texture;
-        const colorTex = (colorImg ?? deposit)!.texture;
+        // exists for the missing ones; the u_has* flags gate their use.
+        const anyTex = (deposit ?? colorImg ?? waterMap)!.texture;
+        const depositTex = deposit?.texture ?? anyTex;
+        const colorTex = colorImg?.texture ?? anyTex;
+        const waterTex = waterMap?.texture ?? anyTex;
+        const inkTex = inkMap?.texture ?? anyTex;
         ctx.drawFullscreen(contactProg, cDst, (g) => {
           g.activeTexture(g.TEXTURE0);
           g.bindTexture(g.TEXTURE_2D, cSrc.texture);
@@ -880,6 +1024,12 @@ export const watercolorInkNode: NodeDefinition = {
           g.activeTexture(g.TEXTURE2);
           g.bindTexture(g.TEXTURE_2D, colorTex);
           g.uniform1i(g.getUniformLocation(contactProg, "u_color"), 2);
+          g.activeTexture(g.TEXTURE3);
+          g.bindTexture(g.TEXTURE_2D, waterTex);
+          g.uniform1i(g.getUniformLocation(contactProg, "u_water"), 3);
+          g.activeTexture(g.TEXTURE4);
+          g.bindTexture(g.TEXTURE_2D, inkTex);
+          g.uniform1i(g.getUniformLocation(contactProg, "u_ink"), 4);
           g.uniform1i(
             g.getUniformLocation(contactProg, "u_hasDeposit"),
             deposit ? 1 : 0
@@ -887,6 +1037,14 @@ export const watercolorInkNode: NodeDefinition = {
           g.uniform1i(
             g.getUniformLocation(contactProg, "u_hasColor"),
             colorImg ? 1 : 0
+          );
+          g.uniform1i(
+            g.getUniformLocation(contactProg, "u_hasWater"),
+            waterMap ? 1 : 0
+          );
+          g.uniform1i(
+            g.getUniformLocation(contactProg, "u_hasInk"),
+            inkMap ? 1 : 0
           );
           g.uniform3f(
             g.getUniformLocation(contactProg, "u_sigmaParam"),
@@ -916,8 +1074,9 @@ export const watercolorInkNode: NodeDefinition = {
       for (let i = 0; i < substeps; i++) {
         // 0. continuous brush/paper contact: inside the loop, per the
         // paper's n-iteration procedure, so the reservoir competes with
-        // outflow/evaporation every step.
-        if (sampleRate <= 0) runContact(0.25 * alpha);
+        // outflow/evaporation every step (÷ dynScale: same per-frame
+        // equilibration at any grid size).
+        if (sampleRate <= 0) runContact(Math.min(1, (0.25 * alpha) / dynScale));
         const src = state.bufs[state.readIdx];
         const other = state.bufs[(state.readIdx ^ 1) as 0 | 1];
         // 1. flux (both halves): src -> fluxA, fluxB
@@ -966,6 +1125,7 @@ export const watercolorInkNode: NodeDefinition = {
           g.uniform1i(g.getUniformLocation(evapProg, "u_dried"), 1);
           g.uniform1f(g.getUniformLocation(evapProg, "u_evap"), evap);
           g.uniform1f(g.getUniformLocation(evapProg, "u_rewet"), rewet);
+          g.uniform1f(g.getUniformLocation(evapProg, "u_fade"), fadeFactor);
         });
         // 4b. fix dried ink: src (post-diffuse) + dried -> other dried.
         // Reads the SAME post-diffuse input as 4a so the dried test
@@ -979,6 +1139,13 @@ export const watercolorInkNode: NodeDefinition = {
           g.uniform1i(g.getUniformLocation(fixProg, "u_dried"), 1);
           g.uniform1f(g.getUniformLocation(fixProg, "u_evap"), evap);
           g.uniform1f(g.getUniformLocation(fixProg, "u_rewet"), rewet);
+          g.uniform1f(g.getUniformLocation(fixProg, "u_fade"), fadeFactor);
+          g.uniform1f(g.getUniformLocation(fixProg, "u_dt"), dtSub);
+          g.uniform1f(g.getUniformLocation(fixProg, "u_lifetime"), lifetime);
+          g.uniform1f(
+            g.getUniformLocation(fixProg, "u_dissolve"),
+            dissolveFactor
+          );
         });
         // 4a wrote the newest wet state into `other`; 4b flipped dried.
         state.readIdx = (state.readIdx ^ 1) as 0 | 1;

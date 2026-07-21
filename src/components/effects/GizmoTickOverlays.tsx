@@ -8,7 +8,7 @@ import PrimitiveGizmo, {
   type PrimitiveGizmoEnv,
 } from "./PrimitiveGizmo";
 import MotionPathOverlay from "./MotionPathOverlay";
-import SplineEditorOverlay from "./SplineEditorOverlay";
+import SplineEditorOverlay from "./spline-editor/SplineEditorOverlay";
 import GradientOverlay from "./GradientOverlay";
 import { evaluateKeyframesAt } from "@/engine/keyframes";
 import { gpointXKey, gpointYKey } from "@/engine/conventions";

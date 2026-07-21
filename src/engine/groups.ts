@@ -23,6 +23,68 @@ export const GROUP_OUTPUT_TYPE = "group-output";
 // hidden `content` input. See specdocs/layers-groups-attributes.md §2.
 export const LAYER_TYPE = "layer";
 
+// An Iterate is the third structural variant, presented as a ZONE of
+// exactly two nodes (071926_iterate-zone-view.md rev 3):
+//
+//  - The **Iteration Output** node (type ITERATE_TYPE) is the
+//    engine-side shell: it COMPUTES (a nested evaluation of the zone
+//    members, K times, collecting the results into an image_group /
+//    grouped spline / grouped points), it anchors membership (members'
+//    parentId = its id), and its minted input socket is the collect
+//    tap — the matching aux output carries the GROUPED result onward.
+//  - The **Iteration Input** node (type ITERATE_INPUT_TYPE, itself a
+//    member) carries the loop params (count / seed / random range) and
+//    emits the per-iteration values (index / t / random) on its aux
+//    outputs during the nested evaluation. It is also the exterior
+//    face for passthrough inputs: an exterior wire lands on its `in:`
+//    side; flatten reroutes that edge onto the shell's hidden
+//    `zi__<name>` input, and the value re-enters each iteration
+//    through the same-named aux output.
+//
+// The flatten pass drops the zone members (Iteration Input included)
+// from the flat graph wholesale — they evaluate privately inside the
+// shell's compute. See specdocs/071826_iterate-node.md.
+export const ITERATE_TYPE = "iterate";
+export const ITERATE_INPUT_TYPE = "iterate-input";
+
+// Reserved sockets on the Iteration Input (can't be renamed/removed;
+// user passthrough sockets mint alongside).
+export const ITERATE_INPUT_SOCKETS = [
+  { name: "index", type: "scalar" },
+  { name: "t", type: "scalar" },
+  { name: "random", type: "scalar" },
+] as const;
+
+// Prefix for the shell's hidden passthrough inputs (see above). Namespaced
+// so a passthrough can never collide with a minted collect socket on the
+// same node.
+export const ITERATE_PASSTHROUGH_PREFIX = "zi__";
+
+// Direct crossing wires: an `exterior → member` edge STAYS exactly as
+// the user drew it — no boundary socket, no visible rerouting
+// (071926_iterate-zone-view.md, "stay as wired"). The flatten extraction
+// mirrors each such edge onto a per-edge hidden shell input
+// (`zi__e_<edgeId>`, raw/uncoerced — the evaluator special-cases these
+// on ITERATE_TYPE nodes) and keeps the original edge in the interior
+// record; the shell's compute synthesizes an eval-only ITERATE_FEED_TYPE
+// node per crossing edge that re-emits the value inside each iteration.
+export const ITERATE_EDGE_PREFIX = "zi__e_";
+export const ITERATE_FEED_TYPE = "iterate-feed";
+
+// The Iteration Input's loop params, resolved SHELL-SIDE with the house
+// wire > keyframe > constant precedence (the Iteration Input never runs
+// through the outer evaluator, so the shell does the resolution itself —
+// keyframes from the stashed node's animation at ctx.tick, wires through
+// the shell's hidden `zi__param__<name>` inputs, which flatten reroutes
+// exterior `in:param:` edges onto). See 071926_iterate-zone-view.md.
+export const ITERATE_LOOP_PARAMS = [
+  "count",
+  "seed",
+  "random_min",
+  "random_max",
+] as const;
+export const ITERATE_PARAM_PREFIX = "zi__param__";
+
 // Fixed socket lists for a layer's interior boundary nodes. Stored in
 // the boundary nodes' `sockets` param like any group, but with
 // `fixed: true` alongside — which suppresses the virtual "new socket"

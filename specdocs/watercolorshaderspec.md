@@ -173,6 +173,23 @@ suspension on cells that stay wet each substep (`I += rewet·D`,
 `D −= rewet·D` — exactly conservative; both sides derive the wet test from
 the same post-diffusion input). 0 = paper-faithful.
 
+**Fade & lifetime (extensions, default off).** Two non-conservative exits
+for ink (like evaporation for water), both authored in seconds and
+converted to per-substep factors through the same fps × simScale²-scaled
+substep count, so they're framerate- and resolution-independent:
+
+- `fade` — fraction of ink (suspended **and** dried) lost per second,
+  exponential, per-channel-multiplicative in absorption space so a fading
+  mark passes through lighter tints of its own hue. Keyframing it to 1
+  for a beat is a soft "clear the sheet".
+- `lifetime` / `dissolve` — the dried buffer's spare alpha channel is an
+  **age clock** (seconds since fresh pigment was banked). Past `lifetime`,
+  the mark dissolves to ~1% over `dissolve` seconds. Gotcha: the fix
+  pass's dry test is a *state* that recurs every substep, so the age
+  resets **only when actual ink is banked** (`lum(fresh) > ε`) — an
+  unconditional reset would pin every dry cell at age 0 and lifetime
+  would never fire.
+
 ### Stability constraints (enforce as UI clamps in §7)
 
 - `0 < alpha <= 1.0` (the 0.25 factor in Step 1 then guarantees total
@@ -311,6 +328,39 @@ into a full-canvas `ctx.allocImage()` returned as `primary`.
 Workgroup/tiling: N/A (fragment shaders). Plain `texture()`/`texelFetch`
 reads; no shared-memory tiling.
 
+### 3.5 Resolution independence
+
+The CA's laws are per-CELL, so without correction a bigger grid shrinks
+every visual length scale relative to the canvas — blooms spread fewer
+canvas-fractions per frame, washes dry after less relative distance, fibers
+shorten ("2048 never looks as good as 1024" at any slider setting). All
+cell-scale quantities normalize to a reference grid via
+`simScale = sqrt(simW·simH) / REF_CELLS` (`REF_CELLS = 512` — the default
+0.5-resolution sweet spot at a 1024 canvas, so tuned setups keep their exact
+look and other sizes now match it).
+
+**The key insight (got this wrong once):** the Step-1 water update is a
+degenerate **Laplacian relaxation** — for smooth fields
+`ΣΔW ≈ 0.25·α·∇²W` — so the water surface spreads *diffusively*, radius ∝
+`cell · √substeps`, NOT ballistically. Holding relative spread therefore
+needs substeps × **simScale²**; linear scaling leaves a 2× grid ~30% slow
+(1/√2), which is visible by eye.
+
+| Quantity | Scaling | Why |
+|----------|---------|-----|
+| substeps/frame | × simScale² (cap `MAX_SUBSTEPS` = 48) | diffusive spread: relative radius ∝ √substeps / gridSize |
+| evap, rewet | ÷ simScale² | same scene-time drying with more substeps |
+| beta | **unchanged** | β·substeps·cell² is constant under quadratic substep scaling — cancels exactly, no stability-cap caveat |
+| continuous contact strength | ÷ simScale² (cap 1) | same per-frame reservoir equilibration |
+| fiber length | × simScale | canvas-relative fiber length holds |
+| fiber count | area term ÷ simScale | conserved fiber material per cell: more, longer, (1-cell-)thinner fibers |
+
+Cost note: substeps × simScale² on top of quadratic pixel growth — a 2048
+canvas at 0.5 resolution costs ~16× a 1024 one, and past simScale ≈ 2.8 the
+substep cap kicks in and spread degrades gracefully. That's the honest price
+of the bigger grid; the cheap alternative is lowering `resolution` (the sim
+then literally IS the smaller reference grid, upsampled).
+
 ---
 
 ## 4. Paper generation (CPU init → static texture)
@@ -374,11 +424,26 @@ Two optional input sockets feed the inject pass:
   to the `ink_color` param through the same formula (default black ⇒
   byte-identical to the monochrome behavior either way).
 
-Coverage resolution: `deposit` wired → its mask; only `color` wired → the
+Two further optional **delivery-field** sockets (both `mask`-typed, so
+noise/gradients/splines/images coerce in) turn the reservoir's scalars into
+spatial fields, composing multiplicatively with everything else:
+
+- **`water_map`** — scales the reservoir *head* per cell:
+  `head(cell) = deposit_water · cov · waterMap`. Wired **alone** it
+  deposits at cov = 1, i.e. first-class **pre-wetting** (brush clean water
+  onto regions; ink later blooms wet-on-wet there).
+- **`ink_map`** — scales pigment *concentration* per cell:
+  `dI = dW · dip_concentration · inkMap · σ`. Ink rides water (Step 2), so
+  an ink map over undelivered/dry cells contributes nothing — the
+  dry-brush limit, by design (an ink map alone does not activate
+  deposition).
+
+Coverage resolution: `deposit` wired → its mask; else `color` wired → the
 color image's own **alpha** doubles as coverage, so a single wire carries
 both shape and hue (a shape-on-transparency deposits its silhouette; an
-opaque photo wets the whole sheet uniformly and "watercolorizes"). Neither
-wired → no deposition.
+opaque photo wets the whole sheet uniformly and "watercolorizes"); else
+`water_map` wired → coverage 1 (the map itself shapes delivery). None of
+the above wired → no deposition.
 
 **Straight-alpha discipline (bug class, learned the hard way):** in this
 engine RGB under zero alpha is arbitrary — a Merge's transparent background
@@ -546,6 +611,9 @@ Scalars get sliders; use `softMax` for escape-hatch ranges (RD precedent).
 | `beta`              | Diffusion          | 0.12    | 0.0 – 0.25   | Step 3 |
 | `evap_rate`         | Evaporation        | 0.004   | 0 – 0.05     | Step 4 |
 | `rewet`             | Re-wetting         | 0       | 0 – 0.05     | dried→suspended lift on wet cells (§2 extension); 0 = paper-faithful |
+| `fade`              | Fade / sec         | 0       | 0 – 1        | fraction of all ink lost per second (§2 extension); 0 = off |
+| `lifetime`          | Dried lifetime (s) | 0       | 0 – 60       | age-based dissolve of dried marks (§2 extension); 0 = infinite |
+| `dissolve`          | Dissolve (s)       | 1       | 0.05 – 10    | dissolve duration past lifetime; visible when lifetime > 0 |
 | `wet_strength`      | Wet ink strength   | 0.55    | 0 – 2        | render `kWet` |
 | `dried_strength`    | Dried ink strength | 0.9     | 0 – 2        | render `kDried` |
 | `substeps_per_frame`| Substeps / frame   | 6       | 1 – 16       | |
@@ -584,7 +652,8 @@ Between deposits, and after accounting for cumulative evaporated W
 (`evapRate * wetCellCount` estimate is fine), total ink (I + D) must be
 conserved to within 0.1% relative error over a 60-second session. If it
 drifts, the flux scheme is broken (double-counted or dropped edge) — fix
-before proceeding. Keep this as a Milestone-1 gate; it can compile out of the
+before proceeding. Run the check with `fade = 0` and `lifetime = 0` (both
+are deliberate ink sinks); `rewet` may stay on (it's conservative). Keep this as a Milestone-1 gate; it can compile out of the
 shipped node.
 
 ---

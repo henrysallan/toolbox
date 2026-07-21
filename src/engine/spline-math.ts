@@ -281,55 +281,183 @@ function solidifyForOffset(sub: SplineSubpath): SplineSubpath {
   return { ...sub, anchors };
 }
 
+// Circular-arc join for a corner of the parallel curve: the arc from E to S
+// around center C (the source corner anchor), radius ≈ |offset distance|,
+// approximated by ≤90° cubic spans (handle length k = 4/3·tan(Δ/4)·r).
+// Returns the tangent handle for the E anchor, intermediate arc anchors,
+// and the tangent handle for the S anchor — or null when E/S don't sit near
+// the radius-r circle (degenerate input; caller falls back to a straight
+// connector).
+function cornerArcJoin(
+  E: [number, number],
+  S: [number, number],
+  C: [number, number],
+  radius: number
+): {
+  outH: [number, number];
+  mids: SplineAnchor[];
+  inH: [number, number];
+} | null {
+  const vex = E[0] - C[0];
+  const vey = E[1] - C[1];
+  const vsx = S[0] - C[0];
+  const vsy = S[1] - C[1];
+  const rE = Math.hypot(vex, vey);
+  const rS = Math.hypot(vsx, vsy);
+  if (rE < radius * 0.75 || rE > radius * 1.25) return null;
+  if (rS < radius * 0.75 || rS > radius * 1.25) return null;
+  // Signed sweep from (E−C) to (S−C), shortest way — this equals the
+  // tangent turn at the corner, so the arc continues the travel direction
+  // on the convex side and closes the classic offset loop on the concave
+  // side (which the overlap resolve then culls).
+  const sweep = Math.atan2(vex * vsy - vey * vsx, vex * vsx + vey * vsy);
+  if (sweep === 0) return null;
+  const n = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2)));
+  const step = sweep / n;
+  const r = (rE + rS) / 2;
+  const h = (4 / 3) * Math.tan(Math.abs(step) / 4) * r;
+  const sgn = Math.sign(step);
+  const a0 = Math.atan2(vey, vex);
+  const tangentAt = (ang: number): [number, number] => [
+    -Math.sin(ang) * sgn,
+    Math.cos(ang) * sgn,
+  ];
+  const mids: SplineAnchor[] = [];
+  for (let k = 1; k < n; k++) {
+    const ang = a0 + step * k;
+    const t = tangentAt(ang);
+    mids.push({
+      pos: [C[0] + r * Math.cos(ang), C[1] + r * Math.sin(ang)],
+      inHandle: [-h * t[0], -h * t[1]],
+      outHandle: [h * t[0], h * t[1]],
+    });
+  }
+  const t0 = tangentAt(a0);
+  const tn = tangentAt(a0 + sweep);
+  return {
+    outH: [h * t0[0], h * t0[1]],
+    mids,
+    inH: [-h * tn[0], -h * tn[1]],
+  };
+}
+
 // Parallel-curve offset via bezier-js. The library's .offset(d) on a single
 // cubic returns an array of cubics (may subdivide around high-curvature
-// regions). We reassemble them into a single subpath, stitching handles at
-// the joins from each returned cubic's control points.
+// regions). Each source segment's offset chain is contiguous internally,
+// but at a source CORNER (tangent discontinuity) consecutive chains do NOT
+// meet — they're separated by an arc-shaped gap of angle = the tangent turn.
+// We insert that arc (radius |distance| around the corner anchor), which is
+// the exact parallel curve of a corner: rings stay equidistant at corners
+// instead of getting welded/chamfered. Smooth joins (gap ≈ 0) merge into a
+// single anchor as before.
 export function offsetSubpath(
   sub: SplineSubpath,
   distance: number
 ): SplineSubpath | null {
   if (distance === 0) return sub;
-  const segments = subpathToBeziers(solidifyForOffset(sub));
+  const solid = solidifyForOffset(sub);
+  const segments = subpathToBeziers(solid);
   if (segments.length === 0) return null;
-  const outCurves: Bezier[] = [];
-  for (const seg of segments) {
-    const result = seg.curve.offset(distance);
-    if (Array.isArray(result)) {
-      // Each entry is already a Bezier.
-      for (const b of result) outCurves.push(b);
-    } else {
-      // The single-arg form of offset(d) is documented to return Bezier[],
-      // but fall through safely in case the types drift.
-      continue;
+  const nAnchors = solid.anchors.length;
+
+  // Offset per source segment, keeping the chains separate — segIdx maps a
+  // chain back to its source segment so joins know which corner anchor to
+  // wrap around. (subpathToBeziers emits segment j = anchors[j]→[j+1] plus
+  // a closing segment, so the corner after segment j is anchors[(j+1)%n].)
+  const chains: { curves: Bezier[]; segIdx: number }[] = [];
+  for (let j = 0; j < segments.length; j++) {
+    const result = segments[j].curve.offset(distance);
+    // The single-arg form of offset(d) is documented to return Bezier[];
+    // skip defensively in case the types drift.
+    if (Array.isArray(result) && result.length > 0) {
+      chains.push({ curves: result, segIdx: j });
     }
   }
-  if (outCurves.length === 0) return null;
-  // Rebuild anchors from the offset cubic chain. Each cubic contributes its
-  // endpoint as an anchor, with in/out handles derived from its CP2/CP1.
+  if (chains.length === 0) return null;
+
+  const absD = Math.abs(distance);
+  // Below this gap a join is treated as smooth/continuous. Relative to the
+  // offset distance so it's scale-free (callers pass normalized OR pixel
+  // space). Corners turn a gap of 2·|d|·sin(θ/2), so this merges only
+  // sub-degree corners.
+  const mergeEps = absD * 0.01;
+
   const anchors: SplineAnchor[] = [];
-  const first = outCurves[0].points[0];
-  const firstCp1 = outCurves[0].points[1];
+  const firstPts = chains[0].curves[0].points;
   anchors.push({
-    pos: [first.x, first.y],
-    outHandle: [firstCp1.x - first.x, firstCp1.y - first.y],
+    pos: [firstPts[0].x, firstPts[0].y],
+    outHandle: [firstPts[1].x - firstPts[0].x, firstPts[1].y - firstPts[0].y],
   });
-  for (let i = 0; i < outCurves.length; i++) {
-    const c = outCurves[i];
-    const p = c.points;
-    const endAnchor: SplineAnchor = {
-      pos: [p[3].x, p[3].y],
-      inHandle: [p[2].x - p[3].x, p[2].y - p[3].y],
-    };
-    // Carry the next curve's CP1 as this anchor's outHandle so the join
-    // tracks whatever slight discontinuity the offset introduced — bezier-js
-    // subdivides at corners, so contiguous CPs may not be collinear.
-    const next = outCurves[i + 1];
-    if (next) {
-      const nextCp1 = next.points[1];
-      endAnchor.outHandle = [nextCp1.x - p[3].x, nextCp1.y - p[3].y];
+
+  for (let ci = 0; ci < chains.length; ci++) {
+    const { curves, segIdx } = chains[ci];
+    // Interior of the chain: contiguous cubics from one segment's offset.
+    // Carry the next curve's CP1 as the outHandle so the join tracks any
+    // slight discontinuity the subdivision introduced.
+    for (let k = 0; k + 1 < curves.length; k++) {
+      const p = curves[k].points;
+      const nextCp1 = curves[k + 1].points[1];
+      anchors.push({
+        pos: [p[3].x, p[3].y],
+        inHandle: [p[2].x - p[3].x, p[2].y - p[3].y],
+        outHandle: [nextCp1.x - p[3].x, nextCp1.y - p[3].y],
+      });
     }
-    anchors.push(endAnchor);
+    const lastP = curves[curves.length - 1].points;
+    const endAnchor: SplineAnchor = {
+      pos: [lastP[3].x, lastP[3].y],
+      inHandle: [lastP[2].x - lastP[3].x, lastP[2].y - lastP[3].y],
+    };
+
+    const isSeam = ci === chains.length - 1;
+    const nextChain = isSeam ? (sub.closed ? chains[0] : null) : chains[ci + 1];
+    if (!nextChain) {
+      // Open end — nothing to join.
+      anchors.push(endAnchor);
+      continue;
+    }
+
+    const sPts = nextChain.curves[0].points;
+    const S: [number, number] = [sPts[0].x, sPts[0].y];
+    const E = endAnchor.pos;
+    const gap = Math.hypot(E[0] - S[0], E[1] - S[1]);
+
+    if (gap <= mergeEps) {
+      // Smooth join. Mid-path: merge into one anchor grafting the next
+      // chain's CP1 (the next chain's start IS this anchor). At the seam:
+      // keep both anchors — the closing segment spans the ≈0 gap.
+      if (!isSeam) {
+        endAnchor.outHandle = [sPts[1].x - E[0], sPts[1].y - E[1]];
+      }
+      anchors.push(endAnchor);
+      continue;
+    }
+
+    // Corner join. Only when the chains are source-adjacent do we know the
+    // corner anchor; a dropped segment between them leaves no center to arc
+    // around, so fall back to a straight connector (no handles).
+    const contiguous = nextChain.segIdx === (segIdx + 1) % segments.length;
+    const arc = contiguous
+      ? cornerArcJoin(E, S, solid.anchors[(segIdx + 1) % nAnchors].pos, absD)
+      : null;
+    if (arc) {
+      endAnchor.outHandle = arc.outH;
+      anchors.push(endAnchor, ...arc.mids);
+    } else {
+      anchors.push(endAnchor);
+    }
+    if (isSeam) {
+      // The closing segment (last anchor → anchors[0]) becomes the arc's
+      // final cubic.
+      if (arc) anchors[0].inHandle = arc.inH;
+    } else {
+      const startAnchor: SplineAnchor = {
+        pos: S,
+        outHandle: [sPts[1].x - S[0], sPts[1].y - S[1]],
+      };
+      if (arc) startAnchor.inHandle = arc.inH;
+      anchors.push(startAnchor);
+    }
   }
   return { anchors, closed: sub.closed };
 }
@@ -682,7 +810,13 @@ function anchorHasHandle(a: SplineAnchor): boolean {
   );
 }
 
-function roundSubpath(sub: SplineSubpath, radius: number): SplineSubpath {
+// Generalized over a per-anchor radius resolver so the uniform Round Corners
+// node and Spline Draw's per-anchor Live Corners (anchor.cornerRadius, spec
+// 071926_spline-draw-authoring-upgrade.md M1) share one fillet.
+function roundSubpath(
+  sub: SplineSubpath,
+  radiusFor: (a: SplineAnchor, index: number) => number
+): SplineSubpath {
   const anchors = sub.anchors;
   const n = anchors.length;
   // Fewer than 3 anchors → no real corner to round (a closed 2-anchor path is
@@ -693,6 +827,11 @@ function roundSubpath(sub: SplineSubpath, radius: number): SplineSubpath {
     const cur = anchors[i];
     const isEndpoint = !sub.closed && (i === 0 || i === n - 1);
     if (isEndpoint || anchorHasHandle(cur)) {
+      out.push({ ...cur });
+      continue;
+    }
+    const radius = radiusFor(cur, i);
+    if (!(radius > 0)) {
       out.push({ ...cur });
       continue;
     }
@@ -739,5 +878,32 @@ export function roundCorners(
   radius: number
 ): SplineSubpath[] {
   if (!(radius > 0)) return subpaths;
-  return subpaths.map((s) => roundSubpath(s, radius));
+  return subpaths.map((s) => roundSubpath(s, () => radius));
+}
+
+// --- Live Corners (per-anchor radius) --------------------------------------
+// Spline Draw's live rounding: each anchor may carry its own `cornerRadius`
+// (see SplineAnchor in types.ts); anchors without one pass through. Fillet
+// math, caps, and eligibility (handle-less interior corners only) are
+// identical to roundCorners. Identity — returns the INPUT ARRAY REFERENCE —
+// when no anchor carries a live radius, so callers can apply it
+// unconditionally at zero cost for radius-free splines.
+
+function anchorHasLiveCorner(a: SplineAnchor): boolean {
+  return (a.cornerRadius ?? 0) > ROUND_EPS && !anchorHasHandle(a);
+}
+
+export function hasLiveCorners(subpaths: SplineSubpath[]): boolean {
+  return subpaths.some((s) => s.anchors.some(anchorHasLiveCorner));
+}
+
+export function roundCornersPerAnchor(
+  subpaths: SplineSubpath[]
+): SplineSubpath[] {
+  if (!hasLiveCorners(subpaths)) return subpaths;
+  return subpaths.map((s) =>
+    s.anchors.some(anchorHasLiveCorner)
+      ? roundSubpath(s, (a) => a.cornerRadius ?? 0)
+      : s
+  );
 }

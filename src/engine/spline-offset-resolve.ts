@@ -4,13 +4,14 @@ import { subpathToBeziers } from "./spline-math";
 
 // Resolve self-overlaps introduced by parallel-curve offsetting.
 //
-// `offsetSubpath` (spline-math) offsets each cubic independently and stitches
-// the chain back together with no intersection handling. At a sharp corner the
-// two neighbouring segment-offsets cross on the concave side, leaving a little
-// "bowtie" self-intersection loop; large offsets add global crossings where a
-// narrow feature collapses. This module cuts those loops so the path resolves
-// to a single point at each crossing (Sharp), optionally rounding the cut with
-// a local fillet (Smooth).
+// `offsetSubpath` (spline-math) offsets each cubic independently and joins
+// consecutive segment-offsets with a round corner arc, but does no
+// intersection handling. At a sharp corner the two neighbouring
+// segment-offsets cross on the concave side, so the join arc there closes a
+// little "bowtie" self-intersection loop; large offsets add global crossings
+// where a narrow feature collapses. This module cuts those loops so the path
+// resolves to a single point at each crossing (Sharp), optionally rounding
+// the cut with a local fillet (Smooth).
 //
 // The algorithm is a cubic-exact loop cull: find every self-intersection on
 // the post-offset cubic chain, then walk the chain skipping the geometry

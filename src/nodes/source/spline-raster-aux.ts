@@ -49,11 +49,16 @@ export const SPLINE_RASTER_PARAMS: ParamDef[] = [
   // px = absolute pixels (legacy); % = percent of canvas width, so the
   // stroke keeps its look at any resolution (#174).
   strokeUnitsParam("stroke_units", (p) => !!p.stroke_enabled),
+  // alpha: every consume path is 8-digit-safe — hexToRgba into Canvas
+  // stroke/fill styles here and in buildSplineElement, hexToRgba01 via
+  // compositeSplineFill's fillColorHex on the image-fill path — and the
+  // raster signatures key on the raw hex.
   {
     name: "stroke_color",
     label: "Stroke color",
     type: "color",
     default: "#ffffff",
+    alpha: true,
     visibleIf: (p) => !!p.stroke_enabled,
   },
   { name: "fill_enabled", label: "Fill", type: "boolean", default: false },
@@ -62,6 +67,7 @@ export const SPLINE_RASTER_PARAMS: ParamDef[] = [
     label: "Fill color",
     type: "color",
     default: "#ffffff",
+    alpha: true,
     visibleIf: (p) => !!p.fill_enabled,
   },
   // How a wired `fill` image maps into the shape. `window` reveals the

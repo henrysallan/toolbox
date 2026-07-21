@@ -80,10 +80,16 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
   // Live cursor in canvas UV. Updated on pointermove and read on every
   // frame — mirrors the editor's wiring so cursor-aware nodes (Cursor
   // source, scatter-points, etc.) behave the same way in /live/.
-  const cursorRef = useRef<{ x: number; y: number; active: boolean }>({
+  const cursorRef = useRef<{
+    x: number;
+    y: number;
+    active: boolean;
+    pressed: boolean;
+  }>({
     x: 0.5,
     y: 0.5,
     active: false,
+    pressed: false,
   });
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
@@ -96,16 +102,42 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
       const yDom = (e.clientY - rect.top) / rect.height;
       const y = 1 - yDom;
       const inside = x >= 0 && x <= 1 && yDom >= 0 && yDom <= 1;
-      cursorRef.current = { x, y, active: inside };
+      cursorRef.current = {
+        x,
+        y,
+        active: inside,
+        pressed: cursorRef.current.pressed,
+      };
     };
     const onLeave = () => {
       cursorRef.current = { ...cursorRef.current, active: false };
     };
+    // Primary-button press starting inside the canvas box = the drawing
+    // gesture (ctx.cursor.pressed) — mirrors the editor's wiring.
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const xr = (e.clientX - rect.left) / rect.width;
+      const yr = (e.clientY - rect.top) / rect.height;
+      if (xr < 0 || xr > 1 || yr < 0 || yr > 1) return;
+      cursorRef.current = { ...cursorRef.current, pressed: true };
+    };
+    const onUp = () => {
+      cursorRef.current = { ...cursorRef.current, pressed: false };
+    };
     window.addEventListener("pointermove", onMove);
     document.addEventListener("pointerleave", onLeave);
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
     return () => {
       window.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerleave", onLeave);
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
     };
   }, []);
 

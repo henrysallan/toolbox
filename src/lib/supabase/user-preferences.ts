@@ -66,6 +66,49 @@ export async function saveUserPreferences(
   return { ok: true };
 }
 
+// --- Brush presets (Paint node, 071926_paint-toolkit.md) -------------------
+// Stored in a dedicated `brush_presets jsonb` column (migration:
+// specdocs/user-preferences-brush-presets-migration.sql). Deliberately NOT
+// part of loadUserPreferences' select: while the migration is unapplied that
+// select would error and take the API-key prefs down with it. Callers treat
+// null as "cloud unavailable" (signed out / offline / column missing) and
+// fall back to localStorage (paint-editor/presets.ts).
+
+export async function loadCloudBrushPresets(): Promise<unknown[] | null> {
+  const supa = createClient();
+  const { data: userData } = await supa.auth.getUser();
+  const uid = userData.user?.id;
+  if (!uid) return null;
+  const { data, error } = await supa
+    .from("user_preferences")
+    .select("brush_presets")
+    .eq("user_id", uid)
+    .maybeSingle();
+  if (error) {
+    console.warn("loadCloudBrushPresets:", error.message);
+    return null;
+  }
+  const list = data?.brush_presets;
+  return Array.isArray(list) ? list : null;
+}
+
+export async function saveCloudBrushPresets(
+  presets: unknown[]
+): Promise<boolean> {
+  const supa = createClient();
+  const { data: userData } = await supa.auth.getUser();
+  const uid = userData.user?.id;
+  if (!uid) return false;
+  const { error } = await supa
+    .from("user_preferences")
+    .upsert({ user_id: uid, brush_presets: presets }, { onConflict: "user_id" });
+  if (error) {
+    console.warn("saveCloudBrushPresets:", error.message);
+    return false;
+  }
+  return true;
+}
+
 // OpenAI key validator: hits /v1/models, free + fast.
 export async function testOpenAIKey(
   key: string

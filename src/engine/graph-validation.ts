@@ -127,6 +127,14 @@ export function editorCanCoerce(
     (src === "spline" || src === "points")
   )
     return true;
+  // Mirror's `source` socket rests as spline but accepts points — it
+  // retypes itself (and its output) from connectedTypes like Transform.
+  if (
+    targetDefType === "mirror" &&
+    targetHandle === "in:source" &&
+    src === "points"
+  )
+    return true;
   // Scatter Points' density socket accepts a spline directly — its filled
   // silhouette becomes the density, sampled on the CPU at readback size
   // (no Rasterize Spline → texture → readback round trip). The socket

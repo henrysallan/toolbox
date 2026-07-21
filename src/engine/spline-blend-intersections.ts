@@ -1,0 +1,413 @@
+// Blend Intersections — implicit-field fusion of a stroke network.
+//
+// Turns a multi-subpath spline (open or closed strokes, self-crossings
+// welcome) into ONE closed outline: thin stroke bodies that swell into
+// webbed ink-pools wherever strokes cross or pass within a blend radius.
+// The look is an SDF smooth-union: every stroke is a distance field,
+// polynomial smooth-min combines them, and the iso-contour at the stroke
+// radius is the outline. Spec: specdocs/071926_blend-intersections.md
+// (devlist #49 — the implicit-surface fusion deferred from #71).
+//
+// All distance work happens in CANVAS-PIXEL space so strokes stay round
+// on non-square canvases (same rule as multi-stroke's px-space offsets);
+// the marching-squares step maps straight back into [0,1]² Y-DOWN UV.
+
+import type { SplineAnchor, SplineSubpath, SplineValue } from "./types";
+import { flattenSpline } from "./spline-flatten";
+import { marchingSquares } from "./marching-squares";
+import { fitSplineToPolyline } from "./spline-math";
+
+export interface BlendIntersectionsOptions {
+  // Stroke body thickness (diameter) in canvas px.
+  widthPx: number;
+  // Smooth-min k in canvas px — the webbing radius. 0 = plain union.
+  blendPx: number;
+  // Field samples across the network bbox's larger span.
+  resolution: number;
+  // 0..1 bezier-fit tolerance. 0 = raw marching-squares polygons.
+  smoothing: number;
+}
+
+// Line segments per flattened curve. Uniform subdivision is fine here —
+// the field only sees distances, so sub-cell flattening error is
+// invisible at any sane resolution.
+const CURVE_STEPS = 16;
+
+// Segments of one subpath whose ordinals are within this gap of each
+// other belong to the same local "branch" of the stroke. Two passes of a
+// self-crossing loop are far apart in ordinal space, so they land in
+// separate branches and blend; adjacent segments of one pass collapse
+// into a single branch and can't inflate the field (the sum-of-blobs
+// artifact of naive per-segment metaballs).
+const BRANCH_GAP = 8;
+
+// Hard cap on field samples — a runaway resolution × elongated bbox
+// guard, far above any useful setting.
+const MAX_SAMPLES = 1_500_000;
+
+const EMPTY: SplineValue = { kind: "spline", subpaths: [] };
+
+// Polynomial smooth-min (Quilez). Deepens the union by at most k/4 where
+// the two fields are equal, which is exactly the concave junction fillet.
+function smin(a: number, b: number, k: number): number {
+  if (k <= 0) return Math.min(a, b);
+  const h = Math.max(k - Math.abs(a - b), 0) / k;
+  return Math.min(a, b) - h * h * k * 0.25;
+}
+
+// Squared-distance from point p to segment a→b (all px space).
+function segDist(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = 0;
+  if (len2 > 1e-12) {
+    t = ((px - ax) * dx + (py - ay) * dy) / len2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+  }
+  const ex = px - (ax + dx * t);
+  const ey = py - (ay + dy * t);
+  // sqrt, not Math.hypot — this runs per (sample × candidate) and hypot's
+  // overflow guards cost real time there.
+  return Math.sqrt(ex * ex + ey * ey);
+}
+
+export function blendIntersections(
+  spline: SplineValue,
+  canvasW: number,
+  canvasH: number,
+  opts: BlendIntersectionsOptions
+): SplineValue {
+  if (canvasW <= 0 || canvasH <= 0) return EMPTY;
+
+  // ---- Flatten each subpath separately so segments keep (subpath,
+  // ordinal) identity for branch clustering.
+  const segX0: number[] = [];
+  const segY0: number[] = [];
+  const segX1: number[] = [];
+  const segY1: number[] = [];
+  const segSub: number[] = [];
+  const segOrd: number[] = [];
+  const subSegCount: number[] = [];
+  const subClosed: boolean[] = [];
+
+  let bx0 = Infinity;
+  let by0 = Infinity;
+  let bx1 = -Infinity;
+  let by1 = -Infinity;
+
+  for (const sub of spline.subpaths) {
+    if (sub.anchors.length < 2) continue;
+    const flat = flattenSpline(
+      { kind: "spline", subpaths: [sub] },
+      CURVE_STEPS
+    );
+    const subIdx = subSegCount.length;
+    subSegCount.push(flat.segCount);
+    subClosed.push(sub.closed);
+    for (let i = 0; i < flat.segCount; i++) {
+      const x0 = flat.segments[i * 4] * canvasW;
+      const y0 = flat.segments[i * 4 + 1] * canvasH;
+      const x1 = flat.segments[i * 4 + 2] * canvasW;
+      const y1 = flat.segments[i * 4 + 3] * canvasH;
+      segX0.push(x0);
+      segY0.push(y0);
+      segX1.push(x1);
+      segY1.push(y1);
+      segSub.push(subIdx);
+      segOrd.push(i);
+      if (x0 < bx0) bx0 = x0;
+      if (x1 < bx0) bx0 = x1;
+      if (y0 < by0) by0 = y0;
+      if (y1 < by0) by0 = y1;
+      if (x0 > bx1) bx1 = x0;
+      if (x1 > bx1) bx1 = x1;
+      if (y0 > by1) by1 = y0;
+      if (y1 > by1) by1 = y1;
+    }
+  }
+  const segCount = segSub.length;
+  if (segCount === 0) return EMPTY;
+
+  const r = Math.max(0.25, opts.widthPx / 2);
+  const k = Math.max(0, opts.blendPx);
+
+  // ---- Grid over the network bbox. The iso surface reaches at most
+  // r + k/4 beyond a stroke centerline; pad a couple cells past that.
+  const res = Math.max(16, Math.min(1024, Math.round(opts.resolution)));
+  const roughCell = Math.max(bx1 - bx0, by1 - by0, 1e-3) / (res - 1);
+  const margin = r + k * 0.25 + roughCell * 2;
+  bx0 -= margin;
+  by0 -= margin;
+  bx1 += margin;
+  by1 += margin;
+
+  let cell = Math.max(bx1 - bx0, by1 - by0) / (res - 1);
+  // Thin-feature guard: the stroke tube must span ≥ ~3 cells or marching
+  // squares hits saddle-heavy topology (speckle + broken chains) along
+  // its length. Resolution remains the ceiling via MAX_SAMPLES below.
+  cell = Math.min(cell, Math.max(0.5, r * 0.75));
+  let gw = Math.max(2, Math.round((bx1 - bx0) / cell) + 1);
+  let gh = Math.max(2, Math.round((by1 - by0) / cell) + 1);
+  if (gw * gh > MAX_SAMPLES) {
+    cell *= Math.sqrt((gw * gh) / MAX_SAMPLES);
+    gw = Math.max(2, Math.round((bx1 - bx0) / cell) + 1);
+    gh = Math.max(2, Math.round((by1 - by0) / cell) + 1);
+  }
+
+  // ---- Spatial hash. A branch only matters near the iso if its
+  // distance is within ~k of the running minimum (≤ r + k/4 there), so
+  // this radius bounds what any sample must gather.
+  const influence = r + k * 1.25 + cell * Math.SQRT2;
+  const bucket = Math.max(influence, cell);
+  const bCols = Math.max(1, Math.ceil((bx1 - bx0) / bucket));
+  const bRows = Math.max(1, Math.ceil((by1 - by0) / bucket));
+  const buckets = new Map<number, number[]>();
+  const bIdx = (cx: number, cy: number) => cy * bCols + cx;
+  for (let i = 0; i < segCount; i++) {
+    const minX = Math.min(segX0[i], segX1[i]);
+    const maxX = Math.max(segX0[i], segX1[i]);
+    const minY = Math.min(segY0[i], segY1[i]);
+    const maxY = Math.max(segY0[i], segY1[i]);
+    const c0 = Math.max(0, Math.floor((minX - bx0) / bucket));
+    const c1 = Math.min(bCols - 1, Math.floor((maxX - bx0) / bucket));
+    const r0 = Math.max(0, Math.floor((minY - by0) / bucket));
+    const r1 = Math.min(bRows - 1, Math.floor((maxY - by0) / bucket));
+    for (let cy = r0; cy <= r1; cy++) {
+      for (let cx = c0; cx <= c1; cx++) {
+        const key = bIdx(cx, cy);
+        let list = buckets.get(key);
+        if (!list) {
+          list = [];
+          buckets.set(key, list);
+        }
+        list.push(i);
+      }
+    }
+  }
+
+  // ---- Sample the field. Candidate gathering is cached per hash bucket
+  // (every sample inside a bucket sees the same 3×3 neighborhood);
+  // distances + branch folding run per sample on reusable scratch,
+  // allocation-free in the hot loop.
+  const grid = new Float32Array(gw * gh);
+  const segKey = new Float64Array(segCount);
+  for (let i = 0; i < segCount; i++) {
+    segKey[i] = segSub[i] * 1048576 + segOrd[i];
+  }
+  const bucketCand: (Int32Array | null)[] = new Array(bCols * bRows).fill(
+    null
+  );
+  const stamp = new Int32Array(segCount).fill(-1);
+  const gatherScratch: number[] = [];
+  const gatherBucket = (cx: number, cy: number): Int32Array => {
+    const key = bIdx(cx, cy);
+    const cached = bucketCand[key];
+    if (cached) return cached;
+    gatherScratch.length = 0;
+    for (let ny = cy - 1; ny <= cy + 1; ny++) {
+      if (ny < 0 || ny >= bRows) continue;
+      for (let nx = cx - 1; nx <= cx + 1; nx++) {
+        if (nx < 0 || nx >= bCols) continue;
+        const list = buckets.get(bIdx(nx, ny));
+        if (!list) continue;
+        for (const si of list) {
+          if (stamp[si] === key) continue;
+          stamp[si] = key;
+          gatherScratch.push(si);
+        }
+      }
+    }
+    const arr = Int32Array.from(gatherScratch);
+    bucketCand[key] = arr;
+    return arr;
+  };
+
+  const candSeg: number[] = [];
+  const candDist: number[] = [];
+  const branchDists: number[] = [];
+  // Beyond this the smooth-min deepening (≤ k/4) can't move the iso into
+  // a neighboring cell — plain nearest-distance is exact enough there.
+  const farSlack = k * 0.25 + cell * 2;
+
+  for (let gy = 0; gy < gh; gy++) {
+    const py = by0 + gy * cell;
+    const cy = Math.max(0, Math.min(bRows - 1, Math.floor((py - by0) / bucket)));
+    for (let gx = 0; gx < gw; gx++) {
+      const px = bx0 + gx * cell;
+      const cx = Math.max(
+        0,
+        Math.min(bCols - 1, Math.floor((px - bx0) / bucket))
+      );
+      const gi = gy * gw + gx;
+
+      const cand = gatherBucket(cx, cy);
+      let m = 0;
+      let minD = Infinity;
+      for (let ci = 0; ci < cand.length; ci++) {
+        const si = cand[ci];
+        const d = segDist(px, py, segX0[si], segY0[si], segX1[si], segY1[si]);
+        if (d <= influence) {
+          candSeg[m] = si;
+          candDist[m] = d;
+          m++;
+          if (d < minD) minD = d;
+        }
+      }
+
+      if (m === 0) {
+        grid[gi] = influence;
+        continue;
+      }
+      if (m === 1 || minD - r > farSlack) {
+        grid[gi] = minD - r;
+        continue;
+      }
+
+      // Insertion-sort candidates by (subpath, ordinal) so contiguous
+      // runs are adjacent, then split into branches at ordinal gaps.
+      for (let i = 1; i < m; i++) {
+        const s = candSeg[i];
+        const d = candDist[i];
+        const sk = segKey[s];
+        let j = i - 1;
+        while (j >= 0 && segKey[candSeg[j]] > sk) {
+          candSeg[j + 1] = candSeg[j];
+          candDist[j + 1] = candDist[j];
+          j--;
+        }
+        candSeg[j + 1] = s;
+        candDist[j + 1] = d;
+      }
+
+      branchDists.length = 0;
+      let curSub = -1;
+      let prevOrd = 0;
+      let curMin = 0;
+      let subFirstBranch = -1; // branchDists index of this subpath's first branch
+      let subFirstOrd = 0;
+      for (let i = 0; i <= m; i++) {
+        const sub = i < m ? segSub[candSeg[i]] : -2; // sentinel flushes the tail
+        const ord = i < m ? segOrd[candSeg[i]] : 0;
+        const d = i < m ? candDist[i] : 0;
+        if (sub !== curSub) {
+          if (curSub >= 0) {
+            branchDists.push(curMin);
+            // Closed subpath whose candidate runs touch both ends of the
+            // ordinal range: the seam-spanning runs are ONE local branch.
+            if (subClosed[curSub] && branchDists.length > subFirstBranch + 1) {
+              const n = subSegCount[curSub];
+              const wrapGap = subFirstOrd + (n - 1 - prevOrd);
+              if (wrapGap <= BRANCH_GAP) {
+                const last = branchDists.pop()!;
+                branchDists[subFirstBranch] = Math.min(
+                  branchDists[subFirstBranch],
+                  last
+                );
+              }
+            }
+          }
+          if (i === m) break;
+          curSub = sub;
+          curMin = d;
+          subFirstBranch = branchDists.length;
+          subFirstOrd = ord;
+        } else if (ord - prevOrd > BRANCH_GAP) {
+          branchDists.push(curMin);
+          curMin = d;
+        } else if (d < curMin) {
+          curMin = d;
+        }
+        prevOrd = ord;
+      }
+
+      // Fold ascending for a deterministic smooth-min.
+      branchDists.sort((a, b) => a - b);
+      let acc = branchDists[0];
+      for (let i = 1; i < branchDists.length; i++) {
+        acc = smin(acc, branchDists[i], k);
+      }
+      grid[gi] = acc - r;
+    }
+  }
+
+  // ---- Contour back into canvas UV.
+  const contours = marchingSquares(grid, gw, gh, {
+    iso: 0,
+    uvOrigin: [bx0 / canvasW, by0 / canvasH],
+    uvSize: [((gw - 1) * cell) / canvasW, ((gh - 1) * cell) / canvasH],
+  });
+
+  // ---- Cleanup + optional refit, all in px space (isotropic error).
+  // Marching squares on thin/tangent features leaves saddle debris:
+  // sub-cell slivers, and rings split into open chains whose endpoints
+  // nearly meet. Drop the former, re-close the latter.
+  const smoothing = Math.max(0, Math.min(1, opts.smoothing));
+  const errPx = 0.25 + smoothing * cell * 1.5;
+  const out: SplineSubpath[] = [];
+  for (const c of contours) {
+    const pts: [number, number][] = c.anchors.map((a) => [
+      a.pos[0] * canvasW,
+      a.pos[1] * canvasH,
+    ]);
+    let closed = c.closed;
+    if (!closed && pts.length > 2) {
+      const gap = Math.hypot(
+        pts[0][0] - pts[pts.length - 1][0],
+        pts[0][1] - pts[pts.length - 1][1]
+      );
+      if (gap <= cell * 1.5) closed = true;
+    }
+    let len = 0;
+    for (let i = 1; i < pts.length; i++) {
+      len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    }
+    if (len < cell * 3) continue; // saddle debris
+
+    if (smoothing <= 0.001) {
+      out.push({ anchors: c.anchors, closed });
+      continue;
+    }
+
+    // Refit as smooth beziers; anchors divide back into UV (positions
+    // and handle offsets both scale linearly). Closed contours append
+    // their seam point for the fit, then merge the duplicate end anchor
+    // back into the start.
+    if (closed) pts.push([pts[0][0], pts[0][1]]);
+    const fitted = fitSplineToPolyline(pts, errPx);
+    if (fitted.length < 2) {
+      out.push({ anchors: c.anchors, closed });
+      continue;
+    }
+    if (closed) {
+      const last = fitted[fitted.length - 1];
+      fitted.pop();
+      if (fitted.length < 2) {
+        out.push({ anchors: c.anchors, closed });
+        continue;
+      }
+      if (last.inHandle) fitted[0].inHandle = last.inHandle;
+    }
+    const anchors: SplineAnchor[] = fitted.map((a) => {
+      const na: SplineAnchor = {
+        pos: [a.pos[0] / canvasW, a.pos[1] / canvasH],
+      };
+      if (a.inHandle) {
+        na.inHandle = [a.inHandle[0] / canvasW, a.inHandle[1] / canvasH];
+      }
+      if (a.outHandle) {
+        na.outHandle = [a.outHandle[0] / canvasW, a.outHandle[1] / canvasH];
+      }
+      return na;
+    });
+    out.push({ anchors, closed });
+  }
+  return { kind: "spline", subpaths: out };
+}

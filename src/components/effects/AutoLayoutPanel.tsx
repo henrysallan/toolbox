@@ -12,6 +12,7 @@ import {
   upsertKeyframe,
   type KeyframeAnimationBlock,
 } from "@/engine/keyframes";
+import { animatedValueAt } from "@/engine/conventions";
 import KeyframeDiamond from "./KeyframeDiamond";
 import { ColorSwatchPicker } from "@/lib/color-picker-popover";
 
@@ -612,8 +613,19 @@ export default function AutoLayoutPanel({
   onSeekTick,
 }: Props) {
   const p = node.data.params as Record<string, unknown>;
-  const num = (name: string, def: number): number =>
-    typeof p[name] === "number" ? (p[name] as number) : def;
+  // Animated readout: keyframed scalars display their evaluated value at
+  // the playhead (fields follow scrub/playback). Edits write through set()
+  // and autokey mirrors them into the block at the same tick.
+  const num = (name: string, def: number): number => {
+    const stored = typeof p[name] === "number" ? (p[name] as number) : def;
+    const v = animatedValueAt(
+      getAnimation?.(node.id, name),
+      "scalar",
+      currentTick ?? 0,
+      stored
+    );
+    return typeof v === "number" && Number.isFinite(v) ? v : stored;
+  };
   const str = (name: string, def: string): string =>
     typeof p[name] === "string" ? (p[name] as string) : def;
   const bool = (name: string): boolean => p[name] === true;

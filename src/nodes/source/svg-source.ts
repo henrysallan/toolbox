@@ -49,11 +49,14 @@ export const svgSourceNode: NodeDefinition = {
       default: 2,
       visibleIf: (p) => !!p.stroke_enabled,
     },
+    // alpha: rendered by the shared rasterizeSplineAux, whose paths are
+    // 8-digit-safe (see SPLINE_RASTER_PARAMS in spline-raster-aux.ts).
     {
       name: "stroke_color",
       label: "Stroke color",
       type: "color",
       default: "#ffffff",
+      alpha: true,
       visibleIf: (p) => !!p.stroke_enabled,
     },
     {
@@ -67,6 +70,7 @@ export const svgSourceNode: NodeDefinition = {
       label: "Fill color",
       type: "color",
       default: "#ffffff",
+      alpha: true,
       visibleIf: (p) => !!p.fill_enabled,
     },
     {

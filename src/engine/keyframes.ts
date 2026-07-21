@@ -382,7 +382,10 @@ function oklabToRgb(L: number, a: number, b: number): [number, number, number] {
 // Color keyframe values arrive in two forms: 0..1 RGBA tuples (gradient
 // point / ramp stop virtual keys seed tuples) and hex strings (literal
 // color params keyframe their stored value verbatim). Interpolation math
-// needs tuples, so coerce here — a hex string parses to [r,g,b,1].
+// needs tuples, so coerce here — a hex string parses to [r,g,b,a] with
+// the alpha from an 8-digit `#rrggbbaa` (6-digit ⇒ 1). Alpha-in is
+// unconditional (tuples are engine-internal); whether it survives back
+// into the param's hex is the flag-gated colorValueToHex's call.
 function toRgbaTuple(v: unknown): RGBA {
   if (Array.isArray(v) && v.length >= 3) {
     return [
@@ -396,11 +399,12 @@ function toRgbaTuple(v: unknown): RGBA {
     let h = v.replace("#", "");
     if (h.length === 3) h = h.split("").map((c) => c + c).join("");
     const n = parseInt(h.slice(0, 6) || "0", 16);
+    const a = h.length >= 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1;
     return [
       ((n >> 16) & 0xff) / 255,
       ((n >> 8) & 0xff) / 255,
       (n & 0xff) / 255,
-      1,
+      Number.isFinite(a) ? a : 1,
     ];
   }
   return [0, 0, 0, 1];
@@ -462,6 +466,20 @@ function lerpHandle(a: Handle, b: Handle, t: number): Handle {
   return [ax + (bx - ax) * t, ay + (by - ay) * t];
 }
 
+// Live-corner radius (SplineAnchor.cornerRadius) lerps like a handle: a
+// missing radius is a zero one, so a corner can smoothly round/sharpen
+// across keyframes. Both-missing stays undefined (no field minted).
+function lerpCornerRadius(
+  a: number | undefined,
+  b: number | undefined,
+  t: number
+): number | undefined {
+  if (a == null && b == null) return undefined;
+  const av = a ?? 0;
+  const bv = b ?? 0;
+  return av + (bv - av) * t;
+}
+
 function lerpSpline(
   a: SplineKfValue,
   b: SplineKfValue,
@@ -486,6 +504,7 @@ function lerpSpline(
           inHandle: lerpHandle(aa.inHandle, ba.inHandle, t),
           outHandle: lerpHandle(aa.outHandle, ba.outHandle, t),
           broken: aa.broken,
+          cornerRadius: lerpCornerRadius(aa.cornerRadius, ba.cornerRadius, t),
         };
       });
       return { ...sa, anchors };

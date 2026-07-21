@@ -26,6 +26,9 @@ import JunctionEdge from "./JunctionEdge";
 import WireActionOverlay from "./WireActionOverlay";
 import NodeSearchPopup from "./NodeSearchPopup";
 import SimulationZoneUnderlay from "./SimulationZoneUnderlay";
+import IterateZoneUnderlay, {
+  computeIterateZoneRects,
+} from "./IterateZoneUnderlay";
 import { useEffectiveDevice } from "./input-device";
 import { getNodeDef } from "@/engine/registry";
 import {
@@ -43,12 +46,16 @@ import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
   GROUP_TYPE,
+  ITERATE_INPUT_TYPE,
+  ITERATE_TYPE,
   LAYER_TYPE,
   VIRTUAL_SOCKET,
 } from "@/engine/groups";
 import { editorCanCoerce } from "@/engine/graph-validation";
 
-// Node types you can dive into with Tab / double-click.
+// Node types you can dive into with Tab / double-click. Iterate is
+// deliberately absent — its body always renders inline as a zone
+// (071926_iterate-zone-view.md), there is no interior scope to enter.
 function isEnterableScope(defType: string): boolean {
   return defType === GROUP_TYPE || defType === LAYER_TYPE;
 }
@@ -157,6 +164,10 @@ interface Props {
   onUngroupSelection?: () => void;
   onDiveIntoGroup?: (groupId: string) => void;
   onScopeUp?: () => void;
+  // Zone view (071926_iterate-zone-view.md): a node dragged into / out
+  // of an expanded Iterate's zone rect requests a scope move. Parent
+  // owns the legality check (reparentNode) + undo + toast.
+  onReparentNode?: (nodeId: string, newParentId: string | undefined) => void;
   // Scope trail for the breadcrumb row: the Project crumb
   // (PROJECT_CRUMB_ID) first, then the composition (id null), then the
   // group chain to the current scope. The row hides at the comp root.
@@ -211,6 +222,7 @@ function NodeEditor({
   onUngroupSelection,
   onDiveIntoGroup,
   onScopeUp,
+  onReparentNode,
   breadcrumbs,
   onNavigateScope,
   onOpenProject,
@@ -622,6 +634,18 @@ function NodeEditor({
   // Render-refreshed bodies + stable shells for the ReactFlow per-node
   // handlers (assigned just before the JSX return; see the comment there).
   type RfNode = Node<NodeDataPayload>;
+  // Active shell-drag snapshot: the Iterate shell being dragged plus
+  // every member's start position (071926_iterate-zone-view.md).
+  const zoneDragRef = useRef<{
+    shellId: string;
+    start: { x: number; y: number };
+    members: Map<string, { x: number; y: number }>;
+  } | null>(null);
+  // Cmd/Ctrl held at drag start — the "take it out of the zone"
+  // modifier (it already means detach-with-heal, which strips the wires
+  // that would otherwise block the reparent). Plain drags never remove
+  // membership; the zone just stretches.
+  const cmdDragRef = useRef(false);
   const nodeDragStartRef = useRef<(e: React.MouseEvent, node: RfNode) => void>(
     () => {}
   );
@@ -1440,15 +1464,129 @@ function NodeEditor({
     const targetNode = nodes.find((n) => n.id === c.target);
     if (!sourceNode || !targetNode) return false;
 
+    // A member can never wire INTO its own zone's Iteration Input —
+    // loop params and passthroughs take exterior values only (driving
+    // the loop's configuration from inside the loop is circular).
+    if (
+      targetNode.data.defType === ITERATE_INPUT_TYPE &&
+      sourceNode.data.parentId === targetNode.data.parentId
+    ) {
+      return false;
+    }
+
+    // Iterate zones render multiple scopes at once
+    // (071926_iterate-zone-view.md rev 3), so scope legality is no
+    // longer guaranteed by visibility. A cross-scope wire is valid only
+    // for the zone's legal crossings:
+    //   (1) member → its OWN shell (the collect tap / virtual mint);
+    //   (2) exterior → the zone's Iteration Input exterior face;
+    //   (3) exterior → member — the wire stays exactly as drawn; flatten
+    //       mirrors it per-edge onto the shell and the compute feeds the
+    //       value into each iteration ("stay as wired");
+    //   (4) member → exterior — onConnect auto-mints the collect socket
+    //       on the shell; only while the shell has none, and only when
+    //       the exterior target accepts the GROUPED type (an image
+    //       comes out as image_group).
+    // Programmatic cross-scope edges (promoted params) don't pass
+    // through here.
+    if (sourceNode.data.parentId !== targetNode.data.parentId) {
+      const parentOf = (n: RfNode) =>
+        n.data.parentId
+          ? nodes.find((x) => x.id === n.data.parentId)
+          : undefined;
+      const isGroupBoundary = (t: string) =>
+        t === GROUP_INPUT_TYPE || t === GROUP_OUTPUT_TYPE;
+      const sShell = parentOf(sourceNode);
+      const sourceIsMember =
+        sShell?.data.defType === ITERATE_TYPE &&
+        !isGroupBoundary(sourceNode.data.defType);
+      // (1) collect tap.
+      const memberToOwnShell =
+        sourceIsMember &&
+        targetNode.id === sShell!.id &&
+        sourceNode.data.defType !== ITERATE_INPUT_TYPE;
+      // (2) exterior → Iteration Input's exterior face.
+      const inputShell =
+        targetNode.data.defType === ITERATE_INPUT_TYPE
+          ? parentOf(targetNode)
+          : undefined;
+      const exteriorToInput =
+        inputShell?.data.defType === ITERATE_TYPE &&
+        sourceNode.data.parentId === inputShell.data.parentId &&
+        !isGroupBoundary(sourceNode.data.defType);
+      // (3) exterior → member (auto-mint passthrough).
+      const tShell = parentOf(targetNode);
+      const intoZone =
+        tShell?.data.defType === ITERATE_TYPE &&
+        sourceNode.data.parentId === tShell.data.parentId &&
+        targetNode.data.defType !== ITERATE_INPUT_TYPE &&
+        !isGroupBoundary(targetNode.data.defType) &&
+        !isGroupBoundary(sourceNode.data.defType);
+      // (5) iteration values → exterior: the Iteration Input's aux
+      // outputs (index / t / random / passthroughs) may wire to any
+      // same-scope-as-the-shell consumer. The wire stays PENDING (the
+      // consumer sees nothing) until the chain is piped into the
+      // Iteration Output, which absorbs it into the zone
+      // (absorbIntoIterateZone). The virtual port is excluded — minting
+      // a passthrough toward the outside is meaningless.
+      const sInputShell =
+        sourceNode.data.defType === ITERATE_INPUT_TYPE
+          ? parentOf(sourceNode)
+          : undefined;
+      const iterValuesOut =
+        sInputShell?.data.defType === ITERATE_TYPE &&
+        targetNode.data.parentId === sInputShell.data.parentId &&
+        c.sourceHandle !== `out:aux:${VIRTUAL_SOCKET}` &&
+        targetNode.data.defType !== ITERATE_INPUT_TYPE &&
+        !isGroupBoundary(targetNode.data.defType);
+      // (4) member → exterior (auto-mint a collect socket on the shell —
+      // every collect socket gets its own grouped output, so this is
+      // always mintable; the only gate is the honest type one: the
+      // exterior target must accept the GROUPED result).
+      let outOfZone = false;
+      if (
+        sourceIsMember &&
+        sourceNode.data.defType !== ITERATE_INPUT_TYPE &&
+        targetNode.id !== sShell!.id &&
+        targetNode.data.parentId === sShell!.data.parentId &&
+        !isGroupBoundary(targetNode.data.defType)
+      ) {
+        const raw = resolveSourceSocketType(sourceNode, c.sourceHandle);
+        const tgt = resolveTargetSocketType(targetNode, c.targetHandle);
+        const grouped = raw === "image" ? "image_group" : raw;
+        outOfZone =
+          !!grouped &&
+          !!tgt &&
+          editorCanCoerce(
+            grouped,
+            tgt,
+            targetNode.data.defType,
+            c.targetHandle ?? undefined
+          );
+      }
+      if (
+        !memberToOwnShell &&
+        !exteriorToInput &&
+        !intoZone &&
+        !outOfZone &&
+        !iterValuesOut
+      ) {
+        return false;
+      }
+    }
+
     // Virtual boundary sockets accept any type — the connect path mints
     // a real socket typed after the far end. Virtual-to-virtual is
     // refused: there'd be no type to infer on either side.
     const srcVirtual =
       c.sourceHandle === `out:aux:${VIRTUAL_SOCKET}` &&
-      sourceNode.data.defType === GROUP_INPUT_TYPE;
+      (sourceNode.data.defType === GROUP_INPUT_TYPE ||
+        sourceNode.data.defType === ITERATE_INPUT_TYPE);
     const tgtVirtual =
       c.targetHandle === `in:${VIRTUAL_SOCKET}` &&
-      targetNode.data.defType === GROUP_OUTPUT_TYPE;
+      (targetNode.data.defType === GROUP_OUTPUT_TYPE ||
+        targetNode.data.defType === ITERATE_TYPE ||
+        targetNode.data.defType === ITERATE_INPUT_TYPE);
     if (srcVirtual || tgtVirtual) return !(srcVirtual && tgtVirtual);
 
     if (c.sourceHandle.startsWith("out:aux:")) {
@@ -1608,9 +1746,61 @@ function NodeEditor({
     if ((e.metaKey || e.ctrlKey) && onDetachNode) {
       onDetachNode(node.id, findDetachBridge(node.id));
     }
+    cmdDragRef.current = e.metaKey || e.ctrlKey;
+    // Dragging an Iterate shell drags its whole zone
+    // (071926_iterate-zone-view.md): snapshot the shell's start plus
+    // every member's start; the drag handler re-derives each member as
+    // start + delta (absolute, no per-tick drift).
+    if ((node.data as NodeDataPayload).defType === ITERATE_TYPE) {
+      const members = new Map<string, { x: number; y: number }>();
+      const memberOf = (id: string | undefined): boolean => {
+        for (let cur = id, hops = 0; cur && hops < nodes.length; hops++) {
+          if (cur === node.id) return true;
+          cur = (
+            nodes.find((n) => n.id === cur)?.data as
+              | NodeDataPayload
+              | undefined
+          )?.parentId;
+        }
+        return false;
+      };
+      for (const n of nodes) {
+        if (n.id !== node.id && memberOf((n.data as NodeDataPayload).parentId)) {
+          members.set(n.id, { x: n.position.x, y: n.position.y });
+        }
+      }
+      zoneDragRef.current = {
+        shellId: node.id,
+        start: { x: node.position.x, y: node.position.y },
+        members,
+      };
+    } else {
+      zoneDragRef.current = null;
+    }
     setSpliceCandidate(null);
   };
   nodeDragRef.current = (_e, node, dragged) => {
+    // Shell drag → move the members with it. Members that are part of
+    // the drag selection already move under React Flow — skip those.
+    const zone = zoneDragRef.current;
+    if (zone && node.id === zone.shellId) {
+      const dx = node.position.x - zone.start.x;
+      const dy = node.position.y - zone.start.y;
+      const draggedIds = new Set(dragged.map((d) => d.id));
+      const changes: NodeChange<RfNode>[] = [];
+      for (const [id, start] of zone.members) {
+        if (draggedIds.has(id)) continue;
+        changes.push({
+          id,
+          type: "position",
+          position: { x: start.x + dx, y: start.y + dy },
+        });
+      }
+      if (changes.length > 0) onNodesChange(changes);
+      // A shell drag is a zone move, never a splice.
+      if (spliceRef.current) setSpliceCandidate(null);
+      return;
+    }
     // Only splice-highlight on a single-node drag. Marquee drags that move
     // many nodes at once shouldn't suddenly splice one into a random edge.
     if (dragged.length !== 1) {
@@ -1633,16 +1823,76 @@ function NodeEditor({
     }
   };
   nodeDragStopRef.current = (_e, node, dragged) => {
+    zoneDragRef.current = null;
+    // A shell never reparents by dragging (a zone inside a zone would be
+    // a nested Iterate, which doesn't evaluate) — the zone just moves.
+    if ((node.data as NodeDataPayload).defType === ITERATE_TYPE) {
+      setSpliceCandidate(null);
+      return;
+    }
     const candidate = spliceRef.current;
     setSpliceCandidate(null);
-    if (!candidate) return;
-    if (dragged.length !== 1) return;
-    onSpliceNode?.({
-      nodeId: node.id,
-      edgeId: candidate.edgeId,
-      inputName: candidate.inputName,
-      outputHandle: candidate.outputHandle,
-    });
+    if (candidate && dragged.length === 1) {
+      onSpliceNode?.({
+        nodeId: node.id,
+        edgeId: candidate.edgeId,
+        inputName: candidate.inputName,
+        outputHandle: candidate.outputHandle,
+      });
+      return;
+    }
+    // Zone drop-to-reparent (071926_iterate-zone-view.md): landing a
+    // single node's center inside an Iterate zone absorbs it into that
+    // scope. Leaving is DELIBERATE: only a Cmd/Ctrl-drag that ends
+    // outside the zone (rect computed WITHOUT the dragged node — the
+    // union bbox would otherwise follow it, making exit impossible)
+    // moves the node up to the shell's scope; a plain drag just
+    // stretches the zone. Boundary nodes never move; multi-select drags
+    // don't reparent.
+    if (dragged.length !== 1 || !onReparentNode) return;
+    const data = node.data as NodeDataPayload;
+    if (
+      data.defType === GROUP_INPUT_TYPE ||
+      data.defType === GROUP_OUTPUT_TYPE ||
+      data.defType === ITERATE_INPUT_TYPE
+    ) {
+      return;
+    }
+    const zones = computeIterateZoneRects(
+      nodes as Node<NodeDataPayload>[],
+      node.id
+    ).filter((z) => z.shellId !== node.id);
+    const cx = node.position.x + (node.measured?.width ?? 220) / 2;
+    const cy = node.position.y + (node.measured?.height ?? 100) / 2;
+    // Innermost (smallest) zone containing the node's center.
+    const hit = zones
+      .filter(
+        (z) =>
+          cx >= z.bbox.x &&
+          cx <= z.bbox.x + z.bbox.width &&
+          cy >= z.bbox.y &&
+          cy <= z.bbox.y + z.bbox.height
+      )
+      .sort(
+        (a, b) => a.bbox.width * a.bbox.height - b.bbox.width * b.bbox.height
+      )[0];
+    if (hit && data.parentId !== hit.shellId) {
+      onReparentNode(node.id, hit.shellId);
+    } else if (!hit && data.parentId && cmdDragRef.current) {
+      // Cmd-dragged clear of every zone: if it lives in one, take it
+      // out (detach at drag start already stripped the wires that would
+      // block this).
+      const shell = nodes.find((n) => n.id === data.parentId);
+      if (
+        (shell?.data as NodeDataPayload | undefined)?.defType ===
+        ITERATE_TYPE
+      ) {
+        onReparentNode(
+          node.id,
+          (shell!.data as NodeDataPayload).parentId
+        );
+      }
+    }
   };
   nodeContextMenuRef.current = (e, node) => {
     e.preventDefault();
@@ -1992,6 +2242,7 @@ function NodeEditor({
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
         <SimulationZoneUnderlay nodes={nodes} />
+        <IterateZoneUnderlay nodes={nodes} />
         {viewportOverlay && <ViewportPortal>{viewportOverlay}</ViewportPortal>}
       </ReactFlow>
 

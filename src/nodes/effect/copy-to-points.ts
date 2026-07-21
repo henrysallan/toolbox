@@ -666,7 +666,7 @@ export const copyToPointsNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Duplicate an image (or image group), spline, or point at every target point. Each copy respects per-point rotation and scale, anchored at the instance's content center (or canvas center / custom). Per-instance modulation works in every mode: scalar inputs drive every copy uniformly (e.g. audio amplitude on `scale_mul` makes everything pulse), and image inputs are sampled at each copy's position (e.g. noise on `scale_field` gives every copy a different size). Variants — grouped splines / points, or image-group items — land per point via the pick mode: all, image-driven (`pick` input), seeded random, cycle, or by the target point's own group. Draw order controls stacking (painter's by-y, shuffled).",
+    "Duplicate an image (or image group), spline, or point at every target point. Each copy respects per-point rotation and scale, anchored at the instance's content center (or canvas center / custom). Per-instance modulation works in every mode: scalar inputs drive every copy uniformly (e.g. audio amplitude on `scale_mul` makes everything pulse), and image inputs are sampled at each copy's position (e.g. noise on `scale_field` gives every copy a different size). Variants — grouped splines / points, or image-group items — land per point via the pick mode: all, image-driven (`pick` input), seeded random, cycle, or by the target point's own group. Draw order controls stacking (painter's by-y, shuffled). In spline/point modes, Tag copies chooses the groupIndex the copies carry out: the instance's own tags, the copy's index (so downstream per-group styling — Stroke color/thickness sources, Select by Index — varies per copy), or the target point's group.",
   backend: "webgl2",
   inputs: [
     { name: "points", type: "points", required: true },
@@ -798,6 +798,24 @@ export const copyToPointsNode: NodeDefinition = {
       options: ["points order", "by y", "shuffled"],
       default: "points order",
     },
+    // What groupIndex the emitted copies carry (spline / point modes —
+    // image mode flattens, so there's nothing to tag). "instance groups"
+    // preserves the instance's own tags (legacy; missing param resolves
+    // here). "copy index" tags everything emitted for target point i
+    // with i — the identity that lets downstream per-group styling
+    // (Stroke's color/thickness sources, Select by Index, Modulate
+    // Splines) vary PER COPY instead of per instance-part. "target
+    // group" inherits the target point's own groupIndex. Keyed on the
+    // point's index, not emission order, so draw_order never reshuffles
+    // identity. Spec: 071826_copy-identity-stroke-width.md.
+    {
+      name: "output_tag",
+      label: "Tag copies",
+      type: "enum",
+      options: ["instance groups", "copy index", "target group"],
+      default: "instance groups",
+      visibleIf: (p) => p.mode === "spline" || p.mode === "point",
+    },
     // Modulation params — honored in every mode (shader in image mode,
     // CPU math in spline / point modes). These give the user knobs to
     // set even before they wire any modulation input; once a
@@ -914,6 +932,19 @@ export const copyToPointsNode: NodeDefinition = {
     // Emission/stacking order over the target points (null = producer
     // order, the fast path).
     const drawOrderMode = (params.draw_order as string) ?? "points order";
+
+    // Copy-identity tagging for the CPU modes (see the param comment).
+    const outputTag = (params.output_tag as string) ?? "instance groups";
+    const tagFor = (
+      instanceTag: number | undefined,
+      pointIndex: number,
+      targetGroup: number | undefined
+    ): number | undefined =>
+      outputTag === "copy index"
+        ? pointIndex
+        : outputTag === "target group"
+          ? targetGroup ?? 0
+          : instanceTag;
     const order = ptsValue
       ? buildDrawOrder(ptsValue, drawOrderMode, pickSeed)
       : null;
@@ -1007,11 +1038,11 @@ export const copyToPointsNode: NodeDefinition = {
             scaleX: sx,
             scaleY: sy,
           });
-          // Preserve instance groupIndex on the output so downstream
-          // per-index nodes can still key off it.
+          // Tag per output_tag: instance identity (legacy), copy
+          // identity, or the target point's group.
           outSubpaths.push({
             ...transformed,
-            groupIndex: sub.groupIndex,
+            groupIndex: tagFor(sub.groupIndex, i, pt.groupIndex),
           });
         }
       }
@@ -1083,7 +1114,7 @@ export const copyToPointsNode: NodeDefinition = {
               (src.scale?.[0] ?? 1) * tSx,
               (src.scale?.[1] ?? 1) * tSy,
             ],
-            groupIndex: src.groupIndex,
+            groupIndex: tagFor(src.groupIndex, i, target.groupIndex),
           });
         }
       }

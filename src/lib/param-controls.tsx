@@ -22,9 +22,10 @@ import type {
 import { parseCsv, type CsvDelimiter } from "@/engine/csv-parse";
 import { registerImageOriginal } from "@/lib/image-bytes";
 import { newExprInput } from "@/nodes/effect/expression";
-import { newWedgeValueId } from "@/nodes/source/wedge";
+import { newWedgeValueId, WEDGE_TYPE_DEFAULTS } from "@/nodes/source/wedge";
 import { syncChannelInputs } from "@/nodes/effect/point-expression";
 import {
+  animatedValueAt,
   gpointCKey,
   gpointXKey,
   gpointYKey,
@@ -994,6 +995,40 @@ export interface LayerAnimApi {
   set: (key: string, next: KeyframeAnimationBlock | undefined) => void;
 }
 
+// Animated readouts for virtual-key sub-values (layer opacity, gradient
+// points, ramp stops): the keyframe-evaluated value at the playhead, falling
+// back to the stored constant. Display-only — edits still diff/patch against
+// the stored arrays, so autokey and the constant round-trip are untouched.
+export function animScalarAt(
+  layerAnim: LayerAnimApi | undefined,
+  key: string,
+  stored: number
+): number {
+  if (!layerAnim) return stored;
+  const v = animatedValueAt(
+    layerAnim.get(key),
+    "scalar",
+    layerAnim.currentTick,
+    stored
+  );
+  return typeof v === "number" && Number.isFinite(v) ? v : stored;
+}
+
+export function animColorHexAt(
+  layerAnim: LayerAnimApi | undefined,
+  key: string,
+  storedHex: string
+): string {
+  if (!layerAnim) return storedHex;
+  const v = animatedValueAt(
+    layerAnim.get(key),
+    "color",
+    layerAnim.currentTick,
+    storedHex
+  );
+  return typeof v === "string" ? v : storedHex;
+}
+
 // Per-stop expose / control access for ColorRampControl. Keys are the
 // virtual ramp names (`ramp_c/a/p:<param>:<stopId>` — engine/conventions):
 // exposing adds an input socket on the node, controlling adds a knob to the
@@ -1009,13 +1044,40 @@ export interface RampIoApi {
   toggleControl: (key: string) => void;
 }
 
-export function normalizeHex(s: string): string | null {
+export function normalizeHex(
+  s: string,
+  opts?: { alpha?: boolean }
+): string | null {
   let h = s.trim().replace(/^#/, "");
   if (/^[0-9a-fA-F]{3}$/.test(h)) h = h.split("").map((c) => c + c).join("");
+  else if (opts?.alpha && /^[0-9a-fA-F]{4}$/.test(h))
+    h = h.split("").map((c) => c + c).join("");
   if (/^[0-9a-fA-F]{6}$/.test(h)) return "#" + h.toLowerCase();
-  // 8-digit (with alpha) — keep the rgb, drop alpha (param colors are rgb).
-  if (/^[0-9a-fA-F]{8}$/.test(h)) return "#" + h.slice(0, 6).toLowerCase();
+  if (/^[0-9a-fA-F]{8}$/.test(h)) {
+    // 8-digit (with alpha): alpha-enabled params keep the byte (a fully
+    // opaque `ff` collapses to 6-digit — the canonical form for a=1, so
+    // stored values never churn format). Everywhere else keeps the
+    // historical strip-to-rgb so un-audited nodes never see 8 digits.
+    if (opts?.alpha && !/ff$/i.test(h)) return "#" + h.toLowerCase();
+    return "#" + h.slice(0, 6).toLowerCase();
+  }
   return null;
+}
+
+// Trailing alpha byte of an 8-digit hex as 0..1 (6-digit ⇒ 1).
+export function hexAlpha01(hex: string): number {
+  const h = hex.replace("#", "");
+  if (h.length < 8) return 1;
+  const a = parseInt(h.slice(6, 8), 16);
+  return Number.isFinite(a) ? a / 255 : 1;
+}
+
+// Compose a 6-digit hex with a 0..1 alpha — 8-digit only when a < 1 (the
+// storage contract: opaque stays 6-digit).
+export function withHexAlpha(hex6: string, a01: number): string {
+  const byte = Math.max(0, Math.min(255, Math.round(a01 * 255)));
+  if (byte >= 255) return hex6;
+  return hex6 + byte.toString(16).padStart(2, "0");
 }
 
 export function hexToRgb(hex: string): [number, number, number] {
@@ -1085,20 +1147,29 @@ export function hslToHex(h: number, s: number, l: number): string {
   return rgbToHex(r, g, b);
 }
 
-// Compact color control: a small swatch + hex field + H/S/L inputs. Local
-// drafts keep partial hex typing and HSL round-trip rounding from fighting
-// the controlled value; an external change (keyframe playback, undo, the
-// swatch) resyncs them.
+// Compact color control: a small swatch + hex field + H/S/L inputs (+ an
+// A input for alpha-enabled params — `ParamDef.alpha`, which stores
+// 8-digit `#rrggbbaa` while translucent). Local drafts keep partial hex
+// typing and HSL round-trip rounding from fighting the controlled value;
+// an external change (keyframe playback, undo, the swatch) resyncs them.
 export function ColorControl({
   value,
   onChange,
+  alpha = false,
 }: {
   value: unknown;
   onChange: (v: unknown) => void;
+  alpha?: boolean;
 }) {
-  const hex = normalizeHex(typeof value === "string" ? value : "") ?? "#000000";
+  const hex =
+    normalizeHex(typeof value === "string" ? value : "", { alpha }) ??
+    "#000000";
+  const rgbHex = hex.slice(0, 7);
+  const a01 = hexAlpha01(hex);
   const [hexDraft, setHexDraft] = useState(hex);
-  const [hsl, setHsl] = useState<[number, number, number]>(() => hexToHsl(hex));
+  const [hsl, setHsl] = useState<[number, number, number]>(() =>
+    hexToHsl(rgbHex)
+  );
   const lastHexRef = useRef(hex);
 
   useEffect(() => {
@@ -1110,7 +1181,7 @@ export function ColorControl({
   }, [hex]);
 
   const commitHex = (next: string) => {
-    const norm = normalizeHex(next);
+    const norm = normalizeHex(next, { alpha });
     if (!norm) {
       setHexDraft(hex); // invalid — revert the draft
       return;
@@ -1126,7 +1197,16 @@ export function ColorControl({
     const next: [number, number, number] = [...hsl];
     next[idx] = Math.max(0, Math.min(max, v));
     setHsl(next);
-    const nextHex = hslToHex(next[0], next[1], next[2]);
+    const rgb = hslToHex(next[0], next[1], next[2]);
+    const nextHex = alpha ? withHexAlpha(rgb, a01) : rgb;
+    lastHexRef.current = nextHex;
+    setHexDraft(nextHex);
+    onChange(nextHex);
+  };
+
+  const setAlpha = (pct: number) => {
+    const nextA = Math.max(0, Math.min(100, pct)) / 100;
+    const nextHex = withHexAlpha(rgbHex, nextA);
     lastHexRef.current = nextHex;
     setHexDraft(nextHex);
     onChange(nextHex);
@@ -1150,6 +1230,7 @@ export function ColorControl({
         value={hex}
         onChange={(h) => commitHex(h)}
         title="Pick a color"
+        alpha={alpha}
       />
       <input
         type="text"
@@ -1172,6 +1253,14 @@ export function ColorControl({
           onChange={(v) => setChannel(i as 0 | 1 | 2, v)}
         />
       ))}
+      {alpha && (
+        <HslField
+          label="A"
+          value={Math.round(a01 * 100)}
+          max={100}
+          onChange={setAlpha}
+        />
+      )}
     </div>
   );
 }
@@ -2435,7 +2524,7 @@ export function ParamControl({
 
   if (param.type === "color") {
     const hex = typeof value === "string" ? value : (param.default as string);
-    return <ColorControl value={hex} onChange={onChange} />;
+    return <ColorControl value={hex} onChange={onChange} alpha={param.alpha} />;
   }
 
   if (param.type === "file") {
@@ -2685,13 +2774,20 @@ export function ParamControl({
 
   if (param.type === "wedge_values") {
     // The Wedge node's explicit value list — one row per batch-render
-    // variation. Scalar rows only for now (the node's `type` param will key
-    // color/vec2/string row editors when those land). Index labels double as
-    // the mapping to `{i}` filename tokens / the Preview index.
+    // variation, with the row editor keyed by the node's sibling `type`
+    // param (scalar / color / vec2 / string). Index labels double as the
+    // mapping to `{i}` filename tokens / the Preview index.
+    const wtype = ((allParams?.type as string) ?? "scalar") as
+      | "scalar"
+      | "color"
+      | "vec2"
+      | "string";
     const list = Array.isArray(value)
       ? (value as WedgeValueItem[])
       : ((param.default as WedgeValueItem[]) ?? []);
     const update = (next: WedgeValueItem[]) => onChange(next);
+    const setRow = (id: string, v: WedgeValueItem["value"]) =>
+      update(list.map((x) => (x.id === id ? { ...x, value: v } : x)));
     const removeBtn: React.CSSProperties = {
       background: "transparent",
       border: "1px solid #3f3f46",
@@ -2703,6 +2799,65 @@ export function ParamControl({
       cursor: "pointer",
       fontFamily: "inherit",
       flexShrink: 0,
+    };
+    const textStyle: React.CSSProperties = {
+      flex: 1,
+      minWidth: 0,
+      background: "#0c0c0e",
+      border: "1px solid #27272a",
+      color: "#e4e4e7",
+      borderRadius: 3,
+      padding: "3px 6px",
+      fontFamily: "inherit",
+      fontSize: 11,
+    };
+    const rowEditor = (item: WedgeValueItem) => {
+      if (wtype === "color") {
+        return (
+          <ColorControl
+            value={typeof item.value === "string" ? item.value : "#ffffff"}
+            onChange={(v) => setRow(item.id, v as string)}
+          />
+        );
+      }
+      if (wtype === "vec2") {
+        const v = Array.isArray(item.value) ? item.value : [0, 0];
+        return (
+          <>
+            <NumberField
+              value={typeof v[0] === "number" ? v[0] : 0}
+              onChange={(x) => setRow(item.id, [x, v[1] ?? 0])}
+              step={0.01}
+              width={56}
+            />
+            <NumberField
+              value={typeof v[1] === "number" ? v[1] : 0}
+              onChange={(y) => setRow(item.id, [v[0] ?? 0, y])}
+              step={0.01}
+              width={56}
+            />
+          </>
+        );
+      }
+      if (wtype === "string") {
+        return (
+          <input
+            value={typeof item.value === "string" ? item.value : ""}
+            spellCheck={false}
+            placeholder="value"
+            onChange={(e) => setRow(item.id, e.target.value)}
+            style={textStyle}
+          />
+        );
+      }
+      return (
+        <NumberField
+          value={typeof item.value === "number" ? item.value : 0}
+          onChange={(v) => setRow(item.id, v)}
+          step={0.01}
+          width={64}
+        />
+      );
     };
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -2720,16 +2875,7 @@ export function ParamControl({
             >
               {i}
             </span>
-            <NumberField
-              value={typeof item.value === "number" ? item.value : 0}
-              onChange={(v) =>
-                update(
-                  list.map((x) => (x.id === item.id ? { ...x, value: v } : x))
-                )
-              }
-              step={0.01}
-              width={64}
-            />
+            {rowEditor(item)}
             <button
               onClick={() => update(list.filter((x) => x.id !== item.id))}
               title="Remove"
@@ -2741,9 +2887,16 @@ export function ParamControl({
         ))}
         <button
           onClick={() => {
-            // Seed the new row one step past the last two values' delta
-            // (1 when there's no trend) — matches the common "0, 1, 2, …"
-            // seed-list case without a dedicated range mode round-trip.
+            if (wtype !== "scalar") {
+              update([
+                ...list,
+                { id: newWedgeValueId(), value: WEDGE_TYPE_DEFAULTS[wtype] },
+              ]);
+              return;
+            }
+            // Scalar: seed the new row one step past the last two values'
+            // delta (1 when there's no trend) — matches the common
+            // "0, 1, 2, …" seed-list case without a range-mode round-trip.
             const nums = list.map((x) =>
               typeof x.value === "number" ? x.value : 0
             );
@@ -3126,6 +3279,14 @@ export function MergeLayersControl({
       {layers.map((l, i) => {
         const enabled = l.enabled !== false;
         const dragging = dragId === l.id;
+        // Animated readout: a keyframed opacity displays its evaluated value
+        // at the playhead (slider follows scrub/playback). Edits patch the
+        // stored array; autokey mirrors them into the virtual block.
+        const dispOpacity = animScalarAt(
+          layerAnim,
+          layerOpacityKey(l.id),
+          l.opacity
+        );
         return (
           <div
             key={l.id}
@@ -3247,12 +3408,12 @@ export function MergeLayersControl({
                 min={0}
                 max={1}
                 step={0.01}
-                value={l.opacity}
+                value={dispOpacity}
                 onChange={(v) => patch(l.id, { opacity: v })}
                 title="Opacity — hold Shift to fine-tune"
               />
               <NumberField
-                value={l.opacity}
+                value={dispOpacity}
                 onChange={(v) => patch(l.id, { opacity: v })}
                 min={0}
                 max={1}
@@ -3283,9 +3444,11 @@ export function MergeLayersControl({
                         } else if (findKeyframeAt(block, tick)) {
                           layerAnim.set(key, removeKeyframeAt(block, tick));
                         } else {
+                          // Pin the evaluated value — inserting mid-segment
+                          // must not snap the curve to the stored constant.
                           layerAnim.set(
                             key,
-                            upsertKeyframe(block, tick, l.opacity, "easeInOut")
+                            upsertKeyframe(block, tick, dispOpacity, "easeInOut")
                           );
                         }
                       }}
@@ -3365,7 +3528,17 @@ export function GradientPointsControl({
       {points.length === 0 && (
         <div style={{ color: "#52525b" }}>(no points — add one)</div>
       )}
-      {points.map((p, i) => (
+      {points.map((p, i) => {
+        // Animated readouts — keyframed sub-values display their evaluated
+        // value at the playhead; edits still patch the stored point.
+        const dispX = animScalarAt(layerAnim, gpointXKey(p.id), p.x);
+        const dispY = animScalarAt(layerAnim, gpointYKey(p.id), p.y);
+        const dispColor = animColorHexAt(
+          layerAnim,
+          gpointCKey(p.id),
+          typeof p.color === "string" ? p.color : "#ffffff"
+        );
+        return (
         <div
           key={p.id}
           style={{
@@ -3407,13 +3580,13 @@ export function GradientPointsControl({
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <ColorControl
-                value={typeof p.color === "string" ? p.color : "#ffffff"}
+                value={dispColor}
                 onChange={(hex) => update(p.id, { color: hex as string })}
               />
             </div>
             {diamond(
               gpointCKey(p.id),
-              hexToRgba01Tuple(typeof p.color === "string" ? p.color : "#ffffff"),
+              hexToRgba01Tuple(dispColor),
               "Keyframe this point's color"
             )}
           </div>
@@ -3421,27 +3594,28 @@ export function GradientPointsControl({
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ color: "#71717a", width: 10, flexShrink: 0 }}>X</span>
             <NumberField
-              value={p.x}
+              value={dispX}
               onChange={(v) => update(p.id, { x: v })}
               min={-0.5}
               max={1.5}
               step={0.001}
               width={56}
             />
-            {diamond(gpointXKey(p.id), p.x, "Keyframe this point's X")}
+            {diamond(gpointXKey(p.id), dispX, "Keyframe this point's X")}
             <span style={{ color: "#71717a", width: 10, flexShrink: 0 }}>Y</span>
             <NumberField
-              value={p.y}
+              value={dispY}
               onChange={(v) => update(p.id, { y: v })}
               min={-0.5}
               max={1.5}
               step={0.001}
               width={56}
             />
-            {diamond(gpointYKey(p.id), p.y, "Keyframe this point's Y")}
+            {diamond(gpointYKey(p.id), dispY, "Keyframe this point's Y")}
           </div>
         </div>
-      ))}
+        );
+      })}
       <button
         onClick={addPoint}
         disabled={points.length >= GRADIENT_MAX_POINTS}
@@ -3605,14 +3779,48 @@ export function ColorRampControl({
   const sorted = [...stops].sort((a, b) => a.position - b.position);
   const selected = stops.find((s) => s.id === selectedId) ?? null;
 
+  // Animated readouts: resolve each stop's keyframed sub-values at the
+  // playhead for DISPLAY (bar gradient, handles, selected-stop fields), so
+  // the ramp follows scrubbing/playback. Wire-driven fields keep the stored
+  // value (wire wins over keyframes; the field renders read-only). Edits
+  // always patch the stored stops — autokey mirrors them into the blocks.
+  const displayStop = (s: ColorRampStop): ColorRampStop => {
+    if (!layerAnim || !paramName) return s;
+    const kc = rampColorKey(paramName, s.id);
+    const ka = rampAlphaKey(paramName, s.id);
+    const kp = rampPositionKey(paramName, s.id);
+    const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+    return {
+      ...s,
+      color: rampIo?.isDriven(kc)
+        ? s.color
+        : animColorHexAt(
+            layerAnim,
+            kc,
+            typeof s.color === "string" ? s.color : "#000000"
+          ),
+      alpha: rampIo?.isDriven(ka)
+        ? (s.alpha ?? 1)
+        : clamp01(animScalarAt(layerAnim, ka, s.alpha ?? 1)),
+      position: rampIo?.isDriven(kp)
+        ? s.position
+        : clamp01(animScalarAt(layerAnim, kp, s.position)),
+    };
+  };
+  // Re-sort by display position — animated positions can cross stored order.
+  const displaySorted = stops
+    .map(displayStop)
+    .sort((a, b) => a.position - b.position);
+  const selectedDisplay = selected ? displayStop(selected) : null;
+
   // Build a CSS gradient preview using rgba() so transparency is visible
   // against a checker background layered behind the bar.
   const gradientCss =
-    sorted.length === 0
+    displaySorted.length === 0
       ? "transparent"
-      : sorted.length === 1
-        ? hexAlphaCss(sorted[0].color, sorted[0].alpha ?? 1)
-        : `linear-gradient(to right, ${sorted
+      : displaySorted.length === 1
+        ? hexAlphaCss(displaySorted[0].color, displaySorted[0].alpha ?? 1)
+        : `linear-gradient(to right, ${displaySorted
             .map(
               (s) =>
                 `${hexAlphaCss(s.color, s.alpha ?? 1)} ${(s.position * 100).toFixed(2)}%`
@@ -3624,8 +3832,10 @@ export function ColorRampControl({
   function addStopAt(pos: number) {
     if (stops.length >= COLOR_RAMP_MAX_STOPS) return;
     const p = Math.max(0, Math.min(1, pos));
-    const color = sampleRampColor(sorted, p);
-    const alpha = sampleRampAlpha(sorted, p);
+    // Sample the DISPLAYED ramp so the new stop matches what was clicked
+    // (the sampled value becomes the stop's stored constant).
+    const color = sampleRampColor(displaySorted, p);
+    const alpha = sampleRampAlpha(displaySorted, p);
     const id = newStopId();
     onChange([...stops, { id, position: p, color, alpha }]);
     setSelectedId(id);
@@ -3695,7 +3905,7 @@ export function ColorRampControl({
           cursor: "copy",
         }}
       >
-        {sorted.map((s) => {
+        {displaySorted.map((s) => {
           const isSelected = s.id === selectedId;
           return (
             <div
@@ -3748,8 +3958,8 @@ export function ColorRampControl({
               }}
             >
               <span style={{ color: "#a1a1aa" }}>
-                stop · {sorted.findIndex((s) => s.id === selected.id) + 1}/
-                {sorted.length}
+                stop · {displaySorted.findIndex((s) => s.id === selected.id) + 1}/
+                {displaySorted.length}
               </span>
               <button
                 onClick={() => removeStop(selected.id)}
@@ -3778,6 +3988,9 @@ export function ColorRampControl({
                     position: rampPositionKey(paramName, selected.id),
                   }
                 : null;
+              // Field readouts + diamond seeds use the display-resolved stop;
+              // edits patch the stored `selected` via updateStop.
+              const disp = selectedDisplay ?? selected;
               return (
                 <>
                   <div
@@ -3798,7 +4011,7 @@ export function ColorRampControl({
                       }}
                     >
                       <ColorControl
-                        value={selected.color}
+                        value={disp.color}
                         onChange={(hex) =>
                           updateStop(selected.id, { color: hex as string })
                         }
@@ -3808,8 +4021,8 @@ export function ColorRampControl({
                       diamond(
                         keys.color,
                         hexToRgba01Tuple(
-                          typeof selected.color === "string"
-                            ? selected.color
+                          typeof disp.color === "string"
+                            ? disp.color
                             : "#ffffff"
                         ),
                         "Keyframe this stop's color"
@@ -3832,7 +4045,7 @@ export function ColorRampControl({
                       min={0}
                       max={1}
                       step={0.01}
-                      value={selected.alpha ?? 1}
+                      value={disp.alpha ?? 1}
                       onChange={(v) => updateStop(selected.id, { alpha: v })}
                       style={{
                         flex: 1,
@@ -3844,7 +4057,7 @@ export function ColorRampControl({
                       min={0}
                       max={1}
                       step={0.01}
-                      value={selected.alpha ?? 1}
+                      value={disp.alpha ?? 1}
                       onChange={(e) =>
                         updateStop(selected.id, {
                           alpha: parseFloat(e.target.value),
@@ -3864,7 +4077,7 @@ export function ColorRampControl({
                     {keys &&
                       diamond(
                         keys.alpha,
-                        selected.alpha ?? 1,
+                        disp.alpha ?? 1,
                         "Keyframe this stop's alpha"
                       )}
                     {keys && rampIo && (
@@ -3885,7 +4098,7 @@ export function ColorRampControl({
                       min={0}
                       max={1}
                       step={0.001}
-                      value={selected.position}
+                      value={disp.position}
                       onChange={(v) =>
                         updateStop(selected.id, { position: v })
                       }
@@ -3899,7 +4112,7 @@ export function ColorRampControl({
                       min={0}
                       max={1}
                       step={0.001}
-                      value={selected.position}
+                      value={disp.position}
                       onChange={(e) =>
                         updateStop(selected.id, {
                           position: parseFloat(e.target.value),
@@ -3919,7 +4132,7 @@ export function ColorRampControl({
                     {keys &&
                       diamond(
                         keys.position,
-                        selected.position,
+                        disp.position,
                         "Keyframe this stop's position"
                       )}
                     {keys && rampIo && (

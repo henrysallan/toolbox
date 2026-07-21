@@ -43,6 +43,13 @@ import {
 // pixel walks a 5×5 cell neighborhood looking for dot coverage. Cells
 // produce dot positions differently per mode but the per-pixel rendering
 // (edge noise, size mapping, color compositing) is identical.
+//
+// Dot color comes from `colorSource`: "flat" uses the single dotColor
+// param; "image" samples the color texture at each dot's center so every
+// dot is a solid swatch of the underlying image (pointillism-style color
+// transfer). The optional `color` input overrides which image is sampled
+// — wire the original in there when the density input is a processed
+// (blurred/thresholded) version that has lost its color.
 
 const MODES = ["grid", "screen", "packed", "packed-flow"] as const;
 type Mode = (typeof MODES)[number];
@@ -175,6 +182,8 @@ uniform float u_noiseScale;
 uniform float u_noiseRoughness;
 uniform float u_noiseStrength;
 uniform vec3  u_dotColor;
+uniform sampler2D u_colorTex;     
+uniform int   u_colorSource;      
 uniform vec3  u_bgColor;
 uniform float u_bgAlpha;
 
@@ -203,6 +212,17 @@ float valueNoise(vec2 p) {
   float c = hash22(ivec2(i) + ivec2(0, 1)).x;
   float d = hash22(ivec2(i) + ivec2(1, 1)).x;
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// One flat color per dot, sampled at the dot's center — the whole dot is
+// a solid swatch (pointillism), not a dot-shaped window onto the image.
+// textureLod: this runs after divergent \`continue\`s, where implicit-LOD
+// texture() derivatives are undefined.
+vec3 dotColorAt(vec2 dotUv) {
+  if (u_colorSource == 1) {
+    return textureLod(u_colorTex, clamp(dotUv, 0.0, 1.0), 0.0).rgb;
+  }
+  return u_dotColor;
 }
 
 float sampleDensity(vec2 uv) {
@@ -280,7 +300,8 @@ void main() {
       if (cov <= 0.0) continue;
 
       // Source-over in premultiplied space (see the acc init note above).
-      acc.rgb = u_dotColor * cov + acc.rgb * (1.0 - cov);
+      vec3 dotRgb = dotColorAt(dotUv);
+      acc.rgb = dotRgb * cov + acc.rgb * (1.0 - cov);
       acc.a   = cov + acc.a * (1.0 - cov);
     }
   }
@@ -315,6 +336,8 @@ uniform float u_noiseScale;
 uniform float u_noiseRoughness;
 uniform float u_noiseStrength;
 uniform vec3  u_dotColor;
+uniform sampler2D u_colorTex;     
+uniform int   u_colorSource;      
 uniform vec3  u_bgColor;
 uniform float u_bgAlpha;
 
@@ -343,6 +366,15 @@ float valueNoise(vec2 p) {
   float c = hash22(ivec2(i) + ivec2(0, 1)).x;
   float d = hash22(ivec2(i) + ivec2(1, 1)).x;
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// One flat color per dot, sampled at the dot's center (see the grid
+// shader's dotColorAt note — textureLod because of divergent flow).
+vec3 dotColorAt(vec2 dotUv) {
+  if (u_colorSource == 1) {
+    return textureLod(u_colorTex, clamp(dotUv, 0.0, 1.0), 0.0).rgb;
+  }
+  return u_dotColor;
 }
 
 void main() {
@@ -398,7 +430,8 @@ void main() {
       if (cov <= 0.0) continue;
 
       // Source-over in premultiplied space (see the acc init note above).
-      acc.rgb = u_dotColor * cov + acc.rgb * (1.0 - cov);
+      vec3 dotRgb = dotColorAt(dotUv);
+      acc.rgb = dotRgb * cov + acc.rgb * (1.0 - cov);
       acc.a   = cov + acc.a * (1.0 - cov);
     }
   }
@@ -411,7 +444,9 @@ void main() {
 function hexToRgb(hex: string): [number, number, number] {
   const h = hex.replace("#", "");
   const s = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  const n = parseInt(s, 16);
+  // Slice to the rgb bytes so an 8-digit `#rrggbbaa` can't shift the
+  // channels (these params are not alpha-opted; see 072026_color-alpha.md).
+  const n = parseInt(s.slice(0, 6), 16);
   return [
     ((n >> 16) & 0xff) / 255,
     ((n >> 8) & 0xff) / 255,
@@ -1078,9 +1113,15 @@ export const stippleNode: NodeDefinition = {
   category: "image",
   subcategory: "modifier",
   description:
-    "Re-renders the input as a field of dots whose size and density follow input darkness. Grid (jittered halftone-ish), Screen (stochastic), Packed (organic relaxed-Poisson), and Packed-Flow (persistent dots with fade-in/out + position lerp for animated inputs) modes share the same edge-noise and colorization layer.",
+    "Re-renders the input as a field of dots whose size and density follow input darkness. Grid (jittered halftone-ish), Screen (stochastic), Packed (organic relaxed-Poisson), and Packed-Flow (persistent dots with fade-in/out + position lerp for animated inputs) modes share the same edge-noise and colorization layer. Dots are either a flat color or sample the image's color at each dot center (pointillism color transfer); the optional `color` input substitutes a different image for that sampling.",
   backend: "webgl2",
-  inputs: [{ name: "image", type: "image", required: true }],
+  inputs: [
+    { name: "image", type: "image", required: true },
+    // Optional color-transfer override. Only sampled when colorSource is
+    // "image"; unwired, dots sample the main input instead. Lets a
+    // processed density source (blurred/thresholded) keep original colors.
+    { name: "color", type: "image", required: false },
+  ],
   params: [
     {
       name: "mode", label: "Mode", type: "enum",
@@ -1184,7 +1225,17 @@ export const stippleNode: NodeDefinition = {
       name: "noiseStrength", label: "Edge Strength", type: "scalar",
       min: 0, max: 1, step: 0.01, default: 0.18,
     },
-    { name: "dotColor", label: "Dot Color", type: "color", default: "#4ca134" },
+    {
+      // "flat" = the dotColor param; "image" = each dot samples the color
+      // texture at its center (the `color` input when wired, else the main
+      // input). Old saves have no value and default to flat — unchanged look.
+      name: "colorSource", label: "Color Source", type: "enum",
+      options: ["flat", "image"], default: "flat", control: "segmented",
+    },
+    {
+      name: "dotColor", label: "Dot Color", type: "color", default: "#4ca134",
+      visibleIf: (p) => (p.colorSource ?? "flat") !== "image",
+    },
     { name: "backgroundColor", label: "Background", type: "color", default: "#ece5d0" },
     {
       name: "backgroundAlpha", label: "Background Alpha", type: "scalar",
@@ -1233,6 +1284,15 @@ export const stippleNode: NodeDefinition = {
 
     const [dr, dg, db] = hexToRgb((params.dotColor as string) ?? "#4ca134");
     const [bgR, bgG, bgB] = hexToRgb((params.backgroundColor as string) ?? "#ece5d0");
+
+    // Per-dot color transfer: sample the `color` input when wired, else the
+    // main input. The texture is bound either way (unit 1) so the shader
+    // stays single-path; u_colorSource gates whether it's read.
+    const colorSource =
+      ((params.colorSource as string) ?? "flat") === "image" ? 1 : 0;
+    const colorIn = inputs["color"];
+    const colorTex =
+      colorIn && colorIn.kind === "image" ? colorIn.texture : src.texture;
 
     if (mode === "packed" || mode === "packed-flow") {
       // ----- Packed (and packed-flow) shared setup -----
@@ -1372,6 +1432,10 @@ export const stippleNode: NodeDefinition = {
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, state!.cellTexture);
         gl.uniform1i(gl.getUniformLocation(prog, "u_cells"), 0);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, colorTex);
+        gl.uniform1i(gl.getUniformLocation(prog, "u_colorTex"), 1);
+        gl.uniform1i(gl.getUniformLocation(prog, "u_colorSource"), colorSource);
         gl.uniform2f(gl.getUniformLocation(prog, "u_cellsRes"), state!.cellsX, state!.cellsY);
         gl.uniform2f(gl.getUniformLocation(prog, "u_resolution"), output.width, output.height);
         gl.uniform1f(gl.getUniformLocation(prog, "u_dotMin"), dotMin);
@@ -1400,6 +1464,10 @@ export const stippleNode: NodeDefinition = {
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, src.texture);
       gl.uniform1i(gl.getUniformLocation(prog, "u_src"), 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, colorTex);
+      gl.uniform1i(gl.getUniformLocation(prog, "u_colorTex"), 1);
+      gl.uniform1i(gl.getUniformLocation(prog, "u_colorSource"), colorSource);
       gl.uniform2f(gl.getUniformLocation(prog, "u_resolution"), output.width, output.height);
       gl.uniform1f(gl.getUniformLocation(prog, "u_gridSize"), gridSize);
       gl.uniform1f(gl.getUniformLocation(prog, "u_densityCurve"), densityCurve);

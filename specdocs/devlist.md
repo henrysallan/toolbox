@@ -1,24 +1,11 @@
-1. for perlin noise add W offset
-
-
-
 
 
 
 10. RGB seperate node
 
-
-
-12. Add right click menu for nodes and a "Code Editor" button. hitting that opens that code of that node in a IDE code editor in the parameters window
-
-13. Update Array node: linear, radial, spiral, concentric - with contextual parameters for each one. I am also notiving that the array node doesnt allow the indiviudual cells to overlap, they just cutoff when we for example scale stuff up
-
-
-
 compute shaders
 
 
-21. allow more zoom out and more room for the node editor. Ie move canvas in each direction. 
 
 
 
@@ -40,23 +27,17 @@ compute shaders
     gradients / SDF fields. Frame-accurate offline. Spec: 062926_audio-analysis.md.
 
 
-36. the solid color node should have a vec3 output with its color. We should add a hex input int he parameters section
+36. DONE the solid color node should have a vec3 output with its color. We should add a hex input int he parameters section
 
-37. add undo to the transform handles when manipulated in the canvas preivew. Holding shift while resizing any transform handle makes it keep locked ratio (this affects any node that uses those controls)
+37. DONE add undo to the transform handles when manipulated in the canvas preivew. Holding shift while resizing any transform handle makes it keep locked ratio (this affects any node that uses those controls)
 
-38. spline morph node with GSAP svg morph
+38. DONE spline morph node with GSAP svg morph
 
 
 40. allow a vec2 position to be added to a UV to offset it? or maybe add a set position node? where we move the origin/center of whatever we are setting to match to a vec2 position input?
 
 
 42. advection node
-
-43. image should be allowed to be pipped into a scalar. 
-
-
-45. hide the minimap in the node editor
-
 
 
 49. Some way to do metaballs
@@ -75,7 +56,7 @@ compute shaders
 
 53. image data should be able to drive UV data
 
-54. Iterative render. Some sort of node that takes multiple inputs and then lets you render the full chain with each of them, 1 after another. Saves everything as a .zip file.
+54. DONE Iterative render. Some sort of node that takes multiple inputs and then lets you render the full chain with each of them, 1 after another. Saves everything as a .zip file.
 
 55. Spline draw has a tool for doing various shape primatives. 
 
@@ -87,22 +68,21 @@ compute shaders
 66. Variable font support. proximity masking effects for each variable axis based on an image mask.
 
 
-69. we need project resoloution to be saved and loaded with the project
+69. DONE we need project resoloution to be saved and loaded with the project
 
-70. a split viewport. Add the ability to split the viewport into 2. When the view port is split, every node gets an additional toggle - so "A" for active becomes, "A1" and "A2" which designates if its active in editor 1 or 2. The split should be 2 viewports stacked. 
+70. DONE a split viewport. Add the ability to split the viewport into 2. When the view port is split, every node gets an additional toggle - so "A" for active becomes, "A1" and "A2" which designates if its active in editor 1 or 2. The split should be 2 viewports stacked. 
 
 71. Id like to add a node that basically does a proximity merge for sets of splines. like a metaball effect but more general purpose so it could work on open splines as well. Do you understand? provide a few strategies for this node
     DONE — see #50 / the Proximity Join/Merge node. JOIN mode works on
     open splines (endpoint stitching). Pure metaball blobbing (implicit-
     surface fusion) is still a separate idea — see #49.
 
-72. In the window node add "Generate Node" this should open a modal that is essentially a text input field with an explanation of whats happening. It will have a loading bar for when the api call is happening, and it would be cool to actually show the node their in the modal in place of the loading bar when its done. This interface will be a Claude api call and heres how it works. We let a user ask for a node. We include in their prompt, a claude.md instruction file for exactly how to write new nodes for our system. Idk if this feature will work well as we are saying claude must 1 shot it with only the markdown file as guidance. We will see.
+72. DONE In the window node add "Generate Node" this should open a modal that is essentially a text input field with an explanation of whats happening. It will have a loading bar for when the api call is happening, and it would be cool to actually show the node their in the modal in place of the loading bar when its done. This interface will be a Claude api call and heres how it works. We let a user ask for a node. We include in their prompt, a claude.md instruction file for exactly how to write new nodes for our system. Idk if this feature will work well as we are saying claude must 1 shot it with only the markdown file as guidance. We will see.
 
 So I think you should first set up the modal, the infrastructure for calling the api. Set up the entry in the Window menu dropdown. Then look at a bunch of nodes, read the docs, and then write a general purpose context markdown that can get passed along with the users prompt. Then Set up the infrastructure to basically allow nodes to be temporarily added to the interface (under a user generated section). These nodes dont need to be saved for now. This can be like an experimental feature
 
 
 
-74. cmd + n for the new button/action
 
 74. shortest path node
     DONE — Shortest Path node, points-first: routes through a point cloud
@@ -373,7 +353,7 @@ For the layers editor, we would create a new toggle in addition to tracks and gr
 
 158. Another idea - i want to be able to take a node group, pass that group as context to the AI interface, and then use a LLM call to make edits to that node group. THink through what we would need to do to set that up. I am thinking that we would add to the custom right click menu on nodes, for groups we add a "Edit with AI" button. Clicking it opens the ai chat interface and we see the node added as context. Thats the ui now we need to think about what the llm call should look like?
 
-159. Currently when you are inside a layer, you have "group input" and "group output" those are fine, but I want to rename them "Layer Input" and "Layer Output" to differentiate between being inside a group and being inside a layer.
+159. DONE Currently when you are inside a layer, you have "group input" and "group output" those are fine, but I want to rename them "Layer Input" and "Layer Output" to differentiate between being inside a group and being inside a layer.
 
 Additionally for layer output, i basically want to add all the functionality of a normal output node, ie i want to allow the user to render stuff while inside a layer and not be forced to go up to the layers context just to render
 
@@ -385,9 +365,9 @@ Additionally all nodes are the same color, but I want to make the layer nodes ti
 
 161. Nodes that contain multiple subpaths (text node, spline draw, SVG source) we should be able to right click and have a option that says "decompose" and that should give us an individual spline draw node for each piece of the node. So if its a text node it should be by letter, if its spline draw its by subpath etc.
 
-162. I want to improve the landing page. Ill give you a screenshot of what we have and what i want
+162. DONE I want to improve the landing page. Ill give you a screenshot of what we have and what i want
 
-163. I want to make it more elegant to address a motion brief that needs various exports of the same content. one idea is to make certain node streams use certain node streams. But 
+163. DONE I want to make it more elegant to address a motion brief that needs various exports of the same content. one idea is to make certain node streams use certain node streams. But 
 
 the more i think about it the more I am thinking we need the notion of a "composition" and then above that "project" - both are higher level than a layer. Currently in the hierarchy a project name is the highest and it just shows the nodegraph of layers. Instead i want that layer view to be a composition view (which we will name). And I want there to be a higher level called the project view. The project view will actually be a new panel that replaces the node edior while active. It will essentially be a file browser showing the structure of the .toolbox project file. So a .toolbox is always a full project, though it will start with 1 composition, and inside that 1 layer, and inside that the default nodes. 
 
@@ -402,15 +382,15 @@ Let me know if you understand.
 
 164. The ability to export a nodegraph as a single react component, maybe this involves LLM call idk.
 
-165. The sample along path outputs the tangent as a vec2, but im not sure the right way to use that on for example, a copy to points? like if i am copying a spline to every point on a path and i want to align the rotation to the tangent or the normal of the path.. how do i do that
+165. DONE The sample along path outputs the tangent as a vec2, but im not sure the right way to use that on for example, a copy to points? like if i am copying a spline to every point on a path and i want to align the rotation to the tangent or the normal of the path.. how do i do that
 
-166. In the node editor when i drag a node away, it doesnt maintain the connection/relink the ajoining nodes - can we fix that?
+166. DONE In the node editor when i drag a node away, it doesnt maintain the connection/relink the ajoining nodes - can we fix that?
 
-167. Vary the DUPLICATES when you copy text to points (size, weight, leading, font, tracking, and the string shown), driven by index / groupIndex / seeded random / a field sampled at each copy's position / keyframed time. Not a pile of new nodes — enrich the two we have. Text gets string variants + a new `text_instance` output socket carrying {base style + variant strings}. Copy to Points auto-accepts `text_instance` (new sockets appear only when connected), picks the per-copy string with its existing pick_mode, and applies per-copy typographic modulation (each channel driven by index/group/random/field), then re-rasterizes text per copy. Net new = one socket type, zero new node files. Single-string is first-class (modulate typography with no variants). The per-glyph "drive an animation with an image field" idea is separate and already exists via the animator `field` driver. Spec: specdocs/070726_text-instances.md.
+167. DONE Vary the DUPLICATES when you copy text to points (size, weight, leading, font, tracking, and the string shown), driven by index / groupIndex / seeded random / a field sampled at each copy's position / keyframed time. Not a pile of new nodes — enrich the two we have. Text gets string variants + a new `text_instance` output socket carrying {base style + variant strings}. Copy to Points auto-accepts `text_instance` (new sockets appear only when connected), picks the per-copy string with its existing pick_mode, and applies per-copy typographic modulation (each channel driven by index/group/random/field), then re-rasterizes text per copy. Net new = one socket type, zero new node files. Single-string is first-class (modulate typography with no variants). The per-glyph "drive an animation with an image field" idea is separate and already exists via the animator `field` driver. Spec: specdocs/070726_text-instances.md.
 
 167. the voronoi animated toggle should animate the evoloution, rather than whatever is being animated right now.
 
-168. For the shift + click drag in the node editor currently we just do it when we click and drag from a socket, but im thinking we could just allow it from a node, hold shift before clicking a node, and we draw a straight line from the origin node to the cursor and just attempt to connect the first socket output to the relevant socket input. 
+168. DONE For the shift + click drag in the node editor currently we just do it when we click and drag from a socket, but im thinking we could just allow it from a node, hold shift before clicking a node, and we draw a straight line from the origin node to the cursor and just attempt to connect the first socket output to the relevant socket input. 
 
 169. currently we build the along path function for text into the text node. but i want to allow that 
 
@@ -491,3 +471,123 @@ Let me know if you understand.
     (source→reroute→targets, any count) or double-clicking a wire. Also fixes
     the latent bug that junctions never survived save (edge `data` isn't
     serialized) — reroute nodes persist. Spec: specdocs/071326_reroute-node.md.
+
+
+181. DONE For the repeat path i am noticing that when there are sharp corners, as the path offsets it overlaps itself. I want to have a way to resolve that - im thinking a mode toggle on that node and the offset node. - and then a further toggle between sharp and smooth. Sharp just cuts the overlap and resolves to a single intersection as the transition. Smooth maybe does some sort of spline merge flow resample
+
+182. DONE (M1–M3) turn points into text: take a points output and read each
+    point's own data (position, index, rotation, scale, group) as a string,
+    then display those strings AS text mapped onto the point positions — 10
+    points → 10 xy labels sitting on the dots. Two nodes: **Points to Text**
+    (points → text_instance, the composable primitive — pair with Copy to
+    Points' new `by index` pick mode) and **Point Labels** (points → image, the
+    self-contained drop-and-go node). Field dropdown + custom token template
+    ({x} {y} {i} {n} {rot} {rad} {sx} {sy} {g}), normalized/pixel units,
+    precision; style borrowed from a wired Text node or local font/size/color.
+    Spec: specdocs/071426_point-labels.md. Remaining: eyeball in-editor + M4 docs.
+
+
+183. DONE (M1+M2) Per-copy variation, right side: Copy to Points spline/point
+    modes get a "Tag copies" enum — instance groups (legacy) / copy index /
+    target group — so downstream per-group machinery (Stroke color +
+    thickness sources, Select by Index, Modulate Splines) can vary each COPY
+    instead of each instance part. Stroke gets a per-subpath thickness
+    source (uniform / vary by index|random|group|position × lo..hi
+    multipliers) sharing one driver resolver with the color source
+    (makeSubpathDriverFn in engine/spline-color-source.ts). The composed
+    recipe: Circle → CTP (tag: copy index) → Stroke (ramp by group +
+    thickness vary) = every copy its own color and weight, continuous,
+    seeded, no upstream re-eval. Spec:
+    specdocs/071826_copy-identity-stroke-width.md.
+
+184. DONE (M1, image+spline+points collect) Iterate node — bounded for-each
+    over a subgraph, the "left side" of per-copy variation and the answer to
+    "randomize a generator's params per copy" without Houdini-style
+    stamping. A computing group shell (third structural variant): flatten
+    drops its interior wholesale; compute nested-evaluates it K times with
+    index / t / seeded random injected through the interior Iteration Input
+    (wire them into exposed params — randomization stays wiring, not
+    parameters); results collect into an image_group / groupIndex-tagged
+    spline/points, feeding CTP's variant picks + per-group styling.
+    Remaining: wrap-selection creation, in-app docs page, eyeball guardrail
+    behavior under heavy interiors, per-copy typographic milestone
+    interplay. Spec: specdocs/071826_iterate-node.md.
+
+185. DONE (rev 2) Iterate is a ZONE — the loop body always renders inline
+    in the parent graph inside a tinted dashed region (Blender
+    repeat-zone energy). No collapsed view, no toggle, no diving in.
+    Membership stays parentId (all the engine/caching correctness of the
+    structural group); only visibility changed. Drag a node into the
+    zone to reparent it into the loop, drag it out to leave (blocked
+    with a toast if wires would cross the boundary); interactive wiring
+    across scopes is rejected — data crosses through Iteration
+    Input/Output as designed. Remaining: compact chrome for the shell,
+    shell-drag moves the whole zone, auto-mint boundary sockets on
+    crossing wires, maybe zone-style rendering for groups/layers. Spec:
+    specdocs/071926_iterate-zone-view.md.
+
+186. DONE (rev 3) Iterate zone is exactly TWO nodes: iteration count, seed,
+    and a NEW random min/max range live on the Iteration Input (the
+    per-iteration `random` maps into that range); the collected output
+    comes straight off the Iteration Output (wire a member into its
+    virtual port to mint the collect socket — image comes out as an image
+    group, spline/points merged with per-iteration groupIndex). The
+    separate "Iterate" shell node is gone from view — engine-side the
+    Iteration Output IS the computing shell. Also: dragging the Iteration
+    Output moves the whole zone, and wires drawn straight across the zone
+    edge auto-mint the boundary socket and route through it (exterior→
+    member mints a passthrough on Iteration Input; member→exterior mints
+    the collect socket). Breaking note: zones created with the earlier
+    same-day three-node build don't migrate — recreate them. Spec:
+    specdocs/071926_iterate-zone-view.md (rev 3).
+
+187. DONE Iterate loop params animate: keyframe count / seed / random
+    min/max on the Iteration Input (diamonds + autokey + TrackEditor
+    already worked — now the shell resolves the blocks at the scoped
+    clock), or expose one and wire a signal into it from outside the zone
+    (audio level → random max). House wire > keyframe > constant
+    precedence, resolved shell-side; wiring a loop param from INSIDE the
+    zone is rejected as circular. Animated count grows/shrinks at the
+    tail without reshuffling existing iterations (random is
+    index-stable); an animated range slides the whole population
+    smoothly. Spec: specdocs/071926_iterate-zone-view.md.
+
+188. DONE Iterate zone ergonomics: (a) boundary wiring is lenient now —
+    any member output can wire to any exterior consumer (each mints its
+    own collect socket; multi-socket collection landed, one nested pass
+    per iteration evaluates every tap), same exterior source wired in
+    twice reuses its passthrough, and the only rejections left are honest
+    ones (grouped-type mismatch, circular member→Iteration Input).
+    (b) Membership gestures: plain drags never pull a node out of the
+    zone (the tint stretches around it — previously exit was
+    geometrically impossible since the rect followed the node);
+    Cmd/Ctrl-drag ending outside the zone takes the node out, composing
+    with Cmd-drag's existing detach-with-heal so blocking wires strip in
+    the same gesture. Drop-in absorb unchanged. Spec:
+    specdocs/071926_iterate-zone-view.md.
+
+
+199. conways game of life node
+
+200. DONE Rigid Body Simulator (`rigid-body-simulator`): 2D rigid body
+    dynamics for splines — each subpath becomes a body that falls,
+    tumbles, stacks, and collides with colliders, bounds, and other
+    bodies. Müller shape matching over the Rope Simulator's particle
+    machinery via the new shared engine/sim-kernel.ts (rope refactored
+    onto it, zero behavior change). Body↔body collision is the headline:
+    particle↔edge-capsule contacts, deduped deepest-per-(particle,body),
+    re-projected every iteration interleaved with the shape match so
+    stacks settle solid. Rigidity slider (1 = rigid → output is the
+    ORIGINAL beziers under the fitted rotation+translation; <1 = jelly →
+    particle rebuild; k composes over iterations × substeps). Glue on
+    contact (bond rest = contact distance, 4/particle cap, glue_map
+    strength field) with PIXEL-denominated breaks (bond overstretch OR
+    endpoint displacement off the fitted pose — strain never fires under
+    shape matching; see spec's Breaking note) → `snaps` aux. Full rope
+    pin suite (ends / pin_map / animated pins capture / follow_input;
+    one pin = hinge). `bodies` aux (centroid+rotation per body) drives
+    Copy-to-Points image stamping. Friction/bounce maps with live
+    toggles. Verified headless (17-scenario harness: rigid drop, exact
+    output, pendulum, 3-stack settle without interpenetration, glue
+    hold/snap, soft squash, pin_map, follow, puppet drag); browser
+    feel-pass pending. Spec: specdocs/072026_rigid-body-simulator.md.

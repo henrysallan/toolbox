@@ -36,6 +36,7 @@ import { resolvePromotedParams } from "@/state/graph-ops";
 import { LAYER_OPACITY_PREFIX, parseRampParamKey } from "@/engine/conventions";
 import {
   type ClipBlock,
+  clipSlipsOnInTrim,
   defaultClip,
   isClippable,
   isTimeDrivenClip,
@@ -141,9 +142,10 @@ type LaneRow =
       // The node's current clip windows, if any. Empty/undefined ⇒ render a
       // faint full-duration ghost that creates a window when dragged.
       clips?: ClipBlock[];
-      // Whether this node remaps its clock to clip-local time (Video). Drives
-      // in-trim slip behavior.
-      timeDriven: boolean;
+      // Whether this node's windows carry a local clock (Video's clip-local
+      // remap, a layer's interior offset). In-trims on these slip
+      // sourceInTick so the content stays anchored — see clipSlipsOnInTrim.
+      slipsInTrim: boolean;
     }
   | {
       kind: "paramLane";
@@ -219,14 +221,15 @@ type DragKind =
       startClips: ClipBlock[];
     }
   | {
-      // Dragging a clip edge — trims in or out. For time-driven clips the
-      // in-edge also slips sourceInTick so the footage stays anchored.
+      // Dragging a clip edge — trims in or out. For clock-carrying clips
+      // (video, layer) the in-edge also slips sourceInTick so the content
+      // stays anchored.
       kind: "clipTrim";
       nodeId: string;
       clipIndex: number;
       side: "in" | "out";
       startClips: ClipBlock[];
-      timeDriven: boolean;
+      slipsInTrim: boolean;
       // Source footage length in ticks (video only) — bounds the trim so the
       // window can't extend past the available footage. Undefined ⇒ unbounded.
       sourceDurationTicks?: number;
@@ -386,7 +389,7 @@ export function TrackEditor(props: TrackEditorProps) {
         selected: isSelected,
         clippable,
         clips: data.clips,
-        timeDriven: isTimeDrivenClip(data.defType),
+        slipsInTrim: clipSlipsOnInTrim(data.defType),
       });
       if (isCollapsed) continue;
       // Promoted-param lanes — block lives on the deep node; an empty
@@ -1205,7 +1208,7 @@ export function TrackEditor(props: TrackEditorProps) {
     nodeId: string;
     region: "in" | "out" | "body";
     clipIndex: number;
-    timeDriven: boolean;
+    slipsInTrim: boolean;
   } | null {
     const EDGE = 6;
     for (let i = 0; i < lanes.length; i++) {
@@ -1224,7 +1227,7 @@ export function TrackEditor(props: TrackEditorProps) {
         if (Math.abs(contentX - inPx) <= EDGE) region = "in";
         else if (Math.abs(contentX - outPx) <= EDGE) region = "out";
         else region = "body";
-        return { nodeId: row.nodeId, region, clipIndex: 0, timeDriven: row.timeDriven };
+        return { nodeId: row.nodeId, region, clipIndex: 0, slipsInTrim: row.slipsInTrim };
       }
       for (let ci = 0; ci < windows.length; ci++) {
         const c = windows[ci];
@@ -1235,7 +1238,7 @@ export function TrackEditor(props: TrackEditorProps) {
         if (Math.abs(contentX - inPx) <= EDGE) region = "in";
         else if (Math.abs(contentX - outPx) <= EDGE) region = "out";
         else region = "body";
-        return { nodeId: row.nodeId, region, clipIndex: ci, timeDriven: row.timeDriven };
+        return { nodeId: row.nodeId, region, clipIndex: ci, slipsInTrim: row.slipsInTrim };
       }
       // Inside the row's Y band but on no window — let other handlers run.
       return null;
@@ -1416,7 +1419,7 @@ export function TrackEditor(props: TrackEditorProps) {
           clipIndex: clipHit.clipIndex,
           side: clipHit.region,
           startClips,
-          timeDriven: clipHit.timeDriven,
+          slipsInTrim: clipHit.slipsInTrim,
           sourceDurationTicks: sourceDurationTicksFor(clipHit.nodeId),
         });
       }
@@ -1658,17 +1661,18 @@ export function TrackEditor(props: TrackEditorProps) {
         const t = snap ? snapTickToFrame(raw, timeline.ticksPerFrame) : raw;
         let updated: ClipBlock;
         if (drag.side === "in") {
-          // For video, the head can't be pulled earlier than the start of the
-          // footage (sourceIn would go negative).
-          const minIn = drag.timeDriven
+          // Clock-carrying clips can't pull the head earlier than the content
+          // anchor: for video that's the start of the footage (sourceIn would
+          // go negative), for a layer its interior's time zero.
+          const minIn = drag.slipsInTrim
             ? Math.max(0, win.inTick - win.sourceInTick)
             : 0;
           const newIn = Math.round(
             Math.max(minIn, Math.min(t, win.outTick - minW))
           );
-          // Time-driven clips slip the source so the footage under the
+          // Clock-carrying clips slip the source so the content under the
           // trimmed head stays put (classic NLE in-trim).
-          const sourceIn = drag.timeDriven
+          const sourceIn = drag.slipsInTrim
             ? win.sourceInTick + (newIn - win.inTick)
             : win.sourceInTick;
           updated = { ...win, inTick: newIn, sourceInTick: sourceIn };

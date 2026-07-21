@@ -1,6 +1,7 @@
 "use client";
 
 import type { ParamDef } from "@/engine/types";
+import { ColorSwatchPicker } from "@/lib/color-picker-popover";
 
 export function ExportParamControl({
   param,
@@ -113,13 +114,17 @@ export function ExportParamControl({
       typeof value === "string"
         ? value
         : (param.default as string) ?? "#000000";
+    // The app's universal picker instead of the native browser dialog —
+    // native <input type="color"> can never carry alpha, and alpha-enabled
+    // params (ParamDef.alpha, carried through the manifest's def clone)
+    // need the popover's alpha strip.
     return (
-      <input
-        className="color-input"
-        type="color"
+      <ColorSwatchPicker
         value={hex}
+        onChange={(h) => onChange(h)}
+        alpha={param.alpha}
         disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
+        swatchStyle={{ width: "100%", height: 24 }}
       />
     );
   }

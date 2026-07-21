@@ -161,6 +161,13 @@ export default function NodeSearchPopup({
         // Casts to satisfy the rest of NodeDefinition's required fields
         // when iterated; nothing else touches them.
       } as unknown as (typeof real)[number],
+      {
+        type: "iterate",
+        name: "Iterate",
+        category: "utility",
+        description:
+          "A zone that evaluates the nodes inside it K times, collecting the results as variants (an image group or grouped spline/points). Wire its index / t / random into exposed params to vary each iteration.",
+      } as unknown as (typeof real)[number],
       aiRecipe,
       ...(presetDefs() as unknown as (typeof real)[number][]),
     ];

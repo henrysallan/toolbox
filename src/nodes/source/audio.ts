@@ -159,8 +159,9 @@ export const audioSourceNode: NodeDefinition = {
       el.volume = volume;
       // Mic is always "live" — gate audibility on ctx.playing so a
       // paused scene goes quiet without terminating the stream, and on
-      // routing so an unconnected mic monitors silently.
-      el.muted = !ctx.playing || !audible;
+      // routing so an unconnected mic monitors silently. Layer pre-roll
+      // counts as not-playing (nothing may be audible before the cut).
+      el.muted = !ctx.playing || !!ctx.preroll || !audible;
       return {
         primary: { kind: "audio", element: el, source: "mic" } satisfies AudioValue,
       };
@@ -201,7 +202,9 @@ export const audioSourceNode: NodeDefinition = {
           // Next eval will retry.
         }
       }
-      if (ctx.playing) {
+      // Layer pre-roll holds the element paused (parked at the entry
+      // point by the seek above) so audio never leads the cut.
+      if (ctx.playing && !ctx.preroll) {
         if (el.paused) {
           el.play().catch(() => {
             // Autoplay can be blocked until first user gesture; retry
@@ -213,10 +216,11 @@ export const audioSourceNode: NodeDefinition = {
       }
     } else {
       // Free-run mode: pressing scene Play starts the element, Pause
-      // stops it. No time syncing beyond that.
-      if (ctx.playing && el.paused) {
+      // stops it. No time syncing beyond that. Layer pre-roll counts as
+      // paused so audio never leads the cut.
+      if (ctx.playing && !ctx.preroll && el.paused) {
         el.play().catch(() => {});
-      } else if (!ctx.playing && !el.paused) {
+      } else if ((!ctx.playing || ctx.preroll) && !el.paused) {
         el.pause();
       }
     }

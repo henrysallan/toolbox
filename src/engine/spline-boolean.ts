@@ -28,12 +28,15 @@ export type SplineMergeOp = "union" | "intersect" | "exclude";
 // polygon-clipping rounds coordinates to a grid derived from their
 // magnitude; [0,1] inputs sit right at the precision floor. Work in a
 // scaled-up integer-ish space and divide back out on the way home.
-const SCALE = 8192;
+// (Exported for spline-planar.ts — the Shape Builder face machinery works
+// in the same scaled space.)
+export const SCALE = 8192;
 
 // Flatten one subpath into a closed ring of scaled [x,y] points. Open
 // subpaths are treated as closed (fill semantics demand a region). `steps`
 // line segments approximate each cubic — more = smoother, slower.
-function subpathToRing(sub: SplineSubpath, steps: number): Ring {
+// (Exported for spline-planar.ts.)
+export function subpathToRing(sub: SplineSubpath, steps: number): Ring {
   const segs = subpathToBeziers({ ...sub, closed: true });
   if (segs.length === 0) return [];
   const ring: Ring = [];
@@ -110,12 +113,28 @@ function ringToAnchors(ring: Ring): SplineAnchor[] {
   return pts.map((p) => ({ pos: [p[0] / SCALE, p[1] / SCALE] }) as SplineAnchor);
 }
 
-function geomToSpline(geom: MultiPolygon): SplineValue {
+// (Exported for spline-planar.ts.)
+export function geomToSpline(geom: MultiPolygon): SplineValue {
   const tol = SCALE * 6e-5; // ≈ 0.5 scaled units
   const subpaths: SplineSubpath[] = [];
   for (const poly of geom) {
     for (const ring of poly) {
-      const anchors = ringToAnchors(simplifyRing(ring, tol));
+      // Strip polygon-clipping's closing duplicate BEFORE the cyclic
+      // collinear cull. With the duplicate present, BOTH copies of the seam
+      // vertex sit at zero distance from a neighbor line (each has itself
+      // as a neighbor) and simplifyRing culled both — eating a genuine
+      // corner whenever the ring's seam landed on one, which it always does
+      // for crisp shapes (a boolean of two rectangles came back with a
+      // clipped corner). ringToAnchors' own dedupe then no-ops.
+      let open = ring;
+      if (open.length > 1) {
+        const a = open[0];
+        const b = open[open.length - 1];
+        if (Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6) {
+          open = open.slice(0, -1);
+        }
+      }
+      const anchors = ringToAnchors(simplifyRing(open, tol));
       if (anchors.length >= 3) subpaths.push({ anchors, closed: true });
     }
   }
@@ -262,8 +281,8 @@ function geomEdges(geom: MultiPolygon): ClipEdge[] {
 
 // Even-odd point-in-region over every ring of the MultiPolygon (scaled
 // coords). Counting across outer rings AND holes together IS the even-odd
-// rule, so holes read as outside.
-function pointInGeom(geom: MultiPolygon, x: number, y: number): boolean {
+// rule, so holes read as outside. (Exported for spline-planar.ts.)
+export function pointInGeom(geom: MultiPolygon, x: number, y: number): boolean {
   let inside = false;
   for (const poly of geom) {
     for (const ring of poly) {

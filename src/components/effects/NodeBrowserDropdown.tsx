@@ -100,6 +100,11 @@ export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
       name: "Simulation Zone",
       category: "effect",
     });
+    list.push({
+      type: "iterate",
+      name: "Iterate",
+      category: "utility",
+    });
     return list;
   }, [atRoot]);
 

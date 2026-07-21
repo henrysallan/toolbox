@@ -1,25 +1,13 @@
-import type { NodeDefinition } from "@/engine/types";
+import type { NodeDefinition, ParamDef } from "@/engine/types";
 
-export const outputNode: NodeDefinition = {
-  type: "output",
-  name: "Output",
-  category: "output",
-  description:
-    "Terminal node. Its input image is rendered to the visible canvas by the engine.",
-  backend: "webgl2",
-  terminal: true,
-  // Audio is optional — the visual pipeline doesn't depend on it, and
-  // requiring it would force users into a specific graph shape. Audio
-  // Source handles play/pause itself via ctx.playing; Output just needs
-  // the node to be "needed" so it evaluates.
-  inputs: [
-    { name: "image", type: "image", required: true },
-    { name: "audio", type: "audio", required: false },
-  ],
-  // `render` is a reference output: wire it into a Render Queue node to add
-  // this Output as a queue item. It carries no value (the evaluator ignores
-  // `render` edges) — it just links the two nodes organizationally.
-  params: [
+// The export configuration params, shared verbatim between the composition
+// Output node (below) and each **Layer Output** (the fixed `group-output`
+// inside a layer — see specdocs/071526_layer-output-export-settings.md).
+// A Layer Output stores its own copy on the node instance so a layer can be
+// rendered in a different form than the comp (e.g. a transparent qtrle of
+// one layer). Both surfaces render this one list, so a param added here
+// shows up in both panels automatically.
+export const EXPORT_PARAMS: ParamDef[] = [
     {
       name: "filename",
       label: "Filename",
@@ -267,7 +255,28 @@ export const outputNode: NodeDefinition = {
       default: false,
       visibleIf: (p) => p.exportMode === "gif",
     },
+];
+
+export const outputNode: NodeDefinition = {
+  type: "output",
+  name: "Output",
+  category: "output",
+  description:
+    "Terminal node. Its input image is rendered to the visible canvas by the engine.",
+  backend: "webgl2",
+  terminal: true,
+  // Audio is optional — the visual pipeline doesn't depend on it, and
+  // requiring it would force users into a specific graph shape. Audio
+  // Source handles play/pause itself via ctx.playing; Output just needs
+  // the node to be "needed" so it evaluates.
+  inputs: [
+    { name: "image", type: "image", required: true },
+    { name: "audio", type: "audio", required: false },
   ],
+  // `render` is a reference output: wire it into a Render Queue node to add
+  // this Output as a queue item. It carries no value (the evaluator ignores
+  // `render` edges) — it just links the two nodes organizationally.
+  params: EXPORT_PARAMS,
   primaryOutput: null,
   auxOutputs: [{ name: "render", type: "render" }],
   compute() {

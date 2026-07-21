@@ -169,40 +169,53 @@ the Output's `filename` param at delivery time in every export path:
 5. **Docs + devguide.** In-app docs page for the node; devguide section
    (batch/wedge rendering + the ctx.wedgeIndex invariant note).
 
-## Status (2026-07-10)
+## Status (2026-07-10 — all milestones landed)
 
-Milestones 1 + 2 are implemented (plus the `range`/`random` scalar modes,
-pulled forward from M4 — they were ~40 lines of CPU math on the node):
+M1–M5 are implemented. Where things live:
 
-- `src/nodes/source/wedge.ts` — the node (scalar `values`/`range`/`random`/
-  `index` modes, `preview`, `enabled`, fingerprintExtras on the clamped
-  effective index). `wedgeIterationCount`/`wedgeScalarAt` exported for the
-  driver.
+- `src/nodes/source/wedge.ts` — the node. `type` (scalar / color / vec2 /
+  string, header dropdown, retypes the output via `resolvePrimaryOutput`);
+  scalar gets `values`/`range`/`random`/`index` modes, other types are
+  always value lists; `preview`, `enabled`, fingerprintExtras on the
+  clamped effective index. Exports `wedgeIterationCount` / `wedgeValueAt` /
+  `wedgeTokenValue` for the drivers.
 - `src/engine/types.ts` + `gl.ts` — `wedge_values` ParamType,
   `WedgeValueItem`, `ctx.wedgeIndex` (+ `makeContext` arg).
-- `src/lib/param-controls.tsx` — `wedge_values` row editor (scalar rows;
-  add-button extrapolates the last delta, so 0,1 → +Add → 2).
-- `src/lib/export-naming.ts` — `{i}` / `{i:N}` tokens + `_{i:3}`
-  auto-append. Unit-tested (scratch harness, 26 assertions).
-- `EffectsApp.tsx` — `wedgeIndexRef` → renderFrame ctx; `resolveWedgeBatch`
-  (flatten + reverse-BFS, bypassed wedges excluded); `exportWedged` wraps
-  the image/video standalone Export dispatch; `exportVideo` gained
-  `labelPrefix` for "Variation 2/5 — Encoding…" banners.
+- `src/lib/wedge-batch.ts` — `resolveWedgeBatchInfo`: the shared flatten +
+  reverse-BFS resolver (count + reachable wedges), used by the export
+  drivers AND the UI readouts; fast-paths to count 1 when the graph has no
+  wedges.
+- `src/lib/export-naming.ts` — `{i}` / `{i:N}` / `{wedge}` /
+  `{wedge:Name}` tokens, `_{i:3}` auto-append, `stripWedgeTokens` for the
+  sequence zip name. Token values sanitized. Unit-tested (scratch
+  harnesses, ~45 assertions).
+- `src/lib/param-controls.tsx` — `wedge_values` row editor keyed by the
+  sibling `type` param (number / color swatch / vec2 pair / text rows;
+  scalar add-button extrapolates the last delta).
+- `EffectsApp.tsx` — `wedgeIndexRef` → renderFrame ctx; `exportWedged`
+  (standalone image/video), wedge loops inside `exportSequence` (single
+  shared zip/folder across variations), `exportGif` (one GIF per
+  variation), and `renderQueue` (rows × variations, queue progress shows
+  "name · 5/12", toast counts files); `exportVideo` gained `labelPrefix`
+  ("Variation 2/5 — Encoding…").
+- `ParamPanel.tsx` — `OutputWedgeReadout` ("Export renders N wedge
+  variations" pill on Output nodes) + ×N badge on Render Queue rows.
+- Docs: the node self-documents on the auto-generated Utility Nodes page;
+  devguide has a "Wedge batch rendering" bullet under Export.
 
-Deviations / deferred details, for M3+:
+Accepted caveats:
 
-- **Standalone batch delivery is sequential downloads** (the queue's
-  default), not the specced seqDelivery reuse — the panel can't currently
-  see whether wedges exist upstream, so surfacing a delivery picker needs
-  the "N variations" readout plumbing (M4).
+- **Standalone image/video batch delivery is sequential downloads** (the
+  queue's default) — route through a Render Queue for zip/folder.
+  Sequence batches DO share one zip/folder.
 - **Batched videos always use the wasm encoder** — the native-ffmpeg path
   requires a Save dialog per file (`!opts.sink` gate), same limitation the
   Render Queue already has.
 - **Layer Output exports don't batch**: the fixed group-output id
   dissolves in the flatten pass, so `resolveWedgeBatch` sees count 1 and
   falls through to the plain single render.
-- Sequence/GIF exports and the Render Queue still render the preview
-  variation only (M3).
+- The AI-recipe catalog treats `wedge_values` as placeable-not-settable
+  (same class as merge_layers/expr_inputs).
 
 ## Out of scope
 

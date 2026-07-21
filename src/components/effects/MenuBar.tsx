@@ -11,6 +11,10 @@ import { CURRENT_VERSION } from "@/lib/changelog";
 import { platform } from "@/lib/platform";
 import WindowControls from "./WindowControls";
 import UpdateToast from "./UpdateToast";
+import MessageConsole, {
+  type ConsoleEntry,
+  type ProgressStatus,
+} from "./MessageConsole";
 import { useDesktopUpdates } from "./useDesktopUpdates";
 
 type MenuItem =
@@ -122,6 +126,16 @@ export interface MenuBarProps {
   // drives the Toolbox-menu label; the toggle connects/disconnects.
   mcpStatus: "off" | "connecting" | "pairing" | "connected";
   onToggleMcpBridge: () => void;
+  // Status messages (EffectsApp's flashToast). `statusToast` is the
+  // currently-flashing message (null once it times out); `consoleLog` is
+  // the full history. Rendered by MessageConsole as a compact chip left
+  // of the account button that opens a draggable console window.
+  statusToast: string | null;
+  consoleLog: ConsoleEntry[];
+  // Save/load progress (EffectsApp's progressStatus — also fed by
+  // node-progress events). Non-null takes over the chip: spinner +
+  // label + percentage + thin fill bar.
+  progressStatus: ProgressStatus | null;
 }
 
 const BAR_HEIGHT = 22;
@@ -170,6 +184,9 @@ export default function MenuBar({
   onOpenUserPreferences,
   mcpStatus,
   onToggleMcpBridge,
+  statusToast,
+  consoleLog,
+  progressStatus,
 }: MenuBarProps) {
   const { user } = useUser();
   const signedIn = !!user;
@@ -629,6 +646,15 @@ export default function MenuBar({
           findConflict={findNameConflict}
         />
       </div>
+      {/* Status readout + console (left of the FPS counter / account
+          button) — the flashToast messages and save/load progress that
+          used to overlay the canvas. Click opens the message-history
+          console window. */}
+      <MessageConsole
+        toast={statusToast}
+        log={consoleLog}
+        progress={progressStatus}
+      />
       {showFps && <FpsCounter />}
       <AccountMenu />
       {/* Windows caption buttons (desktop frameless build) — flush in the

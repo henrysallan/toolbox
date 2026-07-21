@@ -764,11 +764,15 @@ export const textNode: NodeDefinition = {
       type: "boolean",
       default: false,
     },
+    // alpha: the hex lands verbatim in Canvas fillStyle (8-digit is valid
+    // CSS) and the raster signature keys on it. Per-char color animators
+    // override per glyph with their own (opaque) colors — unchanged.
     {
       name: "color",
       label: "Color",
       type: "color",
       default: "#ffffff",
+      alpha: true,
     },
     // Fill mode — solid uses `color`; the gradient modes span the whole
     // text box through a color ramp.
@@ -829,11 +833,13 @@ export const textNode: NodeDefinition = {
       default: 2,
       visibleIf: (p) => p.strokeEnabled === true,
     },
+    // alpha: verbatim into Canvas strokeStyle, signature-keyed (`sc`).
     {
       name: "strokeColor",
       label: "Stroke color",
       type: "color",
       default: "#000000",
+      alpha: true,
       visibleIf: (p) => p.strokeEnabled === true,
     },
     {

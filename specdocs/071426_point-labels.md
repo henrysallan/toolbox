@@ -196,15 +196,30 @@ Docs:
   routing traced through the text-mode M>1 branch. NOT yet eyeballed in the
   running editor (`Point → Points-to-Text → Copy to Points [text, by index] →
   Output`) — needs a manual browser pass.
-- **M3 — Self-contained node.** `point-labels` node (points → image). NOW extract
-  the shared `drawTextInstancesAtPoints` helper from Copy to Points' text mode so
-  this node reuses the identical GPU path (with anchor / offset / label_scale +
-  the raster LRU); re-verify Copy-to-Points text mode unchanged. Verify a bare
-  `Scatter Points → Point Labels → Output` shows coordinate labels on the dots
-  with no other wiring.
-- **M4 — Styling + polish.** Optional `text_instance` style input on both nodes
-  (borrow a Text node's style); local fallback params; docs + devguide + devlist;
-  lint ratchet + typecheck + `npm run check` green.
+- **M3 — Self-contained node.** DONE — with a better approach than the spec
+  planned. Instead of extracting Copy to Points' entangled instanced draw,
+  `point-labels` ([point-labels.ts](../src/nodes/effect/point-labels.ts)) reuses
+  **engine/element.ts's `compositeOverAt`** (proven source-over of a raster at a
+  Y-down px rect) — one pass per label. So **Copy to Points is untouched** and no
+  risky refactor happened. Point→pixel mapping matches Copy to Points via
+  `aspectCorrectY` ([aspect.ts](../src/engine/aspect.ts)) so labels land on dots.
+  `stable:false` + a per-string raster LRU (capped 1024, released on evict/style-
+  change/dispose) + a Text-style font-readiness gate. Params: placement
+  (on/above/below/left/right) + offset X/Y + label_scale (baked into font size
+  for crispness) + `OPACITY_PARAM` + the shared formatter block. Verified:
+  typecheck + `npm run check` + lint ratchet green; dev-server client compile +
+  runtime node registration confirmed (editor serves 200, both nodes register).
+  NOT yet eyeballed: a bare `Scatter Points → Point Labels → Output` showing
+  labels on dots — needs a manual browser pass.
+  - Perf note: N full-canvas composite passes per eval (stable:false). Negligible
+    for realistic label counts (tens–hundreds); the raster LRU means text is only
+    re-rasterized when a string or the style changes. A future optimization could
+    batch via one instanced draw, but correctness/simplicity won here.
+- **M4 — Styling + docs.** MOSTLY DONE. Optional `text_instance` style input +
+  local fallback params shipped on both nodes in M1/M3; devlist entry #182 added;
+  in-app docs render from the def descriptions. Remaining: a short devguide note
+  (two nodes + the Copy-to-Points `by index` mode) if wanted, and the in-editor
+  visual pass. lint ratchet + typecheck + `npm run check` all green.
 
 ## Open questions / risks
 

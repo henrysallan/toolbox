@@ -58,8 +58,10 @@ export function CompositionTabBar({
     <div
       style={{
         display: "flex",
-        alignItems: "stretch",
-        height: 22,
+        alignItems: "center",
+        gap: 3,
+        height: 24,
+        padding: "0 4px",
         flexShrink: 0,
         background: "#0a0a0a",
         borderBottom: "1px solid #1c1c1f",
@@ -139,16 +141,12 @@ function CompositionTabItem({
         alignItems: "center",
         gap: 5,
         maxWidth: 180,
-        padding: "0 8px",
-        background: active ? "#18181b" : "transparent",
-        borderRight: "1px solid #1c1c1f",
-        // Active gets a top accent; a drop target gets a left accent.
-        boxShadow: [
-          active ? "inset 0 1.5px 0 0 #3f3f46" : "",
-          dragOver ? "inset 1.5px 0 0 0 #52525b" : "",
-        ]
-          .filter(Boolean)
-          .join(", ") || "none",
+        height: 18,
+        padding: "0 9px",
+        background: active ? "#27272a" : hover ? "#18181b" : "transparent",
+        borderRadius: 999,
+        // A drop target gets a highlight ring.
+        boxShadow: dragOver ? "inset 0 0 0 1px #52525b" : "none",
         color: active ? "#fafafa" : "#a1a1aa",
         fontSize: 9.5,
         letterSpacing: 0.2,
@@ -175,7 +173,7 @@ function CompositionTabItem({
             justifyContent: "center",
             width: 12,
             height: 12,
-            borderRadius: 3,
+            borderRadius: 999,
             color: hover ? "#a1a1aa" : "transparent",
             background: "transparent",
             fontSize: 11,
@@ -206,8 +204,7 @@ function NewCompButton({ onCreate }: { onCreate: () => void }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        width: 24,
-        borderRight: "1px solid #1c1c1f",
+        width: 22,
       }}
     >
       <button
@@ -220,13 +217,12 @@ function NewCompButton({ onCreate }: { onCreate: () => void }) {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          width: 16,
-          height: 16,
+          width: 18,
+          height: 18,
           padding: 0,
-          // Square stroke appears on hover.
           background: hover ? "#18181b" : "transparent",
-          border: `1px solid ${hover ? "#3f3f46" : "transparent"}`,
-          borderRadius: 3,
+          border: "none",
+          borderRadius: 999,
           color: hover ? "#d4d4d8" : "#71717a",
           cursor: "pointer",
           fontSize: 12,

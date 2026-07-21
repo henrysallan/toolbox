@@ -38,6 +38,10 @@ const HANDLE_SIZE = 10;
 // catches clicks without making the port look chunky. Capped just
 // below ROW_H (22) so adjacent rows don't have overlapping hitboxes.
 const HANDLE_HIT = 20;
+// Dwell time on an output socket before the data-peek popover opens
+// (SocketPeekPopover). Long enough that ordinary wiring gestures never
+// trip it; short enough to be discoverable.
+const PEEK_DWELL_MS = 2000;
 
 // Node types that surface an editable text box directly on the node body,
 // mapped to the string param it edits. Both params are declared
@@ -173,6 +177,65 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
     window.addEventListener("render-queue-progress", onProg);
     return () => window.removeEventListener("render-queue-progress", onProg);
   }, [isQueue, id]);
+
+  // Output-socket peek: dwell on an output handle for PEEK_DWELL_MS →
+  // dispatch `socket-peek` and EffectsApp mounts SocketPeekPopover next to
+  // the socket with the value the eval produced there. Leaving the handle
+  // (or pressing down to start a wire drag) cancels the dwell and asks
+  // EffectsApp to hide — with a short grace so the pointer can travel into
+  // the popover. One timer per node; hopping sockets restarts it.
+  const peekTimerRef = useRef<number | null>(null);
+  const peekShownRef = useRef<string | null>(null);
+  useEffect(() => {
+    return () => {
+      if (peekTimerRef.current !== null) {
+        window.clearTimeout(peekTimerRef.current);
+        peekTimerRef.current = null;
+      }
+      const shown = peekShownRef.current;
+      if (shown) {
+        peekShownRef.current = null;
+        window.dispatchEvent(
+          new CustomEvent("socket-peek", {
+            detail: { id, handle: shown, hide: true },
+          })
+        );
+      }
+    };
+  }, [id]);
+  const cancelSocketPeek = () => {
+    if (peekTimerRef.current !== null) {
+      window.clearTimeout(peekTimerRef.current);
+      peekTimerRef.current = null;
+    }
+    const shown = peekShownRef.current;
+    if (shown) {
+      peekShownRef.current = null;
+      window.dispatchEvent(
+        new CustomEvent("socket-peek", {
+          detail: { id, handle: shown, hide: true },
+        })
+      );
+    }
+  };
+  const armSocketPeek = (
+    e: React.PointerEvent,
+    handle: string,
+    anchorY: number
+  ) => {
+    // A held button means a wire drag is passing over — don't arm.
+    if (e.buttons !== 0) return;
+    if (peekTimerRef.current !== null) {
+      window.clearTimeout(peekTimerRef.current);
+    }
+    peekTimerRef.current = window.setTimeout(() => {
+      peekTimerRef.current = null;
+      peekShownRef.current = handle;
+      window.dispatchEvent(
+        new CustomEvent("socket-peek", { detail: { id, handle, anchorY } })
+      );
+    }, PEEK_DWELL_MS);
+  };
 
   // Hidden inputs (evaluator-only sockets like a layer's `content`)
   // never render — no handle, no row.
@@ -966,6 +1029,11 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               type="source"
               id="out:primary"
               position={Position.Right}
+              onPointerEnter={(e) =>
+                armSocketPeek(e, "out:primary", PAD_Y + ROW_H / 2)
+              }
+              onPointerLeave={cancelSocketPeek}
+              onPointerDown={cancelSocketPeek}
               style={{
                 top: PAD_Y + ROW_H / 2,
                 width: HANDLE_HIT,
@@ -1028,6 +1096,18 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                 id={`out:aux:${aux.name}`}
                 position={Position.Right}
                 isConnectable={!disabled}
+                onPointerEnter={
+                  disabled || isVirtual
+                    ? undefined
+                    : (e) =>
+                        armSocketPeek(e, `out:aux:${aux.name}`, handleCenter)
+                }
+                onPointerLeave={
+                  disabled || isVirtual ? undefined : cancelSocketPeek
+                }
+                onPointerDown={
+                  disabled || isVirtual ? undefined : cancelSocketPeek
+                }
                 style={{
                   top: handleCenter,
                   width: HANDLE_HIT,

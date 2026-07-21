@@ -688,12 +688,24 @@ export const videoNode: NodeDefinition = {
             // Metadata may be partial — next pass retries.
           }
         }
-      } else if (!ctx.playing) {
-        // Scene is paused — freeze the video at exactly `target` so
-        // the soft-sync loop doesn't creep forward and hard-seek back
-        // every ~0.3s while playback is stopped.
+      } else if (!ctx.playing || ctx.preroll) {
+        // Scene is paused — or this node is PRE-ROLLING inside a
+        // not-yet-active layer (ctx.preroll: clock pinned to the window's
+        // entry tick) — freeze the video at exactly `target` so the
+        // soft-sync loop doesn't creep forward and hard-seek back every
+        // ~0.3s. A pre-rolling video thereby parks silently on its entry
+        // frame, so the cut needs no seek at all.
         if (!video.paused) video.pause();
-        if (absDrift > 0.01) {
+        // Coalesced seeking is what makes scrubbing usable: while a seek
+        // is in flight, do NOT retarget it — every currentTime write
+        // cancels the in-flight seek and restarts decode from the
+        // previous keyframe, so a moving playhead would never land a
+        // single frame (the picture freezes until the drag stops).
+        // Letting each seek finish shows real intermediate frames at
+        // whatever rate the decoder manages, and the `seeked` bump wired
+        // in lib/video.ts guarantees a re-eval that chains the next seek
+        // to the freshest playhead time.
+        if (absDrift > 0.01 && !video.seeking) {
           try {
             video.currentTime = target;
           } catch {
@@ -702,10 +714,17 @@ export const videoNode: NodeDefinition = {
         }
       } else if (absDrift > HARD_SEEK || !wantsForward) {
         if (!video.paused) video.pause();
-        try {
-          video.currentTime = target;
-        } catch {
-          // Some browsers throw if metadata is partial — next frame retries.
+        // Same coalescing as the paused path: retargeting the in-flight
+        // seek every rAF restarts decode forever on long-GOP sources —
+        // visible as a long stale-frame hang when playback jumps (loop
+        // wrap, entering a layer's clip window) and as no motion at all
+        // during reverse playback (which is seek-per-frame by design).
+        if (!video.seeking) {
+          try {
+            video.currentTime = target;
+          } catch {
+            // Some browsers throw if metadata is partial — next frame retries.
+          }
         }
         // Leave playbackRate at the user's nominal speed for when we
         // resume soft-sync next frame.

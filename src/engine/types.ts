@@ -130,6 +130,19 @@ export interface SplineAnchor {
   // Falsy = smooth (the default), where a handle drag mirrors its partner.
   // The rasterizer ignores this entirely; it only reads inHandle/outHandle.
   broken?: boolean;
+  // Live corner radius (Spline Draw "Live Corners" — spec
+  // 071926_spline-draw-authoring-upgrade.md M1). A handle-less corner anchor
+  // with a positive radius is replaced by a circular fillet AT EMIT TIME
+  // (roundCornersPerAnchor in spline-math.ts, applied by Spline Draw's
+  // compute): the stored anchor keeps its logical sharp position, so the
+  // rounding stays re-editable and the anchor count is topology-stable for
+  // Path Animation morphs (the radius itself lerps in keyframes.ts).
+  // Normalized units, same space as `pos`, capped per corner at half each
+  // adjacent edge (matching the Round Corners node). Downstream consumers
+  // never see it — the fillet has already been applied when the spline
+  // leaves the node. Inert on handled (curved) anchors and open-path
+  // endpoints.
+  cornerRadius?: number;
 }
 export interface SplineSubpath {
   anchors: SplineAnchor[];
@@ -828,6 +841,10 @@ export type ParamType =
   | "video_file"
   | "image_sequence"
   | "paint"
+  // Paint-node brush settings blob (BrushSettingsValue). Plain JSON, hidden
+  // from the generic panel (edited via the Brush Editor window), not
+  // keyframable/exposable/controllable. Spec: 071926_paint-toolkit.md.
+  | "brush_settings"
   | "merge_layers"
   | "color_ramp"
   | "curves"
@@ -1061,6 +1078,35 @@ export interface PaintParamValue {
   snapshot: ImageBitmap | null;
 }
 
+// Brush settings for the Paint node's stamp engine (the `brush_settings`
+// param). Plain JSON; the node stores the full blob (not a preset reference)
+// so projects stay self-contained. Brush size is NOT here — it stays the
+// node's visible `size` scalar param (in canvas px). The editor-side model
+// (defaults, presets, stamp cache) lives in components/effects/paint-editor.
+// Spec: 071926_paint-toolkit.md.
+export interface BrushSettingsValue {
+  hardness: number; // 0..1 — stamp edge: 1 = hard disc, 0 = full falloff
+  opacity: number; // 0..1 — per-stroke alpha cap
+  flow: number; // 0..1 — per-stamp alpha
+  spacing: number; // stamp interval as a fraction of brush diameter
+  smoothing: number; // 0..1 — pointer stabilizer strength
+  pressureSize: boolean; // pen pressure scales stamp size
+  pressureOpacity: boolean; // pen pressure scales stamp alpha
+}
+
+// Shared default so the node def, the load migration (lib/project.ts), and
+// the editor resolve missing/partial blobs identically. Treat as frozen —
+// read sites spread it, never mutate it.
+export const DEFAULT_BRUSH_SETTINGS: BrushSettingsValue = {
+  hardness: 0.8,
+  opacity: 1,
+  flow: 1,
+  spacing: 0.15,
+  smoothing: 0.35,
+  pressureSize: true,
+  pressureOpacity: false,
+};
+
 // Parsed SVG payload. All geometry is normalized to cubic-bezier subpaths at
 // import time (see lib/svg-parse). Anchor positions are in [0,1]² Y-DOWN,
 // pre-fit to the source viewBox preserving aspect — downstream transforms
@@ -1107,6 +1153,15 @@ export interface ParamDef {
   //                 the node's sibling media param (`sequence`/`file`), not
   //                 from `options`. The value is the layer's stable id.
   control?: "segmented" | "font" | "exr_layer";
+  // For "color" params: the value may carry an alpha channel as 8-digit
+  // `#rrggbbaa` hex. 6-digit always reads as fully opaque, controls keep
+  // writing 6-digit while alpha is 1 (so opting in never rewrites stored
+  // values), and the trailing byte is STRAIGHT alpha (the engine-wide
+  // non-premultiplied convention). OPT-IN per param because many compute
+  // functions parse hex with local helpers that mis-read 8 digits — set
+  // this only after verifying the node's parse path handles `#rrggbbaa`
+  // end to end. Spec: 072026_color-alpha.md.
+  alpha?: boolean;
   hidden?: boolean;
   // Optional predicate over the node's current params. Returning false hides
   // the row in the UI without affecting the underlying stored value.
@@ -1286,6 +1341,11 @@ export interface CursorState {
   x: number;
   y: number;
   active: boolean;
+  // True while the primary pointer button is held down after a press that
+  // STARTED inside the preview canvas — the drawing gesture (Cursor Trail
+  // Points' `emit: press`). Optional so contexts that don't track buttons
+  // (gl.ts fallback, older embedders) stay valid; absent reads as false.
+  pressed?: boolean;
 }
 
 export interface RenderContext {
@@ -1307,6 +1367,15 @@ export interface RenderContext {
   // time-sensitive sources (Audio, Video) to decide whether to play or
   // pause their media elements; image-only nodes can safely ignore it.
   playing: boolean;
+  // True while this node evaluates inside a layer's PRE-ROLL: the playhead
+  // hasn't reached the layer's in-point yet, but the cut is imminent, so
+  // the interior evaluates invisibly — with the clock pinned to the
+  // window's entry tick — to warm caches and media decoders before the
+  // cut (see the pre-roll block in evaluator.ts). Media nodes must NOT
+  // audibly play or advance while set: hold paused/parked on the current
+  // target (Video routes to its paused-freeze path, Audio stays paused).
+  // Set per-node by evaluateGraph; absent/false everywhere else.
+  preroll?: boolean;
   // Audio-source node ids whose primary output is wired into an Output
   // node's `audio` socket. The Audio Source node keeps its element
   // advancing for data regardless, but only un-mutes (plays to the
@@ -1328,6 +1397,23 @@ export interface RenderContext {
   // into `fingerprintExtras` so caches bust between variations. See
   // specdocs/071026_wedge-render-batching.md.
   wedgeIndex?: number;
+  // Per-iteration values during an Iterate node's nested evaluation
+  // (specdocs/071826_iterate-node.md). Set ONLY by the Iterate shell's
+  // compute around each nested evaluateGraph call; undefined everywhere
+  // else. Read by the iterate-source boundary def, which emits `index`
+  // / `t` / `random` plus the shell's exterior input values (`values`,
+  // keyed by socket name). `runId` increments per shell compute so the
+  // private interior cache busts when exterior inputs change without
+  // the index changing; iterate-source folds runId + index into its
+  // fingerprintExtras.
+  iteration?: {
+    index: number;
+    count: number;
+    t: number;
+    random: number;
+    runId: number;
+    values: Record<string, SocketValue | undefined>;
+  };
   cursor: CursorState;
   state: Record<string, unknown>;
   allocImage(opts?: { width?: number; height?: number }): ImageValue;

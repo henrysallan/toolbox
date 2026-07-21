@@ -76,6 +76,17 @@ export function isTimeDrivenClip(nodeType: string): boolean {
   return TIME_DRIVEN_CLIP_TYPES.has(nodeType);
 }
 
+// Clip windows on these types carry a local clock — Video remaps to
+// clip-local time, and a layer offsets its interior's clock by
+// `inTick − sourceInTick`. An in-trim on them must slip sourceInTick by
+// the trim delta so the content stays anchored (classic NLE trim: the
+// handle reveals footage, it doesn't slide it — sliding is the bar-move
+// gesture). Pure-gate types keep sourceInTick untouched. Both timeline
+// editors' trim drags consult this.
+export function clipSlipsOnInTrim(nodeType: string): boolean {
+  return isTimeDrivenClip(nodeType) || nodeType === "layer";
+}
+
 export function defaultClip(inTick: number, outTick: number): ClipBlock {
   return { inTick, outTick, sourceInTick: 0, enabled: true };
 }

@@ -1,4 +1,8 @@
-import type { InputSocketDef, ParamDef, SocketType } from "./types";
+import type { InputSocketDef, ParamDef, ParamType, SocketType } from "./types";
+import {
+  evaluateKeyframesAt,
+  type KeyframeAnimationBlock,
+} from "./keyframes";
 
 // Universal opacity param. Any node def that declares it gets a free
 // post-pass from the evaluator: every image output (primary AND aux)
@@ -116,20 +120,58 @@ export function rampFieldSocketType(field: RampStopField): SocketType {
 // paths — a wired vec4 on an exposed color param, and keyframe
 // interpolation (which lerps in tuple space) — but compute functions only
 // ever see hex, so both paths normalize through here before the value
-// lands in effectiveParams. Tuple alpha is ignored: param colors are RGB
-// (a paired opacity/alpha param carries transparency).
-export function colorValueToHex(v: unknown, fallback: string): string {
+// lands in effectiveParams. Tuple alpha is carried as an 8-digit
+// `#rrggbbaa` ONLY when the def opts in (`ParamDef.alpha`) and the tuple
+// is actually translucent — everywhere else it's dropped, so un-audited
+// nodes never receive 8 digits (spec 072026_color-alpha.md).
+export function colorValueToHex(
+  v: unknown,
+  fallback: string,
+  alpha = false
+): string {
   if (typeof v === "string") return v;
   if (Array.isArray(v) && v.length >= 3) {
-    const c = (x: unknown) => {
+    const byte = (x: unknown) => {
       const n = typeof x === "number" ? x : 0;
-      return Math.max(0, Math.min(255, Math.round(n * 255)))
-        .toString(16)
-        .padStart(2, "0");
+      return Math.max(0, Math.min(255, Math.round(n * 255)));
     };
-    return `#${c(v[0])}${c(v[1])}${c(v[2])}`;
+    const c = (x: unknown) => byte(x).toString(16).padStart(2, "0");
+    const rgb = `#${c(v[0])}${c(v[1])}${c(v[2])}`;
+    if (alpha) {
+      const a = byte(typeof v[3] === "number" ? v[3] : 1);
+      if (a < 255) return rgb + a.toString(16).padStart(2, "0");
+    }
+    return rgb;
   }
   return fallback;
+}
+
+// Display-value resolution for UI readouts: the keyframe-evaluated value
+// of a param (or virtual-key sub-value) at `tick`, falling back to the
+// stored constant when the block is missing/disabled/empty. This is the
+// keyframe step of the evaluator's wire > keyframe > constant merge —
+// callers handle the wire case themselves (driven params show stored).
+// Colors normalize to hex exactly like effectiveParams does (interpolation
+// returns 0..1 RGBA tuples between keyframes); pass the def's `alpha`
+// flag as `alphaColor` so opted-in params keep their alpha byte.
+export function animatedValueAt(
+  block: KeyframeAnimationBlock | undefined,
+  type: ParamType,
+  tick: number,
+  stored: unknown,
+  alphaColor = false
+): unknown {
+  if (!block || !block.animated || block.keyframes.length === 0) return stored;
+  const v = evaluateKeyframesAt(block, type, tick);
+  if (v === undefined) return stored;
+  if (type === "color") {
+    return colorValueToHex(
+      v,
+      typeof stored === "string" ? stored : "#000000",
+      alphaColor
+    );
+  }
+  return v;
 }
 
 export const RAMP_FIELD_LABEL: Record<RampStopField, string> = {

@@ -57,7 +57,10 @@ src/
     registry.ts           registerNode()/getNodeDef() — a Map, nothing more.
     flatten.ts groups.ts  Node-group/layer/reroute dissolution pass + group socket
                           plumbing (reroute = a dot-rendered passthrough node
-                          spliced out at eval; 071326_reroute-node.md).
+                          spliced out at eval; 071326_reroute-node.md). Also
+                          extracts Iterate interiors wholesale (they evaluate
+                          privately in the shell's compute — see § Groups &
+                          layers and 071826_iterate-node.md).
     layout.ts             Auto Layout: layout units + pure Figma-semantics solver.
     element.ts            Element-socket GL helpers: wrap/flatten coercions, positioned
                           source-over compositing, alpha-bbox trim, canvas upload.
@@ -67,6 +70,9 @@ src/
     clips.ts              Per-node timeline clip windows (gate + local time).
     graph-helpers.ts      Handle-id parsing, param→socket type mapping.
     sdf*.ts, spline-*.ts, points.ts, noise.ts, marching-squares.ts, …  domain math.
+    sim-kernel.ts         Shared CPU sim kernel (force/collider ports, chamfer
+                          mask fields, property-map readbacks, spatial hash) —
+                          Rope + Rigid Body Simulators both ride it.
   nodes/                  One file per node def. index.ts registers ~130 defs.
     source/ effect/ sdf/ group/ output/
   components/effects/     The editor UI. EffectsApp.tsx is the shell/orchestrator.
@@ -97,11 +103,60 @@ src/
                           points, ramp stops, live viewer, exported apps — in
                           place of the native browser picker. Spec:
                           071026_color-node-multi-output.md.
+    NodeInspectorPopup.tsx / SocketPeekPopover.tsx   data readouts. The `i`
+                          inspector panel lists a node's inputs/outputs as
+                          text summaries; dwelling ~2s on an OUTPUT handle
+                          pops a per-socket peek with visual previews
+                          (image/mask/uv thumbnails via readImagePixels,
+                          spline/points drawings, color swatches, strings).
+                          The eval loop force-evaluates the peeked node
+                          (extraTargets + the evaluator's extraConsumed opt,
+                          so consumption-gated auxes build too). Spec:
+                          072126_socket-peek-popover.md.
     TrackEditor.tsx / LayersEditor.tsx / PlaybackBar.tsx   timeline UIs.
     *Overlay.tsx, TransformGizmo.tsx, PrimitiveGizmo.tsx   on-canvas editing.
-                          SplineEditorOverlay: multi-subpath pen/edit (Pen /
-                          Path-Select / Sub-path-Select tools + GUI bbox
-                          transform). GradientOverlay: linear/radial/multipoint
+                          spline-editor/: the Spline Draw overlay as a module
+                          directory (071926_spline-draw-authoring-upgrade.md
+                          M0) — SplineEditorOverlay.tsx owns state/effects/
+                          ALL rendering; tools/*.ts own per-tool pointer
+                          logic, ops.ts the value writes, drag.ts the drag
+                          stream, dock.tsx the chrome, geometry.ts pure math,
+                          snapping.ts the snap service (anchor + canvas-guide
+                          snapping, 45° handle lock; Cmd/Ctrl suppresses);
+                          everything shares a per-render SplineEditorEnv
+                          (types.ts). Multi-subpath pen/edit (Pen / Pencil /
+                          Path-Select / Sub-path-Select / Shape-Builder tools
+                          + GUI bbox transform + Live Corners per-anchor
+                          rounding widgets). Shape Builder (B) rides
+                          engine/spline-planar.ts (coverage-signature planar
+                          faces over spline-boolean.ts primitives): hover
+                          highlights the face under the cursor, click
+                          extracts, drag merges, Alt deletes — destructive,
+                          one undo per gesture. Path surgery via context
+                          menus (cut/scissors, join J, reverse + chevron,
+                          align/distribute selections). New tool =
+                          tools/<name>.ts + a DragState kind + a dock entry
+                          + a render block.
+                          paint-editor/: the Paint node's toolkit overlay
+                          (071926_paint-toolkit.md) — brush / eraser / blur /
+                          fill / eyedropper + Clear. PaintOverlay.tsx maps
+                          pointer→canvas px through the preview canvas's
+                          TRANSFORMED rect (zoom/pan-exact; brush size is
+                          canvas px); engine.ts is the stamp pipeline
+                          (stroke-local scratch canvas → base+scratch
+                          composite each rAF, so opacity caps and mid-stroke
+                          pipeline feedback are both exact; blur mutates the
+                          target per stamp); brushes.ts = settings model +
+                          built-in presets + stamp cache; BrushEditor.tsx =
+                          the ParamPanel preset block + floating editor
+                          window (user presets sync to Supabase
+                          user_preferences.brush_presets — migration
+                          user-preferences-brush-presets-migration.sql —
+                          with localStorage fallback). Every action commits
+                          pre-action pixels through the paint undo lane.
+                          Generic dock chrome (shell/pill/toggle) shared
+                          with spline-editor via ../tool-dock.tsx.
+                          GradientOverlay: linear/radial/multipoint
                           handles. Multi-select shows one gizmo per selected
                           transform/primitive node, each editing only its own
                           params (TransformGizmo swaps its canvas-wide translate
@@ -179,7 +234,11 @@ Wires reference handles `out:primary` / `out:aux:<name>` →
   at the boundary (see the Y-flips in text.ts, image-source.ts,
   marching-squares readback). When pixels look upside down, you missed one.
 - The cursor (`ctx.cursor`) is stored **Y-UP** canvas UV (flipped from DOM
-  in EffectsApp's pointermove).
+  in EffectsApp's pointermove). Its optional `pressed` flag is true while
+  the primary button is held after a press that STARTED inside the preview
+  box (capture-phase listeners in EffectsApp + LiveViewer) — the drawing
+  gesture Cursor Trail Points' `emit: press` reads; point-emitting
+  consumers must flip to y-down (071926_loop-weave.md).
 - Non-square canvases: normalized coords are anisotropic. Geometry that
   must stay round uses the aspect-correct helpers
   ([aspect.ts](../src/engine/aspect.ts)) / the SDF compiler's
@@ -188,7 +247,13 @@ Wires reference handles `out:primary` / `out:aux:<name>` →
 - Alpha is **straight (non-premultiplied)** throughout;
   `UNPACK_PREMULTIPLY_ALPHA_WEBGL` is explicitly disabled on uploads.
   Compositing is Porter-Duff source-over done manually in shaders
-  (see merge.ts BLEND_FS).
+  (see merge.ts BLEND_FS). Caveat: WebGL **ignores** that flag for
+  ImageBitmap sources — the bitmap's creation-time `premultiplyAlpha`
+  wins, and `createImageBitmap`'s default is premultiplied. Mint
+  straight-alpha bitmaps explicitly
+  (`createImageBitmap(src, { premultiplyAlpha: "none" })`, as the paint
+  snapshot paths do) or downstream compositing applies alpha twice and
+  soft edges fade through grey.
 
 ### Socket types (src/engine/types.ts)
 
@@ -244,7 +309,13 @@ itself: spline→mask is styling-independent).
    - Layer-local clock: nodes inside a layer run on
      `globalTick − layerOffset` (AE-style). Clip windows gate output
      (empty value outside the window) and, for Video, remap to clip-local
-     time ([clips.ts](../src/engine/clips.ts)).
+     time ([clips.ts](../src/engine/clips.ts)). **Layer pre-roll:** a gated
+     layer whose next window starts within ~0.5s keeps its `content` edge,
+     so its interior evaluates invisibly with the clock PINNED to the
+     window's entry tick and `ctx.preroll` set — media park paused on the
+     entry frame (Video's freeze path, Audio pause) so cuts land warm with
+     no seek/no cold compile. Media nodes that play elements must respect
+     `ctx.preroll` (never audible, never advancing while set).
    - Inputs resolve through `resolveInputs(params, {connectedTypes})` if
      present (polymorphic sockets), get the universal `mask` input appended
      (`withMaskInput`, opt out with `noMaskInput`), and each incoming value
@@ -326,6 +397,15 @@ To add a node:
 3. Params: prefer declared `ParamDef`s (they get keyframing, exposing,
    range-override UI, export controls for free). `visibleIf` for dependent
    rows. Scalars get sliders (use `softMax` for escape-hatch ranges).
+   Color params can opt into an alpha channel with `alpha: true`: the
+   value becomes 8-digit `#rrggbbaa` while translucent (6-digit stays the
+   opaque canonical form, straight alpha), the panel adds an A field and
+   the universal picker an alpha strip, and wires/keyframes carry it
+   (vec4 socket alpha honored, oklab lerp alphas linearly). OPT-IN ONLY
+   after verifying the node's hex parse path handles 8 digits — many
+   local `hexToRgb` copies mis-read them; the spline raster core
+   (`hexToRgba`/`hexToRgba01`) and raw Canvas fillStyle are safe. Spec:
+   072026_color-alpha.md (Fill is the reference opt-in).
 4. Shaders: `ctx.getShader("<unique-key>", FS_SOURCE)` (cached by key) +
    `ctx.drawFullscreen(prog, target, setup)`. GLSL 300 es, fullscreen
    triangle provides `v_uv`.
@@ -369,9 +449,25 @@ To add a node:
   is keyframable ("Path Animation" row in ParamPanel), and `interpolate`
   lerps it anchor-by-anchor (pos + handle offsets) between keyframed states.
   The graph editor stays scalar-only; non-scalar tracks just show diamonds.
+- **Panel readouts are animated**: controls display the keyframe-evaluated
+  value at the playhead (`animatedValueAt` in engine/conventions.ts — the
+  keyframe step of wire > keyframe > constant), so sliders/fields/swatches
+  move while scrubbing or playing. Covers ParamRow (all keyframable types),
+  the AutoLayout panel's scalars, and the virtual-key sub-controls
+  (merge-layer opacity, gradient points, ramp stops + the ramp bar).
+  Display-only: edits still diff/patch the STORED constants (autokey mirrors
+  them at the playhead), driven params show the stored value (wire wins and
+  the row is dimmed), and diamond inserts capture the *evaluated* value so a
+  mid-segment insert pins the curve (same contract as TrackEditor). Spec:
+  071526_animated-param-readouts.md.
 - Clips: in/out windows on source nodes (`CLIPPABLE_NODE_TYPES`); video is
   the only time-remapped type. Layers use clip windows as their in/out
-  bars and offset their interior's clock.
+  bars and offset their interior's clock. Trim semantics (both timeline
+  editors): on clock-carrying clips (video + layer — `clipSlipsOnInTrim`
+  in clips.ts) an in-trim slips `sourceInTick` by the trim delta so the
+  content stays anchored (NLE trim = reveal; the in-handle clamps at the
+  content anchor), while a bar move slides content with the window;
+  pure-gate types trim without slipping.
 - Timeline UIs: PlaybackBar (transport), TrackEditor (per-param tracks +
   graph editor), LayersEditor (AE-style layer stack at root).
 
@@ -387,7 +483,59 @@ To add a node:
   their interior local time. Root scope is a strict layer chain feeding
   Output (since schema v4; older saves auto-wrap into "Layer 1").
 - Params deep inside a group can be promoted to its interface
-  (`resolvePromotedParams` in graph-ops.ts).
+  (`resolvePromotedParams` in graph-ops.ts) — a minted boundary socket
+  wired straight into a deep node's exposed param (`in:param:…`). The
+  ParamPanel surfaces these as editable widgets on the **shell** node
+  (slider/dropdown/color, keyframe diamonds, driven-dimmed when the shell
+  socket is wired from outside) — a remote control writing through to the
+  interior node, not a copy. This works for **both** `node-group` **and**
+  `layer` shells (ParamPanel's "group inputs" / "layer inputs" section);
+  the layer case filters out the reserved fixed-interface sockets
+  (`stack`/`content`/`backdrop`/`audio`) and hides the output-socket
+  editor. This is the composition-level knob for per-instance layer params:
+  duplicate a layer (deep-copied interior) and tweak each copy's promoted
+  params in the panel without diving in.
+- **Iterate** (specs 071826_iterate-node.md +
+  071926_iterate-zone-view.md rev 3) is the third structural variant,
+  presented as an always-inline ZONE of exactly two nodes. **Iteration
+  Output** (`iterate`) is the engine-side shell: it computes, anchors
+  membership (members' parentId = its id), mints collect sockets via
+  its virtual input (any number — each same-named aux output carries a
+  GROUPED result: image → image_group of iterate-OWNED texture copies,
+  spline/points → merged with groupIndex = iteration; one nested pass
+  per iteration evaluates every tap via evaluateGraph's extraTargets),
+  and carries hidden `zi__<name>` passthrough inputs. **Iteration Input**
+  (`iterate-input`, itself a member) holds the loop params (count /
+  seed / random_min / random_max — resolved SHELL-side with wire >
+  keyframe > constant: keyframes off the stashed node's animation at the
+  scoped tick, wires via flatten-rerouted hidden `zi__param__` inputs;
+  member→Iteration Input wires are rejected as circular), emits
+  index / t / random per iteration from
+  `ctx.iteration`, and is the exterior face for passthroughs (flatten
+  reroutes `exterior → its in:<name>` onto the shell's `zi__` input;
+  the collect tap `member → shell in:` rides the interior record).
+  Eval: flatten's `extractIterateInteriors` removes members wholesale;
+  the evaluator stashes each interior + a fingerprint hash on
+  `ctx.state[ITERATE_STASH_KEY]` (hash folds member
+  params/structure/animation + time when time-driven into the shell's
+  fingerprint). The shell's compute re-runs members K times through a
+  nested `evaluateGraph` over a PRIVATE cache, `{nested:true}` (skips
+  the state sweep — whose members-only keep-set would dispose everything
+  else — and audio routing); collected image copies happen BEFORE the
+  next nested eval frees transients. Nested Iterates are rejected.
+  Editor: compound "iterate" menu entry (`makeIterateNodes`), no diving
+  (isEnterableScope excludes it), `scopedNodes` recurses visibility
+  through shells, `IterateZoneUnderlay` shares its rects with the
+  drag-stop reparent hit-test, dragging the shell moves the whole zone,
+  and `isValidConnection` allows exactly four cross-scope crossings
+  (collect tap / exterior→Iteration Input / auto-minted exterior→member
+  / auto-minted member→exterior via `connectAcrossIterateBoundary`,
+  which dedupes repeat wires onto existing sockets). Membership
+  gestures: drop-in absorbs; plain drag-out just stretches the zone;
+  Cmd/Ctrl-drag ending outside (rect computed sans the dragged node)
+  takes the node out, composing with Cmd-drag detach-with-heal.
+  `reparentNode` refuses boundary nodes, cycles, and wire-crossing
+  moves. Serialization: plain nodes + parentId, no schema bump.
 - A layer's interior **Layer Input** node (`group-input`, reserved
   `backdrop`) mints extra sockets like any group. Those surface as real
   input sockets on the layer node in the parent composition via
@@ -436,7 +584,11 @@ To add a node:
   to null; a stream that fails keeps its envelope so the ref still
   round-trips. Viewers / `.toolbox` / fragment loads omit the flag and stay
   synchronous. The [Spinner](../src/components/effects/Spinner.tsx) (smooth
-  linear arc) drives both this and the save/load ProgressBanner. **Rollout-safe:** upload falls back to the inline
+  linear arc) drives both this and the save/load progress readout in the
+  MenuBar's status chip
+  ([MessageConsole.tsx](../src/components/effects/MessageConsole.tsx) — the
+  chip also shows every flashToast message and opens a draggable console
+  window with the message history). **Rollout-safe:** upload falls back to the inline
   graph if Storage errors (e.g. the bucket's migration hasn't been run), so
   saves keep working the old way until `specdocs/project-assets-migration.sql`
   is applied, then switch automatically. Delete removes the project prefix;
@@ -541,6 +693,31 @@ To add a node:
   disposal, so transparent frames are expanded to self-contained full frames
   with restore-to-background disposal (larger, but Preview opens them). Falls
   back to the raw ffmpeg GIF if gifsicle fails. Spec: 061826_gif-export-and-image-sequence.md.
+- **Wedge batch rendering** (spec 071026_wedge-render-batching.md — Houdini
+  "wedging"): the **Wedge** node (utility, src/nodes/source/wedge.ts) emits
+  one value per batch iteration — scalar (value list / range / seeded
+  random / bare index), color, vec2, or string — wired into seeds, Switch
+  indices, or any exposed param. EVERY export path (standalone image /
+  video / sequence / GIF Export and Render Queue rows) resolves the wedges
+  upstream of the rendered Output (`resolveWedgeBatchInfo` in
+  lib/wedge-batch.ts: flatten + reverse reachability, shared with the UI
+  readouts) and renders once per variation, with `ctx.wedgeIndex` stepping
+  0..N−1 (EffectsApp's `wedgeIndexRef` → makeContext). Multiple wedges
+  **zip** (batch = max count; a shorter wedge clamps, so its last value
+  holds). Outside a batch `ctx.wedgeIndex` is undefined and the node emits
+  its `preview` param — scrub Preview to audition variations live;
+  `enabled: false` pins a wedge to preview (reports count 1). **Caching
+  invariant:** the node folds the clamped effective index into
+  `fingerprintExtras`, and the batch drivers deliberately do NOT clear the
+  eval cache between variations — wedge-independent branches render once
+  per batch. Don't break either half. Filenames: `{i}` / `{i:3}` /
+  `{wedge}` / `{wedge:Name}` tokens in the Output's `filename`
+  (lib/export-naming.ts); a batch that names no token auto-appends
+  `_{i:3}`. Sequence batches share ONE zip/folder (zip name strips
+  tokens). Caveats: batched videos always use the wasm encoder (the
+  native-ffmpeg path needs a Save dialog per file, same as the queue);
+  Layer Output exports don't batch (the fixed group-output id dissolves in
+  the flatten pass).
 - Exported apps: `buildExportManifest` walks the graph for params marked
   `controlParams` (per-node "user controllable" flags) → manifest of
   panel controls + file inputs; export-packager.ts zips the prebuilt Vite
@@ -857,10 +1034,18 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   all fills then all strokes, the "x-ray") vs `layered` (per-subpath fill+stroke
   in draw order, so a later shape occludes earlier strokes). (3) Rasterize
   Spline's **`fill_source: ramp`** — per-subpath fill color from a `color_ramp`,
-  indexed by `ramp_by` (index / seeded random / groupIndex). Ramp sampling is
-  the CPU helper `sampleColorRamp` in the engine-side [color-ramp.ts](../src/engine/color-ramp.ts)
-  (where `ColorRampStop`/`COLOR_RAMP_MAX_STOPS` now canonically live — the Color
-  Ramp node re-exports them). A wired `fill` image still overrides the ramp.
+  indexed by `ramp_by` (index / seeded random / groupIndex / centroid position).
+  Ramp sampling is the CPU helper `sampleColorRamp` in the engine-side
+  [color-ramp.ts](../src/engine/color-ramp.ts) (where `ColorRampStop`/
+  `COLOR_RAMP_MAX_STOPS` now canonically live — the Color Ramp node re-exports
+  them). A wired `fill` image still overrides the ramp. The per-subpath
+  color-resolver itself (`makeSubpathColorFn` + `hash01` + centroid) lives in
+  engine-side [spline-color-source.ts](../src/engine/spline-color-source.ts):
+  Rasterize Spline's fill and the **Stroke** node's stroke color both build a
+  `SubpathColorConfig` and share it, so stroke color has the same flat/ramp
+  source options (index/random/group/position) as fill. In Stroke the
+  per-subpath source strokes each subpath in its own color, and the per-ring
+  Repeats ramp (`repeat_color_mode`) takes precedence over it when both are on.
 - **Contextual Delete** uses [shortcut-scope.ts](../src/components/effects/shortcut-scope.ts)
   (the last-clicked scoped region wins). It tracks BOTH `pointerdown` and
   `mousedown` in capture phase: overlay handlers that `preventDefault()` their
@@ -926,7 +1111,9 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   inputs/primaryOutput/aux back into `data`; the param-change path skips
   re-resolving these two so it can't clobber it. Add any future mode-less
   connectedTypes-retyping node to that set (the **Reroute** node is one — its
-  wildcard `value` input + output adopt whatever's wired in). **AI recipes/edits can author
+  wildcard `value` input + output adopt whatever's wired in; the **Mirror**
+  node is another — its spline-resting `source` retypes to points,
+  072026_mirror-node.md). **AI recipes/edits can author
   pattern-(1) merge stacks** (070926_claude-mcp-bridge.md §4c): `layers`
   accepts [{mode, opacity}, …] via `vetMergeLayers` (ids minted, or
   preserved by index on edit so wires survive), edge targets `in:layerN` /
@@ -948,6 +1135,53 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   `PointsValue`, not the `Point[]` view — the sim hot path never
   round-trips). Empty zones emit the frozen `EMPTY_POINTS` sentinel, which
   `ensurePointArray` short-circuits (count 0) so it's never mutated.
+- **Rope Simulator** (`rope-simulator`, spec 071926_rope-simulator.md)
+  is a CPU string-dynamics node: spline in → simulated spline out
+  (+ aux `points` and per-frame `tears` points). Subpaths resample to
+  particle chains (exact even-arc-length seeding — resampleSubpath
+  alone bunches samples on handle-less segments); XPBD distance +
+  bending constraints in canvas-px space; per-particle material attrs
+  (friction/bounce/stretch/stick multipliers, tear weakness) from base
+  params × mask-typed map inputs, baked at reset by default with
+  per-map live (world-field) toggles; pinning via ends enum / pin map /
+  animated `pins` points capture / `follow_input` arc-length tracking
+  of the live input spline. It CONSUMES the Particle Simulator's
+  force/collider descriptor nodes — the CPU ports live in
+  engine/sim-kernel.ts (shared with the Rigid Body Simulator) and
+  mirror the GLSL exactly; keep them in sync when adding kinds. The image-mask
+  collider deliberately diverges: it builds a chamfer DISTANCE FIELD
+  from the readback (alpha-gradient nudges stall deep inside solids;
+  ropes drape into them). Self/string↔string collision is a counting-
+  sort spatial hash at `thickness` px. State is session-only in
+  `ctx.state`, reset on time-wrap / topology change / seed-param
+  change — input SHAPE edits don't reseed (deliberate, for
+  follow_input); scrub to 0 to reseed. Same paused-eval-advances-sim
+  caveat as the Particle Simulator.
+- **Rigid Body Simulator** (`rigid-body-simulator`, spec
+  072026_rigid-body-simulator.md) is the rope's sibling: one BODY per
+  subpath via Müller shape matching (closed-form 2D fit; pins carry a
+  large fit weight — one pin = hinge/pendulum, two+ = frozen; same
+  four pin mechanisms as the rope). Shares engine/sim-kernel.ts with
+  the rope. Body↔body contacts are particle↔EDGE capsules (+ same-body
+  particle pairs under `self_collide`): discovered once per substep,
+  deduped to the deepest contact per (particle, other body), then
+  re-projected EVERY iteration interleaved with the shape match — the
+  interleave is what makes stacks settle; don't hoist contacts out of
+  the loop. Rigidity 1 outputs the ORIGINAL bezier anchors under the
+  fitted rotation+translation (handles rotate only — exact authored
+  curves, tumbling); < 1 rebuilds from particles, with the per-pull k
+  composed over iterations × substeps so the slider is solver-rate
+  independent. Glue mints particle↔particle bonds at cross-body
+  contacts (rest = contact distance, 4/particle cap, `glue_map`
+  strength field); breaks are PIXEL-denominated — bond overstretch OR
+  endpoint displacement from the body's fitted pose — NOT strain
+  (bond projection runs last in the loop, so a yanked bond stays
+  satisfied while ripping its endpoints off the pose; see the spec's
+  Breaking note). `snaps` aux emits break points; `bodies` aux emits
+  one point per body (centroid + rotation) for Copy-to-Points image
+  stamping. Clamp bounds additionally zero inward velocity at the
+  wall node-side (kernel clamp keeps rope/particle semantics) so
+  resting bodies don't accumulate phantom gravity velocity.
 - **Per-point field logic lives in Point Expression** (`point-expression`,
   spec 070726_point-expression-node.md). The engine has no general per-element
   field system like Blender geometry nodes — a `PointsValue`'s attributes are
@@ -1026,3 +1260,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   saves render byte-identical).
 - No automated tests; keep modules pure where possible (layout solver,
   graph-ops) so they're testable when a runner lands.
+
+
+Notes:
+1. Never use playwrite unless explicitly asked

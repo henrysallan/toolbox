@@ -9,41 +9,13 @@ import {
   makeZeroTex,
   type SplineFillFit,
 } from "@/engine/spline-fill";
+import { type ColorRampStop } from "@/engine/color-ramp";
 import {
-  sampleColorRamp,
-  type ColorRampInterp,
-  type ColorRampStop,
-} from "@/engine/color-ramp";
+  makeSubpathColorFn,
+  type ColorRampBy,
+} from "@/engine/spline-color-source";
 import { resolveStrokePx, strokeUnitsParam } from "@/engine/stroke-units";
 import { SPLINE_FILL_INPUT } from "@/nodes/source/spline-raster-aux";
-
-// Deterministic per-subpath hash → [0, 1) for the "random" ramp mode.
-// Index-stable so a static spline keeps its color assignment; the seed
-// reshuffles. Same mix as Copy to Points' hash01.
-function hash01(index: number, seed: number): number {
-  let h = (index * 374761393 + seed * 668265263) | 0;
-  h = (h ^ (h >>> 13)) | 0;
-  h = Math.imul(h, 1274126177);
-  h = h ^ (h >>> 16);
-  return (h >>> 0) / 4294967296;
-}
-
-// Mean anchor position (normalized [0,1] Y-DOWN) — a cheap stand-in for a
-// subpath's centroid. Used by the `position` ramp mode to key color on WHERE
-// a region sits rather than its array index, so the color is stable when the
-// subpath count/order churns frame to frame (Spline Merge Flow re-extracts its
-// contours every frame, so index-based color flickers; centroid-based doesn't).
-function subpathCentroid(sub: SplineSubpath): [number, number] {
-  const a = sub.anchors;
-  if (a.length === 0) return [0.5, 0.5];
-  let cx = 0;
-  let cy = 0;
-  for (const an of a) {
-    cx += an.pos[0];
-    cy += an.pos[1];
-  }
-  return [cx / a.length, cy / a.length];
-}
 
 // One-shot rasterizer that does Fill + Stroke in a single Canvas2D pass.
 // Equivalent to wiring a Fill into a Stroke through a Merge, but skips
@@ -193,52 +165,27 @@ function drawSplineStroke(
 
 // Builds a per-subpath fill-color resolver. With `fill_source: "ramp"` each
 // subpath samples the `fill_ramp` by its ordinal index / a seeded hash / its
-// groupIndex; otherwise every subpath uses the flat `fill_color`.
+// groupIndex / centroid position; otherwise every subpath uses the flat
+// `fill_color`. The per-subpath sourcing lives engine-side (shared with the
+// Stroke node) — this adapts the node's `fill_*` params onto it.
 function makeFillColorFn(
   subpaths: SplineSubpath[],
   params: Record<string, unknown>
 ): (i: number, sub: SplineSubpath) => string {
-  const flat = hexToRgba((params.fill_color as string) ?? "#ffffff");
-  if ((params.fill_source as string) !== "ramp") return () => flat;
-
-  const stops = Array.isArray(params.fill_ramp)
-    ? (params.fill_ramp as ColorRampStop[])
-    : [];
-  const interp = ((params.ramp_interp as string) ?? "linear") as ColorRampInterp;
-  const by = (params.ramp_by as string) ?? "index";
-  const seed = Math.floor((params.ramp_seed as number) ?? 0);
-  const angleRad = (((params.ramp_angle as number) ?? 0) * Math.PI) / 180;
-  const N = subpaths.length;
-
-  let groups: number[] = [];
-  if (by === "group") {
-    const set = new Set<number>();
-    for (const s of subpaths) set.add(s.groupIndex ?? 0);
-    groups = Array.from(set).sort((a, b) => a - b);
-  }
-
-  // position mode: project each centroid onto the gradient axis, normalized
-  // so the unit square maps to [0,1] exactly (no overshoot at diagonal angles).
-  const ca = Math.cos(angleRad);
-  const sa = Math.sin(angleRad);
-  const projHalf = 0.5 * (Math.abs(ca) + Math.abs(sa)) || 1;
-
-  return (i, sub) => {
-    let t: number;
-    if (by === "random") {
-      t = hash01(i, seed);
-    } else if (by === "group") {
-      const gi = groups.indexOf(sub.groupIndex ?? 0);
-      t = groups.length > 1 ? gi / (groups.length - 1) : 0;
-    } else if (by === "position") {
-      const [cx, cy] = subpathCentroid(sub);
-      const proj = (cx - 0.5) * ca + (cy - 0.5) * sa;
-      t = Math.min(1, Math.max(0, 0.5 + proj / (2 * projHalf)));
-    } else {
-      t = N > 1 ? i / (N - 1) : 0;
-    }
-    return sampleColorRamp(stops, t, interp);
-  };
+  return makeSubpathColorFn(subpaths, {
+    source: (params.fill_source as string) === "ramp" ? "ramp" : "flat",
+    flatColor: (params.fill_color as string) ?? "#ffffff",
+    stops: Array.isArray(params.fill_ramp)
+      ? (params.fill_ramp as ColorRampStop[])
+      : [],
+    by: ((params.ramp_by as ColorRampBy) ?? "index"),
+    seed: Math.floor((params.ramp_seed as number) ?? 0),
+    angleDeg: (params.ramp_angle as number) ?? 0,
+    interp: ((params.ramp_interp as string) ?? "linear") as
+      | "linear"
+      | "ease"
+      | "constant",
+  });
 }
 
 // Draw the flat (non-image) fill + stroke composite into the 2D context,
@@ -356,11 +303,15 @@ export const rasterizeSplineNode: NodeDefinition = {
       default: "flat",
       visibleIf: (p) => p.enable_fill !== false,
     },
+    // alpha: consumed via spline-color-source's flatColor (hexToRgba) and
+    // compositeSplineFill's fillColorHex (hexToRgba01) — both 8-digit-safe;
+    // the raster signatures key on the raw hex.
     {
       name: "fill_color",
       label: "Fill color",
       type: "color",
       default: "#ffffff",
+      alpha: true,
       visibleIf: (p) =>
         p.enable_fill !== false && p.fill_source !== "ramp",
     },
@@ -482,11 +433,14 @@ export const rasterizeSplineNode: NodeDefinition = {
       type: "boolean",
       default: true,
     },
+    // alpha: consumed through hexToRgba into the Canvas strokeStyle
+    // (8-digit-safe); the raster signature keys on the raw hex.
     {
       name: "stroke_color",
       label: "Stroke color",
       type: "color",
       default: "#000000",
+      alpha: true,
       visibleIf: (p) => p.enable_stroke !== false,
     },
     // See image_fill above — lets the wired `fill` image color the stroke

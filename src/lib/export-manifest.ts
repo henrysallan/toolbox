@@ -37,6 +37,7 @@ const FILE_PARAM_TYPES = new Set<ParamType>([
 const UNSUPPORTED_CONTROL_TYPES = new Set<ParamType>([
   "paint",
   "spline_anchors",
+  "brush_settings",
 ]);
 
 export interface ExportWarning {

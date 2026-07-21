@@ -894,6 +894,9 @@ export function LayersEditor({
       }
       if (drag.kind === "bar") {
         const deltaTicks = (e.clientX - drag.startMouseX) / pixelsPerTick;
+        const existing = layers.find((l) => l.id === drag.nodeId)?.data.clips;
+        const cur =
+          drag.clipIndex >= 0 ? existing?.[drag.clipIndex] : undefined;
         let inT = drag.startIn;
         let outT = drag.startOut;
         if (drag.mode === "move") {
@@ -902,19 +905,42 @@ export function LayersEditor({
           inT = drag.startIn + d;
           outT = drag.startOut + d;
         } else if (drag.mode === "trimIn") {
-          inT = Math.max(0, Math.min(snapTick(drag.startIn + deltaTicks), outT - snap));
+          // An in-trim reveals rather than slides (see clipSlipsOnInTrim in
+          // engine/clips.ts): the interior clock's anchor (inTick −
+          // sourceInTick) stays put via the slip below, and the head can't
+          // be pulled earlier than that anchor — the layer's local time
+          // zero, mirroring the Track editor's footage-start clamp.
+          const anchor = cur ? Math.max(0, cur.inTick - cur.sourceInTick) : 0;
+          inT = Math.max(
+            anchor,
+            Math.min(snapTick(drag.startIn + deltaTicks), outT - snap)
+          );
         } else {
           outT = Math.max(inT + snap, snapTick(drag.startOut + deltaTicks));
         }
-        // Edit only the dragged window; materialize a ghost on first
-        // drag, and preserve the window's source slip on a video clip.
-        const existing = layers.find((l) => l.id === drag.nodeId)?.data.clips;
+        // Edit only the dragged window; materialize a ghost on first drag.
+        // In-trims slip sourceInTick by the trim delta so the interior's
+        // clock is unchanged — moving the bar is what slides content.
         let next: ClipBlock[];
         if (drag.clipIndex < 0 || !existing || existing.length === 0) {
-          next = [defaultClip(inT, outT)];
+          const c = defaultClip(inT, outT);
+          // A ghost bar's content is anchored at tick 0 (no window ⇒ zero
+          // offset); keep that anchor when the first gesture is an in-trim.
+          if (drag.mode === "trimIn") c.sourceInTick = inT - drag.startIn;
+          next = [c];
         } else {
           next = existing.map((c, i) =>
-            i === drag.clipIndex ? { ...c, inTick: inT, outTick: outT } : c
+            i === drag.clipIndex
+              ? {
+                  ...c,
+                  inTick: inT,
+                  outTick: outT,
+                  sourceInTick:
+                    drag.mode === "trimIn"
+                      ? c.sourceInTick + (inT - c.inTick)
+                      : c.sourceInTick,
+                }
+              : c
           );
         }
         onClipChange(drag.nodeId, next);
