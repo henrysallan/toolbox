@@ -38,6 +38,25 @@ export default defineConfig({
         srcRoot,
         "components/effects/KeyframeDiamond"
       ),
+      // The React-free half, imported directly by node definitions that
+      // broadcast app events (nodes/source/color-literal.ts). Listed
+      // separately because alias matching is exact-or-followed-by-slash:
+      // the "panel-window" entry below does NOT cover "panel-window-dom".
+      "@/components/effects/layout/panel-window-dom": path.resolve(
+        srcRoot,
+        "components/effects/layout/panel-window-dom"
+      ),
+      // param-controls also reaches for the panel-window helpers
+      // (ownerWindow/ownerDocument for portal targets + hit-testing,
+      // usePanelWindow for listener binding). Mapped to the real module
+      // rather than shimmed: with no provider above it — which is always
+      // the case in an exported app, there are no popout windows —
+      // usePanelWindow already returns null, so the behaviour is
+      // identical and there's no shim to keep in sync. Costs React only.
+      "@/components/effects/layout/panel-window": path.resolve(
+        srcRoot,
+        "components/effects/layout/panel-window"
+      ),
       "@/state/graph-ops": path.resolve(srcRoot, "state/graph-ops"),
       "@/state/graph": path.resolve(root, "src/shims/state-graph.ts"),
       "@xyflow/react": path.resolve(root, "src/shims/xyflow-react.ts"),
