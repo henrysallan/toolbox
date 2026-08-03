@@ -5,7 +5,10 @@ import type {
   RenderContext,
   SocketValue,
 } from "@/engine/types";
-import { broadcastAppEvent } from "@/components/effects/layout/panel-window";
+// panel-window-dom, not panel-window: this file is reachable from the
+// docs pages' server graph via src/nodes/index.ts, and the latter is a
+// "use client" module.
+import { broadcastAppEvent } from "@/components/effects/layout/panel-window-dom";
 
 // Color value source — emits vec4 (r, g, b, a) values without rasterizing
 // them. Solid Color produces a full-frame image; this one produces raw
