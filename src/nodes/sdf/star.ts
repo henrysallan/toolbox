@@ -4,6 +4,7 @@ import type {
   PositionValue,
   SdfValue,
 } from "@/engine/types";
+import { SDF_PAINT_PARAMS, paintSdf } from "@/engine/sdf-material";
 
 // SDF primitive — an N-pointed star centered at (x, y) with outer
 // radius r.
@@ -80,6 +81,7 @@ export const sdfStarNode: NodeDefinition = {
       step: 0.01,
       default: 2.5,
     },
+    ...SDF_PAINT_PARAMS,
   ],
   primaryOutput: "sdf",
   auxOutputs: [],
@@ -102,15 +104,18 @@ export const sdfStarNode: NodeDefinition = {
     );
     const out: SdfValue = {
       kind: "sdf",
-      root: {
-        kind: "star",
-        position: rootOfPosition(inputs.position),
-        cx,
-        cy,
-        r,
-        sides,
-        sharpness,
-      },
+      root: paintSdf(
+        {
+          kind: "star",
+          position: rootOfPosition(inputs.position),
+          cx,
+          cy,
+          r,
+          sides,
+          sharpness,
+        },
+        params
+      ),
     };
     return { primary: out };
   },

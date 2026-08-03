@@ -5,7 +5,11 @@ import type {
   SdfValue,
   SplineValue,
 } from "@/engine/types";
-import { compileSdf, structuralHash } from "@/engine/sdf-compile";
+import {
+  bindSdfUniforms,
+  compileSdf,
+  structuralHash,
+} from "@/engine/sdf-compile";
 import { marchingSquares } from "@/engine/marching-squares";
 
 // Extract the iso-line of an SDF as a spline. The pipeline:
@@ -135,22 +139,7 @@ export const sdfToSplineNode: NodeDefinition = {
         gl.getUniformLocation(prog, "u_aspectCorrect"),
         aspectCorrect ? 1 : 0
       );
-      let samplerUnit = 0;
-      for (const u of compiled.uniforms) {
-        const loc = gl.getUniformLocation(prog, u.name);
-        if (!loc) continue;
-        if (u.type === "float") {
-          gl.uniform1f(loc, u.value as number);
-        } else if (u.type === "vec2") {
-          const v = u.value as [number, number];
-          gl.uniform2f(loc, v[0], v[1]);
-        } else {
-          gl.activeTexture(gl.TEXTURE0 + samplerUnit);
-          gl.bindTexture(gl.TEXTURE_2D, u.value as WebGLTexture);
-          gl.uniform1i(loc, samplerUnit);
-          samplerUnit++;
-        }
-      }
+      bindSdfUniforms(gl, prog, compiled.uniforms);
     });
 
     // Sync readback. Float32Array length = w*h*4 (RGBA), R channel

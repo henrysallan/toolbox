@@ -63,8 +63,8 @@ export function CompositionTabBar({
         height: 24,
         padding: "0 4px",
         flexShrink: 0,
-        background: "#0a0a0a",
-        borderBottom: "1px solid #1c1c1f",
+        background: "var(--tb-n-0)",
+        borderBottom: "1px solid var(--tb-n-4)",
         overflowX: "auto",
         overflowY: "hidden",
         scrollbarWidth: "none",
@@ -143,11 +143,11 @@ function CompositionTabItem({
         maxWidth: 180,
         height: 18,
         padding: "0 9px",
-        background: active ? "#27272a" : hover ? "#18181b" : "transparent",
+        background: active ? "var(--tb-n-7)" : hover ? "var(--tb-n-3)" : "transparent",
         borderRadius: 999,
         // A drop target gets a highlight ring.
-        boxShadow: dragOver ? "inset 0 0 0 1px #52525b" : "none",
-        color: active ? "#fafafa" : "#a1a1aa",
+        boxShadow: dragOver ? "inset 0 0 0 1px var(--tb-n-10)" : "none",
+        color: active ? "var(--tb-n-17)" : "var(--tb-n-13)",
         fontSize: 9.5,
         letterSpacing: 0.2,
         cursor: "pointer",
@@ -174,18 +174,18 @@ function CompositionTabItem({
             width: 12,
             height: 12,
             borderRadius: 999,
-            color: hover ? "#a1a1aa" : "transparent",
+            color: hover ? "var(--tb-n-13)" : "transparent",
             background: "transparent",
             fontSize: 11,
             lineHeight: 1,
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.background = "#27272a";
-            e.currentTarget.style.color = "#fafafa";
+            e.currentTarget.style.background = "var(--tb-n-7)";
+            e.currentTarget.style.color = "var(--tb-n-17)";
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.background = "transparent";
-            e.currentTarget.style.color = hover ? "#a1a1aa" : "transparent";
+            e.currentTarget.style.color = hover ? "var(--tb-n-13)" : "transparent";
           }}
         >
           ×
@@ -220,10 +220,10 @@ function NewCompButton({ onCreate }: { onCreate: () => void }) {
           width: 18,
           height: 18,
           padding: 0,
-          background: hover ? "#18181b" : "transparent",
+          background: hover ? "var(--tb-n-3)" : "transparent",
           border: "none",
           borderRadius: 999,
-          color: hover ? "#d4d4d8" : "#71717a",
+          color: hover ? "var(--tb-n-15)" : "var(--tb-n-11)",
           cursor: "pointer",
           fontSize: 12,
           lineHeight: 1,

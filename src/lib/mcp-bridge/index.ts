@@ -9,7 +9,7 @@
 // Protocol frames:
 //   server → page: {type:"hello", code, serverVersion}
 //                  {type:"cmd", id, cmd, args} · {type:"replaced"}
-//   page → server: {type:"pair", ok:true, appVersion}
+//   page → server: {type:"pair", ok:true, code, appVersion}  (code echoes hello)
 //                  {type:"result", id, ok, result?, error?}
 
 export const MCP_BRIDGE_URL = "ws://127.0.0.1:38275";
@@ -65,8 +65,14 @@ export function connectBridge(opts: BridgeOptions): BridgeClient {
 
   const pair = () => {
     if (!ws || ws.readyState !== WebSocket.OPEN || !hello) return;
+    // Echo the code from `hello` — the server validates it before pairing.
     ws.send(
-      JSON.stringify({ type: "pair", ok: true, appVersion: opts.appVersion ?? "dev" })
+      JSON.stringify({
+        type: "pair",
+        ok: true,
+        code: hello.code,
+        appVersion: opts.appVersion ?? "dev",
+      })
     );
     opts.onCodeTrusted?.(hello.code);
     status({ state: "connected", code: hello.code, serverVersion: hello.serverVersion });

@@ -20,7 +20,7 @@ export default function DocsInfoButton() {
         padding: "0 6px",
         display: "inline-flex",
         alignItems: "center",
-        color: "#a1a1aa",
+        color: "var(--tb-n-13)",
         textDecoration: "none",
       }}
     >

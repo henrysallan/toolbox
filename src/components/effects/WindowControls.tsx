@@ -190,7 +190,7 @@ function CaptionButton({
   const background = over
     ? danger
       ? "#c42b1c"
-      : "rgba(255,255,255,0.09)"
+      : "color-mix(in srgb, var(--tb-lift) 9%, transparent)"
     : "transparent";
   return (
     <button
@@ -207,7 +207,7 @@ function CaptionButton({
         alignItems: "center",
         justifyContent: "center",
         background,
-        color: danger && over ? "#fff" : "#e5e7eb",
+        color: danger && over ? "#fff" : "var(--tb-n-16)",
         border: "none",
         padding: 0,
         margin: 0,

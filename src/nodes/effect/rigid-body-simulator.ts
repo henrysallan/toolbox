@@ -16,17 +16,19 @@ import {
 } from "@/engine/spline-math";
 import {
   applyForceCpu,
+  authoredToPxY,
   buildSpatialHash,
   cellStart,
   evenPolylinePoints,
   fillAttrFromMap,
   packColliders,
+  pxToAuthoredY,
   readMapBuffer,
   resolveBoundsCpu,
   resolveCollidersCpu,
   sampleMap,
   samplePolylineAt,
-  scaleSubpath,
+  subpathToCanvasPx,
   type MapCacheEntry,
   type MaskColliderCacheEntry,
   type PackedCollider,
@@ -64,8 +66,11 @@ import { makePoints } from "@/engine/points";
 // Forces/colliders/bounds/maps ride the shared sim kernel (same
 // descriptor nodes, same CPU math as the rope — a collider feels
 // identical in every sim). Coordinate spaces follow the rope
-// convention: solver in canvas-px Y-down, force/collider/bounds
-// response in UV.
+// convention (see sim-kernel.ts header): geometry sockets are AUTHORED
+// space, solver in true canvas-px Y-down, bounds/masks in canvas UV,
+// force + analytic-collider descriptors evaluated in authored coords.
+// Stepping follows the house sim contract: playback evals advance,
+// paused evals re-emit without stepping.
 
 const MAX_FORCE_SLOTS = 6;
 const MAX_COLLIDER_SLOTS = 6;
@@ -180,7 +185,7 @@ function seedState(
   for (let si = 0; si < src.subpaths.length; si++) {
     const sub = src.subpaths[si];
     if (sub.anchors.length < 2) continue;
-    const pxSub = scaleSubpath(sub, W, H);
+    const pxSub = subpathToCanvasPx(sub, W, H);
     const m = measureSubpath(pxSub);
     if (m.total <= 1e-3) continue;
     const minCount = sub.closed ? 3 : 2;
@@ -845,7 +850,7 @@ function breakBonds(
     st.bondKeys.delete(Math.min(p, q) * st.count + Math.max(p, q));
     snaps.push(
       (pos[p * 2] + pos[q * 2]) / 2 / W,
-      (pos[p * 2 + 1] + pos[q * 2 + 1]) / 2 / H
+      pxToAuthoredY((pos[p * 2 + 1] + pos[q * 2 + 1]) / 2, W, H)
     );
   }
   // Compact when the dead fraction dominates (stick-slip contact can
@@ -1194,6 +1199,7 @@ export const rigidBodySimulatorNode: NodeDefinition = {
     const src = inputs.splines;
     const W = Math.max(1, ctx.width);
     const H = Math.max(1, ctx.height);
+    const aspect = W / H;
     const key = stateKey(nodeId);
 
     if (!src || src.kind !== "spline" || src.subpaths.length === 0) {
@@ -1262,6 +1268,13 @@ export const rigidBodySimulatorNode: NodeDefinition = {
       ctx.state[key] = st;
     }
     st = st!;
+    // Step gating — the house sim contract (matter-simulator precedent):
+    // paused evals (param tweaks, graph edits, re-renders at a parked
+    // playhead) re-emit output without advancing, so frame 0 keeps its
+    // seed pose and the near-zero blind spot of the wrap check above
+    // can't accumulate drift.
+    const active =
+      ctx.playing || (ctx.offline && ctx.time > st.lastTime + 1e-6);
     st.lastTime = ctx.time;
 
     // Property maps. Baked maps sample once at (re)seed, at rest
@@ -1301,10 +1314,11 @@ export const rigidBodySimulatorNode: NodeDefinition = {
       }
       // Point capture: each input point grabs the nearest still-free
       // particle within pin_radius (greedy, one particle per point).
+      // Points are authored-space, like the splines.
       if (pinPts) {
         for (let k = 0; k < pinPts.count; k++) {
           const px = pinPts.positions[k * 2] * W;
-          const py = pinPts.positions[k * 2 + 1] * H;
+          const py = authoredToPxY(pinPts.positions[k * 2 + 1], W, H);
           let bestI = -1;
           let bestD = pinRadius;
           for (let i = 0; i < st.count; i++) {
@@ -1386,7 +1400,11 @@ export const rigidBodySimulatorNode: NodeDefinition = {
         const pk = st.pinPointIdx[i];
         if (pk < 0 || pk >= pinPts.count) continue;
         pos[i * 2] = prev[i * 2] = pinPts.positions[pk * 2] * W;
-        pos[i * 2 + 1] = prev[i * 2 + 1] = pinPts.positions[pk * 2 + 1] * H;
+        pos[i * 2 + 1] = prev[i * 2 + 1] = authoredToPxY(
+          pinPts.positions[pk * 2 + 1],
+          W,
+          H
+        );
       }
     }
     if (followInput) {
@@ -1401,7 +1419,7 @@ export const rigidBodySimulatorNode: NodeDefinition = {
         let dense = denseCache.get(si);
         if (!dense) {
           const rs = resampleSubpath(
-            scaleSubpath(sub, W, H),
+            subpathToCanvasPx(sub, W, H),
             Math.min(2048, Math.max(sub.anchors.length * 8, 32))
           );
           dense = rs.anchors.map((a) => a.pos);
@@ -1413,12 +1431,14 @@ export const rigidBodySimulatorNode: NodeDefinition = {
       }
     }
 
-    for (let s = 0; s < substeps; s++) {
-      // Integrate: recover velocity from Verlet positions (UV/sec so
-      // the shared force descriptors keep Particle Simulator units),
-      // damp, apply gravity + forces, advance. Per-particle force
-      // application is what makes torque emergent — wind catching one
-      // end of a plank spins it with no torque code.
+    const stepCount = active ? substeps : 0;
+    for (let s = 0; s < stepCount; s++) {
+      // Integrate: recover velocity from Verlet positions (AUTHORED
+      // units/sec — both axes are W px, so the shared force descriptors
+      // keep Particle Simulator units at any aspect), damp, apply
+      // gravity + forces at the particle's authored position, advance.
+      // Per-particle force application is what makes torque emergent —
+      // wind catching one end of a plank spins it with no torque code.
       for (let i = 0; i < count; i++) {
         if (invMass[i] === 0) {
           prev[i * 2] = pos[i * 2];
@@ -1426,16 +1446,16 @@ export const rigidBodySimulatorNode: NodeDefinition = {
           continue;
         }
         vel[0] = ((pos[i * 2] - prev[i * 2]) / (h * W)) * dampFactor;
-        vel[1] = ((pos[i * 2 + 1] - prev[i * 2 + 1]) / (h * H)) * dampFactor;
+        vel[1] = ((pos[i * 2 + 1] - prev[i * 2 + 1]) / (h * W)) * dampFactor;
         vel[0] += gx * h;
         vel[1] += gy * h;
         const u = pos[i * 2] / W;
-        const v = pos[i * 2 + 1] / H;
+        const v = pxToAuthoredY(pos[i * 2 + 1], W, H);
         for (const f of forces) applyForceCpu(f, u, v, vel, h, ctx.time);
         prev[i * 2] = pos[i * 2];
         prev[i * 2 + 1] = pos[i * 2 + 1];
         pos[i * 2] += vel[0] * h * W;
-        pos[i * 2 + 1] += vel[1] * h * H;
+        pos[i * 2 + 1] += vel[1] * h * W;
       }
 
       if (doContacts) {
@@ -1465,7 +1485,7 @@ export const rigidBodySimulatorNode: NodeDefinition = {
           pp[1] = pos[i * 2 + 1] / H;
           pp[2] = (pos[i * 2] - prev[i * 2]) / (h * W);
           pp[3] = (pos[i * 2 + 1] - prev[i * 2 + 1]) / (h * H);
-          resolveCollidersCpu(colliders, pp, fr, bo);
+          resolveCollidersCpu(colliders, pp, fr, bo, aspect);
           resolveBoundsCpu(boundsMode, boundsRestitution, pp, fr, bo);
           // Clamp mode pins position but leaves the inward velocity
           // untouched (kernel/rope semantics) — for a RESTING body that
@@ -1498,7 +1518,7 @@ export const rigidBodySimulatorNode: NodeDefinition = {
     // these fitted goals.
     for (const body of bodies) shapeMatchBody(st, body, 0);
 
-    const snapUv = glue > 0 ? breakBonds(st, glueBreak, W, H) : [];
+    const snapUv = glue > 0 && active ? breakBonds(st, glueBreak, W, H) : [];
 
     // ---- outputs ----
     const exact = rigidity >= 0.999;
@@ -1514,20 +1534,21 @@ export const rigidBodySimulatorNode: NodeDefinition = {
           const out: SplineAnchor = {
             pos: [
               (c * rx - sn * ry + body.cx) / W,
-              (sn * rx + c * ry + body.cy) / H,
+              pxToAuthoredY(sn * rx + c * ry + body.cy, W, H),
             ],
           };
-          // Handles are offsets from pos — they rotate, never translate.
+          // Handles are offsets from pos — they rotate, never translate
+          // (authored offsets are px/W on BOTH axes; see subpathToCanvasPx).
           if (a.inHandle) {
             out.inHandle = [
               (c * a.inHandle[0] - sn * a.inHandle[1]) / W,
-              (sn * a.inHandle[0] + c * a.inHandle[1]) / H,
+              (sn * a.inHandle[0] + c * a.inHandle[1]) / W,
             ];
           }
           if (a.outHandle) {
             out.outHandle = [
               (c * a.outHandle[0] - sn * a.outHandle[1]) / W,
-              (sn * a.outHandle[0] + c * a.outHandle[1]) / H,
+              (sn * a.outHandle[0] + c * a.outHandle[1]) / W,
             ];
           }
           return out;
@@ -1536,7 +1557,7 @@ export const rigidBodySimulatorNode: NodeDefinition = {
       } else {
         const uvPts: [number, number][] = [];
         for (let i = body.start; i < body.start + body.count; i++) {
-          uvPts.push([pos[i * 2] / W, pos[i * 2 + 1] / H]);
+          uvPts.push([pos[i * 2] / W, pxToAuthoredY(pos[i * 2 + 1], W, H)]);
         }
         sp =
           outputMode === "polyline"
@@ -1560,7 +1581,7 @@ export const rigidBodySimulatorNode: NodeDefinition = {
       for (let bi = 0; bi < bodies.length; bi++) {
         const body = bodies[bi];
         pts.positions[bi * 2] = body.cx / W;
-        pts.positions[bi * 2 + 1] = body.cy / H;
+        pts.positions[bi * 2 + 1] = pxToAuthoredY(body.cy, W, H);
         pts.rotations![bi] = body.angle;
         pts.groupIndices![bi] = body.srcIndex;
       }
@@ -1570,7 +1591,7 @@ export const rigidBodySimulatorNode: NodeDefinition = {
       const pts = makePoints(count, { withGroupIndices: true });
       for (let i = 0; i < count; i++) {
         pts.positions[i * 2] = pos[i * 2] / W;
-        pts.positions[i * 2 + 1] = pos[i * 2 + 1] / H;
+        pts.positions[i * 2 + 1] = pxToAuthoredY(pos[i * 2 + 1], W, H);
         pts.groupIndices![i] = bodies[st.particleBody[i]].srcIndex;
       }
       aux.points = pts;

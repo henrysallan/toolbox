@@ -1,59 +1,116 @@
-export const socketColor: Record<string, string> = {
-  image: "#60a5fa",
-  mask: "#f472b6",
-  uv: "#34d399",
-  vector: "#f97316",
-  scalar: "#facc15",
-  vec2: "#a78bfa",
-  vec3: "#a78bfa",
-  vec4: "#a78bfa",
-  spline: "#22d3ee",
-  points: "#fb923c",
-  audio: "#ec4899",
+// Wire/socket colours — one hue per socket type.
+//
+// THEMED, but only in lightness. A socket's identity is its HUE, so the hue
+// is byte-identical in both modes; light mode just caps perceptual lightness
+// at ~0.56 so a bright dark-mode yellow (#facc15, OKLCH L 0.86) doesn't turn
+// into unreadable pale text on a white node. Light values are derived, not
+// hand-picked — see specdocs/080226_theme-modes.md.
+//
+// The dark column is exactly what the editor used before theming, so dark
+// mode is unchanged.
+//
+// Adding a socket type? Invariant #7 in the devguide lists everywhere else
+// that ripples; add the pair here and run `npm run gen:theme-css`.
+
+export interface SocketColorPair {
+  dark: string;
+  light: string;
+}
+
+export const SOCKET_PALETTE: Record<string, SocketColorPair> = {
+  image: { dark: "#60a5fa", light: "#2274cf" },
+  mask: { dark: "#f472b6", light: "#c13185" },
+  uv: { dark: "#34d399", light: "#009156" },
+  vector: { dark: "#f97316", light: "#cb3d00" },
+  scalar: { dark: "#facc15", light: "#9d6b00" },
+  vec2: { dark: "#a78bfa", light: "#7c58d1" },
+  vec3: { dark: "#a78bfa", light: "#7c58d1" },
+  vec4: { dark: "#a78bfa", light: "#7c58d1" },
+  spline: { dark: "#22d3ee", light: "#0089a6" },
+  points: { dark: "#fb923c", light: "#be4e00" },
+  audio: { dark: "#ec4899", light: "#c62c7c" },
   // String wires — lime. A plain text value, distinct from scalar's pure
   // yellow and scalar_field's amber so a string signal reads as its own type.
-  string: "#a3e635",
+  string: { dark: "#a3e635", light: "#4e8800" },
   // Image groups reuse the image hue but shift darker so a grouped
   // wire reads as related-but-distinct from a single image. Spline
   // and points no longer have a distinct group type — they carry
-  // groupIndex metadata on the base value.
-  image_group: "#1d4ed8",
+  // groupIndex metadata on the base value. Already dark enough for light
+  // mode, so it's the one pair that doesn't move.
+  image_group: { dark: "#1d4ed8", light: "#1d4ed8" },
   // Live text carrier (Text → Copy to Points) — fuchsia. A text-family
   // cousin of string's lime, but clearly its own pipeline: it holds a
   // style + variant strings, not a plain value.
-  text_instance: "#e879f9",
+  text_instance: { dark: "#e879f9", light: "#a83fb8" },
   // Particle-engine sockets. Forces and emitters are descriptor
   // socket types — distinct from data sockets, so warm-tinted to set
   // them apart from the cool image/spline pipeline.
-  force: "#fda4af",
-  emitter: "#fcd34d",
-  collider: "#fb7185",
-  particles: "#f43f5e",
+  force: { dark: "#fda4af", light: "#ae5462" },
+  emitter: { dark: "#fcd34d", light: "#996d00" },
+  collider: { dark: "#fb7185", light: "#ca3153" },
+  particles: { dark: "#f43f5e", light: "#cf2849" },
   // SDF wires — soft purple, distinct from vec2/3/4 lavender so a
   // distance-field signal reads as its own pipeline.
-  sdf: "#c084fc",
+  sdf: { dark: "#c084fc", light: "#914ace" },
   // Position wires — green-cyan. Visually distinct from SDF and uv
   // (which is also green-ish but emerald): position is a "where to
   // sample" signal, paired with sdf as the "what to evaluate" signal.
-  position: "#5eead4",
+  position: { dark: "#5eead4", light: "#008e79" },
   // Scalar field — yellow-amber, distinct from scalar's bright yellow
   // so users can tell at a glance whether a wire carries a single CPU
   // value or a per-pixel shader expression.
-  scalar_field: "#eab308",
+  scalar_field: { dark: "#eab308", light: "#a36700" },
   // Render reference wire (Output → Render Queue). Neutral slate — it's an
   // organizational link, not a data pipeline, so it shouldn't read as one
   // of the colorful signal types.
-  render: "#94a3b8",
+  render: { dark: "#94a3b8", light: "#66768c" },
   // Element wires (Auto Layout) — indigo, distinct from image blue and
   // the vec lavender: an intrinsically-sized renderable, not yet pixels.
-  element: "#818cf8",
+  element: { dark: "#818cf8", light: "#5e63d9" },
   // 3D scene wires. object3d is a warm amber (a placed thing in the
   // scene); camera a cooler teal-green so the "which view" signal reads
   // distinctly from the scene contents.
-  object3d: "#f59e0b",
-  camera: "#2dd4bf",
+  object3d: { dark: "#f59e0b", light: "#b55800" },
+  camera: { dark: "#2dd4bf", light: "#008f7b" },
 };
 
+/** Fallback for an unknown socket type — the neutral slate. */
+export const SOCKET_FALLBACK: SocketColorPair = {
+  dark: "#9ca3af",
+  light: "#6b7280",
+};
+
+export const socketVar = (type: string): string => `--tb-s-${type}`;
+
+/**
+ * Socket colour for a DOM or SVG context — a `var(--tb-s-…)` reference, so it
+ * tracks the theme without the caller re-rendering.
+ *
+ * NOT usable in a canvas 2D context: `var()` is CSS, and the 2D context would
+ * silently paint black. Use {@link resolveSocketColor} there.
+ */
 export function colorForSocket(type: string): string {
-  return socketColor[type] ?? "#9ca3af";
+  return SOCKET_PALETTE[type] ? `var(${socketVar(type)})` : `var(--tb-s-fallback)`;
 }
+
+/**
+ * Socket colour as a concrete hex for the CURRENT theme — for canvas 2D
+ * (SocketPeekPopover's spline/points previews). Reads the resolved custom
+ * property so it can't drift from the DOM.
+ */
+export function resolveSocketColor(type: string): string {
+  const pair = SOCKET_PALETTE[type] ?? SOCKET_FALLBACK;
+  if (typeof document === "undefined") return pair.dark;
+  const v = getComputedStyle(document.documentElement)
+    .getPropertyValue(SOCKET_PALETTE[type] ? socketVar(type) : "--tb-s-fallback")
+    .trim();
+  return v || pair.dark;
+}
+
+/**
+ * Back-compat view: socket type → the DOM colour reference. Kept because
+ * callers indexed this map directly before the theme layer landed.
+ */
+export const socketColor: Record<string, string> = Object.fromEntries(
+  Object.keys(SOCKET_PALETTE).map((t) => [t, colorForSocket(t)])
+);

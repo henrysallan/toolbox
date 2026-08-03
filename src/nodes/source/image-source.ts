@@ -27,6 +27,8 @@ in vec2 v_uv;
 uniform sampler2D u_src;
 uniform vec2 u_invScale;
 uniform float u_letterbox;
+uniform vec2 u_offset; // placement pan, screen convention (Y down)
+uniform float u_zoom;  // placement zoom about the canvas center
 uniform int u_hasUvIn;
 uniform sampler2D u_uvIn;
 uniform vec2 u_uvConst;
@@ -37,6 +39,10 @@ void main() {
   else if (u_hasUvIn == 2) uv = u_uvConst;
   else uv = v_uv;
 
+  // Placement: pan/zoom in output space before the aspect fit, so cover's
+  // crop is a movable sampling window over the full-res source, not a
+  // bake. Screen → UV y-flip for the offset, same as transform.ts.
+  uv = 0.5 + (uv - vec2(u_offset.x, -u_offset.y) - 0.5) / u_zoom;
   vec2 s = 0.5 + (uv - 0.5) * u_invScale;
   if (u_letterbox > 0.5 && (s.x < 0.0 || s.x > 1.0 || s.y < 0.0 || s.y > 1.0)) {
     outColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -133,6 +139,39 @@ export const imageSourceNode: NodeDefinition = {
       type: "enum",
       options: ["cover", "contain", "stretch"],
       default: "cover",
+    },
+    // Placement within the canvas — sampling-time pan/zoom against the
+    // full-res source texture, so pixels cover crops away stay
+    // recoverable at full fidelity (no re-rasterize). Transform-node
+    // conventions: offsets in canvas fractions, +Y down. Primary output
+    // only; the element aux carries the untouched bitmap.
+    {
+      name: "offsetX",
+      label: "Offset X",
+      type: "scalar",
+      min: -1,
+      max: 1,
+      step: 0.001,
+      default: 0,
+    },
+    {
+      name: "offsetY",
+      label: "Offset Y",
+      type: "scalar",
+      min: -1,
+      max: 1,
+      step: 0.001,
+      default: 0,
+    },
+    {
+      name: "zoom",
+      label: "Zoom",
+      type: "scalar",
+      min: 0.01,
+      max: 10,
+      softMax: 4,
+      step: 0.01,
+      default: 1,
     },
   ],
   primaryOutput: "image",
@@ -278,7 +317,14 @@ export const imageSourceNode: NodeDefinition = {
     }
 
     if (!srcTex || !srcW || !srcH) {
-      ctx.clearTarget(output, [0, 0, 0, 1]);
+      // No file loaded — emit an EMPTY frame, not a black plate. Opaque
+      // black is real content: it mattes over whatever it composites onto
+      // and shows as a black canvas in the viewport (which is what a fresh
+      // starter graph — Image Source → Bloom → Layer → Output with no
+      // Active node — used to look like). Transparent reads correctly
+      // everywhere: checker in the viewport, nothing in a stack blend,
+      // real alpha in an export.
+      ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output, aux: { element: emptyElement() } };
     }
 
@@ -305,6 +351,9 @@ export const imageSourceNode: NodeDefinition = {
     const outAspect = output.width / output.height;
     const alpha = imgAspect / outAspect;
     const fit = (params.fit as string) ?? "cover";
+    const offsetX = (params.offsetX as number) ?? 0;
+    const offsetY = (params.offsetY as number) ?? 0;
+    const zoom = Math.max(0.0001, (params.zoom as number) ?? 1);
 
     let invScale: [number, number];
     let letterbox = 0;
@@ -330,6 +379,8 @@ export const imageSourceNode: NodeDefinition = {
         invScale[1]
       );
       gl2.uniform1f(gl2.getUniformLocation(prog, "u_letterbox"), letterbox);
+      gl2.uniform2f(gl2.getUniformLocation(prog, "u_offset"), offsetX, offsetY);
+      gl2.uniform1f(gl2.getUniformLocation(prog, "u_zoom"), zoom);
 
       gl2.activeTexture(gl2.TEXTURE1);
       gl2.bindTexture(gl2.TEXTURE_2D, boundUvTex);

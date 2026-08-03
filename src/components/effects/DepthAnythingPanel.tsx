@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useRef, useSyncExternalStore } from "react";
+import { useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Edge, Node } from "@xyflow/react";
+import { evalNumExpr } from "@/lib/num-expr";
 import type { NodeDataPayload } from "@/state/graph";
 import type {
   DepthDtype,
@@ -266,14 +267,14 @@ export default function DepthAnythingPanel({
           alignItems: "center",
           gap: 8,
           padding: "4px 8px",
-          background: "#111114",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-1)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 4,
         }}
       >
         <div
           style={{
-            color: "#fafafa",
+            color: "var(--tb-n-17)",
             fontSize: 11,
             fontWeight: 600,
             letterSpacing: 0.3,
@@ -281,7 +282,7 @@ export default function DepthAnythingPanel({
         >
           Depth Anything
         </div>
-        <div style={{ color: "#52525b", fontSize: 10 }}>
+        <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
           {MODEL_LABELS[model] ?? model}
         </div>
         <div style={{ flex: 1 }} />
@@ -289,12 +290,12 @@ export default function DepthAnythingPanel({
           style={{
             color:
               status.phase === "error"
-                ? "#f87171"
+                ? "var(--tb-a-red-400)"
                 : baked
-                ? "#4ade80"
+                ? "var(--tb-a-green-400)"
                 : busy
-                ? "#fbbf24"
-                : "#71717a",
+                ? "var(--tb-a-amber-400)"
+                : "var(--tb-n-11)",
             fontSize: 10,
             display: "flex",
             alignItems: "center",
@@ -310,8 +311,8 @@ export default function DepthAnythingPanel({
       {busy && barProgress != null && (
         <div
           style={{
-            background: "#0a0a0a",
-            border: "1px solid #27272a",
+            background: "var(--tb-n-0)",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 3,
             height: 6,
             overflow: "hidden",
@@ -319,7 +320,7 @@ export default function DepthAnythingPanel({
         >
           <div
             style={{
-              background: "#1e3a8a",
+              background: "var(--tb-a-blue-900)",
               height: "100%",
               width: `${barProgress * 100}%`,
               transition: "width 200ms linear",
@@ -332,9 +333,9 @@ export default function DepthAnythingPanel({
         <div
           style={{
             padding: "6px 10px",
-            background: "rgba(239, 68, 68, 0.1)",
-            border: "1px solid #b91c1c",
-            color: "#fecaca",
+            background: "color-mix(in srgb, var(--tb-a-red-500) 10%, transparent)",
+            border: "1px solid var(--tb-a-red-700)",
+            color: "var(--tb-a-red-200)",
             borderRadius: 4,
             fontSize: 11,
             lineHeight: 1.4,
@@ -348,9 +349,9 @@ export default function DepthAnythingPanel({
         <div
           style={{
             padding: "6px 10px",
-            background: "rgba(251, 191, 36, 0.08)",
-            border: "1px solid #92400e",
-            color: "#fde68a",
+            background: "color-mix(in srgb, var(--tb-a-amber-400) 8%, transparent)",
+            border: "1px solid var(--tb-a-amber-800)",
+            color: "var(--tb-a-amber-200)",
             borderRadius: 4,
             fontSize: 11,
             lineHeight: 1.4,
@@ -371,11 +372,11 @@ export default function DepthAnythingPanel({
               style={{
                 flex: 1,
                 padding: "4px 8px",
-                background: outputMode === m ? "#1e3a8a" : "transparent",
+                background: outputMode === m ? "var(--tb-a-blue-900)" : "transparent",
                 border: `1px solid ${
-                  outputMode === m ? "#1d4ed8" : "#3f3f46"
+                  outputMode === m ? "var(--tb-a-blue-700)" : "var(--tb-n-9)"
                 }`,
-                color: outputMode === m ? "#bfdbfe" : "#a1a1aa",
+                color: outputMode === m ? "var(--tb-a-blue-200)" : "var(--tb-n-13)",
                 fontFamily: "inherit",
                 fontSize: 11,
                 borderRadius: 3,
@@ -399,9 +400,9 @@ export default function DepthAnythingPanel({
             style={{
               flex: 1,
               padding: "3px 6px",
-              background: "#0f0f12",
-              border: "1px solid #27272a",
-              color: locked ? "#52525b" : "#e5e7eb",
+              background: "var(--tb-n-1)",
+              border: "1px solid var(--tb-n-7)",
+              color: locked ? "var(--tb-n-10)" : "var(--tb-n-16)",
               fontFamily: "inherit",
               fontSize: 11,
               borderRadius: 3,
@@ -430,9 +431,9 @@ export default function DepthAnythingPanel({
           style={{
             width: "100%",
             padding: "3px 6px",
-            background: "#0f0f12",
-            border: "1px solid #27272a",
-            color: locked ? "#52525b" : "#e5e7eb",
+            background: "var(--tb-n-1)",
+            border: "1px solid var(--tb-n-7)",
+            color: locked ? "var(--tb-n-10)" : "var(--tb-n-16)",
             fontFamily: "inherit",
             fontSize: 11,
             borderRadius: 3,
@@ -453,7 +454,7 @@ export default function DepthAnythingPanel({
             display: "flex",
             alignItems: "center",
             gap: 6,
-            color: "#a1a1aa",
+            color: "var(--tb-n-13)",
             fontSize: 11,
             cursor: "pointer",
           }}
@@ -555,7 +556,7 @@ export default function DepthAnythingPanel({
         )}
       </div>
 
-      <div style={{ color: "#52525b", fontSize: 10, lineHeight: 1.5 }}>
+      <div style={{ color: "var(--tb-n-10)", fontSize: 10, lineHeight: 1.5 }}>
         <i>Preview</i> estimates depth on the current frame (first run downloads
         the model, cached afterwards). For moving footage, <i>Bake</i> plays
         through the in/out range and caches a depth map per frame, normalized to
@@ -583,7 +584,7 @@ function InlineSpinner() {
         cy="12"
         r="9"
         fill="none"
-        stroke="#fbbf24"
+        stroke="var(--tb-a-amber-400)"
         strokeWidth="3"
         strokeLinecap="round"
         strokeDasharray="40"
@@ -605,7 +606,7 @@ function Field({
       <div
         style={{
           width: 90,
-          color: "#a1a1aa",
+          color: "var(--tb-n-13)",
           fontSize: 10,
           textTransform: "uppercase",
           letterSpacing: 0.5,
@@ -646,7 +647,7 @@ function Slider({
       />
       <span
         style={{
-          color: "#a1a1aa",
+          color: "var(--tb-n-13)",
           fontSize: 10,
           fontVariantNumeric: "tabular-nums",
           width: 40,
@@ -668,23 +669,41 @@ function FrameInput({
   disabled: boolean;
   onChange: (v: number) => void;
 }) {
+  // Draft only exists while focused — idle, the live value shows through,
+  // so no draft-sync effect is needed when the value changes externally.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const commit = () => {
+    setEditing(false);
+    const p = evalNumExpr(draft); // plain numbers or math: "24*8", "300/2"
+    const n = p === null ? NaN : Math.max(0, Math.round(p));
+    if (Number.isFinite(n) && n !== value) onChange(n);
+  };
   return (
     <input
-      type="number"
-      min={0}
-      step={1}
-      value={value}
+      type="text"
+      inputMode="decimal"
+      value={editing ? draft : String(value)}
       disabled={disabled}
-      onChange={(e) => {
-        const v = Math.max(0, Math.round(parseFloat(e.target.value)));
-        if (Number.isFinite(v)) onChange(v);
+      onFocus={() => {
+        setDraft(String(value));
+        setEditing(true);
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        else if (e.key === "Escape") {
+          setEditing(false);
+          (e.target as HTMLInputElement).blur();
+        }
       }}
       style={{
         width: 72,
         padding: "3px 6px",
-        background: "#0f0f12",
-        border: "1px solid #27272a",
-        color: disabled ? "#52525b" : "#e5e7eb",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-n-7)",
+        color: disabled ? "var(--tb-n-10)" : "var(--tb-n-16)",
         fontFamily: "inherit",
         fontSize: 11,
         borderRadius: 3,
@@ -710,8 +729,8 @@ function SmallButton({
       style={{
         padding: "3px 8px",
         background: "transparent",
-        border: "1px solid #3f3f46",
-        color: disabled ? "#52525b" : "#a1a1aa",
+        border: "1px solid var(--tb-n-9)",
+        color: disabled ? "var(--tb-n-10)" : "var(--tb-n-13)",
         fontFamily: "inherit",
         fontSize: 10,
         borderRadius: 3,
@@ -741,9 +760,9 @@ function ActionButton({
       style={{
         flex: 1,
         padding: "6px 10px",
-        background: enabled ? "#1e3a8a" : "transparent",
-        border: `1px solid ${enabled ? "#1d4ed8" : "#3f3f46"}`,
-        color: enabled ? "#bfdbfe" : "#52525b",
+        background: enabled ? "var(--tb-a-blue-900)" : "transparent",
+        border: `1px solid ${enabled ? "var(--tb-a-blue-700)" : "var(--tb-n-9)"}`,
+        color: enabled ? "var(--tb-a-blue-200)" : "var(--tb-n-10)",
         fontFamily: "inherit",
         fontSize: 11,
         borderRadius: 3,

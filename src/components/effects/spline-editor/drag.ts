@@ -10,12 +10,18 @@ import { DRAG_THRESHOLD, PENCIL_MIN_SAMPLE } from "./constants";
 import { bezierAt } from "./geometry";
 import type { DragState, SplineEditorEnv } from "./types";
 import type { SplineOps } from "./ops";
-import { angleLockPx, snapPoint } from "./snapping";
+import { angleLockPx, guideSnapLines, snapPoint } from "./snapping";
 import { cornerRadiusDragMove } from "./tools/corner";
 import { penAnchorClick } from "./tools/pen";
 import { commitPencilStroke } from "./tools/pencil";
+import { commitPrimitive, primitiveBoxAt } from "./tools/primitive";
 import { shapeDragMove, shapeDragUp } from "./tools/shape";
 import { resolveMarquee } from "./tools/subpath";
+import { tunniDragMove } from "./tools/tunni";
+import { widthDragMove } from "./tools/width";
+
+// HUD number formatting: normalized values at 3 decimals, angles at 1.
+const f3 = (v: number) => v.toFixed(3);
 
 export function dragMove(
   ops: SplineOps,
@@ -54,6 +60,13 @@ export function dragMove(
         inHandle: [-hx, -hy],
         outHandle: [hx, hy],
       });
+      const o = env.normToPx(a.pos);
+      const ang = (Math.atan2(py - o.y, px - o.x) * 180) / Math.PI;
+      env.setHud({
+        x: e.clientX,
+        y: e.clientY,
+        text: `∠ ${ang.toFixed(1)}°  L ${f3(Math.hypot(hx, hy))}`,
+      });
       break;
     }
     case "anchor": {
@@ -79,7 +92,8 @@ export function dragMove(
             env.rect,
             ops.anchorSnapTargets(exclude),
             p.x,
-            p.y
+            p.y,
+            guideSnapLines(env.guides, env.normToPx)
           );
           env.setSnapGuides(res.guides);
           if (res.guides.length > 0) {
@@ -101,6 +115,15 @@ export function dragMove(
             pos: [tx, ty],
           });
         }
+        const start = drag.groupStarts?.get(drag.index);
+        const delta = start
+          ? `  Δ ${f3(tx - start[0])}, ${f3(ty - start[1])}`
+          : "";
+        env.setHud({
+          x: e.clientX,
+          y: e.clientY,
+          text: `x ${f3(tx)}  y ${f3(ty)}${delta}`,
+        });
       }
       break;
     }
@@ -121,14 +144,35 @@ export function dragMove(
       const hx = hnx - a.pos[0];
       const hy = hny - a.pos[1];
       const patch: Partial<SplineAnchor> = {};
+      // Linked (smooth) drags keep the partner COLLINEAR but preserve its
+      // own length — a full mirror here would silently even out uneven
+      // handles (the explicit "Even handles" context-menu op is the only
+      // thing that copies lengths; alignHandles is the same convention).
+      // A missing partner stays missing — a plain drag never mints the
+      // opposite handle — and a zero-length drag has no direction, so the
+      // partner holds still instead of collapsing.
+      const partner = drag.side === "out" ? a.inHandle : a.outHandle;
+      const len = Math.hypot(hx, hy);
+      let opposed: [number, number] | undefined;
+      if (drag.linked && partner && len > 1e-9) {
+        const pl = Math.hypot(partner[0], partner[1]);
+        opposed = [(-hx / len) * pl, (-hy / len) * pl];
+      }
       if (drag.side === "out") {
         patch.outHandle = [hx, hy];
-        if (drag.symmetric) patch.inHandle = [-hx, -hy];
+        if (opposed) patch.inHandle = opposed;
       } else {
         patch.inHandle = [hx, hy];
-        if (drag.symmetric) patch.outHandle = [-hx, -hy];
+        if (opposed) patch.outHandle = opposed;
       }
       ops.updateAnchor(drag.index, patch);
+      const o = env.normToPx(a.pos);
+      const ang = (Math.atan2(py - o.y, px - o.x) * 180) / Math.PI;
+      env.setHud({
+        x: e.clientX,
+        y: e.clientY,
+        text: `∠ ${ang.toFixed(1)}°  L ${f3(Math.hypot(hx, hy))}`,
+      });
       break;
     }
     case "segment": {
@@ -185,25 +229,98 @@ export function dragMove(
     case "path-move": {
       // Translate the whole path from the start snapshot by the
       // normalized pointer delta.
-      ops.translateWholePath(
-        drag.startValue,
-        nx - drag.startNorm[0],
-        ny - drag.startNorm[1]
-      );
+      const dxn = nx - drag.startNorm[0];
+      const dyn = ny - drag.startNorm[1];
+      ops.translateWholePath(drag.startValue, dxn, dyn);
+      env.setHud({
+        x: e.clientX,
+        y: e.clientY,
+        text: `Δ ${f3(dxn)}, ${f3(dyn)}`,
+      });
       break;
     }
     case "bbox": {
       // Scale the whole path about the anchored edge/corner. Computed
       // from the start box + snapshot so the drag doesn't compound.
-      ops.applyBBoxDrag(drag, nx, ny, e.shiftKey);
+      const s = ops.applyBBoxDrag(drag, nx, ny, e.shiftKey);
+      env.setHud({
+        x: e.clientX,
+        y: e.clientY,
+        text: `${Math.round(s.sx * 100)}% × ${Math.round(s.sy * 100)}%`,
+      });
       break;
     }
     case "corner-radius": {
-      cornerRadiusDragMove(ops, env, drag, e);
+      const r = cornerRadiusDragMove(ops, env, drag, e);
+      if (r !== null) {
+        env.setHud({ x: e.clientX, y: e.clientY, text: `r ${f3(r)}` });
+      }
       break;
     }
     case "shape": {
       shapeDragMove(env, drag, e);
+      break;
+    }
+    case "width": {
+      const w = widthDragMove(ops, env, drag, e);
+      if (w !== null) {
+        env.setHud({ x: e.clientX, y: e.clientY, text: `× ${w.toFixed(2)}` });
+      }
+      break;
+    }
+    case "guide": {
+      // Reposition a guideline (spec 080226 M5). env.guides is the
+      // drag-start snapshot — only this guide's pos changes per move, so
+      // rebuilding from it is exact.
+      const g = env.guides[drag.index];
+      if (!g) break;
+      const [gnx, gny] = env.clientToNorm(e.clientX, e.clientY);
+      const pos = g.axis === "x" ? gnx : gny;
+      const next = env.guides.slice();
+      next[drag.index] = { ...g, pos };
+      env.onGuidesChange(next);
+      env.setHud({
+        x: e.clientX,
+        y: e.clientY,
+        text: `${g.axis} ${f3(pos)}`,
+      });
+      break;
+    }
+    case "measure": {
+      // The live ruler line — persists past pointerup (dragUp doesn't
+      // clear it; Escape / a new drag does).
+      env.setMeasure({
+        x1: drag.startClient.x,
+        y1: drag.startClient.y,
+        x2: e.clientX,
+        y2: e.clientY,
+      });
+      break;
+    }
+    case "tunni": {
+      const f = tunniDragMove(ops, env, drag, e);
+      if (f) {
+        env.setHud({
+          x: e.clientX,
+          y: e.clientY,
+          text: `T ${Math.round(f.f1 * 100)}% · ${Math.round(f.f2 * 100)}%`,
+        });
+      }
+      break;
+    }
+    case "primitive": {
+      // The resolved box lives in the drag state so the preview and the
+      // commit share one source of truth (see types.ts). Re-resolved every
+      // move, so Shift / Alt can be pressed or released mid-gesture.
+      const box = primitiveBoxAt(ops, env, drag, e);
+      env.setDrag({ ...drag, box });
+      const [x0, y0] = env.clientToNorm(box.x, box.y);
+      const [x1, y1] = env.clientToNorm(box.x + box.w, box.y + box.h);
+      env.setHud({
+        x: e.clientX,
+        y: e.clientY,
+        text: `w ${f3(Math.abs(x1 - x0))}  h ${f3(Math.abs(y1 - y0))}`,
+      });
       break;
     }
     case "pencil": {
@@ -251,6 +368,11 @@ export function dragUp(
   if (drag.kind === "shape") {
     shapeDragUp(ops, env, drag);
   }
+  if (drag.kind === "primitive") {
+    // Commit the box the preview last showed — a click with no drag resolves
+    // to nothing (tools/primitive.ts).
+    commitPrimitive(ops, env, drag);
+  }
   if (drag.kind === "pencil") {
     // Pin the exact release point (it may not have cleared the sample
     // gate), then fit + commit the stroke and reset the buffer.
@@ -259,10 +381,23 @@ export function dragUp(
     if (!last || last[0] !== e.clientX || last[1] !== e.clientY) {
       pts.push([e.clientX, e.clientY]);
     }
-    commitPencilStroke(env);
+    commitPencilStroke(ops, env);
     env.pencilPtsRef.current = [];
     env.setPencilVersion((v) => v + 1);
   }
+  // Dropping a guide outside the canvas deletes it (spec 080226 M5).
+  if (drag.kind === "guide" && env.rect) {
+    const r = env.rect;
+    const out =
+      e.clientX < r.left - 24 ||
+      e.clientX > r.right + 24 ||
+      e.clientY < r.top - 24 ||
+      e.clientY > r.bottom + 24;
+    if (out) {
+      env.onGuidesChange(env.guides.filter((_, k) => k !== drag.index));
+    }
+  }
   env.setSnapGuides([]);
+  env.setHud(null);
   env.setDrag(null);
 }

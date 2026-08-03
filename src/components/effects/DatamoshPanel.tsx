@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Edge, Node } from "@xyflow/react";
+import { evalNumExpr } from "@/lib/num-expr";
 import type { NodeDataPayload } from "@/state/graph";
 import {
   addStripFrame,
@@ -283,12 +284,12 @@ export default function DatamoshPanel({
           alignItems: "center",
           gap: 8,
           padding: "4px 8px",
-          background: "#111114",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-1)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 4,
         }}
       >
-        <div style={{ color: "#fafafa", fontSize: 11, fontWeight: 600 }}>
+        <div style={{ color: "var(--tb-n-17)", fontSize: 11, fontWeight: 600 }}>
           Datamosh
         </div>
         <div style={{ flex: 1 }} />
@@ -296,12 +297,12 @@ export default function DatamoshPanel({
           style={{
             color:
               status.phase === "error"
-                ? "#f87171"
+                ? "var(--tb-a-red-400)"
                 : moshed
-                ? "#4ade80"
+                ? "var(--tb-a-green-400)"
                 : busy
-                ? "#fbbf24"
-                : "#71717a",
+                ? "var(--tb-a-amber-400)"
+                : "var(--tb-n-11)",
             fontSize: 10,
             display: "flex",
             alignItems: "center",
@@ -353,7 +354,7 @@ export default function DatamoshPanel({
         onBake={() => void bakeClip("B")}
       />
       {(!upstream.a || !upstream.b) && (
-        <div style={{ color: "#71717a", fontSize: 10 }}>
+        <div style={{ color: "var(--tb-n-11)", fontSize: 10 }}>
           Wire an image into <b>clip A</b> and <b>clip B</b>, set each
           clip&apos;s frame range, then bake.
         </div>
@@ -397,9 +398,9 @@ export default function DatamoshPanel({
                 style={{
                   flex: 1,
                   padding: "4px 8px",
-                  background: on ? "#1e3a8a" : "transparent",
-                  border: `1px solid ${on ? "#1d4ed8" : "#3f3f46"}`,
-                  color: disabled ? "#52525b" : on ? "#bfdbfe" : "#a1a1aa",
+                  background: on ? "var(--tb-a-blue-900)" : "transparent",
+                  border: `1px solid ${on ? "var(--tb-a-blue-700)" : "var(--tb-n-9)"}`,
+                  color: disabled ? "var(--tb-n-10)" : on ? "var(--tb-a-blue-200)" : "var(--tb-n-13)",
                   fontFamily: "inherit",
                   fontSize: 11,
                   borderRadius: 3,
@@ -458,7 +459,7 @@ export default function DatamoshPanel({
       {engine === "codec" && (
         <>
           <Field label="Remove I-frames">
-            <label style={{ display: "flex", alignItems: "center", gap: 6, color: "#a1a1aa", fontSize: 11, cursor: "pointer" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--tb-n-13)", fontSize: 11, cursor: "pointer" }}>
               <input
                 type="checkbox"
                 checked={iframeRemoval}
@@ -471,7 +472,7 @@ export default function DatamoshPanel({
             <Slider value={pframeDup} min={0} max={8} step={1} decimals={0}
               onChange={(v) => onParamChange(node.id, "pframeDup", v)} />
           </Field>
-          <div style={{ color: "#52525b", fontSize: 10, lineHeight: 1.5 }}>
+          <div style={{ color: "var(--tb-n-10)", fontSize: 10, lineHeight: 1.5 }}>
             Authentic bitstream datamosh via ffmpeg (MPEG-4/AVI). Slower and
             coarser than Flow, but the &ldquo;real&rdquo; glitch. Always bakes.
           </div>
@@ -493,7 +494,7 @@ export default function DatamoshPanel({
         )}
       </div>
 
-      <div style={{ color: "#52525b", fontSize: 10, lineHeight: 1.5 }}>
+      <div style={{ color: "var(--tb-n-10)", fontSize: 10, lineHeight: 1.5 }}>
         <i>Bake</i> each clip into the node (frame-stepped — the clip&apos;s
         chain must be renderable). Drag the bars so they overlap; the overlap is
         moshed — clip B&apos;s motion smears a frozen frame of clip A.{" "}
@@ -625,7 +626,7 @@ function ClipTimeline({
           width: pct(Math.max(1, len)),
           height: 22,
           background: color,
-          border: "1px solid rgba(255,255,255,0.25)",
+          border: "1px solid color-mix(in srgb, var(--tb-lift) 25%, transparent)",
           borderRadius: 3,
           cursor: disabled ? "default" : "grab",
           display: "flex",
@@ -646,7 +647,7 @@ function ClipTimeline({
           style={{
             position: "absolute", left: 0, top: 0, width: 7, height: "100%",
             cursor: disabled ? "default" : "ew-resize",
-            background: "rgba(255,255,255,0.25)",
+            background: "color-mix(in srgb, var(--tb-lift) 25%, transparent)",
           }}
         />
         {/* right-edge length grip */}
@@ -655,7 +656,7 @@ function ClipTimeline({
           style={{
             position: "absolute", right: 0, top: 0, width: 7, height: "100%",
             cursor: disabled ? "default" : "ew-resize",
-            background: "rgba(255,255,255,0.25)",
+            background: "color-mix(in srgb, var(--tb-lift) 25%, transparent)",
           }}
         />
       </div>
@@ -664,7 +665,7 @@ function ClipTimeline({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <div style={{ color: "#a1a1aa", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>
+      <div style={{ color: "var(--tb-n-13)", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>
         Overlap timeline
       </div>
       <div
@@ -674,8 +675,8 @@ function ClipTimeline({
         style={{
           position: "relative",
           height: 56,
-          background: "#0a0a0a",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-0)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 4,
           touchAction: "none",
         }}
@@ -697,7 +698,7 @@ function ClipTimeline({
         <Bar row={0} start={aStart} len={aLen} sourceIn={sourceInA} color="#1e3a8acc" which="A" label="A" />
         <Bar row={1} start={bStart} len={bLen} sourceIn={sourceInB} color="#166534cc" which="B" label="B" />
       </div>
-      <div style={{ color: "#52525b", fontSize: 10 }}>
+      <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
         {hasOverlap
           ? `Overlap ${overlapStart}–${overlapEnd} (${overlapEnd - overlapStart}f moshed)`
           : "No overlap — drag the bars together"}
@@ -711,9 +712,9 @@ function ClipTimeline({
 const selectStyle: React.CSSProperties = {
   width: "100%",
   padding: "3px 6px",
-  background: "#0f0f12",
-  border: "1px solid #27272a",
-  color: "#e5e7eb",
+  background: "var(--tb-n-1)",
+  border: "1px solid var(--tb-n-7)",
+  color: "var(--tb-n-16)",
   fontFamily: "inherit",
   fontSize: 11,
   borderRadius: 3,
@@ -750,10 +751,10 @@ function ClipRow({
   const span = outFrame - inFrame + 1;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-      <div style={{ width: 38, color: "#a1a1aa", fontSize: 10, fontWeight: 600 }}>
+      <div style={{ width: 38, color: "var(--tb-n-13)", fontSize: 10, fontWeight: 600 }}>
         {name}
         {baked ? (
-          <span style={{ color: "#52525b", fontWeight: 400 }}> {count}f</span>
+          <span style={{ color: "var(--tb-n-10)", fontWeight: 400 }}> {count}f</span>
         ) : null}
       </div>
       <FrameInput
@@ -761,7 +762,7 @@ function ClipRow({
         disabled={disabled}
         onChange={(v) => onRange(inKey, Math.min(v, outFrame))}
       />
-      <span style={{ color: "#52525b", fontSize: 10 }}>–</span>
+      <span style={{ color: "var(--tb-n-10)", fontSize: 10 }}>–</span>
       <FrameInput
         value={outFrame}
         disabled={disabled}
@@ -784,9 +785,9 @@ function ClipRow({
         style={{
           flex: 1,
           padding: "5px 8px",
-          background: baked ? "transparent" : enabled ? "#1e3a8a" : "transparent",
-          border: `1px solid ${baked ? "#3f3f46" : enabled ? "#1d4ed8" : "#3f3f46"}`,
-          color: baked ? "#a1a1aa" : enabled ? "#bfdbfe" : "#52525b",
+          background: baked ? "transparent" : enabled ? "var(--tb-a-blue-900)" : "transparent",
+          border: `1px solid ${baked ? "var(--tb-n-9)" : enabled ? "var(--tb-a-blue-700)" : "var(--tb-n-9)"}`,
+          color: baked ? "var(--tb-n-13)" : enabled ? "var(--tb-a-blue-200)" : "var(--tb-n-10)",
           fontFamily: "inherit",
           fontSize: 11,
           borderRadius: 3,
@@ -804,8 +805,8 @@ function miniBtnStyle(enabled: boolean): React.CSSProperties {
   return {
     padding: "4px 6px",
     background: "transparent",
-    border: "1px solid #3f3f46",
-    color: enabled ? "#a1a1aa" : "#52525b",
+    border: "1px solid var(--tb-n-9)",
+    color: enabled ? "var(--tb-n-13)" : "var(--tb-n-10)",
     fontFamily: "inherit",
     fontSize: 10,
     borderRadius: 3,
@@ -822,23 +823,41 @@ function FrameInput({
   disabled: boolean;
   onChange: (v: number) => void;
 }) {
+  // Draft only exists while focused — idle, the live value shows through,
+  // so no draft-sync effect is needed when the value changes externally.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const commit = () => {
+    setEditing(false);
+    const p = evalNumExpr(draft); // plain numbers or math: "24*8", "300/2"
+    const n = p === null ? NaN : Math.max(0, Math.round(p));
+    if (Number.isFinite(n) && n !== value) onChange(n);
+  };
   return (
     <input
-      type="number"
-      min={0}
-      step={1}
-      value={value}
+      type="text"
+      inputMode="decimal"
+      value={editing ? draft : String(value)}
       disabled={disabled}
-      onChange={(e) => {
-        const v = Math.max(0, Math.round(parseFloat(e.target.value)));
-        if (Number.isFinite(v)) onChange(v);
+      onFocus={() => {
+        setDraft(String(value));
+        setEditing(true);
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        else if (e.key === "Escape") {
+          setEditing(false);
+          (e.target as HTMLInputElement).blur();
+        }
       }}
       style={{
         width: 42,
         padding: "3px 4px",
-        background: "#0f0f12",
-        border: "1px solid #27272a",
-        color: disabled ? "#52525b" : "#e5e7eb",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-n-7)",
+        color: disabled ? "var(--tb-n-10)" : "var(--tb-n-16)",
         fontFamily: "inherit",
         fontSize: 11,
         borderRadius: 3,
@@ -849,8 +868,8 @@ function FrameInput({
 
 function Progress({ value }: { value: number }) {
   return (
-    <div style={{ background: "#0a0a0a", border: "1px solid #27272a", borderRadius: 3, height: 6, overflow: "hidden" }}>
-      <div style={{ background: "#1e3a8a", height: "100%", width: `${value * 100}%`, transition: "width 150ms linear" }} />
+    <div style={{ background: "var(--tb-n-0)", border: "1px solid var(--tb-n-7)", borderRadius: 3, height: 6, overflow: "hidden" }}>
+      <div style={{ background: "var(--tb-a-blue-900)", height: "100%", width: `${value * 100}%`, transition: "width 150ms linear" }} />
     </div>
   );
 }
@@ -858,8 +877,8 @@ function Progress({ value }: { value: number }) {
 function Notice({ tone, children }: { tone: "error" | "warn"; children: React.ReactNode }) {
   const c =
     tone === "error"
-      ? { bg: "rgba(239,68,68,0.1)", bd: "#b91c1c", fg: "#fecaca" }
-      : { bg: "rgba(251,191,36,0.08)", bd: "#92400e", fg: "#fde68a" };
+      ? { bg: "color-mix(in srgb, var(--tb-a-red-500) 10%, transparent)", bd: "var(--tb-a-red-700)", fg: "var(--tb-a-red-200)" }
+      : { bg: "color-mix(in srgb, var(--tb-a-amber-400) 8%, transparent)", bd: "var(--tb-a-amber-800)", fg: "var(--tb-a-amber-200)" };
   return (
     <div style={{ padding: "6px 10px", background: c.bg, border: `1px solid ${c.bd}`, color: c.fg, borderRadius: 4, fontSize: 11, lineHeight: 1.4 }}>
       {children}
@@ -870,7 +889,7 @@ function Notice({ tone, children }: { tone: "error" | "warn"; children: React.Re
 function InlineSpinner() {
   return (
     <svg className="toolbox-spinner" width="9" height="9" viewBox="0 0 24 24" aria-hidden>
-      <circle cx="12" cy="12" r="9" fill="none" stroke="#fbbf24" strokeWidth="3" strokeLinecap="round" strokeDasharray="40" strokeDashoffset="20" />
+      <circle cx="12" cy="12" r="9" fill="none" stroke="var(--tb-a-amber-400)" strokeWidth="3" strokeLinecap="round" strokeDasharray="40" strokeDashoffset="20" />
     </svg>
   );
 }
@@ -878,7 +897,7 @@ function InlineSpinner() {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <div style={{ width: 90, color: "#a1a1aa", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>
+      <div style={{ width: 90, color: "var(--tb-n-13)", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>
         {label}
       </div>
       <div style={{ flex: 1 }}>{children}</div>
@@ -895,7 +914,7 @@ function Slider({
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <input type="range" min={min} max={max} step={step} value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))} style={{ flex: 1 }} />
-      <span style={{ color: "#a1a1aa", fontSize: 10, fontVariantNumeric: "tabular-nums", width: 40, textAlign: "right" }}>
+      <span style={{ color: "var(--tb-n-13)", fontSize: 10, fontVariantNumeric: "tabular-nums", width: 40, textAlign: "right" }}>
         {value.toFixed(decimals)}
       </span>
     </div>
@@ -907,9 +926,9 @@ function ActionButton({ label, enabled, onClick }: { label: string; enabled: boo
     <button type="button" onClick={onClick} disabled={!enabled}
       style={{
         flex: 1, padding: "6px 10px",
-        background: enabled ? "#1e3a8a" : "transparent",
-        border: `1px solid ${enabled ? "#1d4ed8" : "#3f3f46"}`,
-        color: enabled ? "#bfdbfe" : "#52525b",
+        background: enabled ? "var(--tb-a-blue-900)" : "transparent",
+        border: `1px solid ${enabled ? "var(--tb-a-blue-700)" : "var(--tb-n-9)"}`,
+        color: enabled ? "var(--tb-a-blue-200)" : "var(--tb-n-10)",
         fontFamily: "inherit", fontSize: 11, borderRadius: 3,
         cursor: enabled ? "pointer" : "not-allowed", opacity: enabled ? 1 : 0.6,
       }}>

@@ -81,20 +81,20 @@ export default function SaveModal({
         onClick={(e) => e.stopPropagation()}
         style={{
           minWidth: 360,
-          background: "#18181b",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-3)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 6,
           padding: 16,
-          fontFamily: "ui-monospace, monospace",
+          fontFamily: "var(--ui-font)",
           fontSize: 12,
-          color: "#e5e7eb",
+          color: "var(--tb-n-16)",
           boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
         }}
       >
         <div
           style={{
             marginBottom: 10,
-            color: "#a1a1aa",
+            color: "var(--tb-n-13)",
             fontSize: 10,
             textTransform: "uppercase",
             letterSpacing: 1,
@@ -116,9 +116,9 @@ export default function SaveModal({
             width: "100%",
             boxSizing: "border-box",
             padding: "6px 8px",
-            background: "#0a0a0a",
-            border: "1px solid #27272a",
-            color: "#e5e7eb",
+            background: "var(--tb-n-0)",
+            border: "1px solid var(--tb-n-7)",
+            color: "var(--tb-n-16)",
             fontFamily: "inherit",
             fontSize: 12,
             borderRadius: 3,
@@ -132,7 +132,7 @@ export default function SaveModal({
               {conflict && (
                 <div
                   style={{
-                    color: "#facc15",
+                    color: "var(--tb-a-yellow-400)",
                     fontSize: 10,
                     marginBottom: 8,
                     lineHeight: 1.4,
@@ -144,7 +144,7 @@ export default function SaveModal({
               )}
               {error && (
                 <div
-                  style={{ color: "#ef4444", fontSize: 10, marginBottom: 8 }}
+                  style={{ color: "var(--tb-a-red-500)", fontSize: 10, marginBottom: 8 }}
                 >
                   {error}
                 </div>
@@ -160,9 +160,9 @@ export default function SaveModal({
                   disabled={saving || !name.trim()}
                   style={{
                     ...btnStyle(),
-                    background: conflict ? "#b45309" : "#16a34a",
-                    border: `1px solid ${conflict ? "#b45309" : "#16a34a"}`,
-                    color: conflict ? "#fef3c7" : "#dcfce7",
+                    background: conflict ? "var(--tb-a-amber-700)" : "var(--tb-a-green-600)",
+                    border: `1px solid ${conflict ? "var(--tb-a-amber-700)" : "var(--tb-a-green-600)"}`,
+                    color: conflict ? "var(--tb-a-amber-100)" : "var(--tb-a-green-100)",
                     opacity: saving || !name.trim() ? 0.5 : 1,
                   }}
                 >
@@ -187,8 +187,8 @@ function btnStyle(): React.CSSProperties {
   return {
     padding: "4px 10px",
     background: "transparent",
-    border: "1px solid #3f3f46",
-    color: "#e5e7eb",
+    border: "1px solid var(--tb-n-9)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 11,
     borderRadius: 3,

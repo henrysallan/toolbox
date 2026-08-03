@@ -3,10 +3,35 @@
    and exported-app bundles. Keeping a single source of truth here means
    tweaking the slider thumb in one file updates all three surfaces. */
 @import "../lib/live-viewer/form-controls.css";
+/* Editor colour tokens (--tb-n-* ramp + --tb-a-* accents), both modes.
+   GENERATED from theme/tokens.ts — see 080226_theme-modes.md. */
+@import "./theme-tokens.css";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Page backdrop. Tied to the theme ramp rather than the OS colour scheme:
+     the editor decides its own mode now (User Preferences → Appearance), and
+     a body that disagreed with the chrome showed through at the panel gaps. */
+  --background: var(--tb-n-0);
+  --foreground: var(--tb-n-16);
+  /* Editor UI font, toggled from User Preferences (see
+     components/effects/ui-font.ts, which overrides this on
+     document.documentElement). Component inline styles reference
+     var(--ui-font) instead of hard-coding ui-monospace.
+     --code-font is for surfaces that are semantically code/aligned
+     (expression editors, log console, char inspectors) and stays
+     monospace regardless of the UI-font choice. */
+  --ui-font: ui-monospace, monospace;
+  --code-font: ui-monospace, monospace;
+
+  /* Native scrollbars. `scrollbar-color` INHERITS, so declaring it once here
+     themes every scroll container in the app — and because it points at the
+     ramp it picks up the brightness trim and the tint as well, which
+     `color-scheme` alone (set per mode in theme-tokens.css) cannot do.
+     Deliberately no ::-webkit-scrollbar rules: defining those switches
+     Chromium into custom-scrollbar mode and we would have to re-specify the
+     sizing. Panels that want a different treatment opt in via .thin-scrollbar
+     or .no-scrollbar below, which still win on specificity. */
+  scrollbar-color: var(--tb-n-9) transparent;
 }
 
 @theme inline {
@@ -16,12 +41,8 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+/* (The old prefers-color-scheme override is gone — theme-tokens.css owns
+   both ramps, and app/layout.tsx picks the mode before first paint.) */
 
 /* Inter (variable) — used by the landing modal's pills. Single weight axis
    spanning the file's full range so `font-weight: 680` resolves. */
@@ -31,6 +52,14 @@
   font-weight: 100 900;
   font-display: swap;
   src: url("/fonts/Inter-VariableFont_opsz,wght.ttf") format("truetype");
+}
+
+/* The shared number-input spinner glyph (form-controls.css) is a data URI
+   with a hard-coded white stroke — invisible on a light field, and a data URI
+   can't take a var(). Inverting it under the light theme is the one move that
+   doesn't require forking the shared stylesheet the export bundles also use. */
+:root[data-theme="light"] input[type="number"]::-webkit-inner-spin-button {
+  filter: invert(1);
 }
 
 /* Far-right menu-bar items (Sign in / account / version / docs) share the
@@ -44,10 +73,10 @@
   transition: background 90ms;
 }
 .menubar-pill:hover {
-  background: #2a2a2e;
+  background: var(--tb-n-8);
 }
 .menubar-pill.is-open {
-  background: #27272a;
+  background: var(--tb-n-7);
 }
 
 html,
@@ -91,6 +120,24 @@ body {
   height: 0;
 }
 
+/* Same, applied to a whole SUBTREE: the timeline dock (the floating
+   modal and any `timeline` panel — 080226_timeline-modal-panel.md).
+   Its inner lists still scroll by wheel/trackpad, but a scrollbar
+   gutter inside a window that already has its own frame reads as
+   chrome-inside-chrome, and it eats into the lane geometry the ruler
+   is measured against. Descendants are covered because which element
+   scrolls depends on the tab (today only LayersEditor's lane list). */
+.timeline-dock,
+.timeline-dock * {
+  scrollbar-width: none;
+}
+.timeline-dock::-webkit-scrollbar,
+.timeline-dock *::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 /* Interaction-only range input for the bar-style param slider. Fully
    transparent — the visible track / fill / leading-edge line are real DOM
    rendered behind it in ScalarSliderRow (DOM gives a rounded fill cap a
@@ -104,6 +151,12 @@ input.param-slider-bare[type="range"] {
 input.param-slider-bare[type="range"]::-webkit-slider-runnable-track {
   height: 20px;
   background: transparent;
+  /* Drop the shared chrome's 1px #27272a / 2px-radius track border. It paints
+     ON TOP of the DOM bar, so it drew a hard square ring that ignored the
+     track's own radius — invisible in dark mode (it happens to match
+     --tb-n-6), near-black in light mode. The visible outline is the track
+     div's ring. */
+  border: none;
 }
 input.param-slider-bare[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -118,6 +171,7 @@ input.param-slider-bare[type="range"]::-webkit-slider-thumb {
 input.param-slider-bare[type="range"]::-moz-range-track {
   height: 20px;
   background: transparent;
+  border: none;
 }
 input.param-slider-bare[type="range"]::-moz-range-thumb {
   width: 14px;
@@ -137,7 +191,7 @@ input.ccbar-slider[type="range"] {
 input.ccbar-slider[type="range"]::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 2px;
-  background: var(--track, #3f3f46);
+  background: var(--track, var(--tb-n-9));
 }
 input.ccbar-slider[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -146,21 +200,21 @@ input.ccbar-slider[type="range"]::-webkit-slider-thumb {
   height: 11px;
   margin-top: -3.5px;
   border-radius: 50%;
-  background: #e5e7eb;
-  border: 1px solid #0a0a0a;
+  background: var(--tb-n-16);
+  border: 1px solid var(--tb-n-0);
   cursor: pointer;
 }
 input.ccbar-slider[type="range"]::-moz-range-track {
   height: 4px;
   border-radius: 2px;
-  background: var(--track, #3f3f46);
+  background: var(--track, var(--tb-n-9));
 }
 input.ccbar-slider[type="range"]::-moz-range-thumb {
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  background: #e5e7eb;
-  border: 1px solid #0a0a0a;
+  background: var(--tb-n-16);
+  border: 1px solid var(--tb-n-0);
   cursor: pointer;
 }
 
@@ -168,7 +222,7 @@ input.ccbar-slider[type="range"]::-moz-range-thumb {
    Just a hairline track outline with a muted thumb — no heavy chrome. */
 .thin-scrollbar {
   scrollbar-width: thin;
-  scrollbar-color: #3f3f46 transparent;
+  scrollbar-color: var(--tb-n-9) transparent;
 }
 .thin-scrollbar::-webkit-scrollbar {
   width: 6px;
@@ -179,11 +233,11 @@ input.ccbar-slider[type="range"]::-moz-range-thumb {
 }
 .thin-scrollbar::-webkit-scrollbar-thumb {
   background: transparent;
-  border: 1px solid #3f3f46;
+  border: 1px solid var(--tb-n-9);
   border-radius: 3px;
 }
 .thin-scrollbar::-webkit-scrollbar-thumb:hover {
-  border-color: #52525b;
+  border-color: var(--tb-n-10);
 }
 
 /* Custom cursor: replace EVERY native cursor state with the white
@@ -237,6 +291,17 @@ input.ccbar-slider[type="range"]::-moz-range-thumb {
   cursor: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='black' stroke-width='1.2' stroke-linejoin='round'%3E%3Cpath d='M2 22 L4 17 L17 4 L20 7 L7 20 Z' fill='white'/%3E%3Cpath d='M14 7 L17 10' /%3E%3Cpath d='M2 22 L5 19' /%3E%3Cpath d='M4 17 L7 20' /%3E%3C/g%3E%3C/svg%3E") 1 22, crosshair !important;
 }
 
+/* React Flow pane — the node editor's own surface. NodeEditor passes
+   colorMode={themeMode}, which gets React Flow's built-in palette (handles,
+   selection, controls) onto the right side of the theme; these two pin the
+   pane fill and dot grid to OUR ramp so the node editor can't drift from the
+   panels around it. --tb-n-2 is a hair off xyflow's dark default (#141417 vs
+   #141414), so dark mode is unchanged to the eye. */
+.react-flow {
+  --xy-background-color: var(--tb-n-2);
+  --xy-background-pattern-dots-color: var(--tb-n-11);
+}
+
 /* React Flow Controls — strip the panel/button chrome to just white icons
    on transparent bg. The default styles are a floating card with filled
    buttons; we want something that disappears into the node-editor surface. */
@@ -258,16 +323,16 @@ input.ccbar-slider[type="range"]::-moz-range-thumb {
 }
 
 .react-flow__controls-button:hover {
-  background: rgba(255, 255, 255, 0.08) !important;
+  background: var(--tb-n-8) !important;
   border-radius: 3px;
 }
 
 .react-flow__controls-button svg,
 .react-flow__controls-button path {
-  fill: #e5e7eb;
+  fill: var(--tb-n-16);
 }
 
 .react-flow__controls-button:disabled svg,
 .react-flow__controls-button:disabled path {
-  fill: #52525b;
+  fill: var(--tb-n-10);
 }

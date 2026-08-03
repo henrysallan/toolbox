@@ -48,7 +48,39 @@ function failPending(reason) {
   pending.clear();
 }
 
-const wss = new WebSocketServer({ host: "127.0.0.1", port: PORT });
+// CSWSH defense. WebSocket handshakes are exempt from the same-origin policy,
+// so a plain loopback bind isn't enough: any web page the user visits can
+// `new WebSocket("ws://127.0.0.1:38275")` and drive the editor. But browsers
+// ALWAYS attach an `Origin` header to the handshake and a page can't forge it,
+// so we reject any handshake whose Origin is a non-loopback web page. Absent
+// Origin = a non-browser client (the CLI, the e2e harness) — no drive-by
+// vector — and is allowed; a local malicious *process* is out of scope here
+// (it already has code execution) and is the reason pairing also validates the
+// echoed code below.
+function isAllowedOrigin(origin) {
+  if (!origin) return true; // non-browser client (no Origin header)
+  try {
+    const host = new URL(origin).hostname;
+    return (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "[::1]" ||
+      host === "::1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+const wss = new WebSocketServer({
+  host: "127.0.0.1",
+  port: PORT,
+  verifyClient: ({ origin }) => {
+    if (isAllowedOrigin(origin)) return true;
+    log(`rejected WebSocket handshake from disallowed Origin: ${origin}`);
+    return false;
+  },
+});
 
 wss.on("connection", (ws) => {
   if (editor) {
@@ -75,6 +107,15 @@ wss.on("connection", (ws) => {
       return;
     }
     if (msg.type === "pair" && msg.ok) {
+      // The client must echo the exact pairing code it received in `hello`.
+      // On its own this is weak (the code is in the frame we sent), but it
+      // closes the "any {pair:ok} frame pairs you" foot-gun and pairs with the
+      // Origin gate above: a browser drive-by can't complete the handshake at
+      // all, so it never sees the code to echo.
+      if (String(msg.code) !== PAIRING_CODE) {
+        log("rejected pair frame with a missing/incorrect code");
+        return;
+      }
       editor.paired = true;
       editor.appVersion = msg.appVersion ?? "unknown";
       log(`paired with editor (app v${editor.appVersion})`);

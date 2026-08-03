@@ -159,15 +159,15 @@ export default function RateProjectPopover({
         left,
         top,
         width: W,
-        background: "#18181b",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 4,
         boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
         padding: 10,
         zIndex: 4000,
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
       }}
       onMouseDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => {
@@ -179,7 +179,7 @@ export default function RateProjectPopover({
     >
       <div
         style={{
-          color: "#a1a1aa",
+          color: "var(--tb-n-13)",
           fontSize: 9,
           textTransform: "uppercase",
           letterSpacing: 0.5,
@@ -192,7 +192,7 @@ export default function RateProjectPopover({
         Rate · {row.name}
       </div>
       {!signedIn ? (
-        <div style={{ color: "#71717a", padding: "6px 0" }}>
+        <div style={{ color: "var(--tb-n-11)", padding: "6px 0" }}>
           Sign in to rate.
         </div>
       ) : (
@@ -214,7 +214,7 @@ export default function RateProjectPopover({
                   background: "transparent",
                   border: "none",
                   cursor: busy ? "wait" : "pointer",
-                  color: n <= display ? "#facc15" : "#3f3f46",
+                  color: n <= display ? "var(--tb-a-yellow-400)" : "var(--tb-n-9)",
                   fontSize: 22,
                   lineHeight: "22px",
                   padding: 0,
@@ -232,7 +232,7 @@ export default function RateProjectPopover({
               justifyContent: "space-between",
               gap: 6,
               fontSize: 10,
-              color: "#71717a",
+              color: "var(--tb-n-11)",
             }}
           >
             <span>
@@ -246,8 +246,8 @@ export default function RateProjectPopover({
                 disabled={busy}
                 style={{
                   background: "transparent",
-                  border: "1px solid #3f3f46",
-                  color: "#a1a1aa",
+                  border: "1px solid var(--tb-n-9)",
+                  color: "var(--tb-n-13)",
                   fontSize: 9,
                   padding: "2px 6px",
                   borderRadius: 3,
@@ -266,7 +266,7 @@ export default function RateProjectPopover({
           style={{
             marginTop: 10,
             paddingTop: 10,
-            borderTop: "1px solid #27272a",
+            borderTop: "1px solid var(--tb-n-7)",
             display: "flex",
             flexDirection: "column",
             gap: 4,
@@ -274,7 +274,7 @@ export default function RateProjectPopover({
         >
           <div
             style={{
-              color: "#a1a1aa",
+              color: "var(--tb-n-13)",
               fontSize: 9,
               textTransform: "uppercase",
               letterSpacing: 0.5,
@@ -285,7 +285,7 @@ export default function RateProjectPopover({
           <div
             style={{
               fontSize: 10,
-              color: "#a1a1aa",
+              color: "var(--tb-n-13)",
               whiteSpace: "nowrap",
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -298,9 +298,9 @@ export default function RateProjectPopover({
             onClick={copyLive}
             style={{
               alignSelf: "flex-start",
-              background: copied ? "#065f46" : "transparent",
-              border: `1px solid ${copied ? "#065f46" : "#3f3f46"}`,
-              color: copied ? "#a7f3d0" : "#e5e7eb",
+              background: copied ? "var(--tb-a-emerald-800)" : "transparent",
+              border: `1px solid ${copied ? "var(--tb-a-emerald-800)" : "var(--tb-n-9)"}`,
+              color: copied ? "var(--tb-a-emerald-200)" : "var(--tb-n-16)",
               fontSize: 10,
               padding: "2px 8px",
               borderRadius: 3,
@@ -317,8 +317,8 @@ export default function RateProjectPopover({
           style={{
             marginTop: 10,
             paddingTop: 10,
-            borderTop: "1px solid #27272a",
-            color: "#52525b",
+            borderTop: "1px solid var(--tb-n-7)",
+            color: "var(--tb-n-10)",
             fontSize: 10,
           }}
         >

@@ -12,6 +12,12 @@ export const subpathsOf = (
   v: SplineParamValue | undefined | null
 ): SplineSubpath[] => v?.subpaths ?? [];
 
+// Stable anchor identity (spec 072726 M6): a short random slug, minted by
+// every op that creates an anchor. Keys the per-anchor keyframe tracks.
+export function mintAnchorId(): string {
+  return Math.random().toString(36).slice(2, 9);
+}
+
 // --- pure bezier helpers (px or norm, caller-consistent) -------------------
 
 export function bezierAt(
@@ -211,7 +217,7 @@ export function splitSegmentAnchors(
   if (straight) {
     const x = A.pos[0] + (B.pos[0] - A.pos[0]) * t;
     const y = A.pos[1] + (B.pos[1] - A.pos[1]) * t;
-    inserted = { pos: [x, y] };
+    inserted = { id: mintAnchorId(), pos: [x, y] };
   } else {
     const P0 = A.pos;
     const P3 = B.pos;
@@ -240,6 +246,7 @@ export function splitSegmentAnchors(
     patchI.outHandle = nz(a1[0] - P0[0], a1[1] - P0[1]);
     patchJ.inHandle = nz(c1[0] - P3[0], c1[1] - P3[1]);
     inserted = {
+      id: mintAnchorId(),
       pos: f1,
       inHandle: nz(d1[0] - f1[0], d1[1] - f1[1]),
       outHandle: nz(e1[0] - f1[0], e1[1] - f1[1]),
@@ -270,14 +277,19 @@ export function cutSubpathAt(
   const anchors = sub.anchors;
   const n = anchors.length;
   if (idx < 0 || idx >= n) return null;
+  // The cut anchor appears in BOTH pieces — drop its id on the copies so
+  // per-anchor tracks never resolve two anchors at once (the orphaned
+  // tracks fall away in EffectsApp's cleanup pass).
   const dropOut = (a: SplineAnchor): SplineAnchor => {
     const c = { ...a };
     delete c.outHandle;
+    delete c.id;
     return c;
   };
   const dropIn = (a: SplineAnchor): SplineAnchor => {
     const c = { ...a };
     delete c.inHandle;
+    delete c.id;
     return c;
   };
   if (sub.closed) {
@@ -300,6 +312,76 @@ export function cutSubpathAt(
     { ...sub, anchors: first, closed: false },
     { ...sub, anchors: second, closed: false },
   ];
+}
+
+// Harmonize (G2 curvature continuity — spec 080226 M2, the Glyphs
+// "harmonise" behavior). For a smooth anchor B (both handles present and
+// nearly opposed), the two adjacent cubics' endpoint curvatures at B are
+// κ_in = (2/3)·d1/a² and κ_out = (2/3)·d2/b², where a/b are the handle
+// lengths and d1/d2 the perpendicular distances of the NEIGHBOR controls
+// from the handle line. Since the controls C_in/C_out and B are collinear,
+// sliding B along that line with the controls FIXED changes only a and b
+// (a + b = |C_out − C_in|); curvature matches when a/b = √(d1/d2). Returns
+// the patch (new pos + recomputed handle offsets) or null when the anchor
+// doesn't qualify (missing/uneven handles, endpoint, straight side, or
+// already harmonized).
+export function harmonizeAnchor(
+  anchors: SplineAnchor[],
+  closed: boolean,
+  i: number
+): Partial<SplineAnchor> | null {
+  const n = anchors.length;
+  const a = anchors[i];
+  if (!a?.inHandle || !a.outHandle) return null;
+  const hasPrev = closed || i > 0;
+  const hasNext = closed || i < n - 1;
+  if (!hasPrev || !hasNext || n < 2) return null;
+  const li = Math.hypot(a.inHandle[0], a.inHandle[1]);
+  const lo = Math.hypot(a.outHandle[0], a.outHandle[1]);
+  if (li < 1e-9 || lo < 1e-9) return null;
+  // Smooth prerequisite: handles opposed within ~3° — harmonizing a broken
+  // corner is ill-defined (Align Handles first).
+  const opp =
+    (a.inHandle[0] * a.outHandle[0] + a.inHandle[1] * a.outHandle[1]) /
+    (li * lo);
+  if (opp > -0.9986) return null;
+  const B = a.pos;
+  const Cin: [number, number] = [B[0] + a.inHandle[0], B[1] + a.inHandle[1]];
+  const Cout: [number, number] = [
+    B[0] + a.outHandle[0],
+    B[1] + a.outHandle[1],
+  ];
+  const prev = anchors[(i - 1 + n) % n];
+  const next = anchors[(i + 1) % n];
+  const P1: [number, number] = prev.outHandle
+    ? [prev.pos[0] + prev.outHandle[0], prev.pos[1] + prev.outHandle[1]]
+    : [prev.pos[0], prev.pos[1]];
+  const P2: [number, number] = next.inHandle
+    ? [next.pos[0] + next.inHandle[0], next.pos[1] + next.inHandle[1]]
+    : [next.pos[0], next.pos[1]];
+  const axx = Cout[0] - Cin[0];
+  const axy = Cout[1] - Cin[1];
+  const L = Math.hypot(axx, axy);
+  if (L < 1e-9) return null;
+  const ux = axx / L;
+  const uy = axy / L;
+  const distToLine = (q: [number, number]) =>
+    Math.abs((q[0] - Cin[0]) * uy - (q[1] - Cin[1]) * ux);
+  const d1 = distToLine(P1);
+  const d2 = distToLine(P2);
+  // A straight (zero-curvature) side can't be matched by sliding — skip.
+  if (d1 < 1e-9 || d2 < 1e-9) return null;
+  const s1 = Math.sqrt(d1);
+  const s2 = Math.sqrt(d2);
+  const t = s1 / (s1 + s2);
+  const Bx = Cin[0] + axx * t;
+  const By = Cin[1] + axy * t;
+  if (Math.hypot(Bx - B[0], By - B[1]) < 1e-9) return null; // already G2
+  return {
+    pos: [Bx, By],
+    inHandle: [Cin[0] - Bx, Cin[1] - By],
+    outHandle: [Cout[0] - Bx, Cout[1] - By],
+  };
 }
 
 // Derive handle auto-fill vectors for converting a corner anchor to smooth.

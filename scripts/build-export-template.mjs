@@ -127,11 +127,28 @@ for (const item of SOURCE_INCLUDE) {
 const distFiles = listFilesRecursive(join(OUT_DIR, "dist"));
 const sourceFiles = listFilesRecursive(join(OUT_DIR, "source"));
 
+// Per-file byte counts + the Tier-A single-file size, so the editor's
+// Export App modal can show a truthful bundle-size estimate (and subtract
+// the ort wasm when the project has no ML nodes). Older editors ignore
+// the extra fields; older manifests without them fall back to a
+// graph-only estimate. Spec: 073126_export-resolution-and-app-slim.md.
+const byteMap = (root, files) => {
+  const out = {};
+  for (const f of files) out[f] = statSync(join(root, f)).size;
+  return out;
+};
+const distBytes = byteMap(join(OUT_DIR, "dist"), distFiles);
+const sourceBytes = byteMap(join(OUT_DIR, "source"), sourceFiles);
+const tierABytes = statSync(join(OUT_DIR, "index.html")).size;
+
 const manifest = {
   built: true,
   builtAt: new Date().toISOString(),
   distFiles,
   sourceFiles,
+  distBytes,
+  sourceBytes,
+  tierABytes,
 };
 writeFileSync(join(OUT_DIR, "manifest.json"), JSON.stringify(manifest, null, 2));
 

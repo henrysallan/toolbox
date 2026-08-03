@@ -480,6 +480,19 @@ function lerpCornerRadius(
   return av + (bv - av) * t;
 }
 
+// Width-profile multiplier (SplineAnchor.width) lerps the same way, except
+// a MISSING width means 1 (the neutral multiplier), not 0.
+function lerpWidth(
+  a: number | undefined,
+  b: number | undefined,
+  t: number
+): number | undefined {
+  if (a == null && b == null) return undefined;
+  const av = a ?? 1;
+  const bv = b ?? 1;
+  return av + (bv - av) * t;
+}
+
 function lerpSpline(
   a: SplineKfValue,
   b: SplineKfValue,
@@ -505,6 +518,8 @@ function lerpSpline(
           outHandle: lerpHandle(aa.outHandle, ba.outHandle, t),
           broken: aa.broken,
           cornerRadius: lerpCornerRadius(aa.cornerRadius, ba.cornerRadius, t),
+          cornerStyle: aa.cornerStyle,
+          width: lerpWidth(aa.width, ba.width, t),
         };
       });
       return { ...sa, anchors };

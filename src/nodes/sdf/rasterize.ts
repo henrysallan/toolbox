@@ -1,5 +1,9 @@
 import type { NodeDefinition, SdfValue } from "@/engine/types";
-import { compileSdf, structuralHash } from "@/engine/sdf-compile";
+import {
+  bindSdfUniforms,
+  compileSdf,
+  structuralHash,
+} from "@/engine/sdf-compile";
 
 // Sample an SDF at every pixel and produce an image. Walks the SDF
 // tree once, builds a single fragment shader, and does one fullscreen
@@ -156,27 +160,13 @@ export const sdfRasterizeNode: NodeDefinition = {
         aspectCorrect ? 1 : 0
       );
 
-      // Bind the per-leaf parameter uniforms collected during compile.
-      // Samplers (Displace) consume texture units starting at 0; the
-      // SDF rasterize fragment shader doesn't sample any other
-      // textures, so unit 0..N is ours to allocate.
-      let samplerUnit = 0;
-      for (const u of compiled.uniforms) {
-        const loc = gl.getUniformLocation(prog, u.name);
-        if (!loc) continue;
-        if (u.type === "float") {
-          gl.uniform1f(loc, u.value as number);
-        } else if (u.type === "vec2") {
-          const v = u.value as [number, number];
-          gl.uniform2f(loc, v[0], v[1]);
-        } else {
-          // sampler2D
-          gl.activeTexture(gl.TEXTURE0 + samplerUnit);
-          gl.bindTexture(gl.TEXTURE_2D, u.value as WebGLTexture);
-          gl.uniform1i(loc, samplerUnit);
-          samplerUnit++;
-        }
-      }
+      // Colour-bleed radius. Nothing authors one yet, and 0 means every
+      // material weight is 1 — the accumulator is inert until the
+      // shading terminal reads it.
+      const bleedLoc = gl.getUniformLocation(prog, "u_bleedInv");
+      if (bleedLoc) gl.uniform1f(bleedLoc, 0);
+
+      bindSdfUniforms(gl, prog, compiled.uniforms);
     });
 
     return { primary: output };

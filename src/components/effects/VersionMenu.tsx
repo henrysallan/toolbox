@@ -44,15 +44,15 @@ export default function ChangelogPopover({
         width: 300,
         maxHeight: 440,
         overflowY: "auto",
-        background: "#18181b",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 4,
         boxShadow: "0 8px 24px rgba(0,0,0,0.55)",
         padding: "10px 12px",
         fontSize: 11,
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
         zIndex: 2000,
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
       }}
     >
       <div
@@ -62,13 +62,13 @@ export default function ChangelogPopover({
           justifyContent: "space-between",
           marginBottom: 8,
           paddingBottom: 6,
-          borderBottom: "1px solid #27272a",
+          borderBottom: "1px solid var(--tb-n-7)",
         }}
       >
         <span style={{ fontWeight: 600, letterSpacing: 0.3 }}>
           Changelog
         </span>
-        <span style={{ color: "#71717a", fontSize: 10 }}>
+        <span style={{ color: "var(--tb-n-11)", fontSize: 10 }}>
           v{CURRENT_VERSION}
         </span>
       </div>
@@ -79,7 +79,7 @@ export default function ChangelogPopover({
             paddingBottom: 8,
             marginBottom: i === CHANGELOG.length - 1 ? 0 : 8,
             borderBottom:
-              i === CHANGELOG.length - 1 ? "none" : "1px solid #27272a",
+              i === CHANGELOG.length - 1 ? "none" : "1px solid var(--tb-n-7)",
           }}
         >
           <div
@@ -91,7 +91,7 @@ export default function ChangelogPopover({
             }}
           >
             <span style={{ fontWeight: 600 }}>v{entry.version}</span>
-            <span style={{ color: "#71717a", fontSize: 10 }}>{entry.date}</span>
+            <span style={{ color: "var(--tb-n-11)", fontSize: 10 }}>{entry.date}</span>
           </div>
           <Section title="What's new" items={entry.added} />
           <Section title="What's changed" items={entry.changed} />
@@ -106,7 +106,7 @@ function Section({ title, items }: { title: string; items: string[] }) {
     <div style={{ marginTop: 4 }}>
       <div
         style={{
-          color: "#a1a1aa",
+          color: "var(--tb-n-13)",
           fontSize: 10,
           textTransform: "uppercase",
           letterSpacing: 0.5,
@@ -116,14 +116,14 @@ function Section({ title, items }: { title: string; items: string[] }) {
         {title}
       </div>
       {items.length === 0 ? (
-        <div style={{ color: "#52525b", fontSize: 11, paddingLeft: 2 }}>—</div>
+        <div style={{ color: "var(--tb-n-10)", fontSize: 11, paddingLeft: 2 }}>—</div>
       ) : (
         <ul
           style={{
             margin: 0,
             paddingLeft: 14,
             listStyle: "disc",
-            color: "#d4d4d8",
+            color: "var(--tb-n-15)",
             lineHeight: 1.45,
           }}
         >

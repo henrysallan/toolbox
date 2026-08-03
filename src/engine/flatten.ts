@@ -79,6 +79,19 @@ function isDissolvedType(type: string): boolean {
 // resolveBoundarySource's own cases.
 const REROUTE_INPUT = "value";
 
+// Layer Output socket → the layer node's own input it becomes. These are the
+// PUSH-side splices: the interior producer is rewired straight onto the layer
+// shell, which computes with it. `image` feeds the blend as the hidden
+// `content`; `spline` is the vector export tap (stashed by layer.compute for
+// the Layer Output's SVG button, never rendered). `audio` is deliberately
+// absent — it resolves on the PULL side, in resolveBoundarySource, because a
+// spliced audio chain has to land directly on its consumer for the
+// evaluator's audio-routing detection to see it.
+const LAYER_OUTPUT_TO_LAYER_INPUT: Record<string, string | undefined> = {
+  image: "content",
+  spline: "spline",
+};
+
 function auxName(sourceHandle: string): string | null {
   return sourceHandle.startsWith("out:aux:")
     ? sourceHandle.slice("out:aux:".length)
@@ -411,12 +424,13 @@ export function flattenGraph(
       // `content` input (the layer computes the blend itself).
       const parent = target.parentId ? byId.get(target.parentId) : undefined;
       const parsed = parseTargetHandleKind(e.targetHandle);
-      if (
+      const layerInput =
         target.type === GROUP_OUTPUT_TYPE &&
         parent?.type === LAYER_TYPE &&
-        parsed?.kind === "input" &&
-        parsed.name === "image"
-      ) {
+        parsed?.kind === "input"
+          ? LAYER_OUTPUT_TO_LAYER_INPUT[parsed.name]
+          : undefined;
+      if (layerInput && parent) {
         const resolved = sourceNeedsResolve(e)
           ? resolveSource(e.source, e.sourceHandle)
           : { source: e.source, sourceHandle: e.sourceHandle };
@@ -426,7 +440,7 @@ export function flattenGraph(
             source: resolved.source,
             sourceHandle: resolved.sourceHandle,
             target: parent.id,
-            targetHandle: "in:content",
+            targetHandle: `in:${layerInput}`,
           });
         }
       }

@@ -32,7 +32,7 @@ export default function JunctionEdge(props: EdgeProps) {
 
   const splice = !!(data as EdgeData | undefined)?.spliceHighlight;
   const effectiveStyle = splice
-    ? { ...style, stroke: "#facc15", strokeWidth: 3 }
+    ? { ...style, stroke: "var(--tb-a-yellow-400)", strokeWidth: 3 }
     : style;
 
   const [path] = getBezierPath({

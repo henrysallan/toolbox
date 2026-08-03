@@ -28,7 +28,6 @@ import {
   EASING_PRESET_LABELS,
   EASING_PRESET_ORDER,
   easeOf,
-  easingPathFor,
   emptyAnimationBlock,
   framesToTicks,
   snapTickToFrame,
@@ -39,6 +38,7 @@ import { useClock } from "@/state/playback-clock";
 import { LAYER_OPACITY_PREFIX } from "@/engine/conventions";
 import { getShortcutScope } from "./shortcut-scope";
 import { wheelWantsZoom, getEffectiveDevice } from "./input-device";
+import { EasingTile } from "./timeline/EasingTile";
 
 // ---------------------------------------------------------------------
 // Public API
@@ -68,13 +68,13 @@ interface GraphEditorProps {
 // Constants — dark theme palette and layout metrics
 // ---------------------------------------------------------------------
 
-const BG = "#0a0a0c";
-const PANEL = "#1f1f23";
-const BORDER = "#27272a";
-const MUTED = "#52525b";
-const TEXT = "#d4d4d8";
-const ACCENT = "#3b82f6";
-const CURVE = "#60a5fa";
+const BG = "var(--tb-n-0)";
+const PANEL = "var(--tb-n-5)";
+const BORDER = "var(--tb-n-7)";
+const MUTED = "var(--tb-n-10)";
+const TEXT = "var(--tb-n-15)";
+const ACCENT = "var(--tb-a-blue-500)";
+const CURVE = "var(--tb-a-blue-400)";
 
 const HEIGHT = 280;
 const HEADER_H = 24;
@@ -290,7 +290,7 @@ export function GraphEditor({
         value={active?.key ?? ""}
         onChange={(e) => setActiveKey(e.target.value)}
         style={{
-          background: "#15151a",
+          background: "var(--tb-n-3)",
           color: TEXT,
           border: `1px solid ${BORDER}`,
           borderRadius: 2,
@@ -409,7 +409,7 @@ export function GraphEditor({
     [yMinView, yMaxView, innerH]
   );
 
-  function getMousePos(e: React.MouseEvent | MouseEvent) {
+  function getMousePos(e: React.MouseEvent | MouseEvent | React.PointerEvent | PointerEvent) {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -494,23 +494,6 @@ export function GraphEditor({
     const next = [...ks.slice(0, insertAt), newKf, ...ks.slice(insertAt)];
     commit({ ...blockRef.current, keyframes: next });
     return insertAt;
-  }
-
-  function setEasingFor(idx: number, preset: EasingPreset) {
-    const ks = blockRef.current.keyframes;
-    const k = ks[idx];
-    if (!k) return;
-    let bezierHandles = k.bezierHandles;
-    if (preset === "customBezier") {
-      // Initialize handles from a sensible default — half the segment to
-      // the next keyframe, slope from local neighbors.
-      bezierHandles = bezierHandles ?? defaultBezierHandles(ks, idx);
-    } else {
-      bezierHandles = undefined;
-    }
-    const next = ks.slice();
-    next[idx] = { ...k, easingOut: preset, bezierHandles };
-    commit({ ...blockRef.current, keyframes: next });
   }
 
   // ----- Wheel: 2-finger scroll = pan; Cmd/Ctrl + scroll = zoom -----
@@ -598,20 +581,34 @@ export function GraphEditor({
   ]);
 
   // Middle-button pointerdown: block the preview canvas's window-level
-  // middle-drag (bug #2). Plain middle-drag pans via the React onMouseDown
-  // (the compat mousedown still fires); Cmd/Ctrl + middle-drag zooms —
-  // horizontal movement zooms time (X), vertical zooms value (Y), about the
-  // press point. Drag right / up zooms in. Scoped to button 1 so left-button
-  // keyframe interactions are untouched.
+  // middle-drag (bug #2). Cmd/Ctrl + middle-drag zooms — horizontal movement
+  // zooms time (X), vertical zooms value (Y), about the press point. Drag
+  // right / up zooms in. Scoped to button 1 so left-button keyframe
+  // interactions are untouched.
+  //
+  // BOTH middle-button gestures live here. This native listener is on the
+  // SVG itself while React delegates from the app root, so it runs first and
+  // its stopPropagation means the React surface handler never sees button 1.
+  // (It used to lean on the compat mousedown reaching React afterwards for
+  // the plain-pan case; pointer events have no such second delivery.)
   useEffect(() => {
     const el = svgRef.current;
     if (!el) return;
     const onDown = (e: PointerEvent) => {
       if (e.button !== 1) return;
       e.stopPropagation();
-      if (!(e.metaKey || e.ctrlKey)) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
+      // Plain middle-drag = pan.
+      if (!(e.metaKey || e.ctrlKey)) {
+        setDrag({
+          kind: "pan",
+          startMouseX: e.clientX - rect.left,
+          startMouseY: e.clientY - rect.top,
+          startView: { viewTickOffset, pixelsPerTick, yMinView, yMaxView },
+        });
+        return;
+      }
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
       const startX = e.clientX;
@@ -644,7 +641,17 @@ export function GraphEditor({
     };
     el.addEventListener("pointerdown", onDown);
     return () => el.removeEventListener("pointerdown", onDown);
-  }, [pixelsPerTick, yMinView, yMaxView, screenToTick, screenToValue]);
+    // viewTickOffset joined the list when the plain-pan branch moved in here
+    // — the pan snapshots it at press time, so a stale closure would start
+    // the drag from the wrong offset.
+  }, [
+    pixelsPerTick,
+    viewTickOffset,
+    yMinView,
+    yMaxView,
+    screenToTick,
+    screenToValue,
+  ]);
 
   // ----- Keyboard: space / delete / escape / F -----
   useEffect(() => {
@@ -778,8 +785,10 @@ export function GraphEditor({
     };
   }, [selected, innerW, yMin, yMax, modal, currentTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ----- Mouse interactions on the SVG surface -----
-  function onMouseDown(e: React.MouseEvent) {
+  // ----- Pointer interactions on the SVG surface -----
+  // Pointer, not mouse: iPadOS emits no mousemove stream during a touch or
+  // Pencil drag, so a mousedown-rooted gesture never moves.
+  function onSurfacePointerDown(e: React.PointerEvent) {
     if (contextMenu) setContextMenu(null);
     // A click while a modal transform is live confirms it (positions are
     // already committed by the modal's move handler).
@@ -788,18 +797,14 @@ export function GraphEditor({
       e.preventDefault();
       return;
     }
-    if (e.button !== 0 && e.button !== 1) return;
+    // Middle-button never reaches here: the native pointerdown listener
+    // above owns both middle gestures and stops propagation.
+    if (e.button !== 0) return;
     shiftAxisRef.current = null;
     const { x, y } = getMousePos(e);
 
-    // Cmd/Ctrl + middle-drag = zoom (owned by the native pointerdown
-    // listener); bail so we don't also start a pan.
-    if (e.button === 1 && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      return;
-    }
-    // Space-drag or middle-click → pan.
-    if (spaceHeld || e.button === 1) {
+    // Space-drag → pan.
+    if (spaceHeld) {
       e.preventDefault();
       setDrag({
         kind: "pan",
@@ -929,7 +934,7 @@ export function GraphEditor({
   // ----- Window-level move/up so dragging persists out of the SVG -----
   useEffect(() => {
     if (drag.kind === "none") return;
-    function onMove(ev: MouseEvent) {
+    function onMove(ev: PointerEvent) {
       const { x, y } = getMousePos(ev);
       if (drag.kind === "pan") {
         const sv = drag.startView;
@@ -1048,9 +1053,6 @@ export function GraphEditor({
         const newDy = drag.startHandle.dy + dValue;
         let leftHandle: { dx: number; dy: number };
         let rightHandle: { dx: number; dy: number };
-        const existing =
-          k.bezierHandles ??
-          defaultBezierHandles(blockRef.current.keyframes, drag.keyIdx);
         if (drag.side === "right") {
           rightHandle = { dx: newDx, dy: newDy };
           // v1: always mirror the opposite handle.
@@ -1059,12 +1061,9 @@ export function GraphEditor({
           leftHandle = { dx: newDx, dy: newDy };
           rightHandle = { dx: -newDx, dy: -newDy };
         }
-        // Don't write a non-custom easing key's mirrored side as if it
-        // were live; only the side(s) attached to a custom segment matter.
-        // We still store both sides on `bezierHandles` because the data
-        // model holds them together — readers consult them only when the
+        // Both sides store on `bezierHandles` because the data model
+        // holds them together — readers consult them only when the
         // adjacent segment is customBezier.
-        void existing;
         patchKeyframe(drag.keyIdx, {
           bezierHandles: { leftHandle, rightHandle },
         });
@@ -1081,11 +1080,15 @@ export function GraphEditor({
       }
       setDrag({ kind: "none" });
     }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    // iPadOS swaps pointerup for pointercancel whenever the system claims
+    // the gesture; without this the drag state machine stays latched.
+    window.addEventListener("pointercancel", onUp);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
   }, [
     drag,
@@ -1149,12 +1152,12 @@ export function GraphEditor({
     };
     // Re-apply right away so axis-toggles update without needing a move.
     apply(cursorRef.current);
-    const onMove = (ev: MouseEvent) => {
+    const onMove = (ev: PointerEvent) => {
       cursorRef.current = getMousePos(ev);
       apply(cursorRef.current);
     };
-    window.addEventListener("mousemove", onMove);
-    return () => window.removeEventListener("mousemove", onMove);
+    window.addEventListener("pointermove", onMove);
+    return () => window.removeEventListener("pointermove", onMove);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modal, pixelsPerTick, innerH, yMaxView, yMinView, timeline.ticksPerFrame]);
 
@@ -1177,7 +1180,6 @@ export function GraphEditor({
     for (let i = 0; i < ks.length - 1; i++) {
       const a = ks[i];
       const b = ks[i + 1];
-      const ax = tickToScreen(a.tick);
       const ay = valueToScreen(a.value as number);
       const bx = tickToScreen(b.tick);
       const by = valueToScreen(b.value as number);
@@ -1221,8 +1223,6 @@ export function GraphEditor({
           }
         }
       }
-      void ax;
-      void ay;
     }
     return out;
   }, [ks, tickToScreen, valueToScreen]);
@@ -1286,7 +1286,7 @@ export function GraphEditor({
 
   // Begin a box-resize drag from one of the transform-box handles.
   function startBoxResize(
-    e: React.MouseEvent,
+    e: React.PointerEvent,
     handle: BoxHandle,
     box: { left: number; right: number; top: number; bottom: number }
   ) {
@@ -1318,7 +1318,7 @@ export function GraphEditor({
           alignItems: "center",
           justifyContent: "center",
           fontSize: 12,
-          fontFamily: "ui-monospace, monospace",
+          fontFamily: "var(--ui-font)",
           padding: 16,
           textAlign: "center",
         }}
@@ -1342,9 +1342,13 @@ export function GraphEditor({
         borderRadius: 4,
         position: "relative",
         userSelect: "none",
-        fontFamily: "ui-monospace, monospace",
-        fontSize: 11,
+        fontFamily: "var(--ui-font)",
+        fontSize: 10,
         color: TEXT,
+        // tabIndex below exists only to capture keyboard shortcuts; the
+        // browser's focus ring around a whole editor pane reads as a
+        // stray blue box on the panel.
+        outline: "none",
         cursor: spaceHeld ? "grab" : drag.kind === "pan" ? "grabbing" : "default",
       }}
       tabIndex={0}
@@ -1394,7 +1398,7 @@ export function GraphEditor({
               borderRadius: 3,
               padding: "1px 4px",
               fontSize: 11,
-              fontFamily: "ui-monospace, monospace",
+              fontFamily: "var(--ui-font)",
             }}
           >
             {EASING_PRESETS.map((p) => (
@@ -1412,8 +1416,13 @@ export function GraphEditor({
         ref={svgRef}
         width={width}
         height={height - HEADER_H}
-        style={{ display: "block" }}
-        onMouseDown={onMouseDown}
+        style={{
+          display: "block",
+          // The plot owns every gesture on it (scrub, marquee, key drags),
+          // so opt out of browser panning rather than lose the stream.
+          touchAction: "none",
+        }}
+        onPointerDown={onSurfacePointerDown}
         onMouseMove={(e) => {
           const p = getMousePos(e);
           cursorRef.current = p;
@@ -1429,7 +1438,7 @@ export function GraphEditor({
           y={PADDING.top}
           width={innerW}
           height={innerH}
-          fill="#111114"
+          fill="var(--tb-n-1)"
           stroke={BORDER}
         />
 
@@ -1524,7 +1533,7 @@ export function GraphEditor({
                     width={8}
                     height={8}
                     fill={ACCENT}
-                    stroke="#1e3a8a"
+                    stroke="var(--tb-a-blue-900)"
                     style={{ cursor: "move" }}
                   />
                 </g>
@@ -1587,7 +1596,7 @@ export function GraphEditor({
                     width={8}
                     height={8}
                     fill={ACCENT}
-                    stroke="#1e3a8a"
+                    stroke="var(--tb-a-blue-900)"
                     style={{ cursor: "move" }}
                   />
                 </g>
@@ -1663,7 +1672,7 @@ export function GraphEditor({
             y={Math.min(drag.startY, drag.curY)}
             width={Math.abs(drag.curX - drag.startX)}
             height={Math.abs(drag.curY - drag.startY)}
-            fill="rgba(59,130,246,0.12)"
+            fill="color-mix(in srgb, var(--tb-a-blue-500) 12%, transparent)"
             stroke={ACCENT}
             strokeDasharray="3 3"
             pointerEvents="none"
@@ -1732,7 +1741,7 @@ export function GraphEditor({
                     stroke={ACCENT}
                     strokeWidth={1.5}
                     style={{ cursor: h.cursor }}
-                    onMouseDown={(e) => startBoxResize(e, h.key, selBox)}
+                    onPointerDown={(e) => startBoxResize(e, h.key, selBox)}
                   />
                 ))}
               </g>
@@ -1748,7 +1757,7 @@ export function GraphEditor({
               y1={cursorRef.current.y}
               x2={PADDING.left + innerW}
               y2={cursorRef.current.y}
-              stroke="#ef4444"
+              stroke="var(--tb-a-red-500)"
               strokeWidth={1}
               strokeDasharray="4 3"
               opacity={0.5}
@@ -1760,7 +1769,7 @@ export function GraphEditor({
               y1={PADDING.top - RULER_H}
               x2={cursorRef.current.x}
               y2={PADDING.top + innerH}
-              stroke="#22c55e"
+              stroke="var(--tb-a-green-500)"
               strokeWidth={1}
               strokeDasharray="4 3"
               opacity={0.5}
@@ -1785,7 +1794,7 @@ export function GraphEditor({
               d={`M ${playheadX - 5} ${PADDING.top - RULER_H} L ${playheadX + 5} ${PADDING.top - RULER_H} L ${playheadX} ${PADDING.top - RULER_H + 7} Z`}
               fill={ACCENT}
               style={{ cursor: "ew-resize" }}
-              onMouseDown={(e) => {
+              onPointerDown={(e) => {
                 e.stopPropagation();
                 setDrag({ kind: "scrub" });
               }}
@@ -1858,7 +1867,6 @@ export function GraphEditor({
             }
             patchMany(updates);
             setContextMenu(null);
-            void setEasingFor;
           }}
           onDelete={() => {
             const targets = selected.size > 0
@@ -1924,7 +1932,7 @@ function KeyframeContextMenu({
     cursor: "pointer",
     fontSize: 11,
     color: TEXT,
-    fontFamily: "ui-monospace, monospace",
+    fontFamily: "var(--ui-font)",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
@@ -1956,56 +1964,17 @@ function KeyframeContextMenu({
               gap: 4,
             }}
           >
-            {EASING_PRESETS.map((p) => {
-              const active = keyframe.easingOut === p.id;
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  title={p.label}
-                  onClick={() => onPickEasing(p.id)}
-                  style={{
-                    width: 36,
-                    height: 36,
-                    padding: 0,
-                    background: active ? "#1e3a8a" : "#101013",
-                    border: `1px solid ${active ? "#3b82f6" : BORDER}`,
-                    borderRadius: 4,
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <svg width={28} height={28} viewBox="0 0 28 28" aria-hidden>
-                    <line
-                      x1={0}
-                      y1={28 * 0.82}
-                      x2={28}
-                      y2={28 * 0.82}
-                      stroke="#2a2a30"
-                      strokeWidth={1}
-                    />
-                    <line
-                      x1={0}
-                      y1={28 * 0.18}
-                      x2={28}
-                      y2={28 * 0.18}
-                      stroke="#2a2a30"
-                      strokeWidth={1}
-                    />
-                    <path
-                      d={easingPathFor(p.id, 28, 28, 36)}
-                      fill="none"
-                      stroke={active ? "#fbbf24" : "#3b82f6"}
-                      strokeWidth={1.5}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
-              );
-            })}
+            {EASING_PRESETS.map((p) => (
+              <EasingTile
+                key={p.id}
+                preset={p.id}
+                size={36}
+                disabled={false}
+                label={p.label}
+                active={keyframe.easingOut === p.id}
+                onClick={() => onPickEasing(p.id)}
+              />
+            ))}
           </div>
           <div style={{ height: 1, background: BORDER, margin: "6px 0 2px" }} />
           <div
@@ -2042,7 +2011,7 @@ function KeyframeContextMenu({
             style={itemStyle}
             onClick={onDelete}
             onMouseEnter={(e) =>
-              (e.currentTarget.style.background = "#7f1d1d")
+              (e.currentTarget.style.background = "var(--tb-t-red-d-0)")
             }
             onMouseLeave={(e) =>
               (e.currentTarget.style.background = "transparent")

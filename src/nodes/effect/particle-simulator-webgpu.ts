@@ -180,7 +180,12 @@ interface WebGPUSimState {
 }
 
 function stateKey(nodeId: string) {
-  return `particle-sim-webgpu:${nodeId}`;
+  // First `:` segment MUST be the registered type ("particle-simulator") or the
+  // evaluator's dispose sweep skips it (getNodeDef miss) and this backend's GPU
+  // buffers leak on delete. The `:webgpu` suffix keeps it distinct from the
+  // WebGL backend's key while still sweeping under the same node id. See
+  // 072226 audit #6.
+  return `particle-simulator:${nodeId}:webgpu`;
 }
 
 function disposeState(ctx: RenderContext, st: WebGPUSimState) {
@@ -364,6 +369,14 @@ export const particleSimulatorWebGPUNode: NodeDefinition = {
     const reset = st.resetNextFrame || resetTimeWrap;
     st.resetNextFrame = false;
     st.lastTime = ctx.time;
+
+    // TODO (072226 sim #2): this backend still advances on EVERY compute, so
+    // it double-steps on the offline settle re-render and split view's 2nd
+    // pass (unlike rope/rigid/particle-webgl, which gate on
+    // `ctx.playing || (ctx.offline && ctx.time > st.lastTime + 1e-6)`). The
+    // gate is non-trivial here because the readback pipeline is a frame behind
+    // (skipping a dispatch must not strand the pendingUpload chain); left for
+    // a pass that can verify against a real WebGPU device. Opt-in backend.
 
     // ---- Drain pending readback into a WebGL texture --------------
     // This is what compute() returns this frame. Always one frame

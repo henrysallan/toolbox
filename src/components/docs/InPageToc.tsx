@@ -19,15 +19,15 @@ export default function InPageToc({ items }: { items: TocItem[] }) {
       aria-label="On this page"
       style={{
         padding: "10px 14px",
-        background: "#111113",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 4,
         margin: "0 0 28px",
       }}
     >
       <div
         style={{
-          color: "#71717a",
+          color: "var(--tb-n-11)",
           fontSize: 10,
           textTransform: "uppercase",
           letterSpacing: 0.5,
@@ -44,13 +44,13 @@ export default function InPageToc({ items }: { items: TocItem[] }) {
             href={`#${it.id}`}
             style={{
               fontSize: 13,
-              color: "#d4d4d8",
+              color: "var(--tb-n-15)",
               textDecoration: "none",
               padding: "2px 0",
               lineHeight: 1.5,
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = "#93c5fd")}
-            onMouseLeave={(e) => (e.currentTarget.style.color = "#d4d4d8")}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "var(--tb-a-blue-300)")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "var(--tb-n-15)")}
           >
             {it.title}
           </a>

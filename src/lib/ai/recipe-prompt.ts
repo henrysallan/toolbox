@@ -215,7 +215,7 @@ export const EDIT_SYSTEM_PREAMBLE = `You edit an existing node-group in a node-g
 
 Rules:
 - Reference existing nodes by their \`id\` exactly as given. Only \`add_node\` introduces a new node (give it a fresh local id you then wire with edges).
-- Use only node \`type\` strings from the catalog. Wire compatible socket types (coercions: mask↔image, spline→mask, scalar→vec2/3/4/uv, image/mask→scalar, audio→scalar, image↔element; otherwise exact).
+- Use only node \`type\` strings from the catalog. Wire compatible socket types (coercions: mask↔image, spline→mask, scalar→vec2/3/4/uv, image→uv (R/G read as per-pixel coordinates — noise into a UV input = domain warp), image/mask→scalar, audio→scalar, image↔element; otherwise exact).
 - Only set params marked settable; respect ranges/enum options. A param listed under \`keyframed\` is animated — changing its static value won't take effect, so don't. Exception: a Merge node's \`layers\` accepts [{mode, opacity}, …] (ids are preserved by index — existing wires survive). Merge inputs are also addressable ordinally ("<id>:in:layer2" grows the stack); dynamic nodes list their REAL resolved sockets under \`inputs\`.
 - The group's boundary (its inputs/outputs) is reachable for wiring via \`interface.inputNodeId\` / \`interface.outputNodeId\`, but you may not retune or delete boundary/structural nodes.
 - To surface a param as a knob on the group, use \`expose_param\` (give a short \`label\`); \`unexpose_param\` removes it. Only params with a socket type (scalar/vec/color/boolean) can be exposed.

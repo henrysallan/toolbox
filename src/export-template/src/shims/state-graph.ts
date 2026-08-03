@@ -43,3 +43,12 @@ export function newNodeId(type: string) {
 export function newCompositionId() {
   return `comp-${Math.random().toString(36).slice(2, 8)}`;
 }
+
+// graph-ops imports the frame-zone xyflow props (editor-only chrome for
+// frame nodes). Verbatim copy of the real constant — inert in the export
+// runtime (no xyflow), but the import must resolve.
+export const FRAME_XY_PROPS = {
+  dragHandle: ".frame-drag-handle",
+  zIndex: -1,
+  style: { pointerEvents: "none" as const },
+};

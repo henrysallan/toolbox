@@ -55,20 +55,20 @@ export default function PublicPrivateConfirm({
         style={{
           minWidth: 360,
           maxWidth: 420,
-          background: "#18181b",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-3)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 6,
           padding: 16,
-          fontFamily: "ui-monospace, monospace",
+          fontFamily: "var(--ui-font)",
           fontSize: 12,
-          color: "#e5e7eb",
+          color: "var(--tb-n-16)",
           boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
         }}
       >
         <div
           style={{
             marginBottom: 10,
-            color: "#a1a1aa",
+            color: "var(--tb-n-13)",
             fontSize: 10,
             textTransform: "uppercase",
             letterSpacing: 1,
@@ -79,7 +79,7 @@ export default function PublicPrivateConfirm({
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
           {title}
         </div>
-        <div style={{ color: "#a1a1aa", lineHeight: 1.5, marginBottom: 14 }}>
+        <div style={{ color: "var(--tb-n-13)", lineHeight: 1.5, marginBottom: 14 }}>
           {body}
         </div>
         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
@@ -90,9 +90,9 @@ export default function PublicPrivateConfirm({
             onClick={onConfirm}
             style={{
               ...btnStyle(),
-              background: toPublic ? "#16a34a" : "#b45309",
-              border: `1px solid ${toPublic ? "#16a34a" : "#b45309"}`,
-              color: toPublic ? "#dcfce7" : "#fef3c7",
+              background: toPublic ? "var(--tb-a-green-600)" : "var(--tb-a-amber-700)",
+              border: `1px solid ${toPublic ? "var(--tb-a-green-600)" : "var(--tb-a-amber-700)"}`,
+              color: toPublic ? "var(--tb-a-green-100)" : "var(--tb-a-amber-100)",
             }}
           >
             {toPublic ? "Make public" : "Make private"}
@@ -107,8 +107,8 @@ function btnStyle(): React.CSSProperties {
   return {
     padding: "4px 10px",
     background: "transparent",
-    border: "1px solid #3f3f46",
-    color: "#e5e7eb",
+    border: "1px solid var(--tb-n-9)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 11,
     borderRadius: 3,

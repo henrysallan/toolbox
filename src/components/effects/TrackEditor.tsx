@@ -7,33 +7,46 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  ownerDocument,
+  ownerWindow,
+  usePanelWindow,
+} from "@/components/effects/layout/panel-window";
 import type { Edge, Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
-import { useClock } from "@/state/playback-clock";
+import { playbackClock } from "@/state/playback-clock";
 import {
   type EasingPreset,
-  type Keyframe,
   type KeyframeAnimationBlock,
   type ProjectTimeline,
   EASING_PRESET_ORDER,
   EASING_PRESET_LABELS,
-  easingPathFor,
   emptyAnimationBlock,
   evaluateKeyframesAt,
   findKeyframeAt,
-  diamondStateFor,
   isStepOnly,
   removeKeyframeAt,
   snapTickToFrame,
   upsertKeyframe,
+  type Keyframe,
 } from "@/engine/keyframes";
 import { getNodeDef } from "@/engine/registry";
 import { getEffectiveDevice } from "./input-device";
 import { GROUP_TYPE } from "@/engine/groups";
 import { resolvePromotedParams } from "@/state/graph-ops";
-import { LAYER_OPACITY_PREFIX, parseRampParamKey } from "@/engine/conventions";
+import {
+  anchorTrackId,
+  LAYER_OPACITY_PREFIX,
+  parseRampParamKey,
+} from "@/engine/conventions";
+import {
+  getPublishedAnchorSelection,
+  requestAnchorSelection,
+  subscribePublishedAnchorSelection,
+} from "./spline-anchor-scope";
 import {
   type ClipBlock,
   clipSlipsOnInTrim,
@@ -44,6 +57,79 @@ import {
   splitClipsAt,
 } from "@/engine/clips";
 import type { ParamType } from "@/engine/types";
+import {
+  COLOR_ACCENT,
+  COLOR_BG,
+  COLOR_BORDER,
+  COLOR_CLIP_BORDER,
+  COLOR_CLIP_BORDER_SELECTED,
+  COLOR_CLIP_FILL,
+  COLOR_CLIP_FILL_HOVER,
+  COLOR_CLIP_FILL_SELECTED,
+  COLOR_CLIP_GHOST,
+  COLOR_CLIP_GHOST_BORDER,
+  COLOR_CLIP_GHOST_BORDER_HOVER,
+  COLOR_CLIP_GHOST_HOVER,
+  COLOR_CLIP_HANDLE,
+  COLOR_CLIP_HANDLE_HOVER,
+  COLOR_DIAMOND,
+  COLOR_DIAMOND_BORDER,
+  COLOR_DIAMOND_HOVER,
+  COLOR_DIAMOND_HOVER_BORDER,
+  COLOR_DIAMOND_SELECTED_BORDER,
+  COLOR_RULER_TEXT,
+  COLOR_RULER_TICK,
+  COLOR_SEGMENT,
+  COLOR_SEGMENT_HOLD,
+  COLOR_SEGMENT_HOVER,
+  KEY_SIZE,
+  SEGMENT_HIT_PX,
+  COLOR_GUTTER_BG,
+  COLOR_GUTTER_BORDER,
+  COLOR_GUTTER_CHEVRON,
+  COLOR_GUTTER_TEXT,
+  COLOR_GUTTER_TEXT_STRONG,
+  COLOR_LANE_SEP,
+  COLOR_MUTED,
+  COLOR_TEXT,
+  GUTTER_RADIUS,
+  COLOR_LANE_SELECTED_BG,
+  KEY_HIT_PX,
+  ANCHOR_HIGHLIGHT_BG,
+  ANCHOR_HIGHLIGHT_EDGE,
+  SNAP_PROXIMITY_PX,
+  CLIP_EDGE_PX,
+  MARQUEE_BORDER,
+  MARQUEE_FILL,
+  RULER_HEIGHT,
+  ZOOM_SENSITIVITY,
+} from "./timeline/theme";
+import { clampPixelsPerTick, useTimelineView } from "./timeline/view";
+import {
+  type GroupBase,
+  type KeyframeOpResult,
+  type SelectionKey,
+  buildGroupBases,
+  keyframeValuesEqual,
+  groupSelection,
+  laneKey,
+  moveKeyframes,
+  nextGestureKey,
+  scaleKeyframes as scaleKeyframesOp,
+  selKey,
+  staggerKeyframes as staggerKeyframesOp,
+} from "./timeline/keyframe-ops";
+import { moveClipWindow, trimClipWindow } from "./timeline/clip-ops";
+import { rulerSpacing as computeRulerSpacing } from "./timeline/ruler";
+import { LaneFrameTicks, RulerFrameStubs } from "./timeline/FrameTicks";
+import { EasingTile } from "./timeline/EasingTile";
+import {
+  HoverLine,
+  type HoverLineHandle,
+  PlayheadHandle,
+  PlayheadLine,
+} from "./timeline/PlayheadChrome";
+import { DiamondNav } from "./timeline/DiamondNav";
 
 // ---------------------------------------------------------------------
 // Public types
@@ -84,40 +170,23 @@ export interface TrackEditorProps {
 }
 
 // ---------------------------------------------------------------------
-// Constants & theme
+// Constants
 // ---------------------------------------------------------------------
+// Palette + shared metrics live in ./timeline/theme.ts; only the
+// Tracks-specific layout constants stay here.
 
-const COLOR_BG = "#0a0a0a";
-const COLOR_LANE_SEP = "#141417";
-const COLOR_BORDER = "#27272a";
-const COLOR_MUTED = "#52525b";
-const COLOR_TEXT = "#d4d4d8";
-const COLOR_ACCENT = "#3b82f6";
-const COLOR_PLAYHEAD = "#22c55e";
-const COLOR_DIAMOND = "#f59e0b";
-const COLOR_DIAMOND_SELECTED = COLOR_ACCENT;
-// Clip bar palette. Teal so clips read distinctly from the amber keyframes.
-// Base is intentionally dim; hover and selected brighten progressively.
-const COLOR_CLIP_FILL = "#123c44"; // dim resting fill
-const COLOR_CLIP_FILL_HOVER = "#185863"; // brighter on hover
-const COLOR_CLIP_FILL_SELECTED = "#0e7490"; // brightest, selected
-const COLOR_CLIP_BORDER = "#1d6373"; // dim resting border
-const COLOR_CLIP_BORDER_SELECTED = "#67e8f9"; // bright cyan when selected
-const COLOR_CLIP_HANDLE = "#2b8093"; // resting edge grip
-const COLOR_CLIP_HANDLE_HOVER = "#a5f3fc"; // grip lit on hover
-const COLOR_CLIP_GHOST = "rgba(34, 211, 238, 0.07)";
-
-const RULER_HEIGHT = 24;
 const NODE_HEADER_HEIGHT = 22;
 const INSPECTOR_HEIGHT = 28;
 const PARAM_LABEL_WIDTH = 184;
-
-const DEFAULT_TRACK_HEIGHT = 28;
-const MIN_TRACK_HEIGHT = 16;
-const MAX_TRACK_HEIGHT = 64;
-
-const MIN_PIXELS_PER_TICK = 0.0002;
-const MAX_PIXELS_PER_TICK = 1.5;
+const TRACK_HEIGHT = 28;
+// The label gutter is drawn as an inset rounded card floating over the
+// lanes. The inset applies on the left, top and bottom — NOT the right,
+// where the card's edge IS the gutter/lane boundary. Deliberately not
+// applied to the lanes viewport's left edge: the ruler above shares that
+// origin, so shifting it would slide every tick off its keyframes.
+const GUTTER_INSET = 12;
+// What the time axis must clear to keep tick 0 just right of the card.
+const GUTTER_RESERVE = PARAM_LABEL_WIDTH + GUTTER_INSET;
 
 const EASING_PRESETS = EASING_PRESET_ORDER;
 const EASING_LABELS = EASING_PRESET_LABELS;
@@ -157,16 +226,6 @@ type LaneRow =
       selected: boolean;
     };
 
-interface SelectionKey {
-  nodeId: string;
-  paramName: string;
-  tick: number;
-}
-
-function selKey(s: SelectionKey): string {
-  return `${s.nodeId}\u0000${s.paramName}\u0000${s.tick}`;
-}
-
 type DragKind =
   | { kind: "none" }
   | {
@@ -185,27 +244,19 @@ type DragKind =
       startMouseY: number;
       currentMouseX: number;
       currentMouseY: number;
+      // Shift held at start → merge the box's keys into the selection.
+      additive: boolean;
     }
   | {
       kind: "moveKeyframes";
       startMouseX: number;
-      // Snapshot of original ticks per selected key.
-      starts: Map<string, number>;
-      // Per-(nodeId, paramName) snapshot of the entire keyframe array at
-      // drag-start, so each mousemove can rebuild the array from a stable
-      // baseline. Without this, after the first apply the live block has
-      // the new ticks and we lose the ability to look up originals.
-      groupBases: Map<
-        string,
-        {
-          nodeId: string;
-          paramName: string;
-          originals: Keyframe[];
-          selectedOriginalTicks: Set<number>;
-        }
-      >;
-      // Anchor tick used to compute snapping.
-      anchorStartTick: number;
+      // Per-lane snapshot of the entire keyframe arrays at drag-start,
+      // so each mousemove rebuilds from a stable baseline (see
+      // timeline/keyframe-ops.ts).
+      groupBases: GroupBase[];
+      // Undo coalesce key for this gesture — unique per drag so two
+      // rapid drags never merge into one history entry.
+      gestureKey: string;
       // Option/Alt held → fan the selection across lanes instead of
       // moving it uniformly (stagger).
       stagger?: boolean;
@@ -237,19 +288,11 @@ type DragKind =
   | {
       kind: "scaleSelection";
       side: "left" | "right";
-      // Anchor (opposite edge in ticks) and starts snapshot.
+      // Anchor (opposite edge in ticks) and drag-start snapshots.
       anchorTick: number;
       startEdgeTick: number;
-      starts: Map<string, number>;
-      groupBases: Map<
-        string,
-        {
-          nodeId: string;
-          paramName: string;
-          originals: Keyframe[];
-          selectedOriginalTicks: Set<number>;
-        }
-      >;
+      groupBases: GroupBase[];
+      gestureKey: string;
     };
 
 interface ContextMenuState {
@@ -279,32 +322,108 @@ export function TrackEditor(props: TrackEditorProps) {
     onSelectNode,
     fitVersion,
   } = props;
-  // Clock read from the playback store (clock-store spec, step 3): this
-  // editor re-renders per frame by design (playhead + diamond states);
-  // subscribing here keeps the tick off the shell's props.
-  const currentTick = useClock((s) => s.tick);
+  // Null in the main window; the child Window when this editor is
+  // popped out (080226_panel-popout-windows.md §3). Every window-level
+  // listener below resolves through it.
+  const panelWin = usePanelWindow();
+  // No top-level clock subscription (clock-store spec, leaf pass): the
+  // playhead chrome and DiamondNav subscribe themselves, and actions
+  // read the tick imperatively at event time — playback no longer
+  // re-renders the whole editor per frame.
   const fullNodes = allNodes ?? nodes;
   // Stable identity for the no-edges fallback so downstream memos don't
   // recompute every render.
   const allEdges = useMemo(() => edges ?? [], [edges]);
 
-  // --- View state (local) ---
-  const [viewTickOffset, setViewTickOffset] = useState(0); // leftmost visible tick
-  const [pixelsPerTick, setPixelsPerTick] = useState(0.01); // adjusted on first mount
-  const [trackHeight, setTrackHeight] = useState(DEFAULT_TRACK_HEIGHT);
+  // --- View state (shared tick↔px math; see timeline/view.ts) ---
+  const view = useTimelineView();
+  const {
+    pixelsPerTick,
+    viewTickOffset,
+    setPixelsPerTick,
+    setViewTickOffset,
+    tickToPx,
+    pxToTick,
+    zoomTo,
+    fit: fitView,
+  } = view;
   const [scrollY, setScrollY] = useState(0);
 
   // --- Selection ---
-  const [selection, setSelection] = useState<Set<string>>(new Set());
-  // Mirror selection content as objects for inspector/easing ops (parallel
-  // to the string set so order-of-most-recent click is preserved).
+  // The list is the source of truth (order-of-most-recent click is
+  // preserved for the inspector); the Set is derived for membership
+  // tests. Previously these were two parallel useStates kept in sync by
+  // hand at every call site.
   const [selectionList, setSelectionList] = useState<SelectionKey[]>([]);
+  const selection = useMemo(
+    () => new Set(selectionList.map(selKey)),
+    [selectionList]
+  );
+
+  // ---- Anchor link with the Spline Draw overlay --------------------------
+  // (spline-anchor-scope.ts). A Spline Draw node's per-anchor keyframes
+  // live on `anchor_p:<id>`-style virtual tracks, so a lane here and an
+  // anchor on canvas can name the same thing.
+
+  // tracks → canvas: selecting keyframes on anchor lanes asks the overlay
+  // to select those anchors. Overlays for other nodes ignore the request,
+  // so this doesn't need to know which spline node is active. Only fires
+  // when the selection is anchor lanes of a SINGLE node — a mixed or
+  // cross-node selection has no one anchor set to mean.
+  useEffect(() => {
+    let nodeId: string | null = null;
+    const ids: string[] = [];
+    for (const s of selectionList) {
+      const anchorId = anchorTrackId(s.paramName);
+      if (!anchorId) return;
+      if (nodeId === null) nodeId = s.nodeId;
+      else if (nodeId !== s.nodeId) return;
+      if (!ids.includes(anchorId)) ids.push(anchorId);
+    }
+    if (nodeId && ids.length > 0) requestAnchorSelection(nodeId, ids);
+  }, [selectionList]);
+
+  // canvas → tracks: the anchors selected on canvas, so their lanes can
+  // be highlighted. A highlight, NOT a selection — that's what keeps the
+  // two channels from feeding each other.
+  const canvasAnchors = useSyncExternalStore(
+    subscribePublishedAnchorSelection,
+    getPublishedAnchorSelection,
+    getPublishedAnchorSelection
+  );
+  const highlightedAnchorIds = useMemo(
+    () => new Set(canvasAnchors.anchorIds),
+    [canvasAnchors]
+  );
+  /** Is this lane one of the anchors currently selected on canvas? */
+  const isAnchorHighlighted = useCallback(
+    (nodeId: string, paramName: string): boolean => {
+      if (canvasAnchors.nodeId !== nodeId || highlightedAnchorIds.size === 0) {
+        return false;
+      }
+      const id = anchorTrackId(paramName);
+      return !!id && highlightedAnchorIds.has(id);
+    },
+    [canvasAnchors.nodeId, highlightedAnchorIds]
+  );
 
   // --- Drag / context menu ---
   const [drag, setDrag] = useState<DragKind>({ kind: "none" });
-  // Cursor x (px within the lanes viewport) while hovering — drives the
-  // faded playhead-preview line. Null when the cursor is off the lanes.
-  const [hoverX, setHoverX] = useState<number | null>(null);
+  // Faded playhead-preview lines (ruler + lanes). Positioned
+  // imperatively through HoverLine handles — mousemove writes the
+  // transform directly instead of re-rendering the editor per cursor
+  // event.
+  const rulerHoverRef = useRef<HoverLineHandle | null>(null);
+  const lanesHoverRef = useRef<HoverLineHandle | null>(null);
+  const setHoverLineX = (x: number | null) => {
+    rulerHoverRef.current?.set(x);
+    lanesHoverRef.current?.set(x);
+  };
+  // Hide the preview the moment any drag starts (scrub already moves the
+  // real playhead).
+  useEffect(() => {
+    if (drag.kind !== "none") setHoverLineX(null);
+  }, [drag.kind]);
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
 
   // --- Clipboard for copy/paste ---
@@ -332,9 +451,8 @@ export function TrackEditor(props: TrackEditorProps) {
   // window-level mousedown/keydown closures.
   const [razorMode, setRazorMode] = useState(false);
   const razorModeRef = useRef(false);
-  razorModeRef.current = razorMode;
-  // Latest split-at-playhead action, so the window keydown handler (which is
-  // re-subscribed only on selection change) always splits at the live tick.
+  // Latest split-at-playhead action, so the once-subscribed window
+  // keydown handler always splits at the live tick.
   const splitAtPlayheadRef = useRef<() => void>(() => {});
 
   // Clip selection (one window) and hover, for styling + cursor + delete.
@@ -343,9 +461,9 @@ export function TrackEditor(props: TrackEditorProps) {
   const [hoveredClip, setHoveredClip] = useState<
     (ClipRef & { region: "in" | "out" | "body" }) | null
   >(null);
-  // Refs so the selection-scoped keydown handler sees the live values.
+  // Refs so the once-subscribed keydown handler sees the live values
+  // (synced in the every-render effect below, next to the actions).
   const selectedClipRef = useRef<ClipRef | null>(null);
-  selectedClipRef.current = selectedClip;
   const deleteSelectedClipRef = useRef<() => void>(() => {});
 
   // Refs for measuring and event capture.
@@ -463,17 +581,17 @@ export function TrackEditor(props: TrackEditorProps) {
     let y = 0;
     for (const row of lanes) {
       ys.push(y);
-      y += row.kind === "nodeHeader" ? NODE_HEADER_HEIGHT : trackHeight;
+      y += row.kind === "nodeHeader" ? NODE_HEADER_HEIGHT : TRACK_HEIGHT;
     }
     return ys;
-  }, [lanes, trackHeight]);
+  }, [lanes]);
   const totalLanesHeight =
     laneRowYs.length === 0
       ? 0
       : laneRowYs[laneRowYs.length - 1] +
         (lanes[lanes.length - 1].kind === "nodeHeader"
           ? NODE_HEADER_HEIGHT
-          : trackHeight);
+          : TRACK_HEIGHT);
 
   // ---- Container width tracking ----
   useLayoutEffect(() => {
@@ -487,48 +605,51 @@ export function TrackEditor(props: TrackEditorProps) {
     return () => ro.disconnect();
   }, []);
 
-  // ---- Fit on first mount: scale pixelsPerTick so sceneDuration fits ----
+  // ---- Fit (first mount, Home key, dock-header button) ----
+  // The label gutter floats OVER the lanes' left edge, so the fit
+  // reserves its width: tick 0 lands just right of the gutter instead of
+  // underneath it, keeping early keyframes visible and clickable.
+  const lanesAreaWidth = Math.max(50, containerWidth);
+
+  const fit = useCallback(() => {
+    if (lanesAreaWidth <= 0) return;
+    fitView(lanesAreaWidth, timeline.sceneDurationTicks, GUTTER_RESERVE);
+  }, [lanesAreaWidth, timeline.sceneDurationTicks, fitView]);
+
   useEffect(() => {
     if (fitDoneRef.current) return;
     if (containerWidth <= 0) return;
-    const lanesPx = Math.max(50, containerWidth);
-    const pad = 0.95;
-    const pps =
-      timeline.sceneDurationTicks > 0
-        ? (lanesPx * pad) / timeline.sceneDurationTicks
-        : 0.01;
-    setPixelsPerTick(
-      Math.max(MIN_PIXELS_PER_TICK, Math.min(MAX_PIXELS_PER_TICK, pps))
-    );
-    setViewTickOffset(0);
+    fit();
     fitDoneRef.current = true;
-  }, [containerWidth, timeline.sceneDurationTicks]);
+  }, [containerWidth, fit]);
 
-  // ---- Helpers: tick <-> pixel ----
-  const lanesAreaWidth = Math.max(50, containerWidth);
-
-  const tickToPx = useCallback(
-    (tick: number) => (tick - viewTickOffset) * pixelsPerTick,
-    [viewTickOffset, pixelsPerTick]
-  );
-  const pxToTick = useCallback(
-    (px: number) => viewTickOffset + px / pixelsPerTick,
-    [viewTickOffset, pixelsPerTick]
-  );
-
-  // ---- Fit handler (Home key behavior, also exposed via toolbar) ----
-  const fit = useCallback(() => {
-    if (lanesAreaWidth <= 0) return;
-    const pad = 0.95;
-    const pps =
-      timeline.sceneDurationTicks > 0
-        ? (lanesAreaWidth * pad) / timeline.sceneDurationTicks
-        : 0.01;
-    setPixelsPerTick(
-      Math.max(MIN_PIXELS_PER_TICK, Math.min(MAX_PIXELS_PER_TICK, pps))
-    );
-    setViewTickOffset(0);
-  }, [lanesAreaWidth, timeline.sceneDurationTicks]);
+  // F — zoom/pan so the selected keyframes fill the usable viewport
+  // (the region right of the floating label gutter).
+  const focusSelection = useCallback(() => {
+    if (selectionList.length === 0) return;
+    let minTick = Infinity;
+    let maxTick = -Infinity;
+    for (const s of selectionList) {
+      if (s.tick < minTick) minTick = s.tick;
+      if (s.tick > maxTick) maxTick = s.tick;
+    }
+    if (!isFinite(minTick)) return;
+    // A single column still gets a sensible zoom: pretend it spans 10
+    // frames so F on one keyframe centers it rather than zooming to max.
+    const span = Math.max(maxTick - minTick, timeline.ticksPerFrame * 10);
+    const usable = Math.max(50, lanesAreaWidth - GUTTER_RESERVE);
+    const pps = clampPixelsPerTick((usable * 0.6) / span);
+    const centerTick = (minTick + maxTick) / 2;
+    const centerPx = GUTTER_RESERVE + usable / 2;
+    setPixelsPerTick(pps);
+    setViewTickOffset(centerTick - centerPx / pps);
+  }, [
+    selectionList,
+    lanesAreaWidth,
+    timeline.ticksPerFrame,
+    setPixelsPerTick,
+    setViewTickOffset,
+  ]);
 
   // Parent-triggered fit (the fit button now lives in the dock header).
   // Skip the initial render so this doesn't fight the first-mount fit.
@@ -572,17 +693,12 @@ export function TrackEditor(props: TrackEditorProps) {
           return;
         }
         const mx = e.clientX - lanesRect.left;
-        const tickAtCursor = pxToTick(mx);
         const mag = Math.abs(dx) > Math.abs(dy) ? dx : dy;
-        setPixelsPerTick((prev) => {
-          const factor = Math.exp(-mag * 0.0015);
-          const next = Math.max(
-            MIN_PIXELS_PER_TICK,
-            Math.min(MAX_PIXELS_PER_TICK, prev * factor)
-          );
-          setViewTickOffset(tickAtCursor - mx / next);
-          return next;
-        });
+        zoomTo(
+          mx,
+          pxToTick(mx),
+          pixelsPerTick * Math.exp(-mag * ZOOM_SENSITIVITY)
+        );
         return;
       }
 
@@ -593,17 +709,11 @@ export function TrackEditor(props: TrackEditorProps) {
         e.preventDefault();
         e.stopPropagation();
         const mx = e.clientX - lanesRect.left;
-        const tickAtCursor = pxToTick(mx);
-        setPixelsPerTick((prev) => {
-          const factor = Math.exp(-dx * 0.0015);
-          const next = Math.max(
-            MIN_PIXELS_PER_TICK,
-            Math.min(MAX_PIXELS_PER_TICK, prev * factor)
-          );
-          const newOffset = tickAtCursor - mx / next;
-          setViewTickOffset(newOffset);
-          return next;
-        });
+        zoomTo(
+          mx,
+          pxToTick(mx),
+          pixelsPerTick * Math.exp(-dx * ZOOM_SENSITIVITY)
+        );
         return;
       }
 
@@ -625,25 +735,39 @@ export function TrackEditor(props: TrackEditorProps) {
     };
     el.addEventListener("wheel", handler, { passive: false });
     return () => el.removeEventListener("wheel", handler);
-  }, [pxToTick, pixelsPerTick, totalLanesHeight]);
+  }, [pxToTick, pixelsPerTick, totalLanesHeight, zoomTo, setViewTickOffset]);
 
   // Middle-button pointerdown: stop it reaching the preview canvas's
   // window-level middle-drag pan (bug #2 — the bleed-through). Scoped to
-  // button 1 so left-button keyframe interactions are untouched. Plain
-  // middle-drag pans via the React onMouseDown above (the compat mousedown
-  // still fires); Cmd/Ctrl + middle-drag zooms the time axis here.
+  // button 1 so left-button keyframe interactions are untouched.
+  //
+  // BOTH middle-button gestures live here. This listener is on containerRef,
+  // an ANCESTOR of the lanes area, and React delegates from the app root —
+  // so it runs first, and its stopPropagation means the React surface
+  // handler never sees button 1. (It used to lean on the compat mousedown
+  // reaching React afterwards for the plain-pan case; pointer events have no
+  // such second delivery, so the pan is started directly below.)
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const onDown = (e: PointerEvent) => {
       if (e.button !== 1) return;
       e.stopPropagation();
-      if (!(e.metaKey || e.ctrlKey)) return;
-      // preventDefault suppresses the compat mousedown, so the React pan
-      // handler won't also fire for this Cmd/Ctrl + middle gesture.
       e.preventDefault();
       const rect = lanesAreaRef.current?.getBoundingClientRect();
       if (!rect) return;
+      // Plain middle-drag = pan.
+      if (!(e.metaKey || e.ctrlKey)) {
+        setDrag({
+          kind: "pan",
+          startMouseX: e.clientX,
+          startMouseY: e.clientY,
+          startTickOffset: viewTickOffset,
+          startScrollY: scrollY,
+        });
+        return;
+      }
+      // Cmd/Ctrl + middle-drag = zoom the time axis.
       const startX = e.clientX;
       const startY = e.clientY;
       const anchorX = startX - rect.left;
@@ -651,34 +775,45 @@ export function TrackEditor(props: TrackEditorProps) {
       const tickAt = viewTickOffset + anchorX / startPpt;
       const onMove = (ev: PointerEvent) => {
         // Drag up zooms in (larger pixels-per-tick).
-        const factor = Math.exp(-(ev.clientY - startY) * 0.0015);
-        const next = Math.max(
-          MIN_PIXELS_PER_TICK,
-          Math.min(MAX_PIXELS_PER_TICK, startPpt * factor)
-        );
-        setViewTickOffset(tickAt - anchorX / next);
-        setPixelsPerTick(next);
+        const factor = Math.exp(-(ev.clientY - startY) * ZOOM_SENSITIVITY);
+        zoomTo(anchorX, tickAt, startPpt * factor);
       };
+      const win = ownerWindow(el);
       const onUp = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
+        win.removeEventListener("pointermove", onMove);
+        win.removeEventListener("pointerup", onUp);
       };
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
+      win.addEventListener("pointermove", onMove);
+      win.addEventListener("pointerup", onUp);
     };
     el.addEventListener("pointerdown", onDown);
     return () => el.removeEventListener("pointerdown", onDown);
-  }, [pixelsPerTick, viewTickOffset]);
+  }, [pixelsPerTick, viewTickOffset, zoomTo, scrollY]);
 
-  // ---- Keyboard: space-pan, delete, escape ----
+  // ---- Keyboard: space-pan, tools, delete, copy/paste, Home/F ----
   // Delete/Backspace is gated by `hoveredRef` so the keyframe deletion
   // only fires while the mouse is over the Track Editor — otherwise the
   // node-graph editor's own delete handler is the right target.
+  //
+  // The listener subscribes ONCE and reads the latest closures through
+  // `keyActionsRef` (assigned every render). Previously it re-subscribed
+  // only on selection identity, so Cmd+V pasted at whatever tick the
+  // playhead had when the selection last changed, and Cmd+C copied from
+  // a stale block index.
   const hoveredRef = useRef(false);
+  const keyActionsRef = useRef({
+    deleteSelected: () => {},
+    copySelected: () => {},
+    pasteAtPlayhead: () => {},
+    fit: () => {},
+    focusSelection: () => {},
+    hasSelection: false,
+  });
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea") return;
+      const acts = keyActionsRef.current;
 
       if (e.code === "Space" && !spaceDownRef.current && !e.shiftKey) {
         // !shiftKey so Shift+Space (the pie menu chord) never starts a pan.
@@ -688,15 +823,15 @@ export function TrackEditor(props: TrackEditorProps) {
         return;
       }
       if (e.key === "Escape") {
-        setSelection(new Set());
         setSelectionList([]);
         setSelectedClip(null);
         setMenu(null);
         setRazorMode(false);
         return;
       }
-      // Tool shortcuts (only while hovering the editor so bare keys don't
-      // hijack typing elsewhere): C = razor/blade, V = select.
+      // Tool + view shortcuts (only while hovering the editor so bare
+      // keys don't hijack typing elsewhere): C = razor/blade, V = select,
+      // Home = fit the scene, F = focus the selection.
       if (!e.metaKey && !e.ctrlKey && !e.altKey) {
         if (e.key.toLowerCase() === "c" && hoveredRef.current) {
           e.preventDefault();
@@ -706,6 +841,17 @@ export function TrackEditor(props: TrackEditorProps) {
         if (e.key.toLowerCase() === "v" && hoveredRef.current) {
           e.preventDefault();
           setRazorMode(false);
+          return;
+        }
+        if (e.key === "Home" && hoveredRef.current) {
+          e.preventDefault();
+          acts.fit();
+          return;
+        }
+        if (e.key.toLowerCase() === "f" && hoveredRef.current) {
+          if (!acts.hasSelection) return;
+          e.preventDefault();
+          acts.focusSelection();
           return;
         }
       }
@@ -726,28 +872,27 @@ export function TrackEditor(props: TrackEditorProps) {
           deleteSelectedClipRef.current();
           return;
         }
-        if (selection.size === 0) return;
+        if (!acts.hasSelection) return;
         e.preventDefault();
         e.stopPropagation();
-        deleteSelected();
+        acts.deleteSelected();
       }
       // Copy / paste — only when hovering the editor so the global
       // Cmd+C / Cmd+V shortcuts don't get hijacked elsewhere.
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c") {
         if (!hoveredRef.current) return;
-        if (selection.size === 0) return;
+        if (!acts.hasSelection) return;
         e.preventDefault();
         e.stopPropagation();
-        copySelected();
+        acts.copySelected();
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") {
         if (!hoveredRef.current) return;
         if (!clipboardRef.current) return;
         e.preventDefault();
         e.stopPropagation();
-        pasteAtPlayhead();
+        acts.pasteAtPlayhead();
       }
-      // TODO: keyboard shortcuts for Home (fit) and F (focus selection).
     }
     function onKeyUp(e: KeyboardEvent) {
       if (e.code === "Space") {
@@ -755,13 +900,14 @@ export function TrackEditor(props: TrackEditorProps) {
         setSpaceDown(false);
       }
     }
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
+    const win = panelWin ?? window;
+    win.addEventListener("keydown", onKeyDown);
+    win.addEventListener("keyup", onKeyUp);
     return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
+      win.removeEventListener("keydown", onKeyDown);
+      win.removeEventListener("keyup", onKeyUp);
     };
-  }, [selection]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [panelWin]);
 
   // ---- Block-by-key index for fast updates ----
   // nodeId → paramName → block (uses the same block reference as `lanes`)
@@ -780,54 +926,48 @@ export function TrackEditor(props: TrackEditorProps) {
     return idx;
   }, [fullNodes]);
 
-  // Snapshot the original keyframe arrays for every (nodeId, paramName)
-  // touched by `sel`, plus which of their ticks were selected. Used as
-  // the immutable baseline for in-progress drags so each mousemove
-  // recomputes from the original state instead of the just-mutated one.
-  function buildGroupBases(sel: SelectionKey[]) {
-    const bases = new Map<
-      string,
-      {
-        nodeId: string;
-        paramName: string;
-        originals: Keyframe[];
-        selectedOriginalTicks: Set<number>;
-      }
-    >();
-    for (const s of sel) {
-      const gkey = `${s.nodeId} ${s.paramName}`;
-      let entry = bases.get(gkey);
-      if (!entry) {
-        const block = blockIndex.get(s.nodeId)?.get(s.paramName);
-        if (!block) continue;
-        entry = {
-          nodeId: s.nodeId,
-          paramName: s.paramName,
-          originals: block.keyframes.map((k) => ({ ...k })),
-          selectedOriginalTicks: new Set<number>(),
-        };
-        bases.set(gkey, entry);
-      }
-      entry.selectedOriginalTicks.add(s.tick);
+  // Adapter for the shared snapshot/op helpers (timeline/keyframe-ops).
+  const getBlockForBases = (nodeId: string, paramName: string) =>
+    blockIndex.get(nodeId)?.get(paramName);
+
+  // Apply a shared keyframe-op result: one onAnimationChange per lane,
+  // all sharing the gesture's coalesce key so the whole gesture is ONE
+  // undo entry, then adopt the rebuilt selection. A null result (e.g. a
+  // scale pinned at its minimum span) keeps the last applied state.
+  function applyKeyframeOp(
+    result: KeyframeOpResult | null,
+    gestureKey: string
+  ) {
+    if (!result) return;
+    for (const u of result.updates) {
+      const block = blockIndex.get(u.nodeId)?.get(u.paramName);
+      if (!block) continue;
+      onAnimationChange(
+        u.nodeId,
+        u.paramName,
+        { ...block, keyframes: u.keyframes },
+        gestureKey
+      );
     }
-    return bases;
+    setSelectionList(result.selection);
   }
 
-  // Group selection entries by (nodeId, paramName) so we can emit one
-  // onAnimationChange per affected block.
-  function groupSelection(sel: SelectionKey[]) {
-    const groups = new Map<string, SelectionKey[]>();
-    for (const s of sel) {
-      const k = `${s.nodeId}\u0000${s.paramName}`;
-      const list = groups.get(k);
-      if (list) list.push(s);
-      else groups.set(k, [s]);
-    }
-    return groups;
+  // Stagger fans lanes top → bottom; order the bases by lane row index.
+  function orderBasesByLane(bases: GroupBase[]): GroupBase[] {
+    const idxOf = (b: GroupBase) =>
+      lanes.findIndex(
+        (r) =>
+          r.kind === "paramLane" &&
+          r.nodeId === b.nodeId &&
+          r.paramName === b.paramName
+      );
+    return [...bases].sort((a, b) => idxOf(a) - idxOf(b));
   }
 
   function deleteSelected() {
     if (selectionList.length === 0) return;
+    // One gesture key for every affected lane → one undo entry.
+    const gestureKey = nextGestureKey("delete");
     const groups = groupSelection(selectionList);
     for (const [, items] of groups) {
       const { nodeId, paramName } = items[0];
@@ -837,9 +977,8 @@ export function TrackEditor(props: TrackEditorProps) {
       for (const it of items) {
         next = removeKeyframeAt(next, it.tick);
       }
-      onAnimationChange(nodeId, paramName, next);
+      onAnimationChange(nodeId, paramName, next, gestureKey);
     }
-    setSelection(new Set());
     setSelectionList([]);
   }
 
@@ -872,8 +1011,11 @@ export function TrackEditor(props: TrackEditorProps) {
   function pasteAtPlayhead() {
     const clip = clipboardRef.current;
     if (!clip || clip.items.length === 0) return;
-    // Group pastes by (nodeId, paramName) so each affected block emits
-    // a single onAnimationChange call.
+    // The LIVE playhead — read at paste time, not captured at render.
+    const tickNow = playbackClock.get().tick;
+    const gestureKey = nextGestureKey("paste");
+    // Group pastes by lane so each affected block emits a single
+    // onAnimationChange call.
     const grouped = new Map<
       string,
       {
@@ -883,8 +1025,8 @@ export function TrackEditor(props: TrackEditorProps) {
       }
     >();
     for (const it of clip.items) {
-      const targetTick = currentTick + it.offsetTicks;
-      const key = `${it.nodeId} ${it.paramName}`;
+      const targetTick = tickNow + it.offsetTicks;
+      const key = laneKey(it.nodeId, it.paramName);
       const g = grouped.get(key);
       const item = {
         tick: targetTick,
@@ -912,11 +1054,16 @@ export function TrackEditor(props: TrackEditorProps) {
       const merged = [...filtered, ...g.items.map((i) => i.keyframe)].sort(
         (a, b) => a.tick - b.tick
       );
-      onAnimationChange(g.nodeId, g.paramName, {
-        ...block,
-        animated: true,
-        keyframes: merged,
-      });
+      onAnimationChange(
+        g.nodeId,
+        g.paramName,
+        {
+          ...block,
+          animated: true,
+          keyframes: merged,
+        },
+        gestureKey
+      );
       for (const i of g.items) {
         newSelection.push({
           nodeId: g.nodeId,
@@ -926,19 +1073,56 @@ export function TrackEditor(props: TrackEditorProps) {
       }
     }
     setSelectionList(newSelection);
-    setSelection(new Set(newSelection.map(selKey)));
+  }
+
+  // Current stored value for a param, resolving virtual keys (merge
+  // layer opacity, ramp stops) that have no entry in `params`. Returns
+  // undefined when no value can be determined — callers then skip the
+  // insert instead of writing an undefined-valued keyframe.
+  function storedParamValue(
+    node: Node<NodeDataPayload> | undefined,
+    paramName: string
+  ): unknown {
+    if (!node) return undefined;
+    const direct = node.data.params[paramName];
+    if (direct !== undefined) return direct;
+    if (paramName.startsWith(LAYER_OPACITY_PREFIX)) {
+      const layerId = paramName.slice(LAYER_OPACITY_PREFIX.length);
+      const layersRaw = node.data.params?.layers;
+      if (!Array.isArray(layersRaw)) return undefined;
+      const layer = layersRaw.find(
+        (l) => (l as { id?: string } | null)?.id === layerId
+      ) as { opacity?: number } | undefined;
+      return layer ? (layer.opacity ?? 1) : undefined;
+    }
+    const rampKey = parseRampParamKey(paramName);
+    if (rampKey) {
+      const stopsRaw = node.data.params?.[rampKey.paramName];
+      if (!Array.isArray(stopsRaw)) return undefined;
+      const stop = (
+        stopsRaw as Array<({ id?: string } & Record<string, unknown>) | null>
+      ).find((s) => s?.id === rampKey.stopId);
+      if (!stop) return undefined;
+      if (rampKey.field === "color") return stop.color;
+      if (rampKey.field === "alpha")
+        return (stop.alpha as number | undefined) ?? 1;
+      return stop.position;
+    }
+    return undefined;
   }
 
   // Add / remove a keyframe at the playhead for a track (the lane-label
-  // diamond). Mirrors the param-panel diamond.
+  // diamond). Mirrors the param-panel diamond. Reads the playhead
+  // imperatively so the toggle always lands at the live tick.
   function toggleKeyAtPlayhead(
     nodeId: string,
     paramName: string,
     type: ParamType
   ) {
+    const tickNow = playbackClock.get().tick;
     const block = blockIndex.get(nodeId)?.get(paramName);
-    if (block && findKeyframeAt(block, currentTick)) {
-      const next = removeKeyframeAt(block, currentTick);
+    if (block && findKeyframeAt(block, tickNow)) {
+      const next = removeKeyframeAt(block, tickNow);
       onAnimationChange(
         nodeId,
         paramName,
@@ -949,18 +1133,20 @@ export function TrackEditor(props: TrackEditorProps) {
     const node = fullNodes.find((n) => n.id === nodeId);
     const value =
       block?.animated && block.keyframes.length > 0
-        ? evaluateKeyframesAt(block, type, currentTick)
-        : node?.data.params[paramName];
+        ? evaluateKeyframesAt(block, type, tickNow)
+        : storedParamValue(node, paramName);
+    if (value === undefined) return;
     const base = block ?? emptyAnimationBlock();
     onAnimationChange(
       nodeId,
       paramName,
-      upsertKeyframe({ ...base, animated: true }, currentTick, value)
+      upsertKeyframe({ ...base, animated: true }, tickNow, value)
     );
   }
 
   function setKeyframeEasing(targets: SelectionKey[], easing: EasingPreset) {
     if (targets.length === 0) return;
+    const gestureKey = nextGestureKey("easing");
     const groups = groupSelection(targets);
     for (const [, items] of groups) {
       const { nodeId, paramName } = items[0];
@@ -970,190 +1156,67 @@ export function TrackEditor(props: TrackEditorProps) {
       const nextKfs = block.keyframes.map((k) =>
         ticksToChange.has(k.tick) ? { ...k, easingOut: easing } : k
       );
-      onAnimationChange(nodeId, paramName, { ...block, keyframes: nextKfs });
-    }
-  }
-
-  function moveKeyframesByDelta(
-    groupBases: Map<
-      string,
-      {
-        nodeId: string;
-        paramName: string;
-        originals: Keyframe[];
-        selectedOriginalTicks: Set<number>;
-      }
-    >,
-    deltaTicks: number,
-    snap: boolean
-  ) {
-    // Rebuild every affected block from its drag-start snapshot.
-    const newSelectionListMK: SelectionKey[] = [];
-    for (const baseMK of groupBases.values()) {
-      const blockMK = blockIndex.get(baseMK.nodeId)?.get(baseMK.paramName);
-      if (!blockMK) continue;
-      const remappedMK: Keyframe[] = baseMK.originals.map((k) => {
-        if (!baseMK.selectedOriginalTicks.has(k.tick)) return { ...k };
-        let target = k.tick + deltaTicks;
-        if (snap) target = snapTickToFrame(target, timeline.ticksPerFrame);
-        target = Math.round(target);
-        return { ...k, tick: target };
-      });
-      const seenMK = new Map<number, Keyframe>();
-      for (const k of remappedMK) seenMK.set(k.tick, k);
-      const sortedMK = [...seenMK.values()].sort((a, b) => a.tick - b.tick);
       onAnimationChange(
-        baseMK.nodeId,
-        baseMK.paramName,
-        {
-          ...blockMK,
-          keyframes: sortedMK,
-        },
-        "kf-batch"
+        nodeId,
+        paramName,
+        { ...block, keyframes: nextKfs },
+        gestureKey
       );
-      for (const origTick of baseMK.selectedOriginalTicks) {
-        let target = origTick + deltaTicks;
-        if (snap) target = snapTickToFrame(target, timeline.ticksPerFrame);
-        target = Math.round(target);
-        newSelectionListMK.push({
-          nodeId: baseMK.nodeId,
-          paramName: baseMK.paramName,
-          tick: target,
-        });
-      }
     }
-    setSelectionList(newSelectionListMK);
-    setSelection(new Set(newSelectionListMK.map(selKey)));
-  }
-
-  // Stagger: order the selected lanes top → bottom (by lane row index);
-  // the topmost stays static and each lane below offsets its keys by
-  // `stepTicks × order`, preserving intra-track spacing. `stepTicks` is
-  // snapped to a frame so every offset is frame-aligned. No-op when only
-  // one lane is selected.
-  function staggerKeyframes(
-    groupBases: Map<
-      string,
-      {
-        nodeId: string;
-        paramName: string;
-        originals: Keyframe[];
-        selectedOriginalTicks: Set<number>;
-      }
-    >,
-    stepTicks: number
-  ) {
-    const step = Math.round(snapTickToFrame(stepTicks, timeline.ticksPerFrame));
-    const laneIndexOf = (nodeId: string, paramName: string) =>
-      lanes.findIndex(
-        (r) =>
-          r.kind === "paramLane" &&
-          r.nodeId === nodeId &&
-          r.paramName === paramName
-      );
-    const ordered = [...groupBases.values()]
-      .map((b) => ({ b, idx: laneIndexOf(b.nodeId, b.paramName) }))
-      .sort((a, b) => a.idx - b.idx);
-    const newSel: SelectionKey[] = [];
-    ordered.forEach(({ b }, k) => {
-      const block = blockIndex.get(b.nodeId)?.get(b.paramName);
-      if (!block) return;
-      const offset = step * k;
-      const remapped = b.originals.map((kf) =>
-        b.selectedOriginalTicks.has(kf.tick)
-          ? { ...kf, tick: Math.max(0, kf.tick + offset) }
-          : { ...kf }
-      );
-      const seen = new Map<number, Keyframe>();
-      for (const kf of remapped) seen.set(kf.tick, kf);
-      const sorted = [...seen.values()].sort((a, b) => a.tick - b.tick);
-      onAnimationChange(
-        b.nodeId,
-        b.paramName,
-        { ...block, keyframes: sorted },
-        "kf-batch"
-      );
-      for (const ot of b.selectedOriginalTicks) {
-        newSel.push({
-          nodeId: b.nodeId,
-          paramName: b.paramName,
-          tick: Math.max(0, ot + offset),
-        });
-      }
-    });
-    setSelectionList(newSel);
-    setSelection(new Set(newSel.map(selKey)));
-  }
-
-  function scaleKeyframes(
-    groupBases: Map<
-      string,
-      {
-        nodeId: string;
-        paramName: string;
-        originals: Keyframe[];
-        selectedOriginalTicks: Set<number>;
-      }
-    >,
-    anchorTick: number,
-    startEdgeTick: number,
-    currentEdgeTick: number,
-    snap: boolean
-  ) {
-    const span = startEdgeTick - anchorTick;
-    if (Math.abs(span) < 1) return;
-    const factor = (currentEdgeTick - anchorTick) / span;
-    const newSelectionList: SelectionKey[] = [];
-    for (const base of groupBases.values()) {
-      const block = blockIndex.get(base.nodeId)?.get(base.paramName);
-      if (!block) continue;
-      const remapped = base.originals.map((k) => {
-        if (!base.selectedOriginalTicks.has(k.tick)) return { ...k };
-        let target = anchorTick + (k.tick - anchorTick) * factor;
-        if (snap) target = snapTickToFrame(target, timeline.ticksPerFrame);
-        target = Math.round(target);
-        return { ...k, tick: target };
-      });
-      const seen = new Map<number, Keyframe>();
-      for (const k of remapped) seen.set(k.tick, k);
-      const sorted = [...seen.values()].sort((a, b) => a.tick - b.tick);
-      onAnimationChange(
-        base.nodeId,
-        base.paramName,
-        {
-          ...block,
-          keyframes: sorted,
-        },
-        "kf-batch"
-      );
-      for (const origTick of base.selectedOriginalTicks) {
-        let target = anchorTick + (origTick - anchorTick) * factor;
-        if (snap) target = snapTickToFrame(target, timeline.ticksPerFrame);
-        target = Math.round(target);
-        newSelectionList.push({
-          nodeId: base.nodeId,
-          paramName: base.paramName,
-          tick: target,
-        });
-      }
-    }
-    setSelectionList(newSelectionList);
-    setSelection(new Set(newSelectionList.map(selKey)));
   }
 
   // ---- Hit testing on lanes ----
+  /**
+   * The two keyframes bracketing a click on the connector line BETWEEN
+   * them — i.e. the pair that owns that segment's easing. Only the
+   * interior of the line counts: the ends belong to the keyframes
+   * themselves, and hitTestKeyframe runs first regardless.
+   */
+  function hitTestSegment(
+    contentX: number,
+    contentY: number
+  ): SelectionKey[] | null {
+    for (let i = 0; i < lanes.length; i++) {
+      const row = lanes[i];
+      if (row.kind !== "paramLane") continue;
+      const yTop = laneRowYs[i];
+      if (contentY < yTop || contentY > yTop + TRACK_HEIGHT) continue;
+      // Connectors are drawn at the lane's mid-height.
+      if (Math.abs(contentY - (yTop + TRACK_HEIGHT / 2)) > SEGMENT_HIT_PX) {
+        return null;
+      }
+      const kfs = row.block.keyframes;
+      for (let j = 1; j < kfs.length; j++) {
+        if (
+          contentX > tickToPx(kfs[j - 1].tick) + KEY_HIT_PX &&
+          contentX < tickToPx(kfs[j].tick) - KEY_HIT_PX
+        ) {
+          return [
+            {
+              nodeId: row.nodeId,
+              paramName: row.paramName,
+              tick: kfs[j - 1].tick,
+            },
+            { nodeId: row.nodeId, paramName: row.paramName, tick: kfs[j].tick },
+          ];
+        }
+      }
+      return null;
+    }
+    return null;
+  }
+
   // Returns the keyframe selection key + lane row index for a click within
   // the lanes content area.
   function hitTestKeyframe(
     contentX: number,
     contentY: number
   ): { key: SelectionKey; rowIdx: number } | null {
-    const KEY_HIT_PX = 6;
     for (let i = 0; i < lanes.length; i++) {
       const row = lanes[i];
       if (row.kind !== "paramLane") continue;
       const yTop = laneRowYs[i];
-      const yBot = yTop + trackHeight;
+      const yBot = yTop + TRACK_HEIGHT;
       if (contentY < yTop || contentY > yBot) continue;
       // Found the lane; walk its keyframes and test x distance.
       for (const kf of row.block.keyframes) {
@@ -1210,7 +1273,7 @@ export function TrackEditor(props: TrackEditorProps) {
     clipIndex: number;
     slipsInTrim: boolean;
   } | null {
-    const EDGE = 6;
+    const EDGE = CLIP_EDGE_PX;
     for (let i = 0; i < lanes.length; i++) {
       const row = lanes[i];
       if (row.kind !== "nodeHeader" || !row.clippable) continue;
@@ -1267,6 +1330,7 @@ export function TrackEditor(props: TrackEditorProps) {
   // materialize a ghost if needed); with no selection, split every clippable
   // node that already has a window under the playhead.
   function splitAtPlayhead() {
+    const tickNow = playbackClock.get().tick;
     const headers = lanes.filter(
       (r): r is Extract<LaneRow, { kind: "nodeHeader" }> =>
         r.kind === "nodeHeader" && r.clippable
@@ -1276,16 +1340,15 @@ export function TrackEditor(props: TrackEditorProps) {
     for (const h of targets) {
       const hasClips = !!h.clips && h.clips.length > 0;
       if (hasClips) {
-        if (resolveClipAt(h.clips, currentTick).active) {
-          splitClipAtTick(h.nodeId, currentTick);
+        if (resolveClipAt(h.clips, tickNow).active) {
+          splitClipAtTick(h.nodeId, tickNow);
         }
       } else if (selected.length > 0) {
         // Explicitly targeted, no windows yet → materialize + cut.
-        splitClipAtTick(h.nodeId, currentTick);
+        splitClipAtTick(h.nodeId, tickNow);
       }
     }
   }
-  splitAtPlayheadRef.current = splitAtPlayhead;
 
   // Remove the currently selected clip window.
   function deleteSelectedClip() {
@@ -1298,7 +1361,45 @@ export function TrackEditor(props: TrackEditorProps) {
     setSelectedClip(null);
     setHoveredClip(null);
   }
-  deleteSelectedClipRef.current = deleteSelectedClip;
+
+  // Sync every ref the once-subscribed window handlers read. Runs after
+  // every render (no dep array) so the handlers always see the latest
+  // closures and values — the stale-paste/copy bug came from syncing
+  // these only when the selection identity changed.
+  useEffect(() => {
+    razorModeRef.current = razorMode;
+    selectedClipRef.current = selectedClip;
+    splitAtPlayheadRef.current = splitAtPlayhead;
+    deleteSelectedClipRef.current = deleteSelectedClip;
+    keyActionsRef.current = {
+      deleteSelected,
+      copySelected,
+      pasteAtPlayhead,
+      fit,
+      focusSelection,
+      hasSelection: selectionList.length > 0,
+    };
+  });
+
+  // Param types across the current selection — drives the customBezier
+  // gate (scalar-only) and the step-only easing hide. Computed once per
+  // selection/lane change instead of per <option> per render.
+  const selectionTypes = useMemo(() => {
+    const typeOf = new Map<string, ParamType>();
+    for (const r of lanes) {
+      if (r.kind === "paramLane") {
+        typeOf.set(laneKey(r.nodeId, r.paramName), r.paramType);
+      }
+    }
+    let allScalar = selectionList.length > 0;
+    let stepOnly = selectionList.length > 0;
+    for (const s of selectionList) {
+      const t = typeOf.get(laneKey(s.nodeId, s.paramName));
+      if (t !== "scalar") allScalar = false;
+      if (!t || !isStepOnly(t)) stepOnly = false;
+    }
+    return { allScalar, stepOnly };
+  }, [lanes, selectionList]);
 
   // ---- Selection bounding box (in ticks + row idx range) ----
   const selectionBox = useMemo(() => {
@@ -1307,17 +1408,16 @@ export function TrackEditor(props: TrackEditorProps) {
     let maxTick = -Infinity;
     let minRow = Infinity;
     let maxRow = -Infinity;
-    // Build a fast lookup nodeId+paramName -> rowIdx.
+    // Build a fast lookup lane -> rowIdx.
     const rowIdx = new Map<string, number>();
     for (let i = 0; i < lanes.length; i++) {
       const r = lanes[i];
-      if (r.kind === "paramLane")
-        rowIdx.set(`${r.nodeId}\u0000${r.paramName}`, i);
+      if (r.kind === "paramLane") rowIdx.set(laneKey(r.nodeId, r.paramName), i);
     }
     for (const s of selectionList) {
       if (s.tick < minTick) minTick = s.tick;
       if (s.tick > maxTick) maxTick = s.tick;
-      const ri = rowIdx.get(`${s.nodeId}\u0000${s.paramName}`);
+      const ri = rowIdx.get(laneKey(s.nodeId, s.paramName));
       if (ri == null) continue;
       if (ri < minRow) minRow = ri;
       if (ri > maxRow) maxRow = ri;
@@ -1326,28 +1426,12 @@ export function TrackEditor(props: TrackEditorProps) {
     return { minTick, maxTick, minRow, maxRow };
   }, [selectionList, lanes]);
 
-  // ---- Mouse interactions on the lanes area ----
-  function onLanesMouseDown(e: React.MouseEvent) {
-    // Middle-click = pan (handled here without requiring Space). Cmd/Ctrl +
-    // middle-drag = zoom instead, which the native pointerdown listener owns —
-    // bail here so we don't also start a pan.
-    if (e.button === 1) {
-      if (e.metaKey || e.ctrlKey) {
-        e.preventDefault();
-        return;
-      }
-      const rect = lanesAreaRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      e.preventDefault();
-      setDrag({
-        kind: "pan",
-        startMouseX: e.clientX,
-        startMouseY: e.clientY,
-        startTickOffset: viewTickOffset,
-        startScrollY: scrollY,
-      });
-      return;
-    }
+  // ---- Pointer interactions on the lanes area ----
+  // Pointer, not mouse: iPadOS synthesizes mouse events only for a tap, so a
+  // mousedown-rooted gesture has no move stream under finger or Pencil.
+  function onLanesPointerDown(e: React.PointerEvent) {
+    // Middle-button never reaches here: the native pointerdown listener
+    // above owns both middle gestures (pan / Cmd-zoom) and stops propagation.
     if (e.button !== 0) {
       return;
     }
@@ -1394,15 +1478,15 @@ export function TrackEditor(props: TrackEditorProps) {
       // Select this window (and clear any keyframe selection so Backspace is
       // unambiguous).
       setSelectedClip({ nodeId: clipHit.nodeId, clipIndex: clipHit.clipIndex });
-      setSelection(new Set());
       setSelectionList([]);
-      // Materialize a window-less node's ghost into a real full-duration
-      // window so the drag has a stable baseline (and it persists). For video
-      // this is clamped to the footage length.
+      // A window-less node's ghost gets a full-duration default as the
+      // drag baseline, but it is NOT written until the drag actually
+      // moves (the mousemove handlers emit from this snapshot) — a plain
+      // click no longer dirties the document. For video the default is
+      // clamped to the footage length.
       let startClips = clipsForNode(clipHit.nodeId);
       if (!startClips || startClips.length === 0) {
         startClips = [defaultClipForNode(clipHit.nodeId)];
-        onClipChange?.(clipHit.nodeId, startClips);
       }
       if (clipHit.region === "body") {
         setDrag({
@@ -1435,7 +1519,7 @@ export function TrackEditor(props: TrackEditorProps) {
       const yBotRow = lanes[selectionBox.maxRow];
       const yBot =
         (laneRowYs[selectionBox.maxRow] ?? 0) +
-        (yBotRow?.kind === "nodeHeader" ? NODE_HEADER_HEIGHT : trackHeight);
+        (yBotRow?.kind === "nodeHeader" ? NODE_HEADER_HEIGHT : TRACK_HEIGHT);
       const inYBand = contentY >= yTop - 4 && contentY <= yBot + 4;
       const EDGE = 6;
       // Suppress scale handles entirely when the box has no usable
@@ -1447,29 +1531,25 @@ export function TrackEditor(props: TrackEditorProps) {
       const allowScale = boxWidth >= 2 * EDGE + 2;
       if (allowScale && inYBand && Math.abs(contentX - leftPx) <= EDGE) {
         // Drag left edge -> scale toward right anchor.
-        const starts = new Map<string, number>();
-        for (const s of selectionList) starts.set(selKey(s), s.tick);
         setDrag({
           kind: "scaleSelection",
           side: "left",
           anchorTick: selectionBox.maxTick,
           startEdgeTick: selectionBox.minTick,
-          starts,
-          groupBases: buildGroupBases(selectionList),
+          groupBases: buildGroupBases(selectionList, getBlockForBases),
+          gestureKey: nextGestureKey("scale"),
         });
         e.preventDefault();
         return;
       }
       if (allowScale && inYBand && Math.abs(contentX - rightPx) <= EDGE) {
-        const starts = new Map<string, number>();
-        for (const s of selectionList) starts.set(selKey(s), s.tick);
         setDrag({
           kind: "scaleSelection",
           side: "right",
           anchorTick: selectionBox.minTick,
           startEdgeTick: selectionBox.maxTick,
-          starts,
-          groupBases: buildGroupBases(selectionList),
+          groupBases: buildGroupBases(selectionList, getBlockForBases),
+          gestureKey: nextGestureKey("scale"),
         });
         e.preventDefault();
         return;
@@ -1482,39 +1562,39 @@ export function TrackEditor(props: TrackEditorProps) {
         inYBand && contentX >= leftPx - PAD && contentX <= rightPx + PAD;
       if (interior) {
         const hit = hitTestKeyframe(contentX, contentY);
-        // Always treat interior-drag as group-move, even if the cursor is
-        // over a keyframe (keyframe-click path below handles non-selected).
-        if (
-          hit &&
-          !selection.has(selKey(hit.key)) &&
-          !e.shiftKey
-        ) {
-          // Click on a non-selected keyframe inside the box: replace selection.
-          const ne: SelectionKey[] = [hit.key];
-          setSelection(new Set([selKey(hit.key)]));
-          setSelectionList(ne);
-          // Start a single-keyframe move below.
-          const starts = new Map<string, number>();
-          starts.set(selKey(hit.key), hit.key.tick);
+        // Shift-click toggles membership even inside the box — without
+        // this, keyframes inside the bounding box could never be
+        // shift-deselected (the interior swallowed the click as a
+        // group-move).
+        if (hit && e.shiftKey) {
+          const k = selKey(hit.key);
+          setSelectionList(
+            selection.has(k)
+              ? selectionList.filter((s) => selKey(s) !== k)
+              : [...selectionList, hit.key]
+          );
+          e.preventDefault();
+          return;
+        }
+        if (hit && !selection.has(selKey(hit.key))) {
+          // Click on a non-selected keyframe inside the box: replace
+          // selection and start a single-keyframe move.
+          setSelectionList([hit.key]);
           setDrag({
             kind: "moveKeyframes",
             startMouseX: e.clientX,
-            starts,
-            anchorStartTick: hit.key.tick,
-            groupBases: buildGroupBases([hit.key]),
+            groupBases: buildGroupBases([hit.key], getBlockForBases),
+            gestureKey: nextGestureKey("drag"),
             stagger: e.altKey,
           });
           e.preventDefault();
           return;
         }
-        const starts = new Map<string, number>();
-        for (const s of selectionList) starts.set(selKey(s), s.tick);
         setDrag({
           kind: "moveKeyframes",
           startMouseX: e.clientX,
-          starts,
-          anchorStartTick: selectionList[0]?.tick ?? 0,
-          groupBases: buildGroupBases(selectionList),
+          groupBases: buildGroupBases(selectionList, getBlockForBases),
+          gestureKey: nextGestureKey("drag"),
           stagger: e.altKey,
         });
         e.preventDefault();
@@ -1527,59 +1607,74 @@ export function TrackEditor(props: TrackEditorProps) {
     if (hit) {
       const k = selKey(hit.key);
       if (e.shiftKey) {
-        // Toggle membership.
-        if (selection.has(k)) {
-          const nextSet = new Set(selection);
-          nextSet.delete(k);
-          setSelection(nextSet);
-          setSelectionList(selectionList.filter((s) => selKey(s) !== k));
-        } else {
-          const nextSet = new Set(selection);
-          nextSet.add(k);
-          setSelection(nextSet);
-          setSelectionList([...selectionList, hit.key]);
-        }
-      } else {
-        if (!selection.has(k)) {
-          setSelection(new Set([k]));
-          setSelectionList([hit.key]);
-        }
+        // Toggle membership; no drag on a shift-click.
+        setSelectionList(
+          selection.has(k)
+            ? selectionList.filter((s) => selKey(s) !== k)
+            : [...selectionList, hit.key]
+        );
+        e.preventDefault();
+        return;
+      }
+      if (!selection.has(k)) {
+        setSelectionList([hit.key]);
       }
       // Start a move drag on the (possibly-updated) selection.
-      const starts = new Map<string, number>();
       const effective = selection.has(k) ? selectionList : [hit.key];
-      for (const s of effective) starts.set(selKey(s), s.tick);
       setDrag({
         kind: "moveKeyframes",
         startMouseX: e.clientX,
-        starts,
-        anchorStartTick: hit.key.tick,
-        groupBases: buildGroupBases(effective),
+        groupBases: buildGroupBases(effective, getBlockForBases),
+        gestureKey: nextGestureKey("drag"),
         stagger: e.altKey,
       });
       e.preventDefault();
       return;
     }
 
-    // Empty space: begin marquee box-select.
+    // Hit the connector between two keyframes? Select the pair that
+    // bounds the segment, and start a move on them — same gesture the
+    // keyframes themselves get, so dragging the line slides both ends.
+    // Shift merges the pair into the existing selection.
+    const seg = hitTestSegment(contentX, contentY);
+    if (seg) {
+      const next = e.shiftKey
+        ? [...selectionList, ...seg.filter((s) => !selection.has(selKey(s)))]
+        : seg;
+      setSelectionList(next);
+      if (!e.shiftKey) {
+        setDrag({
+          kind: "moveKeyframes",
+          startMouseX: e.clientX,
+          groupBases: buildGroupBases(next, getBlockForBases),
+          gestureKey: nextGestureKey("drag"),
+          stagger: e.altKey,
+        });
+      }
+      e.preventDefault();
+      return;
+    }
+
+    // Empty space: begin marquee box-select. Shift = additive (the box's
+    // keys merge into the selection on release).
     setDrag({
       kind: "marquee",
       startMouseX: mx,
       startMouseY: my,
       currentMouseX: mx,
       currentMouseY: my,
+      additive: e.shiftKey,
     });
     if (!e.shiftKey) {
-      setSelection(new Set());
       setSelectionList([]);
     }
     e.preventDefault();
   }
 
-  // Window-level mousemove/mouseup for active drag.
+  // Window-level pointermove/pointerup for active drag.
   useEffect(() => {
     if (drag.kind === "none") return;
-    function onMove(e: MouseEvent) {
+    function onMove(e: PointerEvent) {
       const rect = lanesAreaRef.current?.getBoundingClientRect();
       if (!rect) return;
       const mx = e.clientX - rect.left;
@@ -1602,94 +1697,98 @@ export function TrackEditor(props: TrackEditorProps) {
         return;
       }
       if (drag.kind === "moveKeyframes") {
-        const dxPx = e.clientX - drag.startMouseX;
-        const deltaTicks = dxPx / pixelsPerTick;
+        let deltaTicks = (e.clientX - drag.startMouseX) / pixelsPerTick;
+        let snapToFrame = !e.shiftKey;
+        // Proximity snap to the playhead: if any dragged key would land
+        // within SNAP_PROXIMITY_PX of it, nudge the WHOLE delta so that
+        // key lands exactly on it (the selection keeps its shape).
+        // Suppressed by Option, and skipped for a stagger drag, where
+        // the delta is a per-lane step rather than a position.
+        // The tick is read imperatively off the clock store — this
+        // editor deliberately doesn't subscribe at its top level.
+        if (!e.altKey && !drag.stagger && pixelsPerTick > 0) {
+          const playTick = playbackClock.get().tick;
+          const tol = SNAP_PROXIMITY_PX / pixelsPerTick;
+          let bestDelta: number | null = null;
+          let bestD = Infinity;
+          for (const base of drag.groupBases) {
+            for (const t of base.selectedOriginalTicks) {
+              const landed = t + deltaTicks;
+              const d = Math.abs(landed - playTick);
+              if (d <= tol && d < bestD) {
+                bestD = d;
+                bestDelta = deltaTicks + (playTick - landed);
+              }
+            }
+          }
+          if (bestDelta != null) {
+            deltaTicks = bestDelta;
+            // The delta is already exact; re-snapping to the frame grid
+            // would drag it back off the playhead whenever the playhead
+            // itself sits off-frame (a shift-scrub can park it there).
+            snapToFrame = false;
+          }
+        }
+        const opts = {
+          snap: snapToFrame,
+          ticksPerFrame: timeline.ticksPerFrame,
+        };
         if (drag.stagger) {
           // Option/Alt held → stagger the selection across lanes; the
           // drag delta becomes the per-lane step.
-          staggerKeyframes(drag.groupBases, deltaTicks);
+          applyKeyframeOp(
+            staggerKeyframesOp(
+              orderBasesByLane(drag.groupBases),
+              deltaTicks,
+              opts
+            ),
+            drag.gestureKey
+          );
         } else {
-          moveKeyframesByDelta(drag.groupBases, deltaTicks, !e.shiftKey);
+          applyKeyframeOp(
+            moveKeyframes(drag.groupBases, deltaTicks, opts),
+            drag.gestureKey
+          );
         }
         return;
       }
       if (drag.kind === "scaleSelection") {
-        const currentEdgeTick = pxToTick(mx);
-        const snap = !e.shiftKey;
-        scaleKeyframes(
-          drag.groupBases,
-          drag.anchorTick,
-          drag.startEdgeTick,
-          currentEdgeTick,
-          snap
+        applyKeyframeOp(
+          scaleKeyframesOp(
+            drag.groupBases,
+            drag.anchorTick,
+            drag.startEdgeTick,
+            pxToTick(mx),
+            { snap: !e.shiftKey, ticksPerFrame: timeline.ticksPerFrame }
+          ),
+          drag.gestureKey
         );
         return;
       }
       if (drag.kind === "clipMove") {
-        const win = drag.startClips[drag.clipIndex];
-        if (!win) return;
-        const snap = !e.shiftKey;
-        let delta = (e.clientX - drag.startMouseX) / pixelsPerTick;
-        if (snap) {
-          const snappedIn = snapTickToFrame(
-            win.inTick + delta,
-            timeline.ticksPerFrame
-          );
-          delta = snappedIn - win.inTick;
-        }
-        let newIn = win.inTick + delta;
-        let newOut = win.outTick + delta;
-        // Keep the window on the non-negative side of the timeline.
-        if (newIn < 0) {
-          newOut -= newIn;
-          newIn = 0;
-        }
-        const next = drag.startClips.map((c, i) =>
-          i === drag.clipIndex
-            ? { ...c, inTick: Math.round(newIn), outTick: Math.round(newOut) }
-            : c
+        const next = moveClipWindow(
+          drag.startClips,
+          drag.clipIndex,
+          (e.clientX - drag.startMouseX) / pixelsPerTick,
+          { snap: !e.shiftKey, ticksPerFrame: timeline.ticksPerFrame }
         );
-        onClipChange?.(drag.nodeId, next);
+        if (next) onClipChange?.(drag.nodeId, next);
         return;
       }
       if (drag.kind === "clipTrim") {
-        const win = drag.startClips[drag.clipIndex];
-        if (!win) return;
-        const snap = !e.shiftKey;
-        const minW = timeline.ticksPerFrame;
-        const raw = pxToTick(mx);
-        const t = snap ? snapTickToFrame(raw, timeline.ticksPerFrame) : raw;
-        let updated: ClipBlock;
-        if (drag.side === "in") {
-          // Clock-carrying clips can't pull the head earlier than the content
-          // anchor: for video that's the start of the footage (sourceIn would
-          // go negative), for a layer its interior's time zero.
-          const minIn = drag.slipsInTrim
-            ? Math.max(0, win.inTick - win.sourceInTick)
-            : 0;
-          const newIn = Math.round(
-            Math.max(minIn, Math.min(t, win.outTick - minW))
-          );
-          // Clock-carrying clips slip the source so the content under the
-          // trimmed head stays put (classic NLE in-trim).
-          const sourceIn = drag.slipsInTrim
-            ? win.sourceInTick + (newIn - win.inTick)
-            : win.sourceInTick;
-          updated = { ...win, inTick: newIn, sourceInTick: sourceIn };
-        } else {
-          let newOut = Math.round(Math.max(win.inTick + minW, t));
-          // For video, the tail can't run past the end of the footage.
-          if (drag.sourceDurationTicks != null) {
-            const maxOut =
-              win.inTick + (drag.sourceDurationTicks - win.sourceInTick);
-            newOut = Math.min(newOut, Math.round(maxOut));
+        const next = trimClipWindow(
+          drag.startClips,
+          drag.clipIndex,
+          drag.side,
+          pxToTick(mx),
+          {
+            snap: !e.shiftKey,
+            ticksPerFrame: timeline.ticksPerFrame,
+            slipsInTrim: drag.slipsInTrim,
+            sourceDurationTicks: drag.sourceDurationTicks,
           }
-          updated = { ...win, outTick: newOut };
-        }
-        const next = drag.startClips.map((c, i) =>
-          i === drag.clipIndex ? updated : c
         );
-        onClipChange?.(drag.nodeId, next);
+        if (next) onClipChange?.(drag.nodeId, next);
         return;
       }
     }
@@ -1711,7 +1810,7 @@ export function TrackEditor(props: TrackEditorProps) {
           const row = lanes[i];
           if (row.kind !== "paramLane") continue;
           const yTop = laneRowYs[i];
-          const yBot = yTop + trackHeight;
+          const yBot = yTop + TRACK_HEIGHT;
           if (yBot < cy0 || yTop > cy1) continue;
           for (const kf of row.block.keyframes) {
             if (kf.tick >= tMin && kf.tick <= tMax) {
@@ -1723,17 +1822,46 @@ export function TrackEditor(props: TrackEditorProps) {
             }
           }
         }
-        setSelection(new Set(newList.map(selKey)));
-        setSelectionList(newList);
+        if (drag.additive) {
+          // Shift-marquee merges into the existing selection.
+          const seen = new Set(selectionList.map(selKey));
+          const merged = [...selectionList];
+          for (const s of newList) {
+            const k = selKey(s);
+            if (!seen.has(k)) {
+              seen.add(k);
+              merged.push(s);
+            }
+          }
+          setSelectionList(merged);
+        } else {
+          setSelectionList(newList);
+        }
       }
       setDrag({ kind: "none" });
     }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    function onBlur() {
+      // Cmd+Tab away mid-drag: the pointerup never arrives, so end the
+      // gesture here instead of leaving it stuck until the next click.
+      setDrag({ kind: "none" });
+    }
+    const win = panelWin ?? window;
+    win.addEventListener("pointermove", onMove);
+    win.addEventListener("pointerup", onUp);
+    // iPadOS fires pointercancel instead of pointerup whenever the system
+    // claims the gesture (scroll takeover, palm, backgrounding). Without
+    // this the drag state machine stays latched after the finger lifts.
+    win.addEventListener("pointercancel", onUp);
+    win.addEventListener("blur", onBlur);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      win.removeEventListener("pointermove", onMove);
+      win.removeEventListener("pointerup", onUp);
+      win.removeEventListener("pointercancel", onUp);
+      win.removeEventListener("blur", onBlur);
     };
+    // The op appliers are plain per-render closures; the effect keys on
+    // the drag/view state that actually changes gesture behavior.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     drag,
     pixelsPerTick,
@@ -1742,9 +1870,9 @@ export function TrackEditor(props: TrackEditorProps) {
     pxToTick,
     laneRowYs,
     lanes,
-    trackHeight,
     selectionList,
-  ]); // eslint-disable-line react-hooks/exhaustive-deps
+    panelWin,
+  ]);
 
   // ---- Hover tracking for clip bars (styling + cursor) ----
   // Clip bars are pointer-events:none and hit-tested by coordinate, so we
@@ -1791,9 +1919,7 @@ export function TrackEditor(props: TrackEditorProps) {
     if (!hit) return;
     e.preventDefault();
     // If the clicked keyframe is not in the selection, replace selection.
-    const k = selKey(hit.key);
-    if (!selection.has(k)) {
-      setSelection(new Set([k]));
+    if (!selection.has(selKey(hit.key))) {
       setSelectionList([hit.key]);
     }
     setMenu({ x: e.clientX, y: e.clientY, target: hit.key, submenu: null });
@@ -1807,111 +1933,170 @@ export function TrackEditor(props: TrackEditorProps) {
     }
     // Defer one tick so the original mousedown that opened the menu
     // doesn't immediately close it.
+    const win = panelWin ?? window;
     const t = window.setTimeout(() => {
-      window.addEventListener("mousedown", onDown);
+      win.addEventListener("mousedown", onDown);
     }, 0);
     return () => {
       window.clearTimeout(t);
-      window.removeEventListener("mousedown", onDown);
+      win.removeEventListener("mousedown", onDown);
     };
-  }, [menu]);
+  }, [menu, panelWin]);
 
   // ---- Stagger from the dock header control ----
   // The control fires `keyframe-stagger-begin` (we snapshot a ≥2-lane
   // selection and report back), `keyframe-stagger` (apply step live),
   // and `keyframe-stagger-end`.
-  const staggerBaseRef = useRef<ReturnType<typeof buildGroupBases> | null>(
-    null
-  );
+  const staggerBaseRef = useRef<{
+    bases: GroupBase[];
+    gestureKey: string;
+  } | null>(null);
   useEffect(() => {
     const onBegin = (e: Event) => {
       const distinctLanes = new Set(
-        selectionList.map((s) => `${s.nodeId} ${s.paramName}`)
+        selectionList.map((s) => laneKey(s.nodeId, s.paramName))
       );
       if (distinctLanes.size >= 2) {
-        staggerBaseRef.current = buildGroupBases(selectionList);
+        staggerBaseRef.current = {
+          bases: orderBasesByLane(
+            buildGroupBases(selectionList, getBlockForBases)
+          ),
+          gestureKey: nextGestureKey("stagger"),
+        };
         (e as CustomEvent).detail?.respond?.(true);
       } else {
         staggerBaseRef.current = null;
       }
     };
     const onStep = (e: Event) => {
-      if (!staggerBaseRef.current) return;
+      const base = staggerBaseRef.current;
+      if (!base) return;
       const ticks = (e as CustomEvent<{ stepTicks: number }>).detail?.stepTicks;
       if (typeof ticks === "number") {
-        staggerKeyframes(staggerBaseRef.current, ticks);
+        applyKeyframeOp(
+          staggerKeyframesOp(base.bases, ticks, {
+            snap: true,
+            ticksPerFrame: timeline.ticksPerFrame,
+          }),
+          base.gestureKey
+        );
       }
     };
     const onEnd = () => {
       staggerBaseRef.current = null;
     };
-    window.addEventListener("keyframe-stagger-begin", onBegin);
-    window.addEventListener("keyframe-stagger", onStep);
-    window.addEventListener("keyframe-stagger-end", onEnd);
+    // The stagger control broadcasts to every window
+    // (broadcastAppEvent), so this listens on its own — whichever that
+    // is — and hears the control wherever IT lives.
+    const win = panelWin ?? window;
+    win.addEventListener("keyframe-stagger-begin", onBegin);
+    win.addEventListener("keyframe-stagger", onStep);
+    win.addEventListener("keyframe-stagger-end", onEnd);
     return () => {
-      window.removeEventListener("keyframe-stagger-begin", onBegin);
-      window.removeEventListener("keyframe-stagger", onStep);
-      window.removeEventListener("keyframe-stagger-end", onEnd);
+      win.removeEventListener("keyframe-stagger-begin", onBegin);
+      win.removeEventListener("keyframe-stagger", onStep);
+      win.removeEventListener("keyframe-stagger-end", onEnd);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectionList]);
+  }, [selectionList, panelWin]);
+
+  // ---- Proximity snapping (playhead ↔ keyframes) ----
+  // Every keyframe tick on the VISIBLE lanes, deduped and sorted — the
+  // targets a playhead scrub can snap onto.
+  const laneKeyTicks = useMemo(() => {
+    const ticks = new Set<number>();
+    for (const row of lanes) {
+      if (row.kind !== "paramLane") continue;
+      for (const k of row.block.keyframes) ticks.add(k.tick);
+    }
+    return Array.from(ticks).sort((a, b) => a - b);
+  }, [lanes]);
+
+  /**
+   * The keyframe tick to snap a scrub onto, or null when none is within
+   * SNAP_PROXIMITY_PX. The tolerance converts px→ticks through the live
+   * zoom, so the pull is a constant on-screen distance.
+   */
+  const snapScrubToKeyframe = useCallback(
+    (rawTick: number): number | null => {
+      if (pixelsPerTick <= 0) return null;
+      const tol = SNAP_PROXIMITY_PX / pixelsPerTick;
+      let best: number | null = null;
+      let bestD = Infinity;
+      for (const t of laneKeyTicks) {
+        const d = Math.abs(t - rawTick);
+        if (d <= tol && d < bestD) {
+          bestD = d;
+          best = t;
+        }
+      }
+      return best;
+    },
+    [laneKeyTicks, pixelsPerTick]
+  );
+
+  /**
+   * Resolve a scrub position: proximity-snap to a keyframe first (it
+   * wins over frame snapping, and is exact — so a keyframe parked
+   * off-frame by a shift-drag is still reachable), otherwise fall back
+   * to the frame grid unless Shift. Option/Alt suppresses the proximity
+   * pull entirely.
+   */
+  const resolveScrubTick = useCallback(
+    (rawTick: number, e: { shiftKey: boolean; altKey: boolean }): number => {
+      if (!e.altKey) {
+        const onKey = snapScrubToKeyframe(rawTick);
+        if (onKey != null) return Math.max(0, Math.round(onKey));
+      }
+      const tick = e.shiftKey
+        ? rawTick
+        : snapTickToFrame(rawTick, timeline.ticksPerFrame);
+      return Math.max(0, Math.round(tick));
+    },
+    [snapScrubToKeyframe, timeline.ticksPerFrame]
+  );
 
   // ---- Ruler scrub ----
-  function onRulerMouseDown(e: React.MouseEvent) {
+  // Clamped at 0 — the playhead can't be dragged into negative time.
+  function onRulerPointerDown(e: React.PointerEvent) {
     if (e.button !== 0) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const mx = e.clientX - rect.left;
-    let tick = pxToTick(mx);
-    if (!e.shiftKey) tick = snapTickToFrame(tick, timeline.ticksPerFrame);
-    onScrub(Math.round(tick));
+    onScrub(resolveScrubTick(pxToTick(mx), e));
     setDrag({ kind: "scrub" });
   }
 
   useEffect(() => {
     if (drag.kind !== "scrub") return;
-    function onMove(e: MouseEvent) {
+    function onMove(e: PointerEvent) {
       const rect = lanesAreaRef.current?.getBoundingClientRect();
       if (!rect) return;
       const mx = e.clientX - rect.left;
-      let tick = pxToTick(mx);
-      if (!e.shiftKey) tick = snapTickToFrame(tick, timeline.ticksPerFrame);
-      onScrub(Math.round(tick));
+      onScrub(resolveScrubTick(pxToTick(mx), e));
     }
     function onUp() {
       setDrag({ kind: "none" });
     }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    const win = panelWin ?? window;
+    win.addEventListener("pointermove", onMove);
+    win.addEventListener("pointerup", onUp);
+    win.addEventListener("pointercancel", onUp);
+    win.addEventListener("blur", onUp);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      win.removeEventListener("pointermove", onMove);
+      win.removeEventListener("pointerup", onUp);
+      win.removeEventListener("pointercancel", onUp);
+      win.removeEventListener("blur", onUp);
     };
-  }, [drag.kind, pxToTick, onScrub, timeline.ticksPerFrame]);
+  }, [drag.kind, pxToTick, onScrub, resolveScrubTick, panelWin]);
 
-  // ---- Ruler tick spacing (dynamic) ----
-  // Choose major frame interval so the on-screen spacing is ~80px and the
-  // step is a "nice" frame number (1, 2, 5, 10, 20, 50, 100, ...).
-  const rulerSpacing = useMemo(() => {
-    const targetPx = 80;
-    const ticksPerFrame = timeline.ticksPerFrame;
-    const pxPerFrame = pixelsPerTick * ticksPerFrame;
-    if (pxPerFrame <= 0) return { majorFrames: 60, minorFrames: 10 };
-    const rawFrames = targetPx / pxPerFrame;
-    // Snap to nice numbers in 1/2/5 sequence.
-    const pow = Math.pow(10, Math.floor(Math.log10(Math.max(1, rawFrames))));
-    const norm = rawFrames / pow;
-    let nice: number;
-    if (norm < 1.5) nice = 1;
-    else if (norm < 3.5) nice = 2;
-    else if (norm < 7.5) nice = 5;
-    else nice = 10;
-    const majorFrames = Math.max(1, Math.round(nice * pow));
-    const minorFrames = Math.max(1, Math.round(majorFrames / 5));
-    return { majorFrames, minorFrames };
-  }, [pixelsPerTick, timeline.ticksPerFrame]);
+  // ---- Ruler tick spacing (shared 1/2/5 ladder) ----
+  const rulerSpacing = useMemo(
+    () => computeRulerSpacing(pixelsPerTick, timeline.ticksPerFrame),
+    [pixelsPerTick, timeline.ticksPerFrame]
+  );
 
   // ---- Render ----
-  const playheadX = tickToPx(currentTick);
 
   // Cursor over the lanes content: space-pan and razor win first; then the
   // active clip drag; then clip hover (edge grips → resize, body → grab).
@@ -1945,7 +2130,11 @@ export function TrackEditor(props: TrackEditorProps) {
         color: COLOR_TEXT,
         // Match the Layers editor's typography — the two timeline
         // surfaces should read as one family.
-        font: "11px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        font: "10px/1.2 var(--ui-font)",
+        // tabIndex below is only there to capture keyboard shortcuts;
+        // the browser's focus ring on a whole editor pane reads as a
+        // stray blue box around the panel, so suppress it.
+        outline: "none",
         display: "flex",
         flexDirection: "column",
         userSelect: "none",
@@ -1970,23 +2159,27 @@ export function TrackEditor(props: TrackEditorProps) {
           height: RULER_HEIGHT,
           minHeight: RULER_HEIGHT,
           display: "flex",
-          borderBottom: "1px solid #1f1f23",
+          borderBottom: "1px solid var(--tb-n-5)",
         }}
       >
         <div
-          onMouseDown={onRulerMouseDown}
+          onPointerDown={onRulerPointerDown}
           onMouseMove={(e) => {
             // Measure against the lanes viewport so the preview lines up
             // with the playhead's coordinate space (shared column origin).
+            if (drag.kind !== "none") return;
             const rect = lanesAreaRef.current?.getBoundingClientRect();
-            if (rect) setHoverX(e.clientX - rect.left);
+            if (rect) setHoverLineX(e.clientX - rect.left);
           }}
-          onMouseLeave={() => setHoverX(null)}
+          onMouseLeave={() => setHoverLineX(null)}
           style={{
             position: "relative",
             flex: 1,
             cursor: "ew-resize",
             overflow: "hidden",
+            // The ruler owns the scrub gesture — opt out of browser panning
+            // so iPadOS can't cancel the drag to scroll an ancestor.
+            touchAction: "none",
           }}
         >
           <Ruler
@@ -2000,51 +2193,21 @@ export function TrackEditor(props: TrackEditorProps) {
           />
           {/* Hover preview within the ruler — continues the lanes line up
               through the time markers. */}
-          {hoverX != null && drag.kind === "none" && (
-            <div
-              style={{
-                position: "absolute",
-                top: 0,
-                bottom: 0,
-                left: hoverX,
-                width: 1,
-                background: COLOR_PLAYHEAD,
-                opacity: 0.3,
-                pointerEvents: "none",
-              }}
-            />
-          )}
-          {/* Playhead handle */}
-          <div
-            style={{
-              position: "absolute",
-              left: playheadX - 6,
-              top: 2,
-              width: 12,
-              height: RULER_HEIGHT - 4,
-              cursor: "ew-resize",
-            }}
-            onMouseDown={(e) => {
-              if (e.button !== 0) return;
-              e.stopPropagation();
-              setDrag({ kind: "scrub" });
-            }}
-          >
-            <div
-              style={{
-                width: 0,
-                height: 0,
-                margin: "0 auto",
-                borderLeft: "6px solid transparent",
-                borderRight: "6px solid transparent",
-                borderTop: `8px solid ${COLOR_PLAYHEAD}`,
-              }}
-            />
-          </div>
+          <HoverLine ref={rulerHoverRef} />
+          {/* Playhead handle (self-subscribing leaf) */}
+          <PlayheadHandle
+            tickToPx={tickToPx}
+            onStartScrub={() => setDrag({ kind: "scrub" })}
+          />
         </div>
       </div>
 
-      {/* Lanes area */}
+      {/* Lanes area. The vertical padding is what insets the gutter card
+          top and bottom: it moves the in-flow lanes viewport down by the
+          same amount the absolutely-positioned card is offset, so the two
+          content origins stay identical and every label keeps sitting on
+          its own lane. Everything that hit-tests measures against the
+          lanes viewport's own rect, so the offset needs no other edits. */}
       <div
         style={{
           flex: 1,
@@ -2053,21 +2216,29 @@ export function TrackEditor(props: TrackEditorProps) {
           position: "relative",
           overflow: "hidden",
           height: lanesViewportHeight,
+          paddingTop: GUTTER_INSET,
+          paddingBottom: GUTTER_INSET,
         }}
       >
-        {/* Left label column — floats over the full-width timeline. Semi-
-            transparent so the lanes/keyframes stay visible behind it. */}
+        {/* Left label column — an inset rounded card floating over the
+            full-width timeline. The 1px frame is an INSET box-shadow, not
+            a border: a real border would shift this card's absolutely-
+            positioned contents down a pixel relative to the lanes and
+            break the row alignment. The frame is a separate overlay at
+            the end of this element — an inset shadow set here would paint
+            UNDER the rows, and a selected row's opaque fill would cover
+            it. */}
         <div
           style={{
             position: "absolute",
-            left: 0,
-            top: 0,
-            bottom: 0,
+            left: GUTTER_INSET,
+            top: GUTTER_INSET,
+            bottom: GUTTER_INSET,
             zIndex: 2,
             width: PARAM_LABEL_WIDTH,
             minWidth: PARAM_LABEL_WIDTH,
-            background: "rgba(10, 10, 10, 0.7)",
-            borderRight: "1px solid #1f1f23",
+            background: COLOR_GUTTER_BG,
+            borderRadius: GUTTER_RADIUS,
             overflow: "hidden",
           }}
         >
@@ -2079,7 +2250,7 @@ export function TrackEditor(props: TrackEditorProps) {
               right: 0,
             }}
           >
-            {lanes.map((row, i) => {
+            {lanes.map((row) => {
               if (row.kind === "nodeHeader") {
                 return (
                   <div
@@ -2094,10 +2265,10 @@ export function TrackEditor(props: TrackEditorProps) {
                       alignItems: "center",
                       padding: "0 8px 0 4px",
                       gap: 4,
-                      background: row.selected ? "#13131a" : "transparent",
+                      background: row.selected ? "var(--tb-n-2)" : "transparent",
                       borderBottom: `1px solid ${COLOR_LANE_SEP}`,
                       cursor: "pointer",
-                      fontSize: 11,
+                      fontSize: 10,
                     }}
                   >
                     {/* Collapse chevron — same glyph the Layers editor
@@ -2107,7 +2278,7 @@ export function TrackEditor(props: TrackEditorProps) {
                         width: 14,
                         height: 14,
                         flexShrink: 0,
-                        color: "#71717a",
+                        color: COLOR_GUTTER_CHEVRON,
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
@@ -2130,7 +2301,9 @@ export function TrackEditor(props: TrackEditorProps) {
                     </span>
                     <span
                       style={{
-                        color: row.selected ? "#e5e7eb" : "#c7c7cc",
+                        // Dimmed against the card so the lanes and their
+                        // keyframes stay the brightest thing on screen.
+                        color: row.selected ? "var(--tb-n-14)" : COLOR_GUTTER_TEXT_STRONG,
                         whiteSpace: "nowrap",
                         overflow: "hidden",
                         textOverflow: "ellipsis",
@@ -2152,24 +2325,35 @@ export function TrackEditor(props: TrackEditorProps) {
               const badge = isVecBadge ? row.paramType : null;
               const isScalarTrack = row.paramType === "scalar";
               const graphOn = !!row.block.graphVisible;
+              // This lane's anchor is selected on the Spline Draw canvas
+              // — a marker so it's obvious which lane is which anchor.
+              const anchorLit = isAnchorHighlighted(row.nodeId, row.paramName);
               return (
                 <div
                   key={`pl:${row.nodeId}:${row.paramName}`}
                   onClick={() => onSelectNode?.(row.nodeId)}
                   style={{
-                    height: trackHeight,
+                    height: TRACK_HEIGHT,
                     display: "flex",
                     alignItems: "center",
                     padding: "0 8px 0 10px",
                     gap: 8,
                     borderBottom: `1px solid ${COLOR_LANE_SEP}`,
-                    background: row.selected ? "rgba(250,250,250,0.04)" : undefined,
+                    background: anchorLit
+                      ? ANCHOR_HIGHLIGHT_BG
+                      : row.selected
+                        ? "color-mix(in srgb, var(--tb-lift) 4%, transparent)"
+                        : undefined,
+                    // A stripe on the card's inner edge, so the link reads
+                    // even when the row is scrolled and the label clipped.
+                    boxShadow: anchorLit
+                      ? `inset 2px 0 0 0 ${ANCHOR_HIGHLIGHT_EDGE}`
+                      : undefined,
                     cursor: "pointer",
                   }}
                 >
                   <DiamondNav
                     block={row.block}
-                    currentTick={currentTick}
                     onToggle={() =>
                       toggleKeyAtPlayhead(
                         row.nodeId,
@@ -2181,12 +2365,12 @@ export function TrackEditor(props: TrackEditorProps) {
                   />
                   <span
                     style={{
-                      color: COLOR_TEXT,
+                      color: COLOR_GUTTER_TEXT,
                       whiteSpace: "nowrap",
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       flex: 1,
-                      fontSize: 11,
+                      fontSize: 10,
                     }}
                   >
                     {row.paramLabel}
@@ -2194,7 +2378,7 @@ export function TrackEditor(props: TrackEditorProps) {
                   {badge && (
                     <span
                       style={{
-                        background: "#1f1f23",
+                        background: "var(--tb-n-5)",
                         color: COLOR_MUTED,
                         border: `1px solid ${COLOR_BORDER}`,
                         borderRadius: 2,
@@ -2238,20 +2422,34 @@ export function TrackEditor(props: TrackEditorProps) {
               );
             })}
           </div>
+          {/* The card's stroke, above the scrolled rows — so a selected
+              row's fill passes behind the frame instead of over it. */}
+          <div
+            aria-hidden
+            style={{
+              position: "absolute",
+              inset: 0,
+              borderRadius: GUTTER_RADIUS,
+              boxShadow: `inset 0 0 0 1px ${COLOR_GUTTER_BORDER}`,
+              pointerEvents: "none",
+              zIndex: 1,
+            }}
+          />
         </div>
 
         {/* Lanes content (scrollable, scrubbable) */}
         <div
           ref={lanesAreaRef}
-          onMouseDown={onLanesMouseDown}
+          onPointerDown={onLanesPointerDown}
           onMouseMove={(e) => {
             onLanesHoverMove(e);
+            if (drag.kind !== "none") return;
             const rect = lanesAreaRef.current?.getBoundingClientRect();
-            if (rect) setHoverX(e.clientX - rect.left);
+            if (rect) setHoverLineX(e.clientX - rect.left);
           }}
           onMouseLeave={() => {
             if (hoveredClip) setHoveredClip(null);
-            setHoverX(null);
+            setHoverLineX(null);
           }}
           onContextMenu={onLanesContextMenu}
           style={{
@@ -2259,8 +2457,22 @@ export function TrackEditor(props: TrackEditorProps) {
             flex: 1,
             overflow: "hidden",
             cursor: lanesCursor,
+            // Keyframe drags, marquee and clip moves all start here — the
+            // lanes own their gestures rather than letting iPadOS pan.
+            touchAction: "none",
           }}
         >
+          {/* Frame-division grid. A FIXED backdrop — outside the scrolled
+              content, and first in the DOM so every lane, clip bar and
+              keyframe paints over it. */}
+          <LaneFrameTicks
+            width={lanesAreaWidth}
+            tickToPx={tickToPx}
+            pxToTick={pxToTick}
+            ticksPerFrame={timeline.ticksPerFrame}
+            majorFrames={rulerSpacing.majorFrames}
+            minorFrames={rulerSpacing.minorFrames}
+          />
           {/* Inner scrollable content */}
           <div
             style={{
@@ -2297,11 +2509,13 @@ export function TrackEditor(props: TrackEditorProps) {
                           width: widthPx,
                           height: NODE_HEADER_HEIGHT - 7,
                           background: ghostHover
-                            ? "rgba(34,211,238,0.13)"
+                            ? COLOR_CLIP_GHOST_HOVER
                             : COLOR_CLIP_GHOST,
-                          border: `1px solid rgba(34,211,238,${
-                            ghostHover ? 0.4 : 0.22
-                          })`,
+                          border: `1px solid ${
+                            ghostHover
+                              ? COLOR_CLIP_GHOST_BORDER_HOVER
+                              : COLOR_CLIP_GHOST_BORDER
+                          }`,
                           borderRadius: 3,
                           boxSizing: "border-box",
                           pointerEvents: "none",
@@ -2395,7 +2609,12 @@ export function TrackEditor(props: TrackEditorProps) {
                       left: 0,
                       right: 0,
                       height: NODE_HEADER_HEIGHT,
-                      background: row.selected ? "#13131a" : "transparent",
+                      // Translucent, not a ramp colour: this row spans
+                      // the full lane width, and an opaque fill blanks
+                      // the frame grid behind it.
+                      background: row.selected
+                        ? COLOR_LANE_SELECTED_BG
+                        : "transparent",
                       borderBottom: `1px solid ${COLOR_LANE_SEP}`,
                     }}
                   >
@@ -2408,9 +2627,11 @@ export function TrackEditor(props: TrackEditorProps) {
                   key={`lp:${row.nodeId}:${row.paramName}`}
                   row={row}
                   yTop={yTop}
-                  height={trackHeight}
+                  height={TRACK_HEIGHT}
+                  viewWidth={lanesAreaWidth}
                   tickToPx={tickToPx}
                   selection={selection}
+                  anchorLit={isAnchorHighlighted(row.nodeId, row.paramName)}
                 />
               );
             })}
@@ -2422,41 +2643,16 @@ export function TrackEditor(props: TrackEditorProps) {
                 tickToPx={tickToPx}
                 laneRowYs={laneRowYs}
                 lanes={lanes}
-                trackHeight={trackHeight}
               />
             )}
           </div>
 
           {/* Hover preview — a faded playhead line that tracks the cursor.
               Hidden during any drag (scrub already moves the real one). */}
-          {hoverX != null && drag.kind === "none" && (
-            <div
-              style={{
-                position: "absolute",
-                top: 0,
-                bottom: 0,
-                left: hoverX,
-                width: 1,
-                background: COLOR_PLAYHEAD,
-                opacity: 0.3,
-                pointerEvents: "none",
-              }}
-            />
-          )}
+          <HoverLine ref={lanesHoverRef} />
 
-          {/* Playhead vertical line (in the visible viewport) */}
-          <div
-            style={{
-              position: "absolute",
-              top: 0,
-              bottom: 0,
-              left: playheadX,
-              width: 1,
-              background: COLOR_PLAYHEAD,
-              opacity: 0.7,
-              pointerEvents: "none",
-            }}
-          />
+          {/* Playhead vertical line (self-subscribing leaf) */}
+          <PlayheadLine tickToPx={tickToPx} />
 
           {/* Marquee */}
           {drag.kind === "marquee" && (
@@ -2467,8 +2663,8 @@ export function TrackEditor(props: TrackEditorProps) {
                 top: Math.min(drag.startMouseY, drag.currentMouseY),
                 width: Math.abs(drag.currentMouseX - drag.startMouseX),
                 height: Math.abs(drag.currentMouseY - drag.startMouseY),
-                background: "rgba(96, 165, 250, 0.1)",
-                border: `1px dashed ${COLOR_ACCENT}`,
+                background: MARQUEE_FILL,
+                border: MARQUEE_BORDER,
                 pointerEvents: "none",
               }}
             />
@@ -2483,7 +2679,7 @@ export function TrackEditor(props: TrackEditorProps) {
             height: INSPECTOR_HEIGHT,
             minHeight: INSPECTOR_HEIGHT,
             borderTop: `1px solid ${COLOR_BORDER}`,
-            background: "#0f0f12",
+            background: "var(--tb-n-1)",
             display: "flex",
             alignItems: "center",
             padding: "0 8px",
@@ -2497,51 +2693,19 @@ export function TrackEditor(props: TrackEditorProps) {
           </div>
           <div style={{ flex: 1 }} />
           <label style={{ color: COLOR_MUTED }}>easing:</label>
-          <select
-            value={
-              (() => {
-                // Show the easing of the most-recently selected keyframe.
-                const last = selectionList[selectionList.length - 1];
-                const kf = blockIndex
-                  .get(last.nodeId)
-                  ?.get(last.paramName)
-                  ?.keyframes.find((k) => k.tick === last.tick);
-                return kf?.easingOut ?? "easeInOut";
-              })()
-            }
-            onChange={(e) =>
-              setKeyframeEasing(
-                selectionList,
-                e.target.value as EasingPreset
-              )
-            }
-            style={{
-              background: "#15151a",
-              color: COLOR_TEXT,
-              border: `1px solid ${COLOR_BORDER}`,
-              borderRadius: 2,
-              padding: "2px 4px",
-              fontSize: 11,
-            }}
-          >
-            {EASING_PRESETS.map((p) => {
-              const allScalar = selectionList.every((s) => {
-                const lane = lanes.find(
-                  (l) =>
-                    l.kind === "paramLane" &&
-                    l.nodeId === s.nodeId &&
-                    l.paramName === s.paramName
-                ) as Extract<LaneRow, { kind: "paramLane" }> | undefined;
-                return lane?.paramType === "scalar";
-              });
-              const disabled = p === "customBezier" && !allScalar;
-              return (
-                <option key={p} value={p} disabled={disabled}>
-                  {EASING_LABELS[p]}
-                </option>
-              );
-            })}
-          </select>
+          <EasingPickerButton
+            value={(() => {
+              // Show the easing of the most-recently selected keyframe.
+              const last = selectionList[selectionList.length - 1];
+              const kf = blockIndex
+                .get(last.nodeId)
+                ?.get(last.paramName)
+                ?.keyframes.find((k) => k.tick === last.tick);
+              return kf?.easingOut ?? "easeInOut";
+            })()}
+            allScalar={selectionTypes.allScalar}
+            onPick={(p) => setKeyframeEasing(selectionList, p)}
+          />
           <button
             type="button"
             onClick={deleteSelected}
@@ -2569,7 +2733,7 @@ export function TrackEditor(props: TrackEditorProps) {
             right: 8,
             zIndex: 5,
             background: COLOR_CLIP_FILL_SELECTED,
-            color: "#ecfeff",
+            color: "var(--tb-t-cyan-l-1)",
             border: `1px solid ${COLOR_CLIP_BORDER_SELECTED}`,
             borderRadius: 3,
             padding: "1px 6px",
@@ -2598,24 +2762,8 @@ export function TrackEditor(props: TrackEditorProps) {
             setKeyframeEasing(selectionList, p);
             setMenu(null);
           }}
-          allScalar={selectionList.every((s) => {
-            const lane = lanes.find(
-              (l) =>
-                l.kind === "paramLane" &&
-                l.nodeId === s.nodeId &&
-                l.paramName === s.paramName
-            ) as Extract<LaneRow, { kind: "paramLane" }> | undefined;
-            return lane?.paramType === "scalar";
-          })}
-          stepOnly={selectionList.every((s) => {
-            const lane = lanes.find(
-              (l) =>
-                l.kind === "paramLane" &&
-                l.nodeId === s.nodeId &&
-                l.paramName === s.paramName
-            ) as Extract<LaneRow, { kind: "paramLane" }> | undefined;
-            return lane ? isStepOnly(lane.paramType) : false;
-          })}
+          allScalar={selectionTypes.allScalar}
+          stepOnly={selectionTypes.stepOnly}
         />
       )}
     </div>
@@ -2648,7 +2796,6 @@ function Ruler(props: RulerProps) {
   // Layers-editor-style ruler: a bordered cell per major frame with the
   // frame number inside, vertically centered — no tick stubs or seconds
   // suffix, so Tracks and Layers read as one surface.
-  void minorFrames;
   const cells: { x: number; frame: number }[] = [];
   const firstMajor = Math.ceil(startFrame / majorFrames) * majorFrames;
   for (let f = firstMajor; f <= endFrame; f += majorFrames) {
@@ -2662,6 +2809,18 @@ function Ruler(props: RulerProps) {
       height={height}
       style={{ display: "block", pointerEvents: "none" }}
     >
+      {/* Minor divisions as short stubs off the bottom edge, on the same
+          1/2/5 ladder as the numbers — drawn first so the numbered
+          majors below paint over them. */}
+      <RulerFrameStubs
+        width={width}
+        height={height}
+        tickToPx={tickToPx}
+        pxToTick={pxToTick}
+        ticksPerFrame={timeline.ticksPerFrame}
+        majorFrames={majorFrames}
+        minorFrames={minorFrames}
+      />
       {cells.map((t) => (
         <g key={t.frame}>
           <line
@@ -2669,15 +2828,17 @@ function Ruler(props: RulerProps) {
             x2={t.x}
             y1={0}
             y2={height}
-            stroke={COLOR_BORDER}
+            stroke={COLOR_RULER_TICK}
             strokeWidth={1}
           />
           <text
             x={t.x + 4}
             y={height / 2 + 3}
             fontSize={9}
-            fontFamily="ui-monospace, monospace"
-            fill="#71717a"
+            // style, not the presentation attribute — var() only resolves
+            // through the CSS cascade.
+            style={{ fontFamily: "var(--ui-font)" }}
+            fill={COLOR_RULER_TEXT}
           >
             {t.frame}
           </text>
@@ -2687,109 +2848,64 @@ function Ruler(props: RulerProps) {
   );
 }
 
-// Lane-label keyframe cluster: ‹ ◆ › — chevrons jump the playhead to
-// the previous / next keyframe; the diamond toggles a key at the
-// playhead (empty / yellow / red, same as the param panel). Shared look
-// with the Layers editor.
-export function DiamondNav({
-  block,
-  currentTick,
-  onToggle,
-  onSeek,
-}: {
-  block: KeyframeAnimationBlock | undefined;
-  currentTick: number;
-  onToggle: () => void;
-  onSeek: (tick: number) => void;
-}) {
-  const st = diamondStateFor(block, currentTick);
-  const col =
-    st === "red" ? "#ef4444" : st === "yellow" ? "#facc15" : "#52525b";
-  let prev: number | null = null;
-  let next: number | null = null;
-  for (const k of block?.keyframes ?? []) {
-    if (k.tick < currentTick && (prev == null || k.tick > prev)) prev = k.tick;
-    if (k.tick > currentTick && (next == null || k.tick < next)) next = k.tick;
-  }
-  const navBtn = (dir: "prev" | "next", target: number | null) => (
-    <button
-      type="button"
-      title={dir === "prev" ? "Jump to previous keyframe" : "Jump to next keyframe"}
-      disabled={target == null}
-      onClick={(e) => {
-        e.stopPropagation();
-        if (target != null) onSeek(target);
-      }}
-      style={{
-        width: 10,
-        height: 12,
-        flexShrink: 0,
-        background: "transparent",
-        border: "none",
-        padding: 0,
-        cursor: target == null ? "default" : "pointer",
-        color: target == null ? "#2e2e33" : "#71717a",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <svg
-        width={7}
-        height={9}
-        viewBox="0 0 7 9"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={1.4}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        style={{ transform: dir === "prev" ? "rotate(180deg)" : "none" }}
-      >
-        <path d="M2 1.5 L5 4.5 L2 7.5" />
-      </svg>
-    </button>
-  );
-  return (
-    <span
-      style={{ display: "flex", alignItems: "center", gap: 3, flexShrink: 0 }}
-    >
-      {navBtn("prev", prev)}
-      <button
-        type="button"
-        title="Toggle keyframe at playhead"
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggle();
-        }}
-        style={{
-          width: 8,
-          height: 8,
-          flexShrink: 0,
-          transform: "rotate(45deg)",
-          background: st === "empty" ? "transparent" : col,
-          border: `1px solid ${st === "empty" ? "#52525b" : col}`,
-          padding: 0,
-          cursor: "pointer",
-        }}
-      />
-      {navBtn("next", next)}
-    </span>
-  );
-}
-
 interface ParamLaneProps {
   row: Extract<LaneRow, { kind: "paramLane" }>;
   yTop: number;
   height: number;
+  // Viewport width for culling off-screen keyframes/segments.
+  viewWidth: number;
   tickToPx: (tick: number) => number;
   selection: Set<string>;
+  /** This lane's Spline Draw anchor is selected on the canvas. */
+  anchorLit?: boolean;
 }
 
 function ParamLane(props: ParamLaneProps) {
-  const { row, yTop, height, tickToPx, selection } = props;
+  const { row, yTop, height, viewWidth, tickToPx, selection, anchorLit } =
+    props;
   const isColor = row.paramType === "color";
+  // Hover is tracked per-lane rather than lifted to the editor: the
+  // diamonds are pointerEvents:none (the lanes container owns every
+  // click), so this re-derives the same KEY_HIT_PX rule the hit test
+  // uses and re-renders only the one lane the cursor is over.
+  const [hoverTick, setHoverTick] = useState<number | null>(null);
+  const [hoverSeg, setHoverSeg] = useState<number | null>(null);
+  const onHover = (e: React.MouseEvent) => {
+    const x = e.clientX - e.currentTarget.getBoundingClientRect().left;
+    const y = e.clientY - e.currentTarget.getBoundingClientRect().top;
+    const kfs = row.block.keyframes;
+    let bestTick: number | null = null;
+    let bestD = Infinity;
+    for (const k of kfs) {
+      const d = Math.abs(tickToPx(k.tick) - x);
+      if (d <= KEY_HIT_PX && d < bestD) {
+        bestD = d;
+        bestTick = k.tick;
+      }
+    }
+    let seg: number | null = null;
+    if (bestTick == null && Math.abs(y - height / 2) <= SEGMENT_HIT_PX) {
+      for (let i = 1; i < kfs.length; i++) {
+        if (
+          x > tickToPx(kfs[i - 1].tick) + KEY_HIT_PX &&
+          x < tickToPx(kfs[i].tick) - KEY_HIT_PX
+        ) {
+          seg = i;
+          break;
+        }
+      }
+    }
+    if (bestTick !== hoverTick) setHoverTick(bestTick);
+    if (seg !== hoverSeg) setHoverSeg(seg);
+  };
+  const clearHover = () => {
+    if (hoverTick !== null) setHoverTick(null);
+    if (hoverSeg !== null) setHoverSeg(null);
+  };
   return (
     <div
+      onMouseMove={onHover}
+      onMouseLeave={clearHover}
       style={{
         position: "absolute",
         top: yTop,
@@ -2800,10 +2916,16 @@ function ParamLane(props: ParamLaneProps) {
         // Faint white wash + a top stroke when this lane belongs to
         // the currently-selected node — pairs with the left-stripe
         // on the label gutter to make the active row read as one
-        // continuous selection across the full editor width.
-        background: row.selected ? "rgba(250,250,250,0.04)" : undefined,
+        // continuous selection across the full editor width. The anchor
+        // highlight wins: it's answering a narrower question ("which
+        // lane is the anchor I just clicked on canvas?").
+        background: anchorLit
+          ? ANCHOR_HIGHLIGHT_BG
+          : row.selected
+            ? COLOR_LANE_SELECTED_BG
+            : undefined,
         borderTop: row.selected
-          ? "1px solid rgba(250,250,250,0.5)"
+          ? "1px solid color-mix(in srgb, var(--tb-lift) 50%, transparent)"
           : undefined,
       }}
     >
@@ -2816,8 +2938,17 @@ function ParamLane(props: ParamLaneProps) {
         const prev = row.block.keyframes[i - 1];
         const x0 = tickToPx(prev.tick);
         const x1 = tickToPx(k.tick);
-        if (x1 < -20 || x0 > 99999) return null;
+        if (x1 < -20 || x0 > viewWidth + 20) return null;
         const isHold = prev.easingOut === "hold";
+        const segHovered = hoverSeg === i;
+        // Dashed where the value CHANGES across the segment, solid where
+        // it holds — so a track's actual motion reads at a glance.
+        const changes = !keyframeValuesEqual(prev.value, k.value);
+        const color = segHovered
+          ? COLOR_SEGMENT_HOVER
+          : isHold
+            ? COLOR_SEGMENT_HOLD
+            : COLOR_SEGMENT;
         return (
           <div
             key={`seg:${prev.tick}:${k.tick}`}
@@ -2826,9 +2957,11 @@ function ParamLane(props: ParamLaneProps) {
               top: height / 2 - 0.5,
               left: x0,
               width: x1 - x0,
-              height: 1,
-              background: isHold ? COLOR_MUTED : "#3f3f46",
-              opacity: isColor ? 0 : 0.6,
+              // A border (not a background) so the dash pattern renders;
+              // the box itself collapses to zero height.
+              height: 0,
+              borderTop: `1px ${changes ? "dashed" : "solid"} ${color}`,
+              opacity: isColor ? 0 : segHovered ? 1 : 0.6,
               pointerEvents: "none",
             }}
           />
@@ -2838,9 +2971,12 @@ function ParamLane(props: ParamLaneProps) {
       {!isColor &&
         row.block.keyframes.map((k) => {
           const x = tickToPx(k.tick);
-          const sk = `${row.nodeId}\u0000${row.paramName}\u0000${k.tick}`;
-          const isSel = selection.has(sk);
-          const size = Math.max(5, Math.min(8, height * 0.28));
+          if (x < -20 || x > viewWidth + 20) return null;
+          const isSel = selection.has(
+            selKey({ nodeId: row.nodeId, paramName: row.paramName, tick: k.tick })
+          );
+          const isHover = !isSel && hoverTick === k.tick;
+          const size = Math.max(4, Math.min(KEY_SIZE, height * 0.24));
           return (
             <div
               key={`kf:${k.tick}`}
@@ -2850,12 +2986,20 @@ function ParamLane(props: ParamLaneProps) {
                 top: height / 2 - size / 2,
                 width: size,
                 height: size,
-                transform: "rotate(45deg)",
-                background: isSel ? COLOR_DIAMOND_SELECTED : COLOR_DIAMOND,
-                border: `1px solid ${isSel ? "#fff" : "#92400e"}`,
-                boxShadow: isSel
-                  ? `0 0 0 2px rgba(59,130,246,0.35)`
-                  : "none",
+                // Hover scales about the diamond's own centre, so the
+                // key never appears to move off its tick.
+                transform: `rotate(45deg) scale(${isHover ? 1.25 : 1})`,
+                // Selection changes the OUTLINE only — the amber fill is
+                // constant so a selected key still reads as a keyframe.
+                background: isHover ? COLOR_DIAMOND_HOVER : COLOR_DIAMOND,
+                border: `1px solid ${
+                  isSel
+                    ? COLOR_DIAMOND_SELECTED_BORDER
+                    : isHover
+                      ? COLOR_DIAMOND_HOVER_BORDER
+                      : COLOR_DIAMOND_BORDER
+                }`,
+                transition: "transform 90ms, background 90ms",
                 pointerEvents: "none",
               }}
             />
@@ -2865,8 +3009,10 @@ function ParamLane(props: ParamLaneProps) {
       {isColor &&
         row.block.keyframes.map((k) => {
           const x = tickToPx(k.tick);
-          const sk = `${row.nodeId}\u0000${row.paramName}\u0000${k.tick}`;
-          const isSel = selection.has(sk);
+          if (x < -20 || x > viewWidth + 20) return null;
+          const isSel = selection.has(
+            selKey({ nodeId: row.nodeId, paramName: row.paramName, tick: k.tick })
+          );
           return (
             <div
               key={`cs:${k.tick}`}
@@ -2876,7 +3022,7 @@ function ParamLane(props: ParamLaneProps) {
                 top: 2,
                 width: 2,
                 height: height - 4,
-                background: isSel ? "#fff" : "rgba(255,255,255,0.5)",
+                background: isSel ? "#fff" : "color-mix(in srgb, var(--tb-lift) 50%, transparent)",
                 outline: isSel ? `1px solid ${COLOR_ACCENT}` : "none",
                 pointerEvents: "none",
               }}
@@ -2967,7 +3113,7 @@ function rgbaToCss(value: unknown): string {
     const a = value.length >= 4 ? Math.max(0, Math.min(1, Number(value[3]))) : 1;
     return `rgba(${r},${g},${b},${a})`;
   }
-  return "#888";
+  return "var(--tb-n-12)";
 }
 
 interface SelectionBoxProps {
@@ -2975,18 +3121,17 @@ interface SelectionBoxProps {
   tickToPx: (tick: number) => number;
   laneRowYs: number[];
   lanes: LaneRow[];
-  trackHeight: number;
 }
 
 function SelectionBox(props: SelectionBoxProps) {
-  const { box, tickToPx, laneRowYs, lanes, trackHeight } = props;
+  const { box, tickToPx, laneRowYs, lanes } = props;
   const leftRaw = tickToPx(box.minTick);
   const rightRaw = tickToPx(box.maxTick);
   const yTop = (laneRowYs[box.minRow] ?? 0) - 2;
   const lastRow = lanes[box.maxRow];
   const yBot =
     (laneRowYs[box.maxRow] ?? 0) +
-    (lastRow?.kind === "nodeHeader" ? NODE_HEADER_HEIGHT : trackHeight) +
+    (lastRow?.kind === "nodeHeader" ? NODE_HEADER_HEIGHT : TRACK_HEIGHT) +
     2;
   const EDGE = 6;
   const naturalW = rightRaw - leftRaw;
@@ -3007,35 +3152,44 @@ function SelectionBox(props: SelectionBoxProps) {
         width: w,
         height: h,
         border: `1px solid ${COLOR_ACCENT}`,
+        borderRadius: 5,
         background: degenerate
-          ? "rgba(59,130,246,0.15)"
-          : "rgba(59,130,246,0.05)",
+          ? "color-mix(in srgb, var(--tb-a-blue-500) 15%, transparent)"
+          : "color-mix(in srgb, var(--tb-a-blue-500) 5%, transparent)",
         pointerEvents: "none",
         boxSizing: "border-box",
       }}
     >
-      {/* Edge handles only render when the box is wide enough to scale.
-          When degenerate the strip itself is the move-group hit zone. */}
+      {/* Scale handles — short, thick, rounded bars centred on each edge,
+          so the box reads as grabbable rather than as a plain outline.
+          Purely visual: the hit zone is still the EDGE band in
+          onLanesPointerDown, which is wider than the bar is drawn.
+          Only rendered when the box is wide enough to scale; when
+          degenerate the strip itself is the move-group hit zone. */}
       {!degenerate && (
         <>
           <div
             style={{
               position: "absolute",
-              left: -3,
-              top: 0,
-              bottom: 0,
-              width: 4,
-              background: "rgba(59,130,246,0.4)",
+              left: -2,
+              top: "50%",
+              transform: "translateY(-50%)",
+              width: 3,
+              height: Math.max(8, Math.min(18, h * 0.45)),
+              borderRadius: 2,
+              background: COLOR_ACCENT,
             }}
           />
           <div
             style={{
               position: "absolute",
-              right: -3,
-              top: 0,
-              bottom: 0,
-              width: 4,
-              background: "rgba(59,130,246,0.4)",
+              right: -2,
+              top: "50%",
+              transform: "translateY(-50%)",
+              width: 3,
+              height: Math.max(8, Math.min(18, h * 0.45)),
+              borderRadius: 2,
+              background: COLOR_ACCENT,
             }}
           />
         </>
@@ -3055,6 +3209,7 @@ interface ContextMenuViewProps {
 
 function ContextMenuView(props: ContextMenuViewProps) {
   const { menu, onDelete, onSetEasing, allScalar, stepOnly } = props;
+  const panelWin = usePanelWindow();
   const [hoverEasing, setHoverEasing] = useState(false);
   // Portal to the body — the dock's slide transform would otherwise be
   // the containing block for `position: fixed`, offsetting the menu from
@@ -3067,7 +3222,7 @@ function ContextMenuView(props: ContextMenuViewProps) {
         left: menu.x,
         top: menu.y,
         zIndex: 1000,
-        background: "#1a1a1f",
+        background: "var(--tb-n-4)",
         color: COLOR_TEXT,
         border: `1px solid ${COLOR_BORDER}`,
         borderRadius: 4,
@@ -3088,7 +3243,7 @@ function ContextMenuView(props: ContextMenuViewProps) {
             justifyContent: "space-between",
             alignItems: "center",
             gap: 12,
-            background: hoverEasing ? "#27272a" : "transparent",
+            background: hoverEasing ? "var(--tb-n-7)" : "transparent",
           }}
         >
           <span>Set easing</span>
@@ -3108,7 +3263,7 @@ function ContextMenuView(props: ContextMenuViewProps) {
           cursor: "pointer",
         }}
         onMouseEnter={(e) =>
-          ((e.currentTarget as HTMLDivElement).style.background = "#27272a")
+          ((e.currentTarget as HTMLDivElement).style.background = "var(--tb-n-7)")
         }
         onMouseLeave={(e) =>
           ((e.currentTarget as HTMLDivElement).style.background = "transparent")
@@ -3117,17 +3272,23 @@ function ContextMenuView(props: ContextMenuViewProps) {
         Delete keyframe
       </div>
     </div>,
-    document.body
+    // This editor's OWN body — a popped-out timeline must not drop its
+    // context menu into the main window.
+    (panelWin ?? window).document.body
   );
 }
 
 interface EasingGridProps {
   allScalar: boolean;
   onPick(p: EasingPreset): void;
+  /** Overrides the default submenu placement (used by the picker button). */
+  style?: React.CSSProperties;
+  /** Marks the current preset. */
+  active?: EasingPreset;
 }
 
 function EasingGrid(props: EasingGridProps) {
-  const { allScalar, onPick } = props;
+  const { allScalar, onPick, style, active } = props;
   const TILE = 36;
   const COLS = 6;
   return (
@@ -3136,7 +3297,7 @@ function EasingGrid(props: EasingGridProps) {
         position: "absolute",
         left: "100%",
         top: 0,
-        background: "#1a1a1f",
+        background: "var(--tb-n-4)",
         border: `1px solid ${COLOR_BORDER}`,
         borderRadius: 4,
         padding: 6,
@@ -3144,6 +3305,7 @@ function EasingGrid(props: EasingGridProps) {
         display: "grid",
         gridTemplateColumns: `repeat(${COLS}, ${TILE}px)`,
         gap: 4,
+        ...style,
       }}
     >
       {EASING_PRESETS.map((p) => {
@@ -3154,6 +3316,7 @@ function EasingGrid(props: EasingGridProps) {
             preset={p}
             size={TILE}
             disabled={disabled}
+            active={active === p}
             label={EASING_LABELS[p]}
             onClick={() => {
               if (disabled) return;
@@ -3166,70 +3329,104 @@ function EasingGrid(props: EasingGridProps) {
   );
 }
 
-interface EasingTileProps {
-  preset: EasingPreset;
-  size: number;
-  disabled: boolean;
-  label: string;
-  onClick(): void;
-}
-
-function EasingTile(props: EasingTileProps) {
-  const { preset, size, disabled, label, onClick } = props;
+/**
+ * The inspector strip's easing control. Was a native <select>, which
+ * rendered the OS menu (and its focus ring) in the middle of an
+ * otherwise custom surface; this is the same tile grid the right-click
+ * menu already uses, opened from a button styled like the rest of the
+ * strip.
+ */
+function EasingPickerButton(props: {
+  value: EasingPreset;
+  allScalar: boolean;
+  onPick(p: EasingPreset): void;
+}) {
+  const { value, allScalar, onPick } = props;
+  const panelWin = usePanelWindow();
+  const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
-  const inset = 4;
-  const w = size - inset * 2;
-  const h = size - inset * 2;
-  const path = easingPathFor(preset, w, h, 40);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(
+    null
+  );
+  useEffect(() => {
+    if (!open) return;
+    const r = btnRef.current?.getBoundingClientRect();
+    // Opens UPWARD: the strip is pinned to the bottom of the editor, so
+    // there is never room below it.
+    if (r) setAnchor({ left: r.left, top: r.top - 6 });
+    const onDown = (e: MouseEvent) => {
+      if (btnRef.current?.contains(e.target as globalThis.Node)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    const win = ownerWindow(btnRef.current);
+    win.addEventListener("mousedown", onDown);
+    win.addEventListener("keydown", onKey);
+    return () => {
+      win.removeEventListener("mousedown", onDown);
+      win.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
   return (
-    <button
-      type="button"
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        width: size,
-        height: size,
-        padding: 0,
-        background: hover && !disabled ? "#27272a" : "#101013",
-        border: `1px solid ${hover && !disabled ? "#3f3f46" : COLOR_BORDER}`,
-        borderRadius: 4,
-        cursor: disabled ? "not-allowed" : "pointer",
-        opacity: disabled ? 0.35 : 1,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden>
-        {/* baseline & ceiling */}
-        <line
-          x1={0}
-          y1={h * 0.82}
-          x2={w}
-          y2={h * 0.82}
-          stroke="#2a2a30"
-          strokeWidth={1}
-        />
-        <line
-          x1={0}
-          y1={h * 0.18}
-          x2={w}
-          y2={h * 0.18}
-          stroke="#2a2a30"
-          strokeWidth={1}
-        />
-        <path
-          d={path}
-          fill="none"
-          stroke={hover && !disabled ? "#fbbf24" : "#3b82f6"}
-          strokeWidth={1.5}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    </button>
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        title="Set easing for the selected keyframes"
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        style={{
+          background: open || hover ? "var(--tb-n-5)" : "var(--tb-n-3)",
+          color: COLOR_TEXT,
+          border: `1px solid ${open ? "var(--tb-n-9)" : COLOR_BORDER}`,
+          borderRadius: 3,
+          padding: "0 8px",
+          height: 18,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          fontFamily: "var(--ui-font)",
+          fontSize: 10,
+          cursor: "pointer",
+          outline: "none",
+        }}
+      >
+        {EASING_LABELS[value]}
+        <span style={{ color: COLOR_MUTED, fontSize: 8 }}>{"▲"}</span>
+      </button>
+      {open &&
+        anchor &&
+        createPortal(
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{ position: "fixed", left: 0, top: 0, zIndex: 1000 }}
+          >
+            <EasingGrid
+              allScalar={allScalar}
+              active={value}
+              onPick={(p) => {
+                setOpen(false);
+                onPick(p);
+              }}
+              style={{
+                position: "fixed",
+                left: anchor.left,
+                top: anchor.top,
+                transform: "translateY(-100%)",
+              }}
+            />
+          </div>,
+          // Context, not the ref — portal targets are computed during
+          // render, where refs are off-limits.
+          (panelWin ?? window).document.body
+        )}
+    </>
   );
 }

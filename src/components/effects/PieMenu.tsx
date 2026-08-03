@@ -9,7 +9,7 @@ import { createPortal } from "react-dom";
 // Presentational + self-contained: it knows nothing about the app, only a
 // list of items (each with its own run()). The owner (EffectsApp) builds the
 // item array wired to real handlers. Look & feel follows the editor's house
-// language (inline-hex zinc/blue, ui-monospace, pills at 999, house easing).
+// language (inline-hex zinc/blue, var(--ui-font), pills at 999, house easing).
 //
 // Interaction = hybrid (Blender-style): flick a direction and release the
 // keys to fire; OR tap the chord and it stays open for point-and-click.
@@ -223,7 +223,7 @@ export default function PieMenu({ origin, items, onClose }: Props) {
         // No dark scrim — the canvas stays visible (reference has none).
         background: "transparent",
         cursor: "default",
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         userSelect: "none",
       }}
     >
@@ -241,13 +241,13 @@ export default function PieMenu({ origin, items, onClose }: Props) {
           transition: `opacity 0.14s ${EASE}, transform 0.14s ${EASE}`,
         }}
       >
-        {wedge && <path d={wedge} fill="rgba(30,58,138,0.35)" />}
+        {wedge && <path d={wedge} fill="color-mix(in srgb, var(--tb-a-blue-900) 35%, transparent)" />}
         <circle
           cx={center.cx}
           cy={center.cy}
           r={R}
           fill="none"
-          stroke="#27272a"
+          stroke="var(--tb-n-7)"
           strokeWidth={1}
         />
       </svg>
@@ -261,7 +261,7 @@ export default function PieMenu({ origin, items, onClose }: Props) {
           width: HUB,
           height: HUB,
           borderRadius: 999,
-          border: "1px solid #27272a",
+          border: "1px solid var(--tb-n-7)",
           background: "rgba(10,10,10,0.55)",
           pointerEvents: "none",
           opacity: shown ? 1 : 0,
@@ -300,13 +300,13 @@ export default function PieMenu({ origin, items, onClose }: Props) {
                 alignItems: "center",
                 justifyContent: "center",
                 borderRadius: 10,
-                background: dis ? "#141416" : isActive ? "#1e3a8a" : "#18181b",
+                background: dis ? "var(--tb-n-2)" : isActive ? "var(--tb-a-blue-900)" : "var(--tb-n-3)",
                 border: `1px solid ${
-                  dis ? "#27272a" : isActive ? "#3b82f6" : "#27272a"
+                  dis ? "var(--tb-n-7)" : isActive ? "var(--tb-a-blue-500)" : "var(--tb-n-7)"
                 }`,
-                color: dis ? "#52525b" : isActive ? "#dbeafe" : "#a1a1aa",
+                color: dis ? "var(--tb-n-10)" : isActive ? "var(--tb-a-blue-100)" : "var(--tb-n-13)",
                 boxShadow: isActive
-                  ? "0 0 0 3px rgba(59,130,246,0.25)"
+                  ? "0 0 0 3px color-mix(in srgb, var(--tb-a-blue-500) 25%, transparent)"
                   : "none",
                 opacity: shown ? (dis ? 0.5 : 1) : 0,
                 transform: shown ? "scale(1)" : "scale(0.6)",
@@ -330,9 +330,9 @@ export default function PieMenu({ origin, items, onClose }: Props) {
                 borderRadius: 999,
                 padding: "3px 9px",
                 fontSize: 11,
-                background: dis ? "#0a0a0a" : isActive ? "#1e3a8a" : "#0a0a0a",
-                border: `1px solid ${isActive ? "#1e3a8a" : "#27272a"}`,
-                color: dis ? "#52525b" : isActive ? "#dbeafe" : "#a1a1aa",
+                background: dis ? "var(--tb-n-0)" : isActive ? "var(--tb-a-blue-900)" : "var(--tb-n-0)",
+                border: `1px solid ${isActive ? "var(--tb-a-blue-900)" : "var(--tb-n-7)"}`,
+                color: dis ? "var(--tb-n-10)" : isActive ? "var(--tb-a-blue-100)" : "var(--tb-n-13)",
                 opacity: shown ? (dis ? 0.5 : 1) : 0,
                 transition: `opacity 0.14s ${EASE}, background 0.1s ${EASE}, border-color 0.1s ${EASE}, color 0.1s ${EASE}`,
               }}
@@ -341,11 +341,11 @@ export default function PieMenu({ origin, items, onClose }: Props) {
               {item.hint && (
                 <span
                   style={{
-                    color: isActive ? "#93c5fd" : "#71717a",
+                    color: isActive ? "var(--tb-a-blue-300)" : "var(--tb-n-11)",
                     fontSize: 10,
                     padding: "0 3px",
                     borderRadius: 3,
-                    border: `1px solid ${isActive ? "#1d4ed8" : "#27272a"}`,
+                    border: `1px solid ${isActive ? "var(--tb-a-blue-700)" : "var(--tb-n-7)"}`,
                   }}
                 >
                   {item.hint}

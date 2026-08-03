@@ -34,7 +34,7 @@ import { pointsFromArray } from "@/engine/points";
 // MAX_EMITTERS) and a switch over their `kind` ints — keeps shader
 // compiles deterministic without runtime stitching.
 //
-// State is stored on ctx.state[`particle-sim:${nodeId}`] so it
+// State is stored on ctx.state[`particle-simulator:${nodeId}`] so it
 // survives across frames. The eval cache doesn't touch it (textures
 // are owned by this state, not allocated through ctx.allocImage).
 //
@@ -464,7 +464,12 @@ interface SimState {
 }
 
 function stateKey(nodeId: string) {
-  return `particle-sim:${nodeId}`;
+  // MUST start with the registered node type ("particle-simulator") so the
+  // evaluator's dispose sweep (which resolves the key's first `:` segment via
+  // getNodeDef) actually fires dispose on node deletion / backend teardown. The
+  // old "particle-sim:" prefix resolved to no def, so dispose was dead code and
+  // every add/delete cycle leaked 4 textures + 2 FBOs. See 072226 audit #6.
+  return `particle-simulator:${nodeId}`;
 }
 
 function disposeState(ctx: RenderContext, st: SimState) {
@@ -845,6 +850,16 @@ export const particleSimulatorWebGLNode: NodeDefinition = {
     const wasNonZero = st.lastTime > 0.05;
     const isNearZero = ctx.time < 0.05;
     const reset = wasNonZero && isNearZero;
+    // House sim contract (rope/rigid precedent): advance only while playing or
+    // when an offline export steps to a NEW time. Evals at an UNCHANGED
+    // ctx.time — a paused playhead, split view's 2nd pass, and above all the
+    // offline settle RE-RENDER — re-emit the current state without advancing,
+    // so the sim doesn't double-step on export (motion matching preview) or
+    // drift while paused. A time wrap still resets below even when not active.
+    // See 072226 sim audit #2. `active` reads st.lastTime BEFORE it's updated.
+    const active =
+      ctx.playing || (ctx.offline && ctx.time > st.lastTime + 1e-6);
+    const runStep = active || reset;
     st.lastTime = ctx.time;
 
     // Gather force / emitter descriptors from inputs.
@@ -1036,20 +1051,23 @@ export const particleSimulatorWebGLNode: NodeDefinition = {
     // Instead: drive the same VAO. The engine always keeps the VAO bound
     // and the sharedVs is implicit from getShader's link. drawArrays(
     // TRIANGLES, 0, 3) — that's the fullscreen-triangle convention.
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (runStep) gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     // Restore the default single drawBuffer so subsequent passes don't
     // see ours (drawFullscreen et al assume COLOR_ATTACHMENT0 only).
     gl.drawBuffers([gl.BACK]);
 
-    // Flip the read index for next frame.
-    st.readIdx = readIdx === 0 ? 1 : 0;
+    // Flip the read index only when we actually stepped; otherwise the write
+    // textures are stale, so re-emit the current read state (no advance).
+    if (runStep) st.readIdx = readIdx === 0 ? 1 : 0;
+    const outPos = runStep ? writePos : readPos;
+    const outVel = runStep ? writeVel : readVel;
 
     const out: ParticlesValue = {
       kind: "particles",
-      positionTex: writePos,
-      velocityTex: writeVel,
+      positionTex: outPos,
+      velocityTex: outVel,
       width: texW,
       height: texH,
       count: st.count,
@@ -1067,7 +1085,7 @@ export const particleSimulatorWebGLNode: NodeDefinition = {
       // `cap` Point objects.
       const data = ctx.readImageToFloat32({
         kind: "image",
-        texture: writePos,
+        texture: outPos,
         width: texW,
         height: texH,
       });

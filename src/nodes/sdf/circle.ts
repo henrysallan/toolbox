@@ -4,6 +4,7 @@ import type {
   PositionValue,
   SdfValue,
 } from "@/engine/types";
+import { SDF_PAINT_PARAMS, paintSdf } from "@/engine/sdf-material";
 
 // SDF primitive — a 2D disc of radius `r` centered at (x, y) in
 // canvas-UV coords. Wire a `position` input to route the disc through
@@ -64,6 +65,7 @@ export const sdfCircleNode: NodeDefinition = {
       step: 0.001,
       default: 0.2,
     },
+    ...SDF_PAINT_PARAMS,
   ],
   primaryOutput: "sdf",
   auxOutputs: [],
@@ -80,13 +82,16 @@ export const sdfCircleNode: NodeDefinition = {
         : ((params.radius as number) ?? 0.2);
     const out: SdfValue = {
       kind: "sdf",
-      root: {
-        kind: "circle",
-        position: rootOfPosition(inputs.position),
-        cx,
-        cy,
-        r,
-      },
+      root: paintSdf(
+        {
+          kind: "circle",
+          position: rootOfPosition(inputs.position),
+          cx,
+          cy,
+          r,
+        },
+        params
+      ),
     };
     return { primary: out };
   },

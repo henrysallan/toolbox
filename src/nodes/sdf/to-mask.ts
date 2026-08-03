@@ -1,5 +1,9 @@
 import type { NodeDefinition, SdfValue } from "@/engine/types";
-import { compileSdf, structuralHash } from "@/engine/sdf-compile";
+import {
+  bindSdfUniforms,
+  compileSdf,
+  structuralHash,
+} from "@/engine/sdf-compile";
 
 // Render an SDF as a binary (or feathered) mask at the chosen iso-
 // level. Default threshold = 0 produces the canonical "inside vs
@@ -89,22 +93,7 @@ export const sdfToMaskNode: NodeDefinition = {
         aspectCorrect ? 1 : 0
       );
 
-      let samplerUnit = 0;
-      for (const u of compiled.uniforms) {
-        const loc = gl.getUniformLocation(prog, u.name);
-        if (!loc) continue;
-        if (u.type === "float") {
-          gl.uniform1f(loc, u.value as number);
-        } else if (u.type === "vec2") {
-          const v = u.value as [number, number];
-          gl.uniform2f(loc, v[0], v[1]);
-        } else {
-          gl.activeTexture(gl.TEXTURE0 + samplerUnit);
-          gl.bindTexture(gl.TEXTURE_2D, u.value as WebGLTexture);
-          gl.uniform1i(loc, samplerUnit);
-          samplerUnit++;
-        }
-      }
+      bindSdfUniforms(gl, prog, compiled.uniforms);
     });
 
     return { primary: output };

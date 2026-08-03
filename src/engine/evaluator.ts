@@ -8,6 +8,7 @@ import {
   MASK_INPUT_NAME,
   parseRampParamKey,
   rampFieldSocketType,
+  resolveAnchorTracks,
   withMaskInput,
   type RampStopField,
 } from "./conventions";
@@ -37,6 +38,7 @@ import type {
   ResolveCtx,
   SocketType,
   SocketValue,
+  SplineSubpath,
 } from "./types";
 
 const MASK_APPLY_FS = `#version 300 es
@@ -439,6 +441,15 @@ function socketToParamRaw(
 // node so the sweep converges even if a dispose is incomplete. Keys whose
 // first segment isn't a registered node type (engine-internal `__…__` keys,
 // `sim-zone:<zoneId>` shared state) are left alone.
+// Colon-bearing state prefixes that are deliberately NOT node types (so a
+// getNodeDef miss on them is expected, not a bug). `sim-zone:<zoneId>` is
+// shared Start/End feedback state; `__…__` engine-internal keys are filtered
+// earlier by the no-colon check but are listed for future colon-bearing ones.
+const KNOWN_NON_TYPE_STATE_PREFIXES = new Set(["sim-zone"]);
+// Dedup the "unregistered prefix" warning so the per-eval sweep logs each
+// offending prefix at most once per session.
+const warnedUnknownStatePrefixes = new Set<string>();
+
 function sweepNodeState(
   ctx: RenderContext,
   keep: ReadonlySet<string> | null
@@ -454,7 +465,27 @@ function sweepNodeState(
     const nodeId = j === -1 ? rest : rest.slice(0, j);
     if (!nodeId || (keep && keep.has(nodeId))) continue;
     const def = getNodeDef(type);
-    if (!def) continue;
+    if (!def) {
+      // A state key whose first segment resolves to no node type means its
+      // dispose can NEVER run (this sweep is the only dispose call site) — a
+      // silent per-node resource leak. That's exactly how the particle sim's
+      // `particle-sim:`/`particle-sim-webgpu:` keys leaked GPU state before
+      // 072226. Warn once so the next such convention break is loud.
+      if (
+        !type.startsWith("__") &&
+        !KNOWN_NON_TYPE_STATE_PREFIXES.has(type) &&
+        !warnedUnknownStatePrefixes.has(type)
+      ) {
+        warnedUnknownStatePrefixes.add(type);
+        console.warn(
+          `[eval] ctx.state key prefix "${type}:" is not a registered node ` +
+            `type — its dispose will never run (resource leak). State keys must ` +
+            `be "<nodeType>:<nodeId>" (see types.ts) or an allowlisted shared ` +
+            `prefix.`
+        );
+      }
+      continue;
+    }
     const pairKey = `${type}:${nodeId}`;
     if (disposed.has(pairKey)) continue;
     disposed.add(pairKey);
@@ -728,9 +759,15 @@ export function evaluateGraph(
       : flat.edges.filter(
           (e) =>
             !(
-              e.targetHandle === "in:content" &&
-              gatedLayers.has(e.target) &&
-              !prerollLayers.has(e.target)
+              // Both edges flatten pushes from a Layer Output onto the layer
+              // shell: the blend content and the vector export tap. A gated
+              // layer shows nothing, so neither interior branch should be
+              // kept alive (gatedLayers holds layer ids only, so this can't
+              // catch another node type's `in:spline`).
+              ((e.targetHandle === "in:content" ||
+                e.targetHandle === "in:spline") &&
+                gatedLayers.has(e.target) &&
+                !prerollLayers.has(e.target))
             )
         );
 
@@ -1196,6 +1233,31 @@ export function evaluateGraph(
           }
           anyAnimated = true;
           keyframeOverrides[pdef.name] = stops;
+        }
+      }
+      // Virtual per-anchor keys for Spline Draw (anchor_p/in/out:<id> —
+      // spec 072726 M6): animate INDIVIDUAL anchors of a `spline_anchors`
+      // param. EITHER/OR with whole-shape Path Animation — when the spline
+      // param's own block is animated (resolved by the standard keyframe
+      // step above), per-anchor tracks are ignored. Same clone-and-override
+      // contract as the three blocks above; tracks whose anchor id no
+      // longer exists are ignored.
+      const splineParam = def.params.find((p) => p.type === "spline_anchors");
+      if (splineParam && !animation[splineParam.name]?.animated) {
+        const base = (keyframeOverrides[splineParam.name] ??
+          node.params[splineParam.name]) as
+          | { subpaths?: SplineSubpath[] }
+          | undefined;
+        if (base && Array.isArray(base.subpaths)) {
+          const resolved = resolveAnchorTracks(
+            base as { subpaths: SplineSubpath[] },
+            animation,
+            ctx.tick
+          );
+          if (resolved) {
+            anyAnimated = true;
+            keyframeOverrides[splineParam.name] = resolved;
+          }
         }
       }
       if (anyAnimated) {

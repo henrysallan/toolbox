@@ -2,6 +2,7 @@ import type { Edge, Node } from "@xyflow/react";
 import type { NodeDataPayload } from "./graph";
 import type { SavedComposition } from "@/lib/project";
 import type { SaveState } from "@/components/effects/FileNameMenu";
+import type { LayoutTree } from "@/components/effects/layout/model";
 
 // Module-level survival capsule for editor state across a client-side
 // route change (e.g. clicking the docs "i" button).
@@ -40,6 +41,12 @@ export interface EditorSessionSnapshot {
   // exact compositions and active selection, not just the tagged nodes.
   compositions: SavedComposition[];
   activeCompositionId: string;
+  // Tiled window layout (072726_window-tiling.md M4). Carried by
+  // reference — leaf ids survive, so the sticky primary election (and
+  // NodeEditor's per-pane camera stash, keyed on leaf ids) restore
+  // exactly.
+  layoutTree: LayoutTree;
+  primaryViewportLeafId: string | null;
 }
 
 let stash: EditorSessionSnapshot | null = null;

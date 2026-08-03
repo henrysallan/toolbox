@@ -7,6 +7,7 @@ import type {
   SplineValue,
 } from "@/engine/types";
 import { flattenSpline, splineGeomHash } from "@/engine/spline-flatten";
+import { SDF_PAINT_PARAMS, paintSdf } from "@/engine/sdf-material";
 
 // SDF primitive — distance to a spline. The spline gets pre-
 // flattened on the CPU into line segments (cubic Béziers
@@ -136,6 +137,7 @@ export const sdfSplineNode: NodeDefinition = {
       type: "boolean",
       default: false,
     },
+    ...SDF_PAINT_PARAMS,
   ],
   primaryOutput: "sdf",
   auxOutputs: [],
@@ -173,13 +175,16 @@ export const sdfSplineNode: NodeDefinition = {
     const closed = state.closed === true && !forceOpen;
     const out: SdfValue = {
       kind: "sdf",
-      root: {
-        kind: "splineSdf",
-        position: rootOfPosition(inputs.position),
-        segmentTexture: state.texture!,
-        segCount: state.segCount!,
-        closed,
-      },
+      root: paintSdf(
+        {
+          kind: "splineSdf",
+          position: rootOfPosition(inputs.position),
+          segmentTexture: state.texture!,
+          segCount: state.segCount!,
+          closed,
+        },
+        params
+      ),
     };
     return { primary: out };
   },

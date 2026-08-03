@@ -75,3 +75,52 @@ export function sampleColorRamp(
   }
   return toRgba(sorted[sorted.length - 1]);
 }
+
+// Numeric sibling of sampleColorRamp for consumers that feed GPU buffers
+// rather than Canvas2D fillStyles (first: Diffusion Curves' per-sample
+// constraint colors, 072726_diffusion-curves.md). Same stop semantics —
+// sort/clamp/bracket, per-stop straight alpha, `ease` smoothsteps,
+// `constant` holds the left stop — but returns RGBA in 0..1 without the
+// string round-trip (and without the string version's 8-bit rounding).
+export function sampleColorRampRgba01(
+  stops: ColorRampStop[],
+  t: number,
+  interp: ColorRampInterp = "linear"
+): [number, number, number, number] {
+  const sorted = [...stops]
+    .filter((s) => typeof s.position === "number")
+    .sort((a, b) => a.position - b.position)
+    .slice(0, COLOR_RAMP_MAX_STOPS);
+  const tc = Math.max(0, Math.min(1, t));
+
+  const toVec = (stop: ColorRampStop): [number, number, number, number] => {
+    const [r, g, b] = hexToRgb(stop.color);
+    const a = Math.max(0, Math.min(1, stop.alpha ?? 1));
+    return [r / 255, g / 255, b / 255, a];
+  };
+
+  if (sorted.length === 0) return [tc, tc, tc, 1];
+  if (sorted.length === 1) return toVec(sorted[0]);
+  if (tc <= sorted[0].position) return toVec(sorted[0]);
+  if (tc >= sorted[sorted.length - 1].position)
+    return toVec(sorted[sorted.length - 1]);
+
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    if (tc >= a.position && tc <= b.position) {
+      if (interp === "constant") return toVec(a);
+      let f = (tc - a.position) / Math.max(b.position - a.position, 1e-4);
+      if (interp === "ease") f = f * f * (3 - 2 * f); // smoothstep
+      const va = toVec(a);
+      const vb = toVec(b);
+      return [
+        va[0] + (vb[0] - va[0]) * f,
+        va[1] + (vb[1] - va[1]) * f,
+        va[2] + (vb[2] - va[2]) * f,
+        va[3] + (vb[3] - va[3]) * f,
+      ];
+    }
+  }
+  return toVec(sorted[sorted.length - 1]);
+}

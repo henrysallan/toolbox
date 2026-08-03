@@ -4,6 +4,7 @@ import type {
   PositionValue,
   SdfValue,
 } from "@/engine/types";
+import { SDF_PAINT_PARAMS, paintSdf } from "@/engine/sdf-material";
 
 // SDF primitive — an axis-aligned rectangle (optionally rounded)
 // centered at (x, y) with full width × height in canvas-UV units.
@@ -82,6 +83,7 @@ export const sdfRectangleNode: NodeDefinition = {
       step: 0.001,
       default: 0,
     },
+    ...SDF_PAINT_PARAMS,
   ],
   primaryOutput: "sdf",
   auxOutputs: [],
@@ -110,15 +112,18 @@ export const sdfRectangleNode: NodeDefinition = {
     );
     const out: SdfValue = {
       kind: "sdf",
-      root: {
-        kind: "rect",
-        position: rootOfPosition(inputs.position),
-        cx,
-        cy,
-        sx,
-        sy,
-        cornerRadius,
-      },
+      root: paintSdf(
+        {
+          kind: "rect",
+          position: rootOfPosition(inputs.position),
+          cx,
+          cy,
+          sx,
+          sy,
+          cornerRadius,
+        },
+        params
+      ),
     };
     return { primary: out };
   },

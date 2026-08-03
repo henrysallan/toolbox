@@ -174,6 +174,25 @@ export function coerceValue(
     if (target === "uv") return value;
   }
 
+  // Image → uv: reinterpret R/G as per-pixel (u, v). Zero-copy — UV fields
+  // live in the same RGBA pool textures as images (see allocUv), and every
+  // uv consumer samples `.rg`, so re-wrapping the texture is the whole job.
+  // The wrapper is transient (built at input-resolution, consumed inside the
+  // downstream compute), so aliasing the source texture is safe. A grayscale
+  // image (R == G) maps to the (f, f) diagonal — wiring Noise into another
+  // Noise's UV input is Blender's Fac → Vector marble trick, re-evaluating
+  // the second noise at coordinates read from the first. Curl noise's signed
+  // RG field warps as a true vector field. Mask is deliberately NOT
+  // coercible to uv (its R-format texture reads G = 0).
+  if (value.kind === "image" && target === "uv") {
+    return {
+      kind: "uv",
+      texture: value.texture,
+      width: value.width,
+      height: value.height,
+    };
+  }
+
   // Image / mask → scalar. Sample the source's "middle value" via a 1×1
   // readback. Intentionally general so any scalar-typed input or exposed
   // param accepts an image — noise wired into Transform scale, gradient

@@ -5,6 +5,7 @@ import type {
   RenderContext,
   SocketValue,
 } from "@/engine/types";
+import { broadcastAppEvent } from "@/components/effects/layout/panel-window";
 
 // Color value source — emits vec4 (r, g, b, a) values without rasterizing
 // them. Solid Color produces a full-frame image; this one produces raw
@@ -294,10 +295,13 @@ function announcePalette(nodeId: string, hexes: string[] | null) {
   if (prevKey === nextKey) return;
   if (hexes) store.set(nodeId, hexes);
   else store.delete(nodeId);
-  window.dispatchEvent(
-    new CustomEvent("color-node-palette", {
-      detail: { nodeId, colors: hexes },
-    })
+  // Broadcast: the node body listening for this may be in a popped-out
+  // node editor (080226_panel-popout-windows.md).
+  broadcastAppEvent(
+    () =>
+      new CustomEvent("color-node-palette", {
+        detail: { nodeId, colors: hexes },
+      })
   );
 }
 

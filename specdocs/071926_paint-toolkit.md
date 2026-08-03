@@ -260,8 +260,13 @@ paint node; closes on deselect.
   backdrop (not into the output): paint *over* video/renders while the
   node outputs strokes alone. (Today you see the pipeline result, which
   covers the common case; a true reference input covers rotoscoping.)
-- **Straight-line helpers** — Shift-click to line from last point;
-  Shift-drag axis constraint.
+- **Straight-line helpers** — ✅ SHIPPED. Shift-click connects a straight
+  line from the previous stroke's end (dashed preview while Shift is
+  held; repeated Shift-clicks chain a polyline; works for brush / eraser
+  / blur via `StrokeSession.lineTo`, which bypasses the stabilizer);
+  Shift-drag locks the stroke to its dominant axis (anchor re-arms when
+  Shift is released mid-stroke). The overlay is keyed per node so the
+  line anchor never leaks across paint nodes.
 - **Per-stroke blend modes** — multiply/screen via
   `globalCompositeOperation` on the stroke composite.
 - **Supersampled paint surface** — 2× canvas-res option so zoomed-in

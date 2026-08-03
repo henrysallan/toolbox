@@ -112,14 +112,14 @@ export default function BgRemovePanel({
           alignItems: "center",
           gap: 8,
           padding: "4px 8px",
-          background: "#111114",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-1)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 4,
         }}
       >
         <div
           style={{
-            color: "#fafafa",
+            color: "var(--tb-n-17)",
             fontSize: 11,
             fontWeight: 600,
             letterSpacing: 0.3,
@@ -127,11 +127,11 @@ export default function BgRemovePanel({
         >
           Background Remove
         </div>
-        <div style={{ color: "#52525b", fontSize: 10 }}>{model}</div>
+        <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>{model}</div>
         <div style={{ flex: 1 }} />
         <div
           style={{
-            color: baked ? "#4ade80" : busy ? "#fbbf24" : "#71717a",
+            color: baked ? "var(--tb-a-green-400)" : busy ? "var(--tb-a-amber-400)" : "var(--tb-n-11)",
             fontSize: 10,
             display: "flex",
             alignItems: "center",
@@ -147,8 +147,8 @@ export default function BgRemovePanel({
       {busy && progress?.phase === "loading-model" && (
         <div
           style={{
-            background: "#0a0a0a",
-            border: "1px solid #27272a",
+            background: "var(--tb-n-0)",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 3,
             height: 6,
             overflow: "hidden",
@@ -156,7 +156,7 @@ export default function BgRemovePanel({
         >
           <div
             style={{
-              background: "#1e3a8a",
+              background: "var(--tb-a-blue-900)",
               height: "100%",
               width: `${(progress.progress ?? 0) * 100}%`,
               transition: "width 200ms linear",
@@ -169,9 +169,9 @@ export default function BgRemovePanel({
         <div
           style={{
             padding: "6px 10px",
-            background: "rgba(239, 68, 68, 0.1)",
-            border: "1px solid #b91c1c",
-            color: "#fecaca",
+            background: "color-mix(in srgb, var(--tb-a-red-500) 10%, transparent)",
+            border: "1px solid var(--tb-a-red-700)",
+            color: "var(--tb-a-red-200)",
             borderRadius: 4,
             fontSize: 11,
             lineHeight: 1.4,
@@ -217,9 +217,9 @@ export default function BgRemovePanel({
           style={{
             flex: 1,
             padding: "6px 10px",
-            background: canBake ? "#1e3a8a" : "transparent",
-            border: `1px solid ${canBake ? "#1d4ed8" : "#3f3f46"}`,
-            color: canBake ? "#bfdbfe" : "#52525b",
+            background: canBake ? "var(--tb-a-blue-900)" : "transparent",
+            border: `1px solid ${canBake ? "var(--tb-a-blue-700)" : "var(--tb-n-9)"}`,
+            color: canBake ? "var(--tb-a-blue-200)" : "var(--tb-n-10)",
             fontFamily: "inherit",
             fontSize: 11,
             borderRadius: 3,
@@ -237,8 +237,8 @@ export default function BgRemovePanel({
             style={{
               padding: "6px 10px",
               background: "transparent",
-              border: "1px solid #3f3f46",
-              color: "#a1a1aa",
+              border: "1px solid var(--tb-n-9)",
+              color: "var(--tb-n-13)",
               fontFamily: "inherit",
               fontSize: 11,
               borderRadius: 3,
@@ -250,7 +250,7 @@ export default function BgRemovePanel({
         )}
       </div>
 
-      <div style={{ color: "#52525b", fontSize: 10, lineHeight: 1.5 }}>
+      <div style={{ color: "var(--tb-n-10)", fontSize: 10, lineHeight: 1.5 }}>
         Bake runs the model in your browser via Transformers.js. The
         first run downloads ~177 MB ({model}) which is cached for
         future runs. Tweaking <i>feather</i> / <i>threshold</i>{" "}
@@ -293,7 +293,7 @@ function InlineSpinner() {
         cy="12"
         r="9"
         fill="none"
-        stroke="#fbbf24"
+        stroke="var(--tb-a-amber-400)"
         strokeWidth="3"
         strokeLinecap="round"
         strokeDasharray="40"
@@ -315,7 +315,7 @@ function Field({
       <div
         style={{
           width: 90,
-          color: "#a1a1aa",
+          color: "var(--tb-n-13)",
           fontSize: 10,
           textTransform: "uppercase",
           letterSpacing: 0.5,
@@ -344,9 +344,9 @@ function Select({
       style={{
         width: "100%",
         padding: "3px 6px",
-        background: "#0f0f12",
-        border: "1px solid #27272a",
-        color: "#e5e7eb",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-n-7)",
+        color: "var(--tb-n-16)",
         fontFamily: "inherit",
         fontSize: 11,
         borderRadius: 3,
@@ -387,7 +387,7 @@ function Slider({
       />
       <span
         style={{
-          color: "#a1a1aa",
+          color: "var(--tb-n-13)",
           fontSize: 10,
           fontVariantNumeric: "tabular-nums",
           width: 40,

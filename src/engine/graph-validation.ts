@@ -69,6 +69,11 @@ export function coercible(src: string, tgt: string): boolean {
   // Scalar broadcasts into vec/uv sockets ((s,s) for uv).
   if (src === "scalar" && (tgt === "vec2" || tgt === "vec3" || tgt === "vec4" || tgt === "uv"))
     return true;
+  // Image → uv: R/G reinterpreted as per-pixel (u, v) — zero-copy re-wrap in
+  // coerce.ts. Grayscale lands on the (f, f) diagonal, i.e. Blender's
+  // Fac → Vector domain warp. Mask is excluded: R-format textures read G = 0,
+  // which would silently collapse v — route mask → image first.
+  if (src === "image" && tgt === "uv") return true;
   // Image/mask → scalar: center-pixel R-channel sample at eval time.
   if ((src === "image" || src === "mask") && tgt === "scalar") return true;
   // Audio → scalar: AnalyserNode RMS level.

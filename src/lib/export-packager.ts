@@ -18,7 +18,35 @@ export interface PackageExportInput {
 
 const PLACEHOLDER = "<!--__EXPORT_GRAPH_DATA__-->";
 const HEAD_CLOSE = "</head>";
+// Cap on USER content (the serialized graph — embedded media is the real
+// payload — plus the manifest). Deliberately NOT the whole bundle: the
+// template's weight is fixed and known-good, and counting it here is what
+// silently broke Export App when the 22 MB ONNX runtime landed in dist/
+// (every export exceeded the cap before zipping). Spec:
+// 073126_export-resolution-and-app-slim.md.
 const SIZE_CAP_BYTES = 25 * 1024 * 1024;
+
+// Node types whose compute dynamically imports the transformers/ONNX
+// runtime (lib/ai/*-session.ts). Only a graph containing one of these can
+// ever fetch the ~22 MB ort-wasm asset at runtime, so the packaging path
+// drops that asset from the bundle for every other project. Keep in sync
+// with the nodes that import from lib/ai.
+export const ML_NODE_TYPES = new Set([
+  "bg-remove",
+  "segment-anything",
+  "depth-anything",
+]);
+
+// The ONNX-runtime wasm emitted into the template's dist/assets by the
+// export-template build (hashed filename, hence the pattern).
+export const ORT_WASM_ASSET_RE = /^assets\/ort-.*\.wasm$/;
+
+// Conservative "does this project use ML nodes anywhere" check over the
+// serialized graph — `nodes` is flat across all compositions, so this
+// covers comps the exported app could switch to, reachable or not.
+export function graphUsesMlNodes(graph: SavedProject): boolean {
+  return (graph.nodes ?? []).some((n) => ML_NODE_TYPES.has(n.defType));
+}
 
 function sanitizeAppName(name: string): string {
   const replaced = name.replace(/[^A-Za-z0-9_-]/g, "-");
@@ -175,26 +203,14 @@ export async function packageExportApp(input: PackageExportInput): Promise<Blob>
   const readme = buildReadme(input);
   zip.file("README.md", readme);
 
-  let totalBytes = 0;
-  totalBytes += byteLength(tierAHtml);
-  totalBytes += byteLength(distIndexHtml);
-  for (const [path, content] of Object.entries(template.distFiles)) {
-    if (path === "index.html") continue;
-    totalBytes += byteLength(content);
-  }
-  totalBytes += byteLength(graphPretty);
-  totalBytes += byteLength(manifestPretty);
-  for (const content of Object.values(template.sourceFiles)) {
-    totalBytes += byteLength(content);
-  }
-  totalBytes += byteLength(graphPretty);
-  totalBytes += byteLength(manifestPretty);
-  totalBytes += byteLength(readme);
-
-  if (totalBytes > SIZE_CAP_BYTES) {
-    const mb = (totalBytes / (1024 * 1024)).toFixed(2);
+  // Cap the USER content only — one copy of the graph (embedded media
+  // lives there) + the manifest. The template's fixed weight is excluded
+  // (see SIZE_CAP_BYTES).
+  const userBytes = byteLength(graphPretty) + byteLength(manifestPretty);
+  if (userBytes > SIZE_CAP_BYTES) {
+    const mb = (userBytes / (1024 * 1024)).toFixed(2);
     throw new Error(
-      `export bundle exceeds 25 MB cap (uncompressed size: ${mb} MB)`,
+      `project content exceeds the 25 MB export cap (${mb} MB of graph + embedded media — shrink or unembed large images/fonts)`,
     );
   }
 

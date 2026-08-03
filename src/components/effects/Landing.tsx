@@ -79,14 +79,21 @@ export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        // Dark veil while initializing → translucent once revealed. The
+        // Opaque veil while initializing → translucent once revealed. The
         // blur stays constant (heavy) so only the veil's alpha animates,
         // which is far smoother than transitioning the blur itself.
-        background: revealed ? "rgba(0, 0, 0, 0.35)" : "rgba(0, 0, 0, 0.97)",
+        //
+        // The revealed veil rides --tb-sink rather than a fixed black, so it
+        // pushes the editor AWAY from the foreground in whichever direction
+        // the theme wants: darker under dark mode, lighter under light. A
+        // black scrim over a light editor just looked like a dimmed screen.
+        background: revealed
+          ? "color-mix(in srgb, var(--tb-sink) 35%, transparent)"
+          : "color-mix(in srgb, var(--tb-n-0) 97%, transparent)",
         backdropFilter: "blur(20px)",
         WebkitBackdropFilter: "blur(20px)",
         transition: "background-color 600ms ease",
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
       }}
     >
       {/* Window controls (frameless desktop) — the menu bar is hidden behind
@@ -138,15 +145,15 @@ export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
             style={{
               fontFamily: INTER,
               fontSize: 11,
-              color: "#71717a",
+              color: "var(--tb-n-11)",
               textDecoration: "none",
               cursor: "pointer",
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.color = "#d4d4d8";
+              e.currentTarget.style.color = "var(--tb-n-15)";
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.color = "#71717a";
+              e.currentTarget.style.color = "var(--tb-n-11)";
             }}
           >
             Also for {downloadWin ? "macOS" : "Windows"}
@@ -178,7 +185,7 @@ export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
             style={{
               fontFamily: INTER,
               fontWeight: 680,
-              color: "#fafafa",
+              color: "var(--tb-n-17)",
               whiteSpace: "nowrap",
               letterSpacing: -0.5,
               lineHeight: 1.02,
@@ -195,8 +202,8 @@ export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
         <div
           style={{
             height: "min(560px, 80vh)",
-            background: "#0a0a0a",
-            border: "1px solid #27272a",
+            background: "var(--tb-n-0)",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 8,
             boxShadow: "0 20px 60px rgba(0, 0, 0, 0.6)",
             overflow: "hidden",
@@ -272,18 +279,18 @@ function UserPill({
           gap: 8,
           height: 44,
           padding: "0 18px",
-          background: "#fafafa",
+          background: "var(--tb-n-17)",
           border: "none",
           borderRadius: 999,
-          color: "#18181b",
+          color: "var(--tb-n-3)",
           fontFamily: INTER,
           fontSize: 13,
           fontWeight: 600,
           cursor: "pointer",
           whiteSpace: "nowrap",
         }}
-        onMouseEnter={(e) => (e.currentTarget.style.background = "#e5e7eb")}
-        onMouseLeave={(e) => (e.currentTarget.style.background = "#fafafa")}
+        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--tb-n-16)")}
+        onMouseLeave={(e) => (e.currentTarget.style.background = "var(--tb-n-17)")}
       >
         <GoogleMark />
         Sign in with Google
@@ -310,8 +317,8 @@ function UserPill({
           gap: 10,
           height: 44,
           padding: "0 16px 0 6px",
-          background: "#0a0a0a",
-          border: `1px solid ${open ? "#3f3f46" : "#27272a"}`,
+          background: "var(--tb-n-0)",
+          border: `1px solid ${open ? "var(--tb-n-9)" : "var(--tb-n-7)"}`,
           borderRadius: 999,
           cursor: "pointer",
           fontFamily: INTER,
@@ -325,7 +332,7 @@ function UserPill({
               height: 32,
               borderRadius: "50%",
               flexShrink: 0,
-              background: `#18181b center/cover url(${avatarUrl})`,
+              background: `var(--tb-n-3) center/cover url(${avatarUrl})`,
             }}
           />
         ) : (
@@ -335,8 +342,8 @@ function UserPill({
               height: 32,
               borderRadius: "50%",
               flexShrink: 0,
-              background: "#3f3f46",
-              color: "#e5e7eb",
+              background: "var(--tb-n-9)",
+              color: "var(--tb-n-16)",
               fontSize: 12,
               fontWeight: 600,
               display: "inline-flex",
@@ -351,7 +358,7 @@ function UserPill({
           style={{
             fontSize: 13,
             fontWeight: 600,
-            color: "#e5e7eb",
+            color: "var(--tb-n-16)",
             maxWidth: 200,
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -369,8 +376,8 @@ function UserPill({
             right: 0,
             marginBottom: 6,
             minWidth: 160,
-            background: "#18181b",
-            border: "1px solid #27272a",
+            background: "var(--tb-n-3)",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 6,
             boxShadow: "0 6px 20px rgba(0, 0, 0, 0.5)",
             padding: 4,
@@ -384,14 +391,14 @@ function UserPill({
               padding: "6px 10px",
               background: "transparent",
               border: "none",
-              color: "#e5e7eb",
+              color: "var(--tb-n-16)",
               textAlign: "left",
               fontFamily: INTER,
               fontSize: 12,
               cursor: "pointer",
               borderRadius: 3,
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "#27272a")}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--tb-n-7)")}
             onMouseLeave={(e) =>
               (e.currentTarget.style.background = "transparent")
             }
@@ -430,22 +437,22 @@ function DownloadPill({ href, os }: { href: string; os: "mac" | "windows" }) {
         height: 40,
         padding: "0 16px",
         background: "transparent",
-        border: "1px solid #3f3f46",
+        border: "1px solid var(--tb-n-9)",
         borderRadius: 999,
         fontFamily: INTER,
         fontWeight: 500,
         fontSize: 13,
-        color: "#d4d4d8",
+        color: "var(--tb-n-15)",
         cursor: "pointer",
         textDecoration: "none",
       }}
       onMouseEnter={(e) => {
-        e.currentTarget.style.background = "#19191c";
-        e.currentTarget.style.color = "#fafafa";
+        e.currentTarget.style.background = "var(--tb-n-3)";
+        e.currentTarget.style.color = "var(--tb-n-17)";
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.background = "transparent";
-        e.currentTarget.style.color = "#d4d4d8";
+        e.currentTarget.style.color = "var(--tb-n-15)";
       }}
     >
       {isWin ? <WindowsMark /> : <AppleMark />}

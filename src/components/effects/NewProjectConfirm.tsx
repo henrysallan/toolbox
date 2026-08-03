@@ -57,20 +57,20 @@ export default function NewProjectConfirm({
         style={{
           minWidth: 380,
           maxWidth: 440,
-          background: "#18181b",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-3)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 6,
           padding: 16,
-          fontFamily: "ui-monospace, monospace",
+          fontFamily: "var(--ui-font)",
           fontSize: 12,
-          color: "#e5e7eb",
+          color: "var(--tb-n-16)",
           boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
         }}
       >
         <div
           style={{
             marginBottom: 10,
-            color: "#a1a1aa",
+            color: "var(--tb-n-13)",
             fontSize: 10,
             textTransform: "uppercase",
             letterSpacing: 1,
@@ -81,7 +81,7 @@ export default function NewProjectConfirm({
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
           Save before starting a new project?
         </div>
-        <div style={{ color: "#a1a1aa", lineHeight: 1.5, marginBottom: 14 }}>
+        <div style={{ color: "var(--tb-n-13)", lineHeight: 1.5, marginBottom: 14 }}>
           You have unsaved work in this project.{" "}
           {canSave ? saveHint : "Sign in to save."}
         </div>
@@ -94,8 +94,8 @@ export default function NewProjectConfirm({
             style={{
               ...btnStyle(),
               background: "transparent",
-              border: "1px solid #b91c1c",
-              color: "#fecaca",
+              border: "1px solid var(--tb-a-red-700)",
+              color: "var(--tb-a-red-200)",
             }}
           >
             Don&apos;t save
@@ -105,9 +105,9 @@ export default function NewProjectConfirm({
               onClick={onSave}
               style={{
                 ...btnStyle(),
-                background: "#16a34a",
-                border: "1px solid #16a34a",
-                color: "#dcfce7",
+                background: "var(--tb-a-green-600)",
+                border: "1px solid var(--tb-a-green-600)",
+                color: "var(--tb-a-green-100)",
               }}
             >
               Save
@@ -123,8 +123,8 @@ function btnStyle(): React.CSSProperties {
   return {
     padding: "4px 10px",
     background: "transparent",
-    border: "1px solid #3f3f46",
-    color: "#e5e7eb",
+    border: "1px solid var(--tb-n-9)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 11,
     borderRadius: 3,

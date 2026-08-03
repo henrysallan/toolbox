@@ -84,9 +84,27 @@ export default function PaintOverlay({
   // Alt temporarily flips brush-family tools to the eyedropper (Photoshop
   // convention). Tracked as state so the cursor swaps too.
   const [altHeld, setAltHeld] = useState(false);
+  // Shift: straight-line helpers. Shift-click connects a line from the last
+  // stroke's end; Shift-drag locks the stroke to its dominant axis. Held
+  // state drives the dashed connect-preview line.
+  const [shiftHeld, setShiftHeld] = useState(false);
   // Live pointer position (client px) for the brush-ring cursor; null when
   // the pointer is off the surface.
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
+  // End point of the previous stroke (canvas px) — the Shift-click line
+  // anchor. Cleared by remount on node switch (EffectsApp keys this overlay
+  // by node id).
+  const [lastEnd, setLastEnd] = useState<[number, number] | null>(null);
+  // True while a stroke session is in flight — state (not just sessionRef)
+  // so render-time gates like the connect-preview line can read it.
+  const [stroking, setStroking] = useState(false);
+  // Shift-drag axis lock for the current stroke: anchor = where Shift
+  // engaged; axis locks to the dominant direction once movement clears a
+  // small threshold, and re-arms when Shift is released mid-stroke.
+  const constraintRef = useRef<{
+    anchor: [number, number];
+    axis: "h" | "v" | null;
+  } | null>(null);
 
   // On-screen rect of the preview canvas (reflects the viewport's pan/zoom
   // CSS transform) and of its containing panel (the clip region / dock
@@ -178,6 +196,10 @@ export default function PaintOverlay({
         setAltHeld(true);
         return;
       }
+      if (e.key === "Shift") {
+        setShiftHeld(true);
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTyping(e.target)) return;
       const k = e.key.toLowerCase();
@@ -201,8 +223,12 @@ export default function PaintOverlay({
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key === "Alt") setAltHeld(false);
+      if (e.key === "Shift") setShiftHeld(false);
     };
-    const onBlur = () => setAltHeld(false);
+    const onBlur = () => {
+      setAltHeld(false);
+      setShiftHeld(false);
+    };
     window.addEventListener("keydown", onKey);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
@@ -312,7 +338,16 @@ export default function PaintOverlay({
       sampleColor(e.clientX, e.clientY);
       return;
     }
+    // A resolution change rescales the canvas — carry the Shift-line anchor
+    // into the new pixel space so a pending connect line stays put.
+    const preW = canvas.width;
+    const preH = canvas.height;
     ensureCanvasRes(canvas);
+    const scaleX = canvas.width / preW;
+    const scaleY = canvas.height / preH;
+    if (scaleX !== 1 || scaleY !== 1) {
+      setLastEnd((p) => (p ? [p[0] * scaleX, p[1] * scaleY] : p));
+    }
     const pt = toCanvasPx(e.clientX, e.clientY);
     if (!pt) return;
     e.preventDefault();
@@ -340,8 +375,24 @@ export default function PaintOverlay({
       brush,
       pressureCapable: e.pointerType === "pen",
     });
-    session.down(pt[0], pt[1], e.pressure || 0.5);
+    const pressure = e.pressure || 0.5;
+    // Shift-click: connect a straight line from the previous stroke's end
+    // (Photoshop convention). The session then stays open, so a Shift-drag
+    // keeps painting from the click point.
+    const connectFrom =
+      e.shiftKey && lastEnd
+        ? ([lastEnd[0] * scaleX, lastEnd[1] * scaleY] as [number, number])
+        : null;
+    if (connectFrom) {
+      session.down(connectFrom[0], connectFrom[1], pressure);
+      session.lineTo(pt[0], pt[1], pressure);
+    } else {
+      session.down(pt[0], pt[1], pressure);
+    }
+    // Arm the Shift-drag axis lock from the press point.
+    constraintRef.current = { anchor: pt, axis: null };
     sessionRef.current = session;
+    setStroking(true);
     e.currentTarget.setPointerCapture(e.pointerId);
     const tick = () => {
       sessionRef.current?.renderLive();
@@ -358,7 +409,28 @@ export default function PaintOverlay({
     const events = e.nativeEvent.getCoalescedEvents?.() ?? [e.nativeEvent];
     for (const ev of events) {
       const pt = toCanvasPx(ev.clientX, ev.clientY);
-      if (pt) session.move(pt[0], pt[1], ev.pressure || 0.5);
+      if (!pt) continue;
+      if (ev.shiftKey) {
+        // Shift-drag: lock to the dominant axis through the anchor. The
+        // axis picks once movement clears a small threshold, so the first
+        // jittery pixels don't decide it.
+        const c = constraintRef.current;
+        if (c) {
+          if (!c.axis) {
+            const dx = Math.abs(pt[0] - c.anchor[0]);
+            const dy = Math.abs(pt[1] - c.anchor[1]);
+            if (Math.max(dx, dy) > 4) c.axis = dx >= dy ? "h" : "v";
+          }
+          if (c.axis === "h") pt[1] = c.anchor[1];
+          else if (c.axis === "v") pt[0] = c.anchor[0];
+        }
+      } else if (constraintRef.current) {
+        // Shift released mid-stroke: back to freehand, and re-arm the lock
+        // from wherever the stroke is now so a later Shift press anchors
+        // here instead of the original press point.
+        constraintRef.current = { anchor: pt, axis: null };
+      }
+      session.move(pt[0], pt[1], ev.pressure || 0.5);
     }
   };
 
@@ -366,8 +438,13 @@ export default function PaintOverlay({
     const session = sessionRef.current;
     if (!session) return;
     sessionRef.current = null;
+    constraintRef.current = null;
+    setStroking(false);
     cancelAnimationFrame(rafRef.current);
     session.end();
+    // Remember where this stroke ended — the anchor for the next
+    // Shift-click connect line.
+    setLastEnd(session.position);
     const canvas = paint?.canvas;
     if (canvas) {
       snapshot(canvas);
@@ -400,6 +477,33 @@ export default function PaintOverlay({
     (effectiveTool === "brush" ||
       effectiveTool === "eraser" ||
       effectiveTool === "blur");
+
+  // Shift held with a previous stroke to connect from: preview the line a
+  // click would draw, from the last stroke's end to the cursor.
+  const connectPreview =
+    shiftHeld &&
+    !stroking &&
+    lastEnd !== null &&
+    cursor !== null &&
+    rect !== null &&
+    hostRect !== null &&
+    paint?.canvas &&
+    (effectiveTool === "brush" ||
+      effectiveTool === "eraser" ||
+      effectiveTool === "blur")
+      ? {
+          x1:
+            rect.left -
+            hostRect.left +
+            (lastEnd[0] / paint.canvas.width) * rect.width,
+          y1:
+            rect.top -
+            hostRect.top +
+            (lastEnd[1] / paint.canvas.height) * rect.height,
+          x2: cursor.x - hostRect.left,
+          y2: cursor.y - hostRect.top,
+        }
+      : null;
 
   return (
     <>
@@ -441,6 +545,37 @@ export default function PaintOverlay({
             cursor: showRing ? "none" : "crosshair",
           }}
         />
+        {/* Shift connect-line preview — dashed, dark casing under a light
+            dash so it reads on any background. */}
+        {connectPreview && (
+          <svg
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              pointerEvents: "none",
+            }}
+          >
+            <line
+              x1={connectPreview.x1}
+              y1={connectPreview.y1}
+              x2={connectPreview.x2}
+              y2={connectPreview.y2}
+              stroke="rgba(0,0,0,0.6)"
+              strokeWidth={3}
+            />
+            <line
+              x1={connectPreview.x1}
+              y1={connectPreview.y1}
+              x2={connectPreview.x2}
+              y2={connectPreview.y2}
+              stroke="color-mix(in srgb, var(--tb-lift) 90%, transparent)"
+              strokeWidth={1}
+              strokeDasharray="4 4"
+            />
+          </svg>
+        )}
         {/* The ring itself — dual outline (light over dark) so it reads on
             any background. Positioned in wrapper-local coords. */}
         {showRing && hostRect && (
@@ -452,7 +587,7 @@ export default function PaintOverlay({
               width: ringSize,
               height: ringSize,
               borderRadius: "50%",
-              border: "1px solid rgba(255,255,255,0.9)",
+              border: "1px solid color-mix(in srgb, var(--tb-lift) 90%, transparent)",
               boxShadow: "0 0 0 1px rgba(0,0,0,0.6)",
               pointerEvents: "none",
               boxSizing: "border-box",

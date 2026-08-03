@@ -99,7 +99,7 @@ export default function EditorBasicsPage() {
         the override and snap back to the param def's defaults.
       </P>
       <P>
-        <em style={{ color: "#71717a" }}>
+        <em style={{ color: "var(--tb-n-11)" }}>
           Tip: the number input still lets you type values past the
           slider's soft max — that's the whole reason soft max exists.
           Set Min / Max for the slider's pinned range; set Soft max

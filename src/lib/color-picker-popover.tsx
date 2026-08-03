@@ -60,7 +60,7 @@ function withHexAlpha(hex6: string, a01: number): string {
 
 // Checkerboard underlay that makes translucency visible on swatches and
 // the alpha strip (layered UNDER a color gradient via multi-background).
-const CHECKER = "repeating-conic-gradient(#52525b 0% 25%, #27272a 0% 50%)";
+const CHECKER = "repeating-conic-gradient(var(--tb-n-10) 0% 25%, var(--tb-n-7) 0% 50%)";
 
 // HSV (h 0..360, s/v 0..1) <-> hex. Pickers conventionally work in HSV —
 // the SV square maps x → saturation, y → value.
@@ -256,9 +256,9 @@ export function ColorPickerPopover({
   ).EyeDropper;
 
   const textStyle: React.CSSProperties = {
-    background: "#0a0a0a",
-    border: "1px solid #27272a",
-    color: "#e5e7eb",
+    background: "var(--tb-n-0)",
+    border: "1px solid var(--tb-n-7)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 10,
     padding: "2px 4px",
@@ -280,14 +280,13 @@ export function ColorPickerPopover({
         display: "flex",
         flexDirection: "column",
         gap: 6,
-        background: "#111113",
-        border: "1px solid #3f3f46",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-n-9)",
         borderRadius: 6,
         boxShadow: "0 6px 20px rgba(0,0,0,0.55)",
         cursor: "default",
         boxSizing: "border-box",
-        fontFamily:
-          'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
         ...style,
       }}
@@ -303,7 +302,7 @@ export function ColorPickerPopover({
           borderRadius: 4,
           backgroundColor: hueColor,
           backgroundImage:
-            "linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, rgba(255,255,255,0))",
+            "linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, color-mix(in srgb, var(--tb-lift) 0%, transparent))",
           cursor: "crosshair",
           touchAction: "none",
         }}
@@ -397,7 +396,7 @@ export function ColorPickerPopover({
                   // so translucency reads at a glance.
                   background: `linear-gradient(${previewHex}, ${previewHex}), ${CHECKER}`,
                   backgroundSize: "auto, 6px 6px",
-                  border: "1px solid #3f3f46",
+                  border: "1px solid var(--tb-n-9)",
                 }
               : {
                   width: 18,
@@ -405,7 +404,7 @@ export function ColorPickerPopover({
                   flexShrink: 0,
                   borderRadius: 3,
                   background: hexDraft,
-                  border: "1px solid #3f3f46",
+                  border: "1px solid var(--tb-n-9)",
                 }
           }
         />
@@ -448,9 +447,9 @@ export function ColorPickerPopover({
               alignItems: "center",
               justifyContent: "center",
               background: "transparent",
-              border: "1px solid #3f3f46",
+              border: "1px solid var(--tb-n-9)",
               borderRadius: 3,
-              color: "#a1a1aa",
+              color: "var(--tb-n-13)",
               cursor: "pointer",
               padding: 0,
             }}
@@ -544,7 +543,7 @@ export function ColorSwatchPicker({
           width: 22,
           height: 18,
           padding: 0,
-          border: "1px solid #27272a",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 3,
           // Alpha-enabled swatches layer the (possibly translucent) color
           // over a checkerboard; 8-digit hex is valid CSS.

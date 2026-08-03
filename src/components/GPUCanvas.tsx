@@ -65,7 +65,7 @@ export default function GPUCanvas({ className, preferred = "auto" }: Props) {
           left: 8,
           padding: "4px 8px",
           fontSize: 12,
-          fontFamily: "ui-monospace, monospace",
+          fontFamily: "var(--ui-font)",
           background: "rgba(0,0,0,0.5)",
           color: "white",
           borderRadius: 4,

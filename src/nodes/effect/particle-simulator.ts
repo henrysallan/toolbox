@@ -22,9 +22,10 @@ import { particleSimulatorWebGPUNode } from "./particle-simulator-webgpu";
 //
 // Both backends share the same input/param schema (re-exported from
 // the WebGL node). Switching backends mid-session discards the live
-// simulation state — state is keyed differently per backend
-// (`particle-sim:` vs `particle-sim-webgpu:`) — and the kernel resets
-// on the next compute().
+// simulation state — state is keyed distinctly per backend
+// (`particle-simulator:<id>` vs `particle-simulator:<id>:webgpu`, both
+// under the registered type so the dispose sweep reaches them) — and
+// the kernel resets on the next compute().
 
 function pickBackend(params: Record<string, unknown>): NodeDefinition {
   return params.backend === "webgpu"

@@ -128,10 +128,10 @@ export function PaintBrushSection({ node, onParamChange }: SectionProps) {
           width: "100%",
           padding: "6px 0",
           fontSize: 11,
-          fontFamily: "ui-monospace, monospace",
-          background: open ? "rgba(59, 130, 246, 0.18)" : "#1c1c1f",
-          color: open ? "#93c5fd" : "#e4e4e7",
-          border: `1px solid ${open ? "#3b82f6" : "#3f3f46"}`,
+          fontFamily: "var(--ui-font)",
+          background: open ? "color-mix(in srgb, var(--tb-a-blue-500) 18%, transparent)" : "var(--tb-n-4)",
+          color: open ? "var(--tb-a-blue-300)" : "var(--tb-n-16)",
+          border: `1px solid ${open ? "var(--tb-a-blue-500)" : "var(--tb-n-9)"}`,
           borderRadius: 5,
           cursor: "pointer",
         }}
@@ -226,13 +226,13 @@ function BrushEditorWindow({
         top: pos.y,
         width: 300,
         zIndex: 60,
-        background: "rgba(17, 17, 17, 0.97)",
-        border: "1px solid #3f3f46",
+        background: "color-mix(in srgb, var(--tb-n-0) 97%, transparent)",
+        border: "1px solid var(--tb-n-9)",
         borderRadius: 8,
         boxShadow: "0 10px 30px rgba(0, 0, 0, 0.5)",
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
-        color: "#e4e4e7",
+        color: "var(--tb-n-16)",
         userSelect: "none",
       }}
     >
@@ -245,11 +245,11 @@ function BrushEditorWindow({
           alignItems: "center",
           justifyContent: "space-between",
           padding: "7px 10px",
-          borderBottom: "1px solid #27272a",
+          borderBottom: "1px solid var(--tb-n-7)",
           cursor: "grab",
         }}
       >
-        <span style={{ color: "#a1a1aa", letterSpacing: 0.5 }}>
+        <span style={{ color: "var(--tb-n-13)", letterSpacing: 0.5 }}>
           brush editor
         </span>
         <button
@@ -259,7 +259,7 @@ function BrushEditorWindow({
           style={{
             background: "transparent",
             border: "none",
-            color: "#a1a1aa",
+            color: "var(--tb-n-13)",
             cursor: "pointer",
             fontSize: 13,
             padding: 0,
@@ -343,9 +343,9 @@ function BrushEditorWindow({
             style={{
               flex: 1,
               minWidth: 0,
-              background: "#101013",
-              color: "#e4e4e7",
-              border: "1px solid #3f3f46",
+              background: "var(--tb-n-1)",
+              color: "var(--tb-n-16)",
+              border: "1px solid var(--tb-n-9)",
               borderRadius: 4,
               padding: "4px 7px",
               fontFamily: "inherit",
@@ -361,9 +361,9 @@ function BrushEditorWindow({
             }}
             style={{
               padding: "4px 10px",
-              background: saveName.trim() ? "#1d4ed8" : "#1c1c1f",
-              color: saveName.trim() ? "#fff" : "#52525b",
-              border: "1px solid #3f3f46",
+              background: saveName.trim() ? "var(--tb-a-blue-700)" : "var(--tb-n-4)",
+              color: saveName.trim() ? "#fff" : "var(--tb-n-10)",
+              border: "1px solid var(--tb-n-9)",
               borderRadius: 4,
               cursor: saveName.trim() ? "pointer" : "default",
               fontFamily: "inherit",
@@ -385,8 +385,8 @@ function BrushEditorWindow({
                   gap: 5,
                   padding: "2px 4px 2px 8px",
                   fontSize: 10,
-                  background: "#1c1c1f",
-                  border: "1px solid #3f3f46",
+                  background: "var(--tb-n-4)",
+                  border: "1px solid var(--tb-n-9)",
                   borderRadius: 10,
                 }}
               >
@@ -396,7 +396,7 @@ function BrushEditorWindow({
                   style={{
                     background: "transparent",
                     border: "none",
-                    color: "#d4d4d8",
+                    color: "var(--tb-n-15)",
                     cursor: "pointer",
                     padding: 0,
                     fontFamily: "inherit",
@@ -412,7 +412,7 @@ function BrushEditorWindow({
                   style={{
                     background: "transparent",
                     border: "none",
-                    color: "#71717a",
+                    color: "var(--tb-n-11)",
                     cursor: "pointer",
                     padding: 0,
                     fontSize: 11,
@@ -480,7 +480,7 @@ function StrokePreview({
         width: "100%",
         height: 64,
         borderRadius: 5,
-        border: "1px solid #27272a",
+        border: "1px solid var(--tb-n-7)",
         display: "block",
       }}
     />
@@ -513,7 +513,7 @@ function SliderRow({
         gap: 7,
       }}
     >
-      <span style={{ color: "#a1a1aa" }}>{label}</span>
+      <span style={{ color: "var(--tb-n-13)" }}>{label}</span>
       <input
         type="range"
         min={min}
@@ -521,9 +521,9 @@ function SliderRow({
         step={step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        style={{ width: "100%", accentColor: "#3b82f6" }}
+        style={{ width: "100%", accentColor: "var(--tb-a-blue-500)" }}
       />
-      <span style={{ textAlign: "right", color: "#d4d4d8" }}>
+      <span style={{ textAlign: "right", color: "var(--tb-n-15)" }}>
         {format ? format(value) : value.toFixed(2)}
       </span>
     </label>
@@ -546,14 +546,14 @@ function CheckRow({
         alignItems: "center",
         gap: 7,
         cursor: "pointer",
-        color: "#a1a1aa",
+        color: "var(--tb-n-13)",
       }}
     >
       <input
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        style={{ accentColor: "#3b82f6" }}
+        style={{ accentColor: "var(--tb-a-blue-500)" }}
       />
       {label}
     </label>

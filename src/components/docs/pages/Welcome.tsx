@@ -31,17 +31,17 @@ export default function WelcomePage() {
       <H2>How the rest of these docs are organized</H2>
       <UL>
         <LI>
-          <strong style={{ color: "#e5e7eb" }}>Editor</strong> — how
+          <strong style={{ color: "var(--tb-n-16)" }}>Editor</strong> — how
           the graph works, keyboard shortcuts, save/load, public and
           private projects.
         </LI>
         <LI>
-          <strong style={{ color: "#e5e7eb" }}>Node reference</strong>{" "}
+          <strong style={{ color: "var(--tb-n-16)" }}>Node reference</strong>{" "}
           (coming soon) — what each node does, its parameters, and
           what plugs into what.
         </LI>
         <LI>
-          <strong style={{ color: "#e5e7eb" }}>Data types</strong>{" "}
+          <strong style={{ color: "var(--tb-n-16)" }}>Data types</strong>{" "}
           (coming soon) — the socket colors, what they mean, and how
           to convert between them.
         </LI>
@@ -51,14 +51,14 @@ export default function WelcomePage() {
         If you&rsquo;re brand new, start with{" "}
         <Link
           href="/docs/editor/basics"
-          style={{ color: "#93c5fd", textDecoration: "underline" }}
+          style={{ color: "var(--tb-a-blue-300)", textDecoration: "underline" }}
         >
           Editor basics
         </Link>
         . If you just want the full shortcut list, jump to{" "}
         <Link
           href="/docs/editor/keyboard"
-          style={{ color: "#93c5fd", textDecoration: "underline" }}
+          style={{ color: "var(--tb-a-blue-300)", textDecoration: "underline" }}
         >
           Keyboard shortcuts
         </Link>
@@ -73,7 +73,7 @@ export default function WelcomePage() {
       </P>
 
       <P>
-        <em style={{ color: "#71717a" }}>
+        <em style={{ color: "var(--tb-n-11)" }}>
           Tip: you can always re-open this documentation from any
           screen via the <Code>i</Code> button in the top menu bar.
         </em>

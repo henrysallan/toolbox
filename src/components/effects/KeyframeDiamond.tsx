@@ -29,16 +29,16 @@ export default function KeyframeDiamond({
 }: Props) {
   const fill =
     state === "yellow"
-      ? "#facc15"
+      ? "var(--tb-a-yellow-400)"
       : state === "red"
-      ? "#ef4444"
+      ? "var(--tb-a-red-500)"
       : "transparent";
   const stroke =
     state === "yellow"
-      ? "#facc15"
+      ? "var(--tb-a-yellow-400)"
       : state === "red"
-      ? "#ef4444"
-      : "#52525b";
+      ? "var(--tb-a-red-500)"
+      : "var(--tb-n-10)";
   return (
     <button
       type="button"

@@ -16,27 +16,49 @@ import { snoise } from "./noise";
 // against a rope and a rigid body, and both must mirror the Particle
 // Simulator's GLSL math exactly.
 //
-// Everything here follows the two-space convention documented in the
-// rope sim: solvers run in canvas-pixel Y-down space; force/collider/
-// bounds response runs in normalized [0,1]² UV space (the shared
-// descriptors are specified in UV, matching the particle shader).
+// Everything here follows the three-space convention documented in the
+// rope sim: geometry sockets (splines, points) carry AUTHORED
+// coordinates (engine/aspect.ts — x spans the width, y width-isotropic
+// and vertically centered); solvers run in TRUE canvas-pixel Y-down
+// space; canvas-aligned lookups (bounds, mask colliders, property maps)
+// use canvas UV; force and analytic-collider descriptors are evaluated
+// in authored coordinates (the particle sim's space, so a descriptor
+// feels identical in every sim). On a square canvas all three
+// normalized spaces coincide.
+
+// ---- authored ↔ canvas-pixel mapping --------------------------------
+
+// The spline rasterizer's mapping (spline-raster.ts): x·W,
+// aspectCorrectY(y)·H — an isotropic scale by W, vertically centered.
+export function authoredToPxY(y: number, W: number, H: number): number {
+  return y * W + 0.5 * (H - W);
+}
+
+export function pxToAuthoredY(yPx: number, W: number, H: number): number {
+  return (yPx - 0.5 * (H - W)) / W;
+}
 
 // ---- seeding helpers -------------------------------------------------
 
-export function scaleSubpath(
+// Authored-space subpath → true canvas pixels. Positions are affine
+// (scale W + vertical centering); handles are RELATIVE offsets, so they
+// scale by W on both axes with no offset — exactly what the rasterizer
+// draws (toPx(pos + handle) − toPx(pos)).
+export function subpathToCanvasPx(
   s: SplineSubpath,
-  kx: number,
-  ky: number
+  W: number,
+  H: number
 ): SplineSubpath {
+  const oy = 0.5 * (H - W);
   return {
     ...s,
     anchors: s.anchors.map((a) => {
       const out: SplineAnchor = {
-        pos: [a.pos[0] * kx, a.pos[1] * ky],
+        pos: [a.pos[0] * W, a.pos[1] * W + oy],
       };
-      if (a.inHandle) out.inHandle = [a.inHandle[0] * kx, a.inHandle[1] * ky];
+      if (a.inHandle) out.inHandle = [a.inHandle[0] * W, a.inHandle[1] * W];
       if (a.outHandle)
-        out.outHandle = [a.outHandle[0] * kx, a.outHandle[1] * ky];
+        out.outHandle = [a.outHandle[0] * W, a.outHandle[1] * W];
       return out;
     }),
   };
@@ -352,40 +374,52 @@ export function contactResponse(
   p[3] = ny * vnAfter + vty * kt;
 }
 
-// Mutates p = [u, v, velU, velV]. Returns the index of the last
-// collider contacted this call (−1 = none) — sticky welds anchor to it.
+// Mutates p = [u, v, velU, velV] in CANVAS UV. Returns the index of the
+// last collider contacted this call (−1 = none) — sticky welds anchor
+// to it. `aspect` is W/H: circle/line descriptors live in AUTHORED
+// coordinates (the particle sim's space), so those branches convert
+// p in and out — authored space is width-isotropic, which also keeps
+// the reflection orthonormal. Mask colliders are canvas-aligned
+// textures and stay in canvas UV. aspect = 1 is the identity.
 export function resolveCollidersCpu(
   colliders: PackedCollider[],
   p: Float32Array,
   friction: number,
-  bounciness: number
+  bounciness: number,
+  aspect = 1
 ): number {
   let contact = -1;
   for (let ci = 0; ci < colliders.length; ci++) {
     const c = colliders[ci];
-    if (c.kind === "circle") {
-      const dx = p[0] - c.cx;
-      const dy = p[1] - c.cy;
-      const r = Math.hypot(dx, dy);
-      const penetrating = c.inside ? r > c.radius : r < c.radius;
-      if (penetrating && r > 1e-5) {
-        const sgn = c.inside ? -1 : 1;
-        const nx = (dx / r) * sgn;
-        const ny = (dy / r) * sgn;
-        // Both cases project back to the surface along the center ray.
-        p[0] = c.cx + (dx / r) * c.radius;
-        p[1] = c.cy + (dy / r) * c.radius;
-        contactResponse(p, nx, ny, c.restitution, friction, bounciness);
-        contact = ci;
+    if (c.kind === "circle" || c.kind === "line") {
+      p[1] = 0.5 + (p[1] - 0.5) / aspect;
+      p[3] /= aspect;
+      if (c.kind === "circle") {
+        const dx = p[0] - c.cx;
+        const dy = p[1] - c.cy;
+        const r = Math.hypot(dx, dy);
+        const penetrating = c.inside ? r > c.radius : r < c.radius;
+        if (penetrating && r > 1e-5) {
+          const sgn = c.inside ? -1 : 1;
+          const nx = (dx / r) * sgn;
+          const ny = (dy / r) * sgn;
+          // Both cases project back to the surface along the center ray.
+          p[0] = c.cx + (dx / r) * c.radius;
+          p[1] = c.cy + (dy / r) * c.radius;
+          contactResponse(p, nx, ny, c.restitution, friction, bounciness);
+          contact = ci;
+        }
+      } else {
+        const dist = c.nx * p[0] + c.ny * p[1] - c.d;
+        if (dist < 0) {
+          p[0] -= dist * c.nx;
+          p[1] -= dist * c.ny;
+          contactResponse(p, c.nx, c.ny, c.restitution, friction, bounciness);
+          contact = ci;
+        }
       }
-    } else if (c.kind === "line") {
-      const dist = c.nx * p[0] + c.ny * p[1] - c.d;
-      if (dist < 0) {
-        p[0] -= dist * c.nx;
-        p[1] -= dist * c.ny;
-        contactResponse(p, c.nx, c.ny, c.restitution, friction, bounciness);
-        contact = ci;
-      }
+      p[1] = 0.5 + (p[1] - 0.5) * aspect;
+      p[3] *= aspect;
     } else {
       // image mask: contact in buffer-texel space (the readback keeps
       // the mask's aspect, so texels are ~square in canvas px and the

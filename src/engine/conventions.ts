@@ -1,4 +1,10 @@
-import type { InputSocketDef, ParamDef, ParamType, SocketType } from "./types";
+import type {
+  InputSocketDef,
+  ParamDef,
+  ParamType,
+  SocketType,
+  SplineSubpath,
+} from "./types";
 import {
   evaluateKeyframesAt,
   type KeyframeAnimationBlock,
@@ -179,6 +185,95 @@ export const RAMP_FIELD_LABEL: Record<RampStopField, string> = {
   alpha: "alpha",
   position: "position",
 };
+
+// ---------------------------------------------------------------------
+// Per-anchor spline tracks (Spline Draw, spec 072726 M6)
+// ---------------------------------------------------------------------
+//
+// Virtual keys animating INDIVIDUAL anchors of a `spline_anchors` param —
+// the ramp-stop pattern one level deeper. Three vec2 tracks per anchor id:
+// position, in-handle offset, out-handle offset (a missing handle IS
+// [0, 0], so vec2 lerp is exact and handles can grow/retract smoothly).
+// EITHER/OR with whole-shape "Path Animation": when the spline param's own
+// block is animated, per-anchor tracks are ignored (the caller guards).
+
+export const ANCHOR_P_PREFIX = "anchor_p:";
+export const ANCHOR_IN_PREFIX = "anchor_in:";
+export const ANCHOR_OUT_PREFIX = "anchor_out:";
+
+export function anchorPosKey(id: string): string {
+  return `${ANCHOR_P_PREFIX}${id}`;
+}
+export function anchorInKey(id: string): string {
+  return `${ANCHOR_IN_PREFIX}${id}`;
+}
+export function anchorOutKey(id: string): string {
+  return `${ANCHOR_OUT_PREFIX}${id}`;
+}
+export function isAnchorTrackKey(key: string): boolean {
+  return (
+    key.startsWith(ANCHOR_P_PREFIX) ||
+    key.startsWith(ANCHOR_IN_PREFIX) ||
+    key.startsWith(ANCHOR_OUT_PREFIX)
+  );
+}
+// The anchor id a track key names, or null for non-anchor keys.
+export function anchorTrackId(key: string): string | null {
+  for (const p of [ANCHOR_P_PREFIX, ANCHOR_IN_PREFIX, ANCHOR_OUT_PREFIX]) {
+    if (key.startsWith(p)) return key.slice(p.length);
+  }
+  return null;
+}
+
+// Resolve every animated anchor track onto a cloned spline at `tick`.
+// Returns null when nothing applied (caller keeps the original — and does
+// the either/or guard against whole-shape Path Animation). Shared by the
+// evaluator's clone-and-override block and the editor overlay's
+// value-at-tick derivation, so what's edited is what renders.
+export function resolveAnchorTracks<T extends { subpaths: SplineSubpath[] }>(
+  spline: T,
+  animation: Record<string, KeyframeAnimationBlock | undefined> | undefined,
+  tick: number
+): T | null {
+  if (!animation) return null;
+  let out: SplineSubpath[] | null = null;
+  const ensure = () =>
+    out ??
+    (out = spline.subpaths.map((s) => ({
+      ...s,
+      anchors: s.anchors.map((a) => ({ ...a })),
+    })));
+  let touched = false;
+  for (const [key, block] of Object.entries(animation)) {
+    if (!block || !block.animated || block.keyframes.length === 0) continue;
+    let field: "p" | "in" | "out" | null = null;
+    if (key.startsWith(ANCHOR_P_PREFIX)) field = "p";
+    else if (key.startsWith(ANCHOR_IN_PREFIX)) field = "in";
+    else if (key.startsWith(ANCHOR_OUT_PREFIX)) field = "out";
+    if (!field) continue;
+    const id = anchorTrackId(key);
+    if (!id) continue;
+    const v = evaluateKeyframesAt(block, "vec2", tick);
+    if (!Array.isArray(v) || v.length < 2) continue;
+    const vec: [number, number] = [v[0] as number, v[1] as number];
+    for (const s of ensure()) {
+      const a = s.anchors.find((x) => x.id === id);
+      if (!a) continue;
+      if (field === "p") {
+        a.pos = vec;
+      } else if (field === "in") {
+        if (Math.hypot(vec[0], vec[1]) < 1e-9) delete a.inHandle;
+        else a.inHandle = vec;
+      } else {
+        if (Math.hypot(vec[0], vec[1]) < 1e-9) delete a.outHandle;
+        else a.outHandle = vec;
+      }
+      touched = true;
+      break;
+    }
+  }
+  return touched && out ? { ...spline, subpaths: out } : null;
+}
 
 export const MASK_INPUT_NAME = "mask";
 

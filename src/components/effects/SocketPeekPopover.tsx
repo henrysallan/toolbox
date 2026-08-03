@@ -12,7 +12,7 @@ import type {
   SplineValue,
   UvValue,
 } from "@/engine/types";
-import { colorForSocket } from "./socketColor";
+import { colorForSocket, resolveSocketColor } from "./socketColor";
 import { ValueSummary } from "./NodeInspectorPopup";
 
 // Hover-peek popover for a single OUTPUT socket: dwell on an output
@@ -90,12 +90,12 @@ export default function SocketPeekPopover({
         top: y,
         transform: "translateY(-50%)",
         pointerEvents: "auto",
-        background: "#0a0a0a",
-        border: "1px solid #3f3f46",
+        background: "var(--tb-n-0)",
+        border: "1px solid var(--tb-n-9)",
         borderRadius: 4,
         boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
-        color: "#e5e7eb",
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        color: "var(--tb-n-16)",
+        fontFamily: "var(--code-font)",
         fontSize: 10,
         padding: 8,
         minWidth: 120,
@@ -118,11 +118,11 @@ export default function SocketPeekPopover({
             borderRadius: "50%",
             background: value
               ? colorForSocket(value.kind as SocketType)
-              : "#52525b",
+              : "var(--tb-n-10)",
             flex: "0 0 auto",
           }}
         />
-        <span style={{ color: "#a1a1aa", letterSpacing: 0.3 }}>{label}</span>
+        <span style={{ color: "var(--tb-n-13)", letterSpacing: 0.3 }}>{label}</span>
       </div>
       {value ? (
         <>
@@ -136,7 +136,7 @@ export default function SocketPeekPopover({
           />
         </>
       ) : (
-        <div style={{ color: "#52525b" }}>
+        <div style={{ color: "var(--tb-n-10)" }}>
           {evaluated ? "(empty — no value on this output)" : "(not evaluated)"}
         </div>
       )}
@@ -174,15 +174,15 @@ function PeekVisual({
             wordBreak: "break-word",
             maxHeight: 96,
             overflowY: "auto",
-            color: "#d4d4d8",
-            background: "#18181b",
-            border: "1px solid #27272a",
+            color: "var(--tb-n-15)",
+            background: "var(--tb-n-3)",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 3,
             padding: "4px 6px",
           }}
         >
           {value.value === "" ? (
-            <span style={{ color: "#52525b" }}>(empty string)</span>
+            <span style={{ color: "var(--tb-n-10)" }}>(empty string)</span>
           ) : (
             value.value
           )}
@@ -203,7 +203,7 @@ function PeekVisual({
             width: 40,
             height: 14,
             borderRadius: 3,
-            border: "1px solid #3f3f46",
+            border: "1px solid var(--tb-n-9)",
             background: CHECKER_BG,
           }}
         >
@@ -225,7 +225,7 @@ function PeekVisual({
 
 // Transparent-pixel backdrop, matches the editor's dark chrome.
 const CHECKER_BG =
-  "repeating-conic-gradient(#27272a 0% 25%, #18181b 0% 50%) 0 0 / 12px 12px";
+  "repeating-conic-gradient(var(--tb-n-7) 0% 25%, var(--tb-n-3) 0% 50%) 0 0 / 12px 12px";
 
 function PixelThumb({
   value,
@@ -278,7 +278,7 @@ function PixelThumb({
         height: dispH,
         display: "block",
         borderRadius: 3,
-        border: "1px solid #27272a",
+        border: "1px solid var(--tb-n-7)",
         background: CHECKER_BG,
       }}
     />
@@ -331,7 +331,7 @@ function SplineThumb({
       }
       if (sp.closed) path.closePath();
     }
-    c2d.strokeStyle = colorForSocket("spline");
+    c2d.strokeStyle = resolveSocketColor("spline");
     c2d.lineWidth = 1.25;
     c2d.stroke(path);
   }, [value, w, h]);
@@ -346,8 +346,8 @@ function SplineThumb({
         height: h,
         display: "block",
         borderRadius: 3,
-        border: "1px solid #27272a",
-        background: "#18181b",
+        border: "1px solid var(--tb-n-7)",
+        background: "var(--tb-n-3)",
       }}
     />
   );
@@ -373,7 +373,7 @@ function PointsThumb({
     if (!canvas || !c2d) return;
     c2d.setTransform(2, 0, 0, 2, 0, 0);
     c2d.clearRect(0, 0, w, h);
-    c2d.fillStyle = colorForSocket("points");
+    c2d.fillStyle = resolveSocketColor("points");
     const stride = Math.max(1, Math.ceil(value.count / MAX_PEEK_DOTS));
     const pos = value.positions;
     for (let i = 0; i < value.count; i += stride) {
@@ -393,8 +393,8 @@ function PointsThumb({
         height: h,
         display: "block",
         borderRadius: 3,
-        border: "1px solid #27272a",
-        background: "#18181b",
+        border: "1px solid var(--tb-n-7)",
+        background: "var(--tb-n-3)",
       }}
     />
   );

@@ -26,6 +26,10 @@ export default defineConfig({
       "@/engine": path.resolve(srcRoot, "engine"),
       "@/nodes": path.resolve(srcRoot, "nodes"),
       "@/lib": path.resolve(srcRoot, "lib"),
+      // engine/vector-kernel.ts imports the wasm-pack glue from @/wasm.
+      // The binary itself is fetched lazily at runtime (kernelReady()
+      // gating), so only the JS glue needs to resolve here.
+      "@/wasm": path.resolve(srcRoot, "wasm"),
       // The shared param-controls UI (@/lib/param-controls, used by the live
       // viewer) imports this one bundle-safe leaf component from the editor
       // tree. Map it through so the export build resolves it; it pulls in

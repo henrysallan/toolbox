@@ -9,6 +9,10 @@ import type {
 } from "@/engine/types";
 import { buildPath2D, buildPath2DWith, hexToRgba } from "@/engine/spline-raster";
 import {
+  buildWidthEnvelopePath,
+  subpathHasWidthProfile,
+} from "@/engine/spline-width";
+import {
   compositeSplineFill,
   makeZeroTex,
   splineBbox,
@@ -274,7 +278,7 @@ export function rasterizeSplineAux(
             c2d.fill(path, "evenodd");
           }
           if (strokeOn) {
-            c2d.lineWidth = Math.max(
+            const strokePx = Math.max(
               0,
               resolveStrokePx(
                 (params.stroke_thickness as number) ?? 4,
@@ -282,12 +286,31 @@ export function rasterizeSplineAux(
                 W
               )
             );
+            c2d.lineWidth = strokePx;
             c2d.strokeStyle = hexToRgba(
               (params.stroke_color as string) ?? "#ffffff"
             );
             c2d.lineCap = "round";
             c2d.lineJoin = "round";
-            c2d.stroke(path);
+            // Width profiles (spec 072726 M3): profiled subpaths render as
+            // a variable-width envelope FILL; the rest keep the plain
+            // stroke (byte-identical when no anchor carries a profile).
+            const profiled = subpaths.filter(subpathHasWidthProfile);
+            if (profiled.length === 0) {
+              c2d.stroke(path);
+            } else {
+              const plain = subpaths.filter(
+                (s) => !subpathHasWidthProfile(s)
+              );
+              const plainPath =
+                plain.length > 0 ? buildPath2D(plain, W, H, fillOn) : null;
+              if (plainPath) c2d.stroke(plainPath);
+              c2d.fillStyle = c2d.strokeStyle as string;
+              for (const s of profiled) {
+                const env = buildWidthEnvelopePath(s, W, H, strokePx);
+                if (env) c2d.fill(env);
+              }
+            }
           }
         }
         uploadCanvas(gl, state.rasterTex!, canvas);
@@ -344,22 +367,32 @@ export function rasterizeSplineAux(
       // Stroke layer in its own color.
       c2d.clearRect(0, 0, W, H);
       if (strokeOn) {
-        const strokePath = buildPath2D(subpaths, W, H, false);
-        if (strokePath) {
-          c2d.lineWidth = Math.max(
-            0,
-            resolveStrokePx(
-              (params.stroke_thickness as number) ?? 4,
-              params.stroke_units,
-              W
-            )
-          );
-          c2d.strokeStyle = hexToRgba(
-            (params.stroke_color as string) ?? "#ffffff"
-          );
-          c2d.lineCap = "round";
-          c2d.lineJoin = "round";
-          c2d.stroke(strokePath);
+        const strokePx = Math.max(
+          0,
+          resolveStrokePx(
+            (params.stroke_thickness as number) ?? 4,
+            params.stroke_units,
+            W
+          )
+        );
+        c2d.lineWidth = strokePx;
+        c2d.strokeStyle = hexToRgba(
+          (params.stroke_color as string) ?? "#ffffff"
+        );
+        c2d.lineCap = "round";
+        c2d.lineJoin = "round";
+        // Width profiles (spec 072726 M3) — same split as the flat path.
+        const profiled = subpaths.filter(subpathHasWidthProfile);
+        const plain = profiled.length
+          ? subpaths.filter((s) => !subpathHasWidthProfile(s))
+          : subpaths;
+        const strokePath =
+          plain.length > 0 ? buildPath2D(plain, W, H, false) : null;
+        if (strokePath) c2d.stroke(strokePath);
+        c2d.fillStyle = c2d.strokeStyle as string;
+        for (const s of profiled) {
+          const env = buildWidthEnvelopePath(s, W, H, strokePx);
+          if (env) c2d.fill(env);
         }
       }
       uploadCanvas(gl, state.strokeTex, canvas);

@@ -81,6 +81,12 @@ export interface UploadResult {
   // Filenames (<hash>.<ext>) referenced by this graph — for prune. Empty on
   // fallback.
   keepFilenames: Set<string>;
+  // Snapshot of the objects already stored under the prefix, taken BEFORE this
+  // save's uploads. The prune candidate set: pruning against this (not a fresh
+  // list at prune time) means a concurrent save's asset — uploaded AFTER this
+  // snapshot — is never a candidate, so our unawaited prune can't delete it.
+  // Empty on fallback. See 072226 audit #1c.
+  existingBefore: Set<string>;
 }
 
 // Extract inline assets → upload the ones not already present → return the
@@ -107,17 +113,16 @@ export async function uploadGraphAssets(
       await rewriteNodeToRefs(node, pending, keepFilenames);
     }
 
-    if (pending.size === 0) {
-      // No media at all — nothing to upload, but still a valid ref-graph
-      // (identical to the input) and we "used storage" (no fallback needed).
-      return { graph: out, usedStorage: true, keepFilenames };
-    }
+    // 2. Snapshot what's already stored BEFORE uploading. This is both the
+    //    upload-dedup set and the prune candidate set (see UploadResult).
+    //    Listed unconditionally — even a media-free save needs it to prune
+    //    orphans left when the last media was removed.
+    const existingBefore = await listProjectAssetFilenames(supabase, loc);
 
-    // 2. Diff against what's already stored, upload only the new ones.
-    const existing = await listProjectAssetFilenames(supabase, loc);
+    // 3. Upload only the assets not already present (content-addressed).
     for (const [hash, a] of pending) {
       const filename = assetFilename(hash, a.ext);
-      if (existing.has(filename)) continue;
+      if (existingBefore.has(filename)) continue;
       const { error } = await supabase.storage
         .from(PROJECT_ASSETS_BUCKET)
         .upload(assetPath(loc, hash, a.ext), a.bytes as BufferSource, {
@@ -130,7 +135,7 @@ export async function uploadGraphAssets(
       if (error) throw error;
     }
 
-    return { graph: out, usedStorage: true, keepFilenames };
+    return { graph: out, usedStorage: true, keepFilenames, existingBefore };
   } catch (err) {
     // Bucket missing (pre-migration) or transient Storage error — fall back
     // to the inline graph so the save still goes through the old way.
@@ -138,7 +143,12 @@ export async function uploadGraphAssets(
       "[project-assets] Storage upload unavailable — saving inline:",
       err
     );
-    return { graph, usedStorage: false, keepFilenames: new Set() };
+    return {
+      graph,
+      usedStorage: false,
+      keepFilenames: new Set(),
+      existingBefore: new Set(),
+    };
   }
 }
 
@@ -150,19 +160,38 @@ async function rewriteNodeToRefs(
   keep: Set<string>
 ): Promise<void> {
   for (const [key, val] of Object.entries(node.params)) {
-    if (!isInlineAsset(val)) continue;
-    const { bytes, mime } = await dataUrlToBytes(val.dataUrl);
-    const hash = await sha256Hex(bytes);
-    const ext = mimeToExt(mime);
-    if (!pending.has(hash)) pending.set(hash, { bytes, ext, mime });
-    keep.add(assetFilename(hash, ext));
-    // Swap the inline dataUrl for a ref, preserving other envelope fields
-    // (font family/filename/axes, exr filename, …).
-    const ref: Record<string, unknown> = { ...val };
-    delete ref.dataUrl;
-    ref.asset = hash;
-    ref.ext = ext;
-    node.params[key] = ref;
+    if (isInlineAsset(val)) {
+      const { bytes, mime } = await dataUrlToBytes(val.dataUrl);
+      const hash = await sha256Hex(bytes);
+      const ext = mimeToExt(mime);
+      if (!pending.has(hash)) pending.set(hash, { bytes, ext, mime });
+      keep.add(assetFilename(hash, ext));
+      // Swap the inline dataUrl for a ref, preserving other envelope fields
+      // (font family/filename/axes, exr filename, …).
+      const ref: Record<string, unknown> = { ...val };
+      delete ref.dataUrl;
+      ref.asset = hash;
+      ref.ext = ext;
+      node.params[key] = ref;
+      continue;
+    }
+    // An already-extracted ref that never got re-inlined this session — most
+    // often a stream that resolved to a Storage URL and then failed to decode,
+    // so the param still holds { …, asset, ext, dataUrl:<https url> } (see
+    // resolveAssetRefs). We have no bytes to (re)upload, but the object is
+    // already in Storage: keep it alive (add to the keep-set so the prune
+    // doesn't delete it) and store a CLEAN ref — strip the transient URL so
+    // the row round-trips as a proper { asset, ext } reference. Without this
+    // the keep-set misses it and the next save prunes the object the row still
+    // points at. See 072226 audit #1b.
+    if (isAssetRef(val) && typeof val.ext === "string") {
+      keep.add(assetFilename(val.asset, val.ext));
+      if ("dataUrl" in val) {
+        const ref: Record<string, unknown> = { ...val };
+        delete ref.dataUrl;
+        node.params[key] = ref;
+      }
+    }
   }
 }
 
@@ -186,9 +215,16 @@ export function resolveAssetRefs(
       const { data } = supabase.storage
         .from(PROJECT_ASSETS_BUCKET)
         .getPublicUrl(assetPath(loc, val.asset, ext));
+      // Keep `asset`/`ext` alongside the resolved URL (don't strip them). A
+      // param that never gets replaced by decoded bytes — a stream that
+      // resolved to this URL and then FAILED to decode — is put back into the
+      // graph as this envelope, and on the next save rewriteNodeToRefs must
+      // still recognize it as an asset ref. Stripping asset/ext made it look
+      // like plain inline media with an https URL: invisible to the keep-set,
+      // so the prune deleted the Storage object the row still points at (data
+      // loss). The deserializer only reads dataUrl, so the extra fields are
+      // inert on a successful load. See 072226 audit #1b.
       const restored: Record<string, unknown> = { ...val };
-      delete restored.asset;
-      delete restored.ext;
       restored.dataUrl = data.publicUrl;
       if (!params) params = { ...node.params };
       params[key] = restored;
@@ -217,18 +253,26 @@ export async function deleteProjectAssets(
   }
 }
 
-// Delete objects under the prefix NOT in `keep` — orphans left by a re-save
-// that dropped or replaced media. Best-effort; safe only when called AFTER a
-// successful compare-and-swap write (the caller is then the authoritative
-// latest, so nothing else references the pruned assets — see spec).
+// Delete objects that existed at save time but the saved graph no longer
+// references — orphans left by a re-save that dropped or replaced media.
+// Best-effort; safe only when called AFTER a successful compare-and-swap
+// write (the caller is then the authoritative latest, so nothing else
+// references the pruned assets — see spec).
+//
+// `candidates` is the pre-upload snapshot from uploadGraphAssets (the objects
+// that existed BEFORE this save wrote anything), NOT a fresh listing. Pruning
+// only from that snapshot is what makes this concurrency-safe: an object a
+// concurrent save uploaded after our snapshot is absent from `candidates`, so
+// this (unawaited, possibly-late) prune can never delete it. Re-listing here
+// reintroduced exactly that race — see 072226 audit #1c.
 export async function pruneProjectAssets(
   supabase: SupabaseClient,
   loc: AssetLocator,
-  keep: Set<string>
+  keep: Set<string>,
+  candidates: Set<string>
 ): Promise<void> {
   try {
-    const existing = await listProjectAssetFilenames(supabase, loc);
-    const stale = Array.from(existing).filter((n) => !keep.has(n));
+    const stale = Array.from(candidates).filter((n) => !keep.has(n));
     if (stale.length === 0) return;
     const paths = stale.map((n) => `${loc.userId}/${loc.projectId}/${n}`);
     await supabase.storage.from(PROJECT_ASSETS_BUCKET).remove(paths);

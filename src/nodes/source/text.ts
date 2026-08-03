@@ -7,9 +7,12 @@ import type {
   NodeDefinition,
   RenderContext,
   SdfValue,
+  SplineSubpath,
   SplineValue,
   TextInstanceValue,
 } from "@/engine/types";
+import { aspectUncorrectY } from "@/engine/aspect";
+import { simplifyPolyline } from "@/engine/spline-math";
 import { computeSDF } from "@/engine/sdf";
 import { emptyElement, uploadCanvasToImage } from "@/engine/element";
 import { marchingSquares } from "@/engine/marching-squares";
@@ -1423,10 +1426,40 @@ function extractTextSpline(
       grid[y * w + x] = 0.5 - a;
     }
   }
-  const subpaths = marchingSquares(grid, w, h, {
+  const contours = marchingSquares(grid, w, h, {
     iso: 0,
     uvOrigin: [0, 0],
     uvSize: [1, 1],
   });
+  // Two post-passes over the canvas-normalized contours:
+  //  1. RDP-simplify in PIXEL space (isotropic tolerance). Marching
+  //     squares emits a vertex per raster cell; those ~1px edges cap
+  //     Round Corners' fillets (d ≤ edge/2) into sub-pixel no-ops and
+  //     bloat every downstream consumer. Straight stems collapse to
+  //     single long edges; curves stay within the tolerance.
+  //  2. Map into the authored square space that buildPath2D re-expands
+  //     by aspect at render time (see engine/aspect.ts) — raw canvas-
+  //     normalized coords rasterize stretched on non-square canvases.
+  //     Square = identity.
+  const SIMPLIFY_TOL_PX = 0.4;
+  const aspect = w / h;
+  const subpaths: SplineSubpath[] = [];
+  for (const sub of contours) {
+    const px = sub.anchors.map(
+      (a) => [a.pos[0] * w, a.pos[1] * h] as [number, number]
+    );
+    const kept = simplifyPolyline(px, SIMPLIFY_TOL_PX, sub.closed);
+    // Micro-loops (AA specks smaller than the tolerance) drop out.
+    if (kept.length < (sub.closed ? 3 : 2)) continue;
+    subpaths.push({
+      anchors: kept.map((p) => ({
+        pos: [p[0] / w, aspectUncorrectY(p[1] / h, aspect)] as [
+          number,
+          number,
+        ],
+      })),
+      closed: sub.closed,
+    });
+  }
   return { kind: "spline", subpaths };
 }

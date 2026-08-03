@@ -670,3 +670,112 @@ export function parseSvg(text: string, filename?: string): SvgFileParamValue {
     aspect: vw / vh,
   };
 }
+
+// ---- clipboard paste ----------------------------------------------------
+//
+// Paste-from-clipboard support (Figma "Copy as SVG" etc. → Spline Draw
+// node). Spec: 073026_svg-paste.md.
+
+// Cheap sync gate for paste handlers: does this clipboard text look like
+// SVG markup, or like bare path data (a `d` attribute string)?
+export function looksLikeSvgPasteText(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/<svg[\s>]/i.test(t)) return true;
+  // Bare path data: opens like "M 10 20" / "m-1.5,3" (a coordinate right
+  // after the moveto — prose like "Many..." fails this) and contains only
+  // path-command letters, numbers, and separators.
+  if (!/^[Mm]\s*[-+.\d]/.test(t)) return false;
+  return /^[MmLlHhVvCcSsQqTtAaZz\s,+\-.\deE]+$/.test(t);
+}
+
+// Sampled bounding box of cubic subpaths — 16 steps per segment, plenty for
+// fit purposes. Returns null when nothing is drawable.
+function sampleBounds(
+  subpaths: SplineSubpath[]
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const visit = (x: number, y: number) => {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  };
+  for (const sub of subpaths) {
+    const anchors = sub.anchors;
+    const n = anchors.length;
+    if (n === 0) continue;
+    if (n === 1) visit(anchors[0].pos[0], anchors[0].pos[1]);
+    const segs = sub.closed ? n : n - 1;
+    for (let k = 0; k < segs; k++) {
+      const a = anchors[k];
+      const b = anchors[(k + 1) % n];
+      const p0x = a.pos[0];
+      const p0y = a.pos[1];
+      const p1x = p0x + (a.outHandle?.[0] ?? 0);
+      const p1y = p0y + (a.outHandle?.[1] ?? 0);
+      const p3x = b.pos[0];
+      const p3y = b.pos[1];
+      const p2x = p3x + (b.inHandle?.[0] ?? 0);
+      const p2y = p3y + (b.inHandle?.[1] ?? 0);
+      for (let s = 0; s <= 16; s++) {
+        const t = s / 16;
+        const u = 1 - t;
+        const w0 = u * u * u;
+        const w1 = 3 * u * u * t;
+        const w2 = 3 * u * t * t;
+        const w3 = t * t * t;
+        visit(
+          w0 * p0x + w1 * p1x + w2 * p2x + w3 * p3x,
+          w0 * p0y + w1 * p1y + w2 * p2y + w3 * p3y
+        );
+      }
+    }
+  }
+  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+}
+
+// Parse clipboard text — full <svg> markup or a bare path `d` string — into
+// spline subpaths, uniformly contain-fit inside the VISIBLE canvas.
+//
+// Authored [0,1]² space is isotropic (spline rasterization aspect-corrects Y
+// so both axes render at W px per authored unit — see engine/aspect.ts), and
+// the visible canvas spans the 1 × 1/aspect rect centered on (0.5, 0.5) in
+// authored units. Fitting the geometry's sampled bounds into THAT rect (not
+// [0,1]², which is the SVG-file convention above) keeps the whole pasted
+// shape on-screen at any canvas aspect while preserving its proportions.
+export function parseSvgPasteText(
+  text: string,
+  canvasAspect: number
+): SplineSubpath[] {
+  const t = text.trim();
+  const subpaths = /<svg[\s>]/i.test(t)
+    ? parseSvg(t).subpaths
+    : parsePathD(t, IDENTITY);
+  const bounds = sampleBounds(subpaths);
+  if (!bounds) return subpaths;
+
+  const visH = 1 / Math.max(1e-6, canvasAspect);
+  const w = bounds.maxX - bounds.minX;
+  const h = bounds.maxY - bounds.minY;
+  const sx = w > 1e-9 ? 1 / w : Infinity;
+  const sy = h > 1e-9 ? visH / h : Infinity;
+  let s = Math.min(sx, sy);
+  if (!Number.isFinite(s)) s = 1; // degenerate (a point) — center only
+  const cx = (bounds.minX + bounds.maxX) / 2;
+  const cy = (bounds.minY + bounds.maxY) / 2;
+
+  // We own the freshly-parsed arrays — rescale in place. Handles are
+  // pos-relative offsets, so they only scale.
+  for (const sub of subpaths) {
+    for (const a of sub.anchors) {
+      a.pos = [(a.pos[0] - cx) * s + 0.5, (a.pos[1] - cy) * s + 0.5];
+      if (a.inHandle) a.inHandle = [a.inHandle[0] * s, a.inHandle[1] * s];
+      if (a.outHandle) a.outHandle = [a.outHandle[0] * s, a.outHandle[1] * s];
+    }
+  }
+  return subpaths;
+}

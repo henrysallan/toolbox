@@ -8,6 +8,7 @@ import type {
   SdfValue,
 } from "@/engine/types";
 import { computeSDF } from "@/engine/sdf";
+import { SDF_PAINT_PARAMS, paintSdf } from "@/engine/sdf-material";
 
 // Image → SDF. Turns a raster image into a signed distance field that
 // composes with the rest of the SDF graph (Union, Morph, Round, Smooth
@@ -194,6 +195,7 @@ export const sdfFromImageNode: NodeDefinition = {
       default: 0.5,
       visibleIf: (p) => p.mode === "raw",
     },
+    ...SDF_PAINT_PARAMS,
   ],
   primaryOutput: "sdf",
   auxOutputs: [],
@@ -270,12 +272,15 @@ export const sdfFromImageNode: NodeDefinition = {
 
     const out: SdfValue = {
       kind: "sdf",
-      root: {
-        kind: "sdfFromImage",
-        position: rootOfPosition(inputs.position),
-        image: state.sdf.texture,
-        range,
-      },
+      root: paintSdf(
+        {
+          kind: "sdfFromImage",
+          position: rootOfPosition(inputs.position),
+          image: state.sdf.texture,
+          range,
+        },
+        params
+      ),
     };
     return { primary: out };
   },

@@ -44,8 +44,8 @@ const BOTTOM_FIELDS: {
   def: number;
   grad?: string;
 }[] = [
-  { name: "temp", label: "Temp", min: -1, max: 1, step: 0.001, def: 0, grad: "linear-gradient(90deg,#3b82f6,#f59e0b)" },
-  { name: "tint", label: "Tint", min: -1, max: 1, step: 0.001, def: 0, grad: "linear-gradient(90deg,#22c55e,#d946ef)" },
+  { name: "temp", label: "Temp", min: -1, max: 1, step: 0.001, def: 0, grad: "linear-gradient(90deg,var(--tb-a-blue-500),var(--tb-a-amber-500))" },
+  { name: "tint", label: "Tint", min: -1, max: 1, step: 0.001, def: 0, grad: "linear-gradient(90deg,var(--tb-a-green-500),#d946ef)" },
   { name: "hue", label: "Hue", min: -180, max: 180, step: 0.5, def: 0, grad: HUE_GRAD },
   { name: "contrast", label: "Cont", min: 0, max: 4, step: 0.001, def: 1, grad: "linear-gradient(90deg,#000,#fff)" },
   { name: "pivot", label: "Pivot", min: 0, max: 1, step: 0.001, def: 0.5 },
@@ -65,8 +65,8 @@ export default function ColorCorrectionPanel({ node, onParamChange }: Props) {
         display: "flex",
         flexDirection: "column",
         gap: 10,
-        color: "#c9c9cf",
-        fontFamily: "ui-monospace, monospace",
+        color: "var(--tb-n-14)",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
       }}
     >
@@ -76,7 +76,7 @@ export default function ColorCorrectionPanel({ node, onParamChange }: Props) {
         ))}
       </div>
 
-      <div style={{ height: 1, background: "#1f1f23", margin: "2px 0" }} />
+      <div style={{ height: 1, background: "var(--tb-n-5)", margin: "2px 0" }} />
 
       {/* Bottom bar — gradient-tracked sliders */}
       <div
@@ -159,8 +159,8 @@ function ColorWheel({
         display: "flex",
         flexDirection: "column",
         gap: 5,
-        background: "#0c0c0e",
-        border: "1px solid #1a1a1d",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-n-3)",
         borderRadius: 6,
         padding: 6,
       }}
@@ -169,7 +169,7 @@ function ColorWheel({
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
         <span
           style={{
-            color: "#c9c9cf",
+            color: "var(--tb-n-14)",
             fontWeight: 600,
             flex: 1,
             minWidth: 0,
@@ -181,7 +181,7 @@ function ColorWheel({
         >
           {label}
         </span>
-        <span style={{ color: "#71717a", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>
+        <span style={{ color: "var(--tb-n-11)", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>
           {lum.toFixed(2)}
         </span>
         <button
@@ -191,7 +191,7 @@ function ColorWheel({
           style={{
             background: "transparent",
             border: "none",
-            color: "#71717a",
+            color: "var(--tb-n-11)",
             cursor: "pointer",
             padding: 0,
             fontSize: 12,
@@ -238,14 +238,14 @@ function ColorWheel({
             cursor: "crosshair",
             // Resolve look: vivid hue only at the rim, dark desaturated interior.
             background:
-              "radial-gradient(circle at center, rgba(10,10,12,0.88) 0%, rgba(10,10,12,0.86) 40%, rgba(10,10,12,0) 78%)," +
-              "conic-gradient(from 0deg,#ff2d2d,#ffd92d,#37d937,#2dd9d9,#2d6bff,#c92dff,#ff2d2d)",
+              "radial-gradient(circle at center, color-mix(in srgb, var(--tb-n-0) 88%, transparent) 0%, color-mix(in srgb, var(--tb-n-0) 86%, transparent) 40%, rgba(10,10,12,0) 78%)," +
+              "conic-gradient(from 0deg,#ff2d2d,#ffd92d,#37d937,var(--tb-t-cyan-l-3),#2d6bff,#c92dff,#ff2d2d)",
             boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.6)",
           }}
         >
           {/* crosshair */}
-          <div style={{ position: "absolute", left: "50%", top: "12%", bottom: "12%", width: 1, background: "rgba(255,255,255,0.14)", transform: "translateX(-0.5px)" }} />
-          <div style={{ position: "absolute", top: "50%", left: "12%", right: "12%", height: 1, background: "rgba(255,255,255,0.14)", transform: "translateY(-0.5px)" }} />
+          <div style={{ position: "absolute", left: "50%", top: "12%", bottom: "12%", width: 1, background: "color-mix(in srgb, var(--tb-lift) 14%, transparent)", transform: "translateX(-0.5px)" }} />
+          <div style={{ position: "absolute", top: "50%", left: "12%", right: "12%", height: 1, background: "color-mix(in srgb, var(--tb-lift) 14%, transparent)", transform: "translateY(-0.5px)" }} />
           {/* balance dot */}
           <div
             style={{
@@ -257,8 +257,8 @@ function ColorWheel({
               marginLeft: -4.5,
               marginTop: -4.5,
               borderRadius: "50%",
-              background: "#0a0a0a",
-              border: "2px solid #fafafa",
+              background: "var(--tb-n-0)",
+              border: "2px solid var(--tb-n-17)",
               boxShadow: "0 1px 3px rgba(0,0,0,0.6)",
               pointerEvents: "none",
             }}
@@ -300,7 +300,7 @@ function GradientSlider({
 }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-      <span style={{ color: "#8a8a90", flex: "0 0 34px" }}>{label}</span>
+      <span style={{ color: "var(--tb-n-12)", flex: "0 0 34px" }}>{label}</span>
       <input
         type="range"
         className="ccbar-slider"
@@ -312,7 +312,7 @@ function GradientSlider({
         style={{
           flex: 1,
           minWidth: 0,
-          ["--track" as string]: grad ?? "#3f3f46",
+          ["--track" as string]: grad ?? "var(--tb-n-9)",
         } as React.CSSProperties}
       />
       <div style={{ flex: "0 0 42px" }}>
@@ -373,8 +373,8 @@ function MasterSlider({
         width: 8,
         flexShrink: 0,
         cursor: "ns-resize",
-        background: "#141417",
-        border: "1px solid #232327",
+        background: "var(--tb-n-2)",
+        border: "1px solid var(--tb-n-6)",
         borderRadius: 4,
       }}
     >
@@ -388,7 +388,7 @@ function MasterSlider({
           marginLeft: -6,
           marginTop: -6,
           borderRadius: "50%",
-          background: "#d4d4d8",
+          background: "var(--tb-n-15)",
           boxShadow: "0 1px 2px rgba(0,0,0,0.6)",
         }}
       />
@@ -414,8 +414,8 @@ function MiniSlider({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10 }}>
-        <span style={{ color: "#8a8a90" }}>{label}</span>
-        <span style={{ color: "#a1a1aa", fontVariantNumeric: "tabular-nums" }}>
+        <span style={{ color: "var(--tb-n-12)" }}>{label}</span>
+        <span style={{ color: "var(--tb-n-13)", fontVariantNumeric: "tabular-nums" }}>
           {value.toFixed(2)}
         </span>
       </div>
@@ -449,7 +449,7 @@ function LabeledNum({
 }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 3, flex: 1, minWidth: 0 }}>
-      <span style={{ color: "#52525b", flex: "0 0 auto" }}>{label}</span>
+      <span style={{ color: "var(--tb-n-10)", flex: "0 0 auto" }}>{label}</span>
       <NumField value={value} min={min} max={max} step={step} onChange={onChange} />
     </div>
   );
@@ -505,10 +505,10 @@ function NumField({
         flex: 1,
         minWidth: 0,
         width: "100%",
-        background: "#0a0a0a",
-        border: "1px solid #232327",
+        background: "var(--tb-n-0)",
+        border: "1px solid var(--tb-n-6)",
         borderRadius: 3,
-        color: "#c9c9cf",
+        color: "var(--tb-n-14)",
         fontFamily: "inherit",
         fontSize: 10,
         padding: "2px 4px",

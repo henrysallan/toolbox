@@ -4,6 +4,7 @@ import type {
   PositionValue,
   SdfValue,
 } from "@/engine/types";
+import { SDF_PAINT_PARAMS, paintSdf } from "@/engine/sdf-material";
 
 // SDF primitive — a capsule between two points (a, b) with thickness r.
 // Same formula covers Quílez's "line segment" and "capsule" — the only
@@ -81,6 +82,7 @@ export const sdfLineSegmentNode: NodeDefinition = {
       step: 0.001,
       default: 0.04,
     },
+    ...SDF_PAINT_PARAMS,
   ],
   primaryOutput: "sdf",
   auxOutputs: [],
@@ -100,15 +102,18 @@ export const sdfLineSegmentNode: NodeDefinition = {
         : ((params.thickness as number) ?? 0.04);
     const out: SdfValue = {
       kind: "sdf",
-      root: {
-        kind: "lineSegment",
-        position: rootOfPosition(inputs.position),
-        ax,
-        ay,
-        bx,
-        by,
-        r: Math.max(0, r),
-      },
+      root: paintSdf(
+        {
+          kind: "lineSegment",
+          position: rootOfPosition(inputs.position),
+          ax,
+          ay,
+          bx,
+          by,
+          r: Math.max(0, r),
+        },
+        params
+      ),
     };
     return { primary: out };
   },

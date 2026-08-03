@@ -3,6 +3,7 @@
 // real src/lib/mcp-bridge client acting as the editor tab.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { WebSocket as RawWS } from "ws";
 import { connectBridge, type BridgeClient, type BridgeStatus } from "@/lib/mcp-bridge";
 import { registerAllNodes } from "@/nodes";
 import { buildCatalogDsl } from "@/lib/ai/generate-recipe-client";
@@ -107,6 +108,54 @@ check(
 // --- 1. no editor connected → friendly error ---
 const r1 = await client.callTool({ name: "get_status", arguments: {} });
 check("no-editor error", isError(r1) && textOf(r1).includes("No Toolbox editor"), textOf(r1).slice(0, 60));
+
+// --- 1b. CSWSH / rogue-client hardening (a browser drive-by can't complete the
+//         handshake; a client that doesn't echo the pairing code can't pair) ---
+{
+  // (a) A cross-origin handshake (what a malicious web page sends — the browser
+  //     forces the Origin header) is rejected before it ever opens.
+  const rogue = new RawWS(`ws://127.0.0.1:${PORT}`, {
+    headers: { origin: "https://evil.example" },
+  });
+  let opened = false;
+  rogue.on("open", () => {
+    opened = true;
+  });
+  await new Promise((resolve) => {
+    rogue.on("error", () => resolve(null)); // handshake refused → error, no open
+    rogue.on("unexpected-response", () => resolve(null));
+    setTimeout(resolve, 400);
+  });
+  check("cross-origin WS handshake rejected", !opened);
+  try {
+    rogue.close();
+  } catch {
+    /* already refused */
+  }
+
+  // (b) A same-origin-absent client (allowed to connect) that echoes the WRONG
+  //     pairing code must NOT become paired — get_status still errors.
+  const noecho = new RawWS(`ws://127.0.0.1:${PORT}`);
+  await new Promise((resolve, reject) => {
+    noecho.on("open", resolve);
+    noecho.on("error", reject);
+    setTimeout(() => reject(new Error("rogue connect timeout")), 2000);
+  });
+  await new Promise((resolve) => {
+    noecho.on("message", () => resolve(null)); // wait for the hello frame
+    setTimeout(resolve, 400);
+  });
+  noecho.send(JSON.stringify({ type: "pair", ok: true, code: "0000", appVersion: "rogue" }));
+  await new Promise((r) => setTimeout(r, 150));
+  const rWrong = await client.callTool({ name: "get_status", arguments: {} });
+  check(
+    "wrong pairing code does not pair",
+    isError(rWrong) && textOf(rWrong).includes("pairing isn't confirmed"),
+    textOf(rWrong).slice(0, 60)
+  );
+  noecho.close();
+  await new Promise((r) => setTimeout(r, 200)); // let the slot free before the real editor connects
+}
 
 // --- 2. editor connects but pairing NOT confirmed → pairing error ---
 const statuses: BridgeStatus[] = [];

@@ -116,8 +116,8 @@ export function ProjectView({
         minHeight: 0,
         display: "flex",
         flexDirection: "column",
-        background: "#0a0a0a",
-        color: "#e5e7eb",
+        background: "var(--tb-n-0)",
+        color: "var(--tb-n-16)",
       }}
     >
       <ProjectHeader
@@ -216,18 +216,18 @@ function ConfirmDeleteModal({
         onClick={(e) => e.stopPropagation()}
         style={{
           width: 300,
-          background: "#161619",
-          border: "1px solid #2a2a2e",
+          background: "var(--tb-n-3)",
+          border: "1px solid var(--tb-n-8)",
           borderRadius: 8,
           padding: 16,
           boxShadow: "0 12px 40px #000000cc",
         }}
       >
-        <div style={{ fontSize: 13, fontWeight: 600, color: "#fafafa" }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--tb-n-17)" }}>
           Confirm Deletion
         </div>
-        <div style={{ fontSize: 11, color: "#a1a1aa", marginTop: 8, lineHeight: 1.5 }}>
-          Delete <span style={{ color: "#e5e7eb" }}>{name}</span>? This removes
+        <div style={{ fontSize: 11, color: "var(--tb-n-13)", marginTop: 8, lineHeight: 1.5 }}>
+          Delete <span style={{ color: "var(--tb-n-16)" }}>{name}</span>? This removes
           the composition and its nodes. You can undo it afterwards.
         </div>
         <div
@@ -243,9 +243,9 @@ function ConfirmDeleteModal({
             onClick={onCancel}
             style={{
               fontSize: 11,
-              color: "#d4d4d8",
-              background: "#1f1f23",
-              border: "1px solid #2a2a2e",
+              color: "var(--tb-n-15)",
+              background: "var(--tb-n-5)",
+              border: "1px solid var(--tb-n-8)",
               borderRadius: 6,
               padding: "5px 12px",
               cursor: "pointer",
@@ -260,8 +260,8 @@ function ConfirmDeleteModal({
             style={{
               fontSize: 11,
               fontWeight: 600,
-              color: "#fee2e2",
-              background: "#b91c1c",
+              color: "var(--tb-t-red-l-0)",
+              background: "var(--tb-a-red-700)",
               border: "1px solid #dc2626",
               borderRadius: 6,
               padding: "5px 12px",
@@ -321,7 +321,7 @@ function ProjectHeader({
         gap: 6,
         height: 28,
         padding: "0 8px",
-        borderBottom: "1px solid #1c1c1f",
+        borderBottom: "1px solid var(--tb-n-4)",
         flexShrink: 0,
       }}
     >
@@ -343,7 +343,7 @@ function ProjectHeader({
         style={{
           fontSize: 12,
           fontWeight: 600,
-          color: "#fafafa",
+          color: "var(--tb-n-17)",
           background: "transparent",
           border: "1px solid transparent",
           borderRadius: 4,
@@ -354,7 +354,7 @@ function ProjectHeader({
           cursor: canRename ? "text" : "default",
         }}
         onFocus={(e) => {
-          if (canRename) e.currentTarget.style.borderColor = "#27272a";
+          if (canRename) e.currentTarget.style.borderColor = "var(--tb-n-7)";
         }}
         onBlur={(e) => {
           e.currentTarget.style.borderColor = "transparent";
@@ -367,8 +367,8 @@ function ProjectHeader({
           style={{
             fontSize: 10,
             fontWeight: 600,
-            color: "#052e16",
-            background: "#4ade80",
+            color: "var(--tb-t-green-d-0)",
+            background: "var(--tb-a-green-400)",
             border: "none",
             borderRadius: 999,
             padding: "2px 9px",
@@ -390,7 +390,7 @@ function ProjectHeader({
       <div style={{ flex: 1 }} />
       {mode === "comps" && (
         <>
-          <span style={{ fontSize: 10, color: "#52525b" }}>
+          <span style={{ fontSize: 10, color: "var(--tb-n-10)" }}>
             {count} {count === 1 ? "comp" : "comps"}
           </span>
           <div style={{ display: "flex", gap: 2 }}>
@@ -431,8 +431,8 @@ function SegmentedToggle({
     <div
       style={{
         display: "flex",
-        background: "#0f0f11",
-        border: "1px solid #232327",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-n-6)",
         borderRadius: 6,
         padding: 1,
       }}
@@ -447,8 +447,8 @@ function SegmentedToggle({
             style={{
               fontSize: 10,
               fontWeight: 600,
-              color: active ? "#fafafa" : "#71717a",
-              background: active ? "#26262b" : "transparent",
+              color: active ? "var(--tb-n-17)" : "var(--tb-n-11)",
+              background: active ? "var(--tb-n-7)" : "transparent",
               border: "none",
               borderRadius: 5,
               padding: "2px 10px",
@@ -507,9 +507,9 @@ function CompositionCard({
         flexDirection: "column",
         borderRadius: 6,
         border: `1px solid ${
-          active ? "#3f3f46" : dragOver ? "#52525b" : "#1f1f23"
+          active ? "var(--tb-n-9)" : dragOver ? "var(--tb-n-10)" : "var(--tb-n-5)"
         }`,
-        background: "#111114",
+        background: "var(--tb-n-1)",
         overflow: "hidden",
         cursor: "pointer",
         opacity: dragging ? 0.4 : 1,
@@ -521,11 +521,11 @@ function CompositionCard({
           width: "100%",
           aspectRatio: `${Math.max(aspect, 0.4)}`,
           maxHeight: 120,
-          background: "#0a0a0a",
+          background: "var(--tb-n-0)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          borderBottom: "1px solid #1c1c1f",
+          borderBottom: "1px solid var(--tb-n-4)",
         }}
       >
         {comp.thumbnail ? (
@@ -536,7 +536,7 @@ function CompositionCard({
             style={{ width: "100%", height: "100%", objectFit: "contain" }}
           />
         ) : (
-          <span style={{ fontSize: 10, color: "#3f3f46" }}>no preview</span>
+          <span style={{ fontSize: 10, color: "var(--tb-n-9)" }}>no preview</span>
         )}
         {active && (
           <span
@@ -547,7 +547,7 @@ function CompositionCard({
               fontSize: 8,
               letterSpacing: 0.4,
               textTransform: "uppercase",
-              color: "#a1a1aa",
+              color: "var(--tb-n-13)",
               background: "#000000aa",
               borderRadius: 3,
               padding: "1px 4px",
@@ -577,7 +577,7 @@ function CompositionCard({
           onRename={onRename}
           fontSize={11}
         />
-        <div style={{ fontSize: 9, color: "#52525b", marginTop: 1 }}>
+        <div style={{ fontSize: 9, color: "var(--tb-n-10)", marginTop: 1 }}>
           {settingsLine(comp)}
         </div>
       </div>
@@ -611,14 +611,14 @@ function CompositionTable({
           gridTemplateColumns: grid,
           gap: 8,
           padding: "4px 8px",
-          color: "#71717a",
+          color: "var(--tb-n-11)",
           fontSize: 9,
           textTransform: "uppercase",
           letterSpacing: 0.5,
-          borderBottom: "1px solid #1c1c1f",
+          borderBottom: "1px solid var(--tb-n-4)",
           position: "sticky",
           top: 0,
-          background: "#0a0a0a",
+          background: "var(--tb-n-0)",
         }}
       >
         <span>Composition</span>
@@ -647,10 +647,10 @@ function CompositionTable({
               gap: 8,
               alignItems: "center",
               padding: "3px 8px",
-              borderBottom: "1px solid #141416",
-              background: active ? "#161619" : "transparent",
+              borderBottom: "1px solid var(--tb-n-2)",
+              background: active ? "var(--tb-n-3)" : "transparent",
               borderLeft: `2px solid ${
-                active ? "#3f3f46" : dragOver ? "#52525b" : "transparent"
+                active ? "var(--tb-n-9)" : dragOver ? "var(--tb-n-10)" : "transparent"
               }`,
               cursor: "pointer",
               opacity: dnd.dragId === c.id ? 0.4 : 1,
@@ -671,7 +671,7 @@ function CompositionTable({
                     fontSize: 8,
                     letterSpacing: 0.4,
                     textTransform: "uppercase",
-                    color: "#71717a",
+                    color: "var(--tb-n-11)",
                     flexShrink: 0,
                   }}
                 >
@@ -679,7 +679,7 @@ function CompositionTable({
                 </span>
               )}
             </div>
-            <span style={{ color: "#71717a", fontSize: 10 }}>
+            <span style={{ color: "var(--tb-n-11)", fontSize: 10 }}>
               {settingsLine(c)}
             </span>
             <div
@@ -743,9 +743,9 @@ function EditableName({
         style={{
           width: "100%",
           fontSize,
-          color: "#fafafa",
-          background: "#000",
-          border: "1px solid #3f3f46",
+          color: "var(--tb-n-17)",
+          background: "var(--tb-frame)",
+          border: "1px solid var(--tb-n-9)",
           borderRadius: 3,
           padding: "1px 4px",
           outline: "none",
@@ -763,7 +763,7 @@ function EditableName({
       title="Double-click to rename"
       style={{
         fontSize,
-        color: active ? "#fafafa" : "#d4d4d8",
+        color: active ? "var(--tb-n-17)" : "var(--tb-n-15)",
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
@@ -802,12 +802,12 @@ function HeaderIconButton({
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        background: active ? "#1b2741" : hover ? "#19191c" : "transparent",
+        background: active ? "var(--tb-a-navy-deep)" : hover ? "var(--tb-n-3)" : "transparent",
         border: `1px solid ${
-          active ? "#26375f" : hover ? "#2a2a2e" : "transparent"
+          active ? "var(--tb-a-navy-tint)" : hover ? "var(--tb-n-8)" : "transparent"
         }`,
         borderRadius: 3,
-        color: active ? "#bfdbfe" : hover ? "#e5e7eb" : "#8a8a90",
+        color: active ? "var(--tb-a-blue-200)" : hover ? "var(--tb-n-16)" : "var(--tb-n-12)",
         cursor: "pointer",
         padding: 0,
       }}
@@ -848,7 +848,7 @@ function OverlayIconButton({
         borderRadius: 4,
         border: "none",
         cursor: "pointer",
-        color: hover ? (danger ? "#fca5a5" : "#fafafa") : "#d4d4d8",
+        color: hover ? (danger ? "var(--tb-a-red-300)" : "var(--tb-n-17)") : "var(--tb-n-15)",
         background: hover ? "#000000dd" : "#000000aa",
       }}
     >
@@ -888,8 +888,8 @@ function RowIconButton({
         borderRadius: 3,
         border: "none",
         cursor: "pointer",
-        color: hover ? (danger ? "#fca5a5" : "#e5e7eb") : "#6b6b71",
-        background: hover ? "#19191c" : "transparent",
+        color: hover ? (danger ? "var(--tb-a-red-300)" : "var(--tb-n-16)") : "var(--tb-n-11)",
+        background: hover ? "var(--tb-n-3)" : "transparent",
       }}
     >
       {children}

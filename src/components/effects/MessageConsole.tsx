@@ -49,21 +49,21 @@ export default function MessageConsole({
   // the flash tint), blue for loads — same tones the old banner used.
   const chipColor = progress
     ? isLoad
-      ? "#93c5fd"
-      : "#86efac"
+      ? "var(--tb-a-blue-300)"
+      : "var(--tb-a-green-300)"
     : active
-      ? "#86efac"
+      ? "var(--tb-a-green-300)"
       : hover
-        ? "#a1a1aa"
-        : "#5f5f66";
+        ? "var(--tb-n-13)"
+        : "var(--tb-n-10)";
   const chipBg = progress
     ? isLoad
-      ? "rgba(59, 130, 246, 0.14)"
-      : "rgba(34, 197, 94, 0.14)"
+      ? "color-mix(in srgb, var(--tb-a-blue-500) 14%, transparent)"
+      : "color-mix(in srgb, var(--tb-a-green-500) 14%, transparent)"
     : active
-      ? "rgba(34, 197, 94, 0.14)"
+      ? "color-mix(in srgb, var(--tb-a-green-500) 14%, transparent)"
       : hover
-        ? "#1b1b1f"
+        ? "var(--tb-n-4)"
         : "transparent";
   return (
     <div
@@ -169,12 +169,12 @@ function ConsoleWindow({
         top: pos.y,
         width: WINDOW_WIDTH,
         zIndex: 3000,
-        background: "#18181b",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 6,
         boxShadow: "0 10px 32px rgba(0,0,0,0.6)",
         overflow: "hidden",
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--code-font)",
         userSelect: "none",
       }}
     >
@@ -216,8 +216,8 @@ function ConsoleWindow({
           justifyContent: "space-between",
           height: TITLEBAR_HEIGHT,
           padding: "0 4px 0 10px",
-          background: "#111114",
-          borderBottom: "1px solid #27272a",
+          background: "var(--tb-n-1)",
+          borderBottom: "1px solid var(--tb-n-7)",
           cursor: dragging ? "grabbing" : "grab",
           touchAction: "none",
         }}
@@ -226,7 +226,7 @@ function ConsoleWindow({
           style={{
             fontSize: 10,
             letterSpacing: 0.5,
-            color: "#a1a1aa",
+            color: "var(--tb-n-13)",
           }}
         >
           Console
@@ -244,17 +244,17 @@ function ConsoleWindow({
             background: "transparent",
             border: "none",
             borderRadius: 3,
-            color: "#71717a",
+            color: "var(--tb-n-11)",
             fontSize: 11,
             lineHeight: 1,
             cursor: "pointer",
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.color = "#e5e7eb";
-            e.currentTarget.style.background = "#27272a";
+            e.currentTarget.style.color = "var(--tb-n-16)";
+            e.currentTarget.style.background = "var(--tb-n-7)";
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.color = "#71717a";
+            e.currentTarget.style.color = "var(--tb-n-11)";
             e.currentTarget.style.background = "transparent";
           }}
         >
@@ -275,20 +275,20 @@ function ConsoleWindow({
         }}
       >
         {log.length === 0 ? (
-          <div style={{ color: "#52525b" }}>No messages yet.</div>
+          <div style={{ color: "var(--tb-n-10)" }}>No messages yet.</div>
         ) : (
           log.map((e) => (
             <div key={e.id} style={{ display: "flex", gap: 8 }}>
               <span
                 style={{
-                  color: "#52525b",
+                  color: "var(--tb-n-10)",
                   flexShrink: 0,
                   fontVariantNumeric: "tabular-nums",
                 }}
               >
                 {formatTime(e.at)}
               </span>
-              <span style={{ color: "#d4d4d8", wordBreak: "break-word" }}>
+              <span style={{ color: "var(--tb-n-15)", wordBreak: "break-word" }}>
                 {e.text}
               </span>
             </div>

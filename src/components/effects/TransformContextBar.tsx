@@ -27,8 +27,8 @@ export default function TransformContextBar({
         alignItems: "center",
         gap: 4,
         padding: "0 8px",
-        background: "#0a0a0a",
-        borderBottom: "1px solid #27272a",
+        background: "var(--tb-n-0)",
+        borderBottom: "1px solid var(--tb-n-7)",
         userSelect: "none",
         flexShrink: 0,
       }}
@@ -73,13 +73,13 @@ function ContextButton({
         background: "transparent",
         border: "1px solid transparent",
         borderRadius: 3,
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
         cursor: "pointer",
         padding: 0,
       }}
       onMouseEnter={(e) => {
-        e.currentTarget.style.background = "#1c1c1f";
-        e.currentTarget.style.borderColor = "#27272a";
+        e.currentTarget.style.background = "var(--tb-n-4)";
+        e.currentTarget.style.borderColor = "var(--tb-n-7)";
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.background = "transparent";

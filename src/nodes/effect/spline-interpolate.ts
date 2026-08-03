@@ -11,6 +11,8 @@ import {
   applyMorph,
   type MorphCorrespondence,
 } from "@/engine/spline-morph";
+import { measureSpline, sampleSplineAt } from "@/engine/spline-math";
+import { transformSpline } from "@/engine/spline-transform";
 
 // Spline Interpolate — feed N splines into auto-growing sockets and get back a
 // single spline containing the inputs PLUS `count` interpolated in-between
@@ -89,18 +91,32 @@ export const splineInterpolateNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Interpolate between 2 or more splines. Feed shapes into the auto-growing sockets (there's always one spare) and get a single spline containing the inputs plus a set number of interpolated in-betweens, spread evenly across the whole sequence. Shapes are auto-aligned by orientation and start vertex; each output subpath is groupIndex-tagged in order for Select by Index / Copy-to-Points.",
+    "Interpolate between 2 or more splines. Feed shapes into the auto-growing sockets (there's always one spare) and get a single spline containing the inputs plus a set number of interpolated in-betweens, spread evenly across the whole sequence. Shapes are auto-aligned by orientation and start vertex; each output subpath is groupIndex-tagged in order for Select by Index / Copy-to-Points. Wire a spline into the Spine socket to distribute the whole family along it (the Illustrator Blend-along-a-path move), optionally rotated to the spine's tangent.",
   backend: "webgl2",
   noMaskInput: true,
-  inputs: [{ name: "in", type: "spline", required: false, label: "Spline" }],
+  inputs: [
+    { name: "in", type: "spline", required: false, label: "Spline" },
+    { name: "spine", type: "spline", required: false, label: "Spine" },
+  ],
   resolveInputs(params): InputSocketDef[] {
     const slots = readSlots(params);
-    return slots.map((name, i) => ({
-      name,
-      type: "spline" as SocketType,
-      required: false,
-      label: slots.length > 1 ? `Spline ${i + 1}` : "Spline",
-    }));
+    return [
+      ...slots.map((name, i) => ({
+        name,
+        type: "spline" as SocketType,
+        required: false,
+        label: slots.length > 1 ? `Spline ${i + 1}` : "Spline",
+      })),
+      // Blend spine (spec 072726 M4): when wired, the whole family
+      // distributes along it. A FIXED socket — the auto-grow slots effect
+      // in EffectsApp excludes it by name.
+      {
+        name: "spine",
+        type: "spline" as SocketType,
+        required: false,
+        label: "Spine",
+      },
+    ];
   },
   params: [
     {
@@ -124,6 +140,14 @@ export const splineInterpolateNode: NodeDefinition = {
       softMax: 128,
       step: 1,
       default: 64,
+    },
+    {
+      // With a spine wired: rotate each family member to the spine's tangent
+      // at its station (the Illustrator Blend "align to path" behavior).
+      name: "spine_align",
+      label: "Align to spine",
+      type: "boolean",
+      default: true,
     },
   ],
   primaryOutput: "spline",
@@ -173,7 +197,7 @@ export const splineInterpolateNode: NodeDefinition = {
     const base = Math.floor(count / segCount);
     const extra = count % segCount;
 
-    const groups: SplineSubpath[][] = [];
+    let groups: SplineSubpath[][] = [];
     for (let k = 0; k < segCount; k++) {
       groups.push(shapes[k].subpaths); // faithful input at the knot
       const inSeg = base + (k < extra ? 1 : 0);
@@ -183,6 +207,60 @@ export const splineInterpolateNode: NodeDefinition = {
       }
     }
     groups.push(shapes[shapes.length - 1].subpaths); // final input closes it
+
+    // Blend spine (spec 072726 M4): with a spine wired, each family member
+    // moves to an even arc-length station along it (centroid → station),
+    // optionally rotated to the tangent. A single closed-subpath spine
+    // spaces stations i/n so the first and last members don't stack at the
+    // seam; open (or multi-subpath) spines include both endpoints. Unwired
+    // spine = the layout above, untouched.
+    const spine =
+      inputs.spine?.kind === "spline" && inputs.spine.subpaths.length > 0
+        ? inputs.spine
+        : null;
+    if (spine) {
+      const lengths = measureSpline(spine);
+      if (lengths.total > 0) {
+        const align = params.spine_align !== false;
+        const loop =
+          spine.subpaths.length === 1 && spine.subpaths[0].closed;
+        const n = groups.length;
+        groups = groups.map((subs, i) => {
+          const t = n === 1 ? 0.5 : loop ? i / n : i / (n - 1);
+          const s = sampleSplineAt(spine, lengths, t);
+          // Member centroid = mean of its anchor positions (the morph
+          // family is densely resampled, so this is stable).
+          let cx = 0;
+          let cy = 0;
+          let cn = 0;
+          for (const sub of subs) {
+            for (const a of sub.anchors) {
+              cx += a.pos[0];
+              cy += a.pos[1];
+              cn++;
+            }
+          }
+          if (cn === 0) return subs;
+          cx /= cn;
+          cy /= cn;
+          const rot = align
+            ? (Math.atan2(s.tangent[1], s.tangent[0]) * 180) / Math.PI
+            : 0;
+          return transformSpline(
+            { kind: "spline", subpaths: subs },
+            {
+              translateX: s.pos[0] - cx,
+              translateY: s.pos[1] - cy,
+              scaleX: 1,
+              scaleY: 1,
+              rotateDeg: rot,
+              pivotX: cx,
+              pivotY: cy,
+            }
+          ).subpaths;
+        });
+      }
+    }
 
     return { primary: tagGroups(groups) };
   },

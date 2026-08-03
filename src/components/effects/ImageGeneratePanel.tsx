@@ -434,15 +434,15 @@ export default function ImageGeneratePanel({
           alignItems: "center",
           gap: 8,
           padding: "4px 8px",
-          background: "#111114",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-1)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 4,
           flexShrink: 0,
         }}
       >
         <div
           style={{
-            color: "#fafafa",
+            color: "var(--tb-n-17)",
             fontSize: 11,
             fontWeight: 600,
             letterSpacing: 0.3,
@@ -450,7 +450,7 @@ export default function ImageGeneratePanel({
         >
           Image Generate
         </div>
-        <div style={{ color: "#52525b", fontSize: 10 }}>
+        <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
           {size} · {quality} · {format}
         </div>
         <div style={{ flex: 1 }} />
@@ -470,8 +470,8 @@ export default function ImageGeneratePanel({
           style={{
             margin: "6px 0 0 0",
             padding: "8px 10px",
-            background: "#111114",
-            border: "1px solid #27272a",
+            background: "var(--tb-n-1)",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 4,
             display: "flex",
             flexDirection: "column",
@@ -520,9 +520,9 @@ export default function ImageGeneratePanel({
           style={{
             margin: "6px 0 0 0",
             padding: "6px 10px",
-            background: "rgba(180, 83, 9, 0.12)",
-            border: "1px solid #b45309",
-            color: "#fde68a",
+            background: "color-mix(in srgb, var(--tb-a-amber-700) 12%, transparent)",
+            border: "1px solid var(--tb-a-amber-700)",
+            color: "var(--tb-a-amber-200)",
             borderRadius: 4,
             fontSize: 11,
             lineHeight: 1.4,
@@ -543,8 +543,8 @@ export default function ImageGeneratePanel({
             style={{
               padding: "2px 10px",
               background: "transparent",
-              border: "1px solid #b45309",
-              color: "#fde68a",
+              border: "1px solid var(--tb-a-amber-700)",
+              color: "var(--tb-a-amber-200)",
               fontFamily: "inherit",
               fontSize: 11,
               borderRadius: 3,
@@ -562,9 +562,9 @@ export default function ImageGeneratePanel({
           style={{
             margin: "6px 0 0 0",
             padding: "6px 10px",
-            background: "rgba(239, 68, 68, 0.1)",
-            border: "1px solid #b91c1c",
-            color: "#fecaca",
+            background: "color-mix(in srgb, var(--tb-a-red-500) 10%, transparent)",
+            border: "1px solid var(--tb-a-red-700)",
+            color: "var(--tb-a-red-200)",
             borderRadius: 4,
             fontSize: 11,
             lineHeight: 1.4,
@@ -592,8 +592,8 @@ export default function ImageGeneratePanel({
             display: "flex",
             flexDirection: "column",
             minHeight: 0,
-            background: "#0a0a0a",
-            border: "1px solid #27272a",
+            background: "var(--tb-n-0)",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 4,
             overflow: "hidden",
           }}
@@ -612,13 +612,13 @@ export default function ImageGeneratePanel({
             }}
           >
             {loading && (
-              <div style={{ color: "#52525b", fontStyle: "italic" }}>
+              <div style={{ color: "var(--tb-n-10)", fontStyle: "italic" }}>
                 Loading…
               </div>
             )}
             {!loading &&
               (!session || session.messages.length === 0) && (
-                <div style={{ color: "#52525b", fontStyle: "italic" }}>
+                <div style={{ color: "var(--tb-n-10)", fontStyle: "italic" }}>
                   No prompts yet. Type below and hit Send.
                 </div>
               )}
@@ -627,8 +627,8 @@ export default function ImageGeneratePanel({
                 key={m.id}
                 style={{
                   padding: "6px 8px",
-                  background: "#0f0f12",
-                  border: "1px solid #27272a",
+                  background: "var(--tb-n-1)",
+                  border: "1px solid var(--tb-n-7)",
                   borderRadius: 3,
                   display: "flex",
                   flexDirection: "column",
@@ -637,7 +637,7 @@ export default function ImageGeneratePanel({
               >
                 <div
                   style={{
-                    color: "#e5e7eb",
+                    color: "var(--tb-n-16)",
                     whiteSpace: "pre-wrap",
                     wordBreak: "break-word",
                   }}
@@ -649,7 +649,7 @@ export default function ImageGeneratePanel({
                     display: "flex",
                     gap: 8,
                     alignItems: "center",
-                    color: "#71717a",
+                    color: "var(--tb-n-11)",
                     fontSize: 10,
                   }}
                 >
@@ -667,7 +667,7 @@ export default function ImageGeneratePanel({
                   </span>
                 </div>
                 {m.error && (
-                  <div style={{ color: "#fecaca", fontSize: 10 }}>
+                  <div style={{ color: "var(--tb-a-red-200)", fontSize: 10 }}>
                     {m.error}
                   </div>
                 )}
@@ -677,7 +677,7 @@ export default function ImageGeneratePanel({
           <div
             style={{
               padding: 8,
-              borderTop: "1px solid #27272a",
+              borderTop: "1px solid var(--tb-n-7)",
               display: "flex",
               flexDirection: "column",
               gap: 6,
@@ -704,10 +704,10 @@ export default function ImageGeneratePanel({
                 width: "100%",
                 boxSizing: "border-box",
                 padding: "6px 8px",
-                background: "#0f0f12",
-                border: "1px solid #27272a",
+                background: "var(--tb-n-1)",
+                border: "1px solid var(--tb-n-7)",
                 borderRadius: 3,
-                color: "#e5e7eb",
+                color: "var(--tb-n-16)",
                 fontFamily: "inherit",
                 fontSize: 11,
                 resize: "vertical",
@@ -723,7 +723,7 @@ export default function ImageGeneratePanel({
               }}
             >
               <div
-                style={{ color: "#52525b", fontSize: 10 }}
+                style={{ color: "var(--tb-n-10)", fontSize: 10 }}
                 title={
                   wiredRefLabels.length > 0
                     ? `Will attach reference images from ref_${wiredRefLabels
@@ -739,7 +739,7 @@ export default function ImageGeneratePanel({
                     <span
                       key={k}
                       style={{
-                        color: on ? "#bfdbfe" : "#3f3f46",
+                        color: on ? "var(--tb-a-blue-200)" : "var(--tb-n-9)",
                         marginLeft: 4,
                         fontWeight: on ? 600 : 400,
                       }}
@@ -762,17 +762,17 @@ export default function ImageGeneratePanel({
                   ...btnStyle(),
                   background:
                     prompt.trim() && !busy && !loadFailed
-                      ? "#1e3a8a"
+                      ? "var(--tb-a-blue-900)"
                       : "transparent",
                   border: `1px solid ${
                     prompt.trim() && !busy && !loadFailed
-                      ? "#1d4ed8"
-                      : "#3f3f46"
+                      ? "var(--tb-a-blue-700)"
+                      : "var(--tb-n-9)"
                   }`,
                   color:
                     prompt.trim() && !busy && !loadFailed
-                      ? "#bfdbfe"
-                      : "#52525b",
+                      ? "var(--tb-a-blue-200)"
+                      : "var(--tb-n-10)",
                   opacity:
                     prompt.trim() && !busy && !loadFailed ? 1 : 0.6,
                 }}
@@ -789,8 +789,8 @@ export default function ImageGeneratePanel({
             display: "flex",
             flexDirection: "column",
             minHeight: 0,
-            background: "#0a0a0a",
-            border: "1px solid #27272a",
+            background: "var(--tb-n-0)",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 4,
             overflow: "hidden",
           }}
@@ -798,14 +798,14 @@ export default function ImageGeneratePanel({
           <div
             style={{
               padding: "4px 8px",
-              borderBottom: "1px solid #27272a",
+              borderBottom: "1px solid var(--tb-n-7)",
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
               flexShrink: 0,
             }}
           >
-            <div style={{ color: "#a1a1aa", fontSize: 10 }}>Generations</div>
+            <div style={{ color: "var(--tb-n-13)", fontSize: 10 }}>Generations</div>
             <div style={{ display: "flex", gap: 0 }}>
               {(["grid", "list"] as const).map((v) => (
                 <button
@@ -816,11 +816,11 @@ export default function ImageGeneratePanel({
                     ...btnStyle(),
                     padding: "1px 8px",
                     fontSize: 10,
-                    background: view === v ? "#0a0a0a" : "transparent",
+                    background: view === v ? "var(--tb-n-0)" : "transparent",
                     border: `1px solid ${
-                      view === v ? "#52525b" : "#3f3f46"
+                      view === v ? "var(--tb-n-10)" : "var(--tb-n-9)"
                     }`,
-                    color: view === v ? "#fafafa" : "#a1a1aa",
+                    color: view === v ? "var(--tb-n-17)" : "var(--tb-n-13)",
                     borderRadius: 0,
                     marginLeft: -1,
                   }}
@@ -900,7 +900,7 @@ function ThumbList({
           flex: 1,
           minHeight: 0,
           padding: 8,
-          color: "#52525b",
+          color: "var(--tb-n-10)",
           fontSize: 11,
           fontStyle: "italic",
         }}
@@ -949,8 +949,8 @@ function ThumbList({
                 display: "flex",
                 gap: 8,
                 padding: 4,
-                background: sel ? "#1e3a8a" : "transparent",
-                border: `1px solid ${sel ? "#fafafa" : "#27272a"}`,
+                background: sel ? "var(--tb-a-blue-900)" : "transparent",
+                border: `1px solid ${sel ? "var(--tb-n-17)" : "var(--tb-n-7)"}`,
                 borderRadius: 3,
                 cursor: "pointer",
                 alignItems: "center",
@@ -961,7 +961,7 @@ function ThumbList({
                 style={{
                   width: 48,
                   height: 48,
-                  background: "#0f0f12",
+                  background: "var(--tb-n-1)",
                   borderRadius: 2,
                   flexShrink: 0,
                   overflow: "hidden",
@@ -983,7 +983,7 @@ function ThumbList({
               <div
                 style={{
                   flex: 1,
-                  color: "#a1a1aa",
+                  color: "var(--tb-n-13)",
                   fontSize: 10,
                   lineHeight: 1.4,
                   overflow: "hidden",
@@ -1028,12 +1028,12 @@ function ThumbList({
             style={{
               aspectRatio: "1 / 1",
               padding: 0,
-              background: "#0f0f12",
-              border: `1px solid ${sel ? "#fafafa" : "#27272a"}`,
+              background: "var(--tb-n-1)",
+              border: `1px solid ${sel ? "var(--tb-n-17)" : "var(--tb-n-7)"}`,
               borderRadius: 3,
               cursor: "pointer",
               overflow: "hidden",
-              boxShadow: sel ? "0 0 0 1px rgba(250,250,250,0.3)" : "none",
+              boxShadow: sel ? "0 0 0 1px color-mix(in srgb, var(--tb-lift) 30%, transparent)" : "none",
             }}
           >
             {url && (
@@ -1077,7 +1077,7 @@ function InlineSpinner() {
         cy="12"
         r="9"
         fill="none"
-        stroke="#71717a"
+        stroke="var(--tb-n-11)"
         strokeWidth="3"
         strokeLinecap="round"
         strokeDasharray="40"
@@ -1122,7 +1122,7 @@ function Field({
       <div
         style={{
           width: 80,
-          color: "#a1a1aa",
+          color: "var(--tb-n-13)",
           fontSize: 10,
           textTransform: "uppercase",
           letterSpacing: 0.5,
@@ -1151,9 +1151,9 @@ function Select({
       style={{
         width: "100%",
         padding: "3px 6px",
-        background: "#0f0f12",
-        border: "1px solid #27272a",
-        color: "#e5e7eb",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-n-7)",
+        color: "var(--tb-n-16)",
         fontFamily: "inherit",
         fontSize: 11,
         borderRadius: 3,
@@ -1171,9 +1171,9 @@ function Select({
 function iconBtnStyle(active: boolean): React.CSSProperties {
   return {
     padding: "1px 8px",
-    background: active ? "#0a0a0a" : "transparent",
-    border: `1px solid ${active ? "#52525b" : "#3f3f46"}`,
-    color: active ? "#fafafa" : "#a1a1aa",
+    background: active ? "var(--tb-n-0)" : "transparent",
+    border: `1px solid ${active ? "var(--tb-n-10)" : "var(--tb-n-9)"}`,
+    color: active ? "var(--tb-n-17)" : "var(--tb-n-13)",
     fontFamily: "inherit",
     fontSize: 12,
     lineHeight: 1,
@@ -1186,8 +1186,8 @@ function btnStyle(): React.CSSProperties {
   return {
     padding: "3px 10px",
     background: "transparent",
-    border: "1px solid #3f3f46",
-    color: "#e5e7eb",
+    border: "1px solid var(--tb-n-9)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 11,
     borderRadius: 3,

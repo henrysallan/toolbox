@@ -66,6 +66,8 @@ export const cursorTrailPointsNode: NodeDefinition = {
   name: "Cursor Trail Points",
   category: "point",
   subcategory: "generator",
+  description:
+    "Drop points along the pointer's path while drawing on the preview — evenly spaced with seeded radial scatter. Feed Loop Weave for the live loop-de-loop demo, or any points consumer. Press mode draws while the mouse button is held; hover drops wherever the pointer moves.",
   backend: "webgl2",
   // External cursor + wall-clock state — recompute every eval.
   stable: false,

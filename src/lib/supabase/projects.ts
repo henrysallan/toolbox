@@ -48,6 +48,12 @@ export interface ProjectRow {
   public_slug: string | null;
   // Populated for rows returned by listPublicProjects; null elsewhere.
   author: ProjectAuthor | null;
+  // Which project_folders row this project lives in (null/undefined =
+  // root). Only fetched by listPrivateProjects — folders are a
+  // private-tab concept — and undefined until the folders migration
+  // (specdocs/project-folders-migration.sql) has been run. Read it as
+  // `row.folder_id ?? null`.
+  folder_id?: string | null;
 }
 
 const BASE_COLS =
@@ -314,6 +320,7 @@ export async function updateProject(
     graph: rowGraph,
     usedStorage,
     keepFilenames,
+    existingBefore,
   } = await uploadGraphAssets(supabase, graph, { userId, projectId: id });
   guardRowSize(rowGraph);
   // Upload the thumbnail so the thumbnail column is only touched when we've
@@ -351,7 +358,12 @@ export async function updateProject(
   // (its orphans are cheap). Best-effort, and not awaited — never block the
   // save on cleanup.
   if (usedStorage && expectedUpdatedAt) {
-    void pruneProjectAssets(supabase, { userId, projectId: id }, keepFilenames);
+    void pruneProjectAssets(
+      supabase,
+      { userId, projectId: id },
+      keepFilenames,
+      existingBefore
+    );
   }
   invalidateProjectCaches();
   return { ok: true, updatedAt };
@@ -360,33 +372,55 @@ export async function updateProject(
 // Rename without touching graph/thumbnail so typing in the menu-bar
 // name pill doesn't cost a full serialize. Returns the row's new
 // updated_at (it bumps here!) so the editor can keep its save guard in
-// sync — or null on failure. Non-empty string is truthy, so boolean-style
-// call sites keep working.
+// sync.
+export interface RenameProjectResult {
+  ok: boolean;
+  // CAS matched zero rows — another window/machine moved the row since
+  // `expectedUpdatedAt` was read. Nothing was written; the editor is stale.
+  conflict?: boolean;
+  updatedAt?: string;
+}
+
 export async function renameProject(
   id: string,
-  name: string
-): Promise<string | null> {
+  name: string,
+  // Same optimistic-concurrency contract as updateProject: when provided,
+  // the UPDATE also matches on updated_at so a stale window's rename
+  // CONFLICTS instead of laundering a fresh stamp past the next save's CAS.
+  // Omit for rows this editor never loaded (last-writer-wins).
+  expectedUpdatedAt?: string
+): Promise<RenameProjectResult> {
   const supabase = createClient();
   const updatedAt = new Date().toISOString();
-  const { error } = await supabase
+  let query = supabase
     .from("projects")
     .update({ name, updated_at: updatedAt })
     .eq("id", id);
+  if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
+  const { data, error } = await query.select("id");
   if (error) {
     console.error("renameProject failed:", error);
-    return null;
+    return { ok: false };
+  }
+  if (expectedUpdatedAt && (!data || data.length === 0)) {
+    return { ok: false, conflict: true };
   }
   invalidateProjectCaches();
-  return updatedAt;
+  return { ok: true, updatedAt };
 }
 
 export async function setProjectVisibility(
   id: string,
-  isPublic: boolean
+  isPublic: boolean,
+  // Optimistic concurrency, same contract as updateProject/renameProject:
+  // a stale window's visibility flip conflicts rather than laundering a
+  // fresh updated_at past the next save's CAS.
+  expectedUpdatedAt?: string
 ): Promise<
   // updatedAt: the row bumps its version here — the editor feeds it back
   // into its save guard (see updateProject's expectedUpdatedAt).
-  { ok: true; slug: string | null; updatedAt: string } | { ok: false }
+  | { ok: true; slug: string | null; updatedAt: string }
+  | { ok: false; conflict?: boolean }
 > {
   const supabase = createClient();
   // Going public mints a slug if one doesn't already exist; going private
@@ -414,13 +448,15 @@ export async function setProjectVisibility(
   } else {
     payload.public_slug = null;
   }
-  const { error } = await supabase
-    .from("projects")
-    .update(payload)
-    .eq("id", id);
+  let query = supabase.from("projects").update(payload).eq("id", id);
+  if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
+  const { data, error } = await query.select("id");
   if (error) {
     console.error("setProjectVisibility failed:", error);
     return { ok: false };
+  }
+  if (expectedUpdatedAt && (!data || data.length === 0)) {
+    return { ok: false, conflict: true };
   }
   invalidateProjectCaches();
   return { ok: true, slug: isPublic ? resolvedSlug : null, updatedAt };
@@ -564,14 +600,25 @@ export async function listPrivateProjects(): Promise<ProjectRow[]> {
     if (definitelyOffline()) {
       return privateListCache?.ownerId === uid ? privateListCache.rows : [];
     }
-    const { data, error } = await withTimeout(
-      supabase
-        .from("projects")
-        .select(BASE_COLS)
-        .eq("user_id", uid)
-        .order("updated_at", { ascending: false }),
-      LIST_TIMEOUT_MS
-    );
+    // folder_id is private-tab-only, so it rides this query rather than
+    // BASE_COLS. Pre-migration DBs don't have the column — PostgREST
+    // answers 42703 — so retry once without it and the grid lists flat.
+    const fetchList = (cols: string) =>
+      withTimeout(
+        supabase
+          .from("projects")
+          .select(cols)
+          .eq("user_id", uid)
+          .order("updated_at", { ascending: false }),
+        LIST_TIMEOUT_MS
+      ) as Promise<{
+        data: Record<string, unknown>[] | null;
+        error: { code?: string } | null;
+      }>;
+    let { data, error } = await fetchList(`${BASE_COLS}, folder_id`);
+    if (error?.code === "42703") {
+      ({ data, error } = await fetchList(BASE_COLS));
+    }
     if (error) {
       console.error("listPrivateProjects failed:", error);
       return privateListCache?.ownerId === uid ? privateListCache.rows : [];

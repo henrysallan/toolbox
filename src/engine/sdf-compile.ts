@@ -18,16 +18,46 @@
 
 import type { PositionNode, ScalarFieldNode, SdfNode } from "./types";
 
-export type SdfUniformType = "float" | "vec2" | "sampler2D";
+export type SdfUniformType = "float" | "vec2" | "vec3" | "sampler2D";
 export interface SdfUniform {
   name: string;
   type: SdfUniformType;
-  value: number | [number, number] | WebGLTexture;
+  value:
+    | number
+    | [number, number]
+    | [number, number, number]
+    | WebGLTexture;
 }
 
 interface EmitState {
   uniforms: SdfUniform[];
   helpers: Set<HelperKey>;
+  // Emitted-expression memos, keyed on AST node OBJECT identity. Two
+  // things need them:
+  //
+  //  - The Surf emitter delegates every leaf's distance to `emitSdf`, so
+  //    a mode that emits both (bevel: struct at the centre, float at the
+  //    four neighbour taps) reuses one set of leaf uniforms instead of
+  //    allocating a second copy of every shape parameter.
+  //  - A subtree wired into two places — a position chain branched
+  //    across several shapes, which the SDF nodes' docs actively
+  //    encourage — emits once rather than once per consumer.
+  //
+  // Memoizing the STRING is what makes this safe: the expression is
+  // re-inlined at each use site, so operators that read the ambient
+  // `p` (displace, and the bevel body's neighbour taps, which reassign
+  // `p` between evaluations) still see the right coordinate.
+  sdfMemo: Map<SdfNode, string>;
+  posMemo: Map<PositionNode, string>;
+  // Uniform memo for nodes the expression memos can't cover. Leaves are
+  // deduped by `sdfMemo` (one emitted string, one set of uniforms), but
+  // combiners and modifiers emit DIFFERENT expressions in the two
+  // pipelines — `smin(a,b,k)` vs `sSmoothUnion(a,b,k)` — so a bevel
+  // (which needs both walks) would otherwise mint `k` twice. That is
+  // merely wasteful for floats and genuinely costly for Displace, whose
+  // sampler would burn a second texture unit on the same texture.
+  // Keyed on (node, slot).
+  uniformMemo: Map<SdfNode, Map<string, string>>;
 }
 
 type HelperKey =
@@ -300,10 +330,138 @@ float snoiseFbm(vec2 p, float scl, vec2 off, float seed,
 }`,
 };
 
+// ── The Surf pipeline ─────────────────────────────────────────────
+//
+// The float emitter collapses the tree to one distance, which throws
+// away "which shape am I near" before anything is rendered — so no
+// terminal can colour two shapes differently. The Surf emitter carries
+// colour alongside distance instead:
+//
+//   d     signed distance, bit-identical to the float emitter's
+//   c     winner-takes-all colour
+//   acc   Σ colourᵢ·wᵢ  — the colour-bleed accumulator
+//   accW  Σ wᵢ
+//
+// The load-bearing line is `r.c = mix(b.c, a.c, h)` in sSmoothUnion:
+// `h` is the smin's OWN blend factor, so colour blends across exactly
+// the bridge the distance blends over, driven by the same Smoothness
+// knob. No new node, no new wire.
+//
+// `acc`/`accW` are a parallel channel only leaves write to, summed by
+// the combiners. Two consequences worth knowing:
+//   - A subtracted operand is a CUTTER: removed from the geometry and
+//     from the wash (it would be surprising for a shape to tint the
+//     hole it carved).
+//   - Modifiers don't repaint. A leaf's weight comes from its own
+//     distance, so a Displace/Onion above it reshapes the silhouette
+//     without dragging the wash along. That is the intended reading of
+//     "colour bleed PER SDF".
+const SURF_DECLS = `uniform float u_bleedInv;
+// 1 = interiors saturate at weight 1 (a firm colour core); 0 = weight
+// keeps growing inward so the nearest shape dominates hard. Declared
+// here, not with the shade uniforms, because sLeaf is shared by every
+// Surf mode — rasterize/bevel simply leave it at its default, which is
+// moot there since their bleedInv is 0 (every weight is exp(0) = 1).
+uniform int u_bleedInside;
+
+struct Surf { float d; vec3 c; vec3 acc; float accW; };
+
+Surf sLeaf(float d, vec3 col, float matW, float bleedInv) {
+  float dd = (u_bleedInside == 1) ? max(d, 0.0) : d;
+  // Clamp the exponent: with saturate-interiors off, dd goes negative
+  // and a small radius would overflow exp() to inf, poisoning accW.
+  float w = matW * exp(clamp(-dd * bleedInv, -60.0, 60.0));
+  return Surf(d, col, col * w, w);
+}
+
+Surf sUnion(Surf a, Surf b) {
+  bool aw = a.d <= b.d;
+  return Surf(aw ? a.d : b.d, aw ? a.c : b.c, a.acc + b.acc, a.accW + b.accW);
+}
+
+Surf sIntersect(Surf a, Surf b) {
+  bool aw = a.d >= b.d;
+  return Surf(aw ? a.d : b.d, aw ? a.c : b.c, a.acc + b.acc, a.accW + b.accW);
+}
+
+Surf sSubtract(Surf a, Surf b) {
+  return Surf(max(a.d, -b.d), a.c, a.acc, a.accW);
+}
+
+Surf sSmoothUnion(Surf a, Surf b, float k) {
+  float h = (k <= 0.0) ? step(a.d, b.d)
+                       : clamp(0.5 + 0.5 * (b.d - a.d) / k, 0.0, 1.0);
+  float d = (k <= 0.0) ? min(a.d, b.d) : mix(b.d, a.d, h) - k * h * (1.0 - h);
+  return Surf(d, mix(b.c, a.c, h), a.acc + b.acc, a.accW + b.accW);
+}
+
+Surf sSmoothIntersect(Surf a, Surf b, float k) {
+  float h = (k <= 0.0) ? step(b.d, a.d)
+                       : clamp(0.5 - 0.5 * (b.d - a.d) / k, 0.0, 1.0);
+  float d = (k <= 0.0) ? max(a.d, b.d) : mix(b.d, a.d, h) + k * h * (1.0 - h);
+  return Surf(d, mix(b.c, a.c, h), a.acc + b.acc, a.accW + b.accW);
+}
+
+Surf sSmoothSubtract(Surf a, Surf b, float k) {
+  float nb = -b.d;
+  float h = (k <= 0.0) ? step(nb, a.d)
+                       : clamp(0.5 - 0.5 * (nb - a.d) / k, 0.0, 1.0);
+  float d = (k <= 0.0) ? max(a.d, nb) : mix(nb, a.d, h) + k * h * (1.0 - h);
+  return Surf(d, a.c, a.acc, a.accW);
+}
+
+Surf sMorph(Surf a, Surf b, float t) {
+  return Surf(mix(a.d, b.d, t), mix(a.c, b.c, t),
+              mix(a.acc, b.acc, t), mix(a.accW, b.accW, t));
+}
+
+Surf sOffset(Surf s, float r) { s.d -= r; return s; }
+Surf sOnion(Surf s, float t) { s.d = abs(s.d) - t; return s; }
+Surf sDisplace(Surf s, float amt) { s.d += amt; return s; }`;
+
+function newEmitState(): EmitState {
+  return {
+    uniforms: [],
+    helpers: new Set(),
+    sdfMemo: new Map(),
+    posMemo: new Map(),
+    uniformMemo: new Map(),
+  };
+}
+
+// `alloc` with a stable (node, slot) identity, so a second walk over the
+// same tree reuses the uniform the first walk minted. See EmitState.
+function allocFor(
+  state: EmitState,
+  owner: SdfNode,
+  slot: string,
+  type: SdfUniformType,
+  value:
+    | number
+    | [number, number]
+    | [number, number, number]
+    | WebGLTexture
+): string {
+  let slots = state.uniformMemo.get(owner);
+  if (!slots) {
+    slots = new Map();
+    state.uniformMemo.set(owner, slots);
+  }
+  const hit = slots.get(slot);
+  if (hit !== undefined) return hit;
+  const name = alloc(state, type, value);
+  slots.set(slot, name);
+  return name;
+}
+
 function alloc(
   state: EmitState,
   type: SdfUniformType,
-  value: number | [number, number] | WebGLTexture
+  value:
+    | number
+    | [number, number]
+    | [number, number, number]
+    | WebGLTexture
 ): string {
   const idx = state.uniforms.length;
   const name = `u_p${idx}`;
@@ -314,7 +472,19 @@ function alloc(
 // Position pipeline emitter. Returns a GLSL `vec2` expression that
 // computes the per-pixel sample position. Default `canvasUv` returns
 // the bare `p` (the canvas-UV variable in scope at the call site).
+//
+// Memoized on node identity: one position chain branched across several
+// shapes (the pattern the SDF primitives' docs recommend) emits its
+// uniforms once instead of once per consumer.
 function emitPosition(node: PositionNode, state: EmitState): string {
+  const memo = state.posMemo.get(node);
+  if (memo !== undefined) return memo;
+  const expr = emitPositionUncached(node, state);
+  state.posMemo.set(node, expr);
+  return expr;
+}
+
+function emitPositionUncached(node: PositionNode, state: EmitState): string {
   switch (node.kind) {
     case "canvasUv":
       return "p";
@@ -466,10 +636,28 @@ function emitScalarField(node: ScalarFieldNode, state: EmitState): string {
 // from its own `position` field, then calls the appropriate distance
 // function against it. Combiners / modifiers operate on float-typed
 // sub-expressions only.
+//
+// Memoized on node identity — see EmitState. The Surf emitter routes
+// every leaf's distance through here, so the two walks share one set of
+// shape uniforms.
 function emitSdf(node: SdfNode, state: EmitState): string {
+  const memo = state.sdfMemo.get(node);
+  if (memo !== undefined) return memo;
+  const expr = emitSdfUncached(node, state);
+  state.sdfMemo.set(node, expr);
+  return expr;
+}
+
+function emitSdfUncached(node: SdfNode, state: EmitState): string {
   switch (node.kind) {
     case "empty":
       return "1e10";
+
+    // Colour is not distance — the float pipeline reads straight
+    // through, which is what keeps SDF to Mask / to Distance Image /
+    // to Spline working unchanged on a materialed tree.
+    case "material":
+      return emitSdf(node.child, state);
 
     case "circle": {
       const pos = emitPosition(node.position, state);
@@ -581,7 +769,7 @@ function emitSdf(node: SdfNode, state: EmitState): string {
       state.helpers.add("smin");
       const a = emitSdf(node.a, state);
       const b = emitSdf(node.b, state);
-      const k = alloc(state, "float", node.k);
+      const k = allocFor(state, node, "k", "float", node.k);
       return `smin(${a}, ${b}, ${k})`;
     }
 
@@ -589,7 +777,7 @@ function emitSdf(node: SdfNode, state: EmitState): string {
       state.helpers.add("smax");
       const a = emitSdf(node.a, state);
       const b = emitSdf(node.b, state);
-      const k = alloc(state, "float", node.k);
+      const k = allocFor(state, node, "k", "float", node.k);
       return `smax(${a}, ${b}, ${k})`;
     }
 
@@ -597,7 +785,7 @@ function emitSdf(node: SdfNode, state: EmitState): string {
       state.helpers.add("smax");
       const a = emitSdf(node.a, state);
       const b = emitSdf(node.b, state);
-      const k = alloc(state, "float", node.k);
+      const k = allocFor(state, node, "k", "float", node.k);
       return `smax(${a}, -(${b}), ${k})`;
     }
 
@@ -616,29 +804,144 @@ function emitSdf(node: SdfNode, state: EmitState): string {
       // value — the shader stays cached.
       const a = emitSdf(node.a, state);
       const b = emitSdf(node.b, state);
-      const t = alloc(state, "float", node.t);
+      const t = allocFor(state, node, "t", "float", node.t);
       return `mix(${a}, ${b}, ${t})`;
     }
 
     case "round": {
-      const r = alloc(state, "float", node.r);
+      const r = allocFor(state, node, "r", "float", node.r);
       const child = emitSdf(node.child, state);
       return `((${child}) - ${r})`;
     }
 
     case "onion": {
-      const t = alloc(state, "float", node.thickness);
+      const t = allocFor(state, node, "thickness", "float", node.thickness);
       const child = emitSdf(node.child, state);
       return `(abs(${child}) - ${t})`;
     }
 
     case "displace": {
-      const samp = alloc(state, "sampler2D", node.image.texture);
-      const amt = alloc(state, "float", node.amount);
+      const samp = allocFor(state, node, "tex", "sampler2D", node.image.texture);
+      const amt = allocFor(state, node, "amount", "float", node.amount);
       const child = emitSdf(node.child, state);
       // Sampled at the canvas-UV `p`, not the shape's per-shape
       // position — Displace is a screen-space perturbation.
       return `((${child}) + (texture(${samp}, p).r - 0.5) * 2.0 * ${amt})`;
+    }
+  }
+}
+
+// The material inherited by everything below the current point in the
+// descent. Both fields are GLSL expressions, not values — the root one
+// is a mode uniform (the terminal's own foreground), so a tree with no
+// `material` node in it paints every leaf the terminal's fill colour
+// and reproduces the pre-material output exactly.
+interface SurfMaterial {
+  col: string; // vec3
+  weight: string; // float
+}
+
+// Colour-carrying emitter. Returns a GLSL `Surf` expression. Mirrors
+// emitSdf's structure one-for-one; the only nodes that read the
+// material are the leaves, and the only node that rebinds it is
+// `material`.
+//
+// NOT memoized — the emitted expression depends on the inherited
+// material, so the same subtree under two different materials must emit
+// twice. Leaf DISTANCES still come from emitSdf's memo, which is where
+// the uniforms actually live.
+function emitSurf(
+  node: SdfNode,
+  state: EmitState,
+  mat: SurfMaterial
+): string {
+  switch (node.kind) {
+    case "material": {
+      const weight = allocFor(state, node, "bleed", "float", node.bleed);
+      // Ramp mode inlines a LUT fetch driven by a per-pixel field. That
+      // expression lands at every leaf below this material, but it is a
+      // pure function of `p` and identical at each site, so the GLSL
+      // compiler CSEs it back down to one fetch.
+      const col = node.ramp
+        ? `texture(${allocFor(state, node, "lut", "sampler2D", node.ramp.lut)}, vec2(clamp(${emitScalarField(node.ramp.t, state)}, 0.0, 1.0), 0.5)).rgb`
+        : allocFor(state, node, "color", "vec3", node.color);
+      return emitSurf(node.child, state, { col, weight });
+    }
+
+    // An unwired socket paints nothing — zero weight keeps the
+    // sentinel out of the bleed accumulator, and 1e10 keeps it from
+    // ever winning the colour.
+    case "empty":
+      return `sLeaf(1e10, ${mat.col}, 0.0, u_bleedInv)`;
+
+    case "circle":
+    case "rect":
+    case "lineSegment":
+    case "polygon":
+    case "triangle":
+    case "star":
+    case "splineSdf":
+    case "sdfFromImage":
+      return `sLeaf(${emitSdf(node, state)}, ${mat.col}, ${mat.weight}, u_bleedInv)`;
+
+    case "union":
+      return `sUnion(${emitSurf(node.a, state, mat)}, ${emitSurf(node.b, state, mat)})`;
+
+    case "intersection":
+      return `sIntersect(${emitSurf(node.a, state, mat)}, ${emitSurf(node.b, state, mat)})`;
+
+    case "subtraction":
+      return `sSubtract(${emitSurf(node.a, state, mat)}, ${emitSurf(node.b, state, mat)})`;
+
+    case "smoothUnion": {
+      const a = emitSurf(node.a, state, mat);
+      const b = emitSurf(node.b, state, mat);
+      const k = allocFor(state, node, "k", "float", node.k);
+      return `sSmoothUnion(${a}, ${b}, ${k})`;
+    }
+
+    case "smoothIntersection": {
+      const a = emitSurf(node.a, state, mat);
+      const b = emitSurf(node.b, state, mat);
+      const k = allocFor(state, node, "k", "float", node.k);
+      return `sSmoothIntersect(${a}, ${b}, ${k})`;
+    }
+
+    case "smoothSubtraction": {
+      const a = emitSurf(node.a, state, mat);
+      const b = emitSurf(node.b, state, mat);
+      const k = allocFor(state, node, "k", "float", node.k);
+      return `sSmoothSubtract(${a}, ${b}, ${k})`;
+    }
+
+    case "morph": {
+      // Same empty-side degradation as the float emitter — mixing with
+      // the 1e10 sentinel would blank the field for any t in (0,1).
+      if (node.a.kind === "empty") return emitSurf(node.b, state, mat);
+      if (node.b.kind === "empty") return emitSurf(node.a, state, mat);
+      const a = emitSurf(node.a, state, mat);
+      const b = emitSurf(node.b, state, mat);
+      const t = allocFor(state, node, "t", "float", node.t);
+      return `sMorph(${a}, ${b}, ${t})`;
+    }
+
+    case "round": {
+      const child = emitSurf(node.child, state, mat);
+      const r = allocFor(state, node, "r", "float", node.r);
+      return `sOffset(${child}, ${r})`;
+    }
+
+    case "onion": {
+      const child = emitSurf(node.child, state, mat);
+      const t = allocFor(state, node, "thickness", "float", node.thickness);
+      return `sOnion(${child}, ${t})`;
+    }
+
+    case "displace": {
+      const child = emitSurf(node.child, state, mat);
+      const samp = allocFor(state, node, "tex", "sampler2D", node.image.texture);
+      const amt = allocFor(state, node, "amount", "float", node.amount);
+      return `sDisplace(${child}, (texture(${samp}, p).r - 0.5) * 2.0 * ${amt})`;
     }
   }
 }
@@ -856,6 +1159,15 @@ export function structuralHash(node: SdfNode): string {
       return `R(${structuralHash(node.child)})`;
     case "onion":
       return `On(${structuralHash(node.child)})`;
+    // Colour and bleed weight are uniforms, so they are deliberately
+    // NOT in the hash — keyframing a material rebinds and never
+    // recompiles, the same contract morph's `t` and the repeat jitters
+    // already have. The material's PRESENCE is structural: it changes
+    // which uniform each leaf below it reads. So is ramp-vs-constant
+    // (a LUT fetch is different GLSL) and the driving field's topology
+    // — but NOT the stops, which only rebake a texture.
+    case "material":
+      return `Mt${node.ramp ? `{${scalarFieldHash(node.ramp.t)}}` : ""}(${structuralHash(node.child)})`;
     case "displace":
       return `D(${structuralHash(node.child)})`;
   }
@@ -882,7 +1194,7 @@ export interface CompiledSdfSnippet {
 // multiple times per pixel for finite-difference normals — at built-in quality,
 // no rasterize/JFA round-trip. Cache the composed program by structuralHash(root).
 export function compileSdfSnippet(root: SdfNode): CompiledSdfSnippet {
-  const state: EmitState = { uniforms: [], helpers: new Set() };
+  const state = newEmitState();
   const distExpr = emitSdf(root, state);
   const helperDecls = Array.from(state.helpers)
     .map((h) => HELPERS[h])
@@ -898,7 +1210,68 @@ export type SdfOutputMode =
   | "distance"
   | "mask"
   | "raw"
-  | "bevel";
+  | "bevel"
+  | "shade";
+
+const SHADE_UNIFORMS = `uniform int u_channel;      // 0 composite, 1 normal, 2 height, 3 glow, 4 bleed, 5 mask
+uniform float u_softness;
+uniform vec3 u_fillColor;
+uniform float u_fillAlpha;
+uniform vec3 u_bgColor;
+uniform float u_bgAlpha;
+
+uniform float u_bleedMix;
+
+uniform int u_lightOn;
+uniform int u_heightMode;   // 0 outer, 1 inner, 2 emboss, 3 pillow, 4 curve
+uniform sampler2D u_heightCurve;
+uniform float u_depth;
+uniform float u_soften;
+uniform vec3 u_l1Dir;
+uniform float u_l1HiOp;
+uniform float u_l1ShOp;
+uniform vec3 u_l2Dir;
+uniform float u_l2HiOp;
+uniform float u_l2ShOp;
+uniform vec3 u_hiColor;
+uniform vec3 u_shColor;
+uniform int u_hiBlend;
+uniform int u_shBlend;
+
+uniform int u_glowOn;
+uniform float u_glowRadius;
+uniform float u_glowIntensity;
+uniform int u_glowColorMode;  // 0 material, 1 fixed
+uniform vec3 u_glowColor;
+uniform int u_glowBlend;      // 0 source-over, 1 add, 2 screen
+
+uniform int u_contourOn;
+uniform vec3 u_contourColor;
+uniform float u_contourAlpha;
+uniform float u_contourWidth;
+uniform float u_contourSpacing;`;
+
+// Straight-alpha Porter-Duff source-over. The engine composites this way
+// everywhere (invariant #4) — the older rasterize/bevel bodies used a
+// plain mix(), which is only equivalent when both sides are opaque. Glow
+// over a transparent background is exactly the case where it isn't.
+const SHADE_HELPERS = `vec4 srcOver(vec4 s, vec4 d) {
+  float a = s.a + d.a * (1.0 - s.a);
+  if (a <= 1e-6) return vec4(0.0);
+  return vec4((s.rgb * s.a + d.rgb * d.a * (1.0 - s.a)) / a, a);
+}
+
+// Signed distance -> relief height, per style. Curve mode runs the emboss
+// parameterisation (0.5 at the boundary) through a user LUT, which
+// subsumes the four fixed profiles and everything between them.
+float shadeHeight(float dd) {
+  float depth = max(u_depth, 1e-6);
+  if (u_heightMode == 0) return (dd <= 0.0) ? 1.0 : 1.0 - smoothstep(0.0, depth, dd);
+  if (u_heightMode == 1) return (dd >= 0.0) ? 0.0 : smoothstep(0.0, depth, -dd);
+  if (u_heightMode == 2) return clamp(0.5 - 0.5 * dd / depth, 0.0, 1.0);
+  if (u_heightMode == 3) return 1.0 - smoothstep(0.0, depth, abs(dd));
+  return texture(u_heightCurve, vec2(clamp(0.5 - 0.5 * dd / depth, 0.0, 1.0), 0.5)).r;
+}`;
 
 const RASTERIZE_UNIFORMS = `uniform vec3 u_fg;
 uniform vec3 u_bg;
@@ -937,20 +1310,27 @@ uniform vec3 u_shColor;
 uniform int u_hiBlend;
 uniform int u_shBlend;`;
 
-function mainBody(mode: SdfOutputMode, distExpr: string): string {
-  const setup = `vec2 p = v_uv;
+function mainBody(
+  mode: SdfOutputMode,
+  distExpr: string,
+  surfExpr: string
+): string {
+  const preamble = `vec2 p = v_uv;
   if (u_aspectCorrect > 0.5) {
     float aspect = u_canvasSize.x / u_canvasSize.y;
     p = vec2(p.x, (p.y - 0.5) / aspect + 0.5);
-  }
-  float d = ${distExpr};
+  }`;
+  // Surf modes take their distance off the struct; distance-only modes
+  // evaluate the float expression directly.
+  const setup = `${preamble}
+  ${surfExpr ? `Surf s = ${surfExpr};\n  float d = s.d;` : `float d = ${distExpr};`}
   float pixel = 1.0 / max(u_canvasSize.x, u_canvasSize.y);`;
 
   if (mode === "rasterize") {
     return `${setup}
   float soft = max(u_softness * pixel, pixel * 0.5);
   float fillMask = smoothstep(soft, -soft, d);
-  vec4 fg = vec4(u_fg, u_fgAlpha);
+  vec4 fg = vec4(s.c, u_fgAlpha);
   vec4 bg = vec4(u_bg, u_bgAlpha);
   vec4 base = mix(bg, fg, fillMask);
   if (u_contourWidth > 0.0) {
@@ -997,7 +1377,11 @@ function mainBody(mode: SdfOutputMode, distExpr: string): string {
   float pixel = 1.0 / max(u_canvasSize.x, u_canvasSize.y);
   float step = max((1.0 + u_soften * 0.5) * pixel, pixel * 0.5);
 
-  float d = ${distExpr};
+  // Colour comes off the struct at the centre; the four neighbour taps
+  // only need distance, so they use the float expression (which shares
+  // the struct's leaf uniforms via the emit memo).
+  Surf s = ${surfExpr};
+  float d = s.d;
   p = p_orig - vec2(step, 0.0);
   float dL = ${distExpr};
   p = p_orig + vec2(step, 0.0);
@@ -1041,7 +1425,7 @@ function mainBody(mode: SdfOutputMode, distExpr: string): string {
 
   float soft = max(u_soften * pixel, pixel * 0.5);
   float fillMask = smoothstep(soft, -soft, d);
-  vec4 fg = vec4(u_fgColor, u_fgAlpha);
+  vec4 fg = vec4(s.c, u_fgAlpha);
   vec4 bg = vec4(u_bgColor, u_bgAlpha);
   vec4 base = mix(bg, fg, fillMask);
   vec3 col = base.rgb;
@@ -1078,6 +1462,134 @@ function mainBody(mode: SdfOutputMode, distExpr: string): string {
   outColor = vec4(col, base.a);`;
   }
 
+  if (mode === "shade") {
+    // One pass, layered: background <- glow <- fill (lit) <- contour.
+    // `u_channel` selects what actually gets written, so the aux
+    // outputs reuse this same compiled program with a different uniform
+    // rather than five more shader variants.
+    return `${preamble}
+  vec2 p_orig = p;
+  float pixel = 1.0 / max(u_canvasSize.x, u_canvasSize.y);
+  Surf s = ${surfExpr};
+  float d = s.d;
+
+  // Winner-takes-all colour vs the weighted wash of every painted leaf.
+  vec3 bleedCol = s.acc / max(s.accW, 1e-4);
+  vec3 matCol = (s.accW > 1e-6) ? mix(s.c, bleedCol, u_bleedMix) : s.c;
+
+  float soft = max(u_softness * pixel, pixel * 0.5);
+  float fillMask = smoothstep(soft, -soft, d);
+
+  if (u_channel == 5) { outColor = vec4(vec3(fillMask), 1.0); return; }
+  if (u_channel == 4) { outColor = vec4(bleedCol, 1.0); return; }
+
+  vec4 acc = vec4(u_bgColor, u_bgAlpha);
+
+  // ── Bleed wash. A real layer over the background, NOT just a tint on
+  // the fill — the whole point is colour reaching where no shape is.
+  // accW (total material weight arriving at this pixel) is the natural
+  // coverage: ~1 near the shapes, falling off over the bleed radius.
+  if (u_bleedMix > 0.0 && s.accW > 1e-6) {
+    acc = srcOver(vec4(bleedCol, clamp(s.accW, 0.0, 1.0) * u_bleedMix), acc);
+  }
+
+  // ── Glow: falloff outside the surface, coloured by the material so
+  // each shape's own colour bleeds into its halo.
+  float glowAmt = 0.0;
+  vec3 glowCol = (u_glowColorMode == 0) ? matCol : u_glowColor;
+  if (u_glowOn == 1) {
+    float g = exp(-max(d, 0.0) / max(u_glowRadius, 1e-5));
+    glowAmt = clamp(g * u_glowIntensity, 0.0, 1.0);
+  }
+  if (u_channel == 3) { outColor = vec4(glowCol, glowAmt); return; }
+  if (u_glowOn == 1) {
+    if (u_glowBlend == 0) {
+      acc = srcOver(vec4(glowCol, glowAmt), acc);
+    } else if (u_glowBlend == 1) {
+      acc = vec4(acc.rgb + glowCol * glowAmt, max(acc.a, glowAmt));
+    } else {
+      acc = vec4(vec3(1.0) - (vec3(1.0) - acc.rgb) * (vec3(1.0) - glowCol * glowAmt),
+                 max(acc.a, glowAmt));
+    }
+  }
+
+  // ── Fill (coverage folded into alpha so anti-aliasing composites
+  // correctly against a transparent background).
+  acc = srcOver(vec4(matCol, u_fillAlpha * fillMask), acc);
+
+  // ── Relief lighting. Height + normal come from four float taps of the
+  // SAME distance expression with p reassigned — no struct needed, so
+  // the colour channel is evaluated exactly once.
+  float h = shadeHeight(d);
+  vec3 n = vec3(0.0, 0.0, 1.0);
+  if (u_lightOn == 1 || u_channel == 1 || u_channel == 2) {
+    float stepPx = max((1.0 + u_soften * 0.5) * pixel, pixel * 0.5);
+    p = p_orig - vec2(stepPx, 0.0);
+    float dL = ${distExpr};
+    p = p_orig + vec2(stepPx, 0.0);
+    float dR = ${distExpr};
+    p = p_orig - vec2(0.0, stepPx);
+    float dD = ${distExpr};
+    p = p_orig + vec2(0.0, stepPx);
+    float dU = ${distExpr};
+    p = p_orig;
+    n = normalize(vec3(shadeHeight(dL) - shadeHeight(dR),
+                       shadeHeight(dU) - shadeHeight(dD), 0.5));
+  }
+  if (u_channel == 2) { outColor = vec4(vec3(h), 1.0); return; }
+  if (u_channel == 1) { outColor = vec4(n * 0.5 + 0.5, 1.0); return; }
+
+  if (u_lightOn == 1) {
+    vec3 col = acc.rgb;
+    for (int li = 0; li < 2; li++) {
+      vec3 ldir = li == 0 ? u_l1Dir : u_l2Dir;
+      float hiOp = li == 0 ? u_l1HiOp : u_l2HiOp;
+      float shOp = li == 0 ? u_l1ShOp : u_l2ShOp;
+      float diff = dot(n, normalize(ldir));
+      if (diff > 0.0) {
+        float a = hiOp * diff;
+        if (u_hiBlend == 0) {
+          col = mix(col, vec3(1.0) - (vec3(1.0) - col) * (vec3(1.0) - u_hiColor), a);
+        } else if (u_hiBlend == 1) {
+          col = mix(col, min(col + u_hiColor, vec3(1.0)), a);
+        } else {
+          col = mix(col, u_hiColor, a);
+        }
+      } else if (diff < 0.0) {
+        float a = shOp * (-diff);
+        if (u_shBlend == 0) {
+          col = mix(col, col * u_shColor, a);
+        } else if (u_shBlend == 1) {
+          col = mix(col, max(col + u_shColor - vec3(1.0), vec3(0.0)), a);
+        } else if (u_shBlend == 2) {
+          vec3 cb = vec3(1.0) - clamp((vec3(1.0) - col) / max(u_shColor, vec3(1e-3)), 0.0, 1.0);
+          col = mix(col, cb, a);
+        } else {
+          col = mix(col, u_shColor, a);
+        }
+      }
+    }
+    acc = vec4(col, acc.a);
+  }
+
+  // ── Contour. Spacing > 0 repeats it as concentric bands through the
+  // whole field instead of a single line on the zero-crossing.
+  if (u_contourOn == 1 && u_contourWidth > 0.0) {
+    float cw = u_contourWidth * pixel;
+    float dist;
+    if (u_contourSpacing > 0.0) {
+      float band = mod(d, u_contourSpacing);
+      dist = min(band, u_contourSpacing - band);
+    } else {
+      dist = abs(d);
+    }
+    float m = smoothstep(cw + soft, max(cw - soft, 0.0), dist);
+    acc = srcOver(vec4(u_contourColor, u_contourAlpha * m), acc);
+  }
+
+  outColor = acc;`;
+  }
+
   // raw — CPU readback. R holds signed distance; everything else
   // reads zero. The image must be RGBA16F to preserve the sign + range.
   return `${setup}
@@ -1094,17 +1606,45 @@ function modeUniformDecls(mode: SdfOutputMode): string {
       return MASK_UNIFORMS;
     case "bevel":
       return BEVEL_UNIFORMS;
+    case "shade":
+      return SHADE_UNIFORMS;
     case "raw":
       return "";
   }
 }
 
+// Modes that carry colour through the tree. Everything else is
+// distance-only and stays on the smaller, cheaper float emitter.
+const SURF_MODES = new Set<SdfOutputMode>(["rasterize", "bevel", "shade"]);
+
+// The root material each Surf mode inherits — the terminal's own
+// foreground uniform. This is what makes an unmaterialed tree render
+// exactly as it did before materials existed: every leaf paints
+// `u_fg` / `u_fgColor`, so `s.c` is a constant equal to the colour the
+// old shader mixed in directly.
+const ROOT_MATERIAL: Partial<Record<SdfOutputMode, string>> = {
+  rasterize: "u_fg",
+  bevel: "u_fgColor",
+  shade: "u_fillColor",
+};
+
 export function compileSdf(
   root: SdfNode,
   mode: SdfOutputMode = "rasterize"
 ): CompiledSdf {
-  const state: EmitState = { uniforms: [], helpers: new Set() };
-  const distExpr = emitSdf(root, state);
+  const state = newEmitState();
+  const rootMaterial = ROOT_MATERIAL[mode];
+  const usesSurf = SURF_MODES.has(mode) && !!rootMaterial;
+
+  // Only bevel needs both walks (float taps at the four neighbours for
+  // the normal, struct at the centre for colour). Emitting float FIRST
+  // warms the memo so the struct pass reuses one set of leaf uniforms
+  // rather than allocating a second copy of every shape parameter.
+  const needsFloat = !usesSurf || mode === "bevel" || mode === "shade";
+  const distExpr = needsFloat ? emitSdf(root, state) : "";
+  const surfExpr = usesSurf
+    ? emitSurf(root, state, { col: rootMaterial, weight: "1.0" })
+    : "";
 
   const helperDecls = Array.from(state.helpers)
     .map((h) => HELPERS[h])
@@ -1124,11 +1664,60 @@ ${uniformDecls}
 
 out vec4 outColor;
 
+${usesSurf ? SURF_DECLS : ""}
+${mode === "shade" ? SHADE_HELPERS : ""}
+
 ${helperDecls}
 
 void main() {
-  ${mainBody(mode, distExpr)}
+  ${mainBody(mode, distExpr, surfExpr)}
 }`;
 
   return { source, uniforms: state.uniforms };
+}
+
+// Bind the per-leaf parameter uniforms collected during compile.
+// Samplers consume texture units starting at `firstUnit`; the
+// Rasterize-family shaders sample nothing else, so units 0..N are
+// theirs to allocate. Returns the next free unit.
+//
+// Single-sourced here because five nodes (Rasterize / Bevel / to Mask /
+// to Distance Image / to Spline) each had their own copy of this loop,
+// and every new uniform type had to be added to all five or the odd one
+// out would silently bind a colour as a texture.
+export function bindSdfUniforms(
+  gl: WebGL2RenderingContext,
+  prog: WebGLProgram,
+  uniforms: SdfUniform[],
+  firstUnit = 0
+): number {
+  let unit = firstUnit;
+  for (const u of uniforms) {
+    const loc = gl.getUniformLocation(prog, u.name);
+    // A uniform the GLSL compiler optimized out has no location — skip
+    // it WITHOUT consuming a texture unit.
+    if (!loc) continue;
+    switch (u.type) {
+      case "float":
+        gl.uniform1f(loc, u.value as number);
+        break;
+      case "vec2": {
+        const v = u.value as [number, number];
+        gl.uniform2f(loc, v[0], v[1]);
+        break;
+      }
+      case "vec3": {
+        const v = u.value as [number, number, number];
+        gl.uniform3f(loc, v[0], v[1], v[2]);
+        break;
+      }
+      case "sampler2D":
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(gl.TEXTURE_2D, u.value as WebGLTexture);
+        gl.uniform1i(loc, unit);
+        unit++;
+        break;
+    }
+  }
+  return unit;
 }

@@ -225,7 +225,7 @@ export default function WebGPUParticleOverlay({
             top: rect.top + 12,
             background: "rgba(0,0,0,0.7)",
             color: "#fff",
-            font: "12px ui-monospace, monospace",
+            font: "12px var(--ui-font)",
             padding: "6px 10px",
             borderRadius: 4,
             pointerEvents: "none",

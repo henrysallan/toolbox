@@ -135,7 +135,7 @@ export default function YourFirstGraphPage() {
           Read{" "}
           <Link
             href="/docs/editor/basics"
-            style={{ color: "#93c5fd", textDecoration: "underline" }}
+            style={{ color: "var(--tb-a-blue-300)", textDecoration: "underline" }}
           >
             Editor basics
           </Link>{" "}
@@ -145,7 +145,7 @@ export default function YourFirstGraphPage() {
           Peek at{" "}
           <Link
             href="/docs/projects/saving"
-            style={{ color: "#93c5fd", textDecoration: "underline" }}
+            style={{ color: "var(--tb-a-blue-300)", textDecoration: "underline" }}
           >
             Saving and loading
           </Link>{" "}

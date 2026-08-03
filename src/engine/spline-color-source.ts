@@ -10,12 +10,14 @@ import {
 // node's stroke color. A spline can carry many subpaths (Copy to Points, SVG
 // glyphs, Spline Merge Flow regions); this resolves each subpath's color from
 // a flat value or a color ramp keyed by ordinal index, a seeded hash, the
-// subpath's groupIndex, or its centroid projected on a steerable axis.
+// subpath's groupIndex, its centroid projected on a steerable axis, or the
+// producer-authored `driver` scalar carried on the subpath itself (e.g.
+// Space Fill's per-line weight — 072726_space-fill.md).
 //
 // Engine-side (invariant #1) so it stays in the export bundle. Returns an
 // `rgba(...)` string ready for a Canvas2D fillStyle/strokeStyle.
 
-export type ColorRampBy = "index" | "random" | "group" | "position";
+export type ColorRampBy = "index" | "random" | "group" | "position" | "driver";
 
 export interface SubpathColorConfig {
   source: "flat" | "ramp";
@@ -89,6 +91,13 @@ export function makeSubpathDriverFn(
 
   return (i, sub) => {
     if (by === "random") return hash01(i, seed);
+    if (by === "driver") {
+      // Producer-authored scalar; subpaths without one sit at mid-ramp.
+      const d = sub.driver;
+      return typeof d === "number" && Number.isFinite(d)
+        ? Math.min(1, Math.max(0, d))
+        : 0.5;
+    }
     if (by === "group") {
       const gi = groups.indexOf(sub.groupIndex ?? 0);
       return groups.length > 1 ? gi / (groups.length - 1) : 0;

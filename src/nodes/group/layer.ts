@@ -6,6 +6,10 @@ import type {
 } from "@/engine/types";
 import { readGroupInterface } from "@/engine/groups";
 import {
+  svgExportStashKey,
+  type SvgExportStash,
+} from "@/nodes/output/svg-export";
+import {
   BLEND_FS,
   BLEND_MODE_ORDER,
   BLIT_FS,
@@ -48,6 +52,7 @@ export const layerNode: NodeDefinition = {
     { name: "stack", type: "image", required: false },
     { name: "content", type: "image", required: false, hidden: true },
     { name: "audio", type: "audio", required: false },
+    { name: "spline", type: "spline", required: false, hidden: true },
   ],
   // Fixed interface (stack / hidden content / audio) PLUS any extra input
   // sockets the user minted on the interior Layer Input node. graph-ops'
@@ -62,6 +67,7 @@ export const layerNode: NodeDefinition = {
       { name: "stack", type: "image", required: false },
       { name: "content", type: "image", required: false, hidden: true },
       { name: "audio", type: "audio", required: false },
+      { name: "spline", type: "spline", required: false, hidden: true },
     ];
     // Names already owned by the fixed interface — `backdrop` maps to `stack`,
     // so skip it too. Collisions are dropped rather than duplicated.
@@ -94,7 +100,28 @@ export const layerNode: NodeDefinition = {
   primaryOutput: "image",
   auxOutputs: [{ name: "audio", type: "audio" }],
 
-  compute({ inputs, params, ctx }) {
+  compute({ inputs, params, ctx, nodeId }) {
+    // Vector export tap. The interior Layer Output has no compute of its
+    // own (flatten dissolves every group boundary), so the layer stashes
+    // on its behalf — under the LAYER's id, which EffectsApp's
+    // exportSvgNode resolves to from the Layer Output's parentId. Purely
+    // a side-channel: it never touches the blend below.
+    const splineIn = inputs.spline;
+    if (
+      splineIn &&
+      splineIn.kind === "spline" &&
+      splineIn.subpaths.length > 0
+    ) {
+      const stash: SvgExportStash = {
+        subpaths: splineIn.subpaths,
+        width: ctx.width,
+        height: ctx.height,
+      };
+      ctx.state[svgExportStashKey(nodeId)] = stash;
+    } else {
+      delete ctx.state[svgExportStashKey(nodeId)];
+    }
+
     const stack = inputs.stack;
     const content = inputs.content;
     const hasStack = !!stack && stack.kind === "image";
@@ -145,5 +172,9 @@ export const layerNode: NodeDefinition = {
     });
     if (baseOwned) ctx.releaseTexture(base.texture);
     return { primary: output };
+  },
+
+  dispose(ctx, nodeId) {
+    delete ctx.state[svgExportStashKey(nodeId)];
   },
 };

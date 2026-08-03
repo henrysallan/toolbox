@@ -137,23 +137,23 @@ function ShareCorner({
         left: 12,
         bottom: 12,
         padding: "6px 10px",
-        background: "rgba(15, 15, 17, 0.85)",
-        border: "1px solid #27272a",
+        background: "color-mix(in srgb, var(--tb-n-0) 85%, transparent)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 4,
-        color: "#a1a1aa",
+        color: "var(--tb-n-13)",
         fontFamily: "ui-monospace, monospace",
         fontSize: 10,
         letterSpacing: 0.3,
         pointerEvents: "none",
       }}
     >
-      <span style={{ color: "#e5e7eb" }}>{name}</span>
+      <span style={{ color: "var(--tb-n-16)" }}>{name}</span>
       {authorName && (
-        <span style={{ marginLeft: 6, color: "#71717a" }}>
+        <span style={{ marginLeft: 6, color: "var(--tb-n-11)" }}>
           · by {authorName}
         </span>
       )}
-      <span style={{ marginLeft: 6, color: "#52525b" }}>· #{slug.slice(0, 6)}</span>
+      <span style={{ marginLeft: 6, color: "var(--tb-n-10)" }}>· #{slug.slice(0, 6)}</span>
     </div>
   );
 }

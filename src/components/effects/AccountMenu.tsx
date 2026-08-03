@@ -47,7 +47,7 @@ export default function AccountMenu() {
         onClick={signIn}
         style={{
           padding: "0 10px",
-          color: "#d4d4d8",
+          color: "var(--tb-n-15)",
           border: "none",
           fontFamily: "inherit",
           fontSize: "inherit",
@@ -79,7 +79,7 @@ export default function AccountMenu() {
         }}
         style={{
           padding: "0 10px",
-          color: "#e5e7eb",
+          color: "var(--tb-n-16)",
           border: "none",
           fontFamily: "inherit",
           fontSize: "inherit",
@@ -95,7 +95,7 @@ export default function AccountMenu() {
               width: 16,
               height: 16,
               borderRadius: "50%",
-              background: `#18181b center/cover url(${avatarUrl})`,
+              background: `var(--tb-n-3) center/cover url(${avatarUrl})`,
             }}
           />
         ) : (
@@ -104,8 +104,8 @@ export default function AccountMenu() {
               width: 16,
               height: 16,
               borderRadius: "50%",
-              background: "#3f3f46",
-              color: "#e5e7eb",
+              background: "var(--tb-n-9)",
+              color: "var(--tb-n-16)",
               fontSize: 9,
               display: "inline-flex",
               alignItems: "center",
@@ -127,8 +127,8 @@ export default function AccountMenu() {
             top: "100%",
             right: 0,
             minWidth: 220,
-            background: "#18181b",
-            border: "1px solid #27272a",
+            background: "var(--tb-n-3)",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 4,
             boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
             padding: 4,
@@ -138,14 +138,14 @@ export default function AccountMenu() {
           <div
             style={{
               padding: "4px 10px",
-              color: "#71717a",
+              color: "var(--tb-n-11)",
               fontSize: 10,
               wordBreak: "break-all",
             }}
           >
             {user.email}
           </div>
-          <div style={{ height: 1, background: "#27272a", margin: "4px 0" }} />
+          <div style={{ height: 1, background: "var(--tb-n-7)", margin: "4px 0" }} />
           <button
             onClick={signOut}
             style={{
@@ -154,7 +154,7 @@ export default function AccountMenu() {
               padding: "4px 10px",
               background: "transparent",
               border: "none",
-              color: "#e5e7eb",
+              color: "var(--tb-n-16)",
               textAlign: "left",
               fontFamily: "inherit",
               fontSize: 11,
@@ -162,7 +162,7 @@ export default function AccountMenu() {
               borderRadius: 3,
             }}
             onMouseEnter={(e) =>
-              (e.currentTarget.style.background = "#1e3a8a")
+              (e.currentTarget.style.background = "var(--tb-a-blue-900)")
             }
             onMouseLeave={(e) =>
               (e.currentTarget.style.background = "transparent")

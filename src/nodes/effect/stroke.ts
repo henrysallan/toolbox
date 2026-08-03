@@ -6,6 +6,10 @@ import type {
 } from "@/engine/types";
 import { buildPath2D, hexToRgba } from "@/engine/spline-raster";
 import {
+  buildWidthEnvelopePath,
+  subpathHasWidthProfile,
+} from "@/engine/spline-width";
+import {
   defaultFloatCurve,
   sampleFloatCurve,
   sanitizeFloatCurve,
@@ -150,7 +154,7 @@ export const strokeNode: NodeDefinition = {
       name: "ramp_by",
       label: "Ramp by",
       type: "enum",
-      options: ["index", "random", "group", "position"],
+      options: ["index", "random", "group", "position", "driver"],
       default: "index",
       visibleIf: (p) => p.color_source === "ramp",
     },
@@ -214,7 +218,7 @@ export const strokeNode: NodeDefinition = {
       name: "thickness_by",
       label: "Vary by",
       type: "enum",
-      options: ["index", "random", "group", "position"],
+      options: ["index", "random", "group", "position", "driver"],
       default: "random",
       visibleIf: (p) => p.thickness_source === "vary",
     },
@@ -687,7 +691,15 @@ export const strokeNode: NodeDefinition = {
             if (w <= 0 || a <= 0) continue;
             c2d.lineWidth = w;
             c2d.globalAlpha = a;
-            if (perSubpath || widthCfg) {
+            // Width profiles (spec 072726 M3): a profiled subpath renders
+            // as a variable-width envelope FILL — dash/dot are ignored for
+            // it (the profile wins; fills don't dash), while Repeats win
+            // over profiles (rings apply only when repeats === 1). Forces
+            // the per-subpath loop like the other per-subpath features.
+            const anyProfile =
+              repeats <= 1 &&
+              ring.subPaths.some((sp) => subpathHasWidthProfile(sp.sub));
+            if (perSubpath || widthCfg || anyProfile) {
               // Per-subpath stroking: own ramp color and/or own width.
               const subs = ring.subPaths.map((sp) => sp.sub);
               const colorAt = perSubpath
@@ -700,13 +712,22 @@ export const strokeNode: NodeDefinition = {
                 ? sampleColorRamp(repeatStops, ring.t)
                 : solid;
               ring.subPaths.forEach((sp, i) => {
+                let ww = w;
                 if (widthAt) {
-                  const ww =
-                    w * (widthLo + (widthHi - widthLo) * widthAt(i, sp.sub));
+                  ww = w * (widthLo + (widthHi - widthLo) * widthAt(i, sp.sub));
                   if (ww <= 0) return;
                   c2d.lineWidth = ww;
                 }
-                c2d.strokeStyle = colorAt ? colorAt(i, sp.sub) : ringColor;
+                const color = colorAt ? colorAt(i, sp.sub) : ringColor;
+                if (repeats <= 1 && subpathHasWidthProfile(sp.sub)) {
+                  const env = buildWidthEnvelopePath(sp.sub, W, H, ww);
+                  if (env) {
+                    c2d.fillStyle = color;
+                    c2d.fill(env);
+                    return;
+                  }
+                }
+                c2d.strokeStyle = color;
                 c2d.stroke(sp.path);
               });
             } else {

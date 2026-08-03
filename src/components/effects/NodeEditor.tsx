@@ -20,7 +20,13 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EffectNode from "./EffectNode";
+import {
+  ownerDocument,
+  usePanelWindow,
+} from "./layout/panel-window";
 import RerouteNode from "./RerouteNode";
+import FrameNode, { computeFrameRects, collectFrameMemberIds } from "./FrameNode";
+import { NODE_TINTS } from "./node-tints";
 import JunctionEdge from "./JunctionEdge";
 // (waypoint-context retired with the junction waypoint — reroute is a node now)
 import WireActionOverlay from "./WireActionOverlay";
@@ -52,6 +58,8 @@ import {
   VIRTUAL_SOCKET,
 } from "@/engine/groups";
 import { editorCanCoerce } from "@/engine/graph-validation";
+import type { SocketType } from "@/engine/types";
+import { FRAME_TYPE, REROUTE_TYPE } from "@/engine/graph-helpers";
 
 // Node types you can dive into with Tab / double-click. Iterate is
 // deliberately absent — its body always renders inline as a zone
@@ -60,8 +68,36 @@ function isEnterableScope(defType: string): boolean {
   return defType === GROUP_TYPE || defType === LAYER_TYPE;
 }
 import { getShortcutScope } from "./shortcut-scope";
+import {
+  claimNodesPane,
+  ownsGlobalNodesPaneScope,
+  ownsNodesPaneScope,
+  registerNodesPane,
+  unregisterNodesPane,
+} from "./nodes-pane-scope";
 import { looksLikeFragmentText } from "@/lib/fragment-clipboard";
+import { looksLikeSvgPasteText } from "@/lib/svg-parse";
 import type { NodeDataPayload } from "@/state/graph";
+import { useTheme } from "./theme/theme";
+
+// Context stashed when a wire drag is released on empty pane and the node
+// search popup opens — the picked node gets auto-wired to the drag's origin.
+// A drag out of an OUTPUT socket wires source → the new node's first
+// accepting input; a drag out of an INPUT socket wires the new node's first
+// accepting output → that input.
+export type PendingWire =
+  | {
+      kind: "from-source";
+      sourceNodeId: string;
+      sourceHandle: string;
+      sourceType: string;
+    }
+  | {
+      kind: "into-target";
+      targetNodeId: string;
+      targetHandle: string;
+      targetType: string;
+    };
 
 interface Props {
   nodes: Node<NodeDataPayload>[];
@@ -70,14 +106,13 @@ interface Props {
   onEdgesChange: OnEdgesChange;
   onConnect: OnConnect;
   onSelectNode: (id: string | null) => void;
+  // Returns the new node's id when a single plain node was spawned, so
+  // the add menu can hand it straight to G-move. Compound adds (layer,
+  // iterate, presets, …) return nothing.
   onAddNode: (
     type: string,
-    pendingWire?: {
-      sourceNodeId: string;
-      sourceHandle: string;
-      sourceType: string;
-    }
-  ) => void;
+    pendingWire?: PendingWire
+  ) => string | undefined | void;
   // Fires while the cursor is over the flow pane (not over nodes or menus).
   // The parent uses the latest value to seed `onAddNode`'s drop position.
   onPanePointer?: (pos: { x: number; y: number }) => void;
@@ -98,6 +133,13 @@ interface Props {
   ) => void;
   // Right-click a node-group → "Edit with AI" (opens the AI panel in edit mode).
   onEditWithAINode?: (nodeId: string) => void;
+  // Right-click a node with a spline-typed output → "Make Editable": the
+  // parent bakes the evaluated spline into a fresh Spline Draw node,
+  // bypasses this node, and moves its spline out-wires over
+  // (makeSplineEditable in graph-ops). NodeEditor owns only the menu
+  // gating — hidden for Spline Draw itself (already editable), structural
+  // shells (no eval-cache entry to bake from), and reroutes.
+  onMakeEditableNode?: (nodeId: string) => void;
   onDuplicateNode?: (nodeId: string) => void;
   onDuplicateSelection?: () => void;
   // Shift+M: wrap the currently selected image/mask-output nodes in a
@@ -109,6 +151,9 @@ interface Props {
   // OS-clipboard text looked like a Toolbox fragment (copied from another tab /
   // instance, or a shared snippet). Handles the cross-instance paste.
   onPasteFragmentText?: (text: string) => void;
+  // OS-clipboard text looked like SVG markup or bare path data (Figma
+  // "Copy as SVG" → Spline Draw node at the cursor). Spec: 073026_svg-paste.md.
+  onPasteSvgText?: (text: string, flowPos: { x: number; y: number }) => void;
   // Desktop file drop + clipboard paste — when the user drops an image/
   // video/audio/svg file onto the flow pane, or pastes one from the OS
   // clipboard, we spawn the matching source node with that file already
@@ -168,6 +213,21 @@ interface Props {
   // of an expanded Iterate's zone rect requests a scope move. Parent
   // owns the legality check (reparentNode) + undo + toast.
   onReparentNode?: (nodeId: string, newParentId: string | undefined) => void;
+  // Cosmetic styling from the right-click menu (073026): apply a tint
+  // preset (null clears) and/or toggle the bold outline on the given
+  // nodes. Parent owns undo (one pushGraph + one setNodes per call).
+  onStyleNodes?: (
+    nodeIds: string[],
+    patch: { tint?: string | null; bold?: boolean }
+  ) => void;
+  // Shift+F — frame the current selection (or spawn an empty frame at
+  // the cursor when nothing is selected). Parent owns the node creation
+  // + membership writes.
+  onFrameSelection?: () => void;
+  // Frame membership from drag gestures (073026): a single dragged node
+  // whose center lands in a same-scope frame joins it; a Cmd-drag ending
+  // outside every frame leaves. undefined = clear membership.
+  onSetNodeFrame?: (nodeId: string, frameId: string | undefined) => void;
   // Scope trail for the breadcrumb row: the Project crumb
   // (PROJECT_CRUMB_ID) first, then the composition (id null), then the
   // group chain to the current scope. The row hides at the comp root.
@@ -183,11 +243,28 @@ interface Props {
   // increments this to ask the editor to fit the freshly-loaded graph
   // once React Flow has measured it. Initial value (0) is a no-op.
   frameSignal?: number;
+  // Tiled layout (072726_window-tiling.md): several NodeEditor panes can
+  // mount at once. Window-level shortcut/paste handlers gate on this
+  // pane owning the instance scope (nodes-pane-scope.ts) so two panes
+  // never both act on one keystroke. Single-pane setups can omit it.
+  paneId?: string;
 }
 
 // Sentinel id for the leading breadcrumb crumb that opens the Project view
 // (v5). A real scope id is a node id / null; this never collides.
 export const PROJECT_CRUMB_ID = "__project__";
+
+// Per-pane camera stash (tiled layout, 072726 M4 polish): a pane that
+// unmounts (its leaf's kind switched away, or the docs round-trip)
+// parks its viewport here keyed by pane id; remounting the SAME pane
+// restores it instead of re-running the initial fitView. Module-level
+// so it survives React unmounts within a page load — the same
+// rationale as state/editor-session.ts. Leaf ids retire over a
+// session, so stale entries just sit unused (tiny).
+const paneCameraStash = new Map<
+  string,
+  { x: number; y: number; zoom: number }
+>();
 
 // Memoized (export at the bottom): EffectsApp re-renders on every rAF tick
 // during playback; with stable prop identities (EffectsApp memoizes /
@@ -205,12 +282,14 @@ function NodeEditor({
   onDuplicateOnDrag,
   onDetachNode,
   onEditWithAINode,
+  onMakeEditableNode,
   onDuplicateNode,
   onDuplicateSelection,
   onMergeSelection,
   onCopyNodes,
   onPasteNodes,
   onPasteFragmentText,
+  onPasteSvgText,
   onAddFileNode,
   onAddImageNodeFromImageGen,
   onAddAssetNode,
@@ -223,14 +302,27 @@ function NodeEditor({
   onDiveIntoGroup,
   onScopeUp,
   onReparentNode,
+  onStyleNodes,
+  onFrameSelection,
+  onSetNodeFrame,
   breadcrumbs,
   onNavigateScope,
   onOpenProject,
   atRoot,
   frameSignal,
+  paneId = "main",
 }: Props) {
+  // Null in the main window; the child Window when this pane is popped
+  // out (080226_panel-popout-windows.md §3). EVERY window-level
+  // listener below resolves through it — module-scope `window` is
+  // always the main one, so a detached pane would neither hear its own
+  // keystrokes nor hit-test in the right coordinate space.
+  const panelWin = usePanelWindow();
+  // Drives React Flow's colorMode so its built-in palette (pane, handles,
+  // controls, selection) tracks the editor theme.
+  const { mode: themeMode } = useTheme();
   const nodeTypes = useMemo(
-    () => ({ effect: EffectNode, reroute: RerouteNode }),
+    () => ({ effect: EffectNode, reroute: RerouteNode, frame: FrameNode }),
     []
   );
   // Register JunctionEdge under the default edge type so every edge —
@@ -240,6 +332,7 @@ function NodeEditor({
   const edgeTypes = useMemo(() => ({ default: JunctionEdge }), []);
   const {
     screenToFlowPosition,
+    flowToScreenPosition,
     setNodes: rfSetNodes,
     setEdges: rfSetEdges,
     getNodes: rfGetNodes,
@@ -250,6 +343,36 @@ function NodeEditor({
     fitView,
   } = useReactFlow();
   const flowWrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // Pane-instance scope (tiled layout): register this pane, and claim
+  // the shortcut scope when the pointer enters or presses inside it —
+  // sticky, so the sole pane (the common case) always owns it and
+  // shortcuts work with the cursor anywhere, exactly as before tiling.
+  // The window matters: scope is resolved per window, since a keystroke
+  // only reaches panes in the one holding OS focus (pop-out spec §M3).
+  useEffect(() => {
+    registerNodesPane(paneId, panelWin ?? window);
+    return () => unregisterNodesPane(paneId);
+  }, [paneId, panelWin]);
+  // Camera restore: read once at mount (lazy useState — not a ref, so
+  // render never touches ref.current); park the live camera on unmount.
+  const [stashedCamera] = useState(() => paneCameraStash.get(paneId));
+  useEffect(() => {
+    return () => {
+      paneCameraStash.set(paneId, getViewport());
+    };
+  }, [paneId, getViewport]);
+  useEffect(() => {
+    const el = flowWrapperRef.current;
+    if (!el) return;
+    const claim = () => claimNodesPane(paneId);
+    el.addEventListener("pointerenter", claim);
+    el.addEventListener("pointerdown", claim, true);
+    return () => {
+      el.removeEventListener("pointerenter", claim);
+      el.removeEventListener("pointerdown", claim, true);
+    };
+  }, [paneId]);
 
   // Re-frame the whole graph when the parent bumps `frameSignal` (a project
   // was opened / a new one seeded → the node set was swapped in place, which
@@ -285,6 +408,7 @@ function NodeEditor({
   useEffect(() => {
     const el = flowWrapperRef.current;
     if (!el) return;
+    const win = panelWin ?? window;
     const onDown = (e: MouseEvent) => {
       if (e.button !== 1 || !(e.metaKey || e.ctrlKey)) return;
       e.preventDefault();
@@ -308,15 +432,15 @@ function NodeEditor({
         });
       };
       const onUp = () => {
-        window.removeEventListener("mousemove", onMove, true);
-        window.removeEventListener("mouseup", onUp, true);
+        win.removeEventListener("mousemove", onMove, true);
+        win.removeEventListener("mouseup", onUp, true);
       };
-      window.addEventListener("mousemove", onMove, true);
-      window.addEventListener("mouseup", onUp, true);
+      win.addEventListener("mousemove", onMove, true);
+      win.addEventListener("mouseup", onUp, true);
     };
     el.addEventListener("mousedown", onDown, true);
     return () => el.removeEventListener("mousedown", onDown, true);
-  }, [getViewport, setViewport]);
+  }, [getViewport, setViewport, panelWin]);
 
   // Touch / pen detection for the React Flow gesture model. On
   // mouse, the marquee box-select is on by default and a single-
@@ -364,6 +488,9 @@ function NodeEditor({
       // Only act when this editor was the last one clicked, so Delete /
       // Shift+D don't fire while the user is working in the graph editor.
       if (getShortcutScope() !== "node") return;
+      // …and only in the pane instance that owns the tiled-layout scope,
+      // so two mounted panes never both delete/duplicate on one press.
+      if (!ownsNodesPaneScope(paneId)) return;
 
       // Shift+D = duplicate selection, then immediately enter
       // G-move so the new clones follow the cursor until the user
@@ -384,6 +511,23 @@ function NodeEditor({
         e.preventDefault();
         pendingGAfterDupRef.current = true;
         onDuplicateSelection();
+        return;
+      }
+
+      // Shift+F = frame the selection (073026_node-cosmetics-and-frames.md).
+      // No selection gate — the parent spawns an empty frame at the cursor
+      // when nothing is selected. (EffectsApp's full-canvas F handler bails
+      // on shiftKey so this chord is exclusively ours.)
+      if (
+        e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        (e.key === "F" || e.key === "f")
+      ) {
+        if (!onFrameSelection) return;
+        e.preventDefault();
+        onFrameSelection();
         return;
       }
 
@@ -469,7 +613,10 @@ function NodeEditor({
       // because window keydowns don't carry pointer coords.
       const mp = lastMouseRef.current;
       if (mp) {
-        const under = document.elementFromPoint(mp.x, mp.y) as HTMLElement | null;
+        const under = ownerDocument(flowWrapperRef.current).elementFromPoint(
+          mp.x,
+          mp.y
+        ) as HTMLElement | null;
         if (under?.closest("[data-track-editor]")) return;
       }
       const selectedNodes = rfGetNodes().filter((n) => n.selected);
@@ -481,8 +628,9 @@ function NodeEditor({
         edges: selectedEdges.map((ed) => ({ id: ed.id })),
       });
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const win = panelWin ?? window;
+    win.addEventListener("keydown", onKey);
+    return () => win.removeEventListener("keydown", onKey);
   }, [
     rfGetNodes,
     rfGetEdges,
@@ -491,6 +639,8 @@ function NodeEditor({
     onMergeSelection,
     onGroupSelection,
     onUngroupSelection,
+    onFrameSelection,
+    paneId,
   ]);
 
   // Tab = dive into the selected group/layer; Shift+Tab = up one scope.
@@ -508,6 +658,7 @@ function NodeEditor({
         return;
       }
       if (getShortcutScope() !== "node") return;
+      if (!ownsNodesPaneScope(paneId)) return;
       if (e.shiftKey) {
         if (!onScopeUp) return;
         e.preventDefault();
@@ -536,9 +687,10 @@ function NodeEditor({
         onScopeUp();
       }
     };
-    window.addEventListener("keydown", onKeyCapture, true);
-    return () => window.removeEventListener("keydown", onKeyCapture, true);
-  }, [rfGetNodes, onDiveIntoGroup, onScopeUp, atRoot]);
+    const win = panelWin ?? window;
+    win.addEventListener("keydown", onKeyCapture, true);
+    return () => win.removeEventListener("keydown", onKeyCapture, true);
+  }, [rfGetNodes, onDiveIntoGroup, onScopeUp, atRoot, paneId]);
 
   // Apple Pencil hover indicator. iPad / Apple Pencil fires
   // pointermove with pointerType === "pen" while hovering, *before*
@@ -786,15 +938,23 @@ function NodeEditor({
   // Set by Shift+D so the next render (once duplicates land in `nodes`)
   // can immediately enter G-move on the new selection.
   const pendingGAfterDupRef = useRef(false);
+  // Same handoff for the add menu, but keyed to the specific node id the
+  // parent just spawned — an add can land while nothing is selected yet,
+  // and an id keeps a stale flag from grabbing some unrelated selection
+  // on a later, unrelated `nodes` update.
+  const pendingGAfterAddRef = useRef<string | null>(null);
   // Tracked globally so we can use the cursor position at the moment
   // of G keypress (which itself doesn't carry mouse coords).
   const lastMouseRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
       lastMouseRef.current = { x: e.clientX, y: e.clientY };
     };
-    window.addEventListener("mousemove", onMove);
-    return () => window.removeEventListener("mousemove", onMove);
+    // pointermove also covers Pencil hover, so G-move starts from where the
+    // stylus actually is rather than the last place a mouse was seen.
+    const win = panelWin ?? window;
+    win.addEventListener("pointermove", onMove);
+    return () => win.removeEventListener("pointermove", onMove);
   }, []);
 
   const exitGCommit = useCallback(() => {
@@ -851,6 +1011,7 @@ function NodeEditor({
       // Gate to the last-clicked editor so G doesn't fire here while the
       // graph editor (which owns G-grab) is the one in use.
       if (getShortcutScope() !== "node" && !gMoveRef.current) return;
+      if (!ownsNodesPaneScope(paneId) && !gMoveRef.current) return;
       if (gMoveRef.current) {
         // G a second time = commit, mirroring Blender's behavior.
         e.preventDefault();
@@ -868,9 +1029,32 @@ function NodeEditor({
         origPositions,
       });
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [nodes, exitGCommit]);
+    const win = panelWin ?? window;
+    win.addEventListener("keydown", onKey);
+    return () => win.removeEventListener("keydown", onKey);
+  }, [nodes, exitGCommit, paneId]);
+
+  // Add-menu handoff to G-move (Blender's Shift+A behavior): the node
+  // the user just picked arrives under the cursor already grabbed, so
+  // they place it with a move + click instead of a separate drag.
+  useEffect(() => {
+    const addedId = pendingGAfterAddRef.current;
+    if (!addedId) return;
+    const added = nodes.find((n) => n.id === addedId);
+    if (!added) return; // hasn't reached this pane's scope yet
+    pendingGAfterAddRef.current = null;
+    // Unlike the G hotkey — which grabs with whatever offset the cursor
+    // already has — anchor startMouse at the node itself so the node
+    // snaps under the cursor on the first move. Otherwise it would trail
+    // by however far down the menu the picked entry happened to be,
+    // which is an artifact of menu navigation, not intent.
+    setGMove({
+      startMouse: flowToScreenPosition(added.position),
+      origPositions: new Map([
+        [added.id, { x: added.position.x, y: added.position.y }],
+      ]),
+    });
+  }, [nodes, flowToScreenPosition]);
 
   // Shift+D handoff to G-move. After the parent has applied the
   // duplicate, the new clones land in `nodes` already selected — at
@@ -893,7 +1077,9 @@ function NodeEditor({
   // intercept clicks / Escape / right-click for commit / cancel.
   useEffect(() => {
     if (!gMove) return;
-    const onMove = (e: MouseEvent) => {
+    // pointermove so G-move follows a Pencil hover too; the commit/cancel
+    // presses stay on mousedown, which a tap still synthesizes.
+    const onMove = (e: PointerEvent) => {
       const start = screenToFlowPosition({
         x: gMove.startMouse.x,
         y: gMove.startMouse.y,
@@ -936,15 +1122,16 @@ function NodeEditor({
       // the right-click gesture itself was the cancel signal.
       e.preventDefault();
     };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mousedown", onDown, true);
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("contextmenu", onContext);
+    const win = panelWin ?? window;
+    win.addEventListener("pointermove", onMove);
+    win.addEventListener("mousedown", onDown, true);
+    win.addEventListener("keydown", onKey);
+    win.addEventListener("contextmenu", onContext);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mousedown", onDown, true);
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("contextmenu", onContext);
+      win.removeEventListener("pointermove", onMove);
+      win.removeEventListener("mousedown", onDown, true);
+      win.removeEventListener("keydown", onKey);
+      win.removeEventListener("contextmenu", onContext);
     };
   }, [gMove, screenToFlowPosition, onNodesChange, exitGCommit, exitGCancel]);
 
@@ -952,6 +1139,39 @@ function NodeEditor({
   // (engine/graph-validation.ts editorCanCoerce), same as
   // isValidConnection uses for manually drawn wires.
   const canCoerce = editorCanCoerce;
+
+  // The primary output type a node would expose if `srcType` were wired
+  // into `inputName`. The polymorphic nodes (Transform / Displace /
+  // Mirror / Reroute) retype their output from `connectedTypes` the
+  // moment something lands on their input — EffectsApp's edges-keyed
+  // resync writes that back a tick after the edge appears. Until then
+  // the stored socket reads the RESTING type ("image" on a fresh
+  // Transform), so a splice check against `data.primaryOutput` rejects
+  // dropping a Transform on a spline/points wire even though drawing
+  // that same pair of wires by hand is allowed. Resolving with the
+  // prospective connectedTypes closes that gap. Non-polymorphic nodes
+  // (no resolver, or one that ignores ctx) fall through to the stored
+  // type unchanged.
+  const projectPrimaryOutput = (
+    node: Node<NodeDataPayload>,
+    inputName: string,
+    srcType: string
+  ): string | null => {
+    const stored = node.data.primaryOutput ?? null;
+    const def = getNodeDef(node.data.defType);
+    if (!def?.resolvePrimaryOutput) return stored;
+    try {
+      return (
+        def.resolvePrimaryOutput(node.data.params, {
+          connectedTypes: { [inputName]: srcType as SocketType },
+        }) ?? stored
+      );
+    } catch {
+      // A resolver must never break the drag — fall back to the socket
+      // the node is currently showing.
+      return stored;
+    }
+  };
 
   // Look for the nearest edge the given node could splice into.
   // Returns null if no edge is close enough or none are type-compatible.
@@ -1039,12 +1259,19 @@ function NodeEditor({
       );
       if (!inputMatch) continue;
 
-      // And an output that can reach tgtType?
+      // And an output that can reach tgtType? Test the output the node
+      // WILL have once the splice lands, not the resting one it shows
+      // while unwired — see projectPrimaryOutput.
+      const projectedPrimary = projectPrimaryOutput(
+        draggedNode,
+        inputMatch.name,
+        srcType
+      );
       let outputHandleId: string | null = null;
       if (
-        draggedNode.data.primaryOutput &&
+        projectedPrimary &&
         canCoerce(
-          draggedNode.data.primaryOutput,
+          projectedPrimary,
           tgtType,
           targetNode.data.defType,
           edge.targetHandle
@@ -1168,28 +1395,25 @@ function NodeEditor({
   // on Esc, outside click, or after picking a node.
   //
   // `pendingWire` is set when the popup opened from a wire drop on
-  // empty pane — carries the source handle so the next created node
-  // gets auto-wired from it. Cleared when the popup closes or when
-  // opened via Shift+A.
+  // empty pane — carries the drag's origin handle (either side) so the
+  // next created node gets auto-wired to it. Cleared when the popup
+  // closes or when opened via Shift+A.
   const [nodePopup, setNodePopup] = useState<{
     x: number;
     y: number;
-    pendingWire?: {
-      sourceNodeId: string;
-      sourceHandle: string;
-      sourceType: string;
-    };
+    pendingWire?: PendingWire;
   } | null>(null);
   const closeNodePopup = () => setNodePopup(null);
   // Last global cursor position — needed for Shift+A, which arrives as
   // a keyboard event without any pointer coordinates.
   const lastCursorRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
       lastCursorRef.current = { x: e.clientX, y: e.clientY };
     };
-    window.addEventListener("mousemove", onMove);
-    return () => window.removeEventListener("mousemove", onMove);
+    const win = panelWin ?? window;
+    win.addEventListener("pointermove", onMove);
+    return () => win.removeEventListener("pointermove", onMove);
   }, []);
 
   // Drive the Shift-drag fuzzy-connect ring. Only does work while a
@@ -1207,9 +1431,10 @@ function NodeEditor({
         hideConnectRing();
         return;
       }
-      const el = document.elementFromPoint(clientX, clientY) as
-        | HTMLElement
-        | null;
+      const el = ownerDocument(flowWrapperRef.current).elementFromPoint(
+        clientX,
+        clientY
+      ) as HTMLElement | null;
       const nodeEl = el?.closest(".react-flow__node") as HTMLElement | null;
       const id = nodeEl?.getAttribute("data-id");
       const overNode = !!id && id !== drag.fromNodeId;
@@ -1225,13 +1450,14 @@ function NodeEditor({
       const c = lastCursorRef.current;
       apply(c.x, c.y, e.type === "keydown");
     };
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("keyup", onKey);
+    const win = panelWin ?? window;
+    win.addEventListener("pointermove", onPointerMove);
+    win.addEventListener("keydown", onKey);
+    win.addEventListener("keyup", onKey);
     return () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("keyup", onKey);
+      win.removeEventListener("pointermove", onPointerMove);
+      win.removeEventListener("keydown", onKey);
+      win.removeEventListener("keyup", onKey);
     };
   }, [hideConnectRing]);
 
@@ -1246,6 +1472,7 @@ function NodeEditor({
   useEffect(() => {
     const el = flowWrapperRef.current;
     if (!el) return;
+    const win = panelWin ?? window;
     const onDown = (e: PointerEvent) => {
       if (e.button !== 0 || !e.shiftKey) return;
       const targetEl = e.target as HTMLElement | null;
@@ -1255,6 +1482,12 @@ function NodeEditor({
       const nodeEl = targetEl.closest(".react-flow__node") as HTMLElement | null;
       const originId = nodeEl?.getAttribute("data-id");
       if (!nodeEl || !originId) return;
+      // Frames have no sockets to pull a wire from — leave the gesture to
+      // React Flow so a Shift-drag on an edge band just moves the frame.
+      const originData = rfGetNodes().find((n) => n.id === originId)?.data as
+        | NodeDataPayload
+        | undefined;
+      if (originData?.defType === FRAME_TYPE) return;
 
       // Take over from React Flow for this gesture.
       e.preventDefault();
@@ -1294,7 +1527,7 @@ function NodeEditor({
           return;
         }
         dragging = true;
-        const under = document.elementFromPoint(
+        const under = ownerDocument(flowWrapperRef.current).elementFromPoint(
           ev.clientX,
           ev.clientY
         ) as HTMLElement | null;
@@ -1310,8 +1543,9 @@ function NodeEditor({
         });
       };
       const onUp = (ev: PointerEvent) => {
-        window.removeEventListener("pointermove", onMove, true);
-        window.removeEventListener("pointerup", onUp, true);
+        const win = panelWin ?? window;
+        win.removeEventListener("pointermove", onMove, true);
+        win.removeEventListener("pointerup", onUp, true);
         setNodeConnect(null);
         if (dragging) {
           processNodeDropRef.current(originId, ev.clientX, ev.clientY);
@@ -1326,12 +1560,12 @@ function NodeEditor({
           );
         }
       };
-      window.addEventListener("pointermove", onMove, true);
-      window.addEventListener("pointerup", onUp, true);
+      win.addEventListener("pointermove", onMove, true);
+      win.addEventListener("pointerup", onUp, true);
     };
     el.addEventListener("pointerdown", onDown, true);
     return () => el.removeEventListener("pointerdown", onDown, true);
-  }, [rfGetNodes, rfSetNodes]);
+  }, [rfGetNodes, rfSetNodes, panelWin]);
 
   // Open the node-search popup at a screen point, clamped into the
   // editor so a request from outside it (e.g. the pie menu opened over
@@ -1379,8 +1613,9 @@ function NodeEditor({
       e.preventDefault();
       openNodeSearchAt(x, y);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const win = panelWin ?? window;
+    win.addEventListener("keydown", onKey);
+    return () => win.removeEventListener("keydown", onKey);
   }, [openNodeSearchAt]);
 
   // The pie menu's "Add Node" item opens this same popup via a window
@@ -1391,17 +1626,23 @@ function NodeEditor({
         | { x?: number; y?: number }
         | undefined;
       if (!d || typeof d.x !== "number" || typeof d.y !== "number") return;
+      // One popup only when several panes are mounted (tiled layout).
+      // GLOBAL scope, not per-window: this event is broadcast to every
+      // window, so a per-window check would open one popup per window.
+      if (!ownsGlobalNodesPaneScope(paneId)) return;
       openNodeSearchAt(d.x, d.y);
     };
-    window.addEventListener("toolbox:open-node-search", onOpen);
-    return () => window.removeEventListener("toolbox:open-node-search", onOpen);
-  }, [openNodeSearchAt]);
+    const win = panelWin ?? window;
+    win.addEventListener("toolbox:open-node-search", onOpen);
+    return () => win.removeEventListener("toolbox:open-node-search", onOpen);
+  }, [openNodeSearchAt, paneId]);
 
   // Window-level `paste` listener. Replaces the old Cmd+V keydown path
   // so we can inspect the clipboard for files before deciding what to
   // do. Priority:
   //   - focused text field → let native paste happen, don't interfere
   //   - cursor not over flow → ignore
+  //   - OS-clipboard text is SVG markup / path data → Spline Draw node
   //   - OS-clipboard has files → spawn source nodes with them
   //   - otherwise → internal node clipboard (onPasteNodes)
   useEffect(() => {
@@ -1415,6 +1656,8 @@ function NodeEditor({
       ) {
         return;
       }
+      // Exactly one pane handles a paste when several are mounted.
+      if (!ownsNodesPaneScope(paneId)) return;
       // Cross-instance fragment paste: the OS clipboard holds a serialized
       // Toolbox group/recipe (copied from another tab/instance or a shared
       // snippet). Read it synchronously and route it before the file /
@@ -1437,6 +1680,16 @@ function NodeEditor({
       const overFlow =
         x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 
+      // Clipboard SVG text (Figma "Copy as SVG", a bare path `d` string) →
+      // Spline Draw node at the cursor. Gated on cursor-over-flow like the
+      // file path below. An .svg FILE on the clipboard still takes the file
+      // path (→ SVG Source). Spec: 073026_svg-paste.md.
+      if (txt && overFlow && onPasteSvgText && looksLikeSvgPasteText(txt)) {
+        e.preventDefault();
+        onPasteSvgText(txt, screenToFlowPosition({ x, y }));
+        return;
+      }
+
       const files = e.clipboardData?.files;
       if (files && files.length > 0 && overFlow && onAddFileNode) {
         e.preventDefault();
@@ -1454,9 +1707,17 @@ function NodeEditor({
         onPasteNodes();
       }
     };
-    window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
-  }, [onAddFileNode, onPasteNodes, onPasteFragmentText, screenToFlowPosition]);
+    const win = panelWin ?? window;
+    win.addEventListener("paste", onPaste);
+    return () => win.removeEventListener("paste", onPaste);
+  }, [
+    onAddFileNode,
+    onPasteNodes,
+    onPasteFragmentText,
+    onPasteSvgText,
+    screenToFlowPosition,
+    paneId,
+  ]);
 
   const isValidConnection = (c: Connection | Edge) => {
     if (!c.sourceHandle || !c.targetHandle) return false;
@@ -1618,7 +1879,10 @@ function NodeEditor({
     y: number,
     excludeId: string
   ): Node<NodeDataPayload> | null => {
-    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    const el = ownerDocument(flowWrapperRef.current).elementFromPoint(
+      x,
+      y
+    ) as HTMLElement | null;
     const nodeEl = el?.closest(".react-flow__node") as HTMLElement | null;
     const id = nodeEl?.getAttribute("data-id");
     if (!id || id === excludeId) return null;
@@ -1774,6 +2038,24 @@ function NodeEditor({
         start: { x: node.position.x, y: node.position.y },
         members,
       };
+    } else if ((node.data as NodeDataPayload).defType === FRAME_TYPE) {
+      // Dragging a frame (edge bands / label — its only drag handles)
+      // moves everything inside: same snapshot-and-replay as the Iterate
+      // shell above, with membership from data.frameId instead of
+      // parentId (073026_node-cosmetics-and-frames.md).
+      const members = new Map<string, { x: number; y: number }>();
+      for (const mid of collectFrameMemberIds(
+        nodes as Node<NodeDataPayload>[],
+        node.id
+      )) {
+        const m = nodes.find((n) => n.id === mid);
+        if (m) members.set(mid, { x: m.position.x, y: m.position.y });
+      }
+      zoneDragRef.current = {
+        shellId: node.id,
+        start: { x: node.position.x, y: node.position.y },
+        members,
+      };
     } else {
       zoneDragRef.current = null;
     }
@@ -1826,7 +2108,11 @@ function NodeEditor({
     zoneDragRef.current = null;
     // A shell never reparents by dragging (a zone inside a zone would be
     // a nested Iterate, which doesn't evaluate) — the zone just moves.
-    if ((node.data as NodeDataPayload).defType === ITERATE_TYPE) {
+    // Frames likewise: dragging one moves it and its members, nothing else.
+    if (
+      (node.data as NodeDataPayload).defType === ITERATE_TYPE ||
+      (node.data as NodeDataPayload).defType === FRAME_TYPE
+    ) {
       setSpliceCandidate(null);
       return;
     }
@@ -1849,49 +2135,79 @@ function NodeEditor({
     // moves the node up to the shell's scope; a plain drag just
     // stretches the zone. Boundary nodes never move; multi-select drags
     // don't reparent.
-    if (dragged.length !== 1 || !onReparentNode) return;
+    if (dragged.length !== 1) return;
     const data = node.data as NodeDataPayload;
-    if (
+    const isBoundary =
       data.defType === GROUP_INPUT_TYPE ||
       data.defType === GROUP_OUTPUT_TYPE ||
-      data.defType === ITERATE_INPUT_TYPE
-    ) {
-      return;
-    }
-    const zones = computeIterateZoneRects(
-      nodes as Node<NodeDataPayload>[],
-      node.id
-    ).filter((z) => z.shellId !== node.id);
+      data.defType === ITERATE_INPUT_TYPE;
     const cx = node.position.x + (node.measured?.width ?? 220) / 2;
     const cy = node.position.y + (node.measured?.height ?? 100) / 2;
-    // Innermost (smallest) zone containing the node's center.
-    const hit = zones
+    let reparented = false;
+    if (!isBoundary && onReparentNode) {
+      const zones = computeIterateZoneRects(
+        nodes as Node<NodeDataPayload>[],
+        node.id
+      ).filter((z) => z.shellId !== node.id);
+      // Innermost (smallest) zone containing the node's center.
+      const hit = zones
+        .filter(
+          (z) =>
+            cx >= z.bbox.x &&
+            cx <= z.bbox.x + z.bbox.width &&
+            cy >= z.bbox.y &&
+            cy <= z.bbox.y + z.bbox.height
+        )
+        .sort(
+          (a, b) => a.bbox.width * a.bbox.height - b.bbox.width * b.bbox.height
+        )[0];
+      if (hit && data.parentId !== hit.shellId) {
+        onReparentNode(node.id, hit.shellId);
+        reparented = true;
+      } else if (!hit && data.parentId && cmdDragRef.current) {
+        // Cmd-dragged clear of every zone: if it lives in one, take it
+        // out (detach at drag start already stripped the wires that would
+        // block this).
+        const shell = nodes.find((n) => n.id === data.parentId);
+        if (
+          (shell?.data as NodeDataPayload | undefined)?.defType ===
+          ITERATE_TYPE
+        ) {
+          onReparentNode(
+            node.id,
+            (shell!.data as NodeDataPayload).parentId
+          );
+          reparented = true;
+        }
+      }
+    }
+    // Frame membership (073026_node-cosmetics-and-frames.md): the same
+    // drop-in / Cmd-drag-out grammar as Iterate zones, but it writes
+    // data.frameId instead of reparenting, and boundary nodes may join
+    // (framing a group's interior naturally includes its pillars).
+    // Skipped when this drop just crossed an Iterate boundary —
+    // membership is same-scope-siblings only and `data.parentId` in this
+    // closure is stale after a reparent.
+    if (reparented || !onSetNodeFrame) return;
+    const frames = computeFrameRects(
+      nodes as Node<NodeDataPayload>[],
+      node.id
+    ).filter((f) => f.parentId === data.parentId);
+    const fHit = frames
       .filter(
-        (z) =>
-          cx >= z.bbox.x &&
-          cx <= z.bbox.x + z.bbox.width &&
-          cy >= z.bbox.y &&
-          cy <= z.bbox.y + z.bbox.height
+        (f) =>
+          cx >= f.bbox.x &&
+          cx <= f.bbox.x + f.bbox.width &&
+          cy >= f.bbox.y &&
+          cy <= f.bbox.y + f.bbox.height
       )
       .sort(
         (a, b) => a.bbox.width * a.bbox.height - b.bbox.width * b.bbox.height
       )[0];
-    if (hit && data.parentId !== hit.shellId) {
-      onReparentNode(node.id, hit.shellId);
-    } else if (!hit && data.parentId && cmdDragRef.current) {
-      // Cmd-dragged clear of every zone: if it lives in one, take it
-      // out (detach at drag start already stripped the wires that would
-      // block this).
-      const shell = nodes.find((n) => n.id === data.parentId);
-      if (
-        (shell?.data as NodeDataPayload | undefined)?.defType ===
-        ITERATE_TYPE
-      ) {
-        onReparentNode(
-          node.id,
-          (shell!.data as NodeDataPayload).parentId
-        );
-      }
+    if (fHit && data.frameId !== fHit.frameId) {
+      onSetNodeFrame(node.id, fHit.frameId);
+    } else if (!fHit && data.frameId && cmdDragRef.current) {
+      onSetNodeFrame(node.id, undefined);
     }
   };
   nodeContextMenuRef.current = (e, node) => {
@@ -2113,29 +2429,40 @@ function NodeEditor({
           // If the wire was dropped on empty pane (toHandle is null on
           // the FinalConnectionState), pop the search so the user can
           // immediately browse a node to land the wire on. We also
-          // stash the source handle details so the picked node gets
-          // auto-wired from this same source.
+          // stash the origin handle details so the picked node gets
+          // auto-wired to it — from an output socket the new node
+          // becomes the consumer; from an input socket it becomes the
+          // producer.
           const flowPos = screenToFlowPosition({ x, y });
           onPanePointer?.(flowPos);
-          let pendingWire:
-            | { sourceNodeId: string; sourceHandle: string; sourceType: string }
-            | undefined;
+          let pendingWire: PendingWire | undefined;
           const fromHandle = conn?.fromHandle;
           const fromNode = conn?.fromNode as
             | { id: string }
             | null
             | undefined;
           if (fromHandle?.id && fromNode?.id) {
-            const srcNode = nodes.find((n) => n.id === fromNode.id);
-            const srcType = srcNode
-              ? resolveSourceSocketType(srcNode, fromHandle.id)
-              : null;
-            if (srcType) {
-              pendingWire = {
-                sourceNodeId: fromNode.id,
-                sourceHandle: fromHandle.id,
-                sourceType: srcType,
-              };
+            const originNode = nodes.find((n) => n.id === fromNode.id);
+            if (originNode && fromHandle.type === "target") {
+              const tgtType = resolveTargetSocketType(originNode, fromHandle.id);
+              if (tgtType) {
+                pendingWire = {
+                  kind: "into-target",
+                  targetNodeId: fromNode.id,
+                  targetHandle: fromHandle.id,
+                  targetType: tgtType,
+                };
+              }
+            } else if (originNode) {
+              const srcType = resolveSourceSocketType(originNode, fromHandle.id);
+              if (srcType) {
+                pendingWire = {
+                  kind: "from-source",
+                  sourceNodeId: fromNode.id,
+                  sourceHandle: fromHandle.id,
+                  sourceType: srcType,
+                };
+              }
             }
           }
           setNodePopup({ x: x + 4, y: y + 4, pendingWire });
@@ -2215,7 +2542,10 @@ function NodeEditor({
         // already works on plain drag via `selectionOnDrag`.
         multiSelectionKeyCode={["Shift", "Meta", "Control"]}
         selectionKeyCode={null}
-        fitView
+        // A pane remounting with a parked camera (kind round-trip /
+        // docs nav — paneCameraStash) restores it and skips the fit.
+        fitView={!stashedCamera}
+        defaultViewport={stashedCamera}
         // Cap the initial fit so a project with a single small node (a fresh
         // "Layer 1", or an opened project whose graph is tiny) doesn't get
         // blown up toward maxZoom to fill the viewport — that reads as "opened
@@ -2238,7 +2568,12 @@ function NodeEditor({
           [100000, 100000],
         ]}
         proOptions={{ hideAttribution: true }}
-        colorMode="dark"
+        // Follows the editor theme rather than being pinned to "dark".
+        // React Flow keys its own palette off this (.react-flow.dark), and
+        // leaving it hardcoded left the whole pane on xyflow's #141414 while
+        // every panel around it went light. The pane fill and dot colour are
+        // pinned to our ramp in globals.css regardless.
+        colorMode={themeMode}
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
         <SimulationZoneUnderlay nodes={nodes} />
@@ -2295,20 +2630,20 @@ function NodeEditor({
         </>
       )}
 
-      {/* Fixed corner action stack — pinned upper-left of the editor.
+      {/* Fixed corner action row — pinned upper-right of the editor.
           Designed for touch / pencil where the equivalent gestures
           (Shift+A, Backspace) aren't reachable without a hardware
           keyboard. The "+" opens the node search at the pen's last
-          hover position (or near the button on mouse). The "−"
+          hover position (or near the button on mouse). The trash
           deletes whatever's selected (nodes or edges); falls back
           to no-op when nothing is selected. */}
       <div
         style={{
           position: "absolute",
           top: 5,
-          left: 5,
+          right: 5,
           display: "flex",
-          flexDirection: "column",
+          flexDirection: "row",
           gap: 4,
           zIndex: 30,
         }}
@@ -2317,9 +2652,10 @@ function NodeEditor({
           title="Add node"
           onTap={() => {
             // Prefer the most recent pen-hover position (pen users
-            // expect the popup at their tip); fall back to a spot
-            // just below the button so the popup is reachable on
-            // mouse / touch.
+            // expect the popup at their tip); fall back to the upper
+            // left of the pane on mouse / touch — the popup isn't
+            // edge-clamped, so anchoring it under the (right-pinned)
+            // button would push it off-screen.
             const wrapper = flowWrapperRef.current;
             const wrapperRect = wrapper?.getBoundingClientRect();
             let x: number;
@@ -2331,8 +2667,9 @@ function NodeEditor({
               x = wrapperRect.left + 36;
               y = wrapperRect.top + 36;
             } else {
-              x = window.innerWidth / 2;
-              y = window.innerHeight / 2;
+              const w = panelWin ?? window;
+              x = w.innerWidth / 2;
+              y = w.innerHeight / 2;
             }
             const flowPos = screenToFlowPosition({ x, y });
             onPanePointer?.(flowPos);
@@ -2364,12 +2701,12 @@ function NodeEditor({
               optical weight. Inline so we don't pull a new icon dep
               for one glyph. */}
           <svg
-            width={14}
-            height={14}
+            width={11}
+            height={11}
             viewBox="0 0 14 14"
             fill="none"
             stroke="currentColor"
-            strokeWidth={1.4}
+            strokeWidth={1.6}
             strokeLinecap="round"
             strokeLinejoin="round"
           >
@@ -2384,18 +2721,19 @@ function NodeEditor({
 
       {/* Scope breadcrumbs — root crumb is the project name, then one
           crumb per group in the current path. Click any crumb to jump
-          to that scope. Sits beside the corner action stack. */}
+          to that scope. Row height matches the corner action buttons
+          so both sit on the same optical baseline from top: 5. */}
       {breadcrumbs && breadcrumbs.length > 0 && onNavigateScope && (
         <div
           style={{
             position: "absolute",
             top: 5,
-            left: 40,
+            left: 10,
             display: "flex",
             alignItems: "center",
             gap: 4,
             zIndex: 30,
-            height: 28,
+            height: 22,
           }}
         >
           {breadcrumbs.map((crumb, i) => {
@@ -2405,11 +2743,11 @@ function NodeEditor({
                 {i > 0 && (
                   // Chevron separator between crumbs.
                   <svg
-                    width={9}
-                    height={9}
+                    width={8}
+                    height={8}
                     viewBox="0 0 9 9"
                     fill="none"
-                    stroke="#52525b"
+                    stroke="var(--tb-n-10)"
                     strokeWidth={1.4}
                     strokeLinecap="round"
                     strokeLinejoin="round"
@@ -2441,7 +2779,11 @@ function NodeEditor({
           // Thread the pending-wire context through the popup so the
           // parent's onAddNode can auto-connect the new node back to
           // the source handle the user dragged from.
-          onAdd={(type) => onAddNode(type, nodePopup.pendingWire)}
+          onAdd={(type) => {
+            const addedId = onAddNode(type, nodePopup.pendingWire);
+            // Single plain nodes come back grabbed, ready to place.
+            if (addedId) pendingGAfterAddRef.current = addedId;
+          }}
           onClose={closeNodePopup}
         />
       )}
@@ -2457,6 +2799,26 @@ function NodeEditor({
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={closeContextMenu}
+          {...(() => {
+            // Tint / bold (073026): Blender's rule — right-clicking a node
+            // that's part of the selection styles the whole selection,
+            // otherwise just the clicked node. Reroutes have no chrome to
+            // style, so the rows hide for them.
+            if (!onStyleNodes) return {};
+            const clicked = nodes.find((n) => n.id === contextMenu.nodeId);
+            if (!clicked || clicked.data.defType === REROUTE_TYPE) return {};
+            const targets = clicked.selected
+              ? nodes.filter((n) => n.selected && !n.hidden).map((n) => n.id)
+              : [clicked.id];
+            return {
+              tint: clicked.data.tint ?? null,
+              bold: !!clicked.data.bold,
+              onSetTint: (hex: string | null) =>
+                onStyleNodes(targets, { tint: hex }),
+              onToggleBold: () =>
+                onStyleNodes(targets, { bold: !clicked.data.bold }),
+            };
+          })()}
           onCopy={
             onCopyNodes
               ? () => {
@@ -2495,6 +2857,26 @@ function NodeEditor({
               ? () => onEditWithAINode(contextMenu.nodeId)
               : undefined
           }
+          onMakeEditable={(() => {
+            if (!onMakeEditableNode) return undefined;
+            const d = nodes.find((n) => n.id === contextMenu.nodeId)?.data;
+            if (!d) return undefined;
+            // Spline Draw is already editable; group/layer shells dissolve
+            // at flatten (no eval-cache entry to bake), reroutes likewise.
+            if (
+              d.defType === "spline-draw" ||
+              d.defType === GROUP_TYPE ||
+              d.defType === LAYER_TYPE ||
+              d.defType === REROUTE_TYPE
+            )
+              return undefined;
+            const hasSpline =
+              d.primaryOutput === "spline" ||
+              d.auxOutputs.some((a) => a.type === "spline" && !a.disabled);
+            return hasSpline
+              ? () => onMakeEditableNode(contextMenu.nodeId)
+              : undefined;
+          })()}
         />
       )}
     </div>
@@ -2510,6 +2892,11 @@ function NodeContextMenu({
   onDuplicate,
   onDetach,
   onEditWithAI,
+  onMakeEditable,
+  tint,
+  bold,
+  onSetTint,
+  onToggleBold,
 }: {
   x: number;
   y: number;
@@ -2519,19 +2906,38 @@ function NodeContextMenu({
   onDuplicate?: () => void;
   onDetach?: () => void;
   onEditWithAI?: () => void;
+  onMakeEditable?: () => void;
+  // Cosmetic styling (073026): current values of the clicked node, shown
+  // as the checked swatch / Bold check. Absent handlers hide the rows.
+  tint?: string | null;
+  bold?: boolean;
+  onSetTint?: (hex: string | null) => void;
+  onToggleBold?: () => void;
 }) {
+  const panelWin = usePanelWindow();
+  const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const onDown = () => onClose();
+    const onDown = (e: MouseEvent) => {
+      // Presses INSIDE the menu must not close it: this capture listener
+      // fires before the item's own events, and closing here unmounts the
+      // button between mousedown and mouseup — its onClick never fires
+      // (every menu action was silently dead before this check). Same
+      // containment rule as VersionMenu / the param-control popovers;
+      // the item's onClick calls onClose itself after running.
+      if (menuRef.current?.contains(e.target as globalThis.Node)) return;
+      onClose();
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    // Any click anywhere closes. Use capture so it fires before other
+    // Any click outside closes. Use capture so it fires before other
     // handlers potentially consume the event.
-    window.addEventListener("mousedown", onDown, true);
-    window.addEventListener("keydown", onKey);
+    const win = panelWin ?? window;
+    win.addEventListener("mousedown", onDown, true);
+    win.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("mousedown", onDown, true);
-      window.removeEventListener("keydown", onKey);
+      win.removeEventListener("mousedown", onDown, true);
+      win.removeEventListener("keydown", onKey);
     };
   }, [onClose]);
 
@@ -2541,32 +2947,112 @@ function NodeContextMenu({
     onClick?: () => void;
   }> = [
     ...(onEditWithAI ? [{ label: "✦ Edit with AI", onClick: onEditWithAI }] : []),
+    // Only offered on nodes with a spline-typed output (gating at the call
+    // site) — bakes the evaluated spline into an editable Spline Draw node.
+    ...(onMakeEditable
+      ? [{ label: "Make Editable", onClick: onMakeEditable }]
+      : []),
     { label: "Copy", shortcut: "⌘C", onClick: onCopy },
     { label: "Paste", shortcut: "⌘V", onClick: onPaste },
     { label: "Duplicate", onClick: onDuplicate },
     { label: "Detach", shortcut: "⌘-drag", onClick: onDetach },
+    // Bold outline toggle — check shows the clicked node's current state.
+    ...(onToggleBold
+      ? [{ label: "Bold", shortcut: bold ? "✓" : undefined, onClick: onToggleBold }]
+      : []),
   ];
 
   return (
     <div
+      ref={menuRef}
       onMouseDown={(e) => e.stopPropagation()}
       style={{
         position: "fixed",
         left: x,
         top: y,
         minWidth: 180,
-        background: "#18181b",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 4,
         boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
         padding: 4,
         zIndex: 2000,
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
         userSelect: "none",
       }}
     >
+      {onSetTint && (
+        <div
+          style={{
+            display: "flex",
+            gap: 5,
+            alignItems: "center",
+            padding: "6px 10px",
+            borderBottom: "1px solid var(--tb-n-7)",
+            marginBottom: 4,
+          }}
+        >
+          {NODE_TINTS.map((hex) => (
+            <button
+              key={hex}
+              title="Tint node"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSetTint(hex);
+                onClose();
+              }}
+              style={{
+                width: 15,
+                height: 15,
+                borderRadius: 8,
+                padding: 0,
+                cursor: "pointer",
+                background: hex,
+                border:
+                  tint === hex
+                    ? "2px solid var(--tb-n-16)"
+                    : "1px solid color-mix(in srgb, var(--tb-lift) 18%, transparent)",
+              }}
+            />
+          ))}
+          <button
+            title="Clear tint"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSetTint(null);
+              onClose();
+            }}
+            style={{
+              width: 15,
+              height: 15,
+              borderRadius: 8,
+              padding: 0,
+              cursor: "pointer",
+              background: "transparent",
+              border: "1px solid var(--tb-n-10)",
+              position: "relative",
+              overflow: "hidden",
+            }}
+          >
+            {/* diagonal "none" slash */}
+            <span
+              style={{
+                position: "absolute",
+                left: -2,
+                right: -2,
+                top: "50%",
+                height: 1,
+                background: "var(--tb-n-11)",
+                transform: "rotate(-45deg)",
+              }}
+            />
+          </button>
+        </div>
+      )}
       {items.map((it, i) => {
         const disabled = !it.onClick;
         return (
@@ -2590,7 +3076,7 @@ function NodeContextMenu({
               padding: "4px 10px",
               background: "transparent",
               border: "none",
-              color: disabled ? "#52525b" : "#e5e7eb",
+              color: disabled ? "var(--tb-n-10)" : "var(--tb-n-16)",
               textAlign: "left",
               fontFamily: "inherit",
               fontSize: "inherit",
@@ -2600,7 +3086,7 @@ function NodeContextMenu({
             onMouseEnter={(e) => {
               if (!disabled)
                 (e.currentTarget as HTMLButtonElement).style.background =
-                  "#1e3a8a";
+                  "var(--tb-a-blue-900)";
             }}
             onMouseLeave={(e) => {
               (e.currentTarget as HTMLButtonElement).style.background =
@@ -2611,7 +3097,7 @@ function NodeContextMenu({
             {it.shortcut && (
               <span
                 style={{
-                  color: disabled ? "#3f3f46" : "#71717a",
+                  color: disabled ? "var(--tb-n-9)" : "var(--tb-n-11)",
                   fontSize: 10,
                 }}
               >
@@ -2696,21 +3182,21 @@ function BreadcrumbChip({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        height: 22,
+        height: 18,
         maxWidth: 160,
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
         borderRadius: 999,
-        padding: "0 11px",
-        background: current ? "#26262b" : hover ? "#26262b" : "#1c1c1f",
+        padding: "0 8px",
+        background: current ? "var(--tb-n-7)" : hover ? "var(--tb-n-7)" : "var(--tb-n-4)",
         border: `1px solid ${
-          current ? "#52525b" : hover ? "#52525b" : "#3f3f46"
+          current ? "var(--tb-n-10)" : hover ? "var(--tb-n-10)" : "var(--tb-n-9)"
         }`,
-        color: current ? "#e1e1e1" : hover ? "#e1e1e1" : "#8d9199",
-        fontFamily: "ui-monospace, monospace",
-        fontSize: 11,
-        lineHeight: "20px",
+        color: current ? "var(--tb-n-16)" : hover ? "var(--tb-n-16)" : "var(--tb-n-12)",
+        fontFamily: "var(--ui-font)",
+        fontSize: 10,
+        lineHeight: "16px",
         cursor: current ? "default" : "pointer",
         touchAction: "manipulation",
         userSelect: "none",
@@ -2744,14 +3230,14 @@ function CornerActionButton({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        width: 28,
-        height: 28,
-        borderRadius: 6,
-        background: hover ? "#26262b" : "#1c1c1f",
-        border: `1px solid ${hover ? "#52525b" : "#3f3f46"}`,
-        color: hover ? "#e1e1e1" : "#8d9199",
-        fontFamily: "ui-monospace, monospace",
-        fontSize: 18,
+        width: 22,
+        height: 22,
+        borderRadius: 5,
+        background: hover ? "var(--tb-n-7)" : "var(--tb-n-4)",
+        border: `1px solid ${hover ? "var(--tb-n-10)" : "var(--tb-n-9)"}`,
+        color: hover ? "var(--tb-n-16)" : "var(--tb-n-12)",
+        fontFamily: "var(--ui-font)",
+        fontSize: 15,
         lineHeight: 1,
         cursor: "pointer",
         display: "flex",
@@ -2770,7 +3256,7 @@ function CornerActionButton({
 
 // Floating Apple Pencil hover cursor — a small ring at the pen tip.
 // Purely visual (pointer-events: none) — the actual add-node trigger
-// is the fixed "+" button in the upper-left of the editor pane,
+// is the fixed "+" button in the upper-right of the editor pane,
 // which competes less with React Flow's gesture handling.
 //
 // Mounts inside the node-editor wrapper (which is position: relative)
@@ -2801,8 +3287,8 @@ function PenHoverCursor({
         marginLeft: -9,
         marginTop: -9,
         borderRadius: "50%",
-        border: "1.5px solid rgba(255, 255, 255, 0.85)",
-        background: "rgba(255, 255, 255, 0.08)",
+        border: "1.5px solid color-mix(in srgb, var(--tb-lift) 85%, transparent)",
+        background: "color-mix(in srgb, var(--tb-lift) 8%, transparent)",
         pointerEvents: "none",
         zIndex: 60,
       }}
@@ -2848,8 +3334,8 @@ function ConnectDropRing({
         marginLeft: -size / 2,
         marginTop: -size / 2,
         borderRadius: "50%",
-        border: `2px solid ${over ? "#93c5fd" : "rgba(96, 165, 250, 0.75)"}`,
-        background: over ? "rgba(96, 165, 250, 0.18)" : "rgba(96, 165, 250, 0.07)",
+        border: `2px solid ${over ? "var(--tb-a-blue-300)" : "color-mix(in srgb, var(--tb-a-blue-400) 75%, transparent)"}`,
+        background: over ? "color-mix(in srgb, var(--tb-a-blue-400) 18%, transparent)" : "color-mix(in srgb, var(--tb-a-blue-400) 7%, transparent)",
         boxShadow: over ? "0 0 14px 2px rgba(96, 165, 250, 0.7)" : "none",
         opacity: shown ? 1 : 0,
         transition:
@@ -2900,7 +3386,7 @@ function NodeConnectLine({
         y1={y1 - rect.top}
         x2={x2 - rect.left}
         y2={y2 - rect.top}
-        stroke={over ? "#93c5fd" : "rgba(96, 165, 250, 0.85)"}
+        stroke={over ? "var(--tb-a-blue-300)" : "color-mix(in srgb, var(--tb-a-blue-400) 85%, transparent)"}
         strokeWidth={2}
         strokeLinecap="round"
       />

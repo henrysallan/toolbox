@@ -15,17 +15,19 @@ import {
 } from "@/engine/spline-math";
 import {
   applyForceCpu,
+  authoredToPxY,
   buildSpatialHash,
   cellStart,
   evenPolylinePoints,
   fillAttrFromMap,
   packColliders,
+  pxToAuthoredY,
   readMapBuffer,
   resolveBoundsCpu,
   resolveCollidersCpu,
   sampleMap,
   samplePolylineAt,
-  scaleSubpath,
+  subpathToCanvasPx,
   type MapCacheEntry,
   type MaskColliderCacheEntry,
   type PackedCollider,
@@ -43,18 +45,23 @@ import { makePoints } from "@/engine/points";
 // shared with the Rigid Body Simulator) mirror that shader's math
 // exactly so a collider behaves identically in every sim.
 //
-// Two coordinate spaces, deliberately:
-//   - The solver (constraints, rest lengths) runs in CANVAS-PIXEL space,
-//     Y-down, so segment spacing and stiffness are isotropic on
-//     non-square canvases (the spline-offset-resolve precedent).
-//   - Force/collider/bounds response runs in normalized [0,1]² UV space,
-//     converted per particle per substep, because the shared descriptors
-//     are specified in UV (matching the Particle Simulator verbatim).
+// Three coordinate spaces, deliberately (see sim-kernel.ts header):
+//   - Geometry sockets carry AUTHORED coordinates (engine/aspect.ts) —
+//     the space splines/points are stored and rendered in.
+//   - The solver (constraints, rest lengths, self-collision) runs in
+//     TRUE canvas-pixel space, Y-down, via the rasterizer's mapping
+//     (subpathToCanvasPx), so segment spacing, stiffness, and thickness
+//     are isotropic ON SCREEN at any canvas aspect.
+//   - Canvas bounds, mask colliders, and property maps use canvas UV;
+//     force and analytic-collider descriptors are evaluated in authored
+//     coordinates (matching the Particle Simulator verbatim).
 //
 // State is session-only (bake convention): seeded from the input spline
-// on reset, advanced every eval. Reset = seed-relevant param change,
-// input TOPOLOGY change (subpath/anchor counts — shape animation does
-// not reset), canvas resize, or scene-time wrap.
+// on reset, advanced on PLAYBACK evals only (the house sim contract —
+// paused evals re-emit output without stepping, so a parked playhead
+// holds its pose). Reset = seed-relevant param change, input TOPOLOGY
+// change (subpath/anchor counts — shape animation does not reset),
+// canvas resize, or scene-time wrap.
 
 const MAX_FORCE_SLOTS = 6;
 const MAX_COLLIDER_SLOTS = 6;
@@ -147,8 +154,8 @@ function stateKey(nodeId: string): string {
 }
 
 // ---- seeding -------------------------------------------------------
-// (scaleSubpath / evenPolylinePoints / samplePolylineAt live in the
-// shared sim kernel.)
+// (subpathToCanvasPx / evenPolylinePoints / samplePolylineAt live in
+// the shared sim kernel.)
 
 function seedState(
   src: SplineValue,
@@ -170,7 +177,7 @@ function seedState(
   for (let si = 0; si < src.subpaths.length; si++) {
     const sub = src.subpaths[si];
     if (sub.anchors.length < 2) continue;
-    const pxSub = scaleSubpath(sub, W, H);
+    const pxSub = subpathToCanvasPx(sub, W, H);
     const m = measureSubpath(pxSub);
     if (m.total <= 1e-3) continue;
     const minCount = sub.closed ? 3 : 2;
@@ -762,6 +769,7 @@ export const ropeSimulatorNode: NodeDefinition = {
     const src = inputs.splines;
     const W = Math.max(1, ctx.width);
     const H = Math.max(1, ctx.height);
+    const aspect = W / H;
     const key = stateKey(nodeId);
 
     if (!src || src.kind !== "spline" || src.subpaths.length === 0) {
@@ -814,6 +822,13 @@ export const ropeSimulatorNode: NodeDefinition = {
       ctx.state[key] = st;
     }
     st = st!;
+    // Step gating — the house sim contract (matter-simulator precedent):
+    // paused evals (param tweaks, graph edits, re-renders at a parked
+    // playhead) re-emit output without advancing, so frame 0 keeps its
+    // seed pose and the near-zero blind spot of the wrap check above
+    // can't accumulate drift.
+    const active =
+      ctx.playing || (ctx.offline && ctx.time > st.lastTime + 1e-6);
     st.lastTime = ctx.time;
 
     // Property maps. Baked maps sample once at (re)seed, at rest
@@ -853,10 +868,11 @@ export const ropeSimulatorNode: NodeDefinition = {
       }
       // Point capture: each input point grabs the nearest still-free
       // particle within pin_radius (greedy, one particle per point).
+      // Points are authored-space, like the splines.
       if (pinPts) {
         for (let k = 0; k < pinPts.count; k++) {
           const px = pinPts.positions[k * 2] * W;
-          const py = pinPts.positions[k * 2 + 1] * H;
+          const py = authoredToPxY(pinPts.positions[k * 2 + 1], W, H);
           let best = -1;
           let bestD = pinRadius;
           for (let i = 0; i < st.count; i++) {
@@ -928,7 +944,11 @@ export const ropeSimulatorNode: NodeDefinition = {
         const k = st.pinPointIdx[i];
         if (k < 0 || k >= pinPts.count) continue;
         pos[i * 2] = prev[i * 2] = pinPts.positions[k * 2] * W;
-        pos[i * 2 + 1] = prev[i * 2 + 1] = pinPts.positions[k * 2 + 1] * H;
+        pos[i * 2 + 1] = prev[i * 2 + 1] = authoredToPxY(
+          pinPts.positions[k * 2 + 1],
+          W,
+          H
+        );
       }
     }
     if (followInput) {
@@ -943,7 +963,7 @@ export const ropeSimulatorNode: NodeDefinition = {
         let dense = denseCache.get(si);
         if (!dense) {
           const rs = resampleSubpath(
-            scaleSubpath(sub, W, H),
+            subpathToCanvasPx(sub, W, H),
             Math.min(2048, Math.max(sub.anchors.length * 8, 32))
           );
           dense = rs.anchors.map((a) => a.pos);
@@ -955,10 +975,12 @@ export const ropeSimulatorNode: NodeDefinition = {
       }
     }
 
-    for (let s = 0; s < substeps; s++) {
-      // Integrate: recover velocity from Verlet positions (UV/sec so
-      // the shared force descriptors keep Particle Simulator units),
-      // damp, apply gravity + forces, advance.
+    const stepCount = active ? substeps : 0;
+    for (let s = 0; s < stepCount; s++) {
+      // Integrate: recover velocity from Verlet positions (AUTHORED
+      // units/sec — both axes are W px, so the shared force descriptors
+      // keep Particle Simulator units at any aspect), damp, apply
+      // gravity + forces at the particle's authored position, advance.
       for (let i = 0; i < count; i++) {
         if (invMass[i] === 0) {
           prev[i * 2] = pos[i * 2];
@@ -966,16 +988,16 @@ export const ropeSimulatorNode: NodeDefinition = {
           continue;
         }
         vel[0] = ((pos[i * 2] - prev[i * 2]) / (h * W)) * dampFactor;
-        vel[1] = ((pos[i * 2 + 1] - prev[i * 2 + 1]) / (h * H)) * dampFactor;
+        vel[1] = ((pos[i * 2 + 1] - prev[i * 2 + 1]) / (h * W)) * dampFactor;
         vel[0] += gx * h;
         vel[1] += gy * h;
         const u = pos[i * 2] / W;
-        const v = pos[i * 2 + 1] / H;
+        const v = pxToAuthoredY(pos[i * 2 + 1], W, H);
         for (const f of forces) applyForceCpu(f, u, v, vel, h, ctx.time);
         prev[i * 2] = pos[i * 2];
         prev[i * 2 + 1] = pos[i * 2 + 1];
         pos[i * 2] += vel[0] * h * W;
-        pos[i * 2 + 1] += vel[1] * h * H;
+        pos[i * 2 + 1] += vel[1] * h * W;
       }
 
       // Constraint relaxation (px space). Distance constraints are
@@ -1052,7 +1074,7 @@ export const ropeSimulatorNode: NodeDefinition = {
           pp[1] = pos[i * 2 + 1] / H;
           pp[2] = (pos[i * 2] - prev[i * 2]) / (h * W);
           pp[3] = (pos[i * 2 + 1] - prev[i * 2 + 1]) / (h * H);
-          const hit = resolveCollidersCpu(colliders, pp, fr, bo);
+          const hit = resolveCollidersCpu(colliders, pp, fr, bo, aspect);
           resolveBoundsCpu(boundsMode, boundsRestitution, pp, fr, bo);
           pos[i * 2] = pp[0] * W;
           pos[i * 2 + 1] = pp[1] * H;
@@ -1061,19 +1083,22 @@ export const ropeSimulatorNode: NodeDefinition = {
           // Sticky weld creation: a sticking particle anchors to the
           // collider it touched (circle: offset from center, so an
           // animated collider carries it; line: point re-projected
-          // onto the moving plane; mask: world point).
+          // onto the moving plane; mask: world point). Circle/line
+          // anchors live in the descriptors' AUTHORED space; mask
+          // anchors in canvas UV — weldKind disambiguates.
           const stickEff = stickiness * st.attrStick[i];
           if (hit >= 0 && stickEff > 0.001 && st.weldSlot[i] < 0) {
             const c = colliders[hit];
+            const av = 0.5 + (pp[1] - 0.5) / aspect;
             st.weldSlot[i] = hit;
             if (c.kind === "circle") {
               st.weldKind[i] = 0;
               st.weldAx[i] = pp[0] - c.cx;
-              st.weldAy[i] = pp[1] - c.cy;
+              st.weldAy[i] = av - c.cy;
             } else if (c.kind === "line") {
               st.weldKind[i] = 1;
               st.weldAx[i] = pp[0];
-              st.weldAy[i] = pp[1];
+              st.weldAy[i] = av;
             } else {
               st.weldKind[i] = 2;
               st.weldAx[i] = pp[0];
@@ -1122,7 +1147,8 @@ export const ropeSimulatorNode: NodeDefinition = {
           ay = st.weldAy[i];
         }
         const axPx = ax * W;
-        const ayPx = ay * H;
+        // Mask anchors are canvas UV; circle/line anchors are authored.
+        const ayPx = st.weldKind[i] === 2 ? ay * H : authoredToPxY(ay, W, H);
         const drift = Math.hypot(pos[i * 2] - axPx, pos[i * 2 + 1] - ayPx);
         if (drift > stickEff * stickStrength) {
           st.weldSlot[i] = -1;
@@ -1140,7 +1166,7 @@ export const ropeSimulatorNode: NodeDefinition = {
     // (1 − max endpoint weakness), so white tears at a touch and
     // unwired/black keeps the base threshold.
     const tearUv: number[] = [];
-    if (tearing) {
+    if (tearing && active) {
       for (let e = 0; e < st.edgeCount; e++) {
         if (!st.edgeAlive[e] || st.edgeRest[e] < 1e-6) continue;
         const a = st.edgeA[e];
@@ -1155,7 +1181,7 @@ export const ropeSimulatorNode: NodeDefinition = {
           st.edgeAlive[e] = 0;
           tearUv.push(
             (pos[a * 2] + pos[b * 2]) / 2 / W,
-            (pos[a * 2 + 1] + pos[b * 2 + 1]) / 2 / H
+            pxToAuthoredY((pos[a * 2 + 1] + pos[b * 2 + 1]) / 2, W, H)
           );
         }
       }
@@ -1211,7 +1237,7 @@ export const ropeSimulatorNode: NodeDefinition = {
         if (run.length < 2) continue;
         const uvPts: [number, number][] = run.map((g) => [
           pos[g * 2] / W,
-          pos[g * 2 + 1] / H,
+          pxToAuthoredY(pos[g * 2 + 1], W, H),
         ]);
         const sp: SplineSubpath =
           outputMode === "polyline"
@@ -1231,7 +1257,7 @@ export const ropeSimulatorNode: NodeDefinition = {
       const pts = makePoints(count, { withGroupIndices: true });
       for (let i = 0; i < count; i++) {
         pts.positions[i * 2] = pos[i * 2] / W;
-        pts.positions[i * 2 + 1] = pos[i * 2 + 1] / H;
+        pts.positions[i * 2 + 1] = pxToAuthoredY(pos[i * 2 + 1], W, H);
       }
       for (const c of st.chains) {
         for (let i = 0; i < c.count; i++) {

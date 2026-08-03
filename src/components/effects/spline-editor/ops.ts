@@ -13,6 +13,8 @@ import {
   autoSmoothHandles,
   bezierAt,
   cutSubpathAt,
+  harmonizeAnchor,
+  mintAnchorId,
   nearestTOnCubic,
   reverseSubpathAnchors,
   splitSegmentAnchors,
@@ -52,11 +54,22 @@ export function makeSplineOps(env: SplineEditorEnv) {
     env.setPenSealed(false);
   };
 
+  // Select every anchor of a subpath (defaults to the active one) — the
+  // double-click-a-segment / double-click-a-subpath "select the whole path"
+  // gesture. Takes an explicit index because the caller may be activating a
+  // different subpath in the same batch (activeSubpathRef only catches up on
+  // the next render).
+  const selectAllAnchors = (subpathIndex?: number) => {
+    const idx = subpathIndex ?? env.activeSubpathRef.current;
+    const anchors = subpathsOf(env.valueRef.current)[idx]?.anchors ?? [];
+    env.setSelected(new Set(anchors.map((_, i) => i)));
+  };
+
   const addAnchorAt = (nx: number, ny: number) => {
     const cur = env.valueRef.current;
     const anchors = readAnchors(cur);
     const next = withSubpathPatch(cur, {
-      anchors: [...anchors, { pos: [nx, ny] }],
+      anchors: [...anchors, { id: mintAnchorId(), pos: [nx, ny] }],
     });
     env.onChangeRef.current(next);
     return anchors.length;
@@ -393,6 +406,7 @@ export function makeSplineOps(env: SplineEditorEnv) {
       sy = s;
     }
     scaleWholePath(d.startValue, [pivotX, pivotY], sx, sy);
+    return { sx, sy }; // applied scale, for the drag HUD readout
   };
 
   const deleteAnchorIndices = (indices: Set<number>) => {
@@ -445,7 +459,7 @@ export function makeSplineOps(env: SplineEditorEnv) {
     const subs = subpathsOf(cur);
     const newSubs: SplineSubpath[] = [
       ...subs,
-      { anchors: [{ pos: [nx, ny] }], closed: false },
+      { anchors: [{ id: mintAnchorId(), pos: [nx, ny] }], closed: false },
     ];
     const newActive = newSubs.length - 1;
     env.onChangeRef.current({ ...cur, subpaths: newSubs });
@@ -454,6 +468,33 @@ export function makeSplineOps(env: SplineEditorEnv) {
     // We're now drawing this fresh subpath — clear any prior "sealed" state.
     env.setPenSealed(false);
     return newActive;
+  };
+
+  // Commit a finished subpath (a pencil stroke, a stamped primitive) in ONE
+  // onChange — so one undo entry. Reuses the active subpath when it exists
+  // and is still empty (a fresh node's seed subpath) so we don't strand an
+  // orphan; otherwise appends. The new subpath becomes active, the anchor
+  // selection clears, and the pen unseals so it can extend the result.
+  const appendSubpath = (anchors: SplineAnchor[], closed: boolean) => {
+    const cur = env.valueRef.current;
+    const subs = subpathsOf(cur);
+    const activeIdx = env.activeSubpathRef.current;
+    // An out-of-range active index — e.g. a stale index after undo, before
+    // the clamp effect runs — must NOT read as "empty", or the map below
+    // matches nothing and the whole shape is dropped.
+    const reuseEmpty =
+      activeIdx >= 0 &&
+      activeIdx < subs.length &&
+      (subs[activeIdx]?.anchors.length ?? 0) === 0;
+    const newSubs: SplineSubpath[] = reuseEmpty
+      ? subs.map((s, i) => (i === activeIdx ? { ...s, anchors, closed } : s))
+      : [...subs, { anchors, closed }];
+    const newActive = reuseEmpty ? activeIdx : newSubs.length - 1;
+    env.onChangeRef.current({ ...cur, subpaths: newSubs });
+    env.setActiveSubpath(newActive);
+    env.setSelected(new Set());
+    env.setPenSealed(false);
+    env.lastAnchorRef.current = anchors.length - 1;
   };
 
   // Remove the active subpath (keeping ≥ 1 — never an empty subpaths array).
@@ -542,6 +583,9 @@ export function makeSplineOps(env: SplineEditorEnv) {
         out.push(env.normToPx(anchors[i].pos));
       }
     }
+    // Other Spline Draw nodes' anchors (multi-node ghosts, spec 072726 M5) —
+    // empty when ghosts are hidden.
+    for (const p of env.ghostSnapPx) out.push(p);
     return out;
   };
 
@@ -564,10 +608,27 @@ export function makeSplineOps(env: SplineEditorEnv) {
     if (patches.size) patchAnchors(patches);
   };
 
+  // Harmonize (spec 080226 M2): slide each qualifying target anchor along
+  // its handle axis to G2 curvature continuity (geometry.ts owns the math).
+  // Non-qualifying anchors (broken, endpoints, straight sides) skip
+  // silently; one patchAnchors for the lot.
+  const harmonizeAnchors = (index: number) => {
+    const cur = env.valueRef.current;
+    const sub = subpathsOf(cur)[env.activeSubpathRef.current];
+    if (!sub) return;
+    const patches = new Map<number, Partial<SplineAnchor>>();
+    for (const idx of targetsFor(index)) {
+      const patch = harmonizeAnchor(sub.anchors, sub.closed, idx);
+      if (patch) patches.set(idx, patch);
+    }
+    if (patches.size) patchAnchors(patches);
+  };
+
   return {
     readAnchors,
     withSubpathPatch,
     selectSubpath,
+    selectAllAnchors,
     addAnchorAt,
     findInsertOnSpline,
     insertAnchorOnSegment,
@@ -581,10 +642,12 @@ export function makeSplineOps(env: SplineEditorEnv) {
     deleteAnchor,
     toggleClosed,
     startNewSubpath,
+    appendSubpath,
     deleteActiveSubpath,
     toggleCornerSmooth,
     targetsFor,
     applyHandleOp,
+    harmonizeAnchors,
     anchorSnapTargets,
     applyShapeBuilder,
     cutAtAnchor,

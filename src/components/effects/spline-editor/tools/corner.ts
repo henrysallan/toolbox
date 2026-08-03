@@ -92,6 +92,41 @@ export function cornerWidgets(
   return out;
 }
 
+// The radius drag's target set: the selected eligible corners when the
+// grabbed one is part of a multi-selection, else just the grabbed corner.
+function cornerTargets(
+  ops: SplineOps,
+  env: SplineEditorEnv,
+  index: number
+): number[] {
+  const anchors = ops.readAnchors(env.valueRef.current);
+  const sub = subpathsOf(env.valueRef.current)[env.activeSubpathRef.current];
+  const closed = sub?.closed ?? false;
+  const sel = env.selectedRef.current;
+  return sel.has(index) && sel.size > 1
+    ? [...sel].filter((i) => cornerEligible(anchors, closed, i))
+    : [index];
+}
+
+// Alt-click on a Live Corners widget cycles the corner STYLE (spec 080226
+// M1): round → chamfer → scoop → round, applied to the same target set the
+// radius drag uses. `undefined` = round, so untouched saves stay field-free.
+export function cycleCornerStyle(
+  ops: SplineOps,
+  env: SplineEditorEnv,
+  index: number
+) {
+  const anchors = ops.readAnchors(env.valueRef.current);
+  const cur = anchors[index]?.cornerStyle;
+  const next: SplineAnchor["cornerStyle"] =
+    cur === undefined ? "chamfer" : cur === "chamfer" ? "scoop" : undefined;
+  const patch = new Map<number, Partial<SplineAnchor>>();
+  for (const i of cornerTargets(ops, env, index)) {
+    patch.set(i, { cornerStyle: next });
+  }
+  ops.patchAnchors(patch);
+}
+
 // Pointerdown on a widget: the drag targets the grabbed corner plus every
 // other selected eligible corner (multi-select apply — one patch per move).
 export function beginCornerRadiusDrag(
@@ -100,19 +135,11 @@ export function beginCornerRadiusDrag(
   index: number,
   e: PointerLike
 ) {
-  const anchors = ops.readAnchors(env.valueRef.current);
-  const sub = subpathsOf(env.valueRef.current)[env.activeSubpathRef.current];
-  const closed = sub?.closed ?? false;
-  const sel = env.selectedRef.current;
-  const targets =
-    sel.has(index) && sel.size > 1
-      ? [...sel].filter((i) => cornerEligible(anchors, closed, i))
-      : [index];
   env.lastAnchorRef.current = index;
   env.setDrag({
     kind: "corner-radius",
     index,
-    targets,
+    targets: cornerTargets(ops, env, index),
     startClient: { x: e.clientX, y: e.clientY },
   });
 }
@@ -128,16 +155,16 @@ export function cornerRadiusDragMove(
   env: SplineEditorEnv,
   drag: Extract<DragState, { kind: "corner-radius" }>,
   e: PointerEvent
-) {
+): number | null {
   const rect = env.rect;
-  if (!rect) return;
+  if (!rect) return null;
   const anchors = ops.readAnchors(env.valueRef.current);
   const b = cornerBisectorPx(
     { rect, normToPx: env.normToPx },
     anchors,
     drag.index
   );
-  if (!b) return;
+  if (!b) return null;
   const distPx =
     (e.clientX - b.anchor.x) * b.bis[0] + (e.clientY - b.anchor.y) * b.bis[1];
   let radius = Math.max(0, (distPx - CORNER_WIDGET_OFFSET) / rect.width);
@@ -156,4 +183,5 @@ export function cornerRadiusDragMove(
   const value = radius > 1e-4 ? radius : undefined;
   for (const i of drag.targets) patch.set(i, { cornerRadius: value });
   ops.patchAnchors(patch);
+  return value ?? 0; // applied radius, for the drag HUD readout
 }

@@ -1,7 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import { useStore, type Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
+import { getNodeDef } from "@/engine/registry";
 import type {
   ImageGroupValue,
   ImageValue,
@@ -41,6 +43,10 @@ export default function NodeInspectorPopup({ node, snapshot }: Props) {
   const x = node.position.x;
   const y = node.position.y;
   const nodeW = measured?.width ?? 200;
+  // What the node *is*, above what's currently flowing through it. Comes
+  // from the registry def (a handful of defs have none) — never from
+  // node.data, so a renamed node still explains itself.
+  const description = getNodeDef(node.data.defType)?.description;
 
   return (
     <div
@@ -55,12 +61,12 @@ export default function NodeInspectorPopup({ node, snapshot }: Props) {
         // measurement is straightforward.
         transform: "translateY(calc(-100% - 8px))",
         pointerEvents: "auto",
-        background: "#0a0a0a",
-        border: "1px solid #3f3f46",
+        background: "var(--tb-n-0)",
+        border: "1px solid var(--tb-n-9)",
         borderRadius: 4,
         boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
-        color: "#e5e7eb",
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        color: "var(--tb-n-16)",
+        fontFamily: "var(--code-font)",
         fontSize: 10,
         padding: 8,
         minWidth: 200,
@@ -79,29 +85,22 @@ export default function NodeInspectorPopup({ node, snapshot }: Props) {
           marginBottom: 6,
         }}
       >
-        <span style={{ color: "#a1a1aa", letterSpacing: 0.3 }}>inspect</span>
-        <button
-          onClick={() =>
-            window.dispatchEvent(
-              new CustomEvent("effect-node-toggle", {
-                detail: { id: node.id, kind: "toggleInspect" },
-              })
-            )
-          }
-          title="Close inspector"
+        <span style={{ color: "var(--tb-n-13)", letterSpacing: 0.3 }}>inspect</span>
+        <CloseButton nodeId={node.id} />
+      </div>
+      {description && (
+        <div
           style={{
-            background: "transparent",
-            border: "none",
-            color: "#71717a",
-            cursor: "pointer",
-            fontFamily: "inherit",
-            fontSize: 11,
-            padding: 0,
+            color: "var(--tb-n-13)",
+            lineHeight: 1.45,
+            marginBottom: 6,
+            paddingBottom: 6,
+            borderBottom: "1px solid var(--tb-n-7)",
           }}
         >
-          ✕
-        </button>
-      </div>
+          {description}
+        </div>
+      )}
       <Section label="inputs">
         {(() => {
           const entries = Object.entries(snapshot?.inputs ?? {});
@@ -137,6 +136,36 @@ export default function NodeInspectorPopup({ node, snapshot }: Props) {
   );
 }
 
+function CloseButton({ nodeId }: { nodeId: string }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={() =>
+        window.dispatchEvent(
+          new CustomEvent("effect-node-toggle", {
+            detail: { id: nodeId, kind: "toggleInspect" },
+          })
+        )
+      }
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title="Close inspector"
+      style={{
+        background: "transparent",
+        border: "none",
+        color: hover ? "var(--tb-n-16)" : "var(--tb-n-11)",
+        cursor: "pointer",
+        fontFamily: "inherit",
+        fontSize: 11,
+        padding: 0,
+        transition: "color 100ms ease",
+      }}
+    >
+      ✕
+    </button>
+  );
+}
+
 function Section({
   label,
   children,
@@ -148,7 +177,7 @@ function Section({
     <div style={{ marginBottom: 6 }}>
       <div
         style={{
-          color: "#52525b",
+          color: "var(--tb-n-10)",
           textTransform: "uppercase",
           letterSpacing: 0.5,
           fontSize: 9,
@@ -163,7 +192,7 @@ function Section({
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ color: "#52525b" }}>{children}</div>;
+  return <div style={{ color: "var(--tb-n-10)" }}>{children}</div>;
 }
 
 function SocketRow({
@@ -182,7 +211,7 @@ function SocketRow({
         padding: "2px 0",
       }}
     >
-      <span style={{ color: "#a1a1aa", minWidth: 56 }}>{label}</span>
+      <span style={{ color: "var(--tb-n-13)", minWidth: 56 }}>{label}</span>
       <ValueSummary value={value} />
     </div>
   );
@@ -193,7 +222,7 @@ function SocketRow({
 // previews on top of the same summary line.
 export function ValueSummary({ value }: { value: SocketValue | undefined }) {
   if (!value) {
-    return <span style={{ color: "#52525b" }}>—</span>;
+    return <span style={{ color: "var(--tb-n-10)" }}>—</span>;
   }
   switch (value.kind) {
     case "scalar":
@@ -232,7 +261,7 @@ export function ValueSummary({ value }: { value: SocketValue | undefined }) {
       // Runtime-only kinds (sdf, element, particles, …) — name the kind
       // rather than rendering an opaque "?".
       return (
-        <span style={{ color: "#a1a1aa" }}>
+        <span style={{ color: "var(--tb-n-13)" }}>
           {(value as { kind?: string }).kind ?? "?"}
         </span>
       );

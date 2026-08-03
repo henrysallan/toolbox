@@ -87,9 +87,9 @@ export default function AiRecipePanel({
         width: "100%",
         boxSizing: "border-box",
         overflow: "hidden",
-        background: "#0a0a0a",
-        fontFamily: "ui-monospace, monospace",
-        color: "#e5e7eb",
+        background: "var(--tb-n-0)",
+        fontFamily: "var(--ui-font)",
+        color: "var(--tb-n-16)",
         display: "flex",
         flexDirection: "column",
       }}
@@ -103,12 +103,12 @@ export default function AiRecipePanel({
           justifyContent: "space-between",
           gap: 8,
           padding: "10px 10px 8px",
-          borderBottom: "1px solid #18181b",
+          borderBottom: "1px solid var(--tb-n-3)",
         }}
       >
         <div
           style={{
-            color: "#a1a1aa",
+            color: "var(--tb-n-13)",
             fontSize: 10,
             textTransform: "uppercase",
             letterSpacing: 1,
@@ -118,7 +118,7 @@ export default function AiRecipePanel({
             minWidth: 0,
           }}
         >
-          <Sparkle color="#a78bfa" />
+          <Sparkle color="var(--tb-a-violet-400)" />
           <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {editing ? `Edit · ${editTarget!.name}` : "AI Recipe"}
           </span>
@@ -130,7 +130,7 @@ export default function AiRecipePanel({
               style={{
                 background: "transparent",
                 border: "none",
-                color: "#71717a",
+                color: "var(--tb-n-11)",
                 fontFamily: "inherit",
                 fontSize: 10,
                 textDecoration: "underline",
@@ -147,7 +147,7 @@ export default function AiRecipePanel({
             style={{
               background: "transparent",
               border: "none",
-              color: "#71717a",
+              color: "var(--tb-n-11)",
               fontFamily: "inherit",
               fontSize: 14,
               cursor: "pointer",
@@ -181,8 +181,8 @@ export default function AiRecipePanel({
                 maxWidth: "88%",
                 padding: "5px 9px",
                 borderRadius: 10,
-                background: "#27272a",
-                color: "#e5e7eb",
+                background: "var(--tb-n-7)",
+                color: "var(--tb-n-16)",
                 fontSize: 11,
                 lineHeight: 1.45,
               }}
@@ -194,14 +194,14 @@ export default function AiRecipePanel({
                 display: "flex",
                 gap: 5,
                 alignItems: "flex-start",
-                color: "#a1a1aa",
+                color: "var(--tb-n-13)",
                 fontSize: 11,
                 lineHeight: 1.45,
                 paddingLeft: 2,
               }}
             >
               <span style={{ marginTop: 1, flexShrink: 0 }}>
-                <Sparkle color="#a78bfa" />
+                <Sparkle color="var(--tb-a-violet-400)" />
               </span>
               <span>{t.summary}</span>
             </div>
@@ -211,8 +211,8 @@ export default function AiRecipePanel({
           const last = i === progress.length - 1;
           if (e.kind === "request")
             return (
-              <div key={i} style={{ display: "flex", gap: 6, alignItems: "center", color: "#71717a", fontSize: 11 }}>
-                {busy && last ? <Pulse /> : <span style={{ color: "#52525b" }}>→</span>}
+              <div key={i} style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--tb-n-11)", fontSize: 11 }}>
+                {busy && last ? <Pulse /> : <span style={{ color: "var(--tb-n-10)" }}>→</span>}
                 <span>Asking Claude{e.attempt > 1 ? ` · attempt ${e.attempt}` : ""}…</span>
               </div>
             );
@@ -224,11 +224,11 @@ export default function AiRecipePanel({
                   display: "flex",
                   gap: 6,
                   alignItems: "flex-start",
-                  color: "#8b8b94",
+                  color: "var(--tb-n-12)",
                   fontSize: 10.5,
                   lineHeight: 1.55,
-                  background: "#121212",
-                  border: "1px solid #1c1c1c",
+                  background: "var(--tb-n-2)",
+                  border: "1px solid var(--tb-n-4)",
                   borderRadius: 8,
                   padding: "6px 8px",
                 }}
@@ -241,19 +241,19 @@ export default function AiRecipePanel({
             return (
               <div key={i} style={{ color: "#d97706", fontSize: 10.5, lineHeight: 1.45 }}>
                 ✗ attempt {e.attempt}: {e.errors.length} issue{e.errors.length > 1 ? "s" : ""} — fixing
-                <div style={{ color: "#71717a", paddingLeft: 12, marginTop: 2 }}>{e.errors[0]}</div>
+                <div style={{ color: "var(--tb-n-11)", paddingLeft: 12, marginTop: 2 }}>{e.errors[0]}</div>
               </div>
             );
           if (e.kind === "applied")
             return (
-              <div key={i} style={{ color: "#22c55e", fontSize: 10.5 }}>
+              <div key={i} style={{ color: "var(--tb-a-green-500)", fontSize: 10.5 }}>
                 ✓ applied{e.summary ? ` — ${e.summary}` : ""}
               </div>
             );
           return null;
         })}
         {busy && progress.length === 0 && (
-          <div style={{ display: "flex", gap: 6, alignItems: "center", color: "#a78bfa", fontSize: 11 }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--tb-a-violet-400)", fontSize: 11 }}>
             <Pulse /> working…
           </div>
         )}
@@ -264,7 +264,7 @@ export default function AiRecipePanel({
         style={{
           flexShrink: 0,
           padding: "8px 10px 10px",
-          borderTop: "1px solid #18181b",
+          borderTop: "1px solid var(--tb-n-3)",
           display: "flex",
           flexDirection: "column",
           gap: 8,
@@ -272,7 +272,7 @@ export default function AiRecipePanel({
       >
         {error && (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <div style={{ color: "#ef4444", fontSize: 11, lineHeight: 1.5 }}>{error}</div>
+            <div style={{ color: "var(--tb-a-red-500)", fontSize: 11, lineHeight: 1.5 }}>{error}</div>
             {keyHint && (
               <button onClick={onOpenPreferences} style={smallBtn()}>
                 Open Preferences
@@ -283,8 +283,8 @@ export default function AiRecipePanel({
 
         <div
           style={{
-            background: "#141414",
-            border: `1px solid ${busy ? "#3f3f46" : "#27272a"}`,
+            background: "var(--tb-n-2)",
+            border: `1px solid ${busy ? "var(--tb-n-9)" : "var(--tb-n-7)"}`,
             borderRadius: 10,
             padding: 8,
           }}
@@ -312,7 +312,7 @@ export default function AiRecipePanel({
               background: "transparent",
               border: "none",
               outline: "none",
-              color: "#e5e7eb",
+              color: "var(--tb-n-16)",
               fontFamily: "inherit",
               fontSize: 12.5,
               lineHeight: 1.5,
@@ -332,14 +332,14 @@ export default function AiRecipePanel({
                 gap: 5,
                 padding: "3px 8px",
                 borderRadius: 999,
-                border: "1px solid #27272a",
-                background: "#18181b",
-                color: "#d4d4d8",
+                border: "1px solid var(--tb-n-7)",
+                background: "var(--tb-n-3)",
+                color: "var(--tb-n-15)",
                 fontSize: 11,
                 userSelect: "none",
               }}
             >
-              <Sparkle color="#a78bfa" /> Claude Opus 4.8
+              <Sparkle color="var(--tb-a-violet-400)" /> Claude Opus 4.8
             </div>
             <div style={{ flex: 1 }} />
             <button
@@ -352,8 +352,8 @@ export default function AiRecipePanel({
                 padding: "5px 12px",
                 borderRadius: 999,
                 border: "none",
-                background: "#ede9fe",
-                color: "#3b0764",
+                background: "var(--tb-t-violet-l-2)",
+                color: "var(--tb-t-magenta-d-0)",
                 fontFamily: "inherit",
                 fontSize: 11,
                 fontWeight: 600,
@@ -361,7 +361,7 @@ export default function AiRecipePanel({
                 opacity: busy || !prompt.trim() ? 0.45 : 1,
               }}
             >
-              <Sparkle color="#3b0764" /> {busy ? (editing ? "Applying…" : "Generating…") : editing ? "Apply" : "Generate"}
+              <Sparkle color="var(--tb-t-magenta-d-0)" /> {busy ? (editing ? "Applying…" : "Generating…") : editing ? "Apply" : "Generate"}
             </button>
           </div>
         </div>
@@ -374,7 +374,7 @@ export default function AiRecipePanel({
               style={{
                 background: "transparent",
                 border: "none",
-                color: "#d4d4d8",
+                color: "var(--tb-n-15)",
                 fontFamily: "inherit",
                 fontSize: 10.5,
                 textDecoration: "underline",
@@ -397,8 +397,8 @@ function smallBtn(): React.CSSProperties {
     alignSelf: "flex-start",
     padding: "4px 10px",
     background: "transparent",
-    border: "1px solid #3f3f46",
-    color: "#e5e7eb",
+    border: "1px solid var(--tb-n-9)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 11,
     borderRadius: 3,

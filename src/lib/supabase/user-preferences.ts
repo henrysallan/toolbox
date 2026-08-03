@@ -109,6 +109,49 @@ export async function saveCloudBrushPresets(
   return true;
 }
 
+// --- Layout presets (window tiling, 072726_window-tiling.md) --------------
+// Stored in a dedicated `layout_presets jsonb` column (migration:
+// specdocs/user-preferences-layout-presets-migration.sql). Kept out of
+// loadUserPreferences' select for the same reason as brush_presets: an
+// unapplied migration would take the API-key prefs down with it. Callers
+// treat null as "cloud unavailable" and fall back to localStorage
+// (components/effects/layout/presets.ts).
+
+export async function loadCloudLayoutPresets(): Promise<unknown[] | null> {
+  const supa = createClient();
+  const { data: userData } = await supa.auth.getUser();
+  const uid = userData.user?.id;
+  if (!uid) return null;
+  const { data, error } = await supa
+    .from("user_preferences")
+    .select("layout_presets")
+    .eq("user_id", uid)
+    .maybeSingle();
+  if (error) {
+    console.warn("loadCloudLayoutPresets:", error.message);
+    return null;
+  }
+  const list = data?.layout_presets;
+  return Array.isArray(list) ? list : null;
+}
+
+export async function saveCloudLayoutPresets(
+  presets: unknown[]
+): Promise<boolean> {
+  const supa = createClient();
+  const { data: userData } = await supa.auth.getUser();
+  const uid = userData.user?.id;
+  if (!uid) return false;
+  const { error } = await supa
+    .from("user_preferences")
+    .upsert({ user_id: uid, layout_presets: presets }, { onConflict: "user_id" });
+  if (error) {
+    console.warn("saveCloudLayoutPresets:", error.message);
+    return false;
+  }
+  return true;
+}
+
 // OpenAI key validator: hits /v1/models, free + fast.
 export async function testOpenAIKey(
   key: string

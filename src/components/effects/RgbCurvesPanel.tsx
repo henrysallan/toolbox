@@ -28,10 +28,10 @@ interface Props {
 
 const CHANNELS: CurveChannel[] = ["rgb", "r", "g", "b"];
 const COLORS: Record<CurveChannel, string> = {
-  rgb: "#e5e7eb",
-  r: "#ef4444",
-  g: "#22c55e",
-  b: "#3b82f6",
+  rgb: "var(--tb-n-16)",
+  r: "var(--tb-a-red-500)",
+  g: "var(--tb-a-green-500)",
+  b: "var(--tb-a-blue-500)",
 };
 const LABELS: Record<CurveChannel, string> = {
   rgb: "RGB",
@@ -54,8 +54,8 @@ export default function RgbCurvesPanel({ node, onParamChange }: Props) {
     flex: 1,
     padding: "4px 0",
     background: "transparent",
-    border: "1px solid #3f3f46",
-    color: "#a1a1aa",
+    border: "1px solid var(--tb-n-9)",
+    color: "var(--tb-n-13)",
     borderRadius: 4,
     fontFamily: "inherit",
     fontSize: 10,
@@ -83,8 +83,8 @@ export default function RgbCurvesPanel({ node, onParamChange }: Props) {
               style={{
                 flex: 1,
                 padding: "4px 0",
-                background: active ? COLORS[ch] : "#18181b",
-                color: active ? "#0a0a0a" : COLORS[ch],
+                background: active ? COLORS[ch] : "var(--tb-n-3)",
+                color: active ? "var(--tb-n-0)" : COLORS[ch],
                 border: `1px solid ${COLORS[ch]}`,
                 borderRadius: 4,
                 fontFamily: "inherit",
@@ -116,7 +116,7 @@ export default function RgbCurvesPanel({ node, onParamChange }: Props) {
           reset all
         </button>
       </div>
-      <div style={{ color: "#52525b", fontSize: 10, flexShrink: 0 }}>
+      <div style={{ color: "var(--tb-n-10)", fontSize: 10, flexShrink: 0 }}>
         double-click to add · drag to move · right-click a point to remove
       </div>
     </div>
@@ -273,8 +273,8 @@ function CurveEditor({
           onContextMenu={(e) => e.preventDefault()}
           style={{
             display: "block",
-            background: "#0a0a0a",
-            border: "1px solid #27272a",
+            background: "var(--tb-n-0)",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 4,
             cursor: "crosshair",
             touchAction: "none",
@@ -290,7 +290,7 @@ function CurveEditor({
                   y1={dataToPy(0, h)}
                   x2={dataToPx(t, w)}
                   y2={dataToPy(1, h)}
-                  stroke="#1a1a1d"
+                  stroke="var(--tb-n-3)"
                   strokeWidth={1}
                 />
                 <line
@@ -298,7 +298,7 @@ function CurveEditor({
                   y1={dataToPy(t, h)}
                   x2={dataToPx(1, w)}
                   y2={dataToPy(t, h)}
-                  stroke="#1a1a1d"
+                  stroke="var(--tb-n-3)"
                   strokeWidth={1}
                 />
               </g>
@@ -310,7 +310,7 @@ function CurveEditor({
             y1={dataToPy(0, h)}
             x2={dataToPx(1, w)}
             y2={dataToPy(1, h)}
-            stroke="#27272a"
+            stroke="var(--tb-n-7)"
             strokeWidth={1}
             strokeDasharray="3 3"
           />
@@ -327,7 +327,7 @@ function CurveEditor({
                 cx={cx}
                 cy={cy}
                 r={sel ? 6 : 5}
-                fill={sel ? color : "#0a0a0a"}
+                fill={sel ? color : "var(--tb-n-0)"}
                 stroke={color}
                 strokeWidth={sel ? 2 : 1.5}
                 style={{ cursor: "grab", touchAction: "none" }}

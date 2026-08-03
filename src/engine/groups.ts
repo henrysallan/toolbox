@@ -92,9 +92,16 @@ export const ITERATE_PARAM_PREFIX = "zi__param__";
 export const LAYER_INPUT_SOCKETS = [
   { name: "backdrop", type: "image" },
 ] as const;
+// `spline` is the layer's vector export tap — the same side-channel the
+// composition Output carries. It is NOT part of the layer's rendered
+// result: flatten splices it onto the layer node's hidden `spline` input,
+// whose compute stashes the evaluated path for the Layer Output's SVG
+// button. Appended last so it lands under image/audio on the node, and
+// back-filled onto layers saved before it existed (group-output.ts).
 export const LAYER_OUTPUT_SOCKETS = [
   { name: "image", type: "image" },
   { name: "audio", type: "audio" },
+  { name: "spline", type: "spline" },
 ] as const;
 
 export function isFixedBoundary(params: Record<string, unknown>): boolean {
@@ -162,4 +169,28 @@ export function readBoundarySockets(
   params: Record<string, unknown>
 ): GroupSocketSpec[] {
   return specList(params.sockets);
+}
+
+// A Group **Output**'s socket list, with a fixed (layer) boundary's
+// canonical sockets back-filled. A layer's interface is immutable, so
+// LAYER_OUTPUT_SOCKETS — not the stored `sockets` param — is its source of
+// truth: a socket added after a project was saved (the `spline` SVG tap)
+// shows up with no migration and no schema bump. Appending is safe because
+// handle ids are name-based, so edges already on the stored sockets can't
+// shift. Plain groups are untouched (their stored list IS the truth).
+// Used by group-output.resolveInputs and the read-only socket panel, which
+// must agree on what the node has.
+export function resolveOutputBoundarySockets(
+  params: Record<string, unknown>
+): GroupSocketSpec[] {
+  const stored = readBoundarySockets(params);
+  if (!isFixedBoundary(params)) return stored;
+  const have = new Set(stored.map((s) => s.name));
+  return [
+    ...stored,
+    ...LAYER_OUTPUT_SOCKETS.filter((s) => !have.has(s.name)).map((s) => ({
+      name: s.name,
+      type: s.type as SocketType,
+    })),
+  ];
 }

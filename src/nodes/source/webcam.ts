@@ -32,6 +32,8 @@ in vec2 v_uv;
 uniform sampler2D u_src;
 uniform vec2 u_invScale;
 uniform float u_letterbox;
+uniform vec2 u_offset; // placement pan, screen convention (Y down)
+uniform float u_zoom;  // placement zoom about the canvas center
 uniform float u_mirror; // 1.0 to flip the sampling X axis
 uniform int u_hasUvIn;
 uniform sampler2D u_uvIn;
@@ -44,6 +46,8 @@ void main() {
   else if (u_hasUvIn == 2) uv = u_uvConst;
   else uv = v_uv;
 
+  // Placement pan/zoom before the aspect fit — see image-source.ts FIT_FS.
+  uv = 0.5 + (uv - vec2(u_offset.x, -u_offset.y) - 0.5) / u_zoom;
   vec2 s = 0.5 + (uv - 0.5) * u_invScale;
   if (u_letterbox > 0.5 && (s.x < 0.0 || s.x > 1.0 || s.y < 0.0 || s.y > 1.0)) {
     outColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -218,6 +222,36 @@ export const webcamSourceNode: NodeDefinition = {
       options: ["cover", "contain", "stretch"],
       default: "cover",
     },
+    // Placement within the canvas — sampling-time pan/zoom, Transform-node
+    // conventions (+Y down). Same trio as Image / Video source.
+    {
+      name: "offsetX",
+      label: "Offset X",
+      type: "scalar",
+      min: -1,
+      max: 1,
+      step: 0.001,
+      default: 0,
+    },
+    {
+      name: "offsetY",
+      label: "Offset Y",
+      type: "scalar",
+      min: -1,
+      max: 1,
+      step: 0.001,
+      default: 0,
+    },
+    {
+      name: "zoom",
+      label: "Zoom",
+      type: "scalar",
+      min: 0.01,
+      max: 10,
+      softMax: 4,
+      step: 0.01,
+      default: 1,
+    },
     {
       name: "mirror",
       label: "Mirror",
@@ -251,7 +285,9 @@ export const webcamSourceNode: NodeDefinition = {
       video.videoWidth > 0 &&
       video.videoHeight > 0;
     if (!ready) {
-      ctx.clearTarget(output, [0, 0, 0, 1]);
+      // No stream yet ⇒ empty frame, not a black plate (same rule as the
+      // Image / Video sources).
+      ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output };
     }
 
@@ -272,7 +308,7 @@ export const webcamSourceNode: NodeDefinition = {
       // Some browsers briefly refuse the upload right after stream
       // init — bail and retry next eval.
       gl.bindTexture(gl.TEXTURE_2D, null);
-      ctx.clearTarget(output, [0, 0, 0, 1]);
+      ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output };
     }
     gl.bindTexture(gl.TEXTURE_2D, null);
@@ -314,6 +350,9 @@ export const webcamSourceNode: NodeDefinition = {
     }
 
     const mirror = params.mirror === false ? 0 : 1;
+    const offsetX = (params.offsetX as number) ?? 0;
+    const offsetY = (params.offsetY as number) ?? 0;
+    const zoom = Math.max(0.0001, (params.zoom as number) ?? 1);
 
     const prog = ctx.getShader("webcam-source/fit", FS);
     ctx.drawFullscreen(prog, output, (gl2) => {
@@ -326,6 +365,8 @@ export const webcamSourceNode: NodeDefinition = {
         invScale[1]
       );
       gl2.uniform1f(gl2.getUniformLocation(prog, "u_letterbox"), letterbox);
+      gl2.uniform2f(gl2.getUniformLocation(prog, "u_offset"), offsetX, offsetY);
+      gl2.uniform1f(gl2.getUniformLocation(prog, "u_zoom"), zoom);
       gl2.uniform1f(gl2.getUniformLocation(prog, "u_mirror"), mirror);
 
       gl2.activeTexture(gl2.TEXTURE1);

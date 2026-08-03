@@ -29,6 +29,7 @@
 
 import JSZip from "jszip";
 import type { SavedProject } from "./project";
+import { CURRENT_SCHEMA, NewerSchemaError } from "./project";
 import {
   dataUrlToBytes,
   isAssetRef,
@@ -105,26 +106,39 @@ export async function writeProjectFile(
 
   for (const node of graph.nodes) {
     for (const [key, val] of Object.entries(node.params)) {
-      if (!isInlineAsset(val)) continue;
-      const { bytes, mime } = await dataUrlToBytes(val.dataUrl);
-      const id = await sha256Hex(bytes);
-      let asset = seen.get(id);
-      if (!asset) {
-        const ext = mimeToExt(mime);
-        asset = { id, mime, ext, bytes: bytes.length };
-        seen.set(id, asset);
-        assets.push(asset);
-        zip.file(`assets/${id}.${ext}`, bytes, {
-          compression: PRECOMPRESSED_MIMES.has(mime) ? "STORE" : "DEFLATE",
-        });
+      if (isInlineAsset(val)) {
+        const { bytes, mime } = await dataUrlToBytes(val.dataUrl);
+        const id = await sha256Hex(bytes);
+        let asset = seen.get(id);
+        if (!asset) {
+          const ext = mimeToExt(mime);
+          asset = { id, mime, ext, bytes: bytes.length };
+          seen.set(id, asset);
+          assets.push(asset);
+          zip.file(`assets/${id}.${ext}`, bytes, {
+            compression: PRECOMPRESSED_MIMES.has(mime) ? "STORE" : "DEFLATE",
+          });
+        }
+        // Swap the inline `dataUrl` for an asset reference, preserving any
+        // other envelope fields (e.g. a font's family/filename/axes) so they
+        // survive the round-trip.
+        const ref: Record<string, unknown> = { ...val };
+        delete ref.dataUrl;
+        ref.asset = id;
+        node.params[key] = ref;
+        continue;
       }
-      // Swap the inline `dataUrl` for an asset reference, preserving any
-      // other envelope fields (e.g. a font's family/filename/axes) so they
-      // survive the round-trip.
-      const ref: Record<string, unknown> = { ...val };
-      delete ref.dataUrl;
-      ref.asset = id;
-      node.params[key] = ref;
+      // An asset ref still carrying a transient (https) Storage URL — a v9
+      // stream that failed to decode and left the resolved envelope in the
+      // param. We have no bytes to embed, so drop the URL: a supposedly-offline
+      // `.toolbox` must not carry a live Supabase URL. With no manifest asset
+      // it loads as missing media (re-pick), the same as any dropped file. See
+      // 072226 audit #1b.
+      if (isAssetRef(val) && "dataUrl" in val) {
+        const ref: Record<string, unknown> = { ...val };
+        delete ref.dataUrl;
+        node.params[key] = ref;
+      }
     }
   }
 
@@ -197,6 +211,12 @@ export async function readProjectFile(
   }
 
   const graph = JSON.parse(await projectFile.async("string")) as SavedProject;
+  // Guard the inner graph schema too — the container format and the graph
+  // schema version bump independently, so a same-container file can still hold
+  // a newer graph. Bail before re-inlining assets for a file we can't open.
+  if ((graph.schemaVersion ?? 1) > CURRENT_SCHEMA) {
+    throw new NewerSchemaError(graph.schemaVersion ?? 1);
+  }
   const assetById = new Map(manifest.assets.map((a) => [a.id, a]));
 
   for (const node of graph.nodes) {

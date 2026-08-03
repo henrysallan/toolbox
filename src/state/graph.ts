@@ -92,13 +92,37 @@ export type NodeDataPayload = {
   displayName?: string;
   layerAccent?: boolean;
   // User-resized node box, in flow (canvas) px, set by dragging the
-  // bottom-left resize grip on the node. Absent ⇒ auto: width falls back to
+  // bottom-right resize grip on the node. Absent ⇒ auto: width falls back to
   // the per-type content `minWidth`, height to the content-driven body. Both
   // persist with the project (serialize passes them through — additive, no
   // schema bump). Editor-only; the engine never reads them.
   uiWidth?: number;
   uiHeight?: number;
+  // Cosmetic node styling, set from the right-click menu (both additive/
+  // optional like uiWidth — persisted, no schema bump, engine-blind).
+  // `tint` is one of the NODE_TINTS preset hexes (any hex renders) washed
+  // over the node body; `bold` draws a thick outline ring. Spec:
+  // specdocs/073026_node-cosmetics-and-frames.md.
+  tint?: string;
+  bold?: boolean;
+  // Frame membership: id of the frame-zone node (FRAME_TYPE) this node
+  // belongs to. Member→frame pointer like `parentId` — a deleted frame
+  // just strands ids that every consumer ignores (and undoing the delete
+  // restores membership for free). Never set on frame nodes themselves
+  // (no nested frames). Same spec as `tint`.
+  frameId?: string;
   [key: string]: unknown;
+};
+
+// xyflow-level props every frame-zone node carries (creation + deserialize;
+// cloneNode's spread preserves them). The wrapper is click-through so
+// marquee/pane gestures work over the frame's interior — the edge bands and
+// label chip re-enable pointer events and are the only drag handles; z -1
+// keeps the shaded rect behind regular nodes.
+export const FRAME_XY_PROPS = {
+  dragHandle: ".frame-drag-handle",
+  zIndex: -1,
+  style: { pointerEvents: "none" as const },
 };
 
 export function makeSourceHandleId(kind: "primary" | "aux", name?: string) {

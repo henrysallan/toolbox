@@ -19,12 +19,12 @@ export default function DocsIndex() {
           <h2
             style={{
               fontSize: 11,
-              color: "#71717a",
+              color: "var(--tb-n-11)",
               textTransform: "uppercase",
               letterSpacing: 0.5,
               margin: "0 0 10px",
               paddingBottom: 6,
-              borderBottom: "1px solid #27272a",
+              borderBottom: "1px solid var(--tb-n-7)",
             }}
           >
             {section.title}
@@ -37,11 +37,11 @@ export default function DocsIndex() {
                 style={{
                   display: "block",
                   padding: "10px 12px",
-                  background: "#111113",
-                  border: "1px solid #27272a",
+                  background: "var(--tb-n-1)",
+                  border: "1px solid var(--tb-n-7)",
                   borderRadius: 4,
                   textDecoration: "none",
-                  color: "#e5e7eb",
+                  color: "var(--tb-n-16)",
                 }}
               >
                 <div style={{ fontSize: 13, fontWeight: 600 }}>
@@ -50,7 +50,7 @@ export default function DocsIndex() {
                 <div
                   style={{
                     fontSize: 12,
-                    color: "#a1a1aa",
+                    color: "var(--tb-n-13)",
                     marginTop: 2,
                     lineHeight: 1.5,
                   }}

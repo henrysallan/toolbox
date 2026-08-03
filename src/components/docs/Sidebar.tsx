@@ -61,9 +61,9 @@ export default function Sidebar() {
       style={{
         width: 260,
         flexShrink: 0,
-        borderRight: "1px solid #27272a",
+        borderRight: "1px solid var(--tb-n-7)",
         padding: "14px 10px 32px",
-        background: "#0a0a0a",
+        background: "var(--tb-n-0)",
         overflowY: "auto",
       }}
       className="thin-scrollbar"
@@ -105,7 +105,7 @@ function SectionBlock({
           padding: "6px 8px",
           background: "transparent",
           border: "none",
-          color: "#a1a1aa",
+          color: "var(--tb-n-13)",
           fontSize: 10,
           textTransform: "uppercase",
           letterSpacing: 0.5,
@@ -114,8 +114,8 @@ function SectionBlock({
           textAlign: "left",
           borderRadius: 3,
         }}
-        onMouseEnter={(e) => (e.currentTarget.style.color = "#e5e7eb")}
-        onMouseLeave={(e) => (e.currentTarget.style.color = "#a1a1aa")}
+        onMouseEnter={(e) => (e.currentTarget.style.color = "var(--tb-n-16)")}
+        onMouseLeave={(e) => (e.currentTarget.style.color = "var(--tb-n-13)")}
         aria-expanded={open}
       >
         <Chevron open={open} />
@@ -150,11 +150,11 @@ function PageRow({ page, pathname }: { page: DocPage; pathname: string }) {
           display: "block",
           padding: "5px 10px",
           fontSize: 13,
-          color: active ? "#f4f4f5" : "#a1a1aa",
-          background: active ? "#18181b" : "transparent",
+          color: active ? "var(--tb-n-17)" : "var(--tb-n-13)",
+          background: active ? "var(--tb-n-3)" : "transparent",
           borderRadius: 3,
           textDecoration: "none",
-          borderLeft: `2px solid ${active ? "#60a5fa" : "transparent"}`,
+          borderLeft: `2px solid ${active ? "var(--tb-a-blue-400)" : "transparent"}`,
           transition: "background 80ms",
         }}
       >
@@ -166,7 +166,7 @@ function PageRow({ page, pathname }: { page: DocPage; pathname: string }) {
             display: "flex",
             flexDirection: "column",
             marginLeft: 14,
-            borderLeft: "1px solid #27272a",
+            borderLeft: "1px solid var(--tb-n-7)",
             paddingLeft: 8,
             marginTop: 2,
             marginBottom: 4,
@@ -181,7 +181,7 @@ function PageRow({ page, pathname }: { page: DocPage; pathname: string }) {
                   // modifier / utility groupings on auto-generated
                   // node category pages. Non-clickable.
                   fontSize: 9,
-                  color: "#52525b",
+                  color: "var(--tb-n-10)",
                   textTransform: "uppercase",
                   letterSpacing: 0.5,
                   padding: "4px 0 2px",
@@ -197,13 +197,13 @@ function PageRow({ page, pathname }: { page: DocPage; pathname: string }) {
                 href={`#${item.id}`}
                 style={{
                   fontSize: 12,
-                  color: "#71717a",
+                  color: "var(--tb-n-11)",
                   textDecoration: "none",
                   padding: "2px 0",
                   lineHeight: 1.4,
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.color = "#d4d4d8")}
-                onMouseLeave={(e) => (e.currentTarget.style.color = "#71717a")}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "var(--tb-n-15)")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "var(--tb-n-11)")}
               >
                 {item.title}
               </a>
@@ -224,7 +224,7 @@ function Chevron({ open }: { open: boolean }) {
         justifyContent: "center",
         width: 10,
         height: 10,
-        color: "#71717a",
+        color: "var(--tb-n-11)",
         transform: open ? "rotate(90deg)" : "rotate(0deg)",
         transition: "transform 120ms",
         fontSize: 9,

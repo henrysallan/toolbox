@@ -44,7 +44,27 @@ function installWindowGuards(win, originUrl) {
 
   // Same-origin popups (incl. OAuth) open in-app; genuinely external links go
   // to the system browser.
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url, frameName }) => {
+    // Panel pop-outs (specdocs/080226_panel-popout-windows.md) are
+    // `window.open("", "tb-panel-<leaf>")` — an about:blank child the
+    // renderer dresses itself. about:blank parses to origin "null", so
+    // it has to be matched by frame name BEFORE the origin check or the
+    // panel window would be handed to the system browser.
+    //
+    // Native frame on purpose: a pop-out has no menu bar to host the
+    // app's custom window controls, and a native frame gets OS window
+    // snapping and multi-monitor placement for free.
+    if (typeof frameName === "string" && frameName.startsWith("tb-panel-")) {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          backgroundColor: "#0a0a0a",
+          autoHideMenuBar: true,
+          minWidth: 320,
+          minHeight: 240,
+        },
+      };
+    }
     try {
       if (new URL(url).origin === new URL(originUrl).origin) return { action: "allow" };
     } catch {

@@ -157,10 +157,10 @@ function NodeCard({ def }: { def: NodeDefinition }) {
   return (
     <article
       style={{
-        border: "1px solid #27272a",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 4,
         padding: "14px 16px",
-        background: "#111113",
+        background: "var(--tb-n-1)",
         margin: "0 0 16px",
       }}
       id={def.type}
@@ -171,7 +171,7 @@ function NodeCard({ def }: { def: NodeDefinition }) {
       <H3>{def.name}</H3>
       <div
         style={{
-          color: "#71717a",
+          color: "var(--tb-n-11)",
           fontSize: 11,
           fontFamily: "ui-monospace, monospace",
           marginTop: -4,
@@ -180,7 +180,7 @@ function NodeCard({ def }: { def: NodeDefinition }) {
       >
         <Code>{def.type}</Code>
         {polymorphic && (
-          <span style={{ marginLeft: 8, color: "#a78bfa" }}>
+          <span style={{ marginLeft: 8, color: "var(--tb-a-violet-400)" }}>
             polymorphic
           </span>
         )}
@@ -216,7 +216,7 @@ function ColumnLabel({ children }: { children: React.ReactNode }) {
   return (
     <div
       style={{
-        color: "#a1a1aa",
+        color: "var(--tb-n-13)",
         fontSize: 10,
         textTransform: "uppercase",
         letterSpacing: 0.5,
@@ -233,7 +233,7 @@ function ParamTable({ params }: { params: ParamDef[] }) {
   return (
     <div
       style={{
-        border: "1px solid #27272a",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 3,
         overflow: "hidden",
       }}
@@ -246,12 +246,12 @@ function ParamTable({ params }: { params: ParamDef[] }) {
       {params.map((p) => (
         <Row key={p.name}>
           <Cell width={180}>
-            <div style={{ color: "#e5e7eb" }}>
+            <div style={{ color: "var(--tb-n-16)" }}>
               {p.label ?? p.name}
             </div>
             <div
               style={{
-                color: "#52525b",
+                color: "var(--tb-n-10)",
                 fontSize: 11,
                 fontFamily: "ui-monospace, monospace",
               }}
@@ -264,7 +264,7 @@ function ParamTable({ params }: { params: ParamDef[] }) {
             {p.type === "scalar" && (p.min !== undefined || p.max !== undefined) && (
               <div
                 style={{
-                  color: "#52525b",
+                  color: "var(--tb-n-10)",
                   fontSize: 11,
                   fontFamily: "ui-monospace, monospace",
                   marginTop: 2,
@@ -279,7 +279,7 @@ function ParamTable({ params }: { params: ParamDef[] }) {
               style={{
                 fontFamily: "ui-monospace, monospace",
                 fontSize: 12,
-                color: "#d4d4d8",
+                color: "var(--tb-n-15)",
               }}
             >
               {formatDefault(p)}
@@ -287,7 +287,7 @@ function ParamTable({ params }: { params: ParamDef[] }) {
             {p.type === "enum" && p.options && (
               <div
                 style={{
-                  color: "#71717a",
+                  color: "var(--tb-n-11)",
                   fontSize: 11,
                   marginTop: 3,
                 }}
@@ -319,7 +319,7 @@ function SocketTable({
   return (
     <div
       style={{
-        border: "1px solid #27272a",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 3,
         overflow: "hidden",
       }}
@@ -340,18 +340,18 @@ function SocketTable({
           {inputs.map((inp) => (
             <Row key={`in-${inp.name}`}>
               <Cell width={120}>
-                <span style={{ color: "#93c5fd" }}>input</span>
+                <span style={{ color: "var(--tb-a-blue-300)" }}>input</span>
                 {inp.required && (
-                  <span style={{ color: "#ef4444", marginLeft: 4 }}>*</span>
+                  <span style={{ color: "var(--tb-a-red-500)", marginLeft: 4 }}>*</span>
                 )}
               </Cell>
               <Cell width={180}>
-                <div style={{ color: "#e5e7eb" }}>
+                <div style={{ color: "var(--tb-n-16)" }}>
                   {inp.label ?? inp.name}
                 </div>
                 <div
                   style={{
-                    color: "#52525b",
+                    color: "var(--tb-n-10)",
                     fontSize: 11,
                     fontFamily: "ui-monospace, monospace",
                   }}
@@ -367,11 +367,11 @@ function SocketTable({
           {primary && (
             <Row>
               <Cell width={120}>
-                <span style={{ color: "#86efac" }}>output</span>{" "}
-                <span style={{ color: "#71717a", fontSize: 10 }}>primary</span>
+                <span style={{ color: "var(--tb-a-green-300)" }}>output</span>{" "}
+                <span style={{ color: "var(--tb-n-11)", fontSize: 10 }}>primary</span>
               </Cell>
               <Cell width={180}>
-                <div style={{ color: "#e5e7eb" }}>out</div>
+                <div style={{ color: "var(--tb-n-16)" }}>out</div>
               </Cell>
               <Cell>
                 <TypePill type={primary} />
@@ -381,11 +381,11 @@ function SocketTable({
           {aux.map((a) => (
             <Row key={`aux-${a.name}`}>
               <Cell width={120}>
-                <span style={{ color: "#86efac" }}>output</span>{" "}
-                <span style={{ color: "#71717a", fontSize: 10 }}>aux</span>
+                <span style={{ color: "var(--tb-a-green-300)" }}>output</span>{" "}
+                <span style={{ color: "var(--tb-n-11)", fontSize: 10 }}>aux</span>
               </Cell>
               <Cell width={180}>
-                <div style={{ color: "#e5e7eb" }}>{a.name}</div>
+                <div style={{ color: "var(--tb-n-16)" }}>{a.name}</div>
               </Cell>
               <Cell>
                 <TypePill type={a.type} />
@@ -412,8 +412,8 @@ function Row({
     <div
       style={{
         display: "flex",
-        borderBottom: header ? "1px solid #27272a" : "1px solid #18181b",
-        background: header ? "#0e0e10" : "transparent",
+        borderBottom: header ? "1px solid var(--tb-n-7)" : "1px solid var(--tb-n-3)",
+        background: header ? "var(--tb-n-1)" : "transparent",
       }}
     >
       {children}
@@ -435,8 +435,8 @@ function Cell({
         width,
         flex: width ? undefined : 1,
         fontSize: 13,
-        color: "#d4d4d8",
-        borderRight: "1px solid #18181b",
+        color: "var(--tb-n-15)",
+        borderRight: "1px solid var(--tb-n-3)",
       }}
     >
       {children}
@@ -450,12 +450,12 @@ function TypePill({ type }: { type: string }) {
       style={{
         display: "inline-block",
         padding: "1px 6px",
-        border: "1px solid #3f3f46",
+        border: "1px solid var(--tb-n-9)",
         borderRadius: 2,
         fontFamily: "ui-monospace, monospace",
         fontSize: 11,
-        color: "#e4e4e7",
-        background: "#18181b",
+        color: "var(--tb-n-16)",
+        background: "var(--tb-n-3)",
       }}
     >
       {type}

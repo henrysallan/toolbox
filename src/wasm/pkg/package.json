@@ -1,0 +1,15 @@
+{
+  "name": "toolbox-vector-kernel",
+  "type": "module",
+  "version": "0.2.1",
+  "files": [
+    "kernel_bg.wasm",
+    "kernel.js",
+    "kernel.d.ts"
+  ],
+  "main": "kernel.js",
+  "types": "kernel.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

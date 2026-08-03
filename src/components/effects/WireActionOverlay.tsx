@@ -75,7 +75,7 @@ export default function WireActionOverlay({
       return false;
     };
 
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
       if (!e.shiftKey && !e.altKey) return;
       if (shouldIgnoreTarget(e.target)) return;
@@ -92,14 +92,14 @@ export default function WireActionOverlay({
       });
     };
 
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
       const d = dragRef.current;
       if (!d) return;
       e.preventDefault();
       setDrag({ ...d, current: [e.clientX, e.clientY] });
     };
 
-    const onUp = (e: MouseEvent) => {
+    const onUp = (e: PointerEvent) => {
       const d = dragRef.current;
       if (!d) return;
       e.preventDefault();
@@ -138,6 +138,11 @@ export default function WireActionOverlay({
       setDrag(null);
     };
 
+    // System took the gesture — abandon without cutting/combining anything.
+    const onCancel = () => {
+      if (dragRef.current) setDrag(null);
+    };
+
     const onKeyUp = (e: KeyboardEvent) => {
       // Dropping the modifier mid-drag aborts the gesture — matches how
       // Photoshop tools abandon when you release the modifier key.
@@ -147,21 +152,26 @@ export default function WireActionOverlay({
     };
 
     // Capture phase everywhere so React Flow's handlers see a
-    // already-stopped event and don't start competing gestures.
-    window.addEventListener("mousedown", onDown, true);
-    window.addEventListener("mousemove", onMove, true);
-    window.addEventListener("mouseup", onUp, true);
+    // already-stopped event and don't start competing gestures. Pointer
+    // rather than mouse: React Flow's own pan/marquee is pointer-driven, so
+    // a mousedown intercept was racing it even with a mouse, and did nothing
+    // at all under a Pencil.
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onCancel, true);
     window.addEventListener("keyup", onKeyUp);
     return () => {
-      window.removeEventListener("mousedown", onDown, true);
-      window.removeEventListener("mousemove", onMove, true);
-      window.removeEventListener("mouseup", onUp, true);
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onCancel, true);
       window.removeEventListener("keyup", onKeyUp);
     };
   }, [flowEl, onCombine, onCut, screenToFlowPosition]);
 
   if (!drag) return null;
-  const stroke = drag.mode === "combine" ? "#22d3ee" : "#ef4444";
+  const stroke = drag.mode === "combine" ? "var(--tb-a-cyan-400)" : "var(--tb-a-red-500)";
 
   return (
     <svg

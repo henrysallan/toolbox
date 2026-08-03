@@ -528,7 +528,7 @@ export const perlinNoiseNode: NodeDefinition = {
   category: "image",
   subcategory: "generator",
   description:
-    "Multi-algorithm fBm noise. Three outputs: `image` (rasterized canvas-wide), `value` (CPU scalar sampled at the `position` input — single number per frame), and `field` (per-pixel scalar shader expression sampled at `field_position` — wire into SDF Rotate.angle_field / SDF Twist.strength_field for true per-pixel/per-tile modulation; pair with SDF Repeat.cell_id for per-tile variation). The `field` output uses simplex regardless of the `type` param; image and value paths respect type.",
+    "Multi-algorithm fBm noise. Three outputs: `image` (rasterized canvas-wide), `value` (CPU scalar sampled at the `position` input — single number per frame), and `field` (per-pixel scalar shader expression sampled at `field_position` — wire into SDF Rotate.angle_field / SDF Twist.strength_field for true per-pixel/per-tile modulation; pair with SDF Repeat.cell_id for per-tile variation). The `field` output uses simplex regardless of the `type` param; image and value paths respect type. The `UV` input re-evaluates the noise at coordinates read from the wired value's R/G — wire another Noise (or any image) in for Blender-style domain warping/marbling.",
   backend: "webgl2",
   inputs: [
     { name: "uv_in", label: "UV", type: "uv", required: false },

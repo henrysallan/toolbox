@@ -38,12 +38,12 @@ interface Props {
   onSeekTick?: (tick: number) => void;
 }
 
-const ACCENT = "#3b82f6";
-const PANEL_BG = "#18181b";
-const FIELD_BG = "#0f0f12";
-const BORDER = "#2a2a30";
-const TEXT = "#d4d4d8";
-const MUTED = "#8a8a93";
+const ACCENT = "var(--tb-a-blue-500)";
+const PANEL_BG = "var(--tb-n-3)";
+const FIELD_BG = "var(--tb-n-1)";
+const BORDER = "var(--tb-n-8)";
+const TEXT = "var(--tb-n-15)";
+const MUTED = "var(--tb-n-12)";
 
 // 3×3 alignment grid → param value. Row/col map to the 9 LAYOUT_ALIGN
 // options; the center is the bare "center" string.
@@ -218,7 +218,7 @@ function NumInput({
         border: `1px solid ${BORDER}`,
         borderRadius: 6,
         color: disabled ? MUTED : TEXT,
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
         padding: "5px 7px",
         boxSizing: "border-box",
@@ -305,7 +305,7 @@ function Caret({
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.25 : 0.7,
         lineHeight: 0,
-        color: "#a1a1aa",
+        color: "var(--tb-n-13)",
       }}
     >
       <svg width="7" height="10" viewBox="0 0 7 10" fill="none">
@@ -424,8 +424,8 @@ function KeyframeControl({
               top: "100%",
               right: 0,
               marginTop: 4,
-              background: "#111113",
-              border: "1px solid #1f1f23",
+              background: "var(--tb-n-1)",
+              border: "1px solid var(--tb-n-5)",
               borderRadius: 4,
               padding: 4,
               zIndex: 1000,
@@ -461,9 +461,9 @@ function KeyframeControl({
 
 function menuItemStyle(active?: boolean, disabled?: boolean): React.CSSProperties {
   return {
-    background: active ? "#1f2937" : "transparent",
+    background: active ? "var(--tb-t-navy-d-1)" : "transparent",
     border: "none",
-    color: disabled ? "#3f3f46" : active ? "#93c5fd" : "#d4d4d8",
+    color: disabled ? "var(--tb-n-9)" : active ? "var(--tb-a-blue-300)" : "var(--tb-n-15)",
     fontFamily: "inherit",
     fontSize: 11,
     textAlign: "left",
@@ -513,7 +513,7 @@ function PillToggle({
           bottom: 2,
           left: `calc(${idx * segPct}% + 2px)`,
           width: `calc(${segPct}% - 4px)`,
-          background: "#3f3f46",
+          background: "var(--tb-n-9)",
           borderRadius: 999,
           transition: "left 0.14s ease",
         }}
@@ -526,7 +526,7 @@ function PillToggle({
           bottom: 2,
           left: `calc(${ghostIdx * segPct}% + 2px)`,
           width: `calc(${segPct}% - 4px)`,
-          background: "rgba(255,255,255,0.08)",
+          background: "color-mix(in srgb, var(--tb-lift) 8%, transparent)",
           borderRadius: 999,
           opacity: hoverIdx !== null && hoverIdx !== idx ? 1 : 0,
           transition: "left 0.12s ease, opacity 0.12s ease",
@@ -548,7 +548,7 @@ function PillToggle({
               padding: "3px 4px",
               border: "none",
               background: "transparent",
-              color: active ? "#fff" : hoverIdx === i ? "#d4d4d8" : MUTED,
+              color: active ? "#fff" : hoverIdx === i ? "var(--tb-n-15)" : MUTED,
               fontSize: 10,
               cursor: "pointer",
               fontFamily: "inherit",
@@ -671,7 +671,7 @@ export default function AutoLayoutPanel({
         flexDirection: "column",
         gap: 14,
         color: TEXT,
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
       }}
     >
@@ -795,6 +795,9 @@ export default function AutoLayoutPanel({
         {bgEnabled && (
           <FieldRow label="Fill" grow>
             <ColorSwatch
+              // theme-ignore — literal hex, NOT a token: this is a node param
+              // default that gets persisted and handed to the engine, which
+              // cannot resolve a CSS variable.
               value={str("bgColor", "#18181b")}
               onChange={(v) => set("bgColor", v)}
             />
@@ -1197,7 +1200,10 @@ function Switch({ checked }: { checked: boolean }) {
           width: 12,
           height: 12,
           borderRadius: 999,
-          background: "#fff",
+          // Ramp-topped rather than literal white: the unchecked track is
+          // --tb-n-1, which is near-white in light mode, so a white knob
+          // would disappear into it.
+          background: "var(--tb-n-17)",
           transition: "left 0.14s ease",
         }}
       />
@@ -1244,7 +1250,7 @@ function Segment({
               borderRadius: 4,
               border: "none",
               cursor: "pointer",
-              background: active ? "#3f3f46" : "transparent",
+              background: active ? "var(--tb-n-9)" : "transparent",
               color: active ? "#fff" : MUTED,
             }}
           >
@@ -1279,8 +1285,8 @@ function IconButton({
         height: 24,
         borderRadius: 6,
         border: `1px solid ${active ? ACCENT : BORDER}`,
-        background: active ? "rgba(59,130,246,0.18)" : FIELD_BG,
-        color: active ? "#93c5fd" : MUTED,
+        background: active ? "color-mix(in srgb, var(--tb-a-blue-500) 18%, transparent)" : FIELD_BG,
+        color: active ? "var(--tb-a-blue-300)" : MUTED,
         cursor: "pointer",
         flexShrink: 0,
       }}
@@ -1336,10 +1342,10 @@ function AlignGrid({
               border: "none",
               borderRadius: 4,
               cursor: "pointer",
-              background: selected ? "rgba(59,130,246,0.16)" : "transparent",
+              background: selected ? "color-mix(in srgb, var(--tb-a-blue-500) 16%, transparent)" : "transparent",
             }}
             onMouseEnter={(e) => {
-              if (!selected) e.currentTarget.style.background = "#26262c";
+              if (!selected) e.currentTarget.style.background = "var(--tb-n-7)";
             }}
             onMouseLeave={(e) => {
               if (!selected) e.currentTarget.style.background = "transparent";
@@ -1353,7 +1359,7 @@ function AlignGrid({
                   width: 3,
                   height: 3,
                   borderRadius: 3,
-                  background: "#52525b",
+                  background: "var(--tb-n-10)",
                 }}
               />
             )}
@@ -1472,7 +1478,7 @@ const addBtnStyle: React.CSSProperties = {
 
 const removeBtnStyle: React.CSSProperties = {
   background: "transparent",
-  border: "1px solid #3f3f46",
+  border: "1px solid var(--tb-n-9)",
   color: MUTED,
   fontSize: 10,
   padding: "1px 6px",

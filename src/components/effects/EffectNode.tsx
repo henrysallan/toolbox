@@ -10,6 +10,7 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
+import { usePanelWindow } from "./layout/panel-window";
 import { getNodeDef } from "@/engine/registry";
 import { paramSocketType } from "@/state/graph";
 import type { NodeDataPayload } from "@/state/graph";
@@ -21,8 +22,18 @@ import {
 import type { ColorRampStop } from "@/engine/color-ramp";
 import { MAX_COLORS, getExtractedPalette } from "@/nodes/source/color-literal";
 import { ColorPickerPopover } from "@/lib/color-picker-popover";
-import { MiniBarSlider, NumberField } from "@/lib/param-controls";
+import {
+  BAR_SLIDER_RADIUS,
+  MiniBarSlider,
+  NumberField,
+} from "@/lib/param-controls";
+import {
+  startPointerDrag,
+  useCoarsePointer,
+  TOUCH_DRAG_STYLE,
+} from "@/lib/pointer-drag";
 import { colorForSocket } from "./socketColor";
+import { tintRgba } from "./node-tints";
 import { Spinner } from "./Spinner";
 import { VIRTUAL_SOCKET } from "@/engine/groups";
 
@@ -61,6 +72,32 @@ const SCALAR_INPUT_PARAMS: Record<string, string> = {
   constant: "value",
 };
 
+// Node types that surface a colour swatch on the node body, mapped to
+// the params behind it. `paint` (when present) is the inherit toggle —
+// the SDF primitives are unpainted by default and take their colour
+// from an enclosing SDF Material or the terminal's foreground, so the
+// swatch has to show an "inheriting" state, not just a colour. SDF
+// Material itself always paints, so it declares no toggle.
+//
+// A swatch here rather than only in the panel because per-shape colour
+// is the one SDF param you set while looking at the graph, and burying
+// it costs a selection round-trip per shape. Spec:
+// 080226_sdf-materials-and-shading.md.
+const COLOR_SWATCH_PARAMS: Record<
+  string,
+  { color: string; paint?: string }
+> = {
+  "sdf-circle": { color: "color", paint: "paint" },
+  "sdf-rectangle": { color: "color", paint: "paint" },
+  "sdf-line-segment": { color: "color", paint: "paint" },
+  "sdf-polygon": { color: "color", paint: "paint" },
+  "sdf-triangle": { color: "color", paint: "paint" },
+  "sdf-star": { color: "color", paint: "paint" },
+  "sdf-spline": { color: "color", paint: "paint" },
+  "sdf-from-image": { color: "color", paint: "paint" },
+  "sdf-material": { color: "color" },
+};
+
 interface ExposedSocket {
   name: string;
   label: string;
@@ -80,6 +117,11 @@ function formatMs(v: number): string {
 // pane-level handler prop changes identity; the memo stops that cascade here
 // as long as this node's own props (id/data/selected) are unchanged.
 function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
+  // Null in the main window; the child Window when this node's pane is
+  // popped out (080226_panel-popout-windows.md §3). Only the LISTENERS
+  // need it — this node's own dispatches go to module-scope `window`,
+  // which is the main one, exactly where EffectsApp listens.
+  const panelWin = usePanelWindow();
   // Per-node compute time, surfaced when the Window-menu "Show
   // Node Timings" toggle is on. EffectsApp dispatches a
   // `node-timings` event after each pipeline eval; we pick our
@@ -108,9 +150,10 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
         pending = undefined;
       });
     };
-    window.addEventListener("node-timings", onTimings);
+    const win = panelWin ?? window;
+    win.addEventListener("node-timings", onTimings);
     return () => {
-      window.removeEventListener("node-timings", onTimings);
+      win.removeEventListener("node-timings", onTimings);
       if (raf) cancelAnimationFrame(raf);
     };
   }, [id]);
@@ -125,8 +168,9 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
       const set = (e as CustomEvent<Set<string>>).detail;
       setMediaLoading(!!set && set.has(id));
     };
-    window.addEventListener("node-media-loading", onLoading);
-    return () => window.removeEventListener("node-media-loading", onLoading);
+    const win = panelWin ?? window;
+    win.addEventListener("node-media-loading", onLoading);
+    return () => win.removeEventListener("node-media-loading", onLoading);
   }, [id]);
 
   // Mirror EffectsApp's split-viewport state. EffectsApp dispatches a
@@ -139,13 +183,14 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
       const detail = (e as CustomEvent<{ split: boolean }>).detail;
       if (detail) setViewportSplit(!!detail.split);
     };
-    window.addEventListener("viewport-split-changed", onChange);
-    return () => window.removeEventListener("viewport-split-changed", onChange);
+    const win = panelWin ?? window;
+    win.addEventListener("viewport-split-changed", onChange);
+    return () => win.removeEventListener("viewport-split-changed", onChange);
   }, []);
 
   const isQueue = data.defType === "render-queue";
   // A Layer Output (the fixed group-output inside a layer) gets the Output
-  // node's render buttons too, so you can render a layer from inside it (#159).
+  // node's render buttons too, so you can render a layer from inside it (var(--tb-a-blue-link)).
   const isLayerOutput =
     data.defType === "group-output" &&
     (data.params as { fixed?: boolean } | undefined)?.fixed === true;
@@ -174,8 +219,9 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           : null
       );
     };
-    window.addEventListener("render-queue-progress", onProg);
-    return () => window.removeEventListener("render-queue-progress", onProg);
+    const win = panelWin ?? window;
+    win.addEventListener("render-queue-progress", onProg);
+    return () => win.removeEventListener("render-queue-progress", onProg);
   }, [isQueue, id]);
 
   // Output-socket peek: dwell on an output handle for PEEK_DWELL_MS →
@@ -331,11 +377,19 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
     const ov = data.paramOverrides?.[scalarInputParam];
     const min = ov?.min ?? p.min ?? 0;
     const max = ov?.max ?? p.max ?? 1;
-    const step = p.step ?? 0.01;
+    // Param-driven increment (stepFrom — e.g. Constant's value follows its
+    // `step`/`mode` params). When active, edits snap to k·step (see
+    // NodeScalarSlider) so the on-node bar matches the ParamPanel row.
+    const dynStep = p.stepFrom?.(data.params);
+    const step = dynStep ?? p.step ?? 0.01;
     const sliderMax = ov?.softMax ?? p.softMax ?? max;
     const sliderMin = Math.max(min, -sliderMax);
-    return { min, max, step, sliderMin, sliderMax };
-  }, [data.defType, scalarInputParam, data.paramOverrides]);
+    return { min, max, step, snapToStep: dynStep !== undefined, sliderMin, sliderMax };
+  }, [data.defType, scalarInputParam, data.paramOverrides, data.params]);
+
+  // On-node colour swatch (SDF primitives + SDF Material).
+  const colorSwatch = COLOR_SWATCH_PARAMS[data.defType];
+  const [swatchOpen, setSwatchOpen] = useState(false);
 
   // Content-driven minimum width (the auto size when unresized). Reused as
   // the outer div's minWidth AND the resize clamp floor.
@@ -347,22 +401,19 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
         ? 220
         : 200;
 
-  // Bottom-left resize grip. Drag = live local preview (the outer div grows +
-  // a transform keeps the RIGHT edge anchored while the LEFT edge follows the
-  // cursor); a single commit on pointer-up dispatches `effect-node-resize`,
-  // which EffectsApp turns into one setNodes + one undo step (size on
-  // data.uiWidth/uiHeight, plus position.x shifted so the right edge holds).
+  // Bottom-right resize grip. Drag = live local preview (the outer div grows
+  // as the right/bottom edges follow the cursor — the top-left corner is the
+  // anchor, so position never moves); a single commit on pointer-up dispatches
+  // `effect-node-resize`, which EffectsApp turns into one setNodes + one undo
+  // step (size on data.uiWidth/uiHeight).
   const nodeRef = useRef<HTMLDivElement>(null);
   const rf = useReactFlow();
   const [resizeDrag, setResizeDrag] = useState<{
     w: number;
     h: number;
-    tx: number;
   } | null>(null);
 
-  const onResizeStart = (e: React.PointerEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
+  const onResizeStart = (e: React.PointerEvent<HTMLElement>) => {
     const el = nodeRef.current;
     if (!el) return;
     const zoom = rf.getZoom() || 1;
@@ -373,33 +424,38 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
     const startX = e.clientX;
     const startY = e.clientY;
     const minH = 40;
-    let latest = { w: startW, h: startH, tx: 0 };
-    const onMove = (ev: PointerEvent) => {
-      const dxFlow = (ev.clientX - startX) / zoom;
-      const dyFlow = (ev.clientY - startY) / zoom;
-      const w = Math.max(minWidth, startW - dxFlow); // left edge follows cursor
-      const h = Math.max(minH, startH + dyFlow); // bottom edge follows cursor
-      const tx = startW - w; // shift so the right edge stays put
-      latest = { w, h, tx };
-      setResizeDrag({ w, h, tx });
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      setResizeDrag(null);
-      window.dispatchEvent(
-        new CustomEvent("effect-node-resize", {
-          detail: {
-            id,
-            width: Math.round(latest.w),
-            height: Math.round(latest.h),
-            dx: latest.tx,
-          },
-        })
-      );
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    let latest = { w: startW, h: startH };
+    const started = startPointerDrag(e, {
+      cursor: "nwse-resize",
+      onMove: (ev) => {
+        const dxFlow = (ev.clientX - startX) / zoom;
+        const dyFlow = (ev.clientY - startY) / zoom;
+        // right/bottom edges follow the pointer; top-left stays anchored
+        const w = Math.max(minWidth, startW + dxFlow);
+        const h = Math.max(minH, startH + dyFlow);
+        latest = { w, h };
+        setResizeDrag({ w, h });
+      },
+      onUp: () => {
+        setResizeDrag(null);
+        window.dispatchEvent(
+          new CustomEvent("effect-node-resize", {
+            detail: {
+              id,
+              width: Math.round(latest.w),
+              height: Math.round(latest.h),
+            },
+          })
+        );
+      },
+      // Cancelled (iPadOS reclaimed the gesture, or the node unmounted):
+      // drop the live preview WITHOUT committing, so no undo step is minted
+      // for a size the user never released on.
+      onCancel: () => setResizeDrag(null),
+    });
+    if (!started) return;
+    e.stopPropagation();
+    e.preventDefault();
   };
 
   // Double-click the grip clears the override → back to auto content size.
@@ -411,11 +467,22 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   };
 
   // Re-measure handle positions after a committed resize (right-side sockets
-  // moved with the width; left sockets moved with a left-edge resize) so wires
-  // stay attached — same re-measure the socket-rename path relies on.
+  // moved with the width) so wires stay attached — same re-measure the
+  // socket-rename path relies on.
   useEffect(() => {
     updateNodeInternals(id);
   }, [data.uiWidth, data.uiHeight, id, updateNodeInternals]);
+
+  // Does any param actually animate? Same test `evaluateKeyframesAt` runs
+  // before it will return a keyframed value — an `animated` block with no
+  // keys, or keys with animation switched off, is not animation.
+  const hasKeyframes = useMemo(
+    () =>
+      Object.values(data.animation ?? {}).some(
+        (b) => b.animated && b.keyframes.length > 0
+      ),
+    [data.animation]
+  );
 
   const dispatch = (kind: "toggleActive" | "toggleActive2" | "toggleBypass") => {
     window.dispatchEvent(
@@ -455,8 +522,9 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
       setPalette(detail.colors);
       if (detail.colors) setPickerFor(null);
     };
-    window.addEventListener("color-node-palette", onPalette);
-    return () => window.removeEventListener("color-node-palette", onPalette);
+    const win = panelWin ?? window;
+    win.addEventListener("color-node-palette", onPalette);
+    return () => win.removeEventListener("color-node-palette", onPalette);
   }, [isColorNode, id]);
   // Swatch color: extracted palette wins over the stored param while active.
   const swatchHexFor = (n: number, paramName: string): string =>
@@ -483,38 +551,58 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
       ref={nodeRef}
       style={{
         minWidth,
-        // User-resized box (bottom-left grip) → explicit size; a live drag
+        // User-resized box (bottom-right grip) → explicit size; a live drag
         // previews from local state. Absent ⇒ auto (minWidth / content height).
         width: resizeDrag ? resizeDrag.w : data.uiWidth,
         height: resizeDrag ? resizeDrag.h : data.uiHeight,
-        // Keep the right edge anchored while the left edge follows the cursor
-        // during a drag; removed on commit (position.x absorbs the shift).
-        transform: resizeDrag ? `translateX(${resizeDrag.tx}px)` : undefined,
         // A node with an on-node text box lays out as a flex column so the
         // textarea can flex to fill a resized (taller) body. Other node types
         // stay in block flow — an over-tall box just leaves bottom space.
         display: stringInputParam ? "flex" : undefined,
         flexDirection: stringInputParam ? "column" : undefined,
-        // Layer nodes + their boundary nodes get a faint blue wash (#159).
-        background: data.layerAccent ? "#171b24" : "#18181b",
+        // Layer nodes + their boundary nodes get a faint blue wash (#159);
+        // a user tint (right-click menu) washes over the base the same way,
+        // layered so the body stays opaque (wires must not show through).
+        background: data.tint
+          ? `linear-gradient(${tintRgba(data.tint, 0.13)}, ${tintRgba(
+              data.tint,
+              0.13
+            )}), var(--tb-n-3)`
+          : data.layerAccent
+            ? "var(--tb-t-navy-d-3)"
+            : "var(--tb-n-3)",
+        // Border precedence: selection and error stay legible over any
+        // cosmetic tint.
         border: `1px solid ${
           selected
-            ? "#60a5fa"
+            ? "var(--tb-a-blue-400)"
             : data.error
-              ? "#ef4444"
-              : data.layerAccent
-                ? "#39507a"
-                : "#3f3f46"
+              ? "var(--tb-a-red-500)"
+              : data.tint
+                ? tintRgba(data.tint, 0.6)
+                : data.layerAccent
+                  ? "var(--tb-t-navy-d-4)"
+                  : "var(--tb-n-9)"
         }`,
-        borderRadius: 6,
-        fontFamily:
-          'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        borderRadius: 10,
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
         opacity: bypassed ? 0.5 : 1,
-        boxShadow: selected
-          ? "0 0 0 1px rgba(96,165,250,0.3)"
-          : "0 2px 8px rgba(0,0,0,0.4)",
+        // Bold = an extra outline ring via box-shadow (border width never
+        // changes, so sockets don't shift and no re-measure is needed).
+        // Composes with the selection ring: bold sits outside it.
+        boxShadow: (() => {
+          const boldRing = data.bold
+            ? `0 0 0 ${selected ? 3 : 2}px ${
+                data.tint ? tintRgba(data.tint, 0.9) : "var(--tb-n-15)"
+              }`
+            : null;
+          const base = selected
+            ? "0 0 0 1px color-mix(in srgb, var(--tb-a-blue-400) 30%, transparent)"
+            : "var(--tb-shadow-node)";
+          return boldRing ? `${base}, ${boldRing}` : base;
+        })(),
         // Fade the selection outline (border tint + ring) in/out rather
         // than snapping it on click.
         transition: "border-color 140ms ease, box-shadow 140ms ease",
@@ -523,6 +611,27 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
         position: "relative",
       }}
     >
+      {hasKeyframes && (
+        <div
+          title="Animated — this node has keyframed parameters"
+          style={{
+            position: "absolute",
+            // Floats off the top-left corner, clear of the timing readout
+            // (which starts at left: 2) so both can show at once.
+            top: -6,
+            left: -6,
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            // Keyframe red, same as the Track Editor diamond on a key.
+            background: "var(--tb-a-red-500)",
+            // A dark rim keeps the dot legible over a wire or a node it
+            // happens to overlap.
+            boxShadow: "0 0 0 1.5px var(--tb-n-3)",
+            zIndex: 5,
+          }}
+        />
+      )}
       {evalMs !== null && (
         <div
           style={{
@@ -538,10 +647,10 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             //   > 16ms red     (over a frame, will drop fps)
             color:
               evalMs < 4
-                ? "#34d399"
+                ? "var(--tb-a-emerald-400)"
                 : evalMs < 16
-                ? "#facc15"
-                : "#ef4444",
+                ? "var(--tb-a-yellow-400)"
+                : "var(--tb-a-red-500)",
             opacity: 0.7,
             letterSpacing: 0.3,
             fontVariantNumeric: "tabular-nums",
@@ -551,45 +660,27 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           {formatMs(evalMs)}
         </div>
       )}
-      {!!data.aiAuthored && (
-        <button
-          className="nodrag"
-          title="Edit with AI"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            window.dispatchEvent(
-              new CustomEvent("ai-edit-node", { detail: { nodeId: id } })
-            );
-          }}
-          style={{
-            position: "absolute",
-            // Hovers just above the node's top-right corner.
-            top: -12,
-            right: -8,
-            width: 20,
-            height: 20,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            borderRadius: 999,
-            background: "#1a1430",
-            border: "1px solid #6d28d9",
-            cursor: "pointer",
-            padding: 0,
-            zIndex: 5,
-            boxShadow: "0 1px 4px rgba(0,0,0,0.45)",
-          }}
-        >
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="#a78bfa" aria-hidden>
-            <path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z" />
-          </svg>
-        </button>
-      )}
+      {!!data.aiAuthored && <AiEditButton id={id} />}
       <div
         style={{
-          padding: "6px 8px",
-          borderBottom: "1px solid #27272a",
+          // The header is an inset chip, not an edge-to-edge bar: it sits
+          // 4px inside the node with its own lifted fill and rounding, so no
+          // divider rule is needed to separate it from the body.
+          margin: 4,
+          padding: "4px 6px",
+          // Lifted a step off the body (#18181b → #2a2a2a). A tint / layer
+          // accent washes over the chip the same way it washes the body, so
+          // a tinted node still reads tinted in its header.
+          background: data.tint
+            ? `linear-gradient(${tintRgba(data.tint, 0.13)}, ${tintRgba(
+                data.tint,
+                0.13
+              )}), var(--tb-n-7)`
+            : data.layerAccent
+              ? "var(--tb-t-navy-d-5)"
+              : "var(--tb-n-7)",
+          border: "1px solid var(--tb-n-9)",
+          borderRadius: 8,
           display: "flex",
           gap: 6,
           alignItems: "center",
@@ -608,44 +699,13 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           {mediaLoading && (
             <span
               title="Loading image…"
-              style={{ display: "inline-flex", color: "#93c5fd" }}
+              style={{ display: "inline-flex", color: "var(--tb-a-blue-300)" }}
             >
               <Spinner size={11} stroke={1.6} arc={0.28} />
             </span>
           )}
           {data.displayName ?? data.name}
-          <button
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              window.dispatchEvent(
-                new CustomEvent("effect-node-toggle", {
-                  detail: { id, kind: "toggleInspect" },
-                })
-              );
-            }}
-            title="Inspect — show inputs and outputs flowing through this node"
-            className="nodrag"
-            data-node-inspect-toggle="1"
-            style={{
-              width: 14,
-              height: 14,
-              borderRadius: "50%",
-              background: "transparent",
-              border: "1px solid #52525b",
-              color: "#a1a1aa",
-              fontSize: 9,
-              fontWeight: 700,
-              fontFamily: "inherit",
-              fontStyle: "italic",
-              lineHeight: "12px",
-              textAlign: "center",
-              padding: 0,
-              cursor: "pointer",
-            }}
-          >
-            i
-          </button>
+          <InspectButton id={id} />
           {(() => {
             // Header dropdown for an enum param — lets nodes like Group
             // / Pick / Length flip mode without opening the params
@@ -660,6 +720,11 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             return (
               <select
                 value={current}
+                className="nodrag"
+                // Both, deliberately: `nodrag` + stopping POINTERdown is what
+                // holds on touch (React Flow's node drag is pointer-driven —
+                // a mousedown-only guard lets a tap drag the node instead).
+                onPointerDown={(e) => e.stopPropagation()}
                 onMouseDown={(e) => e.stopPropagation()}
                 onChange={(e) => {
                   window.dispatchEvent(
@@ -673,9 +738,9 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                   );
                 }}
                 style={{
-                  background: "#18181b",
-                  color: "#e5e7eb",
-                  border: "1px solid #27272a",
+                  background: "var(--tb-n-3)",
+                  color: "var(--tb-n-16)",
+                  border: "1px solid var(--tb-n-7)",
                   borderRadius: 3,
                   fontFamily: "inherit",
                   fontSize: 10,
@@ -696,7 +761,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           {data.error ? (
             <span
               title={data.error}
-              style={{ color: "#ef4444", fontSize: 10, marginRight: 4 }}
+              style={{ color: "var(--tb-a-red-500)", fontSize: 10, marginRight: 4 }}
             >
               ERR
             </span>
@@ -706,7 +771,9 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           {!isQueue && (
             <HeaderToggle
               on={active}
-              label={viewportSplit ? "A1" : "A"}
+              // Split viewport swaps the eye for bare viewport numbers —
+              // one eye can't say *which* viewport it means.
+              label={viewportSplit ? "1" : <EyeIcon />}
               title={
                 active
                   ? viewportSplit
@@ -717,31 +784,31 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                     : "Set active (view on canvas)"
               }
               activeBg="#047857"
-              activeFg="#d1fae5"
+              activeFg="var(--tb-t-cyan-l-0)"
               onClick={() => dispatch("toggleActive")}
             />
           )}
           {!isQueue && viewportSplit && (
             <HeaderToggle
               on={active2}
-              label="A2"
+              label="2"
               title={
                 active2
                   ? "Active in viewport 2"
                   : "Set active in viewport 2"
               }
               activeBg="#0369a1"
-              activeFg="#dbeafe"
+              activeFg="var(--tb-a-blue-100)"
               onClick={() => dispatch("toggleActive2")}
             />
           )}
           {!isQueue && (
             <HeaderToggle
               on={bypassed}
-              label="B"
+              label={<BanIcon />}
               title={bypassed ? "Bypassed" : "Bypass (pass through)"}
-              activeBg="#b45309"
-              activeFg="#fef3c7"
+              activeBg="var(--tb-a-amber-700)"
+              activeFg="var(--tb-a-amber-100)"
               onClick={() => dispatch("toggleBypass")}
             />
           )}
@@ -750,8 +817,8 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               on={false}
               label="+"
               title="Add input layer"
-              activeBg="#374151"
-              activeFg="#e5e7eb"
+              activeBg="var(--tb-a-gray-700)"
+              activeFg="var(--tb-n-16)"
               onClick={() =>
                 window.dispatchEvent(
                   new CustomEvent("effect-node-toggle", {
@@ -766,8 +833,8 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               on={false}
               label="+"
               title="Add input"
-              activeBg="#374151"
-              activeFg="#e5e7eb"
+              activeBg="var(--tb-a-gray-700)"
+              activeFg="var(--tb-n-16)"
               onClick={() =>
                 window.dispatchEvent(
                   new CustomEvent("effect-node-toggle", {
@@ -782,8 +849,8 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               on={false}
               label="+"
               title="Add color output"
-              activeBg="#374151"
-              activeFg="#e5e7eb"
+              activeBg="var(--tb-a-gray-700)"
+              activeFg="var(--tb-n-16)"
               onClick={() =>
                 window.dispatchEvent(
                   new CustomEvent("effect-node-toggle", {
@@ -798,8 +865,8 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               on={false}
               label="+"
               title="Add item slot"
-              activeBg="#374151"
-              activeFg="#e5e7eb"
+              activeBg="var(--tb-a-gray-700)"
+              activeFg="var(--tb-n-16)"
               onClick={() =>
                 window.dispatchEvent(
                   new CustomEvent("effect-node-toggle", {
@@ -814,8 +881,8 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               on={false}
               label="+"
               title="Add input variable"
-              activeBg="#374151"
-              activeFg="#e5e7eb"
+              activeBg="var(--tb-a-gray-700)"
+              activeFg="var(--tb-n-16)"
               onClick={() =>
                 window.dispatchEvent(
                   new CustomEvent("effect-node-toggle", {
@@ -830,8 +897,8 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               on={false}
               label="+"
               title="Add queue slot"
-              activeBg="#374151"
-              activeFg="#e5e7eb"
+              activeBg="var(--tb-a-gray-700)"
+              activeFg="var(--tb-n-16)"
               onClick={() =>
                 window.dispatchEvent(
                   new CustomEvent("effect-node-toggle", {
@@ -846,8 +913,8 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               on={false}
               label="↗"
               title="Export App — bundle this graph as a runnable web app"
-              activeBg="#1e3a8a"
-              activeFg="#bfdbfe"
+              activeBg="var(--tb-a-blue-900)"
+              activeFg="var(--tb-a-blue-200)"
               onClick={() =>
                 window.dispatchEvent(
                   new CustomEvent("effect-node-export", {
@@ -862,8 +929,8 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               on={false}
               label="↻"
               title="Clear trail history"
-              activeBg="#374151"
-              activeFg="#e5e7eb"
+              activeBg="var(--tb-a-gray-700)"
+              activeFg="var(--tb-n-16)"
               onClick={() =>
                 window.dispatchEvent(
                   new CustomEvent("effect-node-toggle", {
@@ -903,7 +970,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                     isVirtual ? "transparent" : colorForSocket(input.type)
                   }
                   border={
-                    isVirtual ? "1px dashed #52525b" : "1px solid #0a0a0a"
+                    isVirtual ? "1px dashed var(--tb-n-10)" : "1px solid var(--tb-n-0)"
                   }
                 />
               </Handle>
@@ -924,7 +991,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               >
                 <span
                   style={{
-                    color: isVirtual ? "#52525b" : "#a1a1aa",
+                    color: isVirtual ? "var(--tb-n-10)" : "var(--tb-n-13)",
                     fontStyle: isVirtual ? "italic" : undefined,
                   }}
                 >
@@ -939,8 +1006,8 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                           flex: 1,
                           height: 6,
                           borderRadius: 999,
-                          background: "#0a0a0a",
-                          border: "1px solid #27272a",
+                          background: "var(--tb-n-0)",
+                          border: "1px solid var(--tb-n-7)",
                           overflow: "hidden",
                         }}
                       >
@@ -951,7 +1018,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                                 ? "100%"
                                 : `${fill * 100}%`,
                             height: "100%",
-                            background: "#2563eb",
+                            background: "var(--tb-a-blue-600)",
                             opacity: fill === "indeterminate" ? 0.45 : 1,
                             transition: "width 200ms",
                           }}
@@ -991,7 +1058,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                 <SocketDot
                   size={HANDLE_SIZE}
                   background={colorForSocket(ex.socketType)}
-                  border="1px dashed #52525b"
+                  border="1px dashed var(--tb-n-10)"
                   borderRadius={2}
                 />
               </Handle>
@@ -1007,7 +1074,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                   paddingLeft: 14,
                 }}
               >
-                <span style={{ color: "#71717a", fontStyle: "italic" }}>
+                <span style={{ color: "var(--tb-n-11)", fontStyle: "italic" }}>
                   {ex.label}
                 </span>
                 <span
@@ -1045,7 +1112,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               <SocketDot
                 size={HANDLE_SIZE + 2}
                 background={colorForSocket(data.primaryOutput!)}
-                border="1px solid #0a0a0a"
+                border="1px solid var(--tb-n-0)"
               />
             </Handle>
             <div
@@ -1077,7 +1144,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               >
                 {data.primaryOutput}
               </span>
-              <span style={{ color: "#e4e4e7" }}>out</span>
+              <span style={{ color: "var(--tb-n-16)" }}>out</span>
             </div>
           </Fragment>
         )}
@@ -1123,13 +1190,13 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                     disabled || isVirtual
                       ? isVirtual
                         ? "transparent"
-                        : "#27272a"
+                        : "var(--tb-n-7)"
                       : colorForSocket(aux.type)
                   }
                   border={
                     disabled || isVirtual
-                      ? "1px dashed #52525b"
-                      : "1px solid #0a0a0a"
+                      ? "1px dashed var(--tb-n-10)"
+                      : "1px solid var(--tb-n-0)"
                   }
                 />
               </Handle>
@@ -1164,7 +1231,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                 {!isVirtual && (
                   <span
                     style={{
-                      color: disabled ? "#52525b" : colorForSocket(aux.type),
+                      color: disabled ? "var(--tb-n-10)" : colorForSocket(aux.type),
                       fontSize: 9,
                     }}
                   >
@@ -1173,7 +1240,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                 )}
                 <span
                   style={{
-                    color: isVirtual ? "#52525b" : "#71717a",
+                    color: isVirtual ? "var(--tb-n-10)" : "var(--tb-n-11)",
                     fontStyle: isVirtual ? "italic" : undefined,
                   }}
                 >
@@ -1216,7 +1283,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
         <div
           style={{
             padding: "6px 8px",
-            borderTop: "1px solid #27272a",
+            borderTop: "1px solid var(--tb-n-7)",
             // Fill the remaining height of a resized node so the textarea can
             // grow with it; minHeight:0 lets it shrink inside the flex column.
             flex: "1 1 auto",
@@ -1241,7 +1308,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
         <div
           style={{
             padding: "6px 8px",
-            borderTop: "1px solid #27272a",
+            borderTop: "1px solid var(--tb-n-7)",
           }}
         >
           <NodeScalarSlider
@@ -1255,8 +1322,35 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             min={scalarConfig.min}
             max={scalarConfig.max}
             step={scalarConfig.step}
+            snapToStep={scalarConfig.snapToStep}
             sliderMin={scalarConfig.sliderMin}
             sliderMax={scalarConfig.sliderMax}
+          />
+        </div>
+      )}
+
+      {colorSwatch && (
+        <div
+          style={{
+            padding: "6px 8px",
+            borderTop: "1px solid var(--tb-n-7)",
+          }}
+        >
+          <NodeColorSwatch
+            id={id}
+            colorParam={colorSwatch.color}
+            paintParam={colorSwatch.paint}
+            color={
+              typeof data.params[colorSwatch.color] === "string"
+                ? (data.params[colorSwatch.color] as string)
+                : "#ffffff"
+            }
+            // No `paint` param (SDF Material) means always painted.
+            painted={
+              !colorSwatch.paint || data.params[colorSwatch.paint] === true
+            }
+            open={swatchOpen}
+            setOpen={setSwatchOpen}
           />
         </div>
       )}
@@ -1265,7 +1359,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
         <div
           style={{
             padding: "6px 8px",
-            borderTop: "1px solid #27272a",
+            borderTop: "1px solid var(--tb-n-7)",
             display: "flex",
             gap: 6,
           }}
@@ -1304,6 +1398,12 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               )
             }
           />
+          {/* Vector product. Both surfaces carry a `spline` tap — the
+              composition Output as a real input, a Layer Output as its
+              third fixed boundary socket. Self-gating: renders nothing
+              until something is wired into `in:spline`, so the usual
+              two-button row is unchanged for everyone else. */}
+          <SvgExportButton id={id} />
         </div>
       )}
 
@@ -1311,37 +1411,11 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
         <div
           style={{
             padding: "6px 8px",
-            borderTop: "1px solid #27272a",
+            borderTop: "1px solid var(--tb-n-7)",
             display: "flex",
           }}
         >
-          <button
-            className="nodrag"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              window.dispatchEvent(
-                new CustomEvent("effect-node-export", {
-                  detail: { id, kind: "queue" },
-                })
-              );
-            }}
-            title="Render every queued Output in order"
-            style={{
-              flex: 1,
-              background: "#1e3a8a",
-              border: "1px solid #1d4ed8",
-              color: "#bfdbfe",
-              borderRadius: 999,
-              padding: "4px 10px",
-              fontFamily: "inherit",
-              fontSize: 10,
-              letterSpacing: 0.3,
-              cursor: "pointer",
-            }}
-          >
-            Render ▶
-          </button>
+          <RenderQueueButton id={id} />
         </div>
       )}
 
@@ -1354,19 +1428,24 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   );
 }
 
-// Bottom-left resize handle. A quiet corner target that brightens when the
-// node is selected or being dragged. `nodrag` so grabbing it resizes the
-// node instead of moving it.
+// Bottom-right resize handle: a quarter-round bracket that traces just
+// OUTSIDE the node's corner (the node clips nothing, so it can overhang),
+// echoing the body's border radius. Brightens when the node is selected or
+// being dragged. `nodrag` so grabbing it resizes the node instead of moving it.
 function ResizeGrip({
   active,
   onPointerDown,
   onDoubleClick,
 }: {
   active: boolean;
-  onPointerDown: (e: React.PointerEvent) => void;
+  onPointerDown: (e: React.PointerEvent<HTMLElement>) => void;
   onDoubleClick: (e: React.MouseEvent) => void;
 }) {
   const [hover, setHover] = useState(false);
+  const coarse = useCoarsePointer();
+  // The visible bracket stays 12px at every input type; only the invisible
+  // grab box around it grows for a fingertip.
+  const hit = coarse ? 28 : 16;
   return (
     <div
       className="nodrag"
@@ -1377,31 +1456,37 @@ function ResizeGrip({
       onMouseLeave={() => setHover(false)}
       style={{
         position: "absolute",
-        left: 0,
-        bottom: 0,
-        width: 16,
-        height: 16,
-        cursor: "nesw-resize",
+        // Overhangs the corner by 4px — the bracket reads as an outline
+        // offset from the node edge rather than a glyph sitting on it.
+        right: -4,
+        bottom: -4,
+        width: hit,
+        height: hit,
+        cursor: "nwse-resize",
         display: "flex",
         alignItems: "flex-end",
-        justifyContent: "flex-start",
-        padding: 3,
-        // The bottom-left rounding matches the node corner so the hit area
-        // doesn't poke past it.
-        borderBottomLeftRadius: 6,
+        justifyContent: "flex-end",
         zIndex: 4,
-        opacity: hover ? 0.95 : active ? 0.6 : 0.28,
+        // Always fully opaque on touch: there's no hover to reveal it, and a
+        // 0.28 grip is easy to miss when you can't feel your way to it.
+        opacity: hover ? 0.95 : active ? 0.6 : coarse ? 0.55 : 0.28,
         transition: "opacity 120ms ease",
+        // React Flow's node drag is pointer-driven; without this the browser
+        // can claim the gesture for a pan before the grip's capture lands.
+        ...TOUCH_DRAG_STYLE,
       }}
     >
-      <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden>
-        <path
-          d="M0 8 L8 0 M0 8 L4 8 M0 8 L0 4"
-          stroke="#a1a1aa"
-          strokeWidth="1"
-          fill="none"
-        />
-      </svg>
+      {/* Two borders + a corner radius draw the quarter arc exactly; an SVG
+          path would have to guess at the same curve. */}
+      <div
+        style={{
+          width: 12,
+          height: 12,
+          borderRight: "1px solid var(--tb-n-13)",
+          borderBottom: "1px solid var(--tb-n-13)",
+          borderBottomRightRadius: 12,
+        }}
+      />
     </div>
   );
 }
@@ -1413,6 +1498,7 @@ function ExportButton({
   label: string;
   onClick: () => void;
 }) {
+  const [hover, setHover] = useState(false);
   return (
     <button
       className="nodrag"
@@ -1421,19 +1507,88 @@ function ExportButton({
         e.stopPropagation();
         onClick();
       }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       style={{
         flex: 1,
-        background: "#27272a",
-        color: "#e5e7eb",
-        border: "1px solid #3f3f46",
+        background: hover ? "var(--tb-n-9)" : "var(--tb-n-7)",
+        color: hover ? "var(--tb-n-17)" : "var(--tb-n-16)",
+        border: `1px solid ${hover ? "var(--tb-n-11)" : "var(--tb-n-9)"}`,
         borderRadius: 3,
         padding: "3px 6px",
         fontFamily: "inherit",
         fontSize: 10,
         cursor: "pointer",
+        transition:
+          "background 100ms ease, color 100ms ease, border-color 100ms ease",
       }}
     >
       {label}
+    </button>
+  );
+}
+
+// The third export product on an Output / Layer Output: the spline wired
+// into its `spline` tap, saved as a standalone .svg at the current playhead.
+// Its own component so the connection subscription lives here — the row
+// renders nothing at all when the tap is empty, which keeps the default
+// chrome (Image / Video) exactly as it was. The panel gates its
+// "Export SVG →" twin on the same wire.
+function SvgExportButton({ id }: { id: string }) {
+  const conns = useNodeConnections({
+    handleType: "target",
+    handleId: "in:spline",
+  });
+  if (conns.length === 0) return null;
+  return (
+    <ExportButton
+      label="SVG"
+      onClick={() =>
+        window.dispatchEvent(
+          new CustomEvent("effect-node-export", {
+            detail: { id, kind: "svg" },
+          })
+        )
+      }
+    />
+  );
+}
+
+// Render Queue's "run the whole queue" button — the one on-node action that
+// isn't a toggle, so it gets a filled accent instead of HeaderToggle's pill.
+function RenderQueueButton({ id }: { id: string }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      className="nodrag"
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        window.dispatchEvent(
+          new CustomEvent("effect-node-export", {
+            detail: { id, kind: "queue" },
+          })
+        );
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title="Render every queued Output in order"
+      style={{
+        flex: 1,
+        background: hover ? "var(--tb-a-blue-700)" : "var(--tb-a-blue-900)",
+        border: `1px solid ${hover ? "var(--tb-a-blue-500)" : "var(--tb-a-blue-700)"}`,
+        color: hover ? "var(--tb-t-navy-l-0)" : "var(--tb-a-blue-200)",
+        borderRadius: 999,
+        padding: "4px 10px",
+        fontFamily: "inherit",
+        fontSize: 10,
+        letterSpacing: 0.3,
+        cursor: "pointer",
+        transition:
+          "background 100ms ease, color 100ms ease, border-color 100ms ease",
+      }}
+    >
+      Render ▶
     </button>
   );
 }
@@ -1512,9 +1667,9 @@ function NodeStringInput({
         height: "100%",
         boxSizing: "border-box",
         resize: "none",
-        background: "#0e0e11",
-        color: wired ? "#71717a" : "#e5e7eb",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-1)",
+        color: wired ? "var(--tb-n-11)" : "var(--tb-n-16)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 4,
         fontFamily: "inherit",
         fontSize: 11,
@@ -1523,6 +1678,149 @@ function NodeStringInput({
         outline: "none",
       }}
     />
+  );
+}
+
+// Inline colour swatch on the node body (SDF primitives + SDF Material).
+//
+// Three states, because SDF colour is genuinely tri-state:
+//   inheriting — `paint` off; the shape takes an enclosing Material's
+//                colour, or the terminal's foreground. Shown as a
+//                slashed outline, NOT as a colour, so "no colour of its
+//                own" never reads as "black".
+//   painted    — `paint` on; filled swatch + hex. The ✕ returns to
+//                inheriting without disturbing the stored colour, so
+//                toggling back and forth is lossless.
+//   driven     — a wire into the colour input wins at eval, so the
+//                swatch goes read-only and dims (same contract as
+//                NodeScalarSlider).
+function NodeColorSwatch({
+  id,
+  colorParam,
+  paintParam,
+  color,
+  painted,
+  open,
+  setOpen,
+}: {
+  id: string;
+  colorParam: string;
+  paintParam?: string;
+  color: string;
+  painted: boolean;
+  open: boolean;
+  setOpen: (v: boolean) => void;
+}) {
+  // Two ways a colour can be driven: a real `color` input socket (SDF
+  // Material) or the param exposed as `in:param:color` (any primitive).
+  // Hooks can't be conditional, so both are always queried.
+  const socketConns = useNodeConnections({
+    handleType: "target",
+    handleId: `in:${colorParam}`,
+  });
+  const paramConns = useNodeConnections({
+    handleType: "target",
+    handleId: `in:param:${colorParam}`,
+  });
+  const wired = socketConns.length > 0 || paramConns.length > 0;
+
+  const emit = (name: string, value: unknown) =>
+    window.dispatchEvent(
+      new CustomEvent("effect-node-param", { detail: { id, name, value } })
+    );
+
+  const swatchBg = painted && !wired ? color : "transparent";
+
+  return (
+    <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 6 }}>
+      <button
+        className="nodrag"
+        title={
+          wired
+            ? "Driven by a wired input"
+            : painted
+              ? "Edit color"
+              : "Give this shape its own color"
+        }
+        disabled={wired}
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (wired) return;
+          // Turning paint on and opening the picker is one gesture —
+          // an extra click to reveal a control you just asked for is
+          // pure friction.
+          if (paintParam && !painted) emit(paintParam, true);
+          setOpen(!open);
+        }}
+        style={{
+          width: 22,
+          height: 16,
+          padding: 0,
+          borderRadius: 3,
+          border: "1px solid var(--tb-n-9)",
+          background: swatchBg,
+          cursor: wired ? "default" : "pointer",
+          opacity: wired ? 0.5 : 1,
+          position: "relative",
+          overflow: "hidden",
+        }}
+      >
+        {!painted && !wired && (
+          // Corner-to-corner slash: the conventional "no paint" mark.
+          <span
+            style={{
+              position: "absolute",
+              inset: 0,
+              background:
+                "linear-gradient(to top right, transparent 45%, var(--tb-n-10) 45%, var(--tb-n-10) 55%, transparent 55%)",
+            }}
+          />
+        )}
+      </button>
+
+      <span style={{ fontSize: 10, color: "var(--tb-n-11)", flex: 1 }}>
+        {wired ? "driven" : painted ? color : "inherit"}
+      </span>
+
+      {painted && paintParam && !wired && (
+        <button
+          className="nodrag"
+          title="Back to inheriting"
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            emit(paintParam, false);
+            setOpen(false);
+          }}
+          style={{
+            width: 14,
+            height: 14,
+            padding: 0,
+            lineHeight: "12px",
+            fontSize: 11,
+            borderRadius: 3,
+            border: "1px solid var(--tb-n-7)",
+            background: "transparent",
+            color: "var(--tb-n-11)",
+            cursor: "pointer",
+          }}
+        >
+          ×
+        </button>
+      )}
+
+      {open && !wired && (
+        <ColorPickerPopover
+          value={color}
+          onChange={(hex) => emit(colorParam, hex)}
+          onClose={() => setOpen(false)}
+          style={{ top: "100%", right: 0, marginTop: 4 }}
+        />
+      )}
+    </div>
   );
 }
 
@@ -1540,6 +1838,7 @@ function NodeScalarSlider({
   min,
   max,
   step,
+  snapToStep,
   sliderMin,
   sliderMax,
 }: {
@@ -1549,6 +1848,10 @@ function NodeScalarSlider({
   min: number;
   max: number;
   step: number;
+  // Step came from ParamDef.stepFrom — snap edits to zero-based multiples
+  // of it (k·step, clamped) so values land ON the increments rather than
+  // the native range's min-offset grid. Mirrors ParamControl's behavior.
+  snapToStep?: boolean;
   sliderMin: number;
   sliderMax: number;
 }) {
@@ -1557,12 +1860,18 @@ function NodeScalarSlider({
     handleId: `in:param:${paramName}`,
   });
   const wired = conns.length > 0;
-  const emit = (v: number) =>
+  const emit = (raw: number) => {
+    let v = raw;
+    if (snapToStep && step > 0 && Number.isFinite(v)) {
+      v = parseFloat((Math.round(v / step) * step).toFixed(6));
+      v = Math.max(min, Math.min(max, v));
+    }
     window.dispatchEvent(
       new CustomEvent("effect-node-param", {
         detail: { id, name: paramName, value: v },
       })
     );
+  };
 
   if (wired) {
     return (
@@ -1573,10 +1882,10 @@ function NodeScalarSlider({
           display: "flex",
           alignItems: "center",
           paddingLeft: 6,
-          borderRadius: 6,
-          boxShadow: "inset 0 0 0 1px #232327",
-          background: "#0f0f11",
-          color: "#71717a",
+          borderRadius: BAR_SLIDER_RADIUS,
+          boxShadow: "inset 0 0 0 1px var(--tb-n-6)",
+          background: "var(--tb-n-1)",
+          color: "var(--tb-n-11)",
           fontSize: 11,
           fontVariantNumeric: "tabular-nums",
         }}
@@ -1613,6 +1922,49 @@ function NodeScalarSlider({
   );
 }
 
+// View / bypass glyphs. `currentColor` so they inherit HeaderToggle's
+// on/off/hover colour without either side knowing the other's palette.
+function EyeIcon() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M1.5 12S5.8 5.5 12 5.5 22.5 12 22.5 12 18.2 18.5 12 18.5 1.5 12 1.5 12z" />
+      <circle cx="12" cy="12" r="3.2" />
+    </svg>
+  );
+}
+
+function BanIcon() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M5.6 5.6 18.4 18.4" />
+    </svg>
+  );
+}
+
+// Header pill button (view / bypass / viewport numbers / +). `label` is a
+// node, not a string, so the view + bypass toggles can carry icons while the
+// rest stay glyphs. Hover lives in local state on purpose — keeping it out of
+// EffectNode means pointing at one toggle doesn't re-render the whole node.
 function HeaderToggle({
   on,
   label,
@@ -1622,12 +1974,13 @@ function HeaderToggle({
   onClick,
 }: {
   on: boolean;
-  label: string;
+  label: React.ReactNode;
   title: string;
   activeBg: string;
   activeFg: string;
   onClick: () => void;
 }) {
+  const [hover, setHover] = useState(false);
   return (
     <button
       onMouseDown={(e) => e.stopPropagation()}
@@ -1635,25 +1988,130 @@ function HeaderToggle({
         e.stopPropagation();
         onClick();
       }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       title={title}
+      aria-label={title}
       className="nodrag"
       style={{
         width: 18,
         height: 18,
-        borderRadius: 3,
+        borderRadius: 6,
         fontSize: 10,
         fontWeight: 600,
-        lineHeight: "16px",
-        textAlign: "center",
         padding: 0,
-        background: on ? activeBg : "transparent",
-        color: on ? activeFg : "#71717a",
-        border: `1px solid ${on ? activeBg : "#3f3f46"}`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: on ? activeBg : hover ? "var(--tb-n-9)" : "transparent",
+        color: on ? activeFg : hover ? "var(--tb-n-16)" : "var(--tb-n-11)",
+        border: `1px solid ${on ? activeBg : hover ? "var(--tb-n-11)" : "var(--tb-n-9)"}`,
+        // An ON toggle already owns its accent hue, so hover lifts it with a
+        // white film instead of a second colour — one rule covers every
+        // activeBg (view green, bypass amber, the grey + buttons).
+        boxShadow: on && hover
+          ? "inset 0 0 0 20px color-mix(in srgb, var(--tb-lift) 16%, transparent)"
+          : undefined,
         cursor: "pointer",
         fontFamily: "inherit",
+        transition:
+          "background 100ms ease, color 100ms ease, border-color 100ms ease, box-shadow 100ms ease",
       }}
     >
       {label}
+    </button>
+  );
+}
+
+// The header's circled "i" — opens NodeInspectorPopup. Its own component so
+// hover state doesn't re-render the node; `data-node-inspect-toggle` is what
+// the popup's outside-click handler looks for, so it has to stay.
+function InspectButton({ id }: { id: string }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        window.dispatchEvent(
+          new CustomEvent("effect-node-toggle", {
+            detail: { id, kind: "toggleInspect" },
+          })
+        );
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title="Inspect — show inputs and outputs flowing through this node"
+      className="nodrag"
+      data-node-inspect-toggle="1"
+      style={{
+        width: 14,
+        height: 14,
+        borderRadius: "50%",
+        background: hover ? "var(--tb-n-9)" : "transparent",
+        border: `1px solid ${hover ? "var(--tb-n-13)" : "var(--tb-n-10)"}`,
+        color: hover ? "var(--tb-n-16)" : "var(--tb-n-13)",
+        fontSize: 9,
+        fontWeight: 800,
+        fontFamily: "inherit",
+        lineHeight: "12px",
+        textAlign: "center",
+        padding: 0,
+        cursor: "pointer",
+        transition:
+          "background 100ms ease, color 100ms ease, border-color 100ms ease",
+      }}
+    >
+      i
+    </button>
+  );
+}
+
+// Star badge above the top-right corner of an AI-authored group.
+function AiEditButton({ id }: { id: string }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      className="nodrag"
+      title="Edit with AI"
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        window.dispatchEvent(
+          new CustomEvent("ai-edit-node", { detail: { nodeId: id } })
+        );
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        position: "absolute",
+        // Hovers just above the node's top-right corner.
+        top: -12,
+        right: -8,
+        width: 20,
+        height: 20,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 999,
+        background: hover ? "var(--tb-t-violet-d-0)" : "var(--tb-t-violet-d-1)",
+        border: `1px solid ${hover ? "var(--tb-a-violet-400)" : "#6d28d9"}`,
+        cursor: "pointer",
+        padding: 0,
+        zIndex: 5,
+        boxShadow: "var(--tb-shadow-chip)",
+        transition: "background 100ms ease, border-color 100ms ease",
+      }}
+    >
+      <svg
+        width="11"
+        height="11"
+        viewBox="0 0 24 24"
+        fill={hover ? "var(--tb-t-violet-l-1)" : "var(--tb-a-violet-400)"}
+        aria-hidden
+      >
+        <path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z" />
+      </svg>
     </button>
   );
 }
@@ -1673,6 +2131,11 @@ function ColorSwatchButton({
   // Palette mode (image wired) — the swatch is a readout, not an editor.
   disabled?: boolean;
 }) {
+  const [hover, setHover] = useState(false);
+  // The swatch IS its colour, so hover brightens the inset ring rather than
+  // the fill — nothing about the value on screen may shift. A disabled
+  // swatch is a readout and stays inert.
+  const lit = hover && !disabled;
   return (
     <button
       className="nodrag"
@@ -1683,6 +2146,8 @@ function ColorSwatchButton({
         e.stopPropagation();
         if (!disabled) onClick();
       }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       style={{
         width: 14,
         height: 14,
@@ -1690,9 +2155,12 @@ function ColorSwatchButton({
         borderRadius: 3,
         background: color,
         border: "1px solid rgba(0,0,0,0.55)",
-        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.14)",
+        boxShadow: lit
+          ? "inset 0 0 0 1px color-mix(in srgb, var(--tb-lift) 50%, transparent)"
+          : "inset 0 0 0 1px color-mix(in srgb, var(--tb-lift) 14%, transparent)",
         cursor: disabled ? "default" : "pointer",
         padding: 0,
+        transition: "box-shadow 100ms ease",
       }}
     />
   );

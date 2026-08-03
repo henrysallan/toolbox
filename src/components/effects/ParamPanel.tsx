@@ -1,7 +1,17 @@
 "use client";
 
 import type { Edge, Node } from "@xyflow/react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  memo,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { ownerWindow } from "@/components/effects/layout/panel-window";
 import { getNodeDef } from "@/engine/registry";
 import { resolveWedgeBatchInfo } from "@/lib/wedge-batch";
 import { paramSocketType } from "@/state/graph";
@@ -16,8 +26,12 @@ import {
   isFixedBoundary,
   readBoundarySockets,
   readReservedSockets,
+  resolveOutputBoundarySockets,
   type GroupSocketSpec,
 } from "@/engine/groups";
+import { evalNumExpr } from "@/lib/num-expr";
+import { EXPORT_PARAMS } from "@/nodes/output/output";
+import { SVG_STYLE_PARAMS } from "@/nodes/output/svg-export";
 import { colorForSocket } from "./socketColor";
 import LoadGrid from "./LoadGrid";
 import ImageGeneratePanel from "./ImageGeneratePanel";
@@ -43,6 +57,10 @@ import KeyframeDiamond from "./KeyframeDiamond";
 import TrackVisibilityEye from "./TrackVisibilityEye";
 import { Dropdown, ParamControl, menuItemStyle, type LayerAnimApi, type RampIoApi } from "@/lib/param-controls";
 import { animatedValueAt, parseRampParamKey } from "@/engine/conventions";
+
+// SVG styling param names, shared by the SVG Export node and the Output
+// node's spline tap. The Output panel hides these until a spline is wired.
+const SVG_STYLE_PARAM_NAMES = new Set(SVG_STYLE_PARAMS.map((p) => p.name));
 
 // Expose / Control toggle glyphs. Referenced from public/ via CSS mask so the
 // silhouette recolors to the button's `currentColor` (active/inactive states)
@@ -94,8 +112,8 @@ function SwitchPill({ on }: { on: boolean }) {
         height: 15,
         borderRadius: 999,
         boxSizing: "border-box",
-        background: on ? "#3b82f6" : "#27272a",
-        border: `1px solid ${on ? "#3b82f6" : "#3f3f46"}`,
+        background: on ? "var(--tb-a-blue-500)" : "var(--tb-n-7)",
+        border: `1px solid ${on ? "var(--tb-a-blue-500)" : "var(--tb-n-9)"}`,
         transition: "background 0.14s ease, border-color 0.14s ease",
       }}
     >
@@ -107,7 +125,7 @@ function SwitchPill({ on }: { on: boolean }) {
           width: 11,
           height: 11,
           borderRadius: 999,
-          background: on ? "#fff" : "#a1a1aa",
+          background: on ? "#fff" : "var(--tb-n-13)",
           transition: "left 0.14s ease, background 0.14s ease",
         }}
       />
@@ -142,8 +160,8 @@ function GroupHeader({
         alignItems: "center",
         gap: 8,
         padding: "5px 8px",
-        background: "#141414",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-2)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 6,
         cursor: hasChildren ? "pointer" : "default",
         userSelect: "none",
@@ -173,7 +191,7 @@ function GroupHeader({
           flex: 1,
           minWidth: 0,
           fontSize: 11,
-          color: enabled ? "#e4e4e7" : "#a1a1aa",
+          color: enabled ? "var(--tb-n-16)" : "var(--tb-n-13)",
           whiteSpace: "nowrap",
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -188,7 +206,7 @@ function GroupHeader({
           viewBox="0 0 8 8"
           style={{
             flexShrink: 0,
-            color: "#a1a1aa",
+            color: "var(--tb-n-13)",
             transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)",
             transition: "transform 0.12s ease",
           }}
@@ -349,6 +367,64 @@ const RES_PRESETS: Array<{ label: string; w: number; h: number }> = [
   { label: "3840 × 2160", w: 3840, h: 2160 },
 ];
 
+// Panel width (px) below which one-line param rows split into two lines.
+// A single-line row spends ~300px on fixed furniture (90px label, eye,
+// number field, keyframe diamond + carets, expose/control toggles), so
+// under this width the slider track is squeezed to a few dozen pixels and
+// dropdown labels ellipsis away to nothing. Two lines gives the control
+// the full row width back.
+const NARROW_PANEL_PX = 380;
+
+// True when the panel is narrower than NARROW_PANEL_PX. Provided by
+// ParamPanelShell so each ParamRow can pick its layout without running its
+// own ResizeObserver.
+const NarrowPanelContext = createContext(false);
+
+// Scroll container for the whole panel — owns the single width measurement
+// that drives the one-line / two-line row layout below.
+function ParamPanelShell({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [narrow, setNarrow] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // clientWidth, not the observed border box: the panel's own 10px
+    // padding is already excluded from what a row actually gets. No eager
+    // first call — observe() delivers an initial observation itself.
+    const ro = new ResizeObserver(() =>
+      setNarrow(el.clientWidth < NARROW_PANEL_PX)
+    );
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  return (
+    <NarrowPanelContext.Provider value={narrow}>
+      <div
+        ref={ref}
+        className="no-scrollbar"
+        style={{
+          height: "100%",
+          width: "100%",
+          overflowY: "auto",
+          // Clip any sub-pixel horizontal overflow so a stray child can't
+          // push the visible right edge inward and break the symmetry.
+          overflowX: "hidden",
+          padding: 10,
+          boxSizing: "border-box",
+          background: "var(--tb-n-0)",
+          color: "var(--tb-n-16)",
+          fontFamily: "var(--ui-font)",
+          fontSize: 11,
+        }}
+      >
+        {children}
+      </div>
+    </NarrowPanelContext.Provider>
+  );
+}
+
 // Memoized (export at the bottom). The clock-store subscription inside
 // still re-renders it per frame while PLAYING (keyframe diamonds track the
 // playhead — the leaf-subscription follow-up fixes that); the memo removes
@@ -398,6 +474,18 @@ function ParamPanel({
     : undefined;
   const def = selected ? getNodeDef(selected.data.defType) : undefined;
 
+  // Is anything wired into the Output node's optional `spline` tap? Wired ⇒
+  // the panel reveals the SVG styling rows and the "Export SVG →" action;
+  // both are dead weight without a spline to write, and the export panel is
+  // long enough already. Same gate as the on-node SVG button in
+  // EffectNode.tsx.
+  const outputSplineWired =
+    !!selected &&
+    def?.type === "output" &&
+    (edges ?? []).some(
+      (e) => e.target === selected.id && e.targetHandle === "in:spline"
+    );
+
   // Collapsed state for ParamDef groups (e.g. the Text node's per-character
   // animators), keyed `${nodeId}:${groupId}`. Default expanded; the header
   // caret toggles it. Purely UI — never touches stored params.
@@ -413,23 +501,7 @@ function ParamPanel({
     });
 
   return (
-    <div
-      className="no-scrollbar"
-      style={{
-        height: "100%",
-        width: "100%",
-        overflowY: "auto",
-        // Clip any sub-pixel horizontal overflow so a stray child can't
-        // push the visible right edge inward and break the symmetry.
-        overflowX: "hidden",
-        padding: 10,
-        boxSizing: "border-box",
-        background: "#0a0a0a",
-        color: "#e5e7eb",
-        fontFamily: "ui-monospace, monospace",
-        fontSize: 11,
-      }}
-    >
+    <ParamPanelShell>
       {mode === "project" ? (
         <ProjectSettings
           canvasRes={canvasRes}
@@ -585,6 +657,7 @@ function ParamPanel({
             isFixedBoundary(selected.data.params) && (
               <LayerOutputExportSettings
                 node={selected}
+                edges={edges ?? []}
                 onParamChange={onParamChange}
               />
             )}
@@ -598,6 +671,7 @@ function ParamPanel({
                   key={selected.id}
                   name={selected.data.name}
                   onCommit={(v) => onRenameNode(selected.id, v)}
+                  title={def.type === LAYER_TYPE ? "Layer name" : "Group name"}
                 />
               </Section>
             )}
@@ -649,7 +723,7 @@ function ParamPanel({
                       label={def.type === LAYER_TYPE ? "layer inputs" : "group inputs"}
                     >
                       {inputSockets.length === 0 ? (
-                        <div style={{ color: "#52525b" }}>(no sockets yet)</div>
+                        <div style={{ color: "var(--tb-n-10)" }}>(no sockets yet)</div>
                       ) : (
                         inputSockets.map((s) => {
                           // Interior exposed-param consumers of this
@@ -725,7 +799,7 @@ function ParamPanel({
                           return <GroupSocketRow key={s.name} spec={s} />;
                         })
                       )}
-                      <div style={{ color: "#52525b", fontSize: 10 }}>
+                      <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
                         Wire into the dashed “new socket” port on{" "}
                         {def.type === LAYER_TYPE ? "Layer Input" : "Group Input"}{" "}
                         to add one.
@@ -746,9 +820,9 @@ function ParamPanel({
             <button
               onClick={() => onExportApp(selected.id)}
               style={{
-                background: "#1e3a8a",
-                border: "1px solid #1d4ed8",
-                color: "#bfdbfe",
+                background: "var(--tb-a-blue-900)",
+                border: "1px solid var(--tb-a-blue-700)",
+                color: "var(--tb-a-blue-200)",
                 fontFamily: "inherit",
                 fontSize: 11,
                 padding: "6px 10px",
@@ -762,6 +836,35 @@ function ParamPanel({
               Export App →
             </button>
           )}
+          {/* Output's vector product: the same action as the node's on-canvas
+              "SVG" button, surfaced next to the styling rows it uses. Only
+              once the `spline` tap is wired — see outputSplineWired. */}
+          {outputSplineWired && (
+            <button
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("effect-node-export", {
+                    detail: { id: selected.id, kind: "svg" },
+                  })
+                )
+              }
+              style={{
+                background: "var(--tb-a-blue-900)",
+                border: "1px solid var(--tb-a-blue-700)",
+                color: "var(--tb-a-blue-200)",
+                fontFamily: "inherit",
+                fontSize: 11,
+                padding: "6px 10px",
+                borderRadius: 4,
+                cursor: "pointer",
+                textAlign: "center",
+                letterSpacing: 0.3,
+              }}
+              title="Save the spline wired into this Output at the current playhead as a standalone .svg"
+            >
+              Export SVG →
+            </button>
+          )}
           {def.type === "scene-render" && (
             <button
               onClick={() => {
@@ -770,9 +873,9 @@ function ParamPanel({
                 );
               }}
               style={{
-                background: "#1e3a8a",
-                border: "1px solid #1d4ed8",
-                color: "#bfdbfe",
+                background: "var(--tb-a-blue-900)",
+                border: "1px solid var(--tb-a-blue-700)",
+                color: "var(--tb-a-blue-200)",
                 fontFamily: "inherit",
                 fontSize: 11,
                 padding: "6px 10px",
@@ -784,6 +887,32 @@ function ParamPanel({
               title="Export the 3D scene contents (meshes, materials, lights) as a GLB file"
             >
               Export GLB →
+            </button>
+          )}
+          {def.type === "svg-export" && (
+            <button
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("effect-node-export", {
+                    detail: { id: selected.id, kind: "svg" },
+                  })
+                )
+              }
+              style={{
+                background: "var(--tb-a-blue-900)",
+                border: "1px solid var(--tb-a-blue-700)",
+                color: "var(--tb-a-blue-200)",
+                fontFamily: "inherit",
+                fontSize: 11,
+                padding: "6px 10px",
+                borderRadius: 4,
+                cursor: "pointer",
+                textAlign: "center",
+                letterSpacing: 0.3,
+              }}
+              title="Save the wired spline at the current playhead as a standalone .svg"
+            >
+              Export SVG →
             </button>
           )}
           {/* Wedge batch readout: this Output has Wedge nodes upstream, so
@@ -798,7 +927,32 @@ function ParamPanel({
           {/* Group shells have no def params — their name + interface
               sections above are the whole panel. */}
           {def.type !== GROUP_TYPE && (
-          <Section label={`${def.name} · parameters`}>
+          <Section
+            // The section header IS the node's title, in an editable box:
+            // committing renames this instance only (data.name), which the
+            // node header / breadcrumbs / Layers editor all read back.
+            // Group + layer shells already carry their own name field
+            // above, so they keep a plain text header here.
+            label={selected.data.name}
+            header={
+              onRenameNode && def.type !== LAYER_TYPE ? (
+                <NodeNameField
+                  key={selected.id}
+                  name={selected.data.name}
+                  onCommit={(v) => onRenameNode(selected.id, v)}
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    letterSpacing: 0.3,
+                    padding: "5px 9px",
+                    // Rounder than a plain field — echoes the node header
+                    // chip this title mirrors.
+                    borderRadius: 8,
+                  }}
+                />
+              ) : undefined
+            }
+          >
           {(() => {
             const exposedSet = new Set(selected.data.exposedParams ?? []);
             const controlSet = new Set(selected.data.controlParams ?? []);
@@ -818,10 +972,21 @@ function ParamPanel({
                   if (parseRampParamKey(s)?.paramName === p.name) return true;
                 }
               }
+              // Output-only: the SVG styling rows stay out of sight until
+              // the `spline` tap is wired. Deliberately AFTER the
+              // exposed/controlled escape hatches above, so unwiring the
+              // spline can't strand an exposure the user has to un-toggle.
+              if (
+                def.type === "output" &&
+                !outputSplineWired &&
+                SVG_STYLE_PARAM_NAMES.has(p.name)
+              ) {
+                return false;
+              }
               return p.visibleIf?.(selected.data.params) ?? true;
             });
             if (visible.length === 0) {
-              return <div style={{ color: "#52525b" }}>(no parameters)</div>;
+              return <div style={{ color: "var(--tb-n-10)" }}>(no parameters)</div>;
             }
             // One param's row element — shared by standalone rows, group
             // headers, and grouped children.
@@ -987,7 +1152,7 @@ function ParamPanel({
                         style={{
                           marginLeft: 6,
                           paddingLeft: 9,
-                          borderLeft: "1px solid #27272a",
+                          borderLeft: "1px solid var(--tb-n-7)",
                           display: "flex",
                           flexDirection: "column",
                           gap: 7,
@@ -1047,9 +1212,9 @@ function ParamPanel({
                 marginTop: 8,
                 width: "100%",
                 padding: "7px 10px",
-                background: "rgba(59, 130, 246, 0.12)",
-                border: "1px solid #3b82f6",
-                color: "#bfdbfe",
+                background: "color-mix(in srgb, var(--tb-a-blue-500) 12%, transparent)",
+                border: "1px solid var(--tb-a-blue-500)",
+                color: "var(--tb-a-blue-200)",
                 borderRadius: 5,
                 cursor: "pointer",
                 fontFamily: "inherit",
@@ -1076,9 +1241,9 @@ function ParamPanel({
           )}
         </div>
       ) : (
-        <div style={{ color: "#52525b" }}>Select a node to edit parameters.</div>
+        <div style={{ color: "var(--tb-n-10)" }}>Select a node to edit parameters.</div>
       )}
-    </div>
+    </ParamPanelShell>
   );
 }
 
@@ -1102,8 +1267,8 @@ function KeyerSamplesRow({
     <div
       style={{
         padding: 8,
-        background: "#111113",
-        border: "1px solid #1f1f23",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-n-5)",
         borderRadius: 4,
         display: "flex",
         flexDirection: "column",
@@ -1117,7 +1282,7 @@ function KeyerSamplesRow({
           justifyContent: "space-between",
         }}
       >
-        <span style={{ color: "#d4d4d8" }}>
+        <span style={{ color: "var(--tb-n-15)" }}>
           sampled colors ({colors.length})
         </span>
         {colors.length > 0 && (
@@ -1126,8 +1291,8 @@ function KeyerSamplesRow({
             onClick={() => onChange([])}
             style={{
               background: "none",
-              border: "1px solid #3f3f46",
-              color: "#a1a1aa",
+              border: "1px solid var(--tb-n-9)",
+              color: "var(--tb-n-13)",
               borderRadius: 4,
               padding: "2px 8px",
               cursor: "pointer",
@@ -1141,7 +1306,7 @@ function KeyerSamplesRow({
         )}
       </div>
       {colors.length === 0 ? (
-        <div style={{ color: "#52525b" }}>
+        <div style={{ color: "var(--tb-n-10)" }}>
           Drag across the canvas to sample the colors to key out.
         </div>
       ) : (
@@ -1155,7 +1320,7 @@ function KeyerSamplesRow({
                 width: 16,
                 height: 16,
                 borderRadius: 3,
-                border: "1px solid rgba(255,255,255,0.25)",
+                border: "1px solid color-mix(in srgb, var(--tb-lift) 25%, transparent)",
                 background: c,
                 cursor: "pointer",
                 padding: 0,
@@ -1188,15 +1353,15 @@ function ProjectSettings({
       <div
         style={{
           padding: 8,
-          background: "#111113",
-          border: "1px solid #1f1f23",
+          background: "var(--tb-n-1)",
+          border: "1px solid var(--tb-n-5)",
           borderRadius: 4,
           display: "flex",
           flexDirection: "column",
           gap: 6,
         }}
       >
-        <span style={{ color: "#d4d4d8" }}>resolution</span>
+        <span style={{ color: "var(--tb-n-15)" }}>resolution</span>
         <Dropdown
           value={isPreset ? resKey : "__custom__"}
           options={[
@@ -1224,13 +1389,13 @@ function ProjectSettings({
             value={canvasRes[0]}
             onCommit={(w) => onCanvasResChange([w, canvasRes[1]])}
           />
-          <span style={{ color: "#52525b" }}>×</span>
+          <span style={{ color: "var(--tb-n-10)" }}>×</span>
           <ResInput
             value={canvasRes[1]}
             onCommit={(h) => onCanvasResChange([canvasRes[0], h])}
           />
         </div>
-        <span style={{ color: "#d4d4d8", marginTop: 4 }}>frame rate</span>
+        <span style={{ color: "var(--tb-n-15)", marginTop: 4 }}>frame rate</span>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <ResInput
             value={fps}
@@ -1239,7 +1404,7 @@ function ProjectSettings({
             max={240}
             width={56}
           />
-          <span style={{ color: "#52525b" }}>fps</span>
+          <span style={{ color: "var(--tb-n-10)" }}>fps</span>
         </div>
       </div>
     </Section>
@@ -1252,61 +1417,83 @@ function ResInput({
   min = 16,
   max = 8192,
   width = 72,
+  title,
+  style,
 }: {
   value: number;
   onCommit: (n: number) => void;
   min?: number;
   max?: number;
   width?: number;
+  title?: string;
+  style?: React.CSSProperties;
 }) {
   const [draft, setDraft] = useState(String(value));
   useEffect(() => {
     setDraft(String(value));
   }, [value]);
   const commit = () => {
-    const n = Math.round(parseFloat(draft));
+    const p = evalNumExpr(draft); // plain numbers or math: "1920/2", "24*8"
+    const n = p === null ? NaN : Math.round(p);
     if (!Number.isFinite(n) || n < min || n > max) {
       setDraft(String(value));
       return;
     }
+    setDraft(String(n));
     if (n !== value) onCommit(n);
   };
   return (
     <input
-      type="number"
+      type="text"
+      inputMode="decimal"
       value={draft}
-      min={min}
-      max={max}
-      step={1}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        else if (e.key === "Escape") {
+          setDraft(String(value));
+          (e.target as HTMLInputElement).blur();
+        }
       }}
+      title={title}
       style={{
         width,
-        background: "#0a0a0a",
-        border: "1px solid #27272a",
-        color: "#e5e7eb",
+        background: "var(--tb-n-0)",
+        border: "1px solid var(--tb-n-7)",
+        color: "var(--tb-n-16)",
         fontFamily: "inherit",
         fontSize: 11,
         padding: "2px 4px",
+        ...style,
       }}
     />
   );
 }
 
 // Editable node display name — commit on blur / Enter, Escape reverts.
-// Used for group shells; the name feeds the node header, breadcrumbs,
-// and (later) the Layers editor.
+// Used for group shells and as the params section's title box; the name
+// feeds the node header, breadcrumbs, and the Layers editor. Renaming is
+// per-instance — it writes `data.name` on this node only.
 function NodeNameField({
   name,
   onCommit,
+  title = "Node name — renames this node only",
+  style,
 }: {
   name: string;
   onCommit: (name: string) => void;
+  title?: string;
+  style?: React.CSSProperties;
 }) {
   const [draft, setDraft] = useState(name);
+  // An external rename (undo, Layers editor, frame-label chip) has to win
+  // over a stale draft from a previous mount of the same node.
+  const [lastName, setLastName] = useState(name);
+  if (name !== lastName) {
+    setLastName(name);
+    setDraft(name);
+  }
   return (
     <input
       type="text"
@@ -1325,17 +1512,18 @@ function NodeNameField({
           (e.target as HTMLInputElement).blur();
         }
       }}
-      title="Group name"
+      title={title}
       style={{
-        background: "#0a0a0a",
-        border: "1px solid #27272a",
-        color: "#e5e7eb",
+        background: "var(--tb-n-0)",
+        border: "1px solid var(--tb-n-7)",
+        color: "var(--tb-n-16)",
         fontFamily: "inherit",
         fontSize: 11,
         padding: "4px 6px",
         borderRadius: 4,
         boxSizing: "border-box",
         width: "100%",
+        ...style,
       }}
     />
   );
@@ -1388,9 +1576,9 @@ function GroupSocketRow({
           style={{
             flex: 1,
             minWidth: 0,
-            background: "#0a0a0a",
-            border: "1px solid #27272a",
-            color: "#e5e7eb",
+            background: "var(--tb-n-0)",
+            border: "1px solid var(--tb-n-7)",
+            color: "var(--tb-n-16)",
             fontFamily: "inherit",
             fontSize: 11,
             padding: "3px 6px",
@@ -1405,7 +1593,7 @@ function GroupSocketRow({
           style={{
             flex: 1,
             minWidth: 0,
-            color: "#a1a1aa",
+            color: "var(--tb-n-13)",
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -1418,7 +1606,7 @@ function GroupSocketRow({
           read-only list keeps just dot + name (the dot still carries
           the type via color + tooltip). */}
       {onRename && (
-        <span style={{ color: "#52525b", fontSize: 9, flexShrink: 0 }}>
+        <span style={{ color: "var(--tb-n-10)", fontSize: 9, flexShrink: 0 }}>
           {spec.type}
         </span>
       )}
@@ -1428,8 +1616,8 @@ function GroupSocketRow({
           title="Remove socket (disconnects its wires)"
           style={{
             background: "transparent",
-            border: "1px solid #3f3f46",
-            color: "#8d9199",
+            border: "1px solid var(--tb-n-9)",
+            color: "var(--tb-n-12)",
             borderRadius: 4,
             width: 18,
             height: 18,
@@ -1462,14 +1650,19 @@ function GroupSocketsPanel({
   onRename?: (oldName: string, newName: string) => void;
   onRemove?: (name: string) => void;
 }) {
-  const sockets = readBoundarySockets(node.data.params);
+  // Outputs go through the resolver so a fixed (layer) boundary's
+  // back-filled sockets are listed too — this panel must agree with the
+  // handles the node actually renders.
+  const sockets = isInput
+    ? readBoundarySockets(node.data.params)
+    : resolveOutputBoundarySockets(node.data.params);
   // Reserved sockets (a layer's `backdrop`) are part of the fixed
   // interface — shown read-only, no rename/remove.
   const reserved = new Set(readReservedSockets(node.data.params));
   return (
     <Section label={isInput ? "group inputs" : "group outputs"}>
       {sockets.length === 0 ? (
-        <div style={{ color: "#52525b" }}>(no sockets yet)</div>
+        <div style={{ color: "var(--tb-n-10)" }}>(no sockets yet)</div>
       ) : (
         sockets.map((s) => (
           <GroupSocketRow
@@ -1482,7 +1675,7 @@ function GroupSocketsPanel({
           />
         ))
       )}
-      <div style={{ color: "#52525b", fontSize: 10 }}>
+      <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
         Wire into the dashed “new socket” port on the node to add one.
       </div>
     </Section>
@@ -1493,22 +1686,38 @@ function GroupSocketsPanel({
 // layer). It carries its own independent copy of the composition Output's
 // export config on the node instance, so a layer can be rendered in a
 // different form than the comp. We render the canonical EXPORT_PARAMS list
-// (the Output def's params) as plain rows — export config isn't scene
-// animation, so no keyframe / expose affordances. Values + visibleIf
+// as plain rows — export config isn't scene animation, so no keyframe /
+// expose affordances. (EXPORT_PARAMS rather than the whole Output def:
+// the SVG styling rows are appended there, and here they're gated on the
+// layer's own spline tap instead — see below.) Values + visibleIf
 // evaluate against defaults-merged params so a layer saved before this
 // feature (missing keys) still renders a complete, correct panel; the
 // first edit materializes the real key. See
 // specdocs/071526_layer-output-export-settings.md.
 function LayerOutputExportSettings({
   node,
+  edges,
   onParamChange,
 }: {
   node: Node<NodeDataPayload>;
+  edges: Edge[];
   onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
 }) {
-  const params = getNodeDef("output")?.params ?? [];
+  // The layer's vector tap — the third fixed boundary socket. Wired ⇒ this
+  // panel grows the SVG styling rows and an "Export SVG →" action, exactly
+  // like the composition Output's. Same gate as the on-node SVG button.
+  const splineWired = edges.some(
+    (e) => e.target === node.id && e.targetHandle === "in:spline"
+  );
+  const params = splineWired
+    ? [...EXPORT_PARAMS, ...SVG_STYLE_PARAMS]
+    : EXPORT_PARAMS;
+  // Defaults always cover the SVG rows: a layer created before the tap
+  // existed has none of those keys stored, and an unset row must still
+  // render its default rather than `undefined`.
   const defaults: Record<string, unknown> = {};
-  for (const p of params) defaults[p.name] = p.default;
+  for (const p of EXPORT_PARAMS) defaults[p.name] = p.default;
+  for (const p of SVG_STYLE_PARAMS) defaults[p.name] = p.default;
   const merged = { ...defaults, ...node.data.params };
   const visible = params.filter(
     (p) => !p.hidden && (p.visibleIf?.(merged) ?? true)
@@ -1524,15 +1733,45 @@ function LayerOutputExportSettings({
           onChange={(v) => onParamChange(node.id, p.name, v)}
         />
       ))}
+      {splineWired && (
+        <button
+          onClick={() =>
+            window.dispatchEvent(
+              new CustomEvent("effect-node-export", {
+                detail: { id: node.id, kind: "svg" },
+              })
+            )
+          }
+          style={{
+            background: "var(--tb-a-blue-900)",
+            border: "1px solid var(--tb-a-blue-700)",
+            color: "var(--tb-a-blue-200)",
+            fontFamily: "inherit",
+            fontSize: 11,
+            padding: "6px 10px",
+            borderRadius: 4,
+            cursor: "pointer",
+            textAlign: "center",
+            letterSpacing: 0.3,
+          }}
+          title="Save the spline wired into this Layer Output at the current playhead as a standalone .svg"
+        >
+          Export SVG →
+        </button>
+      )}
     </Section>
   );
 }
 
 function Section({
   label,
+  header,
   children,
 }: {
-  label: string;
+  label?: string;
+  // Replaces the uppercase text header entirely — used by the params
+  // section, whose header is an editable node-name field.
+  header?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -1543,16 +1782,18 @@ function Section({
         gap: 10,
       }}
     >
-      <div
-        style={{
-          color: "#71717a",
-          textTransform: "uppercase",
-          letterSpacing: 1,
-          fontSize: 10,
-        }}
-      >
-        {label}
-      </div>
+      {header ?? (
+        <div
+          style={{
+            color: "var(--tb-n-11)",
+            textTransform: "uppercase",
+            letterSpacing: 1,
+            fontSize: 10,
+          }}
+        >
+          {label}
+        </div>
+      )}
       {children}
     </div>
   );
@@ -1578,9 +1819,9 @@ const OutputWedgeReadout = memo(function OutputWedgeReadout({
   return (
     <div
       style={{
-        color: "#a5b4fc",
-        background: "#1e1b4b",
-        border: "1px solid #312e81",
+        color: "var(--tb-t-navy-l-1)",
+        background: "var(--tb-t-violet-d-2)",
+        border: "1px solid var(--tb-t-violet-d-3)",
         borderRadius: 4,
         padding: "5px 8px",
         fontSize: 10,
@@ -1696,9 +1937,9 @@ function RenderQueuePanel({
   const textInput: React.CSSProperties = {
     flex: 1,
     minWidth: 0,
-    background: "#0a0a0a",
-    border: "1px solid #27272a",
-    color: "#e5e7eb",
+    background: "var(--tb-n-0)",
+    border: "1px solid var(--tb-n-7)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 11,
     borderRadius: 3,
@@ -1707,9 +1948,9 @@ function RenderQueuePanel({
   const numInput: React.CSSProperties = {
     width: 56,
     flexShrink: 0,
-    background: "#0a0a0a",
-    border: "1px solid #27272a",
-    color: "#e5e7eb",
+    background: "var(--tb-n-0)",
+    border: "1px solid var(--tb-n-7)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 11,
     borderRadius: 3,
@@ -1730,9 +1971,9 @@ function RenderQueuePanel({
           onClick={run}
           style={{
             flex: 1,
-            background: "#1e3a8a",
-            border: "1px solid #1d4ed8",
-            color: "#bfdbfe",
+            background: "var(--tb-a-blue-900)",
+            border: "1px solid var(--tb-a-blue-700)",
+            color: "var(--tb-a-blue-200)",
             fontFamily: "inherit",
             fontSize: 11,
             padding: "6px 10px",
@@ -1750,9 +1991,9 @@ function RenderQueuePanel({
           style={{
             width: 28,
             height: 28,
-            background: "#18181b",
-            border: "1px solid #3f3f46",
-            color: "#a1a1aa",
+            background: "var(--tb-n-3)",
+            border: "1px solid var(--tb-n-9)",
+            color: "var(--tb-n-13)",
             borderRadius: 4,
             cursor: "pointer",
             fontSize: 13,
@@ -1767,8 +2008,8 @@ function RenderQueuePanel({
               top: "100%",
               right: 0,
               marginTop: 4,
-              background: "#111113",
-              border: "1px solid #1f1f23",
+              background: "var(--tb-n-1)",
+              border: "1px solid var(--tb-n-5)",
               borderRadius: 4,
               padding: 4,
               zIndex: 1000,
@@ -1780,7 +2021,7 @@ function RenderQueuePanel({
           >
             <div
               style={{
-                color: "#52525b",
+                color: "var(--tb-n-10)",
                 fontSize: 9,
                 textTransform: "uppercase",
                 letterSpacing: 1,
@@ -1807,7 +2048,7 @@ function RenderQueuePanel({
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {items.length === 0 && (
-          <div style={{ color: "#52525b" }}>(no slots — use + on node)</div>
+          <div style={{ color: "var(--tb-n-10)" }}>(no slots — use + on node)</div>
         )}
         {items.map((item, i) => {
           const out = outputFor(item);
@@ -1835,11 +2076,11 @@ function RenderQueuePanel({
                 padding: 8,
                 border: `1px solid ${
                   overIndex === i && dragIndex !== null && dragIndex !== i
-                    ? "#52525b"
-                    : "#27272a"
+                    ? "var(--tb-n-10)"
+                    : "var(--tb-n-7)"
                 }`,
                 borderRadius: 4,
-                background: dragIndex === i ? "#26262b" : "#1f1f23",
+                background: dragIndex === i ? "var(--tb-n-7)" : "var(--tb-n-5)",
               }}
             >
               {/* Line 1: drag · index · progress bar · jump-to-node · remove */}
@@ -1852,12 +2093,12 @@ function RenderQueuePanel({
                     setDragIndex(null);
                     setOverIndex(null);
                   }}
-                  style={{ cursor: "grab", color: "#52525b", fontSize: 13 }}
+                  style={{ cursor: "grab", color: "var(--tb-n-10)", fontSize: 13 }}
                 >
                   ⠿
                 </span>
                 <span
-                  style={{ color: "#71717a", fontSize: 10, minWidth: 14 }}
+                  style={{ color: "var(--tb-n-11)", fontSize: 10, minWidth: 14 }}
                 >
                   {i + 1}
                 </span>
@@ -1874,8 +2115,8 @@ function RenderQueuePanel({
                       flex: 1,
                       height: 10,
                       borderRadius: 999,
-                      background: "#0a0a0a",
-                      border: "1px solid #27272a",
+                      background: "var(--tb-n-0)",
+                      border: "1px solid var(--tb-n-7)",
                       overflow: "hidden",
                     }}
                   >
@@ -1886,7 +2127,7 @@ function RenderQueuePanel({
                             ? "100%"
                             : `${fill * 100}%`,
                         height: "100%",
-                        background: "#2563eb",
+                        background: "var(--tb-a-blue-600)",
                         opacity: fill === "indeterminate" ? 0.45 : 1,
                         transition: "width 200ms",
                       }}
@@ -1896,7 +2137,7 @@ function RenderQueuePanel({
                   <span
                     style={{
                       flex: 1,
-                      color: "#71717a",
+                      color: "var(--tb-n-11)",
                       fontSize: 11,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
@@ -1910,9 +2151,9 @@ function RenderQueuePanel({
                   <span
                     title={`${wedgeCounts.get(out.id)} wedge variations — this row renders ${wedgeCounts.get(out.id)} files`}
                     style={{
-                      color: "#a5b4fc",
-                      background: "#1e1b4b",
-                      border: "1px solid #312e81",
+                      color: "var(--tb-t-navy-l-1)",
+                      background: "var(--tb-t-violet-d-2)",
+                      border: "1px solid var(--tb-t-violet-d-3)",
                       borderRadius: 999,
                       fontSize: 9,
                       padding: "1px 6px",
@@ -1928,8 +2169,8 @@ function RenderQueuePanel({
                     title="Open this Output node's settings"
                     style={{
                       background: "transparent",
-                      border: "1px solid #3f3f46",
-                      color: "#a1a1aa",
+                      border: "1px solid var(--tb-n-9)",
+                      color: "var(--tb-n-13)",
                       fontSize: 11,
                       lineHeight: 1,
                       padding: "1px 5px",
@@ -1948,8 +2189,8 @@ function RenderQueuePanel({
                   title="Remove slot"
                   style={{
                     background: "transparent",
-                    border: "1px solid #3f3f46",
-                    color: "#a1a1aa",
+                    border: "1px solid var(--tb-n-9)",
+                    color: "var(--tb-n-13)",
                     fontSize: 12,
                     lineHeight: 1,
                     padding: "1px 6px",
@@ -1990,34 +2231,21 @@ function RenderQueuePanel({
                     style={{ width: 76, flexShrink: 0 }}
                   />
                   {item.kind === "video" ? (
-                    <input
-                      type="number"
-                      min={1}
+                    <ResInput
                       value={frames}
+                      min={1}
+                      max={1e9}
                       title="Frame count"
-                      onChange={(e) =>
-                        onParamChange(
-                          out.id,
-                          "videoFrames",
-                          Math.max(1, Math.round(Number(e.target.value) || 1))
-                        )
-                      }
+                      onCommit={(n) => onParamChange(out.id, "videoFrames", n)}
                       style={numInput}
                     />
                   ) : (
-                    <input
-                      type="number"
-                      min={0}
+                    <ResInput
                       value={item.frame}
+                      min={0}
+                      max={1e9}
                       title="Frame to render"
-                      onChange={(e) =>
-                        patchItem(item.id, {
-                          frame: Math.max(
-                            0,
-                            Math.round(Number(e.target.value) || 0)
-                          ),
-                        })
-                      }
+                      onCommit={(n) => patchItem(item.id, { frame: n })}
                       style={numInput}
                     />
                   )}
@@ -2029,9 +2257,9 @@ function RenderQueuePanel({
         <button
           onClick={addSlot}
           style={{
-            background: "#18181b",
-            border: "1px dashed #3f3f46",
-            color: "#a1a1aa",
+            background: "var(--tb-n-3)",
+            border: "1px dashed var(--tb-n-9)",
+            color: "var(--tb-n-13)",
             fontFamily: "inherit",
             fontSize: 11,
             padding: "5px 10px",
@@ -2083,7 +2311,7 @@ function KeyframeCaret({
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.25 : 0.7,
         lineHeight: 0,
-        color: "#a1a1aa",
+        color: "var(--tb-n-13)",
       }}
     >
       <svg width="7" height="10" viewBox="0 0 7 10" fill="none">
@@ -2128,8 +2356,11 @@ function PathAnimationRow({
       if (target && menuRef.current.contains(target)) return;
       setMenuOpen(false);
     };
-    window.addEventListener("mousedown", onDocDown);
-    return () => window.removeEventListener("mousedown", onDocDown);
+    // Whichever window this panel is in — module `window` is always
+    // the main one (080226_panel-popout-windows.md §3).
+    const win = ownerWindow(menuRef.current);
+    win.addEventListener("mousedown", onDocDown);
+    return () => win.removeEventListener("mousedown", onDocDown);
   }, [menuOpen]);
 
   const animated = !!animation?.animated;
@@ -2188,7 +2419,7 @@ function PathAnimationRow({
         padding: "3px 0",
       }}
     >
-      <span style={{ color: "#8a8a90", flex: 1, minWidth: 0 }}>
+      <span style={{ color: "var(--tb-n-12)", flex: 1, minWidth: 0 }}>
         Path Animation
       </span>
       <div style={{ display: "inline-flex", alignItems: "center", gap: 1 }}>
@@ -2225,8 +2456,8 @@ function PathAnimationRow({
                 top: "100%",
                 right: 0,
                 marginTop: 4,
-                background: "#111113",
-                border: "1px solid #1f1f23",
+                background: "var(--tb-n-1)",
+                border: "1px solid var(--tb-n-5)",
                 borderRadius: 4,
                 padding: 4,
                 zIndex: 1000,
@@ -2347,8 +2578,11 @@ function ParamRow({
       if (target && menuRef.current.contains(target)) return;
       setMenuOpen(false);
     };
-    window.addEventListener("mousedown", onDocDown);
-    return () => window.removeEventListener("mousedown", onDocDown);
+    // Whichever window this panel is in — module `window` is always
+    // the main one (080226_panel-popout-windows.md §3).
+    const win = ownerWindow(menuRef.current);
+    win.addEventListener("mousedown", onDocDown);
+    return () => win.removeEventListener("mousedown", onDocDown);
   }, [menuOpen]);
 
   const animated = !!animation?.animated;
@@ -2441,7 +2675,15 @@ function ParamRow({
   // expose/control onto ONE row (half the height). Multi-line controls
   // (text areas, paint, font/file pickers, ramps, curves) keep the stacked
   // header so they aren't crushed against the label.
-  const inline = isInlineParam(param);
+  //
+  // Below NARROW_PANEL_PX that single row leaves the control only a few
+  // dozen pixels, so inline params fall back to the stacked two-line form
+  // (label on top, control + diamond underneath) with tighter spacing than
+  // the natively-stacked rows.
+  const narrowPanel = useContext(NarrowPanelContext);
+  const inlineCapable = isInlineParam(param);
+  const inline = inlineCapable && !narrowPanel;
+  const wrapped = inlineCapable && narrowPanel;
   // File controls suppress their header label (the "Load …" button is
   // self-describing), so they collapse onto a single snug row with the
   // expose/control toggle on the right — no empty header eating height.
@@ -2453,20 +2695,28 @@ function ParamRow({
     param.type === "lut_file" ||
     param.type === "csv_file";
 
+  // Inline rows cap the label at a fixed column; wrapped rows give it the
+  // whole first line. Both ellipsis rather than wrap, so a long name never
+  // pushes the row past the two lines it's budgeted.
+  const labelTruncates = inline || wrapped;
   const labelEl = (
     <span
-      title={inline ? label : undefined}
+      title={labelTruncates ? label : undefined}
       style={{
-        color: "#8a8a90",
-        display: inline ? "flex" : "inline-flex",
+        color: "var(--tb-n-12)",
+        display: labelTruncates ? "flex" : "inline-flex",
         alignItems: "center",
         gap: 6,
-        ...(inline ? { flex: "0 0 90px", minWidth: 0 } : {}),
+        ...(inline
+          ? { flex: "0 0 90px", minWidth: 0 }
+          : wrapped
+          ? { flex: "1 1 auto", minWidth: 0 }
+          : {}),
       }}
     >
       <span
         style={
-          inline
+          labelTruncates
             ? {
                 flex: "1 1 auto",
                 minWidth: 0,
@@ -2493,7 +2743,7 @@ function ParamRow({
             padding: 0,
             margin: 0,
             cursor: "pointer",
-            color: linkInfo.isLinked ? "#facc15" : "#52525b",
+            color: linkInfo.isLinked ? "var(--tb-a-yellow-400)" : "var(--tb-n-10)",
             display: "inline-flex",
             alignItems: "center",
             lineHeight: 1,
@@ -2507,7 +2757,7 @@ function ParamRow({
         <span
           title="Driven by a connected input — stored value is ignored while connected"
           style={{
-            color: "#93c5fd",
+            color: "var(--tb-a-blue-300)",
             fontSize: 9,
             textTransform: "uppercase",
             letterSpacing: 0.5,
@@ -2534,9 +2784,9 @@ function ParamRow({
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
-            background: exposed ? "#1e3a8a" : "transparent",
-            border: "1px solid #27272a",
-            color: exposed ? "#bfdbfe" : "#71717a",
+            background: exposed ? "var(--tb-a-blue-900)" : "transparent",
+            border: "1px solid var(--tb-n-7)",
+            color: exposed ? "var(--tb-a-blue-200)" : "var(--tb-n-11)",
             width: 18,
             height: 18,
             padding: 0,
@@ -2563,13 +2813,13 @@ function ParamRow({
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
-            background: controlled ? "#065f46" : "transparent",
-            border: "1px solid #27272a",
+            background: controlled ? "var(--tb-a-emerald-800)" : "transparent",
+            border: "1px solid var(--tb-n-7)",
             color: controlled
-              ? "#a7f3d0"
+              ? "var(--tb-a-emerald-200)"
               : controlSupported
-              ? "#71717a"
-              : "#3f3f46",
+              ? "var(--tb-n-11)"
+              : "var(--tb-n-9)",
             width: 18,
             height: 18,
             padding: 0,
@@ -2661,8 +2911,8 @@ function ParamRow({
             top: "100%",
             right: 0,
             marginTop: 4,
-            background: "#111113",
-            border: "1px solid #1f1f23",
+            background: "var(--tb-n-1)",
+            border: "1px solid var(--tb-n-5)",
             borderRadius: 4,
             padding: 4,
             zIndex: 1000,
@@ -2679,7 +2929,7 @@ function ParamRow({
             <>
               <div
                 style={{
-                  color: "#52525b",
+                  color: "var(--tb-n-10)",
                   fontSize: 9,
                   textTransform: "uppercase",
                   letterSpacing: 1,
@@ -2724,14 +2974,18 @@ function ParamRow({
     <div
       style={{
         // Inline rows are a single line — trim the vertical padding so the
-        // whole row is shorter. Stacked (multi-line) rows keep the roomier
-        // padding their taller controls need.
-        padding: inline || labelSuppressed ? "5px 10px" : 10,
+        // whole row is shorter. Wrapped rows are the same compact control,
+        // just on two lines, so they keep the tight padding too. Natively
+        // stacked (multi-line) rows keep the roomier padding their taller
+        // controls need.
+        padding: inline || labelSuppressed || wrapped ? "5px 10px" : 10,
         boxSizing: "border-box",
         width: "100%",
-        background: "#0c0c0e",
-        border: `1px solid ${driven ? "#334155" : "#1a1a1d"}`,
-        borderRadius: 4,
+        background: "var(--tb-n-1)",
+        border: `1px solid ${driven ? "var(--tb-a-slate-700)" : "var(--tb-n-3)"}`,
+        // Softer than the 4px it used to carry, so the card doesn't read
+        // squarer than the bar sliders sitting inside it.
+        borderRadius: 7,
       }}
     >
       {inline || labelSuppressed ? (
@@ -2759,7 +3013,8 @@ function ParamRow({
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
-              marginBottom: 8,
+              gap: 6,
+              marginBottom: wrapped ? 4 : 8,
             }}
           >
             {labelEl}

@@ -46,8 +46,39 @@ export interface PrimitiveGizmoAdapter {
   // Resize drags anchor the opposite edge/corner (box-style, the center
   // moves) instead of growing symmetrically around a fixed center.
   anchorResize?: boolean;
+  // Input socket names (without the `in:` prefix) whose being wired
+  // makes the gizmo lie. The SDF primitives' `position` chain
+  // transforms the SAMPLE space, so with one attached the shape no
+  // longer sits at its raw x/y and the handles would float off it —
+  // better no gizmo than a gizmo pointing at the wrong place.
+  hideWhenWired?: string[];
+  // Point-handle primitives (Line Segment's two endpoints, Triangle's
+  // three corners). A centre+extent box is the wrong control for these —
+  // resizing a box can't express "move one endpoint" — so when `points`
+  // is present the host renders draggable dots INSTEAD of the box, and
+  // `read` is not required.
+  points?: {
+    // Handle positions in normalized canvas space, Y-DOWN (screen
+    // convention), same space the box gizmo's cx/cy live in.
+    read: (
+      get: (name: string, fallback: number) => number,
+      env: PrimitiveGizmoEnv
+    ) => Array<{ x: number; y: number; label?: string }>;
+    // Map a dragged handle back to params.
+    write: (
+      index: number,
+      x: number,
+      y: number,
+      env: PrimitiveGizmoEnv
+    ) => Array<[string, number]>;
+    // Draw connecting lines between consecutive handles; `closed` also
+    // joins last→first. Purely cosmetic, but it makes a segment read as
+    // a segment rather than two loose dots.
+    connect?: "open" | "closed";
+  };
   // Read the shape's center + half-extents from the node's (effective) params.
-  read: (
+  // Optional only for `points` adapters, which render no box.
+  read?: (
     get: (name: string, fallback: number) => number,
     env: PrimitiveGizmoEnv
   ) => {
@@ -57,7 +88,7 @@ export interface PrimitiveGizmoAdapter {
     hy: number;
   };
   // Map a gizmo patch back to [paramName, value] pairs to apply.
-  write: (
+  write?: (
     patch: PrimitiveGizmoPatch,
     env: PrimitiveGizmoEnv
   ) => Array<[string, number | string]>;
@@ -66,8 +97,163 @@ export interface PrimitiveGizmoAdapter {
   motionPath?: PrimitiveMotionPath;
 }
 
+// Smallest half-extent a gizmo will report or write.
+const MIN_HALF = 0.002;
+
+// ── SDF primitive coordinate conversion ───────────────────────────
+//
+// Two corrections, both load-bearing — get either wrong and the handles
+// don't sit on the shape.
+//
+// Y FLIP. An SDF primitive's `y` param rides `v_uv` straight through
+// (the compiler's main() opens with `vec2 p = v_uv`), and v = 0 is the
+// framebuffer's VISUAL BOTTOM — see FULLSCREEN_VS in engine/gl.ts and
+// the readPixels note beside it, corroborated by the Y-flip in
+// nodes/sdf/to-spline.ts. So SDF y counts UPWARD, while this gizmo's cy
+// counts DOWNWARD (`top = cy - hy`). They are opposed. Note this
+// contradicts the devguide's blanket "SDF positions are Y-DOWN", which
+// holds for CPU spline/point geometry but not for these params.
+//
+// ASPECT. With Aspect Correct on, the shader evaluates at
+// p.y = (v - 0.5)/aspect + 0.5, so a shape whose SDF half-height is
+// `sy` covers `sy * aspect` of the screen vertically. That factor is
+// exactly what keeps an SDF circle round on a non-square canvas, so the
+// gizmo box has to apply it too.
+//
+// Aspect Correct is a param on the TERMINAL (Rasterize / Bevel), not on
+// the primitive, so we assume its default (on). On a square canvas
+// aspect is 1 and the assumption costs nothing either way.
+const sdfAspect = (env: PrimitiveGizmoEnv) =>
+  env.canvasWidth / Math.max(1, env.canvasHeight);
+
+const sdfYToGizmo = (y: number, a: number) => 1 - ((y - 0.5) * a + 0.5);
+const gizmoYToSdf = (cy: number, a: number) => (0.5 - cy) / a + 0.5;
+
+// Circle / Polygon / Star carry ONE radius, but the gizmo hands back
+// whichever axes the drag moved (edges send one, corners send both).
+// Averaging the two lets a corner drag grow the shape smoothly while an
+// edge drag still reads as a plain radius edit.
+function sdfRadiusFrom(
+  p: PrimitiveGizmoPatch,
+  a: number
+): number | undefined {
+  const fromX = p.hx;
+  const fromY = p.hy === undefined ? undefined : p.hy / a;
+  if (fromX !== undefined && fromY !== undefined) return (fromX + fromY) / 2;
+  return fromX ?? fromY;
+}
+
+// Shared by the three centre+radius SDF primitives.
+function sdfRadialAdapter(radiusParam = "radius"): PrimitiveGizmoAdapter {
+  return {
+    hideWhenWired: ["position", "center"],
+    read: (g, env) => {
+      const a = sdfAspect(env);
+      const r = Math.max(MIN_HALF, g(radiusParam, 0.2));
+      return {
+        cx: g("x", 0.5),
+        cy: sdfYToGizmo(g("y", 0.5), a),
+        hx: r,
+        hy: r * a,
+      };
+    },
+    write: (p, env) => {
+      const a = sdfAspect(env);
+      const out: Array<[string, number | string]> = [];
+      if (p.cx !== undefined) out.push(["x", p.cx]);
+      if (p.cy !== undefined) out.push(["y", gizmoYToSdf(p.cy, a)]);
+      const r = sdfRadiusFrom(p, a);
+      if (r !== undefined) out.push([radiusParam, Math.max(0, r)]);
+      return out;
+    },
+  };
+}
+
 // defType → adapter. Add new spline primitives here.
 export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
+  // SDF primitives. The four with a genuine centre+extent param shape
+  // get the box; Line Segment and Triangle get point handles instead
+  // (see `points` on the adapter). SDF Spline and SDF from Image stay
+  // out — they carry no position params at all.
+  //
+  // `motionPath` is deliberately omitted: its toCenter/fromCenter hooks
+  // take no env, so they cannot apply the aspect factor, and a
+  // trajectory that drifts on non-square canvases is worse than none.
+  "sdf-circle": sdfRadialAdapter(),
+  "sdf-polygon": sdfRadialAdapter(),
+  "sdf-star": sdfRadialAdapter(),
+  // Endpoint handles, not a box: a segment is defined by where its two
+  // ends are, and no box resize can move one end independently.
+  "sdf-line-segment": {
+    hideWhenWired: ["position"],
+    points: {
+      connect: "open",
+      read: (g, env) => {
+        const a = sdfAspect(env);
+        return [
+          { x: g("ax", 0.25), y: sdfYToGizmo(g("ay", 0.5), a), label: "A" },
+          { x: g("bx", 0.75), y: sdfYToGizmo(g("by", 0.5), a), label: "B" },
+        ];
+      },
+      write: (i, x, y, env) => {
+        const a = sdfAspect(env);
+        const yv = gizmoYToSdf(y, a);
+        return i === 0
+          ? [["ax", x], ["ay", yv]]
+          : [["bx", x], ["by", yv]];
+      },
+    },
+  },
+  // Same story with three corners.
+  "sdf-triangle": {
+    hideWhenWired: ["position"],
+    points: {
+      connect: "closed",
+      read: (g, env) => {
+        const a = sdfAspect(env);
+        return [
+          { x: g("ax", 0.5), y: sdfYToGizmo(g("ay", 0.25), a), label: "A" },
+          { x: g("bx", 0.25), y: sdfYToGizmo(g("by", 0.75), a), label: "B" },
+          { x: g("cx", 0.75), y: sdfYToGizmo(g("cy", 0.75), a), label: "C" },
+        ];
+      },
+      write: (i, x, y, env) => {
+        const a = sdfAspect(env);
+        const yv = gizmoYToSdf(y, a);
+        const nx = ["ax", "bx", "cx"][i];
+        const ny = ["ay", "by", "cy"][i];
+        return [
+          [nx, x],
+          [ny, yv],
+        ];
+      },
+    },
+  },
+  "sdf-rectangle": {
+    // width/height are FULL extents here (the node halves them into the
+    // AST's sx/sy), unlike the radial trio.
+    hideWhenWired: ["position", "center", "size"],
+    read: (g, env) => {
+      const a = sdfAspect(env);
+      return {
+        cx: g("x", 0.5),
+        cy: sdfYToGizmo(g("y", 0.5), a),
+        hx: Math.max(MIN_HALF, g("width", 0.4) / 2),
+        hy: Math.max(MIN_HALF, (g("height", 0.4) / 2) * a),
+      };
+    },
+    write: (p, env) => {
+      const a = sdfAspect(env);
+      const out: Array<[string, number | string]> = [];
+      if (p.cx !== undefined) out.push(["x", p.cx]);
+      if (p.cy !== undefined) out.push(["y", gizmoYToSdf(p.cy, a)]);
+      if (p.hx !== undefined) out.push(["width", Math.max(0, p.hx * 2)]);
+      if (p.hy !== undefined)
+        out.push(["height", Math.max(0, (p.hy / a) * 2)]);
+      return out;
+    },
+  },
+
   circle: {
     motionPath: { x: "centerX", y: "centerY" },
     read: (g) => ({
@@ -231,7 +417,6 @@ interface DragState {
 
 const HANDLE = 10;
 const CENTER_R = 4;
-const MIN_HALF = 0.002;
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
@@ -525,6 +710,142 @@ export default function PrimitiveGizmo({
           style={{ cursor: "move", pointerEvents: "auto" }}
           onPointerDown={startDrag("move")}
         />
+      </svg>
+    </div>
+  );
+}
+
+// Draggable point handles for primitives defined by explicit points
+// rather than a box — SDF Line Segment's two endpoints, SDF Triangle's
+// three corners. Same fixed-overlay + canvas-rect mapping as
+// PrimitiveGizmo; the adapter owns all coordinate conversion, so this
+// component never learns anything about SDF space.
+export function PrimitivePointHandles({
+  canvas,
+  points,
+  connect,
+  onChange,
+}: {
+  canvas: HTMLCanvasElement | null;
+  points: Array<{ x: number; y: number; label?: string }>;
+  connect?: "open" | "closed";
+  onChange: (index: number, x: number, y: number) => void;
+}) {
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  // Latest-callback ref, assigned in an effect rather than during render
+  // so the drag listeners can stay subscribed across re-renders without
+  // reading a ref mid-render.
+  const onChangeRef = useRef(onChange);
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  });
+
+  useEffect(() => {
+    // No `setRect(null)` on an absent canvas — that would be a
+    // synchronous setState in an effect body. The render guard below
+    // covers it, and a stale rect is unreachable while canvas is null.
+    if (!canvas) return;
+    const update = () => setRect(canvas.getBoundingClientRect());
+    // No synchronous seeding call either — observing fires the callback
+    // once immediately, which supplies the initial rect.
+    const ro = new ResizeObserver(update);
+    ro.observe(canvas);
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [canvas]);
+
+  useEffect(() => {
+    if (dragIndex === null || !rect) return;
+    const onMove = (e: PointerEvent) => {
+      // Unclamped on purpose: these points legitimately live outside
+      // [0,1] (a segment can run off-canvas), unlike a box centre.
+      onChangeRef.current(
+        dragIndex,
+        (e.clientX - rect.left) / rect.width,
+        (e.clientY - rect.top) / rect.height
+      );
+    };
+    const onUp = () => setDragIndex(null);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragIndex, rect]);
+
+  if (!canvas || !rect || points.length === 0) return null;
+
+  const px = points.map((p) => ({
+    x: rect.left + p.x * rect.width,
+    y: rect.top + p.y * rect.height,
+    label: p.label,
+  }));
+
+  const segments: Array<[typeof px[0], typeof px[0]]> = [];
+  if (connect) {
+    for (let i = 0; i + 1 < px.length; i++) segments.push([px[i], px[i + 1]]);
+    if (connect === "closed" && px.length > 2) {
+      segments.push([px[px.length - 1], px[0]]);
+    }
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 2 }}>
+      <svg
+        width="100%"
+        height="100%"
+        style={{ position: "absolute", inset: 0, overflow: "visible" }}
+      >
+        {segments.map(([a, b], i) => (
+          <line
+            key={`seg-${i}`}
+            x1={a.x}
+            y1={a.y}
+            x2={b.x}
+            y2={b.y}
+            stroke="#22c55e"
+            strokeWidth="1"
+            strokeDasharray="4 3"
+            opacity={0.9}
+          />
+        ))}
+        {px.map((p, i) => (
+          <g key={`pt-${i}`}>
+            <circle
+              cx={p.x}
+              cy={p.y}
+              r={CENTER_R + 1}
+              fill={dragIndex === i ? "#ef4444" : "#22c55e"}
+              stroke="#fef2f2"
+              strokeWidth="0.75"
+              style={{ cursor: "move", pointerEvents: "auto" }}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                setDragIndex(i);
+              }}
+            />
+            {p.label && (
+              <text
+                x={p.x + CENTER_R + 4}
+                y={p.y - CENTER_R - 2}
+                fill="#fef2f2"
+                fontSize="10"
+                fontFamily="var(--ui-font)"
+                style={{ pointerEvents: "none", userSelect: "none" }}
+              >
+                {p.label}
+              </text>
+            )}
+          </g>
+        ))}
       </svg>
     </div>
   );

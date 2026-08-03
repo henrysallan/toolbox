@@ -4,7 +4,14 @@
 
    Rules are intentionally unscoped — they target bare `input[type=...]`
    so any consumer that imports this file gets the look without wrapping
-   markup in a class. */
+   markup in a class.
+
+   Colours are `var(--tb-…, #fallback)`. In the EDITOR the theme tokens are
+   defined, so these controls track light/dark, the brightness trim and the
+   tint like everything else. In the live-viewer and exported-app bundles no
+   token is defined, so every one of them falls back to the literal it always
+   used — those surfaces are user artifacts and deliberately un-themed
+   (080226_theme-modes.md). Keep the fallback in step with the dark value. */
 
 input[type="number"] {
   border-radius: 3px;
@@ -15,7 +22,7 @@ input[type="number"]:focus,
 input[type="text"]:focus,
 input[type="search"]:focus,
 textarea:focus {
-  outline: 1px solid #3f3f46;
+  outline: 1px solid var(--tb-n-9, #3f3f46);
   outline-offset: -1px;
 }
 
@@ -34,7 +41,7 @@ input[type="number"]::-webkit-inner-spin-button {
   height: 100%;
   margin: 0;
   padding: 0;
-  border-left: 1px solid rgba(255, 255, 255, 0.25);
+  border-left: 1px solid color-mix(in srgb, var(--tb-lift, #ffffff) 25%, transparent);
   background-color: transparent;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 14'%3E%3Cpolyline points='2.5,5.25 5,2.75 7.5,5.25' fill='none' stroke='white' stroke-width='1' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpolyline points='2.5,8.75 5,11.25 7.5,8.75' fill='none' stroke='white' stroke-width='1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
@@ -64,8 +71,8 @@ input[type="range"]:focus {
 }
 
 input[type="range"]::-webkit-slider-runnable-track {
-  background: #18181b;
-  border: 1px solid #27272a;
+  background: var(--tb-n-3, #18181b);
+  border: 1px solid var(--tb-n-7, #27272a);
   height: 3px;
   border-radius: 2px;
 }
@@ -75,16 +82,16 @@ input[type="range"]::-webkit-slider-thumb {
   appearance: none;
   width: 11px;
   height: 11px;
-  background: #18181b;
-  border: 1px solid #52525b;
+  background: var(--tb-n-3, #18181b);
+  border: 1px solid var(--tb-n-10, #52525b);
   border-radius: 50%;
   margin-top: -5px;
   cursor: pointer;
 }
 
 input[type="range"]::-moz-range-track {
-  background: #18181b;
-  border: 1px solid #27272a;
+  background: var(--tb-n-3, #18181b);
+  border: 1px solid var(--tb-n-7, #27272a);
   height: 3px;
   border-radius: 2px;
 }
@@ -92,8 +99,8 @@ input[type="range"]::-moz-range-track {
 input[type="range"]::-moz-range-thumb {
   width: 11px;
   height: 11px;
-  background: #18181b;
-  border: 1px solid #52525b;
+  background: var(--tb-n-3, #18181b);
+  border: 1px solid var(--tb-n-10, #52525b);
   border-radius: 50%;
   cursor: pointer;
 }

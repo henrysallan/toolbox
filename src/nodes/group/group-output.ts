@@ -5,7 +5,7 @@ import type {
 } from "@/engine/types";
 import {
   isFixedBoundary,
-  readBoundarySockets,
+  resolveOutputBoundarySockets,
   VIRTUAL_SOCKET,
 } from "@/engine/groups";
 
@@ -15,6 +15,12 @@ import {
 // them. The flatten pass splices each exterior edge
 // `(group, out:aux:j) → Y` straight through to the interior producer
 // wired into `(this, in:j)`, so this node never computes.
+//
+// A LAYER's Group Output is the exception to the 1:1 mirror: its sockets
+// are fixed (LAYER_OUTPUT_SOCKETS) and flatten pushes them onto the layer
+// SHELL's inputs instead — `image` → the hidden `content` the blend reads,
+// `spline` → the hidden vector tap the layer stashes for its SVG export.
+// Only `audio` still resolves as a true output.
 //
 // Auto-created by Cmd+G, never via the add menus. One per group.
 
@@ -29,7 +35,9 @@ export const groupOutputNode: NodeDefinition = {
   noMaskInput: true,
   inputs: [],
   resolveInputs(params): InputSocketDef[] {
-    const real = readBoundarySockets(params).map((s) => ({
+    // resolveOutputBoundarySockets back-fills a fixed (layer) boundary's
+    // canonical sockets — see its docs in engine/groups.ts.
+    const real = resolveOutputBoundarySockets(params).map((s) => ({
       name: s.name,
       type: s.type as SocketType,
       required: false,

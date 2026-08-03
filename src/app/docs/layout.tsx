@@ -20,8 +20,8 @@ export default function DocsLayout({ children }: { children: ReactNode }) {
         flexDirection: "column",
         height: "100vh",
         width: "100%",
-        background: "#0a0a0a",
-        color: "#e5e7eb",
+        background: "var(--tb-n-0)",
+        color: "var(--tb-n-16)",
         // Default to Inter across the docs surface; header overrides
         // back to monospace so the top bar mirrors the editor chrome.
         fontFamily:

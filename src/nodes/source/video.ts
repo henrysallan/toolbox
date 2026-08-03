@@ -30,6 +30,8 @@ in vec2 v_uv;
 uniform sampler2D u_src;
 uniform vec2 u_invScale;
 uniform float u_letterbox;
+uniform vec2 u_offset; // placement pan, screen convention (Y down)
+uniform float u_zoom;  // placement zoom about the canvas center
 uniform int u_hasUvIn;
 uniform sampler2D u_uvIn;
 uniform vec2 u_uvConst;
@@ -41,6 +43,8 @@ void main() {
   else if (u_hasUvIn == 2) uv = u_uvConst;
   else uv = v_uv;
 
+  // Placement pan/zoom before the aspect fit — see image-source.ts FIT_FS.
+  uv = 0.5 + (uv - vec2(u_offset.x, -u_offset.y) - 0.5) / u_zoom;
   vec2 s = 0.5 + (uv - 0.5) * u_invScale;
   if (u_letterbox > 0.5 && (s.x < 0.0 || s.x > 1.0 || s.y < 0.0 || s.y > 1.0)) {
     outColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -344,6 +348,36 @@ export const videoNode: NodeDefinition = {
       options: ["cover", "contain", "stretch"],
       default: "cover",
     },
+    // Placement within the canvas — sampling-time pan/zoom, Transform-node
+    // conventions (+Y down). Same trio as Image Source / Webcam.
+    {
+      name: "offsetX",
+      label: "Offset X",
+      type: "scalar",
+      min: -1,
+      max: 1,
+      step: 0.001,
+      default: 0,
+    },
+    {
+      name: "offsetY",
+      label: "Offset Y",
+      type: "scalar",
+      min: -1,
+      max: 1,
+      step: 0.001,
+      default: 0,
+    },
+    {
+      name: "zoom",
+      label: "Zoom",
+      type: "scalar",
+      min: 0.01,
+      max: 10,
+      softMax: 4,
+      step: 0.01,
+      default: 1,
+    },
     {
       name: "sync_to_scene_time",
       label: "Sync to scene time",
@@ -427,7 +461,9 @@ export const videoNode: NodeDefinition = {
           clearSeqCache(gl, s);
           s.valueRef = null;
         }
-        ctx.clearTarget(output, [0, 0, 0, 1]);
+        // Nothing loaded ⇒ empty frame, not a black plate. See the same
+        // clear in image-source.ts for why alpha 0 is the honest value.
+        ctx.clearTarget(output, [0, 0, 0, 0]);
         return { primary: output };
       }
       // EXR decode identity: layer + alpha handling. A change invalidates
@@ -551,7 +587,8 @@ export const videoNode: NodeDefinition = {
         s.hasUploadedFrame = true;
       }
       if (!s.hasUploadedFrame || !s.tex) {
-        ctx.clearTarget(output, [0, 0, 0, 1]);
+        // No frame decoded yet — empty, not black (same rule as above).
+        ctx.clearTarget(output, [0, 0, 0, 0]);
         return { primary: output };
       }
 
@@ -592,6 +629,10 @@ export const videoNode: NodeDefinition = {
         }
       }
 
+      const offsetXSeq = (params.offsetX as number) ?? 0;
+      const offsetYSeq = (params.offsetY as number) ?? 0;
+      const zoomSeq = Math.max(0.0001, (params.zoom as number) ?? 1);
+
       const progSeq = ctx.getShader("video-source/fit", FS);
       const curTex = s.tex;
       ctx.drawFullscreen(progSeq, output, (gl2) => {
@@ -604,6 +645,12 @@ export const videoNode: NodeDefinition = {
           invScale[1]
         );
         gl2.uniform1f(gl2.getUniformLocation(progSeq, "u_letterbox"), letterbox);
+        gl2.uniform2f(
+          gl2.getUniformLocation(progSeq, "u_offset"),
+          offsetXSeq,
+          offsetYSeq
+        );
+        gl2.uniform1f(gl2.getUniformLocation(progSeq, "u_zoom"), zoomSeq);
         gl2.activeTexture(gl2.TEXTURE1);
         gl2.bindTexture(gl2.TEXTURE_2D, uvInTexSeq);
         gl2.uniform1i(gl2.getUniformLocation(progSeq, "u_uvIn"), 1);
@@ -620,7 +667,8 @@ export const videoNode: NodeDefinition = {
 
     const paramFile = params.file as VideoFileParamValue | null | undefined;
     if (!paramFile?.video) {
-      ctx.clearTarget(output, [0, 0, 0, 1]);
+      // No file loaded ⇒ empty frame, not a black plate.
+      ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output };
     }
     const video = paramFile.video;
@@ -796,10 +844,11 @@ export const videoNode: NodeDefinition = {
     }
 
     // If we've never managed to upload, there's no last-good frame to
-    // show — clear to black and bail. Audio still flows (it may be loaded
+    // show — clear to EMPTY (not black; a black plate is real content that
+    // mattes downstream) and bail. Audio still flows (it may be loaded
     // before the first frame decodes).
     if (!state.hasUploadedFrame) {
-      ctx.clearTarget(output, [0, 0, 0, 1]);
+      ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output, aux: audioAux };
     }
 
@@ -843,6 +892,10 @@ export const videoNode: NodeDefinition = {
       }
     }
 
+    const offsetX = (params.offsetX as number) ?? 0;
+    const offsetY = (params.offsetY as number) ?? 0;
+    const zoom = Math.max(0.0001, (params.zoom as number) ?? 1);
+
     const prog = ctx.getShader("video-source/fit", FS);
     ctx.drawFullscreen(prog, output, (gl2) => {
       gl2.activeTexture(gl2.TEXTURE0);
@@ -854,6 +907,8 @@ export const videoNode: NodeDefinition = {
         invScale[1]
       );
       gl2.uniform1f(gl2.getUniformLocation(prog, "u_letterbox"), letterbox);
+      gl2.uniform2f(gl2.getUniformLocation(prog, "u_offset"), offsetX, offsetY);
+      gl2.uniform1f(gl2.getUniformLocation(prog, "u_zoom"), zoom);
 
       gl2.activeTexture(gl2.TEXTURE1);
       gl2.bindTexture(gl2.TEXTURE_2D, uvInTex);

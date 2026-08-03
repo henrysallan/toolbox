@@ -39,7 +39,7 @@ export function H1({ children }: { children: ReactNode }) {
       style={{
         fontSize: 30,
         fontWeight: 700,
-        color: "#f4f4f5",
+        color: "var(--tb-n-17)",
         margin: "0 0 6px",
         letterSpacing: -0.3,
         lineHeight: 1.15,
@@ -55,7 +55,7 @@ export function Lede({ children }: { children: ReactNode }) {
     <p
       style={{
         fontSize: 15,
-        color: "#a1a1aa",
+        color: "var(--tb-n-13)",
         margin: "0 0 28px",
         lineHeight: 1.6,
       }}
@@ -85,16 +85,16 @@ function LinkableHeading({
       ? {
           fontSize: 20,
           fontWeight: 600,
-          color: "#f4f4f5",
+          color: "var(--tb-n-17)",
           margin: "28px 0 10px",
           paddingTop: 10,
-          borderTop: "1px solid #27272a",
+          borderTop: "1px solid var(--tb-n-7)",
           lineHeight: 1.25,
         }
       : {
           fontSize: 15,
           fontWeight: 600,
-          color: "#e5e7eb",
+          color: "var(--tb-n-16)",
           margin: "20px 0 8px",
           lineHeight: 1.3,
         };
@@ -133,7 +133,7 @@ function LinkableHeading({
           background: "transparent",
           border: "none",
           padding: 0,
-          color: copied ? "#34d399" : "#71717a",
+          color: copied ? "var(--tb-a-emerald-400)" : "var(--tb-n-11)",
           cursor: "pointer",
           fontSize: 13,
           opacity: hover || copied ? 1 : 0,
@@ -180,7 +180,7 @@ export function P({ children }: { children: ReactNode }) {
     <p
       style={{
         fontSize: 14,
-        color: "#d4d4d8",
+        color: "var(--tb-n-15)",
         lineHeight: 1.7,
         margin: "0 0 14px",
       }}
@@ -195,7 +195,7 @@ export function UL({ children }: { children: ReactNode }) {
     <ul
       style={{
         fontSize: 14,
-        color: "#d4d4d8",
+        color: "var(--tb-n-15)",
         lineHeight: 1.7,
         paddingLeft: 22,
         margin: "0 0 14px",
@@ -211,7 +211,7 @@ export function OL({ children }: { children: ReactNode }) {
     <ol
       style={{
         fontSize: 14,
-        color: "#d4d4d8",
+        color: "var(--tb-n-15)",
         lineHeight: 1.7,
         paddingLeft: 22,
         margin: "0 0 14px",
@@ -234,10 +234,10 @@ export function Kbd({ children }: { children: ReactNode }) {
       style={{
         display: "inline-block",
         padding: "1px 6px",
-        background: "#18181b",
-        border: "1px solid #3f3f46",
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-9)",
         borderRadius: 3,
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
         fontFamily: "ui-monospace, monospace",
         fontSize: 11,
         lineHeight: 1.4,
@@ -254,10 +254,10 @@ export function Code({ children }: { children: ReactNode }) {
     <code
       style={{
         padding: "0 4px",
-        background: "#18181b",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 3,
-        color: "#e4e4e7",
+        color: "var(--tb-n-16)",
         fontFamily: "ui-monospace, monospace",
         fontSize: 12,
       }}
@@ -275,7 +275,7 @@ export function Table({ children }: { children: ReactNode }) {
         width: "100%",
         borderCollapse: "collapse",
         fontSize: 13,
-        color: "#d4d4d8",
+        color: "var(--tb-n-15)",
         margin: "4px 0 18px",
       }}
     >
@@ -290,12 +290,12 @@ export function Th({ children }: { children: ReactNode }) {
       style={{
         textAlign: "left",
         padding: "6px 10px",
-        color: "#a1a1aa",
+        color: "var(--tb-n-13)",
         fontSize: 11,
         textTransform: "uppercase",
         letterSpacing: 0.5,
         fontWeight: 600,
-        borderBottom: "1px solid #27272a",
+        borderBottom: "1px solid var(--tb-n-7)",
       }}
     >
       {children}
@@ -308,7 +308,7 @@ export function Td({ children }: { children: ReactNode }) {
     <td
       style={{
         padding: "6px 10px",
-        borderBottom: "1px solid #1a1a1d",
+        borderBottom: "1px solid var(--tb-n-3)",
         verticalAlign: "top",
       }}
     >
@@ -326,8 +326,8 @@ export function Note({
   children: ReactNode;
   tone?: "info" | "warning";
 }) {
-  const border = tone === "warning" ? "#b45309" : "#3f3f46";
-  const bg = tone === "warning" ? "#1f1408" : "#111113";
+  const border = tone === "warning" ? "var(--tb-a-amber-700)" : "var(--tb-n-9)";
+  const bg = tone === "warning" ? "var(--tb-t-amber-d-0)" : "var(--tb-n-1)";
   return (
     <div
       style={{
@@ -338,7 +338,7 @@ export function Note({
         borderRadius: 4,
         margin: "4px 0 14px",
         fontSize: 13.5,
-        color: "#d4d4d8",
+        color: "var(--tb-n-15)",
         lineHeight: 1.6,
       }}
     >

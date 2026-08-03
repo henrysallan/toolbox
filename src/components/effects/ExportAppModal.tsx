@@ -14,11 +14,22 @@ interface Props {
   onPickOutputNode?: (id: string) => void;
   manifest: ExportManifest;
   warnings: ExportWarning[];
-  estimatedSizeBytes: number;
+  // Whole-bundle estimate (template + serialized graph). Null while the
+  // async estimate (graph serialization + template manifest fetch) is
+  // still computing.
+  estimatedSizeBytes: number | null;
+  // The portion the 25 MB cap actually applies to: serialized graph
+  // (embedded media) + manifest. Null while computing.
+  estimatedContentBytes: number | null;
+  // True when the project uses ML nodes (bg-remove / segment / depth), so
+  // the bundle keeps the ~22 MB ONNX runtime.
+  mlRuntimeIncluded: boolean;
   busy: boolean;
   onExport: (args: { appName: string; description?: string }) => void;
 }
 
+// Mirrors SIZE_CAP_BYTES in lib/export-packager.ts — the cap on USER
+// content (graph + manifest), not the fixed template weight.
 const SIZE_CAP_BYTES = 25 * 1024 * 1024;
 
 export default function ExportAppModal(props: Props): JSX.Element | null {
@@ -33,6 +44,8 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
     manifest,
     warnings,
     estimatedSizeBytes,
+    estimatedContentBytes,
+    mlRuntimeIncluded,
     busy,
     onExport,
   } = props;
@@ -61,7 +74,8 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
 
   if (!open) return null;
 
-  const overSize = estimatedSizeBytes >= SIZE_CAP_BYTES;
+  const overSize =
+    estimatedContentBytes !== null && estimatedContentBytes >= SIZE_CAP_BYTES;
   const trimmedName = appName.trim();
   const exportDisabled = busy || overSize || trimmedName.length === 0;
 
@@ -73,7 +87,14 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
     });
   };
 
-  const sizeMb = (estimatedSizeBytes / 1024 / 1024).toFixed(2);
+  const sizeMb =
+    estimatedSizeBytes !== null
+      ? (estimatedSizeBytes / 1024 / 1024).toFixed(2)
+      : null;
+  const contentMb =
+    estimatedContentBytes !== null
+      ? (estimatedContentBytes / 1024 / 1024).toFixed(2)
+      : null;
   const visibleWarnings = warnings.filter((w) => w.kind !== "no-controls");
 
   return (
@@ -97,13 +118,13 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
           maxWidth: "calc(100vw - 32px)",
           maxHeight: "calc(100vh - 32px)",
           overflowY: "auto",
-          background: "#18181b",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-3)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 6,
           padding: 16,
-          fontFamily: "ui-monospace, monospace",
+          fontFamily: "var(--ui-font)",
           fontSize: 11,
-          color: "#e5e7eb",
+          color: "var(--tb-n-16)",
           boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
         }}
       >
@@ -117,7 +138,7 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
         >
           <div
             style={{
-              color: "#a1a1aa",
+              color: "var(--tb-n-13)",
               fontSize: 10,
               textTransform: "uppercase",
               letterSpacing: 1,
@@ -130,8 +151,8 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
             aria-label="Close"
             style={{
               background: "transparent",
-              border: "1px solid #3f3f46",
-              color: "#a1a1aa",
+              border: "1px solid var(--tb-n-9)",
+              color: "var(--tb-n-13)",
               fontFamily: "inherit",
               fontSize: 11,
               borderRadius: 3,
@@ -187,25 +208,25 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
               <option value={altOutputNode.id}>{altOutputNode.name}</option>
             </select>
           ) : (
-            <div style={{ color: "#a1a1aa" }}>{outputNode.name}</div>
+            <div style={{ color: "var(--tb-n-13)" }}>{outputNode.name}</div>
           )}
         </div>
 
         <div style={{ marginBottom: 10 }}>
           <div style={labelStyle()}>File inputs (auto-included)</div>
           {manifest.fileInputs.length === 0 ? (
-            <div style={{ color: "#71717a" }}>
+            <div style={{ color: "var(--tb-n-11)" }}>
               (none — this app has no file inputs)
             </div>
           ) : (
             <div style={listStyle()}>
               {manifest.fileInputs.map((fi) => (
                 <div key={`${fi.nodeId}::${fi.paramName}`} style={rowStyle()}>
-                  <span style={{ color: "#60a5fa" }}>✓</span>
-                  <span style={{ color: "#e5e7eb" }}>{fi.nodeName}</span>
-                  <span style={{ color: "#52525b" }}>—</span>
-                  <span style={{ color: "#a1a1aa" }}>{fi.label}</span>
-                  <span style={{ color: "#52525b" }}>({fi.paramType})</span>
+                  <span style={{ color: "var(--tb-a-blue-400)" }}>✓</span>
+                  <span style={{ color: "var(--tb-n-16)" }}>{fi.nodeName}</span>
+                  <span style={{ color: "var(--tb-n-10)" }}>—</span>
+                  <span style={{ color: "var(--tb-n-13)" }}>{fi.label}</span>
+                  <span style={{ color: "var(--tb-n-10)" }}>({fi.paramType})</span>
                 </div>
               ))}
             </div>
@@ -219,10 +240,10 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
           {manifest.controls.length === 0 ? (
             <div
               style={{
-                color: "#71717a",
+                color: "var(--tb-n-11)",
                 lineHeight: 1.5,
-                background: "#111113",
-                border: "1px solid #1f1f23",
+                background: "var(--tb-n-1)",
+                border: "1px solid var(--tb-n-5)",
                 borderRadius: 3,
                 padding: "6px 8px",
               }}
@@ -236,11 +257,11 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
             <div style={listStyle()}>
               {manifest.controls.map((c) => (
                 <div key={`${c.nodeId}::${c.paramName}`} style={rowStyle()}>
-                  <span style={{ color: "#60a5fa" }}>•</span>
-                  <span style={{ color: "#e5e7eb" }}>{c.nodeName}</span>
-                  <span style={{ color: "#52525b" }}>—</span>
-                  <span style={{ color: "#a1a1aa" }}>{c.label}</span>
-                  <span style={{ color: "#52525b" }}>({c.paramType})</span>
+                  <span style={{ color: "var(--tb-a-blue-400)" }}>•</span>
+                  <span style={{ color: "var(--tb-n-16)" }}>{c.nodeName}</span>
+                  <span style={{ color: "var(--tb-n-10)" }}>—</span>
+                  <span style={{ color: "var(--tb-n-13)" }}>{c.label}</span>
+                  <span style={{ color: "var(--tb-n-10)" }}>({c.paramType})</span>
                 </div>
               ))}
             </div>
@@ -256,13 +277,13 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
                   key={`${w.kind}::${w.nodeId ?? ""}::${w.paramName ?? ""}::${i}`}
                   style={{
                     ...rowStyle(),
-                    color: "#facc15",
+                    color: "var(--tb-a-yellow-400)",
                     alignItems: "flex-start",
                     lineHeight: 1.4,
                   }}
                 >
-                  <span style={{ color: "#facc15", fontWeight: 700 }}>!</span>
-                  <span style={{ color: "#facc15" }}>{w.message}</span>
+                  <span style={{ color: "var(--tb-a-yellow-400)", fontWeight: 700 }}>!</span>
+                  <span style={{ color: "var(--tb-a-yellow-400)" }}>{w.message}</span>
                 </div>
               ))}
             </div>
@@ -271,19 +292,27 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
 
         <div style={{ marginBottom: 8 }}>
           <div style={labelStyle()}>Output size</div>
-          <div style={{ color: "#a1a1aa" }}>
+          <div style={{ color: "var(--tb-n-13)" }}>
             {manifest.canvasRes[0]} × {manifest.canvasRes[1]}
           </div>
         </div>
 
         <div style={{ marginBottom: 14 }}>
           <div style={labelStyle()}>Estimated bundle size</div>
-          <div style={{ color: overSize ? "#ef4444" : "#a1a1aa" }}>
-            {sizeMb} MB
-            {overSize && (
-              <span style={{ color: "#ef4444" }}>
+          <div style={{ color: overSize ? "var(--tb-a-red-500)" : "var(--tb-n-13)" }}>
+            {sizeMb === null ? "computing…" : `${sizeMb} MB`}
+            {mlRuntimeIncluded && (
+              <span style={{ color: "var(--tb-n-13)" }}>
                 {" "}
-                (over 25 MB cap — remove embedded assets to export)
+                (includes the ~22 MB ML runtime — the graph uses
+                bg-remove / segment / depth)
+              </span>
+            )}
+            {overSize && (
+              <span style={{ color: "var(--tb-a-red-500)" }}>
+                {" "}
+                (project content is {contentMb} MB — over the 25 MB cap;
+                remove or shrink embedded media to export)
               </span>
             )}
           </div>
@@ -296,7 +325,7 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
             justifyContent: "space-between",
             alignItems: "center",
             paddingTop: 10,
-            borderTop: "1px solid #27272a",
+            borderTop: "1px solid var(--tb-n-7)",
           }}
         >
           <button onClick={onClose} style={btnStyle()}>
@@ -307,9 +336,9 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
             disabled={exportDisabled}
             style={{
               ...btnStyle(),
-              background: "#1e3a8a",
-              border: "1px solid #1e3a8a",
-              color: "#bfdbfe",
+              background: "var(--tb-a-blue-900)",
+              border: "1px solid var(--tb-a-blue-900)",
+              color: "var(--tb-a-blue-200)",
               opacity: exportDisabled ? 0.5 : 1,
               cursor: exportDisabled ? "not-allowed" : "pointer",
             }}
@@ -324,7 +353,7 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
 
 function labelStyle(): React.CSSProperties {
   return {
-    color: "#71717a",
+    color: "var(--tb-n-11)",
     fontSize: 10,
     textTransform: "uppercase",
     letterSpacing: 1,
@@ -337,9 +366,9 @@ function inputStyle(): React.CSSProperties {
     width: "100%",
     boxSizing: "border-box",
     padding: "6px 8px",
-    background: "#0a0a0a",
-    border: "1px solid #27272a",
-    color: "#e5e7eb",
+    background: "var(--tb-n-0)",
+    border: "1px solid var(--tb-n-7)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 11,
     borderRadius: 3,
@@ -349,8 +378,8 @@ function inputStyle(): React.CSSProperties {
 
 function listStyle(): React.CSSProperties {
   return {
-    background: "#111113",
-    border: "1px solid #1f1f23",
+    background: "var(--tb-n-1)",
+    border: "1px solid var(--tb-n-5)",
     borderRadius: 3,
     padding: "6px 8px",
     display: "flex",
@@ -372,8 +401,8 @@ function btnStyle(): React.CSSProperties {
   return {
     padding: "4px 10px",
     background: "transparent",
-    border: "1px solid #3f3f46",
-    color: "#e5e7eb",
+    border: "1px solid var(--tb-n-9)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 11,
     borderRadius: 3,

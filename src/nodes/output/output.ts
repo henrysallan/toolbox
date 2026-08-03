@@ -1,4 +1,9 @@
 import type { NodeDefinition, ParamDef } from "@/engine/types";
+import {
+  SVG_STYLE_PARAMS,
+  svgExportStashKey,
+  type SvgExportStash,
+} from "./svg-export";
 
 // The export configuration params, shared verbatim between the composition
 // Output node (below) and each **Layer Output** (the fixed `group-output`
@@ -14,6 +19,52 @@ export const EXPORT_PARAMS: ParamDef[] = [
       type: "string",
       default: "",
       placeholder: "auto (timestamp)",
+    },
+    // ----- export resolution (073126_export-resolution-and-app-slim.md) --
+    // Applies to every export product (image / video / sequence / GIF).
+    // canvas = project canvas resolution (the default, and the pre-existing
+    // behavior — except exports no longer inherit the preview render
+    // scale); scale = canvas × multiplier (supersampling / quick proxies);
+    // custom = explicit W×H for delivery specs that differ from the
+    // working res. Resolved by resolveExportResolution (lib/export.ts);
+    // video paths round down to even dims (H.264/H.265 reject odd sizes).
+    {
+      name: "resolution",
+      label: "Resolution",
+      type: "enum",
+      options: ["canvas", "scale", "custom"],
+      default: "canvas",
+      control: "segmented",
+    },
+    {
+      name: "resScale",
+      label: "Scale",
+      type: "scalar",
+      min: 0.25,
+      max: 4,
+      step: 0.05,
+      default: 1,
+      visibleIf: (p) => p.resolution === "scale",
+    },
+    {
+      name: "resWidth",
+      label: "Width",
+      type: "scalar",
+      min: 16,
+      max: 8192,
+      step: 1,
+      default: 1920,
+      visibleIf: (p) => p.resolution === "custom",
+    },
+    {
+      name: "resHeight",
+      label: "Height",
+      type: "scalar",
+      min: 16,
+      max: 8192,
+      step: 1,
+      default: 1080,
+      visibleIf: (p) => p.resolution === "custom",
     },
     {
       name: "imageFormat",
@@ -262,7 +313,7 @@ export const outputNode: NodeDefinition = {
   name: "Output",
   category: "output",
   description:
-    "Terminal node. Its input image is rendered to the visible canvas by the engine.",
+    "Terminal node. Its input image is rendered to the visible canvas by the engine. Wire a spline into the optional `spline` input to unlock an SVG button alongside Image and Video — it saves that path at the current playhead as a standalone .svg, styled by the stroke/fill params that appear with it.",
   backend: "webgl2",
   terminal: true,
   // Audio is optional — the visual pipeline doesn't depend on it, and
@@ -272,16 +323,44 @@ export const outputNode: NodeDefinition = {
   inputs: [
     { name: "image", type: "image", required: true },
     { name: "audio", type: "audio", required: false },
+    // Vector side-channel. Whatever spline lands here is snapshotted at the
+    // playhead into ctx.state under the SVG Export node's stash key, so the
+    // node's "SVG" button saves it as a standalone .svg next to the raster /
+    // video products. The engine never renders it — the canvas still shows
+    // `image`, and Output declares no primary output, so the terminal
+    // preview is unaffected. Same stash key + SVG_STYLE_PARAMS names as the
+    // SVG Export node, which is what lets EffectsApp's single exporter serve
+    // both surfaces.
+    { name: "spline", type: "spline", required: false },
   ],
   // `render` is a reference output: wire it into a Render Queue node to add
   // this Output as a queue item. It carries no value (the evaluator ignores
   // `render` edges) — it just links the two nodes organizationally.
-  params: EXPORT_PARAMS,
+  //
+  // NOTE: EXPORT_PARAMS is the list a **Layer Output** mirrors; the SVG
+  // styling rows are Output-only (a Layer Output has no spline input), so
+  // they're appended here rather than added to EXPORT_PARAMS.
+  params: [...EXPORT_PARAMS, ...SVG_STYLE_PARAMS],
   primaryOutput: null,
   auxOutputs: [{ name: "render", type: "render" }],
-  compute() {
+  compute({ inputs, ctx, nodeId }) {
     // Engine blits our input image to the canvas after evaluation. The
     // `render` aux output carries no value — it's a reference link only.
+    const spline = inputs.spline;
+    if (spline && spline.kind === "spline" && spline.subpaths.length > 0) {
+      const stash: SvgExportStash = {
+        subpaths: spline.subpaths,
+        width: ctx.width,
+        height: ctx.height,
+      };
+      ctx.state[svgExportStashKey(nodeId)] = stash;
+    } else {
+      delete ctx.state[svgExportStashKey(nodeId)];
+    }
     return {};
+  },
+
+  dispose(ctx, nodeId) {
+    delete ctx.state[svgExportStashKey(nodeId)];
   },
 };

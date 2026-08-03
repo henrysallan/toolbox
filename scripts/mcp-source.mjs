@@ -183,7 +183,14 @@ export function createSourceReader() {
   }
 
   function skewRef(appVersion) {
-    if (!appVersion || !/^\d+\.\d+\.\d+/.test(appVersion)) return null;
+    // Anchored + `/`-free by construction: appVersion is attacker-controllable
+    // once paired, and it's interpolated into the GitHub-raw fetch URL as the
+    // tag segment (`/v${ref}/…`). An unanchored regex let e.g.
+    // "1.0.0/../../../evil/repo/main" normalize to an arbitrary repo (SSRF /
+    // source-substitution). A strict x.y.z gate can't contain a slash, so the
+    // URL host/org/repo can't be escaped. Non-matching versions (prerelease,
+    // build metadata) fall back to the local checkout — safe.
+    if (!appVersion || !/^\d+\.\d+\.\d+$/.test(appVersion)) return null;
     if (appVersion === localVersion) return null;
     return appVersion;
   }

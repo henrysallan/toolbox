@@ -58,7 +58,14 @@ compute shaders
 
 54. DONE Iterative render. Some sort of node that takes multiple inputs and then lets you render the full chain with each of them, 1 after another. Saves everything as a .zip file.
 
-55. Spline draw has a tool for doing various shape primatives. 
+55. DONE (v1) Spline draw has a tool for doing various shape primatives.
+    Rectangle (R) + Ellipse (E) in the overlay's tool dock: drag a rubber-band
+    box, release commits one closed subpath (corner anchors / KAPPA-handled
+    quadrant anchors) that stays fully editable. Shift = 1:1 (square/circle,
+    screen-space), Alt/Option = draw from the centre, Alt+Shift = both;
+    snapping applies to the origin and the free corner. More primitives
+    (polygon / star / rounded-rect) are the fast-follow — see #152.
+    Spec: 071926_spline-draw-authoring-upgrade.md M6. 
 
 
 
@@ -101,6 +108,12 @@ So I think you should first set up the modal, the infrastructure for calling the
 
 
 80. Change the "points on path" to "spline to points" and add a points output socket. 
+    PARTIAL — a dedicated Spline to Points node now exists (2026-07-31):
+    spline in → its raw ANCHOR positions as points (subpath order,
+    groupIndex from the subpath's tag or index, spline passthrough aux).
+    That's a different extraction than Points on Path's arc-length
+    sampling, so the rename here is now off the table — the "Spline to
+    Points" name is taken by the anchor extractor.
 
 81. the trails node outputs image data. but when i use a color ramp, i feel like i should be able to control the trail color where earlier trails are a certain color and newer ones are different. but thats not how it works, walk me through some diffretn strategies. 
 
@@ -388,7 +401,7 @@ Let me know if you understand.
 
 167. DONE Vary the DUPLICATES when you copy text to points (size, weight, leading, font, tracking, and the string shown), driven by index / groupIndex / seeded random / a field sampled at each copy's position / keyframed time. Not a pile of new nodes — enrich the two we have. Text gets string variants + a new `text_instance` output socket carrying {base style + variant strings}. Copy to Points auto-accepts `text_instance` (new sockets appear only when connected), picks the per-copy string with its existing pick_mode, and applies per-copy typographic modulation (each channel driven by index/group/random/field), then re-rasterizes text per copy. Net new = one socket type, zero new node files. Single-string is first-class (modulate typography with no variants). The per-glyph "drive an animation with an image field" idea is separate and already exists via the animator `field` driver. Spec: specdocs/070726_text-instances.md.
 
-167. the voronoi animated toggle should animate the evoloution, rather than whatever is being animated right now.
+167. DONE the voronoi animated toggle should animate the evoloution, rather than whatever is being animated right now. (073026_voronoi-unified.md — Animated now drives W itself along a seamless always-forward loop; slice keys wrap per loop window.)
 
 168. DONE For the shift + click drag in the node editor currently we just do it when we click and drag from a socket, but im thinking we could just allow it from a node, hold shift before clicking a node, and we draw a straight line from the origin node to the cursor and just attempt to connect the first socket output to the relevant socket input. 
 
@@ -591,3 +604,184 @@ Let me know if you understand.
     output, pendulum, 3-stack settle without interpenetration, glue
     hold/snap, soft squash, pin_map, follow, puppet drag); browser
     feel-pass pending. Spec: specdocs/072026_rigid-body-simulator.md.
+
+202. DONE Node cosmetics + Frames: right-click menu grew a 7-swatch tint
+    row (low-alpha wash over the node body, Tailwind-400 register) and a
+    Bold toggle (thick box-shadow outline ring, no layout shift) —
+    applies to the whole selection when the clicked node is selected.
+    Plus Blender-style Frames: Shift+F wraps the selection in a
+    `frame-zone` node (shaded rect behind its members, auto-fits as
+    they move — membership via each member's `data.frameId`); drag a
+    node in to join, Cmd-drag out to leave, drag the edges/label to
+    move frame + contents, click the top-left label to rename. All
+    additive persistence, schema stays 9. Spec:
+    specdocs/073026_node-cosmetics-and-frames.md.
+
+203. Shortest Path: TREE mode — one root point picked by an index int
+    slider fans out to every reachable point as a rooted tree (paths
+    split, never re-join). Shape sliders: wander (direct/SPT ↔
+    minimal/MST morph, one generalized Prim/Dijkstra pass), cost
+    jitter + seed, max children per point, depth limit. Emit as
+    overlapping root→leaf branches (Trim Path grows the whole tree
+    from the root) or unique per-edge segments; aux points in settle
+    order. Update modes: locked (topology captured at frame 0 /
+    topology-param / count change — connections persist, edges
+    stretch as points animate) | live (rebuild per frame, optional
+    parent-glide smoothing: reconfigured connections glide to their
+    new junction, detaching + re-fusing in branches mode).
+    Implemented 2026-07-31 — buildTreeInGraph in engine/spline-graph.ts
+    (generalized Prim/Dijkstra, key = α·label(parent) + cost) + tree
+    mode in nodes/effect/shortest-path.ts (the node's only stateful
+    corner: ctx.state locked-topology capture + glide positions,
+    in-flight-only fingerprintExtras, dispose). Typecheck/lint/
+    npm run check green + standalone builder smoke test; needs an
+    in-browser pass. Spec: specdocs/073126_shortest-path-tree-mode.md.
+
+201. Vector kernel (kurbo → WASM) driving an OPTIMIZE PATH node: messy
+    spline/curve data in (pencil scribbles, marching-squares traces,
+    sim output, traced SVGs) → the most economical clean bezier path
+    within a px tolerance, corner-preserving.
+    DONE (v1) 2026-07-30 — Optimize Path node (`optimize-path`, spline
+    modifier: tolerance px / adaptive|optimal / corner angle° /
+    smoothing / cull specks px / debug skeleton) over
+    rust/toolbox-vector-kernel (kurbo 0.13.1 pinned, 77KB wasm committed
+    at public/wasm/v1 + src/wasm/pkg; `npm run build:wasm` rebuilds).
+    Facade+adapter engine/vector-kernel.ts: lazy main-thread init
+    (passthrough + pipeline-bump until ready, fingerprintExtras busts),
+    px-space conversion, per-subpath tags preserved. Two empirical
+    kernel-input discoveries (spec "Kernel input shaping"): coincident-
+    endpoint runs and 2^k-aligned polyline runs both fragment the fitter
+    catastrophically → closed loops split into two stitched half-arcs,
+    and handle-less runs encode as G1 cubics via TS Catmull-Rom tangents
+    (one-sided at corners). Result: 512-pt noisy circle → 10 anchors
+    (optimal) / 53 (adaptive) / 4 (adaptive + smoothing 0.6, worst dev
+    0.22px — denoise-then-fit beats optimal on raw input), corners
+    exact, pure cubics reproduce at 0.000px. 2026-07-31 additions:
+    Smoothing 0–1 (pre-fit Relax-style Laplacian on HANDLE-LESS anchors
+    only — authored geometry pinned; open endpoints pinned, closed
+    wraps), Cull specks (drop subpaths under N px arc length, before
+    any fitting), Debug skeleton toggle (aux `image` minted on demand:
+    source path faint grey under the optimized result's pen-tool-style
+    anchors+handles + an anchor-count readout; the preview fallback's
+    aux-image path shows it on node select with zero wiring — Bezier
+    Handles stays the fully-styled visualizer). check:kernel covers
+    smoothing/cull; in the CI chain; needs an in-browser pass.
+    P0 (2026-07-31, from the kernel audit): `optimal` mode is now OUR
+    shortest-path/DP subdivision optimizer (opt.rs — Levien's Zulip
+    sketch, unimplemented upstream) replacing fit_to_bezpath_opt: never
+    worse than adaptive by construction, retires the kurbo#268 unwrap
+    trap, and beats _opt on both axes (2048-seg noisy blob 75→32 verbs
+    at 14× native speed; noisy-circle optimal 10→7 anchors). Lives
+    entirely in our crate on kurbo's public fit_to_cubic — no fork, no
+    upstream dependency; upstreaming optional. Kernel v0.2.0 (92KB).
+    2026-08-02 (v0.2.1): TWO interlocking bugs found via the arrow-
+    screenshot spike report + star-corpus diagnosis. (a) kurbo's corner
+    test folds past 90° (|tan|), so near-reversal spike tips read as
+    smooth and got curl/overshoot while moderate notches pinned exactly
+    — both modes now corner-split fold-proof (normalized dot vs cos) in
+    opt.rs, and Smoothing pins raw-position corners. (b) Fixing (a)
+    exposed a latent kurbo degeneracy the fold had been shielding:
+    exactly-straight ranges have no quartic solution and fit_to_bezpath
+    bisects EXPONENTIALLY (multi-minute hang) — fixed with chord_or_fit
+    (chord-cubic short-circuit per range) + our own depth-capped
+    adaptive recursion; termination now unconditional. Thin tips
+    interpolate at 0.000px in both modes (spike-star regression in
+    check:kernel); noisy-circle improved further (adaptive 53→34,
+    optimal 7→6 anchors). Both bugs worth reporting upstream.
+    Worker pool + fitSampled + offset/stroke/dash remain deferred.
+    Spec: specdocs/attractor-vector-kernel-spec.md.
+
+204. DONE Curved path modes (Connect Points + Shortest Path) — a
+    `path` mode enum (straight | curved | sag | flow | network |
+    bundle | attract) shaping connection segments via cubic handles,
+    shared through engine/segment-shape.ts (ParamDef factory +
+    handle math over an index-pair edge list). curved = circular
+    arcs ↔ S-curves (curvature / s_curve / flip / path_jitter); sag =
+    hanging-wire droop along a gravity angle; flow = snoise-field
+    tangents; network = ONE shared tangent per point so connections
+    read as curves flowing THROUGH the web; bundle = one-shot edge
+    bundling (parallel neighbors merge into trunks); attract = bow
+    toward/away from centroid or a custom center. Connect Points:
+    header control, per-pair segments. Shortest Path: points + tree
+    modes only (chains decompose into edges — interior anchors get
+    both handles, network ⇒ through-point smoothing, junctions stay
+    tangent-consistent; glide stubs ride synthetic table entries;
+    spline mode exempt — it re-emits authored geometry). Pure
+    emit-time math in iso (aspect-corrected) space; connectivity,
+    raw-UV max_distance, groupIndex, aux outputs untouched;
+    randomness pair-keyed (stable, no shimmer). Defaults straight →
+    old saves unchanged. Node-level smoke suite passed (40 checks:
+    arc circularity px-space, S-morph, sag depth, tangent
+    collinearity, bundle pull, attract cap, determinism, no-NaN
+    extremes); needs an in-browser pass. Spec:
+    specdocs/073126_connect-points-curved-paths.md.
+
+205. M1-M3 DONE Panel pop-out windows (multi-monitor) — detach a layout leaf into
+    its own OS window so a second monitor can hold the viewport or
+    timeline full-screen. Same-origin `window.open` + React portal, so
+    the detached panel is the SAME React tree (same state, no sync
+    protocol, no second evaluator); the engine is untouched because
+    `blitToCanvas` ends in a plain `drawImage` into the target canvas,
+    which works cross-document same-origin. The real work is the
+    window/document coupling sweep — detachable panels must resolve
+    their window from `ownerDocument.defaultView`, never module scope.
+    M1 (risk gate) SHIPPED 2026-08-02: one popped-out watch viewport —
+    layout/PanelPopout.tsx + removeLeaf/attachLeaf ops + the kind
+    menu's Pop Out entry; verified in Electron that synthetic events
+    fire in the child and the cross-document blit lands. M2+M3 SHIPPED
+    2026-08-03: params, timeline and node editor all pop out. Shared
+    layout/panel-window.tsx (usePanelWindow context + ownerWindow/
+    ownerDocument + broadcastAppEvent) drove a ~80-site window/document
+    sweep across ParamPanel, param-controls, TrackEditor, LayersEditor,
+    NodeEditor and EffectNode; the app's window CustomEvents now
+    broadcast to every window, and nodes-pane-scope splits into
+    per-window scope (keystrokes) vs global scope (broadcasts) so a
+    broadcast can't open one popup per window. Still open: M4
+    persistence (per-machine localStorage, NOT in the project blob) +
+    polish. Primary viewport stays undetachable; the pie menu doesn't
+    reach a detached pane. Spec:
+    specdocs/080226_panel-popout-windows.md.
+
+206. SDF materials + unified shading — give the SDF compiler a color
+    channel so per-shape color survives the combine operators, then one
+    terminal (`SDF Shade`) that reads the field as a continuum. The
+    blocker is structural: `emitSdf` collapses the tree to a single
+    `float`, so by render time "which shape am I near" is gone. Fix is
+    a `Surf { d, c, acc, accW }` struct emitter beside the existing
+    float one — smooth-union's own `h` factor mixes color across the
+    same bridge the distance blends over, so the EXISTING SDF Smooth
+    Union starts mixing color with no new wire; a parallel accumulator
+    gives one `bleed` knob dialing winner-takes-all → soft wash. Color
+    enters three ways, one runtime-only `material` AST kind: on-node
+    swatch on the 8 primitives (zero extra nodes), an `SDF Material`
+    node (subtree override + wired color), and ramp × scalar_field via
+    a 1×256 LUT on the sampler path (per-tile color off `posCellId` —
+    impossible at any node count otherwise, since the position fold
+    means one leaf covers all tiles). Colors stay UNIFORMS so
+    keyframing never recompiles. `SDF Shade` = Fill / Bleed / Light
+    (bevel parity + a `float_curve` height profile) / Glow / Contour,
+    gated sections, plus consumption-gated aux normal/height/glow/
+    bleed/mask. `sdf-rasterize` + `sdf-bevel` stay visible and gain
+    material awareness; M0 gate is pixel-identical output on existing
+    projects. Spec: specdocs/080226_sdf-materials-and-shading.md.
+
+207. DONE Physarum node — GPU slime-mold transport network (Jones 2010 /
+    mxsage's 36 Points parameterisation, implementation ported from
+    Bleuje's interactive-physarum, CC BY-NC-SA 3.0). Millions of agents
+    in RGBA32F ping-pong textures sense a decaying trail at three
+    points, turn toward the strongest, step and deposit; the deposit is
+    an additive gl.POINTS draw standing in for the reference's compute-
+    shader atomicAdd. All 24 Points ship as presets with four
+    always-visible multipliers riding on top (presets can't write back
+    into sliders, so `custom` is the escape hatch), plus the reference's
+    11 colour modes, a `blend` mask input driving the two-Point spatial
+    interpolation per agent (strictly more general than the original's
+    cursor Gaussian — wire Cursor → Circle to get the pen back), and an
+    `inject` mask the agents colonise. Two normalisations are
+    load-bearing and were found by rendering, not reading: a Poisson
+    correction on the deposit (agent count = quality, not look) and a
+    diffusion radius coupled to the distance scale (so a 4K export
+    resembles its 1080p preview). Supersedes the "deferred GPU
+    physarum" item in 080226_behavioral-growth.md §8; that node's CPU
+    `physarum` mode is still worth building where agent positions must
+    leave as a `points` value. Spec: specdocs/080226_physarum.md.

@@ -25,14 +25,14 @@ export default function UpdateToast({
         bottom: 16,
         zIndex: 2000,
         width: 260,
-        background: "#18181b",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 6,
         boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
         padding: "10px 12px",
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
         userSelect: "none",
       }}
     >
@@ -49,7 +49,7 @@ export default function UpdateToast({
           style={{
             background: "transparent",
             border: "none",
-            color: "#71717a",
+            color: "var(--tb-n-11)",
             cursor: "default",
             fontSize: 12,
             padding: "0 0 0 8px",
@@ -66,7 +66,7 @@ export default function UpdateToast({
               marginTop: 8,
               height: 4,
               borderRadius: 2,
-              background: "#27272a",
+              background: "var(--tb-n-7)",
               overflow: "hidden",
             }}
           >
@@ -74,7 +74,7 @@ export default function UpdateToast({
               style={{
                 width: `${Math.max(0, Math.min(100, status.percent))}%`,
                 height: "100%",
-                background: "#3b82f6",
+                background: "var(--tb-a-blue-500)",
                 transition: "width 200ms linear",
               }}
             />
@@ -84,7 +84,7 @@ export default function UpdateToast({
               marginTop: 6,
               display: "flex",
               justifyContent: "space-between",
-              color: "#71717a",
+              color: "var(--tb-n-11)",
               fontSize: 10,
             }}
           >
@@ -99,10 +99,10 @@ export default function UpdateToast({
             marginTop: 10,
             width: "100%",
             padding: "5px 0",
-            background: "#1e3a8a",
+            background: "var(--tb-a-blue-900)",
             border: "none",
             borderRadius: 4,
-            color: "#e5e7eb",
+            color: "var(--tb-n-16)",
             fontFamily: "inherit",
             fontSize: 11,
             cursor: "default",

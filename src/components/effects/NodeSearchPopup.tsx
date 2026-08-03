@@ -9,6 +9,7 @@ import {
 } from "react";
 import { allNodeDefs } from "@/engine/registry";
 import { PRESETS } from "@/state/presets";
+import { fuzzyScoreFields } from "@/lib/fuzzy-search";
 import type { NodeCategory, NodeSubcategory } from "@/engine/types";
 
 // Display order + labels mirror NodeBrowserDropdown so the two add-
@@ -191,14 +192,23 @@ export default function NodeSearchPopup({
   const normalized = query.trim().toLowerCase();
   const flatMatches = useMemo(() => {
     if (!normalized) return [];
-    return defs
-      .filter(
-        (d) =>
-          d.name.toLowerCase().includes(normalized) ||
-          d.type.toLowerCase().includes(normalized) ||
-          d.category.toLowerCase().includes(normalized)
-      )
-      .sort((a, b) => a.name.localeCompare(b.name));
+    // Fuzzy match against name/type/category, best score first — typos
+    // ("guassian"), abbreviations ("rastspline"), and split tokens
+    // ("part sim") all land. Category hits weigh least so typing a
+    // category name lists its nodes after any name/type matches.
+    const scored: { def: (typeof defs)[number]; score: number }[] = [];
+    for (const d of defs) {
+      const score = fuzzyScoreFields(normalized, [
+        { text: d.name, weight: 1 },
+        { text: d.type, weight: 0.9 },
+        { text: d.category, weight: 0.5 },
+      ]);
+      if (score !== null) scored.push({ def: d, score });
+    }
+    scored.sort(
+      (a, b) => b.score - a.score || a.def.name.localeCompare(b.def.name)
+    );
+    return scored.map((e) => e.def);
   }, [defs, normalized]);
 
   // On mount: autofocus the input. Ensures Shift+A users can type
@@ -278,15 +288,15 @@ export default function NodeSearchPopup({
         top: y,
         display: "flex",
         gap: 0,
-        background: "#0a0a0a",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-0)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 6,
         boxShadow: "0 8px 24px rgba(0, 0, 0, 0.5)",
         padding: 6,
         zIndex: 3000,
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
         userSelect: "none",
       }}
     >
@@ -308,10 +318,10 @@ export default function NodeSearchPopup({
           onKeyDown={onInputKeyDown}
           placeholder="search nodes…"
           style={{
-            background: "#18181b",
-            border: "1px solid #27272a",
+            background: "var(--tb-n-3)",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 4,
-            color: "#e5e7eb",
+            color: "var(--tb-n-16)",
             fontFamily: "inherit",
             fontSize: 11,
             padding: "4px 6px",
@@ -333,14 +343,14 @@ export default function NodeSearchPopup({
                     justifyContent: "space-between",
                     alignItems: "center",
                     padding: "4px 6px",
-                    background: active ? "#1e3a8a" : "transparent",
-                    color: active ? "#f0f9ff" : "#e5e7eb",
+                    background: active ? "var(--tb-a-blue-900)" : "transparent",
+                    color: active ? "var(--tb-t-sky-l-1)" : "var(--tb-n-16)",
                     borderRadius: 3,
                     cursor: "default",
                   }}
                 >
                   <span>{labelFor(cat)}</span>
-                  <span style={{ color: active ? "#bfdbfe" : "#52525b" }}>
+                  <span style={{ color: active ? "var(--tb-a-blue-200)" : "var(--tb-n-10)" }}>
                     ▶
                   </span>
                 </div>
@@ -363,7 +373,7 @@ export default function NodeSearchPopup({
           maxHeight: 360,
           overflowY: "auto",
           paddingLeft: 6,
-          borderLeft: "1px solid #27272a",
+          borderLeft: "1px solid var(--tb-n-7)",
           display: "flex",
           flexDirection: "column",
         }}
@@ -371,7 +381,7 @@ export default function NodeSearchPopup({
         {(() => {
           if (rightColumnNodes.length === 0) {
             return (
-              <div style={{ color: "#52525b", padding: "4px 2px" }}>
+              <div style={{ color: "var(--tb-n-10)", padding: "4px 2px" }}>
                 {normalized ? "no matches" : ""}
               </div>
             );
@@ -399,8 +409,8 @@ export default function NodeSearchPopup({
                   alignItems: "center",
                   padding: "4px 6px",
                   marginTop: isFirst ? 0 : 2,
-                  background: highlight ? "#1e3a8a" : "transparent",
-                  color: highlight ? "#f0f9ff" : "#e5e7eb",
+                  background: highlight ? "var(--tb-a-blue-900)" : "transparent",
+                  color: highlight ? "var(--tb-t-sky-l-1)" : "var(--tb-n-16)",
                   border: "none",
                   borderRadius: 3,
                   fontFamily: "inherit",
@@ -411,7 +421,7 @@ export default function NodeSearchPopup({
                 onMouseOver={(e) => {
                   if (!highlight) {
                     (e.currentTarget as HTMLButtonElement).style.background =
-                      "#18181b";
+                      "var(--tb-n-3)";
                   }
                 }}
                 onMouseOut={(e) => {
@@ -423,7 +433,7 @@ export default function NodeSearchPopup({
               >
                 <span>{def.name}</span>
                 {normalized && (
-                  <span style={{ color: "#52525b", fontSize: 10 }}>
+                  <span style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
                     {labelFor(def.category)}
                   </span>
                 )}
@@ -451,7 +461,7 @@ export default function NodeSearchPopup({
                 <div
                   style={{
                     padding: "2px 6px",
-                    color: "#71717a",
+                    color: "var(--tb-n-11)",
                     fontSize: 9,
                     textTransform: "uppercase",
                     letterSpacing: 0.4,

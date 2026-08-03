@@ -28,9 +28,9 @@ import {
 } from "@/lib/data-url";
 import { isExrImageValue } from "@/engine/exr";
 import { LAYER_TYPE } from "@/engine/groups";
-import { REROUTE_TYPE } from "@/engine/graph-helpers";
+import { FRAME_TYPE, REROUTE_TYPE } from "@/engine/graph-helpers";
 import { makeLayerNodes, newEdgeId } from "@/state/graph-ops";
-import { newCompositionId } from "@/state/graph";
+import { FRAME_XY_PROPS, newCompositionId } from "@/state/graph";
 
 // Bump when the on-wire shape changes. Load path should branch on this.
 //
@@ -95,6 +95,29 @@ import { newCompositionId } from "@/state/graph";
 // specdocs/071426_cloud-asset-storage.md.
 export const CURRENT_SCHEMA = 9;
 
+// Thrown when a project was saved by a NEWER client than this one. Without
+// this guard the load silently drops fields the older client doesn't know,
+// and a re-save rewrites the row at the older schema — permanent loss. Under
+// v9 it's worse than lossy: the re-save's prune deletes Storage objects only
+// the newer envelope shapes referenced. Callers catch this to show a "made
+// with a newer version" message instead of proceeding. See
+// specdocs/072226_architecture-review.md Tier-1 #1(e).
+export class NewerSchemaError extends Error {
+  readonly savedVersion: number;
+  readonly currentVersion: number;
+  constructor(savedVersion: number) {
+    super(
+      `This project was saved with a newer version of Toolbox ` +
+        `(format v${savedVersion}; this build reads up to v${CURRENT_SCHEMA}). ` +
+        `Update Toolbox to open it — opening and re-saving here would drop the ` +
+        `newer data.`
+    );
+    this.name = "NewerSchemaError";
+    this.savedVersion = savedVersion;
+    this.currentVersion = CURRENT_SCHEMA;
+  }
+}
+
 export interface SavedNode {
   id: string;
   defType: string;
@@ -131,11 +154,17 @@ export interface SavedNode {
   bypassed?: boolean;
   // Group was generated/edited by AI — drives the "Edit with AI" star button.
   aiAuthored?: boolean;
-  // User-resized node box (flow px) via the bottom-left grip. Absent ⇒ the
+  // User-resized node box (flow px) via the bottom-right grip. Absent ⇒ the
   // node auto-sizes. Additive/optional — old saves simply lack them, so no
   // schema bump. Editor-only; the engine never reads these.
   uiWidth?: number;
   uiHeight?: number;
+  // Cosmetic styling + frame membership (right-click tint/bold, Shift+F
+  // frames — 073026_node-cosmetics-and-frames.md). Same additive/optional
+  // convention as uiWidth; editor-only, engine-blind.
+  tint?: string;
+  bold?: boolean;
+  frameId?: string;
 }
 
 export interface SavedEdge {
@@ -197,6 +226,14 @@ export interface SavedProject {
   // CURRENT_SCHEMA). Authoritative per-composition scenes live on
   // `compositions[].scene`.
   scene?: SavedScene;
+  // Tiled editor layout (072726_window-tiling.md M4). ADDITIVE and
+  // opaque here — components/effects/layout/model.ts owns the shape
+  // (toSavedLayout/fromSavedLayout) and EffectsApp attaches/applies it
+  // around serialize/deserialize; this module just carries it. Absent
+  // on pre-M4 saves; older builds ignore it (schema stays 9) and drop
+  // it on resave, losing only the layout. Live viewer / exported apps
+  // never read it.
+  layout?: unknown;
 }
 
 // --- image helpers -------------------------------------------------------
@@ -242,11 +279,20 @@ export async function decodeImageFileEnvelope(
 // A media param whose fetch was deferred at load (a v9 Storage-hosted image
 // on a `deferRemoteMedia` load). The caller streams these in after the graph
 // is interactive and shows a per-node spinner meanwhile. The envelope's
-// `dataUrl` is the (https) Storage URL to fetch.
+// `dataUrl` is the (https) Storage URL to fetch. `asset`/`ext` ride along
+// (resolveAssetRefs preserves them) so that if the stream FAILS and the caller
+// puts this envelope back into the param, the next save still recognizes it as
+// an asset ref and keeps its Storage object alive. See 072226 audit #1b.
 export interface PendingMedia {
   nodeId: string;
   paramName: string;
-  envelope: { kind?: string; dataUrl?: string; filename?: string };
+  envelope: {
+    kind?: string;
+    dataUrl?: string;
+    filename?: string;
+    asset?: string;
+    ext?: string;
+  };
 }
 
 // Sibling key under a node's params that carries the bundled font bytes for a
@@ -805,6 +851,9 @@ export async function serializeGraph(
       aiAuthored: n.data.aiAuthored,
       uiWidth: n.data.uiWidth,
       uiHeight: n.data.uiHeight,
+      tint: n.data.tint,
+      bold: n.data.bold,
+      frameId: n.data.frameId,
     });
     const bucket = Math.floor(((i + 1) / total) * 20);
     if (bucket !== lastBucket) {
@@ -855,6 +904,17 @@ function migrateLoadedParams(
     params.end_x = 0.5 + 0.5 * dx;
     params.end_y = 0.5 + 0.5 * dy;
   }
+  if (defType === "gaussian-blur" && params.linearize === undefined) {
+    // Gaussian Blur merged into the unified Blur node (spec
+    // 080226_blur-convolution.md), which filters in linear light by
+    // default. That default is correct for new work but would silently
+    // restyle every existing project, so legacy nodes pin it off and keep
+    // their original look. The premultiplied-alpha fix that shipped in the
+    // same node is deliberately NOT migrated — that one is a correctness
+    // bug (straight-alpha convolution darkens soft edges), not a taste
+    // default, so old projects get the corrected edges.
+    params.linearize = false;
+  }
   if (defType === "scene-time" && params.rate === undefined) {
     // Ping-pong speed switched from `period` (half-cycle, i.e. min→max time, in
     // the selected unit) to `rate` (full min→max→min cycles per unit). A full
@@ -881,6 +941,14 @@ function migrateLoadedParams(
       params.scale = 1;
       params.offset = 0;
     }
+  }
+  if (defType === "fracture") {
+    // Fracture merged into Voronoi as its "scatter" source
+    // (073026_voronoi-unified.md). Old saves predate the `source` param —
+    // compute's fallback default is "lattice", so pin scatter explicitly.
+    // The mode enum unified on Voronoi's names: "edges" is "f2-f1".
+    if (params.source === undefined) params.source = "scatter";
+    if (params.mode === "edges") params.mode = "f2-f1";
   }
   if (defType === "paint") {
     // The paint toolkit (071926_paint-toolkit.md) added bg_mode; new nodes
@@ -937,6 +1005,13 @@ export async function deserializeGraph(
   // `deferRemoteMedia` is set). Empty otherwise. The caller streams these in.
   pendingMedia: PendingMedia[];
 }> {
+  // Forward-version guard: refuse a project from a newer client rather than
+  // silently dropping its unknown fields (and, on re-save, pruning the Storage
+  // objects only the newer envelope shapes reference). A missing/≤0 version is
+  // a legacy save, not a future one — those load through the migrations below.
+  const savedVersion = saved.schemaVersion ?? 1;
+  if (savedVersion > CURRENT_SCHEMA) throw new NewerSchemaError(savedVersion);
+
   // Resolve the composition registry up front so every node can be tagged
   // into the right composition. A present `compositions` array (even empty)
   // is authoritative; its absence means a ≤v4 / graph-only save, which
@@ -997,9 +1072,17 @@ export async function deserializeGraph(
       : [];
     nodes.push({
       id: sn.id,
-      // Reroutes render as a dot (RerouteNode); everything else uses the
-      // standard EffectNode chrome. Keyed off the saved defType.
-      type: sn.defType === REROUTE_TYPE ? "reroute" : "effect",
+      // Reroutes render as a dot (RerouteNode), frame zones as a shaded
+      // rect (FrameNode, with the click-through/drag-handle xyflow props);
+      // everything else uses the standard EffectNode chrome. Keyed off the
+      // saved defType.
+      type:
+        sn.defType === REROUTE_TYPE
+          ? "reroute"
+          : sn.defType === FRAME_TYPE
+            ? "frame"
+            : "effect",
+      ...(sn.defType === FRAME_TYPE ? FRAME_XY_PROPS : {}),
       position: sn.position,
       data: {
         defType: sn.defType,
@@ -1033,6 +1116,9 @@ export async function deserializeGraph(
         aiAuthored: sn.aiAuthored,
         uiWidth: sn.uiWidth,
         uiHeight: sn.uiHeight,
+        tint: sn.tint,
+        bold: sn.bold,
+        frameId: sn.frameId,
       },
     } satisfies Node<NodeDataPayload>);
     // Throttle to ~5% buckets — same React update-depth guard as serialize.

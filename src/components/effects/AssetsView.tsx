@@ -46,8 +46,8 @@ export function AssetsView({
         minHeight: 0,
         display: "flex",
         flexDirection: "column",
-        background: "#0a0a0a",
-        color: "#e5e7eb",
+        background: "var(--tb-n-0)",
+        color: "var(--tb-n-16)",
         overflowY: "auto",
       }}
     >
@@ -100,12 +100,12 @@ function AssetSection({
             fontSize: 9,
             letterSpacing: 0.5,
             textTransform: "uppercase",
-            color: "#71717a",
+            color: "var(--tb-n-11)",
           }}
         >
           {title}
         </span>
-        <span style={{ fontSize: 9, color: "#3f3f46" }}>{items.length}</span>
+        <span style={{ fontSize: 9, color: "var(--tb-n-9)" }}>{items.length}</span>
         <div style={{ flex: 1 }} />
         {action && (
           <button
@@ -113,9 +113,9 @@ function AssetSection({
             onClick={action.onClick}
             style={{
               fontSize: 10,
-              color: "#d4d4d8",
-              background: "#18181b",
-              border: "1px solid #27272a",
+              color: "var(--tb-n-15)",
+              background: "var(--tb-n-3)",
+              border: "1px solid var(--tb-n-7)",
               borderRadius: 5,
               padding: "3px 8px",
               cursor: "pointer",
@@ -129,7 +129,7 @@ function AssetSection({
         <div
           style={{
             fontSize: 10,
-            color: "#52525b",
+            color: "var(--tb-n-10)",
             padding: "6px 2px",
             lineHeight: 1.5,
           }}
@@ -174,8 +174,8 @@ function AssetCard({ asset }: { asset: AssetItem }) {
         display: "flex",
         flexDirection: "column",
         borderRadius: 5,
-        border: "1px solid #1f1f23",
-        background: "#111114",
+        border: "1px solid var(--tb-n-5)",
+        background: "var(--tb-n-1)",
         overflow: "hidden",
         cursor: "grab",
       }}
@@ -183,11 +183,11 @@ function AssetCard({ asset }: { asset: AssetItem }) {
       <div
         style={{
           aspectRatio: "1",
-          background: "#0a0a0a",
+          background: "var(--tb-n-0)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          color: "#52525b",
+          color: "var(--tb-n-10)",
           fontSize: 9,
           textTransform: "uppercase",
           letterSpacing: 0.5,
@@ -207,7 +207,7 @@ function AssetCard({ asset }: { asset: AssetItem }) {
       <div
         style={{
           fontSize: 9,
-          color: "#a1a1aa",
+          color: "var(--tb-n-13)",
           padding: "3px 5px",
           overflow: "hidden",
           textOverflow: "ellipsis",

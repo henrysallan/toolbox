@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import AccountMenu from "./AccountMenu";
 import ChangelogPopover from "./VersionMenu";
@@ -16,6 +16,13 @@ import MessageConsole, {
   type ProgressStatus,
 } from "./MessageConsole";
 import { useDesktopUpdates } from "./useDesktopUpdates";
+import type { RecentProjectEntry } from "@/lib/recent-projects";
+import type { LayoutPresetEntry } from "./layout/presets";
+import {
+  isShortcutFrozen,
+  setShortcutFrozen,
+  subscribeShortcutFreeze,
+} from "@/lib/shortcut-freeze";
 
 type MenuItem =
   | {
@@ -25,7 +32,10 @@ type MenuItem =
       onClick?: () => void;
       disabled?: boolean;
     }
-  | { kind: "divider" };
+  | { kind: "divider" }
+  // One level of nesting: a row with a ▸ that opens a flyout of plain
+  // items/dividers to its right on hover (File → Open Recent).
+  | { kind: "submenu"; label: string; items: MenuItem[] };
 
 interface MenuDef {
   id: string;
@@ -57,6 +67,11 @@ export interface MenuBarProps {
   onOpenAssets: () => void;
   // Opens the OS file picker to load a local .toolbox file ("Load…").
   onOpenProjectFile: () => void;
+  // File → Open Recent (spec 073026_open-recent.md): the merged
+  // recency-sorted list (cloud + local), the open fan-out, and Clear Menu.
+  recentProjects: RecentProjectEntry[];
+  onOpenRecent: (entry: RecentProjectEntry) => void;
+  onClearRecents: () => void;
   // Downloads the current project as a self-contained .toolbox file.
   onSaveToFile: () => void;
   // Project resolution — surfaced in the file-name dropdown so it can be
@@ -111,13 +126,17 @@ export interface MenuBarProps {
   // each viewport from a different terminal node.
   viewportSplit: boolean;
   onToggleViewportSplit: () => void;
-  // Layout mode toggle. "default" is the current layout (canvas
-  // center, params right, optional dock). "timeline" is an
-  // After-Effects-style layout: canvas top-right, tabbed
-  // params/node-editor on the left, tracks editor pinned to the
-  // bottom of the page with the timeline below it.
-  timelineLayout: boolean;
-  onToggleTimelineLayout: () => void;
+  // Layout presets for the tiled window system
+  // (072726_window-tiling.md), rendered as the Window → Layouts
+  // flyout. The list is built-ins ("Default" = canvas left, nodes over
+  // params on the right; "Timeline" = the AE-style arrangement)
+  // followed by the user's saved presets — applying one replaces the
+  // whole layout tree.
+  layoutPresets: LayoutPresetEntry[];
+  onApplyLayoutPreset: (id: string) => void;
+  // Opens the name modal that saves the CURRENT arrangement as a new
+  // preset on the user's profile.
+  onNewLayoutPreset: () => void;
   // User-wide preferences (OpenAI key, etc.). Lives under the
   // Toolbox menu — application-scoped, distinct from the per-project
   // settings that live in Project Settings.
@@ -155,6 +174,9 @@ export default function MenuBar({
   onOpenLoad,
   onOpenAssets,
   onOpenProjectFile,
+  recentProjects,
+  onOpenRecent,
+  onClearRecents,
   onSaveToFile,
   canvasRes,
   onCanvasResChange,
@@ -179,8 +201,9 @@ export default function MenuBar({
   onToggleShowNodeTimings,
   viewportSplit,
   onToggleViewportSplit,
-  timelineLayout,
-  onToggleTimelineLayout,
+  layoutPresets,
+  onApplyLayoutPreset,
+  onNewLayoutPreset,
   onOpenUserPreferences,
   mcpStatus,
   onToggleMcpBridge,
@@ -359,6 +382,28 @@ export default function MenuBar({
           onClick: onOpenLoad,
         },
         {
+          // Recently-opened cloud + local projects, newest first
+          // (073026_open-recent.md). The dim right-side hint reuses the
+          // shortcut slot to say where each entry lives.
+          kind: "submenu",
+          label: "Open Recent",
+          items:
+            recentProjects.length === 0
+              ? [{ kind: "item", label: "No Recent Projects", disabled: true }]
+              : [
+                  ...recentProjects.slice(0, 10).map(
+                    (r): MenuItem => ({
+                      kind: "item",
+                      label: r.name,
+                      shortcut: r.kind === "cloud" ? "cloud" : "local",
+                      onClick: () => onOpenRecent(r),
+                    })
+                  ),
+                  { kind: "divider" },
+                  { kind: "item", label: "Clear Menu", onClick: onClearRecents },
+                ],
+        },
+        {
           // Opens the Assets view in the parameter panel — drag assets from
           // there into the node editor.
           kind: "item",
@@ -436,9 +481,31 @@ export default function MenuBar({
           onClick: onToggleViewportSplit,
         },
         {
-          kind: "item",
-          label: timelineLayout ? "Exit Timeline Layout" : "Timeline",
-          onClick: onToggleTimelineLayout,
+          // Built-in presets, then the user's saved ones, then the
+          // "+ New Preset…" row that captures the live arrangement.
+          kind: "submenu",
+          label: "Layouts",
+          items: (() => {
+            const builtins = layoutPresets.filter((p) => p.builtin);
+            const saved = layoutPresets.filter((p) => !p.builtin);
+            const row = (p: LayoutPresetEntry): MenuItem => ({
+              kind: "item",
+              label: p.name,
+              onClick: () => onApplyLayoutPreset(p.id),
+            });
+            return [
+              ...builtins.map(row),
+              ...(saved.length > 0
+                ? [{ kind: "divider" } as MenuItem, ...saved.map(row)]
+                : []),
+              { kind: "divider" },
+              {
+                kind: "item",
+                label: "+ New Preset…",
+                onClick: onNewLayoutPreset,
+              },
+            ];
+          })(),
         },
         {
           kind: "item",
@@ -481,15 +548,15 @@ export default function MenuBar({
         // so the centered items aren't tight against the window's top edge.
         height: BAR_HEIGHT + (frameless ? 10 : 0),
         flexShrink: 0,
-        background: "#000",
+        background: "var(--tb-frame)",
         display: "flex",
         // Center every item vertically so the traffic lights / avatar /
         // undo-redo line up with the menu text (they don't all self-center
         // under `stretch`). Web keeps its existing stretch behavior.
         alignItems: frameless ? "center" : "stretch",
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
         position: "relative",
         zIndex: 1000,
         userSelect: "none",
@@ -508,7 +575,7 @@ export default function MenuBar({
           top: hl.top + 2,
           width: hl.width,
           height: Math.max(0, hl.height - 4),
-          background: "#2a2a2e",
+          background: "var(--tb-n-8)",
           borderRadius: 4,
           opacity: hl.visible ? 1 : 0,
           transition:
@@ -533,10 +600,10 @@ export default function MenuBar({
         // Labels sit dim until hovered/opened, so the menu bar reads
         // quietly until the user reaches for it. The brand stays bright.
         const labelColor = isBrand
-          ? "#e5e7eb"
+          ? "var(--tb-n-16)"
           : open || hoverId === m.id
-            ? "#e5e7eb"
-            : "#5f5f66";
+            ? "var(--tb-n-16)"
+            : "var(--tb-n-10)";
         return (
           <div
             key={m.id}
@@ -624,6 +691,7 @@ export default function MenuBar({
           transform: "translateX(-50%)",
           display: "flex",
           alignItems: "center",
+          gap: 6,
           pointerEvents: "auto",
           WebkitAppRegion: frameless ? "no-drag" : undefined,
         }}
@@ -645,6 +713,7 @@ export default function MenuBar({
           onSaveAsNamed={onSaveAsNamed}
           findConflict={findNameConflict}
         />
+        {process.env.NODE_ENV === "development" && <FreezePill />}
       </div>
       {/* Status readout + console (left of the FPS counter / account
           button) — the flashToast messages and save/load progress that
@@ -679,35 +748,112 @@ export default function MenuBar({
 function MenuDropdown({
   items,
   onClose,
+  flyout,
 }: {
   items: MenuItem[];
   onClose: () => void;
+  // Submenu positioning: open to the RIGHT of the parent row instead of
+  // below the menu-bar button.
+  flyout?: boolean;
 }) {
+  // Which submenu row (by index) currently shows its flyout. Hovering any
+  // plain row closes it; hovering the submenu row opens it.
+  const [openSub, setOpenSub] = useState<number | null>(null);
   return (
     <div
       style={{
         position: "absolute",
-        top: "100%",
-        left: 0,
+        ...(flyout
+          ? // -5 lines the flyout's first row up with the parent row
+            // (4px padding + 1px border).
+            { top: -5, left: "100%" }
+          : { top: "100%", left: 0, marginTop: 2 }),
         minWidth: 200,
-        background: "#18181b",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 4,
         boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
         padding: 4,
-        marginTop: 2,
       }}
     >
       {items.map((it, i) =>
         it.kind === "divider" ? (
           <div
             key={i}
-            style={{ height: 1, background: "#27272a", margin: "4px 0" }}
+            style={{ height: 1, background: "var(--tb-n-7)", margin: "4px 0" }}
+          />
+        ) : it.kind === "submenu" ? (
+          <SubmenuRow
+            key={i}
+            item={it}
+            open={openSub === i}
+            onOpen={() => setOpenSub(i)}
+            onClose={onClose}
           />
         ) : (
-          <MenuRow key={i} item={it} onClose={onClose} />
+          <MenuRow
+            key={i}
+            item={it}
+            onClose={onClose}
+            onHover={() => setOpenSub(null)}
+          />
         )
       )}
+    </div>
+  );
+}
+
+// A menu row that opens a nested flyout of items to its right on hover.
+// The flyout lives inside this row's relative wrapper, so crossing the
+// border between row and flyout never leaves the hover tree — it only
+// closes when a SIBLING row is hovered (native menu behavior).
+function SubmenuRow({
+  item,
+  open,
+  onOpen,
+  onClose,
+}: {
+  item: Extract<MenuItem, { kind: "submenu" }>;
+  open: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => {
+        setHover(true);
+        onOpen();
+      }}
+      onMouseLeave={() => setHover(false)}
+    >
+      <button
+        // Click also opens (touch users have no hover).
+        onClick={onOpen}
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 24,
+          width: "100%",
+          padding: "3px 10px",
+          background: hover || open ? "var(--tb-a-blue-900)" : "transparent",
+          border: "none",
+          color: "var(--tb-n-16)",
+          textAlign: "left",
+          fontFamily: "inherit",
+          fontSize: "inherit",
+          cursor: "default",
+          borderRadius: 3,
+        }}
+      >
+        <span>{item.label}</span>
+        <span style={{ color: hover || open ? "var(--tb-n-15)" : "var(--tb-n-11)", fontSize: 10 }}>
+          ▸
+        </span>
+      </button>
+      {open && <MenuDropdown items={item.items} onClose={onClose} flyout />}
     </div>
   );
 }
@@ -715,9 +861,12 @@ function MenuDropdown({
 function MenuRow({
   item,
   onClose,
+  onHover,
 }: {
   item: Extract<MenuItem, { kind: "item" }>;
   onClose: () => void;
+  // Lets the parent dropdown close an open sibling submenu flyout.
+  onHover?: () => void;
 }) {
   const [hover, setHover] = useState(false);
   const disabled = !!item.disabled;
@@ -729,7 +878,10 @@ function MenuRow({
         item.onClick?.();
         onClose();
       }}
-      onMouseEnter={() => setHover(true)}
+      onMouseEnter={() => {
+        setHover(true);
+        onHover?.();
+      }}
       onMouseLeave={() => setHover(false)}
       style={{
         display: "flex",
@@ -738,9 +890,9 @@ function MenuRow({
         gap: 24,
         width: "100%",
         padding: "3px 10px",
-        background: !disabled && hover ? "#1e3a8a" : "transparent",
+        background: !disabled && hover ? "var(--tb-a-blue-900)" : "transparent",
         border: "none",
-        color: disabled ? "#52525b" : "#e5e7eb",
+        color: disabled ? "var(--tb-n-10)" : "var(--tb-n-16)",
         textAlign: "left",
         fontFamily: "inherit",
         fontSize: "inherit",
@@ -748,11 +900,22 @@ function MenuRow({
         borderRadius: 3,
       }}
     >
-      <span>{item.label}</span>
+      <span
+        style={{
+          // Recent-project names can be arbitrarily long — ellipsize
+          // rather than letting one entry stretch the whole menu.
+          maxWidth: 240,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {item.label}
+      </span>
       {item.shortcut && (
         <span
           style={{
-            color: disabled ? "#3f3f46" : hover ? "#d4d4d8" : "#71717a",
+            color: disabled ? "var(--tb-n-9)" : hover ? "var(--tb-n-15)" : "var(--tb-n-11)",
             fontSize: 10,
           }}
         >
@@ -769,6 +932,52 @@ function MenuRow({
 // stalls, or shaders take long to compile, the dt between rAF
 // callbacks grows and the number drops here. Smoothing avoids the
 // noisy single-frame spikes that hide the average performance.
+// Dev-only pill next to the file name: toggles the global shortcut freeze
+// (see lib/shortcut-freeze.ts). Never rendered in production builds — the
+// NODE_ENV check at the call site compiles it out.
+function FreezePill() {
+  const frozen = useSyncExternalStore(
+    subscribeShortcutFreeze,
+    isShortcutFrozen,
+    () => false,
+  );
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={() => setShortcutFrozen(!frozen)}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={
+        frozen
+          ? "Shortcuts frozen — app keyboard shortcuts are suppressed (typing still works). Click to unfreeze."
+          : "Dev: freeze app keyboard shortcuts (typing still works)"
+      }
+      style={{
+        display: "flex",
+        alignItems: "center",
+        height: 16,
+        padding: "0 10px",
+        background: frozen ? "var(--tb-t-sky-d-0)" : hover ? "var(--tb-n-6)" : "var(--tb-n-4)",
+        border: `1px solid ${
+          frozen ? "#155e75" : hover ? "var(--tb-n-9)" : "var(--tb-n-7)"
+        }`,
+        borderRadius: 10,
+        color: frozen ? "var(--tb-t-cyan-l-4)" : "var(--tb-n-13)",
+        transition: "background 90ms, border-color 90ms, color 90ms",
+        fontFamily: "inherit",
+        fontSize: 10,
+        cursor: "default",
+        whiteSpace: "nowrap",
+        userSelect: "none",
+      }}
+    >
+      Freeze
+    </button>
+  );
+}
+
 function FpsCounter() {
   const [fps, setFps] = useState(60);
   useEffect(() => {
@@ -800,7 +1009,7 @@ function FpsCounter() {
   // Color tiers tuned to common refresh rates: 55+ green, 30–55
   // yellow, below 30 red.
   const color =
-    fps >= 55 ? "#34d399" : fps >= 30 ? "#facc15" : "#ef4444";
+    fps >= 55 ? "var(--tb-a-emerald-400)" : fps >= 30 ? "var(--tb-a-yellow-400)" : "var(--tb-a-red-500)";
   return (
     <div
       title="Frame rate (rAF) — overall page render rate"

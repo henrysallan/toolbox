@@ -26,13 +26,16 @@ import {
   type GroupSocketSpec,
 } from "@/engine/groups";
 import {
+  FRAME_TYPE,
   paramSocketType,
   parseTargetHandleKind,
   REROUTE_TYPE,
 } from "@/engine/graph-helpers";
-import type { ParamType, SocketType } from "@/engine/types";
+import { EXPORT_PARAMS } from "@/nodes/output/output";
+import type { ParamType, SocketType, SplineSubpath } from "@/engine/types";
 import type { ClipBlock } from "@/engine/clips";
 import {
+  FRAME_XY_PROPS,
   newNodeId,
   newCompositionId,
   type NodeDataPayload,
@@ -101,9 +104,17 @@ export function makeInstanceNode(
   const resolved = withMaskInput(def.resolveInputs?.(params) ?? def.inputs, def);
   return {
     id: newNodeId(type),
-    // Reroutes render through the dedicated dot component (RerouteNode);
-    // every other node uses the standard EffectNode chrome.
-    type: type === REROUTE_TYPE ? "reroute" : "effect",
+    // Reroutes render through the dedicated dot component (RerouteNode),
+    // frame zones through FrameNode (click-through wrapper, edge-band drag
+    // handles — FRAME_XY_PROPS); every other node uses the standard
+    // EffectNode chrome.
+    type:
+      type === REROUTE_TYPE
+        ? "reroute"
+        : type === FRAME_TYPE
+          ? "frame"
+          : "effect",
+    ...(type === FRAME_TYPE ? FRAME_XY_PROPS : {}),
     position,
     data: {
       defType: type,
@@ -153,6 +164,143 @@ export function cloneNode(
       controlParams: n.data.controlParams ? [...n.data.controlParams] : [],
     },
   };
+}
+
+// Styling params shared by every spline-raster-family source — the
+// SPLINE_RASTER_PARAMS set in spline-raster-aux.ts (Circle, Rectangle,
+// Star, … and Spline Draw itself all declare these names) plus the
+// universal opacity. Copied verbatim by makeSplineEditable so the baked
+// node keeps the exact look of the source it replaces.
+const RASTER_STYLE_PARAMS = [
+  "opacity",
+  "stroke_enabled",
+  "stroke_thickness",
+  "stroke_units",
+  "stroke_color",
+  "fill_enabled",
+  "fill_color",
+  "fill_fit",
+];
+
+// Right-click → "Make Editable" on a node with a spline-typed output.
+// Spawns a Spline Draw node seeded with the BAKED subpaths (the node's
+// evaluated output at the current playhead, handed in by EffectsApp from
+// the eval cache — trim windows, corner fillets, and any animated
+// procedural behavior are already resolved into that geometry), bypasses
+// the original as a revert point, and moves the out-wires of the baked
+// spline handle onto the new node so downstream keeps rendering. For
+// raster-family sources the image out-wires and the fill/mask in-wires
+// migrate too (same sockets, same copied styling ⇒ identical raster);
+// trim params deliberately do NOT copy — the baked geometry is post-trim
+// and copying them would trim twice. The new node returns selected and
+// viewport-active (exclusive, same rule as the header Active toggle) so
+// the pen overlay engages immediately.
+export function makeSplineEditable(
+  nodes: GraphNode[],
+  edges: Edge[],
+  nodeId: string,
+  // The spline-typed output handle that was baked ("out:primary" or
+  // "out:aux:<name>") — only ITS consumers are rewired.
+  splineHandle: string,
+  subpaths: SplineSubpath[]
+): { nodes: GraphNode[]; edges: Edge[]; newNodeId: string } | null {
+  const src = nodes.find((n) => n.id === nodeId);
+  if (!src) return null;
+  const splineHandles = new Set<string>();
+  if (src.data.primaryOutput === "spline") splineHandles.add("out:primary");
+  for (const a of src.data.auxOutputs) {
+    if (a.type === "spline" && !a.disabled) splineHandles.add(`out:aux:${a.name}`);
+  }
+  if (!splineHandles.has(splineHandle)) return null;
+
+  const draw = makeInstanceNode("spline-draw", {
+    x: src.position.x + 48,
+    y: src.position.y + 48,
+  });
+  draw.data.parentId = src.data.parentId;
+  draw.data.compositionId = src.data.compositionId;
+  draw.selected = true;
+  draw.data.active = true;
+
+  // Deep-copy the baked geometry — the caller hands us the runtime
+  // SplineValue's subpaths straight out of the eval cache, and the spline
+  // overlay mutates the param in place; sharing structure would corrupt
+  // cached outputs. cornerRadius tags are dropped: fillets are already
+  // resolved into real anchors in emitted geometry, and a surviving tag
+  // would fillet a second time inside Spline Draw's compute.
+  draw.data.params.spline = {
+    subpaths: subpaths.map((sp) => ({
+      ...sp,
+      anchors: sp.anchors.map(({ cornerRadius: _cr, ...a }) => ({
+        ...a,
+        pos: [...a.pos] as [number, number],
+        inHandle: a.inHandle
+          ? ([...a.inHandle] as [number, number])
+          : undefined,
+        outHandle: a.outHandle
+          ? ([...a.outHandle] as [number, number])
+          : undefined,
+      })),
+    })),
+  };
+
+  const rasterFamily =
+    "stroke_enabled" in src.data.params && "fill_enabled" in src.data.params;
+  if (rasterFamily) {
+    for (const k of RASTER_STYLE_PARAMS) {
+      if (k in src.data.params) draw.data.params[k] = src.data.params[k];
+    }
+    // The copied stroke/fill flags may differ from Spline Draw's defaults —
+    // re-resolve the aux sockets (the image aux only exists when one is on).
+    const def = getNodeDef("spline-draw");
+    if (def) {
+      draw.data.auxOutputs = (
+        def.resolveAuxOutputs?.(draw.data.params) ?? def.auxOutputs
+      ).map((a) => ({
+        name: a.name,
+        label: a.label,
+        type: a.type,
+        disabled: a.disabled,
+      }));
+    }
+  }
+
+  const outEdges = edges.map((e) => {
+    if (e.source === nodeId) {
+      const h = e.sourceHandle ?? "out:primary";
+      if (h === splineHandle) {
+        return { ...e, source: draw.id, sourceHandle: "out:primary" };
+      }
+      if (rasterFamily && h === "out:aux:image") {
+        return { ...e, source: draw.id, sourceHandle: "out:aux:image" };
+      }
+    }
+    if (
+      rasterFamily &&
+      e.target === nodeId &&
+      (e.targetHandle === "in:fill" || e.targetHandle === "in:mask")
+    ) {
+      return { ...e, target: draw.id };
+    }
+    return e;
+  });
+
+  const outNodes: GraphNode[] = nodes.map((n) => {
+    if (n.id === nodeId) {
+      // Bypass rather than delete — the procedural source stays in the
+      // graph as a revert point (un-bypass + rewire to go back).
+      return {
+        ...n,
+        selected: false,
+        data: { ...n.data, bypassed: true, active: false },
+      };
+    }
+    return n.selected || n.data.active
+      ? { ...n, selected: false, data: { ...n.data, active: false } }
+      : n;
+  });
+  outNodes.push(draw);
+  return { nodes: outNodes, edges: outEdges, newNodeId: draw.id };
 }
 
 // Insert reroute nodes onto existing edges — the Shift-drag / double-click-a-
@@ -1431,12 +1579,13 @@ export function makeLayerNodes(
   // A Layer Output carries its own independent export config (filename,
   // format, codec, frame range, …) so a layer can be rendered in a
   // different form than the composition. Seed the same defaults the
-  // composition Output ships with, read from its registered def — the
-  // canonical EXPORT_PARAMS list (see 071526_layer-output-export-settings.md).
+  // composition Output ships with — the canonical EXPORT_PARAMS list
+  // (see 071526_layer-output-export-settings.md). Read from that list
+  // rather than the whole Output def, whose params also carry the
+  // Output-only SVG styling rows (there's no spline tap on a Layer Output).
   // `sockets`/`fixed` come last so a future export param can't shadow them.
   const exportDefaults: Record<string, unknown> = {};
-  for (const p of getNodeDef("output")?.params ?? [])
-    exportDefaults[p.name] = p.default;
+  for (const p of EXPORT_PARAMS) exportDefaults[p.name] = p.default;
   groupOutput.data.params = {
     ...exportDefaults,
     sockets: [...LAYER_OUTPUT_SOCKETS],
@@ -1459,15 +1608,26 @@ export function makeLayerNodes(
 export function createLayer(
   nodes: GraphNode[],
   edges: Edge[],
-  opts?: { name?: string; content?: string }
+  opts?: { name?: string; content?: string },
+  // Composition to add the layer into. Scopes the target Output (and the new
+  // nodes' tag + the "Layer N" count) so "Add layer" in a multi-composition
+  // project can't wire into ANOTHER composition's Output. Omit for a
+  // single-composition / unscoped caller — old behavior (first root Output).
+  compositionId?: string
 ): { nodes: GraphNode[]; edges: Edge[]; layerId: string } {
   const rootLayerCount = nodes.filter(
-    (n) => n.data.defType === LAYER_TYPE && !n.data.parentId
+    (n) =>
+      n.data.defType === LAYER_TYPE &&
+      !n.data.parentId &&
+      belongsToComposition(n, compositionId)
   ).length;
   const name = opts?.name ?? `Layer ${rootLayerCount + 1}`;
 
   const output = nodes.find(
-    (n) => n.data.defType === "output" && !n.data.parentId
+    (n) =>
+      n.data.defType === "output" &&
+      !n.data.parentId &&
+      belongsToComposition(n, compositionId)
   );
   const intoOutput = output
     ? edges.find(
@@ -1507,6 +1667,16 @@ export function createLayer(
     });
   }
 
+  // Tag the new boundary nodes into the target composition — an untagged
+  // node (undefined compositionId) counts as belonging to EVERY composition
+  // (belongsToComposition), so without this a multi-comp "Add layer" would
+  // surface the new layer in every composition's chain.
+  if (compositionId) {
+    layer.data.compositionId = compositionId;
+    groupInput.data.compositionId = compositionId;
+    groupOutput.data.compositionId = compositionId;
+  }
+
   // Optional interior source node, wired to the layer's content output.
   const interior: GraphNode[] = [];
   if (opts?.content) {
@@ -1515,6 +1685,7 @@ export function createLayer(
       y: position.y,
     });
     src.data.parentId = layer.id;
+    if (compositionId) src.data.compositionId = compositionId;
     interior.push(src);
     newEdges.push({
       id: newEdgeId(),
@@ -1801,11 +1972,18 @@ export function getLayerChain(
 export function reorderLayers(
   nodes: GraphNode[],
   edges: Edge[],
-  orderedBottomToTop: string[]
+  orderedBottomToTop: string[],
+  // Scope the target Output to this composition (see createLayer) so a
+  // reorder in a multi-composition project can't rewire another
+  // composition's Output. Omit for single-composition / unscoped callers.
+  compositionId?: string
 ): { nodes: GraphNode[]; edges: Edge[] } {
   const ids = new Set(orderedBottomToTop);
   const output = nodes.find(
-    (n) => n.data.defType === "output" && !n.data.parentId
+    (n) =>
+      n.data.defType === "output" &&
+      !n.data.parentId &&
+      belongsToComposition(n, compositionId)
   );
   const kept = edges.filter((e) => {
     if (e.targetHandle === "in:stack" && ids.has(e.target)) return false;
@@ -2006,6 +2184,13 @@ export function cloneSubgraph(
     } else {
       cloned.selected = true;
       if (retarget) cloned.data.parentId = retarget.parentId;
+    }
+    // Frame membership travels like nesting: a member cloned together with
+    // its frame points at the cloned frame; a member cloned alone keeps
+    // pointing at the original (the half-a-zone reading above).
+    const frame = cloned.data.frameId;
+    if (frame && idMap.has(frame)) {
+      cloned.data.frameId = idMap.get(frame);
     }
   }
   const edges = internalEdges.map((e) => ({

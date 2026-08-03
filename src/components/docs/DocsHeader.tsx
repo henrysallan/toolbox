@@ -14,15 +14,15 @@ export default function DocsHeader() {
       style={{
         height: 22,
         flexShrink: 0,
-        background: "#111113",
-        borderBottom: "1px solid #27272a",
+        background: "var(--tb-n-1)",
+        borderBottom: "1px solid var(--tb-n-7)",
         display: "flex",
         alignItems: "stretch",
         // Header explicitly stays monospace so it reads as editor
         // chrome even though the article body uses Inter.
         fontFamily: "ui-monospace, monospace",
         fontSize: 11,
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
         userSelect: "none",
       }}
     >
@@ -32,7 +32,7 @@ export default function DocsHeader() {
           display: "inline-flex",
           alignItems: "center",
           padding: "0 10px",
-          color: "#e5e7eb",
+          color: "var(--tb-n-16)",
           textDecoration: "none",
           fontWeight: 600,
         }}
@@ -45,7 +45,7 @@ export default function DocsHeader() {
           display: "inline-flex",
           alignItems: "center",
           padding: "0 10px",
-          color: "#71717a",
+          color: "var(--tb-n-11)",
         }}
       >
         / Docs
@@ -56,7 +56,7 @@ export default function DocsHeader() {
           display: "inline-flex",
           alignItems: "center",
           padding: "0 10px",
-          color: "#71717a",
+          color: "var(--tb-n-11)",
           fontSize: 10,
           letterSpacing: 0.3,
         }}

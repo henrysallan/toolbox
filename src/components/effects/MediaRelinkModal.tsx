@@ -31,10 +31,10 @@ function formatSize(bytes?: number): string | null {
 function StatusBadge({ status }: { status: RelinkStatus }) {
   const cfg =
     status === "ok"
-      ? { glyph: "✓", label: "relinked", color: "#4ade80" }
+      ? { glyph: "✓", label: "relinked", color: "var(--tb-a-green-400)" }
       : status === "failed"
-        ? { glyph: "✕", label: "not found", color: "#f87171" }
-        : { glyph: "•", label: "missing", color: "#facc15" };
+        ? { glyph: "✕", label: "not found", color: "var(--tb-a-red-400)" }
+        : { glyph: "•", label: "missing", color: "var(--tb-a-yellow-400)" };
   return (
     <span
       style={{
@@ -98,20 +98,20 @@ export default function MediaRelinkModal({
         style={{
           minWidth: 420,
           maxWidth: 520,
-          background: "#18181b",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-3)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 6,
           padding: 16,
-          fontFamily: "ui-monospace, monospace",
+          fontFamily: "var(--ui-font)",
           fontSize: 12,
-          color: "#e5e7eb",
+          color: "var(--tb-n-16)",
           boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
         }}
       >
         <div
           style={{
             marginBottom: 10,
-            color: "#a1a1aa",
+            color: "var(--tb-n-13)",
             fontSize: 10,
             textTransform: "uppercase",
             letterSpacing: 1,
@@ -126,7 +126,7 @@ export default function MediaRelinkModal({
                 unresolved === 1 ? "s" : ""
               } relinking`}
         </div>
-        <div style={{ color: "#a1a1aa", lineHeight: 1.5, marginBottom: 12 }}>
+        <div style={{ color: "var(--tb-n-13)", lineHeight: 1.5, marginBottom: 12 }}>
           Media files aren&apos;t stored with the project. Relink reads them
           from disk — previously granted files reconnect automatically, the
           rest match by filename from one picker.
@@ -152,14 +152,14 @@ export default function MediaRelinkModal({
                   alignItems: "center",
                   gap: 8,
                   padding: "6px 8px",
-                  background: "#1f1f23",
-                  border: "1px solid #27272a",
+                  background: "var(--tb-n-5)",
+                  border: "1px solid var(--tb-n-7)",
                   borderRadius: 4,
                 }}
               >
                 <span
                   style={{
-                    color: "#71717a",
+                    color: "var(--tb-n-11)",
                     fontSize: 9,
                     textTransform: "uppercase",
                     letterSpacing: 0.5,
@@ -177,7 +177,7 @@ export default function MediaRelinkModal({
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
-                    color: it.status === "ok" ? "#d4d4d8" : "#e5e7eb",
+                    color: it.status === "ok" ? "var(--tb-n-15)" : "var(--tb-n-16)",
                   }}
                 >
                   {it.media.envelope.filename}
@@ -185,7 +185,7 @@ export default function MediaRelinkModal({
                 {size && (
                   <span
                     style={{
-                      color: "#52525b",
+                      color: "var(--tb-n-10)",
                       fontSize: 10,
                       flexShrink: 0,
                     }}
@@ -205,8 +205,8 @@ export default function MediaRelinkModal({
             style={{
               padding: "4px 10px",
               background: "transparent",
-              border: "1px solid #3f3f46",
-              color: "#e5e7eb",
+              border: "1px solid var(--tb-n-9)",
+              color: "var(--tb-n-16)",
               fontFamily: "inherit",
               fontSize: 11,
               borderRadius: 3,
@@ -221,9 +221,9 @@ export default function MediaRelinkModal({
               disabled={busy}
               style={{
                 padding: "4px 14px",
-                background: busy ? "#1e3a8a80" : "#1e3a8a",
-                border: "1px solid #1d4ed8",
-                color: "#bfdbfe",
+                background: busy ? "#1e3a8a80" : "var(--tb-a-blue-900)",
+                border: "1px solid var(--tb-a-blue-700)",
+                color: "var(--tb-a-blue-200)",
                 fontFamily: "inherit",
                 fontSize: 11,
                 borderRadius: 3,

@@ -20,7 +20,7 @@ export default function TrackVisibilityEye({
   onClick,
   title,
 }: Props) {
-  const color = !enabled ? "#52525b" : visible ? "#d4d4d8" : "#52525b";
+  const color = !enabled ? "var(--tb-n-10)" : visible ? "var(--tb-n-15)" : "var(--tb-n-10)";
   return (
     <button
       type="button"

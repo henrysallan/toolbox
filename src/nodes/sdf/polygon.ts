@@ -6,6 +6,7 @@ import type {
   ScalarFieldValue,
   SdfValue,
 } from "@/engine/types";
+import { SDF_PAINT_PARAMS, paintSdf } from "@/engine/sdf-material";
 
 // SDF primitive — a regular N-gon centered at (x, y) with circumradius
 // r. `sides` ≥ 3; non-integer values produce smooth in-between shapes.
@@ -106,6 +107,7 @@ export const sdfPolygonNode: NodeDefinition = {
       type: "boolean",
       default: true,
     },
+    ...SDF_PAINT_PARAMS,
   ],
   primaryOutput: "sdf",
   auxOutputs: [],
@@ -126,15 +128,18 @@ export const sdfPolygonNode: NodeDefinition = {
     );
     const out: SdfValue = {
       kind: "sdf",
-      root: {
-        kind: "polygon",
-        position: rootOfPosition(inputs.position),
-        cx,
-        cy,
-        r,
-        sides,
-        quantizeSides: (params.quantize_sides as boolean) ?? true,
-      },
+      root: paintSdf(
+        {
+          kind: "polygon",
+          position: rootOfPosition(inputs.position),
+          cx,
+          cy,
+          r,
+          sides,
+          quantizeSides: (params.quantize_sides as boolean) ?? true,
+        },
+        params
+      ),
     };
     return { primary: out };
   },

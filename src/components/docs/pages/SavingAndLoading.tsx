@@ -56,15 +56,15 @@ export default function SavingAndLoadingPage() {
       </P>
       <UL>
         <LI>
-          <strong style={{ color: "#22c55e" }}>Green</strong> — every
+          <strong style={{ color: "var(--tb-a-green-500)" }}>Green</strong> — every
           change is saved.
         </LI>
         <LI>
-          <strong style={{ color: "#eab308" }}>Yellow</strong> — you
+          <strong style={{ color: "var(--tb-a-yellow-500)" }}>Yellow</strong> — you
           have unsaved changes since the last save.
         </LI>
         <LI>
-          <strong style={{ color: "#ef4444" }}>Red</strong> — the
+          <strong style={{ color: "var(--tb-a-red-500)" }}>Red</strong> — the
           last save attempt failed. Check your network, then retry.
           Making another edit drops the red state back to yellow so
           you can see the work is still dirty.
@@ -147,7 +147,7 @@ export default function SavingAndLoadingPage() {
         Next:{" "}
         <Link
           href="/docs/projects/public-private"
-          style={{ color: "#93c5fd", textDecoration: "underline" }}
+          style={{ color: "var(--tb-a-blue-300)", textDecoration: "underline" }}
         >
           Public vs. private projects
         </Link>{" "}

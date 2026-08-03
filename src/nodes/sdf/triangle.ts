@@ -4,6 +4,7 @@ import type {
   PositionValue,
   SdfValue,
 } from "@/engine/types";
+import { SDF_PAINT_PARAMS, paintSdf } from "@/engine/sdf-material";
 
 // SDF primitive — a general triangle through three corners. For a
 // regular triangle use SDF Polygon with sides=3.
@@ -88,6 +89,7 @@ export const sdfTriangleNode: NodeDefinition = {
       step: 0.001,
       default: 0.75,
     },
+    ...SDF_PAINT_PARAMS,
   ],
   primaryOutput: "sdf",
   auxOutputs: [],
@@ -109,16 +111,19 @@ export const sdfTriangleNode: NodeDefinition = {
       c?.kind === "vec2" ? c.value[1] : ((params.cy as number) ?? 0.75);
     const out: SdfValue = {
       kind: "sdf",
-      root: {
-        kind: "triangle",
-        position: rootOfPosition(inputs.position),
-        ax,
-        ay,
-        bx,
-        by,
-        cx,
-        cy,
-      },
+      root: paintSdf(
+        {
+          kind: "triangle",
+          position: rootOfPosition(inputs.position),
+          ax,
+          ay,
+          bx,
+          by,
+          cx,
+          cy,
+        },
+        params
+      ),
     };
     return { primary: out };
   },

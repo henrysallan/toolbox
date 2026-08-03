@@ -118,7 +118,9 @@ export interface SampleResult {
 // a straight segment, whose derivative is nonzero for 0<t<1), then a small
 // finite-difference chord (curved-but-degenerate), then the whole-segment
 // endpoint chord. Returns [0,0] only for a genuinely zero-length curve.
-function curveTangent(curve: Bezier, t: number): [number, number] {
+// (Exported for spline-width.ts — the width-envelope sampler needs the same
+// degenerate-robust tangent.)
+export function curveTangent(curve: Bezier, t: number): [number, number] {
   const norm = (dx: number, dy: number): [number, number] | null => {
     const m = Math.hypot(dx, dy);
     return m > 1e-9 ? [dx / m, dy / m] : null;
@@ -780,6 +782,66 @@ export function catmullRomSubpath(points: V2[], closed: boolean): SplineSubpath 
   return { anchors: autoSmoothHandles(corner, closed), closed };
 }
 
+// Ramer–Douglas–Peucker polyline simplification. Keeps the subset of
+// points whose removal would deviate the chain by more than `tol`
+// (same units as the points — callers pick the space; pixel space gives
+// an isotropic tolerance on non-square canvases). Straight runs collapse
+// to single segments while curves keep ≤ tol fidelity — the decimator
+// for dense marching-squares contours (text outline), whose ~1-cell
+// edges otherwise cap Round Corners' fillets into sub-pixel no-ops.
+// `closed` loops are handled by appending the seam point and letting the
+// degenerate first chord (zero length → radial distance) pick the far
+// side of the loop as the first split. A closed loop that simplifies
+// below 3 points (everything within tol of the seam) returns just the
+// seam — callers drop those micro-loops.
+export function simplifyPolyline(
+  pts: V2[],
+  tol: number,
+  closed: boolean
+): V2[] {
+  const n = pts.length;
+  if (n <= (closed ? 3 : 2) || !(tol > 0)) return pts.slice();
+  const src = closed ? [...pts, pts[0]] : pts;
+  const m = src.length;
+  const keep = new Uint8Array(m);
+  keep[0] = 1;
+  keep[m - 1] = 1;
+  // Iterative stack — glyph outlines run to thousands of points and
+  // worst-case RDP recursion is O(n) deep.
+  const stack: Array<[number, number]> = [[0, m - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    if (b - a < 2) continue;
+    const ax = src[a][0];
+    const ay = src[a][1];
+    const dx = src[b][0] - ax;
+    const dy = src[b][1] - ay;
+    const len = Math.hypot(dx, dy);
+    let maxD = -1;
+    let maxI = -1;
+    for (let i = a + 1; i < b; i++) {
+      const px = src[i][0] - ax;
+      const py = src[i][1] - ay;
+      const d =
+        len < 1e-12
+          ? Math.hypot(px, py)
+          : Math.abs(px * dy - py * dx) / len;
+      if (d > maxD) {
+        maxD = d;
+        maxI = i;
+      }
+    }
+    if (maxD > tol) {
+      keep[maxI] = 1;
+      stack.push([a, maxI], [maxI, b]);
+    }
+  }
+  const out: V2[] = [];
+  const last = closed ? m - 1 : m; // drop the appended seam duplicate
+  for (let i = 0; i < last; i++) if (keep[i]) out.push(src[i]);
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Corner rounding — the Round Corners node (Illustrator "Round Corners").
 // Replace each *corner* anchor (one with no handles — straight edges meet here)
@@ -866,9 +928,40 @@ function roundSubpath(
     const h = R * (4 / 3) * Math.tan(theta / 4);
     const p1 = vAdd(P, vScale(uPrev, d)); // inset toward prev
     const p2 = vAdd(P, vScale(uNext, d)); // inset toward next
-    // Both fillet handles point from the inset anchor back toward the corner P.
-    out.push({ pos: p1, outHandle: vScale(uPrev, -h) });
-    out.push({ pos: p2, inHandle: vScale(uNext, -h) });
+    // Corner style (spec 080226 M1): all three variants share the inset
+    // frame above. Chamfer = straight cut; scoop = the round arc's control
+    // tips reflected across the p1→p2 chord (same tangent circle, bulging
+    // INTO the corner); default = the circular arc.
+    if (cur.cornerStyle === "chamfer") {
+      out.push({ pos: p1 });
+      out.push({ pos: p2 });
+    } else if (cur.cornerStyle === "scoop") {
+      const chord = vSub(p2, p1);
+      const cl = vLen(chord);
+      if (cl < ROUND_EPS) {
+        out.push({ pos: p1 });
+        out.push({ pos: p2 });
+      } else {
+        const c = vScale(chord, 1 / cl);
+        // Reflect q across the chord line (through p1, direction c).
+        const reflect = (q: [number, number]): [number, number] => {
+          const rel = vSub(q, p1);
+          const t = vDot(rel, c);
+          return [
+            p1[0] + 2 * t * c[0] - rel[0],
+            p1[1] + 2 * t * c[1] - rel[1],
+          ];
+        };
+        const tip1 = reflect(vAdd(p1, vScale(uPrev, -h)));
+        const tip2 = reflect(vAdd(p2, vScale(uNext, -h)));
+        out.push({ pos: p1, outHandle: vSub(tip1, p1) });
+        out.push({ pos: p2, inHandle: vSub(tip2, p2) });
+      }
+    } else {
+      // Both fillet handles point from the inset anchor back toward P.
+      out.push({ pos: p1, outHandle: vScale(uPrev, -h) });
+      out.push({ pos: p2, inHandle: vScale(uNext, -h) });
+    }
   }
   return { anchors: out, closed: sub.closed };
 }

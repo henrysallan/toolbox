@@ -29,6 +29,7 @@ import {
   type GlyphFields,
   type TextAnimators,
 } from "@/engine/text-animators";
+import { aspectCorrectY } from "@/engine/aspect";
 import { measureSpline, sampleSplineAt } from "@/engine/spline-math";
 import { uploadCanvasToImage } from "@/engine/element";
 import type {
@@ -400,13 +401,15 @@ function resolveFillStyle(
 }
 
 // Sample a spline into a canvas-pixel arc-length table for text-on-path. The
-// spline is normalized [0,1]² Y-DOWN; each sample maps to canvas px
-// (sx*W, sy*H) and we accumulate PIXEL arc length. Doing this in px (rather
-// than the spline's normalized length, which is anisotropic on non-square
-// canvases) makes glyph advances — which are in px — map correctly to path
-// positions, and yields the glyph rotation directly with no tangent
-// conversion. The subpaths concatenate into one continuous domain (same as
-// sampleSplineAt), matching the spec's single arc-length domain.
+// spline is the authored square space (Y-DOWN), so each sample maps to
+// canvas px through the same aspect correction every spline rasterizer
+// applies (sx*W, aspectCorrectY(sy)*H — see engine/aspect.ts); the glyphs
+// land exactly on the path as it renders/displays on non-square canvases.
+// We accumulate PIXEL arc length: glyph advances — which are in px — map
+// correctly to path positions, and the glyph rotation falls out directly
+// with no tangent conversion. The subpaths concatenate into one continuous
+// domain (same as sampleSplineAt), matching the spec's single arc-length
+// domain.
 interface PathSampler {
   totalPx: number;
   at(s: number): { x: number; y: number; angle: number };
@@ -423,10 +426,11 @@ function buildPathSampler(
   const ys: number[] = [];
   const cum: number[] = [0];
   const N = Math.max(2, samples);
+  const aspect = W / H;
   for (let i = 0; i <= N; i++) {
     const r = sampleSplineAt(path, lengths, i / N);
     const x = r.pos[0] * W;
-    const y = r.pos[1] * H;
+    const y = aspectCorrectY(r.pos[1], aspect) * H;
     xs.push(x);
     ys.push(y);
     if (i > 0) cum.push(cum[i - 1] + Math.hypot(x - xs[i - 1], y - ys[i - 1]));

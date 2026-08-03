@@ -13,8 +13,11 @@ import { subpathToBeziers } from "./spline-math";
 //    every pair within a max hop distance (Connect Points semantics),
 //    weighted by euclidean distance.
 //
+// Routing over either graph: shortestPathInGraph (multi-source Dijkstra)
+// and buildTreeInGraph (rooted-tree growth, SPT↔MST morph — tree mode).
 // Pure CPU, deterministic, engine-self-contained.
-// See specdocs/071026_spline-points-nodes.md.
+// See specdocs/071026_spline-points-nodes.md +
+// specdocs/073126_shortest-path-tree-mode.md.
 
 type V2 = [number, number];
 
@@ -205,6 +208,146 @@ export function buildPointsGraph(
   }
 
   return finishGraph(vertexPos, edges, vertexGroups);
+}
+
+// Grow a rooted tree over the graph — the Shortest Path node's tree mode
+// (073126_shortest-path-tree-mode.md). One generalized Prim/Dijkstra pass:
+// a vertex settles via the candidate edge minimizing
+// `alpha * label(parent) + cost(edge)`, so alpha 1 is a shortest-path tree
+// (direct, radial) and alpha 0 is a minimum spanning tree (least total
+// wire, meandering); between is a continuous morph. `edgeCosts` (parallel
+// to graph.edges) overrides raw lengths — jittered costs plug in here.
+// `maxChildren` caps branching per vertex, root included (0 = off): the
+// budget is charged at settle time, and a vertex popping with a full
+// parent re-bids through settled neighbors with budget or parks until one
+// settles next to it. `depthLimit` stops relaxation that many hops from
+// the root (0 = off). Returns parent (-1 root, -2 unreached), depth
+// (-1 unreached) and the deterministic settle order (root first).
+export function buildTreeInGraph(
+  graph: SplineGraph,
+  root: number,
+  opts: {
+    alpha: number;
+    maxChildren?: number;
+    depthLimit?: number;
+    edgeCosts?: Float64Array;
+  }
+): { parent: Int32Array; depth: Int32Array; order: number[] } {
+  const N = graph.vertexPos.length;
+  const parent = new Int32Array(N).fill(-2);
+  const depth = new Int32Array(N).fill(-1);
+  const order: number[] = [];
+  if (N === 0 || root < 0 || root >= N) return { parent, depth, order };
+
+  const alpha = Math.min(1, Math.max(0, opts.alpha));
+  const cap = Math.max(0, Math.floor(opts.maxChildren ?? 0));
+  const depthLimit = Math.max(0, Math.floor(opts.depthLimit ?? 0));
+  const costs = opts.edgeCosts;
+  const costOf = (e: number) =>
+    Math.max(costs ? costs[e] : graph.edges[e].length, 1e-9);
+
+  const dist = new Float64Array(N).fill(Infinity);
+  const prevV = new Int32Array(N).fill(-1);
+  const settled = new Uint8Array(N);
+  const children = cap > 0 ? new Int32Array(N) : null;
+
+  // Flat [key, vertex] min-heap (same layout as shortestPathInGraph). Pop
+  // returns the key too: stale entries are skipped by the key === dist
+  // check, which the max-children re-bid path relies on.
+  const heap: number[] = [];
+  const push = (d: number, v: number) => {
+    heap.push(d, v);
+    let i = heap.length / 2 - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (heap[p * 2] <= heap[i * 2]) break;
+      for (let k = 0; k < 2; k++) {
+        const t = heap[p * 2 + k];
+        heap[p * 2 + k] = heap[i * 2 + k];
+        heap[i * 2 + k] = t;
+      }
+      i = p;
+    }
+  };
+  const pop = (): [number, number] => {
+    const key = heap[0];
+    const v = heap[1];
+    const n = heap.length / 2 - 1;
+    heap[0] = heap[n * 2];
+    heap[1] = heap[n * 2 + 1];
+    heap.length = n * 2;
+    let i = 0;
+    for (;;) {
+      const l = i * 2 + 1;
+      const r = l + 1;
+      let m = i;
+      if (l < n && heap[l * 2] < heap[m * 2]) m = l;
+      if (r < n && heap[r * 2] < heap[m * 2]) m = r;
+      if (m === i) break;
+      for (let k = 0; k < 2; k++) {
+        const t = heap[m * 2 + k];
+        heap[m * 2 + k] = heap[i * 2 + k];
+        heap[i * 2 + k] = t;
+      }
+      i = m;
+    }
+    return [key, v];
+  };
+
+  const full = (v: number) => children !== null && children[v] >= cap;
+  const atLimit = (v: number) => depthLimit > 0 && depth[v] >= depthLimit;
+
+  dist[root] = 0;
+  push(0, root);
+  while (heap.length) {
+    const [key, v] = pop();
+    if (settled[v] || key !== dist[v]) continue;
+    const u = prevV[v];
+    if (u !== -1 && full(u)) {
+      // Recorded parent filled up since this entry was pushed — re-bid via
+      // the cheapest settled neighbor with budget. No candidate ⇒ park with
+      // dist reset to Infinity; a later adjacent settle re-relaxes it.
+      let bestD = Infinity;
+      let bestU = -1;
+      for (const e of graph.adjacency[v]) {
+        const edge = graph.edges[e];
+        const w = edge.a === v ? edge.b : edge.a;
+        if (!settled[w] || full(w) || atLimit(w)) continue;
+        const nd = alpha * dist[w] + costOf(e);
+        if (nd < bestD) {
+          bestD = nd;
+          bestU = w;
+        }
+      }
+      dist[v] = bestD;
+      prevV[v] = bestU;
+      if (bestU !== -1) push(bestD, v);
+      continue;
+    }
+    settled[v] = 1;
+    if (u === -1) {
+      parent[v] = -1;
+      depth[v] = 0;
+    } else {
+      parent[v] = u;
+      depth[v] = depth[u] + 1;
+      if (children) children[u]++;
+    }
+    order.push(v);
+    if (atLimit(v)) continue;
+    for (const e of graph.adjacency[v]) {
+      const edge = graph.edges[e];
+      const other = edge.a === v ? edge.b : edge.a;
+      if (settled[other]) continue;
+      const nd = alpha * dist[v] + costOf(e);
+      if (nd < dist[other]) {
+        dist[other] = nd;
+        prevV[other] = v;
+        push(nd, other);
+      }
+    }
+  }
+  return { parent, depth, order };
 }
 
 // Multi-source Dijkstra: cost-0 seeds at every `sources` vertex, settle

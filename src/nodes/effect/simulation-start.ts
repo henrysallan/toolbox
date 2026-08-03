@@ -318,9 +318,14 @@ export const simulationStartNode: NodeDefinition = {
   },
 
   dispose(ctx, _nodeId) {
-    // We DON'T release zone textures here — the paired End node's
-    // dispose handles that (since either node's dispose running
-    // without the other means the pair is broken anyway).
+    // Zone textures are NOT released here. They live under the shared
+    // `sim-zone:<zoneId>` state key (keyed by zone, not node), which the
+    // evaluator's sweep deliberately skips — and End's dispose is likewise a
+    // no-op. So deleting a zone currently strands its ping-pong textures until
+    // backend teardown (resolution change / unmount). Known-deferred leak; the
+    // real fix is to stash zone_id at compute and release when no Start/End
+    // with that id survives. See 072226 audit #6. (Earlier this comment
+    // claimed End handled it — it doesn't.)
     void ctx;
     void _nodeId;
   },

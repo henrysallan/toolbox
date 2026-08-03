@@ -1,14 +1,26 @@
 import type {
   NodeDefinition,
   PointsValue,
+  SplineAnchor,
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
 import { ensurePointArray, pointsFromArray } from "@/engine/points";
+import {
+  computeSegmentShapeHandles,
+  readSegmentShapeParams,
+  segmentShapeModeParams,
+  segmentShapePathParam,
+  type SegmentShapeEdge,
+} from "@/engine/segment-shape";
 
-// Connect nearby points with straight-line spline segments. The
-// user's control is a max-distance threshold (UV space): every pair
-// of input points within that threshold gets a 2-anchor open subpath.
+// Connect nearby points with spline segments. The user's control is a
+// max-distance threshold (UV space): every pair of input points within
+// that threshold gets a 2-anchor open subpath. A `path` mode decides
+// each segment's SHAPE — straight chords, arcs / S-curves, sag, flow,
+// network tangents, bundling, attract — via the shared segment-shape
+// machinery (engine/segment-shape.ts, also consumed by Shortest Path).
+// Spec: specdocs/073126_connect-points-curved-paths.md.
 // Output is the set of segments as a single SplineValue; a passthrough
 // `points` aux output lets downstream nodes consume both the new
 // connections AND the original points without a re-wire.
@@ -17,14 +29,14 @@ import { ensurePointArray, pointsFromArray } from "@/engine/points";
 // a point set). Parallels scatter-points (Point Generator from an
 // image) on the other side of the type boundary.
 //
-// Algorithm: O(N²) pairwise distance check. For typical sizes
-// (N ≈ 50–200) this is nothing; past a few hundred points a spatial
-// hash would matter, but that's an optimization for later.
-//
 // groupIndex handling: a segment inherits the groupIndex only when
 // both endpoints share one. Cross-group edges (A from group 0 to B
 // from group 1) are left un-tagged so downstream per-index nodes
 // see them as free-floating rather than mis-attributed to one side.
+
+interface Edge extends SegmentShapeEdge {
+  group: number | undefined;
+}
 
 export const connectPointsNode: NodeDefinition = {
   type: "connect-points",
@@ -32,10 +44,12 @@ export const connectPointsNode: NodeDefinition = {
   category: "spline",
   subcategory: "generator",
   description:
-    "Connect pairs of input points within a max-distance threshold with straight-line segments. Primary output is the segments as a spline; the passthrough `points` aux keeps the original points available on the same wire for further downstream use.",
+    "Connect pairs of input points within a max-distance threshold. Path modes shape each connection: straight chords, circular arcs / S-curves (curved), hanging-wire droop (sag), noise-field tangents (flow), smooth curves flowing through shared points (network), parallel connections merging into trunks (bundle), or bowing toward/away from a center (attract). Primary output is the segments as a spline; the passthrough `points` aux keeps the original points available on the same wire for further downstream use.",
   backend: "webgl2",
   inputs: [{ name: "points", type: "points", required: true }],
+  headerControl: { paramName: "path" },
   params: [
+    segmentShapePathParam(),
     {
       name: "max_distance",
       label: "Max distance",
@@ -46,11 +60,12 @@ export const connectPointsNode: NodeDefinition = {
       step: 0.001,
       default: 0.1,
     },
+    ...segmentShapeModeParams(),
   ],
   primaryOutput: "spline",
   auxOutputs: [{ name: "points", type: "points" }],
 
-  compute({ inputs, params }) {
+  compute({ inputs, params, ctx }) {
     const srcVal = inputs.points;
     const points: PointsValue["points"] =
       srcVal?.kind === "points" ? ensurePointArray(srcVal) : [];
@@ -64,7 +79,10 @@ export const connectPointsNode: NodeDefinition = {
     // local density. With max_distance = 0.1 the grid is at most
     // 11×11 buckets; for very small thresholds the grid grows but
     // each bucket stays sparse, so the gain only widens.
-    const subpaths: SplineSubpath[] = [];
+    //
+    // Distances stay RAW UV (not iso) on purpose — changing that
+    // would silently rewire existing projects on non-square canvases.
+    const edges: Edge[] = [];
     if (N > 0 && maxD > 0) {
       const cell = maxD;
       const grid = new Map<string, number[]>();
@@ -103,23 +121,43 @@ export const connectPointsNode: NodeDefinition = {
               const ey = a.pos[1] - b.pos[1];
               if (ex * ex + ey * ey > d2) continue;
               const shared =
-                a.groupIndex !== undefined &&
-                a.groupIndex === b.groupIndex
+                a.groupIndex !== undefined && a.groupIndex === b.groupIndex
                   ? a.groupIndex
                   : undefined;
-              const sub: SplineSubpath = {
-                closed: false,
-                anchors: [
-                  { pos: [a.pos[0], a.pos[1]] },
-                  { pos: [b.pos[0], b.pos[1]] },
-                ],
-              };
-              if (shared !== undefined) sub.groupIndex = shared;
-              subpaths.push(sub);
+              edges.push({ i, j, group: shared });
             }
           }
         }
       }
+    }
+
+    const x = new Float64Array(N);
+    const y = new Float64Array(N);
+    for (let p = 0; p < N; p++) {
+      x[p] = points[p].pos[0];
+      y[p] = points[p].pos[1];
+    }
+    const handles = computeSegmentShapeHandles({
+      edges,
+      x,
+      y,
+      aspect: ctx.height > 0 ? ctx.width / ctx.height : 1,
+      p: readSegmentShapeParams(params),
+    });
+
+    const subpaths: SplineSubpath[] = [];
+    for (let k = 0; k < edges.length; k++) {
+      const e = edges[k];
+      const h = handles[k];
+      const a = points[e.i];
+      const b = points[e.j];
+      const anchorA: SplineAnchor = { pos: [a.pos[0], a.pos[1]] };
+      if (h.out) anchorA.outHandle = h.out;
+      const anchorB: SplineAnchor = { pos: [b.pos[0], b.pos[1]] };
+      if (h.in) anchorB.inHandle = h.in;
+      const sub: SplineSubpath = { closed: false, anchors: [anchorA, anchorB] };
+      if (e.group !== undefined) sub.groupIndex = e.group;
+      subpaths.push(sub);
     }
 
     const spline: SplineValue = { kind: "spline", subpaths };
@@ -127,9 +165,7 @@ export const connectPointsNode: NodeDefinition = {
     // that need both the connections and the source points don't
     // need to re-split the wire.
     const passthrough: PointsValue =
-      srcVal?.kind === "points"
-        ? srcVal
-        : pointsFromArray([]);
+      srcVal?.kind === "points" ? srcVal : pointsFromArray([]);
     return { primary: spline, aux: { points: passthrough } };
   },
 };

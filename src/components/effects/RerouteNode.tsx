@@ -51,7 +51,7 @@ function RerouteNode({ data, selected }: NodeProps<RerouteNodeType>) {
   const connected = useNodeConnections({ handleType: "target" }).length > 0;
   const color = connected
     ? colorForSocket(data.primaryOutput ?? "image")
-    : "#9ca3af";
+    : "var(--tb-n-13)";
 
   return (
     <div style={{ position: "relative", width: NODE, height: NODE }}>
@@ -77,9 +77,9 @@ function RerouteNode({ data, selected }: NodeProps<RerouteNodeType>) {
           height: DOT,
           borderRadius: "50%",
           background: color,
-          border: "1.5px solid #0a0a0a",
+          border: "1.5px solid var(--tb-n-0)",
           boxShadow: selected
-            ? "0 0 0 2px #f5f5f5, 0 0 0 3.5px #0a0a0a"
+            ? "0 0 0 2px var(--tb-n-17), 0 0 0 3.5px var(--tb-n-0)"
             : "0 1px 2px rgba(0,0,0,0.5)",
           pointerEvents: "none",
         }}

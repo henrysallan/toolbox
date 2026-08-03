@@ -5,17 +5,24 @@ import type { Node } from "@xyflow/react";
 import TransformGizmo from "./TransformGizmo";
 import PrimitiveGizmo, {
   PRIMITIVE_GIZMO_ADAPTERS,
+  PrimitivePointHandles,
   type PrimitiveGizmoEnv,
 } from "./PrimitiveGizmo";
 import MotionPathOverlay from "./MotionPathOverlay";
 import SplineEditorOverlay from "./spline-editor/SplineEditorOverlay";
 import GradientOverlay from "./GradientOverlay";
 import { evaluateKeyframesAt } from "@/engine/keyframes";
-import { gpointXKey, gpointYKey } from "@/engine/conventions";
+import {
+  anchorTrackId,
+  gpointXKey,
+  gpointYKey,
+  resolveAnchorTracks,
+} from "@/engine/conventions";
 import type { EvalCache } from "@/engine/evaluator";
 import type { GradientPoint } from "@/engine/types";
 import type { NodeDataPayload } from "@/state/graph";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
+import type { SplineGuide } from "./spline-editor/types";
 import { useClock } from "@/state/playback-clock";
 
 // Playhead-subscribed gizmo overlays (clock-store spec, shell detach).
@@ -60,6 +67,26 @@ function effectiveScalar(
   return typeof raw === "number" ? raw : fallback;
 }
 
+// A Spline Draw node's spline at a tick: the keyframe-interpolated shape
+// when "Path Animation" is animated, else the stored constant with any
+// per-anchor tracks resolved onto it (spec 072726 M6 — same either/or the
+// evaluator applies, so what's edited is what renders). Shared by the
+// active-node value and the multi-node ghosts (M5).
+function splineValueAtTick(
+  n: EffectsNode,
+  tick: number
+): SplineParamValue {
+  const stored = (n.data.params.spline as SplineParamValue | undefined) ?? {
+    subpaths: [{ anchors: [], closed: false }],
+  };
+  const block = n.data.animation?.spline;
+  if (block && block.animated && block.keyframes.length > 0) {
+    const v = evaluateKeyframesAt(block, "spline_anchors", tick);
+    if (v) return v as SplineParamValue;
+  }
+  return resolveAnchorTracks(stored, n.data.animation, tick) ?? stored;
+}
+
 // Pen-tool overlay host. The spline shown at the current playhead: when
 // "Path Animation" is keyframed, that's the interpolated shape (so the
 // editor handles sit on the rendered/animated curve and on-canvas edits
@@ -67,28 +94,98 @@ function effectiveScalar(
 // otherwise the stored constant.
 export function SplineEditorOverlayAtTick({
   node,
+  nodes,
   canvas,
   onParamChange,
+  onSelectNode,
+  onAnchorAnimate,
 }: {
   node: EffectsNode;
+  // Full node list — the overlay ghosts every OTHER Spline Draw node's
+  // spline (keyframe-aware) and lets select-tool clicks switch to it.
+  nodes: EffectsNode[];
   canvas: HTMLCanvasElement | null;
   onParamChange: ParamChange;
+  onSelectNode?: (nodeId: string) => void;
+  // Per-anchor keyframing (spec 072726 M6): create/remove the anchor
+  // tracks for a set of anchors of one subpath. EffectsApp owns the
+  // animation-map mutation (+ lazy id minting + undo snapshot).
+  onAnchorAnimate?: (
+    nodeId: string,
+    subpathIndex: number,
+    anchorIndexes: number[],
+    enable: boolean
+  ) => void;
 }) {
   const currentTick = useClock((s) => s.tick);
-  const stored = (node.data.params.spline as SplineParamValue | undefined) ?? {
-    subpaths: [{ anchors: [], closed: false }],
-  };
-  let value = stored;
+  const value = splineValueAtTick(node, currentTick);
+  // Onion skinning (spec 072726 M1): the STORED keyframe shapes strictly
+  // before/after the playhead — ghosts of where the animation is coming
+  // from / going to. Values are the keyframes' own stored shapes, no
+  // interpolation needed.
+  let onionPrev: SplineParamValue | null = null;
+  let onionNext: SplineParamValue | null = null;
   const block = node.data.animation?.spline;
   if (block && block.animated && block.keyframes.length > 0) {
-    const v = evaluateKeyframesAt(block, "spline_anchors", currentTick);
-    if (v) value = v as SplineParamValue;
+    for (const k of block.keyframes) {
+      if (k.tick < currentTick) onionPrev = k.value as SplineParamValue;
+      else if (k.tick > currentTick) {
+        onionNext = k.value as SplineParamValue;
+        break;
+      }
+    }
   }
+  // Multi-node ghosts (spec 072726 M5): every OTHER Spline Draw node's
+  // spline at this tick, for reference outlines + snapping + switching.
+  const others: Array<{ nodeId: string; value: SplineParamValue }> = [];
+  for (const n of nodes) {
+    if (n.id === node.id || n.data.defType !== "spline-draw") continue;
+    others.push({ nodeId: n.id, value: splineValueAtTick(n, currentTick) });
+  }
+  // Per-anchor keyframing (spec 072726 M6): which anchor ids carry animated
+  // tracks (drives the overlay's badges + menu items), and whether
+  // whole-shape Path Animation is active (either/or — the anchor-animate
+  // menu hides then).
+  const animatedAnchorIds = new Set<string>();
+  for (const [k, b] of Object.entries(node.data.animation ?? {})) {
+    if (!b || !b.animated || b.keyframes.length === 0) continue;
+    const id = anchorTrackId(k);
+    if (id) animatedAnchorIds.add(id);
+  }
+  const pathAnimated = !!(
+    block &&
+    block.animated &&
+    block.keyframes.length > 0
+  );
   return (
     <SplineEditorOverlay
       canvas={canvas}
+      // Identifies this overlay on the anchor-selection channel shared
+      // with the Tracks editor (spline-anchor-scope.ts).
+      nodeId={node.id}
       value={value}
       onChange={(next) => onParamChange(node.id, "spline", next)}
+      onionPrev={onionPrev}
+      onionNext={onionNext}
+      others={others}
+      onSelectNode={onSelectNode}
+      animatedAnchorIds={animatedAnchorIds}
+      pathAnimated={pathAnimated}
+      onAnchorAnimate={
+        onAnchorAnimate
+          ? (subpathIndex, anchorIndexes, enable) =>
+              onAnchorAnimate(node.id, subpathIndex, anchorIndexes, enable)
+          : undefined
+      }
+      // Guidelines (spec 080226 M5): stored in the hidden `spline_guides`
+      // param — its own undo-coalesced write path, never touching the
+      // keyframed spline envelope (a guide edit must not mint keyframes).
+      guides={
+        (node.data.params.spline_guides as SplineGuide[] | undefined) ?? []
+      }
+      onGuidesChange={(next) =>
+        onParamChange(node.id, "spline_guides", next)
+      }
     />
   );
 }
@@ -266,7 +363,34 @@ export function PrimitiveGizmoAtTick({
     getRaw: (name) => node.data.params[name],
     solvedSize,
   };
+  // Point-handle primitives (SDF Line Segment / Triangle) render dots
+  // instead of a box — a centre+extent gizmo can't express "move one
+  // endpoint". These carry no motion path.
+  if (adapter.points) {
+    const pts = adapter.points.read(get, env);
+    return (
+      <PrimitivePointHandles
+        canvas={canvas}
+        points={pts}
+        connect={adapter.points.connect}
+        onChange={(index, x, y) => {
+          const key = `gizmo:${node.id}`;
+          for (const [name, value] of adapter.points!.write(
+            index,
+            x,
+            y,
+            env
+          )) {
+            onParamChange(node.id, name, value, key);
+          }
+        }}
+      />
+    );
+  }
+
+  if (!adapter.read || !adapter.write) return null;
   const { cx, cy, hx, hy } = adapter.read(get, env);
+  const adapterWrite = adapter.write;
   const mp = adapter.motionPath;
   const mpToCenter =
     mp?.toCenter ?? ((x: number, y: number) => ({ cx: x, cy: y }));
@@ -285,7 +409,7 @@ export function PrimitiveGizmoAtTick({
         onChange={(patch) => {
           const id = node.id;
           const key = `gizmo:${id}`;
-          for (const [name, value] of adapter.write(patch, env)) {
+          for (const [name, value] of adapterWrite(patch, env)) {
             onParamChange(id, name, value, key);
           }
         }}

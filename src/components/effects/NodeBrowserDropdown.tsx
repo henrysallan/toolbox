@@ -124,8 +124,8 @@ export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
         position: "absolute",
         top: "100%",
         left: 0,
-        background: "#18181b",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 4,
         boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
         padding: 6,
@@ -251,11 +251,11 @@ function ColumnHeader({ children }: { children: React.ReactNode }) {
     <div
       style={{
         padding: "4px 10px",
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
         fontSize: 10,
         textTransform: "uppercase",
         letterSpacing: 0.5,
-        borderBottom: "1px solid #27272a",
+        borderBottom: "1px solid var(--tb-n-7)",
         marginBottom: 2,
         fontWeight: 600,
       }}
@@ -270,7 +270,7 @@ function SubHeader({ children }: { children: React.ReactNode }) {
     <div
       style={{
         padding: "4px 10px 2px 10px",
-        color: "#71717a",
+        color: "var(--tb-n-11)",
         fontSize: 9,
         textTransform: "uppercase",
         letterSpacing: 0.4,
@@ -291,7 +291,7 @@ function NodeRow({
   return (
     <button
       onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.background = "#1e3a8a")}
+      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--tb-a-blue-900)")}
       onMouseLeave={(e) =>
         (e.currentTarget.style.background = "transparent")
       }
@@ -301,7 +301,7 @@ function NodeRow({
         padding: "3px 10px",
         background: "transparent",
         border: "none",
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
         textAlign: "left",
         fontFamily: "inherit",
         fontSize: 11,

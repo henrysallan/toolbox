@@ -631,8 +631,8 @@ export default function Scene3DViewport({
 
 // ---- Corner toolbar (matches SplineEditorOverlay styling) -------------
 
-const GIZMO_ACCENT = "#f59e0b";
-const CAMERA_ACCENT = "#2dd4bf";
+const GIZMO_ACCENT = "var(--tb-a-amber-500)";
+const CAMERA_ACCENT = "var(--tb-t-cyan-l-2)";
 const TB_BTN = 26;
 
 function toolbarStyle(side: "left" | "right"): React.CSSProperties {
@@ -645,8 +645,8 @@ function toolbarStyle(side: "left" | "right"): React.CSSProperties {
     display: "flex",
     gap: 2,
     padding: 1,
-    background: "rgba(17, 17, 17, 0.9)",
-    border: "1px solid #27272a",
+    background: "color-mix(in srgb, var(--tb-n-0) 90%, transparent)",
+    border: "1px solid var(--tb-n-7)",
     borderRadius: 6,
     boxShadow: "0 4px 12px rgba(0, 0, 0, 0.35)",
     pointerEvents: "auto",
@@ -690,9 +690,9 @@ function IconBtn({
         background: active
           ? `${accent}2e`
           : hover && !disabled
-            ? "rgba(255, 255, 255, 0.08)"
+            ? "color-mix(in srgb, var(--tb-lift) 8%, transparent)"
             : "transparent",
-        color: active ? accent : disabled ? "#52525b" : hover ? "#e4e4e7" : "#a1a1aa",
+        color: active ? accent : disabled ? "var(--tb-n-10)" : hover ? "var(--tb-n-16)" : "var(--tb-n-13)",
         border: `1px solid ${active ? accent : "transparent"}`,
         borderRadius: 4,
         boxSizing: "border-box",

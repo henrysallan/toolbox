@@ -15,8 +15,8 @@ export const TOOL_BTN = 26;
 export const TOOL_INSET = 2; // gap between a segment edge and its highlight
 
 // Active-state palette — matches the spline editor's anchor blue.
-export const DOCK_ACTIVE_STROKE = "#3b82f6";
-export const DOCK_ACTIVE_FILL = "rgba(59, 130, 246, 0.18)";
+export const DOCK_ACTIVE_STROKE = "var(--tb-a-blue-500)";
+export const DOCK_ACTIVE_FILL = "color-mix(in srgb, var(--tb-a-blue-500) 18%, transparent)";
 
 // Outer floating shell, pinned in client coords by the caller (typically the
 // canvas's containing panel rect) so it docks to the window corner rather
@@ -48,12 +48,12 @@ export function DockShell({
         alignItems: "center",
         gap: 4,
         padding: 3,
-        background: "rgba(17, 17, 17, 0.9)",
-        border: "1px solid #27272a",
+        background: "color-mix(in srgb, var(--tb-n-0) 90%, transparent)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 6,
         boxShadow: "0 4px 12px rgba(0, 0, 0, 0.35)",
         pointerEvents: "auto",
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
       }}
     >
       {children}
@@ -68,7 +68,7 @@ export function DockDivider({ vertical }: { vertical?: boolean }) {
         width: 1,
         height: TOOL_BTN,
         margin: "0 1px",
-        background: "#3f3f46",
+        background: "var(--tb-n-9)",
       }}
     />
   ) : (
@@ -77,7 +77,7 @@ export function DockDivider({ vertical }: { vertical?: boolean }) {
         height: 1,
         width: TOOL_BTN,
         margin: "1px 0",
-        background: "#3f3f46",
+        background: "var(--tb-n-9)",
       }}
     />
   );
@@ -131,7 +131,7 @@ export function ModeSlider<T extends string>({
           right: TOOL_INSET,
           top: ghostIdx * TOOL_BTN + TOOL_INSET,
           height: TOOL_BTN - TOOL_INSET * 2,
-          background: "rgba(255, 255, 255, 0.08)",
+          background: "color-mix(in srgb, var(--tb-lift) 8%, transparent)",
           borderRadius: 4,
           opacity: hoverIdx !== null && hoverIdx !== activeIdx ? 1 : 0,
           transition: "top 0.12s ease, opacity 0.12s ease",
@@ -161,8 +161,8 @@ export function ModeSlider<T extends string>({
               color: active
                 ? DOCK_ACTIVE_STROKE
                 : hoverIdx === i
-                  ? "#e4e4e7"
-                  : "#a1a1aa",
+                  ? "var(--tb-n-16)"
+                  : "var(--tb-n-13)",
               border: "none",
               cursor: "pointer",
               padding: 0,
@@ -210,7 +210,7 @@ export function DockHSlider({
         padding: "0 2px",
       }}
     >
-      <span style={{ fontSize: 9, lineHeight: 1, color: "#a1a1aa" }}>
+      <span style={{ fontSize: 9, lineHeight: 1, color: "var(--tb-n-13)" }}>
         {label}
       </span>
       <div style={{ display: "flex", width }}>
@@ -229,7 +229,7 @@ export function DockHSlider({
           lineHeight: 1,
           minWidth: 18,
           textAlign: "right",
-          color: "#d4d4d8",
+          color: "var(--tb-n-15)",
         }}
       >
         {format ? format(value) : String(Math.round(value))}
@@ -271,9 +271,9 @@ export function IconToggle({
         background: active
           ? DOCK_ACTIVE_FILL
           : hover
-            ? "rgba(255, 255, 255, 0.08)"
+            ? "color-mix(in srgb, var(--tb-lift) 8%, transparent)"
             : "transparent",
-        color: active ? DOCK_ACTIVE_STROKE : hover ? "#e4e4e7" : "#a1a1aa",
+        color: active ? DOCK_ACTIVE_STROKE : hover ? "var(--tb-n-16)" : "var(--tb-n-13)",
         border: `1px solid ${active ? DOCK_ACTIVE_STROKE : "transparent"}`,
         borderRadius: 4,
         boxSizing: "border-box",

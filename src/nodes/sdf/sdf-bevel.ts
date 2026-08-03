@@ -1,5 +1,9 @@
 import type { NodeDefinition, SdfValue } from "@/engine/types";
-import { compileSdf, structuralHash } from "@/engine/sdf-compile";
+import {
+  bindSdfUniforms,
+  compileSdf,
+  structuralHash,
+} from "@/engine/sdf-compile";
 
 // SDF Bevel — terminal that rasterizes an SDF with two-light bevel
 // shading. Works by inlining the SDF's distance expression at the
@@ -353,23 +357,12 @@ export const sdfBevelNode: NodeDefinition = {
       gl.uniform1i(gl.getUniformLocation(prog, "u_hiBlend"), hiBlendId);
       gl.uniform1i(gl.getUniformLocation(prog, "u_shBlend"), shBlendId);
 
-      // Bind per-leaf parameter uniforms (same loop as SDF Rasterize).
-      let samplerUnit = 0;
-      for (const u of compiled.uniforms) {
-        const loc = gl.getUniformLocation(prog, u.name);
-        if (!loc) continue;
-        if (u.type === "float") {
-          gl.uniform1f(loc, u.value as number);
-        } else if (u.type === "vec2") {
-          const v = u.value as [number, number];
-          gl.uniform2f(loc, v[0], v[1]);
-        } else {
-          gl.activeTexture(gl.TEXTURE0 + samplerUnit);
-          gl.bindTexture(gl.TEXTURE_2D, u.value as WebGLTexture);
-          gl.uniform1i(loc, samplerUnit);
-          samplerUnit++;
-        }
-      }
+      // Colour-bleed radius — inert until the shading terminal reads
+      // the accumulator (see SDF Rasterize).
+      const bleedLoc = gl.getUniformLocation(prog, "u_bleedInv");
+      if (bleedLoc) gl.uniform1f(bleedLoc, 0);
+
+      bindSdfUniforms(gl, prog, compiled.uniforms);
     });
 
     return { primary: output };

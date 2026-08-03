@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { evalNumExpr } from "@/lib/num-expr";
+import { Dropdown } from "@/lib/param-controls";
 
 // Menu-bar pill showing the current project name with a save-state dot.
 // Click opens a small dropdown to rename the project and flip its
@@ -10,9 +12,9 @@ import { useEffect, useRef, useState } from "react";
 export type SaveState = "saved" | "dirty" | "error";
 
 const DOT_COLOR: Record<SaveState, string> = {
-  saved: "#22c55e",
-  dirty: "#eab308",
-  error: "#ef4444",
+  saved: "var(--tb-a-green-500)",
+  dirty: "var(--tb-a-yellow-500)",
+  error: "var(--tb-a-red-500)",
 };
 
 const DOT_LABEL: Record<SaveState, string> = {
@@ -20,6 +22,12 @@ const DOT_LABEL: Record<SaveState, string> = {
   dirty: "unsaved changes",
   error: "save failed",
 };
+
+const MIN_RES = 16;
+const MAX_RES = 8192;
+// Pointer travel before a press on a res field counts as a scrub rather
+// than a click-to-type. Matches AutoLayoutPanel's NumInput.
+const SCRUB_PX = 3;
 
 // Mirrors the preset list in ParamPanel's Project Settings so the two
 // resolution editors offer the same options.
@@ -112,6 +120,11 @@ export default function FileNameMenu({
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
+      const t = e.target as Element | null;
+      // The resolution Dropdown's list portals to <body>, so it's outside
+      // our subtree — without this, picking a preset would read as a
+      // click-away and close the whole panel before the pick lands.
+      if (t?.closest?.("[data-tb-dropdown]")) return;
       if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -147,6 +160,33 @@ export default function FileNameMenu({
 
   const resKey = `${canvasRes[0]}×${canvasRes[1]}`;
   const isResPreset = RES_PRESETS.some((r) => `${r.w}×${r.h}` === resKey);
+
+  // Aspect lock. The ratio is snapshotted at the START of each gesture
+  // (pointer-down / entering type mode) rather than held in state: a
+  // scrub re-renders us on every frame, so reading the live canvasRes
+  // mid-drag would compound integer rounding and let the ratio drift.
+  // Snapshotting per-gesture is also self-healing — a project load or a
+  // preset pick between gestures is picked up for free.
+  const [lockAspect, setLockAspect] = useState(false);
+  const ratioRef = useRef<number | null>(null);
+  const snapRatio = () => {
+    ratioRef.current = canvasRes[1] > 0 ? canvasRes[0] / canvasRes[1] : 1;
+  };
+  const clampRes = (n: number) =>
+    Math.min(MAX_RES, Math.max(MIN_RES, Math.round(n)));
+  // Locked edits drive the opposite axis off the snapshotted ratio. The
+  // derived side is clamped independently, so pushing one axis to the
+  // 16/8192 rail bends the ratio rather than blocking the drag.
+  const applyWidth = (w: number) => {
+    const r = ratioRef.current;
+    if (lockAspect && r && r > 0) onCanvasResChange([w, clampRes(w / r)]);
+    else onCanvasResChange([w, canvasRes[1]]);
+  };
+  const applyHeight = (h: number) => {
+    const r = ratioRef.current;
+    if (lockAspect && r && r > 0) onCanvasResChange([clampRes(h * r), h]);
+    else onCanvasResChange([canvasRes[0], h]);
+  };
 
   // Build the public URLs only when we have a slug and the project
   // is currently public. Hidden otherwise so the user doesn't see
@@ -214,10 +254,10 @@ export default function FileNameMenu({
           gap: 6,
           height: 16,
           padding: "0 10px",
-          background: open ? "#27272a" : hover ? "#232327" : "#1c1c1f",
-          border: `1px solid ${open || hover ? "#3f3f46" : "#27272a"}`,
+          background: open ? "var(--tb-n-7)" : hover ? "var(--tb-n-6)" : "var(--tb-n-4)",
+          border: `1px solid ${open || hover ? "var(--tb-n-9)" : "var(--tb-n-7)"}`,
           borderRadius: 10,
-          color: "#e5e7eb",
+          color: "var(--tb-n-16)",
           transition: "background 90ms, border-color 90ms",
           fontFamily: "inherit",
           fontSize: 10,
@@ -256,30 +296,26 @@ export default function FileNameMenu({
             left: "50%",
             transform: "translateX(-50%)",
             width: 280,
-            background: "#18181b",
-            border: "1px solid #27272a",
-            borderRadius: 4,
+            background: "var(--tb-n-3)",
+            border: "1px solid var(--tb-n-7)",
+            borderRadius: 12,
             boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
-            padding: 10,
+            padding: 12,
             marginTop: 2,
             fontSize: 11,
-            color: "#e5e7eb",
+            color: "var(--tb-n-16)",
+            // Uniform rhythm between rows — the section labels and rules
+            // are gone, so spacing is what separates the groups now.
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
           }}
         >
-          <div
-            style={{
-              color: "#a1a1aa",
-              fontSize: 10,
-              textTransform: "uppercase",
-              letterSpacing: 0.5,
-              marginBottom: 4,
-            }}
-          >
-            Project name
-          </div>
           <input
             ref={inputRef}
             type="text"
+            aria-label="Project name"
+            placeholder="Project name"
             value={draft}
             disabled={!canMutate}
             onChange={(e) => setDraft(e.target.value)}
@@ -293,22 +329,22 @@ export default function FileNameMenu({
             style={{
               width: "100%",
               boxSizing: "border-box",
-              padding: "5px 8px",
-              background: "#0a0a0a",
-              border: "1px solid #27272a",
-              color: canMutate ? "#e5e7eb" : "#71717a",
+              padding: "8px 12px",
+              background: "var(--tb-n-0)",
+              border: "1px solid var(--tb-n-7)",
+              color: canMutate ? "var(--tb-n-16)" : "var(--tb-n-11)",
               fontFamily: "inherit",
-              fontSize: 11,
-              borderRadius: 3,
-              marginBottom: ownedByMe ? 8 : 6,
+              // Doubles as the panel's title now that the label is gone.
+              fontSize: 13,
+              fontWeight: 600,
+              borderRadius: 10,
             }}
           />
           {!ownedByMe && authorName && (
             <div
               style={{
-                color: "#a1a1aa",
+                color: "var(--tb-n-13)",
                 fontSize: 10,
-                marginBottom: 8,
                 fontStyle: "italic",
               }}
             >
@@ -318,89 +354,69 @@ export default function FileNameMenu({
 
           {/* Resolution — same presets as Project Settings, editable here
               without leaving the dropdown. Not gated by ownership: it's a
-              local render setting, like in Project Settings. */}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 6,
-              padding: "8px 2px",
-              marginBottom: 8,
-              borderTop: "1px solid #27272a",
-            }}
-          >
-            <div
-              style={{
-                color: "#a1a1aa",
-                fontSize: 10,
-                textTransform: "uppercase",
-                letterSpacing: 0.5,
+              local render setting, like in Project Settings. Unlabelled:
+              the fields carry aria-labels instead. */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <ResField
+              label="Width"
+              value={canvasRes[0]}
+              onGestureStart={snapRatio}
+              onCommit={applyWidth}
+            />
+            <AspectLock
+              locked={lockAspect}
+              onToggle={() => {
+                if (!lockAspect) snapRatio();
+                setLockAspect((v) => !v);
               }}
-            >
-              Resolution
-            </div>
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <ResField
-                value={canvasRes[0]}
-                onCommit={(w) => onCanvasResChange([w, canvasRes[1]])}
-              />
-              <span style={{ color: "#52525b" }}>×</span>
-              <ResField
-                value={canvasRes[1]}
-                onCommit={(h) => onCanvasResChange([canvasRes[0], h])}
-              />
-              <select
-                value={isResPreset ? resKey : "__custom__"}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === "__custom__") return;
-                  const [w, h] = v.split("×").map(Number);
-                  onCanvasResChange([w, h]);
-                }}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  background: "#0a0a0a",
-                  border: "1px solid #27272a",
-                  color: "#e5e7eb",
-                  fontFamily: "inherit",
-                  fontSize: 11,
-                  borderRadius: 3,
-                  padding: "4px 6px",
-                  cursor: "pointer",
-                }}
-              >
-                {!isResPreset && <option value="__custom__">custom</option>}
-                {RES_PRESETS.map((r) => (
-                  <option key={r.label} value={`${r.w}×${r.h}`}>
-                    {r.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div
-            style={{
-              padding: "8px 2px",
-              marginBottom: 8,
-              borderTop: "1px solid #27272a",
-              borderBottom: "1px solid #27272a",
-            }}
-          >
-            <VisibilityToggle
-              value={isPublic}
-              disabled={!canMutate || !projectId}
-              onChange={(next) => onRequestToggleVisibility(next)}
+            />
+            <ResField
+              label="Height"
+              value={canvasRes[1]}
+              onGestureStart={snapRatio}
+              onCommit={applyHeight}
+            />
+            <Dropdown
+              value={isResPreset ? resKey : "__custom__"}
+              options={[
+                // Only offered as a readout of the current off-preset
+                // size; picking it is a no-op below.
+                ...(isResPreset
+                  ? []
+                  : [{ value: "__custom__", label: "custom" }]),
+                ...RES_PRESETS.map((r) => ({
+                  value: `${r.w}×${r.h}`,
+                  label: r.label,
+                })),
+              ]}
+              onChange={(v) => {
+                if (v === "__custom__") return;
+                const [w, h] = v.split("×").map(Number);
+                onCanvasResChange([w, h]);
+              }}
+              title="Resolution preset"
+              style={{
+                flex: 1,
+                minWidth: 0,
+                height: 30,
+                borderRadius: 10,
+                padding: "0 10px",
+                color: "var(--tb-n-16)",
+              }}
             />
           </div>
+
+          <VisibilityToggle
+            value={isPublic}
+            disabled={!canMutate || !projectId}
+            onChange={(next) => onRequestToggleVisibility(next)}
+          />
 
           {editorUrl && liveUrl && (
             <div
               style={{
                 display: "flex",
                 gap: 6,
-                marginBottom: 8,
               }}
             >
               <button
@@ -409,9 +425,9 @@ export default function FileNameMenu({
                 style={{
                   ...btnStyle(),
                   flex: 1,
-                  background: editorLinkCopied ? "#1e3a8a" : "transparent",
-                  color: editorLinkCopied ? "#dbeafe" : "#e5e7eb",
-                  border: `1px solid ${editorLinkCopied ? "#1e3a8a" : "#3f3f46"}`,
+                  background: editorLinkCopied ? "var(--tb-a-blue-900)" : "transparent",
+                  color: editorLinkCopied ? "var(--tb-a-blue-100)" : "var(--tb-n-16)",
+                  border: `1px solid ${editorLinkCopied ? "var(--tb-a-blue-900)" : "var(--tb-n-9)"}`,
                 }}
               >
                 {editorLinkCopied ? "Copied" : "Copy editor link"}
@@ -422,9 +438,9 @@ export default function FileNameMenu({
                 style={{
                   ...btnStyle(),
                   flex: 1,
-                  background: liveLinkCopied ? "#166534" : "transparent",
-                  color: liveLinkCopied ? "#dcfce7" : "#e5e7eb",
-                  border: `1px solid ${liveLinkCopied ? "#166534" : "#3f3f46"}`,
+                  background: liveLinkCopied ? "var(--tb-a-green-800)" : "transparent",
+                  color: liveLinkCopied ? "var(--tb-a-green-100)" : "var(--tb-n-16)",
+                  border: `1px solid ${liveLinkCopied ? "var(--tb-a-green-800)" : "var(--tb-n-9)"}`,
                 }}
               >
                 {liveLinkCopied ? "Copied" : "Copy live link"}
@@ -456,9 +472,8 @@ export default function FileNameMenu({
                 {conflict && (
                   <div
                     style={{
-                      color: "#facc15",
+                      color: "var(--tb-a-yellow-400)",
                       fontSize: 10,
-                      marginBottom: 8,
                       lineHeight: 1.4,
                     }}
                   >
@@ -480,14 +495,14 @@ export default function FileNameMenu({
                       display: "flex",
                       alignItems: "center",
                       gap: 6,
-                      color: "#71717a",
-                      fontSize: 10,
+                      color: "var(--tb-n-11)",
+                      fontSize: 11,
                     }}
                   >
                     <span
                       style={{
-                        width: 7,
-                        height: 7,
+                        width: 9,
+                        height: 9,
                         borderRadius: "50%",
                         background: dotColor,
                       }}
@@ -501,9 +516,9 @@ export default function FileNameMenu({
                         disabled={saving}
                         style={{
                           ...btnStyle(),
-                          background: conflict ? "#b45309" : "#1e3a8a",
-                          border: `1px solid ${conflict ? "#b45309" : "#1e3a8a"}`,
-                          color: conflict ? "#fef3c7" : "#dbeafe",
+                          background: conflict ? "var(--tb-a-amber-700)" : "var(--tb-a-blue-900)",
+                          border: `1px solid ${conflict ? "var(--tb-a-amber-700)" : "var(--tb-a-blue-900)"}`,
+                          color: conflict ? "var(--tb-a-amber-100)" : "var(--tb-a-blue-100)",
                           opacity: saving ? 0.5 : 1,
                         }}
                       >
@@ -542,10 +557,11 @@ export default function FileNameMenu({
                       }
                       style={{
                         ...btnStyle(),
-                        background: "#16a34a",
-                        border: "1px solid #16a34a",
-                        color: "#dcfce7",
-                        borderRadius: 999,
+                        background: "var(--tb-a-green-600)",
+                        border: "1px solid var(--tb-a-green-600)",
+                        color: "var(--tb-a-green-100)",
+                        padding: "7px 18px",
+                        fontSize: 13,
                         opacity: canEdit ? 1 : 0.5,
                       }}
                     >
@@ -579,10 +595,11 @@ function VisibilityToggle({
         position: "relative",
         display: "flex",
         width: "100%",
-        height: 26,
+        height: 30,
         borderRadius: 999,
-        background: "#0a0a0a",
-        border: "1px solid #27272a",
+        flexShrink: 0,
+        background: "var(--tb-n-0)",
+        border: "1px solid var(--tb-n-7)",
         opacity: disabled ? 0.5 : 1,
         overflow: "hidden",
       }}
@@ -597,7 +614,7 @@ function VisibilityToggle({
           left: value ? "50%" : 2,
           width: "calc(50% - 2px)",
           borderRadius: 999,
-          background: value ? "#166534" : "#3f3f46",
+          background: value ? "var(--tb-a-green-800)" : "var(--tb-n-9)",
           transition: "left 160ms ease, background 160ms ease",
         }}
       />
@@ -628,9 +645,9 @@ function VisibilityToggle({
               letterSpacing: 0.3,
               color: active
                 ? isPublicSide
-                  ? "#dcfce7"
-                  : "#fafafa"
-                : "#71717a",
+                  ? "var(--tb-a-green-100)"
+                  : "var(--tb-n-17)"
+                : "var(--tb-n-11)",
               cursor: disabled || active ? "default" : "pointer",
               transition: "color 160ms ease",
             }}
@@ -643,51 +660,253 @@ function VisibilityToggle({
   );
 }
 
-// Numeric resolution input: commits on blur / Enter, reverts on invalid.
+// Chain toggle between the W/H fields. Locked draws the connecting bar
+// and makes an edit to either side drive the other.
+function AspectLock({
+  locked,
+  onToggle,
+}: {
+  locked: boolean;
+  onToggle: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      aria-pressed={locked}
+      aria-label="Lock aspect ratio"
+      title={
+        locked
+          ? "Aspect ratio locked — editing one side scales the other. Click to unlink."
+          : "Aspect ratio unlocked — width and height move independently. Click to link."
+      }
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 18,
+        height: 18,
+        padding: 0,
+        flexShrink: 0,
+        background: "transparent",
+        border: "none",
+        color: locked
+          ? "var(--tb-a-blue-400)"
+          : hover
+            ? "var(--tb-n-14)"
+            : "var(--tb-n-10)",
+        cursor: "pointer",
+        transition: "color 120ms",
+      }}
+    >
+      <svg
+        width={14}
+        height={14}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        aria-hidden
+      >
+        <path d="M9 17H7A5 5 0 0 1 7 7h2" />
+        <path d="M15 7h2a5 5 0 1 1 0 10h-2" />
+        {locked && <path d="M8 12h8" />}
+      </svg>
+    </button>
+  );
+}
+
+// Numeric resolution input. Drag horizontally to scrub, click to type
+// (math expressions allowed: "1920/2"). Ported from AutoLayoutPanel's
+// NumInput so the two numeric fields behave identically.
 function ResField({
+  label,
   value,
   onCommit,
-  min = 16,
-  max = 8192,
+  onGestureStart,
+  min = MIN_RES,
+  max = MAX_RES,
 }: {
+  label: string;
   value: number;
   onCommit: (n: number) => void;
+  // Fired before the value can change — lets the parent snapshot the
+  // aspect ratio for the duration of the gesture.
+  onGestureStart?: () => void;
   min?: number;
   max?: number;
 }) {
-  const [draft, setDraft] = useState(String(value));
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  // Latest value/callbacks reachable from the pointer handlers without
+  // re-binding them mid-drag.
+  const valueRef = useRef(value);
+  const onCommitRef = useRef(onCommit);
+  const onGestureStartRef = useRef(onGestureStart);
   useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-  const commit = () => {
-    const n = Math.round(parseFloat(draft));
-    if (!Number.isFinite(n) || n < min || n > max) {
-      setDraft(String(value));
-      return;
-    }
-    if (n !== value) onCommit(n);
+    valueRef.current = value;
+    onCommitRef.current = onCommit;
+    onGestureStartRef.current = onGestureStart;
+  });
+  const scrub = useRef<{
+    startX: number;
+    startVal: number;
+    moved: boolean;
+  } | null>(null);
+  const raf = useRef<number | null>(null);
+  const pending = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (raf.current != null) cancelAnimationFrame(raf.current);
+    },
+    []
+  );
+
+  const clamp = (v: number) => Math.min(max, Math.max(min, v));
+  const emit = (v: number) => {
+    const r = Math.round(v);
+    if (r !== valueRef.current) onCommitRef.current(r);
   };
+  // Coalesce scrub updates to one per frame — each commit re-renders the
+  // panel and re-evaluates the pipeline at the new resolution.
+  const flush = () => {
+    raf.current = null;
+    if (pending.current != null) {
+      emit(pending.current);
+      pending.current = null;
+    }
+  };
+  const queue = (v: number) => {
+    pending.current = v;
+    if (raf.current == null) raf.current = requestAnimationFrame(flush);
+  };
+  // Commit the in-flight value synchronously on release: closing the
+  // dropdown right after a drag unmounts us, and the cleanup below would
+  // otherwise cancel the frame still holding the user's final value.
+  const flushNow = () => {
+    if (raf.current != null) {
+      cancelAnimationFrame(raf.current);
+      raf.current = null;
+    }
+    if (pending.current != null) {
+      emit(pending.current);
+      pending.current = null;
+    }
+  };
+
+  const beginEdit = () => {
+    onGestureStartRef.current?.();
+    setDraft(String(valueRef.current));
+    setEditing(true);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  };
+  const commit = (raw: string) => {
+    setEditing(false); // display falls back to `value` — invalid input reverts
+    const p = evalNumExpr(raw); // plain numbers or math: "1920/2", "24*8"
+    const n = p === null ? NaN : Math.round(p);
+    if (!Number.isFinite(n) || n < min || n > max) return;
+    emit(n);
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLInputElement>) => {
+    if (editing || e.button !== 0) return;
+    e.preventDefault(); // decide click-vs-scrub on release
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* capture unsupported — events still fire */
+    }
+    onGestureStartRef.current?.();
+    scrub.current = {
+      startX: e.clientX,
+      startVal: valueRef.current,
+      moved: false,
+    };
+  };
+  const onPointerMove = (e: React.PointerEvent<HTMLInputElement>) => {
+    const s = scrub.current;
+    if (!s) return;
+    const dx = e.clientX - s.startX;
+    if (!s.moved && Math.abs(dx) < SCRUB_PX) return;
+    s.moved = true;
+    // ~2px of resolution per pixel dragged, so a full sweep crosses the
+    // usual 512–4096 working range. Shift = precision.
+    const perPx = (e.shiftKey ? 0.25 : 1) * 2;
+    queue(clamp(s.startVal + dx * perPx));
+  };
+  const onPointerUp = (e: React.PointerEvent<HTMLInputElement>) => {
+    const s = scrub.current;
+    scrub.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    if (s?.moved) flushNow();
+    else if (s) beginEdit(); // clean click → type
+  };
+  const onPointerCancel = () => {
+    if (scrub.current?.moved) flushNow();
+    scrub.current = null;
+  };
+
   return (
     <input
-      type="number"
-      value={draft}
-      min={min}
-      max={max}
-      step={1}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
+      ref={inputRef}
+      type="text"
+      inputMode="decimal"
+      aria-label={label}
+      title="Drag to scrub · click to type"
+      value={editing ? draft : String(value)}
+      onChange={(e) => editing && setDraft(e.target.value)}
+      onMouseDown={(e) => {
+        if (!editing) e.preventDefault(); // suppress focus until release
+      }}
+      onFocus={() => {
+        if (!editing) beginEdit();
+      }}
+      onBlur={(e) => editing && commit(e.target.value)}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        else if (e.key === "Escape") {
+          setEditing(false);
+          (e.target as HTMLInputElement).blur();
+        } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+          e.preventDefault();
+          onGestureStartRef.current?.();
+          const d = (e.key === "ArrowUp" ? 1 : -1) * (e.shiftKey ? 10 : 1);
+          emit(clamp((valueRef.current || 0) + d));
+        }
       }}
       style={{
+        // border-box: there's no global reset, and the padding bump would
+        // otherwise widen these and starve the preset select beside them.
         width: 60,
-        background: "#0a0a0a",
-        border: "1px solid #27272a",
-        color: "#e5e7eb",
+        // Matched to the preset Dropdown and the visibility toggle so the
+        // three controls share one height.
+        height: 30,
+        boxSizing: "border-box",
+        background: "var(--tb-n-0)",
+        border: "1px solid var(--tb-n-7)",
+        color: "var(--tb-n-16)",
         fontFamily: "inherit",
         fontSize: 11,
-        borderRadius: 3,
-        padding: "4px 6px",
+        borderRadius: 10,
+        padding: "0 10px",
+        outline: "none",
+        cursor: editing ? "text" : "ew-resize",
       }}
     />
   );
@@ -695,13 +914,14 @@ function ResField({
 
 function btnStyle(): React.CSSProperties {
   return {
-    padding: "3px 10px",
+    padding: "6px 14px",
     background: "transparent",
-    border: "1px solid #3f3f46",
-    color: "#e5e7eb",
+    border: "1px solid var(--tb-n-9)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 11,
-    borderRadius: 3,
+    // Pill, to sit with the rounded fields and the visibility toggle.
+    borderRadius: 999,
     cursor: "pointer",
   };
 }

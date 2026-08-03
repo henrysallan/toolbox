@@ -33,20 +33,20 @@ export default function McpPairingDialog({
         onClick={(e) => e.stopPropagation()}
         style={{
           minWidth: 360,
-          background: "#18181b",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-3)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 6,
           padding: 16,
-          fontFamily: "ui-monospace, monospace",
+          fontFamily: "var(--ui-font)",
           fontSize: 12,
-          color: "#e5e7eb",
+          color: "var(--tb-n-16)",
           boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
         }}
       >
         <div
           style={{
             marginBottom: 10,
-            color: "#a1a1aa",
+            color: "var(--tb-n-13)",
             fontSize: 10,
             textTransform: "uppercase",
             letterSpacing: 1,
@@ -65,8 +65,8 @@ export default function McpPairingDialog({
             letterSpacing: 8,
             padding: "10px 0",
             marginBottom: 14,
-            background: "#0a0a0a",
-            border: "1px solid #27272a",
+            background: "var(--tb-n-0)",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 3,
           }}
         >
@@ -77,8 +77,8 @@ export default function McpPairingDialog({
             onClick={onCancel}
             style={{
               background: "transparent",
-              border: "1px solid #3f3f46",
-              color: "#a1a1aa",
+              border: "1px solid var(--tb-n-9)",
+              color: "var(--tb-n-13)",
               fontSize: 11,
               padding: "5px 12px",
               borderRadius: 3,
@@ -92,8 +92,8 @@ export default function McpPairingDialog({
             onClick={onConfirm}
             autoFocus
             style={{
-              background: "#2563eb",
-              border: "1px solid #2563eb",
+              background: "var(--tb-a-blue-600)",
+              border: "1px solid var(--tb-a-blue-600)",
               color: "#fff",
               fontSize: 11,
               padding: "5px 12px",

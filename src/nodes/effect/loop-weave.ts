@@ -17,8 +17,9 @@ import { buildLoopWeave, type WeaveParams } from "@/engine/spline-weave";
 // Aux outputs carry the guide geometry from the reference look: `orbits`
 // = each point's full orbit ellipse (style gray downstream), `skipped` =
 // the untraveled arc of each orbit (Stroke's dash for the dashed-guide
-// look). Both are groupIndex-tagged with the source point index and only
-// built when consumed.
+// look). Both are groupIndex-tagged with the source point index and built
+// unconditionally — this node caches, so consumption-gating an output would
+// serve a stale-empty spline once wired (see compute + 072226 audit #5).
 //
 // Draw-on two ways: `progress` (keyframable, point-tour domain — reveals
 // whole orbits, stable under live appends where an arc-length trim would
@@ -70,6 +71,8 @@ export const loopWeaveNode: NodeDefinition = {
   name: "Loop Weave",
   category: "spline",
   subcategory: "generator",
+  description:
+    "Draw one continuous spline through a point set, loop-de-looping around each point in an elliptical orbit. Alternate-handed orbits weave (connectors cross between points); same-handed reads as cursive loops. Spiral, lobes and wobble reshape the loops; tension, swing and sag reshape the runs between them. Aux outputs carry the orbit ellipses and untraveled dashed-guide arcs. Progress reveals the path point by point; auto reveal draws each arriving point's loop with the timeline.",
   backend: "webgl2",
   inputs: [{ name: "points", type: "points", required: true }],
   params: [
@@ -313,7 +316,7 @@ export const loopWeaveNode: NodeDefinition = {
     return state.inFlight ? `rv:${ctx.tick}` : "";
   },
 
-  compute({ inputs, params, ctx, nodeId, consumedOutputs }) {
+  compute({ inputs, params, ctx, nodeId }) {
     const pts = inputs.points as PointsValue | undefined;
     const smoothness = (params.smoothness as number) ?? 0.5;
     const weaveParams: WeaveParams = {
@@ -373,15 +376,21 @@ export const loopWeaveNode: NodeDefinition = {
       };
     }
 
-    const wantOrbits = !consumedOutputs || consumedOutputs.has("aux:orbits");
-    const wantSkipped = !consumedOutputs || consumedOutputs.has("aux:skipped");
+    // Build the orbits/skipped aux outputs UNCONDITIONALLY, not gated on
+    // consumedOutputs. This node caches (it's `stable`), and a consumer's
+    // existence is not part of the fingerprint — so gating on it meant a cache
+    // entry built while orbits was unconsumed would serve an empty spline
+    // forever once something wired orbits, until an unrelated edit busted the
+    // fp. Consumption-gating an output is only sound for stable:false nodes;
+    // this follows the advect-points precedent of building trails always. See
+    // 072226 audit #5.
     const res = buildLoopWeave(
       pts,
       ctx.width,
       ctx.height,
       weaveParams,
-      wantOrbits,
-      wantSkipped
+      true,
+      true
     );
 
     return {

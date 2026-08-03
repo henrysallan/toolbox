@@ -21,6 +21,7 @@ import type {
 } from "@/engine/types";
 import { parseCsv, type CsvDelimiter } from "@/engine/csv-parse";
 import { registerImageOriginal } from "@/lib/image-bytes";
+import { evalNumExpr } from "@/lib/num-expr";
 import { newExprInput } from "@/nodes/effect/expression";
 import { newWedgeValueId, WEDGE_TYPE_DEFAULTS } from "@/nodes/source/wedge";
 import { syncChannelInputs } from "@/nodes/effect/point-expression";
@@ -67,6 +68,11 @@ import {
   type KeyframeAnimationBlock,
 } from "@/engine/keyframes";
 import KeyframeDiamond from "@/components/effects/KeyframeDiamond";
+import {
+  ownerDocument,
+  ownerWindow,
+  usePanelWindow,
+} from "@/components/effects/layout/panel-window";
 import { ColorSwatchPicker } from "@/lib/color-picker-popover";
 
 export function DampenedRangeInput(
@@ -80,6 +86,7 @@ export function DampenedRangeInput(
   }
 ) {
   const { value, onChange, shiftFactor = 0.1, ...rest } = props;
+  const panelWin = usePanelWindow();
   const dragRef = useRef<{ lastNative: number } | null>(null);
   const shiftRef = useRef(false);
 
@@ -143,13 +150,14 @@ export function DampenedRangeInput(
     const onKey = (e: KeyboardEvent) => {
       shiftRef.current = e.shiftKey;
     };
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("keyup", onKey);
+    const win = panelWin ?? window;
+    win.addEventListener("keydown", onKey);
+    win.addEventListener("keyup", onKey);
     return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("keyup", onKey);
+      win.removeEventListener("keydown", onKey);
+      win.removeEventListener("keyup", onKey);
     };
-  }, []);
+  }, [panelWin]);
   return (
     <input
       type="range"
@@ -208,9 +216,9 @@ export function LoadFileButton({
         gap: 6,
         padding: "5px 14px",
         borderRadius: 999,
-        background: hover ? "#1e376b" : "#172a52",
-        border: "1px solid #2563eb",
-        color: "#bfdbfe",
+        background: hover ? "var(--tb-t-navy-d-6)" : "var(--tb-t-navy-d-7)",
+        border: "1px solid var(--tb-a-blue-600)",
+        color: "var(--tb-a-blue-200)",
         fontFamily: "inherit",
         fontSize: 11,
         cursor: "pointer",
@@ -239,8 +247,8 @@ export function LoadedFilePill({
         gap: 7,
         padding: "3px 12px 3px 3px",
         borderRadius: 999,
-        background: "#18181b",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-7)",
         minWidth: 0,
         maxWidth: "100%",
       }}
@@ -248,7 +256,7 @@ export function LoadedFilePill({
       {thumb}
       <span
         style={{
-          color: "#d4d4d8",
+          color: "var(--tb-n-15)",
           fontSize: 10,
           whiteSpace: "nowrap",
           overflow: "hidden",
@@ -285,9 +293,9 @@ export function MatchAspectButton({
       }
       title="Set the project's aspect ratio to match this source (keeps the current longest side)"
       style={{
-        background: "#27272a",
-        border: "1px solid #3f3f46",
-        color: "#d4d4d8",
+        background: "var(--tb-n-7)",
+        border: "1px solid var(--tb-n-9)",
+        color: "var(--tb-n-15)",
         fontFamily: "inherit",
         fontSize: 10,
         padding: "4px 8px",
@@ -403,7 +411,7 @@ function ExrSwatch() {
         height: 24,
         borderRadius: 4,
         background:
-          "linear-gradient(135deg, #18181b 0%, #3f3f46 45%, #fafafa 100%)",
+          "linear-gradient(135deg, var(--tb-n-3) 0%, var(--tb-n-9) 45%, var(--tb-n-17) 100%)",
       }}
     />
   );
@@ -509,7 +517,7 @@ export function SequenceThumb({
   return bmp ? (
     <BitmapThumb bitmap={bmp} />
   ) : (
-    <div style={{ width: 24, height: 24, borderRadius: 4, background: "#27272a" }} />
+    <div style={{ width: 24, height: 24, borderRadius: 4, background: "var(--tb-n-7)" }} />
   );
 }
 
@@ -634,11 +642,11 @@ export function ModelFileControl({
                 width: 22,
                 height: 22,
                 borderRadius: 4,
-                background: "#27272a",
+                background: "var(--tb-n-7)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                color: "#a1a1aa",
+                color: "var(--tb-n-13)",
               }}
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -715,7 +723,7 @@ export function AudioFileControl({
       />
       {current && (
         <LoadedFilePill
-          thumb={<span style={{ color: "#71717a", fontSize: 11 }}>♪</span>}
+          thumb={<span style={{ color: "var(--tb-n-11)", fontSize: 11 }}>♪</span>}
           name={`${current.filename ?? "audio"} · ${
             Number.isFinite(current.duration)
               ? `${current.duration.toFixed(1)}s`
@@ -733,8 +741,8 @@ export function AudioFileControl({
           style={{
             padding: "2px 6px",
             background: "transparent",
-            border: "1px solid #3f3f46",
-            color: "#a1a1aa",
+            border: "1px solid var(--tb-n-9)",
+            color: "var(--tb-n-13)",
             fontFamily: "inherit",
             fontSize: 10,
             borderRadius: 3,
@@ -836,7 +844,7 @@ export function CsvFileControl({
         {current?.filename && (
           <LoadedFilePill thumb={<CsvSwatch />} name={current.filename} />
         )}
-        <span style={{ color: "#71717a", fontSize: 10 }}>{summary}</span>
+        <span style={{ color: "var(--tb-n-11)", fontSize: 10 }}>{summary}</span>
       </div>
       <textarea
         value={text}
@@ -853,10 +861,10 @@ export function CsvFileControl({
           width: "100%",
           minHeight: 64,
           resize: "vertical",
-          background: "#0a0a0a",
-          border: "1px solid #27272a",
-          color: "#e5e7eb",
-          fontFamily: "ui-monospace, monospace",
+          background: "var(--tb-n-0)",
+          border: "1px solid var(--tb-n-7)",
+          color: "var(--tb-n-16)",
+          fontFamily: "var(--code-font)",
           fontSize: 10,
           padding: "4px 6px",
           boxSizing: "border-box",
@@ -873,10 +881,10 @@ export function CsvFileControl({
 export function CsvSwatch({ size = 22 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 22 22" style={{ flex: "0 0 auto" }}>
-      <rect x="2.5" y="3.5" width="17" height="15" rx="2" fill="#0f172a" stroke="#334155" />
-      <line x1="2.5" y1="8.5" x2="19.5" y2="8.5" stroke="#334155" />
-      <line x1="8" y1="3.5" x2="8" y2="18.5" stroke="#334155" />
-      <line x1="13.5" y1="3.5" x2="13.5" y2="18.5" stroke="#334155" />
+      <rect x="2.5" y="3.5" width="17" height="15" rx="2" fill="var(--tb-t-navy-d-8)" stroke="var(--tb-a-slate-700)" />
+      <line x1="2.5" y1="8.5" x2="19.5" y2="8.5" stroke="var(--tb-a-slate-700)" />
+      <line x1="8" y1="3.5" x2="8" y2="18.5" stroke="var(--tb-a-slate-700)" />
+      <line x1="13.5" y1="3.5" x2="13.5" y2="18.5" stroke="var(--tb-a-slate-700)" />
     </svg>
   );
 }
@@ -891,9 +899,9 @@ export function LutSwatch({ size = 22 }: { size?: number }) {
         height: size,
         flexShrink: 0,
         borderRadius: "50%",
-        border: "1px solid #3f3f46",
+        border: "1px solid var(--tb-n-9)",
         background:
-          "conic-gradient(from 0deg, #ef4444, #facc15, #22c55e, #3b82f6, #a855f7, #ef4444)",
+          "conic-gradient(from 0deg, var(--tb-a-red-500), var(--tb-a-yellow-400), var(--tb-a-green-500), var(--tb-a-blue-500), #a855f7, var(--tb-a-red-500))",
       }}
     />
   );
@@ -931,7 +939,7 @@ export function BitmapThumb({
         borderRadius: "50%",
         display: "block",
         flexShrink: 0,
-        border: "1px solid #3f3f46",
+        border: "1px solid var(--tb-n-9)",
       }}
     />
   );
@@ -980,7 +988,7 @@ export function VideoThumb({
         borderRadius: "50%",
         display: "block",
         flexShrink: 0,
-        border: "1px solid #3f3f46",
+        border: "1px solid var(--tb-n-9)",
       }}
     />
   );
@@ -1213,9 +1221,9 @@ export function ColorControl({
   };
 
   const textStyle: React.CSSProperties = {
-    background: "#0a0a0a",
-    border: "1px solid #27272a",
-    color: "#e5e7eb",
+    background: "var(--tb-n-0)",
+    border: "1px solid var(--tb-n-7)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 10,
     padding: "1px 3px",
@@ -1265,12 +1273,23 @@ export function ColorControl({
   );
 }
 
+// Decimal places a step implies, read off its decimal representation so
+// fractional steps ≥ 1 keep their digits (0.01 → 2, 1.2 → 1, 2 → 0 — the
+// old log10 form floored 1.2 to 0 and displayed 2.4 as "2"). Exponent
+// notation (1e-7) has no "." to count; fall back to the log10 bound.
+function stepDecimals(step: number): number {
+  const s = String(step);
+  if (s.includes("e") || s.includes("E"))
+    return step < 1 ? Math.min(6, Math.ceil(-Math.log10(step))) : 0;
+  const dot = s.indexOf(".");
+  return dot < 0 ? 0 : Math.min(6, s.length - dot - 1);
+}
+
 // Format a number for display, trimming float noise to the precision the
 // step implies (step 0.01 → 2 decimals) and dropping trailing zeros.
 export function formatNum(v: number, step: number): string {
   if (!Number.isFinite(v)) return "0";
-  const decimals =
-    step > 0 && step < 1 ? Math.min(6, Math.ceil(-Math.log10(step))) : 0;
+  const decimals = step > 0 ? stepDecimals(step) : 0;
   let s = v.toFixed(decimals);
   if (s.indexOf(".") >= 0) s = s.replace(/0+$/, "").replace(/\.$/, "");
   return s;
@@ -1328,7 +1347,7 @@ export function StepButton({
         padding: 0,
         margin: 0,
         cursor: "pointer",
-        color: "#a1a1aa",
+        color: "var(--tb-n-13)",
         lineHeight: 0,
       }}
     >
@@ -1361,7 +1380,7 @@ export function NumberField({
   max,
   step = 1,
   width = 56,
-  borderColor = "#27272a",
+  borderColor = "var(--tb-n-7)",
   title,
 }: {
   value: number;
@@ -1437,8 +1456,8 @@ export function NumberField({
     if (t === "") {
       next = 0; // blank confirms to 0
     } else {
-      const p = parseFloat(t);
-      if (Number.isNaN(p)) {
+      const p = evalNumExpr(t); // plain numbers or math: "1920/2", "24*8+1"
+      if (p === null) {
         setEditing(false); // garbage — revert to the live value
         return;
       }
@@ -1491,7 +1510,7 @@ export function NumberField({
         alignItems: "stretch",
         width,
         height: 18,
-        background: "#0a0a0a",
+        background: "var(--tb-n-0)",
         border: `1px solid ${borderColor}`,
         borderRadius: 3,
         boxSizing: "border-box",
@@ -1503,7 +1522,7 @@ export function NumberField({
         type="text"
         inputMode="decimal"
         value={editing ? draft : formatNum(value, step)}
-        title={title ?? "Drag to scrub · click to type"}
+        title={title ?? "Drag to scrub · click to type · math ok (1920/2, 24*8)"}
         onChange={(e) => editing && setDraft(e.target.value)}
         onFocus={() => {
           if (!editing) beginEdit();
@@ -1537,7 +1556,7 @@ export function NumberField({
           background: "transparent",
           border: "none",
           outline: "none",
-          color: "#8a8a90",
+          color: "var(--tb-n-12)",
           fontFamily: "inherit",
           fontSize: 10,
           padding: "1px 3px",
@@ -1550,7 +1569,7 @@ export function NumberField({
           flexDirection: "column",
           width: 11,
           flexShrink: 0,
-          borderLeft: "1px solid rgba(255,255,255,0.18)",
+          borderLeft: "1px solid color-mix(in srgb, var(--tb-lift) 18%, transparent)",
         }}
       >
         <StepButton dir="up" title="Increase" onStep={() => stepBy(1)} />
@@ -1573,7 +1592,7 @@ export function HslField({
 }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
-      <span style={{ color: "#52525b", fontSize: 9, flexShrink: 0 }}>
+      <span style={{ color: "var(--tb-n-10)", fontSize: 9, flexShrink: 0 }}>
         {label}
       </span>
       <NumberField
@@ -1615,8 +1634,8 @@ export function SegmentedControl({
         display: "flex",
         gap: 2,
         padding: 2,
-        background: "#18181b",
-        border: "1px solid #3f3f46",
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-9)",
         borderRadius: 999,
       }}
     >
@@ -1628,8 +1647,8 @@ export function SegmentedControl({
             onClick={() => onChange(o.value)}
             style={{
               flex: 1,
-              background: on ? "#3f3f46" : "transparent",
-              color: on ? "#fafafa" : "#a1a1aa",
+              background: on ? "var(--tb-n-9)" : "transparent",
+              color: on ? "var(--tb-n-17)" : "var(--tb-n-13)",
               border: "none",
               borderRadius: 999,
               padding: "3px 8px",
@@ -1661,6 +1680,7 @@ export function Dropdown({
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const panelWin = usePanelWindow();
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
   const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(
@@ -1697,15 +1717,16 @@ export function Dropdown({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onMove);
-    window.addEventListener("keydown", onKey);
+    const win = ownerWindow(btnRef.current);
+    win.addEventListener("mousedown", onDown);
+    win.addEventListener("scroll", onScroll, true);
+    win.addEventListener("resize", onMove);
+    win.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onMove);
-      window.removeEventListener("keydown", onKey);
+      win.removeEventListener("mousedown", onDown);
+      win.removeEventListener("scroll", onScroll, true);
+      win.removeEventListener("resize", onMove);
+      win.removeEventListener("keydown", onKey);
     };
   }, [open]);
 
@@ -1723,10 +1744,10 @@ export function Dropdown({
           gap: 4,
           width: "100%",
           height: 20,
-          background: "#0a0a0a",
-          border: `1px solid ${open ? "#3f3f46" : "#27272a"}`,
+          background: "var(--tb-n-0)",
+          border: `1px solid ${open ? "var(--tb-n-9)" : "var(--tb-n-7)"}`,
           borderRadius: 4,
-          color: "#8a8a90",
+          color: "var(--tb-n-12)",
           fontFamily: "inherit",
           fontSize: 11,
           padding: "0 6px",
@@ -1749,7 +1770,7 @@ export function Dropdown({
           width={8}
           height={5}
           viewBox="0 0 8 5"
-          style={{ flexShrink: 0, color: "#71717a" }}
+          style={{ flexShrink: 0, color: "var(--tb-n-11)" }}
           aria-hidden
         >
           <polyline
@@ -1768,6 +1789,11 @@ export function Dropdown({
           <div
             ref={popRef}
             className="thin-scrollbar"
+            // Marks the portaled list so host popovers with their own
+            // outside-click-to-close can tell "clicked an option" from
+            // "clicked away" — the portal renders under <body>, outside
+            // the host's DOM subtree, so contains() alone says away.
+            data-tb-dropdown
             style={{
               position: "fixed",
               left: rect.left,
@@ -1775,8 +1801,8 @@ export function Dropdown({
               width: rect.width,
               maxHeight: 260,
               overflowY: "auto",
-              background: "#111113",
-              border: "1px solid #27272a",
+              background: "var(--tb-n-1)",
+              border: "1px solid var(--tb-n-7)",
               borderRadius: 4,
               boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
               zIndex: 10000,
@@ -1794,7 +1820,7 @@ export function Dropdown({
                     setOpen(false);
                   }}
                   onMouseEnter={(e) => {
-                    if (!sel) e.currentTarget.style.background = "#18181b";
+                    if (!sel) e.currentTarget.style.background = "var(--tb-n-3)";
                   }}
                   onMouseLeave={(e) => {
                     if (!sel) e.currentTarget.style.background = "transparent";
@@ -1803,9 +1829,9 @@ export function Dropdown({
                     display: "block",
                     width: "100%",
                     textAlign: "left",
-                    background: sel ? "#1f1f23" : "transparent",
+                    background: sel ? "var(--tb-n-5)" : "transparent",
                     border: "none",
-                    color: sel ? "#facc15" : "#8a8a90",
+                    color: sel ? "var(--tb-a-yellow-400)" : "var(--tb-n-12)",
                     fontFamily: "inherit",
                     fontSize: 11,
                     padding: "4px 7px",
@@ -1821,7 +1847,11 @@ export function Dropdown({
               );
             })}
           </div>,
-          document.body
+          // The panel's OWN document — a popped-out panel portalling to
+          // the main <body> would open its list in the wrong window.
+          // Read from context, not the ref: portal targets are computed
+          // during render, where refs are off-limits.
+          (panelWin ?? window).document.body
         )}
     </>
   );
@@ -1842,6 +1872,7 @@ export function FontPicker({
   onChange: (v: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const panelWin = usePanelWindow();
   const [search, setSearch] = useState("");
   // null = not yet enumerated; [] = unsupported / denied.
   const [local, setLocal] = useState<{ family: string }[] | null>(null);
@@ -1896,15 +1927,16 @@ export function FontPicker({
       if (e.key === "Escape") setOpen(false);
     };
     const onResize = () => setOpen(false);
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
-    window.addEventListener("keydown", onKey);
+    const win = ownerWindow(btnRef.current);
+    win.addEventListener("mousedown", onDown);
+    win.addEventListener("scroll", onScroll, true);
+    win.addEventListener("resize", onResize);
+    win.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onResize);
-      window.removeEventListener("keydown", onKey);
+      win.removeEventListener("mousedown", onDown);
+      win.removeEventListener("scroll", onScroll, true);
+      win.removeEventListener("resize", onResize);
+      win.removeEventListener("keydown", onKey);
     };
   }, [open, local]);
 
@@ -1955,10 +1987,10 @@ export function FontPicker({
           gap: 4,
           width: "100%",
           height: 20,
-          background: "#0a0a0a",
-          border: `1px solid ${open ? "#3f3f46" : "#27272a"}`,
+          background: "var(--tb-n-0)",
+          border: `1px solid ${open ? "var(--tb-n-9)" : "var(--tb-n-7)"}`,
           borderRadius: 4,
-          color: "#c4c4c8",
+          color: "var(--tb-n-14)",
           fontFamily: value ? `"${value}", inherit` : "inherit",
           fontSize: 11,
           padding: "0 6px",
@@ -1976,7 +2008,7 @@ export function FontPicker({
           width={8}
           height={5}
           viewBox="0 0 8 5"
-          style={{ flexShrink: 0, color: "#71717a" }}
+          style={{ flexShrink: 0, color: "var(--tb-n-11)" }}
           aria-hidden
         >
           <polyline
@@ -1999,8 +2031,8 @@ export function FontPicker({
               left: rect.left,
               top: rect.top,
               width: Math.max(rect.width, 200),
-              background: "#111113",
-              border: "1px solid #27272a",
+              background: "var(--tb-n-1)",
+              border: "1px solid var(--tb-n-7)",
               borderRadius: 4,
               boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
               zIndex: 10000,
@@ -2019,10 +2051,10 @@ export function FontPicker({
               style={{
                 width: "100%",
                 height: 22,
-                background: "#0a0a0a",
-                border: "1px solid #27272a",
+                background: "var(--tb-n-0)",
+                border: "1px solid var(--tb-n-7)",
                 borderRadius: 3,
-                color: "#e5e7eb",
+                color: "var(--tb-n-16)",
                 fontFamily: "inherit",
                 fontSize: 11,
                 padding: "0 6px",
@@ -2043,7 +2075,7 @@ export function FontPicker({
                     type="button"
                     onClick={() => pick(o.family)}
                     onMouseEnter={(e) => {
-                      if (!sel) e.currentTarget.style.background = "#18181b";
+                      if (!sel) e.currentTarget.style.background = "var(--tb-n-3)";
                     }}
                     onMouseLeave={(e) => {
                       if (!sel) e.currentTarget.style.background = "transparent";
@@ -2055,9 +2087,9 @@ export function FontPicker({
                       gap: 8,
                       width: "100%",
                       textAlign: "left",
-                      background: sel ? "#1f1f23" : "transparent",
+                      background: sel ? "var(--tb-n-5)" : "transparent",
                       border: "none",
-                      color: sel ? "#facc15" : "#c4c4c8",
+                      color: sel ? "var(--tb-a-yellow-400)" : "var(--tb-n-14)",
                       // Preview each row in its own family. Installed/system
                       // render immediately; curated render once loaded.
                       fontFamily: `"${o.family}", sans-serif`,
@@ -2083,7 +2115,7 @@ export function FontPicker({
                       <span
                         style={{
                           flexShrink: 0,
-                          color: "#52525b",
+                          color: "var(--tb-n-10)",
                           fontFamily: "inherit",
                           fontSize: 9,
                         }}
@@ -2095,18 +2127,22 @@ export function FontPicker({
                 );
               })}
               {shown.length === 0 && (
-                <div style={{ color: "#52525b", fontSize: 10, padding: "6px 7px" }}>
+                <div style={{ color: "var(--tb-n-10)", fontSize: 10, padding: "6px 7px" }}>
                   no match
                 </div>
               )}
               {overflow > 0 && (
-                <div style={{ color: "#52525b", fontSize: 9, padding: "4px 7px" }}>
+                <div style={{ color: "var(--tb-n-10)", fontSize: 9, padding: "4px 7px" }}>
                   +{overflow} more — refine search
                 </div>
               )}
             </div>
           </div>,
-          document.body
+          // The panel's OWN document — a popped-out panel portalling to
+          // the main <body> would open its list in the wrong window.
+          // Read from context, not the ref: portal targets are computed
+          // during render, where refs are off-limits.
+          (panelWin ?? window).document.body
         )}
     </>
   );
@@ -2114,9 +2150,9 @@ export function FontPicker({
 
 export function menuItemStyle(active?: boolean): React.CSSProperties {
   return {
-    background: active ? "#1f1f23" : "transparent",
+    background: active ? "var(--tb-n-5)" : "transparent",
     border: "none",
-    color: active ? "#facc15" : "#d4d4d8",
+    color: active ? "var(--tb-a-yellow-400)" : "var(--tb-n-15)",
     fontFamily: "inherit",
     fontSize: 11,
     padding: "5px 8px",
@@ -2154,8 +2190,8 @@ export function TogglePill({
         boxSizing: "border-box",
         padding: 0,
         flexShrink: 0,
-        background: on ? "#3b82f6" : "#27272a",
-        border: `1px solid ${on ? "#3b82f6" : "#3f3f46"}`,
+        background: on ? "var(--tb-a-blue-500)" : "var(--tb-n-7)",
+        border: `1px solid ${on ? "var(--tb-a-blue-500)" : "var(--tb-n-9)"}`,
         cursor: disabled ? "default" : "pointer",
         transition: "background 0.14s ease, border-color 0.14s ease",
       }}
@@ -2168,7 +2204,7 @@ export function TogglePill({
           width: 11,
           height: 11,
           borderRadius: 999,
-          background: on ? "#fff" : "#a1a1aa",
+          background: on ? "#fff" : "var(--tb-n-13)",
           transition: "left 0.14s ease, background 0.14s ease",
           pointerEvents: "none",
         }}
@@ -2215,6 +2251,21 @@ export function ParamControl({
     const sliderMax = effSoftMax ?? effMax;
     const sliderMin = effMin;
     const sliderValue = Math.max(sliderMin, Math.min(sliderMax, num));
+    // Param-driven increment (stepFrom). When active, every edit — slider,
+    // scrub, stepper, typed — snaps to zero-based multiples of it so the
+    // stored value lands ON the increments (1.2, 2.4, …), not the native
+    // range's min-offset grid. Range bounds still win at the extremes.
+    const dynStep = allParams ? param.stepFrom?.(allParams) : undefined;
+    const handleChange =
+      dynStep !== undefined && dynStep > 0
+        ? (v: unknown) => {
+            if (typeof v !== "number" || !Number.isFinite(v)) return onChange(v);
+            const snapped = parseFloat(
+              (Math.round(v / dynStep) * dynStep).toFixed(6)
+            );
+            onChange(Math.max(effMin, Math.min(effMax, snapped)));
+          }
+        : onChange;
     return (
       <ScalarSliderRow
         param={param}
@@ -2225,8 +2276,9 @@ export function ParamControl({
         sliderMin={sliderMin}
         sliderMax={sliderMax}
         sliderValue={sliderValue}
+        stepOverride={dynStep}
         rangeOverride={rangeOverride}
-        onChange={onChange}
+        onChange={handleChange}
         onRangeChange={onRangeChange}
       />
     );
@@ -2250,9 +2302,9 @@ export function ParamControl({
             width: "100%",
             minHeight: 54,
             resize: "vertical",
-            background: "#0a0a0a",
-            border: "1px solid #27272a",
-            color: "#e5e7eb",
+            background: "var(--tb-n-0)",
+            border: "1px solid var(--tb-n-7)",
+            color: "var(--tb-n-16)",
             fontFamily: "inherit",
             fontSize: 11,
             padding: "4px 6px",
@@ -2271,9 +2323,9 @@ export function ParamControl({
         spellCheck={false}
         style={{
           width: "100%",
-          background: "#0a0a0a",
-          border: "1px solid #27272a",
-          color: "#e5e7eb",
+          background: "var(--tb-n-0)",
+          border: "1px solid var(--tb-n-7)",
+          color: "var(--tb-n-16)",
           fontFamily: "inherit",
           fontSize: 11,
           padding: "2px 4px",
@@ -2339,10 +2391,10 @@ export function ParamControl({
               );
             }
           }}
-          style={{ color: "#e5e7eb", fontSize: 10 }}
+          style={{ color: "var(--tb-n-16)", fontSize: 10 }}
         />
         {current?.filename && (
-          <div style={{ color: "#71717a", fontSize: 10 }}>
+          <div style={{ color: "var(--tb-n-11)", fontSize: 10 }}>
             {current.filename} · {subpathCount} subpath
             {subpathCount === 1 ? "" : "s"}
             {current.aspect && ` · aspect ${current.aspect.toFixed(2)}`}
@@ -2354,8 +2406,8 @@ export function ParamControl({
             style={{
               padding: "2px 6px",
               background: "transparent",
-              border: "1px solid #3f3f46",
-              color: "#a1a1aa",
+              border: "1px solid var(--tb-n-9)",
+              color: "var(--tb-n-13)",
               fontFamily: "inherit",
               fontSize: 10,
               borderRadius: 3,
@@ -2387,10 +2439,10 @@ export function ParamControl({
             const registered = await mod.registerCustomFont(file);
             onChange(registered);
           }}
-          style={{ color: "#e5e7eb", fontSize: 10 }}
+          style={{ color: "var(--tb-n-16)", fontSize: 10 }}
         />
         {current?.family && (
-          <div style={{ color: "#71717a", fontSize: 10 }}>
+          <div style={{ color: "var(--tb-n-11)", fontSize: 10 }}>
             loaded: {current.filename ?? current.family}
           </div>
         )}
@@ -2400,8 +2452,8 @@ export function ParamControl({
             style={{
               padding: "2px 6px",
               background: "transparent",
-              border: "1px solid #3f3f46",
-              color: "#a1a1aa",
+              border: "1px solid var(--tb-n-9)",
+              color: "var(--tb-n-13)",
               fontFamily: "inherit",
               fontSize: 10,
               borderRadius: 3,
@@ -2435,7 +2487,7 @@ export function ParamControl({
         : {};
     if (axes.length === 0) {
       return (
-        <div style={{ color: "#71717a", fontSize: 10, fontStyle: "italic" }}>
+        <div style={{ color: "var(--tb-n-11)", fontSize: 10, fontStyle: "italic" }}>
           Upload a variable font to expose its axes.
         </div>
       );
@@ -2500,7 +2552,7 @@ export function ParamControl({
           ? file.layers
           : []);
       if (!layers.length) {
-        return <div style={{ color: "#52525b" }}>(no EXR loaded)</div>;
+        return <div style={{ color: "var(--tb-n-10)" }}>(no EXR loaded)</div>;
       }
       const effective = layers.some((l) => l.id === current)
         ? current
@@ -2558,8 +2610,8 @@ export function ParamControl({
     };
     const removeBtn: React.CSSProperties = {
       background: "transparent",
-      border: "1px solid #3f3f46",
-      color: "#a1a1aa",
+      border: "1px solid var(--tb-n-9)",
+      color: "var(--tb-n-13)",
       fontSize: 12,
       lineHeight: 1,
       padding: "2px 7px",
@@ -2612,7 +2664,7 @@ export function ParamControl({
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {list.length === 0 && (
-          <div style={{ color: "#52525b" }}>(no inputs)</div>
+          <div style={{ color: "var(--tb-n-10)" }}>(no inputs)</div>
         )}
         {list.map((e) => {
           const isChannel = !!param.channelSync;
@@ -2634,9 +2686,9 @@ export function ParamControl({
                 ...(isChannel
                   ? { width: 76, flexShrink: 0 }
                   : { flex: 1, minWidth: 0 }),
-                background: "#0c0c0e",
-                border: "1px solid #27272a",
-                color: "#e4e4e7",
+                background: "var(--tb-n-1)",
+                border: "1px solid var(--tb-n-7)",
+                color: "var(--tb-n-16)",
                 borderRadius: 3,
                 padding: "3px 6px",
                 fontFamily: "inherit",
@@ -2706,7 +2758,7 @@ export function ParamControl({
             >
               {nameField}
               <span
-                style={{ color: "#52525b", fontSize: 10, flexShrink: 0 }}
+                style={{ color: "var(--tb-n-10)", fontSize: 10, flexShrink: 0 }}
                 title="Value used when this input is not wired"
               >
                 def
@@ -2730,8 +2782,8 @@ export function ParamControl({
             onClick={() => update([...list, newExprInput(list)])}
             style={{
               background: "transparent",
-              border: "1px dashed #3f3f46",
-              color: "#a1a1aa",
+              border: "1px dashed var(--tb-n-9)",
+              color: "var(--tb-n-13)",
               fontSize: 11,
               padding: "4px 8px",
               borderRadius: 3,
@@ -2755,8 +2807,8 @@ export function ParamControl({
               title='Add controls for ch(…) sliders and pick(…) dropdowns in the expression'
               style={{
                 background: "transparent",
-                border: "1px solid #3f3f46",
-                color: "#a1a1aa",
+                border: "1px solid var(--tb-n-9)",
+                color: "var(--tb-n-13)",
                 fontSize: 11,
                 padding: "4px 8px",
                 borderRadius: 3,
@@ -2790,8 +2842,8 @@ export function ParamControl({
       update(list.map((x) => (x.id === id ? { ...x, value: v } : x)));
     const removeBtn: React.CSSProperties = {
       background: "transparent",
-      border: "1px solid #3f3f46",
-      color: "#a1a1aa",
+      border: "1px solid var(--tb-n-9)",
+      color: "var(--tb-n-13)",
       fontSize: 12,
       lineHeight: 1,
       padding: "2px 7px",
@@ -2803,9 +2855,9 @@ export function ParamControl({
     const textStyle: React.CSSProperties = {
       flex: 1,
       minWidth: 0,
-      background: "#0c0c0e",
-      border: "1px solid #27272a",
-      color: "#e4e4e7",
+      background: "var(--tb-n-1)",
+      border: "1px solid var(--tb-n-7)",
+      color: "var(--tb-n-16)",
       borderRadius: 3,
       padding: "3px 6px",
       fontFamily: "inherit",
@@ -2862,7 +2914,7 @@ export function ParamControl({
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {list.length === 0 && (
-          <div style={{ color: "#52525b" }}>(no values — batch renders once)</div>
+          <div style={{ color: "var(--tb-n-10)" }}>(no values — batch renders once)</div>
         )}
         {list.map((item, i) => (
           <div
@@ -2870,7 +2922,7 @@ export function ParamControl({
             style={{ display: "flex", gap: 6, alignItems: "center" }}
           >
             <span
-              style={{ color: "#52525b", fontSize: 10, width: 22, flexShrink: 0 }}
+              style={{ color: "var(--tb-n-10)", fontSize: 10, width: 22, flexShrink: 0 }}
               title={`Variation ${i} — emitted when the batch index is ${i}`}
             >
               {i}
@@ -2910,8 +2962,8 @@ export function ParamControl({
           }}
           style={{
             background: "transparent",
-            border: "1px dashed #3f3f46",
-            color: "#a1a1aa",
+            border: "1px dashed var(--tb-n-9)",
+            color: "var(--tb-n-13)",
             fontSize: 11,
             padding: "4px 8px",
             borderRadius: 3,
@@ -2941,7 +2993,7 @@ export function ParamControl({
       const mode = item[modeKey];
       return (
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <span style={{ color: "#71717a", width: 12, flexShrink: 0 }}>
+          <span style={{ color: "var(--tb-n-11)", width: 12, flexShrink: 0 }}>
             {axis === "width" ? "W" : "H"}
           </span>
           <Dropdown
@@ -2975,7 +3027,7 @@ export function ParamControl({
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {items.length === 0 && (
-          <div style={{ color: "#52525b" }}>(no items — use + on node)</div>
+          <div style={{ color: "var(--tb-n-10)" }}>(no items — use + on node)</div>
         )}
         {items.map((item, i) => (
           <div
@@ -2985,7 +3037,7 @@ export function ParamControl({
               flexDirection: "column",
               gap: 4,
               padding: 6,
-              border: "1px solid #27272a",
+              border: "1px solid var(--tb-n-7)",
               borderRadius: 3,
             }}
           >
@@ -2996,14 +3048,14 @@ export function ParamControl({
                 alignItems: "center",
               }}
             >
-              <span style={{ color: "#a1a1aa" }}>item {i + 1}</span>
+              <span style={{ color: "var(--tb-n-13)" }}>item {i + 1}</span>
               <button
                 onClick={() => onChange(items.filter((x) => x.id !== item.id))}
                 title="Remove item"
                 style={{
                   background: "transparent",
-                  border: "1px solid #3f3f46",
-                  color: "#a1a1aa",
+                  border: "1px solid var(--tb-n-9)",
+                  color: "var(--tb-n-13)",
                   fontSize: 10,
                   padding: "1px 6px",
                   borderRadius: 3,
@@ -3017,7 +3069,7 @@ export function ParamControl({
             {axisRow(item, "width")}
             {axisRow(item, "height")}
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <span style={{ color: "#71717a", width: 12, flexShrink: 0 }} />
+              <span style={{ color: "var(--tb-n-11)", width: 12, flexShrink: 0 }} />
               <Dropdown
                 value={item.fit}
                 options={fits}
@@ -3037,7 +3089,7 @@ export function ParamControl({
                   display: "flex",
                   gap: 4,
                   alignItems: "center",
-                  color: "#a1a1aa",
+                  color: "var(--tb-n-13)",
                   cursor: "pointer",
                 }}
               >
@@ -3149,7 +3201,7 @@ export function ParamControl({
     );
   }
 
-  return <div style={{ color: "#71717a" }}>(unsupported)</div>;
+  return <div style={{ color: "var(--tb-n-11)" }}>(unsupported)</div>;
 }
 
 export const GRADIENT_MAX_POINTS = 16;
@@ -3228,6 +3280,7 @@ export function MergeLayersControl({
   layerAnim?: LayerAnimApi;
 }) {
   const modes = BLEND_MODE_ORDER;
+  const panelWin = usePanelWindow();
   const [dragId, setDragId] = useState<string | null>(null);
   // Row elements keyed by layer id, for hit-testing the reorder drag.
   const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -3260,13 +3313,14 @@ export function MergeLayersControl({
       onChange(next);
     };
     const onUp = () => setDragId(null);
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    const win = panelWin ?? window;
+    win.addEventListener("pointermove", onMove);
+    win.addEventListener("pointerup", onUp);
     return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      win.removeEventListener("pointermove", onMove);
+      win.removeEventListener("pointerup", onUp);
     };
-  }, [dragId, onChange]);
+  }, [dragId, onChange, panelWin]);
 
   const patch = (id: string, p: Partial<MergeLayer>) =>
     onChange(layers.map((x) => (x.id === id ? { ...x, ...p } : x)));
@@ -3274,7 +3328,7 @@ export function MergeLayersControl({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {layers.length === 0 && (
-        <div style={{ color: "#52525b" }}>(no layers — use + on node)</div>
+        <div style={{ color: "var(--tb-n-10)" }}>(no layers — use + on node)</div>
       )}
       {layers.map((l, i) => {
         const enabled = l.enabled !== false;
@@ -3299,9 +3353,9 @@ export function MergeLayersControl({
               flexDirection: "column",
               gap: 4,
               padding: 6,
-              border: "1px solid #27272a",
+              border: "1px solid var(--tb-n-7)",
               borderRadius: 3,
-              background: dragging ? "#1c1c20" : undefined,
+              background: dragging ? "var(--tb-n-4)" : undefined,
               opacity: dragging ? 0.6 : 1,
             }}
           >
@@ -3325,7 +3379,7 @@ export function MergeLayersControl({
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
-                    color: "#52525b",
+                    color: "var(--tb-n-10)",
                     cursor: "grab",
                     touchAction: "none",
                     flexShrink: 0,
@@ -3344,7 +3398,7 @@ export function MergeLayersControl({
                     border: "none",
                     padding: 0,
                     cursor: "pointer",
-                    color: enabled ? "#a1a1aa" : "#52525b",
+                    color: enabled ? "var(--tb-n-13)" : "var(--tb-n-10)",
                     flexShrink: 0,
                   }}
                 >
@@ -3352,7 +3406,7 @@ export function MergeLayersControl({
                 </button>
                 <span
                   style={{
-                    color: enabled ? "#a1a1aa" : "#5b5b62",
+                    color: enabled ? "var(--tb-n-13)" : "var(--tb-n-10)",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
@@ -3360,7 +3414,7 @@ export function MergeLayersControl({
                 >
                   layer {i + 1}
                   {!enabled && (
-                    <span style={{ color: "#52525b" }}> (bypassed)</span>
+                    <span style={{ color: "var(--tb-n-10)" }}> (bypassed)</span>
                   )}
                 </span>
               </div>
@@ -3374,8 +3428,8 @@ export function MergeLayersControl({
                 title="Remove layer"
                 style={{
                   background: "transparent",
-                  border: "1px solid #3f3f46",
-                  color: "#a1a1aa",
+                  border: "1px solid var(--tb-n-9)",
+                  color: "var(--tb-n-13)",
                   fontSize: 10,
                   padding: "1px 6px",
                   borderRadius: 3,
@@ -3526,7 +3580,7 @@ export function GradientPointsControl({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {points.length === 0 && (
-        <div style={{ color: "#52525b" }}>(no points — add one)</div>
+        <div style={{ color: "var(--tb-n-10)" }}>(no points — add one)</div>
       )}
       {points.map((p, i) => {
         // Animated readouts — keyframed sub-values display their evaluated
@@ -3546,7 +3600,7 @@ export function GradientPointsControl({
             flexDirection: "column",
             gap: 4,
             padding: 6,
-            border: "1px solid #27272a",
+            border: "1px solid var(--tb-n-7)",
             borderRadius: 3,
           }}
         >
@@ -3557,15 +3611,15 @@ export function GradientPointsControl({
               alignItems: "center",
             }}
           >
-            <span style={{ color: "#a1a1aa" }}>point {i + 1}</span>
+            <span style={{ color: "var(--tb-n-13)" }}>point {i + 1}</span>
             <button
               onClick={() => removePoint(p.id)}
               disabled={points.length <= 1}
               title="Remove point"
               style={{
                 background: "transparent",
-                border: "1px solid #3f3f46",
-                color: points.length <= 1 ? "#3f3f46" : "#a1a1aa",
+                border: "1px solid var(--tb-n-9)",
+                color: points.length <= 1 ? "var(--tb-n-9)" : "var(--tb-n-13)",
                 fontSize: 10,
                 padding: "1px 6px",
                 borderRadius: 3,
@@ -3592,7 +3646,7 @@ export function GradientPointsControl({
           </div>
           {/* X / Y row */}
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ color: "#71717a", width: 10, flexShrink: 0 }}>X</span>
+            <span style={{ color: "var(--tb-n-11)", width: 10, flexShrink: 0 }}>X</span>
             <NumberField
               value={dispX}
               onChange={(v) => update(p.id, { x: v })}
@@ -3602,7 +3656,7 @@ export function GradientPointsControl({
               width={56}
             />
             {diamond(gpointXKey(p.id), dispX, "Keyframe this point's X")}
-            <span style={{ color: "#71717a", width: 10, flexShrink: 0 }}>Y</span>
+            <span style={{ color: "var(--tb-n-11)", width: 10, flexShrink: 0 }}>Y</span>
             <NumberField
               value={dispY}
               onChange={(v) => update(p.id, { y: v })}
@@ -3621,8 +3675,8 @@ export function GradientPointsControl({
         disabled={points.length >= GRADIENT_MAX_POINTS}
         style={{
           background: "transparent",
-          border: "1px solid #3f3f46",
-          color: points.length >= GRADIENT_MAX_POINTS ? "#3f3f46" : "#a1a1aa",
+          border: "1px solid var(--tb-n-9)",
+          color: points.length >= GRADIENT_MAX_POINTS ? "var(--tb-n-9)" : "var(--tb-n-13)",
           fontSize: 11,
           padding: "3px 8px",
           borderRadius: 3,
@@ -3675,7 +3729,7 @@ function RampIoButtons({ keyName, io }: { keyName: string; io: RampIoApi }) {
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    border: "1px solid #27272a",
+    border: "1px solid var(--tb-n-7)",
     width: 16,
     height: 16,
     padding: 0,
@@ -3696,8 +3750,8 @@ function RampIoButtons({ keyName, io }: { keyName: string; io: RampIoApi }) {
         }
         style={{
           ...base,
-          background: exposed ? "#1e3a8a" : "transparent",
-          color: exposed ? "#bfdbfe" : "#71717a",
+          background: exposed ? "var(--tb-a-blue-900)" : "transparent",
+          color: exposed ? "var(--tb-a-blue-200)" : "var(--tb-n-11)",
         }}
       >
         <RampMaskGlyph
@@ -3715,8 +3769,8 @@ function RampIoButtons({ keyName, io }: { keyName: string; io: RampIoApi }) {
         }
         style={{
           ...base,
-          background: controlled ? "#065f46" : "transparent",
-          color: controlled ? "#a7f3d0" : "#71717a",
+          background: controlled ? "var(--tb-a-emerald-800)" : "transparent",
+          color: controlled ? "var(--tb-a-emerald-200)" : "var(--tb-n-11)",
         }}
       >
         <RampMaskGlyph src="/ControlSymbol.svg" width={10} height={10} />
@@ -3743,6 +3797,7 @@ export function ColorRampControl({
   rampIo?: RampIoApi;
 }) {
   const barRef = useRef<HTMLDivElement>(null);
+  const panelWin = usePanelWindow();
   const [dragId, setDragId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(
     stops[0]?.id ?? null
@@ -3768,13 +3823,14 @@ export function ColorRampControl({
       onChangeRef.current(next);
     };
     const onUp = () => setDragId(null);
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    const win = panelWin ?? window;
+    win.addEventListener("pointermove", onMove);
+    win.addEventListener("pointerup", onUp);
     return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      win.removeEventListener("pointermove", onMove);
+      win.removeEventListener("pointerup", onUp);
     };
-  }, [dragId]);
+  }, [dragId, panelWin]);
 
   const sorted = [...stops].sort((a, b) => a.position - b.position);
   const selected = stops.find((s) => s.id === selectedId) ?? null;
@@ -3827,7 +3883,7 @@ export function ColorRampControl({
             )
             .join(", ")})`;
   const CHECKER =
-    "repeating-conic-gradient(#1a1a1a 0% 25%, #0f0f0f 0% 50%) 0 0 / 8px 8px";
+    "repeating-conic-gradient(var(--tb-n-3) 0% 25%, var(--tb-n-1) 0% 50%) 0 0 / 8px 8px";
 
   function addStopAt(pos: number) {
     if (stops.length >= COLOR_RAMP_MAX_STOPS) return;
@@ -3900,7 +3956,7 @@ export function ColorRampControl({
           // Gradient on top of a checker so partial alpha is visible through
           // each stop.
           background: `${gradientCss}, ${CHECKER}`,
-          border: "1px solid #27272a",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 3,
           cursor: "copy",
         }}
@@ -3925,8 +3981,8 @@ export function ColorRampControl({
                 height: 10,
                 background: `${hexAlphaCss(s.color, s.alpha ?? 1)}, ${CHECKER}`,
                 border: isSelected
-                  ? "1px solid #e5e7eb"
-                  : "1px solid #52525b",
+                  ? "1px solid var(--tb-n-16)"
+                  : "1px solid var(--tb-n-10)",
                 borderRadius: 2,
                 cursor: "ew-resize",
                 marginTop: 3,
@@ -3946,7 +4002,7 @@ export function ColorRampControl({
               flexDirection: "column",
               gap: 4,
               padding: 6,
-              border: "1px solid #27272a",
+              border: "1px solid var(--tb-n-7)",
               borderRadius: 3,
             }}
           >
@@ -3957,7 +4013,7 @@ export function ColorRampControl({
                 alignItems: "center",
               }}
             >
-              <span style={{ color: "#a1a1aa" }}>
+              <span style={{ color: "var(--tb-n-13)" }}>
                 stop · {displaySorted.findIndex((s) => s.id === selected.id) + 1}/
                 {displaySorted.length}
               </span>
@@ -3966,8 +4022,8 @@ export function ColorRampControl({
                 disabled={stops.length <= 1}
                 style={{
                   background: "transparent",
-                  border: "1px solid #3f3f46",
-                  color: stops.length <= 1 ? "#3f3f46" : "#a1a1aa",
+                  border: "1px solid var(--tb-n-9)",
+                  color: stops.length <= 1 ? "var(--tb-n-9)" : "var(--tb-n-13)",
                   fontSize: 10,
                   padding: "1px 6px",
                   borderRadius: 3,
@@ -4000,7 +4056,7 @@ export function ColorRampControl({
                       alignItems: "center",
                     }}
                   >
-                    <span style={{ color: "#71717a", minWidth: 50 }}>
+                    <span style={{ color: "var(--tb-n-11)", minWidth: 50 }}>
                       color
                     </span>
                     <div
@@ -4038,7 +4094,7 @@ export function ColorRampControl({
                       alignItems: "center",
                     }}
                   >
-                    <span style={{ color: "#71717a", minWidth: 50 }}>
+                    <span style={{ color: "var(--tb-n-11)", minWidth: 50 }}>
                       alpha
                     </span>
                     <DampenedRangeInput
@@ -4065,9 +4121,9 @@ export function ColorRampControl({
                       }
                       style={{
                         width: 48,
-                        background: "#0a0a0a",
-                        border: "1px solid #27272a",
-                        color: "#e5e7eb",
+                        background: "var(--tb-n-0)",
+                        border: "1px solid var(--tb-n-7)",
+                        color: "var(--tb-n-16)",
                         fontFamily: "inherit",
                         fontSize: 11,
                         padding: "2px 4px",
@@ -4091,7 +4147,7 @@ export function ColorRampControl({
                       alignItems: "center",
                     }}
                   >
-                    <span style={{ color: "#71717a", minWidth: 50 }}>
+                    <span style={{ color: "var(--tb-n-11)", minWidth: 50 }}>
                       position
                     </span>
                     <DampenedRangeInput
@@ -4120,9 +4176,9 @@ export function ColorRampControl({
                       }
                       style={{
                         width: 48,
-                        background: "#0a0a0a",
-                        border: "1px solid #27272a",
-                        color: "#e5e7eb",
+                        background: "var(--tb-n-0)",
+                        border: "1px solid var(--tb-n-7)",
+                        color: "var(--tb-n-16)",
                         fontFamily: "inherit",
                         fontSize: 11,
                         padding: "2px 4px",
@@ -4144,10 +4200,10 @@ export function ColorRampControl({
             })()}
           </div>
         ) : (
-          <div style={{ color: "#52525b" }}>(click the bar to add a stop)</div>
+          <div style={{ color: "var(--tb-n-10)" }}>(click the bar to add a stop)</div>
         )}
       </div>
-      <div style={{ color: "#52525b", fontSize: 10 }}>
+      <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
         {stops.length}/{COLOR_RAMP_MAX_STOPS} stops — click bar to add, drag
         handles to move
       </div>
@@ -4182,7 +4238,7 @@ export function sampleRampAlpha(sorted: ColorRampStop[], p: number): number {
 // Sample the ramp at position p using linear interpolation in hex space.
 // Used to pick a "sensible" color for newly-inserted stops.
 export function sampleRampColor(sorted: ColorRampStop[], p: number): string {
-  if (sorted.length === 0) return "#808080";
+  if (sorted.length === 0) return "var(--tb-n-12)";
   if (sorted.length === 1) return sorted[0].color;
   if (p <= sorted[0].position) return sorted[0].color;
   if (p >= sorted[sorted.length - 1].position)
@@ -4223,10 +4279,10 @@ export function hexParts(hex: string): [number, number, number] {
 export const CURVE_SIZE = 200;
 export const CURVE_PAD = 8;
 export const CURVE_CHANNEL_COLORS: Record<CurveChannel, string> = {
-  rgb: "#e5e7eb",
-  r: "#ef4444",
-  g: "#22c55e",
-  b: "#3b82f6",
+  rgb: "var(--tb-n-16)",
+  r: "var(--tb-a-red-500)",
+  g: "var(--tb-a-green-500)",
+  b: "var(--tb-a-blue-500)",
 };
 export const CURVE_CHANNEL_LABELS: Record<CurveChannel, string> = {
   rgb: "RGB",
@@ -4246,12 +4302,13 @@ export const CURVE_DRAG_OFF_THRESHOLD = 40;
 export function FloatCurveEditor({
   points,
   onChange,
-  color = "#e5e7eb",
+  color = "var(--tb-n-16)",
 }: {
   points: CurvePoint[];
   onChange: (next: CurvePoint[]) => void;
   color?: string;
 }) {
+  const panelWin = usePanelWindow();
   const [dragId, setDragId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -4333,14 +4390,15 @@ export function FloatCurveEditor({
       }
       setDragId(null);
     };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    const win = panelWin ?? window;
+    win.addEventListener("pointermove", onMove);
+    win.addEventListener("pointerup", onUp);
     return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      win.removeEventListener("pointermove", onMove);
+      win.removeEventListener("pointerup", onUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dragId]);
+  }, [dragId, panelWin]);
 
   const tangents = computeMonotoneTangents(points);
 
@@ -4386,8 +4444,8 @@ export function FloatCurveEditor({
           width: "100%",
           maxWidth: CURVE_SIZE,
           height: "auto",
-          background: "#0a0a0a",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-0)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 3,
           cursor: "crosshair",
           touchAction: "none",
@@ -4407,7 +4465,7 @@ export function FloatCurveEditor({
                 y1={p.y}
                 x2={q.x}
                 y2={q.y}
-                stroke="#1f1f23"
+                stroke="var(--tb-n-5)"
                 strokeWidth={1}
               />
               <line
@@ -4415,7 +4473,7 @@ export function FloatCurveEditor({
                 y1={p2.y}
                 x2={q2.x}
                 y2={q2.y}
-                stroke="#1f1f23"
+                stroke="var(--tb-n-5)"
                 strokeWidth={1}
               />
             </g>
@@ -4431,7 +4489,7 @@ export function FloatCurveEditor({
               y1={a.y}
               x2={b.x}
               y2={b.y}
-              stroke="#27272a"
+              stroke="var(--tb-n-7)"
               strokeWidth={1}
               strokeDasharray="3 3"
             />
@@ -4449,7 +4507,7 @@ export function FloatCurveEditor({
               cx={sp.x}
               cy={sp.y}
               r={selected ? 5 : 4}
-              fill={selected ? color : "#0a0a0a"}
+              fill={selected ? color : "var(--tb-n-0)"}
               stroke={color}
               strokeWidth={selected ? 2 : 1.5}
               style={{ cursor: "grab", touchAction: "none" }}
@@ -4476,15 +4534,15 @@ export function FloatCurveEditor({
                 flexDirection: "column",
                 gap: 4,
                 padding: 6,
-                border: "1px solid #27272a",
+                border: "1px solid var(--tb-n-7)",
                 borderRadius: 3,
               }}
             >
-              <div style={{ color: "#a1a1aa" }}>
+              <div style={{ color: "var(--tb-n-13)" }}>
                 point {idx + 1}/{points.length}
               </div>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                <span style={{ color: "#71717a", minWidth: 14 }}>x</span>
+                <span style={{ color: "var(--tb-n-11)", minWidth: 14 }}>x</span>
                 <input
                   type="number"
                   min={0}
@@ -4504,7 +4562,7 @@ export function FloatCurveEditor({
                   }}
                   style={inputStyle()}
                 />
-                <span style={{ color: "#71717a", minWidth: 14 }}>y</span>
+                <span style={{ color: "var(--tb-n-11)", minWidth: 14 }}>y</span>
                 <input
                   type="number"
                   min={0}
@@ -4536,8 +4594,8 @@ export function FloatCurveEditor({
                 style={{
                   marginTop: 2,
                   background: "transparent",
-                  border: "1px solid #3f3f46",
-                  color: points.length <= 2 ? "#3f3f46" : "#a1a1aa",
+                  border: "1px solid var(--tb-n-9)",
+                  color: points.length <= 2 ? "var(--tb-n-9)" : "var(--tb-n-13)",
                   fontSize: 10,
                   padding: "2px 6px",
                   borderRadius: 3,
@@ -4551,7 +4609,7 @@ export function FloatCurveEditor({
           );
         })()}
 
-      <div style={{ color: "#52525b", fontSize: 10 }}>
+      <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
         click to add · drag to move · drag far off-chart to remove
       </div>
     </div>
@@ -4614,8 +4672,8 @@ export function CurvesControl({
               style={{
                 flex: 1,
                 padding: "3px 0",
-                background: active ? CURVE_CHANNEL_COLORS[ch] : "#18181b",
-                color: active ? "#0a0a0a" : CURVE_CHANNEL_COLORS[ch],
+                background: active ? CURVE_CHANNEL_COLORS[ch] : "var(--tb-n-3)",
+                color: active ? "var(--tb-n-0)" : CURVE_CHANNEL_COLORS[ch],
                 border: `1px solid ${CURVE_CHANNEL_COLORS[ch]}`,
                 borderRadius: 3,
                 fontFamily: "inherit",
@@ -4756,7 +4814,7 @@ export function FontAxisControl({
       <div
         style={{
           flex: 1,
-          color: "#a1a1aa",
+          color: "var(--tb-n-13)",
           fontSize: 10,
           whiteSpace: "nowrap",
           overflow: "hidden",
@@ -4765,7 +4823,7 @@ export function FontAxisControl({
         title={`${axis.name} (${axis.tag}) — ${axis.min}…${axis.max}, default ${axis.default}`}
       >
         {axis.name}
-        <span style={{ color: "#52525b", marginLeft: 4 }}>
+        <span style={{ color: "var(--tb-n-10)", marginLeft: 4 }}>
           {axis.tag}
         </span>
       </div>
@@ -4933,7 +4991,7 @@ export function FontAxisControl({
               style={{
                 width: 30,
                 fontSize: 10,
-                color: "#71717a",
+                color: "var(--tb-n-11)",
                 fontVariantNumeric: "tabular-nums",
               }}
             >
@@ -4956,7 +5014,7 @@ export function FontAxisControl({
               style={{
                 width: 36,
                 fontSize: 10,
-                color: "#a1a1aa",
+                color: "var(--tb-n-13)",
                 textAlign: "right",
                 fontVariantNumeric: "tabular-nums",
               }}
@@ -4973,8 +5031,8 @@ export function FontAxisControl({
               style={{
                 padding: "1px 4px",
                 background: "transparent",
-                border: "1px solid #3f3f46",
-                color: "#a1a1aa",
+                border: "1px solid var(--tb-n-9)",
+                color: "var(--tb-n-13)",
                 fontFamily: "inherit",
                 fontSize: 10,
                 borderRadius: 3,
@@ -4996,8 +5054,8 @@ export function FontAxisControl({
             alignSelf: "flex-start",
             padding: "2px 8px",
             background: "transparent",
-            border: "1px solid #3f3f46",
-            color: "#a1a1aa",
+            border: "1px solid var(--tb-n-9)",
+            color: "var(--tb-n-13)",
             fontFamily: "inherit",
             fontSize: 10,
             borderRadius: 3,
@@ -5014,7 +5072,7 @@ export function FontAxisControl({
       <>
         <div
           style={{
-            color: "#71717a",
+            color: "var(--tb-n-11)",
             fontSize: 10,
             marginBottom: 2,
             lineHeight: 1.5,
@@ -5099,7 +5157,7 @@ export function FontAxisControl({
           style={{
             display: "flex",
             gap: 6,
-            color: "#52525b",
+            color: "var(--tb-n-10)",
             fontSize: 10,
             alignItems: "center",
           }}
@@ -5138,13 +5196,13 @@ export function FontAxisControl({
               style={{
                 width: 28,
                 fontSize: 11,
-                color: "#e5e7eb",
+                color: "var(--tb-n-16)",
                 textAlign: "center",
-                background: "#0a0a0a",
-                border: "1px solid #27272a",
+                background: "var(--tb-n-0)",
+                border: "1px solid var(--tb-n-7)",
                 borderRadius: 2,
                 padding: "1px 0",
-                fontFamily: "ui-monospace, monospace",
+                fontFamily: "var(--code-font)",
                 whiteSpace: "pre",
               }}
               title={`Char ${i}: ${row.ch === " " ? "space" : row.ch === "\n" ? "newline" : row.ch}`}
@@ -5170,7 +5228,7 @@ export function FontAxisControl({
               style={{
                 width: 42,
                 fontSize: 10,
-                color: "#a1a1aa",
+                color: "var(--tb-n-13)",
                 textAlign: "right",
                 fontVariantNumeric: "tabular-nums",
               }}
@@ -5187,7 +5245,7 @@ export function FontAxisControl({
     // default — falls back to the font's declared default at
     // rasterize time. No body needed.
     body = (
-      <div style={{ color: "#52525b", fontSize: 10, fontStyle: "italic" }}>
+      <div style={{ color: "var(--tb-n-10)", fontSize: 10, fontStyle: "italic" }}>
         font default ({axis.default})
       </div>
     );
@@ -5200,8 +5258,8 @@ export function FontAxisControl({
         flexDirection: "column",
         gap: 4,
         padding: 6,
-        background: "#0d0d10",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 3,
       }}
     >
@@ -5215,8 +5273,8 @@ export function btnStyleSmall(): React.CSSProperties {
   return {
     padding: "1px 6px",
     background: "transparent",
-    border: "1px solid #3f3f46",
-    color: "#a1a1aa",
+    border: "1px solid var(--tb-n-9)",
+    color: "var(--tb-n-13)",
     fontFamily: "inherit",
     fontSize: 10,
     borderRadius: 3,
@@ -5248,7 +5306,7 @@ export function FontAxisSlider({
         style={{
           width: 60,
           fontSize: 10,
-          color: "#71717a",
+          color: "var(--tb-n-11)",
         }}
       >
         {label}
@@ -5267,7 +5325,7 @@ export function FontAxisSlider({
           width: 42,
           textAlign: "right",
           fontSize: 10,
-          color: "#a1a1aa",
+          color: "var(--tb-n-13)",
           fontVariantNumeric: "tabular-nums",
         }}
       >
@@ -5280,9 +5338,9 @@ export function FontAxisSlider({
 export function inputStyle(): React.CSSProperties {
   return {
     width: 56,
-    background: "#0a0a0a",
-    border: "1px solid #27272a",
-    color: "#e5e7eb",
+    background: "var(--tb-n-0)",
+    border: "1px solid var(--tb-n-7)",
+    color: "var(--tb-n-16)",
     fontFamily: "inherit",
     fontSize: 11,
     padding: "2px 4px",
@@ -5292,15 +5350,44 @@ export function inputStyle(): React.CSSProperties {
 export function buttonStyle(): React.CSSProperties {
   return {
     flex: 1,
-    background: "#18181b",
-    border: "1px solid #27272a",
-    color: "#a1a1aa",
+    background: "var(--tb-n-3)",
+    border: "1px solid var(--tb-n-7)",
+    color: "var(--tb-n-13)",
     fontSize: 10,
     padding: "2px 6px",
     borderRadius: 3,
     cursor: "pointer",
     fontFamily: "inherit",
   };
+}
+
+// Corner radius shared by both bar-style sliders (MiniBarSlider and
+// ScalarSliderRow) — track and fill alike, so the fill's leading cap
+// keeps following the track's curve. Half of the 20px track height
+// would be a full pill; this sits just inside that.
+// Exported so the stand-ins that occupy a slider's slot (EffectNode's
+// "driven by a wired input" pill) keep the same silhouette.
+export const BAR_SLIDER_RADIUS = 8;
+
+// Leading-edge handle on both bar sliders: a pill-capped bar rather than a
+// hairline. It rides just *inside* the fill — BAR_HANDLE_GAP of fill still
+// showing past its leading edge — instead of straddling the boundary.
+const BAR_HANDLE_W = 3;
+const BAR_HANDLE_GAP = 2;
+// Floor/ceiling on that travel, for fills too short (or too full) to hold the
+// handle clear of the outline.
+const BAR_HANDLE_INSET = 3;
+
+// Left edge of the handle for a given fill percentage. Anchored to the fill's
+// leading edge and clamped to the track, so the offset is inward at every
+// value rather than flipping sign across the middle.
+function barHandleLeft(fillPct: number): string {
+  const p = Math.max(0, Math.min(100, fillPct));
+  return (
+    `clamp(${BAR_HANDLE_INSET}px,` +
+    ` calc(${p}% - ${BAR_HANDLE_W + BAR_HANDLE_GAP}px),` +
+    ` calc(100% - ${BAR_HANDLE_INSET + BAR_HANDLE_W}px))`
+  );
 }
 
 // Scalar slider row with right-click → "Edit range" popover. Slider /
@@ -5318,6 +5405,8 @@ export function MiniBarSlider({
   step,
   onChange,
   title,
+  overlay,
+  height,
 }: {
   value: number;
   min: number;
@@ -5325,19 +5414,32 @@ export function MiniBarSlider({
   step: number;
   onChange: (v: number) => void;
   title?: string;
+  /**
+   * Optional labels drawn inside the track (above the fill, below the
+   * interaction layer). Click-through, so the whole bar stays draggable.
+   */
+  overlay?: React.ReactNode;
+  /** Track height; defaults to the 20px param-panel row. */
+  height?: number;
 }) {
   const clamped = Math.max(min, Math.min(max, value));
   const fillPct =
     max > min ? ((clamped - min) / (max - min)) * 100 : 0;
   return (
-    <div style={{ position: "relative", flex: 1, height: 20, minWidth: 40 }}>
+    <div
+      style={{
+        position: "relative",
+        flex: 1,
+        height: height ?? 20,
+        minWidth: 40,
+      }}
+    >
       <div
         style={{
           position: "absolute",
           inset: 0,
-          borderRadius: 6,
-          boxShadow: "inset 0 0 0 1px #232327",
-          background: "#0f0f11",
+          borderRadius: BAR_SLIDER_RADIUS,
+          background: "var(--tb-n-1)",
           overflow: "hidden",
           pointerEvents: "none",
         }}
@@ -5349,23 +5451,48 @@ export function MiniBarSlider({
             top: 0,
             bottom: 0,
             width: `${fillPct}%`,
-            background: "#202023",
-            borderRadius: 6,
+            background: "var(--tb-n-5)",
+            borderRadius: BAR_SLIDER_RADIUS,
           }}
         />
       </div>
+      {/* Outline, above the fill. An inset shadow on the track itself paints
+          under its children, so the fill swallowed the left corners of the
+          ring and the rounding read as broken. */}
       <div
         style={{
           position: "absolute",
-          left: `${fillPct}%`,
-          top: "21%",
-          bottom: "21%",
-          width: 1,
-          marginLeft: -0.5,
-          background: "#8a8a90",
+          inset: 0,
+          borderRadius: BAR_SLIDER_RADIUS,
+          boxShadow: "inset 0 0 0 1px var(--tb-n-6)",
           pointerEvents: "none",
         }}
       />
+      <div
+        style={{
+          position: "absolute",
+          left: barHandleLeft(fillPct),
+          top: "21%",
+          bottom: "21%",
+          width: BAR_HANDLE_W,
+          borderRadius: 999,
+          background: "var(--tb-n-12)",
+          pointerEvents: "none",
+        }}
+      />
+      {overlay !== undefined && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            pointerEvents: "none",
+          }}
+        >
+          {overlay}
+        </div>
+      )}
       <DampenedRangeInput
         className="param-slider-bare"
         min={min}
@@ -5395,6 +5522,7 @@ export function ScalarSliderRow({
   sliderMin,
   sliderMax,
   sliderValue,
+  stepOverride,
   rangeOverride,
   onChange,
   onRangeChange,
@@ -5407,12 +5535,16 @@ export function ScalarSliderRow({
   sliderMin: number;
   sliderMax: number;
   sliderValue: number;
+  // Param-driven increment (ParamDef.stepFrom, resolved by the caller
+  // against the node's current params). Wins over the static `step`.
+  stepOverride?: number;
   rangeOverride?: { min?: number; max?: number; softMax?: number };
   onChange: (v: unknown) => void;
   onRangeChange?: (
     next: { min?: number; max?: number; softMax?: number } | null
   ) => void;
 }) {
+  const step = stepOverride ?? param.step ?? 0.01;
   const [editorOpen, setEditorOpen] = useState(false);
   const hasOverride = !!rangeOverride;
   // Fill percentage for the new bar-style slider (driven via the --fill CSS
@@ -5424,8 +5556,8 @@ export function ScalarSliderRow({
           Math.min(100, ((sliderValue - sliderMin) / (sliderMax - sliderMin)) * 100)
         )
       : 0;
-  const barColor = hasOverride ? "#172a52" : "#202023";
-  const lineColor = hasOverride ? "#6b8fc7" : "#8a8a90";
+  const barColor = hasOverride ? "var(--tb-t-navy-d-7)" : "var(--tb-n-5)";
+  const lineColor = hasOverride ? "#6b8fc7" : "var(--tb-n-12)";
   return (
     <div
       style={{ display: "flex", gap: 4, alignItems: "center", position: "relative" }}
@@ -5444,9 +5576,8 @@ export function ScalarSliderRow({
           style={{
             position: "absolute",
             inset: 0,
-            borderRadius: 6,
-            boxShadow: "inset 0 0 0 1px #232327",
-            background: "#0f0f11",
+            borderRadius: BAR_SLIDER_RADIUS,
+            background: "var(--tb-n-1)",
             overflow: "hidden",
             pointerEvents: "none",
           }}
@@ -5459,19 +5590,30 @@ export function ScalarSliderRow({
               bottom: 0,
               width: `${fillPct}%`,
               background: barColor,
-              borderRadius: 6,
+              borderRadius: BAR_SLIDER_RADIUS,
             }}
           />
         </div>
-        {/* Thin leading-edge stroke at the value, inset vertically. */}
+        {/* Outline, above the fill so the ring wraps the rounded corners
+            unbroken (an inset shadow on the track paints under its fill). */}
         <div
           style={{
             position: "absolute",
-            left: `${fillPct}%`,
+            inset: 0,
+            borderRadius: BAR_SLIDER_RADIUS,
+            boxShadow: "inset 0 0 0 1px var(--tb-n-6)",
+            pointerEvents: "none",
+          }}
+        />
+        {/* Leading-edge handle at the value, inset vertically. */}
+        <div
+          style={{
+            position: "absolute",
+            left: barHandleLeft(fillPct),
             top: "21%",
             bottom: "21%",
-            width: 1,
-            marginLeft: -0.5,
+            width: BAR_HANDLE_W,
+            borderRadius: 999,
             background: lineColor,
             pointerEvents: "none",
           }}
@@ -5481,7 +5623,7 @@ export function ScalarSliderRow({
           className="param-slider-bare"
           min={sliderMin}
           max={sliderMax}
-          step={param.step ?? 0.01}
+          step={step}
           value={sliderValue}
           onChange={(v) => onChange(v)}
           style={{
@@ -5503,9 +5645,9 @@ export function ScalarSliderRow({
         onChange={(v) => onChange(v)}
         min={effMin}
         max={effMax}
-        step={param.step ?? 0.01}
+        step={step}
         width={44}
-        borderColor={hasOverride ? "#1e3a8a" : "#27272a"}
+        borderColor={hasOverride ? "var(--tb-a-blue-900)" : "var(--tb-n-7)"}
       />
       {editorOpen && onRangeChange && (
         <SliderRangeEditor
@@ -5558,8 +5700,7 @@ export function SliderRangeEditor({
   const parseOrUndef = (s: string): number | undefined => {
     const t = s.trim();
     if (t === "") return undefined;
-    const n = parseFloat(t);
-    return Number.isFinite(n) ? n : undefined;
+    return evalNumExpr(t) ?? undefined;
   };
 
   const submit = () => {
@@ -5590,11 +5731,12 @@ export function SliderRangeEditor({
       if (e.key === "Escape") onCancel();
       if (e.key === "Enter") submit();
     };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
+    const win = ownerWindow(rootRef.current);
+    win.addEventListener("mousedown", onDown);
+    win.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
+      win.removeEventListener("mousedown", onDown);
+      win.removeEventListener("keydown", onKey);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [minStr, maxStr, softStr]);
@@ -5607,13 +5749,13 @@ export function SliderRangeEditor({
         top: "calc(100% + 4px)",
         right: 0,
         minWidth: 220,
-        background: "#18181b",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 4,
         padding: 8,
         zIndex: 50,
         boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
       }}
       onMouseDown={(e) => e.stopPropagation()}
@@ -5626,7 +5768,7 @@ export function SliderRangeEditor({
     >
       <div
         style={{
-          color: "#a1a1aa",
+          color: "var(--tb-n-13)",
           fontSize: 9,
           textTransform: "uppercase",
           letterSpacing: 0.5,
@@ -5659,8 +5801,8 @@ export function SliderRangeEditor({
           style={{
             padding: "3px 8px",
             background: "transparent",
-            border: "1px solid #3f3f46",
-            color: override ? "#e5e7eb" : "#52525b",
+            border: "1px solid var(--tb-n-9)",
+            color: override ? "var(--tb-n-16)" : "var(--tb-n-10)",
             fontFamily: "inherit",
             fontSize: 10,
             borderRadius: 3,
@@ -5675,8 +5817,8 @@ export function SliderRangeEditor({
             style={{
               padding: "3px 8px",
               background: "transparent",
-              border: "1px solid #3f3f46",
-              color: "#e5e7eb",
+              border: "1px solid var(--tb-n-9)",
+              color: "var(--tb-n-16)",
               fontFamily: "inherit",
               fontSize: 10,
               borderRadius: 3,
@@ -5689,9 +5831,9 @@ export function SliderRangeEditor({
             onClick={submit}
             style={{
               padding: "3px 8px",
-              background: "#1e3a8a",
-              border: "1px solid #1e3a8a",
-              color: "#dbeafe",
+              background: "var(--tb-a-blue-900)",
+              border: "1px solid var(--tb-a-blue-900)",
+              color: "var(--tb-a-blue-100)",
               fontFamily: "inherit",
               fontSize: 10,
               borderRadius: 3,
@@ -5726,7 +5868,7 @@ export function RangeField({
         marginBottom: 4,
       }}
     >
-      <span style={{ color: "#a1a1aa", minWidth: 60 }}>{label}</span>
+      <span style={{ color: "var(--tb-n-13)", minWidth: 60 }}>{label}</span>
       <input
         type="number"
         value={value}
@@ -5734,9 +5876,9 @@ export function RangeField({
         onChange={(e) => onChange(e.target.value)}
         style={{
           flex: 1,
-          background: "#0a0a0a",
-          border: "1px solid #27272a",
-          color: "#e5e7eb",
+          background: "var(--tb-n-0)",
+          border: "1px solid var(--tb-n-7)",
+          color: "var(--tb-n-16)",
           fontFamily: "inherit",
           fontSize: 11,
           padding: "2px 4px",

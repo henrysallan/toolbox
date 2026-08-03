@@ -56,3 +56,7 @@ next-env.d.ts
 
 # electron-builder output
 /dist-electron
+
+# rust vector kernel build dir (the built WASM artifact IS committed:
+# src/wasm/pkg + public/wasm/v1 — see attractor-vector-kernel-spec.md §8.4)
+/rust/toolbox-vector-kernel/target

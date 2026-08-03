@@ -80,9 +80,28 @@ export class StrokeSession {
     if (!this.started) return;
     // Exponential stabilizer: smoothing 0 follows raw input, 1 lags hard.
     const k = 1 - 0.85 * this.cfg.brush.smoothing;
-    const nx = this.sx + (x - this.sx) * k;
-    const ny = this.sy + (y - this.sy) * k;
-    const np = this.sp + (pressure - this.sp) * 0.5;
+    this.advance(
+      this.sx + (x - this.sx) * k,
+      this.sy + (y - this.sy) * k,
+      this.sp + (pressure - this.sp) * 0.5
+    );
+  }
+
+  // Straight segment to an exact point, bypassing the stabilizer — the
+  // Shift-click "connect a line from the last stroke" helper. The spacing
+  // walk in advance() lays evenly spaced stamps along the whole segment.
+  lineTo(x: number, y: number, pressure: number) {
+    if (!this.started) return;
+    this.advance(x, y, pressure);
+  }
+
+  // Where the stroke currently ends (smoothed), canvas px — recorded by the
+  // overlay at stroke end as the anchor for the next Shift-click line.
+  get position(): [number, number] {
+    return [this.sx, this.sy];
+  }
+
+  private advance(nx: number, ny: number, np: number) {
     const dx = nx - this.sx;
     const dy = ny - this.sy;
     const dist = Math.hypot(dx, dy);

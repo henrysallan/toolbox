@@ -1,6 +1,13 @@
 // Sub-path Select (direct selection) tool — click a subpath to make it
 // active, then edit its anchors: select/shift-extend, marquee on empty
-// background, group-drag a selection, or grab a curve segment to bend it.
+// background, group-drag a selection, or work a curve segment.
+//
+// Segment grammar (revised 2026-08-02): a PLAIN press on a segment selects
+// its two adjacent anchors and drags them together (the segment translates
+// rigidly, handles riding along); a DOUBLE-click selects the whole subpath
+// (the component wires that to ops.selectAllAnchors); ALT+press bends the
+// curve — the minimum-norm handle solve that used to sit on the plain drag,
+// which made every attempt to grab a path reshape it.
 // Split out of the monolith in M0 of
 // specdocs/071926_spline-draw-authoring-upgrade.md.
 
@@ -111,8 +118,48 @@ export function segmentParamAtClient(
   );
 }
 
-// Segment pointerdown (sub-path mode): cache the grabbed parameter t so the
-// curve tracks the cursor without sliding during the bend drag.
+// Plain segment pointerdown (sub-path mode): select the segment's two
+// adjacent anchors and arm the ordinary group-move drag, so the same gesture
+// that selects also translates the segment. Shift UNIONS the pair into the
+// existing selection (a pair has no sensible per-anchor toggle); a plain
+// press replaces it. Dropping without moving is just the selection.
+export function beginSegmentSelect(
+  ops: SplineOps,
+  env: SplineEditorEnv,
+  seg: { seg: number; i: number; j: number },
+  e: PointerLike
+) {
+  const anchors = ops.readAnchors(env.valueRef.current);
+  const A = anchors[seg.i];
+  if (!A) return;
+  const next = e.shiftKey
+    ? new Set(env.selectedRef.current)
+    : new Set<number>();
+  next.add(seg.i);
+  next.add(seg.j);
+  env.setSelected(next);
+  // No setHoverSeg here — the pointer is over the segment, so hover already
+  // highlighted it (and forcing it on would outlive a drag that ends
+  // elsewhere, since the enter/leave handlers stand down mid-gesture).
+  env.lastAnchorRef.current = seg.i;
+  const groupStarts = new Map<number, [number, number]>();
+  for (const i of next) {
+    const ai = anchors[i];
+    if (ai) groupStarts.set(i, [ai.pos[0], ai.pos[1]]);
+  }
+  const [nx, ny] = env.clientToNorm(e.clientX, e.clientY);
+  env.setDrag({
+    kind: "anchor",
+    index: seg.i,
+    grabOffset: { x: A.pos[0] - nx, y: A.pos[1] - ny },
+    startClient: { x: e.clientX, y: e.clientY },
+    moved: false,
+    groupStarts,
+  });
+}
+
+// Alt+segment pointerdown (sub-path mode): cache the grabbed parameter t so
+// the curve tracks the cursor without sliding during the bend drag.
 export function beginSegmentDrag(
   ops: SplineOps,
   env: SplineEditorEnv,

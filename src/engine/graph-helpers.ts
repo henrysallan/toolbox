@@ -12,6 +12,13 @@ import type { ParamType, SocketType } from "./types";
 // reference it without importing from src/nodes (invariant #1).
 export const REROUTE_TYPE = "reroute";
 
+// The frame node's type string — a Blender-style visual frame zone (a shaded
+// rect behind its member nodes; membership = each member's `data.frameId`).
+// Purely cosmetic: no sockets, never wired, never in the evaluator's needed
+// set. "frame" itself was taken by the Auto-Layout sizing adapter node.
+// Spec: specdocs/073026_node-cosmetics-and-frames.md.
+export const FRAME_TYPE = "frame-zone";
+
 // Parse a React-Flow target handle ID. Regular input sockets are `in:<name>`;
 // exposed param sockets are `in:param:<name>`. Returns null for unrecognized.
 export function parseTargetHandleKind(

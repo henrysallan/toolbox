@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { evalNumExpr } from "@/lib/num-expr";
 import { wheelWantsZoom } from "./input-device";
 import { useClock } from "@/state/playback-clock";
 
@@ -117,16 +118,20 @@ export default function PlaybackBar({
 
   useEffect(() => {
     if (!dragging) return;
-    const onMove = (ev: MouseEvent) => seekFromClientX(ev.clientX);
+    const onMove = (ev: PointerEvent) => seekFromClientX(ev.clientX);
     const onUp = () => {
       setDragging(false);
       onScrubEnd();
     };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    // pointercancel is what iPadOS sends instead of pointerup when it takes
+    // the gesture — without it the scrub never ends and playback stays held.
+    window.addEventListener("pointercancel", onUp);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
   }, [dragging, seekFromClientX, onScrubEnd]);
 
@@ -211,7 +216,7 @@ export default function PlaybackBar({
     return () => el.removeEventListener("pointerdown", onDown);
   }, [pxPerSec, viewOffset, viewSpan, trackWidth]);
 
-  const handleTrackMouseDown = (e: React.MouseEvent) => {
+  const handleTrackPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     e.preventDefault();
     onScrubStart();
@@ -258,14 +263,14 @@ export default function PlaybackBar({
     <div
       style={{
         height: 44,
-        background: "#000",
+        background: "var(--tb-frame)",
         display: "flex",
         alignItems: "center",
         gap: 8,
         padding: "0 12px",
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
         flexShrink: 0,
         width: "100%",
         boxSizing: "border-box",
@@ -302,7 +307,7 @@ export default function PlaybackBar({
 
       <div
         ref={trackRef}
-        onMouseDown={handleTrackMouseDown}
+        onPointerDown={handleTrackPointerDown}
         onMouseMove={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
           setHoverX(e.clientX - rect.left);
@@ -318,12 +323,14 @@ export default function PlaybackBar({
           minWidth: 0,
           height: 20,
           position: "relative",
-          background: "#050505",
-          border: "1px solid #27272a",
+          background: "var(--tb-n-0)",
+          border: "1px solid var(--tb-n-7)",
           borderRadius: 3,
           cursor: "pointer",
           userSelect: "none",
           overflow: "hidden",
+          // The scrub track owns its gesture end to end.
+          touchAction: "none",
         }}
       >
         {/* Centerline */}
@@ -334,7 +341,7 @@ export default function PlaybackBar({
             left: 0,
             right: 0,
             height: 1,
-            background: "#3f3f46",
+            background: "var(--tb-n-9)",
             transform: "translateY(-0.5px)",
             pointerEvents: "none",
           }}
@@ -352,7 +359,7 @@ export default function PlaybackBar({
                 width: 1,
                 height: t.major ? 16 : 5,
                 marginTop: t.major ? 0 : -2,
-                background: t.major ? "#4a4a52" : "#333338",
+                background: t.major ? "var(--tb-n-10)" : "var(--tb-n-8)",
                 pointerEvents: "none",
               }}
             />
@@ -363,7 +370,7 @@ export default function PlaybackBar({
                   bottom: 1,
                   left: t.x + 3,
                   fontSize: 9,
-                  color: "#4a4a52",
+                  color: "var(--tb-n-10)",
                   fontVariantNumeric: "tabular-nums",
                   pointerEvents: "none",
                   lineHeight: 1,
@@ -388,7 +395,7 @@ export default function PlaybackBar({
                 left: lx,
                 width: 1,
                 height: "100%",
-                background: "#3f3f46",
+                background: "var(--tb-n-9)",
                 opacity: 0.7,
                 pointerEvents: "none",
               }}
@@ -406,7 +413,7 @@ export default function PlaybackBar({
               left: hoverX - 1,
               width: 2,
               height: "calc(100% + 4px)",
-              background: "#ef4444",
+              background: "var(--tb-a-red-500)",
               opacity: 0.3,
               pointerEvents: "none",
             }}
@@ -421,7 +428,7 @@ export default function PlaybackBar({
               left: playheadX - 1,
               width: 2,
               height: "calc(100% + 4px)",
-              background: "#ef4444",
+              background: "var(--tb-a-red-500)",
               pointerEvents: "none",
             }}
           />
@@ -435,7 +442,7 @@ export default function PlaybackBar({
               top: 4,
               [playheadOffEdge]: 4,
               fontSize: 10,
-              color: "#ef4444",
+              color: "var(--tb-a-red-500)",
               pointerEvents: "none",
               lineHeight: 1,
             }}
@@ -469,17 +476,17 @@ function PlaybackBarButton({
   const [hover, setHover] = useState(false);
   // Idle: muted grey so a static bar feels quiet. Hover brightens to
   // signal interactivity. Highlighted (e.g. playing) wins over both.
-  const color = highlighted ? "#d1fae5" : hover ? "#e5e7eb" : "#71717a";
+  const color = highlighted ? "var(--tb-t-cyan-l-0)" : hover ? "var(--tb-n-16)" : "var(--tb-n-11)";
   const border = highlighted
-    ? "#065f46"
+    ? "var(--tb-a-emerald-800)"
     : hover
-      ? "#3f3f46"
-      : "#27272a";
+      ? "var(--tb-n-9)"
+      : "var(--tb-n-7)";
   const background = highlighted
     ? "#047857"
     : hover
-      ? "#1f1f23"
-      : "#0a0a0a";
+      ? "var(--tb-n-5)"
+      : "var(--tb-n-0)";
   return (
     <button
       onClick={onClick}
@@ -588,6 +595,71 @@ function ResetIcon() {
   );
 }
 
+// Chevron step button living inside a counter rect, flush with its edge —
+// one click steps the value by a single frame, saving a focus-type-enter
+// round trip. Borderless: the wrapping rect owns the border/background.
+function StepChevron({
+  dir,
+  title,
+  disabled,
+  onStep,
+}: {
+  dir: "left" | "right";
+  title: string;
+  disabled?: boolean;
+  onStep: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  const active = hover && !disabled;
+  return (
+    <button
+      onClick={onStep}
+      title={title}
+      disabled={disabled}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        width: 14,
+        alignSelf: "stretch",
+        background: active ? "var(--tb-n-5)" : "transparent",
+        color: disabled ? "var(--tb-n-9)" : active ? "var(--tb-n-16)" : "var(--tb-n-11)",
+        border: "none",
+        cursor: disabled ? "default" : "pointer",
+        padding: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontFamily: "inherit",
+      }}
+    >
+      <svg width="7" height="9" viewBox="0 0 7 9" fill="none">
+        <path
+          d={dir === "left" ? "M5 1 L2 4.5 L5 8" : "M2 1 L5 4.5 L2 8"}
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  );
+}
+
+// Shared shell for the counter fields: one bordered rect holding both
+// chevrons and the bare input, so the steppers read as part of the counter
+// rather than separate buttons. overflow hidden keeps hover fills inside
+// the rounded corners.
+function counterRectStyle(focused: boolean): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "stretch",
+    background: "var(--tb-n-0)",
+    border: `1px solid ${focused ? "var(--tb-n-9)" : "var(--tb-n-7)"}`,
+    borderRadius: 3,
+    overflow: "hidden",
+  };
+}
+
 // Current-frame readout that doubles as a jump field: shows the live frame
 // while idle, and on entering a number seeks to that frame. Editing freezes
 // the displayed value so playback updates don't fight what you're typing.
@@ -602,7 +674,8 @@ function FrameInput({
   const [draft, setDraft] = useState(String(frame));
   const commit = () => {
     setEditing(false);
-    const n = Math.round(parseFloat(draft));
+    const p = evalNumExpr(draft); // plain numbers or math: "24*8", "300/2"
+    const n = p === null ? NaN : Math.round(p);
     if (!Number.isFinite(n) || n < 0) {
       setDraft(String(frame));
       return;
@@ -610,36 +683,49 @@ function FrameInput({
     onJump(n);
   };
   return (
-    <input
-      type="text"
-      value={editing ? draft : String(frame)}
-      title="Current frame — type a frame number to jump there"
-      onFocus={() => {
-        setDraft(String(frame));
-        setEditing(true);
-      }}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        else if (e.key === "Escape") {
-          setEditing(false);
-          (e.target as HTMLInputElement).blur();
-        }
-      }}
-      style={{
-        width: 56,
-        background: "#0a0a0a",
-        border: "1px solid #27272a",
-        borderRadius: 3,
-        color: "#a1a1aa",
-        fontFamily: "inherit",
-        fontSize: 11,
-        padding: "2px 4px",
-        textAlign: "center",
-        fontVariantNumeric: "tabular-nums",
-      }}
-    />
+    <div style={counterRectStyle(editing)}>
+      <StepChevron
+        dir="left"
+        title="Back one frame"
+        disabled={frame <= 0}
+        onStep={() => onJump(Math.max(0, frame - 1))}
+      />
+      <input
+        type="text"
+        value={editing ? draft : String(frame)}
+        title="Current frame — type a frame number to jump there"
+        onFocus={() => {
+          setDraft(String(frame));
+          setEditing(true);
+        }}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          else if (e.key === "Escape") {
+            setEditing(false);
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+        style={{
+          width: 40,
+          background: "transparent",
+          border: "none",
+          outline: "none",
+          color: "var(--tb-n-13)",
+          fontFamily: "inherit",
+          fontSize: 11,
+          padding: "2px 0",
+          textAlign: "center",
+          fontVariantNumeric: "tabular-nums",
+        }}
+      />
+      <StepChevron
+        dir="right"
+        title="Forward one frame"
+        onStep={() => onJump(frame + 1)}
+      />
+    </div>
   );
 }
 
@@ -651,6 +737,7 @@ function LoopInput({
   onCommit: (v: number | null) => void;
 }) {
   const [draft, setDraft] = useState(value == null ? "" : String(value));
+  const [focused, setFocused] = useState(false);
   useEffect(() => {
     setDraft(value == null ? "" : String(value));
   }, [value]);
@@ -660,7 +747,8 @@ function LoopInput({
       if (value !== null) onCommit(null);
       return;
     }
-    const n = Math.round(parseFloat(trimmed));
+    const p = evalNumExpr(trimmed); // plain numbers or math: "24*8", "300/2"
+    const n = p === null ? NaN : Math.round(p);
     if (!Number.isFinite(n) || n < 1) {
       setDraft(value == null ? "" : String(value));
       return;
@@ -668,32 +756,51 @@ function LoopInput({
     if (n !== value) onCommit(n);
   };
   return (
-    <input
-      type="text"
-      value={draft}
-      placeholder="Loop"
-      title="Loop length in frames — empty plays without looping"
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        else if (e.key === "Escape") {
-          setDraft(value == null ? "" : String(value));
-          (e.target as HTMLInputElement).blur();
-        }
-      }}
-      style={{
-        width: 56,
-        background: "#0a0a0a",
-        border: "1px solid #27272a",
-        borderRadius: 3,
-        color: "#e5e7eb",
-        fontFamily: "inherit",
-        fontSize: 11,
-        padding: "2px 4px",
-        textAlign: "center",
-      }}
-    />
+    <div style={counterRectStyle(focused)}>
+      <StepChevron
+        dir="left"
+        title="Loop length −1 frame"
+        disabled={value == null || value <= 1}
+        onStep={() => {
+          if (value != null && value > 1) onCommit(value - 1);
+        }}
+      />
+      <input
+        type="text"
+        value={draft}
+        placeholder="Loop"
+        title="Loop length in frames — empty plays without looping"
+        onFocus={() => setFocused(true)}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          setFocused(false);
+          commit();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          else if (e.key === "Escape") {
+            setDraft(value == null ? "" : String(value));
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+        style={{
+          width: 40,
+          background: "transparent",
+          border: "none",
+          outline: "none",
+          color: "var(--tb-n-16)",
+          fontFamily: "inherit",
+          fontSize: 11,
+          padding: "2px 0",
+          textAlign: "center",
+        }}
+      />
+      <StepChevron
+        dir="right"
+        title="Loop length +1 frame"
+        onStep={() => onCommit((value ?? 0) + 1)}
+      />
+    </div>
   );
 }
 

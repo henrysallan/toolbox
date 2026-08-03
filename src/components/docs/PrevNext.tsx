@@ -20,7 +20,7 @@ export default function PrevNext({ currentSlug }: { currentSlug: string[] }) {
       style={{
         marginTop: 48,
         paddingTop: 16,
-        borderTop: "1px solid #27272a",
+        borderTop: "1px solid var(--tb-n-7)",
         display: "flex",
         gap: 12,
         justifyContent: "space-between",
@@ -54,16 +54,16 @@ function PrevNextCard({
         flexDirection: "column",
         alignItems: align,
         padding: "10px 12px",
-        background: "#111113",
-        border: "1px solid #27272a",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 4,
         textDecoration: "none",
-        color: "#e5e7eb",
+        color: "var(--tb-n-16)",
       }}
     >
       <span
         style={{
-          color: "#71717a",
+          color: "var(--tb-n-11)",
           fontSize: 10,
           textTransform: "uppercase",
           letterSpacing: 0.5,

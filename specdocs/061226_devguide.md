@@ -70,15 +70,197 @@ src/
     clips.ts              Per-node timeline clip windows (gate + local time).
     graph-helpers.ts      Handle-id parsing, param→socket type mapping.
     sdf*.ts, spline-*.ts, points.ts, noise.ts, marching-squares.ts, …  domain math.
+    voronoi-geometry.ts   pcg3d integer hash (bit-exact GLSL↔TS mirror — the
+                          only hash allowed where CPU geometry must overlay a
+                          shader render) + shared Voronoi diagram derivation
+                          (cells/edges/vertices/centers/neighbors) behind the
+                          unified Voronoi node's three sources; Fracture is a
+                          hidden legacy registration of the same def
+                          (073026_voronoi-unified.md).
     sim-kernel.ts         Shared CPU sim kernel (force/collider ports, chamfer
                           mask fields, property-map readbacks, spatial hash) —
                           Rope + Rigid Body Simulators both ride it.
+    vector-kernel.ts      Facade + SplineValue↔PathData adapter over the
+                          kurbo/WASM geometry kernel (rust/toolbox-vector-
+                          kernel → src/wasm/pkg, binary fetched from
+                          public/wasm/v1). Lazy main-thread init; converts
+                          to canvas px (normalized space is anisotropic);
+                          input shaping notes in the spec are load-bearing.
+                          Drives the Optimize Path node. Spec:
+                          attractor-vector-kernel-spec.md.
+    driver-reduce.ts      Shared luminance-driver box reduce + readback (mask
+                          .r or image luminance × alpha → small grid) feeding
+                          the CPU-authoritative grid nodes: Adaptive Pixelate
+                          (072326_adaptive-pixelate.md) and Bento Slice
+                          (072326_bento-slice.md — sliced-image assemble/split
+                          animation: bento binary cuts, per-piece seeded
+                          scatter × fac, N-step staircase w/ keyframe easing,
+                          instanced quad render, animated points aux).
+    velocity-field.ts     THE velocity-field wire convention (signed-RG
+                          image, midlevel 0.5, Y-DOWN, isotropic canvas-
+                          width units) + encode/decode GLSL. Read its
+                          header before producing/consuming flow fields
+                          (072526_flow-fields.md).
+    poisson.ts            Multigrid Poisson/Laplace solver over pool
+                          textures (cascadic schedule, fluid-sim Jacobi
+                          convention, Dirichlet mask + optional h²·div
+                          RHS). Diffusion Curves' color + blur-map
+                          solves (072726_diffusion-curves.md); generic
+                          for any future Poisson-editing node.
+    convolve/             THE convolution backend behind the Blur node
+                          (080226_blur-convolution.md). One execution
+                          shape — N separable passes + weighted
+                          recombine — serving every kernel family, so
+                          Gaussian / complex-separable bokeh / (M2)
+                          low-rank SVD are plan BUILDERS, not separate
+                          nodes. boundary.ts is the ONLY place the
+                          engine's alpha + colour conventions are
+                          converted for filtering: premultiply in,
+                          un-premultiply out (straight-alpha
+                          convolution is why the old blur darkened soft
+                          edges), plus optional sRGB↔linear — optional
+                          because there is no pipeline-wide working
+                          space, so an EXR/ACES graph is already linear
+                          and must not be transformed twice. complex.ts
+                          FITS its coefficients (least squares against a
+                          target radial profile) instead of shipping a
+                          table, which is what makes disc/ring/soft one
+                          solver. Read its header before touching the
+                          fit — the (a,b) search needs the
+                          coordinate-descent refinement or it stops
+                          being monotonic in component count. Clamp
+                          alpha low on output: hard kernels ring
+                          negative, and negative coverage breaks
+                          source-over downstream.
   nodes/                  One file per node def. index.ts registers ~130 defs.
     source/ effect/ sdf/ group/ output/
+    effect/physarum.ts    The one node that draws GEOMETRY inside a sim step:
+                          agents live in RGBA32F ping-pong textures (16F's
+                          ~1px resolution at 1000 quantises visibly), and
+                          the deposit is an additive gl.POINTS draw into a
+                          16F texture — WebGL2's stand-in for the compute-
+                          shader atomicAdd the reference uses. 16F for the
+                          field is deliberate: half-float is core-blendable
+                          AND core-linear-filterable, where 32F needs
+                          EXT_float_blend / OES_texture_float_linear. Copy
+                          it if you need per-agent scatter rather than
+                          fullscreen passes. Its two normalisation notes
+                          (Poisson deposit correction; diffusion radius
+                          coupled to distance scale) generalise to any
+                          agent-deposit sim — 080226_physarum.md §2.
   components/effects/     The editor UI. EffectsApp.tsx is the shell/orchestrator.
+    layout/               Blender-style tiled window layout (072726_window-tiling.md,
+                          complete): model.ts (split-tree data + presets +
+                          computeRects), ops.ts (pure tree ops — the graph-ops
+                          pattern), LayoutRegion.tsx (renders leaves as FLAT
+                          absolutely-positioned siblings — panels never nest, so
+                          tree changes never remount content; percentage rects =
+                          SSR-safe; owns the PANEL_FRAME/PANEL_GAP chrome + gutter
+                          divider resize), PanelKindMenu.tsx (per-panel editor-kind
+                          chip). Every leaf shows Viewport / Node Editor /
+                          Parameters / Timeline (PANEL_KINDS in model.ts is the
+                          single source of truth — menu + both validators read
+                          it); duplicates are legal. ONE viewport leaf is
+                          PRIMARY (sticky, see below) — it owns canvasRef,
+                          every overlay/gizmo and the Shift+S A/B
+                          split (the kind menu refuses to retire the LAST viewport);
+                          other viewport leaves are WatchViewport blit targets
+                          (renderFrame blits the terminal image to each registered
+                          canvas, own pan/zoom). Each Node Editor pane wraps its OWN
+                          ReactFlowProvider (independent cameras — the old
+                          shell-level provider is gone); window-level shortcut/
+                          paste/pie handlers gate on nodes-pane-scope.ts (sticky
+                          "pane the pointer last entered", composing with
+                          shortcut-scope's editor-kind gate). The old default/
+                          timeline layouts live on as the two BUILT-IN entries
+                          of Window → Layouts; presets.ts adds USER presets
+                          saved from the live tree (name modal =
+                          NewLayoutPresetModal.tsx; same localStorage-plus-
+                          cloud strategy as brush presets — Supabase
+                          user_preferences.layout_presets, migration
+                          user-preferences-layout-presets-migration.sql, cloud
+                          wins on load, absent column = local-only). Saving
+                          under an existing name replaces it.
+                          M2: 12px corner hotspots (crosshair, z 20 — above
+                          gutter dividers, below the kind chips at z 30) start
+                          the SPLIT gesture: drag INTO the panel, the dominant
+                          axis locks the seam after 12px, seam+tint preview is
+                          painted imperatively into refs (no re-render per
+                          move), Esc cancels (tree untouched until commit),
+                          release commits splitLeaf — the clone copies the
+                          source's kind, the ORIGINAL keeps its leaf id. An
+                          outward drag (M3) enters JOIN mode: the hovered
+                          leaf's inner-45% center = SWAP (kinds trade, ⇄
+                          glyph), sides = MERGE — the source's side of the
+                          lowest separating split swallows the other side,
+                          with the doomed region (joinRemovedLeaves in
+                          model.ts) darkened + an arrow before release;
+                          merges that would close every viewport leaf are
+                          refused (same last-viewport invariant as the kind
+                          menu). Primary-viewport election is STICKY state
+                          (falls back to first-in-tree-order only when the
+                          primary stops being a viewport leaf) so splitting
+                          the primary never remounts canvas/overlays.
+                          M4: the layout persists per-project as
+                          SavedProject.layout — ADDITIVE, schema stays 9,
+                          typed `unknown` in project.ts (model.ts owns the
+                          shape: toSavedLayout strips ids, fromSavedLayout
+                          re-mints + validates untrusted blobs, requiring
+                          ≥1 viewport). EffectsApp attaches it post-
+                          serialize at the cloud + .toolbox save sites and
+                          applies it on all three load paths (cloud /
+                          .toolbox / public /p/); absent → default preset;
+                          File → New keeps the current layout. The docs
+                          round-trip stashes layoutTree + primary id
+                          (editor-session), and NodeEditor's module-level
+                          paneCameraStash restores a pane's camera across
+                          kind round-trips (fitView suppressed via
+                          defaultViewport). Double-click a gutter divider
+                          → 50/50.
+                          POP-OUT (080226_panel-popout-windows.md, M1–M3
+                          — every panel kind except the PRIMARY
+                          viewport): PanelPopout.tsx detaches a leaf
+                          into its own OS window. The child is a
+                          same-origin `window.open` portalled into with
+                          createPortal, so it is the SAME React tree —
+                          same state, no sync protocol, no second
+                          evaluator — and the engine is untouched
+                          because blitToCanvas ends in a `drawImage`,
+                          which is legal cross-document while
+                          same-origin. A detached leaf LEAVES layoutTree
+                          (ops.removeLeaf) and lives in EffectsApp's
+                          `detachedPanels`, keeping its leaf id so the
+                          watch-canvas registry still finds it; closing
+                          the window re-homes it beside the largest leaf
+                          (ops.attachLeaf + model.largestLeaf).
+                          INVARIANT: anything renderable inside a
+                          detachable panel must resolve its window from
+                          layout/panel-window.tsx — `usePanelWindow()`
+                          (context; `const win = panelWin ?? window`
+                          INSIDE the effect, `panelWin` in the deps) or
+                          `ownerWindow`/`ownerDocument` when it holds an
+                          element. NEVER module scope: `window` is
+                          always the main one, so a listener registered
+                          there never hears the child and hit-tests its
+                          rects in the wrong coordinate space. Portal
+                          targets must come from context, not a ref —
+                          they're computed during render. The app's own
+                          window CustomEvents go through
+                          `broadcastAppEvent` so either end can be in
+                          another window; `nodes-pane-scope.ts` answers
+                          per-window for keystrokes and GLOBALLY for
+                          broadcasts (which hit every window at once).
+                          The primary viewport is deliberately
+                          undetachable (it owns canvasRef + every
+                          overlay/gizmo).
     NodeEditor.tsx        xyflow wrapper: wires, validation, splice (drop a node
                           on a wire → A→N→C) + detach-heal (Cmd/Ctrl-drag a
                           clean-inline node out → A→C reconnects), copy/paste, marquee.
+                          Paste chain: text field → Toolbox fragment JSON →
+                          SVG text (Figma "Copy as SVG" / bare path `d` →
+                          Spline Draw node, contain-fit to the visible
+                          canvas; 073026_svg-paste.md) → OS files (.svg
+                          FILE still → SVG Source) → internal clipboard.
                           Shift-drag "fuzzy connect": pull a wire from a socket
                           (or the whole node body — capture-phase interceptor)
                           with Shift held → blue ring + line, drop over any node
@@ -88,6 +270,20 @@ src/
                           (RerouteNode.tsx — a dot; insertReroutesOnEdges in
                           graph-ops) that reorganizes wiring: source→reroute→
                           targets, dissolved at flatten. Spec: 071326_reroute-node.md.
+                          Right-click a node with a spline-typed output →
+                          "Make Editable": bakes the node's EVALUATED spline
+                          at the playhead (trim/fillets/animation resolved)
+                          into a fresh Spline Draw node, bypasses the
+                          original as a revert point, moves the baked
+                          handle's out-wires (+ image/fill/mask wires for
+                          raster-family sources, styling copied) onto the
+                          new node, and selects + viewport-activates it so
+                          the pen overlay engages (makeSplineEditable in
+                          graph-ops; disconnected/gated outputs force one
+                          eval pass via the peek-style extraTargets path —
+                          pendingBakeRef in EffectsApp). Hidden for Spline
+                          Draw itself, group/layer shells, and reroutes.
+                          Covered by check-graph-ops.mts.
     ParamPanel.tsx        Renders ParamDef[] → controls; all custom param-type UIs.
     EffectNode.tsx        The node chrome on the graph canvas (sockets, header, +).
                           Also hosts ON-NODE param controls (first: the Color
@@ -103,6 +299,32 @@ src/
                           points, ramp stops, live viewer, exported apps — in
                           place of the native browser picker. Spec:
                           071026_color-node-multi-output.md.
+                          Cosmetics (073026_node-cosmetics-and-frames.md):
+                          right-click tint (7 presets, node-tints.ts, wash +
+                          border) and Bold (extra box-shadow ring, never a
+                          border-width change) render here off data.tint /
+                          data.bold — additive persisted fields, schema 9.
+    FrameNode.tsx         Blender-style frame zones (073026 spec). A frame is
+                          a real hidden-def node (`frame-zone`, FRAME_TYPE)
+                          rendered as a shaded rect BEHIND nodes: wrapper is
+                          click-through (FRAME_XY_PROPS: pointerEvents none,
+                          z -1, dragHandle) and only its edge bands + label
+                          chip take pointer events. Membership = each
+                          member's data.frameId (same-scope siblings; an
+                          Iterate shell member brings its zone along).
+                          computeFrameRects is shared render/hit-test
+                          geometry (excludeMemberId = the Iterate leave
+                          trick); EffectsApp reconciles frame position +
+                          uiWidth/uiHeight to it so the box hugs members
+                          (shrink-to-fit — the union excludes the frame's
+                          own box). Shift+F frames the selection (resolving
+                          out-of-scope picks to their scope ancestor);
+                          drop-in joins, Cmd-drag-out leaves (NodeEditor
+                          drag-stop, same grammar as Iterate zones); label
+                          renames via the `effect-node-rename` event →
+                          handleRenameNode. cloneSubgraph remaps frameId
+                          with the clone set; deleting a frame strands
+                          member ids harmlessly (undo-friendly).
     NodeInspectorPopup.tsx / SocketPeekPopover.tsx   data readouts. The `i`
                           inspector panel lists a node's inputs/outputs as
                           text summaries; dwelling ~2s on an OUTPUT handle
@@ -114,6 +336,24 @@ src/
                           so consumption-gated auxes build too). Spec:
                           072126_socket-peek-popover.md.
     TrackEditor.tsx / LayersEditor.tsx / PlaybackBar.tsx   timeline UIs.
+    timeline/             Shared timeline core (080126 consolidation):
+                          theme.ts (one palette/metrics — the editors had
+                          3 drifted copies), view.ts (useTimelineView:
+                          tick↔px, cursor-anchored zoom, gutter-aware fit),
+                          keyframe-ops.ts (move/scale/stagger with the
+                          unified policy: Shift bypasses frame-snap, ticks
+                          clamp ≥0 via gesture-delta, collisions resolve
+                          dragged-key-wins, scale pins at a 1-frame span;
+                          plus SelectionKey/selKey (NUL-escape separators)
+                          and nextGestureKey — per-gesture undo coalesce
+                          keys so multi-lane delete/paste/easing is ONE
+                          entry), clip-ops.ts (bar move/trim + slip +
+                          footage clamp, both editors), ruler.ts,
+                          EasingTile.tsx, DiamondNav.tsx + PlayheadChrome
+                          (self-subscribing clock leaves — the editors no
+                          longer read the tick at top level, so playback
+                          re-renders only these leaves; actions read
+                          playbackClock.get().tick at event time).
     *Overlay.tsx, TransformGizmo.tsx, PrimitiveGizmo.tsx   on-canvas editing.
                           spline-editor/: the Spline Draw overlay as a module
                           directory (071926_spline-draw-authoring-upgrade.md
@@ -121,13 +361,46 @@ src/
                           ALL rendering; tools/*.ts own per-tool pointer
                           logic, ops.ts the value writes, drag.ts the drag
                           stream, dock.tsx the chrome, geometry.ts pure math,
-                          snapping.ts the snap service (anchor + canvas-guide
-                          snapping, 45° handle lock; Cmd/Ctrl suppresses);
+                          snapping.ts the snap service (coincident anchor
+                          snap → per-axis ALIGNMENT with other anchors
+                          (dashed spanning guide, ticked at each participant)
+                          → canvas edge/center/third hairlines, plus the 45°
+                          handle lock; Cmd/Ctrl suppresses);
                           everything shares a per-render SplineEditorEnv
                           (types.ts). Multi-subpath pen/edit (Pen / Pencil /
-                          Path-Select / Sub-path-Select / Shape-Builder tools
+                          Rectangle / Ellipse / Path-Select / Sub-path-Select
+                          / Shape-Builder / Width tools
                           + GUI bbox transform + Live Corners per-anchor
-                          rounding widgets). Shape Builder (B) rides
+                          rounding widgets). Rectangle (M) / Ellipse (L)
+                          rubber-band ONE closed subpath (tools/primitive.ts,
+                          spec 071926 M6): Shift = 1:1 in SCREEN space, Alt =
+                          press point is the centre; the resolved px box
+                          lives in the drag state so preview == commit, and
+                          the landing geometry is ordinary editable anchors
+                          (ops.appendSubpath, shared with the pencil).
+                          Sub-path Select's SEGMENT grammar (071926
+                          addendum): click selects the two adjacent anchors
+                          and drags them as a pair (rigid segment move —
+                          reuses the "anchor" DragState with a 2-entry
+                          groupStarts, so snapping/HUD/autokey come free),
+                          double-click selects the whole subpath, ALT+drag
+                          bends. Blender-style MODAL transforms
+                          (tools/transform.ts, spec 071926 M7): G/S/R move/
+                          scale/rotate the selection (whole active subpath
+                          when empty; all subpaths in Path Select) about its
+                          median, gated on the cursor being over the canvas,
+                          confirmed by click/Enter, reverted by Esc/right-
+                          click, X/Y axis-locked, Shift = 45° rotate snap.
+                          E EXTRUDES — a new anchor off the open subpath's
+                          end riding the same modal move, staying selected
+                          so E chains; its cancel drops the anchor too
+                          (hence ModalTransform.cancelValue). NOT a
+                          DragState — keydown
+                          to click, so it owns capture-phase listeners; the
+                          math is pure normalized units because the
+                          overlay's normalized space is aspect-corrected
+                          (offset → px is a uniform rect.width scale on both
+                          axes). Shape Builder (B) rides
                           engine/spline-planar.ts (coverage-signature planar
                           faces over spline-boolean.ts primitives): hover
                           highlights the face under the cursor, click
@@ -173,6 +446,21 @@ src/
   lib/
     project.ts            serializeGraph/deserializeGraph, SavedProject SCHEMA (v4).
     project-file.ts       .toolbox zip container (manifest + project.json + assets).
+    recent-projects.ts    File → Open Recent local cache (073026_open-recent.md):
+                          cloud entries in localStorage + FSA handles in
+                          IndexedDB for web-local .toolbox reopens, merged with
+                          the desktop platform.recents list at menu-build time.
+    num-expr.ts           evalNumExpr(): safe + - * / ( ) arithmetic for numeric
+                          text fields — every commit-on-blur/Enter number input
+                          (NumberField, frame/resolution fields) accepts math
+                          like "1920/2" or "24*8+1". Null = revert. Use it, not
+                          parseFloat, when adding a numeric field.
+    shortcut-freeze.ts    Dev-only "Freeze" pill (MenuBar, next to the file name;
+                          next dev builds only): capture-phase window gate that
+                          stopImmediatePropagation()s key/clipboard events on
+                          non-editable targets, killing every app shortcut except
+                          Escape while typing keeps working. Registered at module-eval time so
+                          it precedes all effect-registered listeners.
     supabase/             client/server helpers, projects table CRUD, user prefs.
     media-relink.ts       Missing-media handles (video/audio re-pick on load).
     export*.ts            Image/video export, audio mixdown, exported-app manifest+packager.
@@ -199,6 +487,12 @@ electron/                 Electron desktop shell (NOT part of the Next build): m
                           preload.js (the toolboxNative bridge), ffmpeg.js (native
                           export/transcode), files.js (native dialogs), recents.js
                           (Local tab), server.js (embedded standalone Next server).
+rust/toolbox-vector-kernel/  kurbo→WASM geometry kernel (Optimize Path node).
+                          kurbo pinned exactly; built artifact IS committed
+                          (src/wasm/pkg + public/wasm/v1) so no Rust toolchain
+                          is needed to build the app. `npm run build:wasm`
+                          rebuilds (rustup + wasm-pack); `npm run check:kernel`
+                          verifies. Spec: attractor-vector-kernel-spec.md.
 specdocs/                 Design specs + devlist.md (numbered feature backlog).
 ```
 
@@ -230,6 +524,17 @@ Wires reference handles `out:primary` / `out:aux:<name>` →
 
 - CPU-side geometry — splines, points, SDF positions, transform params,
   pivot/translate — is **normalized [0,1]², Y-DOWN** (row 0 = top).
+  **Exception — SDF primitive params are Y-UP.** An `sdf-circle`/`rect`/
+  `polygon`/`star`'s `y` param is compared against the compiler's
+  `vec2 p = v_uv`, and v=0 is the framebuffer's *visual bottom* (see
+  FULLSCREEN_VS in gl.ts and the readPixels note beside it, and the
+  Y-flip in nodes/sdf/to-spline.ts). So a larger `y` sits HIGHER on
+  screen, the opposite of everything else in this list. Anything mapping
+  those params to screen must flip — and, when Aspect Correct is on,
+  also scale by `aspect = W/H`, since the shader evaluates at
+  `p.y = (v − 0.5)/aspect + 0.5`. Both conversions live in
+  `sdfYToGizmo`/`gizmoYToSdf` in PrimitiveGizmo.tsx; reuse them rather
+  than re-deriving.
 - GL textures sample with **v_uv Y-UP** (v=0 at bottom). Nodes/shaders flip
   at the boundary (see the Y-flips in text.ts, image-source.ts,
   marching-squares readback). When pixels look upside down, you missed one.
@@ -279,6 +584,10 @@ spline→mask (the shape's filled silhouette — even-odd, open subpaths closed
 for fill, aspect-corrected, canvas-sized; identity-cached per SplineValue so
 a static shape rasterizes once — this is what lets a Rectangle/Circle wire
 straight into any mask socket), scalar→vec2/3/4/uv-broadcast,
+image→uv (zero-copy re-wrap — same RGBA pool texture, R/G read as per-pixel
+(u,v), so wiring a noise image into any UV input re-evaluates the consumer
+at warped coordinates: Blender's Fac→Vector domain warp. Mask is excluded —
+its R-format texture would read v = 0. 073026_image-to-uv.md),
 image/mask→scalar (1×1 readback), audio→
 scalar (RMS level, via engine/audio-analysis.ts), image↔element (wrap as
 full-canvas element / flatten centered at natural size; identity-cached in
@@ -291,7 +600,13 @@ density←spline). NodeEditor's
 `isValidConnection` + splice check and EffectsApp's wire-drop auto-connect
 all call it — **add new coercions in coerce.ts (runtime) + coercible
 (editor/validator); add polymorphic socket exceptions in editorCanCoerce
-only.** `image→mask` is **luminance × alpha** (coverage-weighted): opaque
+only.** The exceptions cover the INPUT side; the splice check
+(drag-a-node-onto-a-wire) also has to answer the output side, where a
+retyping node's stored `primaryOutput` still reads its resting type while
+it sits unwired — so `findSpliceCandidate` runs `projectPrimaryOutput`
+(resolvePrimaryOutput with the prospective `connectedTypes`) instead, and
+a Transform drops onto a spline/points wire exactly like the hand-drawn
+pair of wires it stands in for. `image→mask` is **luminance × alpha** (coverage-weighted): opaque
 grayscale (noise/gradients) reads as its old luminance, but a shape drawn on
 transparency (Rectangle/Circle/Text/SVG rasters) mattes by its silhouette,
 not by whatever RGB sits in the cleared surround. A dark-*colored* fill still
@@ -448,6 +763,15 @@ To add a node:
   the whole spline shape keyframes too: Spline Draw's `spline_anchors` param
   is keyframable ("Path Animation" row in ParamPanel), and `interpolate`
   lerps it anchor-by-anchor (pos + handle offsets) between keyframed states.
+  INDIVIDUAL anchors keyframe too (spec 072726 M6): anchors carry optional
+  stable `id`s (minted by the editor), and `anchor_p/in/out:<id>` virtual
+  vec2 tracks animate one anchor's pos / handle offsets — resolved by a
+  fourth clone-and-override block in evaluator.ts via `resolveAnchorTracks`
+  (conventions.ts, shared with the overlay's value-at-tick). EITHER/OR with
+  whole-shape Path Animation (the spline block wins when animated). Enabled
+  per anchor from the overlay's context menu ("Animate anchor"); autokey
+  mirrors drags into just the dragged anchors' tracks; deleting an anchor
+  drops its tracks in the same onParamChange pass.
   The graph editor stays scalar-only; non-scalar tracks just show diamonds.
 - **Panel readouts are animated**: controls display the keyframe-evaluated
   value at the playhead (`animatedValueAt` in engine/conventions.ts — the
@@ -469,7 +793,22 @@ To add a node:
   content anchor), while a bar move slides content with the window;
   pure-gate types trim without slipping.
 - Timeline UIs: PlaybackBar (transport), TrackEditor (per-param tracks +
-  graph editor), LayersEditor (AE-style layer stack at root).
+  graph editor), LayersEditor (AE-style layer stack at root). Shared
+  behavior (tick↔px view, keyframe move/scale/stagger, clip drag math,
+  theme, playhead/diamond leaves) lives in components/effects/timeline/ —
+  edit it there, not per-editor. Spec:
+  080126_timeline-consolidation.md.
+- The dock that hosts those three (Layers / Tracks / Graph tabs) has TWO
+  hosts, both rendering EffectsApp's `renderDockBody` closure: the
+  floating modal the PlaybackBar's curves button opens (root-level
+  `position: fixed`, z 900 — over every panel, under the playback bar at
+  950, the menu bar at 1000 and the dialogs at 2000; drag by the
+  toolbar's empty middle, 8-way resize, rect + open state in
+  localStorage, hidden in full-canvas) and any `timeline` layout leaf.
+  `host` only decides what sits left of the tab toggle — the close ✕ in
+  the modal, the panel-kind chip in a panel. The tab is per-instance so
+  the two don't fight; the other dock toggles are deliberately shared.
+  Spec: 080226_timeline-modal-panel.md.
 
 ## Groups & layers
 
@@ -547,6 +886,20 @@ To add a node:
   layer shell computes only the blend; these extra inputs are pure
   passthrough). Back-compat: old layers have no `interface`, so they resolve
   to just `stack`/`content`/`audio`.
+- The interior **Layer Output** (`group-output`, `fixed: true`) is the one
+  boundary whose sockets are NOT a 1:1 mirror of the shell's outputs.
+  `LAYER_OUTPUT_SOCKETS` (groups.ts) is `image` / `audio` / `spline`, and
+  flatten PUSHES two of them onto the layer shell's own hidden inputs —
+  `image` → `in:content` (what the blend reads), `spline` → `in:spline`
+  (the vector export tap, stashed by `layer.compute`, never rendered); the
+  map is `LAYER_OUTPUT_TO_LAYER_INPUT` in flatten.ts. Only `audio` resolves
+  on the PULL side (resolveBoundarySource), because a spliced audio chain
+  has to land directly on its consumer for the evaluator's audio-routing
+  detection. Both pushed handles are dropped for a gated layer. Because the
+  interface is immutable, `resolveOutputBoundarySockets` treats the
+  constant — not the stored `sockets` param — as the source of truth, which
+  back-fills sockets added after a project was saved with **no migration
+  and no schema bump** (handle ids are name-based, so appending is safe).
 
 ## Persistence & sharing
 
@@ -634,9 +987,39 @@ To add a node:
   the first frames don't capture a fallback face.
 - `.toolbox` files ([project-file.ts](../src/lib/project-file.ts)): zip of
   manifest.json + project.json + thumbnail + content-hashed assets/.
+- **File → Open Recent** ([recent-projects.ts](../src/lib/recent-projects.ts),
+  073026_open-recent.md): per-machine cache of recently opened projects.
+  Cloud entries `{id,name}` live in localStorage (recorded on cloud
+  load/save/rename); web-local `.toolbox` opens persist their FSA
+  `FileSystemFileHandle` in IndexedDB (Chromium only — File → Load… uses
+  `showOpenFilePicker` there so the handle exists; the input fallback
+  isn't recorded); desktop entries are NOT stored — the Electron
+  `platform.recents` list (main-owned, self-pruning) merges in at list
+  time, so this menu and the LoadGrid "Local" tab always agree. Clear
+  Menu clears all three stores (including that Local tab list).
 - Supabase: auth (AuthProvider), `projects` table (private/public, slugs →
   `/p/[slug]` public editor, `/live/[slug]` live viewer), user preferences,
   image-gen edge function. SQL migrations live as `specdocs/*-migration.sql`.
+- **Project folders** (Private tab of the load grid): per-user,
+  arbitrarily nestable `project_folders` table + `projects.folder_id`
+  (null = root) — specdocs/project-folders-migration.sql. LoadGrid
+  drills in (folder tiles/rows listed before projects, breadcrumb chips
+  in its toolbar that navigate AND accept drops), pointer-based drag &
+  drop files projects/folders (`useTileDrag`: past a 5px threshold the
+  tile lifts into a rAF-lerp ghost chasing the cursor; targets are
+  elementFromPoint-hit-tested via `data-drop-target`; invalid release
+  glides home; near the scroll container's top/bottom edge the list
+  edge-auto-scrolls; the ghost transform is owned by the rAF loop, NOT
+  the React style prop; cycle guard client-side + DB trigger backstop), and
+  folder delete re-homes
+  contents to the deleted folder's parent — never deletes projects.
+  Data layer: lib/supabase/project-folders.ts (same session-cache /
+  timeout / offline conventions as projects.ts). `moveProjectToFolder`
+  deliberately does NOT bump `updated_at` — a drag must not conflict an
+  open editor's CAS save or reorder the date sort. Rollout-safe before
+  the migration runs: `listFolders` returns [], `listPrivateProjects`
+  retries without `folder_id` on 42703, and the grid renders flat as
+  before. Spec: 072726_project-folders.md.
 - Editor state survives the in-app docs round-trip via a module-level
   stash ([editor-session.ts](../src/state/editor-session.ts)) — not
   sessionStorage (bitmaps/canvases don't structure-clone).
@@ -671,6 +1054,48 @@ To add a node:
     transparent/flat runs extremely well (often smaller than ProRes for cutout
     graphics) but balloons on busy full-frame content — PNG/EXR sequence is the
     escape hatch there. Shares both encode paths (wasm + native ffmpeg).
+- **SVG** — the third product on an Output **and** on a Layer Output, and
+  the only vector one. A `spline` tap is a pure export side-channel: the
+  evaluated path is stashed under `svgExportStashKey(nodeId)`
+  (engine/svg-serialize.ts serializes it) and styled by the shared
+  `SVG_STYLE_PARAMS` from nodes/output/svg-export.ts. Wiring the tap is what
+  reveals the on-node **SVG** button and the panel's styling rows +
+  "Export SVG →" — unwired, both nodes look exactly as before.
+  - Composition **Output**: a plain optional input; its own compute stashes.
+  - **Layer Output**: the third fixed boundary socket, so a layer exports
+    its own vector art the way it already exports its own image/video. It
+    has no compute (flatten dissolves every boundary), so the **enclosing
+    layer** stashes on its behalf under the LAYER's id — `exportSvgNode`
+    maps Layer Output → `parentId` to find it, while styling params still
+    come from the Layer Output, which owns the layer's export config.
+    `EXPORT_PARAMS` still excludes the SVG rows; the panel appends them
+    itself, gated on the wire.
+  - The standalone **SVG Export** node (spline · utility) is the same
+    mechanism as a passthrough you can sit inline in a chain. All three fire
+    `effect-node-export` with `kind: "svg"` into EffectsApp's one
+    `exportSvgNode`.
+  - Caveat on all three: the stash only refreshes on evals that reach the
+    stashing node, so a viewport-**Active** node (the sole eval target, per
+    `computeNeededSet`) — or a gated/bypassed layer — can leave the
+    snapshot stale. Spec: 072726_spline-animation-program.md M2.
+- **Export resolution** (073126_export-resolution-and-app-slim.md): every
+  Output / Layer Output carries a `resolution` param (**canvas** / **scale**
+  / **custom** + `resScale`/`resWidth`/`resHeight`), applied to image,
+  video, sequence AND gif. `resolveExportResolution` (lib/export.ts)
+  resolves it — video paths pass `{even:true}` (H.264/H.265 reject odd
+  dims). EffectsApp's `beginExportResolution`/`endExportResolution`
+  bracket every export driver: it recreates the engine backend at the
+  target size via the exportResOverride → renderRes path (the same
+  battle-tested recreation as a project-resolution change; the preview
+  canvas element resizes with it, so toBlob / captureStream / native
+  readback all capture at target size with no per-path code), then
+  restores. A depth counter lets Render Queue / wedge batches hold the
+  bracket open (`beginExportResolution(null)`) so per-row brackets don't
+  thrash back to preview res between items. This also fixed a bug:
+  exports used to capture at `canvasRes × previewScale`, so a lowered
+  preview render scale silently shrank every export. The five duplicated
+  two-pass settle loops are now ONE helper (`renderSettledFrameAt` —
+  render, awaitMediaSettle, conditional re-render, optional rAF flush).
 - The Output node's animated export has an `exportMode` param (**video** /
   **sequence** / **gif**, a segmented pill — `ParamDef.control: "segmented"`).
   Sequence = one still per frame (`exportSequence` in EffectsApp), delivered
@@ -724,6 +1149,24 @@ To add a node:
   template (public/export-template/v1) with project.json + assets. The
   same manifest powers `/live/[slug]` via lib/live-viewer/LiveViewer.tsx.
   **This is why src/engine + src/nodes must stay self-contained.**
+  Packaging rules (073126_export-resolution-and-app-slim.md): the 25 MB
+  cap applies to USER content (serialized graph + manifest — embedded
+  media is the payload), NOT the fixed template weight — counting the
+  template is what silently broke every Export App when the ~22 MB
+  ONNX wasm landed in dist/. That wasm (`ORT_WASM_ASSET_RE`) is only
+  fetched at runtime by the ML nodes (`ML_NODE_TYPES` in
+  export-packager.ts: bg-remove / segment-anything / depth-anything —
+  keep in sync with nodes importing lib/ai), so `runExportApp` skips
+  downloading + zipping it when `graphUsesMlNodes(graph)` is false.
+  The modal's size estimate is real now: serialize once on open + the
+  template manifest's `distBytes`/`sourceBytes`/`tierABytes` (emitted by
+  build-export-template.mjs; older manifests → graph-only estimate).
+  Template-build gotcha: engine/editor imports reaching the template
+  bundle need their aliases/shims maintained — vite.config.ts maps
+  `@/wasm` (vector-kernel glue) and src/shims/state-graph.ts carries
+  verbatim copies of the `@/state/graph` values graph-ops imports
+  (newNodeId, newCompositionId, FRAME_XY_PROPS) — a new such import
+  breaks `npm run build:export-template` (and the release CI).
 
 ## Desktop (Electron) build
 
@@ -833,6 +1276,57 @@ native window controls: 070626_windows-desktop-build.md.
     `ensure-release` (ubuntu, pre-creates the Release so the two OS jobs don't
     race to create it), `build-mac` (macos-14, signed/notarized dmg), `build-win`
     (windows-latest, unsigned nsis exe). Both build jobs `needs: ensure-release`.
+
+## Theming (080226_theme-modes.md)
+
+The editor is light/dark themed, plus a per-mode brightness trim, both under
+User Preferences → Appearance. `theme/theme.ts` follows the `ui-font.ts`
+pattern (localStorage, `useSyncExternalStore`, applied to `<html>`); mode
+rides a `data-theme` attribute that `app/theme-tokens.css` keys off, and a
+pre-paint script in `app/layout.tsx` sets it before first paint.
+
+**Write `var(--tb-…)`, not a hex literal.** The neutral ramp is
+**positional** — `--tb-n-0` (deepest surface) … `--tb-n-17` (brightest ink) —
+because `#27272a` was a border in 59 files and a raised surface in others, so
+role-based names would have been wrong half the time. Light mode mirrors the
+ramp end-for-end, which means a site keeps its relative position and nesting
+inverts for free. Semantic aliases (`--tb-panel`, `--tb-border`, `--tb-ink`)
+sit on top for new code. Accents are `--tb-a-*`, one-off tints `--tb-t-*`,
+the app frame `--tb-frame`, and translucent washes go through
+`color-mix(in srgb, var(--tb-lift) N%, transparent)` so a "lighten by N%"
+becomes a "darken by N%" on a light surface.
+
+Socket colours are a special case: `socketColor.ts` carries a dark/light
+pair per type, with the HUE identical in both modes (that is the wire
+identity) and only lightness capped for light mode, so a bright
+`#facc15` scalar doesn't become unreadable pale text on a white node. Use
+`colorForSocket()` in DOM/SVG; use `resolveSocketColor()` in a canvas 2D
+context, where `var()` cannot resolve.
+
+Deliberately NOT themed, and should stay that way: canvas gizmos and
+overlays (contrast is against the user's artwork, not the UI), node tint
+presets and any other value PERSISTED into a project (a `var()` in a saved
+file resolves nowhere), the live viewer and export template (exported apps
+are user artifacts), and saturated identity colour like the macOS traffic
+lights. `scripts/theme-scope.mts` is the authority on that list.
+
+Two runtime adjustments ride on top of the ramp, both in `theme/theme.ts`:
+a per-mode **brightness trim** (OKLCH lightness offset) and a global **tint**
+(a hue pushed onto the greys, chroma scaled by an intensity slider). The tint
+touches greyscale tokens ONLY — accents, socket hues and `--tb-t-*` keep
+their own colour, so tinting the chrome can't restyle an error state. Both
+are applied in one OKLCH round-trip per token and cached for the pre-paint
+script.
+
+Elevation uses `--tb-shadow-node` / `--tb-shadow-chip` / `--tb-shadow-pop`,
+which are whole `box-shadow` values per mode — light mode gets its own far
+softer shadow rather than the dark one recoloured.
+
+Source of truth is `theme/tokens.ts`. After editing it run
+`npm run gen:theme-css`; `npm run check:theme-css` fails if the generated
+`src/app/theme-tokens.css` is stale. `scripts/audit-theme-colors.mts` lists
+every colour literal still unthemed, and
+`scripts/codemod-theme-tokens.mts --apply` sweeps up new ones (idempotent).
 
 ## Invariants — do not break
 
@@ -1046,6 +1540,20 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   source options (index/random/group/position) as fill. In Stroke the
   per-subpath source strokes each subpath in its own color, and the per-ring
   Repeats ramp (`repeat_color_mode`) takes precedence over it when both are on.
+  Rasterize Spline's own stroke has the same sourcing (`stroke_source` +
+  `stroke_ramp` / `stroke_ramp_by` / `_seed` / `_angle` / `_interp`),
+  independent of the fill's — flat color keeps the legacy single-pass stroke
+  (translucent overlaps don't double-blend); ramp strokes per subpath.
+  (4) Rasterize Spline's **`holes`** ("Punch holes", default OFF — old saves
+  byte-identical): per-subpath fills (stacking / ramp / layered) paint nested
+  contours SOLID — text counters, donuts, Points-to-Surface air pockets fill
+  over. With holes on, subpaths group into containment ISLANDS
+  (even-nesting-depth outer + its odd-depth children, point-in-poly on
+  8-samples-per-cubic polylines, ≤256 subpaths else legacy fallback) and each
+  island fills as ONE even-odd path colored by its outer — negative space
+  punches while ramp colors and stacking order survive, in both overlap modes
+  and the image-fill coverage path. Toggling re-rasters via the `hol` key in
+  both raster signatures.
 - **Contextual Delete** uses [shortcut-scope.ts](../src/components/effects/shortcut-scope.ts)
   (the last-clicked scoped region wins). It tracks BOTH `pointerdown` and
   `mousedown` in capture phase: overlay handlers that `preventDefault()` their
@@ -1155,8 +1663,16 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   sort spatial hash at `thickness` px. State is session-only in
   `ctx.state`, reset on time-wrap / topology change / seed-param
   change — input SHAPE edits don't reseed (deliberate, for
-  follow_input); scrub to 0 to reseed. Same paused-eval-advances-sim
-  caveat as the Particle Simulator.
+  follow_input); scrub to 0 to reseed. Steps on the house sim
+  contract (matter-simulator precedent): playing evals and
+  time-advancing offline evals advance; paused evals re-emit without
+  stepping, so a parked playhead (frame 0 included) holds its pose.
+  Coordinate spaces (sim-kernel.ts header): geometry sockets are
+  AUTHORED space (engine/aspect.ts) mapped to TRUE canvas px for the
+  solver via `subpathToCanvasPx`/`authoredToPxY`; canvas bounds, mask
+  colliders, and property maps use canvas UV; force and analytic
+  circle/line collider descriptors are evaluated at authored coords
+  (Particle Simulator parity). Rigid Body shares all of this.
 - **Rigid Body Simulator** (`rigid-body-simulator`, spec
   072026_rigid-body-simulator.md) is the rope's sibling: one BODY per
   subpath via Müller shape matching (closed-form 2D fit; pins carry a
@@ -1258,6 +1774,99 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   px-vs-`%` units toggle ([stroke-units.ts](../src/engine/stroke-units.ts),
   % = canvas-width fraction — the #174 fix; default stays `px` so old
   saves render byte-identical).
+- **Adaptive Pixelate** (`adaptive-pixelate`, spec
+  072326_adaptive-pixelate.md) renders non-constant pixel grids (uniform /
+  quadtree / lattice) with block size driven by its `size_map` mask input
+  (or the source's own luminance when unwired). The grid is
+  CPU-AUTHORITATIVE: a GPU box-reduce of the driver reads back at
+  finest-grid resolution (small), the CPU builds the cell list, and the
+  single image pass reads the grid through an RGBA32F cell-rect index
+  texture (quadtree/uniform — cells are unions of finest texels, exact) or
+  two per-canvas-pixel axis LUTs (lattice — cuts round to integer px, so
+  pixel granularity is exact). One authority means the image and the points
+  aux can't disagree on a threshold cell. The readback runs per recompute,
+  so an animated driver pays a small sync stall each frame (static graphs
+  cache normally). The points aux (cell centers y-down normalized, scale
+  relative to the max block, groupIndex = quadtree level) is built
+  UNCONDITIONALLY — the node caches, so consumption-gating would serve
+  stale empties once wired (the loop-weave rule, 072226 audit #5).
+- **Flow fields** (spec 072526_flow-fields.md): velocity fields travel
+  as plain images per [velocity-field.ts](../src/engine/velocity-field.ts)
+  (signed-RG, midlevel 0.5, Y-DOWN, isotropic canvas-width units — the
+  encoding Perlin Noise `curl` already emits and Displace / Advect
+  Points `vector` already read; y sign flips at the GL boundary, y steps
+  scale by aspect). Producers: Perlin curl, **Spline Flow Field**
+  (`spline-flow-field` — regularized vortex dipoles along a drawn curve,
+  divergence-free by construction; `along`/`orbit`, chainable `field`
+  input sums fields), **Flow Obstacle** (`flow-obstacle` — deflect/block
+  a field around a mask; boundary handling lives HERE, composable, not
+  on producers). **Advect Image** (`advect-image`) is the stateless
+  consumer: per-pixel backward semi-Lagrangian trace, field modes mirror
+  Advect Points; two passes so its uv map is a first-class `uv` aux
+  (built unconditionally — loop-weave rule). CAVEAT: matting an encoded
+  field decodes as v=(−1,−1) — matte consumer outputs, not fields.
+- **Fluid Simulator** (`fluid-simulator`, spec 072626_fluid-simulator.md)
+  is the 2D Eulerian ink/smoke sim: Stam stable fluids + advection-
+  reflection (energy-preserving mid-step reflection, two warm-started
+  Jacobi projections per substep) + vorticity confinement dial, on
+  Watercolor Ink's chassis (stable:false + time fingerprint, node-owned
+  RGBA16F grid state in ctx.state, reset on scene wrap, playing/offline
+  gate, drive_by_scene_time, deposit/color dye vocabulary). Consumes the
+  particle FORCE/COLLIDER descriptors via slot params (forceCount/
+  colliderCount) — its `applyForce` + curl2 GLSL are copied VERBATIM
+  from particle-simulator-webgl.ts (third copy of the contract after
+  sim-kernel.ts): keep all three in sync when adding force kinds.
+  Internal frame is GL texel space (y-up, isotropic); particle-frame and
+  M1-field conversions happen only at the seams. `field` input = guide
+  field in; `velocity` aux = live sim field out (M1 encoding, built
+  unconditionally) so Advect Points/Image can ride the sim.
+- **Matter Simulator** (`matter-simulator`, spec 072726_matter-simulator.md)
+  is MLS-MPM deformable matter (liquid/jelly/snow, mpm99 material
+  models) as WGSL compute — the first real WebGPU node beyond the
+  particle Phase-1 test, and it inherits that node's bridge pattern
+  verbatim: async device boot cached at `<type>:<id>:status`, ONE FRAME
+  BEHIND via renderOut → staging → mapAsync → uploadFloat32ToImage,
+  offline export exact via pushMediaSettle (the settle re-render can't
+  double-step — time hasn't advanced past the active gate). P2G scatter
+  uses fixed-point i32 atomics (round(v·2¹⁶); WGSL atomicAdd is
+  i32-only). Seeds from a `seed` points input / `region` mask / default
+  block — no continuous emitters; `particle_radius` packs seeding at a
+  rest spacing (liveCount ≤ budget rides the whole pipeline). Consumes
+  force descriptors (FOURTH copy of the applyForce contract — webgl
+  GLSL, wgsl integrate.ts, fluid-sim GLSL, matter-sim WGSL: keep all
+  four in sync). Obstacles two ways: analytic circle/line colliders
+  (free-slip on grid nodes + G2P position projection, surfaces inflated
+  by `collider_radius`), and a baked SDF — the `obstacle` spline input
+  ∪ image-mask collider alphas → CPU chamfer signed distance at grid
+  res → storage buffer, rebaked only on value-identity change (animated
+  spline obstacles work). Per-material dials (visibleIf material):
+  liquid stiffness/viscosity, jelly stiffness, snow stiffness/crumble/
+  hardening. Outputs `particles` + a `points` aux that must stay
+  populated on paused evals (kept CPU-side as lastPositions — the
+  readback is consumed once but stable:false recomputes every eval).
+  **Points to Surface** (`points-to-surface`,
+  072726_points-to-surface.md) is the surfacing companion — Zhu-Bridson
+  / metaballs field + marching squares, points → spline with per-blob
+  groupIndex; general to ANY points producer, not just sims.
+- **Diffusion Curves** (`diffusion-curves`, spec
+  072726_diffusion-curves.md — Orzan et al. 2008): spline →
+  smooth-shaded image. Left/Right `color_ramp`s run ALONG each subpath
+  (stop position = t; per-stop alpha diffuses too, so results composite
+  via Merge); trace mode samples a wired image at the source bands
+  (the paper's §4.2 tracing — live per frame over video). Stateless
+  steady-state solve → NORMAL caching (not stable:false): static
+  graphs are free, and the recompute cost is the brute-force
+  nearest-segment pass (O(segments·pixels), ≤2048 samples — segIdx
+  must stay half-float-exact). All constraint rasters are texelFetch
+  lookups through that nearest-field texture; nearest-segment-wins
+  replaces the paper's stencil discard at crossings/thin structures.
+  The on-curve gradient band must stay 1px (halfw 0.5) — wider
+  double-counts the jump in div w and overshoots. Solve rides
+  engine/poisson.ts (RHS restricted by 2×2 SUM across levels — the h²
+  scaling; sanity test: straight line, red/blue ramps → hard step).
+  Two nodes can't share one solve (solved images don't sum) —
+  constraint-level chaining is future work; composite via diffused
+  alpha instead.
 - No automated tests; keep modules pure where possible (layout solver,
   graph-ops) so they're testable when a runner lands.
 

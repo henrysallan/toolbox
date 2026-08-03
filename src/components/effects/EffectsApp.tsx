@@ -19,12 +19,53 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import NodeEditor, { PROJECT_CRUMB_ID } from "./NodeEditor";
+import NodeEditor, { PROJECT_CRUMB_ID, type PendingWire } from "./NodeEditor";
 import { CompositionTabBar } from "./CompositionTabBar";
 import { ProjectView } from "./ProjectView";
 import { AssetsView, type AssetItem } from "./AssetsView";
 import ParamPanel from "./ParamPanel";
+import {
+  LayoutRegion,
+  PANEL_FRAME,
+  PANEL_GAP,
+  GUTTER_HIT,
+  GUTTER_HIT_COARSE,
+} from "./layout/LayoutRegion";
+import { PanelKindMenu } from "./layout/PanelKindMenu";
+import { PanelPopout } from "./layout/PanelPopout";
+import { broadcastAppEvent, ownerWindow } from "./layout/panel-window";
+import {
+  computeRects,
+  countLeavesOfKind,
+  fromSavedLayout,
+  largestLeaf,
+  makeDefaultTree,
+  PANEL_LABELS,
+  toSavedLayout,
+  type LayoutTree,
+  type PanelKind,
+} from "./layout/model";
+import {
+  assignKind,
+  attachLeaf,
+  joinAt,
+  removeLeaf,
+  setRatio,
+  splitLeaf as splitLayoutLeaf,
+  swapLeaves,
+} from "./layout/ops";
+import {
+  layoutPresetEntries,
+  loadLayoutPresets,
+  resolveLayoutPreset,
+  saveLayoutPresets,
+  upsertLayoutPreset,
+  type LayoutPreset,
+} from "./layout/presets";
+import NewLayoutPresetModal from "./NewLayoutPresetModal";
 import { feedWheel, wheelWantsZoom } from "./input-device";
+import { applyStoredUiFont } from "./ui-font";
+import { applyStoredTheme } from "./theme/theme";
 // import CustomCursor from "./CustomCursor"; // temporarily disabled — using native cursor
 import UserPreferencesModal from "./UserPreferencesModal";
 import PaintOverlay from "./paint-editor/PaintOverlay";
@@ -55,19 +96,38 @@ import {
   type GraphEdge,
   type GraphNode,
 } from "@/engine/evaluator";
+import { splineToSvg } from "@/engine/svg-serialize";
 import {
+  svgExportStashKey,
+  type SvgExportStash,
+} from "@/nodes/output/svg-export";
+import {
+  anchorInKey,
+  anchorOutKey,
+  anchorPosKey,
+  anchorTrackId,
   gpointCKey,
   gpointXKey,
   gpointYKey,
+  isAnchorTrackKey,
   layerOpacityKey,
   rampAlphaKey,
   rampColorKey,
   rampPositionKey,
+  resolveAnchorTracks,
   withMaskInput,
 } from "@/engine/conventions";
+import type { SplineAnchor, SplineSubpath } from "@/engine/types";
 import type { ColorRampStop } from "@/engine/color-ramp";
 import type { NodeDataPayload } from "@/state/graph";
 import { parseTargetHandleKind, newCompositionId } from "@/state/graph";
+import { FRAME_TYPE } from "@/engine/graph-helpers";
+import {
+  computeFrameRects,
+  FRAME_DEFAULT_H,
+  FRAME_DEFAULT_W,
+  FRAME_PADDING,
+} from "./FrameNode";
 import {
   buildStarterGraph,
   belongsToComposition,
@@ -90,6 +150,7 @@ import {
   groupSelection,
   makeInstanceNode,
   makeIterateNodes,
+  makeSplineEditable,
   newEdgeId,
   reparentNode,
   removeGroupSocket,
@@ -134,6 +195,7 @@ import {
   defaultFilename,
   downloadBlob,
   pickVideoMime,
+  resolveExportResolution,
   sanitizeFilename,
 } from "@/lib/export";
 import {
@@ -141,6 +203,19 @@ import {
   type FolderHandle,
   type AssetsFolderHandle,
 } from "@/lib/platform";
+import {
+  clearRecentProjects,
+  listRecentProjects,
+  notifyRecentProjectsChanged,
+  openLocalRecentFile,
+  pickAndRecordLocalToolbox,
+  recordCloudRecent,
+  removeCloudRecent,
+  renameCloudRecent,
+  subscribeRecentProjects,
+  supportsLocalFileRecents,
+  type RecentProjectEntry,
+} from "@/lib/recent-projects";
 import {
   decodeImageFileEnvelope,
   deserializeGraph,
@@ -194,6 +269,11 @@ import {
   parseFragmentText,
   writeFragmentToClipboard,
 } from "@/lib/fragment-clipboard";
+import {
+  startPointerDrag,
+  useCoarsePointer,
+  TOUCH_DRAG_STYLE,
+} from "@/lib/pointer-drag";
 import ExportAppModal from "./ExportAppModal";
 import NodeInspectorPopup from "./NodeInspectorPopup";
 import SocketPeekPopover from "./SocketPeekPopover";
@@ -438,6 +518,135 @@ const CONNECTED_TYPE_RETYPE_NODES = new Set([
   "reroute",
 ]);
 
+// --- timeline dock (080226_timeline-modal-panel.md) -----------------------
+//
+// The dock (Layers / Tracks / Graph) has two hosts: the floating modal
+// the PlaybackBar's curves button opens, and any `timeline` leaf in the
+// tiled layout. Both render the same body; `host` only decides what
+// sits left of the tab toggle (close ✕ vs. the panel-kind chip).
+
+export type DockTab = "tracks" | "graph" | "layers";
+/** Instance id of the floating dock (panels key off their leaf id). */
+const DOCK_MODAL_ID = "modal";
+
+/**
+ * Transparency checker behind every viewport canvas (primary, split #2, and
+ * each tiled watch viewport). Painted by the canvas element's own CSS
+ * background, so it reads through wherever the rendered frame has alpha —
+ * including the "nothing to preview" case, where the blit clears the canvas
+ * to transparent rather than filling a plate.
+ *
+ * Steps 9/5 rather than the 3/1 pair the small swatch checkers use: at the
+ * bottom of the ramp two adjacent-ish steps differ by ~4 L*, which at
+ * canvas scale is indistinguishable from black — the whole point of the
+ * checker is that "transparent" doesn't read as "black output". 9 vs 5 is
+ * ~15 L* apart in dark mode and mirrors to a normal light checker.
+ */
+const VIEWPORT_CHECKER =
+  "repeating-conic-gradient(var(--tb-n-9) 0% 25%, var(--tb-n-5) 0% 50%) 0 0 / 24px 24px";
+/**
+ * What sits behind the canvas with the checker toggled OFF — a flat plate,
+ * so alpha reads as one solid field instead of a grid. AE's transparency
+ * grid and Cavalry's checker both work this way; black in dark mode, white
+ * in light, which is what `--tb-frame` already means everywhere else.
+ */
+const VIEWPORT_FLAT = "var(--tb-frame)";
+/** localStorage key for the checker toggle (per-machine, not project data). */
+const VIEWPORT_CHECKER_KEY = "viewport.checker";
+
+// Every control in the dock toolbar — the tab toggle, the buttons either
+// side of it, the stagger popover trigger, the panel-kind chip — is
+// forced to this exact height with box-sizing: border-box, so the row
+// lines up regardless of each control's own padding and border.
+const DOCK_CTRL_H = 22;
+// Nested radii must be concentric or the inner corners bulge past the
+// outer curve: inner = outer − the gap between them (the toggle's 2px
+// padding). See DockTabToggle.
+const DOCK_RADIUS = 6;
+const DOCK_RADIUS_INNER = DOCK_RADIUS - 2;
+
+/** Floating-dock geometry, CSS px in viewport coordinates. */
+interface DockRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+const DOCK_MIN_W = 320;
+const DOCK_MIN_H = 160;
+const DOCK_DEFAULT_H = 280;
+/** Vertical band the modal may occupy — below the menu bar, above the
+ *  playback bar. Both are fixed-height chrome, so the band is a constant
+ *  rather than a measurement: MenuBar is 22 (32 on the frameless desktop
+ *  build — the taller value wins here) and PlaybackBar is 44. The dock
+ *  renders UNDER both anyway; this just keeps it reachable. */
+const DOCK_TOP_INSET = 32;
+const DOCK_BOTTOM_INSET = 44;
+/** Keep at least this much of the drag bar on screen horizontally. */
+const DOCK_EDGE_KEEP = 80;
+const DOCK_RECT_KEY = "timeline.modal.rect";
+const DOCK_OPEN_KEY = "timeline.modal.open";
+
+/** Bottom-anchored, full-width-ish — where the dock used to open. */
+function defaultDockRect(): DockRect {
+  const vw = typeof window === "undefined" ? 1280 : window.innerWidth;
+  const vh = typeof window === "undefined" ? 800 : window.innerHeight;
+  return {
+    x: PANEL_GAP,
+    y: Math.max(
+      DOCK_TOP_INSET,
+      vh - DOCK_BOTTOM_INSET - DOCK_DEFAULT_H - PANEL_GAP
+    ),
+    w: Math.max(DOCK_MIN_W, vw - PANEL_GAP * 2),
+    h: DOCK_DEFAULT_H,
+  };
+}
+
+/**
+ * Fit a rect inside the current window. Runs on every restore (a rect
+ * saved on a large display must not come back offscreen on a laptop)
+ * and on resize.
+ */
+function clampDockRect(r: DockRect): DockRect {
+  if (typeof window === "undefined") return r;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const maxH = Math.max(DOCK_MIN_H, vh - DOCK_TOP_INSET - DOCK_BOTTOM_INSET);
+  const w = Math.max(DOCK_MIN_W, Math.min(r.w, Math.max(DOCK_MIN_W, vw)));
+  const h = Math.max(DOCK_MIN_H, Math.min(r.h, maxH));
+  return {
+    w,
+    h,
+    // Horizontally the drag bar just has to stay reachable, so the box
+    // may hang off either edge as long as DOCK_EDGE_KEEP of it shows.
+    x: Math.max(DOCK_EDGE_KEEP - w, Math.min(r.x, vw - DOCK_EDGE_KEEP)),
+    // Vertically the whole toolbar must stay in the band between the
+    // menu bar and the playback bar.
+    y: Math.max(DOCK_TOP_INSET, Math.min(r.y, vh - DOCK_BOTTOM_INSET - h)),
+  };
+}
+
+function readSavedDockRect(): DockRect | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(DOCK_RECT_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw) as Partial<DockRect>;
+    if (
+      typeof p.x !== "number" ||
+      typeof p.y !== "number" ||
+      typeof p.w !== "number" ||
+      typeof p.h !== "number" ||
+      ![p.x, p.y, p.w, p.h].every(Number.isFinite)
+    ) {
+      return null;
+    }
+    return clampDockRect({ x: p.x, y: p.y, w: p.w, h: p.h });
+  } catch {
+    return null;
+  }
+}
+
 export default function EffectsApp({
   initialProject,
 }: {
@@ -445,9 +654,11 @@ export default function EffectsApp({
 } = {}) {
   return (
     <AuthProvider>
-      <ReactFlowProvider>
-        <EffectsShell initialProject={initialProject} />
-      </ReactFlowProvider>
+      {/* No shell-level ReactFlowProvider: with the tiled layout each
+          Node Editor pane wraps itself in its own provider so duplicate
+          panes get independent stores/cameras (072726_window-tiling.md
+          §5). Nothing outside those panes consumes the store. */}
+      <EffectsShell initialProject={initialProject} />
     </AuthProvider>
   );
 }
@@ -530,21 +741,35 @@ function EffectsShell({
   // await it (never serialize a not-yet-loaded image to null). Node ids still
   // loading are broadcast via `node-media-loading` for the per-node spinner.
   const mediaLoadRef = useRef<Promise<void> | null>(null);
+  // Values that have LANDED from an in-flight stream, keyed
+  // `${nodeId} ${paramName}`, recorded synchronously as each fetch
+  // settles. A save awaits `mediaLoadRef`, but the last patch's `setNodes` may
+  // not have COMMITTED before serialize reads the render-mirror `nodesRef`, so
+  // that image would serialize as null (and its Storage object then be pruned
+  // — the same data loss as #1b, via a different door). overlayLandedMedia
+  // patches these onto the graph at serialize time, independent of React's
+  // commit timing; a cleanup effect drops each entry once it's committed so a
+  // later user edit of the param isn't clobbered. See 072226 audit #1a.
+  const landedMediaRef = useRef<Map<string, unknown>>(new Map());
   const streamPendingMedia = useCallback(
     (pending: PendingMedia[]) => {
+      // A new load supersedes any prior load's landed media.
+      landedMediaRef.current.clear();
       if (pending.length === 0) {
         mediaLoadRef.current = null;
-        window.dispatchEvent(
-          new CustomEvent("node-media-loading", { detail: new Set<string>() })
+        broadcastAppEvent(
+          () =>
+            new CustomEvent("node-media-loading", { detail: new Set<string>() })
         );
         return;
       }
       let left = pending.slice();
       const emit = () =>
-        window.dispatchEvent(
-          new CustomEvent("node-media-loading", {
-            detail: new Set(left.map((p) => p.nodeId)),
-          })
+        broadcastAppEvent(
+          () =>
+            new CustomEvent("node-media-loading", {
+              detail: new Set(left.map((p) => p.nodeId)),
+            })
         );
       emit();
       const patch = (nodeId: string, paramName: string, value: unknown) =>
@@ -562,14 +787,19 @@ function EffectsShell({
           )
         );
       const one = async (pm: PendingMedia) => {
+        const landedKey = `${pm.nodeId} ${pm.paramName}`;
         try {
           const bmp = await decodeImageFileEnvelope(pm.envelope.dataUrl ?? "");
           patch(pm.nodeId, pm.paramName, bmp);
+          // Record synchronously so a save that resumes before React commits
+          // this patch still serializes the landed bitmap (see landedMediaRef).
+          landedMediaRef.current.set(landedKey, bmp);
         } catch (e) {
           console.warn(`[load] streamed image failed for ${pm.nodeId}`, e);
           // Keep the envelope in the param so a re-save preserves the ref
           // (it round-trips as a Storage URL) instead of dropping the image.
           patch(pm.nodeId, pm.paramName, pm.envelope);
+          landedMediaRef.current.set(landedKey, pm.envelope);
         } finally {
           left = left.filter((x) => x !== pm);
           emit();
@@ -584,6 +814,44 @@ function EffectsShell({
     },
     [setNodes]
   );
+
+  // Overlay any landed-but-maybe-not-yet-committed streamed media onto a nodes
+  // array before serializing it. Fixes the save-during-stream race where
+  // `nodesRef` (a render-time mirror) still holds null for an image whose
+  // patch hasn't committed. Skips entries already reflected in the array. See
+  // 072226 audit #1a.
+  const overlayLandedMedia = useCallback(
+    (arr: Node<NodeDataPayload>[]): Node<NodeDataPayload>[] => {
+      const landed = landedMediaRef.current;
+      if (landed.size === 0) return arr;
+      return arr.map((n) => {
+        let params: Record<string, unknown> | null = null;
+        for (const [key, value] of landed) {
+          const sep = key.indexOf(" ");
+          if (key.slice(0, sep) !== n.id) continue;
+          const pname = key.slice(sep + 1);
+          if (n.data.params[pname] === value) continue; // already committed
+          if (!params) params = { ...n.data.params };
+          params[pname] = value;
+        }
+        return params ? { ...n, data: { ...n.data, params } } : n;
+      });
+    },
+    []
+  );
+
+  // Once a landed value is reflected in committed state, drop its entry — the
+  // overlay is no longer needed and keeping it could clobber a later user edit
+  // of that param.
+  useEffect(() => {
+    const landed = landedMediaRef.current;
+    if (landed.size === 0) return;
+    for (const [key, value] of landed) {
+      const sep = key.indexOf(" ");
+      const n = nodes.find((nn) => nn.id === key.slice(0, sep));
+      if (n && n.data.params[key.slice(sep + 1)] === value) landed.delete(key);
+    }
+  }, [nodes]);
 
   // /p/<slug> bootstrap. Runs once on mount when initialProject was
   // supplied; deserializes the saved graph and seeds the editor.
@@ -624,6 +892,11 @@ function EffectsShell({
           if (scene.width !== undefined && scene.height !== undefined)
             setCanvasRes([scene.width, scene.height]);
         }
+        // Per-project tiled layout (M4) — public /p/ loads apply the
+        // author's layout too (owner decision, spec §6).
+        applyLoadedLayout(
+          (initialProject.graph as { layout?: unknown }).layout
+        );
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[EffectsApp] /p/<slug> bootstrap failed:", err);
@@ -654,12 +927,40 @@ function EffectsShell({
     if (typeof window === "undefined") return;
     window.localStorage.setItem("viewport.previewScale", String(previewScale));
   }, [previewScale]);
+  // Transparency checker behind every viewport canvas. On by default; the
+  // toggle in the primary viewport's upper-right corner swaps it for a flat
+  // plate (AE's transparency grid, Cavalry's checker). Same per-machine
+  // viewing-preference rule as previewScale above — localStorage, never the
+  // project file. One switch drives all viewports: primary, split #2, and
+  // every tiled watch window, since it's a way of LOOKING at alpha rather
+  // than a property of any one panel.
+  const [showChecker, setShowChecker] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem(VIEWPORT_CHECKER_KEY) !== "0";
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(VIEWPORT_CHECKER_KEY, showChecker ? "1" : "0");
+  }, [showChecker]);
+  const canvasBackdrop = showChecker ? VIEWPORT_CHECKER : VIEWPORT_FLAT;
+  // Export resolution override (073126_export-resolution-and-app-slim.md).
+  // While set, the engine renders at exactly this size — previewScale is
+  // deliberately not applied, so exports never inherit a lowered preview
+  // render scale. Setting it rides the same backend-recreation effect as a
+  // project-resolution change (the battle-tested path); the preview canvas
+  // element resizes with renderRes, so every capture route (toBlob,
+  // captureStream, native-ffmpeg readback) sees the export size with no
+  // per-path changes. Managed by beginExportResolution/endExportResolution.
+  const [exportResOverride, setExportResOverride] = useState<
+    [number, number] | null
+  >(null);
   const renderRes: [number, number] = useMemo(
-    () => [
-      Math.max(2, Math.round(canvasRes[0] * previewScale)),
-      Math.max(2, Math.round(canvasRes[1] * previewScale)),
-    ],
-    [canvasRes, previewScale]
+    () =>
+      exportResOverride ?? [
+        Math.max(2, Math.round(canvasRes[0] * previewScale)),
+        Math.max(2, Math.round(canvasRes[1] * previewScale)),
+      ],
+    [canvasRes, previewScale, exportResOverride]
   );
   // Controls which panel the right-side parameters section is showing.
   // Selecting a node switches it to "node"; Project Settings flips it to
@@ -698,18 +999,199 @@ function EffectsShell({
   // Holds the screen-px origin where the chord was pressed, or null when
   // closed. Spec: specdocs/071326_pie-menu.md.
   const [pieMenu, setPieMenu] = useState<{ x: number; y: number } | null>(null);
-  // After-Effects-style layout. When on, the page splits into a
-  // tabbed Parameters / Node Editor pane on the left, a canvas on
-  // the right, an always-visible Tracks editor stretching across
-  // the bottom, and the playback bar (timeline) below it. The
-  // existing "default" layout is the alternative.
-  const [timelineLayout, setTimelineLayout] = useState(false);
-  // Active tab in the timeline-layout left pane. Defaults to
-  // Parameters per the spec; the user can flip to the node editor
-  // when they need to wire things up without leaving this layout.
-  const [timelineLayoutTab, setTimelineLayoutTab] = useState<
-    "params" | "nodes"
-  >("params");
+  // The tiled window layout (072726_window-tiling.md): one tree of
+  // splits/leaves replaces the old fixed default/timeline layouts,
+  // which live on as Window-menu presets. Persists per-project
+  // (SavedProject.layout, M4) and across the docs round-trip (session
+  // stash); a fresh session starts on the default preset.
+  const [layoutTree, setLayoutTree] = useState<LayoutTree>(
+    () => rehydrate?.layoutTree ?? makeDefaultTree()
+  );
+  const layoutComputed = useMemo(() => computeRects(layoutTree), [layoutTree]);
+  // Panels popped out into their own OS windows (M1 — viewport only;
+  // 080226_panel-popout-windows.md). A detached leaf LEAVES layoutTree
+  // (so no split ratio describes a hole) and lives here instead,
+  // keeping its leaf id — which is what lets the watch-canvas registry
+  // and the per-pane stashes carry on working untouched.
+  const [detachedPanels, setDetachedPanels] = useState<
+    { id: string; panel: PanelKind }[]
+  >([]);
+  // Primary viewport — hosts the engine blit target (canvasRef), every
+  // editing overlay/gizmo, the tracks dock and the Shift+S A/B split;
+  // other viewport leaves are watch windows (blit-only). Election is
+  // STICKY: the current primary keeps the role while it remains a live
+  // viewport leaf, so splitting it (M2) or adding viewports never
+  // teleports the canvas + overlays into a different pane (that would
+  // remount them). Falls back to the first viewport leaf in tree order.
+  const [primaryViewportLeafId, setPrimaryViewportLeafId] = useState<
+    string | null
+  >(() => {
+    if (rehydrate?.primaryViewportLeafId) return rehydrate.primaryViewportLeafId;
+    for (const id of layoutComputed.order) {
+      if (layoutComputed.leaves.get(id)?.panel === "viewport") return id;
+    }
+    return null;
+  });
+  useEffect(() => {
+    // Functional update returns the same id while the primary is still
+    // valid, so React bails and no cascading render happens.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPrimaryViewportLeafId((prev) => {
+      const viewports = layoutComputed.order.filter(
+        (id) => layoutComputed.leaves.get(id)?.panel === "viewport"
+      );
+      return prev && viewports.includes(prev)
+        ? prev
+        : (viewports[0] ?? null);
+    });
+  }, [layoutComputed]);
+  // Signature of the viewport leaf SET — the state-driven eval effect
+  // keys on it so a freshly-added watch viewport paints immediately.
+  // Ratio-only drags deliberately don't re-eval. Detached viewports
+  // count: a popped-out window would otherwise stay blank until some
+  // unrelated edit triggered the next eval.
+  const viewportLeafSig = useMemo(
+    () =>
+      [
+        ...layoutComputed.order.filter(
+          (id) => layoutComputed.leaves.get(id)?.panel === "viewport"
+        ),
+        ...detachedPanels
+          .filter((d) => d.panel === "viewport")
+          .map((d) => d.id),
+      ].join("|"),
+    [layoutComputed, detachedPanels]
+  );
+  const handleSetLayoutRatio = useCallback(
+    (splitId: string, ratio: number) => {
+      setLayoutTree((t) => setRatio(t, splitId, ratio));
+    },
+    []
+  );
+  const handleAssignPanelKind = useCallback(
+    (leafId: string, kind: PanelKind) => {
+      // A detached leaf isn't in the tree — retype the pop-out entry
+      // instead, so its window swaps editors in place.
+      if (detachedIdsRef.current.has(leafId)) {
+        setDetachedPanels((d) =>
+          d.map((e) => (e.id === leafId ? { ...e, panel: kind } : e))
+        );
+        return;
+      }
+      setLayoutTree((t) => assignKind(t, leafId, kind));
+    },
+    []
+  );
+  // Corner-drag split commit (M2). The new leaf clones the source's
+  // kind (Blender semantics); the original keeps its id, so the sticky
+  // primary election and panel content never move.
+  const handleSplitLeaf = useCallback(
+    (
+      leafId: string,
+      dir: "row" | "col",
+      ratio: number,
+      firstIsNew: boolean
+    ) => {
+      setLayoutTree((t) => splitLayoutLeaf(t, leafId, dir, ratio, firstIsNew));
+    },
+    []
+  );
+  // Join-drag commits (M3). Swap trades the two leaves' panel kinds;
+  // join swallows the target's side of the lowest separating split
+  // (LayoutRegion's preview already showed exactly what closes, and it
+  // refuses merges that would remove every viewport leaf).
+  const handleSwapPanels = useCallback((a: string, b: string) => {
+    setLayoutTree((t) => swapLeaves(t, a, b));
+  }, []);
+  const handleJoinPanels = useCallback((keepId: string, removeId: string) => {
+    setLayoutTree((t) => joinAt(t, keepId, removeId));
+  }, []);
+  // Pop-out (M1). The SYNCHRONOUS authority on what's detached: the
+  // close path can fire twice (the child's `pagehide` and the
+  // `win.closed` poll race), and re-homing twice would graft a second
+  // leaf into the tree. State alone can't guard that — a render may not
+  // have happened in between.
+  const detachedIdsRef = useRef(new Set<string>());
+  const handleDetachPanel = useCallback(
+    (leafId: string, panel: PanelKind) => {
+      // The primary viewport owns canvasRef and every overlay/gizmo —
+      // undetachable until those are window-aware (spec §5).
+      if (leafId === primaryViewportLeafId) return;
+      const next = removeLeaf(layoutTree, leafId);
+      // null = it was the last leaf; unchanged = no such leaf.
+      if (!next || next === layoutTree) return;
+      // Same invariant the kind menu and the join gesture enforce, now
+      // scoped to the MAIN window: it always keeps a viewport.
+      if (countLeavesOfKind(next, "viewport") === 0) return;
+      detachedIdsRef.current.add(leafId);
+      setLayoutTree(next);
+      setDetachedPanels((d) =>
+        d.some((e) => e.id === leafId) ? d : [...d, { id: leafId, panel }]
+      );
+    },
+    [layoutTree, primaryViewportLeafId]
+  );
+  // Coming home: the panel grafts back beside the biggest leaf, split
+  // across that leaf's longer edge. Deterministic, and it never has to
+  // remember a parent split that may have been joined away while the
+  // window was open.
+  const handleRehomePanel = useCallback(
+    (leafId: string, panel: PanelKind) => {
+      if (!detachedIdsRef.current.delete(leafId)) return;
+      const aspect = window.innerWidth / Math.max(1, window.innerHeight);
+      setDetachedPanels((d) => d.filter((e) => e.id !== leafId));
+      setLayoutTree((t) => {
+        const target = largestLeaf(t, aspect);
+        if (!target) return t;
+        return attachLeaf(t, target.id, panel, target.dir).tree;
+      });
+    },
+    []
+  );
+  // Window → Layouts. Built-in presets live in code; the user's saved
+  // ones come from their profile (layout/presets.ts — localStorage +
+  // user_preferences.layout_presets). Applying one swaps the whole tree.
+  const [layoutPresets, setLayoutPresets] = useState<LayoutPreset[]>([]);
+  const applyLayoutPreset = useCallback(
+    (id: string) => {
+      const tree = resolveLayoutPreset(id, layoutPresets);
+      // A preset whose stored blob failed validation resolves to null —
+      // leave the current arrangement alone rather than yanking the user
+      // back to the default.
+      if (tree) setLayoutTree(tree);
+    },
+    [layoutPresets]
+  );
+  // Live refs for the save paths + session stash (the callback-with-
+  // refs pattern every save site here uses).
+  const layoutTreeRef = useRef(layoutTree);
+  layoutTreeRef.current = layoutTree;
+  const primaryViewportLeafIdRef = useRef(primaryViewportLeafId);
+  primaryViewportLeafIdRef.current = primaryViewportLeafId;
+  // Apply a loaded project's saved layout (M4). Malformed or absent →
+  // the default preset, so every project opens with a deterministic
+  // arrangement (File → New deliberately keeps the current layout —
+  // nothing calls this on that path).
+  const applyLoadedLayout = useCallback((savedLayout: unknown) => {
+    setLayoutTree(fromSavedLayout(savedLayout) ?? makeDefaultTree());
+  }, []);
+  // Overlays cache canvas rects and refresh on window "resize"; every
+  // structural layout change moves panels, so fire it once per change
+  // (divider drags additionally fire per-move inside LayoutRegion).
+  useEffect(() => {
+    window.dispatchEvent(new Event("resize"));
+  }, [layoutTree]);
+  // Watch-viewport canvas registry (leaf id → canvas). renderFrame
+  // blits the terminal image to every registered canvas after the
+  // primary one.
+  const watchCanvasesRef = useRef(new Map<string, HTMLCanvasElement>());
+  const registerWatchCanvas = useCallback(
+    (leafId: string, el: HTMLCanvasElement | null) => {
+      if (el) watchCanvasesRef.current.set(leafId, el);
+      else watchCanvasesRef.current.delete(leafId);
+    },
+    []
+  );
   // Split viewport: stacks two preview canvases vertically. Each canvas
   // has its own active terminal node — the per-node header gains a
   // second "A2" toggle (alongside "A1") so the user can independently
@@ -727,10 +1209,11 @@ function EffectsShell({
   // it as a window event so EffectNode can subscribe without prop
   // threading through React Flow's data-only API.
   useEffect(() => {
-    window.dispatchEvent(
-      new CustomEvent("viewport-split-changed", {
-        detail: { split: viewportSplit },
-      })
+    broadcastAppEvent(
+      () =>
+        new CustomEvent("viewport-split-changed", {
+          detail: { split: viewportSplit },
+        })
     );
   }, [viewportSplit]);
   // Show an FPS counter in the menu bar. Reflects overall page render
@@ -748,9 +1231,7 @@ function EffectsShell({
   // EffectNodes can drop their last-shown values.
   useEffect(() => {
     if (!showNodeTimings) {
-      window.dispatchEvent(
-        new CustomEvent("node-timings", { detail: null })
-      );
+      broadcastAppEvent(() => new CustomEvent("node-timings", { detail: null }));
     }
   }, [showNodeTimings]);
   useEffect(() => {
@@ -765,7 +1246,9 @@ function EffectsShell({
         return;
       }
       if (e.key === "f" || e.key === "F") {
-        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        // Shift+F is the node editor's frame-selection chord (073026) —
+        // leave it alone or it can never reach NodeEditor's handler.
+        if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
         e.preventDefault();
         setFullCanvas((v) => !v);
       } else if (e.key === " " && e.shiftKey) {
@@ -840,6 +1323,8 @@ function EffectsShell({
   // the BYO OpenAI key for AI-driven nodes plus future editor-wide
   // settings.
   const [userPrefsOpen, setUserPrefsOpen] = useState(false);
+  // New-layout-preset modal — Window → Layouts → + New Preset….
+  const [newLayoutPresetOpen, setNewLayoutPresetOpen] = useState(false);
   // Export App modal — populated with the target Output node id when the
   // user hits Export App from either the node header or ParamPanel.
   const [exportApp, setExportApp] = useState<{ outputNodeId: string } | null>(
@@ -907,6 +1392,19 @@ function EffectsShell({
   } | null>(null);
   const socketPeekRef = useRef<typeof socketPeek>(null);
   socketPeekRef.current = socketPeek;
+  // "Make Editable" bake pending on a node the eval cache hasn't seen
+  // (disconnected branch / consumption-gated spline aux never built).
+  // renderFrame forces the node into the next pass exactly like a peek —
+  // extraTargets + the spline handle marked consumed — then calls
+  // makeEditableCompleteRef with the fresh outputs. The completion handler
+  // is declared much further down (needs pushGraph/setNodes/etc.), hence
+  // the ref indirection (same pattern as mcpHandlersRef).
+  const pendingBakeRef = useRef<{ nodeId: string; handle: string } | null>(
+    null
+  );
+  const makeEditableCompleteRef = useRef<((nodeId: string) => void) | null>(
+    null
+  );
   const peekHideTimerRef = useRef<number | null>(null);
   const clearSocketPeek = useCallback(() => {
     if (peekHideTimerRef.current !== null) {
@@ -1081,16 +1579,32 @@ function EffectsShell({
   );
   const { user } = useUser();
   const signedIn = !!user;
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  // Default to a 50/50 split between canvas and the right column. The SSR
-  // pass uses a placeholder; we swap to half the viewport on mount to avoid
-  // a hydration mismatch.
-  const [rightColWidth, setRightColWidth] = useState(520);
+  // Layout presets follow the user, so (re)load whenever the signed-in
+  // identity changes — signing in mid-session pulls the cloud copy over
+  // the local-only one.
   useEffect(() => {
-    setRightColWidth(Math.floor(window.innerWidth / 2));
-  }, []);
-  const [bottomRowHeight, setBottomRowHeight] = useState(280);
-
+    let alive = true;
+    loadLayoutPresets().then((list) => {
+      if (alive) setLayoutPresets(list);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [user?.id]);
+  // Window → Layouts → + New Preset…: capture the live tree under a name.
+  const saveLayoutPreset = useCallback(
+    (name: string) => {
+      const next = upsertLayoutPreset(
+        layoutPresets,
+        name,
+        layoutTreeRef.current
+      );
+      setLayoutPresets(next);
+      void saveLayoutPresets(next);
+    },
+    [layoutPresets]
+  );
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const backendRef = useRef<EngineBackend | null>(null);
   const evalCacheRef = useRef<EvalCache>(new Map());
   // Outputs map from the most recent evaluateGraph pass. The eval cache
@@ -1128,6 +1642,17 @@ function EffectsShell({
     window.addEventListener("wheel", onWheel, { capture: true, passive: true });
     return () =>
       window.removeEventListener("wheel", onWheel, { capture: true });
+  }, []);
+  // Apply the persisted UI-font choice (--ui-font on <html>). Post-hydration
+  // on purpose; the editor renders one frame in the default mono at worst.
+  useEffect(() => {
+    applyStoredUiFont();
+  }, []);
+  // Same for the theme (--tb-* on <html>). The pre-paint script in
+  // app/layout.tsx has normally already done this — re-running here makes the
+  // module the authority after hydration and repairs a stale trim cache.
+  useEffect(() => {
+    applyStoredTheme();
   }, []);
   // Overlays subscribe to window "resize" to refresh their cached rect.
   // Overlays only ride viewport 1, so only its transform needs to fire
@@ -1339,12 +1864,54 @@ function EffectsShell({
     () => ({ ticksPerFrame, fps, sceneDurationTicks }),
     [ticksPerFrame, fps, sceneDurationTicks]
   );
-  // Track Editor + Graph Editor UI state.
+  // Track Editor + Graph Editor UI state. The dock's floating host —
+  // open state and geometry — is per-MACHINE window furniture, not
+  // project content, so it lives in localStorage (same call as
+  // viewport.previewScale). SSR renders it closed at the default rect
+  // and the effect below rehydrates, so the markup stays deterministic.
   const [trackEditorOpen, setTrackEditorOpen] = useState(false);
-  const [trackEditorHeight, setTrackEditorHeight] = useState(280);
-  // Slide-up animation for the default-layout dock. `mounted` keeps the
-  // dock in the DOM through its exit slide; `shown` drives the transform
-  // (false = parked below the canvas, true = expanded into view).
+  const [dockRect, setDockRect] = useState<DockRect>(defaultDockRect);
+  const dockRectRef = useRef(dockRect);
+  dockRectRef.current = dockRect;
+  const [dockHydrated, setDockHydrated] = useState(false);
+  useEffect(() => {
+    const saved = readSavedDockRect();
+    if (saved) setDockRect(saved);
+    else setDockRect(clampDockRect(defaultDockRect()));
+    try {
+      if (window.localStorage.getItem(DOCK_OPEN_KEY) === "1") {
+        setTrackEditorOpen(true);
+      }
+    } catch {
+      /* private mode — open state just doesn't persist */
+    }
+    setDockHydrated(true);
+  }, []);
+  useEffect(() => {
+    if (!dockHydrated) return;
+    try {
+      window.localStorage.setItem(DOCK_RECT_KEY, JSON.stringify(dockRect));
+    } catch {
+      /* ignore */
+    }
+  }, [dockRect, dockHydrated]);
+  useEffect(() => {
+    if (!dockHydrated) return;
+    try {
+      window.localStorage.setItem(DOCK_OPEN_KEY, trackEditorOpen ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [trackEditorOpen, dockHydrated]);
+  // Shrinking the window must not strand the dock offscreen.
+  useEffect(() => {
+    const onResize = () => setDockRect((r) => clampDockRect(r));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  // Slide-up animation for the floating dock. `mounted` keeps the dock
+  // in the DOM through its exit slide; `shown` drives the transform
+  // (false = parked below the window edge, true = at its rect).
   const [trackDockMounted, setTrackDockMounted] = useState(false);
   const [trackDockShown, setTrackDockShown] = useState(false);
   useEffect(() => {
@@ -1357,9 +1924,110 @@ function EffectsShell({
     const t = setTimeout(() => setTrackDockMounted(false), 260);
     return () => clearTimeout(t);
   }, [trackEditorOpen]);
-  const [dockTab, setDockTab] = useState<"tracks" | "graph" | "layers">(
-    "layers"
-  );
+  // Drag (by the toolbar's empty middle) and 8-way resize. Both write
+  // the rect through the same clamp, so the dock can never be dragged
+  // or sized out of reach. Suppressed while the slide-in is still
+  // running so a stray press can't fight the transition.
+  const [dockDragging, setDockDragging] = useState(false);
+  // Touch primary → fatter grab zones on the dock's chrome. See the
+  // handle array in the modal render for why corners grow more than edges.
+  const coarsePointer = useCoarsePointer();
+  const dockEdgeHit = coarsePointer ? 12 : 6;
+  const dockCornerHit = coarsePointer ? 24 : 12;
+  const startDockDrag = (e: React.PointerEvent<HTMLElement>) => {
+    // Only the bar itself — not its buttons or the cluster wrappers.
+    if (e.target !== e.currentTarget) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const start = dockRectRef.current;
+    const started = startPointerDrag(e, {
+      cursor: "grabbing",
+      onMove: (ev) => {
+        setDockRect(
+          clampDockRect({
+            ...start,
+            x: start.x + (ev.clientX - startX),
+            y: start.y + (ev.clientY - startY),
+          })
+        );
+      },
+      onUp: () => setDockDragging(false),
+      // iOS pulled the gesture (scroll takeover, palm, backgrounding) —
+      // put the dock back where it was rather than stranding it mid-move.
+      onCancel: () => {
+        setDockDragging(false);
+        setDockRect(clampDockRect(start));
+      },
+    });
+    if (!started) return;
+    e.preventDefault();
+    setDockDragging(true);
+  };
+  /** `edge` is any combination of n/s/e/w — corners pass two. */
+  const startDockResize = (e: React.PointerEvent<HTMLElement>, edge: string) => {
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const start = dockRectRef.current;
+    const onMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      // Work in EDGES, not origin+size: only the dragged edges move, so
+      // the opposite ones stay pinned. Each is clamped against both the
+      // min size and the window, which is what keeps a north drag past
+      // the menu bar from pushing the bottom edge down instead of just
+      // stopping (an origin+size formulation rubber-bands there).
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      let left = start.x;
+      let top = start.y;
+      let right = start.x + start.w;
+      let bottom = start.y + start.h;
+      if (edge.includes("e")) {
+        right = Math.min(vw, Math.max(left + DOCK_MIN_W, right + dx));
+      }
+      if (edge.includes("w")) {
+        left = Math.max(0, Math.min(right - DOCK_MIN_W, left + dx));
+      }
+      if (edge.includes("s")) {
+        bottom = Math.min(
+          vh - DOCK_BOTTOM_INSET,
+          Math.max(top + DOCK_MIN_H, bottom + dy)
+        );
+      }
+      if (edge.includes("n")) {
+        top = Math.max(
+          DOCK_TOP_INSET,
+          Math.min(bottom - DOCK_MIN_H, top + dy)
+        );
+      }
+      setDockRect({ x: left, y: top, w: right - left, h: bottom - top });
+    };
+    const started = startPointerDrag(e, {
+      onMove,
+      onUp: () => setDockDragging(false),
+      onCancel: () => {
+        setDockDragging(false);
+        setDockRect(start);
+      },
+    });
+    if (!started) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDockDragging(true);
+  };
+  // Per-instance dock tab. The dock can be up in two hosts at once —
+  // the floating modal and any number of `timeline` panels — and they
+  // must not fight over which editor shows, so the tab is keyed by
+  // instance id (DOCK_MODAL_ID / `leaf:<leafId>`) instead of global.
+  // The dock's OTHER toggles stay global on purpose: they're either
+  // preferences (selected-only, normalize, collapsed rows) or one-shot
+  // action counters (fit, refit), and sharing those across hosts is
+  // what you want — a "fit" fits every open dock.
+  const [dockTabs, setDockTabs] = useState<Record<string, DockTab>>({});
+  const dockTabFor = (instanceId: string): DockTab =>
+    dockTabs[instanceId] ?? "tracks";
+  const setDockTabFor = (instanceId: string, tab: DockTab) =>
+    setDockTabs((prev) => ({ ...prev, [instanceId]: tab }));
   // Node-group scope: which group's interior the node editor shows.
   // undefined = root. Navigation state, deliberately NOT part of undo
   // history — undoing a group creation while inside it falls back to
@@ -1443,6 +2111,8 @@ function EffectsShell({
         canvasRes: canvasResRef.current,
         compositions: compositionsRef.current,
         activeCompositionId: activeCompositionIdRef.current,
+        layoutTree: layoutTreeRef.current,
+        primaryViewportLeafId: primaryViewportLeafIdRef.current,
       });
     };
   }, []);
@@ -1586,56 +2256,6 @@ function EffectsShell({
     }
   }, [renderRes]);
 
-  const startVResize = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = rightColWidth;
-    // Default layout: column lives on the right, dragging left
-    // grows it (mouse moves toward the column). Timeline layout
-    // flips the body to row-reverse, so the column sits on the
-    // left and the same intuition (mouse moves toward the column =
-    // grow) requires the opposite sign on dx.
-    const reverse = timelineLayout;
-    const onMove = (ev: MouseEvent) => {
-      const dx = reverse ? ev.clientX - startX : startX - ev.clientX;
-      setRightColWidth(
-        Math.max(320, Math.min(window.innerWidth - 320, startW + dx))
-      );
-    };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  }, [rightColWidth, timelineLayout]);
-
-  const startHResize = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startH = bottomRowHeight;
-    const onMove = (ev: MouseEvent) => {
-      const dy = startY - ev.clientY;
-      setBottomRowHeight(
-        Math.max(120, Math.min(window.innerHeight - 160, startH + dy))
-      );
-    };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-  }, [bottomRowHeight]);
-
   const structFp = useMemo(() => {
     const parts: string[] = [];
     for (const n of nodes) {
@@ -1761,19 +2381,23 @@ function EffectsShell({
       // export — no popover is visible and the forced branch would only
       // slow the render.
       const peek = offlineRenderingRef.current ? null : socketPeekRef.current;
-      const peekOpts = peek
+      // Make Editable bake target — forced into the pass the same way as a
+      // peek so a disconnected/gated spline output produces real data.
+      const bake = offlineRenderingRef.current ? null : pendingBakeRef.current;
+      const forced = [peek, bake].filter(
+        (f): f is { nodeId: string; handle: string } => !!f
+      );
+      const peekOpts = forced.length
         ? {
-            extraTargets: [peek.nodeId],
-            extraConsumed: new Map([
-              [
-                peek.nodeId,
-                [
-                  peek.handle === "out:primary"
-                    ? "primary"
-                    : peek.handle.replace(/^out:/, ""),
-                ],
-              ],
-            ]),
+            extraTargets: forced.map((f) => f.nodeId),
+            extraConsumed: forced.reduce((m, f) => {
+              const key =
+                f.handle === "out:primary"
+                  ? "primary"
+                  : f.handle.replace(/^out:/, "");
+              m.set(f.nodeId, [...(m.get(f.nodeId) ?? []), key]);
+              return m;
+            }, new Map<string, string[]>()),
           }
         : undefined;
       const result = evaluateGraph(
@@ -1790,6 +2414,12 @@ function EffectsShell({
       // Re-render the peek popover with this pass's value (rAF-coalesced,
       // same tick as the inspector popups).
       if (peek) scheduleInspectBump();
+      // Finish a pending Make Editable bake now that the target evaluated.
+      // One-shot: clear before completing so a failure can't loop.
+      if (bake) {
+        pendingBakeRef.current = null;
+        makeEditableCompleteRef.current?.(bake.nodeId);
+      }
       // Bail when the error set is unchanged. evaluateGraph returns a
       // fresh object every frame, so a naive setErrors(result.errors)
       // changes the reference every render — and triggers the
@@ -1829,8 +2459,8 @@ function EffectsShell({
       }
 
       if (showNodeTimingsRef.current) {
-        window.dispatchEvent(
-          new CustomEvent("node-timings", { detail: result.timings })
+        broadcastAppEvent(
+          () => new CustomEvent("node-timings", { detail: result.timings })
         );
       }
 
@@ -1851,8 +2481,12 @@ function EffectsShell({
         } else {
           const c2d = target.getContext("2d");
           if (c2d) {
-            c2d.fillStyle = "#111";
-            c2d.fillRect(0, 0, target.width, target.height);
+            // Nothing to show (no Active node, no wired Output). Clear to
+            // transparent rather than filling a dark plate — the canvas
+            // element's CSS checker then reads through, which is the same
+            // "this is empty / transparent" signal a fully transparent
+            // frame gives. The hint text still paints on top.
+            c2d.clearRect(0, 0, target.width, target.height);
             c2d.fillStyle = "#52525b";
             c2d.font = "14px ui-monospace, monospace";
             c2d.fillText(placeholder, 20, target.height / 2);
@@ -1865,6 +2499,17 @@ function EffectsShell({
         result.terminalImage,
         "Connect an Output node to preview."
       );
+
+      // Tiled watch viewports (072726_window-tiling.md §5): every
+      // non-primary viewport panel registers its canvas here and gets
+      // the same terminal image — independent pan/zoom, one eval.
+      for (const watchCanvas of watchCanvasesRef.current.values()) {
+        blitOrPlaceholder(
+          watchCanvas,
+          result.terminalImage,
+          "Connect an Output node to preview."
+        );
+      }
 
       // Split mode: re-evaluate the graph with the second active node
       // so its terminal can drive the second canvas. The eval cache is
@@ -1930,6 +2575,14 @@ function EffectsShell({
     // Re-render when the selection changes so the selected-node preview
     // (when nothing is set Active) updates on the canvas.
     selectedId,
+    // Toggling split view mounts/unmounts the second canvas; re-render so it
+    // paints immediately instead of showing a blank checkerboard until an
+    // unrelated eval (cursor move, param edit) happens to fire. See 072226
+    // audit #7 / editor quick win.
+    viewportSplit,
+    // Same rule for tiled watch viewports: a layout change that adds a
+    // viewport leaf must paint it now, not on the next unrelated eval.
+    viewportLeafSig,
   ]);
 
   // CLOCK-driven eval — the playback driver, imperative and outside React
@@ -2024,29 +2677,70 @@ function EffectsShell({
   // next spare appears; disconnect prunes the emptied middle. (The `t`/`mask`
   // name exclusions below are for Proximity Merge; Spline Interpolate has
   // neither input, so they're inert there.)
+  //
+  // Merge grows here too, but grow-only: once every layer's image socket is
+  // wired, append a fresh layer so there's always an open one. No pruning —
+  // merge layers carry user state (mode/opacity/enabled), so emptied layers
+  // are only removed explicitly via the layers param UI.
   useEffect(() => {
     setNodes((prev) => {
       let changed = false;
       const next = prev.map((n) => {
+        if (n.data.defType === "merge") {
+          const layers = Array.isArray(n.data.params.layers)
+            ? (n.data.params.layers as MergeLayer[])
+            : [];
+          const connected = new Set<string>();
+          for (const e of edges) {
+            if (e.target !== n.id) continue;
+            const parsed = parseTargetHandleKind(e.targetHandle ?? "");
+            if (parsed?.kind === "input") connected.add(parsed.name);
+          }
+          if (!layers.every((l) => connected.has(`layer:${l.id}`))) return n;
+          changed = true;
+          return withUpdatedParams(n, {
+            ...n.data.params,
+            layers: [
+              ...layers,
+              { id: newLayerId(), mode: "normal", opacity: 1 },
+            ],
+          });
+        }
         if (
           n.data.defType !== "proximity-merge" &&
-          n.data.defType !== "spline-interpolate"
+          n.data.defType !== "spline-interpolate" &&
+          n.data.defType !== "sdf-smooth-union"
         )
           return n;
+        // Each auto-grow node's starting slot list. SDF Smooth Union
+        // seeds with its original a/b socket names so saved projects
+        // keep their wires.
+        const seed =
+          n.data.defType === "sdf-smooth-union" ? ["a", "b"] : ["in"];
         const raw = n.data.params.slots;
         const current: string[] =
           Array.isArray(raw) &&
           raw.every((x) => typeof x === "string") &&
           raw.length
             ? (raw as string[])
-            : ["in"];
+            : seed;
         // Socket names wired into this node (exclude the t + mask inputs).
         const connected = new Set<string>();
         for (const e of edges) {
           if (e.target !== n.id) continue;
           const parsed = parseTargetHandleKind(e.targetHandle ?? "");
           if (parsed?.kind !== "input") continue;
-          if (parsed.name === "t" || parsed.name === "mask") continue;
+          // Fixed (non-slot) sockets these nodes declare alongside the
+          // auto-grow list: t/mask, and Spline Interpolate's blend spine
+          // (spec 072726 M4) — wiring them must not mint a slot.
+          if (
+            parsed.name === "t" ||
+            parsed.name === "mask" ||
+            parsed.name === "spine" ||
+            // SDF Smooth Union's scalar Smoothness input.
+            parsed.name === "smoothness"
+          )
+            continue;
           connected.add(parsed.name);
         }
         // Keep connected slots in their current order, append any newly
@@ -2578,6 +3272,165 @@ function EffectsShell({
     [pushGraph, getGraphSnapshot, setNodes, flashToast]
   );
 
+  // Cosmetic tint / bold from the right-click menu
+  // (073026_node-cosmetics-and-frames.md). One pushGraph + one setNodes =
+  // one undo step; clearing deletes the field so untouched nodes stay
+  // envelope-free in saves.
+  const handleStyleNodes = useCallback(
+    (ids: string[], patch: { tint?: string | null; bold?: boolean }) => {
+      if (ids.length === 0) return;
+      const idSet = new Set(ids);
+      pushGraph(getGraphSnapshot());
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (!idSet.has(n.id)) return n;
+          const data = { ...n.data };
+          if (patch.tint !== undefined) {
+            if (patch.tint === null) delete data.tint;
+            else data.tint = patch.tint;
+          }
+          if (patch.bold !== undefined) {
+            if (patch.bold) data.bold = true;
+            else delete data.bold;
+          }
+          return { ...n, data };
+        })
+      );
+    },
+    [pushGraph, getGraphSnapshot, setNodes]
+  );
+
+  // Frame membership from drag gestures (NodeEditor owns the hit-test —
+  // computeFrameRects — so "visually inside" and "joins" agree).
+  const handleSetNodeFrame = useCallback(
+    (nodeId: string, frameId: string | undefined) => {
+      const node = nodesRef.current.find((n) => n.id === nodeId);
+      if (!node || node.data.frameId === frameId) return;
+      pushGraph(getGraphSnapshot());
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id !== nodeId) return n;
+          const data = { ...n.data };
+          if (frameId) data.frameId = frameId;
+          else delete data.frameId;
+          return { ...n, data };
+        })
+      );
+      flashToast(frameId ? "added to frame" : "removed from frame");
+    },
+    [pushGraph, getGraphSnapshot, setNodes, flashToast]
+  );
+
+  // Shift+F — frame the selection (073026_node-cosmetics-and-frames.md).
+  // Selected nodes outside the current scope resolve up their parent chain
+  // to their scope-level ancestor (selecting Iterate-zone members frames
+  // the shell); frames themselves never nest. With nothing selected, an
+  // empty default-size frame lands at the cursor to be filled by dragging
+  // nodes in.
+  const handleFrameSelection = useCallback(() => {
+    const all = nodesRef.current;
+    const scope = currentGroupIdRef.current;
+    const byId = new Map(all.map((n) => [n.id, n]));
+    const memberIds = new Set<string>();
+    for (const n of all) {
+      if (!n.selected) continue;
+      let cur: typeof n | undefined = n;
+      for (
+        let hops = 0;
+        cur && cur.data.parentId !== scope && hops < all.length;
+        hops++
+      ) {
+        cur = cur.data.parentId ? byId.get(cur.data.parentId) : undefined;
+      }
+      if (cur && cur.data.parentId === scope && cur.data.defType !== FRAME_TYPE) {
+        memberIds.add(cur.id);
+      }
+    }
+    pushGraph(getGraphSnapshot());
+    if (memberIds.size === 0) {
+      const base = lastPanePointerRef.current ?? { x: 200, y: 200 };
+      const frame = spawnNode(FRAME_TYPE, base);
+      setNodes((prev) => [...prev, frame]);
+      flashToast("empty frame added — drag nodes in");
+      return;
+    }
+    // Fit the new frame around its members immediately (the reconciliation
+    // effect below would snap it next commit anyway; doing it here avoids a
+    // one-frame flash of the default box).
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    for (const id of memberIds) {
+      const m = byId.get(id)!;
+      minX = Math.min(minX, m.position.x);
+      minY = Math.min(minY, m.position.y);
+      maxX = Math.max(maxX, m.position.x + (m.measured?.width ?? 220));
+      maxY = Math.max(maxY, m.position.y + (m.measured?.height ?? 100));
+    }
+    const frame = spawnNode(FRAME_TYPE, {
+      x: minX - FRAME_PADDING,
+      y: minY - FRAME_PADDING,
+    });
+    frame.data.uiWidth = maxX - minX + FRAME_PADDING * 2;
+    frame.data.uiHeight = maxY - minY + FRAME_PADDING * 2;
+    setNodes((prev) => [
+      ...prev.map((n) =>
+        memberIds.has(n.id)
+          ? { ...n, data: { ...n.data, frameId: frame.id } }
+          : n
+      ),
+      frame,
+    ]);
+    flashToast(`framed ${memberIds.size} node${memberIds.size === 1 ? "" : "s"}`);
+  }, [pushGraph, getGraphSnapshot, setNodes, spawnNode, flashToast]);
+
+  // Frames hug their members: after any graph change, snap each membered
+  // frame's box to its computed rect (Blender shrink-to-fit; the rect
+  // deliberately excludes the frame's own box — FrameNode.tsx). Derived
+  // state — plain setNodes, no pushGraph: undo restores the members and
+  // the box re-derives; the diff guard makes it converge in one pass.
+  useEffect(() => {
+    if (!nodes.some((n) => n.data.defType === FRAME_TYPE)) return;
+    const rects = computeFrameRects(nodes);
+    const updates = new Map<
+      string,
+      { x: number; y: number; w: number; h: number }
+    >();
+    for (const f of nodes) {
+      if (f.data.defType !== FRAME_TYPE) continue;
+      const r = rects.find((z) => z.frameId === f.id);
+      if (!r) continue;
+      const w = f.data.uiWidth ?? FRAME_DEFAULT_W;
+      const h = f.data.uiHeight ?? FRAME_DEFAULT_H;
+      if (
+        Math.abs(f.position.x - r.bbox.x) > 0.5 ||
+        Math.abs(f.position.y - r.bbox.y) > 0.5 ||
+        Math.abs(w - r.bbox.width) > 0.5 ||
+        Math.abs(h - r.bbox.height) > 0.5
+      ) {
+        updates.set(f.id, {
+          x: r.bbox.x,
+          y: r.bbox.y,
+          w: r.bbox.width,
+          h: r.bbox.height,
+        });
+      }
+    }
+    if (updates.size === 0) return;
+    setNodes((prev) =>
+      prev.map((n) => {
+        const u = updates.get(n.id);
+        if (!u) return n;
+        return {
+          ...n,
+          position: { x: u.x, y: u.y },
+          data: { ...n.data, uiWidth: u.w, uiHeight: u.h },
+        };
+      })
+    );
+  }, [nodes, setNodes]);
+
   // If the scope group vanishes from the graph (undo of the group's
   // creation, deletion from outside, project load), fall back to root.
   // Navigation state is not part of undo history, so this is the only
@@ -2595,9 +3448,12 @@ function EffectsShell({
   const placeSourceNode = useCallback(
     (newNode: Node<NodeDataPayload>, label: string) => {
       if (!currentGroupIdRef.current) {
-        const res = createLayer(nodesRef.current, edgesRef.current, {
-          name: label,
-        });
+        const res = createLayer(
+          nodesRef.current,
+          edgesRef.current,
+          { name: label },
+          activeCompositionIdRef.current
+        );
         const go = res.nodes.find(
           (n) =>
             n.data.parentId === res.layerId &&
@@ -2690,6 +3546,36 @@ function EffectsShell({
         newNode.data.name = fileLabel(file.name);
       }
       placeSourceNode(newNode, fileLabel(file.name));
+    },
+    [pushGraph, getGraphSnapshot, spawnNode, placeSourceNode, flashToast]
+  );
+
+  // Clipboard SVG text pasted over the flow (Figma "Copy as SVG" markup or
+  // a bare path `d` string) → a Spline Draw node pre-loaded with the parsed
+  // paths, immediately pen-tool-editable. parseSvgPasteText contain-fits the
+  // geometry inside the visible canvas. An .svg FILE on the clipboard still
+  // routes through onAddFileNode (→ SVG Source). Spec: 073026_svg-paste.md.
+  const handlePasteSvgText = useCallback(
+    async (text: string, flowPos: { x: number; y: number }) => {
+      try {
+        const mod = await import("@/lib/svg-parse");
+        const [w, h] = canvasResRef.current;
+        const subpaths = mod.parseSvgPasteText(text, w / Math.max(1, h));
+        if (subpaths.length === 0) {
+          flashToast("No paths found in the pasted SVG");
+          return;
+        }
+        pushGraph(getGraphSnapshot());
+        const node = spawnNode("spline-draw", flowPos);
+        node.data.params = { ...node.data.params, spline: { subpaths } };
+        placeSourceNode(node, "Pasted SVG");
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("Failed to parse pasted SVG:", err);
+        flashToast(
+          err instanceof Error ? err.message : "Couldn't parse pasted SVG"
+        );
+      }
     },
     [pushGraph, getGraphSnapshot, spawnNode, placeSourceNode, flashToast]
   );
@@ -2860,7 +3746,7 @@ function EffectsShell({
       }
       let wrapped: string | null = null;
       if (!targetScope) {
-        const res = createLayer(baseNodes, baseEdges);
+        const res = createLayer(baseNodes, baseEdges, undefined, activeCompositionIdRef.current);
         baseNodes = res.nodes;
         baseEdges = res.edges;
         targetScope = res.layerId;
@@ -3039,14 +3925,7 @@ function EffectsShell({
   );
 
   const onAddNode = useCallback(
-    (
-      type: string,
-      pendingWire?: {
-        sourceNodeId: string;
-        sourceHandle: string;
-        sourceType: string;
-      }
-    ) => {
+    (type: string, pendingWire?: PendingWire) => {
       // Pseudo-type from the add menu: show the AI Recipe composer in the
       // params panel instead of inserting a node. (setParamView is a stable
       // setter, so this adds nothing to the dependency list.)
@@ -3064,7 +3943,7 @@ function EffectsShell({
       // nodes) and splices it into the top of the root chain. Offered
       // only by the root add menus.
       if (type === "layer") {
-        const res = createLayer(nodesRef.current, edgesRef.current);
+        const res = createLayer(nodesRef.current, edgesRef.current, undefined, activeCompositionIdRef.current);
         setNodes(res.nodes);
         setEdges(res.edges);
         setSelectedId(res.layerId);
@@ -3118,7 +3997,7 @@ function EffectsShell({
         let baseEdges = edgesRef.current;
         let wrapped: string | null = null;
         if (!targetScope) {
-          const res = createLayer(baseNodes, baseEdges);
+          const res = createLayer(baseNodes, baseEdges, undefined, activeCompositionIdRef.current);
           baseNodes = res.nodes;
           baseEdges = res.edges;
           targetScope = res.layerId;
@@ -3159,12 +4038,14 @@ function EffectsShell({
       const newNode = spawnNode(type, pos);
 
       // Auto-wire: the user dropped a live wire on empty pane and
-      // then picked this node from the search popup. Try to connect
-      // from their source handle to a compatible input on the new
-      // node. Mirrors `isValidConnection` + the onConnect promotion
-      // rules for math (uv) and copy-to-points (instance).
+      // then picked this node from the search popup. From an output
+      // socket, connect their source handle to a compatible input on
+      // the new node; from an input socket, connect a compatible
+      // output on the new node back into it. Mirrors
+      // `isValidConnection` + the onConnect promotion rules for math
+      // (uv) and copy-to-points (instance).
       let autoEdge: Edge | null = null;
-      if (pendingWire) {
+      if (pendingWire?.kind === "from-source") {
         const def = getNodeDef(type);
         if (def) {
           const srcType = pendingWire.sourceType;
@@ -3279,6 +4160,88 @@ function EffectsShell({
             };
           }
         }
+      } else if (pendingWire?.kind === "into-target") {
+        // Reverse direction: the wire was pulled out of an INPUT socket,
+        // so the new node is the producer. Pick one of its outputs and
+        // wire it into the stashed input.
+        const def = getNodeDef(type);
+        if (def) {
+          const { targetNodeId, targetHandle, targetType } = pendingWire;
+          // Math's primary output is scalar in scalar mode — promote to
+          // uv when the stashed input expects uv, mirroring the forward
+          // direction (equivalent to switching the Mode param first).
+          if (
+            def.type === "math" &&
+            targetType === "uv" &&
+            newNode.data.params.mode === "scalar"
+          ) {
+            newNode.data.params = { ...newNode.data.params, mode: "uv" };
+          }
+          // Refresh the resolved socket lists after any param mutation so
+          // the edge source matches what the evaluator will see.
+          const resolvedInputs = withMaskInput(
+            def.resolveInputs?.(newNode.data.params) ?? def.inputs,
+            def
+          );
+          newNode.data.inputs = resolvedInputs.map((i) => ({
+            name: i.name,
+            label: i.label,
+            type: i.type,
+            hidden: i.hidden,
+          }));
+          const primaryType =
+            def.resolvePrimaryOutput?.(newNode.data.params) ??
+            def.primaryOutput;
+          newNode.data.primaryOutput = primaryType;
+          const resolvedAux =
+            def.resolveAuxOutputs?.(newNode.data.params) ?? def.auxOutputs;
+          newNode.data.auxOutputs = resolvedAux.map((a) => ({
+            name: a.name,
+            label: a.label,
+            type: a.type,
+            disabled: a.disabled,
+          }));
+
+          // Pick a source output. Exact type match first (primary, then
+          // aux), coercion-compatible second — the same preference order
+          // the forward direction uses for inputs. Aux-exact beating
+          // primary-coercion also gets the Auto Layout case right: an
+          // `item:` slot (element) pulls an Image Source's raw `element`
+          // aux rather than the coerced full-canvas image.
+          const targetDefType = nodesRef.current.find(
+            (n) => n.id === targetNodeId
+          )?.data.defType;
+          const liveAux = resolvedAux.filter((a) => !a.disabled);
+          let sourceHandle: string | null = null;
+          if (primaryType === targetType) sourceHandle = "out:primary";
+          if (!sourceHandle) {
+            const exact = liveAux.find((a) => a.type === targetType);
+            if (exact) sourceHandle = `out:aux:${exact.name}`;
+          }
+          if (
+            !sourceHandle &&
+            primaryType &&
+            editorCanCoerce(primaryType, targetType, targetDefType, targetHandle)
+          ) {
+            sourceHandle = "out:primary";
+          }
+          if (!sourceHandle) {
+            const coerced = liveAux.find((a) =>
+              editorCanCoerce(a.type, targetType, targetDefType, targetHandle)
+            );
+            if (coerced) sourceHandle = `out:aux:${coerced.name}`;
+          }
+
+          if (sourceHandle) {
+            autoEdge = {
+              id: `e-auto-${newNode.id}-${targetNodeId}-${targetHandle}`,
+              source: newNode.id,
+              sourceHandle,
+              target: targetNodeId,
+              targetHandle,
+            };
+          }
+        }
       }
 
       // Select the new node (deselecting others) so it previews on the
@@ -3290,10 +4253,25 @@ function EffectsShell({
         { ...newNode, selected: true },
       ]);
       if (autoEdge) {
-        setEdges((prev) => [...prev, autoEdge as Edge]);
+        // Displace any wire already on the target input — same single-
+        // input rule onConnect applies. No-op in the from-source case
+        // (the target is the freshly spawned node).
+        const added = autoEdge;
+        setEdges((prev) => [
+          ...prev.filter(
+            (e) =>
+              !(e.target === added.target && e.targetHandle === added.targetHandle)
+          ),
+          added,
+        ]);
       }
       setSelectedId(newNode.id);
       setParamView("node");
+      // Hand the id back so the caller can pick the fresh node up in
+      // G-move (the add menu does). Only this plain single-node path
+      // returns one — the compound branches above bail out early, and
+      // grabbing a multi-node spawn isn't meaningful.
+      return newNode.id;
     },
     [setNodes, setEdges, setSelectedId, setParamView, pushGraph, getGraphSnapshot, spawnNode, navigateScope, flashToast]
   );
@@ -3416,7 +4394,7 @@ function EffectsShell({
       let baseEdges = edgesRef.current;
       let wrapped: string | null = null;
       if (!targetScope && !fragNodes.every((n) => n.data.defType === LAYER_TYPE)) {
-        const res = createLayer(baseNodes, baseEdges);
+        const res = createLayer(baseNodes, baseEdges, undefined, activeCompositionIdRef.current);
         baseNodes = res.nodes;
         baseEdges = res.edges;
         targetScope = res.layerId;
@@ -3625,170 +4603,6 @@ function EffectsShell({
     spawnNode,
   ]);
 
-  // Viewport shelf-tool spawner (the spline-primitive buttons that live
-  // in the viewport menubar). Drops a new source node into the network;
-  // when a Merge node is the current target — selected, or active in the
-  // viewport — the new node's image output is wired straight in as a
-  // fresh layer, so stacking up a composite is one click per primitive.
-  const handleAddShelfNode = useCallback(
-    (type: string) => {
-      pushGraph(getGraphSnapshot());
-
-      // Best image/mask output handle on a node, or null if it has none.
-      const imageOutputHandle = (n: Node<NodeDataPayload>): string | null => {
-        if (
-          n.data.primaryOutput === "image" ||
-          n.data.primaryOutput === "mask"
-        ) {
-          return "out:primary";
-        }
-        const aux = (n.data.auxOutputs ?? []).find(
-          (a) => !a.disabled && (a.type === "image" || a.type === "mask")
-        );
-        return aux ? `out:aux:${aux.name}` : null;
-      };
-
-      // Strict root: shelf tools redirect into a fresh layer, wired to
-      // its Group Output when the primitive has an image output.
-      if (!currentGroupIdRef.current) {
-        const res = createLayer(nodesRef.current, edgesRef.current);
-        const go = res.nodes.find(
-          (n) =>
-            n.data.parentId === res.layerId &&
-            n.data.defType === GROUP_OUTPUT_TYPE
-        );
-        const base = lastPanePointerRef.current ?? { x: 200, y: 200 };
-        const node = spawnNode(type, base);
-        node.data.parentId = res.layerId;
-        node.selected = true;
-        const handle = imageOutputHandle(node);
-        // Navigate first — navigateScope clears selection flags, and the
-        // fresh node should come out selected.
-        navigateScope(res.layerId);
-        setNodes([...res.nodes, node]);
-        setEdges(
-          go && handle
-            ? [
-                ...res.edges,
-                {
-                  id: newEdgeId(),
-                  source: node.id,
-                  sourceHandle: handle,
-                  target: go.id,
-                  targetHandle: "in:image",
-                },
-              ]
-            : res.edges
-        );
-        setSelectedId(node.id);
-        setParamView("node");
-        return;
-      }
-
-      // Target Merge: one that's selected (explicit pick wins) or, failing
-      // that, the one parked as the active viewport output.
-      const selId = selectedIdRef.current;
-      const target =
-        nodesRef.current.find(
-          (n) =>
-            n.data.defType === "merge" && (n.id === selId || n.selected)
-        ) ??
-        nodesRef.current.find(
-          (n) => n.data.defType === "merge" && n.data.active
-        ) ??
-        null;
-
-      // Position: stack to the left of the merge (nudged down per existing
-      // layer) when wiring; otherwise drop at the last pane cursor.
-      let pos: { x: number; y: number };
-      if (target) {
-        const layerCount = (
-          (target.data.params.layers as MergeLayer[]) ?? []
-        ).length;
-        pos = {
-          x: target.position.x - 360,
-          y: target.position.y + layerCount * 96,
-        };
-      } else {
-        const base = lastPanePointerRef.current ?? { x: 200, y: 200 };
-        pos = { x: base.x, y: base.y };
-      }
-
-      const newNode = spawnNode(type, pos);
-      const handle = target ? imageOutputHandle(newNode) : null;
-
-      if (!target || !handle) {
-        // No merge to wire into (or the new node has no image output) —
-        // just add it, selected, so its gizmo / pen overlay opens.
-        setNodes((prev) => [
-          ...prev.map((n) => (n.selected ? { ...n, selected: false } : n)),
-          { ...newNode, selected: true },
-        ]);
-        setSelectedId(newNode.id);
-        setParamView("node");
-        return;
-      }
-
-      // Wire the new node in as a fresh layer on the target merge.
-      const layer: MergeLayer = { id: newLayerId(), mode: "normal", opacity: 1 };
-      const nextParams = {
-        ...target.data.params,
-        layers: [
-          ...((target.data.params.layers as MergeLayer[]) ?? []),
-          layer,
-        ],
-      };
-      let nextInputs = target.data.inputs;
-      const def = getNodeDef("merge");
-      if (def) {
-        const resolved = withMaskInput(
-          def.resolveInputs?.(nextParams) ?? def.inputs,
-          def
-        );
-        nextInputs = resolved.map((i) => ({
-          name: i.name,
-          label: i.label,
-          type: i.type,
-          hidden: i.hidden,
-        }));
-      }
-
-      const edge: Edge = {
-        id: newEdgeId(),
-        source: newNode.id,
-        sourceHandle: handle,
-        target: target.id,
-        targetHandle: `in:layer:${layer.id}`,
-      };
-
-      setNodes((prev) => [
-        ...prev.map((n) => {
-          if (n.id === target.id) {
-            return {
-              ...n,
-              data: { ...n.data, params: nextParams, inputs: nextInputs },
-            };
-          }
-          return n.selected ? { ...n, selected: false } : n;
-        }),
-        { ...newNode, selected: true },
-      ]);
-      setEdges((prev) => [...prev, edge]);
-      setSelectedId(newNode.id);
-      setParamView("node");
-    },
-    [
-      pushGraph,
-      getGraphSnapshot,
-      navigateScope,
-      setNodes,
-      setEdges,
-      setSelectedId,
-      setParamView,
-      spawnNode,
-    ]
-  );
-
   // Context-menu / standalone Duplicate: clone the source node at a small
   // offset so it's visibly distinct. No exterior edge surgery — the clone
   // starts disconnected and the user wires it up themselves. Groups
@@ -3813,6 +4627,90 @@ function EffectsShell({
     },
     [pushGraph, getGraphSnapshot, setNodes, setEdges]
   );
+
+  // Right-click → "Make Editable" on a spline-output node: bake the node's
+  // evaluated spline (exactly what the user sees at the current playhead —
+  // a snapshot; animated/procedural upstream behavior freezes, by design)
+  // into a fresh Spline Draw node, bypass the original as a revert point,
+  // and move its spline out-wires onto the new node (makeSplineEditable in
+  // graph-ops). The new node comes back selected + viewport-active so the
+  // pen overlay engages immediately.
+  const resolveSplineBakeHandle = useCallback(
+    (nodeId: string): string | null => {
+      const n = nodesRef.current.find((x) => x.id === nodeId);
+      if (!n) return null;
+      if (n.data.primaryOutput === "spline") return "out:primary";
+      const aux = n.data.auxOutputs.find(
+        (a) => a.type === "spline" && !a.disabled
+      );
+      return aux ? `out:aux:${aux.name}` : null;
+    },
+    []
+  );
+
+  // Read the baked spline from the eval cache and apply the graph op.
+  // Returns false when the output isn't available (yet) so the caller can
+  // force an eval pass — same freshness contract as getRefImageBlob.
+  const tryApplyMakeEditable = useCallback(
+    (nodeId: string, handle: string): boolean => {
+      const out =
+        evalCacheRef.current.get(nodeId)?.output ??
+        lastEvalOutputsRef.current?.get(nodeId);
+      const val =
+        handle === "out:primary"
+          ? out?.primary
+          : out?.aux?.[handle.slice("out:aux:".length)];
+      if (!val || val.kind !== "spline" || val.subpaths.length === 0) {
+        return false;
+      }
+      const res = makeSplineEditable(
+        nodesRef.current,
+        edgesRef.current,
+        nodeId,
+        handle,
+        val.subpaths
+      );
+      if (!res) return false;
+      pushGraph(getGraphSnapshot());
+      setNodes(res.nodes);
+      setEdges(res.edges);
+      setSelectedId(res.newNodeId);
+      flashToast("Baked to editable Spline Draw");
+      return true;
+    },
+    [
+      pushGraph,
+      getGraphSnapshot,
+      setNodes,
+      setEdges,
+      setSelectedId,
+      flashToast,
+    ]
+  );
+
+  const handleMakeEditableNode = useCallback(
+    (nodeId: string) => {
+      const handle = resolveSplineBakeHandle(nodeId);
+      if (!handle) return;
+      if (tryApplyMakeEditable(nodeId, handle)) return;
+      // Not in the eval cache — disconnected branch, or a consumption-gated
+      // aux (Text's marching-squares spline) that never built. Force one
+      // pass with the node targeted + the handle consumed; renderFrame
+      // calls makeEditableCompleteRef after that eval lands.
+      pendingBakeRef.current = { nodeId, handle };
+      window.dispatchEvent(new Event("pipeline-bump"));
+    },
+    [resolveSplineBakeHandle, tryApplyMakeEditable]
+  );
+
+  // Latest-value ref assignment (renderFrame is declared far above and must
+  // call the current closure) — same pattern as nodeContextMenuRef.
+  makeEditableCompleteRef.current = (nodeId: string) => {
+    const handle = resolveSplineBakeHandle(nodeId);
+    if (!handle || !tryApplyMakeEditable(nodeId, handle)) {
+      flashToast("Couldn't read a spline from this node");
+    }
+  };
 
   // Alt-drag duplicate: Figma-style. A clone takes the node's original
   // position AND all of its connections, while the node the user is
@@ -4320,6 +5218,105 @@ function EffectsShell({
                   prev.position !== stop.position,
                   stop.position
                 );
+              }
+            }
+          }
+          // Per-anchor auto-keyframe + orphan cleanup (Spline Draw, spec
+          // 072726 M6). With whole-shape Path Animation OFF and anchor
+          // tracks present, a spline edit mirrors each animated anchor's
+          // changed pos/handles into its virtual tracks at the playhead
+          // (the constant below still writes — tracks win at eval). The
+          // cleanup runs regardless of mode: tracks whose anchor id no
+          // longer exists drop in the same pass (ramp-stop precedent).
+          {
+            const pdT = getNodeDef(n.data.defType)?.params.find(
+              (p) => p.name === paramName
+            )?.type;
+            const nextSpline =
+              pdT === "spline_anchors" &&
+              value &&
+              typeof value === "object" &&
+              Array.isArray((value as { subpaths?: unknown }).subpaths)
+                ? (value as { subpaths: SplineSubpath[] })
+                : null;
+            if (nextSpline && nextAnimation) {
+              const hasAnchorKeys = Object.keys(nextAnimation).some(
+                isAnchorTrackKey
+              );
+              if (hasAnchorKeys && !isAnimated) {
+                const storedPrev = n.data.params[paramName] as
+                  | { subpaths?: SplineSubpath[] }
+                  | undefined;
+                const prevBase: { subpaths: SplineSubpath[] } =
+                  storedPrev && Array.isArray(storedPrev.subpaths)
+                    ? (storedPrev as { subpaths: SplineSubpath[] })
+                    : { subpaths: [] };
+                // Diff against the EVALUATED pre-edit shape — the overlay
+                // edits branch from what's displayed at the playhead.
+                const prevEval =
+                  resolveAnchorTracks(prevBase, nextAnimation, tickAtEdit) ??
+                  prevBase;
+                const prevById = new Map<string, SplineAnchor>();
+                for (const s of prevEval.subpaths) {
+                  for (const a of s.anchors) if (a.id) prevById.set(a.id, a);
+                }
+                const same2 = (
+                  a: [number, number] | undefined,
+                  b: [number, number] | undefined
+                ) =>
+                  (a?.[0] ?? 0) === (b?.[0] ?? 0) &&
+                  (a?.[1] ?? 0) === (b?.[1] ?? 0);
+                const tryKey = (
+                  key: string,
+                  changed: boolean,
+                  kf: [number, number]
+                ) => {
+                  if (!changed) return;
+                  const blk = nextAnimation?.[key];
+                  if (blk?.animated) {
+                    nextAnimation = {
+                      ...nextAnimation,
+                      [key]: upsertKeyframe(blk, tickAtEdit, kf, "easeInOut"),
+                    };
+                  }
+                };
+                for (const s of nextSpline.subpaths) {
+                  for (const a of s.anchors) {
+                    if (!a.id) continue;
+                    const prev = prevById.get(a.id);
+                    if (!prev) continue;
+                    tryKey(anchorPosKey(a.id), !same2(prev.pos, a.pos), [
+                      a.pos[0],
+                      a.pos[1],
+                    ]);
+                    tryKey(
+                      anchorInKey(a.id),
+                      !same2(prev.inHandle, a.inHandle),
+                      [a.inHandle?.[0] ?? 0, a.inHandle?.[1] ?? 0]
+                    );
+                    tryKey(
+                      anchorOutKey(a.id),
+                      !same2(prev.outHandle, a.outHandle),
+                      [a.outHandle?.[0] ?? 0, a.outHandle?.[1] ?? 0]
+                    );
+                  }
+                }
+              }
+              if (hasAnchorKeys) {
+                const liveIds = new Set<string>();
+                for (const s of nextSpline.subpaths) {
+                  for (const a of s.anchors) if (a.id) liveIds.add(a.id);
+                }
+                for (const key of Object.keys(nextAnimation)) {
+                  const aid = anchorTrackId(key);
+                  if (aid && !liveIds.has(aid)) {
+                    const clone: NonNullable<typeof n.data.animation> = {
+                      ...nextAnimation,
+                    };
+                    delete clone[key];
+                    nextAnimation = clone;
+                  }
+                }
               }
             }
           }
@@ -4995,9 +5992,9 @@ function EffectsShell({
     return () => window.removeEventListener("effect-node-param", handler);
   }, [onParamChange]);
 
-  // Node resize grip (bottom-left corner on every node). Fires once per drag,
-  // on pointer-up, with the final flow-space size + the x-shift that keeps the
-  // right edge anchored (the left edge moved). One pushGraph + one setNodes =
+  // Node resize grip (bottom-right corner on every node). Fires once per drag,
+  // on pointer-up, with the final flow-space size; the top-left corner is the
+  // drag anchor, so position never changes. One pushGraph + one setNodes =
   // one undo step. `reset` clears the override back to auto content sizing.
   useEffect(() => {
     const handler = (e: Event) => {
@@ -5006,7 +6003,6 @@ function EffectsShell({
           id: string;
           width?: number;
           height?: number;
-          dx?: number;
           reset?: boolean;
         }>
       ).detail;
@@ -5023,10 +6019,6 @@ function EffectsShell({
           }
           return {
             ...n,
-            position: {
-              ...n.position,
-              x: n.position.x + (detail.dx ?? 0),
-            },
             data: {
               ...n.data,
               uiWidth: detail.width,
@@ -5145,7 +6137,7 @@ function EffectsShell({
           const survEdges = edgesRef.current.filter(
             (e) => !dead.has(e.source) && !dead.has(e.target)
           );
-          const res = reorderLayers(survivors, survEdges, order);
+          const res = reorderLayers(survivors, survEdges, order, activeCompositionIdRef.current);
           setNodes(res.nodes);
           setEdges(res.edges);
           return;
@@ -5494,6 +6486,14 @@ function EffectsShell({
   >(null);
   const recordingRef = useRef(recording);
   recordingRef.current = recording;
+  // Synchronous re-entrancy lock for the standalone Export button.
+  // `recordingRef` mirrors React state and only reflects a COMMITTED render,
+  // so two clicks landing before the next commit both pass its guard and start
+  // two overlapping offline exports (fighting over offlineRenderingRef + the
+  // time save/restore → corrupted capture). This ref is set/cleared
+  // synchronously around the dispatch, so the second click bails immediately.
+  // See 072226 audit editor Tier-1 #2. (relinkBusyRef is the same pattern.)
+  const exportBusyRef = useRef(false);
 
   // Render Queue batch progress. Shown as an "Item i/N · <name>" line above
   // the per-item export banner. Separate from `recording` so each item's own
@@ -5629,6 +6629,19 @@ function EffectsShell({
     },
     [pushGraph, getGraphSnapshot, setNodes]
   );
+
+  // Frame labels (FrameNode's click-to-edit chip) commit through this
+  // event — routing into the standard rename path keeps undo + the
+  // no-op/empty guards in one place.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ id: string; name: string }>).detail;
+      if (!detail) return;
+      handleRenameNode(detail.id, detail.name);
+    };
+    window.addEventListener("effect-node-rename", handler);
+    return () => window.removeEventListener("effect-node-rename", handler);
+  }, [handleRenameNode]);
 
   // Rename / remove a socket on a Group Input / Group Output node —
   // edge handles on both faces of the boundary are rewritten/dropped by
@@ -5803,7 +6816,8 @@ function EffectsShell({
       const res = reorderLayers(
         nodesRef.current,
         edgesRef.current,
-        orderedBottomToTop
+        orderedBottomToTop,
+        activeCompositionIdRef.current
       );
       setNodes(res.nodes);
       setEdges(res.edges);
@@ -5826,10 +6840,12 @@ function EffectsShell({
           ? undefined
           : kind[0].toUpperCase() + kind.slice(1);
       pushGraph(getGraphSnapshot());
-      const res = createLayer(nodesRef.current, edgesRef.current, {
-        content,
-        name,
-      });
+      const res = createLayer(
+        nodesRef.current,
+        edgesRef.current,
+        { content, name },
+        activeCompositionIdRef.current
+      );
       setNodes(res.nodes);
       setEdges(res.edges);
       setSelectedId(res.layerId);
@@ -5987,25 +7003,107 @@ function EffectsShell({
     []
   );
 
+  // Two-pass deterministic offline render, shared by every frame-stepped
+  // export path (video high/max, sequence, GIF, image-at-frame, node-frame
+  // capture). Pass 1 issues any async media work (video seeks to the exact
+  // target time); nodes register a settle promise, and if any did we wait
+  // for the decode to land, then render again so captures read the now-
+  // correct frames. Without this, video sources record stale frames and
+  // multiple videos drift out of sync. `flush` yields one rAF so the GL
+  // commands land before the caller reads pixels back (toBlob/readback
+  // sites); the encoder-driven renderAt loops capture on their own
+  // schedule and skip it.
+  const renderSettledFrameAt = useCallback(
+    async (t: number, fps: number, opts?: { flush?: boolean }) => {
+      // setTime only advances the visible timeline cursor for progress
+      // feedback — with the eval effect guarded by offlineRenderingRef it
+      // doesn't trigger a redundant render of the same frame.
+      setTime(t);
+      const backend = backendRef.current;
+      renderFrameRef.current?.(t, fps, true);
+      const settled = backend ? await awaitMediaSettle(backend.state) : false;
+      if (settled) renderFrameRef.current?.(t, fps, true);
+      if (opts?.flush) {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      }
+    },
+    [setTime]
+  );
+
+  // --- export-resolution bracket (073126_export-resolution-and-app-slim.md)
+  // beginExportResolution switches the engine to the given size (no-op when
+  // it already matches) and endExportResolution restores the preview size
+  // when the OUTERMOST bracket closes. The depth counter lets the batch
+  // drivers (Render Queue, wedge batches) hold one bracket open across rows
+  // so the per-row driver brackets don't thrash the backend back to preview
+  // res between items — a batch passes `null` (hold open, don't touch the
+  // size; the per-row driver sets the real size). Every begin must be
+  // balanced by an end in the caller's finally, including when begin
+  // itself rejects (the depth is incremented first for exactly that).
+  const exportResDepthRef = useRef(0);
+  const beginExportResolution = useCallback(
+    async (target: [number, number] | null) => {
+      exportResDepthRef.current++;
+      if (!target) return;
+      const dimsMatch = () => {
+        const b = backendRef.current;
+        return !!b && b.width === target[0] && b.height === target[1];
+      };
+      if (dimsMatch()) {
+        // Re-check after a frame: a just-closed bracket's restore
+        // recreation may still be pending, in which case the match is
+        // stale and we must set the override like any other switch.
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        if (dimsMatch()) return;
+      }
+      setExportResOverride(target);
+      // The backend-recreation effect is a passive effect: poll until the
+      // new backend and the preview canvas element both report the target
+      // size, then wait two more rAFs so the setBackendReady(true)
+      // re-render has committed (renderFrame's closure gates on it).
+      const deadline = performance.now() + 8000;
+      await new Promise<void>((resolve, reject) => {
+        const check = () => {
+          const b = backendRef.current;
+          const c = canvasRef.current;
+          if (
+            b &&
+            c &&
+            b.width === target[0] &&
+            b.height === target[1] &&
+            c.width === target[0] &&
+            c.height === target[1]
+          ) {
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => resolve())
+            );
+            return;
+          }
+          if (performance.now() > deadline) {
+            reject(
+              new Error(
+                `Couldn't switch the render resolution to ${target[0]}×${target[1]} for export`
+              )
+            );
+            return;
+          }
+          requestAnimationFrame(check);
+        };
+        check();
+      });
+    },
+    []
+  );
+  const endExportResolution = useCallback(() => {
+    exportResDepthRef.current = Math.max(0, exportResDepthRef.current - 1);
+    if (exportResDepthRef.current === 0) setExportResOverride(null);
+  }, []);
+
   const exportImage = useCallback(
-    (nodeId: string) => {
+    async (nodeId: string) => {
       const canvas = canvasRef.current;
       const params = getOutputParams(nodeId);
       if (!canvas || !params) return;
-      // Layer Output: the live preview may be showing something else, so
-      // render this layer's interior to the canvas before the snapshot.
-      const node = nodesRef.current.find((n) => n.id === nodeId);
-      if (
-        node?.data.defType === GROUP_OUTPUT_TYPE &&
-        (node.data.params as { fixed?: boolean })?.fixed === true
-      ) {
-        forcedTerminalRef.current = nodeId;
-        try {
-          renderFrame(timeRef.current, fpsRef.current, false);
-        } finally {
-          forcedTerminalRef.current = null;
-        }
-      }
       const format = (params.imageFormat as string) ?? "png";
       const quality = (params.imageQuality as number) ?? 0.92;
       // {i} tokens resolve to 0 in a single render — never leak literally.
@@ -6016,16 +7114,42 @@ function EffectsShell({
       );
       const mime = `image/${format}`;
       const useQuality = format === "jpeg" || format === "webp";
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) return;
-          downloadBlob(blob, base ? `${base}.${format}` : defaultFilename(format));
-        },
-        mime,
-        useQuality ? quality : undefined
-      );
+      const target = resolveExportResolution(params, canvasResRef.current);
+      // Render this specific Output before the snapshot: a Layer Output's
+      // interior may not be what the live preview shows, a resolution
+      // switch leaves the canvas stale until the next render, and the
+      // snapshot should capture this Output regardless of which node is
+      // set Active (same semantics as the video/sequence exporters).
+      forcedTerminalRef.current = nodeId;
+      try {
+        await beginExportResolution(target);
+        await renderSettledFrameAt(timeRef.current, fpsRef.current, {
+          flush: true,
+        });
+        const blob = await new Promise<Blob | null>((res) =>
+          canvas.toBlob(
+            (b) => res(b),
+            mime,
+            useQuality ? quality : undefined
+          )
+        );
+        if (blob) {
+          downloadBlob(
+            blob,
+            base ? `${base}.${format}` : defaultFilename(format)
+          );
+        }
+      } finally {
+        forcedTerminalRef.current = null;
+        endExportResolution();
+      }
     },
-    [getOutputParams, renderFrame]
+    [
+      getOutputParams,
+      beginExportResolution,
+      endExportResolution,
+      renderSettledFrameAt,
+    ]
   );
 
   const copyImageToClipboard = useCallback(async () => {
@@ -6098,6 +7222,10 @@ function EffectsShell({
         quality === "fast"
           ? previewFps
           : Math.max(1, (params.videoFps as number) ?? previewFps);
+      // Export resolution (even dims — H.264/H.265 reject odd sizes).
+      const targetRes = resolveExportResolution(params, canvasResRef.current, {
+        even: true,
+      });
 
       const savedTime = timeRef.current;
       const savedPlaying = playingRef.current;
@@ -6138,6 +7266,9 @@ function EffectsShell({
         // playback, so route the override through forcedTerminalRef.
         forcedTerminalRef.current = nodeId;
         try {
+          // Switch the engine to the export resolution before the recorder
+          // starts — the canvas capture track follows the element size.
+          await beginExportResolution(targetRes);
           setTime(startFrame / previewFps);
           await new Promise<void>((r) => {
             requestAnimationFrame(() => requestAnimationFrame(() => r()));
@@ -6158,6 +7289,7 @@ function EffectsShell({
           setPlaying(savedPlaying);
           setTime(savedTime);
           setRecording(null);
+          endExportResolution();
         }
 
         const blob = await done;
@@ -6212,26 +7344,14 @@ function EffectsShell({
         // The exporter counts from 0; offset by startFrame so the export
         // window is [startFrame, startFrame + durationFrames). Ignore the
         // exporter's own `t` and compute the real project time here.
-        const t = (startFrame + frameIndex) / exportFps;
-        // setTime only advances the visible timeline cursor for progress
-        // feedback — with the eval effect guarded by offlineRenderingRef it
-        // no longer triggers a redundant render of the same frame.
-        setTime(t);
-        // Pass 1 issues any async media work (video seeks to the exact
-        // target time). Nodes register a settle promise; if any did, wait
-        // for the decode to land, then render again to upload the now-
-        // correct frames before the encoder captures. Without this, video
-        // sources record stale frames and multiple videos drift out of
-        // sync — the deterministic export's job is to be frame-accurate.
-        const backend = backendRef.current;
-        renderFrameRef.current?.(t, exportFps, true);
-        const settled = backend
-          ? await awaitMediaSettle(backend.state)
-          : false;
-        if (settled) renderFrameRef.current?.(t, exportFps, true);
+        await renderSettledFrameAt((startFrame + frameIndex) / exportFps, exportFps);
       };
 
       try {
+        // Switch the engine to the export resolution first — every capture
+        // route below (WebCodecs CanvasSource, PNG frames, native-ffmpeg
+        // readback) reads the preview canvas / backend at this size.
+        await beginExportResolution(targetRes);
         // Render the wired audio into a buffer covering the export window
         // (file mode only — mic has no deterministic offline form). Shared
         // by both offline encoders; null when no file audio is connected.
@@ -6403,9 +7523,18 @@ function EffectsShell({
         setPlaying(savedPlaying);
         setTime(savedTime);
         setRecording(null);
+        endExportResolution();
       }
     },
-    [getOutputParams, getOutputAudioSpec, getLiveAudioTrack, flashToast]
+    [
+      getOutputParams,
+      getOutputAudioSpec,
+      getLiveAudioTrack,
+      flashToast,
+      renderSettledFrameAt,
+      beginExportResolution,
+      endExportResolution,
+    ]
   );
 
   // Render a single still for a Render Queue image item: step the offline
@@ -6432,13 +7561,10 @@ function EffectsShell({
       // Capture this Output's image, not whatever node is set Active.
       forcedTerminalRef.current = nodeId;
       try {
-        setTime(t);
-        const backend = backendRef.current;
-        renderFrameRef.current?.(t, fps, true);
-        const settled = backend ? await awaitMediaSettle(backend.state) : false;
-        if (settled) renderFrameRef.current?.(t, fps, true);
-        // Yield so the GL commands flush before we read pixels back.
-        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        await beginExportResolution(
+          resolveExportResolution(params, canvasResRef.current)
+        );
+        await renderSettledFrameAt(t, fps, { flush: true });
         const blob = await new Promise<Blob | null>((res) =>
           canvas.toBlob(
             (b) => res(b),
@@ -6452,9 +7578,15 @@ function EffectsShell({
         forcedTerminalRef.current = null;
         setPlaying(savedPlaying);
         setTime(savedTime);
+        endExportResolution();
       }
     },
-    [getOutputParams]
+    [
+      getOutputParams,
+      renderSettledFrameAt,
+      beginExportResolution,
+      endExportResolution,
+    ]
   );
 
   // Wedge batch for an Output — count + the reachable wedges (for
@@ -6480,7 +7612,7 @@ function EffectsShell({
       const batch = resolveWedgeBatch(nodeId);
       const total = batch.count;
       if (total <= 1) {
-        if (kind === "image") exportImage(nodeId);
+        if (kind === "image") await exportImage(nodeId);
         else await exportVideo(nodeId);
         return;
       }
@@ -6489,6 +7621,11 @@ function EffectsShell({
       // one rendered N times, and the same "don't interleave batches" rule
       // applies in both directions.
       queueRenderingRef.current = true;
+      // Hold the export-resolution bracket open across variations so the
+      // per-variation drivers (which begin/end their own brackets at the
+      // same target) don't recreate the backend back to preview res
+      // between items. `null` = depth-hold only; the drivers set the size.
+      await beginExportResolution(null);
       const params = getOutputParams(nodeId);
       const node = nodesRef.current.find((n) => n.id === nodeId);
       const rawBase =
@@ -6545,6 +7682,7 @@ function EffectsShell({
       } finally {
         wedgeIndexRef.current = undefined;
         queueRenderingRef.current = false;
+        endExportResolution();
       }
     },
     [
@@ -6554,6 +7692,8 @@ function EffectsShell({
       renderImageToBlobAtFrame,
       getOutputParams,
       flashToast,
+      beginExportResolution,
+      endExportResolution,
     ]
   );
 
@@ -6620,6 +7760,9 @@ function EffectsShell({
       const totalFrames = wedgeTotal * durationFrames;
       let written = 0;
       try {
+        await beginExportResolution(
+          resolveExportResolution(params, canvasResRef.current)
+        );
         for (let v = 0; v < wedgeTotal; v++) {
           wedgeIndexRef.current = wedgeTotal > 1 ? v : undefined;
           const vbase = resolveWedgeName(
@@ -6633,18 +7776,7 @@ function EffectsShell({
           for (let i = 0; i < durationFrames; i++) {
             const frame = startFrame + i;
             const t = frame / fps;
-            setTime(t);
-            // Two-pass deterministic render: issue any async media seeks, wait
-            // for them to settle, then render again so the encoder captures the
-            // correct frame (matches renderImageToBlobAtFrame / the exporters).
-            const backend = backendRef.current;
-            renderFrameRef.current?.(t, fps, true);
-            const settled = backend
-              ? await awaitMediaSettle(backend.state)
-              : false;
-            if (settled) renderFrameRef.current?.(t, fps, true);
-            // Yield so the GL commands flush before we read pixels back.
-            await new Promise<void>((r) => requestAnimationFrame(() => r()));
+            await renderSettledFrameAt(t, fps, { flush: true });
             const blob = await new Promise<Blob | null>((res) =>
               canvas.toBlob(
                 (b) => res(b),
@@ -6692,9 +7824,17 @@ function EffectsShell({
         setPlaying(savedPlaying);
         setTime(savedTime);
         setRecording(null);
+        endExportResolution();
       }
     },
-    [getOutputParams, resolveWedgeBatch, flashToast]
+    [
+      getOutputParams,
+      resolveWedgeBatch,
+      flashToast,
+      renderSettledFrameAt,
+      beginExportResolution,
+      endExportResolution,
+    ]
   );
 
   // Animated GIF export. Same deterministic offline render scaffold as
@@ -6734,12 +7874,7 @@ function EffectsShell({
       setRecording({ mode: "offline", label: "Preparing…", progress: 0 });
 
       const renderAt = async (frameIndex: number) => {
-        const t = (startFrame + frameIndex) / exportFps;
-        setTime(t);
-        const backend = backendRef.current;
-        renderFrameRef.current?.(t, exportFps, true);
-        const settled = backend ? await awaitMediaSettle(backend.state) : false;
-        if (settled) renderFrameRef.current?.(t, exportFps, true);
+        await renderSettledFrameAt((startFrame + frameIndex) / exportFps, exportFps);
       };
 
       // Wedge variations: one GIF per variation, sequential downloads with
@@ -6752,6 +7887,9 @@ function EffectsShell({
         base || sanitizeFilename(node?.data.name ?? "") || "export";
 
       try {
+        await beginExportResolution(
+          resolveExportResolution(params, canvasResRef.current)
+        );
         const { exportGif: runGifExport } = await import("@/lib/export-gif");
         for (let v = 0; v < wedgeTotal; v++) {
           wedgeIndexRef.current = wedgeTotal > 1 ? v : undefined;
@@ -6792,9 +7930,17 @@ function EffectsShell({
         setPlaying(savedPlaying);
         setTime(savedTime);
         setRecording(null);
+        endExportResolution();
       }
     },
-    [getOutputParams, resolveWedgeBatch, flashToast]
+    [
+      getOutputParams,
+      resolveWedgeBatch,
+      flashToast,
+      renderSettledFrameAt,
+      beginExportResolution,
+      endExportResolution,
+    ]
   );
 
   // Step the offline clock through a list of frames and hand the upstream
@@ -6818,14 +7964,8 @@ function EffectsShell({
       try {
         for (const frame of frames) {
           const t = Math.max(0, frame) / Math.max(1, fps);
-          setTime(t);
+          await renderSettledFrameAt(t, fps, { flush: true });
           const backend = backendRef.current;
-          renderFrameRef.current?.(t, fps, true);
-          const settled = backend
-            ? await awaitMediaSettle(backend.state)
-            : false;
-          if (settled) renderFrameRef.current?.(t, fps, true);
-          await new Promise<void>((r) => requestAnimationFrame(() => r()));
           // Stable upstreams live in the eval cache; uncacheable ones
           // (Video/Webcam) only exist in the last pass's outputs map.
           const entry = evalCacheRef.current.get(sourceNodeId);
@@ -6855,7 +7995,7 @@ function EffectsShell({
         setTime(savedTime);
       }
     },
-    []
+    [renderSettledFrameAt]
   );
 
   // Resolve a Render Queue node into its ordered rows, each paired with the
@@ -6929,6 +8069,10 @@ function EffectsShell({
       );
       const totalFiles = wedgeBatches.reduce((a, b) => a + b.count, 0);
       try {
+        // Hold the export-resolution bracket open across rows so per-row
+        // driver brackets don't restore preview res between items (rows
+        // with the same target then share one backend recreation).
+        await beginExportResolution(null);
         for (let i = 0; i < resolved.length; i++) {
           const { item, output } = resolved[i];
           if (!output) continue;
@@ -7042,6 +8186,7 @@ function EffectsShell({
         queueRenderingRef.current = false;
         forcedTerminalRef.current = null;
         setQueueProgress(null);
+        endExportResolution();
       }
     },
     [
@@ -7050,6 +8195,8 @@ function EffectsShell({
       exportVideo,
       renderImageToBlobAtFrame,
       flashToast,
+      beginExportResolution,
+      endExportResolution,
     ]
   );
 
@@ -7078,7 +8225,7 @@ function EffectsShell({
           canvasRes,
         });
         const graphJson = await serializeGraph(
-          nodesRef.current,
+          overlayLandedMedia(nodesRef.current),
           edgesRef.current,
           undefined,
           {
@@ -7132,11 +8279,19 @@ function EffectsShell({
           );
           return out;
         };
+        const { packageExportApp, graphUsesMlNodes, ORT_WASM_ASSET_RE } =
+          await import("@/lib/export-packager");
+        // The ~22 MB ONNX-runtime wasm is only ever fetched at runtime by
+        // the ML nodes (bg-remove / segment / depth) — drop it from the
+        // bundle (and skip downloading it here) when the project has none.
+        // Spec: 073126_export-resolution-and-app-slim.md.
+        const wantedDistFiles = graphUsesMlNodes(graphJson)
+          ? distManifest.distFiles
+          : distManifest.distFiles.filter((p) => !ORT_WASM_ASSET_RE.test(p));
         const [distFiles, sourceFiles] = await Promise.all([
-          fetchAll("/export-template/v1/dist", distManifest.distFiles),
+          fetchAll("/export-template/v1/dist", wantedDistFiles),
           fetchAll("/export-template/v1/source", distManifest.sourceFiles),
         ]);
-        const { packageExportApp } = await import("@/lib/export-packager");
         const blob = await packageExportApp({
           appName: args.appName,
           description: args.description,
@@ -7161,27 +8316,202 @@ function EffectsShell({
     [exportApp, canvasRes, flashToast, compositionsForSave]
   );
 
+  // Async Export App size estimate (073126 M3). The old inline estimate
+  // measured the manifest JSON only (~KBs) while the real payload is the
+  // serialized graph (embedded media) + the template. Serialize once when
+  // the modal opens; template byte counts come from the template
+  // manifest's distBytes/sourceBytes/tierABytes (absent on older template
+  // builds → the template portion reads 0 and only the graph is counted).
+  const [exportAppEstimate, setExportAppEstimate] = useState<{
+    totalBytes: number;
+    contentBytes: number;
+    ml: boolean;
+  } | null>(null);
   useEffect(() => {
-    const handler = (e: Event) => {
+    if (!exportApp) {
+      setExportAppEstimate(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const graphJson = await serializeGraph(
+          overlayLandedMedia(nodesRef.current),
+          edgesRef.current,
+          undefined,
+          {
+            loopFrames: loopFramesRef.current,
+            fps: fpsRef.current,
+            width: canvasResRef.current[0],
+            height: canvasResRef.current[1],
+          },
+          {
+            compositions: compositionsForSave(),
+            activeCompositionId: activeCompositionIdRef.current,
+          }
+        );
+        const { graphUsesMlNodes, ORT_WASM_ASSET_RE } = await import(
+          "@/lib/export-packager"
+        );
+        const ml = graphUsesMlNodes(graphJson);
+        const contentBytes = JSON.stringify(graphJson).length;
+        let templateBytes = 0;
+        try {
+          const m = (await fetch("/export-template/v1/manifest.json").then(
+            (r) => r.json()
+          )) as {
+            distBytes?: Record<string, number>;
+            sourceBytes?: Record<string, number>;
+            tierABytes?: number;
+          };
+          for (const [p, b] of Object.entries(m.distBytes ?? {})) {
+            if (!ml && ORT_WASM_ASSET_RE.test(p)) continue;
+            templateBytes += b;
+          }
+          for (const b of Object.values(m.sourceBytes ?? {})) {
+            templateBytes += b;
+          }
+          templateBytes += m.tierABytes ?? 0;
+        } catch {
+          // Template missing/unbuilt — the export path surfaces that with
+          // its own friendly error; estimate the graph alone here.
+        }
+        if (!cancelled) {
+          setExportAppEstimate({
+            totalBytes: templateBytes + contentBytes,
+            contentBytes,
+            ml,
+          });
+        }
+      } catch (e) {
+        console.warn("Export App size estimate failed:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [exportApp, compositionsForSave]);
+
+  // SVG Export node (spec 072726 M2): serialize the node's stashed input
+  // spline (written by its compute every eval — the node is terminal, so
+  // the stash always reflects the current playhead) and save it through
+  // the platform seam. The composition **Output** node stashes under the
+  // same key from its own optional `spline` tap and declares the same
+  // styling params, so this one exporter serves both.
+  const exportSvgNode = useCallback(
+    async (nodeId: string) => {
+      const backend = backendRef.current;
+      if (!backend) return;
+      const ctx = backend.makeContext(0, 0);
+      const node = nodesRef.current.find((n) => n.id === nodeId);
+      // A Layer Output never computes — flatten dissolves every group
+      // boundary — so its ENCLOSING LAYER stashes the tap's spline under
+      // the layer's own id (layer.compute). Styling params still come from
+      // the Layer Output, which owns the layer's export config.
+      const isLayerOutput =
+        node?.data.defType === GROUP_OUTPUT_TYPE &&
+        (node.data.params as { fixed?: boolean })?.fixed === true;
+      const stashId = (isLayerOutput ? node?.data.parentId : null) ?? nodeId;
+      const stash = ctx.state[svgExportStashKey(stashId)] as
+        | SvgExportStash
+        | undefined;
+      if (!stash || stash.subpaths.length === 0) {
+        const where = isLayerOutput
+          ? "Layer Output"
+          : node?.data.defType === "output"
+            ? "Output"
+            : "SVG Export";
+        flashToast(`Nothing to export — wire a spline into ${where}`);
+        return;
+      }
+      const p = node?.data.params ?? {};
+      const style = {
+        stroke: p.stroke_enabled
+          ? {
+              color: (p.stroke_color as string) ?? "#ffffff",
+              width: (p.stroke_width as number) ?? 4,
+            }
+          : undefined,
+        fill: p.fill_enabled
+          ? {
+              color: (p.fill_color as string) ?? "#ffffff",
+              rule:
+                p.fill_rule === "nonzero"
+                  ? ("nonzero" as const)
+                  : ("evenodd" as const),
+            }
+          : undefined,
+      };
+      const svg = splineToSvg(stash.subpaths, stash.width, stash.height, style);
+      // SVG Export defaults `filename` to "spline"; Output leaves it empty
+      // (its placeholder is the auto-timestamp used by the raster products),
+      // so fall back to the node's own name before the generic default —
+      // same ladder as the image/video paths.
+      const base =
+        sanitizeFilename(((p.filename as string) ?? "").trim()) ||
+        sanitizeFilename(node?.data.name ?? "") ||
+        "spline";
+      try {
+        await platform.saveFile(new Blob([svg], { type: "image/svg+xml" }), {
+          suggestedName: `${base}.svg`,
+          mimeType: "image/svg+xml",
+          filters: [{ name: "SVG", extensions: ["svg"] }],
+        });
+        flashToast(`Exported ${base}.svg`);
+      } catch (err) {
+        console.error("SVG export failed:", err);
+        flashToast(err instanceof Error ? err.message : "SVG export failed");
+      }
+    },
+    [flashToast]
+  );
+
+  useEffect(() => {
+    const handler = async (e: Event) => {
       const detail = (
         e as CustomEvent<{
           id: string;
-          kind: "image" | "video" | "sequence" | "gif" | "app" | "queue";
+          kind: "image" | "video" | "sequence" | "gif" | "app" | "queue" | "svg";
         }>
       ).detail;
       if (!detail) return;
-      // Image/video route through the wedge batch driver, which falls back
-      // to the plain single-render paths when no Wedge nodes are upstream.
-      if (detail.kind === "image") exportWedged(detail.id, "image");
-      else if (detail.kind === "video") exportWedged(detail.id, "video");
-      else if (detail.kind === "sequence") exportSequence(detail.id);
-      else if (detail.kind === "gif") exportGif(detail.id);
-      else if (detail.kind === "app") onOpenExportApp(detail.id);
+      // The offline single-export kinds share offlineRenderingRef and the
+      // time save/restore, so they must not overlap. Take a SYNCHRONOUS lock
+      // here (before the first await) so a double-click's second event bails —
+      // recordingRef alone can't (it lags the React commit). Batch/queue paths
+      // are serialized separately (queueRenderingRef) and stay unguarded here.
+      const offlineKind =
+        detail.kind === "image" ||
+        detail.kind === "video" ||
+        detail.kind === "sequence" ||
+        detail.kind === "gif";
+      if (offlineKind) {
+        if (exportBusyRef.current) return;
+        exportBusyRef.current = true;
+        try {
+          if (detail.kind === "image") await exportWedged(detail.id, "image");
+          else if (detail.kind === "video") await exportWedged(detail.id, "video");
+          else if (detail.kind === "sequence") await exportSequence(detail.id);
+          else if (detail.kind === "gif") await exportGif(detail.id);
+        } finally {
+          exportBusyRef.current = false;
+        }
+        return;
+      }
+      if (detail.kind === "app") onOpenExportApp(detail.id);
       else if (detail.kind === "queue") renderQueue(detail.id);
+      else if (detail.kind === "svg") exportSvgNode(detail.id);
     };
     window.addEventListener("effect-node-export", handler);
     return () => window.removeEventListener("effect-node-export", handler);
-  }, [exportWedged, exportSequence, exportGif, onOpenExportApp, renderQueue]);
+  }, [
+    exportWedged,
+    exportSequence,
+    exportGif,
+    onOpenExportApp,
+    renderQueue,
+    exportSvgNode,
+  ]);
 
   // --- Save / Load ----------------------------------------------------------
   // Progress budget: serialize/deserialize gets the first 70%, the network
@@ -7201,7 +8531,7 @@ function EffectsShell({
     const canvas = canvasRef.current;
     const thumbnail = canvas ? generateThumbnail(canvas, 256) : null;
     const graph = await serializeGraph(
-      nodesRef.current,
+      overlayLandedMedia(nodesRef.current),
       edgesRef.current,
       (f) =>
         setProgressStatus({
@@ -7221,6 +8551,10 @@ function EffectsShell({
         activeCompositionId: activeCompositionIdRef.current,
       }
     );
+    // Per-project tiled layout (M4) — attached post-serialize so
+    // serializeGraph's signature (and its other callers: fragments,
+    // exported apps) stay untouched.
+    graph.layout = toSavedLayout(layoutTreeRef.current);
     setProgressStatus({ label: "saving", progress: SERIALIZE_SHARE, tone: "save" });
     // Heads-up on the INLINE media size. Post-Tier-2 the DB row is tiny
     // (media lives in Storage as refs), so this no longer gates the save —
@@ -7294,6 +8628,7 @@ function EffectsShell({
             ownerId: user.id,
             authorName: null,
           });
+          recordCloudRecent(conflict.id, conflict.name);
           setSaveState("saved");
           setLoadRefreshKey((n) => n + 1);
           flashToast(`overwrote ${conflict.name}`);
@@ -7312,6 +8647,7 @@ function EffectsShell({
           ownerId: user.id,
           authorName: null,
         });
+        recordCloudRecent(result.id, name);
         setSaveState("saved");
         setLoadRefreshKey((n) => n + 1);
         flashToast(`saved as ${name}`);
@@ -7364,6 +8700,7 @@ function EffectsShell({
           ownerId: user.id,
           authorName: null,
         });
+        recordCloudRecent(result.id, copyName);
         setSaveState("saved");
         setLoadRefreshKey((n) => n + 1);
         flashToast("saved a copy");
@@ -7386,6 +8723,7 @@ function EffectsShell({
         currentProject.id
       );
       if (result) {
+        recordCloudRecent(currentProject.id, currentProject.name);
         setSaveState("saved");
         flashToast("saved");
         setLoadRefreshKey((n) => n + 1);
@@ -7431,6 +8769,7 @@ function EffectsShell({
         ownerId: user.id,
         authorName: null,
       });
+      recordCloudRecent(result.id, newName);
       setSaveState("saved");
       setLoadRefreshKey((n) => n + 1);
       flashToast(`saved as ${newName}`);
@@ -7499,6 +8838,8 @@ function EffectsShell({
           if (scene.width !== undefined && scene.height !== undefined)
             setCanvasRes([scene.width, scene.height]);
         }
+        // Per-project tiled layout (M4): absent/malformed → default preset.
+        applyLoadedLayout((saved.graph as { layout?: unknown }).layout);
         setSelectedId(null);
         setParamView("node");
         setCurrentProject({
@@ -7516,6 +8857,7 @@ function EffectsShell({
               : saved.author?.display_name ?? null,
           updatedAt: saved.updated_at,
         });
+        recordCloudRecent(id, saved.name);
         // Load applies a graph snapshot via setNodes/setEdges, which
         // doesn't flow through pushGraph — so saveState isn't auto-
         // flipped to "dirty". Explicitly mark clean.
@@ -7528,7 +8870,7 @@ function EffectsShell({
         setProgressStatus(null);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia, streamPendingMedia, frameGraph, flashToast]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia, streamPendingMedia, frameGraph, flashToast, applyLoadedLayout]
   );
 
   // --- Local .toolbox files (File → Save to File / Load…) ------------------
@@ -7549,7 +8891,7 @@ function EffectsShell({
       const canvas = canvasRef.current;
       const thumbnailDataUrl = canvas ? generateThumbnail(canvas, 256) : null;
       const graph = await serializeGraph(
-        nodesRef.current,
+        overlayLandedMedia(nodesRef.current),
         edgesRef.current,
         (f) =>
           setProgressStatus({ label: "saving", progress: f * 0.8, tone: "save" }),
@@ -7565,6 +8907,8 @@ function EffectsShell({
           activeCompositionId: activeCompositionIdRef.current,
         }
       );
+      // Per-project tiled layout (M4) — rides project.json in the zip.
+      graph.layout = toSavedLayout(layoutTreeRef.current);
       const name =
         currentProject?.name ?? projectFileNameRef.current ?? "Untitled";
       const { writeProjectFile, TOOLBOX_EXTENSION } = await import(
@@ -7573,7 +8917,17 @@ function EffectsShell({
       const blob = await writeProjectFile({ name, graph, thumbnailDataUrl });
       setProgressStatus({ label: "saving", progress: 1, tone: "save" });
       projectFileNameRef.current = name;
-      downloadBlob(blob, `${sanitizeFileName(name)}.${TOOLBOX_EXTENSION}`);
+      // downloadBlob's body, plus a recents poke once the save settles: on
+      // desktop the native dialog records the path into main's recents
+      // out-of-band, so the Open Recent list must refresh AFTER the dialog
+      // closes. Fire-and-forget (not awaited) so the progress chip clears
+      // immediately, exactly as before.
+      void platform
+        .saveFile(blob, {
+          suggestedName: `${sanitizeFileName(name)}.${TOOLBOX_EXTENSION}`,
+        })
+        .then(() => notifyRecentProjectsChanged())
+        .catch((e) => console.error("saveFile failed:", e));
     } catch (e) {
       console.error("Save to file failed:", e);
       flashToast(e instanceof Error ? e.message : "Could not save project file");
@@ -7715,6 +9069,8 @@ function EffectsShell({
           if (scene.width !== undefined && scene.height !== undefined)
             setCanvasRes([scene.width, scene.height]);
         }
+        // Per-project tiled layout (M4): absent/malformed → default preset.
+        applyLoadedLayout((graph as { layout?: unknown }).layout);
         setSelectedId(null);
         setParamView("node");
         // A file-loaded project has no cloud row — cloud Save falls through
@@ -7723,6 +9079,10 @@ function EffectsShell({
         projectFileNameRef.current =
           file.name.replace(/\.toolbox$/i, "") || name;
         setSaveState("saved");
+        // Desktop records opened paths into main's recents out-of-band
+        // (files.js / recents.open) — refresh the Open Recent list. Web
+        // FSA opens recorded at pick time refresh via the same poke.
+        notifyRecentProjectsChanged();
         setProgressStatus({ label: "loading", progress: 1, tone: "load" });
         // Desktop: surface the assets/ folder beside the just-opened project
         // (main armed it when it read the file). Best-effort; web has no path.
@@ -7738,14 +9098,24 @@ function EffectsShell({
         setProgressStatus(null);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia, frameGraph]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia, frameGraph, applyLoadedLayout]
   );
 
   const handleOpenProjectFile = useCallback(() => {
-    // Native: OS Open dialog. Web: <input type="file">.
+    // Native: OS Open dialog. Web: FSA picker on Chromium — its handle is
+    // recorded so File → Open Recent can reopen the file later
+    // (073026_open-recent.md) — else the legacy <input type="file">
+    // (which yields no handle, so those opens aren't recorded).
     if (platform.isNative) {
       void platform.pickOpenFiles({ kind: "toolbox" }).then((files) => {
         const file = files?.[0];
+        if (file) void loadToolboxFile(file);
+      });
+      return;
+    }
+    if (supportsLocalFileRecents()) {
+      // null = cancelled — no fallback dialog in that case.
+      void pickAndRecordLocalToolbox().then((file) => {
         if (file) void loadToolboxFile(file);
       });
       return;
@@ -7775,6 +9145,59 @@ function EffectsShell({
     },
     [loadToolboxFile, flashToast]
   );
+
+  // --- File → Open Recent (spec 073026_open-recent.md) ----------------------
+  // The merged recency-sorted list (localStorage cloud/web-local entries +
+  // desktop native recents), kept in sync via the store's subscribe hook.
+  const [recentProjects, setRecentProjects] = useState<RecentProjectEntry[]>(
+    []
+  );
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      void listRecentProjects().then((list) => {
+        if (alive) setRecentProjects(list);
+      });
+    };
+    refresh();
+    const unsub = subscribeRecentProjects(refresh);
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, []);
+
+  const handleOpenRecent = useCallback(
+    (entry: RecentProjectEntry) => {
+      switch (entry.kind) {
+        case "cloud":
+          // loadProject can't distinguish deleted-row from network failure,
+          // so a failed open only toasts (inside handleLoadProject) — it
+          // never prunes the entry.
+          void handleLoadProject(entry.id);
+          return;
+        case "local-native":
+          void handleOpenLocalRecent(entry.path);
+          return;
+        case "local":
+          // Handle from IDB + permission dance; self-prunes if the file is
+          // gone, survives a permission denial.
+          void openLocalRecentFile(entry.refId).then((file) => {
+            if (file) void loadToolboxFile(file);
+            else
+              flashToast(
+                "Couldn't open — the file may have moved, been deleted, or permission was denied."
+              );
+          });
+          return;
+      }
+    },
+    [handleLoadProject, handleOpenLocalRecent, loadToolboxFile, flashToast]
+  );
+
+  const handleClearRecents = useCallback(() => {
+    void clearRecentProjects();
+  }, []);
 
   // Rename via the file-name pill. If the target name doesn't collide,
   // it's a simple metadata update. If it DOES collide with another of
@@ -7813,6 +9236,9 @@ function EffectsShell({
             ownerId: user.id,
             authorName: null,
           });
+          // The source row is gone; the conflict row is now "this project".
+          removeCloudRecent(currentProject.id);
+          recordCloudRecent(conflict.id, conflict.name);
           setSaveState("saved");
           setLoadRefreshKey((n) => n + 1);
           flashToast(`overwrote ${conflict.name}`);
@@ -7823,15 +9249,31 @@ function EffectsShell({
         }
         return;
       }
-      const renamedAt = await renameProjectRow(currentProject.id, trimmed);
-      if (!renamedAt) {
+      const renameRes = await renameProjectRow(
+        currentProject.id,
+        trimmed,
+        currentProject.updatedAt ?? undefined
+      );
+      if (renameRes.conflict) {
+        setSaveState("error");
+        flashToast(
+          "This project was saved from another window — reload it before renaming here."
+        );
+        return;
+      }
+      if (!renameRes.ok || !renameRes.updatedAt) {
         setSaveState("error");
         flashToast("rename failed");
         return;
       }
       // Rename bumps the row's updated_at — mirror it or the next save's
       // compare-and-swap would false-conflict.
-      setCurrentProject({ ...currentProject, name: trimmed, updatedAt: renamedAt });
+      setCurrentProject({
+        ...currentProject,
+        name: trimmed,
+        updatedAt: renameRes.updatedAt,
+      });
+      renameCloudRecent(currentProject.id, trimmed);
       setLoadRefreshKey((n) => n + 1);
       flashToast(`renamed to ${trimmed}`);
     },
@@ -7880,10 +9322,18 @@ function EffectsShell({
       return;
     }
     const next = pendingVisibility.toPublic;
-    const result = await setProjectVisibilityRow(currentProject.id, next);
+    const result = await setProjectVisibilityRow(
+      currentProject.id,
+      next,
+      currentProject.updatedAt ?? undefined
+    );
     if (!result.ok) {
       setSaveState("error");
-      flashToast("visibility update failed");
+      flashToast(
+        result.conflict
+          ? "This project was saved from another window — reload it before changing visibility."
+          : "visibility update failed"
+      );
       setPendingVisibility(null);
       return;
     }
@@ -8025,10 +9475,11 @@ function EffectsShell({
         hint: "⇧A",
         icon: AddNodeIcon,
         run: () => {
-          window.dispatchEvent(
-            new CustomEvent("toolbox:open-node-search", {
-              detail: { ...lastPointerRef.current },
-            }),
+          broadcastAppEvent(
+            () =>
+              new CustomEvent("toolbox:open-node-search", {
+                detail: { ...lastPointerRef.current },
+              })
           );
         },
       },
@@ -8371,10 +9822,23 @@ function EffectsShell({
   // there without touching this wiring.
   const primitiveGizmoNodes = useMemo(
     () =>
-      selectedGizmoCandidates.filter(
-        (n) => !!PRIMITIVE_GIZMO_ADAPTERS[n.data.defType]
-      ),
-    [selectedGizmoCandidates]
+      selectedGizmoCandidates.filter((n) => {
+        const adapter = PRIMITIVE_GIZMO_ADAPTERS[n.data.defType];
+        if (!adapter) return false;
+        // An adapter can declare sockets that invalidate its handles
+        // when wired (SDF's `position` chain retargets the whole sample
+        // space, so the shape stops sitting at its raw x/y).
+        if (adapter.hideWhenWired?.length) {
+          const wired = edges.some(
+            (e) =>
+              e.target === n.id &&
+              adapter.hideWhenWired!.some((h) => e.targetHandle === `in:${h}`)
+          );
+          if (wired) return false;
+        }
+        return true;
+      }),
+    [selectedGizmoCandidates, edges]
   );
   // With 2+ gizmos up, TransformGizmo trades its canvas-wide translate
   // surface for its bounds polygon so stacked gizmos don't fight over
@@ -8478,29 +9942,129 @@ function EffectsShell({
     [navigateScope]
   );
 
-  const nodeEditorJsx = (
+  // Switch the param panel to the Project Settings view. Shared by File →
+  // Project Settings… and the gear chip in a Parameters panel's header.
+  //
+  // Deselect so switching back to the node view doesn't silently resurrect
+  // whichever node happened to be selected when the user opened Project
+  // Settings. Clear React Flow's per-node `.selected` flag too —
+  // setSelectedId alone leaves the node visually highlighted in the flow
+  // pane. Same rule for Load.
+  const openProjectSettings = useCallback(() => {
+    suppressNextSelectionViewFlipRef.current = true;
+    setSelectedId(null);
+    setNodes((prev) =>
+      prev.map((n) => (n.selected ? { ...n, selected: false } : n))
+    );
+    setParamView("project");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The per-panel editor-kind switcher chip. Re-assigning the LAST
+  // viewport leaf away is blocked — the engine blit target, overlays
+  // and the tracks dock all anchor to a live viewport panel.
+  const panelKindMenuFor = (
+    leafId: string,
+    panel: PanelKind,
+    floating: boolean,
+    /** Square edge, for hosts whose control row has a fixed height. */
+    size?: number
+  ) => {
+    const lastViewport =
+      panel === "viewport" && countLeavesOfKind(layoutTree, "viewport") === 1;
+    const reason = "The layout keeps at least one viewport";
+    const detached = detachedPanels.some((d) => d.id === leafId);
+    // Every kind pops out now (M2/M3). The primary viewport is the one
+    // hold-out — it owns canvasRef and every overlay/gizmo, all of which
+    // anchor to one canvas rect in this window.
+    const popOutReason =
+      panel === "viewport" && leafId === primaryViewportLeafId
+        ? "The main viewport stays in this window"
+        : panel === "viewport" && lastViewport
+          ? reason
+          : undefined;
+    return (
+      <PanelKindMenu
+        value={panel}
+        floating={floating}
+        size={size}
+        onChange={(kind) => handleAssignPanelKind(leafId, kind)}
+        disabledReason={
+          // A DETACHED panel can retype freely except into a viewport:
+          // that would elect a second blit target outside the main
+          // window while the tree still needs one inside it.
+          detached
+            ? {
+                viewport:
+                  "Retype this window's panel in place, or close it first",
+              }
+            : lastViewport
+              ? { nodes: reason, params: reason, timeline: reason }
+              : undefined
+        }
+        onPopOut={
+          detached ? undefined : () => handleDetachPanel(leafId, panel)
+        }
+        popOutDisabledReason={popOutReason}
+      />
+    );
+  };
+
+  // One Node Editor pane instance per "nodes" leaf. Each pane wraps
+  // itself in its OWN ReactFlowProvider so duplicates get independent
+  // stores/cameras; window-level shortcuts route to the pane that owns
+  // the instance scope (nodes-pane-scope.ts, claimed by NodeEditor's
+  // wrapper). The panel-kind chip sits left of the composition tabs.
+  const renderNodesPanel = (leafId: string) => (
     <div
       style={{
         display: "flex",
         flexDirection: "column",
         height: "100%",
         minHeight: 0,
+        position: "relative",
       }}
     >
-      <CompositionTabBar
-        tabs={openCompositionIds
-          .map((id) => compositions.find((c) => c.id === id))
-          .filter((c): c is SavedComposition => !!c)
-          .map((c) => ({ id: c.id, name: c.name }))}
-        activeId={activeCompositionId}
-        onSelect={handleSwitchComposition}
-        onClose={handleCloseComposition}
-        onCreate={handleCreateComposition}
-        onReorder={setOpenCompositionIds}
-        canClose={openCompositionIds.length > 1}
-      />
+      <div
+        style={{
+          display: "flex",
+          alignItems: "stretch",
+          minWidth: 0,
+          background: "var(--tb-n-0)",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            padding: "0 0 0 4px",
+            // Continue the tab bar's bottom border under the chip cell
+            // so the header strip reads as one bar.
+            borderBottom: "1px solid var(--tb-n-4)",
+            flexShrink: 0,
+          }}
+        >
+          {panelKindMenuFor(leafId, "nodes", false)}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <CompositionTabBar
+            tabs={openCompositionIds
+              .map((id) => compositions.find((c) => c.id === id))
+              .filter((c): c is SavedComposition => !!c)
+              .map((c) => ({ id: c.id, name: c.name }))}
+            activeId={activeCompositionId}
+            onSelect={handleSwitchComposition}
+            onClose={handleCloseComposition}
+            onCreate={handleCreateComposition}
+            onReorder={setOpenCompositionIds}
+            canClose={openCompositionIds.length > 1}
+          />
+        </div>
+      </div>
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        <ReactFlowProvider>
         <NodeEditor
+          paneId={leafId}
           nodes={scopedNodes}
       edges={edges}
       onNodesChange={onNodesChangeWithHistory}
@@ -8512,11 +10076,13 @@ function EffectsShell({
       onDuplicateOnDrag={handleDuplicateOnDrag}
       onDetachNode={handleDetachNode}
       onDuplicateNode={handleDuplicateNode}
+      onMakeEditableNode={handleMakeEditableNode}
       onDuplicateSelection={handleDuplicateSelection}
       onMergeSelection={handleMergeSelection}
       onCopyNodes={handleCopyNodes}
       onPasteNodes={handlePasteNodes}
       onPasteFragmentText={handlePasteFragmentText}
+      onPasteSvgText={handlePasteSvgText}
       onEditWithAINode={handleEditWithAI}
       onAddFileNode={onAddFileNode}
       onAddImageNodeFromImageGen={onAddImageNodeFromImageGen}
@@ -8528,6 +10094,9 @@ function EffectsShell({
       onUngroupSelection={handleUngroupSelection}
       onDiveIntoGroup={handleDiveIntoGroup}
       onReparentNode={handleReparentNode}
+      onStyleNodes={handleStyleNodes}
+      onFrameSelection={handleFrameSelection}
+      onSetNodeFrame={handleSetNodeFrame}
       onScopeUp={handleScopeUp}
       breadcrumbs={breadcrumbs}
       onNavigateScope={handleNavigateScope}
@@ -8582,6 +10151,7 @@ function EffectsShell({
         ) : null
       }
         />
+        </ReactFlowProvider>
       </div>
     </div>
   );
@@ -8608,7 +10178,120 @@ function EffectsShell({
       onReorder={handleReorderCompositions}
     />
   );
-  const editorPanelJsx = view === "project" ? projectViewJsx : nodeEditorJsx;
+  // Leaf content router for the tiled LayoutRegion. The Project view
+  // replaces the node editor in EVERY nodes leaf while active (same
+  // rule as the old single editor pane); params leaves all mirror the
+  // shared paramView; non-primary viewport leaves are watch windows.
+  const renderLayoutPanel = (
+    leafId: string,
+    panel: PanelKind
+  ): React.ReactNode => {
+    if (panel === "viewport") {
+      // The PRIMARY viewport leaf never reaches here — the LayoutRegion
+      // renderPanel wrapper in the return JSX renders it inline (it owns
+      // canvasRef + every overlay). Everything else is a watch window.
+      return (
+        <WatchViewport
+          leafId={leafId}
+          renderRes={renderRes}
+          register={registerWatchCanvas}
+          kindMenu={panelKindMenuFor(leafId, "viewport", true)}
+          backdrop={canvasBackdrop}
+        />
+      );
+    }
+    if (panel === "timeline") {
+      // The same dock the floating modal hosts. The editors inside all
+      // size themselves off a ResizeObserver, so a panel that grows or
+      // shrinks by its gutters needs nothing extra here. Its kind chip
+      // rides in the toolbar's left cluster (renderDockBody), so no
+      // header strip or floating chip of its own.
+      return (
+        <div
+          className="timeline-dock"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+          }}
+        >
+          {renderDockBody({
+            host: "panel",
+            instanceId: `leaf:${leafId}`,
+            leafId,
+          })}
+        </div>
+      );
+    }
+    if (panel === "nodes") {
+      if (view === "project") {
+        return (
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              position: "relative",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            {panelKindMenuFor(leafId, "nodes", true)}
+            {projectViewJsx}
+          </div>
+        );
+      }
+      return renderNodesPanel(leafId);
+    }
+    // Parameters: a slim header strip hosts the kind chip (ParamPanel's
+    // own content starts with headers a floating chip would cover) plus,
+    // at the far right, the Project Settings shortcut.
+    return (
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            height: 24,
+            padding: "0 4px",
+            background: "var(--tb-n-0)",
+            borderBottom: "1px solid var(--tb-n-4)",
+            flexShrink: 0,
+          }}
+        >
+          {panelKindMenuFor(leafId, "params", false)}
+          <ProjectSettingsChip
+            active={paramView === "project"}
+            // Toggling back lands on the node view — Project Settings has
+            // no back affordance of its own, so the chip is the way out.
+            onClick={() =>
+              paramView === "project"
+                ? setParamView("node")
+                : openProjectSettings()
+            }
+          />
+        </div>
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          {paramPanelJsx}
+        </div>
+      </div>
+    );
+  };
 
   // Single 0..1 fraction for the queue item currently rendering. Offline
   // encoders (WebCodecs / ffmpeg) report it per frame via `recording`.
@@ -8644,16 +10327,17 @@ function EffectsShell({
   // progress bars on Render Queue nodes. Event-based (like `node-timings`)
   // so node components don't need new props threaded through React Flow.
   useEffect(() => {
-    window.dispatchEvent(
-      new CustomEvent("render-queue-progress", {
-        detail: queueProgress
-          ? {
-              nodeId: queueProgress.nodeId,
-              activeItemId: queueProgress.itemId,
-              itemProgress: queueItemProgress,
-            }
-          : null,
-      })
+    broadcastAppEvent(
+      () =>
+        new CustomEvent("render-queue-progress", {
+          detail: queueProgress
+            ? {
+                nodeId: queueProgress.nodeId,
+                activeItemId: queueProgress.itemId,
+                itemProgress: queueItemProgress,
+              }
+            : null,
+        })
     );
   }, [queueProgress, queueItemProgress]);
 
@@ -8671,6 +10355,89 @@ function EffectsShell({
     setParamView("node");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Per-anchor keyframing (Spline Draw, spec 072726 M6): create or remove
+  // the three vec2 tracks (anchor_p/in/out:<id>) for a set of anchors of
+  // one subpath. Anchors without an id get one minted here (written into
+  // the stored spline in the same pass — lazy ids, no migration). Enabling
+  // seeds each track with a keyframe at the playhead pinning the current
+  // pose; disabling deletes the tracks. One undo entry.
+  const onAnchorAnimate = useCallback(
+    (
+      nodeId: string,
+      subpathIndex: number,
+      anchorIndexes: number[],
+      enable: boolean
+    ) => {
+      pushGraph(getGraphSnapshot());
+      const tickNow = playbackClock.get().tick;
+      const mintId = () => Math.random().toString(36).slice(2, 9);
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id !== nodeId) return n;
+          const spline = n.data.params.spline as
+            | { subpaths?: SplineSubpath[] }
+            | undefined;
+          if (!spline || !Array.isArray(spline.subpaths)) return n;
+          const subs = spline.subpaths.map((s) => ({
+            ...s,
+            anchors: s.anchors.map((a) => ({ ...a })),
+          }));
+          const sub = subs[subpathIndex];
+          if (!sub) return n;
+          let animation = { ...(n.data.animation ?? {}) };
+          for (const ai of anchorIndexes) {
+            const a = sub.anchors[ai];
+            if (!a) continue;
+            if (!a.id) a.id = mintId();
+            const id = a.id;
+            if (enable) {
+              const mk = (value: [number, number]) => ({
+                animated: true,
+                trackVisible: true,
+                keyframes: [
+                  { tick: tickNow, value, easingOut: "easeInOut" as const },
+                ],
+              });
+              if (!animation[anchorPosKey(id)]?.animated) {
+                animation[anchorPosKey(id)] = mk([a.pos[0], a.pos[1]]);
+              }
+              if (!animation[anchorInKey(id)]?.animated) {
+                animation[anchorInKey(id)] = mk([
+                  a.inHandle?.[0] ?? 0,
+                  a.inHandle?.[1] ?? 0,
+                ]);
+              }
+              if (!animation[anchorOutKey(id)]?.animated) {
+                animation[anchorOutKey(id)] = mk([
+                  a.outHandle?.[0] ?? 0,
+                  a.outHandle?.[1] ?? 0,
+                ]);
+              }
+            } else {
+              animation = { ...animation };
+              delete animation[anchorPosKey(id)];
+              delete animation[anchorInKey(id)];
+              delete animation[anchorOutKey(id)];
+            }
+          }
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              params: {
+                ...n.data.params,
+                spline: { ...spline, subpaths: subs },
+              },
+              animation,
+            },
+          };
+        })
+      );
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    []
+  );
   const queueRenderInfo = useMemo(
     () =>
       queueProgress
@@ -8743,168 +10510,196 @@ function EffectsShell({
     />
   );
 
-  // The body of the dock — the toolbar with tab buttons and the
-  // active editor (Tracks or Graph). Used both as the absolute-
-  // positioned overlay in the default layout and as the bottom strip
-  // in the timeline layout. The wrapping container differs between
-  // layouts so its `flexShrink: 0` lives outside this fragment.
-  const dockBodyJsx = (
-    <>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          // Equal margin on all sides around the buttons.
-          padding: 6,
-          background: "#000",
-          borderBottom: "1px solid #27272a",
-          flexShrink: 0,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <DockTabToggle value={dockTab} onChange={setDockTab} />
-          {dockTab !== "graph" && (
-            <StaggerControl ticksPerFrame={ticksPerFrame} />
+  // The body of the dock — the toolbar plus the active editor (Layers /
+  // Tracks / Graph). Rendered by BOTH hosts: the floating modal and any
+  // `timeline` leaf in the tiled layout (080226_timeline-modal-panel.md).
+  // Kept as a closure rather than its own component on purpose — it
+  // reads ~30 values off this scope, and props-threading all of them
+  // would buy nothing (same call as the primary viewport's inline JSX).
+  //
+  // `host` decides only what occupies the slot left of the tab toggle:
+  // the close ✕ in the modal, the panel-kind chip in a panel (a panel
+  // closes through the tiling join gesture, so it has no ✕). The
+  // wrapping container — flex sizing, frame, position — belongs to the
+  // caller.
+  const renderDockBody = (opts: {
+    host: "modal" | "panel";
+    instanceId: string;
+    /** Panel host only — the leaf the kind chip reassigns. */
+    leafId?: string;
+  }) => {
+    const { host, instanceId, leafId } = opts;
+    const dockTab = dockTabFor(instanceId);
+    const setDockTab = (tab: DockTab) => setDockTabFor(instanceId, tab);
+    return (
+      <>
+        <div
+          // The modal's drag bar. Only presses on the bar ITSELF start a
+          // drag (see startDockDrag) — its buttons and the two cluster
+          // wrappers are descendants, so they keep working normally.
+          onPointerDown={host === "modal" ? startDockDrag : undefined}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            // Equal margin on all sides around the buttons.
+            padding: 6,
+            background: "var(--tb-frame)",
+            borderBottom: "1px solid var(--tb-n-7)",
+            flexShrink: 0,
+            cursor: host === "modal" ? "grab" : undefined,
+            // The bar owns its gesture, so iPadOS can't reinterpret a
+            // finger/Pencil drag as a scroll and cancel the pointer stream.
+            ...(host === "modal" ? TOUCH_DRAG_STYLE : null),
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {host === "modal" ? (
+              <DockButton onClick={() => setTrackEditorOpen(false)} title="Close">
+                ✕
+              </DockButton>
+            ) : (
+              leafId &&
+              panelKindMenuFor(leafId, "timeline", false, DOCK_CTRL_H)
+            )}
+            <DockTabToggle value={dockTab} onChange={setDockTab} />
+            {dockTab !== "graph" && (
+              <StaggerControl ticksPerFrame={ticksPerFrame} />
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {dockTab === "tracks" && (
+              <>
+                <DockButton
+                  active={tracksSelectedOnly}
+                  onClick={() => setTracksSelectedOnly((v) => !v)}
+                  title={
+                    tracksSelectedOnly
+                      ? "Showing tracks for selected nodes only — click to show all"
+                      : "Show tracks only for nodes selected in the node editor"
+                  }
+                >
+                  selected only
+                </DockButton>
+                <DockButton
+                  onClick={() => setTrackFitVersion((v) => v + 1)}
+                  title="Fit scene to width"
+                >
+                  fit
+                </DockButton>
+              </>
+            )}
+            {dockTab === "graph" && (
+              <>
+                <DockButton
+                  active={graphNormalizeY}
+                  onClick={() => setGraphNormalizeY((v) => !v)}
+                  title={
+                    graphNormalizeY
+                      ? "Normalize on — y-axis fits each curve to its own range"
+                      : "Normalize off — y-axis uses the parameter's declared range"
+                  }
+                >
+                  normalize
+                </DockButton>
+                <DockButton
+                  onClick={() => setGraphRefitVersion((v) => v + 1)}
+                  title="Refresh: re-fit y-axis to current keyframes"
+                >
+                  ↻
+                </DockButton>
+              </>
+            )}
+          </div>
+        </div>
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          {dockTab === "layers" ? (
+            <LayersEditor
+              layers={layerChain}
+              timeline={projectTimeline}
+              selectedId={selectedId}
+              onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
+              onClipChange={onClipChange}
+              onSelectLayer={handleSelectLayer}
+              onDiveLayer={handleDiveIntoGroup}
+              onToggleVisibility={handleToggleLayerVisibility}
+              onReorder={handleReorderLayers}
+              onAddLayer={handleAddLayerFromEditor}
+              onSplitLayer={handleSplitLayer}
+              nodes={nodes}
+              edges={edges}
+              getAnimation={getAnimation}
+              onAnimationChange={onAnimationChange}
+              fitVersion={trackFitVersion}
+            />
+          ) : dockTab === "tracks" ? (
+            <TrackEditor
+              // Scope-follow: Tracks shows only the nodes in the scope the
+              // node editor is currently viewing (the layer/group you've
+              // dived into), so the two stay coherent. Layer nodes are
+              // excluded — the Layers tab owns them (their opacity
+              // keyframes live in the per-layer twirl-down there). The
+              // "selected only" filter applies on top.
+              nodes={(() => {
+                const scoped = nodes.filter(
+                  (n) =>
+                    n.data.parentId === currentGroupId &&
+                    n.data.defType !== LAYER_TYPE
+                );
+                return tracksSelectedOnly
+                  ? scoped.filter((n) => n.selected)
+                  : scoped;
+              })()}
+              allNodes={nodes}
+              edges={edges}
+              timeline={projectTimeline}
+              onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
+              onAnimationChange={onAnimationChange}
+              onClipChange={onClipChange}
+              fitVersion={trackFitVersion}
+              collapsedNodeIds={collapsedTrackNodes}
+              onToggleCollapsed={(nodeId) =>
+                setCollapsedTrackNodes((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(nodeId)) next.delete(nodeId);
+                  else next.add(nodeId);
+                  return next;
+                })
+              }
+              onSelectNode={(nodeId) => {
+                setNodes((prev) =>
+                  prev.map((n) => ({ ...n, selected: n.id === nodeId }))
+                );
+                setSelectedId(nodeId);
+                setParamView("node");
+              }}
+            />
+          ) : (
+            <GraphEditor
+              // Not scope-filtered: the graph view is a global curve
+              // pinboard — a track is shown only when its `graphVisible`
+              // flag is on, which the user sets explicitly. This also
+              // surfaces a group's promoted params (keyframes live on deep
+              // interior nodes outside the current scope).
+              nodes={nodes}
+              timeline={projectTimeline}
+              onAnimationChange={onAnimationChange}
+              onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
+              normalizeY={graphNormalizeY}
+              refitVersion={graphRefitVersion}
+            />
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {dockTab === "tracks" && (
-            <>
-              <DockButton
-                active={tracksSelectedOnly}
-                onClick={() => setTracksSelectedOnly((v) => !v)}
-                title={
-                  tracksSelectedOnly
-                    ? "Showing tracks for selected nodes only — click to show all"
-                    : "Show tracks only for nodes selected in the node editor"
-                }
-              >
-                selected only
-              </DockButton>
-              <DockButton
-                onClick={() => setTrackFitVersion((v) => v + 1)}
-                title="Fit scene to width"
-              >
-                fit
-              </DockButton>
-            </>
-          )}
-          {dockTab === "graph" && (
-            <>
-              <DockButton
-                active={graphNormalizeY}
-                onClick={() => setGraphNormalizeY((v) => !v)}
-                title={
-                  graphNormalizeY
-                    ? "Normalize on — y-axis fits each curve to its own range"
-                    : "Normalize off — y-axis uses the parameter's declared range"
-                }
-              >
-                normalize
-              </DockButton>
-              <DockButton
-                onClick={() => setGraphRefitVersion((v) => v + 1)}
-                title="Refresh: re-fit y-axis to current keyframes"
-              >
-                ↻
-              </DockButton>
-            </>
-          )}
-          {!timelineLayout && (
-            <DockButton onClick={() => setTrackEditorOpen(false)} title="Close">
-              ▼
-            </DockButton>
-          )}
-        </div>
-      </div>
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        {dockTab === "layers" ? (
-          <LayersEditor
-            layers={layerChain}
-            timeline={projectTimeline}
-            selectedId={selectedId}
-            onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
-            onClipChange={onClipChange}
-            onSelectLayer={handleSelectLayer}
-            onDiveLayer={handleDiveIntoGroup}
-            onToggleVisibility={handleToggleLayerVisibility}
-            onReorder={handleReorderLayers}
-            onAddLayer={handleAddLayerFromEditor}
-            onSplitLayer={handleSplitLayer}
-            nodes={nodes}
-            edges={edges}
-            getAnimation={getAnimation}
-            onAnimationChange={onAnimationChange}
-            fitVersion={trackFitVersion}
-          />
-        ) : dockTab === "tracks" ? (
-          <TrackEditor
-            // Scope-follow: Tracks shows only the nodes in the scope the
-            // node editor is currently viewing (the layer/group you've
-            // dived into), so the two stay coherent. Layer nodes are
-            // excluded — the Layers tab owns them (their opacity
-            // keyframes live in the per-layer twirl-down there). The
-            // "selected only" filter applies on top.
-            nodes={(() => {
-              const scoped = nodes.filter(
-                (n) =>
-                  n.data.parentId === currentGroupId &&
-                  n.data.defType !== LAYER_TYPE
-              );
-              return tracksSelectedOnly
-                ? scoped.filter((n) => n.selected)
-                : scoped;
-            })()}
-            allNodes={nodes}
-            edges={edges}
-            timeline={projectTimeline}
-            onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
-            onAnimationChange={onAnimationChange}
-            onClipChange={onClipChange}
-            fitVersion={trackFitVersion}
-            collapsedNodeIds={collapsedTrackNodes}
-            onToggleCollapsed={(nodeId) =>
-              setCollapsedTrackNodes((prev) => {
-                const next = new Set(prev);
-                if (next.has(nodeId)) next.delete(nodeId);
-                else next.add(nodeId);
-                return next;
-              })
-            }
-            onSelectNode={(nodeId) => {
-              setNodes((prev) =>
-                prev.map((n) => ({ ...n, selected: n.id === nodeId }))
-              );
-              setSelectedId(nodeId);
-              setParamView("node");
-            }}
-          />
-        ) : (
-          <GraphEditor
-            // Not scope-filtered: the graph view is a global curve
-            // pinboard — a track is shown only when its `graphVisible`
-            // flag is on, which the user sets explicitly. This also
-            // surfaces a group's promoted params (keyframes live on deep
-            // interior nodes outside the current scope).
-            nodes={nodes}
-            timeline={projectTimeline}
-            onAnimationChange={onAnimationChange}
-            onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
-            normalizeY={graphNormalizeY}
-            refitVersion={graphRefitVersion}
-          />
-        )}
-      </div>
-    </>
-  );
+      </>
+    );
+  };
 
   const playbackBarJsx = !fullCanvas && (
     <PlaybackBar
@@ -8917,11 +10712,7 @@ function EffectsShell({
       onScrubEnd={onScrubEnd}
       onLoopFramesChange={setLoopFrames}
       tracksOpen={trackEditorOpen}
-      onToggleTracks={
-        timelineLayout
-          ? undefined
-          : () => setTrackEditorOpen((o) => !o)
-      }
+      onToggleTracks={() => setTrackEditorOpen((o) => !o)}
     />
   );
 
@@ -8941,9 +10732,9 @@ function EffectsShell({
         // Tailwind doesn't generate a dvh utility under our config;
         // inline-style fallback for max breadth.
         width: "100%",
-        background: "#000",
-        color: "#e5e7eb",
-        fontFamily: "ui-monospace, monospace",
+        background: "var(--tb-frame)",
+        color: "var(--tb-n-16)",
+        fontFamily: "var(--ui-font)",
         fontSize: 12,
       }}
     >
@@ -8976,19 +10767,7 @@ function EffectsShell({
         onRedo={redo}
         canUndo={canUndo}
         canRedo={canRedo}
-        onOpenProjectSettings={() => {
-          // Deselect so switching back to the node view doesn't silently
-          // resurrect whichever node happened to be selected when the
-          // user opened Project Settings. Clear React Flow's per-node
-          // `.selected` flag too — setSelectedId alone leaves the node
-          // visually highlighted in the flow pane. Same rule for Load.
-          suppressNextSelectionViewFlipRef.current = true;
-          setSelectedId(null);
-          setNodes((prev) =>
-            prev.map((n) => (n.selected ? { ...n, selected: false } : n))
-          );
-          setParamView("project");
-        }}
+        onOpenProjectSettings={openProjectSettings}
         onNewProject={handleNewProject}
         onSave={handleSave}
         onSaveAs={() => setSaveModalOpen(true)}
@@ -9008,6 +10787,9 @@ function EffectsShell({
           setParamView("assets");
         }}
         onOpenProjectFile={handleOpenProjectFile}
+        recentProjects={recentProjects}
+        onOpenRecent={handleOpenRecent}
+        onClearRecents={handleClearRecents}
         onSaveToFile={handleSaveToFile}
         canvasRes={canvasRes}
         onCanvasResChange={setCanvasRes}
@@ -9040,8 +10822,9 @@ function EffectsShell({
         onToggleShowNodeTimings={() => setShowNodeTimings((v) => !v)}
         viewportSplit={viewportSplit}
         onToggleViewportSplit={() => setViewportSplit((v) => !v)}
-        timelineLayout={timelineLayout}
-        onToggleTimelineLayout={() => setTimelineLayout((v) => !v)}
+        layoutPresets={layoutPresetEntries(layoutPresets)}
+        onApplyLayoutPreset={applyLayoutPreset}
+        onNewLayoutPreset={() => setNewLayoutPresetOpen(true)}
         onOpenUserPreferences={() => setUserPrefsOpen(true)}
         mcpStatus={mcp.status.state}
         onToggleMcpBridge={mcp.toggle}
@@ -9051,47 +10834,48 @@ function EffectsShell({
       />
       </div>
       </div>
-      {/* Body wrapper. Default layout = canvas left, right column
-          (NodeEditor over ParamPanel). Timeline layout = canvas right,
-          a tabbed Parameters/Node Editor pane on the left, plus a
-          tracks strip pinned beneath this row (rendered after the
-          closing wrapper div below). flex-direction: row-reverse in
-          timeline mode flips the existing left/right ordering with no
-          structural changes to the children. */}
-      <div
-        style={{
-          display: "flex",
-          flexDirection: timelineLayout ? "row-reverse" : "row",
-          flex: 1,
-          minHeight: 0,
-          width: "100%",
-          // Outer gap so framed panels float off the window edges; the
-          // inter-panel gaps come from the gutter dividers between them.
-          // No bottom gap here — the timeline / playback strips below own
-          // their own top spacing so seams stay single-width. Full-canvas
-          // mode goes edge-to-edge with no chrome.
-          padding: fullCanvas
-            ? 0
-            : `${PANEL_GAP}px ${PANEL_GAP}px 0 ${PANEL_GAP}px`,
-          background: "#000",
-        }}
-      >
-      <section
-        style={{
-          flex: 1,
-          minWidth: 0,
-          position: "relative",
-          display: "flex",
-          flexDirection: "column",
-          ...(fullCanvas ? null : PANEL_FRAME),
-        }}
-      >
+      {/* Tiled editor body (072726_window-tiling.md). The PRIMARY
+          viewport panel renders inline right here — it owns canvasRef,
+          every on-canvas overlay/gizmo, the tracks dock and the
+          Shift+S A/B split, so its JSX keeps living where it always
+          has. Every other leaf (nodes / params / watch viewports)
+          routes through renderLayoutPanel. Full-canvas mode solos the
+          primary viewport leaf edge-to-edge (all other panels stay
+          mounted, display:none). */}
+      <LayoutRegion
+        tree={layoutTree}
+        soloLeafId={fullCanvas ? primaryViewportLeafId : null}
+        onSetRatio={handleSetLayoutRatio}
+        onSplitLeaf={handleSplitLeaf}
+        onSwapLeaves={handleSwapPanels}
+        onJoinLeaves={handleJoinPanels}
+        renderPanel={(leafId, panel) => {
+          if (panel !== "viewport" || leafId !== primaryViewportLeafId) {
+            return renderLayoutPanel(leafId, panel);
+          }
+          return (
+            <div
+              style={{
+                flex: 1,
+                minWidth: 0,
+                minHeight: 0,
+                position: "relative",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
         {!fullCanvas && (
           <ViewportMenuBar
+            leading={panelKindMenuFor(leafId, "viewport", false)}
             projectRes={canvasRes}
             previewScale={previewScale}
             onPreviewScaleChange={setPreviewScale}
-            onAddPrimitive={handleAddShelfNode}
+            trailing={
+              <ViewportCheckerToggle
+                on={showChecker}
+                onToggle={() => setShowChecker((v) => !v)}
+              />
+            }
           />
         )}
         {!fullCanvas && activeTransformNode && (
@@ -9122,7 +10906,7 @@ function EffectsShell({
             position: "relative",
             display: "flex",
             flexDirection: "column",
-            background: "#050505",
+            background: "var(--tb-n-0)",
             padding: fullCanvas ? 0 : 12,
             overflow: "hidden",
             // Confine all on-canvas GUI (transform/primitive/gradient
@@ -9167,9 +10951,8 @@ function EffectsShell({
               style={{
                 maxWidth: "100%",
                 maxHeight: "100%",
-                background:
-                  "repeating-conic-gradient(#1a1a1a 0% 25%, #0f0f0f 0% 50%) 0 0 / 24px 24px",
-                border: "1px solid #111112",
+                background: canvasBackdrop,
+                border: "1px solid var(--tb-n-1)",
                 transform: `translate(${v1.pan[0]}px, ${v1.pan[1]}px) scale(${v1.zoom})`,
                 transformOrigin: "center center",
               }}
@@ -9189,27 +10972,25 @@ function EffectsShell({
                 // Drag the divider — proportional resize between the
                 // two viewports. Snap-clamped so neither viewport can
                 // collapse fully.
-                e.preventDefault();
                 const startY = e.clientY;
                 const parent = (e.currentTarget as HTMLDivElement)
                   .parentElement;
                 if (!parent) return;
                 const total = parent.clientHeight;
                 const startRatio = viewportSplitRatio;
-                const onMove = (ev: PointerEvent) => {
-                  const dy = ev.clientY - startY;
-                  const next = Math.max(
-                    0.1,
-                    Math.min(0.9, startRatio + dy / Math.max(1, total))
-                  );
-                  setViewportSplitRatio(next);
-                };
-                const onUp = () => {
-                  window.removeEventListener("pointermove", onMove);
-                  window.removeEventListener("pointerup", onUp);
-                };
-                window.addEventListener("pointermove", onMove);
-                window.addEventListener("pointerup", onUp);
+                const started = startPointerDrag(e, {
+                  cursor: "row-resize",
+                  onMove: (ev) => {
+                    const dy = ev.clientY - startY;
+                    const next = Math.max(
+                      0.1,
+                      Math.min(0.9, startRatio + dy / Math.max(1, total))
+                    );
+                    setViewportSplitRatio(next);
+                  },
+                  onCancel: () => setViewportSplitRatio(startRatio),
+                });
+                if (started) e.preventDefault();
               }}
             />
           )}
@@ -9236,9 +11017,8 @@ function EffectsShell({
                 style={{
                   maxWidth: "100%",
                   maxHeight: "100%",
-                  background:
-                    "repeating-conic-gradient(#1a1a1a 0% 25%, #0f0f0f 0% 50%) 0 0 / 24px 24px",
-                  border: "1px solid #27272a",
+                  background: canvasBackdrop,
+                  border: "1px solid var(--tb-n-7)",
                   transform: `translate(${v2.pan[0]}px, ${v2.pan[1]}px) scale(${v2.zoom})`,
                   transformOrigin: "center center",
                 }}
@@ -9254,6 +11034,9 @@ function EffectsShell({
           )}
           {activePaintNode && (
             <PaintOverlay
+              // Keyed per node so per-session state (tool, the Shift-line
+              // anchor) resets instead of leaking across paint nodes.
+              key={activePaintNode.id}
               nodeId={activePaintNode.id}
               params={activePaintNode.data.params}
               canvasRes={canvasRes}
@@ -9312,8 +11095,11 @@ function EffectsShell({
           {activeSplineNode && backendReady && (
             <SplineEditorOverlayAtTick
               node={activeSplineNode}
+              nodes={nodes}
               canvas={canvasRef.current}
               onParamChange={onParamChange}
+              onSelectNode={handlePanelSelectNode}
+              onAnchorAnimate={onAnchorAnimate}
             />
           )}
           {activeSegmentNode && backendReady && (
@@ -9405,68 +11191,6 @@ function EffectsShell({
               onParamChange={onParamChange}
             />
           )}
-          {/* Track Editor dock — anchored to the bottom edge of the canvas
-              area. Toggled by the curves button in the PlaybackBar (next to
-              Play). Suppressed in timeline-layout mode, where the dock body
-              lives in its own bottom strip instead. */}
-          {!timelineLayout && trackDockMounted && (
-            <div
-              style={{
-                position: "absolute",
-                left: PANEL_GAP,
-                right: PANEL_GAP,
-                bottom: PANEL_GAP,
-                height: trackEditorHeight,
-                background: "#0a0a0a",
-                // Match the framed panels: thin stroke + slightly rounded
-                // corners, floated a hair off the viewport edges.
-                ...PANEL_FRAME,
-                display: "flex",
-                flexDirection: "column",
-                zIndex: 5,
-                // Slide up from below the canvas on open (and back down on
-                // close); the canvas area clips the parked state.
-                transform: trackDockShown
-                  ? "translateY(0)"
-                  : `translateY(calc(100% + ${PANEL_GAP}px))`,
-                transition: "transform 240ms cubic-bezier(0.16, 1, 0.3, 1)",
-              }}
-            >
-              {/* Resize handle — overlaid on the top edge (absolute) so it
-                  doesn't add layout height above the toolbar. Sits over the
-                  toolbar's top padding, clear of the buttons. */}
-              <div
-                title="Drag to resize"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  const startY = e.clientY;
-                  const startH = trackEditorHeight;
-                  const onMove = (ev: MouseEvent) => {
-                    const dy = startY - ev.clientY;
-                    setTrackEditorHeight(
-                      Math.max(120, Math.min(700, startH + dy))
-                    );
-                  };
-                  const onUp = () => {
-                    window.removeEventListener("mousemove", onMove);
-                    window.removeEventListener("mouseup", onUp);
-                  };
-                  window.addEventListener("mousemove", onMove);
-                  window.addEventListener("mouseup", onUp);
-                }}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  height: 6,
-                  cursor: "row-resize",
-                  zIndex: 10,
-                }}
-              />
-              {dockBodyJsx}
-            </div>
-          )}
           {recording && <RecordingBanner state={recording} />}
           {queueProgress && <QueueBanner state={queueProgress} />}
           <MediaRelinkModal
@@ -9477,183 +11201,171 @@ function EffectsShell({
             onClose={() => setRelinkItems([])}
           />
         </div>
-      </section>
-
-      <Divider
-        orientation="vertical"
-        gutter
-        hidden={fullCanvas}
-        onMouseDown={startVResize}
-      />
-
-      <div
-        style={{
-          width: rightColWidth,
-          flexShrink: 0,
-          display: fullCanvas ? "none" : "flex",
-          flexDirection: "column",
-          minHeight: 0,
-        }}
-      >
-        {timelineLayout ? (
-          // Timeline layout: this column lives on the LEFT (the
-          // wrapper above flips order via row-reverse) and shows a
-          // tabbed Parameters / Node Editor pane instead of the
-          // stacked NodeEditor + ParamPanel.
-          <div
-            style={{
-              flex: 1,
-              minHeight: 0,
-              display: "flex",
-              flexDirection: "column",
-              background: "#0a0a0a",
-              ...PANEL_FRAME,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                gap: 0,
-                padding: "2px 8px",
-                background: "#111114",
-                borderBottom: "1px solid #27272a",
-                flexShrink: 0,
-              }}
-            >
-              {(["params", "nodes"] as const).map((t) => {
-                const active = timelineLayoutTab === t;
-                return (
-                  <button
-                    key={t}
-                    onClick={() => setTimelineLayoutTab(t)}
-                    style={{
-                      background: active ? "#0a0a0a" : "transparent",
-                      border: "1px solid #3f3f46",
-                      borderBottom: active
-                        ? "1px solid #0a0a0a"
-                        : "1px solid #3f3f46",
-                      color: active ? "#fafafa" : "#a1a1aa",
-                      padding: "2px 12px",
-                      marginRight: 2,
-                      marginBottom: -1,
-                      fontFamily: "ui-monospace, monospace",
-                      fontSize: 10,
-                      cursor: "pointer",
-                      borderTopLeftRadius: 3,
-                      borderTopRightRadius: 3,
-                    }}
-                  >
-                    {t === "params" ? "Parameters" : "Node Editor"}
-                  </button>
-                );
-              })}
             </div>
-            <section
-              style={{
-                flex: 1,
-                minHeight: 0,
-                background: "#0a0a0a",
-                display: "flex",
-                flexDirection: "column",
-              }}
-            >
-              {timelineLayoutTab === "params"
-                ? paramPanelJsx
-                : editorPanelJsx}
-            </section>
-          </div>
-        ) : (
-          <>
-            <section
-              style={{
-                flex: 1,
-                minHeight: 0,
-                background: "#0a0a0a",
-                ...PANEL_FRAME,
-              }}
-            >
-              {editorPanelJsx}
-            </section>
-
-            <Divider
-              orientation="horizontal"
-              gutter
-              onMouseDown={startHResize}
-            />
-
-            <section
-              style={{
-                height: bottomRowHeight,
-                minHeight: 0,
-                flexShrink: 0,
-                background: "#0a0a0a",
-                ...PANEL_FRAME,
-              }}
-            >
-              {paramPanelJsx}
-            </section>
-          </>
-        )}
-      </div>
-      </div>
-      {/* Timeline-layout bottom strip: tracks editor full width, with
-          the playback bar beneath it. The default layout pins the
-          PlaybackBar as a sibling here too, just without the tracks
-          strip on top. */}
-      {timelineLayout && (
-        <div
-          style={{
-            flexShrink: 0,
-            display: "flex",
-            flexDirection: "column",
-            background: "#000",
-            // Side gutters match the framed panels above; the gutter
-            // divider provides the top seam (and the resize handle).
-            padding: `0 ${PANEL_GAP}px`,
+          );
+        }}
+      />
+      {/* Panels detached into their own OS windows (M1 — viewport only;
+          080226_panel-popout-windows.md). Each renders the SAME
+          renderLayoutPanel body the tiled grid would, portalled into a
+          same-origin child document: a detached watch viewport
+          registers its canvas in exactly the same registry and the eval
+          loop blits to it without knowing it lives elsewhere. */}
+      {detachedPanels.map((d) => (
+        <PanelPopout
+          key={d.id}
+          id={d.id}
+          title={`${currentProject?.name ?? "Untitled"} — ${PANEL_LABELS[d.panel]}`}
+          onClose={() => handleRehomePanel(d.id, d.panel)}
+          onBlocked={() => {
+            handleRehomePanel(d.id, d.panel);
+            flashToast("Allow pop-ups for this site to open a panel window");
           }}
         >
-          <Divider
-            orientation="horizontal"
-            gutter
-            onMouseDown={(e) => {
-              e.preventDefault();
-              const startY = e.clientY;
-              const startH = trackEditorHeight;
-              const onMove = (ev: MouseEvent) => {
-                const dy = startY - ev.clientY;
-                setTrackEditorHeight(
-                  Math.max(120, Math.min(700, startH + dy))
-                );
-              };
-              const onUp = () => {
-                window.removeEventListener("mousemove", onMove);
-                window.removeEventListener("mouseup", onUp);
-              };
-              window.addEventListener("mousemove", onMove);
-              window.addEventListener("mouseup", onUp);
-            }}
-          />
-          <div
-            style={{
-              height: trackEditorHeight,
-              background: "#0a0a0a",
-              display: "flex",
-              flexDirection: "column",
-              ...PANEL_FRAME,
-            }}
-          >
-            {dockBodyJsx}
-          </div>
+          {renderLayoutPanel(d.id, d.panel)}
+        </PanelPopout>
+      ))}
+      {/* The floating timeline dock (080226_timeline-modal-panel.md).
+          A ROOT-LEVEL fixed layer, not a child of the viewport panel —
+          nothing on this path carries a transform/filter, so `fixed`
+          resolves against the window. z 900 puts it over every panel and
+          its overlays (which top out at 50) while staying under the
+          playback bar (950), the menu bar (1000) and the blocking
+          dialogs (2000). Hidden in full-canvas, like the playback bar. */}
+      {trackDockMounted && !fullCanvas && (
+        <div
+          className="timeline-dock"
+          style={{
+            position: "fixed",
+            left: dockRect.x,
+            top: dockRect.y,
+            width: dockRect.w,
+            height: dockRect.h,
+            background: "var(--tb-n-0)",
+            // Match the framed panels: thin stroke + clipping (which the
+            // editors rely on). The radius overrides PANEL_FRAME's 5 —
+            // this is a floating window, not a tiled panel, so it carries
+            // a softer corner.
+            ...PANEL_FRAME,
+            borderRadius: 12,
+            boxShadow: "0 12px 40px rgba(0,0,0,0.55)",
+            display: "flex",
+            flexDirection: "column",
+            zIndex: 900,
+            // Slide up from below the window edge on open (and back down
+            // on close). Parking by exactly `100dvh - y` puts the top of
+            // the box on the bottom edge, so no sliver stays visible
+            // whatever the resting rect is.
+            transform: trackDockShown
+              ? "translateY(0)"
+              : `translateY(calc(100dvh - ${dockRect.y}px))`,
+            transition: "transform 240ms cubic-bezier(0.16, 1, 0.3, 1)",
+            // A drag that outruns the pointer would otherwise select
+            // text in the editors underneath the cursor.
+            userSelect: dockDragging ? "none" : undefined,
+          }}
+        >
+          {renderDockBody({ host: "modal", instanceId: DOCK_MODAL_ID })}
+          {/* Resize handles — 4 edges + 4 corners, overlaid so they add
+              no layout size. Corners sit above the edges they overlap.
+              Grab zones double on a touch primary (DOCK_EDGE_HIT /
+              DOCK_CORNER_HIT): 6px is a mouse target, not a fingertip one.
+              The corners grow more than the edges because they're the
+              handles people actually reach for, and unlike the edges they
+              don't run the full side of the dock over its content. */}
+          {(
+            [
+              [
+                "n",
+                { top: 0, left: 0, right: 0, height: dockEdgeHit },
+                "ns-resize",
+                11,
+              ],
+              [
+                "s",
+                { bottom: 0, left: 0, right: 0, height: dockEdgeHit },
+                "ns-resize",
+                11,
+              ],
+              [
+                "w",
+                { top: 0, bottom: 0, left: 0, width: dockEdgeHit },
+                "ew-resize",
+                11,
+              ],
+              [
+                "e",
+                { top: 0, bottom: 0, right: 0, width: dockEdgeHit },
+                "ew-resize",
+                11,
+              ],
+              [
+                "nw",
+                { top: 0, left: 0, width: dockCornerHit, height: dockCornerHit },
+                "nwse-resize",
+                12,
+              ],
+              [
+                "ne",
+                {
+                  top: 0,
+                  right: 0,
+                  width: dockCornerHit,
+                  height: dockCornerHit,
+                },
+                "nesw-resize",
+                12,
+              ],
+              [
+                "sw",
+                {
+                  bottom: 0,
+                  left: 0,
+                  width: dockCornerHit,
+                  height: dockCornerHit,
+                },
+                "nesw-resize",
+                12,
+              ],
+              [
+                "se",
+                {
+                  bottom: 0,
+                  right: 0,
+                  width: dockCornerHit,
+                  height: dockCornerHit,
+                },
+                "nwse-resize",
+                12,
+              ],
+            ] as const
+          ).map(([edge, box, cursor, z]) => (
+            <div
+              key={edge}
+              onPointerDown={(e) => startDockResize(e, edge)}
+              style={{
+                position: "absolute",
+                ...box,
+                cursor,
+                zIndex: z,
+                ...TOUCH_DRAG_STYLE,
+              }}
+            />
+          ))}
         </div>
       )}
       {playbackBarJsx && (
         <div
           style={{
             flexShrink: 0,
-            background: "#000",
+            background: "var(--tb-frame)",
             // No vertical gap and only a hair of side inset, so the timeline
             // sits tight and spans a touch wider than the panels above.
             padding: "0 1px",
+            // Above the floating dock (900) — the dock slides UNDER the
+            // playback bar, per 080226_timeline-modal-panel.md §2.
+            position: "relative",
+            zIndex: 950,
           }}
         >
           {playbackBarJsx}
@@ -9701,10 +11413,6 @@ function EffectsShell({
           outputNodeId: exportApp.outputNodeId,
           canvasRes,
         });
-        // Rough size estimate: serialized graph length plus per-asset
-        // overhead. The packager enforces the real 25 MB cap; the
-        // estimate is just a conservative pre-check.
-        const estimate = JSON.stringify(built.manifest).length;
         // Alt output for split-viewport: let the user pick the other
         // active terminal as the export target.
         const alt = nodes.find(
@@ -9722,7 +11430,9 @@ function EffectsShell({
             onPickOutputNode={(id) => setExportApp({ outputNodeId: id })}
             manifest={built.manifest}
             warnings={built.warnings}
-            estimatedSizeBytes={estimate}
+            estimatedSizeBytes={exportAppEstimate?.totalBytes ?? null}
+            estimatedContentBytes={exportAppEstimate?.contentBytes ?? null}
+            mlRuntimeIncluded={exportAppEstimate?.ml ?? false}
             busy={exportAppBusy}
             onExport={(args) => {
               void runExportApp(args);
@@ -9749,6 +11459,13 @@ function EffectsShell({
         signedIn={signedIn}
         onClose={() => setUserPrefsOpen(false)}
       />
+      {newLayoutPresetOpen && (
+        <NewLayoutPresetModal
+          onClose={() => setNewLayoutPresetOpen(false)}
+          onSave={saveLayoutPreset}
+          existingNames={layoutPresets.map((p) => p.name)}
+        />
+      )}
       {/* First-load gateway. Mounts over the editor; picking a project
           loads it in place, "New Project" seeds a fresh graph. Either
           path dismisses the landing. */}
@@ -9810,6 +11527,14 @@ function useViewportPanZoom() {
 // between the cursor and the viewport's DOM subtree. Overlays that want
 // to consume wheel themselves (the curve editor dock) call
 // stopPropagation, which prevents the bubble path from reaching window.
+//
+// "The window level" means the window that owns the VIEWPORT, resolved
+// via ownerDocument (layout/panel-window.ts) — not the module-scope
+// `window`, which is always the main one. A popped-out viewport
+// (080226_panel-popout-windows.md) lives in another document, where
+// module-scope `window` would both miss the child's events and
+// hit-test the main window's pointer coordinates against a rect from a
+// different coordinate space.
 function useViewportGestures(
   viewportRef: React.RefObject<HTMLDivElement | null>,
   setPan: React.Dispatch<React.SetStateAction<[number, number]>>,
@@ -9852,11 +11577,13 @@ function useViewportGestures(
       }
       setPan(([px, py]) => [px - dx, py - dy]);
     };
-    window.addEventListener("wheel", onWheel, { passive: false });
-    return () => window.removeEventListener("wheel", onWheel);
+    const win = ownerWindow(viewportRef.current);
+    win.addEventListener("wheel", onWheel, { passive: false });
+    return () => win.removeEventListener("wheel", onWheel);
   }, [viewportRef, setPan, setZoom]);
 
   useEffect(() => {
+    const win = ownerWindow(viewportRef.current);
     const onDown = (e: PointerEvent) => {
       if (e.button !== 1) return;
       const el = viewportRef.current;
@@ -9909,14 +11636,14 @@ function useViewportGestures(
         }
       };
       const onUp = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
+        win.removeEventListener("pointermove", onMove);
+        win.removeEventListener("pointerup", onUp);
       };
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
+      win.addEventListener("pointermove", onMove);
+      win.addEventListener("pointerup", onUp);
     };
-    window.addEventListener("pointerdown", onDown);
-    return () => window.removeEventListener("pointerdown", onDown);
+    win.addEventListener("pointerdown", onDown);
+    return () => win.removeEventListener("pointerdown", onDown);
   }, [viewportRef, setPan, setZoom]);
 
   // Touch / Pencil pan + pinch-zoom on the canvas viewport.
@@ -10048,29 +11775,94 @@ function useViewportGestures(
   }, [viewportRef, setPan, setZoom]);
 }
 
-// Splitter handle. Renders a thin 1px visual line but keeps a wider
-// (default 5px) hit-target so it's easy to grab. The visible line
-// stays centered inside the hit zone via flex.
-// Blender-style panel chrome. Each editor area is enclosed in a thin
-// bordered, slightly rounded rect; areas are separated by a tiny gutter
-// that doubles (invisibly) as the resize handle — the gap around where
-// borders meet.
-const PANEL_GAP = 3;
-// Resize grab zone for gutter dividers. Wider than the visible gap so
-// it's easy to grab; the extra width overlaps the neighbouring panel
-// edges via negative margins, so the *visible* gap stays PANEL_GAP.
-const GUTTER_HIT = 11;
-const PANEL_FRAME: React.CSSProperties = {
-  border: "1px solid #222225",
-  borderRadius: 5,
-  overflow: "hidden",
-};
+// Watch viewport — a non-primary viewport leaf in the tiled layout
+// (072726_window-tiling.md §5). Pure blit target: registers its canvas
+// with EffectsShell's watch registry (renderFrame copies the terminal
+// image to it every eval) and owns its own pan/zoom, exactly like the
+// primary's frame controls. No overlays, no dock — those anchor to the
+// primary viewport only.
+function WatchViewport({
+  leafId,
+  renderRes,
+  register,
+  kindMenu,
+  backdrop,
+}: {
+  leafId: string;
+  renderRes: [number, number];
+  register: (leafId: string, el: HTMLCanvasElement | null) => void;
+  kindMenu: React.ReactNode;
+  /** Checker or flat plate — the shell's one global choice, passed down. */
+  backdrop: string;
+}) {
+  const { viewportRef, zoom, pan, setZoom, setPan, reset, isDefault } =
+    useViewportPanZoom();
+  useViewportGestures(viewportRef, setPan, setZoom);
+  const canvasRef = useCallback(
+    (el: HTMLCanvasElement | null) => register(leafId, el),
+    [leafId, register]
+  );
+  return (
+    <div
+      style={{
+        flex: 1,
+        minHeight: 0,
+        minWidth: 0,
+        position: "relative",
+        display: "flex",
+        flexDirection: "column",
+        background: "var(--tb-n-0)",
+        padding: 12,
+        overflow: "hidden",
+      }}
+    >
+      {kindMenu}
+      <div
+        ref={viewportRef}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          minWidth: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          position: "relative",
+          width: "100%",
+          overflow: "hidden",
+          touchAction: "none",
+        }}
+      >
+        <canvas
+          ref={canvasRef}
+          width={renderRes[0]}
+          height={renderRes[1]}
+          style={{
+            maxWidth: "100%",
+            maxHeight: "100%",
+            background: backdrop,
+            border: "1px solid var(--tb-n-1)",
+            transform: `translate(${pan[0]}px, ${pan[1]}px) scale(${zoom})`,
+            transformOrigin: "center center",
+          }}
+        />
+        {!isDefault && (
+          <ViewportZoomChip
+            label={`${Math.round(zoom * 100)}% · reset`}
+            onClick={reset}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
 
+// Splitter handle. Renders a thin 1px visual line but keeps a wider
+// (default 5px) hit-target so it's easy to grab.
 function Divider({
   orientation,
   hit = 5,
   thickness = 1,
-  color = "#27272a",
+  color = "var(--tb-n-7)",
   hidden = false,
   gutter = false,
   onPointerDown,
@@ -10088,13 +11880,16 @@ function Divider({
   onMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
 }) {
   const isH = orientation === "horizontal";
+  // Fingertip-sized grab zone on a touch primary; same constants the tiled
+  // LayoutRegion seams use, so both kinds of splitter grow together.
+  const gutterHit = useCoarsePointer() ? GUTTER_HIT_COARSE : GUTTER_HIT;
   // Negative margin reclaims the grab zone's extra width so it nets out
   // to PANEL_GAP of layout while overlapping the panels for easy grabbing.
-  const bleed = -(GUTTER_HIT - PANEL_GAP) / 2;
+  const bleed = -(gutterHit - PANEL_GAP) / 2;
   const gutterStyle: React.CSSProperties = gutter
     ? isH
-      ? { height: GUTTER_HIT, marginTop: bleed, marginBottom: bleed, position: "relative", zIndex: 10 }
-      : { width: GUTTER_HIT, marginLeft: bleed, marginRight: bleed, position: "relative", zIndex: 10 }
+      ? { height: gutterHit, marginTop: bleed, marginBottom: bleed, position: "relative", zIndex: 10 }
+      : { width: gutterHit, marginLeft: bleed, marginRight: bleed, position: "relative", zIndex: 10 }
     : { height: isH ? hit : "auto", width: isH ? "auto" : hit };
   return (
     <div
@@ -10108,6 +11903,10 @@ function Divider({
         cursor: isH ? "row-resize" : "col-resize",
         alignSelf: "stretch",
         background: "transparent",
+        // The splitter owns its gesture — without this iPadOS treats a
+        // finger/Pencil drag as a scroll of whichever panel is under it
+        // and cancels the pointer stream before the first move lands.
+        ...TOUCH_DRAG_STYLE,
         ...gutterStyle,
       }}
     >
@@ -10124,6 +11923,64 @@ function Divider({
   );
 }
 
+/**
+ * Transparency-grid switch. Lives in the viewport menu bar's trailing slot
+ * — same row as the preview-resolution slider, hard right — rather than
+ * floating over the canvas, so nothing overlaps the image. Global: it
+ * drives the backdrop of every viewport canvas, not just the primary.
+ *
+ * The glyph IS the thing it controls — a miniature of the canvas checker,
+ * flat plate when off — so it shows the state it's about to leave behind
+ * and needs no label. Sized 17px to match the panel-kind chip and the
+ * MiniBarSlider beside it.
+ */
+function ViewportCheckerToggle({
+  on,
+  onToggle,
+}: {
+  on: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      aria-pressed={on}
+      title={
+        on
+          ? "Transparency grid on — click for a flat backdrop"
+          : "Transparency grid off — click to show alpha as a checker"
+      }
+      style={{
+        width: 19,
+        height: 17,
+        padding: 0,
+        display: "grid",
+        placeItems: "center",
+        boxSizing: "border-box",
+        background: on ? "var(--tb-n-5)" : "var(--tb-n-3)",
+        border: `1px solid ${on ? "var(--tb-n-9)" : "var(--tb-n-7)"}`,
+        borderRadius: 3,
+        cursor: "pointer",
+      }}
+    >
+      <span
+        style={{
+          width: 11,
+          height: 11,
+          borderRadius: 2,
+          // Same conic recipe as the canvas, scaled to the glyph, and a
+          // couple of ramp steps brighter on both cells so it still reads
+          // at 11px against the chip fill.
+          background: on
+            ? "repeating-conic-gradient(var(--tb-n-13) 0% 25%, var(--tb-n-8) 0% 50%) 0 0 / 5.5px 5.5px"
+            : "var(--tb-frame)",
+          boxShadow: on ? "none" : "inset 0 0 0 1px var(--tb-n-9)",
+        }}
+      />
+    </button>
+  );
+}
+
 function ViewportZoomChip({
   label,
   onClick,
@@ -10137,14 +11994,16 @@ function ViewportZoomChip({
       title="Reset canvas zoom & pan (0)"
       style={{
         position: "absolute",
-        right: 8,
-        bottom: 8,
-        background: "#18181b",
-        color: "#a1a1aa",
-        border: "1px solid #3f3f46",
+        // Tucked into the corner of the viewport, same inset as the
+        // menu bar's trailing controls at the top.
+        right: 4,
+        bottom: 4,
+        background: "var(--tb-n-3)",
+        color: "var(--tb-n-13)",
+        border: "1px solid var(--tb-n-9)",
         borderRadius: 3,
         padding: "3px 8px",
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 10,
         cursor: "pointer",
         zIndex: 4,
@@ -10163,11 +12022,11 @@ function ViewportLabel({ label }: { label: string }) {
         top: 6,
         left: 6,
         padding: "1px 6px",
-        background: "rgba(17, 17, 17, 0.85)",
-        color: "#a1a1aa",
-        border: "1px solid #27272a",
+        background: "color-mix(in srgb, var(--tb-n-0) 85%, transparent)",
+        color: "var(--tb-n-13)",
+        border: "1px solid var(--tb-n-7)",
         borderRadius: 3,
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 10,
         pointerEvents: "none",
         zIndex: 3,
@@ -10199,7 +12058,7 @@ function StaggerControl({ ticksPerFrame }: { ticksPerFrame: number }) {
 
   const close = useCallback(() => {
     setOpen(false);
-    window.dispatchEvent(new CustomEvent("keyframe-stagger-end"));
+    broadcastAppEvent(() => new CustomEvent("keyframe-stagger-end"));
   }, []);
 
   const toggle = () => {
@@ -10208,10 +12067,15 @@ function StaggerControl({ ticksPerFrame }: { ticksPerFrame: number }) {
       return;
     }
     let responded = false;
-    window.dispatchEvent(
-      new CustomEvent("keyframe-stagger-begin", {
-        detail: { respond: () => (responded = true) },
-      })
+    // Broadcast: the editor that answers may be in a popped-out
+    // timeline window (080226_panel-popout-windows.md). `respond` is
+    // called synchronously by whichever listener claims the gesture, so
+    // the flag is settled by the time this returns.
+    broadcastAppEvent(
+      () =>
+        new CustomEvent("keyframe-stagger-begin", {
+          detail: { respond: () => (responded = true) },
+        })
     );
     const r = btnRef.current?.getBoundingClientRect();
     if (r) setAnchor({ left: r.left, top: r.top });
@@ -10223,10 +12087,11 @@ function StaggerControl({ ticksPerFrame }: { ticksPerFrame: number }) {
   // Push the current frame offset to the editor whenever it changes.
   useEffect(() => {
     if (!open || !hasEffect) return;
-    window.dispatchEvent(
-      new CustomEvent("keyframe-stagger", {
-        detail: { stepTicks: frames * ticksPerFrame },
-      })
+    broadcastAppEvent(
+      () =>
+        new CustomEvent("keyframe-stagger", {
+          detail: { stepTicks: frames * ticksPerFrame },
+        })
     );
   }, [frames, open, hasEffect, ticksPerFrame]);
 
@@ -10257,12 +12122,13 @@ function StaggerControl({ ticksPerFrame }: { ticksPerFrame: number }) {
         title="Stagger selected keyframes across layers/tracks"
         onClick={toggle}
         style={{
-          width: 26,
-          height: 26,
-          borderRadius: 5,
-          background: open ? "#1b2741" : "#0a0a0a",
-          border: `1px solid ${open ? "#26375f" : "#27272a"}`,
-          color: open ? "#bfdbfe" : "#8a8a90",
+          width: DOCK_CTRL_H,
+          height: DOCK_CTRL_H,
+          boxSizing: "border-box",
+          borderRadius: DOCK_RADIUS_INNER,
+          background: open ? "var(--tb-a-navy-deep)" : "var(--tb-n-0)",
+          border: `1px solid ${open ? "var(--tb-a-navy-tint)" : "var(--tb-n-7)"}`,
+          color: open ? "var(--tb-a-blue-200)" : "var(--tb-n-12)",
           cursor: "pointer",
           display: "flex",
           alignItems: "center",
@@ -10289,8 +12155,8 @@ function StaggerControl({ ticksPerFrame }: { ticksPerFrame: number }) {
               top: anchor.top - 6,
               transform: "translateY(-100%)",
               zIndex: 1000,
-              background: "#18181b",
-              border: "1px solid #27272a",
+              background: "var(--tb-n-3)",
+              border: "1px solid var(--tb-n-7)",
               borderRadius: 6,
               boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
               padding: 8,
@@ -10299,7 +12165,7 @@ function StaggerControl({ ticksPerFrame }: { ticksPerFrame: number }) {
           >
           <div
             style={{
-              color: "#71717a",
+              color: "var(--tb-n-11)",
               fontSize: 9,
               textTransform: "uppercase",
               letterSpacing: 1,
@@ -10311,7 +12177,7 @@ function StaggerControl({ ticksPerFrame }: { ticksPerFrame: number }) {
           {hasEffect ? (
             <StaggerNumber value={frames} onChange={setFrames} />
           ) : (
-            <div style={{ color: "#52525b", fontSize: 10, lineHeight: 1.4 }}>
+            <div style={{ color: "var(--tb-n-10)", fontSize: 10, lineHeight: 1.4 }}>
               Select keyframes across two or more layers/tracks first.
             </div>
           )}
@@ -10332,31 +12198,31 @@ function StaggerNumber({
 }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(String(value));
-  const dragRef = useRef<{ startX: number; startVal: number; moved: boolean } | null>(
-    null
-  );
   useEffect(() => {
     if (!editing) setText(String(value));
   }, [value, editing]);
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      const d = dragRef.current;
-      if (!d) return;
-      if (Math.abs(e.clientX - d.startX) > 2) d.moved = true;
-      onChange(d.startVal + Math.round((e.clientX - d.startX) / 5));
-    };
-    const onUp = () => {
-      const d = dragRef.current;
-      if (d && !d.moved) setEditing(true);
-      dragRef.current = null;
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, [onChange]);
+  // Scrub state lives inside the gesture rather than in a ref + a pair of
+  // always-mounted window listeners: the drag is scoped to the press, and
+  // `startPointerDrag` guarantees it ends exactly once even if iPadOS
+  // cancels it mid-way.
+  const startScrub = (e: React.PointerEvent<HTMLDivElement>) => {
+    const startX = e.clientX;
+    const startVal = value;
+    let moved = false;
+    const started = startPointerDrag(e, {
+      cursor: "ew-resize",
+      onMove: (ev) => {
+        if (Math.abs(ev.clientX - startX) > 2) moved = true;
+        onChange(startVal + Math.round((ev.clientX - startX) / 5));
+      },
+      // A press that never travelled is a click — switch to typing.
+      onUp: () => {
+        if (!moved) setEditing(true);
+      },
+      onCancel: () => onChange(startVal),
+    });
+    if (started) e.preventDefault();
+  };
   const commit = () => {
     const n = parseInt(text, 10);
     onChange(Number.isFinite(n) ? n : 0);
@@ -10376,10 +12242,10 @@ function StaggerNumber({
       }}
       style={{
         width: "100%",
-        background: "#0a0a0a",
-        border: "1px solid #3f3f46",
-        color: "#e5e7eb",
-        fontFamily: "ui-monospace, monospace",
+        background: "var(--tb-n-0)",
+        border: "1px solid var(--tb-n-9)",
+        color: "var(--tb-n-16)",
+        fontFamily: "var(--ui-font)",
         fontSize: 12,
         padding: "4px 6px",
         borderRadius: 4,
@@ -10388,16 +12254,14 @@ function StaggerNumber({
     />
   ) : (
     <div
-      onMouseDown={(e) => {
-        dragRef.current = { startX: e.clientX, startVal: value, moved: false };
-      }}
+      onPointerDown={startScrub}
       title="Drag to scrub, click to type — frames offset per layer step"
       style={{
         width: "100%",
-        background: "#0a0a0a",
-        border: "1px solid #27272a",
-        color: "#e5e7eb",
-        fontFamily: "ui-monospace, monospace",
+        background: "var(--tb-n-0)",
+        border: "1px solid var(--tb-n-7)",
+        color: "var(--tb-n-16)",
+        fontFamily: "var(--ui-font)",
         fontSize: 12,
         padding: "4px 6px",
         borderRadius: 4,
@@ -10406,10 +12270,11 @@ function StaggerNumber({
         userSelect: "none",
         display: "flex",
         justifyContent: "space-between",
+        ...TOUCH_DRAG_STYLE,
       }}
     >
       <span>{value}</span>
-      <span style={{ color: "#52525b" }}>frames</span>
+      <span style={{ color: "var(--tb-n-10)" }}>frames</span>
     </div>
   );
 }
@@ -10423,8 +12288,8 @@ function DockTabToggle({
   value,
   onChange,
 }: {
-  value: "tracks" | "graph" | "layers";
-  onChange: (v: "tracks" | "graph" | "layers") => void;
+  value: DockTab;
+  onChange: (v: DockTab) => void;
 }) {
   const tabs = [
     { key: "layers", label: "Layers" },
@@ -10437,13 +12302,21 @@ function DockTabToggle({
       style={{
         position: "relative",
         display: "flex",
-        background: "#0a0a0a",
-        border: "1px solid #27272a",
-        borderRadius: 5,
+        alignItems: "stretch",
+        height: DOCK_CTRL_H,
+        boxSizing: "border-box",
+        background: "var(--tb-n-0)",
+        border: "1px solid var(--tb-n-7)",
+        borderRadius: DOCK_RADIUS,
         padding: 2,
       }}
     >
-      {/* Sliding highlight — one button-width, translated to the active tab. */}
+      {/* Sliding highlight — one button-width, translated to the active
+          tab. The width has to be derived the SAME way the buttons' is
+          (the track minus both 2px pads, split N ways) — the old
+          `calc(100%/N - 2px)` measured against the padding box, which
+          left the highlight a fraction short and drifting further left
+          on each successive tab. */}
       <div
         aria-hidden
         style={{
@@ -10451,10 +12324,10 @@ function DockTabToggle({
           top: 2,
           bottom: 2,
           left: 2,
-          width: `calc(${100 / tabs.length}% - 2px)`,
-          background: "#1b2741",
-          border: "1px solid #26375f",
-          borderRadius: 4,
+          width: `calc((100% - 4px) / ${tabs.length})`,
+          background: "var(--tb-a-navy-deep)",
+          border: "1px solid var(--tb-a-navy-tint)",
+          borderRadius: DOCK_RADIUS_INNER,
           transform: `translateX(${Math.max(0, idx) * 100}%)`,
           transition: "transform 220ms cubic-bezier(0.16, 1, 0.3, 1)",
           pointerEvents: "none",
@@ -10472,12 +12345,12 @@ function DockTabToggle({
               zIndex: 1,
               flex: 1,
               minWidth: 60,
-              padding: "3px 14px",
+              padding: "0 14px",
               background: "transparent",
               border: "none",
-              borderRadius: 4,
-              color: active ? "#bfdbfe" : "#8a8a90",
-              fontFamily: "ui-monospace, monospace",
+              borderRadius: DOCK_RADIUS_INNER,
+              color: active ? "var(--tb-a-blue-200)" : "var(--tb-n-12)",
+              fontFamily: "var(--ui-font)",
               fontSize: 10,
               lineHeight: 1,
               cursor: "pointer",
@@ -10497,7 +12370,7 @@ function DockButton({
   onClick,
   title,
   active = false,
-  pad = "3px 10px",
+  pad = "0 10px",
 }: {
   children: React.ReactNode;
   onClick: () => void;
@@ -10514,19 +12387,99 @@ function DockButton({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        background: active ? "#1b2741" : hover ? "#19191c" : "transparent",
-        border: `1px solid ${active ? "#26375f" : hover ? "#2a2a2e" : "#171719"}`,
-        color: active ? "#bfdbfe" : hover ? "#e5e7eb" : "#8a8a90",
+        background: active ? "var(--tb-a-navy-deep)" : hover ? "var(--tb-n-3)" : "transparent",
+        border: `1px solid ${active ? "var(--tb-a-navy-tint)" : hover ? "var(--tb-n-8)" : "var(--tb-n-3)"}`,
+        color: active ? "var(--tb-a-blue-200)" : hover ? "var(--tb-n-16)" : "var(--tb-n-12)",
+        // Fixed height + centred content instead of vertical padding, so
+        // this lines up exactly with the tab toggle and the stagger
+        // button whatever the label is. `pad` now only sets the sides.
+        height: DOCK_CTRL_H,
+        boxSizing: "border-box",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
         padding: pad,
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 10,
         lineHeight: 1,
         cursor: "pointer",
-        borderRadius: 3,
+        borderRadius: DOCK_RADIUS_INNER,
         transition: "background 80ms, border-color 80ms, color 80ms",
       }}
     >
       {children}
+    </button>
+  );
+}
+
+// Gear chip pinned to the right end of a Parameters panel's header strip:
+// a one-click route to the Project Settings view, which otherwise only
+// opens from File → Project Settings…. Sized and coloured to match the
+// PanelKindMenu chip it shares the strip with; `active` reuses DockButton's
+// navy-on-blue treatment so "you are here" reads the same everywhere.
+function ProjectSettingsChip({
+  active,
+  onClick,
+}: {
+  active: boolean;
+  onClick: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      title={active ? "Close Project Settings" : "Project Settings"}
+      aria-label="Project Settings"
+      aria-pressed={active}
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        // Pushes the chip to the far right of the header strip.
+        marginLeft: "auto",
+        width: 19,
+        height: 17,
+        boxSizing: "border-box",
+        flexShrink: 0,
+        background: active
+          ? "var(--tb-a-navy-deep)"
+          : hover
+            ? "var(--tb-n-3)"
+            : "color-mix(in srgb, var(--tb-n-0) 85%, transparent)",
+        border: `1px solid ${
+          active
+            ? "var(--tb-a-navy-tint)"
+            : hover
+              ? "var(--tb-n-9)"
+              : "var(--tb-n-7)"
+        }`,
+        borderRadius: 4,
+        color: active
+          ? "var(--tb-a-blue-200)"
+          : hover
+            ? "var(--tb-n-16)"
+            : "var(--tb-n-13)",
+        cursor: "pointer",
+        padding: 0,
+        transition: "background 80ms, border-color 80ms, color 80ms",
+      }}
+    >
+      <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden>
+        <g
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.1}
+          strokeLinecap="round"
+        >
+          <circle cx={6} cy={6} r={3.5} />
+          <circle cx={6} cy={6} r={1.3} />
+          {/* Six teeth at 60° steps, radius 3.5 → 4.9. */}
+          <path d="M9.5 6h1.4M2.5 6H1.1M7.75 2.97l.7-1.21M4.25 2.97l-.7-1.21M4.25 9.03l-.7 1.21M7.75 9.03l.7 1.21" />
+        </g>
+      </svg>
     </button>
   );
 }
@@ -10557,10 +12510,10 @@ function QueueBanner({
         transform: "translateX(-50%)",
         padding: "6px 12px",
         background: "rgba(24, 24, 27, 0.95)",
-        color: "#e4e4e7",
-        border: "1px solid #3f3f46",
+        color: "var(--tb-n-16)",
+        border: "1px solid var(--tb-n-9)",
         borderRadius: 4,
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
         letterSpacing: 0.5,
         minWidth: 220,
@@ -10612,10 +12565,10 @@ function RecordingBanner({
         transform: "translateX(-50%)",
         padding: "6px 12px",
         background: "rgba(220, 38, 38, 0.9)",
-        color: "#fef2f2",
-        border: "1px solid #ef4444",
+        color: "var(--tb-a-red-50)",
+        border: "1px solid var(--tb-a-red-500)",
         borderRadius: 4,
-        fontFamily: "ui-monospace, monospace",
+        fontFamily: "var(--ui-font)",
         fontSize: 11,
         letterSpacing: 0.5,
         minWidth: 220,
@@ -10632,8 +12585,8 @@ function RecordingBanner({
             width: 8,
             height: 8,
             borderRadius: "50%",
-            background: "#fca5a5",
-            boxShadow: "0 0 8px #ef4444",
+            background: "var(--tb-a-red-300)",
+            boxShadow: "0 0 8px var(--tb-a-red-500)",
           }}
         />
         {text}
@@ -10653,7 +12606,7 @@ function RecordingBanner({
               position: "absolute",
               inset: 0,
               width: `${Math.max(0, Math.min(1, state.progress)) * 100}%`,
-              background: "#fca5a5",
+              background: "var(--tb-a-red-300)",
               transition: "width 80ms linear",
             }}
           />

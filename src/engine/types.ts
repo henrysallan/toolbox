@@ -122,6 +122,13 @@ export type Vec4Value = {
 // The Spline Draw node authors a single subpath; SVG Source emits as many
 // as its source file has.
 export interface SplineAnchor {
+  // Stable identity (spec 072726 M6): minted by every editor op that
+  // creates an anchor (short random slug); pre-existing anchors get one
+  // lazily when per-anchor animation first touches them. Keys the
+  // per-anchor keyframe tracks (anchor_p/in/out:<id> — conventions.ts) so
+  // animation survives reordering/inserts. Optional — plain JSON, no
+  // migration; geometry never reads it.
+  id?: string;
   pos: [number, number];
   inHandle?: [number, number];
   outHandle?: [number, number];
@@ -143,6 +150,19 @@ export interface SplineAnchor {
   // leaves the node. Inert on handled (curved) anchors and open-path
   // endpoints.
   cornerRadius?: number;
+  // Live corner STYLE (spec 080226_font-precision-toolkit.md M1) — how the
+  // cornerRadius fillet is shaped: absent = round (the circular arc),
+  // "chamfer" = a straight cut between the inset points, "scoop" = the arc
+  // reflected across the chord (concave fillet). Inert without a radius;
+  // Path Animation lerps the radius and snaps the style (like `broken`).
+  cornerStyle?: "chamfer" | "scoop";
+  // Width profile (spec 072726_spline-animation-program.md M3): a MULTIPLIER
+  // on the consuming stroke's base thickness at this anchor (absent = 1).
+  // Interpolated smoothly along arc length between anchors; consumed by the
+  // variable-width envelope renderer (spline-width.ts) in the Stroke node
+  // and the shared spline rasterizer. Authored with the Width tool (W);
+  // lerps in Path Animation like cornerRadius.
+  width?: number;
 }
 export interface SplineSubpath {
   anchors: SplineAnchor[];
@@ -154,6 +174,13 @@ export interface SplineSubpath {
   // subpath isn't group-tagged; treat it as its own implicit group
   // or ignore entirely depending on the operation.
   groupIndex?: number;
+  // Optional producer-authored per-subpath scalar in [0,1] — the
+  // continuous sibling of groupIndex's discrete identity. Consumed by the
+  // shared subpath-driver system (spline-color-source.ts `by: "driver"`),
+  // so Rasterize/Stroke ramps and Stroke's per-subpath thickness can map
+  // it. First producer: Space Fill's per-line weight
+  // (072726_space-fill.md). Runtime-only, like the rest of the value.
+  driver?: number;
 }
 export type SplineValue = {
   kind: "spline";
@@ -779,7 +806,43 @@ export type SdfNode =
   // Sample an image's red channel at the rendered position and add
   // `(v - 0.5) * 2 * amount` to the distance. The image lives on the
   // runtime AST node — never serialized.
-  | { kind: "displace"; child: SdfNode; amount: number; image: ImageValue };
+  | { kind: "displace"; child: SdfNode; amount: number; image: ImageValue }
+  // Paint a subtree. Distance is untouched — this is purely the color
+  // channel, consumed by the Surf emitter (sdf-compile.ts) and ignored
+  // by the float emitter, so distance-only consumers (SDF to Mask /
+  // to Distance Image / to Spline) see straight through it.
+  //
+  // Materials INHERIT: the nearest enclosing material paints every leaf
+  // below it, and a nested material overrides for its own subtree (CSS
+  // `fill` semantics). A tree with no material at all takes the
+  // terminal's own foreground, which is why unmaterialed graphs render
+  // exactly as they did before materials existed.
+  //
+  // Runtime-only — built in `compute` from params, never serialized,
+  // same as `splineSdf`'s texture and `displace`'s image. `color` and
+  // `bleed` are UNIFORMS, so keyframing them rebinds rather than
+  // recompiles (structuralHash deliberately ignores their values).
+  | {
+      kind: "material";
+      child: SdfNode;
+      color: [number, number, number];
+      // Weight this material's contribution to the color-bleed
+      // accumulator. 1 = participates normally, 0 = paints itself but
+      // adds nothing to the surrounding wash.
+      bleed: number;
+      // Ramp mode: colour is `lut` sampled at a per-pixel scalar field
+      // instead of the flat `color`. The LUT is a 1x256 RGBA texture
+      // baked from the node's stops and owned by the node (runtime-only,
+      // never serialized — like splineSdf's segment texture).
+      //
+      // Riding a TEXTURE rather than uniform arrays is deliberate: the
+      // emitted GLSL is identical for any stop count, so adding or
+      // moving a stop rebakes a texture and leaves the shader cache hot,
+      // and there is no uniform-budget ceiling on how many ramp
+      // materials one tree can hold. Only `t`'s field topology is
+      // structural.
+      ramp?: { lut: WebGLTexture; t: ScalarFieldNode };
+    };
 
 export type SdfValue = {
   kind: "sdf";
@@ -1132,6 +1195,16 @@ export interface ParamDef {
   // (or unbounded if `max` is absent). Useful for params with a "normal"
   // working range and an escape hatch for extreme values.
   softMax?: number;
+  // For "scalar" params: derive the control's increment from the node's
+  // CURRENT param values instead of the static `step` (e.g. Constant's
+  // `value` slider follows its sibling `step` param). When it returns a
+  // number, edits also SNAP to zero-based multiples of it (k·step, clamped
+  // to the range) so the stored value lands on the increments the user set
+  // — not the offset grid a native range's `min + n·step` would produce.
+  // UI-only hint like `visibleIf`: the engine ignores it, it doesn't
+  // survive export-manifest serialization, and `step` stays the fallback
+  // wherever sibling params aren't in reach (exported-app controls).
+  stepFrom?: (params: Record<string, unknown>) => number | undefined;
   default: unknown;
   options?: string[];
   // Placeholder text for string-type params when the value is empty.

@@ -174,3 +174,22 @@ stay attached — same re-measure the rename path already relies on
   or evenly distribute rows when `uiHeight` exceeds `bodyH`.
 - **Serialize field handling** — one lookup during M4 decides "add two
   fields" vs "already rides along." No expected surprise.
+
+## Amendment — 2026-08-02: grip moved to the bottom-right
+
+Superseded by the node-UI restyle. The grip is now a **bottom-right**
+quarter-round bracket that overhangs the corner by 4px
+([EffectNode.tsx `ResizeGrip`](../src/components/effects/EffectNode.tsx)),
+`cursor: nwse-resize`.
+
+Consequences for the spec above:
+
+- Drag math is now `newWidth = startWidth + (clientX - startX)` — the
+  **right** edge follows the cursor.
+- The `position.x` compensation is gone. The top-left corner is the drag
+  anchor, so the node never moves while resizing; `effect-node-resize` no
+  longer carries `dx` and the EffectsApp handler no longer touches
+  `position`. This retires decision 3 above and its "reposition" step in M3.
+- The "bottom-left vs sockets" risk carries over mirrored (the grip now
+  neighbours the last *output* socket) with the same ~3px overlap and the
+  same cheap fix.

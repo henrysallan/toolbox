@@ -1,0 +1,26 @@
+[package]
+name = "toolbox-vector-kernel"
+version = "0.2.1"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+kurbo = "=0.13.1" # PIN EXACTLY — see specdocs/attractor-vector-kernel-spec.md §4.2
+wasm-bindgen = "0.2"
+
+# Rust emits bulk-memory ops (memory.copy) by default now; wasm-pack's
+# bundled binaryen validates with the feature off unless told otherwise.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+opt-level = 3 # NOT "z" — hot numeric code, size is secondary
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
