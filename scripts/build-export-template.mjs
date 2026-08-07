@@ -6,6 +6,13 @@
 //
 // Run via `npm run build:export-template`. Idempotent — clears the destination
 // before writing.
+//
+// `--slim` drops the ~23 MB ONNX-runtime wasm from the published template.
+// The web deploy (vercel.json buildCommand) uses it: on Vercel the template
+// ships as static assets on every deployment and that one file is ~85% of the
+// weight, while ML exports are rare. Desktop / local builds stay full-fat.
+// The manifest records `mlRuntime: false` so the editor blocks an ML export
+// against a slim template instead of shipping an app that 404s its runtime.
 
 import { execSync } from "node:child_process";
 import { mkdirSync, rmSync, cpSync, writeFileSync, readdirSync, statSync, readFileSync, existsSync } from "node:fs";
@@ -16,6 +23,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, "..");
 const TEMPLATE_DIR = join(REPO, "src", "export-template");
 const OUT_DIR = join(REPO, "public", "export-template", "v1");
+
+const SLIM = process.argv.includes("--slim");
+// Mirrors ORT_WASM_ASSET_RE in src/lib/export-packager.ts — keep in sync.
+const ORT_WASM_ASSET_RE = /^assets\/ort-.*\.wasm$/;
 
 // Paths inside the template-source tree that the user-facing Tier C
 // `source/` zip needs. We curate the list rather than blindly copying so
@@ -81,6 +92,7 @@ if (!existsSync(TEMPLATE_NODE_MODULES)) {
       {
         built: false,
         reason: "template-not-installed",
+        mlRuntime: !SLIM,
         distFiles: [],
         sourceFiles: [],
       },
@@ -109,6 +121,18 @@ cpSync(SINGLEFILE_SRC, join(OUT_DIR, "index.html"));
 
 console.log("[build-export-template] Copying Tier B dist/…");
 cpSync(DIST_SRC, join(OUT_DIR, "dist"), { recursive: true });
+
+if (SLIM) {
+  // Strip before the manifest is listed, so distFiles/distBytes never
+  // advertise a file the deploy doesn't serve.
+  const dropped = listFilesRecursive(join(OUT_DIR, "dist")).filter((f) =>
+    ORT_WASM_ASSET_RE.test(f)
+  );
+  for (const f of dropped) rmSync(join(OUT_DIR, "dist", f));
+  console.log(
+    `[build-export-template] --slim: dropped ML runtime (${dropped.length} file(s): ${dropped.join(", ") || "none"})`
+  );
+}
 
 console.log("[build-export-template] Copying Tier C source tree…");
 const sourceOut = join(OUT_DIR, "source");
@@ -144,6 +168,10 @@ const tierABytes = statSync(join(OUT_DIR, "index.html")).size;
 const manifest = {
   built: true,
   builtAt: new Date().toISOString(),
+  // false → this copy has no ONNX runtime; the editor refuses ML exports
+  // against it. Absent on manifests built before --slim existed, which the
+  // editor treats as true (full template).
+  mlRuntime: !SLIM,
   distFiles,
   sourceFiles,
   distBytes,
@@ -153,5 +181,5 @@ const manifest = {
 writeFileSync(join(OUT_DIR, "manifest.json"), JSON.stringify(manifest, null, 2));
 
 console.log(
-  `[build-export-template] Done. dist=${distFiles.length} files, source=${sourceFiles.length} files.`
+  `[build-export-template] Done${SLIM ? " (slim, no ML runtime)" : ""}. dist=${distFiles.length} files, source=${sourceFiles.length} files.`
 );

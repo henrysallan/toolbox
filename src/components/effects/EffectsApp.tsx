@@ -8424,11 +8424,21 @@ function EffectsShell({
             activeCompositionId: activeCompositionIdRef.current,
           }
         );
-        const distManifest = (await fetch(
-          "/export-template/v1/manifest.json"
-        ).then((r) => r.json())) as {
+        // A build that never ran `build:export-template` has no
+        // public/export-template/v1 at all, so this 404s to the app's HTML
+        // error page — .json() would then throw "Unexpected token '<'" and
+        // bury the real cause. Check the status first.
+        const manifestResp = await fetch("/export-template/v1/manifest.json");
+        if (!manifestResp.ok) {
+          throw new Error(
+            "Export template missing from this build (run `npm run install:export-template && npm run build:export-template`, or use the desktop app)."
+          );
+        }
+        const distManifest = (await manifestResp.json()) as {
           built: boolean;
           reason?: string;
+          // Absent on templates built before `--slim` existed → full copy.
+          mlRuntime?: boolean;
           distFiles: string[];
           sourceFiles: string[];
         };
@@ -8448,6 +8458,9 @@ function EffectsShell({
           await Promise.all(
             paths.map(async (p) => {
               const resp = await fetch(`${base}/${p}`);
+              if (!resp.ok) {
+                throw new Error(`Export template asset missing: ${p}`);
+              }
               const isText =
                 p.endsWith(".html") ||
                 p.endsWith(".js") ||
@@ -8470,7 +8483,16 @@ function EffectsShell({
         // the ML nodes (bg-remove / segment / depth) — drop it from the
         // bundle (and skip downloading it here) when the project has none.
         // Spec: 073126_export-resolution-and-app-slim.md.
-        const wantedDistFiles = graphUsesMlNodes(graphJson)
+        const usesMl = graphUsesMlNodes(graphJson);
+        // The web deploy publishes a slim template (no ONNX runtime) to keep
+        // the static payload down. Refuse rather than ship an app whose ML
+        // nodes 404 their runtime on first render.
+        if (usesMl && distManifest.mlRuntime === false) {
+          throw new Error(
+            "This project uses ML nodes (bg-remove / segment / depth), whose ~22 MB runtime isn't part of the hosted export template. Export from the desktop app instead."
+          );
+        }
+        const wantedDistFiles = usesMl
           ? distManifest.distFiles
           : distManifest.distFiles.filter((p) => !ORT_WASM_ASSET_RE.test(p));
         const [distFiles, sourceFiles] = await Promise.all([
@@ -8511,6 +8533,9 @@ function EffectsShell({
     totalBytes: number;
     contentBytes: number;
     ml: boolean;
+    // The available template has no ONNX runtime (web deploy ships slim),
+    // so an ML project can't be exported from here.
+    mlUnavailable: boolean;
   } | null>(null);
   useEffect(() => {
     if (!exportApp) {
@@ -8541,14 +8566,17 @@ function EffectsShell({
         const ml = graphUsesMlNodes(graphJson);
         const contentBytes = JSON.stringify(graphJson).length;
         let templateBytes = 0;
+        let mlUnavailable = false;
         try {
-          const m = (await fetch("/export-template/v1/manifest.json").then(
-            (r) => r.json()
-          )) as {
+          const resp = await fetch("/export-template/v1/manifest.json");
+          if (!resp.ok) throw new Error(`manifest ${resp.status}`);
+          const m = (await resp.json()) as {
+            mlRuntime?: boolean;
             distBytes?: Record<string, number>;
             sourceBytes?: Record<string, number>;
             tierABytes?: number;
           };
+          mlUnavailable = m.mlRuntime === false;
           for (const [p, b] of Object.entries(m.distBytes ?? {})) {
             if (!ml && ORT_WASM_ASSET_RE.test(p)) continue;
             templateBytes += b;
@@ -8566,6 +8594,7 @@ function EffectsShell({
             totalBytes: templateBytes + contentBytes,
             contentBytes,
             ml,
+            mlUnavailable,
           });
         }
       } catch (e) {
@@ -11638,6 +11667,7 @@ function EffectsShell({
             estimatedSizeBytes={exportAppEstimate?.totalBytes ?? null}
             estimatedContentBytes={exportAppEstimate?.contentBytes ?? null}
             mlRuntimeIncluded={exportAppEstimate?.ml ?? false}
+            mlRuntimeUnavailable={exportAppEstimate?.mlUnavailable ?? false}
             busy={exportAppBusy}
             onExport={(args) => {
               void runExportApp(args);

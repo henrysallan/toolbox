@@ -24,6 +24,10 @@ interface Props {
   // True when the project uses ML nodes (bg-remove / segment / depth), so
   // the bundle keeps the ~22 MB ONNX runtime.
   mlRuntimeIncluded: boolean;
+  // True when the served export template was built slim (no ONNX runtime) —
+  // the web deploy does this. Combined with mlRuntimeIncluded it blocks the
+  // export up front rather than failing after the user clicks.
+  mlRuntimeUnavailable: boolean;
   busy: boolean;
   onExport: (args: { appName: string; description?: string }) => void;
 }
@@ -46,6 +50,7 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
     estimatedSizeBytes,
     estimatedContentBytes,
     mlRuntimeIncluded,
+    mlRuntimeUnavailable,
     busy,
     onExport,
   } = props;
@@ -77,7 +82,9 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
   const overSize =
     estimatedContentBytes !== null && estimatedContentBytes >= SIZE_CAP_BYTES;
   const trimmedName = appName.trim();
-  const exportDisabled = busy || overSize || trimmedName.length === 0;
+  const mlBlocked = mlRuntimeIncluded && mlRuntimeUnavailable;
+  const exportDisabled =
+    busy || overSize || mlBlocked || trimmedName.length === 0;
 
   const submit = () => {
     if (exportDisabled) return;
@@ -299,13 +306,28 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
 
         <div style={{ marginBottom: 14 }}>
           <div style={labelStyle()}>Estimated bundle size</div>
-          <div style={{ color: overSize ? "var(--tb-a-red-500)" : "var(--tb-n-13)" }}>
+          <div
+            style={{
+              color:
+                overSize || mlBlocked
+                  ? "var(--tb-a-red-500)"
+                  : "var(--tb-n-13)",
+            }}
+          >
             {sizeMb === null ? "computing…" : `${sizeMb} MB`}
-            {mlRuntimeIncluded && (
+            {mlRuntimeIncluded && !mlRuntimeUnavailable && (
               <span style={{ color: "var(--tb-n-13)" }}>
                 {" "}
                 (includes the ~22 MB ML runtime — the graph uses
                 bg-remove / segment / depth)
+              </span>
+            )}
+            {mlBlocked && (
+              <span style={{ color: "var(--tb-a-red-500)" }}>
+                {" "}
+                (the graph uses bg-remove / segment / depth, and this build
+                ships the export template without the ~22 MB ML runtime —
+                export from the desktop app)
               </span>
             )}
             {overSize && (

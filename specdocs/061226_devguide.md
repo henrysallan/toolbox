@@ -1272,6 +1272,19 @@ To add a node:
   The modal's size estimate is real now: serialize once on open + the
   template manifest's `distBytes`/`sourceBytes`/`tierABytes` (emitted by
   build-export-template.mjs; older manifests → graph-only estimate).
+  **Where the template comes from per target** (`public/export-template`
+  is gitignored — nothing ships it implicitly): the release CI runs
+  `install:export-template` + `build:export-template` before
+  `desktop:publish`, and vercel.json's `buildCommand` runs the same pair
+  with **`--slim`** before `next build`. `--slim` drops the ONNX wasm from
+  the published copy (28 MB → 5 MB of static assets per deployment) and
+  records `mlRuntime: false` in the manifest; `runExportApp` refuses an
+  ML-node project against such a template (and the modal disables Export
+  with the reason) rather than shipping an app that 404s its runtime.
+  Manifests predating the flag have no `mlRuntime` and read as full.
+  A build that never ran the script at all has no manifest → the fetch
+  404s to the HTML error page, so `runExportApp` checks `resp.ok` before
+  `.json()` (otherwise: `Unexpected token '<'`).
   Template-build gotcha: engine/editor imports reaching the template
   bundle need their aliases/shims maintained — vite.config.ts maps
   `@/wasm` (vector-kernel glue) and src/shims/state-graph.ts carries

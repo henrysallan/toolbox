@@ -111,9 +111,10 @@ touches one function instead of five.
 
 - File → Export dialog (deferred by owner; MenuBar's disabled "Export…"
   stays as-is this round).
-- Building the export template into the **web** deploy (Vercel build
+- ~~Building the export template into the **web** deploy (Vercel build
   never runs `build:export-template`, so hosted Export App 404s —
-  separate deploy-pipeline decision).
+  separate deploy-pipeline decision).~~ **Resolved 2026-08-07** — see
+  "Web deploy" below.
 - Native ffmpeg for Render Queue / wedge batches; ffmpeg-core's unpkg
   fetch; GLB export cleanup.
 
@@ -154,3 +155,42 @@ touches one function instead of five.
 Verification is manual in the browser per repo convention; the export
 paths especially need a hands-on pass (fast/high/max video, sequence,
 GIF, queue, wedges, Export App with and without an ML node).
+
+## Web deploy — shipped 2026-08-07
+
+The deferred item above surfaced as a hosted-app bug report: three
+`/export-template/v1/manifest.json` 404s and
+`Export App failed: SyntaxError: Unexpected token '<', "<!DOCTYPE "...`.
+Cause exactly as recorded — `public/export-template` is gitignored and
+Vercel ran a bare `next build`, so the assets never existed in the
+deployment and `.json()` parsed Next's HTML 404 page.
+
+Resolution (owner's call: build it, minus the ML wasm):
+
+- **`build-export-template.mjs --slim`** — strips files matching
+  `ORT_WASM_ASSET_RE` from `dist/` *before* the manifest is listed, so
+  `distFiles`/`distBytes` never advertise a file the deploy won't serve,
+  and writes `mlRuntime: false`. Output drops 28 MB → 5.2 MB. Without the
+  flag the build is unchanged (`mlRuntime: true`).
+- **vercel.json `buildCommand`** — `install:export-template` +
+  `build:export-template -- --slim` + `next build`. Scoped to Vercel on
+  purpose: the root `build` script stays `next build`, so CI and
+  `desktop:prepare` (which shells `next build` directly) are untouched,
+  and release.yml keeps publishing the full-fat template for desktop.
+- **ML projects on web are refused, not silently broken** —
+  `runExportApp` throws when `graphUsesMlNodes(graph) && mlRuntime ===
+  false`, and the modal disables Export with the reason up front (the
+  size-estimate effect already fetches the manifest, so the flag is known
+  before the user clicks). Desktop remains the path for ML exports.
+- **Missing-template errors are legible** — `runExportApp` checks
+  `resp.ok` on the manifest and on every template asset, replacing the
+  `Unexpected token '<'` SyntaxError with a message naming the fix.
+
+Gates: `npm run typecheck` clean, `npm run lint:ratchet` green
+(120 = baseline). Slim build verified end-to-end through the dev server
+(manifest `mlRuntime: false`, ort wasm 404s, no ort entry in the
+manifest); the local tree was rebuilt full-fat afterwards.
+
+Not done: no hands-on browser pass of the hosted Export App — that needs
+a deploy. Worth checking on the first preview that a non-ML project
+round-trips and an ML project shows the disabled-with-reason state.
