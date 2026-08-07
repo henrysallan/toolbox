@@ -620,6 +620,7 @@ export const fluidSimulatorNode: NodeDefinition = {
     "2D Eulerian fluid (smoke / dye / ink in open water). Wire any mask/spline/shape into `deposit` to release dye; an image into `color` for its hues (alpha doubles as coverage when `deposit` is unwired). Takes the SAME force nodes as the Particle Simulator (Vortex/Wind/Gravity/Turbulence… — add slots in the panel) and Circle/Line/Image-Mask colliders as solid obstacles the flow routes around. The optional `field` input steers the fluid with an authored velocity field (Perlin curl / Spline Flow Field); the `velocity` aux emits the LIVE sim field in the same encoding, so Advect Points / Advect Image can ride the simulation. Advection-reflection keeps swirls energetic; `vorticity` adds small-scale swirl back. `buoyancy` makes dense dye rise (smoke). Runs while the timeline plays; restarting the timeline clears the tank.",
   backend: "webgl2",
   stable: false,
+  simulation: true,
   headerControl: { paramName: "view" },
   inputs: [
     { name: "deposit", type: "mask", required: false },

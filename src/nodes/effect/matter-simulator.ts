@@ -12,6 +12,7 @@ import type {
   SplineValue,
 } from "@/engine/types";
 import { ensureWebGPUDevice } from "@/engine/webgpu/device";
+import { aspectCorrectY, aspectUncorrectY } from "@/engine/aspect";
 import { ensurePointArray, makePoints } from "@/engine/points";
 import { pushMediaSettle } from "@/engine/offline-settle";
 
@@ -44,8 +45,13 @@ import { pushMediaSettle } from "@/engine/offline-settle";
 //
 // Internal frame: GRID INDEX space, Y-DOWN (row 0 = top — no GL
 // involved, storage buffers only), dx = 1, cells pixel-square
-// (ny = nx/aspect). Descriptor seams convert index ↔ y-down canvas-UV
-// exactly like the Fluid Simulator's texel seams. Colliders here are
+// (ny = nx/aspect). Descriptor seams (forces, analytic colliders,
+// gravity) and GEOMETRY seams (the `seed` points input, the `points`
+// aux, the obstacle spline) both convert index ↔ AUTHORED
+// (engine/aspect.ts) — see SEAM_WGSL for why that, and not canvas UV,
+// is the space they belong in. The `particles` primary is the one thing
+// that stays canvas UV, because Particles to Image draws it directly.
+// Colliders here are
 // analytic circle/line only, resolved as free-slip on grid nodes;
 // image-mask colliders are IGNORED (WebGPU can't sample WebGL textures
 // without a cached CPU hop — deferred).
@@ -117,6 +123,30 @@ struct Params {
 `;
 
 // Particle storage: 16 floats. pos(2) vel(2) C(2×2) F(2×2) misc(Jp,-,-,-)
+// Descriptor space seam. The solver's frame is GRID INDEX space, which
+// is ISOTROPIC (cells are pixel-square, ny = nx/aspect); force,
+// analytic-collider and gravity descriptors are AUTHORED coordinates
+// (engine/aspect.ts — x spans the width, y width-isotropic and
+// vertically centered). Index and authored differ by a single uniform
+// scale (nx) plus a vertical offset, so lengths stay lengths and
+// directions stay directions across the seam.
+//
+// This used to convert to CANVAS UV instead, which is anisotropic: it
+// displaced every radial force vertically, squashed its falloff into an
+// ellipse, and tilted analytic-collider normals (the old comment's
+// claim that "y-down uv and index axes are parallel" only holds on a
+// square canvas). Authored is also what the CPU sims use for the very
+// same descriptors (engine/sim-kernel.ts), so one Point Force now feels
+// identical wired into any simulator.
+const SEAM_WGSL = /* wgsl */ `
+fn idxToAuthored(p: vec2<f32>, nx: f32, ny: f32) -> vec2<f32> {
+  return vec2<f32>(p.x / nx, (p.y - 0.5 * ny) / nx + 0.5);
+}
+fn authoredToIdx(a: vec2<f32>, nx: f32, ny: f32) -> vec2<f32> {
+  return vec2<f32>(a.x * nx, (a.y - 0.5) * nx + 0.5 * ny);
+}
+`;
+
 const PARTICLE_STRUCT = /* wgsl */ `
 struct Particle {
   pos: vec2<f32>,
@@ -245,10 +275,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // Grid momentum → velocity, gravity + force descriptors + damping,
 // walls (closed box, free-slip), analytic colliders (free-slip), CFL
-// safety clamp. Descriptor seam: forces run in Y-DOWN canvas-UV, the
-// particle-simulator convention, so the same nodes feel identical.
+// safety clamp. Descriptor seam: forces run in Y-DOWN AUTHORED space
+// (SEAM_WGSL), the convention every simulator shares, so the same force
+// nodes feel identical wherever they are wired.
 const GRID_WGSL = /* wgsl */ `
 ${PARAMS_STRUCT}
+${SEAM_WGSL}
 @group(0) @binding(0) var<storage, read_write> grid: array<atomic<i32>>;
 @group(0) @binding(1) var<storage, read_write> gridVel: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> params: Params;
@@ -304,7 +336,8 @@ fn curl2(p: vec2<f32>, t: f32) -> vec2<f32> {
   return vec2<f32>((n1 - n2) / (2.0 * eps), -(n3 - n4) / (2.0 * eps));
 }
 
-// Mirror of the particle-simulator force contract (uv-space, y-down).
+// Mirror of the particle-simulator force contract (AUTHORED space,
+// y-down — see SEAM_WGSL).
 fn applyForce(kind: u32, a: vec4<f32>, b: vec4<f32>, pos: vec2<f32>,
               vel: vec2<f32>, dt: f32, time: f32) -> vec2<f32> {
   var v = vel;
@@ -356,21 +389,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let cy = gid.x / nx;
   let dt = params.dt;
 
-  // Gravity (uv/s² → index/s² via ny; y-down so +gravity falls).
-  v.y = v.y + params.gravity * params.ny * dt;
+  // Gravity (AUTHORED units/s² → index/s² via nx — the uniform scale
+  // BOTH axes use; y-down so +gravity falls). Scaling by ny instead is
+  // what made the node's own gravity disagree with a wired Gravity
+  // force node on non-square canvases.
+  v.y = v.y + params.gravity * params.nx * dt;
 
-  // Force descriptors in the uv seam.
-  let posUv = vec2<f32>((f32(cx) + 0.5) / params.nx,
-                        (f32(cy) + 0.5) / params.ny);
+  // Force descriptors in the AUTHORED seam.
+  let posA = idxToAuthored(vec2<f32>(f32(cx) + 0.5, f32(cy) + 0.5),
+                           params.nx, params.ny);
   if (params.forceCount > 0u) {
-    var vUv = vec2<f32>(v.x / params.nx, v.y / params.ny);
+    var vA = v / params.nx;
     for (var j: u32 = 0u; j < 6u; j = j + 1u) {
       if (j >= params.forceCount) { break; }
       let kind = params.forceKinds[j >> 2u][j & 3u];
-      vUv = applyForce(kind, params.forceA[j], params.forceB[j],
-                       posUv, vUv, dt, params.time);
+      vA = applyForce(kind, params.forceA[j], params.forceB[j],
+                      posA, vA, dt, params.time);
     }
-    v = vec2<f32>(vUv.x * params.nx, vUv.y * params.ny);
+    v = vA * params.nx;
   }
 
   v = v * max(0.0, 1.0 - params.damping * dt);
@@ -385,9 +421,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var inside = false;
     let pad = params.colliderPad;
     if (kind == 0u) {
-      // circle: ca.xy=center ca.z=radius ca.w=inside(0/1) — uv space,
-      // surface inflated by colliderPad.
-      let d = posUv - ca.xy;
+      // circle: ca.xy=center ca.z=radius ca.w=inside(0/1) — AUTHORED
+      // space (a radius only bounds a circle there), surface inflated
+      // by colliderPad, which is authored too (the obstacle SDF already
+      // scales it by nx).
+      let d = posA - ca.xy;
       let r = length(d);
       if (ca.w > 0.5) {
         if (r > ca.z - pad) { inside = true; n = -d / max(r, 1e-5); }
@@ -397,11 +435,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       }
     } else if (kind == 1u) {
       // line: ca.xy=unit normal ca.z=d — solid where n·p < d (+pad).
-      if (dot(ca.xy, posUv) < ca.z + pad) { inside = true; n = normalize(ca.xy); }
+      if (dot(ca.xy, posA) < ca.z + pad) { inside = true; n = normalize(ca.xy); }
     }
     if (inside) {
-      // n points OUT of the solid (uv). y-down uv and index axes are
-      // parallel, so the same normal applies to v in index units.
+      // n points OUT of the solid (authored). Authored and index axes
+      // differ by a UNIFORM scale, so the same normal applies to v in
+      // index units — the property canvas UV does not have.
       let into = dot(v, n);
       if (into < 0.0) { v = v - n * into; }
     }
@@ -449,6 +488,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 const G2P_WGSL = /* wgsl */ `
 ${PARAMS_STRUCT}
+${SEAM_WGSL}
 ${PARTICLE_STRUCT}
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read> gridVel: array<vec4<f32>>;
@@ -503,52 +543,53 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   p.C = 4.0 * B;   // APIC, quadratic kernel, dx = 1
   p.pos = p.pos + newV * dt;
 
-  // Particle-level collider projection (uv space). Grid BCs alone let
-  // fast particles tunnel between nodes and sprites visually sink into
-  // surfaces; projecting positions out of the padded surface keeps
-  // boundaries crisp. colliderPad inflates every surface so rendered
-  // particle sprites rest ON the collider instead of inside it.
+  // Particle-level collider projection, in the AUTHORED seam (matching
+  // the grid pass — see SEAM_WGSL). Grid BCs alone let fast particles
+  // tunnel between nodes and sprites visually sink into surfaces;
+  // projecting positions out of the padded surface keeps boundaries
+  // crisp. colliderPad inflates every surface so rendered particle
+  // sprites rest ON the collider instead of inside it.
   if (params.colliderCount > 0u) {
-    var uv = vec2<f32>(p.pos.x / params.nx, p.pos.y / params.ny);
-    var vUv = vec2<f32>(p.vel.x / params.nx, p.vel.y / params.ny);
+    var pa = idxToAuthored(p.pos, params.nx, params.ny);
+    var va = p.vel / params.nx;
     let pad = params.colliderPad;
     for (var j: u32 = 0u; j < 4u; j = j + 1u) {
       if (j >= params.colliderCount) { break; }
       let kind = params.colliderKinds[j];
       let ca = params.colliderA[j];
       if (kind == 0u) {
-        let dvec = uv - ca.xy;
+        let dvec = pa - ca.xy;
         let r = length(dvec);
         if (ca.w > 0.5) {
           // container: keep particles INSIDE radius − pad
           let lim = max(ca.z - pad, 1e-4);
           if (r > lim) {
             let nrm = dvec / max(r, 1e-5);
-            uv = ca.xy + nrm * lim;
-            let outw = dot(vUv, nrm);
-            if (outw > 0.0) { vUv = vUv - nrm * outw; }
+            pa = ca.xy + nrm * lim;
+            let outw = dot(va, nrm);
+            if (outw > 0.0) { va = va - nrm * outw; }
           }
         } else {
           let lim = ca.z + pad;
           if (r < lim) {
             let nrm = dvec / max(r, 1e-5);
-            uv = ca.xy + nrm * lim;
-            let inw = dot(vUv, nrm);
-            if (inw < 0.0) { vUv = vUv - nrm * inw; }
+            pa = ca.xy + nrm * lim;
+            let inw = dot(va, nrm);
+            if (inw < 0.0) { va = va - nrm * inw; }
           }
         }
       } else if (kind == 1u) {
         let nrm = normalize(ca.xy);
-        let s = dot(nrm, uv) - (ca.z + pad);
+        let s = dot(nrm, pa) - (ca.z + pad);
         if (s < 0.0) {
-          uv = uv - nrm * s;
-          let inw = dot(vUv, nrm);
-          if (inw < 0.0) { vUv = vUv - nrm * inw; }
+          pa = pa - nrm * s;
+          let inw = dot(va, nrm);
+          if (inw < 0.0) { va = va - nrm * inw; }
         }
       }
     }
-    p.pos = vec2<f32>(uv.x * params.nx, uv.y * params.ny);
-    p.vel = vec2<f32>(vUv.x * params.nx, vUv.y * params.ny);
+    p.pos = authoredToIdx(pa, params.nx, params.ny);
+    p.vel = va * params.nx;
   }
 
   // Baked obstacle SDF projection (bilinear sample, index units).
@@ -843,12 +884,17 @@ function seedParticles(
   if (seedPts && seedPts.count > 0) {
     // Explicit seed points: honor them as given (cycled to the budget);
     // particle_radius doesn't apply — spacing came from the producer.
+    // The socket carries AUTHORED coordinates, so y converts INTO canvas
+    // UV here — the mirror of the points-aux conversion on the way out.
+    // Skipping it squashed a seed shape vertically on non-square
+    // canvases (and made a sim→seed round trip lossy).
     const pts = ensurePointArray(seedPts);
+    const aspect = ctx.width / ctx.height;
     for (let i = 0; i < n; i++) {
       const p = pts[i % pts.length];
       positions.push([
         p.pos[0] + (rand() - 0.5) * 0.01,
-        p.pos[1] + (rand() - 0.5) * 0.01,
+        aspectCorrectY(p.pos[1], aspect) + (rand() - 0.5) * 0.01,
       ]);
     }
   } else {
@@ -1005,9 +1051,15 @@ function bakeObstacleSdf(
     if (c2d) {
       c2d.clearRect(0, 0, nx, ny);
       const path = new Path2D();
+      // The spline is AUTHORED (engine/aspect.ts), and index space is
+      // isotropic, so BOTH axes scale by nx — y additionally re-centers
+      // (authored y = 0.5 is the canvas middle, index y = ny/2).
+      // Scaling y by ny instead treated authored coordinates as canvas
+      // UV and stretched every obstacle vertically at 16:9.
+      const oy = 0.5 * (ny - nx);
       const px = (a: SplineAnchor, h?: [number, number]): [number, number] => [
         (a.pos[0] + (h?.[0] ?? 0)) * nx,
-        (a.pos[1] + (h?.[1] ?? 0)) * ny,
+        (a.pos[1] + (h?.[1] ?? 0)) * nx + oy,
       ];
       for (const sub of spline.subpaths) {
         const anchors = sub.anchors;
@@ -1210,6 +1262,7 @@ export const matterSimulatorNode: NodeDefinition = {
     "MLS-MPM deformable matter on WebGPU — liquid, jelly, and snow are one solver with per-material dials (liquid: stiffness + viscosity; jelly: stiffness; snow: stiffness + crumble + hardening). Wire points into `seed` (or a mask into `region`) to place the material; `particle_radius` packs the seeding at a rest spacing so the material keeps that separation. Obstacles three ways: any spline into `obstacle`, Image Mask Colliders, or Circle/Line colliders — all free-slip, inflated by `collider_radius` so sprites rest ON surfaces. Takes the same force nodes as the Particle Simulator. Output is a `particles` socket for Particles to Image plus a `points` aux for the whole points ecosystem — Copy to Points on goo, Points to Spline surfaces. Runs one frame behind (WebGPU readback); needs a WebGPU-capable browser. Restarting the timeline reseeds.",
   backend: "webgpu",
   stable: false,
+  simulation: true,
   inputs: [
     { name: "seed", type: "points", required: false },
     { name: "region", type: "mask", required: false },
@@ -1691,16 +1744,25 @@ export const matterSimulatorNode: NodeDefinition = {
       height: st.texH,
       count: st.count,
     };
-    // Points aux from the drained CPU array — positions are already
-    // y-down canvas UV; the padded tail beyond count never enters.
+    // Points aux from the drained CPU array. The solver (and the
+    // `particles` primary) runs in y-down CANVAS UV, but geometry
+    // sockets carry AUTHORED coordinates (engine/aspect.ts — y is
+    // width-isotropic and vertically centered), so y converts on the
+    // way out. Without it every points consumer that aspect-corrects on
+    // render — Copy to Points' instanced VS, Points to Spline →
+    // rasterizer, Point Labels, the viewport overlay — double-corrects
+    // and pushes copies away from center vertically on non-square
+    // canvases. Square canvas = identity. The padded tail beyond count
+    // never enters.
     let points: PointsValue;
     const src = st.lastPositions;
     if (src) {
       const live = Math.min(st.liveCount, st.count);
+      const aspect = ctx.width / ctx.height;
       points = makePoints(live);
       for (let i = 0; i < live; i++) {
         points.positions[i * 2] = src[i * 4];
-        points.positions[i * 2 + 1] = src[i * 4 + 1];
+        points.positions[i * 2 + 1] = aspectUncorrectY(src[i * 4 + 1], aspect);
       }
     } else {
       points = makePoints(0);

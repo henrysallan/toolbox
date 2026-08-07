@@ -340,6 +340,7 @@ export const advectPointsNode: NodeDefinition = {
     "Move points through a velocity field derived from an image — the field is re-sampled at every step, so points follow its curves (unlike Displace's single push). Integrate mode traces N deterministic steps per eval and emits streamline trails (flow-field line art: noise → Advect → trails → Stroke). Accumulate mode keeps persistent positions and advances once per frame — endless drift that responds to an animating field, no Simulation Zone needed. Field modes: angle (luminance → heading), vector (signed RG map), gradient (flow toward bright), contour (orbit level sets).",
   backend: "webgl2",
   headerControl: { paramName: "mode" },
+  simulation: true,
   inputs: [
     { name: "points", type: "points", required: true },
     { name: "field", type: "image", required: true, label: "Field" },

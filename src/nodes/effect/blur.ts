@@ -1,12 +1,22 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
 import {
+  aperturePlan,
   bokehPlan,
+  convolvePlan,
   copyImage,
   gaussianPlan,
   runSeparable,
+  type ApertureShape,
   type BokehShape,
 } from "@/engine/convolve";
 import type { NodeDefinition } from "@/engine/types";
+
+// Which bokeh shapes the complex-phasor path can express (it spans
+// circularly-symmetric kernels only) and which have to be rasterized and
+// decomposed instead. Users never see the split — it is one `shape` enum.
+const CIRCULAR_SHAPES = ["disc", "ring", "soft"] as const;
+const isCircular = (s: string): s is BokehShape =>
+  (CIRCULAR_SHAPES as readonly string[]).includes(s);
 
 // The unified Blur node. Spec: specdocs/080226_blur-convolution.md.
 //
@@ -32,13 +42,22 @@ export const blurNode: NodeDefinition = {
     "in premultiplied linear light.",
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
+  // The kernel socket only exists in Convolve mode, so the node does not
+  // carry a dead input in the other two.
+  resolveInputs: (p) =>
+    p.mode === "convolve"
+      ? [
+          { name: "image", type: "image", required: true },
+          { name: "kernel", type: "image", required: false },
+        ]
+      : [{ name: "image", type: "image", required: true }],
   headerControl: { paramName: "mode" },
   params: [
     {
       name: "mode",
       label: "Mode",
       type: "enum",
-      options: ["gaussian", "bokeh"],
+      options: ["gaussian", "bokeh", "convolve"],
       default: "gaussian",
     },
     {
@@ -57,7 +76,10 @@ export const blurNode: NodeDefinition = {
       name: "shape",
       label: "Shape",
       type: "enum",
-      options: ["disc", "ring", "soft"],
+      // One enum spanning both decomposition families — disc/ring/soft go
+      // through complex phasors, the rest get rasterized and SVD'd. The
+      // routing is an implementation detail, not a user-facing choice.
+      options: ["disc", "ring", "soft", "hexagon", "octagon", "cats_eye", "star"],
       default: "disc",
       visibleIf: (p) => p.mode === "bokeh",
     },
@@ -76,7 +98,42 @@ export const blurNode: NodeDefinition = {
       // for another 3 passes. Each component costs 2 horizontal + 1
       // vertical pass.
       default: 3,
-      visibleIf: (p) => p.mode === "bokeh",
+      visibleIf: (p) => p.mode === "bokeh" && isCircular(String(p.shape)),
+    },
+    {
+      name: "rank",
+      label: "Rank",
+      type: "scalar",
+      min: 1,
+      max: 8,
+      step: 1,
+      // The SVD quality knob — how many rank-1 terms approximate the
+      // kernel. Same role `components` plays for the circular family, but
+      // a distinct param because the ceilings differ and conflating them
+      // would mean one slider with two meanings.
+      default: 4,
+      visibleIf: (p) =>
+        p.mode === "convolve" ||
+        (p.mode === "bokeh" && !isCircular(String(p.shape))),
+    },
+    {
+      name: "rotation",
+      label: "Rotation",
+      type: "scalar",
+      min: -180,
+      max: 180,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.mode === "bokeh" && !isCircular(String(p.shape)),
+    },
+    {
+      name: "normalize",
+      label: "Normalize kernel",
+      type: "boolean",
+      // Off lets the kernel's total act as a gain — useful deliberately,
+      // catastrophic accidentally, hence default on.
+      default: true,
+      visibleIf: (p) => p.mode === "convolve",
     },
     {
       name: "ring",
@@ -122,17 +179,39 @@ export const blurNode: NodeDefinition = {
 
     const linearize = params.linearize !== false;
     const mode = (params.mode as string) ?? "gaussian";
+    const rank = (params.rank as number) ?? 4;
 
-    const plan =
-      mode === "bokeh"
+    let plan;
+    if (mode === "convolve") {
+      const k = inputs["kernel"];
+      plan = convolvePlan(
+        ctx,
+        k && k.kind === "image" ? k : null,
+        radius,
+        rank,
+        params.normalize !== false,
+        linearize
+      );
+    } else if (mode === "bokeh") {
+      const shape = String(params.shape ?? "disc");
+      plan = isCircular(shape)
         ? bokehPlan(
             radius,
-            ((params.shape as BokehShape) ?? "disc"),
-            (params.components as number) ?? 2,
+            shape,
+            (params.components as number) ?? 3,
             (params.ring as number) ?? 0.5,
             linearize
           )
-        : gaussianPlan(radius, linearize);
+        : aperturePlan(
+            radius,
+            shape as ApertureShape,
+            rank,
+            (params.rotation as number) ?? 0,
+            linearize
+          );
+    } else {
+      plan = gaussianPlan(radius, linearize);
+    }
 
     return { primary: runSeparable(ctx, src, plan) };
   },

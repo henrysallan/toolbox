@@ -1,4 +1,5 @@
-import type { NodeDefinition } from "@/engine/types";
+import type { ColorRampValue, NodeDefinition } from "@/engine/types";
+import type { ColorRampInterp } from "@/engine/color-ramp";
 // The canonical model now lives engine-side (engine/color-ramp.ts) so engine
 // rasterizers can sample a ramp without an engine→nodes import. Re-exported
 // here for back-compat with existing importers (shape-cells, param-controls).
@@ -82,7 +83,16 @@ export const colorRampNode: NodeDefinition = {
   description:
     "Remaps the input's luminance through a gradient of user-defined color stops.",
   backend: "webgl2",
-  inputs: [{ name: "image", type: "image", required: true }],
+  // NOT required: since the node gained a `ramp` aux output
+  // (080526_on-node-color-ramp.md) a Color Ramp used purely as a palette
+  // source — authored on the node body, wired into Stroke or Rasterize
+  // Spline's ramp param — is a legitimate graph with nothing on `image`.
+  // Leaving it required would flag every one of those as unwired forever.
+  inputs: [{ name: "image", type: "image", required: false }],
+  // No headerControl for `interpolation`, deliberately: an enum dropdown in
+  // the header sets a width floor of its own (wide enough for "constant"),
+  // and this node is meant to sit narrow. Interpolation is a set-once choice
+  // — the panel is the right home for it. See 080526_on-node-color-ramp.md.
   params: [
     {
       name: "stops",
@@ -102,16 +112,13 @@ export const colorRampNode: NodeDefinition = {
     },
   ],
   primaryOutput: "image",
-  auxOutputs: [],
+  // The ramp itself, as a value. Aux rather than primary because this node is
+  // still a luminance remap first — the tap just makes the palette reusable,
+  // so one authored ramp can drive Stroke's colour or Rasterize Spline's fill
+  // and stroke ramps. Spec: 080526_on-node-color-ramp.md.
+  auxOutputs: [{ name: "ramp", type: "color_ramp" }],
 
   compute({ inputs, params, ctx }) {
-    const output = ctx.allocImage();
-    const src = inputs["image"];
-    if (!src || src.kind !== "image") {
-      ctx.clearTarget(output, [0, 0, 0, 1]);
-      return { primary: output };
-    }
-
     const rawStops = Array.isArray(params.stops)
       ? (params.stops as ColorRampStop[])
       : [];
@@ -119,6 +126,21 @@ export const colorRampNode: NodeDefinition = {
       .filter((s) => typeof s.position === "number")
       .sort((a, b) => a.position - b.position)
       .slice(0, COLOR_RAMP_MAX_STOPS);
+    // Emitted on every path, including the no-input one below: a Color Ramp
+    // used purely as a palette source has nothing wired into `image`, and its
+    // ramp still has to reach the consumer.
+    const rampAux: ColorRampValue = {
+      kind: "color_ramp",
+      stops: sorted,
+      interp: (params.interpolation as ColorRampInterp) ?? "linear",
+    };
+
+    const output = ctx.allocImage();
+    const src = inputs["image"];
+    if (!src || src.kind !== "image") {
+      ctx.clearTarget(output, [0, 0, 0, 1]);
+      return { primary: output, aux: { ramp: rampAux } };
+    }
 
     const positions = new Float32Array(COLOR_RAMP_MAX_STOPS);
     const colors = new Float32Array(COLOR_RAMP_MAX_STOPS * 4);
@@ -151,6 +173,6 @@ export const colorRampNode: NodeDefinition = {
       gl.uniform1i(gl.getUniformLocation(prog, "u_interp"), interp);
     });
 
-    return { primary: output };
+    return { primary: output, aux: { ramp: rampAux } };
   },
 };

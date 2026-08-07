@@ -75,7 +75,11 @@ function sniffDelimiter(text: string): string {
 // Split raw CSV text into rows of string fields, honoring quotes. A field
 // wrapped in double quotes may contain the delimiter, newlines, and doubled
 // quotes (`""` → a literal `"`). Handles both CRLF and LF line endings.
-function parseRows(text: string, delim: string): string[][] {
+//
+// Exported because the List node's parser reuses it (080526_list-socket.md):
+// newline + delimiter + quote handling in one pass is exactly what a general
+// list parser needs — it just flattens the rows instead of keeping them.
+export function parseRows(text: string, delim: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
   let field = "";

@@ -634,6 +634,7 @@ export const differentialGrowthNode: NodeDefinition = {
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   stable: false,
+  simulation: true,
   inputs: [
     { name: "spline", label: "Spline", type: "spline", required: true },
     { name: "region", label: "Region", type: "mask", required: false },

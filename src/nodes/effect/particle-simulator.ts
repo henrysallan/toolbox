@@ -44,6 +44,10 @@ export const particleSimulatorNode: NodeDefinition = {
   // default we'll flip this to "webgpu".
   backend: "webgl2",
   stable: false,
+  // Both backends accumulate across frames. The flag has to live on the
+  // ROUTER — this is the def the registry hands out, and the export
+  // drivers read it off the registry, not off the routed-to node.
+  simulation: true,
   inputs: particleSimulatorWebGLNode.inputs,
   resolveInputs: particleSimulatorWebGLNode.resolveInputs,
   resolveAuxOutputs: particleSimulatorWebGLNode.resolveAuxOutputs,

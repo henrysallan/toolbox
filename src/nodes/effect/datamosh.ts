@@ -430,6 +430,7 @@ export const datamoshNode: NodeDefinition = {
   backend: "webgl2",
   // Cached per-frame via fingerprintExtras (not stable:false) so a static graph
   // holds a constant and a moshed range re-fingerprints only per frame.
+  simulation: true,
   inputs: [
     { name: "imageA", label: "clip A", type: "image", required: false },
     { name: "imageB", label: "clip B", type: "image", required: false },

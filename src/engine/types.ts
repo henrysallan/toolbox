@@ -1,5 +1,6 @@
 import type { Object3DValue, CameraValue } from "./three-types";
 import type { TextStyle } from "./text-raster";
+import type { ColorRampInterp, ColorRampStop } from "./color-ramp";
 
 export type SocketType =
   | "image"
@@ -20,6 +21,13 @@ export type SocketType =
   | "points"
   | "audio"
   | "image_group"
+  // Ordered, possibly-mixed collection of socket values (see ListValue).
+  // Produced by the List node; consumed by the list transform nodes. Like
+  // `image_group` it holds BORROWED references — the producing node's cache
+  // entry owns any textures inside, so a list op must never release them
+  // (engine/list-value.ts documents the contract). No coercions: with mixed
+  // items there's no honest list→anything, so every conversion is a node.
+  | "list"
   // Live, still-editable text. Carries a TextInstanceValue — a resolved
   // base TextStyle + a set of variant strings — so text can be placed and
   // varied per-copy (string / size / weight / leading / font) *before* it's
@@ -73,7 +81,16 @@ export type SocketType =
   // its Scene Render / Scene Output boundary. `geometry` and `material`
   // join in M2.
   | "object3d"
-  | "camera";
+  | "camera"
+  // A colour ramp as a value (see ColorRampValue) — a CPU descriptor, no
+  // texture, in the same shape as sdf/position/force. Produced by the Color
+  // Ramp node's `ramp` aux output; consumed by every `color_ramp` PARAM, all
+  // of which become exposable the moment paramSocketType maps this type
+  // (graph-helpers.ts). That's what lets one authored palette drive Stroke's
+  // colour, Rasterize Spline's fill AND stroke ramps, Ascii, Diffusion
+  // Curves… instead of each node carrying a hand-rebuilt copy.
+  // Spec: 080526_on-node-color-ramp.md.
+  | "color_ramp";
 
 export type ImageValue = {
   kind: "image";
@@ -256,6 +273,21 @@ export type ImageGroupValue = {
   items: ImageValue[];
 };
 
+// An ordered, possibly-MIXED collection of socket values — the generic
+// container behind the List node family (080526_list-socket.md). Items are
+// full `SocketValue`s, so a list can carry text, numbers, and (in principle)
+// GPU-backed values side by side; nodes that need one item type derive it with
+// `listItemType()` rather than trusting a declared field.
+//
+// Deliberately minimal (no `itemType`): the kinds are discoverable by
+// inspection, a mixed list stays representable, and an empty list needs no
+// type. Ownership: items are BORROWED, exactly like ImageGroupValue's — see
+// engine/list-value.ts for the rule a list op node must follow.
+export type ListValue = {
+  kind: "list";
+  items: SocketValue[];
+};
+
 // Live text ready to be placed at points and varied per copy. Carries a
 // resolved base style plus the variant string set — NOT a raster, so a
 // consumer (Copy to Points) can re-derive each copy's TextStyle (override
@@ -268,6 +300,23 @@ export type TextInstanceValue = {
   kind: "text_instance";
   base: TextStyle;
   strings: string[];
+};
+
+// A colour ramp travelling as a wire. Plain CPU data — the same
+// `ColorRampStop[]` every `color_ramp` param already stores, so a wired ramp
+// substitutes into `params[<name>]` with no shape change at all
+// (socketToParamRaw returns `stops` verbatim; consumers keep their
+// `Array.isArray` check and their `sampleColorRamp` call).
+//
+// `interp` rides along but is NOT yet applied at the consuming end: the param
+// stores a bare array and saved projects depend on that (invariant #2), so
+// there is nowhere for a wired interpolation mode to land. A ramp set to
+// `ease` here samples `linear` once wired into Stroke. Carried anyway so
+// giving consumers an `<ramp>_interp` sibling param later is purely additive.
+export type ColorRampValue = {
+  kind: "color_ramp";
+  stops: ColorRampStop[];
+  interp: ColorRampInterp;
 };
 
 // =====================================================================
@@ -522,6 +571,7 @@ export type SocketValue =
   | PointsValue
   | AudioValue
   | ImageGroupValue
+  | ListValue
   | TextInstanceValue
   | ForceValue
   | EmitterValue
@@ -532,7 +582,8 @@ export type SocketValue =
   | ScalarFieldValue
   | ElementValue
   | Object3DValue
-  | CameraValue;
+  | CameraValue
+  | ColorRampValue;
 
 // SDF AST. Every SDF node's compute() returns one of these — a small
 // data tree, no GL work. The Rasterize node walks the tree, emits a
@@ -1205,6 +1256,14 @@ export interface ParamDef {
   // survive export-manifest serialization, and `step` stays the fallback
   // wherever sibling params aren't in reach (exported-app controls).
   stepFrom?: (params: Record<string, unknown>) => number | undefined;
+  // For "scalar" params: derive the control's upper bound from the node's
+  // CURRENT param values instead of the static `max` (e.g. Switch's `index`
+  // tops out at `count - 1`, so the slider spans exactly the slots that
+  // exist). A per-node range override still wins, and `max` stays the
+  // fallback wherever sibling params aren't in reach. UI-only hint like
+  // `stepFrom`: the engine ignores it (clamp in `compute`), and it doesn't
+  // survive export-manifest serialization.
+  maxFrom?: (params: Record<string, unknown>) => number | undefined;
   default: unknown;
   options?: string[];
   // Placeholder text for string-type params when the value is empty.
@@ -1225,7 +1284,14 @@ export interface ParamDef {
   //   "exr_layer" — a dropdown whose options come from the EXR layer list on
   //                 the node's sibling media param (`sequence`/`file`), not
   //                 from `options`. The value is the layer's stable id.
-  control?: "segmented" | "font" | "exr_layer";
+  // For "string" params (multiline):
+  //   "file_text"  — the textarea plus a "Load…" button that reads a text file
+  //                 into this same param, and a live item-count summary. The
+  //                 param stays a plain `string`, so unlike a `csv_file`-style
+  //                 param it remains exposable and wire-drivable (that's the
+  //                 whole reason the List node's source isn't a file param —
+  //                 080526_list-socket.md).
+  control?: "segmented" | "font" | "exr_layer" | "file_text";
   // For "color" params: the value may carry an alpha channel as 8-digit
   // `#rrggbbaa` hex. 6-digit always reads as fully opaque, controls keep
   // writing 6-digit while alpha is 1 (so opting in never rewrites stored
@@ -1334,6 +1400,19 @@ export interface NodeDefinition {
   // assumed to read time or other external state that isn't captured by its
   // params/inputs fingerprint. Defaults to true (cacheable).
   stable?: boolean;
+  // Marks a node whose output depends on state ACCUMULATED ACROSS FRAMES in
+  // ctx.state — every real simulation, plus temporal filters (Smooth) and
+  // feedback buffers (Trails, Accumulator, the Simulation Zone pair). Such a
+  // node cannot be rendered correctly at an arbitrary frame from a cold
+  // start; it has to be stepped there from frame 0.
+  //
+  // The export drivers read this (via lib/sim-preroll.ts) to decide whether
+  // switching the engine to the export resolution — which recreates the
+  // backend and therefore WIPES ctx.state — needs a pre-roll to rebuild the
+  // accumulated state before capture. Set it only when a state wipe would
+  // visibly change the node's output AND ctx.time (never wall-clock) drives
+  // the accumulation, since a pre-roll can only reproduce the former.
+  simulation?: boolean;
   inputs: InputSocketDef[];
   // Optional: derive the active input socket list from params and from
   // the source-output types of any currently-wired edges. The

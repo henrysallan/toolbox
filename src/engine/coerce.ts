@@ -174,6 +174,20 @@ export function coerceValue(
     if (target === "uv") return value;
   }
 
+  // Vector widening — pad with z = 0 and w = 1 (a point's homogeneous
+  // coordinate; a colour's opaque alpha). Widening only, deliberately: see
+  // `coercible` in graph-helpers.ts. This is what lets a Switch mix vec
+  // arities across its slots, and lets a vec3 drive a colour (vec4) param.
+  if (value.kind === "vec2") {
+    const [x, y] = value.value;
+    if (target === "vec3") return { kind: "vec3", value: [x, y, 0] };
+    if (target === "vec4") return { kind: "vec4", value: [x, y, 0, 1] };
+  }
+  if (value.kind === "vec3") {
+    const [x, y, z] = value.value;
+    if (target === "vec4") return { kind: "vec4", value: [x, y, z, 1] };
+  }
+
   // Image → uv: reinterpret R/G as per-pixel (u, v). Zero-copy — UV fields
   // live in the same RGBA pool textures as images (see allocUv), and every
   // uv consumer samples `.rg`, so re-wrapping the texture is the whole job.

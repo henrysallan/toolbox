@@ -63,6 +63,9 @@ export interface MenuBarProps {
   canSaveIncremental: boolean;
   // Opens the cloud project browser (the "Projects…" item).
   onOpenLoad: () => void;
+  // Toolbox → the version row. Brings the landing gateway back over the
+  // editor; the current project stays loaded behind it.
+  onOpenLanding: () => void;
   // Opens the Assets view in the parameter panel (the "Assets" item).
   onOpenAssets: () => void;
   // Opens the OS file picker to load a local .toolbox file ("Load…").
@@ -172,6 +175,7 @@ export default function MenuBar({
   onSaveIncremental,
   canSaveIncremental,
   onOpenLoad,
+  onOpenLanding,
   onOpenAssets,
   onOpenProjectFile,
   recentProjects,
@@ -317,7 +321,13 @@ export default function MenuBar({
       id: "toolbox",
       label: "Toolbox",
       items: [
-        { kind: "item", label: `Toolbox v${CURRENT_VERSION}`, disabled: true },
+        {
+          // The version row doubles as the way back to the landing
+          // gateway (the project browser you get on a clean visit).
+          kind: "item",
+          label: `Toolbox v${CURRENT_VERSION}`,
+          onClick: onOpenLanding,
+        },
         ...updateItems,
         { kind: "divider" },
         {

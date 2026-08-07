@@ -454,6 +454,7 @@ export const ropeSimulatorNode: NodeDefinition = {
   backend: "webgl2",
   // Output depends on persistent per-node state — advance every eval.
   stable: false,
+  simulation: true,
   // Spline output — the universal matte has nothing to matte.
   noMaskInput: true,
   inputs: [{ name: "splines", type: "spline", required: true }],

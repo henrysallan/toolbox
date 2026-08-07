@@ -26,7 +26,15 @@ import {
   BAR_SLIDER_RADIUS,
   MiniBarSlider,
   NumberField,
+  hexAlpha01,
+  hexToHsl,
+  hslToHex,
+  sampleRampAlpha,
+  sampleRampColor,
+  withHexAlpha,
 } from "@/lib/param-controls";
+import { HslField } from "@/lib/number-field";
+import { COLOR_RAMP_MAX_STOPS, newStopId } from "@/nodes/effect/color-ramp";
 import {
   startPointerDrag,
   useCoarsePointer,
@@ -55,13 +63,17 @@ const HANDLE_HIT = 20;
 const PEEK_DWELL_MS = 2000;
 
 // Node types that surface an editable text box directly on the node body,
-// mapped to the string param it edits. Both params are declared
+// mapped to the string param it edits. Every param here is declared
 // `multiline: true`, so the on-node control is a <textarea>. Edits route
 // through the shared `effect-node-param` event (→ onParamChange), same as
 // the header dropdowns and Color swatches.
 const STRING_INPUT_PARAMS: Record<string, string> = {
   "string-literal": "value",
   text: "text",
+  // Expression's source is the whole point of the node — reading the graph
+  // means reading the formula, so it goes on the body next to the input
+  // variables the header `+` mints rather than only in the panel.
+  expression: "expression",
 };
 
 // Node types that surface an inline scalar slider on the node body, mapped to
@@ -70,6 +82,10 @@ const STRING_INPUT_PARAMS: Record<string, string> = {
 // `effect-node-param` event.
 const SCALAR_INPUT_PARAMS: Record<string, string> = {
   constant: "value",
+  // Switch's `index` — which slot is live is the one thing you flip while
+  // looking at the graph, so it gets a bar on the node. Its range follows
+  // `count` via ParamDef.maxFrom.
+  switch: "index",
 };
 
 // Node types that surface a colour swatch on the node body, mapped to
@@ -96,6 +112,19 @@ const COLOR_SWATCH_PARAMS: Record<
   "sdf-spline": { color: "color", paint: "paint" },
   "sdf-from-image": { color: "color", paint: "paint" },
   "sdf-material": { color: "color" },
+};
+
+// Node types that surface a mini colour-ramp editor on the node body, mapped
+// to the `color_ramp` param it edits. A registry rather than "any node with a
+// color_ramp param" because four of the ramp-bearing nodes (Ascii, Stroke,
+// Rasterize Spline, Diffusion Curves) declare TWO, and there's no honest rule
+// for which one belongs on the body — see 080526_on-node-color-ramp.md.
+//
+// The widget is the panel's ColorRampControl minus the per-stop keyframe /
+// expose affordances: bar + selected-stop row + H/S/L/A. Interpolation rides
+// the header dropdown (def.headerControl) instead of eating a body row.
+const RAMP_WIDGET_PARAMS: Record<string, string> = {
+  "color-ramp": "stops",
 };
 
 interface ExposedSocket {
@@ -355,8 +384,9 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   const active2 = !!data.active2;
   const bypassed = !!data.bypassed;
 
-  // On-node text box: String source (`value`) and Text node (`text`) render
-  // an editable box on the node body. The placeholder comes from the def.
+  // On-node text box: String source (`value`), Text (`text`) and Expression
+  // (`expression`) render an editable box on the node body. The placeholder
+  // comes from the def.
   const stringInputParam: string | undefined = STRING_INPUT_PARAMS[data.defType];
   const stringPlaceholder = useMemo(() => {
     if (!stringInputParam) return undefined;
@@ -376,7 +406,9 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
     if (!p || p.type !== "scalar") return null;
     const ov = data.paramOverrides?.[scalarInputParam];
     const min = ov?.min ?? p.min ?? 0;
-    const max = ov?.max ?? p.max ?? 1;
+    // Param-driven upper bound (maxFrom — Switch's `index` spans exactly the
+    // slots `count` mints). Override wins, `max` is the fallback.
+    const max = ov?.max ?? p.maxFrom?.(data.params) ?? p.max ?? 1;
     // Param-driven increment (stepFrom — e.g. Constant's value follows its
     // `step`/`mode` params). When active, edits snap to k·step (see
     // NodeScalarSlider) so the on-node bar matches the ParamPanel row.
@@ -391,15 +423,49 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   const colorSwatch = COLOR_SWATCH_PARAMS[data.defType];
   const [swatchOpen, setSwatchOpen] = useState(false);
 
+  // On-node mini colour ramp (Color Ramp). The stops live in data.params; the
+  // only local state is which stop is selected, held here rather than inside
+  // the widget so it survives the widget's re-renders.
+  const rampParam: string | undefined = RAMP_WIDGET_PARAMS[data.defType];
+  const rampStops: ColorRampStop[] | null = useMemo(() => {
+    if (!rampParam) return null;
+    const raw = data.params[rampParam];
+    return Array.isArray(raw) ? (raw as ColorRampStop[]) : [];
+  }, [rampParam, data.params]);
+  const [rampSelId, setRampSelId] = useState<string | null>(null);
+
+  // The two nodes whose output IS a colour: the Color node (one swatch per
+  // colour output) and Solid Color (one colour, one image out). Both carry a
+  // clickable swatch on the output row and the shared H/S/L/A row below.
+  // Declared up here because `minWidth` sizes for that row.
+  const isColorNode = data.defType === "color-literal";
+  const isSolidColorNode = data.defType === "solid-color";
+  const hasOutSwatch = isColorNode || isSolidColorNode;
+
   // Content-driven minimum width (the auto size when unresized). Reused as
   // the outer div's minWidth AND the resize clamp floor.
   const minWidth = isQueue
     ? 300
     : data.defType === "collect"
       ? 240
-      : data.defType === "color-literal"
-        ? 220
-        : 200;
+      : // Four labelled number fields across, in one row.
+        hasOutSwatch
+        ? 260
+        : // Ramp nodes sit NARROWER than the 200 default, not wider. Same
+          // H/S/L/A fields, but stacked 2×2 instead of 4-across — a ramp is a
+          // tall control, and a node that's mostly gradient reads better than
+          // one padded out to fit a single row of number fields. Still
+          // resizable: bar and grid both flex if it's dragged wider.
+          rampParam
+          ? 150
+          : // Constant is half the default: its whole body is one bar + one
+            // number, so 200 was mostly empty padding, and these tend to
+            // appear in clusters feeding exposed inputs. 100 is the floor
+            // the NodeScalarSlider row still fits in (MiniBarSlider's
+            // minWidth 40 + the number field, inside 8px side padding).
+            data.defType === "constant"
+            ? 100
+            : 200;
 
   // Bottom-right resize grip. Drag = live local preview (the outer div grows
   // as the right/bottom edges follow the cursor — the top-left corner is the
@@ -493,8 +559,9 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   // Color node on-node controls: one swatch per color output; clicking a
   // swatch opens the picker popover anchored under its row. `pickerFor`
   // holds the color param name being edited (null = closed). Spec:
-  // 071026_color-node-multi-output.md.
-  const isColorNode = data.defType === "color-literal";
+  // 071026_color-node-multi-output.md. Solid Color reuses the whole
+  // arrangement — one output, one `color` param, so row-1 anchoring lands
+  // as-is and `palette` stays null for it.
   const [pickerFor, setPickerFor] = useState<string | null>(null);
   const colorHexFor = (paramName: string): string => {
     const v = data.params[paramName];
@@ -503,6 +570,18 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   const colorNodeCount = isColorNode
     ? Math.max(1, Math.floor((data.params.count as number) ?? 1))
     : 1;
+  // 1-based index behind a color param name ("color" → 1, "color3" → 3).
+  const colorParamIndex = (name: string): number =>
+    name === "color" ? 1 : parseInt(name.slice("color".length), 10) || 1;
+  // Which colour the bottom H/S/L/A row edits. Only the Color node with
+  // count > 1 offers a choice; clicking a swatch moves the selection (and
+  // opens that swatch's picker, as before). Dropping `count` can strand the
+  // selection on a colour that no longer has an output — fall back to 1.
+  const [selectedColorParam, setSelectedColorParam] = useState("color");
+  const hslColorParam =
+    colorParamIndex(selectedColorParam) <= colorNodeCount
+      ? selectedColorParam
+      : "color";
   // Palette mode: with an image wired into the Color node, compute
   // extracts a palette and announces it via "color-node-palette". The
   // swatches mirror it read-only — the stored params are inert while the
@@ -1127,7 +1206,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                 paddingRight: 14,
               }}
             >
-              {isColorNode && (
+              {hasOutSwatch && (
                 <ColorSwatchButton
                   color={swatchHexFor(1, "color")}
                   title={
@@ -1136,7 +1215,11 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                       : "Edit color"
                   }
                   disabled={!!palette}
-                  onClick={() => setPickerFor("color")}
+                  selected={colorNodeCount > 1 && hslColorParam === "color"}
+                  onClick={() => {
+                    setSelectedColorParam("color");
+                    setPickerFor("color");
+                  }}
                 />
               )}
               <span
@@ -1215,17 +1298,18 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               >
                 {isColorNode && !isVirtual && (
                   <ColorSwatchButton
-                    color={swatchHexFor(
-                      parseInt(aux.name.slice("color".length), 10) || 1,
-                      aux.name
-                    )}
+                    color={swatchHexFor(colorParamIndex(aux.name), aux.name)}
                     title={
                       palette
                         ? "Palette from image — disconnect to edit"
                         : `Edit ${aux.label ?? aux.name}`
                     }
                     disabled={!!palette}
-                    onClick={() => setPickerFor(aux.name)}
+                    selected={hslColorParam === aux.name}
+                    onClick={() => {
+                      setSelectedColorParam(aux.name);
+                      setPickerFor(aux.name);
+                    }}
                   />
                 )}
                 {!isVirtual && (
@@ -1251,17 +1335,13 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           );
         })}
 
-        {isColorNode &&
+        {hasOutSwatch &&
           pickerFor &&
           (() => {
             // Anchor the popover just under the row whose swatch opened
             // it. Color N sits at row N-1 (primary is color 1, aux
             // colorN follows in order).
-            const n =
-              pickerFor === "color"
-                ? 1
-                : parseInt(pickerFor.slice("color".length), 10) || 1;
-            const rowTop = PAD_Y + (n - 1) * ROW_H;
+            const rowTop = PAD_Y + (colorParamIndex(pickerFor) - 1) * ROW_H;
             return (
               <ColorPickerPopover
                 value={colorHexFor(pickerFor)}
@@ -1325,6 +1405,12 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             snapToStep={scalarConfig.snapToStep}
             sliderMin={scalarConfig.sliderMin}
             sliderMax={scalarConfig.sliderMax}
+            // Keep the bar's floor in step with whatever width this node
+            // type declares: row budget = minWidth − 16px side padding −
+            // 4px gap − the 44px number field. Constant's 100 leaves 36.
+            // Without this the bar's own 40px floor wins and the node
+            // renders wider than its minWidth (it auto-sizes to content).
+            barMinWidth={Math.max(24, minWidth - 64)}
           />
         </div>
       )}
@@ -1351,6 +1437,47 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             }
             open={swatchOpen}
             setOpen={setSwatchOpen}
+          />
+        </div>
+      )}
+
+      {hasOutSwatch && (
+        <div
+          style={{
+            padding: "6px 8px",
+            borderTop: "1px solid var(--tb-n-7)",
+          }}
+        >
+          <NodeHslRow
+            id={id}
+            colorParam={hslColorParam}
+            alphaParam="alpha"
+            // Palette mode shows the extracted colour, matching the swatch.
+            color={swatchHexFor(colorParamIndex(hslColorParam), hslColorParam)}
+            alpha={
+              typeof data.params.alpha === "number"
+                ? (data.params.alpha as number)
+                : 1
+            }
+            colorReadOnly={!!palette}
+            readOnlyTitle="Palette from image — disconnect to edit"
+          />
+        </div>
+      )}
+
+      {rampParam && rampStops && (
+        <div
+          style={{
+            padding: "6px 8px",
+            borderTop: "1px solid var(--tb-n-7)",
+          }}
+        >
+          <NodeColorRamp
+            id={id}
+            paramName={rampParam}
+            stops={rampStops}
+            selectedId={rampSelId}
+            setSelectedId={setRampSelId}
           />
         </div>
       )}
@@ -1593,7 +1720,8 @@ function RenderQueueButton({ id }: { id: string }) {
   );
 }
 
-// Editable text box rendered on the node body (String source + Text node).
+// Editable text box rendered on the node body (String source, Text,
+// Expression — see STRING_INPUT_PARAMS).
 // Buffered-controlled: a local value backs the textarea while the user is
 // editing so the round-trip through effect-node-param → onParamChange →
 // re-render can't jump the caret. External changes (undo, a wired string
@@ -1841,6 +1969,7 @@ function NodeScalarSlider({
   snapToStep,
   sliderMin,
   sliderMax,
+  barMinWidth,
 }: {
   id: string;
   paramName: string;
@@ -1854,12 +1983,23 @@ function NodeScalarSlider({
   snapToStep?: boolean;
   sliderMin: number;
   sliderMax: number;
+  // Host's node minWidth is tighter than the bar's 40px default floor —
+  // without this the bar wins and the node renders wider than it declares.
+  barMinWidth?: number;
 }) {
   const conns = useNodeConnections({
     handleType: "target",
     handleId: `in:param:${paramName}`,
   });
-  const wired = conns.length > 0;
+  // A node may ALSO carry a real input socket of the same name that outranks
+  // the stored param at eval time — Switch's `index`, the live-switching
+  // wire. Read-only then, exactly as for an exposed-param wire, so the bar
+  // never invites an edit the evaluator will ignore.
+  const socketConns = useNodeConnections({
+    handleType: "target",
+    handleId: `in:${paramName}`,
+  });
+  const wired = conns.length > 0 || socketConns.length > 0;
   const emit = (raw: number) => {
     let v = raw;
     if (snapToStep && step > 0 && Number.isFinite(v)) {
@@ -1909,6 +2049,7 @@ function NodeScalarSlider({
         max={sliderMax}
         step={step}
         onChange={emit}
+        minWidth={barMinWidth}
       />
       <NumberField
         value={value}
@@ -1918,6 +2059,388 @@ function NodeScalarSlider({
         step={step}
         width={44}
       />
+    </div>
+  );
+}
+
+// Checkerboard behind the ramp bar and its handles, so a partly transparent
+// stop reads as transparent rather than as a dark colour.
+const RAMP_CHECKER =
+  "repeating-conic-gradient(var(--tb-n-3) 0% 25%, var(--tb-n-1) 0% 50%) 0 0 / 6px 6px";
+
+// Inline colour-ramp editor on the node body (Color Ramp). A compact twin of
+// the panel's ColorRampControl — same gestures, same model, same
+// `effect-node-param` round-trip, so undo coalescing (`param:<id>:<name>`),
+// autokey and the removed-stop cleanup in onParamChange all apply unchanged.
+//
+// Deliberately NOT a superset of the panel control: no per-stop keyframe
+// diamonds and no expose buttons. This is the quick-adjust surface you use
+// while looking at the canvas; the panel stays the complete one.
+//
+// Selection lives in the parent (EffectNode) so it survives this component's
+// re-renders, and falls back to the leftmost stop rather than rendering an
+// empty "pick a stop" state — on a node there is no room to spend a row
+// saying nothing.
+function NodeColorRamp({
+  id,
+  paramName,
+  stops,
+  selectedId,
+  setSelectedId,
+}: {
+  id: string;
+  paramName: string;
+  stops: ColorRampStop[];
+  selectedId: string | null;
+  setSelectedId: (v: string | null) => void;
+}) {
+  const panelWin = usePanelWindow();
+  const barRef = useRef<HTMLDivElement>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  // A wire into the exposed ramp param wins at eval (M2 of
+  // 080526_on-node-color-ramp.md), so the editor goes read-only — same
+  // contract as NodeScalarSlider.
+  const conns = useNodeConnections({
+    handleType: "target",
+    handleId: `in:param:${paramName}`,
+  });
+  const wired = conns.length > 0;
+
+  // Latest stops for the pointermove handler, so a drag doesn't re-subscribe
+  // the window listeners on every emitted frame. Synced in an effect rather
+  // than during render — writing a ref in the render body is what
+  // react-hooks/refs flags, and the commit lands well before any pointer
+  // event can read it.
+  const stopsRef = useRef(stops);
+  useEffect(() => {
+    stopsRef.current = stops;
+  }, [stops]);
+
+  const emit = (next: ColorRampStop[]) =>
+    window.dispatchEvent(
+      new CustomEvent("effect-node-param", {
+        detail: { id, name: paramName, value: next },
+      })
+    );
+
+  useEffect(() => {
+    if (!dragId) return;
+    const onMove = (e: PointerEvent) => {
+      const rect = barRef.current?.getBoundingClientRect();
+      if (!rect || rect.width === 0) return;
+      // clientX and the rect are both post-zoom screen px, so the ratio is
+      // zoom-invariant — no need to divide out the flow transform.
+      const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      window.dispatchEvent(
+        new CustomEvent("effect-node-param", {
+          detail: {
+            id,
+            name: paramName,
+            value: stopsRef.current.map((s) =>
+              s.id === dragId ? { ...s, position: pos } : s
+            ),
+          },
+        })
+      );
+    };
+    const onUp = () => setDragId(null);
+    const win = panelWin ?? window;
+    win.addEventListener("pointermove", onMove);
+    win.addEventListener("pointerup", onUp);
+    win.addEventListener("pointercancel", onUp);
+    return () => {
+      win.removeEventListener("pointermove", onMove);
+      win.removeEventListener("pointerup", onUp);
+      win.removeEventListener("pointercancel", onUp);
+    };
+  }, [dragId, panelWin, id, paramName]);
+
+  const sorted = [...stops].sort((a, b) => a.position - b.position);
+  const selected = stops.find((s) => s.id === selectedId) ?? sorted[0] ?? null;
+  const selColor = selected?.color ?? "#000000";
+  const selAlpha = Math.max(0, Math.min(1, selected?.alpha ?? 1));
+
+  // Local H/S/L draft, mirroring ColorControl: hex→HSL→hex is lossy at the
+  // achromatic edges (S 0, L 0/100 all collapse the hue), so typing a hue on
+  // a black stop would snap back to 0 on every keystroke without this. The
+  // key carries the stop id so SELECTING another stop resyncs, while our own
+  // emits (which pre-stamp the key) do not.
+  const [hsl, setHsl] = useState<[number, number, number]>(() =>
+    hexToHsl(selColor)
+  );
+  const hslKeyRef = useRef(`${selected?.id ?? ""}|${selColor}`);
+  useEffect(() => {
+    const key = `${selected?.id ?? ""}|${selColor}`;
+    if (key !== hslKeyRef.current) {
+      hslKeyRef.current = key;
+      setHsl(hexToHsl(selColor));
+    }
+  }, [selected?.id, selColor]);
+
+  const gradientCss =
+    sorted.length === 0
+      ? "transparent"
+      : sorted.length === 1
+        ? (() => {
+            const c = withHexAlpha(sorted[0].color, sorted[0].alpha ?? 1);
+            return `linear-gradient(${c}, ${c})`;
+          })()
+        : `linear-gradient(to right, ${sorted
+            .map(
+              (s) =>
+                `${withHexAlpha(s.color, s.alpha ?? 1)} ${(s.position * 100).toFixed(2)}%`
+            )
+            .join(", ")})`;
+
+  function patchSelected(patch: Partial<ColorRampStop>) {
+    if (!selected) return;
+    emit(stops.map((s) => (s.id === selected.id ? { ...s, ...patch } : s)));
+  }
+
+  function addStopAt(pos: number) {
+    if (stops.length >= COLOR_RAMP_MAX_STOPS) return;
+    const p = Math.max(0, Math.min(1, pos));
+    // Sample the ramp at the click so the new stop starts as the colour that
+    // was already showing there — inserting a stop shouldn't change the ramp.
+    // The empty-ramp guard matters: sampleRampColor returns a `var(--tb-n-12)`
+    // placeholder with no stops to sample, and a CSS var must never be stored
+    // into a project (it resolves nowhere in an exported app).
+    const stop: ColorRampStop = {
+      id: newStopId(),
+      position: p,
+      color: sorted.length > 0 ? sampleRampColor(sorted, p) : "#ffffff",
+      alpha: sorted.length > 0 ? sampleRampAlpha(sorted, p) : 1,
+    };
+    emit([...stops, stop]);
+    setSelectedId(stop.id);
+  }
+
+  function removeSelected() {
+    if (!selected || stops.length <= 1) return;
+    emit(stops.filter((s) => s.id !== selected.id));
+    // Clear rather than pick: `selected` falls back to the leftmost stop, so
+    // this lands somewhere predictable. Picking next[0] would follow STORED
+    // order, which is whatever order stops happened to be added in.
+    setSelectedId(null);
+  }
+
+  const setChannel = (idx: 0 | 1 | 2, v: number) => {
+    if (!selected) return;
+    const next: [number, number, number] = [...hsl];
+    next[idx] = Math.max(0, Math.min(idx === 0 ? 360 : 100, Math.round(v)));
+    setHsl(next);
+    const hex = hslToHex(next[0], next[1], next[2]);
+    hslKeyRef.current = `${selected.id}|${hex}`;
+    patchSelected({ color: hex });
+  };
+
+  const dim: React.CSSProperties = wired
+    ? { opacity: 0.5, pointerEvents: "none" }
+    : {};
+  const selIndex = selected
+    ? sorted.findIndex((s) => s.id === selected.id) + 1
+    : 0;
+
+  return (
+    <div
+      className="nodrag"
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+      style={{ display: "flex", flexDirection: "column", gap: 6, position: "relative" }}
+    >
+      <div
+        ref={barRef}
+        title={wired ? "Driven by a wired input" : "Click to add a stop"}
+        onPointerDown={(e) => {
+          if (wired) return;
+          // Handles are children that overhang the bar — only a press on the
+          // track itself inserts.
+          if (e.target !== e.currentTarget) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          addStopAt((e.clientX - rect.left) / rect.width);
+        }}
+        style={{
+          position: "relative",
+          height: 20,
+          background: `${gradientCss}, ${RAMP_CHECKER}`,
+          border: "1px solid var(--tb-n-7)",
+          borderRadius: 3,
+          cursor: wired ? "default" : "copy",
+          opacity: wired ? 0.6 : 1,
+          boxSizing: "border-box",
+        }}
+      >
+        {sorted.map((s) => {
+          const isSel = s.id === selected?.id;
+          const c8 = withHexAlpha(s.color, s.alpha ?? 1);
+          return (
+            <div
+              key={s.id}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                setSelectedId(s.id);
+                if (!wired) setDragId(s.id);
+              }}
+              title={`${s.color} · α ${(s.alpha ?? 1).toFixed(2)} · pos ${s.position.toFixed(3)}`}
+              style={{
+                position: "absolute",
+                left: `${Math.max(0, Math.min(1, s.position)) * 100}%`,
+                top: -3,
+                bottom: -3,
+                width: 9,
+                transform: "translateX(-50%)",
+                boxSizing: "border-box",
+                background: `linear-gradient(${c8}, ${c8}), ${RAMP_CHECKER}`,
+                border: `1px solid ${isSel ? "var(--tb-n-17)" : "var(--tb-n-9)"}`,
+                // A second ring in the surface colour so a light stop on a
+                // light part of the ramp still reads as a separate object.
+                boxShadow: `0 0 0 1px var(--tb-n-1)`,
+                borderRadius: 3,
+                cursor: wired ? "default" : "ew-resize",
+              }}
+            />
+          );
+        })}
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          ...dim,
+        }}
+      >
+        <span
+          title="Selected stop, by position along the ramp"
+          style={{
+            fontSize: 10,
+            color: "var(--tb-n-11)",
+            fontVariantNumeric: "tabular-nums",
+            flexShrink: 0,
+          }}
+        >
+          {selIndex}/{sorted.length}
+        </span>
+        {/* No "Pos" label — at this width the field has to carry its own
+            meaning, and its tooltip says so. The flex wrapper (with
+            minWidth 0) is what lets the field's `width: 100%` shrink instead
+            of overflowing the row. */}
+        <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
+          <NumberField
+            value={selected?.position ?? 0}
+            onChange={(v) =>
+              patchSelected({ position: Math.max(0, Math.min(1, v)) })
+            }
+            min={0}
+            max={1}
+            step={0.001}
+            width="100%"
+            title="Position along the ramp · drag to scrub, click to type"
+          />
+        </div>
+        <button
+          className="nodrag"
+          title="Edit this stop's colour"
+          onClick={(e) => {
+            e.stopPropagation();
+            setPickerOpen(!pickerOpen);
+          }}
+          style={{
+            width: 22,
+            height: 16,
+            padding: 0,
+            flexShrink: 0,
+            borderRadius: 3,
+            border: "1px solid var(--tb-n-9)",
+            background: `linear-gradient(${withHexAlpha(selColor, selAlpha)}, ${withHexAlpha(selColor, selAlpha)}), ${RAMP_CHECKER}`,
+            cursor: "pointer",
+          }}
+        />
+        <button
+          className="nodrag"
+          title={
+            stops.length <= 1 ? "A ramp needs at least one stop" : "Remove this stop"
+          }
+          disabled={stops.length <= 1}
+          onClick={(e) => {
+            e.stopPropagation();
+            removeSelected();
+          }}
+          style={{
+            width: 14,
+            height: 14,
+            padding: 0,
+            marginLeft: "auto",
+            flexShrink: 0,
+            lineHeight: "12px",
+            fontSize: 11,
+            borderRadius: 3,
+            border: "1px solid var(--tb-n-7)",
+            background: "transparent",
+            color: stops.length <= 1 ? "var(--tb-n-9)" : "var(--tb-n-11)",
+            cursor: stops.length <= 1 ? "not-allowed" : "pointer",
+            fontFamily: "inherit",
+          }}
+        >
+          ×
+        </button>
+      </div>
+
+      {/* H/S/L/A as a 2×2 grid, not a 4-across row: four labelled number
+          fields need ~260px of node, and a ramp node wants to be narrow. The
+          grid keeps every channel one click away at 150px and simply
+          stretches if the node is dragged wider. */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 4,
+          ...dim,
+        }}
+      >
+        {(["H", "S", "L"] as const).map((lbl, i) => (
+          <HslField
+            key={lbl}
+            label={lbl}
+            value={hsl[i]}
+            max={i === 0 ? 360 : 100}
+            onChange={(v) => setChannel(i as 0 | 1 | 2, v)}
+            grow
+          />
+        ))}
+        <HslField
+          label="A"
+          value={Math.round(selAlpha * 100)}
+          max={100}
+          onChange={(v) =>
+            patchSelected({ alpha: Math.max(0, Math.min(100, v)) / 100 })
+          }
+          grow
+        />
+      </div>
+
+      {pickerOpen && !wired && (
+        <ColorPickerPopover
+          // The stop model keeps colour and alpha in separate fields; the
+          // picker speaks 8-digit hex, so compose on the way in and split on
+          // the way out.
+          value={withHexAlpha(selColor, selAlpha)}
+          alpha
+          onChange={(hex) => {
+            const rgb = hex.slice(0, 7);
+            hslKeyRef.current = `${selected?.id ?? ""}|${rgb}`;
+            setHsl(hexToHsl(rgb));
+            patchSelected({ color: rgb, alpha: hexAlpha01(hex) });
+          }}
+          onClose={() => setPickerOpen(false)}
+          style={{ top: "100%", right: 0, marginTop: 4 }}
+        />
+      )}
     </div>
   );
 }
@@ -2116,6 +2639,137 @@ function AiEditButton({ id }: { id: string }) {
   );
 }
 
+// Compact H/S/L/A row on the node body, for the nodes whose output IS a
+// colour (Color, Solid Color). Same four fields the Color Ramp puts under
+// its bar, and there for the same reason: nudging one channel shouldn't
+// cost a trip through the picker popover.
+//
+// Unlike the ramp — whose stops carry colour and alpha in one object —
+// these nodes keep them in two params, an RGB hex and a 0..1 scalar. So A
+// reads and writes as a percentage of `alphaParam`, and the two halves lock
+// independently: a wire into the colour param must not grey out an alpha
+// that is still live (exactly what happens in the Color node's palette
+// mode, where the image drives the colours but `alpha` still applies).
+//
+// The local H/S/L draft mirrors NodeColorRamp's: hex→HSL→hex is lossy at
+// the achromatic edges (S 0, L 0/100 all collapse the hue), so typing a hue
+// on a black colour would snap back to 0 on every keystroke without it.
+// `syncKey` carries the target param name, so SWITCHING which colour is
+// selected resyncs the draft while our own emits (which pre-stamp the key)
+// do not.
+function NodeHslRow({
+  id,
+  colorParam,
+  alphaParam,
+  color,
+  alpha,
+  colorReadOnly,
+  readOnlyTitle,
+}: {
+  id: string;
+  colorParam: string;
+  alphaParam: string;
+  color: string;
+  alpha: number;
+  colorReadOnly?: boolean;
+  readOnlyTitle?: string;
+}) {
+  // A wire into either exposed param wins at eval, so that half goes
+  // read-only — same contract as NodeScalarSlider and NodeColorRamp.
+  const colorConns = useNodeConnections({
+    handleType: "target",
+    handleId: `in:param:${colorParam}`,
+  });
+  const alphaConns = useNodeConnections({
+    handleType: "target",
+    handleId: `in:param:${alphaParam}`,
+  });
+  const colorWired = colorConns.length > 0;
+  const colorLocked = !!colorReadOnly || colorWired;
+  const alphaLocked = alphaConns.length > 0;
+
+  const [hsl, setHsl] = useState<[number, number, number]>(() =>
+    hexToHsl(color)
+  );
+  const syncKey = useRef(`${colorParam}|${color}`);
+  useEffect(() => {
+    const key = `${colorParam}|${color}`;
+    if (key !== syncKey.current) {
+      syncKey.current = key;
+      setHsl(hexToHsl(color));
+    }
+  }, [colorParam, color]);
+
+  const emit = (name: string, value: unknown) =>
+    window.dispatchEvent(
+      new CustomEvent("effect-node-param", { detail: { id, name, value } })
+    );
+
+  const setChannel = (idx: 0 | 1 | 2, v: number) => {
+    const next: [number, number, number] = [...hsl];
+    next[idx] = Math.max(0, Math.min(idx === 0 ? 360 : 100, Math.round(v)));
+    setHsl(next);
+    const hex = hslToHex(next[0], next[1], next[2]);
+    syncKey.current = `${colorParam}|${hex}`;
+    emit(colorParam, hex);
+  };
+
+  // Each field gets its own flex:1 cell so all four come out the same width
+  // — grouping H/S/L under one flex:3 box would charge that box for its two
+  // internal gaps and leave A a few px wider.
+  const cell = (locked: boolean): React.CSSProperties => ({
+    display: "flex",
+    flex: 1,
+    minWidth: 0,
+    ...(locked ? { opacity: 0.5, pointerEvents: "none" } : null),
+  });
+
+  // The lock message rides the row, not the cells: `pointerEvents: none` is
+  // what makes a cell inert, and an inert element never shows a title.
+  const lockTitle =
+    colorLocked && alphaLocked
+      ? "Driven by wired inputs"
+      : colorWired
+        ? "Color driven by a wired input"
+        : colorReadOnly
+          ? readOnlyTitle
+          : alphaLocked
+            ? "Alpha driven by a wired input"
+            : undefined;
+
+  return (
+    <div
+      className="nodrag"
+      title={lockTitle}
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+      style={{ display: "flex", alignItems: "center", gap: 4 }}
+    >
+      {(["H", "S", "L"] as const).map((lbl, i) => (
+        <div key={lbl} style={cell(colorLocked)}>
+          <HslField
+            label={lbl}
+            value={hsl[i]}
+            max={i === 0 ? 360 : 100}
+            onChange={(v) => setChannel(i as 0 | 1 | 2, v)}
+            grow
+          />
+        </div>
+      ))}
+      <div style={cell(alphaLocked)}>
+        <HslField
+          label="A"
+          value={Math.round(Math.max(0, Math.min(1, alpha)) * 100)}
+          max={100}
+          onChange={(v) => emit(alphaParam, Math.max(0, Math.min(100, v)) / 100)}
+          grow
+        />
+      </div>
+    </div>
+  );
+}
+
 // On-node color swatch (Color node output rows) — clicking opens the
 // picker popover for that output's param. Checker underlay is unnecessary:
 // param colors are RGB hex (alpha is a separate param).
@@ -2124,18 +2778,24 @@ function ColorSwatchButton({
   title,
   onClick,
   disabled,
+  selected,
 }: {
   color: string;
   title: string;
   onClick: () => void;
   // Palette mode (image wired) — the swatch is a readout, not an editor.
   disabled?: boolean;
+  // This is the colour the body's H/S/L/A row edits. Only set when there is
+  // more than one swatch to choose between, so a single-colour node never
+  // wears a selection ring for a choice it doesn't offer.
+  selected?: boolean;
 }) {
   const [hover, setHover] = useState(false);
   // The swatch IS its colour, so hover brightens the inset ring rather than
   // the fill — nothing about the value on screen may shift. A disabled
-  // swatch is a readout and stays inert.
-  const lit = hover && !disabled;
+  // swatch is inert to hover, but still shows selection: which colour the
+  // H/S/L/A row points at stays meaningful in palette mode.
+  const lit = selected || (hover && !disabled);
   return (
     <button
       className="nodrag"

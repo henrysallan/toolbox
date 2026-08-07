@@ -290,6 +290,10 @@ export const expressionNode: NodeDefinition = {
       type: "string",
       multiline: true,
       default: "x",
+      // Shown in the on-node box (EffectNode's STRING_INPUT_PARAMS) and the
+      // panel when the source is cleared — an empty expression outputs 0,
+      // which is otherwise indistinguishable from a broken one.
+      placeholder: "sin(t) * x",
     },
     {
       name: "out_type",

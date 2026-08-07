@@ -196,6 +196,7 @@ export const trailsNode: NodeDefinition = {
   backend: "webgl2",
   // Time-dependent by nature — each eval reads last frame's output.
   stable: false,
+  simulation: true,
   inputs: [{ name: "image", type: "image", required: true }],
   resolveInputs(params) {
     const mode = (params.mode as string) ?? "feedback";

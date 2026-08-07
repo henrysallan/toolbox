@@ -121,7 +121,7 @@ import type { SplineAnchor, SplineSubpath } from "@/engine/types";
 import type { ColorRampStop } from "@/engine/color-ramp";
 import type { NodeDataPayload } from "@/state/graph";
 import { parseTargetHandleKind, newCompositionId } from "@/state/graph";
-import { FRAME_TYPE } from "@/engine/graph-helpers";
+import { FRAME_TYPE, SWITCH_TYPE } from "@/engine/graph-helpers";
 import {
   computeFrameRects,
   FRAME_DEFAULT_H,
@@ -198,6 +198,7 @@ import {
   resolveExportResolution,
   sanitizeFilename,
 } from "@/lib/export";
+import { outputNeedsSimPreroll } from "@/lib/sim-preroll";
 import {
   platform,
   type FolderHandle,
@@ -516,6 +517,9 @@ const CONNECTED_TYPE_RETYPE_NODES = new Set([
   // Reroute: a wildcard passthrough whose `value` input + output adopt the
   // type wired in. See specdocs/071326_reroute-node.md.
   "reroute",
+  // Switch: on "auto" (the default) every numbered slot AND the output adopt
+  // the unified type of whatever is wired in — a Reroute with N inputs.
+  SWITCH_TYPE,
 ]);
 
 // --- timeline dock (080226_timeline-modal-panel.md) -----------------------
@@ -553,6 +557,8 @@ const VIEWPORT_CHECKER =
 const VIEWPORT_FLAT = "var(--tb-frame)";
 /** localStorage key for the checker toggle (per-machine, not project data). */
 const VIEWPORT_CHECKER_KEY = "viewport.checker";
+/** Same, for the on-canvas GUI (gizmo/handle overlay) toggle. */
+const VIEWPORT_GIZMOS_KEY = "viewport.gizmos";
 
 // Every control in the dock toolbar — the tab toggle, the buttons either
 // side of it, the stagger popover trigger, the panel-kind chip — is
@@ -943,6 +949,25 @@ function EffectsShell({
     window.localStorage.setItem(VIEWPORT_CHECKER_KEY, showChecker ? "1" : "0");
   }, [showChecker]);
   const canvasBackdrop = showChecker ? VIEWPORT_CHECKER : VIEWPORT_FLAT;
+  // On-canvas GUI for the selection — transform/primitive/gradient handles,
+  // the spline pen, points/segment dots, the 3D orbit viewport's grid+axes.
+  // Every one of those is selection-driven, so one global switch IS "hide
+  // the selected node's GUI": with it off the canvas shows the rendered
+  // frame and nothing else. Same per-machine viewing-preference rule as the
+  // checker above — localStorage, never the project file.
+  //
+  // Deliberately NOT gated: the Paint brush surface and the WebGPU particle
+  // overlay. The first is the paint tool itself (hiding it would silently
+  // make the node unpaintable), the second draws actual output rather than
+  // chrome.
+  const [showGizmos, setShowGizmos] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem(VIEWPORT_GIZMOS_KEY) !== "0";
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(VIEWPORT_GIZMOS_KEY, showGizmos ? "1" : "0");
+  }, [showGizmos]);
   // Export resolution override (073126_export-resolution-and-app-slim.md).
   // While set, the engine renders at exactly this size — previewScale is
   // deliberately not applied, so exports never inherit a lowered preview
@@ -986,6 +1011,11 @@ function EffectsShell({
   const [showLanding, setShowLanding] = useState(
     !initialProject && !rehydrate
   );
+  // True once the landing has been re-opened over a live editor (Toolbox
+  // menu → the version row). That copy is dismissable — the project it
+  // covers is still loaded — whereas the first-load gateway has nothing
+  // to go back to and stays until a project is chosen.
+  const [landingReopened, setLandingReopened] = useState(false);
   // Once the menu bar has finished sliding in we drop its wrapper's
   // transform back to `none`. A lingering transform establishes a
   // stacking context that would trap the menu dropdowns beneath the
@@ -2787,8 +2817,21 @@ function EffectsShell({
   // change what a Transform/Displace sees without touching edges. Positions /
   // most param edits don't alter this string, so drags don't re-run it; the
   // effect's changed-guard makes the extra run a no-op once converged.
+  // A retype node's own params also feed its resolvers (Switch's Count mints
+  // slots, its Type pins the family), and the param-edit path deliberately
+  // leaves these nodes' sockets alone — so their params belong in the
+  // signature too, or a Count bump wouldn't grow the node until the next edge
+  // change. Only for the retype set: the other nodes' params churn constantly
+  // and re-running this for them would be pure waste.
   const polyOutTypeSig = useMemo(
-    () => nodes.map((n) => `${n.id}:${n.data.primaryOutput ?? ""}`).join("|"),
+    () =>
+      nodes
+        .map((n) =>
+          CONNECTED_TYPE_RETYPE_NODES.has(n.data.defType)
+            ? `${n.id}:${n.data.primaryOutput ?? ""}:${JSON.stringify(n.data.params)}`
+            : `${n.id}:${n.data.primaryOutput ?? ""}`
+        )
+        .join("|"),
     [nodes]
   );
   useEffect(() => {
@@ -4121,7 +4164,15 @@ function EffectsShell({
             // on the pane and picking those from the search silently
             // failed to auto-wire while a direct socket drop worked.
             for (const i of resolvedInputs) {
-              if (editorCanCoerce(srcType, i.type, def.type, `in:${i.name}`)) {
+              if (
+                editorCanCoerce(
+                  srcType,
+                  i.type,
+                  def.type,
+                  `in:${i.name}`,
+                  newNode.data.params
+                )
+              ) {
                 targetInput = i.name;
                 break;
               }
@@ -4208,9 +4259,11 @@ function EffectsShell({
           // primary-coercion also gets the Auto Layout case right: an
           // `item:` slot (element) pulls an Image Source's raw `element`
           // aux rather than the coerced full-canvas image.
-          const targetDefType = nodesRef.current.find(
+          const stashTarget = nodesRef.current.find(
             (n) => n.id === targetNodeId
-          )?.data.defType;
+          );
+          const targetDefType = stashTarget?.data.defType;
+          const targetParams = stashTarget?.data.params;
           const liveAux = resolvedAux.filter((a) => !a.disabled);
           let sourceHandle: string | null = null;
           if (primaryType === targetType) sourceHandle = "out:primary";
@@ -4221,13 +4274,25 @@ function EffectsShell({
           if (
             !sourceHandle &&
             primaryType &&
-            editorCanCoerce(primaryType, targetType, targetDefType, targetHandle)
+            editorCanCoerce(
+              primaryType,
+              targetType,
+              targetDefType,
+              targetHandle,
+              targetParams
+            )
           ) {
             sourceHandle = "out:primary";
           }
           if (!sourceHandle) {
             const coerced = liveAux.find((a) =>
-              editorCanCoerce(a.type, targetType, targetDefType, targetHandle)
+              editorCanCoerce(
+                a.type,
+                targetType,
+                targetDefType,
+                targetHandle,
+                targetParams
+              )
             );
             if (coerced) sourceHandle = `out:aux:${coerced.name}`;
           }
@@ -7030,6 +7095,56 @@ function EffectsShell({
     [setTime]
   );
 
+  // Rebuild frame-accumulated simulation state by stepping the offline clock
+  // from frame 0 up to (but NOT including) `toTime` — the caller renders the
+  // target frame itself, so the last step here is the one that leaves the sims
+  // ready for it.
+  //
+  // Why any of this is needed: an export-resolution switch recreates the
+  // engine backend, and the teardown runs disposeAllNodeState + destroy(),
+  // which takes ctx.state — and therefore every sim's accumulated result —
+  // with it. Capturing frame 50 straight after that wipe yields a freshly
+  // seeded sim, or a blank frame for the readback-deferred solvers (matter,
+  // particles) that publish one frame late. lib/sim-preroll.ts decides when a
+  // given Output needs this; only nodes marked `simulation` in their
+  // NodeDefinition can force it, and only ctx.time-driven accumulation is
+  // reproducible this way (wall-clock nodes like Cursor Trail are excluded).
+  //
+  // Caller owns offlineRenderingRef, the banner lifecycle (via onProgress —
+  // kept out of here so a Render Queue item can't leave a banner dangling
+  // over the batch's own), and the time/playing save-restore; this only
+  // steps the clock.
+  const prerollSimulations = useCallback(
+    async (
+      toTime: number,
+      fps: number,
+      onProgress?: (done: number, total: number) => void
+    ) => {
+      const frames = Math.max(0, Math.round(toTime * fps));
+      for (let f = 0; f < frames; f++) {
+        await renderSettledFrameAt(f / fps, fps);
+        // Yield a real frame between steps: the banner repaints, and the
+        // solvers whose result arrives via an async GPU readback get the gap
+        // they need to land it before the next step reads their output.
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        onProgress?.(f + 1, frames);
+      }
+    },
+    [renderSettledFrameAt]
+  );
+
+  // Banner reporter shared by the pre-roll callers — the extra frame in the
+  // denominator is the capture render the caller does after the pre-roll.
+  const prerollProgress = useCallback(
+    (label: string) => (done: number, total: number) =>
+      setRecording({
+        mode: "offline",
+        label: `${label} ${done}/${total}`,
+        progress: done / (total + 1),
+      }),
+    []
+  );
+
   // --- export-resolution bracket (073126_export-resolution-and-app-slim.md)
   // beginExportResolution switches the engine to the given size (no-op when
   // it already matches) and endExportResolution restores the preview size
@@ -7115,17 +7230,56 @@ function EffectsShell({
       const mime = `image/${format}`;
       const useQuality = format === "jpeg" || format === "webp";
       const target = resolveExportResolution(params, canvasResRef.current);
+      const savedTime = timeRef.current;
+      const savedPlaying = playingRef.current;
+      const fps = fpsRef.current;
+      // Does this capture need a simulation pre-roll? Only when the export
+      // size actually differs from what the engine is rendering at — that's
+      // the case that recreates the backend and wipes every sim's
+      // accumulated ctx.state (see prerollSimulations). When the sizes
+      // match, beginExportResolution early-returns, the live state is
+      // untouched, and the frame on screen is already the right one; a
+      // pre-roll would only be a slow way to reproduce it. That's the
+      // difference between this path and renderImageToBlobAtFrame, which
+      // renders an arbitrary frame and so always pre-rolls.
+      const backend = backendRef.current;
+      const resWillSwitch =
+        !backend ||
+        backend.width !== target[0] ||
+        backend.height !== target[1];
+      const preroll =
+        resWillSwitch &&
+        savedTime > 0 &&
+        outputNeedsSimPreroll(nodesRef.current, edgesRef.current, nodeId);
       // Render this specific Output before the snapshot: a Layer Output's
       // interior may not be what the live preview shows, a resolution
       // switch leaves the canvas stale until the next render, and the
       // snapshot should capture this Output regardless of which node is
       // set Active (same semantics as the video/sequence exporters).
       forcedTerminalRef.current = nodeId;
+      if (preroll) {
+        // A pre-roll steps the clock itself, so it takes the same offline
+        // treatment as the frame-stepped exporters: pause the transport so
+        // the playback driver doesn't render competing frames, and flip
+        // ctx.offline so the sims' step gating advances per stepped frame.
+        setPlaying(false);
+        offlineRenderingRef.current = true;
+        setRecording({
+          mode: "offline",
+          label: "Re-simulating…",
+          progress: 0,
+        });
+      }
       try {
         await beginExportResolution(target);
-        await renderSettledFrameAt(timeRef.current, fpsRef.current, {
-          flush: true,
-        });
+        if (preroll) {
+          await prerollSimulations(
+            savedTime,
+            fps,
+            prerollProgress("Re-simulating frame")
+          );
+        }
+        await renderSettledFrameAt(savedTime, fps, { flush: true });
         const blob = await new Promise<Blob | null>((res) =>
           canvas.toBlob(
             (b) => res(b),
@@ -7141,6 +7295,12 @@ function EffectsShell({
         }
       } finally {
         forcedTerminalRef.current = null;
+        if (preroll) {
+          offlineRenderingRef.current = false;
+          setRecording(null);
+          setPlaying(savedPlaying);
+          setTime(savedTime);
+        }
         endExportResolution();
       }
     },
@@ -7148,7 +7308,11 @@ function EffectsShell({
       getOutputParams,
       beginExportResolution,
       endExportResolution,
+      prerollSimulations,
+      prerollProgress,
       renderSettledFrameAt,
+      setPlaying,
+      setTime,
     ]
   );
 
@@ -7560,10 +7724,26 @@ function EffectsShell({
       offlineRenderingRef.current = true;
       // Capture this Output's image, not whatever node is set Active.
       forcedTerminalRef.current = nodeId;
+      // Unlike exportImage this renders an ARBITRARY frame, so accumulated
+      // sim state is never the right one to capture from — whatever ctx.state
+      // holds belongs to some other frame (or was just wiped by an export-
+      // resolution switch). Sims therefore always get stepped from frame 0.
+      // The wedge/queue batches hold one resolution bracket across items, so
+      // there's no per-item switch to key off of anyway.
+      const preroll =
+        frame > 0 &&
+        outputNeedsSimPreroll(nodesRef.current, edgesRef.current, nodeId);
       try {
         await beginExportResolution(
           resolveExportResolution(params, canvasResRef.current)
         );
+        if (preroll) {
+          await prerollSimulations(
+            t,
+            fps,
+            prerollProgress("Re-simulating frame")
+          );
+        }
         await renderSettledFrameAt(t, fps, { flush: true });
         const blob = await new Promise<Blob | null>((res) =>
           canvas.toBlob(
@@ -7576,6 +7756,9 @@ function EffectsShell({
       } finally {
         offlineRenderingRef.current = false;
         forcedTerminalRef.current = null;
+        // Only ours to clear — a batch driver's own banner is untouched
+        // when this call never raised one.
+        if (preroll) setRecording(null);
         setPlaying(savedPlaying);
         setTime(savedTime);
         endExportResolution();
@@ -7583,6 +7766,8 @@ function EffectsShell({
     },
     [
       getOutputParams,
+      prerollProgress,
+      prerollSimulations,
       renderSettledFrameAt,
       beginExportResolution,
       endExportResolution,
@@ -10774,6 +10959,13 @@ function EffectsShell({
         onSaveAsNamed={handleSaveAsProject}
         onSaveIncremental={handleSaveIncremental}
         canSaveIncremental={signedIn && !!currentProject}
+        onOpenLanding={() => {
+          // menuSettled back to false so the bar animates out and in
+          // again rather than snapping once the gateway clears.
+          setMenuSettled(false);
+          setLandingReopened(true);
+          setShowLanding(true);
+        }}
         onOpenLoad={() => {
           suppressNextSelectionViewFlipRef.current = true;
           setSelectedId(null);
@@ -10871,10 +11063,16 @@ function EffectsShell({
             previewScale={previewScale}
             onPreviewScaleChange={setPreviewScale}
             trailing={
-              <ViewportCheckerToggle
-                on={showChecker}
-                onToggle={() => setShowChecker((v) => !v)}
-              />
+              <>
+                <ViewportGizmoToggle
+                  on={showGizmos}
+                  onToggle={() => setShowGizmos((v) => !v)}
+                />
+                <ViewportCheckerToggle
+                  on={showChecker}
+                  onToggle={() => setShowChecker((v) => !v)}
+                />
+              </>
             }
           />
         )}
@@ -11047,13 +11245,16 @@ function EffectsShell({
               }
             />
           )}
-          {selectedPoints && selectedPoints.count > 0 && backendReady && (
-            <PointsOverlay
-              canvas={canvasRef.current}
-              value={selectedPoints}
-            />
-          )}
-          {active3DSceneRenderId && backendReady && (
+          {showGizmos &&
+            selectedPoints &&
+            selectedPoints.count > 0 &&
+            backendReady && (
+              <PointsOverlay
+                canvas={canvasRef.current}
+                value={selectedPoints}
+              />
+            )}
+          {showGizmos && active3DSceneRenderId && backendReady && (
             <Scene3DViewport
               canvas={canvasRef.current}
               sceneRenderId={active3DSceneRenderId}
@@ -11092,7 +11293,7 @@ function EffectsShell({
               }
             />
           )}
-          {activeSplineNode && backendReady && (
+          {showGizmos && activeSplineNode && backendReady && (
             <SplineEditorOverlayAtTick
               node={activeSplineNode}
               nodes={nodes}
@@ -11102,7 +11303,7 @@ function EffectsShell({
               onAnchorAnimate={onAnchorAnimate}
             />
           )}
-          {activeSegmentNode && backendReady && (
+          {showGizmos && activeSegmentNode && backendReady && (
             <SegmentDotsOverlay
               canvas={canvasRef.current}
               dots={
@@ -11130,7 +11331,7 @@ function EffectsShell({
               }}
             />
           )}
-          {activeKeyerNode && backendReady && (
+          {showGizmos && activeKeyerNode && backendReady && (
             <KeyerSampleOverlay
               canvas={canvasRef.current}
               colors={
@@ -11146,45 +11347,49 @@ function EffectsShell({
               }
             />
           )}
-          {backendReady && transformGizmoNodes.map((gizmoNode) => (
-            <TransformGizmoAtTick
-              key={gizmoNode.id}
-              node={gizmoNode}
-              canvas={canvasRef.current}
-              boundsSourceId={
-                gizmoNode.data.params.mode === "spline"
-                  ? edges.find(
-                      (e) =>
-                        e.target === gizmoNode.id &&
-                        e.targetHandle === "in:image"
-                    )?.source
-                  : undefined
-              }
-              evalCacheRef={evalCacheRef}
-              multiGizmo={multiGizmo}
-              ticksPerFrame={ticksPerFrame}
-              onParamChange={onParamChange}
-              onMotionPathPointChange={onMotionPathPointChange}
-            />
-          ))}
+          {showGizmos &&
+            backendReady &&
+            transformGizmoNodes.map((gizmoNode) => (
+              <TransformGizmoAtTick
+                key={gizmoNode.id}
+                node={gizmoNode}
+                canvas={canvasRef.current}
+                boundsSourceId={
+                  gizmoNode.data.params.mode === "spline"
+                    ? edges.find(
+                        (e) =>
+                          e.target === gizmoNode.id &&
+                          e.targetHandle === "in:image"
+                      )?.source
+                    : undefined
+                }
+                evalCacheRef={evalCacheRef}
+                multiGizmo={multiGizmo}
+                ticksPerFrame={ticksPerFrame}
+                onParamChange={onParamChange}
+                onMotionPathPointChange={onMotionPathPointChange}
+              />
+            ))}
           {/* Shape-primitive handles (Circle, Rectangle, …) — move the
               center, drag edges/corners to resize. */}
-          {backendReady && primitiveGizmoNodes.map((node) => (
-            <PrimitiveGizmoAtTick
-              key={node.id}
-              node={node}
-              canvas={canvasRef.current}
-              canvasWidth={canvasRes[0]}
-              canvasHeight={canvasRes[1]}
-              evalCacheRef={evalCacheRef}
-              ticksPerFrame={ticksPerFrame}
-              onParamChange={onParamChange}
-              onMotionPathPointChange={onMotionPathPointChange}
-            />
-          ))}
+          {showGizmos &&
+            backendReady &&
+            primitiveGizmoNodes.map((node) => (
+              <PrimitiveGizmoAtTick
+                key={node.id}
+                node={node}
+                canvas={canvasRef.current}
+                canvasWidth={canvasRes[0]}
+                canvasHeight={canvasRes[1]}
+                evalCacheRef={evalCacheRef}
+                ticksPerFrame={ticksPerFrame}
+                onParamChange={onParamChange}
+                onMotionPathPointChange={onMotionPathPointChange}
+              />
+            ))}
           {/* Gradient handles — linear endpoints (line + 2 dots) or the
               radial center/radius. */}
-          {activeGradientNode && backendReady && (
+          {showGizmos && activeGradientNode && backendReady && (
             <GradientOverlayAtTick
               node={activeGradientNode}
               canvas={canvasRef.current}
@@ -11481,8 +11686,16 @@ function EffectsShell({
           }}
           onNewProject={() => {
             setShowLanding(false);
-            resetToFreshProject();
+            // Via handleNewProject, not resetToFreshProject: now that the
+            // gateway can be re-opened over a live editor, "New Project"
+            // has to clear the unsaved-work confirm first. On the
+            // first-load path saveState is "saved", so it still goes
+            // straight through.
+            handleNewProject();
           }}
+          onClose={
+            landingReopened ? () => setShowLanding(false) : undefined
+          }
         />
       )}
       {/* <CustomCursor /> temporarily disabled — using native cursor */}
@@ -11977,6 +12190,88 @@ function ViewportCheckerToggle({
           boxShadow: on ? "none" : "inset 0 0 0 1px var(--tb-n-9)",
         }}
       />
+    </button>
+  );
+}
+
+/**
+ * On-canvas GUI switch — sits immediately left of the transparency-grid
+ * toggle in the viewport menu bar's trailing slot, and shares its chrome
+ * (19×17 chip, pressed fill when on) so the two read as one pair of view
+ * options.
+ *
+ * The glyph is a miniature gizmo: a bounds box with corner handles, which
+ * is what most of the overlays it controls actually look like. Struck
+ * through when off, the standard "this layer of drawing is suppressed"
+ * mark, since an empty box would just read as a lighter gizmo.
+ */
+function ViewportGizmoToggle({
+  on,
+  onToggle,
+}: {
+  on: boolean;
+  onToggle: () => void;
+}) {
+  const stroke = on ? "var(--tb-n-16)" : "var(--tb-n-11)";
+  return (
+    <button
+      onClick={onToggle}
+      aria-pressed={on}
+      title={
+        on
+          ? "Node GUI on — click to hide the selected node's on-canvas handles"
+          : "Node GUI off — click to show the selected node's on-canvas handles"
+      }
+      style={{
+        width: 19,
+        height: 17,
+        padding: 0,
+        display: "grid",
+        placeItems: "center",
+        boxSizing: "border-box",
+        background: on ? "var(--tb-n-5)" : "var(--tb-n-3)",
+        border: `1px solid ${on ? "var(--tb-n-9)" : "var(--tb-n-7)"}`,
+        borderRadius: 3,
+        cursor: "pointer",
+      }}
+    >
+      <svg width={11} height={11} viewBox="0 0 11 11" aria-hidden>
+        <rect
+          x={2.5}
+          y={2.5}
+          width={6}
+          height={6}
+          fill="none"
+          stroke={stroke}
+          strokeWidth={1}
+          strokeDasharray="1.6 1.4"
+        />
+        {[
+          [2.5, 2.5],
+          [8.5, 2.5],
+          [2.5, 8.5],
+          [8.5, 8.5],
+        ].map(([cx, cy]) => (
+          <rect
+            key={`${cx},${cy}`}
+            x={cx - 1.25}
+            y={cy - 1.25}
+            width={2.5}
+            height={2.5}
+            fill={stroke}
+          />
+        ))}
+        {!on && (
+          <line
+            x1={0.75}
+            y1={10.25}
+            x2={10.25}
+            y2={0.75}
+            stroke="var(--tb-n-14)"
+            strokeWidth={1.25}
+          />
+        )}
+      </svg>
     </button>
   );
 }

@@ -126,6 +126,7 @@
   --tb-s-audio: #ec4899;
   --tb-s-string: #a3e635;
   --tb-s-image_group: #1d4ed8;
+  --tb-s-list: #38bdf8;
   --tb-s-text_instance: #e879f9;
   --tb-s-force: #fda4af;
   --tb-s-emitter: #fcd34d;
@@ -138,6 +139,7 @@
   --tb-s-element: #818cf8;
   --tb-s-object3d: #f59e0b;
   --tb-s-camera: #2dd4bf;
+  --tb-s-color_ramp: #f87962;
   --tb-s-fallback: #9ca3af;
 
   --tb-shadow-node: 0 2px 8px rgba(0,0,0,0.4);
@@ -277,6 +279,7 @@
   --tb-s-audio: #c62c7c;
   --tb-s-string: #4e8800;
   --tb-s-image_group: #1d4ed8;
+  --tb-s-list: #0079ab;
   --tb-s-text_instance: #a83fb8;
   --tb-s-force: #ae5462;
   --tb-s-emitter: #996d00;
@@ -289,6 +292,7 @@
   --tb-s-element: #5e63d9;
   --tb-s-object3d: #b55800;
   --tb-s-camera: #008f7b;
+  --tb-s-color_ramp: #ca3a23;
   --tb-s-fallback: #6b7280;
 
   --tb-shadow-node: 0 1px 3px rgba(0,0,0,0.10);

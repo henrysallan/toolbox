@@ -630,6 +630,7 @@ export const watercolorInkNode: NodeDefinition = {
   // Self-iterating — output depends on accumulated substeps, not just
   // current params. Time is mixed into the fingerprint below.
   stable: false,
+  simulation: true,
   inputs: [
     { name: "deposit", type: "mask", required: false },
     { name: "color", type: "image", required: false },

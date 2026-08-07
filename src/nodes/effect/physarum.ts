@@ -841,6 +841,7 @@ export const physarumNode: NodeDefinition = {
   // Self-iterating: the image depends on accumulated steps, not just the
   // current params.
   stable: false,
+  simulation: true,
   inputs: [
     { name: "blend", type: "mask", required: false },
     { name: "inject", type: "mask", required: false },

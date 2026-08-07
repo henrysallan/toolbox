@@ -26,7 +26,8 @@
   "src/export-template/dist-single/worker-BQFg_p6F.js": 7,
   "src/lib/gpu/webgpu-renderer.ts": 1,
   "src/lib/live-viewer/LiveViewer.tsx": 1,
-  "src/lib/param-controls.tsx": 9,
+  "src/lib/number-field.tsx": 3,
+  "src/lib/param-controls.tsx": 6,
   "src/nodes/effect/points-on-path.ts": 1,
   "src/state/history.ts": 7
 }

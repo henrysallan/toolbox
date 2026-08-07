@@ -3,6 +3,7 @@ import type {
   PointsValue,
   RenderContext,
 } from "@/engine/types";
+import { aspectUncorrectY } from "@/engine/aspect";
 import { makePoints, EMPTY_POINTS } from "@/engine/points";
 import { hash01 } from "@/engine/spline-color-source";
 
@@ -15,8 +16,9 @@ import { hash01 } from "@/engine/spline-color-source";
 // spacing holds), jittered radially by a hash on the drop's monotonic id
 // — deterministic per drop, so re-evals never make the trail shimmer,
 // and appends never move existing points. Positions are emitted y-DOWN
-// normalized (CPU point space); note ctx.cursor is y-UP canvas UV, the
-// flip happens here.
+// AUTHORED (engine/aspect.ts — the space every points consumer expects);
+// note ctx.cursor is y-UP CANVAS UV, so both the y flip and the
+// canvas→authored conversion happen here, at the socket boundary.
 //
 // `emit: press` needs CursorState.pressed (tracked by the editor and
 // live viewer); contexts without it never read as pressed — switch to
@@ -227,15 +229,23 @@ export const cursorTrailPointsNode: NodeDefinition = {
 
     const seed = Math.floor((params.seed as number) ?? 0);
     const scatter = (params.scatter as number) ?? 0.02;
+    const aspect = ctx.height > 0 ? ctx.width / ctx.height : 1;
     const out: PointsValue = makePoints(n, { withGroupIndices: true });
     for (let i = 0; i < n; i++) {
       const d = state.drops[i];
       // Uniform disk jitter in px space (aspect-round), hashed on the
-      // drop id so a given point never moves once placed.
+      // drop id so a given point never moves once placed. Drops are
+      // stored in y-down CANVAS UV (that's what ctx.cursor gives and
+      // what the spacing walk above measures in), but the socket
+      // carries AUTHORED coordinates (engine/aspect.ts) — so y converts
+      // here, and the jitter offset divides by WIDTH on both axes to
+      // land in authored units. Dividing y by height was the reason the
+      // "disk" came out elliptical on non-square canvases.
       const ang = hash01(d.id, seed + SALT_ANG) * Math.PI * 2;
       const rad = scatter * ctx.width * Math.sqrt(hash01(d.id, seed + SALT_RAD));
       out.positions[i * 2] = d.x + (rad * Math.cos(ang)) / ctx.width;
-      out.positions[i * 2 + 1] = d.y + (rad * Math.sin(ang)) / ctx.height;
+      out.positions[i * 2 + 1] =
+        aspectUncorrectY(d.y, aspect) + (rad * Math.sin(ang)) / ctx.width;
       out.groupIndices![i] = d.id;
     }
     return { primary: out };

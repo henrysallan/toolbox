@@ -29,6 +29,11 @@ import {
 // a point set). Parallels scatter-points (Point Generator from an
 // image) on the other side of the type boundary.
 //
+// `min_connections` is a DEGREE FILTER, not a floor: it never invents
+// edges past max_distance, it only removes ones whose endpoints were
+// too lonely. Single-pass and non-cascading — see the comment on the
+// pruning block.
+//
 // groupIndex handling: a segment inherits the groupIndex only when
 // both endpoints share one. Cross-group edges (A from group 0 to B
 // from group 1) are left un-tagged so downstream per-index nodes
@@ -44,7 +49,7 @@ export const connectPointsNode: NodeDefinition = {
   category: "spline",
   subcategory: "generator",
   description:
-    "Connect pairs of input points within a max-distance threshold. Path modes shape each connection: straight chords, circular arcs / S-curves (curved), hanging-wire droop (sag), noise-field tangents (flow), smooth curves flowing through shared points (network), parallel connections merging into trunks (bundle), or bowing toward/away from a center (attract). Primary output is the segments as a spline; the passthrough `points` aux keeps the original points available on the same wire for further downstream use.",
+    "Connect pairs of input points within a max-distance threshold. Path modes shape each connection: straight chords, circular arcs / S-curves (curved), hanging-wire droop (sag), noise-field tangents (flow), smooth curves flowing through shared points (network), parallel connections merging into trunks (bundle), or bowing toward/away from a center (attract). `Min connections` prunes the sparse fringe: an edge survives only when BOTH its endpoints found at least that many neighbours inside the threshold, so stringy one-off segments drop out and the dense core stays. Primary output is the segments as a spline; the passthrough `points` aux keeps the original points available on the same wire for further downstream use.",
   backend: "webgl2",
   inputs: [{ name: "points", type: "points", required: true }],
   headerControl: { paramName: "path" },
@@ -59,6 +64,19 @@ export const connectPointsNode: NodeDefinition = {
       softMax: 0.3,
       step: 0.001,
       default: 0.1,
+    },
+    // Degree filter — see the pruning pass in compute. 0 (and 1, which
+    // can only drop points that had no edges to begin with) are no-ops,
+    // so the default leaves every existing project untouched.
+    {
+      name: "min_connections",
+      label: "Min connections",
+      type: "scalar",
+      min: 0,
+      max: 16,
+      softMax: 6,
+      step: 1,
+      default: 0,
     },
     ...segmentShapeModeParams(),
   ],
@@ -131,6 +149,30 @@ export const connectPointsNode: NodeDefinition = {
       }
     }
 
+    // Degree filter. Points on the sparse fringe of a cloud produce
+    // stringy one-off segments that read as noise; dropping every edge
+    // whose endpoints didn't BOTH reach `min_connections` prunes them
+    // and leaves the dense core intact.
+    //
+    // Degrees are measured ONCE, on the full threshold graph, and the
+    // pass does not cascade: removing an edge never re-tests the
+    // neighbours it just demoted. That's deliberate — an iterative
+    // version is the k-core, which collapses whole regions from a
+    // one-step parameter nudge and is miserable to art-direct. Here the
+    // result is always "the threshold graph, minus its fringe."
+    const minConn = Math.max(0, Math.round((params.min_connections as number) ?? 0));
+    let kept = edges;
+    if (minConn > 1 && edges.length > 0) {
+      const degree = new Int32Array(N);
+      for (const e of edges) {
+        degree[e.i]++;
+        degree[e.j]++;
+      }
+      kept = edges.filter(
+        (e) => degree[e.i] >= minConn && degree[e.j] >= minConn
+      );
+    }
+
     const x = new Float64Array(N);
     const y = new Float64Array(N);
     for (let p = 0; p < N; p++) {
@@ -138,7 +180,7 @@ export const connectPointsNode: NodeDefinition = {
       y[p] = points[p].pos[1];
     }
     const handles = computeSegmentShapeHandles({
-      edges,
+      edges: kept,
       x,
       y,
       aspect: ctx.height > 0 ? ctx.width / ctx.height : 1,
@@ -146,8 +188,8 @@ export const connectPointsNode: NodeDefinition = {
     });
 
     const subpaths: SplineSubpath[] = [];
-    for (let k = 0; k < edges.length; k++) {
-      const e = edges[k];
+    for (let k = 0; k < kept.length; k++) {
+      const e = kept[k];
       const h = handles[k];
       const a = points[e.i];
       const b = points[e.j];

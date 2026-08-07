@@ -63,7 +63,9 @@ function staggerStyle(shown: boolean, index: number): React.CSSProperties {
 }
 
 type Tab = "private" | "public" | "local";
-type View = "grid" | "list";
+// "list" is the compact text table; "detail" is the same table with taller
+// rows carrying a thumbnail in the leading column.
+type View = "grid" | "list" | "detail";
 type SortKey = "name" | "author" | "date";
 type SortDir = "asc" | "desc";
 
@@ -246,9 +248,10 @@ function useTileDrag(opts: {
 
     const activate = (ev: PointerEvent) => {
       const rect = el.getBoundingClientRect();
-      // List rows are panel-wide; their ghost compacts to a chip, so
-      // keep the grab point inside the chip's footprint.
-      const width = spec.view === "list" ? Math.min(rect.width, 240) : rect.width;
+      // List/detail rows are panel-wide; their ghost compacts to a chip,
+      // so keep the grab point inside the chip's footprint.
+      const width =
+        spec.view === "grid" ? rect.width : Math.min(rect.width, 240);
       s.grabDX = Math.max(8, Math.min(ev.clientX - rect.left, width - 16));
       s.grabDY = Math.max(4, Math.min(ev.clientY - rect.top, rect.height - 4));
       s.curX = rect.left;
@@ -1029,6 +1032,14 @@ function Toolbar({
         >
           <ListIcon />
         </IconButton>
+        <IconButton
+          onClick={() => onViewChange("detail")}
+          active={view === "detail"}
+          title="Detail view"
+          ariaLabel="Detail view"
+        >
+          <DetailIcon />
+        </IconButton>
       </div>
     </div>
   );
@@ -1221,6 +1232,18 @@ function ListIcon() {
   );
 }
 
+// Detail view: list rows, each led by a thumbnail block.
+function DetailIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+      <rect x="1" y="1" width="4" height="4" rx="0.5" fill="currentColor" />
+      <rect x="6.5" y="2.5" width="4.5" height="1" fill="currentColor" />
+      <rect x="1" y="7" width="4" height="4" rx="0.5" fill="currentColor" />
+      <rect x="6.5" y="8.5" width="4.5" height="1" fill="currentColor" />
+    </svg>
+  );
+}
+
 function RefreshIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -1302,10 +1325,11 @@ function Body({
       </div>
     );
   }
-  if (view === "list") {
+  if (view === "list" || view === "detail") {
     return (
       <ListView
         rows={rows}
+        detail={view === "detail"}
         sort={sort}
         onSort={onSort}
         currentUserId={currentUserId}
@@ -1478,8 +1502,15 @@ function NewProjectTile({
   );
 }
 
+// Thumbnail edge (square, matching the grid tile's 1:1 crop) and the gap
+// to the name — detail rows only. The header's Title cell is indented by
+// the same amount so the column still reads as one.
+const DETAIL_THUMB = 40;
+const DETAIL_THUMB_GAP = 10;
+
 function ListView({
   rows,
+  detail,
   sort,
   onSort,
   currentUserId,
@@ -1491,6 +1522,8 @@ function ListView({
   folderCtx,
 }: {
   rows: ProjectRow[];
+  // Taller rows with a thumbnail in the leading column.
+  detail: boolean;
   sort: { key: SortKey; dir: SortDir };
   onSort: (key: SortKey) => void;
   currentUserId: string | null;
@@ -1507,8 +1540,24 @@ function ListView({
   const offset = folderOffset + folders.length;
   // Grid so column widths are consistent between header and body rows.
   const grid = "1fr 160px 90px 140px";
+  // Rows in detail mode are thumbnail-tall, so their contents centre
+  // against it rather than sitting on the text baseline.
+  const rowStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: grid,
+    gap: 8,
+    alignItems: "center",
+    padding: detail ? "5px 6px" : "6px 6px",
+    width: "100%",
+    textAlign: "left",
+    border: "none",
+    borderBottom: "1px solid var(--tb-n-3)",
+    fontFamily: "inherit",
+    fontSize: "inherit",
+    cursor: "pointer",
+  };
   return (
-    <div style={{ fontSize: 11 }}>
+    <div style={{ fontSize: detail ? 12 : 11 }}>
       <div
         style={{
           display: "grid",
@@ -1526,6 +1575,9 @@ function ListView({
           active={sort.key === "name"}
           dir={sort.key === "name" ? sort.dir : null}
           onClick={() => onSort("name")}
+          style={
+            detail ? { paddingLeft: DETAIL_THUMB + DETAIL_THUMB_GAP } : undefined
+          }
         >
           Title
         </HeaderCell>
@@ -1559,19 +1611,9 @@ function ListView({
             onClick={onNewProject}
             title="Start a new, empty project"
             style={{
-              display: "grid",
-              gridTemplateColumns: grid,
-              gap: 8,
-              padding: "6px 6px",
-              width: "100%",
-              textAlign: "left",
+              ...rowStyle,
               background: "transparent",
-              border: "none",
-              borderBottom: "1px solid var(--tb-n-3)",
               color: "var(--tb-n-13)",
-              fontFamily: "inherit",
-              fontSize: "inherit",
-              cursor: "pointer",
               ...staggerStyle(shown, 0),
             }}
             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--tb-n-3)")}
@@ -1579,10 +1621,32 @@ function ListView({
               (e.currentTarget.style.background = "transparent")
             }
           >
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-              <span style={{ color: "var(--tb-n-10)", fontSize: 13, lineHeight: 1 }}>
-                +
-              </span>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: detail ? DETAIL_THUMB_GAP : 6,
+                minWidth: 0,
+              }}
+            >
+              {detail ? (
+                <ThumbSlot>
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                    <path
+                      d="M9 3v12M3 9h12"
+                      stroke="var(--tb-n-10)"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </ThumbSlot>
+              ) : (
+                <span
+                  style={{ color: "var(--tb-n-10)", fontSize: 13, lineHeight: 1 }}
+                >
+                  +
+                </span>
+              )}
               New Project
             </span>
             <span />
@@ -1597,7 +1661,8 @@ function ListView({
               folder={f}
               count={folderCtx.counts.get(f.id) ?? 0}
               ctx={folderCtx}
-              grid={grid}
+              rowStyle={rowStyle}
+              detail={detail}
               style={staggerStyle(shown, i + folderOffset)}
             />
           ))}
@@ -1624,19 +1689,9 @@ function ListView({
                 folderCtx ? (e) => folderCtx.beginDragProject(e, r) : undefined
               }
               style={{
-                display: "grid",
-                gridTemplateColumns: grid,
-                gap: 8,
-                padding: "6px 6px",
-                width: "100%",
-                textAlign: "left",
+                ...rowStyle,
                 background: "transparent",
-                border: "none",
-                borderBottom: "1px solid var(--tb-n-3)",
                 color: "var(--tb-n-16)",
-                fontFamily: "inherit",
-                fontSize: "inherit",
-                cursor: "pointer",
                 ...staggerStyle(shown, i),
                 ...(folderCtx?.dragId === r.id
                   ? { opacity: 0.3, transition: "opacity 120ms ease" }
@@ -1651,12 +1706,23 @@ function ListView({
             >
               <span
                 style={{
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: detail ? DETAIL_THUMB_GAP : 0,
+                  minWidth: 0,
                 }}
               >
-                {r.name}
+                {detail && <RowThumb row={r} />}
+                <span
+                  style={{
+                    minWidth: 0,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {r.name}
+                </span>
               </span>
               <span
                 style={{
@@ -1689,15 +1755,77 @@ function ListView({
   );
 }
 
+// The fixed square a detail row leads with. Holds a screenshot, a folder
+// glyph, or the New Project plus — whatever it wraps stays centred and
+// every row keeps the same height.
+function ThumbSlot({
+  children,
+  checker,
+}: {
+  children: React.ReactNode;
+  // Checkerboard behind transparent screenshots; flat panel otherwise.
+  checker?: boolean;
+}) {
+  return (
+    <span
+      style={{
+        width: DETAIL_THUMB,
+        height: DETAIL_THUMB,
+        flexShrink: 0,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        overflow: "hidden",
+        borderRadius: 3,
+        border: "1px solid var(--tb-n-7)",
+        background: checker
+          ? "repeating-conic-gradient(var(--tb-n-3) 0% 25%, var(--tb-n-1) 0% 50%) 0 0 / 8px 8px"
+          : "var(--tb-n-3)",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+// Detail-row screenshot — the same source the grid tile uses, cropped
+// square. Rows without a thumbnail keep the slot so the column stays flush.
+function RowThumb({ row }: { row: ProjectRow }) {
+  const src = thumbnailSrc(row);
+  return (
+    <ThumbSlot checker>
+      {src ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          // A native image-drag would steal the row's pointer gesture.
+          draggable={false}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            display: "block",
+          }}
+        />
+      ) : null}
+    </ThumbSlot>
+  );
+}
+
 function HeaderCell({
   active,
   dir,
   onClick,
+  style,
   children,
 }: {
   active: boolean;
   dir: SortDir | null;
   onClick: () => void;
+  // Detail view indents the Title header to clear the thumbnail column.
+  style?: React.CSSProperties;
   children: React.ReactNode;
 }) {
   return (
@@ -1717,6 +1845,7 @@ function HeaderCell({
         display: "inline-flex",
         alignItems: "center",
         gap: 4,
+        ...style,
       }}
     >
       <span>{children}</span>
@@ -2077,13 +2206,16 @@ function FolderListRow({
   folder,
   count,
   ctx,
-  grid,
+  rowStyle,
+  detail,
   style,
 }: {
   folder: FolderRow;
   count: number;
   ctx: FolderCtx;
-  grid: string;
+  // Column grid + padding shared with the project rows around it.
+  rowStyle: React.CSSProperties;
+  detail: boolean;
   style: React.CSSProperties;
 }) {
   const [hover, setHover] = useState(false);
@@ -2107,34 +2239,36 @@ function FolderListRow({
       data-drop-target={`f:${folder.id}`}
       title={`${folder.name} · ${count} item${count === 1 ? "" : "s"} · right-click to rename or delete`}
       style={{
-        display: "grid",
-        gridTemplateColumns: grid,
-        gap: 8,
-        padding: "6px 6px",
-        width: "100%",
-        textAlign: "left",
+        ...rowStyle,
         background: dropHot ? "var(--tb-t-navy-d-2)" : hover ? "var(--tb-n-3)" : "transparent",
-        border: "none",
-        borderBottom: "1px solid var(--tb-n-3)",
         color: "var(--tb-n-16)",
-        fontFamily: "inherit",
-        fontSize: "inherit",
-        cursor: "pointer",
         ...style,
         ...(dimmed ? { opacity: 0.3, transition: "opacity 120ms ease" } : {}),
       }}
     >
       <span
         style={{
-          display: "inline-flex",
+          display: "flex",
           alignItems: "center",
-          gap: 6,
+          gap: detail ? DETAIL_THUMB_GAP : 6,
           minWidth: 0,
         }}
       >
-        <span style={{ flexShrink: 0, display: "inline-flex" }}>
-          <FolderGlyph size={13} color={dropHot ? "#5b7fd4" : "var(--tb-n-10)"} />
-        </span>
+        {detail ? (
+          <ThumbSlot>
+            <FolderGlyph
+              size={22}
+              color={dropHot ? "#5b7fd4" : "var(--tb-n-11)"}
+            />
+          </ThumbSlot>
+        ) : (
+          <span style={{ flexShrink: 0, display: "inline-flex" }}>
+            <FolderGlyph
+              size={13}
+              color={dropHot ? "#5b7fd4" : "var(--tb-n-10)"}
+            />
+          </span>
+        )}
         {renaming ? (
           <FolderNameInput
             initial={folder.name}

@@ -210,6 +210,7 @@ export const shortestPathNode: NodeDefinition = {
     "Route through a network and output the path as a spline. Points mode: hops between points within the max distance, from a start position (snapped to the nearest point) to an end position or group — visited points ride the aux output. Spline mode: walks a wired network's own curved segments between two groups, or emits N seeded random routes. Tree mode: one root point (by index) fans out to every reachable point as a branching tree that never re-crosses — wander morphs direct↔minimal branching, and the update mode locks the topology at frame 0 (edges stretch as points move) or rebuilds live with an optional glide. Points and tree modes share Connect Points' path shaping (arcs / S-curves, sag, flow, network smoothing, bundling, attract). Animate the draw-on with Trim Path.",
   backend: "webgl2",
   headerControl: { paramName: "mode" },
+  simulation: true,
   inputs: [
     { name: "points", type: "points", required: true },
     { name: "start", type: "vec2", required: false, label: "Start" },

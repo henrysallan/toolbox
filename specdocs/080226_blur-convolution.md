@@ -1,7 +1,8 @@
 # Blur — unified convolution node (2026-08-02)
 
-Status: **M1 implemented** (2026-08-03). M2–M4 designed, not built.
-Deviations from the original spec are marked ⚠ inline.
+Status: **M1 + M2 implemented** (M1 2026-08-03, M2 2026-08-05). M3–M4
+designed, not built. Deviations from the original spec are marked ⚠
+inline.
 
 One `blur` node with a mode dropdown, over a shared engine-side convolution
 core: premultiplied + linear-light boundary, N separable passes, weighted
@@ -97,7 +98,7 @@ because the mode retypes the node's sockets.
 
 | param | type | notes |
 | --- | --- | --- |
-| `mode` | enum `gaussian` \| `bokeh` | header control. ⚠ `convolve` is NOT in the options list until M2 — a stubbed mode that silently does nothing is worse than an absent one, and enum options are additive so adding it later needs no migration. |
+| `mode` | enum `gaussian` \| `bokeh` \| `convolve` | header control. `convolve` landed in M2 as planned — the options list grew, which needs no migration since saved values are strings. |
 | `radius` | scalar px | min 0, **softMax 200**, no hard `max` — today's `max: 20` is the escape-hatch case `softMax` exists for. Default 0. |
 | `linearize` | boolean | **default true.** "Blur in linear light" |
 
@@ -105,7 +106,7 @@ because the mode retypes the node's sockets.
 
 | param | type | notes |
 | --- | --- | --- |
-| `shape` | enum `disc` \| `ring` \| `soft` | ⚠ the polygonal shapes (`hexagon`/`octagon`/`cats_eye`/`star`) land in M2 with the SVD path they route through — M1 ships only the circularly-symmetric family the complex phasors cover. |
+| `shape` | enum `disc` \| `ring` \| `soft` \| `hexagon` \| `octagon` \| `cats_eye` \| `star` | routes the decomposition. The first three are complex phasors; the rest rasterize (kernels.ts) and go through SVD. |
 | `components` | int 1–4 | **⚠ Default 3, not 2.** Measured rather than assumed — see below. |
 | `ring` | scalar 0–1 | donut-ness, `visibleIf shape === "ring"` |
 | `rotation` | scalar deg | polygonal + cat's-eye only |
@@ -114,10 +115,11 @@ because the mode retypes the node's sockets.
 
 | param | type | notes |
 | --- | --- | --- |
-| `quality` | enum `low_rank` \| `exact` | the fast/high/max grammar the Output node already uses. `exact` = FFT. |
-| `rank` | int 1–8 | `visibleIf quality === "low_rank"`, default 4 |
-| `kernel_scale` | scalar | resamples the kernel image |
+| `quality` | enum `low_rank` \| `exact` | ⚠ deferred to M3 — a two-option enum with only one option implemented is worse than no enum. Arrives with the FFT. |
+| `rank` | int 1–8 | default 4. Also drives the polygonal bokeh shapes, which use the same decomposition. |
+| `kernel_scale` | scalar | ⚠ **cut.** `radius` already sets the kernel's extent, so this was a second control over one thing. The whole kernel image is the kernel; `radius` says how far it reaches. |
 | `normalize` | boolean | default true; divide by kernel sum so energy is preserved |
+| `rotation` | scalar deg | polygonal + cat's-eye only |
 
 **Inputs** — `resolveInputs` keyed off `mode`: `image` (required, always),
 `kernel` (image, `mode === "convolve"`), `radius_map` (mask, M4). The
@@ -252,6 +254,51 @@ soft blobs where `disc` produces hard-edged filled circles.
   RGBA16F texture, so it is identical to within half-float weight
   quantization (~0.05% on the sum), not bit-exact.
 
+## What M2 actually took
+
+**⚠ `ComponentPass` became a discriminated union, and the SVD path got its
+own shader pair** rather than generalizing M1's. The two structures really
+are different: a complex component's kernel is EVEN, so its taps are a
+half table that the shader mirrors and its recombination folds into the
+vertical pass (2 horizontal + 1 vertical); an SVD term is an arbitrary
+kernel, so it needs a full unmirrored table and is a plain real
+convolution (1 horizontal + 1 vertical). Generalizing M1's shaders to
+cover both would have meant per-tap branching in the verified-and-shipped
+bokeh path for no gain. Additive instead: zero regression risk, and
+`runSeparable` dispatches on `kind`.
+
+**⚠ `rank` is a separate param from `components`, not one "quality" knob.**
+They cap differently (4 vs 8) and mean different things — number of
+complex phasor components versus number of rank-1 SVD terms. One slider
+with two meanings reads simpler in a table and worse in the panel.
+
+**The orientation flip is the part that needed real verification.** Cell
+(row, col) of a screen-order kernel is a displacement of (col−h) right and
+(row−h) down; true convolution samples `src(p − d)` so a point light
+renders the aperture as drawn rather than rotated 180°; and the shaders
+sample in Y-UP UV. Working it through, **exactly one axis reverses** —
+columns — because on the row axis the convolution flip and the
+screen-down/UV-up flip cancel. If both axes reverse, or neither, an
+asymmetric kernel renders mirrored and no symmetric test would ever catch
+it. Verified with a deliberately asymmetric Γ-shaped kernel: the rendered
+highlights match the kernel image orientation exactly.
+
+Kernel matrices cap at 65×65 (`MAX_KERNEL_HALF` 32), well under the
+separable tap ceiling — the SVD is O(rank·n²) on the CPU and the visual
+return flattens out well before that. Image kernels are cached in a
+WeakMap keyed on the kernel `ImageValue` object (the devguide-sanctioned
+"upstream recomputed" signal), so a static kernel pays the GPU readback
+and the decomposition exactly once. Procedural apertures cache by
+shape/size/rotation/rank in a plain Map — no GPU round trip at all, since
+they rasterize on the CPU.
+
+Verified on GPU: hexagon/octagon/star/cat's-eye all render as their
+shapes with rotation working, arbitrary image kernels reproduce the drawn
+kernel at every highlight, no NaN, no negative alpha on any SVD path (the
+kernels are non-negative, so unlike the analytic disc there is no ringing
+undershoot to clamp), and the M1 circular path is byte-for-byte unchanged
+in behavior.
+
 ## Milestones
 
 **M1 — core + Gaussian + Bokeh.** ✅ Shipped 2026-08-03. `boundary.ts`, `index.ts` with the full
@@ -260,7 +307,7 @@ modes present but Convolve stubbed. Ships the premultiply/linear fix and the
 disc. Verify by A/B against the current node: `mode: gaussian`,
 `linearize: false` must be pixel-identical to today at the same radius.
 
-**M2 — Convolve.** `svd.ts`, the `kernel` input socket, `rank`, and Bokeh's
+**M2 — Convolve.** ✅ Shipped 2026-08-05. `svd.ts`, the `kernel` input socket, `rank`, and Bokeh's
 polygonal shapes routing through the same decomposition. This is where "blur
 by an arbitrary image you drop in" lands.
 

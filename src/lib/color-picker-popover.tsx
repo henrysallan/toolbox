@@ -2,8 +2,11 @@
 
 // The app's universal custom color picker (spec
 // 071026_color-node-multi-output.md, generalized): an HSV saturation/value
-// square, a hue strip, a hex field, and (when the Chromium EyeDropper API
-// exists) an eyedropper. Two exports:
+// square, a hue strip, a hex field, (when the Chromium EyeDropper API
+// exists) an eyedropper, and a numeric H/S/L row — plus an alpha strip and
+// an A field for alpha-enabled hosts. The numeric fields are the app's
+// standard NumberField, so they scrub on drag like every other number in
+// the app. Two exports:
 //
 // - `ColorPickerPopover` — the picker panel itself, absolutely positioned
 //   by its host. EffectNode anchors it INSIDE the node div so it tracks
@@ -23,6 +26,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { HslField } from "@/lib/number-field";
 
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
@@ -106,6 +110,30 @@ function hsvToHex(h: number, s: number, v: number): string {
   return `#${to2(r)}${to2(g)}${to2(b)}`;
 }
 
+// HSV <-> HSL. The two share a hue and differ only in how they split the
+// remaining two axes, so the numeric H/S/L fields drive the picker's HSV
+// state through this pair instead of round-tripping through hex — a scrub
+// would otherwise quantize the color to 8 bits per channel on every tick.
+function hsvToHsl(h: number, s: number, v: number): [number, number, number] {
+  const l = v * (1 - s / 2);
+  const sl = l <= 0 || l >= 1 ? 0 : (v - l) / Math.min(l, 1 - l);
+  return [h, sl, l];
+}
+
+function hslToHsv(h: number, s: number, l: number): [number, number, number] {
+  const v = l + s * Math.min(l, 1 - l);
+  const sv = v <= 0 ? 0 : 2 * (1 - l / v);
+  return [h, sv, v];
+}
+
+// HSV → the integer H/S/L the fields display (h 0..360, s/l 0..100).
+function hsvToHslDisplay(
+  hsv: [number, number, number]
+): [number, number, number] {
+  const [h, s, l] = hsvToHsl(hsv[0], hsv[1], hsv[2]);
+  return [Math.round(h), Math.round(s * 100), Math.round(l * 100)];
+}
+
 interface EyeDropperResult {
   sRGBHex: string;
 }
@@ -115,9 +143,11 @@ interface EyeDropperCtor {
 
 // Popover footprint — the portal wrapper uses these to clamp/flip against
 // the viewport. Keep in sync with the layout below (the alpha variant
-// adds the alpha strip row + its gap).
-export const PICKER_WIDTH = 184;
-export const PICKER_HEIGHT = 172;
+// adds the alpha strip row + its gap). The width is set by the numeric
+// H/S/L/A row: at 224 the four labelled fields each land at ~43px, matching
+// the inline ColorControl row's proven width for a three-digit value.
+export const PICKER_WIDTH = 224;
+export const PICKER_HEIGHT = 196;
 export const PICKER_HEIGHT_ALPHA = PICKER_HEIGHT + 18;
 
 export function ColorPickerPopover({
@@ -152,20 +182,37 @@ export function ColorPickerPopover({
   );
   const [a01, setA01] = useState(() => hexAlpha01(hex));
   const [hexDraft, setHexDraft] = useState(hex);
+  // The H/S/L fields hold their own rounded draft rather than deriving from
+  // `hsv` each render: HSL collapses saturation at L=0 and L=100, so a scrub
+  // through either end would otherwise lose the hue/saturation you started
+  // from and never get it back on the way out.
+  const [hslDraft, setHslDraft] = useState<[number, number, number]>(() =>
+    hsvToHslDisplay(hexToHsv(hex))
+  );
   const lastHexRef = useRef(hex);
   useEffect(() => {
     if (hex !== lastHexRef.current) {
       lastHexRef.current = hex;
-      setHsv(hexToHsv(hex));
+      const nextHsv = hexToHsv(hex);
+      setHsv(nextHsv);
+      setHslDraft(hsvToHslDisplay(nextHsv));
       setA01(hexAlpha01(hex));
       setHexDraft(hex);
     }
   }, [hex]);
 
-  const emit = useCallback(
-    (next: [number, number, number], nextA: number) => {
+  // Single write path for every surface in the panel. `hslShown` is passed
+  // explicitly so the numeric fields can keep the exact values you typed
+  // while every other surface recomputes them from the new HSV.
+  const apply = useCallback(
+    (
+      next: [number, number, number],
+      nextA: number,
+      hslShown: [number, number, number]
+    ) => {
       setHsv(next);
       setA01(nextA);
+      setHslDraft(hslShown);
       const rgb = hsvToHex(next[0], next[1], next[2]);
       const nextHex = alpha ? withHexAlpha(rgb, nextA) : rgb;
       lastHexRef.current = nextHex;
@@ -175,6 +222,19 @@ export function ColorPickerPopover({
     [onChange, alpha]
   );
 
+  const emit = useCallback(
+    (next: [number, number, number], nextA: number) =>
+      apply(next, nextA, hsvToHslDisplay(next)),
+    [apply]
+  );
+
+  // H (0..360) / S / L (0..100) from the numeric fields.
+  const setHslChannel = (idx: 0 | 1 | 2, v: number) => {
+    const next: [number, number, number] = [...hslDraft];
+    next[idx] = Math.max(0, Math.min(idx === 0 ? 360 : 100, Math.round(v)));
+    apply(hslToHsv(next[0], next[1] / 100, next[2] / 100), a01, next);
+  };
+
   const commitHex = (raw: string) => {
     const norm = normalizeHex(raw, { alpha });
     if (!norm) {
@@ -183,7 +243,9 @@ export function ColorPickerPopover({
     }
     lastHexRef.current = norm;
     setHexDraft(norm);
-    setHsv(hexToHsv(norm));
+    const nextHsv = hexToHsv(norm);
+    setHsv(nextHsv);
+    setHslDraft(hsvToHslDisplay(nextHsv));
     setA01(hexAlpha01(norm));
     onChange(norm);
   };
@@ -458,6 +520,33 @@ export function ColorPickerPopover({
               <path d="M18.4 2.6a2 2 0 0 1 2.8 2.8l-2.1 2.1-2.8-2.8 2.1-2.1zM14 6.8L4.5 16.3 3 21l4.7-1.5L17.2 10 14 6.8z" />
             </svg>
           </button>
+        )}
+      </div>
+      {/* Numeric H/S/L (+ A) — drag to scrub, click to type, like every
+          other number in the app. `grow` lets three or four of them share
+          the panel width. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        {(["H", "S", "L"] as const).map((lbl, i) => (
+          <HslField
+            key={lbl}
+            label={lbl}
+            value={hslDraft[i]}
+            max={i === 0 ? 360 : 100}
+            onChange={(v) => setHslChannel(i as 0 | 1 | 2, v)}
+            grow
+          />
+        ))}
+        {alpha && (
+          <HslField
+            label="A"
+            value={Math.round(a01 * 100)}
+            max={100}
+            onChange={(pct) =>
+              apply(hsv, Math.max(0, Math.min(100, pct)) / 100, hslDraft)
+            }
+            grow
+            title="Alpha (0–100%)"
+          />
         )}
       </div>
     </div>

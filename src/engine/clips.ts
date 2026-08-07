@@ -176,11 +176,18 @@ export function emptyClipOutput(
       return { primary: pointsFromArray([]) };
     case "image_group":
       return { primary: { kind: "image_group", items: [] } };
+    case "list":
+      return { primary: { kind: "list", items: [] } };
     case "text_instance":
       return { primary: emptyTextInstance() };
     case "element":
       // Zero-size measure, 1×1 transparent render — layouts skip it.
       return { primary: emptyElement() };
+    case "color_ramp":
+      // No stops. sampleColorRamp's zero-stop branch falls back to the
+      // identity greyscale ramp, so an off-clip ramp reads as "unmodified"
+      // rather than as a solid colour.
+      return { primary: { kind: "color_ramp", stops: [], interp: "linear" } };
     default:
       // No representable empty (or a non-data output) — emit nothing.
       return {};

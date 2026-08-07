@@ -5,6 +5,7 @@ import { useStore, type Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
 import type {
   ImageValue,
+  ListValue,
   MaskValue,
   PointsValue,
   SocketType,
@@ -12,6 +13,7 @@ import type {
   SplineValue,
   UvValue,
 } from "@/engine/types";
+import { describeListItem } from "@/engine/list-value";
 import { colorForSocket, resolveSocketColor } from "./socketColor";
 import { ValueSummary } from "./NodeInspectorPopup";
 
@@ -162,6 +164,8 @@ function PeekVisual({
       return value.items[0] ? (
         <PixelThumb value={value.items[0]} readPixels={readPixels} />
       ) : null;
+    case "list":
+      return <ListRows value={value} />;
     case "spline":
       return <SplineThumb value={value} aspect={canvasAspect} />;
     case "points":
@@ -221,6 +225,51 @@ function PeekVisual({
     default:
       return null;
   }
+}
+
+// First few list items as index-prefixed rows — the peek's job is "did I parse
+// what I think I parsed", which the head of the list answers. Long lists get a
+// trailing count rather than a scroll marathon.
+const LIST_PEEK_ROWS = 8;
+
+function ListRows({ value }: { value: ListValue }) {
+  if (value.items.length === 0) {
+    return <div style={{ color: "var(--tb-n-10)" }}>(empty list)</div>;
+  }
+  const shown = value.items.slice(0, LIST_PEEK_ROWS);
+  const rest = value.items.length - shown.length;
+  return (
+    <div
+      style={{
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-7)",
+        borderRadius: 3,
+        padding: "3px 5px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 1,
+      }}
+    >
+      {shown.map((item, i) => (
+        <div key={i} style={{ display: "flex", gap: 6, minWidth: 0 }}>
+          <span style={{ color: "var(--tb-n-10)", flex: "0 0 auto" }}>{i}</span>
+          <span
+            style={{
+              color: "var(--tb-n-15)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {describeListItem(item)}
+          </span>
+        </div>
+      ))}
+      {rest > 0 && (
+        <div style={{ color: "var(--tb-n-10)" }}>+{rest} more</div>
+      )}
+    </div>
+  );
 }
 
 // Transparent-pixel backdrop, matches the editor's dark chrome.

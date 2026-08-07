@@ -278,6 +278,7 @@ export const reactionDiffusionNode: NodeDefinition = {
   // not just current params. Force re-eval each tick by mixing time
   // into the fingerprint.
   stable: false,
+  simulation: true,
   inputs: [{ name: "seed", type: "image", required: false }],
   // When `drive_by_scene_time` is on, expose a scalar `time` input so
   // the user can wire any monotonic source (Scene Time, Accumulator,

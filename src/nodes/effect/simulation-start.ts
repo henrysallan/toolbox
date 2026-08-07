@@ -195,6 +195,7 @@ export const simulationStartNode: NodeDefinition = {
   // params + inputs. We force re-eval each tick via ctx.time in the
   // fingerprint (see fingerprintExtras).
   stable: false,
+  simulation: true,
   headerControl: { paramName: "kind" },
   inputs: [{ name: "initial", type: "image", required: false }],
   resolveInputs(params): InputSocketDef[] {

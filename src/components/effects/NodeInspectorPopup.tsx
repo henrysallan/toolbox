@@ -4,9 +4,11 @@ import { useState } from "react";
 import { useStore, type Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
 import { getNodeDef } from "@/engine/registry";
+import { listItemType } from "@/engine/list-value";
 import type {
   ImageGroupValue,
   ImageValue,
+  ListValue,
   MaskValue,
   NodeOutput,
   PointsValue,
@@ -247,6 +249,8 @@ export function ValueSummary({ value }: { value: SocketValue | undefined }) {
       return <span>audio · {value.source === "mic" ? "mic" : "file"}</span>;
     case "image_group":
       return <ImageGroupSummary value={value} />;
+    case "list":
+      return <ListSummary value={value} />;
     case "string":
       return (
         <span>
@@ -297,6 +301,18 @@ function PointsSummary({ value }: { value: PointsValue }) {
     <span>
       points · {value.count} point
       {value.count === 1 ? "" : "s"}
+    </span>
+  );
+}
+
+function ListSummary({ value }: { value: ListValue }) {
+  // Lists carry no declared item type — name the shared one, or "mixed".
+  const n = value.items.length;
+  const type = listItemType(value);
+  return (
+    <span>
+      list · {n} item{n === 1 ? "" : "s"}
+      {n > 0 && ` × ${type ?? "mixed"}`}
     </span>
   );
 }

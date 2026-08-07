@@ -25,7 +25,8 @@ export const solidColorNode: NodeDefinition = {
   name: "Solid Color",
   category: "image",
   subcategory: "generator",
-  description: "Fills the frame with a single color.",
+  description:
+    "Fills the frame with a single color. The color square on the node opens a picker in place; the H/S/L/A row at the bottom nudges it without one.",
   backend: "webgl2",
   inputs: [],
   params: [

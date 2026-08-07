@@ -38,6 +38,13 @@ export const SOCKET_PALETTE: Record<string, SocketColorPair> = {
   // groupIndex metadata on the base value. Already dark enough for light
   // mode, so it's the one pair that doesn't move.
   image_group: { dark: "#1d4ed8", light: "#1d4ed8" },
+  // List wires — sky blue. Sits in the widest free slice of the hue circle
+  // (spline 212° → image 255°), which was free because the ramp type
+  // deliberately passed on it. A list is a CONTAINER, so the neutral slate
+  // treatment (like `render`) was tempting — but a list carries real data
+  // through the graph, and slate reads as "organizational, ignore me".
+  // Spec: 080526_list-socket.md.
+  list: { dark: "#38bdf8", light: "#0079ab" },
   // Live text carrier (Text → Copy to Points) — fuchsia. A text-family
   // cousin of string's lime, but clearly its own pipeline: it holds a
   // style + variant strings, not a plain value.
@@ -72,6 +79,14 @@ export const SOCKET_PALETTE: Record<string, SocketColorPair> = {
   // distinctly from the scene contents.
   object3d: { dark: "#f59e0b", light: "#b55800" },
   camera: { dark: "#2dd4bf", light: "#008f7b" },
+  // Colour-ramp wires — coral. Sits in the widest free slice of the hue
+  // circle (31° between particles at 16° and vector at 48°), so it reads
+  // apart from both the pink-red particle descriptors and pure orange. The
+  // wide blue gap (spline 212° → image 255°) was rejected on purpose:
+  // rasterize-spline carries a spline input, an image output AND two ramp
+  // params, so a blue ramp wire would be ambiguous on the very node that
+  // wants it most. Spec: 080526_on-node-color-ramp.md.
+  color_ramp: { dark: "#f87962", light: "#ca3a23" },
 };
 
 /** Fallback for an unknown socket type — the neutral slate. */

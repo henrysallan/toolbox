@@ -44,6 +44,7 @@ export const smoothNode: NodeDefinition = {
     "Exponential smoothing filter on a scalar. Time is the smoothing time-constant (seconds) — larger values produce heavier damping. Useful for de-jittering tracker outputs (hand, object) or audio levels.",
   backend: "webgl2",
   stable: false,
+  simulation: true,
   inputs: [
     { name: "value", type: "scalar", required: false, label: "Value" },
   ],

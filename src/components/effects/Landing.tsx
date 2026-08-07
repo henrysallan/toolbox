@@ -14,6 +14,12 @@ interface Props {
   onLoadLocal?: (path: string) => void;
   // Start a fresh, empty project.
   onNewProject: () => void;
+  // Present only when the landing was re-opened over a live editor
+  // (Toolbox menu → the version row). Dismisses it without touching the
+  // loaded project; absent on the first-load gateway, where there is no
+  // project to go back to. Also switches off the boot veil — the editor
+  // behind is already painted, so covering it would just flash dark.
+  onClose?: () => void;
 }
 
 // How long the near-opaque dark veil is held before lightening to
@@ -41,7 +47,12 @@ const DOWNLOAD_WIN =
 // web, a greyed Mac Download button) on the left, the account pill on the
 // right. Sits on top of the (already mounted) editor; selecting a project
 // or "New Project" dismisses it.
-export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
+export default function Landing({
+  onLoad,
+  onLoadLocal,
+  onNewProject,
+  onClose,
+}: Props) {
   const { user, loading } = useUser();
   const signedIn = !!user;
 
@@ -49,8 +60,9 @@ export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
   const [shown, setShown] = useState(false);
   // Two-phase backdrop: starts as a near-opaque dark veil (hides the
   // editor booting), then lightens to a translucent heavy blur once the
-  // editor has had a moment to settle.
-  const [revealed, setRevealed] = useState(false);
+  // editor has had a moment to settle. A re-open skips straight to the
+  // translucent state — there's nothing booting to hide.
+  const [revealed, setRevealed] = useState(!!onClose);
   // The Mac Download button is web-only. Detect native post-mount to avoid
   // an SSR hydration mismatch (renders nothing until we know).
   const [isWeb, setIsWeb] = useState(false);
@@ -70,12 +82,34 @@ export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
     };
   }, []);
 
+  // Escape backs out to the project underneath (re-open only). Bubble
+  // phase, so anything that stops propagation first — the folder rename
+  // field in the grid — still gets Escape to itself.
+  useEffect(() => {
+    if (!onClose) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const t = e.target as HTMLElement | null;
+      if (t?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t?.tagName ?? ""))
+        return;
+      onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div
       style={{
         position: "fixed",
         inset: 0,
-        zIndex: 50,
+        // Above the whole editor chrome ladder (080226_timeline-modal-panel.md
+        // §Z-order: timeline dock 900, PlaybackBar 950, MenuBar 1000) and below
+        // the blocking dialogs at 2000. A bare 50 used to work only because the
+        // landing paints later in DOM order than the un-z-indexed chrome — once
+        // the timeline dock and PlaybackBar took explicit z-indexes they began
+        // punching through the veil.
+        zIndex: 1500,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -195,7 +229,10 @@ export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
             <span style={{ display: "block", fontSize: 60 }}>Toolbox</span>
           </div>
 
-          <UserPill user={user} loading={loading} />
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {onClose && <BackPill onClick={onClose} />}
+            <UserPill user={user} loading={loading} />
+          </div>
         </div>
 
         {/* Card — the projects grid, full width. */}
@@ -224,6 +261,53 @@ export default function Landing({ onLoad, onLoadLocal, onNewProject }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+// Escape hatch shown only when the landing was re-opened over a live
+// editor: leaves the loaded project exactly as it was. Sized to the
+// account pill beside it.
+function BackPill({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Return to the current project (Esc)"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 7,
+        height: 44,
+        padding: "0 16px",
+        background: "transparent",
+        border: "1px solid var(--tb-n-7)",
+        borderRadius: 999,
+        fontFamily: INTER,
+        fontWeight: 500,
+        fontSize: 13,
+        color: "var(--tb-n-15)",
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.borderColor = "var(--tb-n-9)";
+        e.currentTarget.style.color = "var(--tb-n-17)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = "var(--tb-n-7)";
+        e.currentTarget.style.color = "var(--tb-n-15)";
+      }}
+    >
+      <svg width="13" height="13" viewBox="0 0 12 12" fill="none" aria-hidden>
+        <path
+          d="M7.5 2 3.5 6l4 4"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+      Back to project
+    </button>
   );
 }
 

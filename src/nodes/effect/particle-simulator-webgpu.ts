@@ -310,6 +310,7 @@ export const particleSimulatorWebGPUNode: NodeDefinition = {
   description: particleSimulatorWebGLNode.description,
   backend: "webgpu",
   stable: false,
+  simulation: true,
   inputs: PARTICLE_SIM_SHARED_SCHEMA.inputs,
   resolveInputs: PARTICLE_SIM_SHARED_SCHEMA.resolveInputs,
   resolveAuxOutputs: PARTICLE_SIM_SHARED_SCHEMA.resolveAuxOutputs,

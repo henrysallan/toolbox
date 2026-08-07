@@ -64,6 +64,7 @@ export const accumulatorNode: NodeDefinition = {
   // State lives between frames; fingerprintExtras mixes in ctx.time so
   // the cache re-evaluates us every frame during playback.
   stable: false,
+  simulation: true,
   inputs: [
     { name: "input", type: "scalar", required: true },
     { name: "reset", type: "scalar", required: false },

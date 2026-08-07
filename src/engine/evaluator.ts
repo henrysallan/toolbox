@@ -429,6 +429,12 @@ function socketToParamRaw(
       return sv.kind === "vec4"
         ? colorValueToHex([...sv.value], "#000000", alphaColor)
         : undefined;
+    case "color_ramp":
+      // The param stores a bare ColorRampStop[] and every consumer reads it
+      // with Array.isArray — so hand back the stops verbatim, not the
+      // ColorRampValue wrapper. The wire's `interp` is dropped here; see the
+      // note on ColorRampValue (types.ts) for why, and what would change it.
+      return sv.kind === "color_ramp" ? sv.stops : undefined;
     default:
       return undefined;
   }

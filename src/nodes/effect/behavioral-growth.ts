@@ -8,8 +8,10 @@ import type {
   SplineValue,
 } from "@/engine/types";
 import {
+  authoredToPxY,
   buildSpatialHash,
   cellStart,
+  pxToAuthoredY,
   readMapBuffer,
   sampleMap,
   type MapBuffer,
@@ -38,8 +40,17 @@ import { EMPTY_POINTS, makePoints } from "@/engine/points";
 // "reward" is a decaying field the agents both write and read, so
 // optimisation emerges AND is renderable).
 //
-// Everything runs in true canvas pixels (x = u*W, y = v*H) so radii and
-// speeds are circular on screen rather than in the normalized square.
+// Everything runs in true canvas pixels so radii and speeds are circular
+// on screen rather than in the normalized square. The geometry sockets
+// carry AUTHORED coordinates (engine/aspect.ts), so the seams go through
+// authoredToPxY / pxToAuthoredY (engine/sim-kernel.ts) — x = u*W, but
+// y = v*W + (H-W)/2, NOT v*H. Using v*H treated authored points as canvas
+// UV and squashed the whole population toward the vertical middle of the
+// pixel canvas, which is what put the [0,W]×[0,H] boundary box (wrap and
+// bounce both) well outside the visible frame at 16:9. Canvas-aligned
+// lookups — the flow / obstacle field samplers — stay canvas UV (x/W,
+// y/H), because those images really are canvas-sized. Square canvas =
+// identity, which is why this only ever showed up on non-square projects.
 
 const MAX_STEPS = 400;
 const MAX_AGENTS = 200_000;
@@ -548,6 +559,7 @@ export const behavioralGrowthNode: NodeDefinition = {
     "Give points rules and let them move — flocking, schooling, crowds, slime networks. Steering stacks the classic behaviours as weights you can mix: separation, alignment and cohesion for a flock, Seek toward wired Targets (negative values flee), Wander for restlessness, Flow to follow a wired field as an angle map, and Avoid to steer around Obstacles; tag agents with different group indices and turn on Predator/prey to watch a flock split around a chaser. Physarum is the slime-mould network — each agent sniffs the trail ahead and to each side, turns toward the strongest, and deposits its own trail, which diffuses and decays; the Deposit image aux is usually what you actually render. Vicsek is alignment plus angular noise alone, and the noise slider alone takes it from ordered swirls to chaos. Chemotaxis runs and tumbles up a wired field, searching rather than sliding. Integrate re-runs from the seed points every frame (deterministic and scrub-safe, and the Trails aux gives streamline art); Accumulate keeps the agents moving frame to frame as a living system.",
   backend: "webgl2",
   headerControl: { paramName: "mode" },
+  simulation: true,
   inputs: [
     { name: "points", label: "Agents", type: "points", required: true },
     { name: "field", label: "Field", type: "mask", required: false },
@@ -959,7 +971,7 @@ export const behavioralGrowthNode: NodeDefinition = {
       targets = new Float32Array(tin.count * 2);
       for (let i = 0; i < tin.count; i++) {
         targets[i * 2] = tin.positions[i * 2] * W;
-        targets[i * 2 + 1] = tin.positions[i * 2 + 1] * H;
+        targets[i * 2 + 1] = authoredToPxY(tin.positions[i * 2 + 1], W, H);
       }
     }
 
@@ -967,7 +979,7 @@ export const behavioralGrowthNode: NodeDefinition = {
       const rng = mulberry32(p.seed ^ 0x51ed);
       for (let i = from; i < to; i++) {
         st.pos[i * 2] = src.positions[i * 2] * W;
-        st.pos[i * 2 + 1] = src.positions[i * 2 + 1] * H;
+        st.pos[i * 2 + 1] = authoredToPxY(src.positions[i * 2 + 1], W, H);
         const a = hash01(i, p.seed) * Math.PI * 2 + rng() * 1e-6;
         st.vel[i * 2] = Math.cos(a) * p.speed;
         st.vel[i * 2 + 1] = Math.sin(a) * p.speed;
@@ -1061,7 +1073,7 @@ export const behavioralGrowthNode: NodeDefinition = {
               anchors.length = 0;
             }
           }
-          anchors.push({ pos: [x / W, y / H] });
+          anchors.push({ pos: [x / W, pxToAuthoredY(y, W, H)] });
         }
         if (anchors.length >= 2) {
           subpaths.push({
@@ -1147,7 +1159,7 @@ function emitPoints(
   });
   for (let i = 0; i < n; i++) {
     out.positions[i * 2] = st.pos[i * 2] / W;
-    out.positions[i * 2 + 1] = st.pos[i * 2 + 1] / H;
+    out.positions[i * 2 + 1] = pxToAuthoredY(st.pos[i * 2 + 1], W, H);
     out.rotations![i] = Math.atan2(st.vel[i * 2 + 1], st.vel[i * 2]);
     // Attributes are re-read from the CURRENT seed input by index, so an
     // animated upstream keeps driving scale and group while only the
@@ -1189,7 +1201,7 @@ function buildRingTrails(
         }
         anchors = [];
       }
-      anchors.push({ pos: [x / W, y / H] });
+      anchors.push({ pos: [x / W, pxToAuthoredY(y, W, H)] });
       px = x;
       py = y;
     }

@@ -12,6 +12,7 @@ import type {
   RenderContext,
   SocketValue,
 } from "@/engine/types";
+import { aspectUncorrectY } from "@/engine/aspect";
 import { pointsFromArray } from "@/engine/points";
 
 // =====================================================================
@@ -134,6 +135,9 @@ uniform sampler2D u_colliderMask5;
 uniform int u_boundsMode;
 uniform float u_boundsRestitution;
 
+// Canvas aspect (W / H) for the descriptor seam below.
+uniform float u_aspect;
+
 layout(location = 0) out vec4 outPos;
 layout(location = 1) out vec4 outVel;
 
@@ -187,6 +191,29 @@ vec2 curl2(vec2 p, float t) {
   return vec2((n1 - n2) / (2.0 * eps), -(n3 - n4) / (2.0 * eps));
 }
 
+// ---- descriptor space seam -----------------------------------------
+// The solver itself runs in y-down CANVAS UV: that is what the bounds
+// box (the unit square IS the canvas), the emitter/collider mask
+// samplers, and Particles to Image all speak, so none of that moves.
+//
+// Force, analytic-collider and emitter descriptors are AUTHORED
+// coordinates instead (engine/aspect.ts): x still spans the width, but
+// y is width-isotropic and vertically centered. That is the space where
+// a radius descriptor describes an actual circle rather than an ellipse,
+// it's where the CPU sims evaluate the very same descriptors
+// (engine/sim-kernel.ts, via Rope / Rigid Body) — so one Point Force
+// feels identical wired into any simulator. Evaluating them in canvas
+// UV, as this shader used to, put every radial force off-center
+// vertically and squashed its falloff into an ellipse on 16:9.
+//
+// Positions map affinely; velocities and offsets are pure vectors, so
+// they only scale. Authored velocity is W px/sec on BOTH axes, which is
+// what makes gravity match across sims. Square canvas = identity.
+vec2 toAuthored(vec2 p) { return vec2(p.x, 0.5 + (p.y - 0.5) / u_aspect); }
+vec2 toCanvas(vec2 p) { return vec2(p.x, 0.5 + (p.y - 0.5) * u_aspect); }
+vec2 toAuthoredVec(vec2 v) { return vec2(v.x, v.y / u_aspect); }
+vec2 toCanvasVec(vec2 v) { return vec2(v.x, v.y * u_aspect); }
+
 // ---- emitter mask sampling ----------------------------------------
 vec4 sampleEmitterMask(int slot, vec2 uv) {
   // GLSL won't let us index a sampler array, so unroll manually.
@@ -218,30 +245,43 @@ bool resolveColliders(inout vec2 pos, inout vec2 vel) {
     vec4 cb = u_colliderB[i];
     if (ck == 0) {
       // circle: ca.xy=center, ca.z=radius, ca.w=inside(0/1); cb.x=resti
-      vec2 d = pos - ca.xy;
+      // Resolved in AUTHORED space — a radius only bounds a circle
+      // there. Written back only on contact, so non-touching particles
+      // never eat the round-trip's float drift.
+      vec2 p = toAuthored(pos);
+      vec2 v = toAuthoredVec(vel);
+      vec2 d = p - ca.xy;
       float r = length(d);
       bool inside = ca.w > 0.5;
       bool penetrating = inside ? r > ca.z : r < ca.z;
       if (penetrating && r > 1e-5) {
         vec2 n = (d / r) * (inside ? -1.0 : 1.0);
         // Push out along the normal back to the surface.
-        pos = inside
+        p = inside
           ? ca.xy + n * (-ca.z)
           : ca.xy + (d / r) * ca.z;
-        float vn = dot(vel, n);
+        float vn = dot(v, n);
         if (vn < 0.0) {
-          vel -= (1.0 + cb.x) * vn * n;
+          v -= (1.0 + cb.x) * vn * n;
         }
+        pos = toCanvas(p);
+        vel = toCanvasVec(v);
       }
     } else if (ck == 1) {
       // line half-plane: ca.xy=normal, ca.z=offset; cb.x=resti
-      // Block points with n·p < d.
-      float dist = dot(ca.xy, pos) - ca.z;
+      // Block points with n·p < d. Authored space again: the descriptor
+      // carries a UNIT normal, and only there does it stay unit-length
+      // (and the plane stay at the authored angle).
+      vec2 p = toAuthored(pos);
+      vec2 v = toAuthoredVec(vel);
+      float dist = dot(ca.xy, p) - ca.z;
       if (dist < 0.0) {
         vec2 n = ca.xy;
-        pos -= dist * n;
-        float vn = dot(vel, n);
-        if (vn < 0.0) vel -= (1.0 + cb.x) * vn * n;
+        p -= dist * n;
+        float vn = dot(v, n);
+        if (vn < 0.0) v -= (1.0 + cb.x) * vn * n;
+        pos = toCanvas(p);
+        vel = toCanvasVec(v);
       }
     } else if (ck == 2) {
       // image mask: ca.x=threshold; cb.x=resti; cb.y=killFlag (0/1)
@@ -387,11 +427,14 @@ void main() {
 
       if (ek == 0) {
         // point: ea.xy=center, ea.z=spread; eb.xy=v, eb.z=vJitter, eb.w=lifetime
+        // Center, spread and launch velocity are AUTHORED, so the
+        // spread box stays square and the emitter sits where the
+        // descriptor says; convert into the solver's canvas UV once.
         vec2 j = (hash22(vec2(pid, u_time * 31.0 + float(i))) - 0.5) * 2.0 * ea.z;
-        spawnPos = ea.xy + j;
+        spawnPos = toCanvas(ea.xy + j);
         vec2 vj = (hash22(vec2(pid * 7.0 + 13.0, u_time * 23.0 + float(i))) - 0.5)
                   * 2.0 * eb.z;
-        spawnVel = eb.xy + vj;
+        spawnVel = toCanvasVec(eb.xy + vj);
       } else if (ek == 1) {
         // image_mask: ea.x=threshold; eb.xy=v, eb.z=vJitter, eb.w=lifetime
         float threshold = ea.x;
@@ -410,9 +453,12 @@ void main() {
           }
         }
         if (!found) continue;
+        // spawnPos came from rejection-sampling the mask, which is
+        // canvas-aligned — it's already in the solver's space. Only the
+        // launch velocity is an authored descriptor.
         vec2 vj = (hash22(vec2(pid * 9.0 + 5.0, u_time * 19.0 + float(i))) - 0.5)
                   * 2.0 * eb.z;
-        spawnVel = eb.xy + vj;
+        spawnVel = toCanvasVec(eb.xy + vj);
       }
 
       outPos = vec4(spawnPos, max(u_dt, 1e-4), spawnLife);
@@ -427,9 +473,18 @@ void main() {
   }
 
   // Alive: integrate forces (semi-implicit Euler), advance age.
-  for (int i = 0; i < ${MAX_FORCES}; i++) {
-    if (i >= u_forceCount) break;
-    applyForce(u_forceKinds[i], u_forceA[i], u_forceB[i], pos, vel, u_dt);
+  // The whole force block runs in AUTHORED space — position AND
+  // velocity — so radial falloffs stay round and turbulence cells stay
+  // square; only the resulting velocity converts back. Forces read pos
+  // and write vel, so the round trip is exact.
+  if (u_forceCount > 0) {
+    vec2 fPos = toAuthored(pos);
+    vec2 fVel = toAuthoredVec(vel);
+    for (int i = 0; i < ${MAX_FORCES}; i++) {
+      if (i >= u_forceCount) break;
+      applyForce(u_forceKinds[i], u_forceA[i], u_forceB[i], fPos, fVel, u_dt);
+    }
+    vel = toCanvasVec(fVel);
   }
   pos += vel * u_dt;
   age += u_dt;
@@ -697,6 +752,7 @@ export const particleSimulatorWebGLNode: NodeDefinition = {
   // re-evaluate every frame. The fingerprint extras include ctx.time
   // so the cache busts each tick.
   stable: false,
+  simulation: true,
   inputs: [],
   resolveInputs(params): InputSocketDef[] {
     const fc = Math.max(
@@ -970,6 +1026,11 @@ export const particleSimulatorWebGLNode: NodeDefinition = {
       gl.getUniformLocation(program, "u_resetFlag"),
       reset ? 1 : 0
     );
+    // Descriptor seam (see toAuthored/toCanvas in the shader).
+    gl.uniform1f(
+      gl.getUniformLocation(program, "u_aspect"),
+      ctx.height > 0 ? ctx.width / ctx.height : 1
+    );
 
     gl.uniform1i(
       gl.getUniformLocation(program, "u_forceCount"),
@@ -1089,13 +1150,21 @@ export const particleSimulatorWebGLNode: NodeDefinition = {
         width: texW,
         height: texH,
       });
+      // The position texture is y-down CANVAS UV (what Particles to
+      // Image draws), but geometry sockets carry AUTHORED coordinates
+      // (engine/aspect.ts), so y converts on the way out. Every points
+      // consumer aspect-corrects at render time — Copy to Points' VS,
+      // Points to Spline → rasterizer, Point Labels, the viewport
+      // overlay — so handing them canvas UV double-corrects and spreads
+      // the points vertically. Square canvas = identity.
+      const aspect = ctx.height > 0 ? ctx.width / ctx.height : 1;
       const pts: Point[] = [];
       for (let i = 0; i < cap; i++) {
         const o = i * 4;
         const age = data[o + 2];
         const lifetime = data[o + 3];
         if (age <= 0 || lifetime <= 0 || age >= lifetime) continue;
-        pts.push({ pos: [data[o], data[o + 1]] });
+        pts.push({ pos: [data[o], aspectUncorrectY(data[o + 1], aspect)] });
       }
       const points: PointsValue = pointsFromArray(pts);
       result.aux = { points };

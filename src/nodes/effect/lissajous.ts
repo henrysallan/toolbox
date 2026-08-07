@@ -15,16 +15,21 @@ import { pointsFromArray } from "@/engine/points";
 // over t ∈ [0, 2π]. Integer frequency ratios produce closed curves;
 // non-integer ratios trace ergodically through the bounding box.
 //
-// Phases are exposed in units of π so common values (π/2, π, 3π/2)
-// read as 0.5, 1, 1.5 on the slider — much more useful than raw
-// radians. Rotations stay in radians since 3D rotations have no
-// natural "× π" convention.
+// Phase units differ between the two nodes:
+//   2D — units of π, so π/2, π, 3π/2 read as 0.5, 1, 1.5.
+//   3D — TURNS, so each whole 0→1 span (0→1, 1→2, …) is one full 2π
+//        cycle. That makes a keyframed phase loop seamlessly: a ramp
+//        from n to n+1 lands on a curve identical to where it started.
+// Rotations stay in radians in both — 3D rotations have no natural
+// "× π" convention.
 //
 // 3D curves are rotated around X / Y / Z (extrinsic order) then
 // orthographically projected by dropping z. Center offsets translate
 // the projected curve into UV space.
 
 // -------- helpers ------------------------------------------------------
+
+const TAU = 2 * Math.PI;
 
 function num(v: unknown, fb: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : fb;
@@ -232,7 +237,7 @@ export const lissajous3DNode: NodeDefinition = {
   category: "spline",
   subcategory: "generator",
   description:
-    "Generate a 3D Lissajous curve, rotate it (extrinsic XYZ), and orthographically project to UV space. Three frequencies, three phases (× π), three rotations (rad), and per-axis amplitudes give classic 3D Lissajous knots and harmonograph-style figures. Aux `points` output carries the projected samples as a points value.",
+    "Generate a 3D Lissajous curve, rotate it (extrinsic XYZ), and orthographically project to UV space. Three frequencies, three phases (in turns — each whole 0→1 span is one full cycle, so a keyframed phase loops seamlessly), three rotations (rad), and per-axis amplitudes give classic 3D Lissajous knots and harmonograph-style figures. Aux `points` output carries the projected samples as a points value.",
   backend: "webgl2",
   inputs: [],
   params: [
@@ -308,19 +313,22 @@ export const lissajous3DNode: NodeDefinition = {
       step: 0.01,
       default: 2,
     },
-    // Phases (× π)
+    // Phases in TURNS — 1 = one full 2π cycle, so a keyframe ramp over
+    // any whole span (0→1, 1→2, −1→0) returns to the identical curve.
+    // The ±2 range gives four cycles of headroom; right-click the slider
+    // for a custom range if an animation needs to run further.
     {
       name: "phase_x",
-      label: "Phase X (× π)",
+      label: "Phase X (turns)",
       type: "scalar",
       min: -2,
       max: 2,
       step: 0.001,
-      default: 0.5,
+      default: 0.25,
     },
     {
       name: "phase_y",
-      label: "Phase Y (× π)",
+      label: "Phase Y (turns)",
       type: "scalar",
       min: -2,
       max: 2,
@@ -329,7 +337,7 @@ export const lissajous3DNode: NodeDefinition = {
     },
     {
       name: "phase_z",
-      label: "Phase Z (× π)",
+      label: "Phase Z (turns)",
       type: "scalar",
       min: -2,
       max: 2,
@@ -395,9 +403,9 @@ export const lissajous3DNode: NodeDefinition = {
     const fx = num(params.fx, 1);
     const fy = num(params.fy, 3);
     const fz = num(params.fz, 2);
-    const phaseX = num(params.phase_x, 0.5) * Math.PI;
-    const phaseY = num(params.phase_y, 0) * Math.PI;
-    const phaseZ = num(params.phase_z, 0) * Math.PI;
+    const phaseX = num(params.phase_x, 0.25) * TAU;
+    const phaseY = num(params.phase_y, 0) * TAU;
+    const phaseZ = num(params.phase_z, 0) * TAU;
     const rx = num(params.rx, 0);
     const ry = num(params.ry, 0);
     const rz = num(params.rz, 0);

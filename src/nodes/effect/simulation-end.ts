@@ -60,6 +60,7 @@ export const simulationEndNode: NodeDefinition = {
     "Exit point of a simulation zone. Commits the `state` input as next frame's starting state; pass `skip` high to pause advancement without losing state. Set `kind` to match the paired Simulation Start.",
   backend: "webgl2",
   stable: false,
+  simulation: true,
   headerControl: { paramName: "kind" },
   inputs: [
     { name: "state", type: "image", required: true },

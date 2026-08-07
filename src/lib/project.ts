@@ -93,7 +93,14 @@ import { FRAME_XY_PROPS, newCompositionId } from "@/state/graph";
 // untouched (no `asset` field ⇒ no-op). A v9 save may still be fully inline
 // (fallback when Storage is unavailable). See
 // specdocs/071426_cloud-asset-storage.md.
-export const CURRENT_SCHEMA = 9;
+//
+// v10 — Lissajous 3D phase units: `phase_x/y/z` switched from units of π to
+// TURNS (1 = one full 2π cycle) so a keyframed phase loops seamlessly over
+// each whole 0→1 span. Old values are exactly twice the new ones, so loading
+// a ≤v9 save halves the stored params, any keyframed values, and any custom
+// slider range on those params (see deserializeGraph). Lissajous 2D keeps its
+// × π phases and is untouched.
+export const CURRENT_SCHEMA = 10;
 
 // Thrown when a project was saved by a NEWER client than this one. Without
 // this guard the load silently drops fields the older client doesn't know,
@@ -1177,6 +1184,62 @@ export async function deserializeGraph(
         targetHandle: `in:mask:${l.id}`,
       }));
       edges.splice(i, 1, ...fanned);
+    }
+  }
+  // v10 migration: Lissajous 3D's phases went from units of π to turns, so
+  // every old value is exactly twice its new equivalent. Halve the stored
+  // param, any keyframed values (and their bezier handles' `dy`, which is in
+  // value units), and any custom slider range — a straight linear rescale, so
+  // easing and handle geometry are preserved. `dx` is in ticks: untouched.
+  if ((saved.schemaVersion ?? 1) < 10) {
+    const halve = (v: unknown) => (typeof v === "number" ? v / 2 : v);
+    for (const n of nodes) {
+      if (n.data.defType !== "lissajous-3d") continue;
+      for (const p of ["phase_x", "phase_y", "phase_z"]) {
+        if (typeof n.data.params[p] === "number") {
+          n.data.params[p] = (n.data.params[p] as number) / 2;
+        }
+        const block = n.data.animation?.[p];
+        if (block) {
+          n.data.animation = {
+            ...n.data.animation,
+            [p]: {
+              ...block,
+              keyframes: block.keyframes.map((k) => ({
+                ...k,
+                value: halve(k.value),
+                ...(k.bezierHandles
+                  ? {
+                      bezierHandles: {
+                        leftHandle: {
+                          dx: k.bezierHandles.leftHandle.dx,
+                          dy: k.bezierHandles.leftHandle.dy / 2,
+                        },
+                        rightHandle: {
+                          dx: k.bezierHandles.rightHandle.dx,
+                          dy: k.bezierHandles.rightHandle.dy / 2,
+                        },
+                      },
+                    }
+                  : {}),
+              })),
+            },
+          };
+        }
+        const range = n.data.paramOverrides?.[p];
+        if (range) {
+          n.data.paramOverrides = {
+            ...n.data.paramOverrides,
+            [p]: {
+              ...(range.min !== undefined ? { min: range.min / 2 } : {}),
+              ...(range.max !== undefined ? { max: range.max / 2 } : {}),
+              ...(range.softMax !== undefined
+                ? { softMax: range.softMax / 2 }
+                : {}),
+            },
+          };
+        }
+      }
     }
   }
   // Pre-layers projects wrap into "Layer 1" on load (v4 migration) —

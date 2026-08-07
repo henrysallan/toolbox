@@ -15,9 +15,13 @@
 import type { SocketType, ResolveCtx } from "./types";
 import { getNodeDef } from "./registry";
 import {
+  coercible,
+  isSwitchSlotHandle,
   parseTargetHandleKind,
   paramSocketType,
   REROUTE_TYPE,
+  SWITCH_TYPE,
+  switchTypeIsAuto,
 } from "./graph-helpers";
 import { withMaskInput } from "./conventions";
 
@@ -54,35 +58,11 @@ export interface ValResult {
   order?: string[]; // topological order, when acyclic
 }
 
-// ---------------------------------------------------------------------------
-// Coercion table — the canonical cross-type wires (mirrors coerce.ts and the
-// editor's canCoerce, minus the polymorphic defType exceptions, which proper
-// connectedTypes resolution makes unnecessary).
-// ---------------------------------------------------------------------------
-export function coercible(src: string, tgt: string): boolean {
-  if (src === tgt) return true;
-  if (src === "mask" && tgt === "image") return true;
-  if (src === "image" && tgt === "mask") return true;
-  // Spline → mask: the coercion layer rasterizes the shape's filled
-  // silhouette to a coverage mask.
-  if (src === "spline" && tgt === "mask") return true;
-  // Scalar broadcasts into vec/uv sockets ((s,s) for uv).
-  if (src === "scalar" && (tgt === "vec2" || tgt === "vec3" || tgt === "vec4" || tgt === "uv"))
-    return true;
-  // Image → uv: R/G reinterpreted as per-pixel (u, v) — zero-copy re-wrap in
-  // coerce.ts. Grayscale lands on the (f, f) diagonal, i.e. Blender's
-  // Fac → Vector domain warp. Mask is excluded: R-format textures read G = 0,
-  // which would silently collapse v — route mask → image first.
-  if (src === "image" && tgt === "uv") return true;
-  // Image/mask → scalar: center-pixel R-channel sample at eval time.
-  if ((src === "image" || src === "mask") && tgt === "scalar") return true;
-  // Audio → scalar: AnalyserNode RMS level.
-  if (src === "audio" && tgt === "scalar") return true;
-  // Image ↔ element: wrap as full-canvas element / flatten to image.
-  if (src === "image" && tgt === "element") return true;
-  if (src === "element" && tgt === "image") return true;
-  return false;
-}
+// The pure coercion table now lives in graph-helpers.ts (a leaf module, so
+// node defs can import it without a registry cycle — Switch unifies the types
+// wired into it with exactly these rules). Re-exported here because this is
+// where callers have always found it.
+export { coercible } from "./graph-helpers";
 
 // `coercible` + the def-specific POLYMORPHIC exceptions: sockets that will
 // RETYPE to accept these sources (via resolveInputs' connectedTypes, with
@@ -98,10 +78,25 @@ export function editorCanCoerce(
   src: string,
   tgt: string,
   targetDefType?: string,
-  targetHandle?: string
+  targetHandle?: string,
+  targetParams?: Record<string, unknown>
 ): boolean {
   if (coercible(src, tgt)) return true;
   if (!targetDefType) return false;
+  // Switch's numbered slots are wildcards while its Type is "auto" (the
+  // default): the node adopts whatever family is wired in and coerces the
+  // other slots into it, so the resting socket type says nothing about what
+  // may land. With an EXPLICIT type the sockets are honestly typed and the
+  // plain table above already decided. `targetParams` is optional — callers
+  // that don't pass it (older/edge paths) get the permissive answer, which
+  // matches how every other polymorphic row here behaves.
+  if (
+    targetDefType === SWITCH_TYPE &&
+    isSwitchSlotHandle(targetHandle) &&
+    (!targetParams || switchTypeIsAuto(targetParams.type))
+  ) {
+    return true;
+  }
   // A reroute's single `value` input is a wildcard — it accepts any source
   // and retypes its output to match (connectedTypes retyping, like Transform/
   // Displace). Its resting type reads "image" before anything connects, so

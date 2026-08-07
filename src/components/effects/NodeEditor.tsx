@@ -1255,7 +1255,13 @@ function NodeEditor({
       const inputMatch = draggedNode.data.inputs.find(
         (i) =>
           i.name !== VIRTUAL_SOCKET &&
-          canCoerce(srcType!, i.type, draggedNode.data.defType, `in:${i.name}`)
+          canCoerce(
+            srcType!,
+            i.type,
+            draggedNode.data.defType,
+            `in:${i.name}`,
+            draggedNode.data.params
+          )
       );
       if (!inputMatch) continue;
 
@@ -1274,7 +1280,8 @@ function NodeEditor({
           projectedPrimary,
           tgtType,
           targetNode.data.defType,
-          edge.targetHandle
+          edge.targetHandle,
+          targetNode.data.params
         )
       ) {
         outputHandleId = "out:primary";
@@ -1287,7 +1294,8 @@ function NodeEditor({
               aux.type,
               tgtType,
               targetNode.data.defType,
-              edge.targetHandle
+              edge.targetHandle,
+              targetNode.data.params
             )
           ) {
             outputHandleId = `out:aux:${aux.name}`;
@@ -1377,7 +1385,13 @@ function NodeEditor({
     }
     if (!srcType || !tgtType) return null;
     if (
-      !canCoerce(srcType, tgtType, targetNode.data.defType, outE.targetHandle)
+      !canCoerce(
+        srcType,
+        tgtType,
+        targetNode.data.defType,
+        outE.targetHandle,
+        targetNode.data.params
+      )
     ) {
       return null;
     }
@@ -1473,7 +1487,23 @@ function NodeEditor({
     const el = flowWrapperRef.current;
     if (!el) return;
     const win = panelWin ?? window;
+    // Cancelling a pointerdown suppresses the compatibility mouse events but
+    // NOT the `click` that follows it, so React Flow's node onClick still
+    // runs after a gesture we swallowed. With Shift held that lands in its
+    // multiselect branch and un-toggles whatever we just toggled below — the
+    // two cancelled out and Shift+click appeared to do nothing at all. Arm
+    // this on pointerup and eat that one click in the capture phase (before
+    // it reaches the node, so React never sees it). Disarmed at the start of
+    // every gesture so a release that produces no click (drag ended outside
+    // the wrapper) can't leave it primed to eat an unrelated one.
+    let swallowNextClick = false;
+    const onClickCapture = (e: MouseEvent) => {
+      if (!swallowNextClick) return;
+      swallowNextClick = false;
+      e.stopPropagation();
+    };
     const onDown = (e: PointerEvent) => {
+      swallowNextClick = false;
       if (e.button !== 0 || !e.shiftKey) return;
       const targetEl = e.target as HTMLElement | null;
       if (!targetEl) return;
@@ -1547,6 +1577,10 @@ function NodeEditor({
         win.removeEventListener("pointermove", onMove, true);
         win.removeEventListener("pointerup", onUp, true);
         setNodeConnect(null);
+        // We owned this gesture end to end — don't let its trailing click
+        // reach React Flow (node multiselect on a click, pane-click on a
+        // drag that released over empty canvas).
+        swallowNextClick = true;
         if (dragging) {
           processNodeDropRef.current(originId, ev.clientX, ev.clientY);
         } else {
@@ -1564,7 +1598,11 @@ function NodeEditor({
       win.addEventListener("pointerup", onUp, true);
     };
     el.addEventListener("pointerdown", onDown, true);
-    return () => el.removeEventListener("pointerdown", onDown, true);
+    el.addEventListener("click", onClickCapture, true);
+    return () => {
+      el.removeEventListener("pointerdown", onDown, true);
+      el.removeEventListener("click", onClickCapture, true);
+    };
   }, [rfGetNodes, rfSetNodes, panelWin]);
 
   // Open the node-search popup at a screen point, clamped into the
@@ -1822,7 +1860,8 @@ function NodeEditor({
             grouped,
             tgt,
             targetNode.data.defType,
-            c.targetHandle ?? undefined
+            c.targetHandle ?? undefined,
+            targetNode.data.params
           );
       }
       if (
@@ -1867,7 +1906,8 @@ function NodeEditor({
       srcType,
       tgtType,
       targetNode.data.defType,
-      c.targetHandle
+      c.targetHandle,
+      targetNode.data.params
     );
   };
 

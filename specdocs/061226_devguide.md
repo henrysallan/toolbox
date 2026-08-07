@@ -131,7 +131,20 @@ src/
                           being monotonic in component count. Clamp
                           alpha low on output: hard kernels ring
                           negative, and negative coverage breaks
-                          source-over downstream.
+                          source-over downstream. svd.ts is the second
+                          plan builder — power iteration + deflation
+                          for the top-r rank-1 terms, deterministic
+                          init (a random one would desync the
+                          fingerprint cache) — serving BOTH the
+                          non-circular bokeh apertures (kernels.ts
+                          rasterizes them; the phasor basis can only
+                          express functions of r²) and Convolve mode's
+                          user kernel images. Its header owns THE
+                          orientation rule: screen-order kernel in,
+                          exactly ONE axis (columns) reversed, because
+                          on the row axis the convolution flip and the
+                          screen-down/UV-up flip cancel. Get that wrong
+                          and only an ASYMMETRIC kernel reveals it.
   nodes/                  One file per node def. index.ts registers ~130 defs.
     source/ effect/ sdf/ group/ output/
     effect/physarum.ts    The one node that draws GEOMETRY inside a sim step:
@@ -288,8 +301,9 @@ src/
     EffectNode.tsx        The node chrome on the graph canvas (sockets, header, +).
                           Also hosts ON-NODE param controls (first: the Color
                           node's per-output swatches → ColorPickerPopover, a
-                          compact HSV picker + hex + eyedropper anchored inside
-                          the node div; edits dispatch `effect-node-param`,
+                          compact HSV picker + hex + eyedropper + a numeric
+                          H/S/L(/A) row anchored inside the node div; edits
+                          dispatch `effect-node-param`,
                           which routes through onParamChange so undo/autokey/
                           socket-resolve fire naturally). The picker lives in
                           lib/color-picker-popover.tsx and is the UNIVERSAL
@@ -455,6 +469,12 @@ src/
                           (NumberField, frame/resolution fields) accepts math
                           like "1920/2" or "24*8+1". Null = revert. Use it, not
                           parseFloat, when adding a numeric field.
+    number-field.tsx      NumberField (type / drag-to-scrub / stepper) + HslField
+                          + formatNum. Its own module, not part of
+                          param-controls, because color-picker-popover needs it
+                          and param-controls already imports the picker — so
+                          keeping it there would cycle. param-controls
+                          re-exports all of it, so existing imports still work.
     shortcut-freeze.ts    Dev-only "Freeze" pill (MenuBar, next to the file name;
                           next dev builds only): capture-phase window gate that
                           stopImmediatePropagation()s key/clipboard events on
@@ -549,6 +569,21 @@ Wires reference handles `out:primary` / `out:aux:<name>` →
   ([aspect.ts](../src/engine/aspect.ts)) / the SDF compiler's
   `u_aspectCorrect` path. New geometry features must decide this
   explicitly.
+- **`points` / `spline` sockets are AUTHORED space — always.** Every
+  renderer aspect-corrects y on the way to pixels (spline-raster,
+  spline-width, text-raster, svg-serialize, Copy to Points' instanced
+  VS, Point Labels, PointsOverlay), so a producer that emits canvas UV
+  gets DOUBLE-corrected and its geometry spreads vertically; a consumer
+  that reads authored as canvas UV squashes it toward the middle. A sim
+  whose solver runs in another space (canvas UV, grid index, canvas px)
+  must convert at the socket, not in its consumers — `aspectCorrectY` /
+  `aspectUncorrectY` for UV-ish spaces, `authoredToPxY` /
+  `pxToAuthoredY` (sim-kernel.ts) for pixel spaces. Same rule for FORCE
+  and analytic-collider descriptors: they are authored everywhere
+  (Particle, Matter, Rope, Rigid Body all agree), because that is the
+  only space in which a `radius` bounds a circle and a collider normal
+  survives the trip. This exact bug has been fixed five times — check it
+  when adding any producer, consumer, or simulator.
 - Alpha is **straight (non-premultiplied)** throughout;
   `UNPACK_PREMULTIPLY_ALPHA_WEBGL` is explicitly disabled on uploads.
   Compositing is Porter-Duff source-over done manually in shaders
@@ -573,17 +608,34 @@ beziers, CPU) ·
 `points` (typed-array SoA + lazy `Point[]` view — producers use
 `makePoints`/`pointsFromArray`, hot consumers read typed arrays) · `audio`
 (live HTMLAudioElement) · `image_group` (ordered ImageValue list; splines/
-points instead carry per-item `groupIndex` tags) · particle descriptors
+points instead carry per-item `groupIndex` tags) · `list` (ordered,
+possibly-MIXED `SocketValue[]` — the List node emits it and the list
+transform nodes chain on it. Items are BORROWED, like image_group's: the
+evaluator's release walks never recurse into containers, so the producer's
+cache entry owns any texture inside and a list op must never allocate or
+release per-item. `engine/list-value.ts` states the contract;
+`engine/list-parse.ts` is the format-sniffing parser, which reuses
+csv-parse's `parseRows`. No coercions — with mixed items there's no honest
+list→anything, so every conversion is a node. 080526_list-socket.md) ·
+particle descriptors
 (`force`/`emitter`/`collider` CPU structs + `particles` GPU state textures)
 · compile-time ASTs (`sdf`, `position`, `scalar_field`) that do **zero GL
 work** until SDF Rasterize compiles the tree to one shader · `render`
-(inert organizational link Output→Render Queue).
+(inert organizational link Output→Render Queue) · `color_ramp` (a
+`ColorRampStop[]` + interp mode as a value; Color Ramp's `ramp` aux output
+feeds any `color_ramp` PARAM, so one authored palette drives Stroke,
+Rasterize Spline's fill/stroke ramps, Ascii… — 080526_on-node-color-ramp.md.
+No coercions: it only meets its own type).
 
 Coercions ([coerce.ts](../src/engine/coerce.ts)): mask↔image,
 spline→mask (the shape's filled silhouette — even-odd, open subpaths closed
 for fill, aspect-corrected, canvas-sized; identity-cached per SplineValue so
 a static shape rasterizes once — this is what lets a Rectangle/Circle wire
 straight into any mask socket), scalar→vec2/3/4/uv-broadcast,
+vec WIDENING (vec2→vec3/vec4, vec3→vec4; pads z = 0, w = 1 — a point's
+homogeneous coordinate, a colour's opaque alpha. Widening only: narrowing
+would silently drop components, and a vec4 landing on a vec2 socket is far
+more often a mistake than an intent),
 image→uv (zero-copy re-wrap — same RGBA pool texture, R/G read as per-pixel
 (u,v), so wiring a noise image into any UV input re-evaluates the consumer
 at warped coordinates: Blender's Fac→Vector domain warp. Mask is excluded —
@@ -592,11 +644,16 @@ image/mask→scalar (1×1 readback), audio→
 scalar (RMS level, via engine/audio-analysis.ts), image↔element (wrap as
 full-canvas element / flatten centered at natural size; identity-cached in
 WeakMaps inside engine/element.ts). The editor-side "can this wire land
-here" checks are SINGLE-SOURCED in engine/graph-validation.ts: `coercible`
-(the pure type table, also used by AI-recipe validation) and
-`editorCanCoerce` (adds the polymorphic defType exceptions — Math uv,
-Copy-to-Points instance, Displace/Transform source, Scatter Points
-density←spline). NodeEditor's
+here" checks are SINGLE-SOURCED in two functions: `coercible` — the pure
+type table, also used by AI-recipe validation and by node defs that unify
+what's wired into them (Switch) — which lives in engine/graph-helpers.ts (a
+LEAF module, so a node def can import it without a registry cycle) and is
+re-exported from engine/graph-validation.ts, where `editorCanCoerce` sits
+(it adds the polymorphic defType exceptions — Math uv, Copy-to-Points
+instance, Displace/Transform source, Scatter Points density←spline, Switch's
+numbered slots while its Type is "auto"; its optional `targetParams` arg is
+what lets a param-dependent exception like Switch's answer precisely).
+NodeEditor's
 `isValidConnection` + splice check and EffectsApp's wire-drop auto-connect
 all call it — **add new coercions in coerce.ts (runtime) + coercible
 (editor/validator); add polymorphic socket exceptions in editorCanCoerce
@@ -694,7 +751,8 @@ documented there): `type` (immutable once shipped — saves reference it),
 `backend` (`webgl2|webgpu`), `inputs`/`params`/`primaryOutput`/`auxOutputs`
 plus dynamic variants (`resolveInputs`, `resolvePrimaryOutput`,
 `resolveAuxOutputs` — keyed off params and `connectedTypes`), `compute`,
-optional `init`/`dispose`/`fingerprintExtras`/`stable`/`terminal`/
+optional `init`/`dispose`/`fingerprintExtras`/`stable`/`simulation` (marks
+frame-accumulated state — see § Export, simulation pre-roll)/`terminal`/
 `noMaskInput`/`hidden`/`validateParams` (static param sanity check run by
 the AI-recipe validator only — Point Expression smoke-runs its kernel
 there), UI hints (`supportsTransformGizmo` — requires the
@@ -759,6 +817,14 @@ To add a node:
   Removing a stop drops its tracks, exposures, controls, and edges in the
   same `onParamChange` pass. Spec:
   071026_ramp-stop-keyframe-expose-control.md.
+  The WHOLE ramp is also exposable now (`color_ramp` socket, 080526) — a
+  wire replaces the stops array wholesale, and the per-stop wires still
+  apply on top wherever the incoming ramp reuses a stop id. Which brings up
+  the general rule, easy to miss: **a param gets an expose button iff
+  `paramSocketType(p.type)` is non-null** — ParamPanel derives `exposable`
+  from it, so adding one case in graph-helpers.ts lights up the socket on
+  every node declaring that param type at once. That one line is what gave
+  all nine `color_ramp` params across eight nodes their input socket.
   `Keyframe.value` is `unknown` — most types are scalars/colors/vecs, but
   the whole spline shape keyframes too: Spline Draw's `spline_anchors` param
   is keyframable ("Path Animation" row in ParamPanel), and `interpolate`
@@ -904,7 +970,7 @@ To add a node:
 ## Persistence & sharing
 
 - `serializeGraph`/`deserializeGraph` ([project.ts](../src/lib/project.ts)),
-  `CURRENT_SCHEMA = 9` — the version history is documented at the top of
+  `CURRENT_SCHEMA = 10` — the version history is documented at the top of
   that file; bump it when the wire shape changes and keep loading old ones.
   (v6 renamed Text's `mask` input to `morph_mask` and migrates old
   `in:mask`→`in:morph_mask` edges on load — see below. v7 removed Merge's
@@ -914,7 +980,10 @@ To add a node:
   v8 added the `{kind:"exr"}` original-bytes envelope for EXR stills on
   Image Source — see 070926_exr-color-pipeline.md. v9 lets a media envelope
   carry `{asset:<sha256>, ext}` instead of `dataUrl` — cloud media in
-  Storage; see the cloud-asset bullet below.)
+  Storage; see the cloud-asset bullet below. v10 switched Lissajous 3D's
+  `phase_x/y/z` from units of π to turns so a keyframed phase loops over
+  each whole 0→1 span; load halves the param, its keyframe values and
+  bezier `dy`, and any custom slider range. Lissajous 2D still uses × π.)
 - Media (image bitmaps, paint canvases) inline as data-URLs; video/audio
   don't serialize — they become "missing media" entries re-picked via
   MediaRelinkModal ([media-relink.ts](../src/lib/media-relink.ts)).
@@ -1020,6 +1089,23 @@ To add a node:
   the migration runs: `listFolders` returns [], `listPrivateProjects`
   retries without `folder_id` on 42703, and the grid renders flat as
   before. Spec: 072726_project-folders.md.
+- **Load-grid views** ([LoadGrid.tsx](../src/components/effects/LoadGrid.tsx)):
+  `grid` (thumbnail tiles), `list` (compact text table), `detail` (the
+  same table, taller rows led by a 40px square thumbnail). List and
+  detail are ONE component — `ListView` takes a `detail` flag and shares
+  a single `rowStyle` across project rows, folder rows and New Project so
+  the columns stay aligned; the Title header is indented by the thumb
+  width in detail. Drag ghosts branch on `view === "grid"` (tile replica)
+  vs everything else (compact chip), so detail must never be lumped in
+  with grid there.
+- **Landing gateway** ([Landing.tsx](../src/components/effects/Landing.tsx)):
+  shown on a clean visit to `/`, and re-openable at any time from the
+  Toolbox menu's version row (`onOpenLanding` → `setShowLanding(true)` +
+  `setMenuSettled(false)` so the menu bar re-animates). The re-opened
+  copy is the one that takes `onClose` — that prop also skips the opaque
+  boot veil (nothing is booting) and arms Escape. Its "New Project" runs
+  `handleNewProject`, NOT `resetToFreshProject`, so unsaved work in the
+  editor underneath still gets the confirm.
 - Editor state survives the in-app docs round-trip via a module-level
   stash ([editor-session.ts](../src/state/editor-session.ts)) — not
   sessionStorage (bitmaps/canvases don't structure-clone).
@@ -1096,6 +1182,31 @@ To add a node:
   preview render scale silently shrank every export. The five duplicated
   two-pass settle loops are now ONE helper (`renderSettledFrameAt` —
   render, awaitMediaSettle, conditional re-render, optional rAF flush).
+- **Simulation pre-roll on still export** — the sharp edge of the above.
+  Recreating the backend runs `disposeAllNodeState` + `destroy()`, which
+  takes `ctx.state` with it, and `ctx.state` is where every stateful node
+  keeps its frame-accumulated result. So a still captured at frame 50 used
+  to come out reseeded — or blank, for the solvers (matter, particles) that
+  publish their readback one frame late. `NodeDefinition.simulation` marks
+  the affected node types; `outputNeedsSimPreroll` (lib/sim-preroll.ts)
+  flattens + reverse-BFSes from the Output to ask whether one is reachable;
+  `prerollSimulations` (EffectsApp) then steps the offline clock 0 → target
+  frame at export res before the capture, behind the offline banner. Guarded
+  by `scripts/check-sim-preroll.mts` (in `npm run check`).
+  - `exportImage` pre-rolls only when the size **actually** switches — a
+    matching size early-returns from the bracket, so the live state on
+    screen is already the right one. `renderImageToBlobAtFrame` renders an
+    arbitrary frame and so always pre-rolls.
+  - Mark a node `simulation` only when a state wipe visibly changes its
+    output AND the accumulation is driven by `ctx.time` — a pre-roll can't
+    reproduce wall-clock nodes (Cursor Trail), so they stay unmarked.
+  - Put the flag on the **registered** def: the Particle Simulator's
+    registry entry is the backend router (particle-simulator.ts), not the
+    webgl/webgpu impls it delegates to.
+  - Still open: the closing `endExportResolution()` tears the backend down
+    a second time, so the user's LIVE sim is reset after an export that
+    switched resolution. Fixing that means a second pre-roll at preview res
+    (≈2× the wait), so it's deliberately not done.
 - The Output node's animated export has an `exportMode` param (**video** /
   **sequence** / **gif**, a segmented pill — `ParamDef.control: "segmented"`).
   Sequence = one still per frame (`exportSequence` in EffectsApp), delivered
