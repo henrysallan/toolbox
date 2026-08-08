@@ -96,6 +96,9 @@ import {
   type GraphEdge,
   type GraphNode,
 } from "@/engine/evaluator";
+import * as prof from "@/engine/profiler";
+import { installPerfConsole, summarize } from "@/lib/perf-console";
+import { PerfPanel } from "./PerfPanel";
 import { splineToSvg } from "@/engine/svg-serialize";
 import {
   svgExportStashKey,
@@ -512,10 +515,10 @@ const CONNECTED_TYPE_RETYPE_NODES = new Set([
   "displace",
   "scatter-points",
   // Mirror: spline-resting `source` retypes to points (and its output
-  // follows). See specdocs/072026_mirror-node.md.
+  // follows). See specdocs/archive/072026_mirror-node.md.
   "mirror",
   // Reroute: a wildcard passthrough whose `value` input + output adopt the
-  // type wired in. See specdocs/071326_reroute-node.md.
+  // type wired in. See specdocs/archive/071326_reroute-node.md.
   "reroute",
   // Switch: on "auto" (the default) every numbered slot AND the output adopt
   // the unified type of whatever is wired in — a Reroute with N inputs.
@@ -1027,7 +1030,7 @@ function EffectsShell({
   const [fullCanvas, setFullCanvas] = useState(false);
   // Radial quick-action "pie" menu (Shift+Space, opens at the cursor).
   // Holds the screen-px origin where the chord was pressed, or null when
-  // closed. Spec: specdocs/071326_pie-menu.md.
+  // closed. Spec: specdocs/archive/071326_pie-menu.md.
   const [pieMenu, setPieMenu] = useState<{ x: number; y: number } | null>(null);
   // The tiled window layout (072726_window-tiling.md): one tree of
   // splits/leaves replaces the old fixed default/timeline layouts,
@@ -1666,7 +1669,7 @@ function EffectsShell({
   // Mouse-vs-trackpad detection. One capture-phase wheel listener feeds the
   // sticky detector so every pan/zoom handler shares one device read,
   // regardless of which surface ultimately consumes the event. See
-  // input-device.ts / specdocs/061726_mouse-input-ux.md.
+  // input-device.ts / specdocs/archive/061726_mouse-input-ux.md.
   useEffect(() => {
     const onWheel = (e: WheelEvent) => feedWheel(e);
     window.addEventListener("wheel", onWheel, { capture: true, passive: true });
@@ -1838,7 +1841,7 @@ function EffectsShell({
   }, []);
 
   // Timeline / playback state. The clock lives in the playback-clock
-  // STORE (specdocs/071026_clock-store.md), not React state, and the
+  // STORE (specdocs/archive/071026_clock-store.md), not React state, and the
   // shell does NOT subscribe to it — playback no longer re-renders the
   // ~10k-line shell per frame. Consumers that track the playhead
   // (PlaybackBar, TrackEditor, the gizmo overlays, …) each hold their own
@@ -2320,7 +2323,7 @@ function EffectsShell({
   // renderFrame; undefined during normal editing, so Wedge nodes emit their
   // `preview` value. Never a React state — it must not trigger renders, and
   // the export loops read it synchronously. See
-  // specdocs/071026_wedge-render-batching.md.
+  // specdocs/archive/071026_wedge-render-batching.md.
   const wedgeIndexRef = useRef<number | undefined>(undefined);
 
   // When set, forces the terminal/active node for the render — used by the
@@ -2430,6 +2433,12 @@ function EffectsShell({
             }, new Map<string, string[]>()),
           }
         : undefined;
+      // Coarse trigger for the perf trace (specdocs/080726_perf-profiler.md).
+      // A call site that knows better — a scrub, an async pipeline bump —
+      // calls prof.markTrigger first and wins over this default.
+      prof.markTriggerDefault(
+        offlineRenderingRef.current ? "export" : playingHint ? "raf" : "state"
+      );
       const result = evaluateGraph(
         graphNodes,
         graphEdges,
@@ -2524,11 +2533,13 @@ function EffectsShell({
         }
       };
 
+      const tBlit = prof.getCaptureLevel() > 0 ? performance.now() : 0;
       blitOrPlaceholder(
         canvas,
         result.terminalImage,
         "Connect an Output node to preview."
       );
+      if (tBlit > 0) prof.markBlit(performance.now() - tBlit);
 
       // Tiled watch viewports (072726_window-tiling.md §5): every
       // non-primary viewport panel registers its canvas here and gets
@@ -2584,6 +2595,50 @@ function EffectsShell({
   );
   const renderFrameRef = useRef(renderFrame);
   renderFrameRef.current = renderFrame;
+
+  // `window.__perf` — arm/read the evaluator perf trace
+  // (specdocs/080726_perf-profiler.md M1). Reads edges through the ref so the
+  // chain-poisoning walk always sees the live graph without re-installing on
+  // every edit.
+  useEffect(() => {
+    installPerfConsole(() => edgesRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Stable across renders on purpose: PerfPanel keys its polling interval on
+  // this identity, so an inline arrow would tear the interval down and
+  // rebuild it on every parent render.
+  const getPerfEdges = useCallback(() => edgesRef.current, []);
+
+  // Graph heatmap (M3): while capture is armed, broadcast each node's SHARE
+  // of the frame so EffectNode can tint itself. Shares rather than raw ms —
+  // the tint answers "where does the frame go", and an absolute scale would
+  // wash out entirely on a fast graph.
+  //
+  // Polled on a slow interval, deliberately: GPU timings resolve one to three
+  // frames late, and re-rendering every node at frame rate would distort the
+  // very measurement being displayed.
+  useEffect(() => {
+    const tick = () => {
+      if (prof.getCaptureLevel() === 0) return;
+      const s = summarize({ top: 200, edges: edgesRef.current });
+      if (s.frames === 0) return;
+      const gpuTotal = s.gpu?.msPerFrame ?? 0;
+      const useGpu = gpuTotal > 0;
+      const denom = useGpu ? gpuTotal : Math.max(0.001, s.frameMs.mean);
+      const shares = new Map<string, { share: number; ms: number; gpu: boolean }>();
+      for (const n of s.nodes) {
+        const ms = useGpu ? n.gpuMsPerFrame ?? 0 : n.msPerFrame;
+        shares.set(n.id, { share: ms / denom, ms, gpu: useGpu });
+      }
+      broadcastAppEvent(() => new CustomEvent("node-perf", { detail: shares }));
+    };
+    const id = window.setInterval(tick, 700);
+    return () => {
+      window.clearInterval(id);
+      broadcastAppEvent(() => new CustomEvent("node-perf", { detail: null }));
+    };
+  }, []);
 
   // STATE-driven eval: graph edits, params (structFp), fps, pipeline bumps
   // (font load / video frame / image gen), cursor moves, and selection
@@ -4817,7 +4872,7 @@ function EffectsShell({
   // the crossed wires (grouped by shared source → one reroute each, source →
   // reroute → targets); `cut` removes the listed edges outright. The reroute
   // is a real node — select/copy/paste/delete/input-swap all come for free
-  // (specdocs/071326_reroute-node.md).
+  // (specdocs/archive/071326_reroute-node.md).
   const handleCombineWires = useCallback(
     (edgeIds: string[], midpointFlow: [number, number]) => {
       if (edgeIds.length === 0) return;
@@ -8026,7 +8081,7 @@ function EffectsShell({
   // exportVideo's high/max tiers (frame-stepped, media-settled), but the
   // frames are piped through export-gif.ts (ffmpeg palettegen + gifsicle
   // lossy) instead of a video encoder. No audio. See
-  // specdocs/061826_gif-export-and-image-sequence.md.
+  // specdocs/archive/061826_gif-export-and-image-sequence.md.
   const exportGif = useCallback(
     async (nodeId: string) => {
       if (recordingRef.current || queueRenderingRef.current) return;
@@ -9648,7 +9703,7 @@ function EffectsShell({
   // paramView entries replicate the MenuBar's onOpenLoad/onOpenAssets
   // logic (suppress the selection→view flip, clear selection). "Add
   // Node" hands the pie's origin to the node-search popup via a window
-  // event the NodeEditor listens for. Spec: specdocs/071326_pie-menu.md.
+  // event the NodeEditor listens for. Spec: specdocs/archive/071326_pie-menu.md.
   const pieItems = useMemo<PieMenuItem[]>(
     () => [
       {
@@ -10437,6 +10492,18 @@ function EffectsShell({
             leafId,
           })}
         </div>
+      );
+    }
+    if (panel === "perf") {
+      // Its own kind chip rides in the panel header row (PerfPanel renders
+      // it inline next to the capture controls), so no floating chip here.
+      return (
+        <PerfPanel
+          kindMenu={panelKindMenuFor(leafId, "perf", false)}
+          getEdges={getPerfEdges}
+          fps={fps}
+          onSelectNode={setSelectedId}
+        />
       );
     }
     if (panel === "nodes") {

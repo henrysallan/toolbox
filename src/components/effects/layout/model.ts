@@ -1,5 +1,5 @@
 // Blender-style window tiling — the layout tree model.
-// Spec: specdocs/072726_window-tiling.md.
+// Spec: specdocs/archive/072726_window-tiling.md.
 //
 // The tree is pure data; structural changes go through ops.ts (the
 // graph-ops pattern). Rendering never nests panels in the DOM — leaves
@@ -7,7 +7,7 @@
 // computeRects() as 0..1 fractions, so SSR renders deterministically
 // (no window measurement during render).
 
-export type PanelKind = "viewport" | "nodes" | "params" | "timeline";
+export type PanelKind = "viewport" | "nodes" | "params" | "timeline" | "perf";
 
 /**
  * Every assignable panel kind, in menu order. The single source of
@@ -22,6 +22,7 @@ export const PANEL_KINDS: readonly PanelKind[] = [
   "nodes",
   "params",
   "timeline",
+  "perf",
 ];
 
 /**
@@ -34,6 +35,7 @@ export const PANEL_LABELS: Record<PanelKind, string> = {
   nodes: "Node Editor",
   params: "Parameters",
   timeline: "Timeline",
+  perf: "Performance",
 };
 
 export interface LayoutLeaf {

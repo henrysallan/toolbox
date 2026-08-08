@@ -136,6 +136,15 @@ interface ExposedSocket {
 // Compact ms formatting for the timing overlay. Sub-millisecond
 // values land at "<1ms"; everything else rounds to whole ms so the
 // label stays narrow and visually quiet.
+// Shared with the perf panel's table (PerfPanel.costColor) so a node reads
+// the same in the graph as it does in the list.
+function perfColor(share: number): string {
+  if (share >= 0.25) return "var(--tb-a-red-400)";
+  if (share >= 0.12) return "var(--tb-a-amber-400)";
+  if (share >= 0.05) return "var(--tb-a-yellow-400)";
+  return "var(--tb-a-blue-400)";
+}
+
 function formatMs(v: number): string {
   if (v < 1) return "<1ms";
   if (v < 10) return v.toFixed(1) + "ms";
@@ -186,6 +195,24 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
       if (raf) cancelAnimationFrame(raf);
     };
   }, [id]);
+
+  // Perf heatmap (specdocs/080726_perf-profiler.md M3): EffectsApp broadcasts
+  // each node's SHARE of the frame while capture is armed. A share rather
+  // than raw ms — the tint answers "where does the frame go", and an absolute
+  // scale washes out entirely on a fast graph. `null` detail = capture off.
+  const [perf, setPerf] = useState<{ share: number; ms: number; gpu: boolean } | null>(
+    null
+  );
+  useEffect(() => {
+    const onPerf = (e: Event) => {
+      const detail = (e as CustomEvent<Map<string, { share: number; ms: number; gpu: boolean }> | null>)
+        .detail;
+      setPerf(detail ? detail.get(id) ?? null : null);
+    };
+    const win = panelWin ?? window;
+    win.addEventListener("node-perf", onPerf);
+    return () => win.removeEventListener("node-perf", onPerf);
+  }, [id, panelWin]);
 
   // Media-loading state: EffectsApp streams v9 Storage images in after the
   // graph is interactive and broadcasts the still-loading node ids via
@@ -710,6 +737,51 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             zIndex: 5,
           }}
         />
+      )}
+      {perf !== null && perf.share > 0.02 && (
+        <>
+          {/* Cost bar along the node's top edge — length and colour both
+              track the node's share of the frame, so the expensive node in a
+              graph is findable at a glance without reading any numbers. */}
+          <div
+            style={{
+              position: "absolute",
+              top: -3,
+              left: 4,
+              right: 4,
+              height: 3,
+              borderRadius: 2,
+              background: "var(--tb-n-4)",
+              overflow: "hidden",
+              pointerEvents: "none",
+              zIndex: 4,
+            }}
+          >
+            <div
+              style={{
+                width: `${Math.min(100, perf.share * 100)}%`,
+                height: "100%",
+                background: perfColor(perf.share),
+              }}
+            />
+          </div>
+          <div
+            style={{
+              position: "absolute",
+              top: -14,
+              right: 2,
+              fontSize: 9,
+              color: perfColor(perf.share),
+              opacity: 0.85,
+              fontVariantNumeric: "tabular-nums",
+              pointerEvents: "none",
+            }}
+            title={`${Math.round(perf.share * 100)}% of the frame's ${perf.gpu ? "GPU" : "CPU"} time`}
+          >
+            {perf.gpu ? "gpu " : ""}
+            {formatMs(perf.ms)}
+          </div>
+        </>
       )}
       {evalMs !== null && (
         <div

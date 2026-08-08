@@ -4,7 +4,7 @@ import { PANEL_KINDS, PANEL_LABELS, type PanelKind } from "./model";
 // The per-panel editor-kind switcher (Blender's editor-type dropdown):
 // a small icon chip in every panel's top-left corner opening a 3-entry
 // menu. Dismiss rules follow lib/param-controls' Dropdown (outside
-// mousedown, Esc, scroll). Spec: specdocs/072726_window-tiling.md §3.
+// mousedown, Esc, scroll). Spec: specdocs/archive/072726_window-tiling.md §3.
 
 function KindIcon({ kind }: { kind: PanelKind }) {
   const common = {
@@ -37,6 +37,15 @@ function KindIcon({ kind }: { kind: PanelKind }) {
         <path d="M1 3.2h10M2.6 3.2v-1.4M5.6 3.2v-1.4M8.6 3.2v-1.4" {...common} />
         <path d="M1.5 7.6h9" {...common} />
         <path d="M6 6.1l1.5 1.5L6 9.1 4.5 7.6z" {...common} fill="var(--tb-n-0)" />
+      </svg>
+    );
+  }
+  if (kind === "perf") {
+    // A frame-time trace with a spike, over a baseline.
+    return (
+      <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden>
+        <path d="M1 10.2h10" {...common} />
+        <path d="M1.4 8.4l1.8-.2 1.4-3.2L6.2 2l1.5 5.2 1.3-1.4 1.6-.2" {...common} />
       </svg>
     );
   }
