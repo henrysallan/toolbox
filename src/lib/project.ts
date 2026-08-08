@@ -59,7 +59,7 @@ import { FRAME_XY_PROPS, newCompositionId } from "@/state/graph";
 // registry. Loading any save without a `compositions` field (≤v4, or a
 // graph-only fragment) synthesizes one "Composition 1" from `scene` and
 // tags every node into it — renders identically to the pre-composition
-// app. See specdocs/062926_compositions-and-project-view.md.
+// app. See specdocs/archive/062926_compositions-and-project-view.md.
 //
 // v6 — Text matte mask: the Text node's `mask` input (a variable-font
 // morph driver) was renamed to `morph_mask`, freeing the name `mask` for
@@ -82,7 +82,7 @@ import { FRAME_XY_PROPS, newCompositionId } from "@/state/graph";
 // the PNG envelope; the bytes are the canonical source anyway). The
 // `.toolbox` writer extracts it into a binary asset like any dataUrl
 // envelope. Older builds don't know the kind and load the param as empty.
-// See specdocs/070926_exr-color-pipeline.md.
+// See specdocs/archive/070926_exr-color-pipeline.md.
 //
 // v9 — cloud asset refs: a media envelope MAY carry `{ asset: <sha256>,
 // ext }` instead of `dataUrl`, pointing at a content-addressed object in
@@ -92,7 +92,7 @@ import { FRAME_XY_PROPS, newCompositionId } from "@/state/graph";
 // deserialize, so deserializeGraph is unchanged and ≤v8 inline saves load
 // untouched (no `asset` field ⇒ no-op). A v9 save may still be fully inline
 // (fallback when Storage is unavailable). See
-// specdocs/071426_cloud-asset-storage.md.
+// specdocs/archive/071426_cloud-asset-storage.md.
 //
 // v10 — Lissajous 3D phase units: `phase_x/y/z` switched from units of π to
 // TURNS (1 = one full 2π cycle) so a keyframed phase loops seamlessly over
@@ -248,7 +248,7 @@ export interface SavedProject {
 // All bytes→data-URL encoding goes through lib/data-url.ts: native encoders
 // cached per source object (Blob/ArrayBuffer/ImageBitmap), so an unchanged
 // asset costs ~0ms on every save after the first. See
-// specdocs/071426_save-optimization.md.
+// specdocs/archive/071426_save-optimization.md.
 
 async function dataUrlToBitmap(url: string): Promise<ImageBitmap> {
   const resp = await fetch(url);
@@ -262,7 +262,7 @@ async function dataUrlToBitmap(url: string): Promise<ImageBitmap> {
 // string that isInlineAsset rejects, silently dropping the asset from the
 // row. On the storage path priming is skipped; the first re-save re-encodes
 // to a real data: URL (Tier-1 cache miss) → same content hash → no
-// re-upload. See specdocs/071426_cloud-asset-storage.md.
+// re-upload. See specdocs/archive/071426_cloud-asset-storage.md.
 function isDataUrl(url: string): boolean {
   return url.startsWith("data:");
 }
@@ -477,7 +477,7 @@ async function serializeParams(
       // multi-file re-pick UI is a follow-up, so for now load resolves this
       // to null and the user re-picks in the panel. Keeping the descriptor
       // leaves a record for that future relink path.
-      // See specdocs/061826_gif-export-and-image-sequence.md.
+      // See specdocs/archive/061826_gif-export-and-image-sequence.md.
       const sv = val as ImageSequenceParamValue | null;
       out[key] = sv?.frames?.length
         ? {

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { PanelWindowProvider, registerPanelWindow } from "./panel-window";
 
 // Pop a layout panel into its own OS window (multi-monitor).
-// Spec: specdocs/080226_panel-popout-windows.md.
+// Spec: specdocs/archive/080226_panel-popout-windows.md.
 //
 // The child is a SAME-ORIGIN `window.open`, so it is script-connected
 // to this one: same JS heap, same event loop, synchronous DOM access

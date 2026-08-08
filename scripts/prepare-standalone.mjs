@@ -2,7 +2,7 @@
 // `next build` with output:'standalone' (gated by DESKTOP_BUILD) emits
 // .next/standalone/server.js + traced node_modules, but NOT the static assets
 // or public/ — those must be copied alongside it. electron-builder then bundles
-// .next/standalone via extraResources. See specdocs/062626_electron-native-export.md.
+// .next/standalone via extraResources. See specdocs/archive/062626_electron-native-export.md.
 import { execSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";

@@ -52,7 +52,7 @@ export interface TextDrawAnim {
 // baseline, and forces the modulated per-glyph draw regardless of font axes.
 // `align`/`offset` position the run along the arc length; `side` shifts it
 // perpendicular; `flip` reverses direction. See §4 of
-// specdocs/062526_node-expansion.md.
+// specdocs/archive/062526_node-expansion.md.
 export interface TextPathLayout {
   path: SplineValue;
   align: "start" | "center" | "end";

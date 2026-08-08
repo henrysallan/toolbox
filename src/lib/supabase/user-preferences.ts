@@ -8,7 +8,7 @@ import { createClient } from "@/lib/supabase/client";
 //   (e.g. briaai/RMBG-2.0). Anonymous access works for non-gated
 //   weights; gated repos return 401 without a token.
 //
-// Schema mirrors specdocs/user-preferences-migration.sql (+ the
+// Schema mirrors specdocs/sql_archive/user-preferences-migration.sql (+ the
 // anthropic_api_key column from user-preferences-anthropic-migration.sql).
 
 export interface UserPreferences {
@@ -68,7 +68,7 @@ export async function saveUserPreferences(
 
 // --- Brush presets (Paint node, 071926_paint-toolkit.md) -------------------
 // Stored in a dedicated `brush_presets jsonb` column (migration:
-// specdocs/user-preferences-brush-presets-migration.sql). Deliberately NOT
+// specdocs/sql_archive/user-preferences-brush-presets-migration.sql). Deliberately NOT
 // part of loadUserPreferences' select: while the migration is unapplied that
 // select would error and take the API-key prefs down with it. Callers treat
 // null as "cloud unavailable" (signed out / offline / column missing) and
@@ -111,7 +111,7 @@ export async function saveCloudBrushPresets(
 
 // --- Layout presets (window tiling, 072726_window-tiling.md) --------------
 // Stored in a dedicated `layout_presets jsonb` column (migration:
-// specdocs/user-preferences-layout-presets-migration.sql). Kept out of
+// specdocs/sql_archive/user-preferences-layout-presets-migration.sql). Kept out of
 // loadUserPreferences' select for the same reason as brush_presets: an
 // unapplied migration would take the API-key prefs down with it. Callers
 // treat null as "cloud unavailable" and fall back to localStorage

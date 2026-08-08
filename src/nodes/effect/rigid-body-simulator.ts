@@ -37,7 +37,7 @@ import {
 import { makePoints } from "@/engine/points";
 
 // Rigid Body Simulator — 2D rigid body dynamics over splines.
-// Spec: specdocs/072026_rigid-body-simulator.md.
+// Spec: specdocs/archive/072026_rigid-body-simulator.md.
 //
 // Each input subpath becomes one BODY: its particles are pulled toward
 // the best-fit rigid transform of their rest shape every constraint

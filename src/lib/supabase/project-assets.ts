@@ -10,9 +10,9 @@
 //
 // Rollout-safe: uploadGraphAssets FALLS BACK to the inline graph if Storage
 // errors (e.g. the bucket doesn't exist because the SQL migration hasn't
-// been run yet — specdocs/project-assets-migration.sql), so cloud saves
+// been run yet — specdocs/sql_archive/project-assets-migration.sql), so cloud saves
 // keep working the old way until the bucket is live, then switch over
-// automatically. See specdocs/071426_cloud-asset-storage.md.
+// automatically. See specdocs/archive/071426_cloud-asset-storage.md.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { SavedNode, SavedProject } from "@/lib/project";

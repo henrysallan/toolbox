@@ -8,7 +8,7 @@
 // excludes node_modules. Missing bundle (dev runs) or unpackaged app ⇒ the
 // updater degrades to a no-op: manual checks report "none" (Up to Date).
 //
-// Spec: specdocs/070826_desktop-auto-update.md
+// Spec: specdocs/archive/070826_desktop-auto-update.md
 "use strict";
 
 const { app, ipcMain, BrowserWindow } = require("electron");

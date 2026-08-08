@@ -29,7 +29,7 @@ import type {
 // nothing. `index` also renders as a bar on the node body (EffectNode's
 // SCALAR_INPUT_PARAMS) whose range follows `count` via ParamDef.maxFrom.
 //
-// Spec: specdocs/080526_universal-switch.md.
+// Spec: specdocs/archive/080526_universal-switch.md.
 //
 // The picked value is passed through UNTOUCHED — `ownsTextures: false`, like
 // Reroute. A mux never allocates, so it must never release its inputs'

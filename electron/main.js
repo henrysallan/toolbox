@@ -6,7 +6,7 @@
 //   TOOLBOX_REMOTE_URL → load that (escape hatch, e.g. the deployed site).
 //   otherwise          → spawn the embedded standalone server, load localhost.
 //
-// Spec: specdocs/062626_electron-native-export.md
+// Spec: specdocs/archive/062626_electron-native-export.md
 "use strict";
 
 const { app, BrowserWindow, shell, ipcMain, nativeImage } = require("electron");
@@ -45,7 +45,7 @@ function installWindowGuards(win, originUrl) {
   // Same-origin popups (incl. OAuth) open in-app; genuinely external links go
   // to the system browser.
   win.webContents.setWindowOpenHandler(({ url, frameName }) => {
-    // Panel pop-outs (specdocs/080226_panel-popout-windows.md) are
+    // Panel pop-outs (specdocs/archive/080226_panel-popout-windows.md) are
     // `window.open("", "tb-panel-<leaf>")` — an about:blank child the
     // renderer dresses itself. about:blank parses to origin "null", so
     // it has to be matched by frame name BEFORE the origin check or the

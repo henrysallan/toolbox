@@ -1,6 +1,6 @@
 // Thin client for OpenAI's gpt-image-2 via the Responses API.
 // Direct browser → OpenAI calls using the active user's BYO key.
-// See specdocs/image-generate-node.md §6 for the full request /
+// See specdocs/archive/image-generate-node.md §6 for the full request /
 // response shape we're matching.
 //
 // IMPORTANT: the top-level `model` is a CHAT model (gpt-4.1-mini /

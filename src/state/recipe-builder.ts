@@ -1,5 +1,5 @@
 // buildRecipe — turns an LLM-authored RecipeGraph (the minimal contract in
-// specdocs/062526_ai-recipe-generation.md §5) into a real node-group fragment,
+// specdocs/archive/062526_ai-recipe-generation.md §5) into a real node-group fragment,
 // using the same primitives presets do. The builder is the trust boundary:
 // even a malformed RecipeGraph can only mint nodes via makeInstanceNode and
 // edges between named handles — it can never inject behavior.

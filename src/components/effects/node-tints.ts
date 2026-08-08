@@ -7,7 +7,7 @@
 // EffectNode / FrameNode / the context-menu swatches. Tailwind-400 register
 // so tints read as siblings of the socket hues (socketColor.ts), applied at
 // low alpha so a tinted node is never mistaken for a wire type. Spec:
-// specdocs/073026_node-cosmetics-and-frames.md.
+// specdocs/archive/073026_node-cosmetics-and-frames.md.
 
 export const NODE_TINTS: string[] = [
   "#f87171", // red

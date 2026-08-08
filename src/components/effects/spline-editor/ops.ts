@@ -3,7 +3,7 @@
 // by the component; every function reads live data through the env refs and
 // writes through `env.onChangeRef` — one onChange per user-visible operation,
 // so undo coalescing stays intact. Split out of the monolith in M0 of
-// specdocs/071926_spline-draw-authoring-upgrade.md.
+// specdocs/archive/071926_spline-draw-authoring-upgrade.md.
 
 import { applyShapeBuilderOp, type FaceRef } from "@/engine/spline-planar";
 import type { SplineAnchor, SplineSubpath } from "@/engine/types";

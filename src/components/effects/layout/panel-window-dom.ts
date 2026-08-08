@@ -1,5 +1,5 @@
 // Window/document plumbing for detachable panels — the React-free half.
-// Spec: specdocs/080226_panel-popout-windows.md §3.
+// Spec: specdocs/archive/080226_panel-popout-windows.md §3.
 //
 // Kept separate from panel-window.tsx (which owns the context and is a
 // "use client" module) because these are plain functions that non-React

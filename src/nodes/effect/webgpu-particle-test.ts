@@ -5,7 +5,7 @@ import type { NodeDefinition } from "@/engine/types";
 // =====================================================================
 //
 // Decision-gate node for the WebGPU migration plan in
-// specdocs/webgpu-particles.md. Adding this node to a project mounts a
+// specdocs/archive/webgpu-particles.md. Adding this node to a project mounts a
 // dedicated WebGPU canvas overlaid on the main preview canvas. The
 // overlay runs its own compute + render passes on real WebGPU buffers
 // — there's no WebGL2 readback in either direction.

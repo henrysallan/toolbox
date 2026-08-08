@@ -3,7 +3,7 @@
 // Playhead chrome shared by the tick-based timeline editors: the 1px
 // playhead line, the ruler triangle handle, and the faded hover-preview
 // line. The line and handle subscribe to the clock THEMSELVES (the
-// leaf-subscription pass from specdocs/071026_clock-store.md): the
+// leaf-subscription pass from specdocs/archive/071026_clock-store.md): the
 // editor shells no longer read the tick at their top level, so playback
 // re-renders these leaves only — not the whole editor.
 //

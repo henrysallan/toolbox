@@ -8,11 +8,11 @@ import { invalidateProjectCaches } from "@/lib/supabase/projects";
 // signed-in user, a fetch timeout, offline degradation, and cache
 // invalidation on every mutation.
 //
-// Rollout safety: if specdocs/project-folders-migration.sql hasn't been
+// Rollout safety: if specdocs/sql_archive/project-folders-migration.sql hasn't been
 // run, listFolders() errors → returns [] → the grid renders flat exactly
 // as before the feature; mutations no-op with a console error.
 //
-// Spec: specdocs/072726_project-folders.md
+// Spec: specdocs/archive/072726_project-folders.md
 // ========================================================================
 
 export interface FolderRow {

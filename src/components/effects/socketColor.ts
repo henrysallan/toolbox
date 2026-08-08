@@ -4,7 +4,7 @@
 // is byte-identical in both modes; light mode just caps perceptual lightness
 // at ~0.56 so a bright dark-mode yellow (#facc15, OKLCH L 0.86) doesn't turn
 // into unreadable pale text on a white node. Light values are derived, not
-// hand-picked — see specdocs/080226_theme-modes.md.
+// hand-picked — see specdocs/archive/080226_theme-modes.md.
 //
 // The dark column is exactly what the editor used before theming, so dark
 // mode is unchanged.

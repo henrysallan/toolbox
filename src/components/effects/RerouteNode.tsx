@@ -14,7 +14,7 @@ import { colorForSocket } from "./socketColor";
 type RerouteNodeType = Node<NodeDataPayload, "reroute">;
 
 // A reroute renders as a single dot — but it's a real node (see
-// specdocs/071326_reroute-node.md), so selection / copy-paste / delete /
+// specdocs/archive/071326_reroute-node.md), so selection / copy-paste / delete /
 // input-swap come from React Flow's node machinery. It carries one value
 // straight through; flattenGraph dissolves it before evaluation.
 //

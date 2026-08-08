@@ -2,7 +2,7 @@
 // loop and pushes RGBA8 frames; we pipe them to a bundled ffmpeg-static process
 // reading rawvideo from stdin, and write the encoded file straight to a path
 // the USER picked via a native Save dialog. No wasm heap, real threads, no
-// whole-export buffering. See specdocs/062626_electron-native-export.md.
+// whole-export buffering. See specdocs/archive/062626_electron-native-export.md.
 "use strict";
 
 const { ipcMain, dialog, BrowserWindow } = require("electron");

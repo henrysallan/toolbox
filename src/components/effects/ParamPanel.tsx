@@ -1693,7 +1693,7 @@ function GroupSocketsPanel({
 // evaluate against defaults-merged params so a layer saved before this
 // feature (missing keys) still renders a complete, correct panel; the
 // first edit materializes the real key. See
-// specdocs/071526_layer-output-export-settings.md.
+// specdocs/archive/071526_layer-output-export-settings.md.
 function LayerOutputExportSettings({
   node,
   edges,

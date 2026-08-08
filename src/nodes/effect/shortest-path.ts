@@ -58,7 +58,7 @@ import {
 //    live rebuilds per frame, with `smooth` gliding reconfigured
 //    connections to their new parent (per-node state; the ONLY stateful
 //    corner of this node — see fingerprintExtras/dispose).
-//    Spec: specdocs/073126_shortest-path-tree-mode.md.
+//    Spec: specdocs/archive/073126_shortest-path-tree-mode.md.
 //
 // Path shaping: points + tree modes share Connect Points' `path` mode
 // enum (engine/segment-shape.ts — arcs/S-curves, sag, flow, network,
@@ -67,13 +67,13 @@ import {
 // (network mode ⇒ through-point smoothing; at tree junctions branches
 // stay tangent-consistent). Spline mode is exempt — it re-emits the
 // network's own authored curved segments, which shaping would destroy.
-// Spec: specdocs/073126_connect-points-curved-paths.md.
+// Spec: specdocs/archive/073126_connect-points-curved-paths.md.
 //
 // Group indices use Select by Index semantics everywhere (missing tags ⇒
 // bucket 0; indices pick into the sorted distinct buckets and clamp).
 // Pairs with Trim Path's trim_offset for the animated traversal look.
 // Pure CPU + deterministic (hash-based PRNG, no Math.random) — normal
-// fingerprint caching. Spec: specdocs/071026_spline-points-nodes.md.
+// fingerprint caching. Spec: specdocs/archive/071026_spline-points-nodes.md.
 
 type Mode = "points" | "spline" | "tree";
 

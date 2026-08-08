@@ -1,6 +1,6 @@
 // Pure geometry helpers for the Spline Draw editor overlay (spline-editor/).
 // No React, no refs — everything here takes explicit inputs. Split out of the
-// monolith in M0 of specdocs/071926_spline-draw-authoring-upgrade.md.
+// monolith in M0 of specdocs/archive/071926_spline-draw-authoring-upgrade.md.
 
 import type { SplineAnchor, SplineSubpath } from "@/engine/types";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";

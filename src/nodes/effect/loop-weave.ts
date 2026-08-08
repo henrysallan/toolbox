@@ -32,7 +32,7 @@ import { buildLoopWeave, type WeaveParams } from "@/engine/spline-weave";
 // also makes it deterministic, so offline export renders the reveal
 // (played from frame 0 it matches the preview exactly).
 //
-// Spec: specdocs/071926_loop-weave.md.
+// Spec: specdocs/archive/071926_loop-weave.md.
 
 interface LoopWeaveState {
   // Fractional tour units the auto-reveal pen has drawn so far.

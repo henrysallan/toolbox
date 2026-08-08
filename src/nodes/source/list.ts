@@ -6,7 +6,7 @@ import { resolveListIndex } from "@/engine/list-value";
 // List node — the CSV node's "paste data, get values" idea generalized to any
 // list format, but emitting a real `list` wire so the collection itself can be
 // transformed downstream (sort / slice / filter / join are nodes, not params).
-// Spec: specdocs/080526_list-socket.md.
+// Spec: specdocs/archive/080526_list-socket.md.
 //
 // The source is a plain multiline `string` param, NOT a file param: that keeps
 // it exposable, so a String node or a CSV cell can DRIVE the list at runtime

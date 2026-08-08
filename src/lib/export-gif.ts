@@ -10,7 +10,7 @@
 //      second engine. gifsicle runs on the main thread, no SharedArrayBuffer
 //      / COOP-COEP needed (same constraint the ffmpeg ST core lives under).
 //
-// See specdocs/061826_gif-export-and-image-sequence.md.
+// See specdocs/archive/061826_gif-export-and-image-sequence.md.
 
 import type { FFmpeg } from "@ffmpeg/ffmpeg";
 import gifsicle from "gifsicle-wasm-browser";

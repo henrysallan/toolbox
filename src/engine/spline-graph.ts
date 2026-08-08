@@ -16,8 +16,8 @@ import { subpathToBeziers } from "./spline-math";
 // Routing over either graph: shortestPathInGraph (multi-source Dijkstra)
 // and buildTreeInGraph (rooted-tree growth, SPT↔MST morph — tree mode).
 // Pure CPU, deterministic, engine-self-contained.
-// See specdocs/071026_spline-points-nodes.md +
-// specdocs/073126_shortest-path-tree-mode.md.
+// See specdocs/archive/071026_spline-points-nodes.md +
+// specdocs/archive/073126_shortest-path-tree-mode.md.
 
 type V2 = [number, number];
 

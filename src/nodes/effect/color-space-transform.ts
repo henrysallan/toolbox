@@ -2,7 +2,7 @@ import { OPACITY_PARAM } from "@/engine/conventions";
 import type { ImageValue, NodeDefinition } from "@/engine/types";
 
 // Color Space transform — the analytic half of the EXR/ACES pipeline (spec:
-// specdocs/070926_exr-color-pipeline.md). Decode the source transfer →
+// specdocs/archive/070926_exr-color-pipeline.md). Decode the source transfer →
 // convert gamut to scene-linear Rec.709/sRGB (the working hub) → optional
 // view transform (tone map) → convert to the destination gamut → encode the
 // destination transfer. All matrix math is baked CPU-side into two mat3

@@ -18,7 +18,7 @@ const CIRCULAR_SHAPES = ["disc", "ring", "soft"] as const;
 const isCircular = (s: string): s is BokehShape =>
   (CIRCULAR_SHAPES as readonly string[]).includes(s);
 
-// The unified Blur node. Spec: specdocs/080226_blur-convolution.md.
+// The unified Blur node. Spec: specdocs/archive/080226_blur-convolution.md.
 //
 // One node, several decompositions, one execution shape — every mode
 // builds a SeparablePlan and hands it to the shared core, which owns the

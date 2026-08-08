@@ -38,7 +38,7 @@ export interface ProjectRow {
   updated_at: string;
   created_at: string;
   // Aggregate ratings, denormalized onto the row by a trigger on
-  // project_ratings — see specdocs/ratings-migration.sql. `null` avg
+  // project_ratings — see specdocs/sql_archive/ratings-migration.sql. `null` avg
   // means the project has no ratings yet.
   ratings_avg: number | null;
   ratings_count: number;
@@ -51,7 +51,7 @@ export interface ProjectRow {
   // Which project_folders row this project lives in (null/undefined =
   // root). Only fetched by listPrivateProjects — folders are a
   // private-tab concept — and undefined until the folders migration
-  // (specdocs/project-folders-migration.sql) has been run. Read it as
+  // (specdocs/sql_archive/project-folders-migration.sql) has been run. Read it as
   // `row.folder_id ?? null`.
   folder_id?: string | null;
 }

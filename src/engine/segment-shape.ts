@@ -37,7 +37,7 @@ import { snoise } from "./noise";
 // stub). `alternate` flip is by emission index, inherently
 // order-dependent — documented.
 //
-// Spec: specdocs/073126_connect-points-curved-paths.md.
+// Spec: specdocs/archive/073126_connect-points-curved-paths.md.
 
 type V2 = [number, number];
 

@@ -45,7 +45,7 @@ import { CURATED_FONTS, ensureFontLoaded, isFontReady } from "@/lib/fonts";
 // mod_scale / mod_rot) give variety per cell when wired to noise or
 // gradients. Aux `index` emits normalized-per-cell grayscale matching
 // Array's convention; aux `brightness` emits the per-cell remapped
-// luminance driver. Spec: specdocs/073026_ascii-upgrade.md.
+// luminance driver. Spec: specdocs/archive/073026_ascii-upgrade.md.
 
 // ---- shaders -----------------------------------------------------------
 // FS sources are exported for the headless Electron shader compile check.

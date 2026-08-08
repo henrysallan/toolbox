@@ -7,7 +7,7 @@ import {
 
 // The export configuration params, shared verbatim between the composition
 // Output node (below) and each **Layer Output** (the fixed `group-output`
-// inside a layer — see specdocs/071526_layer-output-export-settings.md).
+// inside a layer — see specdocs/archive/071526_layer-output-export-settings.md).
 // A Layer Output stores its own copy on the node instance so a layer can be
 // rendered in a different form than the comp (e.g. a transparent qtrle of
 // one layer). Both surfaces render this one list, so a param added here
@@ -88,7 +88,7 @@ export const EXPORT_PARAMS: ParamDef[] = [
     // `exportMode` chooses between a single video file and a PNG/image
     // sequence (one still per frame). Both share the start/end frame range
     // and output fps below; the mode-specific params gate on this. See
-    // specdocs/061726_png-sequence-export.md.
+    // specdocs/archive/061726_png-sequence-export.md.
     {
       name: "exportMode",
       label: "Export mode",
@@ -260,7 +260,7 @@ export const EXPORT_PARAMS: ParamDef[] = [
     // palettegen pass; `gifLossy` drives a lossy-LZW optimization pass
     // (gifsicle) — the GIF analogue of a compression slider. Frame range +
     // Output FPS above are shared (GIF delay = round(100/fps) centiseconds).
-    // See specdocs/061826_gif-export-and-image-sequence.md.
+    // See specdocs/archive/061826_gif-export-and-image-sequence.md.
     {
       name: "gifColors",
       label: "Colors",

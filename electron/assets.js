@@ -3,7 +3,7 @@
 // directory of the most-recently-opened .toolbox (recordOpenedToolbox, called
 // from files.js / recents.js) and only ever lists/reads files under an assets
 // folder it has itself scanned or the user explicitly picked. See
-// specdocs/062926_assets.md (and the desktop spec's Security section).
+// specdocs/archive/062926_assets.md (and the desktop spec's Security section).
 "use strict";
 
 const { ipcMain, dialog, BrowserWindow } = require("electron");

@@ -5,7 +5,7 @@
 // webbed ink-pools wherever strokes cross or pass within a blend radius.
 // The look is an SDF smooth-union: every stroke is a distance field,
 // polynomial smooth-min combines them, and the iso-contour at the stroke
-// radius is the outline. Spec: specdocs/071926_blend-intersections.md
+// radius is the outline. Spec: specdocs/archive/071926_blend-intersections.md
 // (devlist #49 — the implicit-surface fusion deferred from #71).
 //
 // All distance work happens in CANVAS-PIXEL space so strokes stay round

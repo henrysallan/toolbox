@@ -13,7 +13,7 @@ import { createPortal } from "react-dom";
 //
 // Interaction = hybrid (Blender-style): flick a direction and release the
 // keys to fire; OR tap the chord and it stays open for point-and-click.
-// Spec: specdocs/071326_pie-menu.md.
+// Spec: specdocs/archive/071326_pie-menu.md.
 // ---------------------------------------------------------------------------
 
 export type PieMenuItem = {

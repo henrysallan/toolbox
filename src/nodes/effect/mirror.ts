@@ -22,7 +22,7 @@ import { ensurePointArray, pointsFromArray } from "@/engine/points";
 // copy are axis-aligned, so they're aspect-free; radial rotations run in
 // pixel-isotropic space (dy scaled by 1/aspect, rotated, scaled back) so
 // copies stay rigid on non-square canvases instead of shearing. Spec:
-// specdocs/072026_mirror-node.md.
+// specdocs/archive/072026_mirror-node.md.
 
 interface CopyOp {
   flipX: boolean;

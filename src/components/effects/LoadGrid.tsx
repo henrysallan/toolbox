@@ -81,7 +81,7 @@ type SortDir = "asc" | "desc";
 // ghost out in place, and an invalid release flies it back to where it
 // was picked up. Plain clicks stay clicks: nothing engages until the
 // threshold, and a real drag suppresses the click that follows
-// pointerup. Spec: specdocs/072726_project-folders.md.
+// pointerup. Spec: specdocs/archive/072726_project-folders.md.
 // ========================================================================
 
 // Drop-target keys carried in data-drop-target: "root" or "f:<folderId>".

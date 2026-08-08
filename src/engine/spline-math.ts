@@ -477,7 +477,7 @@ export function offsetSubpath(
 // passes canvas pixels so the tolerance is isotropic on a non-square canvas
 // (rather than skewed by the [0,1]² aspect). Returned anchors are in that SAME
 // space — the caller converts pos/handles to normalized coords.
-// Spec: specdocs/062526_spline-pencil-tool.md.
+// Spec: specdocs/archive/062526_spline-pencil-tool.md.
 // ---------------------------------------------------------------------------
 
 type V2 = [number, number];
@@ -860,7 +860,7 @@ export function simplifyPolyline(
 // subpaths round every anchor (neighbors wrap); open subpaths leave the two
 // endpoints alone. radius ≤ 0 is identity. Positions are normalized [0,1]²
 // (no aspect correction — matches the other spline modifiers).
-// Spec: specdocs/062526_node-expansion.md §3.
+// Spec: specdocs/archive/062526_node-expansion.md §3.
 // ---------------------------------------------------------------------------
 
 const ROUND_EPS = 1e-6;

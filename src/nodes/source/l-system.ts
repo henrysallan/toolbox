@@ -16,7 +16,7 @@ import {
 } from "@/engine/growth-emit";
 
 // L-System — Lindenmayer string rewriting with a turtle interpreter
-// (specdocs/080226_l-system.md). Split out of Accretive Growth, whose
+// (specdocs/archive/080226_l-system.md). Split out of Accretive Growth, whose
 // modes are all stochastic spatial processes constrained by a region;
 // this one executes a grammar and shares only the emission layer.
 //

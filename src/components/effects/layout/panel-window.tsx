@@ -3,7 +3,7 @@
 import React, { createContext, useContext } from "react";
 
 // Which WINDOW a panel's subtree is living in.
-// Spec: specdocs/080226_panel-popout-windows.md §3.
+// Spec: specdocs/archive/080226_panel-popout-windows.md §3.
 //
 // A popped-out panel is portalled into another document, but it is
 // still the same React tree — so module-scope `window` inside its

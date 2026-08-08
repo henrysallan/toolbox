@@ -16,7 +16,7 @@ import type {
 // V1 is scalar: inputs evaluate as numbers (image/mask/audio coerce to a
 // scalar via the engine's universal coercions), and the output is a scalar
 // or a vec selected by `out_type`. Per-pixel image expressions (JS→GLSL)
-// are a separate follow-up — see specdocs/062926_expression-node.md.
+// are a separate follow-up — see specdocs/archive/062926_expression-node.md.
 
 // ---------------------------------------------------------------------------
 // Input-variable helpers (also imported by the editor's `+`-button handler).

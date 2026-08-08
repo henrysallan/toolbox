@@ -2,7 +2,7 @@
 // pattern): every op is LayoutTree → LayoutTree, returning a new tree
 // with untouched subtrees shared by reference. EffectsApp holds one
 // layoutTree state and applies results; nothing here touches React or
-// the DOM. Spec: specdocs/072726_window-tiling.md.
+// the DOM. Spec: specdocs/archive/072726_window-tiling.md.
 
 import type {
   LayoutNode,

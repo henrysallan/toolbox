@@ -179,7 +179,7 @@ interface Props {
   ) => void;
   // Wire-gesture actions. `onCombineWires` is called when a shift-drag
   // crosses one or more edges; the caller drops a reroute node on the crossed
-  // wire(s) at `midpointFlow` (specdocs/071326_reroute-node.md). `onCutWires`
+  // wire(s) at `midpointFlow` (specdocs/archive/071326_reroute-node.md). `onCutWires`
   // is called with every edge id that an alt-drag crossed.
   onCombineWires?: (
     edgeIds: string[],
@@ -404,7 +404,7 @@ function NodeEditor({
   // the gesture in the capture phase on the wrapper and stop it before d3-zoom
   // sees it, then drive the viewport ourselves. Scoped to button 1 + a zoom
   // modifier, so ordinary middle-drag panning (panOnDrag) is untouched.
-  // (Drag right zooms in.) See specdocs/061726_mouse-input-ux.md.
+  // (Drag right zooms in.) See specdocs/archive/061726_mouse-input-ux.md.
   useEffect(() => {
     const el = flowWrapperRef.current;
     if (!el) return;

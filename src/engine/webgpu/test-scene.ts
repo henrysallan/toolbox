@@ -4,7 +4,7 @@
 //
 // Self-contained WebGPU particle scene used by the WebGPU Particle Test
 // node + overlay. The whole purpose of this module is to validate the
-// system boundaries described in specdocs/webgpu-particles.md before we
+// system boundaries described in specdocs/archive/webgpu-particles.md before we
 // rewrite the real simulator:
 //
 //   - Device boots, kernels compile, pipelines bind.

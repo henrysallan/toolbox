@@ -18,7 +18,7 @@ import {
 } from "@/engine/growth-emit";
 
 // Accretive Growth — branching structures that accumulate and never move
-// (specdocs/080226_accretive-growth.md). M1 shipped the spine plus
+// (specdocs/archive/080226_accretive-growth.md). M1 shipped the spine plus
 // `space_colonization`; M2 added the grid modes `dla` and `percolation`
 // plus `boundary` emission; M3 added `laplacian`; M4 adds the network
 // modes `crack` and `hyphal` plus closed venation. L-systems in M5.

@@ -10,7 +10,7 @@
 // the master Amount upstream (e.g. a Scene Time ping-pong wired into Amount)
 // only warps the group wavefront, not the per-glyph curve. The property value
 // is `lerp(min, max, t)`. Animators stack additively.
-// See specdocs/062526_text-animators.md.
+// See specdocs/archive/062526_text-animators.md.
 //
 // Pure module — no GL, no DOM. The Text node parses params into TextAnimators
 // and reads any wired field images to pixel buffers; text-raster.ts applies the

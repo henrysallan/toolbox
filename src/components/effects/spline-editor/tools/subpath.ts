@@ -9,7 +9,7 @@
 // curve — the minimum-norm handle solve that used to sit on the plain drag,
 // which made every attempt to grab a path reshape it.
 // Split out of the monolith in M0 of
-// specdocs/071926_spline-draw-authoring-upgrade.md.
+// specdocs/archive/071926_spline-draw-authoring-upgrade.md.
 
 import { DRAG_THRESHOLD } from "../constants";
 import { nearestTOnCubic } from "../geometry";

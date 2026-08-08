@@ -3,7 +3,7 @@
 // provide a full implementation; the web impl is exactly today's behavior, so
 // the web target can't regress as native capabilities are added.
 //
-// Spec: specdocs/062626_electron-native-export.md
+// Spec: specdocs/archive/062626_electron-native-export.md
 
 export type OpenFileKind = "video" | "audio" | "media" | "image" | "toolbox";
 
@@ -123,7 +123,7 @@ export interface Platform {
 
   /** External assets folders (the `assets/` next to a .toolbox, or a folder the
    *  user picks). Capability-gated: desktop auto-scans the sibling folder; web
-   *  (and desktop) can pick one. See specdocs/062926_assets.md. */
+   *  (and desktop) can pick one. See specdocs/archive/062926_assets.md. */
   assets?: {
     /** The `assets/` folder beside the most-recently-opened .toolbox (desktop).
      *  null when none exists or no .toolbox was opened this session. */

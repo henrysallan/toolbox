@@ -9,7 +9,7 @@ import { OPACITY_PARAM, colorValueToHex } from "@/engine/conventions";
 // Watercolor Ink node. Cellular-automaton ink/water/paper simulation after
 // Zhang, Sato, Takahashi, Muraoka & Chiba, "Simple Cellular Automaton-based
 // Simulation of Ink Behaviour..." (J. Vis. Comput. Animat. 10, 1999).
-// Spec: specdocs/watercolorshaderspec.md. Self-iterating like Reaction
+// Spec: specdocs/archive/watercolorshaderspec.md. Self-iterating like Reaction
 // Diffusion: ping-pong state textures stepped `substeps_per_frame` times
 // per eval while the timeline plays (or a wired `time` scalar advances).
 //

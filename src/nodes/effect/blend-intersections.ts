@@ -11,7 +11,7 @@ import { resolveStrokePx, strokeUnitsParam } from "@/engine/stroke-units";
 // blend radius (SDF smooth-union of per-stroke distance fields; the
 // classic "blend intersections" ink look). Implicit-field CPU pipeline in
 // engine/spline-blend-intersections.ts. Spec:
-// specdocs/071926_blend-intersections.md (devlist #49).
+// specdocs/archive/071926_blend-intersections.md (devlist #49).
 //
 // Geometry-only, like Spline Merge — wire the output into Rasterize
 // Spline to fill (or outline-stroke) it.

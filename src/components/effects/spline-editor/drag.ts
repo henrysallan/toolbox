@@ -3,7 +3,7 @@
 // component binds window pointermove/pointerup while a drag is active and
 // forwards events here. Delta tracking is in client-px so movement thresholds
 // compare cleanly regardless of zoom. Split out in M0 of
-// specdocs/071926_spline-draw-authoring-upgrade.md.
+// specdocs/archive/071926_spline-draw-authoring-upgrade.md.
 
 import type { SplineAnchor } from "@/engine/types";
 import { DRAG_THRESHOLD, PENCIL_MIN_SAMPLE } from "./constants";

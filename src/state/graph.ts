@@ -16,14 +16,14 @@ export type NodeDataPayload = {
   // undefined for root scope. The nodes array stays flat — nesting is
   // arbitrary depth via parentId chains, and the NodeEditor filters
   // its view to one scope at a time. See
-  // specdocs/layers-groups-attributes.md.
+  // specdocs/archive/layers-groups-attributes.md.
   parentId?: string;
   // Composition scoping (v5+): id of the composition this node belongs to.
   // A project holds multiple compositions and the editor shows one at a
   // time; orthogonal to `parentId` (which scopes within a composition).
   // May be undefined on freshly-created runtime nodes until persisted —
   // serializeGraph tags every node with the active composition on save.
-  // See specdocs/062926_compositions-and-project-view.md.
+  // See specdocs/archive/062926_compositions-and-project-view.md.
   compositionId?: string;
   params: Record<string, unknown>;
   // Per-parameter keyframe animation, keyed by param name. A param is
@@ -88,7 +88,7 @@ export type NodeDataPayload = {
   // NOT serialized. `displayName` relabels a layer's boundary nodes (Layer
   // Input / Layer Output) and the comp-root Output (Composition Output);
   // `layerAccent` tints layer nodes + their boundaries blue. See #159 /
-  // specdocs/062926_compositions-and-project-view.md.
+  // specdocs/archive/062926_compositions-and-project-view.md.
   displayName?: string;
   layerAccent?: boolean;
   // User-resized node box, in flow (canvas) px, set by dragging the
@@ -102,7 +102,7 @@ export type NodeDataPayload = {
   // optional like uiWidth — persisted, no schema bump, engine-blind).
   // `tint` is one of the NODE_TINTS preset hexes (any hex renders) washed
   // over the node body; `bold` draws a thick outline ring. Spec:
-  // specdocs/073026_node-cosmetics-and-frames.md.
+  // specdocs/archive/073026_node-cosmetics-and-frames.md.
   tint?: string;
   bold?: boolean;
   // Frame membership: id of the frame-zone node (FRAME_TYPE) this node
@@ -143,7 +143,7 @@ export function newNodeId(type: string) {
 
 // Composition ids (v5+). A project holds an ordered list of compositions;
 // every node carries the id of the composition it lives in. See
-// specdocs/062926_compositions-and-project-view.md.
+// specdocs/archive/062926_compositions-and-project-view.md.
 export function newCompositionId() {
   return `comp-${Math.random().toString(36).slice(2, 8)}`;
 }

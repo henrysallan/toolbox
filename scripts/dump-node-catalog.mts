@@ -98,10 +98,10 @@ for (const [name, str] of Object.entries(variants)) {
 }
 
 // Dump the canonical full catalog for inspection.
-const outPath = "specdocs/node-catalog.sample.json";
+const outPath = "specdocs/archive/node-catalog.sample.json";
 writeFileSync(outPath, JSON.stringify(buildNodeCatalog(defs), null, 2));
-writeFileSync("specdocs/node-catalog.dsl.txt", variants["compact DSL"]);
-console.log(`\nWrote full catalog → ${outPath}  + DSL → specdocs/node-catalog.dsl.txt`);
+writeFileSync("specdocs/archive/node-catalog.dsl.txt", variants["compact DSL"]);
+console.log(`\nWrote full catalog → ${outPath}  + DSL → specdocs/archive/node-catalog.dsl.txt`);
 
 // A terse line-per-node DSL — denser than JSON, candidate prompt format.
 function compactDsl(): string {

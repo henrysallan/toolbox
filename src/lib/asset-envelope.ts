@@ -7,7 +7,7 @@
 //   - the cloud Storage path (lib/supabase/project-assets.ts) — objects at
 //     <user>/<project>/<hash>.<ext>.
 // One definition of the envelope shape keeps the two readers/writers in
-// lockstep. See specdocs/071426_cloud-asset-storage.md.
+// lockstep. See specdocs/archive/071426_cloud-asset-storage.md.
 
 // An inline asset as serializeParams emits it: any envelope object carrying
 // a `data:` URL under `dataUrl` (image files, paint layers, EXR, fonts).

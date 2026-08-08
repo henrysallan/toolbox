@@ -9,7 +9,7 @@ import { BaseEdge, getBezierPath, type EdgeProps } from "@xyflow/react";
 //
 // (Historically this also drew "junction" waypoint dots for combined
 // same-source wires; that edge-metadata model was replaced by the first-class
-// reroute node — see specdocs/071326_reroute-node.md. Every edge still flows
+// reroute node — see specdocs/archive/071326_reroute-node.md. Every edge still flows
 // through this type so the splice highlight works uniformly.)
 
 type EdgeData = {

@@ -1,5 +1,5 @@
 // Vector kernel facade — kurbo compiled to WASM (rust/toolbox-vector-kernel).
-// Spec: specdocs/attractor-vector-kernel-spec.md.
+// Spec: specdocs/archive/attractor-vector-kernel-spec.md.
 //
 // Owns two things:
 //  1. Kernel lifecycle: lazy init from public/wasm/v1 (browser fetch) or

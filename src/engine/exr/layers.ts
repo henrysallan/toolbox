@@ -2,7 +2,7 @@
 // dot-separated channel-name prefixes with renderer-specific suffix
 // conventions. This module shapes raw part headers into the layer list the
 // UI dropdown shows and the decoder consumes.
-// Spec: specdocs/070926_exr-color-pipeline.md.
+// Spec: specdocs/archive/070926_exr-color-pipeline.md.
 
 import type { ExrRawPartHeader } from "./exr-core";
 

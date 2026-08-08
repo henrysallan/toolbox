@@ -12,7 +12,7 @@ import { EMPTY_POINTS } from "@/engine/points";
 // Advect Points — move points through a velocity field derived from an
 // image. Unlike Displace (one sample, one push), advection re-samples the
 // field at every step, so points follow the field's curves like leaves in
-// a stream. Spec: specdocs/071926_advect-points.md.
+// a stream. Spec: specdocs/archive/071926_advect-points.md.
 //
 // Two modes:
 //   integrate  — stateless. Every eval the input points are seeds and the

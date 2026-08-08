@@ -2,7 +2,7 @@
 // numbered image files into an ImageSequenceParamValue: parse the trailing
 // integer in each filename, sort by it, and keep the encoded bytes (the node
 // decodes lazily). Gaps in the numbering are honored at playback (held
-// frames) — see the node compute + specdocs/061826_gif-export-and-image-sequence.md.
+// frames) — see the node compute + specdocs/archive/061826_gif-export-and-image-sequence.md.
 
 import type {
   ImageSequenceFrame,

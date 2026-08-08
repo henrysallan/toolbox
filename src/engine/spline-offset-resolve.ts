@@ -24,7 +24,7 @@ import { subpathToBeziers } from "./spline-math";
 // Callers run it in CANVAS-PIXEL space so intersection tolerances and fillet
 // radii are isotropic on non-square canvases (Repeat Path / Stroke already
 // offset in px; Offset Path scales to px for the resolve step). Spec:
-// specdocs/071426_offset-overlap-resolve.md.
+// specdocs/archive/071426_offset-overlap-resolve.md.
 
 export type OverlapStyle = "keep" | "sharp" | "smooth";
 

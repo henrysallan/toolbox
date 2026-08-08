@@ -9,7 +9,7 @@ import { AssetsView, type AssetItem } from "./AssetsView";
 // click to enter; create / duplicate / delete / rename / reorder from here.
 // The live preview keeps rendering the last-active composition while open.
 //
-// See specdocs/062926_compositions-and-project-view.md.
+// See specdocs/archive/062926_compositions-and-project-view.md.
 
 interface ProjectViewProps {
   projectName: string;

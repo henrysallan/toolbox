@@ -7,7 +7,7 @@ import { useState } from "react";
 // the tab, it never deletes the composition), + to create a new one. Tabs
 // drag to reorder; the strip scrolls horizontally when they overflow.
 //
-// See specdocs/062926_compositions-and-project-view.md.
+// See specdocs/archive/062926_compositions-and-project-view.md.
 
 export interface CompositionTab {
   id: string;

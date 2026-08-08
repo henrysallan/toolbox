@@ -7,7 +7,7 @@
 // chain handles invalidation. These carry references to RETAINED three.js
 // objects owned by the producing node's ctx.state (built in compute, torn
 // down in dispose), so the dataflow doesn't rebuild three objects every
-// frame — see specdocs/061626_3d-nodes-and-context.md §3.3.
+// frame — see specdocs/archive/061626_3d-nodes-and-context.md §3.3.
 //
 // three's type surface is imported type-only here (erased at runtime) so
 // the rest of the engine type system doesn't couple to three. Only this

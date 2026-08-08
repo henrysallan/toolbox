@@ -8,7 +8,7 @@
 // bundled custom fonts, M-A3 fills "Folder" with the scanned/picked assets/
 // folder, M-A4 makes the cards draggable into the node editor.
 //
-// See specdocs/062926_assets.md.
+// See specdocs/archive/062926_assets.md.
 
 export type AssetKind = "font" | "image" | "video" | "audio" | "svg" | "other";
 

@@ -96,7 +96,7 @@ const SPLIT_CANCEL_PX = 16;
  * structural tree changes never reparent (and never remount) panel
  * content; only styles move. Rects are percentages derived from the
  * tree (deterministic under SSR); pixels are only measured inside
- * drag handlers. Spec: specdocs/072726_window-tiling.md §3.
+ * drag handlers. Spec: specdocs/archive/072726_window-tiling.md §3.
  */
 export function LayoutRegion({
   tree,

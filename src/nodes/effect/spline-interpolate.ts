@@ -30,7 +30,7 @@ import { transformSpline } from "@/engine/spline-transform";
 //
 // Sibling to Spline Morph (spline-morph.ts): that node is a two-input, animated,
 // rasterizing A→B tween; this one is a multi-input, static, spline-out family
-// generator on the same engine. Design: specdocs/070626_spline-interpolate.md.
+// generator on the same engine. Design: specdocs/archive/070626_spline-interpolate.md.
 
 const EMPTY_SPLINE: SplineValue = { kind: "spline", subpaths: [] };
 

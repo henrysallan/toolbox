@@ -16,7 +16,7 @@ compute shaders
     Hz, with confidence gate, hold, and glide). Bands emit SCALARS, not audible
     filtered streams (hearable band-split deferred — needs an AudioValue filter
     extension). Shared engine/audio-analysis.ts; frame-accurate in offline export.
-    Spec: 062926_audio-analysis.md.
+    Spec: archive/062926_audio-analysis.md.
 
 33.1 sprectral converter for audio. Some set of various alorithims and compositions for taking audio input and outputing a scalar field that we can use to control other parameters
     DONE (v1) — Audio Spectral node: FFT → spectrum image (a spatial scalar field,
@@ -24,7 +24,7 @@ compute shaders
     (log-frequency × scrolling time history — accumulated live, reconstructed
     deterministically offline). Params: resolution, history rows, dB window, contrast,
     temporal smoothing, orientation, mirror. Feed it into Displace / Copy-to-Points /
-    gradients / SDF fields. Frame-accurate offline. Spec: 062926_audio-analysis.md.
+    gradients / SDF fields. Frame-accurate offline. Spec: archive/062926_audio-analysis.md.
 
 
 36. DONE the solid color node should have a vec3 output with its color. We should add a hex input int he parameters section
@@ -65,7 +65,7 @@ compute shaders
     screen-space), Alt/Option = draw from the centre, Alt+Shift = both;
     snapping applies to the origin and the free corner. More primitives
     (polygon / star / rounded-rect) are the fast-follow — see #152.
-    Spec: 071926_spline-draw-authoring-upgrade.md M6. 
+    Spec: archive/071926_spline-draw-authoring-upgrade.md M6. 
 
 
 
@@ -356,7 +356,7 @@ For the layers editor, we would create a new toggle in addition to tracks and gr
 
 153. a bunch of preset stackable/additive text animations. per character type on, image field for position offset, image field for opacity. 
 
-154. abstract preset node for vizualizing bezier handles basically we want to pipe in a spline, and then get new splines out that are the handle visualization. Spec: 062926_bezier-handles-node.md (Bezier Handles node: spline in → image + spline out; path overlay + handle lines + anchor/handle dots, each independently styled incl. dashed/dotted + fill).
+154. abstract preset node for vizualizing bezier handles basically we want to pipe in a spline, and then get new splines out that are the handle visualization. Spec: archive/062926_bezier-handles-node.md (Bezier Handles node: spline in → image + spline out; path overlay + handle lines + anchor/handle dots, each independently styled incl. dashed/dotted + fill).
 
 155. something we are constantly wanting to do is to use noise to push around points or spline points. We have a set position node that i feel like could do this, but it only accepts a vec2 right now. Could we add an 2 image field inputs for X and Y? Is that the right idea?
 
@@ -782,6 +782,6 @@ Let me know if you understand.
     correction on the deposit (agent count = quality, not look) and a
     diffusion radius coupled to the distance scale (so a 4K export
     resembles its 1080p preview). Supersedes the "deferred GPU
-    physarum" item in 080226_behavioral-growth.md §8; that node's CPU
+    physarum" item in archive/080226_behavioral-growth.md §8; that node's CPU
     `physarum` mode is still worth building where agent positions must
     leave as a `points` value. Spec: specdocs/080226_physarum.md.

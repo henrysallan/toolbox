@@ -1,7 +1,7 @@
 /* eslint-disable */
 // Toolbox vendored fork of three.js r184's EXRLoader
 // (examples/jsm/loaders/EXRLoader.js, MIT). Spec:
-// specdocs/070926_exr-color-pipeline.md. Differences from upstream:
+// specdocs/archive/070926_exr-color-pipeline.md. Differences from upstream:
 //
 // - Plain functions, no three.js dependency: `parseExrHeaderParts(buffer)`
 //   (header-only, cheap) and `decodeExrToFloat(buffer, options)`.

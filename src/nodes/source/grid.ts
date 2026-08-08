@@ -8,7 +8,7 @@ import { makePoints } from "@/engine/points";
 // "step" takes an explicit gap and lets the footprint grow. Both modes
 // center the grid on (x, y), so switching modes doesn't move it.
 //
-// See specdocs/071926_grid-node.md.
+// See specdocs/archive/071926_grid-node.md.
 
 export const gridNode: NodeDefinition = {
   type: "grid",

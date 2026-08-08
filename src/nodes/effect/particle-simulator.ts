@@ -16,7 +16,7 @@ import { particleSimulatorWebGPUNode } from "./particle-simulator-webgpu";
 // preference) is deliberate during the migration: you can drop two
 // simulators into the same graph with one on each backend and
 // compare visual output side-by-side. Once the WebGPU path reaches
-// parity (post-Phase 4 in specdocs/webgpu-particles.md) we flip the
+// parity (post-Phase 4 in specdocs/archive/webgpu-particles.md) we flip the
 // default to "webgpu"; one stable release later the legacy file
 // gets deleted along with this router.
 //

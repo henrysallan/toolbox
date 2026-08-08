@@ -2,7 +2,7 @@
 // arrays. This module is the home for everything that creates, clones,
 // or rewires nodes outside of React state plumbing — EffectsApp calls
 // in here and applies the results via its setters. Group / layer /
-// chain operations (specdocs/layers-groups-attributes.md) land here;
+// chain operations (specdocs/archive/layers-groups-attributes.md) land here;
 // new structural logic must not be added to EffectsApp directly.
 
 import type { Edge, Node } from "@xyflow/react";
@@ -304,7 +304,7 @@ export function makeSplineEditable(
 }
 
 // Insert reroute nodes onto existing edges — the Shift-drag / double-click-a-
-// wire gesture (specdocs/071326_reroute-node.md). The listed edges are grouped
+// wire gesture (specdocs/archive/071326_reroute-node.md). The listed edges are grouped
 // by their shared (source, sourceHandle); each group gets ONE reroute placed
 // near `anchor` (staggered when there are several), with the shared source
 // feeding the reroute's `value` input and every member edge re-pointed to
@@ -1891,7 +1891,7 @@ export function cloneCompositionNodes(
 // nodes are tagged lazily, and a single-composition project may carry no
 // tags at all before its first save). Passing `undefined` disables the
 // filter entirely (legacy / whole-project callers). See
-// specdocs/062926_compositions-and-project-view.md.
+// specdocs/archive/062926_compositions-and-project-view.md.
 export function belongsToComposition(
   node: GraphNode,
   compositionId: string | undefined

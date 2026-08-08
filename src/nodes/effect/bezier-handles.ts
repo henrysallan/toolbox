@@ -19,7 +19,7 @@ import { OPACITY_PARAM } from "@/engine/conventions";
 //
 // It's a pure visualizer over the input geometry — no time, no state, no async
 // — so it caches as a constant whenever its input and params are unchanged.
-// Spec: specdocs/062926_bezier-handles-node.md.
+// Spec: specdocs/archive/062926_bezier-handles-node.md.
 
 // Y-flip blit: the 2D canvas is row-0-top; flip to the pipeline's Y-up.
 const BLIT_FS = `#version 300 es

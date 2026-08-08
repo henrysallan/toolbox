@@ -15,7 +15,7 @@ import type {
 // forward and deposit; the field then diffuses and decays. The emergent
 // structure is the self-optimising vein network.
 //
-// Lineage (see specdocs/080226_physarum.md):
+// Lineage (see specdocs/archive/080226_physarum.md):
 //   - Jeff Jones (2010), "Characteristics of pattern formation and
 //     evolution in approximations of Physarum transport networks" —
 //     the base 3-sensor algorithm.

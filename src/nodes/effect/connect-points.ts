@@ -20,7 +20,7 @@ import {
 // each segment's SHAPE — straight chords, arcs / S-curves, sag, flow,
 // network tangents, bundling, attract — via the shared segment-shape
 // machinery (engine/segment-shape.ts, also consumed by Shortest Path).
-// Spec: specdocs/073126_connect-points-curved-paths.md.
+// Spec: specdocs/archive/073126_connect-points-curved-paths.md.
 // Output is the set of segments as a single SplineValue; a passthrough
 // `points` aux output lets downstream nodes consume both the new
 // connections AND the original points without a re-wire.

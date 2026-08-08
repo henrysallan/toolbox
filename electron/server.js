@@ -9,7 +9,7 @@
 // own GUI binary as a second app instance, which gets its own (perpetually
 // bouncing) Dock tile and a fragile lifecycle. `utilityProcess` runs real
 // Node, never creates a Dock tile, and is tied to the app's lifetime.
-// Spec: specdocs/062626_electron-native-export.md
+// Spec: specdocs/archive/062626_electron-native-export.md
 "use strict";
 
 const http = require("http");

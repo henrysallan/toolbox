@@ -14,7 +14,7 @@ import { buildPath2D } from "@/engine/spline-raster";
 import { aspectCorrectY } from "@/engine/aspect";
 
 // Optimize Path — refit messy spline data to the fewest clean cubic Bézier
-// segments within a pixel tolerance (specdocs/attractor-vector-kernel-spec.md
+// segments within a pixel tolerance (specdocs/archive/attractor-vector-kernel-spec.md
 // §1.2). Backed by kurbo's simplify/fit machinery compiled to WASM; corner
 // joins sharper than `corner_angle` split the fitting runs, so hard corners
 // survive exactly while smooth-but-noisy spans collapse to minimal curves.

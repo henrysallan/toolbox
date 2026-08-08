@@ -15,7 +15,7 @@ import { autoSmoothHandles } from "@/engine/spline-math";
 // Headline combos: Points to Spline (linear) → here (smooth); smoothing
 // Connect Points' straight segments; flattening an SVG import to corners.
 //
-// Spec: specdocs/071026_spline-points-nodes.md.
+// Spec: specdocs/archive/071026_spline-points-nodes.md.
 
 export const setSplineTypeNode: NodeDefinition = {
   type: "set-spline-type",

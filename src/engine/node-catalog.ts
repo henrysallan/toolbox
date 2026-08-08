@@ -1,6 +1,6 @@
 // Node catalog generator — the machine-readable description of every
 // built-in node, fed to the LLM as context for AI Recipe Generation
-// (specdocs/062526_ai-recipe-generation.md, milestone 1).
+// (specdocs/archive/062526_ai-recipe-generation.md, milestone 1).
 //
 // Pure + engine-side (invariant #1): derives entirely from the registered
 // NodeDefinitions, so it can never drift from the running app and runs both

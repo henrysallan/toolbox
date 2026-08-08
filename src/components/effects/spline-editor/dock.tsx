@@ -2,7 +2,7 @@
 
 // The Spline Draw overlay's floating chrome: the tool dock (mode pill +
 // close-loop / delete-subpath toggles) and the anchor context menu. Split out
-// of the monolith in M0 of specdocs/071926_spline-draw-authoring-upgrade.md.
+// of the monolith in M0 of specdocs/archive/071926_spline-draw-authoring-upgrade.md.
 // The generic dock chrome (shell, mode pill, icon toggle) now lives in
 // ../tool-dock.tsx, shared with the Paint editor (071926_paint-toolkit.md).
 

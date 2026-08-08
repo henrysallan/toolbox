@@ -1,6 +1,6 @@
 // Shared types for the Spline Draw editor overlay (spline-editor/).
 // Split out of the monolith in M0 of
-// specdocs/071926_spline-draw-authoring-upgrade.md.
+// specdocs/archive/071926_spline-draw-authoring-upgrade.md.
 
 import type { Dispatch, SetStateAction } from "react";
 import type { MultiPolygon } from "polygon-clipping";

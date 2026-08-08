@@ -1,6 +1,6 @@
 // Shared sizing / tuning / palette constants for the Spline Draw editor
 // overlay (spline-editor/). Split out of the monolith in M0 of
-// specdocs/071926_spline-draw-authoring-upgrade.md.
+// specdocs/archive/071926_spline-draw-authoring-upgrade.md.
 
 // Visual sizing. Anchors are intentionally small and outlined (blue stroke,
 // faint fill); corner anchors (no handles) draw as squares, smooth/handled

@@ -2,7 +2,7 @@ import { Delaunay } from "d3-delaunay";
 import type { Point, PointsValue, SplineSubpath } from "./types";
 
 // Shared Voronoi geometry derivation for the unified Voronoi node
-// (specdocs/073026_voronoi-unified.md). Given a feature-point set in an
+// (specdocs/archive/073026_voronoi-unified.md). Given a feature-point set in an
 // isotropic "metric space" (where euclidean distance matches what the
 // shader measures), derives the actual diagram as splines + points:
 //

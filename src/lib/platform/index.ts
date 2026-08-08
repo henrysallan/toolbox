@@ -3,7 +3,7 @@
 // the Electron-injected bridge, so the SAME bundle works on both web and
 // desktop — `nativePlatform` is simply inert when no bridge exists.
 //
-// Spec: specdocs/062626_electron-native-export.md
+// Spec: specdocs/archive/062626_electron-native-export.md
 
 import { nativePlatform } from "./native";
 import type { Platform } from "./types";

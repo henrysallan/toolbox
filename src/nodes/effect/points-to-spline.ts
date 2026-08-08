@@ -17,7 +17,7 @@ import { catmullRomSubpath } from "@/engine/spline-math";
 // smooth = catmull-rom auto handles through every point (same math as
 // Spiral / Sine Wave). Chain Set Spline Type to change your mind later.
 //
-// Spec: specdocs/071026_spline-points-nodes.md.
+// Spec: specdocs/archive/071026_spline-points-nodes.md.
 
 type V2 = [number, number];
 

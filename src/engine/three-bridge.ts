@@ -11,7 +11,7 @@
 //
 // Deliberately three-free — it only touches RenderContext + GL — so it
 // stays a pure engine helper. The three.WebGLRenderer lives in the calling
-// node's ctx.state. See specdocs/061626_3d-nodes-and-context.md §4.
+// node's ctx.state. See specdocs/archive/061626_3d-nodes-and-context.md §4.
 
 import type { ImageValue, RenderContext } from "./types";
 

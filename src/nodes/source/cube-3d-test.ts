@@ -17,7 +17,7 @@ import type { NodeDefinition, RenderContext } from "@/engine/types";
 //      like Video Source does for a <video> element.
 //
 // Output is a plain `image`, so it drops into the existing 2D graph with
-// no new socket types. See specdocs/061626_3d-nodes-and-context.md §4 / §11.
+// no new socket types. See specdocs/archive/061626_3d-nodes-and-context.md §4 / §11.
 //
 // Conventions pinned here (spec §5):
 //   - three renders straight-alpha (premultipliedAlpha:false) on a

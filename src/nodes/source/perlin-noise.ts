@@ -631,7 +631,7 @@ export const perlinNoiseNode: NodeDefinition = {
     // scene time along a closed loop, so the window returns to its exact
     // starting field — a seamless, always-forward loop (no ping-pong).
     // Replaces the manual W slider while active. See
-    // specdocs/061626_looping-noise-evolution.md.
+    // specdocs/archive/061626_looping-noise-evolution.md.
     {
       name: "animated",
       label: "Animated",

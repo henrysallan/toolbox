@@ -1,5 +1,5 @@
 // Public API for EXR support. Engine-side (invariant #1) so the export
-// bundle carries it. Spec: specdocs/070926_exr-color-pipeline.md.
+// bundle carries it. Spec: specdocs/archive/070926_exr-color-pipeline.md.
 //
 //   parseExrHeader(buffer)  — cheap, header-only (≈1ms on a 4K file); run at
 //                             file-pick time to enumerate layers.

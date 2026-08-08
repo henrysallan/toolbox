@@ -69,7 +69,7 @@ function isStructuralType(type: string): boolean {
 // Types the flatten pass removes from the evaluated graph, splicing their
 // edges straight through: group structure (above) plus the reroute node — a
 // pure wire waypoint whose single `value` input resolves to its output. See
-// specdocs/071326_reroute-node.md.
+// specdocs/archive/071326_reroute-node.md.
 function isDissolvedType(type: string): boolean {
   return isStructuralType(type) || type === REROUTE_TYPE;
 }
@@ -183,7 +183,7 @@ export interface FlattenResult {
   // removed wholesale from the flat graph. The evaluator stashes these
   // on ctx for the shells' computes (nested evaluation) and folds an
   // interior hash into each shell's fingerprint. Absent when the graph
-  // has no Iterate nodes. See specdocs/071826_iterate-node.md.
+  // has no Iterate nodes. See specdocs/archive/071826_iterate-node.md.
   iterateInteriors?: Map<string, { nodes: GraphNode[]; edges: GraphEdge[] }>;
 }
 

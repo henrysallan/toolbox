@@ -4,7 +4,7 @@
 // on the trackpad idiom (plain scroll = pan, Cmd/Ctrl + scroll = zoom). This
 // module is the single source of truth for whether the active pointing device
 // is a mouse or a trackpad, so every wheel handler can switch behavior with
-// one predicate (`wheelWantsZoom`). See specdocs/061726_mouse-input-ux.md.
+// one predicate (`wheelWantsZoom`). See specdocs/archive/061726_mouse-input-ux.md.
 //
 // Usable from both React (via the hooks below) and raw window/DOM handlers
 // (via the plain getters) — the gesture handlers in EffectsApp and the

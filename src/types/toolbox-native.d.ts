@@ -5,7 +5,7 @@
 //
 // Everything crosses the contextBridge as structured-clone-safe values:
 // bytes are ArrayBuffer (not Blob), folders are opaque tokens (not paths the
-// page chose). See specdocs/062626_electron-native-export.md (Security).
+// page chose). See specdocs/archive/062626_electron-native-export.md (Security).
 
 export {};
 

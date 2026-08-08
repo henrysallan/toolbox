@@ -25,7 +25,7 @@ import { runSplineFlow, disposeFlowState } from "@/engine/spline-flow";
 //     relaxes toward the target silhouette over time, so shapes bridge and
 //     snap together and separating necks stretch and pinch off instead of
 //     popping. Ping-pong fragment sim in engine/spline-flow.ts. Spec:
-//     specdocs/071226_spline-merge-flow.md (devlist #177).
+//     specdocs/archive/071226_spline-merge-flow.md (devlist #177).
 //
 // Geometry-only (no fill/stroke here) — wire the output spline into Rasterize
 // Spline to draw it.

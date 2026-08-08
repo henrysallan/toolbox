@@ -6,7 +6,7 @@ import type {
 } from "@/engine/types";
 import { parseCsv, type CsvDelimiter } from "@/engine/csv-parse";
 
-// CSV node — data-driven values (milestone 1 of specdocs/062926_csv-node.md).
+// CSV node — data-driven values (milestone 1 of specdocs/archive/062926_csv-node.md).
 //
 // Loads/pastes a CSV (stored inline in the project, like the LUT node) and
 // fans out ONE output socket per column, each emitting the cell at the current

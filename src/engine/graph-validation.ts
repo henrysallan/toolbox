@@ -1,5 +1,5 @@
 // Static validator for a graph of real built-in nodes — the correctness gate
-// for AI Recipe Generation (specdocs/062526_ai-recipe-generation.md, §6 /
+// for AI Recipe Generation (specdocs/archive/062526_ai-recipe-generation.md, §6 /
 // milestone 2). Engine-side + pure (invariant #1): no React, no GL, no state
 // imports, so it runs server-side (the generate/repair loop) and in the UI.
 //

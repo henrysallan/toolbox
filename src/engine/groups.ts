@@ -7,7 +7,7 @@
 // Group Input / Group Output nodes (parentId = the group's id) carry
 // the same socket lists in their params under `sockets`; they are the
 // source of truth, and graph-ops keeps the group node's params in
-// sync. See specdocs/layers-groups-attributes.md.
+// sync. See specdocs/archive/layers-groups-attributes.md.
 
 import type { SocketType } from "./types";
 
@@ -20,7 +20,7 @@ export const GROUP_OUTPUT_TYPE = "group-output";
 // local time for its interior. Unlike plain groups the layer node
 // itself computes (the blend against the stack), so the flatten pass
 // keeps it in the flat graph and rewires the interior content onto its
-// hidden `content` input. See specdocs/layers-groups-attributes.md §2.
+// hidden `content` input. See specdocs/archive/layers-groups-attributes.md §2.
 export const LAYER_TYPE = "layer";
 
 // An Iterate is the third structural variant, presented as a ZONE of
@@ -43,7 +43,7 @@ export const LAYER_TYPE = "layer";
 //
 // The flatten pass drops the zone members (Iteration Input included)
 // from the flat graph wholesale — they evaluate privately inside the
-// shell's compute. See specdocs/071826_iterate-node.md.
+// shell's compute. See specdocs/archive/071826_iterate-node.md.
 export const ITERATE_TYPE = "iterate";
 export const ITERATE_INPUT_TYPE = "iterate-input";
 

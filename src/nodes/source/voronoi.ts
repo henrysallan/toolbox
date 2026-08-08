@@ -20,7 +20,7 @@ import {
   type VoronoiGeometry,
 } from "@/engine/voronoi-geometry";
 
-// Unified Voronoi node (specdocs/073026_voronoi-unified.md). Three
+// Unified Voronoi node (specdocs/archive/073026_voronoi-unified.md). Three
 // feature-point sources behind one `source` enum:
 //
 //   lattice — procedural Worley noise on an infinite hashed lattice

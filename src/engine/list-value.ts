@@ -19,7 +19,7 @@
 //   3. Never release a texture reachable from a list you RECEIVED
 //      (invariant #3: release what you alloc, never what you receive).
 //
-// Spec: specdocs/080526_list-socket.md.
+// Spec: specdocs/archive/080526_list-socket.md.
 
 import type { ListValue, SocketType, SocketValue } from "./types";
 

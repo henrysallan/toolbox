@@ -9,7 +9,7 @@
 // a WeakMap entry dies with its media. Unchanged assets serialize in ~0ms
 // on every save after the first.
 //
-// INVARIANT (see specdocs/071426_save-optimization.md): media param values
+// INVARIANT (see specdocs/archive/071426_save-optimization.md): media param values
 // are replace-only. Code that produces new media content must mint a new
 // Blob/bitmap — never write bytes or pixels behind an existing reference —
 // or these caches will serve stale encodings.

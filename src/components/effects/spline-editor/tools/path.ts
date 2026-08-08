@@ -1,7 +1,7 @@
 // Path Select tool — click any subpath to select the whole path; drag (body
 // or bounding-box handles) moves / scales all subpaths, baked into the
 // geometry. Split out of the monolith in M0 of
-// specdocs/071926_spline-draw-authoring-upgrade.md. (The bbox-drag resolve
+// specdocs/archive/071926_spline-draw-authoring-upgrade.md. (The bbox-drag resolve
 // math lives in ops.applyBBoxDrag so drag.ts can reach it without a tool
 // import cycle.)
 

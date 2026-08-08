@@ -57,10 +57,10 @@ src/
     registry.ts           registerNode()/getNodeDef() — a Map, nothing more.
     flatten.ts groups.ts  Node-group/layer/reroute dissolution pass + group socket
                           plumbing (reroute = a dot-rendered passthrough node
-                          spliced out at eval; 071326_reroute-node.md). Also
+                          spliced out at eval; archive/071326_reroute-node.md). Also
                           extracts Iterate interiors wholesale (they evaluate
                           privately in the shell's compute — see § Groups &
-                          layers and 071826_iterate-node.md).
+                          layers and archive/071826_iterate-node.md).
     layout.ts             Auto Layout: layout units + pure Figma-semantics solver.
     element.ts            Element-socket GL helpers: wrap/flatten coercions, positioned
                           source-over compositing, alpha-bbox trim, canvas upload.
@@ -87,7 +87,7 @@ src/
                           to canvas px (normalized space is anisotropic);
                           input shaping notes in the spec are load-bearing.
                           Drives the Optimize Path node. Spec:
-                          attractor-vector-kernel-spec.md.
+                          archive/attractor-vector-kernel-spec.md.
     driver-reduce.ts      Shared luminance-driver box reduce + readback (mask
                           .r or image luminance × alpha → small grid) feeding
                           the CPU-authoritative grid nodes: Adaptive Pixelate
@@ -160,7 +160,7 @@ src/
                           fullscreen passes. Its two normalisation notes
                           (Poisson deposit correction; diffusion radius
                           coupled to distance scale) generalise to any
-                          agent-deposit sim — 080226_physarum.md §2.
+                          agent-deposit sim — archive/080226_physarum.md §2.
   components/effects/     The editor UI. EffectsApp.tsx is the shell/orchestrator.
     layout/               Blender-style tiled window layout (072726_window-tiling.md,
                           complete): model.ts (split-tree data + presets +
@@ -191,7 +191,7 @@ src/
                           NewLayoutPresetModal.tsx; same localStorage-plus-
                           cloud strategy as brush presets — Supabase
                           user_preferences.layout_presets, migration
-                          user-preferences-layout-presets-migration.sql, cloud
+                          sql_archive/user-preferences-layout-presets-migration.sql, cloud
                           wins on load, absent column = local-only). Saving
                           under an existing name replaces it.
                           M2: 12px corner hotspots (crosshair, z 20 — above
@@ -272,7 +272,7 @@ src/
                           Paste chain: text field → Toolbox fragment JSON →
                           SVG text (Figma "Copy as SVG" / bare path `d` →
                           Spline Draw node, contain-fit to the visible
-                          canvas; 073026_svg-paste.md) → OS files (.svg
+                          canvas; archive/073026_svg-paste.md) → OS files (.svg
                           FILE still → SVG Source) → internal clipboard.
                           Shift-drag "fuzzy connect": pull a wire from a socket
                           (or the whole node body — capture-phase interceptor)
@@ -282,7 +282,7 @@ src/
                           wires (or double-click a wire) drops a Reroute node
                           (RerouteNode.tsx — a dot; insertReroutesOnEdges in
                           graph-ops) that reorganizes wiring: source→reroute→
-                          targets, dissolved at flatten. Spec: 071326_reroute-node.md.
+                          targets, dissolved at flatten. Spec: archive/071326_reroute-node.md.
                           Right-click a node with a spline-typed output →
                           "Make Editable": bakes the node's EVALUATED spline
                           at the playhead (trim/fillets/animation resolved)
@@ -312,7 +312,7 @@ src/
                           dismiss rules) everywhere — param panel, gradient
                           points, ramp stops, live viewer, exported apps — in
                           place of the native browser picker. Spec:
-                          071026_color-node-multi-output.md.
+                          archive/071026_color-node-multi-output.md.
                           Cosmetics (073026_node-cosmetics-and-frames.md):
                           right-click tint (7 presets, node-tints.ts, wash +
                           border) and Bold (extra box-shadow ring, never a
@@ -348,7 +348,7 @@ src/
                           The eval loop force-evaluates the peeked node
                           (extraTargets + the evaluator's extraConsumed opt,
                           so consumption-gated auxes build too). Spec:
-                          072126_socket-peek-popover.md.
+                          archive/072126_socket-peek-popover.md.
     TrackEditor.tsx / LayersEditor.tsx / PlaybackBar.tsx   timeline UIs.
     timeline/             Shared timeline core (080126 consolidation):
                           theme.ts (one palette/metrics — the editors had
@@ -438,7 +438,7 @@ src/
                           the ParamPanel preset block + floating editor
                           window (user presets sync to Supabase
                           user_preferences.brush_presets — migration
-                          user-preferences-brush-presets-migration.sql —
+                          sql_archive/user-preferences-brush-presets-migration.sql —
                           with localStorage fallback). Every action commits
                           pre-action pixels through the paint undo lane.
                           Generic dock chrome (shell/pill/toggle) shared
@@ -451,7 +451,7 @@ src/
                           stacked gizmos don't fight; topmost handle wins on
                           overlap). Spline Draw / Gradient / Paint / Segment
                           overlays stay single-selection. Spec:
-                          070826_multiselect-gizmos.md.
+                          archive/070826_multiselect-gizmos.md.
   state/
     graph.ts              NodeDataPayload (what lives in each xyflow node's data).
     graph-ops.ts          ALL structural graph mutations (pure functions). New
@@ -491,13 +491,13 @@ src/
     mcp-bridge/           Editor side of the Claude MCP bridge: WS client + command
                           registry (React side: useMcpBridge + McpPairingDialog;
                           server: scripts/mcp-server.mjs via `npm run mcp`; e2e:
-                          `npm run check:mcp`). Spec: 070926_claude-mcp-bridge.md.
+                          `npm run check:mcp`). Spec: archive/070926_claude-mcp-bridge.md.
                           scripts/mcp-source.mjs adds server-side, bridge-free
                           source-reading tools (get_node_source / read_source /
                           search_source over src/nodes + src/engine, local
                           checkout with a GitHub-tag skew fallback) so Claude can
                           read node/engine code to explain behavior + tree-building.
-                          Spec: 071226_mcp-node-source-tools.md.
+                          Spec: archive/071226_mcp-node-source-tools.md.
     platform/             Platform-adapter seam (web vs Electron) — see "Desktop
                           (Electron) build". index.ts → `platform`; web.ts is
                           today's behavior verbatim; native.ts → window.toolboxNative.
@@ -512,7 +512,7 @@ rust/toolbox-vector-kernel/  kurbo→WASM geometry kernel (Optimize Path node).
                           (src/wasm/pkg + public/wasm/v1) so no Rust toolchain
                           is needed to build the app. `npm run build:wasm`
                           rebuilds (rustup + wasm-pack); `npm run check:kernel`
-                          verifies. Spec: attractor-vector-kernel-spec.md.
+                          verifies. Spec: archive/attractor-vector-kernel-spec.md.
 specdocs/                 Design specs + devlist.md (numbered feature backlog).
 ```
 
@@ -530,7 +530,7 @@ canvases are blit targets only.
 returns a canvas-resolution RGBA16F (fallback RGBA8) texture from a pool.
 Sources fit/center their content onto the full canvas; the one
 intrinsic-size concept that flows through wires is the `element` socket
-type (Auto Layout — see [autolayout-node.md](autolayout-node.md)): a
+type (Auto Layout — see [archive/autolayout-node.md](archive/autolayout-node.md)): a
 deferred measure/render closure pair, coercible both ways with `image`.
 Sub-sized allocs are allowed (`allocImage({width,height})`) and are how
 Auto Layout composites containers and children at exact px sizes.
@@ -616,7 +616,7 @@ cache entry owns any texture inside and a list op must never allocate or
 release per-item. `engine/list-value.ts` states the contract;
 `engine/list-parse.ts` is the format-sniffing parser, which reuses
 csv-parse's `parseRows`. No coercions — with mixed items there's no honest
-list→anything, so every conversion is a node. 080526_list-socket.md) ·
+list→anything, so every conversion is a node. archive/080526_list-socket.md) ·
 particle descriptors
 (`force`/`emitter`/`collider` CPU structs + `particles` GPU state textures)
 · compile-time ASTs (`sdf`, `position`, `scalar_field`) that do **zero GL
@@ -624,7 +624,7 @@ work** until SDF Rasterize compiles the tree to one shader · `render`
 (inert organizational link Output→Render Queue) · `color_ramp` (a
 `ColorRampStop[]` + interp mode as a value; Color Ramp's `ramp` aux output
 feeds any `color_ramp` PARAM, so one authored palette drives Stroke,
-Rasterize Spline's fill/stroke ramps, Ascii… — 080526_on-node-color-ramp.md.
+Rasterize Spline's fill/stroke ramps, Ascii… — archive/080526_on-node-color-ramp.md.
 No coercions: it only meets its own type).
 
 Coercions ([coerce.ts](../src/engine/coerce.ts)): mask↔image,
@@ -639,7 +639,7 @@ more often a mistake than an intent),
 image→uv (zero-copy re-wrap — same RGBA pool texture, R/G read as per-pixel
 (u,v), so wiring a noise image into any UV input re-evaluates the consumer
 at warped coordinates: Blender's Fac→Vector domain warp. Mask is excluded —
-its R-format texture would read v = 0. 073026_image-to-uv.md),
+its R-format texture would read v = 0. archive/073026_image-to-uv.md),
 image/mask→scalar (1×1 readback), audio→
 scalar (RMS level, via engine/audio-analysis.ts), image↔element (wrap as
 full-canvas element / flatten centered at natural size; identity-cached in
@@ -707,7 +707,7 @@ itself: spline→mask is styling-independent).
      own `mask`-typed socket under every image input (`mask:base`,
      `mask:<layerId>`), each the matte for that layer (multiplies the
      layer's effective alpha in BLEND_FS, exactly like a per-pixel opacity;
-     see 070926_merge-layer-masks.md). Also the universal `opacity` param
+     see archive/070926_merge-layer-masks.md). Also the universal `opacity` param
      (declare `OPACITY_PARAM`
      and image outputs fade for free — never implement opacity in a node).
    - `ComputeArgs.consumedOutputs`: the set of this node's output handles
@@ -778,7 +778,7 @@ To add a node:
    after verifying the node's hex parse path handles 8 digits — many
    local `hexToRgb` copies mis-read them; the spline raster core
    (`hexToRgba`/`hexToRgba01`) and raw Canvas fillStyle are safe. Spec:
-   072026_color-alpha.md (Fill is the reference opt-in).
+   archive/072026_color-alpha.md (Fill is the reference opt-in).
 4. Shaders: `ctx.getShader("<unique-key>", FS_SOURCE)` (cached by key) +
    `ctx.drawFullscreen(prog, target, setup)`. GLSL 300 es, fullscreen
    triangle provides `v_uv`.
@@ -816,7 +816,7 @@ To add a node:
   color/scalar ParamDef and the live viewer patches the stop in place).
   Removing a stop drops its tracks, exposures, controls, and edges in the
   same `onParamChange` pass. Spec:
-  071026_ramp-stop-keyframe-expose-control.md.
+  archive/071026_ramp-stop-keyframe-expose-control.md.
   The WHOLE ramp is also exposable now (`color_ramp` socket, 080526) — a
   wire replaces the stops array wholesale, and the per-stop wires still
   apply on top wherever the incoming ramp reuses a stop id. Which brings up
@@ -849,7 +849,7 @@ To add a node:
   them at the playhead), driven params show the stored value (wire wins and
   the row is dimmed), and diamond inserts capture the *evaluated* value so a
   mid-segment insert pins the curve (same contract as TrackEditor). Spec:
-  071526_animated-param-readouts.md.
+  archive/071526_animated-param-readouts.md.
 - Clips: in/out windows on source nodes (`CLIPPABLE_NODE_TYPES`); video is
   the only time-remapped type. Layers use clip windows as their in/out
   bars and offset their interior's clock. Trim semantics (both timeline
@@ -863,7 +863,7 @@ To add a node:
   behavior (tick↔px view, keyframe move/scale/stagger, clip drag math,
   theme, playhead/diamond leaves) lives in components/effects/timeline/ —
   edit it there, not per-editor. Spec:
-  080126_timeline-consolidation.md.
+  archive/080126_timeline-consolidation.md.
 - The dock that hosts those three (Layers / Tracks / Graph tabs) has TWO
   hosts, both rendering EffectsApp's `renderDockBody` closure: the
   floating modal the PlaybackBar's curves button opens (root-level
@@ -874,7 +874,7 @@ To add a node:
   `host` only decides what sits left of the tab toggle — the close ✕ in
   the modal, the panel-kind chip in a panel. The tab is per-instance so
   the two don't fight; the other dock toggles are deliberately shared.
-  Spec: 080226_timeline-modal-panel.md.
+  Spec: archive/080226_timeline-modal-panel.md.
 
 ## Groups & layers
 
@@ -900,8 +900,8 @@ To add a node:
   editor. This is the composition-level knob for per-instance layer params:
   duplicate a layer (deep-copied interior) and tweak each copy's promoted
   params in the panel without diving in.
-- **Iterate** (specs 071826_iterate-node.md +
-  071926_iterate-zone-view.md rev 3) is the third structural variant,
+- **Iterate** (specs archive/071826_iterate-node.md +
+  archive/071926_iterate-zone-view.md rev 3) is the third structural variant,
   presented as an always-inline ZONE of exactly two nodes. **Iteration
   Output** (`iterate`) is the engine-side shell: it computes, anchors
   membership (members' parentId = its id), mints collect sockets via
@@ -976,9 +976,9 @@ To add a node:
   `in:mask`→`in:morph_mask` edges on load — see below. v7 removed Merge's
   universal mask in favor of per-layer mask sockets; an old Merge `in:mask`
   edge fans out into one `in:mask:<layerId>` edge per layer on load —
-  equivalent output under source-over. See 070926_merge-layer-masks.md.
+  equivalent output under source-over. See archive/070926_merge-layer-masks.md.
   v8 added the `{kind:"exr"}` original-bytes envelope for EXR stills on
-  Image Source — see 070926_exr-color-pipeline.md. v9 lets a media envelope
+  Image Source — see archive/070926_exr-color-pipeline.md. v9 lets a media envelope
   carry `{asset:<sha256>, ext}` instead of `dataUrl` — cloud media in
   Storage; see the cloud-asset bullet below. v10 switched Lissajous 3D's
   `phase_x/y/z` from units of π to turns so a keyframed phase loops over
@@ -1017,7 +1017,7 @@ To add a node:
   a won-CAS re-save prunes its own orphans. **Privacy note:** the bucket is
   public, so a private project's media is unguessable-path-public (content
   hash + UUID), same trust level as thumbnails. Spec:
-  071426_cloud-asset-storage.md.
+  archive/071426_cloud-asset-storage.md.
 - All bytes→data-URL encoding goes through [data-url.ts](../src/lib/data-url.ts):
   native encoders cached per source object (Blob / ArrayBuffer / ImageBitmap)
   in WeakMaps, seeded on load — an unchanged asset costs ~0ms on every save
@@ -1032,7 +1032,7 @@ To add a node:
   envelope vocabulary (`isInlineAsset`/`isAssetRef`/hash/ext) is shared by
   the `.toolbox` and cloud paths in
   [asset-envelope.ts](../src/lib/asset-envelope.ts). Spec:
-  071426_save-optimization.md.
+  archive/071426_save-optimization.md.
 - All bytes→data-URL encoding goes through [data-url.ts](../src/lib/data-url.ts):
   native encoders cached per source object (Blob / ArrayBuffer / ImageBitmap)
   in WeakMaps, seeded on load — an unchanged asset costs ~0ms on every save
@@ -1043,7 +1043,7 @@ To add a node:
   Blob/bitmap for new content, never mutate behind an existing reference, or
   the cache serves stale bytes. The `.toolbox` writer STOREs pre-compressed
   mimes (png/jpeg/webp/gif/exr) instead of re-DEFLATing them. Spec:
-  071426_save-optimization.md.
+  archive/071426_save-optimization.md.
 - Fonts: uploaded `custom_font` bytes bundle (v5). The Text `font_family`
   picker (`control:"font"`, [param-controls.tsx](../src/lib/param-controls.tsx))
   merges the user's **installed local fonts** ([local-fonts.ts](../src/lib/local-fonts.ts),
@@ -1057,7 +1057,7 @@ To add a node:
 - `.toolbox` files ([project-file.ts](../src/lib/project-file.ts)): zip of
   manifest.json + project.json + thumbnail + content-hashed assets/.
 - **File → Open Recent** ([recent-projects.ts](../src/lib/recent-projects.ts),
-  073026_open-recent.md): per-machine cache of recently opened projects.
+  archive/073026_open-recent.md): per-machine cache of recently opened projects.
   Cloud entries `{id,name}` live in localStorage (recorded on cloud
   load/save/rename); web-local `.toolbox` opens persist their FSA
   `FileSystemFileHandle` in IndexedDB (Chromium only — File → Load… uses
@@ -1088,7 +1088,7 @@ To add a node:
   open editor's CAS save or reorder the date sort. Rollout-safe before
   the migration runs: `listFolders` returns [], `listPrivateProjects`
   retries without `folder_id` on 42703, and the grid renders flat as
-  before. Spec: 072726_project-folders.md.
+  before. Spec: archive/072726_project-folders.md.
 - **Load-grid views** ([LoadGrid.tsx](../src/components/effects/LoadGrid.tsx)):
   `grid` (thumbnail tiles), `list` (compact text table), `detail` (the
   same table, taller rows led by a 40px square thumbnail). List and
@@ -1163,7 +1163,7 @@ To add a node:
   - Caveat on all three: the stash only refreshes on evals that reach the
     stashing node, so a viewport-**Active** node (the sole eval target, per
     `computeNeededSet`) — or a gated/bypassed layer — can leave the
-    snapshot stale. Spec: 072726_spline-animation-program.md M2.
+    snapshot stale. Spec: archive/072726_spline-animation-program.md M2.
 - **Export resolution** (073126_export-resolution-and-app-slim.md): every
   Output / Layer Output carries a `resolution` param (**canvas** / **scale**
   / **custom** + `resScale`/`resWidth`/`resHeight`), applied to image,
@@ -1215,7 +1215,7 @@ To add a node:
   (`startFrame`/`endFrame`, half-open `[start, end)`), which replaced the
   legacy `videoFrames` duration — old saves migrate in `migrateLoadedParams`
   (project.ts). `resolveFrameRange()` derives the range (with `videoFrames`
-  fallback) for all exporters. Spec: 061726_png-sequence-export.md.
+  fallback) for all exporters. Spec: archive/061726_png-sequence-export.md.
 - **GIF** (`exportMode: "gif"`, `exportGif` in EffectsApp → export-gif.ts):
   same frame-stepped offline scaffold as high/max video, but frames go through
   ffmpeg.wasm palettegen/paletteuse (reuses the `getFfmpeg` singleton from
@@ -1228,8 +1228,8 @@ To add a node:
   macOS ImageIO chokes on inter-frame transparency + "leave previous"
   disposal, so transparent frames are expanded to self-contained full frames
   with restore-to-background disposal (larger, but Preview opens them). Falls
-  back to the raw ffmpeg GIF if gifsicle fails. Spec: 061826_gif-export-and-image-sequence.md.
-- **Wedge batch rendering** (spec 071026_wedge-render-batching.md — Houdini
+  back to the raw ffmpeg GIF if gifsicle fails. Spec: archive/061826_gif-export-and-image-sequence.md.
+- **Wedge batch rendering** (spec archive/071026_wedge-render-batching.md — Houdini
   "wedging"): the **Wedge** node (utility, src/nodes/source/wedge.ts) emits
   one value per batch iteration — scalar (value list / range / seeded
   random / bare index), color, vec2, or string — wired into seeds, Switch
@@ -1298,8 +1298,8 @@ The app ships as **both** the web app and a native **Electron desktop app**
 (**macOS** arm64 + **Windows** x64) from one codebase. The desktop build's only
 behavioral differences: heavy export runs through **native ffmpeg** (no wasm
 heap/thread limits), file open/save use **native OS dialogs**, and it works
-**offline**. Full design: 062626_electron-native-export.md; the Windows target +
-native window controls: 070626_windows-desktop-build.md.
+**offline**. Full design: archive/062626_electron-native-export.md; the Windows target +
+native window controls: archive/070626_windows-desktop-build.md.
 
 - **The seam is `src/lib/platform`** (`platform` from index.ts). Feature code
   calls `platform.saveFile(...)` / `platform.encodeVideo?.(...)` / etc. and
@@ -1351,14 +1351,14 @@ native window controls: 070626_windows-desktop-build.md.
   Snap, Win+Up). `-webkit-app-region` (drag on the spacer, no-drag on controls;
   the CSS prop is augmented in src/types/css.d.ts). `backgroundThrottling:false`
   so rAF/timers aren't throttled (real-time tool). Spec:
-  070626_windows-desktop-build.md.
+  archive/070626_windows-desktop-build.md.
 - **Graceful offline**: auth uses `getSession()` (local cache, "signed in
   offline") not `getUser()`; project lists fail-fast (timeout + `navigator.onLine`
   + try/catch → empty/cached). Local files + native export work fully offline;
   curated/web fonts, ML/tracker nodes, and wasm-GIF still need network
   (accepted). Installed local fonts (desktop is Chromium → `queryLocalFonts`)
   work offline and are the preferred picker source there.
-- **Auto-update** (spec 070826_desktop-auto-update.md): `electron-updater`
+- **Auto-update** (spec archive/070826_desktop-auto-update.md): `electron-updater`
   over the GitHub Releases feed (`latest*.yml` + blockmaps → differential
   downloads). Main-side `electron/updater.js` broadcasts one
   `toolbox:update:state` payload; the seam exposes an optional `updates`
@@ -1480,9 +1480,9 @@ every colour literal still unthemed, and
 
 `specdocs/devlist.md` is the numbered feature backlog (currently ~145
 items) written in the owner's voice; features get a dedicated spec doc
-when designed (e.g. layers-groups-attributes.md, webgpu-particles.md,
-timelinespec / updatedtimelinespecv2.md, sdf-nodes.md,
-autolayout-node.md). The flow that works: read the devlist entry →
+when designed (e.g. archive/layers-groups-attributes.md, archive/webgpu-particles.md,
+timelinespec / archive/updatedtimelinespecv2.md, archive/sdf-nodes.md,
+archive/autolayout-node.md). The flow that works: read the devlist entry →
 explore the relevant engine/UI code → write/iterate a spec with the owner
 → implement in milestones. In-app user-facing docs live under
 src/app/docs + lib/docs/manifest.
@@ -1494,7 +1494,7 @@ through a **ratchet** — `npm run lint:ratchet` fails only when a file
 gains errors beyond `scripts/lint-baseline.json` (pre-existing React 19
 hooks-rule errors are grandfathered; warnings never gate). After fixing
 errors, tighten with `npm run lint:ratchet -- --update` and commit the
-baseline. Spec: 070826_riskfix-plan.md §2.
+baseline. Spec: archive/070826_riskfix-plan.md §2.
 
 ## Known sharp edges (today)
 
@@ -1553,7 +1553,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   export settles on the in-flight `createImageBitmap` like a video seek).
   Sequences are NOT serialized — project.ts stores a frame descriptor only;
   the multi-file relink re-pick UI is still a TODO, so a saved sequence loads
-  empty and is re-picked in the panel. Spec: 061826_gif-export-and-image-sequence.md.
+  empty and is re-picked in the panel. Spec: archive/061826_gif-export-and-image-sequence.md.
   The video kind also exposes an **`audio` aux output** (via
   `resolveAuxOutputs`; hidden for the sequence kind) carrying the `<video>`
   element as an `AudioValue` (`source: "video"`). The element is created
@@ -1565,7 +1565,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   analyser tap treats it like a file element). Offline export decodes the
   audio track straight from the video's ObjectURL via `decodeAudioData`
   (`ExportAudioSpec` now carries `url`/`element`, not a typed file value).
-- **EXR import + color pipeline** (spec 070926_exr-color-pipeline.md).
+- **EXR import + color pipeline** (spec archive/070926_exr-color-pipeline.md).
   Image Source and Video Source's sequence kind accept OpenEXR — single or
   multilayer, DWAA/DWAB/ZIP(S)/PIZ/RLE/PXR24/B44 — with a per-node layer
   dropdown (`exr_layer`: a `control:"exr_layer"` enum whose options come
@@ -1618,7 +1618,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   (returns null). All three nodes are `stable:false` (like LFO); Bands/Pitch
   keep smoothing/glide state in `ctx.state`; Spectral caches its lookup
   texture there (deleted in `dispose`). No new SocketType — outputs are
-  `scalar`/`image`. Spec: 062926_audio-analysis.md.
+  `scalar`/`image`. Spec: archive/062926_audio-analysis.md.
 - **Serialize/deserialize progress is throttled** to ~5% buckets
   ([project.ts](../src/lib/project.ts)). The progress callback does a React
   `setState`; firing it once-per-node inside serialize's tight async loop on a
@@ -1701,7 +1701,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   node inside an offset layer freezes at frame 0; (c) fold the session
   `version` + per-frame readiness into `fingerprintExtras` so a static chain
   caches as a constant and a baked range re-fingerprints only per frame.
-  Depth Anything specifics in 061926_depth-anything-node.md (incl. the
+  Depth Anything specifics in archive/061926_depth-anything-node.md (incl. the
   per-frame normalization flicker caveat for video).
 - **Dynamic input sockets — two patterns.** (1) *Param-backed* (Merge's
   `merge_layers`, Render Queue's `render_queue`, Collect's `count`): the
@@ -1714,9 +1714,9 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   param — keyframe/expose/control for free) and `resolveAuxOutputs` mints a
   vec4 output per extra color; the `+` (`colorAddOutput`) bumps count, and
   shrinking count via panel drops edges to the removed outputs in
-  onParamChange. Spec: 071026_color-node-multi-output.md. (2) *Auto-grow from
-  edges* (Proximity Join/Merge — 070126_proximity-join-merge.md; and Spline
-  Interpolate — 070626_spline-interpolate.md — which share the effect): a
+  onParamChange. Spec: archive/071026_color-node-multi-output.md. (2) *Auto-grow from
+  edges* (Proximity Join/Merge — archive/070126_proximity-join-merge.md; and Spline
+  Interpolate — archive/070626_spline-interpolate.md — which share the effect): a
   `slots: string[]` param whose value is **derived from the node's edges** by a
   dedicated `useEffect` in EffectsApp keyed on `edges` (guarded on those two
   `defType`s), kept equal to (connected sockets) + one trailing empty spare. Wiring the spare mints
@@ -1745,7 +1745,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   connectedTypes-retyping node to that set (the **Reroute** node is one — its
   wildcard `value` input + output adopt whatever's wired in; the **Mirror**
   node is another — its spline-resting `source` retypes to points,
-  072026_mirror-node.md). **AI recipes/edits can author
+  archive/072026_mirror-node.md). **AI recipes/edits can author
   pattern-(1) merge stacks** (070926_claude-mcp-bridge.md §4c): `layers`
   accepts [{mode, opacity}, …] via `vetMergeLayers` (ids minted, or
   preserved by index on edit so wires survive), edge targets `in:layerN` /
@@ -1767,7 +1767,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   `PointsValue`, not the `Point[]` view — the sim hot path never
   round-trips). Empty zones emit the frozen `EMPTY_POINTS` sentinel, which
   `ensurePointArray` short-circuits (count 0) so it's never mutated.
-- **Rope Simulator** (`rope-simulator`, spec 071926_rope-simulator.md)
+- **Rope Simulator** (`rope-simulator`, spec archive/071926_rope-simulator.md)
   is a CPU string-dynamics node: spline in → simulated spline out
   (+ aux `points` and per-frame `tears` points). Subpaths resample to
   particle chains (exact even-arc-length seeding — resampleSubpath
@@ -1798,7 +1798,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   circle/line collider descriptors are evaluated at authored coords
   (Particle Simulator parity). Rigid Body shares all of this.
 - **Rigid Body Simulator** (`rigid-body-simulator`, spec
-  072026_rigid-body-simulator.md) is the rope's sibling: one BODY per
+  archive/072026_rigid-body-simulator.md) is the rope's sibling: one BODY per
   subpath via Müller shape matching (closed-form 2D fit; pins carry a
   large fit weight — one pin = hinge/pendulum, two+ = frozen; same
   four pin mechanisms as the rope). Shares engine/sim-kernel.ts with
@@ -1823,7 +1823,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   wall node-side (kernel clamp keeps rope/particle semantics) so
   resting bodies don't accumulate phantom gravity velocity.
 - **Per-point field logic lives in Point Expression** (`point-expression`,
-  spec 070726_point-expression-node.md). The engine has no general per-element
+  spec archive/070726_point-expression-node.md). The engine has no general per-element
   field system like Blender geometry nodes — a `PointsValue`'s attributes are
   baked at generation and otherwise vary per-point only via image-field
   sampling (Modulate Points / Sample Texture at Points / Displace). Point
@@ -1857,7 +1857,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   code come back as repairable `PARAM_INVALID` errors instead of silently
   no-oping.
 - **Multi-stroke + float curves + stroke units** (spec
-  071226_multi-stroke.md). The `float_curve` ParamType is a single
+  archive/071226_multi-stroke.md). The `float_curve` ParamType is a single
   monotone-cubic 0..1→0..1 curve (`CurvePoint[]`, plain JSON, NOT
   keyframable/exposable) whose model lives engine-side in
   [float-curve.ts](../src/engine/float-curve.ts) — the RGB Curves /
@@ -1888,7 +1888,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   null (dropped). Stroke plumbs the two params into its `geomSig` so ring
   Path2Ds re-cache. Loop-cull only — a collapsed inner offset simplifies to
   one clean closed subpath rather than splitting into islands. Spec:
-  071426_offset-overlap-resolve.md. Shipping the multi-stroke work fixed a
+  archive/071426_offset-overlap-resolve.md. Shipping the multi-stroke work fixed a
   latent `offsetSubpath` bug that also bit
   the Offset Path node: bezier-js's offset() NaNs on handle-less
   (polyline) segments — the shared fix synthesizes 1/3-chord handles
@@ -1899,7 +1899,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   % = canvas-width fraction — the #174 fix; default stays `px` so old
   saves render byte-identical).
 - **Adaptive Pixelate** (`adaptive-pixelate`, spec
-  072326_adaptive-pixelate.md) renders non-constant pixel grids (uniform /
+  archive/072326_adaptive-pixelate.md) renders non-constant pixel grids (uniform /
   quadtree / lattice) with block size driven by its `size_map` mask input
   (or the source's own luminance when unwired). The grid is
   CPU-AUTHORITATIVE: a GPU box-reduce of the driver reads back at
@@ -1914,7 +1914,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   relative to the max block, groupIndex = quadtree level) is built
   UNCONDITIONALLY — the node caches, so consumption-gating would serve
   stale empties once wired (the loop-weave rule, 072226 audit #5).
-- **Flow fields** (spec 072526_flow-fields.md): velocity fields travel
+- **Flow fields** (spec archive/072526_flow-fields.md): velocity fields travel
   as plain images per [velocity-field.ts](../src/engine/velocity-field.ts)
   (signed-RG, midlevel 0.5, Y-DOWN, isotropic canvas-width units — the
   encoding Perlin Noise `curl` already emits and Displace / Advect
@@ -1929,7 +1929,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   Advect Points; two passes so its uv map is a first-class `uv` aux
   (built unconditionally — loop-weave rule). CAVEAT: matting an encoded
   field decodes as v=(−1,−1) — matte consumer outputs, not fields.
-- **Fluid Simulator** (`fluid-simulator`, spec 072626_fluid-simulator.md)
+- **Fluid Simulator** (`fluid-simulator`, spec archive/072626_fluid-simulator.md)
   is the 2D Eulerian ink/smoke sim: Stam stable fluids + advection-
   reflection (energy-preserving mid-step reflection, two warm-started
   Jacobi projections per substep) + vorticity confinement dial, on
@@ -1944,7 +1944,7 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   M1-field conversions happen only at the seams. `field` input = guide
   field in; `velocity` aux = live sim field out (M1 encoding, built
   unconditionally) so Advect Points/Image can ride the sim.
-- **Matter Simulator** (`matter-simulator`, spec 072726_matter-simulator.md)
+- **Matter Simulator** (`matter-simulator`, spec archive/072726_matter-simulator.md)
   is MLS-MPM deformable matter (liquid/jelly/snow, mpm99 material
   models) as WGSL compute — the first real WebGPU node beyond the
   particle Phase-1 test, and it inherits that node's bridge pattern
@@ -1969,11 +1969,11 @@ baseline. Spec: 070826_riskfix-plan.md §2.
   populated on paused evals (kept CPU-side as lastPositions — the
   readback is consumed once but stable:false recomputes every eval).
   **Points to Surface** (`points-to-surface`,
-  072726_points-to-surface.md) is the surfacing companion — Zhu-Bridson
+  archive/072726_points-to-surface.md) is the surfacing companion — Zhu-Bridson
   / metaballs field + marching squares, points → spline with per-blob
   groupIndex; general to ANY points producer, not just sims.
 - **Diffusion Curves** (`diffusion-curves`, spec
-  072726_diffusion-curves.md — Orzan et al. 2008): spline →
+  archive/072726_diffusion-curves.md — Orzan et al. 2008): spline →
   smooth-shaded image. Left/Right `color_ramp`s run ALONG each subpath
   (stop position = t; per-stop alpha diffuses too, so results composite
   via Merge); trace mode samples a wired image at the source bands

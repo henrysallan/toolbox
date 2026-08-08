@@ -231,7 +231,7 @@ import { SplineContextMenu, ToolDock } from "./dock";
 // (coincident endpoints weld into one anchor). A small chevron on the active
 // subpath (sub-path mode) shows travel direction.
 //
-// M0 decomposition (specdocs/071926_spline-draw-authoring-upgrade.md): the
+// M0 decomposition (specdocs/archive/071926_spline-draw-authoring-upgrade.md): the
 // per-tool pointer logic lives in ./tools/*, value writes in ./ops.ts, the
 // drag-stream dispatch in ./drag.ts, chrome in ./dock.tsx, pure math in
 // ./geometry.ts. This component owns state, the effects, coordinate

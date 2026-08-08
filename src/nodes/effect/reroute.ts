@@ -3,7 +3,7 @@ import type { NodeDefinition, SocketType } from "@/engine/types";
 // Reroute — a wire-organizing passthrough, rendered as a dot in the editor
 // (RerouteNode.tsx) but a first-class node in the model so it inherits
 // selection, copy/paste, delete-removes-all-wires, and single-input swap for
-// free. See specdocs/071326_reroute-node.md.
+// free. See specdocs/archive/071326_reroute-node.md.
 //
 // It carries exactly one polymorphic value from its `value` input straight to
 // its output, adopting whatever type is wired in (connectedTypes retyping, so

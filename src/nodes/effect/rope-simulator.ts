@@ -36,7 +36,7 @@ import {
 import { makePoints } from "@/engine/points";
 
 // Rope Simulator — 2D string dynamics over splines.
-// Spec: specdocs/071926_rope-simulator.md (milestone 1).
+// Spec: specdocs/archive/071926_rope-simulator.md (milestone 1).
 //
 // Each input subpath is resampled into a chain of particles joined by
 // distance constraints (plus i↔i+2 bending constraints), stepped with

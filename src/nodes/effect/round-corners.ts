@@ -8,7 +8,7 @@ import { roundCorners } from "@/engine/spline-math";
 // themselves. Already-curved anchors pass through untouched; the endpoints of
 // open subpaths aren't rounded. Output is a spline — view it with Stroke or
 // Rasterize Spline. Radius keyframes for free. Spec:
-// specdocs/062526_node-expansion.md §3.
+// specdocs/archive/062526_node-expansion.md §3.
 
 export const roundCornersNode: NodeDefinition = {
   type: "round-corners",

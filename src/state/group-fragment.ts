@@ -1,6 +1,6 @@
 // Shared "wrap interior nodes in a node-group shell" assembly. Extracted from
 // presets.ts so both canned presets and LLM-authored recipes
-// (specdocs/062526_ai-recipe-generation.md) build groups through one code
+// (specdocs/archive/062526_ai-recipe-generation.md) build groups through one code
 // path. Mirrors graph-ops' groupSelection structurally, but for a generator
 // fragment with no exterior edges — the shell's parentId is left undefined so
 // cloneSubgraph treats it as the single top-level node and retargets it into

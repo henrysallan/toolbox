@@ -9,7 +9,7 @@ import { hash01 } from "@/engine/spline-color-source";
 
 // Cursor Trail Points — drop points along the pointer's path while
 // drawing on the preview. The live companion to Loop Weave (spec
-// specdocs/071926_loop-weave.md): Cursor Trail Points → Loop Weave →
+// specdocs/archive/071926_loop-weave.md): Cursor Trail Points → Loop Weave →
 // Stroke is the whole demo graph, but any points consumer works.
 //
 // Drops are evenly spaced along the stroke (fast swipes interpolate so

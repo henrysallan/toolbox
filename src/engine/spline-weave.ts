@@ -1,5 +1,5 @@
 // Loop Weave geometry — the pure math behind the Loop Weave node
-// (specdocs/071926_loop-weave.md). Takes a point set and builds a single
+// (specdocs/archive/071926_loop-weave.md). Takes a point set and builds a single
 // open spline that visits the points in order, wrapping each in an
 // elliptical orbit and connecting consecutive orbits with Hermite
 // bridges anchored on the common-tangent construction. Handedness

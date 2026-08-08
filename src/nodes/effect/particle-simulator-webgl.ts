@@ -874,7 +874,7 @@ export const particleSimulatorWebGLNode: NodeDefinition = {
       // gravity / drag / point / vortex / wind / turbulence forces
       // and all bounds modes. Emitters and colliders are stubbed
       // (no spawning past the initial random population, no
-      // collision). See specdocs/webgpu-particles.md.
+      // collision). See specdocs/archive/webgpu-particles.md.
       options: ["webgl", "webgpu"],
       default: "webgl",
     },

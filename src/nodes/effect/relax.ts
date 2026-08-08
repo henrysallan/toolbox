@@ -28,7 +28,7 @@ import { makePoints } from "@/engine/points";
 // `mix` lerps the final positions back toward the originals in both modes.
 // Pure and deterministic — normal fingerprint caching applies.
 //
-// Spec: specdocs/071026_spline-points-nodes.md.
+// Spec: specdocs/archive/071026_spline-points-nodes.md.
 
 type Mode = "points" | "spline";
 

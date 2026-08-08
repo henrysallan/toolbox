@@ -11,7 +11,7 @@ import { measureSpline, measureSubpath } from "./spline-math";
 // re-emerging at the start while the rest still shows at the end. Offset is
 // unbounded (taken mod 1), so keyframing 0→N loops the trim N times. Pure,
 // engine-side; the boundary cubics are split with bezier-js. See
-// specdocs/062526_node-expansion.md.
+// specdocs/archive/062526_node-expansion.md.
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 

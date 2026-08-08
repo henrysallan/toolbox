@@ -1,7 +1,7 @@
 # Toolbox — architecture & risk review #2 (2026-07-22)
 
-Second deep audit, following [070326_architecture-review.md](070326_architecture-review.md)
-and the [070826_riskfix-plan.md](070826_riskfix-plan.md) program. Five parallel
+Second deep audit, following [archive/070326_architecture-review.md](archive/070326_architecture-review.md)
+and the [archive/070826_riskfix-plan.md](archive/070826_riskfix-plan.md) program. Five parallel
 deep-dive reviews — engine core (evaluator/gl/coerce/iterate), simulation &
 heavy nodes (sim-kernel, rope/rigid/particle/watercolor/stipple/point-expression),
 editor shell & UI (EffectsApp/NodeEditor/ParamPanel/spline- & paint-editor/

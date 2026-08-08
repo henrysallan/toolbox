@@ -20,7 +20,7 @@ import {
 } from "@/engine/sim-kernel";
 import { EMPTY_POINTS, makePoints } from "@/engine/points";
 
-// Behavioral Growth — specdocs/080226_behavioral-growth.md.
+// Behavioral Growth — specdocs/archive/080226_behavioral-growth.md.
 //
 // Family C of the growth survey: fixed population, positions evolve, the
 // output is the CURRENT state rather than an accumulated record. That is

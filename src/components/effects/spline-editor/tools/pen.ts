@@ -2,7 +2,7 @@
 // starts a new subpath when the active one is closed/sealed); Shift-click
 // inserts on the nearest segment; a quick click on an existing anchor toggles
 // corner ↔ smooth or closes the loop. Split out of the monolith in M0 of
-// specdocs/071926_spline-draw-authoring-upgrade.md.
+// specdocs/archive/071926_spline-draw-authoring-upgrade.md.
 
 import { subpathsOf } from "../geometry";
 import { guideSnapLines, snapPoint } from "../snapping";

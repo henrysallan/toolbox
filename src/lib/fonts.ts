@@ -127,7 +127,7 @@ export function ensureFontLoaded(family: string): Promise<void> {
 // Raw bytes of every custom font registered this session, keyed by the
 // synthetic family. Retained so a project save can bundle the font into the
 // cloud row / `.toolbox` (project.ts) instead of dropping it. See
-// specdocs/062926_assets.md.
+// specdocs/archive/062926_assets.md.
 const customFontBuffers = new Map<string, ArrayBuffer>();
 
 export function getCustomFontBuffer(family: string): ArrayBuffer | undefined {

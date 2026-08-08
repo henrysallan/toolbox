@@ -1,4 +1,4 @@
-// With the tiled layout (specdocs/072726_window-tiling.md) several
+// With the tiled layout (specdocs/archive/072726_window-tiling.md) several
 // Node Editor panes can be mounted at once — all rendering the same
 // graph. Each instance attaches window-level listeners (shortcuts,
 // paste, the pie-menu open-search event); without gating, two panes

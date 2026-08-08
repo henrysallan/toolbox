@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/client";
 
 // Storage + DB helpers for the Image Generate node. Schema +
-// bucket layout matches specdocs/image-gen-migration.sql.
+// bucket layout matches specdocs/sql_archive/image-gen-migration.sql.
 
 const PRIVATE_BUCKET = "image-gen-private";
 const PUBLIC_BUCKET = "image-gen-public";

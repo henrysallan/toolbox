@@ -18,7 +18,7 @@ import {
 } from "@/engine/sim-kernel";
 import { makePoints, EMPTY_POINTS } from "@/engine/points";
 
-// Differential Growth — specdocs/080226_differential-growth.md.
+// Differential Growth — specdocs/archive/080226_differential-growth.md.
 //
 // A polyline where every node repels its neighbours, is pulled along the
 // chain, and INSERTS a new node whenever an edge stretches past a

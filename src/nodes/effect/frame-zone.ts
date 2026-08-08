@@ -9,7 +9,7 @@ import { FRAME_TYPE } from "@/engine/graph-helpers";
 // and this compute never runs on any real path. Membership lives on the
 // members (`data.frameId`), the label is `data.name`, and the box persists
 // through position + uiWidth/uiHeight. Spec:
-// specdocs/073026_node-cosmetics-and-frames.md.
+// specdocs/archive/073026_node-cosmetics-and-frames.md.
 //
 // `hidden: true` — frames are born from Shift+F, not the add-node catalog.
 // `noMaskInput` — a socketless node must not grow the universal mask input.

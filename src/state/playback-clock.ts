@@ -1,6 +1,6 @@
 // Playback clock store — the master transport clock, held OUTSIDE React
 // state so advancing it 60×/s doesn't re-render the whole editor shell.
-// Design: specdocs/071026_clock-store.md.
+// Design: specdocs/archive/071026_clock-store.md.
 //
 // The rAF advancer (EffectsApp) writes through `playbackClock.set`;
 // components read via `useClock(selector)` and re-render only when their

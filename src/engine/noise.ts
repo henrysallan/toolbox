@@ -249,7 +249,7 @@ export function fbmWithW(
 // ── Looping noise evolution ────────────────────────────────────────────
 // Drive W-style evolution around a closed loop so an animation returns to
 // its exact starting field at the end of the window — seamless, always
-// forward (no ping-pong). See specdocs/061626_looping-noise-evolution.md.
+// forward (no ping-pong). See specdocs/archive/061626_looping-noise-evolution.md.
 //
 // frameNow is the continuous frame (ctx.tick / ctx.ticksPerFrame). The
 // window [start, end] (in frames) is the period; phase wraps in [0, 1).
