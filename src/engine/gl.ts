@@ -5,6 +5,7 @@ import type {
   RenderContext,
   UvValue,
 } from "./types";
+import * as prof from "./profiler";
 
 const FULLSCREEN_VS = `#version 300 es
 out vec2 v_uv;
@@ -343,6 +344,11 @@ export function createEngineBackend(
     h: number,
     channels: "rgba" | "r"
   ): WebGLTexture {
+    // NOTE: despite the "pool"/"lease" language in the devguide, there is no
+    // free list here — every alloc is a real createTexture + texImage2D, and
+    // releaseTexture below is a real deleteTexture. The profiler counts both
+    // so the cost of that churn is measurable before anyone acts on it.
+    prof.countAlloc(w, h, channels === "rgba" ? (hasColorBufferFloat ? 8 : 4) : hasColorBufferFloat ? 2 : 1);
     const tex = gl!.createTexture();
     if (!tex) throw new Error("Failed to create texture");
     gl!.bindTexture(gl!.TEXTURE_2D, tex);
@@ -476,7 +482,10 @@ export function createEngineBackend(
         return { kind: "uv", texture: tex, width: w, height: h };
       },
       releaseTexture(tex) {
-        if (tex) gl!.deleteTexture(tex);
+        if (tex) {
+          prof.countRelease();
+          gl!.deleteTexture(tex);
+        }
       },
       drawFullscreen(program, target, setup) {
         bindTarget(target);

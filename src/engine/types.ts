@@ -994,7 +994,7 @@ export type ParamType =
   | "expr_inputs"
   // WedgeValueItem[] — the Wedge node's explicit value list (one row per
   // batch-render variation). Plain-JSON serialization, not keyframable.
-  // See src/nodes/source/wedge.ts + specdocs/071026_wedge-render-batching.md.
+  // See src/nodes/source/wedge.ts + specdocs/archive/071026_wedge-render-batching.md.
   | "wedge_values";
 
 // One named input variable on the Expression node. `name` is the JS
@@ -1154,7 +1154,7 @@ export interface ImageSequenceParamValue {
   // Present when the frames are EXR files (magic-byte sniffed at pick time):
   // the first frame's grouped layer list, driving the Video Source node's
   // layer dropdown. Frames decode through engine/exr instead of
-  // createImageBitmap. See specdocs/070926_exr-color-pipeline.md.
+  // createImageBitmap. See specdocs/archive/070926_exr-color-pipeline.md.
   exr?: {
     layers: import("@/engine/exr/layers").ExrLayer[];
   };
@@ -1381,7 +1381,7 @@ export interface NodeDefinition {
   // WebGPU pipeline (Phase 0: WebGPU Particle Test). The evaluator
   // does not yet bucket by this — Phase 1+ will use it to schedule a
   // WebGPU pass after the WebGL2 pass each frame (see
-  // specdocs/webgpu-particles.md).
+  // specdocs/archive/webgpu-particles.md).
   backend: "webgl2" | "webgpu";
   terminal?: boolean;
   // Opt out of the universal appended `mask` input (see
@@ -1400,6 +1400,18 @@ export interface NodeDefinition {
   // assumed to read time or other external state that isn't captured by its
   // params/inputs fingerprint. Defaults to true (cacheable).
   stable?: boolean;
+  // Set by a CACHEABLE def that skips building outputs nobody consumes (see
+  // ComputeArgs.consumedOutputs). Without it there is a trap: the fingerprint
+  // has no idea which outputs were requested, so wiring a previously-unbuilt
+  // aux would hit the cache and hand back an output that was never rendered.
+  // Declaring this folds the consumed handle set into the fingerprint, so the
+  // node recomputes exactly once when its consumers change.
+  //
+  // NOT needed for `stable: false` defs (Text) — they never hit the cache, so
+  // internal validity flags suffice. Opt-in rather than automatic because it
+  // makes selection/wiring changes bust that node's cache, which is only
+  // worth paying for where an output is genuinely expensive.
+  gatesOutputs?: boolean;
   // Marks a node whose output depends on state ACCUMULATED ACROSS FRAMES in
   // ctx.state — every real simulation, plus temporal filters (Smooth) and
   // feedback buffers (Trails, Accumulator, the Simulation Zone pair). Such a
@@ -1547,10 +1559,10 @@ export interface RenderContext {
   // preview, live viewer, exported apps — where the Wedge node falls back to
   // its `preview` param. A node that reads this must fold the resolved value
   // into `fingerprintExtras` so caches bust between variations. See
-  // specdocs/071026_wedge-render-batching.md.
+  // specdocs/archive/071026_wedge-render-batching.md.
   wedgeIndex?: number;
   // Per-iteration values during an Iterate node's nested evaluation
-  // (specdocs/071826_iterate-node.md). Set ONLY by the Iterate shell's
+  // (specdocs/archive/071826_iterate-node.md). Set ONLY by the Iterate shell's
   // compute around each nested evaluateGraph call; undefined everywhere
   // else. Read by the iterate-source boundary def, which emits `index`
   // / `t` / `random` plus the shell's exterior input values (`values`,

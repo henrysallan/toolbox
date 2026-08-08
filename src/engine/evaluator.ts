@@ -16,6 +16,8 @@ import { getNodeDef } from "./registry";
 import { flattenGraph, resolvePreviewProducer } from "./flatten";
 import { ITERATE_EDGE_PREFIX, ITERATE_TYPE, LAYER_TYPE } from "./groups";
 import { paramSocketType, parseTargetHandleKind } from "./graph-helpers";
+import * as prof from "./profiler";
+import { getGpuTimer } from "./gpu-timer";
 import {
   evaluateKeyframesAt,
   isKeyframable,
@@ -148,6 +150,9 @@ export interface CachedEntry {
   // them on eviction). Bypass passes through an upstream texture — we don't
   // own it and must not release it.
   ownsTextures: boolean;
+  // Profiler-only breakdown of `fingerprint`. Written only while capture is
+  // armed, so entries cached before arming classify as "cold" for one eval.
+  fpParts?: FpParts;
 }
 
 export type EvalCache = Map<string, CachedEntry>;
@@ -526,38 +531,133 @@ function releaseCachedTextures(ctx: RenderContext, entry: CachedEntry): void {
   }
 }
 
+// Fixed-shape breakdown of what went into a fingerprint. Filled only while
+// the profiler is armed (see profiler.ts): on a cache MISS, comparing this
+// against the cached entry's copy is what turns "recomputed" into a reason —
+// notably distinguishing "this node's own params changed" from "an upstream
+// node forced me", which is the chain-poisoning signal. Fixed shape so the
+// comparison is field-by-field rather than positional over an optional list.
+export interface FpParts {
+  params: string;
+  inputs: string;
+  clip: string;
+  anim: string;
+  time: string;
+  extras: string;
+}
+
+// Exported for scripts/check-profiler.mts — the classification is the part of
+// the profiler most likely to rot silently, and it's pure.
+export function classifyMiss(
+  prev: FpParts | undefined,
+  cur: FpParts
+): prof.RecomputeReason {
+  if (!prev) return "cold";
+  // Own-node causes before inherited ones: a node whose params changed AND
+  // whose input changed reports "params", the cause you can act on.
+  if (prev.params !== cur.params) return "params";
+  if (prev.anim !== cur.anim) return "anim";
+  if (prev.extras !== cur.extras) return "extras";
+  if (prev.time !== cur.time) return "unstable";
+  if (prev.clip !== cur.clip) return "gated";
+  if (prev.inputs !== cur.inputs) return "input";
+  return "other";
+}
+
+// Data volume behind a node's primary output, for level-2 traces. `ms` alone
+// can't distinguish algorithm-bound from overhead-bound work — ms-per-point
+// can, and that's the number that decides whether a GPU port would help.
+// Primary only: it's the socket the chain flows through, and walking aux
+// outputs would cost more than the signal is worth.
+function volumeOf(
+  result: NodeOutput
+): { points?: number; subpaths?: number; anchors?: number } | undefined {
+  const v = result.primary;
+  if (!v) return undefined;
+  if (v.kind === "points") return { points: v.count };
+  if (v.kind === "spline") {
+    let anchors = 0;
+    for (const sp of v.subpaths) anchors += sp.anchors.length;
+    return { subpaths: v.subpaths.length, anchors };
+  }
+  return undefined;
+}
+
 function computeNodeFingerprint(
   node: GraphNode,
   def: NodeDefinition,
   inputFps: string[],
   ctx: RenderContext,
-  clipFp: string
+  clipFp: string,
+  // "anim:<tick>" when this node's own keyframes resolved tick-dependently.
+  // Its own segment rather than one of `inputFps` so the profiler can tell
+  // "my animation advanced" from "an ancestor changed".
+  animTickFp: string,
+  // Non-empty only for `gatesOutputs` defs — the set of output handles
+  // something consumes this eval. Such a def SKIPS building unconsumed
+  // outputs, so its result genuinely depends on this; without it, wiring a
+  // previously-unbuilt aux would cache-hit and return an output that was
+  // never rendered.
+  consumedFp: string,
+  // Profiler-only: filled with the same segments that go into the string.
+  partsOut?: FpParts
 ): string {
+  const paramFp = stableStringify(node.params);
+  const inputFp = inputFps.join("|");
   const parts: string[] = [
     node.type,
     node.bypassed ? "B" : "C",
-    stableStringify(node.params),
-    inputFps.join("|"),
+    paramFp,
+    inputFp,
   ];
+  if (partsOut) {
+    partsOut.params = paramFp;
+    partsOut.inputs = inputFp;
+    partsOut.clip = clipFp;
+    partsOut.anim = "";
+    partsOut.time = "";
+    partsOut.extras = "";
+  }
   // A gated clip makes the output an empty value regardless of params/inputs;
   // marking it keeps the gated output cached (stable while gated) and forces
   // a recompute when the playhead re-enters the window. Active time-driven
   // clips need no marker — their local clock already rides ctx.time via the
   // stable:false stamp below.
   if (clipFp) parts.push(clipFp);
-  if (node.animation) parts.push("a:" + stableStringify(node.animation));
-  if (def.stable === false) parts.push("t:" + ctx.time);
+  if (consumedFp) parts.push("out:" + consumedFp);
+  if (node.animation || animTickFp) {
+    // Keyframe DATA (edited by the user) and the resolved TICK (advanced by
+    // playback) are both "this node's own animation" — one reason, one part.
+    const animFp =
+      (node.animation ? "a:" + stableStringify(node.animation) : "") +
+      (animTickFp ? "|" + animTickFp : "");
+    parts.push(animFp);
+    if (partsOut) partsOut.anim = animFp;
+  }
+  if (def.stable === false) {
+    const timeFp = "t:" + ctx.time;
+    parts.push(timeFp);
+    if (partsOut) partsOut.time = timeFp;
+  }
   // External-state hook (e.g. the Cursor node mixing in live pointer pos).
   // Runs after the stable-false time stamp so both signals contribute.
   const extras = def.fingerprintExtras?.(node.params, ctx, node.id);
-  if (extras) parts.push(extras);
-  return parts.join("::");
+  if (extras) {
+    parts.push(extras);
+    if (partsOut) partsOut.extras = extras;
+  }
+  const fp = parts.join("::");
+  // Level 2 metric: total fingerprint characters built per eval. Each node's
+  // string embeds its inputs' strings recursively, so this grows with chain
+  // depth — the direct test of whether fingerprinting itself is a cost.
+  prof.addFingerprintBytes(fp.length);
+  return fp;
 }
 
 // ctx.state key under which the evaluator stashes each Iterate shell's
 // interior subgraph + fingerprint hash for the shell's compute /
 // fingerprintExtras to read. The colon-free key is invisible to
-// sweepNodeState. See specdocs/071826_iterate-node.md.
+// sweepNodeState. See specdocs/archive/071826_iterate-node.md.
 export const ITERATE_STASH_KEY = "__iterate-interiors__";
 export type IterateStash = Map<
   string,
@@ -608,6 +708,20 @@ export function evaluateGraph(
   }
 ): EvalResult {
   const nested = opts?.nested === true;
+  // Held in a local so every profiler call below is guarded by one boolean
+  // rather than re-reading the module's level. False whenever capture is off.
+  const capturing = prof.beginEval(nested);
+  // Iterate rejects nesting inside a nested pass, so interior samples are
+  // always exactly one level down.
+  const evalDepthTag = nested ? 1 : 0;
+  // GPU timer queries can't nest (one TIME_ELAPSED at a time in WebGL2), so
+  // only the root pass issues them; an Iterate interior's GPU time bills to
+  // its shell, matching how depth-0 node samples treat interior CPU time.
+  const gpuTimer =
+    capturing && !nested && prof.wantsGpuTiming() ? getGpuTimer(ctx.gl) : null;
+  // Drain last frame's finished queries before issuing this frame's. Results
+  // land in frames already committed — see profiler.resolveNodeGpu.
+  if (gpuTimer) gpuTimer.poll(prof.resolveNodeGpu);
   const extraTargets = opts?.extraTargets ?? [];
   // Group shells and Group Output boundary nodes are dissolved by flatten,
   // so previewing one directly shows nothing on the canvas. Remap a
@@ -651,7 +765,9 @@ export function evaluateGraph(
   // time (see flatten.ts). No-op (same arrays back) for structure-free
   // graphs. `layerOf` maps interior nodes to their enclosing layer for
   // AE-style local time.
+  const tFlatten = capturing ? performance.now() : 0;
   const flat = flattenGraph(nodes, edges);
+  if (capturing) prof.addPhase("flatten", performance.now() - tFlatten);
   nodes = flat.nodes;
   const layerOf = flat.layerOf;
 
@@ -777,7 +893,13 @@ export function evaluateGraph(
             )
         );
 
+  // Hand the profiler the POST-flatten, post-gating edge list — the topology
+  // this pass actually ran against. Raw project edges would stop at every
+  // group boundary and break the chain-poisoning walk.
+  if (capturing && !nested) prof.recordTopology(edges);
+  const tTopo = capturing ? performance.now() : 0;
   const order = topoSort(nodes, edges);
+  if (capturing) prof.addPhase("topo", performance.now() - tTopo);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const outputs = new Map<string, NodeOutput>();
   const errors: Record<string, string> = {};
@@ -790,6 +912,7 @@ export function evaluateGraph(
       ? new Map<string, InspectSnapshot>()
       : undefined;
   let terminalImage: EvalResult["terminalImage"];
+  const tNeeded = capturing ? performance.now() : 0;
   const needed = computeNeededSet(
     nodes,
     edges,
@@ -798,6 +921,10 @@ export function evaluateGraph(
       ? [...(previewNodeId ? [previewNodeId] : []), ...extraTargets]
       : undefined
   );
+  // Folded into the same bucket as the topo sort — both are "work the
+  // evaluator does to decide what to run", and separating them would imply
+  // they're independently actionable. They aren't.
+  if (capturing) prof.addPhase("topo", performance.now() - tNeeded);
 
   // Per-node set of output handles ("primary" / "aux:<name>") that
   // something consumes this eval: any output wired to a node that will be
@@ -923,6 +1050,8 @@ export function evaluateGraph(
     const inputs: Record<string, SocketValue | undefined> = {};
     const auxIn: Record<string, Record<string, SocketValue | undefined>> = {};
     const inputFpParts: string[] = [];
+    // Set when this node's own keyframes resolved to a tick-dependent value.
+    let animTickFp = "";
 
     // Build the resolve-context for this node — connected source
     // types per input socket. Used by polymorphic nodes that need to
@@ -1270,7 +1399,14 @@ export function evaluateGraph(
         // Tick + animated-param-name list are enough — values are
         // determined by (tick, keyframes) and keyframes already
         // contribute via stableStringify(node.animation) below.
-        inputFpParts.push(`anim:${ctx.tick}`);
+        //
+        // Kept OUT of inputFpParts deliberately. This is the node's OWN
+        // animation advancing, not an upstream change; folding it in with
+        // the input fingerprints made every keyframed node classify as
+        // "input" — i.e. report itself as a victim of its own ancestors —
+        // which hid the real roots from the chain-poisoning report. It
+        // still lands in the fingerprint, just in its own segment.
+        animTickFp = `anim:${ctx.tick}`;
       }
     }
 
@@ -1318,13 +1454,26 @@ export function evaluateGraph(
     }
 
     const clipFp = gated ? "clip:gated" : "";
+    // Fresh object per node while capturing — it outlives this iteration on
+    // the cache entry, so it can't be a reused scratch buffer.
+    const curParts: FpParts | undefined = capturing
+      ? { params: "", inputs: "", clip: "", anim: "", time: "", extras: "" }
+      : undefined;
+    const tFp = capturing ? performance.now() : 0;
     const fingerprint = computeNodeFingerprint(
       node,
       def,
       inputFpParts,
       ctx,
-      clipFp
+      clipFp,
+      animTickFp,
+      def.gatesOutputs
+        ? [...(consumedOutputs.get(id) ?? [])].sort().join(",")
+        : "",
+      curParts
     );
+    const fpMs = capturing ? performance.now() - tFp : 0;
+    if (capturing) prof.addPhase("fingerprint", fpMs);
     fingerprints.set(id, fingerprint);
 
     const prev = cache.get(id);
@@ -1341,6 +1490,9 @@ export function evaluateGraph(
       // Cache hit means no compute ran — surface 0 so the overlay
       // shows the node as cheap rather than persisting an old timing.
       timings.set(id, 0);
+      if (capturing) {
+        prof.recordNode(id, node.type, 0, "hit", evalDepthTag, fpMs);
+      }
     } else {
       // Cache miss (or uncacheable): recompute. Wall-clock around the
       // whole branch (compute + mask blend) — this is what the user
@@ -1348,6 +1500,30 @@ export function evaluateGraph(
       // pending after compute returns; CPU dispatch time is what we
       // can measure cheaply without forcing a sync.
       const tStart = performance.now();
+      // Set once the result-producing branch finishes; 0 if it threw.
+      let tPost = 0;
+      // Opens per-node texture attribution: allocations from here until the
+      // next nodeBegin are charged to this node.
+      if (capturing) prof.nodeBegin();
+      // The query must open BEFORE compute, but this node's sample index
+      // isn't known until recordNode runs after it — and predicting it is
+      // wrong for an Iterate shell, whose interior records its own samples in
+      // between. So hand the timer a slot it holds BY REFERENCE and fill in
+      // `idx` once recordNode returns; poll happens frames later.
+      const gpuSlot = gpuTimer ? { seq: prof.currentSeq(), idx: -1 } : null;
+      const gpuOpened = gpuSlot ? gpuTimer!.begin(gpuSlot) : false;
+      let missReason: prof.RecomputeReason = "other";
+      if (capturing) {
+        // Order matters — the first three never reach the cache at all, so
+        // comparing fingerprint parts would misreport them as "cold".
+        missReason = gated
+          ? "gated"
+          : node.bypassed
+            ? "bypass"
+            : def.stable === false
+              ? "unstable"
+              : classifyMiss(prev?.fpParts, curParts!);
+      }
       try {
         let ownsTextures = true;
         if (gated && node.type === LAYER_TYPE) {
@@ -1385,6 +1561,15 @@ export function evaluateGraph(
             nodeId: id,
             consumedOutputs: consumedOutputs.get(id),
           }) ?? {};
+        }
+
+        // Split the node's wall clock into the def's own compute and
+        // everything the evaluator does afterwards (mask, opacity, cache
+        // bookkeeping), so "the universal conventions are the cost" is
+        // visible rather than hiding inside the node's number.
+        if (capturing) {
+          tPost = performance.now();
+          prof.addPhase("compute", tPost - tStart);
         }
 
         // Node-declared ownership: outputs whose textures live in ctx.state
@@ -1469,7 +1654,12 @@ export function evaluateGraph(
 
         if (cacheable) {
           if (prev) releaseCachedTextures(ctx, prev);
-          cache.set(id, { fingerprint, output: result, ownsTextures });
+          cache.set(id, {
+            fingerprint,
+            output: result,
+            ownsTextures,
+            fpParts: curParts,
+          });
         } else {
           if (prev) {
             // No longer cacheable (e.g., user toggled bypass on). Evict.
@@ -1500,6 +1690,7 @@ export function evaluateGraph(
         }
       } catch (e) {
         errors[id] = e instanceof Error ? e.message : String(e);
+        if (capturing) missReason = "error";
         // eslint-disable-next-line no-console
         console.error(
           `[eval] node ${id} (${node.type}) compute threw:`,
@@ -1513,7 +1704,25 @@ export function evaluateGraph(
           cache.delete(id);
         }
       }
-      timings.set(id, performance.now() - tStart);
+      // Close the query BEFORE recordNode so the draw calls it spans are
+      // exactly this node's. Must run on the throw path too, or the query
+      // stays open and every later begin() silently fails.
+      if (gpuOpened) gpuTimer!.end();
+      const nodeMs = performance.now() - tStart;
+      timings.set(id, nodeMs);
+      if (capturing) {
+        if (tPost > 0) prof.addPhase("post", performance.now() - tPost);
+        const idx = prof.recordNode(
+          id,
+          node.type,
+          nodeMs,
+          missReason,
+          evalDepthTag,
+          fpMs,
+          volumeOf(result)
+        );
+        if (gpuSlot) gpuSlot.idx = idx;
+      }
     }
 
     // Terminal preview selection. Active override wins; otherwise the first
@@ -1587,5 +1796,6 @@ export function evaluateGraph(
   // themselves survive the OUTER sweep because presentIds is pre-flatten.
   if (!nested) sweepNodeState(ctx, presentIds);
 
+  prof.endEval(nested, { tick: globalTick, playing: ctx.playing });
   return { outputs, terminalImage, errors, fingerprints, timings, inspectInputs };
 }
