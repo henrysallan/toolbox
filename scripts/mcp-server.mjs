@@ -606,6 +606,99 @@ server.registerTool(
   }
 );
 
+// --- performance (spec 080726_perf-profiler.md M2) --------------------------
+
+server.registerTool(
+  "set_perf_capture",
+  {
+    description:
+      "Arm or disarm the evaluator performance trace. Capture is OFF by " +
+      "default and costs nothing until armed. Level 1 records per-node time " +
+      "and WHY each node recomputed; level 2 adds data volume (point/subpath " +
+      "counts), texture create/delete churn, and fingerprint size. Arming " +
+      "always clears the previous trace, so the sequence is: " +
+      "set_perf_capture -> drive the workload (transport play, a set_param " +
+      "edit, a scrub) -> get_perf. The editor only evaluates on playback, a " +
+      "param change, or a graph change — an idle editor records no frames.",
+    inputSchema: {
+      level: z
+        .number()
+        .optional()
+        .describe("0 = off, 1 = timings + reasons, 2 = + volume/churn (default)."),
+      frames: z
+        .number()
+        .optional()
+        .describe("Ring size in frames (default 600, ~10s at 60fps)."),
+    },
+  },
+  async ({ level, frames }) => {
+    try {
+      return textResult(await callEditor("set_perf_capture", { level, frames }));
+    } catch (e) {
+      return toolError(e);
+    }
+  }
+);
+
+server.registerTool(
+  "get_perf",
+  {
+    description:
+      "Aggregated performance summary of the captured frames. Returns frame " +
+      "stats (mean/p50/p95/max eval ms, effective fps), a phase breakdown per " +
+      "frame (flatten, topo, fingerprint, compute, post, blit, plus an " +
+      "`unattributed` residual), texture churn, and the top nodes by cost — " +
+      "each with p95, recompute RATE and dominant REASON (`hit`, `params`, " +
+      "`input`, `unstable`, `anim`, `extras`, `cold`), plus ns-per-point where " +
+      "the node emits points. Also returns `poisonRoots`: uncacheable nodes " +
+      "(stable:false and friends) ranked by how much DOWNSTREAM recompute " +
+      "they force — usually the most actionable number in the payload, since " +
+      "a node whose reason is `input` is being dragged by an ancestor rather " +
+      "than doing anything wrong itself. Pass groupBy:\"type\" to collapse " +
+      "instances and see which KIND of node is expensive.",
+    inputSchema: {
+      frames: z
+        .number()
+        .optional()
+        .describe("Only summarize the most recent N frames (default: all)."),
+      top: z.number().optional().describe("How many nodes to return (default 20)."),
+      groupBy: z
+        .enum(["node", "type"])
+        .optional()
+        .describe('"type" collapses instances by node type.'),
+    },
+  },
+  async ({ frames, top, groupBy }) => {
+    try {
+      return textResult(await callEditor("get_perf", { frames, top, groupBy }));
+    } catch (e) {
+      return toolError(e);
+    }
+  }
+);
+
+server.registerTool(
+  "get_perf_frame",
+  {
+    description:
+      "One frame's complete node list by sequence number — use it to " +
+      "interrogate a spike found in get_perf's aggregate (e.g. why p95 is far " +
+      "above p50). Samples tagged depth > 0 come from inside an Iterate " +
+      "interior and their time is ALREADY counted in the enclosing shell's " +
+      "depth-0 sample, so sum only depth-0 entries for a frame total.",
+    inputSchema: {
+      seq: z.number().describe("Frame sequence number, from a get_perf frame."),
+    },
+  },
+  async ({ seq }) => {
+    try {
+      return textResult(await callEditor("get_perf_frame", { seq }));
+    } catch (e) {
+      return toolError(e);
+    }
+  }
+);
+
 // ---------------------------------------------------------------------------
 await server.connect(new StdioServerTransport());
 log(`ready — MCP on stdio, editor bridge on ws://127.0.0.1:${PORT}`);

@@ -61,6 +61,8 @@ const EXPECTED_TOOLS = [
   "get_graph",
   "get_keyframes",
   "get_node_source",
+  "get_perf",
+  "get_perf_frame",
   "get_status",
   "insert_recipe",
   "read_source",
@@ -69,6 +71,7 @@ const EXPECTED_TOOLS = [
   "search_source",
   "set_keyframes",
   "set_param",
+  "set_perf_capture",
   "transport",
   "validate_expression",
 ];
@@ -197,6 +200,18 @@ const bridge: BridgeClient = connectBridge({
       animated: true,
       frames: (keys as { frame: number }[]).map((k) => k.frame),
     }),
+    // Perf tools (spec 080726) — echo the args so the checks below can prove
+    // optional numbers and enums survive the JSON hop rather than arriving
+    // as undefined or strings. The collector's own behaviour is covered by
+    // check-profiler.mts.
+    set_perf_capture: ({ level, frames }) => ({ ok: true, level, frames }),
+    get_perf: ({ frames, top, groupBy }) => ({
+      level: 2,
+      frames: 120,
+      echo: { frames, top, groupBy },
+      poisonRoots: [{ id: "text-1", type: "text", downstreamMsPerFrame: 14.2 }],
+    }),
+    get_perf_frame: ({ seq }) => ({ seq, nodes: [{ id: "n1", ms: 1.5, depth: 0 }] }),
   }),
   isCodeTrusted: () => false,
   appVersion: "e2e",
@@ -238,6 +253,61 @@ check(
 
 const rt = await client.callTool({ name: "transport", arguments: { action: "play" } });
 check("transport round-trips", !isError(rt) && JSON.parse(textOf(rt)).playing === true);
+
+// --- 3c. perf tools (spec 080726_perf-profiler.md M2) ---
+const rpc = await client.callTool({
+  name: "set_perf_capture",
+  arguments: { level: 2, frames: 300 },
+});
+{
+  const j = isError(rpc) ? {} : JSON.parse(textOf(rpc));
+  check(
+    "set_perf_capture forwards level + frames as numbers",
+    !isError(rpc) && j.level === 2 && j.frames === 300,
+    textOf(rpc)
+  );
+}
+// Omitted optionals must arrive as undefined, not "undefined" — the handler
+// distinguishes "not passed" (use the default) from an explicit 0.
+const rpcBare = await client.callTool({ name: "set_perf_capture", arguments: {} });
+{
+  const j = isError(rpcBare) ? {} : JSON.parse(textOf(rpcBare));
+  check(
+    "set_perf_capture omits absent optionals",
+    !isError(rpcBare) && !("level" in j) && !("frames" in j),
+    textOf(rpcBare)
+  );
+}
+const rp = await client.callTool({
+  name: "get_perf",
+  arguments: { frames: 60, top: 5, groupBy: "type" },
+});
+{
+  const j = isError(rp) ? {} : JSON.parse(textOf(rp));
+  check(
+    "get_perf forwards frames/top/groupBy",
+    !isError(rp) &&
+      j.echo?.frames === 60 &&
+      j.echo?.top === 5 &&
+      j.echo?.groupBy === "type",
+    textOf(rp)
+  );
+  check(
+    "get_perf carries the poisoning report",
+    !isError(rp) && j.poisonRoots?.[0]?.downstreamMsPerFrame === 14.2,
+    textOf(rp).slice(0, 80)
+  );
+}
+const rpf = await client.callTool({ name: "get_perf_frame", arguments: { seq: 42 } });
+check(
+  "get_perf_frame forwards seq",
+  !isError(rpf) && JSON.parse(textOf(rpf)).seq === 42,
+  textOf(rpf)
+);
+// `seq` is required by the schema — a missing one must fail at the server,
+// never reach the editor as NaN.
+const rpfBad = await client.callTool({ name: "get_perf_frame", arguments: {} });
+check("get_perf_frame rejects a missing seq", isError(rpfBad), textOf(rpfBad).slice(0, 80));
 
 const rstrip = await client.callTool({
   name: "screenshot_strip",

@@ -32,6 +32,8 @@ import {
   type Keyframe,
   type KeyframeAnimationBlock,
 } from "@/engine/keyframes";
+import * as prof from "@/engine/profiler";
+import { summarize } from "@/lib/perf-console";
 import { buildCatalogDsl, HARD_BUILD_CODES } from "@/lib/ai/generate-recipe-client";
 import { HARD_OP_CODES } from "@/lib/ai/edit-recipe-client";
 import { pointExpressionNode } from "@/nodes/effect/point-expression";
@@ -494,6 +496,120 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         animated: block.animated,
         frames: block.keyframes.map((k) => frameOf(k.tick)),
       };
+    },
+
+    // ---- performance (specdocs/080726_perf-profiler.md M2) -----------------
+    // The agent arms and reads its own traces rather than asking the user to
+    // paste console output. Capture is OFF until armed here (or from the
+    // Window menu), so an unarmed session pays nothing.
+    set_perf_capture: ({ level, frames }) => {
+      const l = level === undefined ? 2 : Number(level);
+      if (![0, 1, 2, 3].includes(l)) {
+        throw new Error(
+          "`level` must be 0 (off), 1 (timings + reasons), 2 (+ volume, " +
+            "texture churn, fingerprint bytes), or 3 (+ per-node GPU time)."
+        );
+      }
+      const f = frames === undefined ? 600 : Number(frames);
+      if (!Number.isFinite(f) || f < 1 || f > 10000) {
+        throw new Error("`frames` must be between 1 and 10000.");
+      }
+      prof.setCaptureLevel(l as 0 | 1 | 2 | 3, { frames: f });
+      deps.flashToast(
+        l === 0 ? "Claude: perf capture off" : `Claude: perf capture on (level ${l})`
+      );
+      return {
+        ok: true,
+        level: l,
+        frames: l === 0 ? 0 : f,
+        note:
+          l === 0
+            ? "Capture off; the trace ring was released."
+            : l === 3
+              ? "Trace cleared. GPU timings resolve 1-3 frames late, so drive " +
+                "the workload for a few seconds before reading, and check " +
+                "gpu.coverage in the result."
+              : "Trace cleared. Drive the workload, then call get_perf.",
+      };
+    },
+
+    get_perf: ({ frames, top, groupBy }) => {
+      if (prof.getCaptureLevel() === 0) {
+        throw new Error(
+          "Perf capture is off — call set_perf_capture first, then drive the " +
+            "workload (play, scrub, or edit a param) before reading."
+        );
+      }
+      const summary = summarize({
+        frames: frames === undefined ? undefined : Number(frames),
+        top: top === undefined ? 20 : Number(top),
+        edges: deps.edgesRef.current.map((e) => ({
+          source: e.source,
+          target: e.target,
+        })),
+      });
+      if (summary.frames === 0) {
+        return {
+          ...summary,
+          note:
+            "No frames captured yet. The editor only evaluates on playback, " +
+            "a param edit, or a graph change — drive one of those first.",
+        };
+      }
+      if (groupBy !== "type") return summary;
+      // Collapse instances so "which KIND of node is expensive" is answerable
+      // without the agent having to correlate ids itself.
+      const byType = new Map<
+        string,
+        { type: string; count: number; msPerFrame: number; totalMs: number; recomputes: number; samples: number }
+      >();
+      for (const n of summary.nodes) {
+        const e = byType.get(n.type) ?? {
+          type: n.type,
+          count: 0,
+          msPerFrame: 0,
+          totalMs: 0,
+          recomputes: 0,
+          samples: 0,
+        };
+        e.count++;
+        e.msPerFrame += n.msPerFrame;
+        e.totalMs += n.totalMs;
+        e.recomputes += n.recomputes;
+        e.samples += n.samples;
+        byType.set(n.type, e);
+      }
+      const types = [...byType.values()]
+        .map((e) => ({
+          ...e,
+          msPerFrame: Math.round(e.msPerFrame * 1000) / 1000,
+          totalMs: Math.round(e.totalMs * 100) / 100,
+          recomputeRate:
+            e.samples > 0 ? Math.round((e.recomputes / e.samples) * 1000) / 1000 : 0,
+        }))
+        .sort((a, b) => b.totalMs - a.totalMs);
+      return { ...summary, nodes: undefined, types };
+    },
+
+    get_perf_frame: ({ seq }) => {
+      if (prof.getCaptureLevel() === 0) {
+        throw new Error("Perf capture is off — call set_perf_capture first.");
+      }
+      if (seq === undefined || !Number.isFinite(Number(seq))) {
+        throw new Error(
+          "`seq` is required — take it from a frame in get_perf, or read " +
+            "the newest with get_perf({frames:1})."
+        );
+      }
+      const frame = prof.readFrame(Number(seq));
+      if (!frame) {
+        throw new Error(
+          `Frame ${seq} is not in the ring — it either aged out or was never ` +
+            "captured. Reduce the gap between the workload and the read, or " +
+            "arm a larger ring via set_perf_capture({frames}).",
+        );
+      }
+      return frame;
     },
 
     validate_expression: ({ source }) => {
