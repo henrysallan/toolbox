@@ -18,7 +18,7 @@ import {
 } from "@/nodes/effect/merge";
 
 // Layer — a root-only group subtype with a fixed interface (see
-// specdocs/layers-groups-attributes.md §2 and engine/groups.ts).
+// specdocs/archive/layers-groups-attributes.md §2 and engine/groups.ts).
 //
 // Unlike a plain group, the layer node computes: it composites its
 // interior result over the `stack` (everything below it in the root
@@ -159,7 +159,10 @@ export const layerNode: NodeDefinition = {
     // Key kept in sync with merge.ts (bumped when the matte uniforms landed
     // — getShader caches by key alone). The layer node never sets u_hasMatte,
     // which defaults to 0 = no matte.
-    const blend = ctx.getShader("merge/blend-v2", BLEND_FS);
+    // v3: BLEND_FS was refactored to share its blend math with Merge's fused
+    // shader (same formulas, same uniforms) — key bumped because getShader
+    // caches by key alone and would otherwise serve the old source.
+    const blend = ctx.getShader("merge/blend-v3", BLEND_FS);
     ctx.drawFullscreen(blend, output, (gl) => {
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, base!.texture);

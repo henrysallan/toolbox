@@ -143,28 +143,16 @@ void main() {
   outColor = vec4(c.rgb, c.a * m);
 }`;
 
-// Layer `b` is composited over base `a` with a Porter-Duff "src over dst"
-// that respects per-pixel layer alpha (scaled by the opacity slider). The
-// selected blend mode is applied to RGB first; source-over then decides how
-// much of that blended RGB reaches the output based on the effective alpha.
-// A wired per-layer matte multiplies into the effective alpha exactly like
-// a per-pixel opacity slider (u_hasMatte defaults to 0, so consumers that
-// never set it — the Layer node — keep the un-matted behavior).
+// The blend math, shared verbatim by the pairwise shader (BLEND_FS, also used
+// by the Layer node) and the fused multi-layer shader below. It lives in one
+// string on purpose: two copies of twenty-nine blend formulas would drift the
+// first time one of them was touched, and the divergence would show up as a
+// subtle color difference that nobody would trace back to here.
 //
 // Formulas match the widely-cited Photoshop / Krita set; division-based
 // modes guard the denominator so backgrounds don't explode to infinity on
 // black/white pixels.
-export const BLEND_FS = `#version 300 es
-precision highp float;
-in vec2 v_uv;
-uniform sampler2D u_base;
-uniform sampler2D u_layer;
-uniform sampler2D u_matte;
-uniform float u_opacity;
-uniform int u_mode;
-uniform int u_hasMatte;
-out vec4 outColor;
-
+const BLEND_MODE_GLSL = `
 vec3 overlayCh(vec3 a, vec3 b) {
   return mix(2.0 * a * b, 1.0 - 2.0 * (1.0 - a) * (1.0 - b), step(0.5, a));
 }
@@ -204,43 +192,45 @@ float luma(vec3 c) {
   return dot(c, vec3(0.2126, 0.7152, 0.0722));
 }
 
-void main() {
-  vec4 a = texture(u_base, v_uv);
-  vec4 b = texture(u_layer, v_uv);
-  vec3 blended;
-  if      (u_mode == 0)  blended = b.rgb;                                     // mix (legacy)
-  else if (u_mode == 1)  blended = b.rgb;                                     // normal
-  else if (u_mode == 2)  blended = overlayCh(a.rgb, b.rgb);                   // overlay
-  else if (u_mode == 3)  blended = 1.0 - (1.0 - a.rgb) * (1.0 - b.rgb);       // screen
-  else if (u_mode == 4)  blended = a.rgb * b.rgb;                             // multiply
-  else if (u_mode == 5)  blended = clamp(a.rgb + b.rgb, 0.0, 1.0);            // add
-  else if (u_mode == 6)  blended = clamp(a.rgb - b.rgb, 0.0, 1.0);            // subtract
-  else if (u_mode == 7)  blended = clamp(a.rgb / max(b.rgb, vec3(1e-5)), 0.0, 1.0); // divide
-  else if (u_mode == 8)  blended = abs(a.rgb - b.rgb);                        // difference
-  else if (u_mode == 9)  blended = (a.rgb + b.rgb) * 0.5;                     // average
-  else if (u_mode == 10) blended = hardLightCh(a.rgb, b.rgb);                 // hard light
-  else if (u_mode == 11) blended = softLightCh(a.rgb, b.rgb);                 // soft light
-  else if (u_mode == 12) blended = vividLightCh(a.rgb, b.rgb);                // vivid light
-  else if (u_mode == 13) blended = pinLightCh(a.rgb, b.rgb);                  // pin light
-  else if (u_mode == 14) blended = clamp(a.rgb + 2.0 * b.rgb - 1.0, 0.0, 1.0); // linear light
-  else if (u_mode == 15) blended = step(vec3(1.0), a.rgb + b.rgb);            // hard mix
-  else if (u_mode == 16) blended = max(a.rgb, b.rgb);                         // lighten
-  else if (u_mode == 17) blended = min(a.rgb, b.rgb);                         // darken
-  else if (u_mode == 18) blended = luma(a.rgb) > luma(b.rgb) ? a.rgb : b.rgb; // lighter color
-  else if (u_mode == 19) blended = luma(a.rgb) < luma(b.rgb) ? a.rgb : b.rgb; // darker color
-  else if (u_mode == 20) blended = colorDodgeCh(a.rgb, b.rgb);                // color dodge
-  else if (u_mode == 21) blended = colorBurnCh(a.rgb, b.rgb);                 // color burn
-  else if (u_mode == 22) blended = clamp(a.rgb + b.rgb, 0.0, 1.0);            // linear dodge (= add)
-  else if (u_mode == 23) blended = clamp(a.rgb + b.rgb - 1.0, 0.0, 1.0);      // linear burn
-  else if (u_mode == 24) blended = a.rgb + b.rgb - 2.0 * a.rgb * b.rgb;       // exclusion
-  else if (u_mode == 25) blended = vec3(1.0) - abs(vec3(1.0) - a.rgb - b.rgb);// negation
-  else if (u_mode == 26) blended = reflectCh(a.rgb, b.rgb);                   // reflect
-  else if (u_mode == 27) blended = glowCh(a.rgb, b.rgb);                      // glow
-  else if (u_mode == 28) blended = clamp(min(a.rgb, b.rgb) - max(a.rgb, b.rgb) + vec3(1.0), 0.0, 1.0); // phoenix
-  else blended = b.rgb;
+vec3 blendRgb(int mode, vec3 a, vec3 b) {
+  if      (mode == 0)  return b;                                     // mix (legacy)
+  else if (mode == 1)  return b;                                     // normal
+  else if (mode == 2)  return overlayCh(a, b);                       // overlay
+  else if (mode == 3)  return 1.0 - (1.0 - a) * (1.0 - b);           // screen
+  else if (mode == 4)  return a * b;                                 // multiply
+  else if (mode == 5)  return clamp(a + b, 0.0, 1.0);                // add
+  else if (mode == 6)  return clamp(a - b, 0.0, 1.0);                // subtract
+  else if (mode == 7)  return clamp(a / max(b, vec3(1e-5)), 0.0, 1.0); // divide
+  else if (mode == 8)  return abs(a - b);                            // difference
+  else if (mode == 9)  return (a + b) * 0.5;                         // average
+  else if (mode == 10) return hardLightCh(a, b);                     // hard light
+  else if (mode == 11) return softLightCh(a, b);                     // soft light
+  else if (mode == 12) return vividLightCh(a, b);                    // vivid light
+  else if (mode == 13) return pinLightCh(a, b);                      // pin light
+  else if (mode == 14) return clamp(a + 2.0 * b - 1.0, 0.0, 1.0);    // linear light
+  else if (mode == 15) return step(vec3(1.0), a + b);                // hard mix
+  else if (mode == 16) return max(a, b);                             // lighten
+  else if (mode == 17) return min(a, b);                             // darken
+  else if (mode == 18) return luma(a) > luma(b) ? a : b;             // lighter color
+  else if (mode == 19) return luma(a) < luma(b) ? a : b;             // darker color
+  else if (mode == 20) return colorDodgeCh(a, b);                    // color dodge
+  else if (mode == 21) return colorBurnCh(a, b);                     // color burn
+  else if (mode == 22) return clamp(a + b, 0.0, 1.0);                // linear dodge (= add)
+  else if (mode == 23) return clamp(a + b - 1.0, 0.0, 1.0);          // linear burn
+  else if (mode == 24) return a + b - 2.0 * a * b;                   // exclusion
+  else if (mode == 25) return vec3(1.0) - abs(vec3(1.0) - a - b);    // negation
+  else if (mode == 26) return reflectCh(a, b);                       // reflect
+  else if (mode == 27) return glowCh(a, b);                          // glow
+  else if (mode == 28) return clamp(min(a, b) - max(a, b) + vec3(1.0), 0.0, 1.0); // phoenix
+  return b;
+}
 
-  float matte = u_hasMatte == 1 ? texture(u_matte, v_uv).r : 1.0;
-  float srcA = clamp(b.a * u_opacity * matte, 0.0, 1.0);
+// Porter-Duff "src over dst" respecting per-pixel layer alpha (scaled by the
+// opacity slider and any matte). The blend mode shapes RGB first; source-over
+// then decides how much of that reaches the output.
+vec4 compositeOver(vec4 a, vec4 b, float opacity, float matte, int mode) {
+  vec3 blended = blendRgb(mode, a.rgb, b.rgb);
+  float srcA = clamp(b.a * opacity * matte, 0.0, 1.0);
   float outA = srcA + a.a * (1.0 - srcA);
   vec3 outRgb;
   if (outA < 1e-4) {
@@ -248,8 +238,82 @@ void main() {
   } else {
     outRgb = (blended * srcA + a.rgb * a.a * (1.0 - srcA)) / outA;
   }
-  outColor = vec4(outRgb, outA);
+  return vec4(outRgb, outA);
+}
+`;
+
+// Pairwise blend of one layer over one base. Still used by the Layer node
+// (group/layer.ts) and by nothing else now that Merge fuses its chain.
+// A wired per-layer matte multiplies into the effective alpha exactly like a
+// per-pixel opacity slider (u_hasMatte defaults to 0, so the Layer node keeps
+// the un-matted behavior).
+export const BLEND_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_base;
+uniform sampler2D u_layer;
+uniform sampler2D u_matte;
+uniform float u_opacity;
+uniform int u_mode;
+uniform int u_hasMatte;
+out vec4 outColor;
+${BLEND_MODE_GLSL}
+void main() {
+  vec4 a = texture(u_base, v_uv);
+  vec4 b = texture(u_layer, v_uv);
+  float matte = u_hasMatte == 1 ? texture(u_matte, v_uv).r : 1.0;
+  outColor = compositeOver(a, b, u_opacity, matte, u_mode);
 }`;
+
+// FUSED multi-layer composite — the whole point of this file's perf work.
+//
+// The old chain ran ONE FULL-CANVAS PASS PER LAYER: N layers meant N writes of
+// every pixel plus N-1 reads back of a full RGBA16F canvas. At 4K that
+// dominated the frame — a level-3 GPU trace put two Merge nodes at 4.0 ms of
+// GPU against 0.03 ms of CPU, and removing them took the scene from 30fps to
+// 120fps (specdocs/080726_perf-profiler.md).
+//
+// This composites `n` layers over the base in ONE pass, accumulating in
+// registers. Bandwidth drops from N canvas writes to 1.
+//
+// Generated per layer count rather than looped because GLSL ES 3.00 only
+// permits CONSTANT expressions when indexing a sampler array — a loop counter
+// will not compile. `n` is small and bounded by the texture-unit budget, so
+// this is a handful of cached programs.
+// Exported for scripts/check-shaders.mts — a GLSL syntax error here is a
+// runtime-only failure that typecheck cannot see.
+export function fusedMergeFs(n: number): string {
+  const samplers = Array.from(
+    { length: n },
+    (_, i) => `uniform sampler2D u_layer${i};\nuniform sampler2D u_matte${i};`
+  ).join("\n");
+  const steps = Array.from({ length: n }, (_, i) => `
+  {
+    vec4 b = texture(u_layer${i}, v_uv);
+    float m = u_hasMatte[${i}] == 1 ? texture(u_matte${i}, v_uv).r : 1.0;
+    acc = compositeOver(acc, b, u_opacity[${i}], m, u_mode[${i}]);
+  }`).join("");
+  return `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_base;
+uniform sampler2D u_baseMatte;
+uniform int u_hasBaseMatte;
+${samplers}
+uniform float u_opacity[${n}];
+uniform int u_mode[${n}];
+uniform int u_hasMatte[${n}];
+out vec4 outColor;
+${BLEND_MODE_GLSL}
+void main() {
+  vec4 acc = texture(u_base, v_uv);
+  // The base matte folds into this pass instead of costing its own
+  // full-canvas pre-pass.
+  if (u_hasBaseMatte == 1) acc.a *= texture(u_baseMatte, v_uv).r;
+${steps}
+  outColor = acc;
+}`;
+}
 
 export function modeToInt(m: BlendMode): number {
   switch (m) {
@@ -403,46 +467,69 @@ export const mergeNode: NodeDefinition = {
       return { primary: output };
     }
 
-    // Key bumped with the matte uniforms so a hot-reloaded session can't be
-    // served the pre-matte program (getShader caches by key alone). Keep in
-    // sync with layer.ts, which shares this shader.
-    const blendProg = ctx.getShader("merge/blend-v2", BLEND_FS);
+    // How many layers fit in ONE fused pass. Each layer costs two texture
+    // units (image + matte) on top of the base pair. WebGL2 guarantees at
+    // least 16 fragment units, so the floor is 7 layers per pass — enough
+    // that almost every real Merge collapses to a single pass.
+    const maxUnits = ctx.gl.getParameter(
+      ctx.gl.MAX_TEXTURE_IMAGE_UNITS
+    ) as number;
+    const perPass = Math.max(1, Math.floor(((maxUnits || 16) - 2) / 2));
+
     let current: ImageValue = base;
-    if (baseMatte) {
-      const matted = ctx.allocImage();
-      matteBase(matted);
-      current = matted;
-    }
-    for (let i = 0; i < connected.length; i++) {
-      const { layer, img, matte } = connected[i];
-      const isLast = i === connected.length - 1;
-      const dest = isLast ? output : ctx.allocImage();
-      ctx.drawFullscreen(blendProg, dest, (gl) => {
+    // The base matte rides the first pass (u_hasBaseMatte); later chunks read
+    // an already-matted intermediate, so they must not apply it again.
+    let baseMatteePending = !!baseMatte;
+
+    for (let start = 0; start < connected.length; start += perPass) {
+      const chunk = connected.slice(start, start + perPass);
+      const isLastChunk = start + perPass >= connected.length;
+      const dest = isLastChunk ? output : ctx.allocImage();
+      const n = chunk.length;
+      const prog = ctx.getShader(`merge/fused-v1-${n}`, fusedMergeFs(n));
+      const applyBaseMatte = baseMatteePending;
+
+      ctx.drawFullscreen(prog, dest, (gl) => {
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, current.texture);
-        gl.uniform1i(gl.getUniformLocation(blendProg, "u_base"), 0);
+        gl.uniform1i(gl.getUniformLocation(prog, "u_base"), 0);
+        // Every sampler needs a live binding even when its flag is off —
+        // some drivers evaluate both branches of the ternary. The base
+        // texture is a harmless stand-in, same trick the old chain used.
         gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, img.texture);
-        gl.uniform1i(gl.getUniformLocation(blendProg, "u_layer"), 1);
-        // The matte sampler needs a valid binding even when unused (some
-        // drivers evaluate both ternary branches) — the layer image is a
-        // harmless stand-in.
-        gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, matte ? matte.texture : img.texture);
-        gl.uniform1i(gl.getUniformLocation(blendProg, "u_matte"), 2);
+        gl.bindTexture(
+          gl.TEXTURE_2D,
+          applyBaseMatte ? baseMatte!.texture : current.texture
+        );
+        gl.uniform1i(gl.getUniformLocation(prog, "u_baseMatte"), 1);
         gl.uniform1i(
-          gl.getUniformLocation(blendProg, "u_hasMatte"),
-          matte ? 1 : 0
+          gl.getUniformLocation(prog, "u_hasBaseMatte"),
+          applyBaseMatte ? 1 : 0
         );
-        gl.uniform1f(
-          gl.getUniformLocation(blendProg, "u_opacity"),
-          layer.opacity
-        );
-        gl.uniform1i(
-          gl.getUniformLocation(blendProg, "u_mode"),
-          modeToInt(layer.mode)
-        );
+
+        const opacities = new Float32Array(n);
+        const modes = new Int32Array(n);
+        const hasMatte = new Int32Array(n);
+        for (let i = 0; i < n; i++) {
+          const { layer, img, matte } = chunk[i];
+          const imgUnit = 2 + i * 2;
+          const matteUnit = imgUnit + 1;
+          gl.activeTexture(gl.TEXTURE0 + imgUnit);
+          gl.bindTexture(gl.TEXTURE_2D, img.texture);
+          gl.uniform1i(gl.getUniformLocation(prog, `u_layer${i}`), imgUnit);
+          gl.activeTexture(gl.TEXTURE0 + matteUnit);
+          gl.bindTexture(gl.TEXTURE_2D, matte ? matte.texture : img.texture);
+          gl.uniform1i(gl.getUniformLocation(prog, `u_matte${i}`), matteUnit);
+          opacities[i] = layer.opacity;
+          modes[i] = modeToInt(layer.mode);
+          hasMatte[i] = matte ? 1 : 0;
+        }
+        gl.uniform1fv(gl.getUniformLocation(prog, "u_opacity"), opacities);
+        gl.uniform1iv(gl.getUniformLocation(prog, "u_mode"), modes);
+        gl.uniform1iv(gl.getUniformLocation(prog, "u_hasMatte"), hasMatte);
       });
+
+      baseMatteePending = false;
       if (current !== base) ctx.releaseTexture(current.texture);
       current = dest;
     }
