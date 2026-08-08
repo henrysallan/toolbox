@@ -265,7 +265,12 @@ function extractPaletteGL(
     const px = ctx.readImageToFloat32(small);
     return extractPaletteFromPixels(px, k);
   } finally {
-    ctx.releaseTexture(small);
+    // `.texture`, not the ImageValue wrapper — releaseTexture takes a raw
+    // WebGLTexture. Passing the wrapper threw inside this `finally`, which
+    // masked the real return value AND leaked the texture, so palette
+    // extraction from a wired image failed outright. (Found by
+    // scripts/bench-nodes.cjs.)
+    ctx.releaseTexture(small.texture);
   }
 }
 
