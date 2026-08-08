@@ -347,17 +347,31 @@ export const bloomNode: NodeDefinition = {
       description: "Glow without the original image composited underneath.",
     },
   ],
+  // `bloom_only` is skipped when unconsumed (below), and this node IS
+  // cacheable — so the consumed-handle set has to reach the fingerprint or
+  // wiring that output would cache-hit and hand back a texture that was
+  // never rendered. See NodeDefinition.gatesOutputs.
+  gatesOutputs: true,
 
-  compute({ inputs, params, ctx, nodeId }) {
+  compute({ inputs, params, ctx, nodeId, consumedOutputs }) {
     const src = inputs.image;
     const dirt = inputs.lens_dirt;
+    // `bloom_only` costs a FULL-CANVAS pass — on a 4K canvas that was ~37% of
+    // this node's fill, spent every frame whether or not anything read it. A
+    // level-3 GPU trace put Bloom at 4.17 ms/frame, the largest single item in
+    // the graph. Undefined ⇒ non-evaluator caller; build it, as before.
+    const wantBloomOnly =
+      !consumedOutputs || consumedOutputs.has("aux:bloom_only");
     const output = ctx.allocImage();
-    const bloomOnly = ctx.allocImage();
+    const bloomOnly = wantBloomOnly ? ctx.allocImage() : null;
 
     if (!src || src.kind !== "image") {
       ctx.clearTarget(output, [0, 0, 0, 1]);
-      ctx.clearTarget(bloomOnly, [0, 0, 0, 0]);
-      return { primary: output, aux: { bloom_only: bloomOnly } };
+      if (bloomOnly) ctx.clearTarget(bloomOnly, [0, 0, 0, 0]);
+      return {
+        primary: output,
+        ...(bloomOnly ? { aux: { bloom_only: bloomOnly } } : {}),
+      };
     }
 
     const threshold = (params.threshold as number) ?? 0.7;
@@ -516,26 +530,28 @@ export const bloomNode: NodeDefinition = {
       );
     });
 
-    const bloomOnlyProg = ctx.getShader(
-      "bloom2/bloom_only",
-      BLOOM_ONLY_FS
-    );
-    ctx.drawFullscreen(bloomOnlyProg, bloomOnly, (gl) => {
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, bloomLayer.texture);
-      gl.uniform1i(gl.getUniformLocation(bloomOnlyProg, "u_bloom"), 0);
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, dirtTex);
-      gl.uniform1i(gl.getUniformLocation(bloomOnlyProg, "u_dirt"), 1);
-      gl.uniform1i(
-        gl.getUniformLocation(bloomOnlyProg, "u_hasDirt"),
-        hasDirt
+    if (bloomOnly) {
+      const bloomOnlyProg = ctx.getShader(
+        "bloom2/bloom_only",
+        BLOOM_ONLY_FS
       );
-      gl.uniform1f(
-        gl.getUniformLocation(bloomOnlyProg, "u_intensity"),
-        intensity
-      );
-    });
+      ctx.drawFullscreen(bloomOnlyProg, bloomOnly, (gl) => {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, bloomLayer.texture);
+        gl.uniform1i(gl.getUniformLocation(bloomOnlyProg, "u_bloom"), 0);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, dirtTex);
+        gl.uniform1i(gl.getUniformLocation(bloomOnlyProg, "u_dirt"), 1);
+        gl.uniform1i(
+          gl.getUniformLocation(bloomOnlyProg, "u_hasDirt"),
+          hasDirt
+        );
+        gl.uniform1f(
+          gl.getUniformLocation(bloomOnlyProg, "u_intensity"),
+          intensity
+        );
+      });
+    }
 
     // Free intermediate mips. The upsample chain's outputs (mipsUp)
     // are independent allocations, so we free both chains except
@@ -549,7 +565,10 @@ export const bloomNode: NodeDefinition = {
       if (m) ctx.releaseTexture(m.texture);
     }
 
-    return { primary: output, aux: { bloom_only: bloomOnly } };
+    return {
+      primary: output,
+      ...(bloomOnly ? { aux: { bloom_only: bloomOnly } } : {}),
+    };
   },
 
   dispose(ctx, nodeId) {
