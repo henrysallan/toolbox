@@ -43,6 +43,7 @@ import {
 import { colorForSocket } from "./socketColor";
 import { tintRgba } from "./node-tints";
 import { Spinner } from "./Spinner";
+import { useAudioAudible } from "@/state/audio-audibility";
 import { VIRTUAL_SOCKET } from "@/engine/groups";
 
 type EffectNodeType = Node<NodeDataPayload, "effect">;
@@ -410,6 +411,19 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   const active = !!data.active;
   const active2 = !!data.active2;
   const bypassed = !!data.bypassed;
+
+  // Not-audible indicator (080926_audio-v2-integration.md M-D): an
+  // audio-CATEGORY node with an audio-typed primary output whose chain
+  // reached no audible sink last eval — Output's `audio` socket, a Layer
+  // Output audio boundary, or the Active node — gets a small muted-speaker
+  // glyph in the header. The primary-output gate keeps notes-only (Step
+  // Pattern) and analysis (Bands/Pitch/Spectral) nodes clean; `null` means
+  // no eval has published a set yet, which must render nothing.
+  const audible = useAudioAudible(id);
+  const showNotAudible =
+    audible === false &&
+    data.primaryOutput === "audio" &&
+    getNodeDef(data.defType)?.category === "audio";
 
   // On-node text box: String source (`value`), Text (`text`) and Expression
   // (`expression`) render an editable box on the node body. The placeholder
@@ -856,6 +870,18 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             </span>
           )}
           {data.displayName ?? data.name}
+          {showNotAudible && (
+            <span
+              title="Not audible — route to a Layer Output audio socket, the Output node, or set Active"
+              style={{
+                display: "inline-flex",
+                color: "var(--tb-n-12)",
+                flexShrink: 0,
+              }}
+            >
+              <MutedSpeakerIcon />
+            </span>
+          )}
           <InspectButton id={id} />
           {(() => {
             // Header dropdown for an enum param — lets nodes like Group
@@ -974,6 +1000,22 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                 window.dispatchEvent(
                   new CustomEvent("effect-node-toggle", {
                     detail: { id, kind: "mergeAddLayer" },
+                  })
+                )
+              }
+            />
+          )}
+          {data.defType === "midi-editor" && (
+            <HeaderToggle
+              on={false}
+              label="Edit"
+              title="Open the piano-roll editor (or double-click the node)"
+              activeBg="var(--tb-a-gray-700)"
+              activeFg="var(--tb-n-16)"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("effect-node-toggle", {
+                    detail: { id, kind: "midiEditorOpen" },
                   })
                 )
               }
@@ -2552,6 +2594,32 @@ function BanIcon() {
     >
       <circle cx="12" cy="12" r="9" />
       <path d="M5.6 5.6 18.4 18.4" />
+    </svg>
+  );
+}
+
+// Muted speaker for the not-audible chip on audio nodes. The body is
+// filled so it still reads at 12px; the "x" is stroked like the other
+// header icons.
+function MutedSpeakerIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      aria-hidden
+    >
+      <path
+        d="M11 5 6 9H2v6h4l5 4z"
+        fill="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+      <path d="m16 9 6 6M22 9l-6 6" />
     </svg>
   );
 }

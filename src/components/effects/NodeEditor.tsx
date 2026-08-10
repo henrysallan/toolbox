@@ -209,6 +209,10 @@ interface Props {
   onUngroupSelection?: () => void;
   onDiveIntoGroup?: (groupId: string) => void;
   onScopeUp?: () => void;
+  // Double-click on a MIDI Editor node opens the viewport piano roll
+  // (080926_midi-editor.md engagement — the second path is the node
+  // header's Edit button).
+  onOpenMidiEditor?: (nodeId: string) => void;
   // Zone view (071926_iterate-zone-view.md): a node dragged into / out
   // of an expanded Iterate's zone rect requests a scope move. Parent
   // owns the legality check (reparentNode) + undo + toast.
@@ -301,6 +305,7 @@ function NodeEditor({
   onUngroupSelection,
   onDiveIntoGroup,
   onScopeUp,
+  onOpenMidiEditor,
   onReparentNode,
   onStyleNodes,
   onFrameSelection,
@@ -2255,6 +2260,14 @@ function NodeEditor({
     setContextMenu({ x: e.clientX, y: e.clientY, nodeId: node.id });
   };
   nodeDoubleClickRef.current = (_e, node) => {
+    // Double-click a MIDI Editor node = open the viewport piano roll.
+    if (
+      onOpenMidiEditor &&
+      (node.data as NodeDataPayload).defType === "midi-editor"
+    ) {
+      onOpenMidiEditor(node.id);
+      return;
+    }
     // Double-click a group or layer node = dive in (same as Tab).
     if (
       onDiveIntoGroup &&

@@ -206,6 +206,52 @@ check("resetTrace clears frames", prof.readTrace().frames.length, 0);
 check("resetTrace keeps the level", prof.getCaptureLevel(), 1);
 check("resetTrace keeps capacity", prof.readTrace().meta.frameCapacity, 4);
 
+// --- playingOnly gates paused evals at beginEval ----------------------------
+// The Performance panel arms with playingOnly so paused param edits and
+// scrubs don't blend into playback stats. The gate must act at OPEN, not at
+// commit: a frame discarded at commit would leave its seq reusable, and a
+// late GPU resolve for the discarded frame would land in whichever committed
+// frame reused that seq.
+prof.setCaptureLevel(1, { frames: 4, playingOnly: true });
+check(
+  "playingOnly — paused root eval is not captured",
+  prof.beginEval(false, false),
+  false
+);
+prof.recordNode("paused", "t", 5, "params", 0, 0);
+prof.endEval(false, { tick: 1, playing: false });
+check("playingOnly — paused eval commits no frame", prof.readTrace().frames.length, 0);
+check("playingOnly — paused eval does not consume a seq", prof.currentSeq(), 0);
+{
+  // A nested pass inside a gated root must also report not-capturing.
+  prof.beginEval(false, false);
+  check("playingOnly — nested inside gated root not captured", prof.beginEval(true), false);
+  prof.endEval(true);
+  prof.endEval(false, { tick: 1, playing: false });
+}
+// A stale trigger from the gated eval must not label the first playing frame.
+prof.markTrigger("seek");
+prof.beginEval(false, false);
+prof.endEval(false, { tick: 1, playing: false });
+prof.beginEval(false, true);
+prof.recordNode("playing", "t", 3, "params", 0, 0);
+prof.endEval(false, { tick: 2, playing: true });
+{
+  const t = prof.readTrace();
+  check("playingOnly — playing eval IS captured", t.frames.length, 1);
+  check("playingOnly — gated eval's trigger not inherited", t.frames[0].trigger, "unknown");
+  check("playingOnly — captured frame holds its samples", t.frames[0].nodes[0].id, "playing");
+}
+// Default (no flag) still records paused evals — the MCP workflow depends on it.
+prof.setCaptureLevel(1, { frames: 4 });
+prof.beginEval(false, false);
+prof.recordNode("pausedDefault", "t", 5, "params", 0, 0);
+prof.endEval(false, { tick: 1, playing: false });
+check("default capture still records paused evals", prof.readTrace().frames.length, 1);
+
+// Restore the empty level-1/capacity-4 state the sections below assume.
+prof.setCaptureLevel(1, { frames: 4 });
+
 // --- GPU results resolve BACKWARDS into committed frames --------------------
 // The async part of level 3: a timing lands 1-3 frames after the frame it
 // belongs to, so it must be written into an already-closed frame — and must be

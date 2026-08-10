@@ -369,7 +369,22 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         );
       if (!SETTABLE_PARAM_TYPES.has(pdef.type))
         throw new Error(`"${param}" (${pdef.type}) can't be set remotely — only ${[...SETTABLE_PARAM_TYPES].join("/")} params.`);
-      const vet = vetParamValue(pdef, value);
+      // MCP transport coercion: some clients serialize the untyped `value`
+      // argument as a string ("1", "true"), which vetParamValue rightly
+      // rejects for scalar/boolean params. Coerce the unambiguous string
+      // forms here, at the transport boundary — vetParamValue still runs
+      // on the result, so range clamping and validation are unchanged.
+      // (Recipe JSON does NOT get this leniency; there a mistyped value is
+      // an authoring error the repair loop should see.)
+      let coerced = value;
+      if (typeof value === "string") {
+        if (pdef.type === "scalar" && value.trim() !== "" && Number.isFinite(Number(value))) {
+          coerced = Number(value);
+        } else if (pdef.type === "boolean" && (value === "true" || value === "false")) {
+          coerced = value === "true";
+        }
+      }
+      const vet = vetParamValue(pdef, coerced);
       if (!vet.ok) throw new Error(`Bad value for "${param}": ${vet.reason}.`);
       deps.onParamChange(String(nodeId), String(param), vet.value);
       deps.flashToast(`Claude: set ${param} on ${node.data.name ?? node.data.defType}`);
@@ -503,6 +518,11 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
     // paste console output. Capture is OFF until armed here (or from the
     // Window menu), so an unarmed session pays nothing.
     set_perf_capture: ({ level, frames }) => {
+      // No playingOnly here, deliberately: the agent's workflow traces paused
+      // interactions on purpose (set_param then get_perf). The Performance
+      // PANEL arms with playingOnly:true so its stats describe playback only
+      // — arming from either side replaces the other's mode, and always
+      // clears, so the trace is never a mix.
       const l = level === undefined ? 2 : Number(level);
       if (![0, 1, 2, 3].includes(l)) {
         throw new Error(

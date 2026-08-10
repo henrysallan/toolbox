@@ -16,6 +16,7 @@ For current material, see `specdocs/`:
 | `061226_devguide.md` | Architecture guide — start here |
 | `072226_architecture-review.md` | Most recent architecture review |
 | `080726_perf-profiler.md` | Perf tooling: profiler, GPU timing, bench |
+| `080826_blend-intersections-gpu.md` | Spec: GPU field eval for Blend Intersections |
 | `devlist.md` / `3Ddevlist.md` | Feature backlogs |
 | `essentials.md` | Missing-primitive-node todo list |
 | `typed-array-points-refactor.md` | Open migration checklist |

@@ -172,6 +172,8 @@ export function emptyClipOutput(
       return { primary: { kind: "string", value: "" } };
     case "spline":
       return { primary: { kind: "spline", subpaths: [] } };
+    case "notes":
+      return { primary: { kind: "notes", notes: [] } };
     case "points":
       return { primary: pointsFromArray([]) };
     case "image_group":

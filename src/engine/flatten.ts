@@ -348,6 +348,39 @@ export function resolveInteriorProducer(
     : null;
 }
 
+// Layer-level audio audition (080826_audio-nodes.md, revised audibility):
+// every layer whose interior wires audio into its Layer Output boundary,
+// resolved to the real producer (through reroutes / nested groups — the
+// same walk flatten itself uses). The evaluator forces these producers
+// into the needed set and treats them as audible sinks, so wiring audio at
+// the LAYER level is enough to hear it — no composition-level Output
+// hookup required. Boundary-only by design: audio arriving on a layer's
+// EXTERIOR `audio` input is composition-level wiring and follows the
+// Output-routing rule instead. Runs on the RAW graph (pre-flatten): the
+// boundary dissolves at flatten, and an unpulled interior chain leaves no
+// trace behind.
+export function collectLayerAudioAuditions(
+  nodes: GraphNode[],
+  edges: GraphEdge[]
+): { layerId: string; producerId: string }[] {
+  const out: { layerId: string; producerId: string }[] = [];
+  if (!nodes.some((n) => n.type === LAYER_TYPE)) return out;
+  const outputNodeOf = new Map<string, string>();
+  for (const n of nodes) {
+    if (n.type === GROUP_OUTPUT_TYPE && n.parentId) {
+      outputNodeOf.set(n.parentId, n.id);
+    }
+  }
+  for (const n of nodes) {
+    if (n.type !== LAYER_TYPE) continue;
+    const boundaryId = outputNodeOf.get(n.id);
+    if (!boundaryId) continue;
+    const resolved = resolveInteriorProducer(nodes, edges, boundaryId, "audio");
+    if (resolved) out.push({ layerId: n.id, producerId: resolved.nodeId });
+  }
+  return out;
+}
+
 export function flattenGraph(
   nodes: GraphNode[],
   edges: GraphEdge[]

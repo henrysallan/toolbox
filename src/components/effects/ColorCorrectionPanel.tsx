@@ -3,13 +3,16 @@
 import { useRef, useState } from "react";
 import type { Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
+import { MiniBarSlider } from "@/lib/param-controls";
 
 // DaVinci-style primaries panel for the Color Correction node: four color
 // wheels (Dark / Shadow / Light / Global = Lift / Gamma / Gain / Offset) each
-// with a balance disc, a master (luminance) slider, and Exp / Sat; plus a
-// bottom bar of Temp / Tint / Hue / Cont / Pivot / MD / B·Ofs. All controls
-// write straight to the node's scalar params; the grading happens in the
-// node's shader.
+// with a balance disc, a master (luminance) slider, and Exp / Sat. All
+// controls write straight to the node's scalar params; the grading happens in
+// the node's shader. The bar fields (Temp / Tint / Hue / Cont / Pivot / MD /
+// B·Ofs) are NOT rendered here — ParamPanel lays them out under this panel as
+// standard param rows (CC_BAR_PARAM_NAMES) so they get the stock slider,
+// keyframe diamond, and expose/control toggles.
 
 interface Props {
   node: Node<NodeDataPayload>;
@@ -32,27 +35,6 @@ const WHEEL_DEFAULTS: Record<string, number> = {
   Sat: 1,
 };
 
-const HUE_GRAD =
-  "linear-gradient(90deg,#ff0000,#ffff00,#00ff00,#00ffff,#0000ff,#ff00ff,#ff0000)";
-
-const BOTTOM_FIELDS: {
-  name: string;
-  label: string;
-  min: number;
-  max: number;
-  step: number;
-  def: number;
-  grad?: string;
-}[] = [
-  { name: "temp", label: "Temp", min: -1, max: 1, step: 0.001, def: 0, grad: "linear-gradient(90deg,var(--tb-a-blue-500),var(--tb-a-amber-500))" },
-  { name: "tint", label: "Tint", min: -1, max: 1, step: 0.001, def: 0, grad: "linear-gradient(90deg,var(--tb-a-green-500),#d946ef)" },
-  { name: "hue", label: "Hue", min: -180, max: 180, step: 0.5, def: 0, grad: HUE_GRAD },
-  { name: "contrast", label: "Cont", min: 0, max: 4, step: 0.001, def: 1, grad: "linear-gradient(90deg,#000,#fff)" },
-  { name: "pivot", label: "Pivot", min: 0, max: 1, step: 0.001, def: 0.5 },
-  { name: "md", label: "MD", min: -1, max: 1, step: 0.001, def: 0 },
-  { name: "boffset", label: "B·Ofs", min: -1, max: 1, step: 0.001, def: 0 },
-];
-
 export default function ColorCorrectionPanel({ node, onParamChange }: Props) {
   const params = node.data.params as Record<string, unknown>;
   const get = (name: string, def: number): number =>
@@ -73,31 +55,6 @@ export default function ColorCorrectionPanel({ node, onParamChange }: Props) {
       <div style={{ display: "flex", gap: 6, alignItems: "stretch" }}>
         {WHEELS.map((w) => (
           <ColorWheel key={w.key} wheelKey={w.key} label={w.label} get={get} set={set} />
-        ))}
-      </div>
-
-      <div style={{ height: 1, background: "var(--tb-n-5)", margin: "2px 0" }} />
-
-      {/* Bottom bar — gradient-tracked sliders */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          columnGap: 12,
-          rowGap: 8,
-        }}
-      >
-        {BOTTOM_FIELDS.map((f) => (
-          <GradientSlider
-            key={f.name}
-            label={f.label}
-            value={get(f.name, f.def)}
-            min={f.min}
-            max={f.max}
-            step={f.step}
-            grad={f.grad}
-            onChange={(v) => set(f.name, v)}
-          />
         ))}
       </div>
     </div>
@@ -280,54 +237,6 @@ function ColorWheel({
   );
 }
 
-// A bottom-bar field: label · slider (gradient track via --track) · value.
-function GradientSlider({
-  label,
-  value,
-  min,
-  max,
-  step,
-  grad,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  grad?: string;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-      <span style={{ color: "var(--tb-n-12)", flex: "0 0 34px" }}>{label}</span>
-      <input
-        type="range"
-        className="ccbar-slider"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        style={{
-          flex: 1,
-          minWidth: 0,
-          ["--track" as string]: grad ?? "var(--tb-n-9)",
-        } as React.CSSProperties}
-      />
-      <div style={{ flex: "0 0 42px" }}>
-        <NumField
-          value={value}
-          min={min}
-          max={max}
-          step={step}
-          onChange={onChange}
-        />
-      </div>
-    </div>
-  );
-}
-
 // Vertical master (luminance) slider on the left of the disc.
 function MasterSlider({
   value,
@@ -419,14 +328,14 @@ function MiniSlider({
           {value.toFixed(2)}
         </span>
       </div>
-      <input
-        type="range"
+      <MiniBarSlider
+        value={value}
         min={min}
         max={max}
         step={step}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        style={{ width: "100%", height: 12 }}
+        height={12}
+        minWidth={0}
+        onChange={onChange}
       />
     </div>
   );

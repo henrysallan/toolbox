@@ -5334,6 +5334,21 @@ export function ScalarSliderRow({
       : 0;
   const barColor = hasOverride ? "var(--tb-t-navy-d-7)" : "var(--tb-n-5)";
   const lineColor = hasOverride ? "#6b8fc7" : "var(--tb-n-12)";
+  // Axis-meaning gradient (ParamDef.trackGradient — Temp's blue↔amber, Hue's
+  // rainbow). Painted dim across the whole track as a preview of both
+  // directions, and vivid under the fill so the leading edge shows the
+  // current value's color. The fill div is only fillPct% wide, so its
+  // background is stretched back out to the full track width to keep the
+  // colors anchored in place. When a gradient is present it wins over the
+  // range-override fill tint; the override still shows via the handle and
+  // number-field border.
+  const grad = param.trackGradient;
+  const fillStyle: React.CSSProperties = grad
+    ? {
+        backgroundImage: grad,
+        backgroundSize: `${fillPct > 0 ? 10000 / fillPct : 100}% 100%`,
+      }
+    : { background: barColor };
   return (
     <div
       style={{ display: "flex", gap: 4, alignItems: "center", position: "relative" }}
@@ -5358,6 +5373,16 @@ export function ScalarSliderRow({
             pointerEvents: "none",
           }}
         >
+          {grad && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                background: grad,
+                opacity: 0.25,
+              }}
+            />
+          )}
           <div
             style={{
               position: "absolute",
@@ -5365,7 +5390,7 @@ export function ScalarSliderRow({
               top: 0,
               bottom: 0,
               width: `${fillPct}%`,
-              background: barColor,
+              ...fillStyle,
               borderRadius: BAR_SLIDER_RADIUS,
             }}
           />

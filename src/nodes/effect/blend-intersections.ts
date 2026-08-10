@@ -116,7 +116,14 @@ export const blendIntersectionsNode: NodeDefinition = {
       opts.resolution
     }|${opts.smoothing}|${ctx.width}x${ctx.height}`;
     if (sig !== state.lastSig) {
-      state.result = blendIntersections(src, ctx.width, ctx.height, opts);
+      // The narrow GPU slice: the SDF field loop runs as a fragment shader
+      // when it can match the CPU reference (spline-blend-intersections-gpu),
+      // and silently falls back to the CPU loop when it can't. Gated by
+      // npm run check:blend-gpu; A/B via __perf.blendGpu(false).
+      state.result = blendIntersections(src, ctx.width, ctx.height, opts, {
+        gl: ctx.gl,
+        getShader: (key, fs) => ctx.getShader(key, fs),
+      });
       state.lastSig = sig;
     }
     return { primary: state.result };

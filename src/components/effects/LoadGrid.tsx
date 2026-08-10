@@ -526,14 +526,19 @@ export default function LoadGrid({
     return () => cancelAnimationFrame(id);
   }, []);
 
-  // If sign-in state flips to signed-out while we're on the Private
-  // tab, bounce to Public. Done as a render-time reconciliation
+  // Reconcile the tab when sign-in state flips, done render-time
   // against the previously-seen `signedIn` to avoid a setState-in-
-  // effect cascade.
+  // effect cascade. Signed out on Private → bounce to Public. Signed
+  // in on Public → bounce to Private: auth resolves async (getSession
+  // runs in an effect), so a signed-in user still mounts as signed-out
+  // and the useState default above locks in Public — this flip is what
+  // actually lands them on their own work. Local is left alone (it can
+  // only be reached by an explicit click).
   const [seenSignedIn, setSeenSignedIn] = useState(signedIn);
   if (seenSignedIn !== signedIn) {
     setSeenSignedIn(signedIn);
     if (!signedIn && tab === "private") setTab("public");
+    if (signedIn && tab === "public") setTab("private");
   }
 
   // Reset rows to the loading state whenever the inputs change so

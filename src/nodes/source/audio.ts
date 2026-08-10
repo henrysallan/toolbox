@@ -1,4 +1,5 @@
 import type {
+  AudioChainElementLeaf,
   AudioFileParamValue,
   AudioValue,
   NodeDefinition,
@@ -38,6 +39,12 @@ interface AudioState {
   micStream: MediaStream | null;
   micRequested: boolean;
   micError: string | null;
+  // Cached element-leaf chain descriptor (080826_audio-nodes.md). The
+  // descriptor must be IDENTITY-stable across evals while the element is
+  // unchanged — this node is stable:false, so without the cache every
+  // frame would mint a new object and defeat the audio reconciler's
+  // identity short-circuit.
+  leaf: AudioChainElementLeaf | null;
 }
 
 function ensureState(ctx: RenderContext, nodeId: string): AudioState {
@@ -49,9 +56,50 @@ function ensureState(ctx: RenderContext, nodeId: string): AudioState {
     micStream: null,
     micRequested: false,
     micError: null,
+    leaf: null,
   };
   ctx.state[key] = s;
   return s;
+}
+
+// Element-leaf descriptor for this source, reused while the element (and
+// url) are unchanged. Lets downstream chain nodes (Filter, Audio Merge)
+// embed this source; the reconciler wraps the element via the shared
+// element-source registry only when a chain actually processes it, so a
+// bare Source → Output wire keeps today's element-direct path.
+function ensureLeaf(
+  state: AudioState,
+  nodeId: string,
+  element: HTMLMediaElement,
+  source: "file" | "mic",
+  url: string | null,
+  // Offline playback hints (080926 M-B) — snapshotted params so an export
+  // can re-create the audible behavior from the url alone.
+  hints?: { sync: boolean; loop: boolean; startOffset: number; volume: number }
+): AudioChainElementLeaf {
+  const prev = state.leaf;
+  if (
+    prev &&
+    prev.element === element &&
+    prev.url === url &&
+    prev.source === source &&
+    prev.sync === hints?.sync &&
+    prev.loop === hints?.loop &&
+    prev.startOffset === hints?.startOffset &&
+    prev.volume === hints?.volume
+  ) {
+    return prev;
+  }
+  const leaf: AudioChainElementLeaf = {
+    kind: "element",
+    nodeId,
+    element,
+    source,
+    url,
+    ...(hints ?? {}),
+  };
+  state.leaf = leaf;
+  return leaf;
 }
 
 export const audioSourceNode: NodeDefinition = {
@@ -163,7 +211,14 @@ export const audioSourceNode: NodeDefinition = {
       // counts as not-playing (nothing may be audible before the cut).
       el.muted = !ctx.playing || !!ctx.preroll || !audible;
       return {
-        primary: { kind: "audio", element: el, source: "mic" } satisfies AudioValue,
+        primary: {
+          kind: "audio",
+          element: el,
+          source: "mic",
+          // Mic has no offline form — url stays null and exports render
+          // this leaf silent.
+          chain: ensureLeaf(state, nodeId, el, "mic", null),
+        } satisfies AudioValue,
       };
     }
 
@@ -226,7 +281,17 @@ export const audioSourceNode: NodeDefinition = {
     }
 
     return {
-      primary: { kind: "audio", element: el, source: "file" } satisfies AudioValue,
+      primary: {
+        kind: "audio",
+        element: el,
+        source: "file",
+        chain: ensureLeaf(state, nodeId, el, "file", paramFile.url ?? null, {
+          sync,
+          loop: !!params.loop,
+          startOffset,
+          volume,
+        }),
+      } satisfies AudioValue,
     };
   },
 

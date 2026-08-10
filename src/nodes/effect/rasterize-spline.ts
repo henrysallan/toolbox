@@ -22,15 +22,13 @@ import { SPLINE_FILL_INPUT } from "@/nodes/source/spline-raster-aux";
 // the intermediate framebuffers and the second canvas. Either pass can
 // be toggled off independently. Fill draws first so the stroke sits on
 // top — matches what you'd get from compositing Fill under Stroke.
-
-const RASTER_FS = `#version 300 es
-precision highp float;
-in vec2 v_uv;
-uniform sampler2D u_src;
-out vec4 outColor;
-void main() {
-  outColor = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
-}`;
+//
+// The flat (no wired image) path returns its persistent upload texture
+// DIRECTLY (`ownsTextures: false`, the Text/Cursor pattern) instead of
+// blitting it into a pool texture: at 4K that blit was a ~3.4 ms
+// full-canvas GPU pass plus a 66 MB RGBA16F alloc/free per eval, spent
+// copying 8-bit data nobody gains precision from. The Y-flip the blit
+// shader used to do is baked into the upload via UNPACK_FLIP_Y_WEBGL.
 
 function makeTex(gl: WebGL2RenderingContext): WebGLTexture {
   const tex = gl.createTexture();
@@ -71,14 +69,22 @@ function ensureState(ctx: RenderContext, nodeId: string): RasterState {
   return s;
 }
 
+// `flipY` bakes the canvas row-0-top → texture Y-up flip into the upload
+// (flat path, whose texture is sampled as-is downstream). The image-path
+// layers stay unflipped — compositeSplineFill's shader samples them with
+// the row-0-top convention (`1.0 - v_uv.y`). FLIP_Y is global pixel-store
+// state, so it is always reset after the upload.
 function uploadCanvas(
   gl: WebGL2RenderingContext,
   tex: WebGLTexture,
-  c: HTMLCanvasElement
+  c: HTMLCanvasElement,
+  flipY = false
 ) {
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+  if (flipY) gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+  if (flipY) gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
   gl.bindTexture(gl.TEXTURE_2D, null);
 }
 
@@ -160,13 +166,47 @@ function polyArea(poly: number[]): number {
   return Math.abs(acc) * 0.5;
 }
 
+// Axis-aligned bounds of a flattened polygon, used to reject containment
+// pairs before paying for the full crossing test.
+function polyBounds(poly: number[]): [number, number, number, number] {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i < poly.length; i += 2) {
+    const x = poly[i];
+    const y = poly[i + 1];
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  return [minX, minY, maxX, maxY];
+}
+
 // Group subpaths into containment islands. Returns null when there's
-// nothing to group (or too many subpaths to test affordably — legacy
-// behavior is the fallback).
+// nothing to group.
+//
+// The containment test is O(n²) in subpaths, and each test walked the whole
+// candidate polygon — O(n²·m) overall. On a Blend Intersections web (218
+// subpaths, ~150 flattened vertices each) that is ~7M crossing tests per
+// frame, and it runs for BOTH the `holes` and `layered` paths, which are the
+// two modes actually worth using.
+//
+// A point outside a polygon's bounding box cannot be inside the polygon, so
+// the bbox test rejects the overwhelming majority of pairs in O(1). Subpaths
+// from a stroke network are mostly small and scattered, so few pairs survive.
+// Purely a prefilter: every pair that passes still gets the exact same
+// crossing test, so the grouping is unchanged.
+//
+// The cap stays, because the bbox prefilter degrades to the old cost when the
+// boxes genuinely do overlap (concentric rings), but it moved 256 -> 2048: at
+// 256 a Blend Intersections web of 300 blobs silently lost its holes with no
+// diagnostic, and 218 subpaths — an ordinary case — sat just under the cliff.
+const MAX_HOLE_ISLAND_SUBPATHS = 2048;
+
 function groupHoleIslands(subpaths: SplineSubpath[]): HoleIsland[] | null {
   const n = subpaths.length;
-  if (n < 2 || n > 256) return null;
+  if (n < 2 || n > MAX_HOLE_ISLAND_SUBPATHS) return null;
   const polys = subpaths.map(flattenForContainment);
+  const bounds = polys.map(polyBounds);
   const containers: number[][] = [];
   for (let i = 0; i < n; i++) {
     const c: number[] = [];
@@ -175,11 +215,14 @@ function groupHoleIslands(subpaths: SplineSubpath[]): HoleIsland[] | null {
     if (polys[i].length >= 6) {
       for (let j = 0; j < n; j++) {
         if (j === i || polys[j].length < 6) continue;
+        const b = bounds[j];
+        if (px < b[0] || px > b[2] || py < b[1] || py > b[3]) continue;
         if (pointInPoly(px, py, polys[j])) c.push(j);
       }
     }
     containers.push(c);
   }
+  const areas = new Float64Array(n).fill(-1); // lazily filled; -1 = unmeasured
   const islands = new Map<number, HoleIsland>();
   const orphanRoots: number[] = [];
   for (let i = 0; i < n; i++) {
@@ -198,7 +241,13 @@ function groupHoleIslands(subpaths: SplineSubpath[]): HoleIsland[] | null {
     let parentArea = Infinity;
     for (const j of containers[i]) {
       if (containers[j].length !== depth - 1) continue;
-      const a = polyArea(polys[j]);
+      // Memoized: a container that nests many holes was re-measured once per
+      // hole, and polyArea walks the whole flattened polygon.
+      let a = areas[j];
+      if (a < 0) {
+        a = polyArea(polys[j]);
+        areas[j] = a;
+      }
       if (a < parentArea) {
         parent = j;
         parentArea = a;
@@ -865,9 +914,9 @@ export const rasterizeSplineNode: NodeDefinition = {
   auxOutputs: [],
 
   compute({ inputs, params, ctx, nodeId }) {
-    const output = ctx.allocImage();
     const src = inputs.path;
     if (!src || src.kind !== "spline") {
+      const output = ctx.allocImage();
       ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output };
     }
@@ -889,8 +938,12 @@ export const rasterizeSplineNode: NodeDefinition = {
 
     if (!imgToFill && !imgToStroke) {
       // --- Flat path: bake fill (under) + stroke (over) into one canvas. ---
+      // "flat2" (not "flat"): the upload gained FLIP_Y when the blit pass was
+      // removed, so a lastSig persisted from the pre-flip code (HMR keeps
+      // ctx.state alive) must never match — it would serve an upside-down
+      // texture until the next content change.
       const sig = JSON.stringify({
-        mode: "flat",
+        mode: "flat2",
         subRef: src.subpaths,
         ov: params.overlap,
         hol: params.holes,
@@ -946,18 +999,26 @@ export const rasterizeSplineNode: NodeDefinition = {
             enableFill,
             enableStroke
           );
-          uploadCanvas(gl, state.rasterTex!, canvas);
+          uploadCanvas(gl, state.rasterTex!, canvas, true);
         }
         state.lastSig = sig;
       }
 
-      const prog = ctx.getShader("rasterize-spline/blit", RASTER_FS);
-      ctx.drawFullscreen(prog, output, (gl2) => {
-        gl2.activeTexture(gl2.TEXTURE0);
-        gl2.bindTexture(gl2.TEXTURE_2D, state.rasterTex);
-        gl2.uniform1i(gl2.getUniformLocation(prog, "u_src"), 0);
-      });
-      return { primary: output };
+      // The upload texture IS the output — no pool alloc, no blit pass.
+      // ownsTextures: false keeps the evaluator from releasing it on cache
+      // eviction; dispose() below owns it. The ImageValue is minted fresh
+      // each recompute so value-object identity still signals "upstream
+      // recomputed" to WeakMap-keyed consumers (texture identity does not —
+      // see the caching rules in the devguide).
+      return {
+        primary: {
+          kind: "image",
+          texture: state.rasterTex!,
+          width: W,
+          height: H,
+        },
+        ownsTextures: false,
+      };
     }
 
     // --- Image path: fill + stroke layers, composite the wired image into
@@ -1037,6 +1098,7 @@ export const rasterizeSplineNode: NodeDefinition = {
     }
 
     const fit = ((params.fill_fit as string) ?? "window") as SplineFillFit;
+    const output = ctx.allocImage();
     compositeSplineFill(ctx, output, {
       fillMaskTex: enableFill ? state.fillTex : state.zeroTex,
       strokeTex: enableStroke ? state.strokeTex : null,

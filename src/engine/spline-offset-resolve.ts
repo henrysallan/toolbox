@@ -1,6 +1,6 @@
 import { Bezier } from "bezier-js";
 import type { SplineAnchor, SplineSubpath } from "./types";
-import { subpathToBeziers } from "./spline-math";
+import { subpathToCurves } from "./spline-math";
 
 // Resolve self-overlaps introduced by parallel-curve offsetting.
 //
@@ -357,7 +357,7 @@ export function resolveSubpathOverlaps(
   let result: SplineSubpath | null;
 
   if (sub.closed) {
-    let curves = subpathToBeziers({ ...sub, closed: true }).map((s) => s.curve);
+    let curves = subpathToCurves({ ...sub, closed: true });
     if (curves.length === 0) return sub;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const hits = findHits(curves, true);
@@ -373,7 +373,7 @@ export function resolveSubpathOverlaps(
     }
     result = curvesToSubpath(curves, true);
   } else {
-    let curves = subpathToBeziers({ ...sub, closed: false }).map((s) => s.curve);
+    let curves = subpathToCurves({ ...sub, closed: false });
     if (curves.length === 0) return sub;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const hits = findHits(curves, false);

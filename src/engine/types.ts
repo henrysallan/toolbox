@@ -20,6 +20,13 @@ export type SocketType =
   | "spline"
   | "points"
   | "audio"
+  // Symbolic note events (a NotesValue) — the "vector" side of the audio
+  // pipeline, as `spline` is to `image`. Produced by note-domain nodes
+  // (Step Pattern, later the sequencer/piano-roll); consumed by instrument
+  // nodes, which are the audio "rasterizers" (notes in → audio out). Note
+  // times are integer ticks (the keyframe/clip timebase). Data-only, no
+  // cross-type coercions. Spec: specdocs/080826_audio-nodes.md.
+  | "notes"
   | "image_group"
   // Ordered, possibly-mixed collection of socket values (see ListValue).
   // Produced by the List node; consumed by the list transform nodes. Like
@@ -243,20 +250,168 @@ export type PointsValue = {
   points: Point[];
 };
 
-// Audio stream reference. Carries a live HTMLAudioElement that's either
-// driving an uploaded file or a microphone MediaStream. The element plays
-// its audio to the system's default output by itself — routing through
-// the node graph just means "this audio is active while the graph
-// evaluates it." Downstream nodes (filters, analyzers) would process
-// ctx.state rather than exchange data through the value.
+// Audio stream reference. Two generations live in one value
+// (specdocs/080826_audio-nodes.md):
+//
+//   element — a live HTMLMediaElement (uploaded file / mic / video track).
+//             The legacy carrier: when the value reaches the Output node's
+//             `audio` socket with no processing in between, the element
+//             plays element-direct exactly as before this spec.
+//   chain   — an AudioChainNode descriptor: the processable signal chain.
+//             Synthesis/effect nodes exchange ONLY descriptors — cheap
+//             immutable CPU values; zero audio work happens in compute().
+//             engine/audio-engine.ts reconciles the descriptor trees that
+//             arrive each eval into a persistent Tone.js graph (and renders
+//             the same descriptors offline for export). Element-backed
+//             sources attach an `element`-kind leaf chain so they can enter
+//             chains; pure synth chains carry no element at all.
 export type AudioValue = {
   kind: "audio";
   // HTMLMediaElement (not just HTMLAudioElement) so a Video Source can flow
   // its decoded audio track through this same socket — a <video> is an
-  // HTMLMediaElement and plays audio identically.
+  // HTMLMediaElement and plays audio identically. Absent for pure synth
+  // chains (Oscillator, instruments) — consumers that tap elements
+  // (audio-analysis, coerce audio→scalar) must null-guard.
+  element?: HTMLMediaElement;
+  source?: "file" | "mic" | "video";
+  chain?: AudioChainNode;
+};
+
+// ---------------------------------------------------------------------------
+// Audio chain descriptors (specdocs/080826_audio-nodes.md)
+//
+// The audio analog of the SDF AST: audio node defs do ZERO audio work — they
+// return one of these small immutable trees, and engine/audio-engine.ts
+// reconciles the trees against a live Tone.js graph (create / dispose /
+// ramp-params) once per eval. `nodeId` is the reconciliation key: it is the
+// graph node's id, stable across frames, so a param tweak retunes the same
+// live object instead of rebuilding it. Cache hits return the identical
+// descriptor object, which lets the reconciler short-circuit on identity.
+//
+// INVARIANT: node defs never import Tone or touch an AudioContext. All
+// execution lives behind audio-engine.ts — that is what keeps live playback
+// and deterministic offline export two interpretations of one description.
+// ---------------------------------------------------------------------------
+
+export type AudioStageParamValue = number | string | boolean;
+export type AudioStageParams = Record<string, AudioStageParamValue>;
+
+// One symbolic note. Times are integer ticks (ticksPerFrame × frame — the
+// keyframe/clip timebase) so note starts compare exactly against clip
+// windows and keyframes; convert to seconds only at the audio boundary
+// (audio-chain.ts noteEventsToSeconds).
+export interface NoteEvent {
+  // MIDI note number (69 = A4 = 440 Hz). Fractional values are legal and
+  // read as detune.
+  pitch: number;
+  // 0..1.
+  velocity: number;
+  startTick: number;
+  durationTicks: number;
+  // Optional stable identity for EDITOR selection and gestures (the piano
+  // roll — 080926_midi-editor.md M1). The audio engine never reads it:
+  // scheduling and the reschedule diff compare the four musical fields
+  // only. Minted lazily by the editor; absent on generated notes (Step
+  // Pattern) and on pre-M1 saves.
+  id?: string;
+}
+
+export type NotesValue = {
+  kind: "notes";
+  notes: NoteEvent[];
+};
+
+// An element-backed source entering a processable chain. Carries the live
+// element reference (the reconciler wraps it via the SHARED element-source
+// registry in audio-analysis.ts — createMediaElementSource is one-shot per
+// element, so analysis taps and chains must reuse one wrap). `url` is the
+// source media ObjectURL for deterministic offline decode; null = no
+// offline form (mic), rendered silent in exports.
+export interface AudioChainElementLeaf {
+  kind: "element";
+  nodeId: string;
   element: HTMLMediaElement;
   source: "file" | "mic" | "video";
-};
+  url: string | null;
+  // Offline playback hints (080926 M-B): how the element maps to scene
+  // time, snapshotted from the source node's params at emit time so an
+  // export can re-create the audible behavior from the url alone.
+  // Absent (older values): synced from 0, no loop, unity volume.
+  sync?: boolean;
+  loop?: boolean;
+  startOffset?: number;
+  volume?: number;
+}
+
+// Audio-rate modulation edge (080926_audio-v2-integration.md M-C): routes
+// another chain's output INTO one of this stage's Tone Signals, where
+// WebAudio SUMS it with the knob value — so a modulator's amplitude
+// expresses DEVIATION in the destination param's units (the Audio LFO's
+// min/max, source-side attenuation). `param` names the target; the def's
+// `<param>_mod` input socket and the adapter's `modTarget(param)` must
+// agree on the name. Any chain is a legal modulator.
+export interface AudioChainMod {
+  param: string;
+  chain: AudioChainNode;
+}
+
+// Free-running signal source (no note input): oscillator, noise, player.
+// `gen` is the adapter key inside audio-engine.ts.
+export interface AudioChainGenerator {
+  kind: "generator";
+  nodeId: string;
+  gen: string;
+  params: AudioStageParams;
+  mods?: AudioChainMod[];
+}
+
+// Notes → audio. The domain-crossing stage ("rasterizer"): the reconciler
+// schedules `notes` onto the slaved transport for live playback and into
+// the offline transport for export. `inst` is the adapter key.
+export interface AudioChainInstrument {
+  kind: "instrument";
+  nodeId: string;
+  inst: string;
+  params: AudioStageParams;
+  notes: NoteEvent[];
+  mods?: AudioChainMod[];
+}
+
+// Audio → audio processor. `fx` is the adapter key.
+export interface AudioChainEffect {
+  kind: "effect";
+  nodeId: string;
+  fx: string;
+  params: AudioStageParams;
+  input: AudioChainNode;
+  mods?: AudioChainMod[];
+}
+
+// One mixer lane. `gain` is linear, `pan` is -1..1. Solo is resolved by the
+// emitting node at descriptor-build time (a soloed set mutes the rest) so
+// the engine only ever sees effective gains.
+export interface AudioChainMixInput {
+  chain: AudioChainNode;
+  gain: number;
+  pan: number;
+  mute: boolean;
+}
+
+// N-input summing stage (Audio Merge). Per-lane gain/pan/mute mirror the
+// visual Merge node's per-layer opacity semantics.
+export interface AudioChainMix {
+  kind: "mix";
+  nodeId: string;
+  params: AudioStageParams;
+  inputs: AudioChainMixInput[];
+}
+
+export type AudioChainNode =
+  | AudioChainElementLeaf
+  | AudioChainGenerator
+  | AudioChainInstrument
+  | AudioChainEffect
+  | AudioChainMix;
 
 // Homogeneous image collection. Carries an ordered list of images —
 // `items[i]` always exists and is non-null up to the length.
@@ -570,6 +725,7 @@ export type SocketValue =
   | SplineValue
   | PointsValue
   | AudioValue
+  | NotesValue
   | ImageGroupValue
   | ListValue
   | TextInstanceValue
@@ -995,7 +1151,12 @@ export type ParamType =
   // WedgeValueItem[] — the Wedge node's explicit value list (one row per
   // batch-render variation). Plain-JSON serialization, not keyframable.
   // See src/nodes/source/wedge.ts + specdocs/archive/071026_wedge-render-batching.md.
-  | "wedge_values";
+  | "wedge_values"
+  // NoteEvent[] — the MIDI Editor node's authored piano-roll clip
+  // (080926_midi-editor.md). Edited exclusively in the viewport piano
+  // roll (declared `hidden` on the def, like spline_anchors' on-canvas
+  // editing); plain-JSON serialization, not keyframable.
+  | "notes_clip";
 
 // One named input variable on the Expression node. `name` is the JS
 // identifier the bound socket value is exposed as inside the expression
@@ -1301,6 +1462,12 @@ export interface ParamDef {
   // this only after verifying the node's parse path handles `#rrggbbaa`
   // end to end. Spec: 072026_color-alpha.md.
   alpha?: boolean;
+  // For "scalar" params: a CSS gradient hinting what the axis means
+  // (Temp's blue↔amber, Hue's rainbow). ScalarSliderRow paints it inside
+  // the track — dim across the full width, vivid under the fill — so the
+  // leading edge shows the current setting's color. UI-only hint like
+  // `stepFrom`: the engine ignores it.
+  trackGradient?: string;
   hidden?: boolean;
   // Optional predicate over the node's current params. Returning false hides
   // the row in the UI without affecting the underlying stored value.
@@ -1527,6 +1694,12 @@ export interface RenderContext {
   tick: number;
   ticksPerFrame: number;
   fps: number;
+  // Project tempo in beats per minute (default 120 when absent). Musical
+  // time for the note-domain nodes: authoring nodes (Step Pattern, the
+  // future sequencer) convert beats → ticks through this at compute time,
+  // so stored note data stays in ticks while a BPM change re-generates
+  // patterns. Serialized on the project's scene block.
+  bpm?: number;
   // Whether the scene's RAF playback is active right now. Used by
   // time-sensitive sources (Audio, Video) to decide whether to play or
   // pause their media elements; image-only nodes can safely ignore it.

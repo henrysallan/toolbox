@@ -45,9 +45,11 @@ const REASON_COLOR: Record<string, string> = {
 function Sparkline({
   frames,
   budgetMs,
+  emptyLabel,
 }: {
   frames: FrameSample[];
   budgetMs: number;
+  emptyLabel: string;
 }) {
   const W = 100;
   const H = 34;
@@ -64,7 +66,7 @@ function Sparkline({
           borderRadius: 3,
         }}
       >
-        no frames captured
+        {emptyLabel}
       </div>
     );
   }
@@ -128,16 +130,34 @@ function Sparkline({
 }
 
 /** Stacked bar of where the evaluator's CPU time goes. */
-function PhaseBar({ s }: { s: PerfSummary }) {
-  const p = s.phaseMsPerFrame;
+function PhaseBar({ s }: { s: PerfSummary | null }) {
+  const p = s?.phaseMsPerFrame;
   const parts = [
-    { k: "compute", v: p.compute ?? 0, c: "var(--tb-a-blue-400)" },
-    { k: "fingerprint", v: p.fingerprint ?? 0, c: "var(--tb-a-violet-400)" },
-    { k: "post", v: p.post ?? 0, c: "var(--tb-a-cyan-400)" },
-    { k: "flatten", v: p.flatten ?? 0, c: "var(--tb-a-green-400)" },
-    { k: "topo", v: p.topo ?? 0, c: "var(--tb-a-emerald-400)" },
-    { k: "other", v: Math.max(0, s.unattributedMsPerFrame), c: "var(--tb-n-7)" },
+    { k: "compute", v: p?.compute ?? 0, c: "var(--tb-a-blue-400)" },
+    { k: "fingerprint", v: p?.fingerprint ?? 0, c: "var(--tb-a-violet-400)" },
+    { k: "post", v: p?.post ?? 0, c: "var(--tb-a-cyan-400)" },
+    { k: "flatten", v: p?.flatten ?? 0, c: "var(--tb-a-green-400)" },
+    { k: "topo", v: p?.topo ?? 0, c: "var(--tb-a-emerald-400)" },
+    { k: "other", v: Math.max(0, s?.unattributedMsPerFrame ?? 0), c: "var(--tb-n-7)" },
   ].filter((x) => x.v > 0.001);
+  // No data: keep the track (the skeleton stays put) with a muted fill.
+  if (parts.length === 0) {
+    return (
+      <div>
+        <div
+          style={{
+            height: 8,
+            borderRadius: 2,
+            border: "1px solid var(--tb-border)",
+            background: "var(--tb-n-1)",
+          }}
+        />
+        <div style={{ marginTop: 4, fontSize: 9, color: "var(--tb-ink-muted)" }}>
+          phases –
+        </div>
+      </div>
+    );
+  }
   const total = parts.reduce((a, b) => a + b.v, 0) || 1;
   return (
     <div>
@@ -205,10 +225,11 @@ export function PerfPanel({
   // `getEdges` must be a STABLE callback from the caller; an inline arrow
   // would re-create this interval on every parent render.
   useEffect(() => {
-    // Nothing to clear on the way down: every readout below is already
-    // gated on `level > 0`, so stale state is unreachable rather than
-    // wrong — and clearing it here would be a setState directly in an
-    // effect body, which cascades a render.
+    // Nothing to clear on the way down — `arm` already reset summary/frames
+    // synchronously in the click handler. That reset moved OUT of this
+    // effect when the skeleton landed: the readouts now render at level 0
+    // (as dashes), so stale state would no longer be unreachable, it would
+    // be displayed as if live.
     if (level === 0) return;
     const tick = () => {
       setSummary(summarize({ top: 40, edges: getEdges() }));
@@ -225,14 +246,36 @@ export function PerfPanel({
   }, [level, getEdges]);
 
   const arm = useCallback((next: 0 | 1 | 2 | 3) => {
-    prof.setCaptureLevel(next, { frames: 600 });
+    // playingOnly: the panel's numbers should describe PLAYBACK. Without it,
+    // every paused param edit and scrub kept accumulating into the same
+    // stats until the user thought to hit Clear, silently blending "how fast
+    // is my graph" with "what did I poke while reading the panel". The MCP
+    // capture tools deliberately arm WITHOUT this flag — the agent traces
+    // paused edits on purpose.
+    prof.setCaptureLevel(next, { frames: 600, playingOnly: true });
     setLevel(next);
+    // Arming always clears the trace; drop the panel's copy in the same
+    // event so the skeleton never shows the previous capture's numbers as
+    // if they were current (at level 0 the poll effect is stopped and
+    // would never overwrite them).
+    setSummary(null);
+    setFrames([]);
   }, []);
 
   const budgetMs = 1000 / Math.max(1, fps);
-  const gpuTotal = summary?.gpu?.msPerFrame ?? 0;
-  const byGpu = !!summary?.gpu;
-  const worstBudget = Math.max(summary?.frameMs.mean ?? 0, gpuTotal);
+  // The layout below renders in EVERY state — off, armed-but-empty, live —
+  // with dashes standing in for absent numbers, so the panel's shape never
+  // jumps when capture starts. `live` is non-null only when there are real
+  // frames; everything data-driven keys off it.
+  const live = summary && summary.frames > 0 ? summary : null;
+  const gpuTotal = live?.gpu?.msPerFrame ?? 0;
+  // byGpu: real GPU data exists (sorting + colour follow it).
+  // gpuCol: the GPU column/stat is VISIBLE — also true while level 3 is
+  // armed with nothing resolved yet, so the table doesn't reflow when the
+  // first timing lands.
+  const byGpu = !!live?.gpu;
+  const gpuCol = byGpu || level === 3;
+  const worstBudget = Math.max(live?.frameMs.mean ?? 0, gpuTotal);
 
   return (
     <div
@@ -285,6 +328,7 @@ export function PerfPanel({
             onClick={() => {
               prof.resetTrace();
               setSummary(null);
+              setFrames([]); // the sparkline draws from these too
             }}
             style={{
               padding: "1px 7px",
@@ -300,108 +344,104 @@ export function PerfPanel({
           </button>
         )}
         <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--tb-ink-muted)" }}>
-          {summary ? `${summary.frames} frames` : "idle"}
+          {level === 0 ? "idle" : `${summary?.frames ?? 0} frames`}
         </span>
       </div>
 
       <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", padding: 6 }}>
-        {level === 0 && (
-          <div style={{ fontSize: 10, color: "var(--tb-ink-muted)", lineHeight: 1.6 }}>
-            Capture is off. Pick a level above, then drive the workload —
-            playback, a param edit, or a graph change. An idle editor evaluates
-            nothing and records no frames.
-            <br />
-            <br />
-            Level 3 adds per-node GPU time. On a 4K canvas the GPU is usually
-            where the frame actually goes, so start there when something feels
-            slow.
+        <Sparkline
+          frames={frames}
+          budgetMs={budgetMs}
+          emptyLabel={level === 0 ? "capture off" : "no frames yet — press play"}
+        />
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            margin: "5px 0 8px",
+            fontSize: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <Stat
+            label="CPU"
+            value={live ? `${fmt(live.frameMs.mean)} ms` : "–"}
+            sub={live ? `p95 ${fmt(live.frameMs.p95)}` : "p95 –"}
+          />
+          {gpuCol && (
+            <Stat
+              label="GPU"
+              value={live?.gpu ? `${fmt(live.gpu.msPerFrame)} ms` : "–"}
+              sub={
+                live?.gpu
+                  ? `${Math.round(live.gpu.coverage * 100)}% resolved`
+                  : "– resolved"
+              }
+              danger={!!live?.gpu && live.gpu.msPerFrame > budgetMs}
+            />
+          )}
+          <Stat
+            label="budget"
+            value={`${fmt(budgetMs, 1)} ms`}
+            sub={`${fps} fps target`}
+            danger={!!live && worstBudget > budgetMs}
+          />
+          <Stat
+            label="actual"
+            value={live?.fps ? `${live.fps.mean} fps` : "–"}
+            sub={live?.fps ? `p5 ${live.fps.p5}` : "p5 –"}
+            danger={!!live?.fps && live.fps.p5 < fps * 0.9}
+          />
+          <Stat
+            label="cache"
+            value={live ? `${Math.round(live.cache.hitRate * 100)}%` : "–"}
+            sub={
+              live
+                ? `${live.cache.alwaysRecomputing}/${live.cache.totalNodes} always`
+                : "– always"
+            }
+          />
+          {(level >= 2 || (live && live.poolPerFrame.allocs > 0)) && (
+            <Stat
+              label="textures"
+              value={
+                live && live.poolPerFrame.allocs > 0
+                  ? `${live.poolPerFrame.allocs}/f`
+                  : "–"
+              }
+              sub={
+                live && live.poolPerFrame.allocs > 0
+                  ? `${live.poolPerFrame.mb} MB`
+                  : "– MB"
+              }
+            />
+          )}
+        </div>
+
+        <PhaseBar s={live} />
+
+        {/* Contextual warnings and the recompute-roots list stay data-gated:
+            they are diagnoses, not layout — an empty "roots" section would
+            just be a heading with nothing to say. */}
+        {live && live.truncatedFrames > 0 && (
+          <div
+            style={{
+              marginTop: 6,
+              fontSize: 9,
+              color: "var(--tb-a-amber-400)",
+            }}
+          >
+            {live.truncatedFrames} frame(s) lost their node samples to
+            ring wrap — reduce the ring or shorten the capture.
           </div>
         )}
 
-        {level > 0 && summary && summary.frames === 0 && (
-          <div style={{ fontSize: 10, color: "var(--tb-ink-muted)", lineHeight: 1.6 }}>
-            Armed, nothing captured yet. Press play or edit a parameter.
-            <br />
-            <br />
-            If the editor window is in the background, requestAnimationFrame is
-            suspended and no frames will be recorded at all.
-          </div>
-        )}
-
-        {level > 0 && summary && summary.frames > 0 && (
-          <>
-            <Sparkline frames={frames} budgetMs={budgetMs} />
-            <div
-              style={{
-                display: "flex",
-                gap: 10,
-                margin: "5px 0 8px",
-                fontSize: 10,
-                flexWrap: "wrap",
-              }}
-            >
-              <Stat
-                label="CPU"
-                value={`${fmt(summary.frameMs.mean)} ms`}
-                sub={`p95 ${fmt(summary.frameMs.p95)}`}
-              />
-              {summary.gpu && (
-                <Stat
-                  label="GPU"
-                  value={`${fmt(summary.gpu.msPerFrame)} ms`}
-                  sub={`${Math.round(summary.gpu.coverage * 100)}% resolved`}
-                  danger={summary.gpu.msPerFrame > budgetMs}
-                />
-              )}
-              <Stat
-                label="budget"
-                value={`${fmt(budgetMs, 1)} ms`}
-                sub={`${fps} fps target`}
-                danger={worstBudget > budgetMs}
-              />
-              {summary.fps && (
-                <Stat
-                  label="actual"
-                  value={`${summary.fps.mean} fps`}
-                  sub={`p5 ${summary.fps.p5}`}
-                  danger={summary.fps.p5 < fps * 0.9}
-                />
-              )}
-              <Stat
-                label="cache"
-                value={`${Math.round(summary.cache.hitRate * 100)}%`}
-                sub={`${summary.cache.alwaysRecomputing}/${summary.cache.totalNodes} always`}
-              />
-              {summary.poolPerFrame.allocs > 0 && (
-                <Stat
-                  label="textures"
-                  value={`${summary.poolPerFrame.allocs}/f`}
-                  sub={`${summary.poolPerFrame.mb} MB`}
-                />
-              )}
-            </div>
-
-            <PhaseBar s={summary} />
-
-            {summary.truncatedFrames > 0 && (
-              <div
-                style={{
-                  marginTop: 6,
-                  fontSize: 9,
-                  color: "var(--tb-a-amber-400)",
-                }}
-              >
-                {summary.truncatedFrames} frame(s) lost their node samples to
-                ring wrap — reduce the ring or shorten the capture.
-              </div>
-            )}
-
-            {summary.poisonRoots.length > 0 && (
+        {live && live.poisonRoots.length > 0 && (
               <div style={{ marginTop: 10 }}>
                 <SectionTitle>
                   Recompute roots — uncacheable nodes dragging a chain
                 </SectionTitle>
-                {summary.poisonRoots.slice(0, 4).map((r) => (
+                {live.poisonRoots.slice(0, 4).map((r) => (
                   <div
                     key={r.id}
                     onClick={() => onSelectNode?.(r.id)}
@@ -437,29 +477,38 @@ export function PerfPanel({
               </div>
             )}
 
-            <div style={{ marginTop: 10 }}>
-              <SectionTitle>
-                Nodes by {byGpu ? "GPU" : "CPU"} time
-              </SectionTitle>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
-                <thead>
-                  <tr style={{ color: "var(--tb-ink-muted)", textAlign: "left" }}>
-                    <th style={{ fontWeight: 400, padding: "2px 0" }}>node</th>
-                    <th style={{ fontWeight: 400, textAlign: "right" }}>cpu</th>
-                    {byGpu && (
-                      <th style={{ fontWeight: 400, textAlign: "right" }}>gpu</th>
-                    )}
-                    <th style={{ fontWeight: 400, textAlign: "right" }}>recomp</th>
-                    <th style={{ fontWeight: 400, paddingLeft: 6 }}>why</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {summary.nodes.map((n) => {
+        <div style={{ marginTop: 10 }}>
+          <SectionTitle>
+            Nodes by {byGpu ? "GPU" : "CPU"} time
+          </SectionTitle>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+            <thead>
+              <tr style={{ color: "var(--tb-ink-muted)", textAlign: "left" }}>
+                <th style={{ fontWeight: 400, padding: "2px 0" }}>node</th>
+                <th style={{ fontWeight: 400, textAlign: "right" }}>cpu</th>
+                {gpuCol && (
+                  <th style={{ fontWeight: 400, textAlign: "right" }}>gpu</th>
+                )}
+                <th style={{ fontWeight: 400, textAlign: "right" }}>recomp</th>
+                <th style={{ fontWeight: 400, paddingLeft: 6 }}>why</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!live && (
+                <tr style={{ borderTop: "1px solid var(--tb-border)", color: "var(--tb-ink-disabled)" }}>
+                  <td style={{ padding: "2px 0" }}>–</td>
+                  <td style={{ textAlign: "right" }}>–</td>
+                  {gpuCol && <td style={{ textAlign: "right" }}>–</td>}
+                  <td style={{ textAlign: "right" }}>–</td>
+                  <td style={{ paddingLeft: 6 }}>–</td>
+                </tr>
+              )}
+              {live?.nodes.map((n) => {
                     const cost = byGpu ? (n.gpuMsPerFrame ?? 0) : n.msPerFrame;
                     const share =
                       byGpu && gpuTotal > 0
                         ? cost / gpuTotal
-                        : cost / Math.max(0.001, summary.frameMs.mean);
+                        : cost / Math.max(0.001, live.frameMs.mean);
                     return (
                       <tr
                         key={n.id}
@@ -503,7 +552,7 @@ export function PerfPanel({
                         <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                           {fmt(n.msPerFrame)}
                         </td>
-                        {byGpu && (
+                        {gpuCol && (
                           <td
                             style={{
                               textAlign: "right",
@@ -537,16 +586,44 @@ export function PerfPanel({
                       </tr>
                     );
                   })}
-                </tbody>
-              </table>
-              {byGpu && summary.gpu && summary.gpu.coverage < 0.5 && (
-                <div style={{ fontSize: 9, color: "var(--tb-ink-muted)", marginTop: 4 }}>
-                  Only {Math.round(summary.gpu.coverage * 100)}% of samples have a
-                  GPU timing yet — a dash means not-yet-resolved, not zero.
-                </div>
-              )}
+            </tbody>
+          </table>
+          {byGpu && live?.gpu && live.gpu.coverage < 0.5 && (
+            <div style={{ fontSize: 9, color: "var(--tb-ink-muted)", marginTop: 4 }}>
+              Only {Math.round(live.gpu.coverage * 100)}% of samples have a
+              GPU timing yet — a dash means not-yet-resolved, not zero.
             </div>
-          </>
+          )}
+        </div>
+
+        {/* Guidance sits BELOW the skeleton so the sections above hold the
+            same position empty and live — data arriving replaces dashes, it
+            doesn't reflow the panel. */}
+        {!live && (
+          <div
+            style={{
+              marginTop: 10,
+              fontSize: 10,
+              color: "var(--tb-ink-muted)",
+              lineHeight: 1.6,
+            }}
+          >
+            {level === 0 ? (
+              <>
+                Capture is off. Pick a level above, then press play — the
+                panel records only while the timeline is playing, and
+                rewinding to frame 0 starts a fresh capture. Level 3 adds
+                per-node GPU time; on a 4K canvas that is usually where the
+                frame actually goes.
+              </>
+            ) : (
+              <>
+                Armed — press play to record. If the editor window is in the
+                background, requestAnimationFrame is suspended and no frames
+                will be recorded at all.
+              </>
+            )}
+          </div>
         )}
       </div>
     </div>

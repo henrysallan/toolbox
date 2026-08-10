@@ -29,6 +29,7 @@ import {
   resolveOutputBoundarySockets,
   type GroupSocketSpec,
 } from "@/engine/groups";
+import { fuzzyScoreFields } from "@/lib/fuzzy-search";
 import { evalNumExpr } from "@/lib/num-expr";
 import { EXPORT_PARAMS } from "@/nodes/output/output";
 import { SVG_STYLE_PARAMS } from "@/nodes/output/svg-export";
@@ -40,6 +41,7 @@ import SegmentPanel from "./SegmentPanel";
 import DepthAnythingPanel from "./DepthAnythingPanel";
 import DatamoshPanel from "./DatamoshPanel";
 import ColorCorrectionPanel from "./ColorCorrectionPanel";
+import { CC_BAR_PARAM_NAMES } from "@/nodes/effect/color-correction";
 import RgbCurvesPanel from "./RgbCurvesPanel";
 import AutoLayoutPanel from "./AutoLayoutPanel";
 import { PaintBrushSection } from "./paint-editor/BrushEditor";
@@ -246,6 +248,10 @@ interface Props {
   // timeline).
   fps: number;
   onFpsChange: (fps: number) => void;
+  // Project tempo (beats/min) for the audio note-domain nodes
+  // (080826_audio-nodes.md). Lives beside fps in Project Settings.
+  bpm: number;
+  onBpmChange: (bpm: number) => void;
   onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
   onToggleParamExposed: (nodeId: string, paramName: string) => void;
   // Toggles whether a param shows up as a knob in an exported app's control
@@ -380,6 +386,45 @@ const NARROW_PANEL_PX = 380;
 // own ResizeObserver.
 const NarrowPanelContext = createContext(false);
 
+// Fuzzy filter behind the params search field. A param matches on its label,
+// its raw name (so `feather_px` is reachable by typing the underscore name
+// even when the label reads "Feather"), or its group id — typing a group name
+// pulls up everything under it.
+//
+// Declaration order is preserved rather than sorting by score: the panel's
+// order and grouping are a map the user already knows, and re-ranking rows
+// under a filter makes a familiar panel unrecognizable. With a handful of
+// survivors, ranking buys nothing anyway.
+function filterParamsByQuery(
+  params: readonly ParamDef[],
+  query: string
+): ParamDef[] {
+  const direct = new Set<ParamDef>();
+  // Groups whose HEADER matched — the header alone is just an enable toggle,
+  // so a hit on it means the user wants the params it gates.
+  const wholeGroups = new Set<string>();
+  // Groups with a surviving child — their header comes along for context, so
+  // the match keeps its enable toggle and its indent.
+  const groupsWithHit = new Set<string>();
+  for (const p of params) {
+    const fields = [
+      { text: p.label ?? p.name, weight: 1 },
+      { text: p.name, weight: 0.7 },
+    ];
+    if (p.group) fields.push({ text: p.group, weight: 0.5 });
+    if (fuzzyScoreFields(query, fields) === null) continue;
+    direct.add(p);
+    if (!p.group) continue;
+    if (p.groupHeader) wholeGroups.add(p.group);
+    else groupsWithHit.add(p.group);
+  }
+  return params.filter((p) => {
+    if (direct.has(p)) return true;
+    if (!p.group) return false;
+    return wholeGroups.has(p.group) || (!!p.groupHeader && groupsWithHit.has(p.group));
+  });
+}
+
 // Scroll container for the whole panel — owns the single width measurement
 // that drives the one-line / two-line row layout below.
 function ParamPanelShell({ children }: { children: ReactNode }) {
@@ -437,6 +482,8 @@ function ParamPanel({
   onCanvasResChange,
   fps,
   onFpsChange,
+  bpm,
+  onBpmChange,
   onParamChange,
   onConvertToEditable,
   onToggleParamExposed,
@@ -500,6 +547,60 @@ function ParamPanel({
       return next;
     });
 
+  // Params search box (right half of the title bar). Purely a view filter —
+  // it never touches stored params, and a hidden param keeps its value.
+  const [paramQuery, setParamQuery] = useState("");
+  // Selecting a different node starts a fresh search: a filter left over from
+  // the previous node reads as "this node has two params".
+  const [queryNodeId, setQueryNodeId] = useState(selectedId);
+  if (selectedId !== queryNodeId) {
+    setQueryNodeId(selectedId);
+    setParamQuery("");
+  }
+
+  // Which params the panel would show with no search active. Hoisted out of
+  // the render block below so the title bar can decide whether the node has
+  // enough rows to be worth a search field.
+  const exposedSet = new Set(selected?.data.exposedParams ?? []);
+  const controlSet = new Set(selected?.data.controlParams ?? []);
+  const visibleParams =
+    selected && def
+      ? def.params.filter((p) => {
+          if (p.hidden) return false;
+          // Always show exposed/controlled params so the user can reach
+          // them to un-toggle, even when `visibleIf` would otherwise hide.
+          if (exposedSet.has(p.name)) return true;
+          if (controlSet.has(p.name)) return true;
+          // Same rule for per-stop ramp exposures/controls — their
+          // virtual names embed the owning param's name.
+          if (p.type === "color_ramp") {
+            for (const s of exposedSet) {
+              if (parseRampParamKey(s)?.paramName === p.name) return true;
+            }
+            for (const s of controlSet) {
+              if (parseRampParamKey(s)?.paramName === p.name) return true;
+            }
+          }
+          // Output-only: the SVG styling rows stay out of sight until
+          // the `spline` tap is wired. Deliberately AFTER the
+          // exposed/controlled escape hatches above, so unwiring the
+          // spline can't strand an exposure the user has to un-toggle.
+          if (
+            def.type === "output" &&
+            !outputSplineWired &&
+            SVG_STYLE_PARAM_NAMES.has(p.name)
+          ) {
+            return false;
+          }
+          return p.visibleIf?.(selected.data.params) ?? true;
+        })
+      : [];
+  const searchQuery = paramQuery.trim();
+  const searching = searchQuery.length > 0;
+  const matchedParams = searching
+    ? filterParamsByQuery(visibleParams, searchQuery)
+    : visibleParams;
+
   return (
     <ParamPanelShell>
       {mode === "project" ? (
@@ -508,6 +609,8 @@ function ParamPanel({
           onCanvasResChange={onCanvasResChange}
           fps={fps}
           onFpsChange={onFpsChange}
+          bpm={bpm}
+          onBpmChange={onBpmChange}
         />
       ) : mode === "load" ? (
         <LoadGrid
@@ -590,10 +693,53 @@ function ParamPanel({
           onParamChange={onParamChange}
         />
       ) : selected && selected.data.defType === "color-correction" ? (
-        // DaVinci-style primaries panel (4 color wheels + bottom bar).
-        <Section label="color correction · primaries">
-          <ColorCorrectionPanel node={selected} onParamChange={onParamChange} />
-        </Section>
+        // DaVinci-style primaries panel (4 color wheels), then the grade bar
+        // fields as standard param rows — same slider / keyframe-diamond /
+        // expose chrome as every other node, wired to the same plumbing the
+        // generic renderRow uses.
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Section label="color correction · primaries">
+            <ColorCorrectionPanel node={selected} onParamChange={onParamChange} />
+          </Section>
+          <Section label="grade">
+            {CC_BAR_PARAM_NAMES.map((name) => {
+              const p = def?.params.find((pp) => pp.name === name);
+              if (!p) return null;
+              const isExposed = exposedSet.has(name);
+              return (
+                <ParamRow
+                  key={`${selected.id}:${name}`}
+                  param={p}
+                  value={selected.data.params[name]}
+                  allParams={selected.data.params}
+                  onChange={(v) => onParamChange(selected.id, name, v)}
+                  exposed={isExposed}
+                  exposable={paramSocketType(p.type) !== null}
+                  driven={isExposed && isParamDriven(selected.id, name)}
+                  controlled={controlSet.has(name)}
+                  controlSupported
+                  onToggleExposed={() => onToggleParamExposed(selected.id, name)}
+                  onToggleControl={() => onToggleParamControl(selected.id, name)}
+                  rangeOverride={selected.data.paramOverrides?.[name]}
+                  onRangeChange={
+                    onParamRangeChange
+                      ? (next) => onParamRangeChange(selected.id, name, next)
+                      : undefined
+                  }
+                  animation={getAnimation?.(selected.id, name)}
+                  currentTick={currentTick}
+                  onSeekTick={onSeekTick}
+                  keyframable={isKeyframable(p.type)}
+                  onAnimationChange={
+                    onAnimationChange
+                      ? (next) => onAnimationChange(selected.id, name, next)
+                      : undefined
+                  }
+                />
+              );
+            })}
+          </Section>
+        </div>
       ) : selected && selected.data.defType === "rgb-curves" ? (
         // Full-panel resize-aware tone-curve editor. `key` resets the
         // editor's local UI state (active channel, selection) per node.
@@ -933,60 +1079,66 @@ function ParamPanel({
             // node header / breadcrumbs / Layers editor all read back.
             // Group + layer shells already carry their own name field
             // above, so they keep a plain text header here.
-            label={selected.data.name}
+            // The title bar is split: name on the left, params search on the
+            // right. `stretch` keeps the two fields the same height without
+            // either one hard-coding it.
             header={
-              onRenameNode && def.type !== LAYER_TYPE ? (
-                <NodeNameField
+              <div
+                style={{ display: "flex", alignItems: "stretch", gap: 6 }}
+              >
+                <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+                  {onRenameNode && def.type !== LAYER_TYPE ? (
+                    <NodeNameField
+                      key={selected.id}
+                      name={selected.data.name}
+                      onCommit={(v) => onRenameNode(selected.id, v)}
+                      style={{
+                        height: "100%",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        letterSpacing: 0.3,
+                        padding: "5px 9px",
+                        // Rounder than a plain field — echoes the node header
+                        // chip this title mirrors.
+                        borderRadius: 8,
+                      }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        color: "var(--tb-n-11)",
+                        textTransform: "uppercase",
+                        letterSpacing: 1,
+                        fontSize: 10,
+                        padding: "6px 2px",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {selected.data.name}
+                    </div>
+                  )}
+                </div>
+                {/* Always present, even on a two-param node: a field that
+                    comes and goes with the node you clicked is harder to
+                    trust than one that's always in the same place. */}
+                <ParamSearchField
                   key={selected.id}
-                  name={selected.data.name}
-                  onCommit={(v) => onRenameNode(selected.id, v)}
-                  style={{
-                    fontSize: 12,
-                    fontWeight: 600,
-                    letterSpacing: 0.3,
-                    padding: "5px 9px",
-                    // Rounder than a plain field — echoes the node header
-                    // chip this title mirrors.
-                    borderRadius: 8,
-                  }}
+                  value={paramQuery}
+                  onChange={setParamQuery}
                 />
-              ) : undefined
+              </div>
             }
           >
           {(() => {
-            const exposedSet = new Set(selected.data.exposedParams ?? []);
-            const controlSet = new Set(selected.data.controlParams ?? []);
-            const visible = def.params.filter((p) => {
-              if (p.hidden) return false;
-              // Always show exposed/controlled params so the user can reach
-              // them to un-toggle, even when `visibleIf` would otherwise hide.
-              if (exposedSet.has(p.name)) return true;
-              if (controlSet.has(p.name)) return true;
-              // Same rule for per-stop ramp exposures/controls — their
-              // virtual names embed the owning param's name.
-              if (p.type === "color_ramp") {
-                for (const s of exposedSet) {
-                  if (parseRampParamKey(s)?.paramName === p.name) return true;
-                }
-                for (const s of controlSet) {
-                  if (parseRampParamKey(s)?.paramName === p.name) return true;
-                }
-              }
-              // Output-only: the SVG styling rows stay out of sight until
-              // the `spline` tap is wired. Deliberately AFTER the
-              // exposed/controlled escape hatches above, so unwiring the
-              // spline can't strand an exposure the user has to un-toggle.
-              if (
-                def.type === "output" &&
-                !outputSplineWired &&
-                SVG_STYLE_PARAM_NAMES.has(p.name)
-              ) {
-                return false;
-              }
-              return p.visibleIf?.(selected.data.params) ?? true;
-            });
+            const visible = matchedParams;
             if (visible.length === 0) {
-              return <div style={{ color: "var(--tb-n-10)" }}>(no parameters)</div>;
+              return (
+                <div style={{ color: "var(--tb-n-10)" }}>
+                  {searching ? `(no params match "${searchQuery}")` : "(no parameters)"}
+                </div>
+              );
             }
             // One param's row element — shared by standalone rows, group
             // headers, and grouped children.
@@ -1125,7 +1277,11 @@ function ParamPanel({
                 );
               }
               const gkey = `${selected.id}:${u.id}`;
-              const collapsed = collapsedGroups.has(gkey);
+              // A search overrides the collapse state: a hit hidden inside a
+              // collapsed group reads as "no results". The user's own
+              // collapse choice is untouched and comes back when the box
+              // clears.
+              const collapsed = !searching && collapsedGroups.has(gkey);
               const hasChildren = u.children.length > 0;
               const header = u.header;
               const enabled = header
@@ -1339,11 +1495,15 @@ function ProjectSettings({
   onCanvasResChange,
   fps,
   onFpsChange,
+  bpm,
+  onBpmChange,
 }: {
   canvasRes: [number, number];
   onCanvasResChange: (res: [number, number]) => void;
   fps: number;
   onFpsChange: (fps: number) => void;
+  bpm: number;
+  onBpmChange: (bpm: number) => void;
 }) {
   const resKey = `${canvasRes[0]}×${canvasRes[1]}`;
   const isPreset = RES_PRESETS.some((r) => `${r.w}×${r.h}` === resKey);
@@ -1405,6 +1565,17 @@ function ProjectSettings({
             width={56}
           />
           <span style={{ color: "var(--tb-n-10)" }}>fps</span>
+        </div>
+        <span style={{ color: "var(--tb-n-15)", marginTop: 4 }}>tempo</span>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <ResInput
+            value={bpm}
+            onCommit={onBpmChange}
+            min={20}
+            max={999}
+            width={56}
+          />
+          <span style={{ color: "var(--tb-n-10)" }}>bpm</span>
         </div>
       </div>
     </Section>
@@ -1526,6 +1697,95 @@ function NodeNameField({
         ...style,
       }}
     />
+  );
+}
+
+// Params search box — the right half of the panel's title bar. Filters the
+// rows below as you type (fuzzy, see filterParamsByQuery); Escape clears,
+// then blurs. Narrow panels give it less room so the node name, which is the
+// thing you read to know where you are, keeps the majority of the bar.
+function ParamSearchField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const narrow = useContext(NarrowPanelContext);
+  const ref = useRef<HTMLInputElement | null>(null);
+  return (
+    <div
+      style={{
+        position: "relative",
+        display: "flex",
+        flex: `0 1 ${narrow ? 108 : 148}px`,
+        minWidth: 0,
+      }}
+    >
+      <input
+        ref={ref}
+        type="text"
+        value={value}
+        spellCheck={false}
+        placeholder="filter…"
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== "Escape") return;
+          // Don't let Escape bubble out to the canvas (deselect) while
+          // there's still a filter to clear.
+          e.stopPropagation();
+          if (value) onChange("");
+          else ref.current?.blur();
+        }}
+        title="Filter parameters by name"
+        style={{
+          width: "100%",
+          background: "var(--tb-n-0)",
+          border: "1px solid var(--tb-n-7)",
+          color: "var(--tb-n-16)",
+          fontFamily: "inherit",
+          fontSize: 11,
+          // Room on the right for the clear button.
+          padding: value ? "5px 20px 5px 8px" : "5px 8px",
+          // Matches the name field it sits beside.
+          borderRadius: 8,
+          boxSizing: "border-box",
+          minWidth: 0,
+        }}
+      />
+      {value && (
+        <button
+          type="button"
+          onClick={() => {
+            onChange("");
+            ref.current?.focus();
+          }}
+          title="Clear filter"
+          style={{
+            position: "absolute",
+            right: 4,
+            top: "50%",
+            transform: "translateY(-50%)",
+            width: 14,
+            height: 14,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "transparent",
+            border: "none",
+            borderRadius: 3,
+            color: "var(--tb-n-11)",
+            cursor: "pointer",
+            fontFamily: "inherit",
+            fontSize: 11,
+            lineHeight: 1,
+            padding: 0,
+          }}
+        >
+          ×
+        </button>
+      )}
+    </div>
   );
 }
 

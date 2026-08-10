@@ -88,73 +88,67 @@ export function marchingSquares(
       const x1 = x0 + stepX;
       const y1 = y0 + stepY;
 
-      // Iso-crossing points on each of the four edges. Computed
-      // lazily — most cases only need two of these.
-      const top = (): Pt => ({
-        x: x0 + isoT(tl, tr, iso) * stepX,
-        y: y0,
-      });
-      const right = (): Pt => ({
-        x: x1,
-        y: y0 + isoT(tr, br, iso) * stepY,
-      });
-      const bottom = (): Pt => ({
-        x: x0 + isoT(bl, br, iso) * stepX,
-        y: y1,
-      });
-      const left = (): Pt => ({
-        x: x0,
-        y: y0 + isoT(tl, bl, iso) * stepY,
-      });
+      // Iso-crossing along each of the four edges, as plain numbers.
+      //
+      // These were four arrow functions built per cell so that only the two
+      // edges a case needs got evaluated. That traded four closure
+      // ALLOCATIONS for two divisions — a bad trade at ~9k boundary cells a
+      // frame, and the allocations landed in the hot path of the slowest
+      // phase of Blend Intersections. isoT guards its own denominator, so
+      // evaluating an edge the case ignores is harmless.
+      const topX = x0 + isoT(tl, tr, iso) * stepX;
+      const rightY = y0 + isoT(tr, br, iso) * stepY;
+      const bottomX = x0 + isoT(bl, br, iso) * stepX;
+      const leftY = y0 + isoT(tl, bl, iso) * stepY;
 
       switch (code) {
         case 1:
-          segments.push({ a: left(), b: bottom() });
+          segments.push({ a: { x: x0, y: leftY }, b: { x: bottomX, y: y1 } });
           break;
         case 2:
-          segments.push({ a: bottom(), b: right() });
+          segments.push({ a: { x: bottomX, y: y1 }, b: { x: x1, y: rightY } });
           break;
         case 3:
-          segments.push({ a: left(), b: right() });
+          segments.push({ a: { x: x0, y: leftY }, b: { x: x1, y: rightY } });
           break;
         case 4:
-          segments.push({ a: top(), b: right() });
+          segments.push({ a: { x: topX, y: y0 }, b: { x: x1, y: rightY } });
           break;
         case 5:
           // Saddle. Disconnected interpretation: two arcs that
           // don't touch, drawn so each "in" diagonal forms a
           // separate cap.
-          segments.push({ a: left(), b: top() });
-          segments.push({ a: bottom(), b: right() });
+          segments.push({ a: { x: x0, y: leftY }, b: { x: topX, y: y0 } });
+          segments.push({ a: { x: bottomX, y: y1 }, b: { x: x1, y: rightY } });
           break;
         case 6:
-          segments.push({ a: top(), b: bottom() });
+          segments.push({ a: { x: topX, y: y0 }, b: { x: bottomX, y: y1 } });
           break;
         case 7:
-          segments.push({ a: left(), b: top() });
+          segments.push({ a: { x: x0, y: leftY }, b: { x: topX, y: y0 } });
           break;
         case 8:
-          segments.push({ a: left(), b: top() });
+          segments.push({ a: { x: x0, y: leftY }, b: { x: topX, y: y0 } });
           break;
         case 9:
-          segments.push({ a: top(), b: bottom() });
+          segments.push({ a: { x: topX, y: y0 }, b: { x: bottomX, y: y1 } });
           break;
         case 10:
           // Saddle (other parity). Same disconnected split.
-          segments.push({ a: left(), b: bottom() });
-          segments.push({ a: top(), b: right() });
+          segments.push({ a: { x: x0, y: leftY }, b: { x: bottomX, y: y1 } });
+          segments.push({ a: { x: topX, y: y0 }, b: { x: x1, y: rightY } });
           break;
         case 11:
-          segments.push({ a: top(), b: right() });
+          segments.push({ a: { x: topX, y: y0 }, b: { x: x1, y: rightY } });
           break;
         case 12:
-          segments.push({ a: left(), b: right() });
+          segments.push({ a: { x: x0, y: leftY }, b: { x: x1, y: rightY } });
           break;
         case 13:
-          segments.push({ a: bottom(), b: right() });
+          segments.push({ a: { x: bottomX, y: y1 }, b: { x: x1, y: rightY } });
           break;
         case 14:
-          segments.push({ a: left(), b: bottom() });
+          segments.push({ a: { x: x0, y: leftY }, b: { x: bottomX, y: y1 } });
           break;
       }
     }
@@ -173,51 +167,94 @@ function chainSegments(segments: Segment[], cellSize: number): SplineSubpath[] {
   if (segments.length === 0) return [];
   const PRECISION = cellSize / 8;
   const inv = 1 / PRECISION;
-  const hash = (p: Pt) => `${Math.round(p.x * inv)}:${Math.round(p.y * inv)}`;
 
-  // Map each endpoint hash to a list of (segIdx, isStart) pairs. Most
-  // points are shared between exactly two segments; saddles can have
-  // four, but the disconnected disambiguation keeps them paired up
-  // along distinct chains so the walk still works.
-  const adj = new Map<string, Array<{ segIdx: number; isStart: boolean }>>();
-  segments.forEach((s, idx) => {
-    const ha = hash(s.a);
-    const hb = hash(s.b);
-    if (!adj.has(ha)) adj.set(ha, []);
-    if (!adj.has(hb)) adj.set(hb, []);
-    adj.get(ha)!.push({ segIdx: idx, isStart: true });
-    adj.get(hb)!.push({ segIdx: idx, isStart: false });
-  });
+  // Endpoint identity as an INTEGER, not a string.
+  //
+  // This was a template literal (`${qx}:${qy}`) into a Map<string,...>,
+  // evaluated twice per segment when building the adjacency and AGAIN on
+  // every step of every walk. Two string allocations plus a string hash per
+  // lookup made chaining the single most expensive phase of Blend
+  // Intersections — more than the SDF field sampling it feeds on.
+  //
+  // Same quantization, so the same points match: the grid is 1/8 of a cell,
+  // and both halves fit a float64's 53-bit integer range with room to spare
+  // (|q| stays under 2^20 for any sane grid, and 2^20 * 2^21 = 2^41).
+  const KOFF = 1 << 20;
+  const KSTRIDE = 1 << 21;
+  const keyOf = (p: Pt) =>
+    (Math.round(p.y * inv) + KOFF) * KSTRIDE + (Math.round(p.x * inv) + KOFF);
+
+  // Endpoint keys, computed once per segment rather than per lookup.
+  const n = segments.length;
+  const ka = new Float64Array(n);
+  const kb = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    ka[i] = keyOf(segments[i].a);
+    kb[i] = keyOf(segments[i].b);
+  }
+
+  // Map each endpoint key to the segment ends meeting there, encoded as
+  // idx*2+1 for a start and idx*2 for an end — a small int instead of a
+  // {segIdx, isStart} object. Most points are shared between exactly two
+  // segments; saddles can have four, but the disconnected disambiguation
+  // keeps them paired up along distinct chains so the walk still works.
+  // Insertion order is preserved (a before b, segments in index order), which
+  // the walk depends on to pick the same continuation as before.
+  const adj = new Map<number, number[]>();
+  for (let idx = 0; idx < n; idx++) {
+    const ha = ka[idx];
+    const hb = kb[idx];
+    let la = adj.get(ha);
+    if (!la) { la = []; adj.set(ha, la); }
+    la.push(idx * 2 + 1);
+    let lb = adj.get(hb);
+    if (!lb) { lb = []; adj.set(hb, lb); }
+    lb.push(idx * 2);
+  }
 
   const visited = new Uint8Array(segments.length);
   const subpaths: SplineSubpath[] = [];
 
-  function walk(startIdx: number, forward: boolean): Pt[] {
-    const out: Pt[] = [];
+  // Points and their keys travel together so no step ever re-derives a key.
+  function walk(startIdx: number, forward: boolean): { pts: Pt[]; keys: number[] } {
+    const pts: Pt[] = [];
+    const keys: number[] = [];
     let curIdx = startIdx;
-    let curEnd = forward ? segments[curIdx].b : segments[curIdx].a;
-    out.push(forward ? segments[curIdx].a : segments[curIdx].b);
-    out.push(curEnd);
+    const seg = segments[curIdx];
+    pts.push(forward ? seg.a : seg.b);
+    keys.push(forward ? ka[curIdx] : kb[curIdx]);
+    let curEnd = forward ? seg.b : seg.a;
+    let curKey = forward ? kb[curIdx] : ka[curIdx];
+    pts.push(curEnd);
+    keys.push(curKey);
     visited[curIdx] = 1;
     while (true) {
-      const h = hash(curEnd);
-      const candidates = adj.get(h) ?? [];
-      let next: { segIdx: number; isStart: boolean } | null = null;
-      for (const c of candidates) {
-        if (c.segIdx === curIdx) continue;
-        if (visited[c.segIdx]) continue;
-        next = c;
-        break;
+      const candidates = adj.get(curKey);
+      let next = -1;
+      if (candidates) {
+        for (let ci = 0; ci < candidates.length; ci++) {
+          const c = candidates[ci];
+          const segIdx = c >> 1;
+          if (segIdx === curIdx) continue;
+          if (visited[segIdx]) continue;
+          next = c;
+          break;
+        }
       }
-      if (!next) break;
-      curIdx = next.segIdx;
+      if (next < 0) break;
+      curIdx = next >> 1;
       visited[curIdx] = 1;
-      curEnd = next.isStart ? segments[curIdx].b : segments[curIdx].a;
-      out.push(curEnd);
+      // Entered through this segment's start -> leave by its end, and vice
+      // versa. (next & 1) is the isStart flag.
+      const isStart = (next & 1) === 1;
+      curEnd = isStart ? segments[curIdx].b : segments[curIdx].a;
+      curKey = isStart ? kb[curIdx] : ka[curIdx];
+      pts.push(curEnd);
+      keys.push(curKey);
       // Closed: arrived back at start.
-      if (hash(curEnd) === hash(out[0])) break;
+      if (curKey === keys[0]) break;
     }
-    return out;
+    return { pts, keys };
   }
 
   for (let i = 0; i < segments.length; i++) {
@@ -225,36 +262,34 @@ function chainSegments(segments: Segment[], cellSize: number): SplineSubpath[] {
     // Walk forward from i, then backward from i to capture both ends
     // of an open chain. For closed loops the forward walk hits its
     // own start and we stop.
-    const forwardPts = walk(i, true);
+    const fwd = walk(i, true);
+    const forwardPts = fwd.pts;
     let pts = forwardPts;
-    const closed = hash(pts[0]) === hash(pts[pts.length - 1]) && pts.length > 2;
+    let keys = fwd.keys;
+    const closed =
+      keys[0] === keys[keys.length - 1] && pts.length > 2;
     if (!closed) {
       // Try walking backward from the original segment's start to
       // pick up any chain prefix not yet visited.
       visited[i] = 0; // unvisit for backward pass
-      const backwardPts = walk(i, false);
-      // backwardPts starts at segments[i].b and walks via segments[i].a
-      // — which means backwardPts[0] is the same end the forward walk
-      // already covered. Splice them: reverse backward (excluding its
-      // first point, which equals forward's last) and prepend forward.
-      // Actually backwardPts walks from b → a → previous chain links.
-      // We want: ...prev links, a, b, next links, → forward points
-      // (except its first, which is a). Reverse backward, prepend.
-      const reversed = backwardPts.slice().reverse();
-      // reversed ends at b; forward starts at a. Combine: drop
-      // reversed's last (b) and forward's first (a) — they're
-      // adjacent, but a appears twice if we keep both. Simpler: keep
-      // reversed (which goes from far-end through to b), then append
-      // forward starting from index 1 (skipping a, which equals
-      // reversed[reversed.length-2] at this point... actually no, a
-      // is reversed[reversed.length-1] in the rebuilt order? Let me
-      // just dedupe at the end.)
+      const back = walk(i, false);
+      // The backward walk starts at segments[i].b and leaves via
+      // segments[i].a, so its first point is the end the forward walk
+      // already covered. Reversing it yields "far end ... b", and the
+      // forward walk yields "a b ... far end" — so reversed + forward
+      // minus its duplicated head splices the two halves of one open chain.
+      // Adjacent duplicates are removed afterwards rather than reasoned
+      // about index by index.
+      const reversed = back.pts.slice().reverse();
+      const reversedKeys = back.keys.slice().reverse();
       pts = reversed.concat(forwardPts.slice(1));
-      pts = dedupeAdjacent(pts);
+      keys = reversedKeys.concat(fwd.keys.slice(1));
+      const deduped = dedupeAdjacent(pts, keys);
+      pts = deduped.pts;
+      keys = deduped.keys;
     }
     if (pts.length < 2) continue;
-    const wasClosed =
-      pts.length > 2 && hash(pts[0]) === hash(pts[pts.length - 1]);
+    const wasClosed = pts.length > 2 && keys[0] === keys[keys.length - 1];
     if (wasClosed) pts.pop();
     subpaths.push({
       anchors: pts.map((p) => ({ pos: [p.x, p.y] as [number, number] })),
@@ -264,10 +299,17 @@ function chainSegments(segments: Segment[], cellSize: number): SplineSubpath[] {
   return subpaths;
 }
 
-function dedupeAdjacent(pts: Pt[]): Pt[] {
-  const out: Pt[] = [];
+// Drops repeated points, carrying each point's endpoint key along so the
+// caller's closed-loop test stays key-based rather than re-deriving one.
+function dedupeAdjacent(
+  pts: Pt[],
+  keys: number[]
+): { pts: Pt[]; keys: number[] } {
+  const outPts: Pt[] = [];
+  const outKeys: number[] = [];
   let prev: Pt | null = null;
-  for (const p of pts) {
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
     if (
       prev &&
       Math.abs(p.x - prev.x) < 1e-9 &&
@@ -275,8 +317,9 @@ function dedupeAdjacent(pts: Pt[]): Pt[] {
     ) {
       continue;
     }
-    out.push(p);
+    outPts.push(p);
+    outKeys.push(keys[i]);
     prev = p;
   }
-  return out;
+  return { pts: outPts, keys: outKeys };
 }

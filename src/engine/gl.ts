@@ -86,7 +86,7 @@ export interface EngineBackend {
     frame: number,
     cursor?: CursorState,
     playing?: boolean,
-    timeline?: { tick: number; ticksPerFrame: number; fps: number },
+    timeline?: { tick: number; ticksPerFrame: number; fps: number; bpm?: number },
     offline?: boolean,
     wedgeIndex?: number
   ): RenderContext;
@@ -339,16 +339,87 @@ export function createEngineBackend(
     return new Uint8ClampedArray(bytes.buffer);
   }
 
+  // ---- Texture free-list pool ----
+  // Measured before building this (perf spec, Fix 10): recycling just
+  // Bloom's 11 per-eval mip textures saved 2.1 ms of GPU per frame at 4K —
+  // create/delete churn is real GPU time, not merely bookkeeping. The pool
+  // makes the devguide's long-standing "lease from a pool" description true
+  // for every allocImage/allocMask/allocUv.
+  //
+  // - Key = size + channel format. texKey remembers each pool texture's key
+  //   so releaseTexture can file it; textures created elsewhere (node-state
+  //   textures) miss the WeakMap and delete exactly as before.
+  // - A reused texture is CLEARED before hand-out: WebGL zero-initializes
+  //   fresh textures and nodes may legitimately rely on alloc = transparent
+  //   black. The clear is a load-op on tile GPUs — far cheaper than the
+  //   create + delete it replaces.
+  // - `inPool` guards double-release: filing the same texture twice would
+  //   hand one texture to two owners later, which presents as impossible
+  //   cross-node bleed, not as a pool bug.
+  // - Aging: entries idle past POOL_MAX_AGE leases die in a periodic sweep,
+  //   per-key lists cap at POOL_MAX_PER_KEY, and resize()/destroy() flush
+  //   outright — a resized canvas or shrunk graph can't strand VRAM.
+  // - The profiler still counts every lease/release (unchanged semantics —
+  //   per-node attribution depends on it), so its "allocs" now measure pool
+  //   TRAFFIC; real driver allocations are only the pool misses.
+  const freeLists = new Map<string, { tex: WebGLTexture; tick: number }[]>();
+  const texKey = new WeakMap<WebGLTexture, string>();
+  const inPool = new WeakSet<WebGLTexture>();
+  let poolTick = 0;
+  const POOL_MAX_PER_KEY = 16;
+  const POOL_MAX_AGE = 2048;
+
+  function flushPool() {
+    for (const list of freeLists.values()) {
+      for (const e of list) {
+        inPool.delete(e.tex);
+        gl!.deleteTexture(e.tex);
+      }
+    }
+    freeLists.clear();
+  }
+
+  function sweepPool() {
+    const cutoff = poolTick - POOL_MAX_AGE;
+    for (const [key, list] of freeLists) {
+      const keep = list.filter((e) => e.tick >= cutoff);
+      if (keep.length === list.length) continue;
+      for (const e of list) {
+        if (e.tick < cutoff) {
+          inPool.delete(e.tex);
+          gl!.deleteTexture(e.tex);
+        }
+      }
+      if (keep.length === 0) freeLists.delete(key);
+      else freeLists.set(key, keep);
+    }
+  }
+
   function allocTexture(
     w: number,
     h: number,
     channels: "rgba" | "r"
   ): WebGLTexture {
-    // NOTE: despite the "pool"/"lease" language in the devguide, there is no
-    // free list here — every alloc is a real createTexture + texImage2D, and
-    // releaseTexture below is a real deleteTexture. The profiler counts both
-    // so the cost of that churn is measurable before anyone acts on it.
     prof.countAlloc(w, h, channels === "rgba" ? (hasColorBufferFloat ? 8 : 4) : hasColorBufferFloat ? 2 : 1);
+    poolTick++;
+    const key = `${w}:${h}:${channels}`;
+    const entry = freeLists.get(key)?.pop();
+    if (entry) {
+      inPool.delete(entry.tex);
+      // Reproduce the zero-init a fresh texture would have had.
+      gl!.bindFramebuffer(gl!.FRAMEBUFFER, fbo);
+      gl!.framebufferTexture2D(
+        gl!.FRAMEBUFFER,
+        gl!.COLOR_ATTACHMENT0,
+        gl!.TEXTURE_2D,
+        entry.tex,
+        0
+      );
+      gl!.viewport(0, 0, w, h);
+      gl!.clearColor(0, 0, 0, 0);
+      gl!.clear(gl!.COLOR_BUFFER_BIT);
+      return entry.tex;
+    }
     const tex = gl!.createTexture();
     if (!tex) throw new Error("Failed to create texture");
     gl!.bindTexture(gl!.TEXTURE_2D, tex);
@@ -410,6 +481,7 @@ export function createEngineBackend(
     gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_WRAP_S, gl!.CLAMP_TO_EDGE);
     gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_WRAP_T, gl!.CLAMP_TO_EDGE);
     gl!.bindTexture(gl!.TEXTURE_2D, null);
+    texKey.set(tex, key);
     return tex;
   }
 
@@ -435,7 +507,7 @@ export function createEngineBackend(
     frame: number,
     cursor?: CursorState,
     playing = false,
-    timeline?: { tick: number; ticksPerFrame: number; fps: number },
+    timeline?: { tick: number; ticksPerFrame: number; fps: number; bpm?: number },
     offline = false,
     wedgeIndex?: number
   ): RenderContext {
@@ -455,6 +527,7 @@ export function createEngineBackend(
       tick,
       ticksPerFrame: tpf,
       fps: renderFps,
+      bpm: timeline?.bpm,
       playing,
       offline,
       wedgeIndex,
@@ -482,10 +555,27 @@ export function createEngineBackend(
         return { kind: "uv", texture: tex, width: w, height: h };
       },
       releaseTexture(tex) {
-        if (tex) {
-          prof.countRelease();
-          gl!.deleteTexture(tex);
+        if (!tex) return;
+        prof.countRelease();
+        const key = texKey.get(tex);
+        if (!key || inPool.has(tex)) {
+          // Not pool-born (a node-state texture routed here) or a double
+          // release — delete/ignore rather than corrupt the free list.
+          if (!inPool.has(tex)) gl!.deleteTexture(tex);
+          return;
         }
+        let list = freeLists.get(key);
+        if (!list) {
+          list = [];
+          freeLists.set(key, list);
+        }
+        if (list.length >= POOL_MAX_PER_KEY) {
+          gl!.deleteTexture(tex);
+        } else {
+          inPool.add(tex);
+          list.push({ tex, tick: poolTick });
+        }
+        if ((poolTick & 255) === 0) sweepPool();
       },
       drawFullscreen(program, target, setup) {
         bindTarget(target);
@@ -577,9 +667,13 @@ export function createEngineBackend(
       height = h;
       hiddenCanvas.width = w;
       hiddenCanvas.height = h;
+      // Old-size pool entries can never be leased again — drop them now
+      // rather than waiting out the age sweep with 66 MB textures.
+      flushPool();
     },
     makeContext,
     destroy() {
+      flushPool();
       shaderCache.forEach((p) => gl!.deleteProgram(p));
       shaderCache.clear();
       readbackTargets.forEach((t) => gl!.deleteTexture(t));

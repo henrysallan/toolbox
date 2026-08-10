@@ -385,8 +385,17 @@ function valueForSocket(
 // full-canvas texture per rep per node and the later nodes measure a GPU under
 // memory pressure rather than their own cost.
 function releaseOutput(ctx: RenderContext, out: unknown): void {
-  const o = out as { primary?: SocketValue; aux?: Record<string, SocketValue> };
+  const o = out as {
+    primary?: SocketValue;
+    aux?: Record<string, SocketValue>;
+    ownsTextures?: boolean;
+  };
   if (!o) return;
+  // State-backed outputs (NodeOutput.ownsTextures === false — Text, the
+  // rasterize-spline flat path) live in ctx.state and are torn down by the
+  // def's dispose; deleting them here would leave later reps sampling a
+  // dead texture.
+  if (o.ownsTextures === false) return;
   const rel = (v: SocketValue | undefined) => {
     if (!v) return;
     if (v.kind === "image" || v.kind === "mask" || v.kind === "uv") {

@@ -19,14 +19,18 @@ export interface BezierSegment {
   length: number;
 }
 
-// Convert a subpath into a flat list of cubics with their arc lengths
-// pre-computed. Each consecutive anchor pair becomes one cubic; if `closed`
-// is true, we also append a cubic from last back to first.
-export function subpathToBeziers(sub: SplineSubpath): BezierSegment[] {
-  const out: BezierSegment[] = [];
+// Convert a subpath into a flat list of cubics. Each consecutive anchor pair
+// becomes one cubic; if `closed` is true, we also append a cubic from last
+// back to first.
+//
+// Prefer this over subpathToBeziers when you don't need arc lengths —
+// safeLength() runs a 24-sample Gauss-Legendre integration per segment, which
+// is pure waste for callers that only walk the geometry.
+export function subpathToCurves(sub: SplineSubpath): Bezier[] {
+  const out: Bezier[] = [];
   const anchors = sub.anchors;
   if (anchors.length < 2) return out;
-  const makeSeg = (a: SplineAnchor, b: SplineAnchor): BezierSegment => {
+  const makeSeg = (a: SplineAnchor, b: SplineAnchor): Bezier => {
     const p0x = a.pos[0];
     const p0y = a.pos[1];
     const cp1x = a.outHandle ? a.pos[0] + a.outHandle[0] : a.pos[0];
@@ -35,8 +39,7 @@ export function subpathToBeziers(sub: SplineSubpath): BezierSegment[] {
     const cp2y = b.inHandle ? b.pos[1] + b.inHandle[1] : b.pos[1];
     const p3x = b.pos[0];
     const p3y = b.pos[1];
-    const curve = new Bezier(p0x, p0y, cp1x, cp1y, cp2x, cp2y, p3x, p3y);
-    return { curve, length: safeLength(curve) };
+    return new Bezier(p0x, p0y, cp1x, cp1y, cp2x, cp2y, p3x, p3y);
   };
   for (let i = 0; i < anchors.length - 1; i++) {
     out.push(makeSeg(anchors[i], anchors[i + 1]));
@@ -45,6 +48,14 @@ export function subpathToBeziers(sub: SplineSubpath): BezierSegment[] {
     out.push(makeSeg(anchors[anchors.length - 1], anchors[0]));
   }
   return out;
+}
+
+// Same, with each cubic's arc length pre-computed.
+export function subpathToBeziers(sub: SplineSubpath): BezierSegment[] {
+  return subpathToCurves(sub).map((curve) => ({
+    curve,
+    length: safeLength(curve),
+  }));
 }
 
 // bezier-js's length() throws on degenerate (all-collinear) curves on some
@@ -343,9 +354,149 @@ function cornerArcJoin(
   };
 }
 
-// Parallel-curve offset via bezier-js. The library's .offset(d) on a single
-// cubic returns an array of cubics (may subdivide around high-curvature
-// regions). Each source segment's offset chain is contiguous internally,
+// --- fast parallel-curve offset -------------------------------------------
+//
+// bezier-js's .offset(d) delegates to reduce(), whose second pass hunts for
+// "simple" spans by LINEAR SCAN at t-step 0.01: it constructs a throwaway
+// Bezier via split(t1,t2) at every step and tests it. A span that is already
+// simple end to end still pays the full ~100 splits to discover that, and
+// each split allocates control points plus a derivative set. At the volumes
+// Offset Path sees in practice — 900+ source segments per frame, each first
+// split at its extrema — that one call dominated the entire frame: measured
+// 264µs per source segment, 244ms per frame, 79% of a 309ms budget.
+//
+// Bisection finds the same spans in O(log n) splits instead of O(1/step):
+// test the whole span, and only when the test fails split at the midpoint and
+// recurse. A span that is already simple now costs ONE split and one test.
+//
+// The resulting pieces differ from the library's — its greedy scan yields
+// maximal spans, bisection yields spans on binary fractions of t — but every
+// piece satisfies the same simple() predicate, which is the only property
+// scale() actually requires of its input.
+const REDUCE_MAX_DEPTH = 8; // 1/256 of a span — finer than the 0.01 scan
+
+// Below this the control points are treated as coincident: 1e-6 of normalized
+// canvas space is ~1/1000 of a pixel at 1024².
+const DEGENERATE_EPS_SQ = 1e-12;
+
+// A span with no extent has no well-defined tangent, so its normals come back
+// NaN and simple() — which compares them through acos — is false forever.
+// Bisecting such a span would recurse straight to the depth cap and emit 2^MAX
+// garbage pieces (measured: 256 pieces, 257 non-finite anchors, from a single
+// zero-length input segment). bezier-js escaped this through reduce()'s "we
+// can never form a reduction" bail-out; this is the equivalent.
+function spanHasExtent(s: Bezier): boolean {
+  const p = s.points;
+  let maxSq = 0;
+  for (const q of p) {
+    if (!Number.isFinite(q.x) || !Number.isFinite(q.y)) return false;
+    const dx = q.x - p[0].x;
+    const dy = q.y - p[0].y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > maxSq) maxSq = d2;
+  }
+  return maxSq > DEGENERATE_EPS_SQ;
+}
+
+// bezier-js's reduce() also gives up and returns [] when a span narrower than
+// one step is still not simple, silently dropping that stretch of curve. Where
+// the span still has extent we stop subdividing at REDUCE_MAX_DEPTH and keep
+// the piece instead: a slightly non-simple sliver offsets imperfectly, but a
+// dropped one leaves a hole in the chain, which offsetSubpath would then
+// bridge with a bogus corner arc.
+function reduceSpan(
+  src: Bezier,
+  t1: number,
+  t2: number,
+  out: Bezier[],
+  depth: number
+): void {
+  const seg = t1 === 0 && t2 === 1 ? src : src.split(t1, t2);
+  if (!spanHasExtent(seg)) return;
+  if (depth >= REDUCE_MAX_DEPTH || seg.simple()) {
+    out.push(seg);
+    return;
+  }
+  const tm = (t1 + t2) * 0.5;
+  reduceSpan(src, t1, tm, out, depth + 1);
+  reduceSpan(src, tm, t2, out, depth + 1);
+}
+
+// Split at the curve's extrema (same first pass as bezier-js — these are the
+// points where the offset genuinely needs a break), then bisect each piece
+// until simple.
+function reduceToSimple(curve: Bezier): Bezier[] {
+  const out: Bezier[] = [];
+  const ts: number[] = [0];
+  // extrema().values is sorted and deduped, and may include 0 and/or 1.
+  for (const t of curve.extrema().values) {
+    if (t > 1e-6 && t < 1 - 1e-6 && t > ts[ts.length - 1] + 1e-6) ts.push(t);
+  }
+  ts.push(1);
+  for (let i = 0; i + 1 < ts.length; i++) {
+    reduceSpan(curve, ts[i], ts[i + 1], out, 0);
+  }
+  return out;
+}
+
+// Translate a straight span along its (constant) normal. bezier-js does this
+// for curves it flagged `_linear`, where scale()'s construction degenerates:
+// the endpoint normals are parallel, so they have no intersection to scale
+// about and lli4 returns null.
+function translateAlongNormal(s: Bezier, d: number): Bezier | null {
+  const n = s.normal(0);
+  if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) return null;
+  const pts = s.points.map((p) => ({ x: p.x + n.x * d, y: p.y + n.y * d }));
+  return new Bezier(pts);
+}
+
+function allFinite(s: Bezier): boolean {
+  for (const p of s.points) {
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return false;
+  }
+  return true;
+}
+
+function offsetPiece(s: Bezier, d: number): Bezier | null {
+  // `_linear` is set by the Bezier constructor (all control points on the
+  // baseline within its epsilon). Not in the published typings, but it is the
+  // same flag the library's own offset() branches on.
+  let out: Bezier | null;
+  if ((s as unknown as { _linear?: boolean })._linear) {
+    out = translateAlongNormal(s, d);
+  } else {
+    try {
+      out = s.scale(d);
+    } catch {
+      // scale() throws "cannot scale this curve" when the endpoint normals are
+      // parallel despite the curve not being flagged linear (a near-straight
+      // span). Translating is the correct limit of the offset in that case.
+      out = translateAlongNormal(s, d);
+    }
+  }
+  // scale() can return non-finite control points without throwing when its
+  // scaling origin lands at infinity. Emitting those would poison every
+  // downstream consumer, so drop the piece.
+  return out && allFinite(out) ? out : null;
+}
+
+// Drop-in replacement for `curve.offset(d)`.
+function offsetCurve(curve: Bezier, d: number): Bezier[] {
+  if (!spanHasExtent(curve)) return [];
+  if ((curve as unknown as { _linear?: boolean })._linear) {
+    const only = translateAlongNormal(curve, d);
+    return only && allFinite(only) ? [only] : [];
+  }
+  const out: Bezier[] = [];
+  for (const piece of reduceToSimple(curve)) {
+    const o = offsetPiece(piece, d);
+    if (o) out.push(o);
+  }
+  return out;
+}
+
+// Parallel-curve offset. offsetCurve() on a single cubic returns an array of
+// cubics (subdividing around high-curvature regions). Each source segment's offset chain is contiguous internally,
 // but at a source CORNER (tangent discontinuity) consecutive chains do NOT
 // meet — they're separated by an arc-shaped gap of angle = the tangent turn.
 // We insert that arc (radius |distance| around the corner anchor), which is
@@ -358,7 +509,9 @@ export function offsetSubpath(
 ): SplineSubpath | null {
   if (distance === 0) return sub;
   const solid = solidifyForOffset(sub);
-  const segments = subpathToBeziers(solid);
+  // Curves, not BezierSegments — the offset never looks at arc length, and
+  // measuring it here cost a Gauss-Legendre integration per segment.
+  const segments = subpathToCurves(solid);
   if (segments.length === 0) return null;
   const nAnchors = solid.anchors.length;
 
@@ -368,10 +521,8 @@ export function offsetSubpath(
   // a closing segment, so the corner after segment j is anchors[(j+1)%n].)
   const chains: { curves: Bezier[]; segIdx: number }[] = [];
   for (let j = 0; j < segments.length; j++) {
-    const result = segments[j].curve.offset(distance);
-    // The single-arg form of offset(d) is documented to return Bezier[];
-    // skip defensively in case the types drift.
-    if (Array.isArray(result) && result.length > 0) {
+    const result = offsetCurve(segments[j], distance);
+    if (result.length > 0) {
       chains.push({ curves: result, segIdx: j });
     }
   }
@@ -549,6 +700,12 @@ function generateBezier(
   const p0 = pts[first];
   const p3 = pts[last];
   const n = last - first + 1;
+  // Scalar accumulation — the vector spelling allocated four arrays per
+  // sample here. Same operations in the same order; see newtonStep.
+  const t1x = tHat1[0], t1y = tHat1[1];
+  const t2x = tHat2[0], t2y = tHat2[1];
+  const p0x = p0[0], p0y = p0[1];
+  const p3x = p3[0], p3y = p3[1];
   let c00 = 0;
   let c01 = 0;
   let c11 = 0;
@@ -556,19 +713,20 @@ function generateBezier(
   let x1 = 0;
   for (let k = 0; k < n; k++) {
     const uu = u[k];
-    const a0 = vScale(tHat1, B1(uu));
-    const a1 = vScale(tHat2, B2(uu));
-    c00 += vDot(a0, a0);
-    c01 += vDot(a0, a1);
-    c11 += vDot(a1, a1);
+    const b0 = B0(uu), b1 = B1(uu), b2 = B2(uu), b3 = B3(uu);
+    const a0x = t1x * b1, a0y = t1y * b1;
+    const a1x = t2x * b2, a1y = t2y * b2;
+    c00 += a0x * a0x + a0y * a0y;
+    c01 += a0x * a1x + a0y * a1y;
+    c11 += a1x * a1x + a1y * a1y;
     // Part of the point fixed by the (clamped) endpoints.
-    const fixed: V2 = [
-      p0[0] * (B0(uu) + B1(uu)) + p3[0] * (B2(uu) + B3(uu)),
-      p0[1] * (B0(uu) + B1(uu)) + p3[1] * (B2(uu) + B3(uu)),
-    ];
-    const tmp = vSub(pts[first + k], fixed);
-    x0 += vDot(a0, tmp);
-    x1 += vDot(a1, tmp);
+    const wStart = b0 + b1;
+    const wEnd = b2 + b3;
+    const pk = pts[first + k];
+    const tmpx = pk[0] - (p0x * wStart + p3x * wEnd);
+    const tmpy = pk[1] - (p0y * wStart + p3y * wEnd);
+    x0 += a0x * tmpx + a0y * tmpy;
+    x1 += a1x * tmpx + a1y * tmpy;
   }
   const detC = c00 * c11 - c01 * c01;
   const segLen = vLen(vSub(p3, p0));
@@ -584,33 +742,54 @@ function generateBezier(
 }
 
 // One Newton-Raphson step toward the parameter on `cubic` nearest to P.
+//
+// Written out in scalars. V2 is [number, number], so the vSub/vScale/vAdd
+// spelling allocated a fresh 2-element array for EVERY intermediate — this
+// function alone built ~15 of them, and it runs per sample per iteration per
+// recursion level. It was a third of Blend Intersections.
+//
+// Every expression below is the same arithmetic in the same order as the
+// vector-helper version, so the float results are bit-identical (verified by
+// snapshotting 18 configurations of blendIntersections, 52823 anchors, before
+// and after). Keep it that way: in particular vLen used Math.hypot, which is
+// NOT equal to sqrt(x*x+y*y) in the last bits, and a changed last bit can
+// flip which sample is chosen as the split point and cascade into different
+// output.
 function newtonStep(cubic: V2[], P: V2, u: number): number {
-  const q = cubicAt(cubic, u);
+  const c0x = cubic[0][0], c0y = cubic[0][1];
+  const c1x = cubic[1][0], c1y = cubic[1][1];
+  const c2x = cubic[2][0], c2y = cubic[2][1];
+  const c3x = cubic[3][0], c3y = cubic[3][1];
+
+  const b0 = B0(u), b1 = B1(u), b2 = B2(u), b3 = B3(u);
+  const qx = b0 * c0x + b1 * c1x + b2 * c2x + b3 * c3x;
+  const qy = b0 * c0y + b1 * c1y + b2 * c2y + b3 * c3y;
+
   // Q'(u): degree-2 bézier of 3·(Cᵢ₊₁−Cᵢ).
-  const q1 = [
-    vScale(vSub(cubic[1], cubic[0]), 3),
-    vScale(vSub(cubic[2], cubic[1]), 3),
-    vScale(vSub(cubic[3], cubic[2]), 3),
-  ];
-  const q1u: V2 = [
-    (1 - u) ** 2 * q1[0][0] + 2 * (1 - u) * u * q1[1][0] + u * u * q1[2][0],
-    (1 - u) ** 2 * q1[0][1] + 2 * (1 - u) * u * q1[1][1] + u * u * q1[2][1],
-  ];
+  const q10x = (c1x - c0x) * 3, q10y = (c1y - c0y) * 3;
+  const q11x = (c2x - c1x) * 3, q11y = (c2y - c1y) * 3;
+  const q12x = (c3x - c2x) * 3, q12y = (c3y - c2y) * 3;
+  const om = 1 - u;
+  const q1ux = om ** 2 * q10x + 2 * om * u * q11x + u * u * q12x;
+  const q1uy = om ** 2 * q10y + 2 * om * u * q11y + u * u * q12y;
+
   // Q''(u): degree-1 bézier of 2·(Q'ᵢ₊₁−Q'ᵢ).
-  const q2 = [vScale(vSub(q1[1], q1[0]), 2), vScale(vSub(q1[2], q1[1]), 2)];
-  const q2u: V2 = [
-    (1 - u) * q2[0][0] + u * q2[1][0],
-    (1 - u) * q2[0][1] + u * q2[1][1],
-  ];
-  const diff = vSub(q, P);
-  const num = vDot(diff, q1u);
-  const den = vDot(q1u, q1u) + vDot(diff, q2u);
+  const q20x = (q11x - q10x) * 2, q20y = (q11y - q10y) * 2;
+  const q21x = (q12x - q11x) * 2, q21y = (q12y - q11y) * 2;
+  const q2ux = om * q20x + u * q21x;
+  const q2uy = om * q20y + u * q21y;
+
+  const dx = qx - P[0];
+  const dy = qy - P[1];
+  const num = dx * q1ux + dy * q1uy;
+  const den = (q1ux * q1ux + q1uy * q1uy) + (dx * q2ux + dy * q2uy);
   if (Math.abs(den) < 1e-12) return u;
   return u - num / den;
 }
 
 // Max distance from the fitted cubic to its samples, plus the index that
-// should split the run if the fit is rejected.
+// should split the run if the fit is rejected. Scalar for the same reason as
+// newtonStep — this allocated two arrays per sample.
 function maxFitError(
   pts: V2[],
   first: number,
@@ -618,10 +797,20 @@ function maxFitError(
   cubic: V2[],
   u: number[]
 ): { error: number; split: number } {
+  const c0x = cubic[0][0], c0y = cubic[0][1];
+  const c1x = cubic[1][0], c1y = cubic[1][1];
+  const c2x = cubic[2][0], c2y = cubic[2][1];
+  const c3x = cubic[3][0], c3y = cubic[3][1];
   let error = 0;
   let split = first + Math.floor((last - first) / 2);
   for (let i = first + 1; i < last; i++) {
-    const d = vLen(vSub(cubicAt(cubic, u[i - first]), pts[i]));
+    const t = u[i - first];
+    const b0 = B0(t), b1 = B1(t), b2 = B2(t), b3 = B3(t);
+    const qx = b0 * c0x + b1 * c1x + b2 * c2x + b3 * c3x;
+    const qy = b0 * c0y + b1 * c1y + b2 * c2y + b3 * c3y;
+    const p = pts[i];
+    // Math.hypot, matching vLen — see newtonStep's note on bit-exactness.
+    const d = Math.hypot(qx - p[0], qy - p[1]);
     if (d > error) {
       error = d;
       split = i;

@@ -29,6 +29,11 @@ export const SOCKET_PALETTE: Record<string, SocketColorPair> = {
   spline: { dark: "#22d3ee", light: "#0089a6" },
   points: { dark: "#fb923c", light: "#be4e00" },
   audio: { dark: "#ec4899", light: "#c62c7c" },
+  // Note wires (symbolic note events → instruments) — green, the classic
+  // DAW MIDI-clip hue. Audio's pink stays the signal; notes read as the
+  // "vector" side of that pipeline, well clear of string's lime-yellow and
+  // uv's teal-leaning emerald.
+  notes: { dark: "#4ade80", light: "#15803d" },
   // String wires — lime. A plain text value, distinct from scalar's pure
   // yellow and scalar_field's amber so a string signal reads as its own type.
   string: { dark: "#a3e635", light: "#4e8800" },

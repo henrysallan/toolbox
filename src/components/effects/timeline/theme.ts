@@ -130,3 +130,87 @@ export const MAX_PIXELS_PER_TICK = 1.5;
 export const ZOOM_SENSITIVITY = 0.0015;
 // Fraction of the viewport the scene occupies after a fit.
 export const FIT_PAD = 0.95;
+
+// ---- MIDI piano roll (midi-editor/) ----
+
+// Note velocity ramp — Logic's grammar: velocity IS the note's colour.
+// The sweep runs cool/dim (low) → hot (high) through the violet/magenta
+// band, the one hue family no other timeline token claims — so notes stay
+// distinguishable at a glance from the amber keyframes, cyan clips, green
+// playhead and blue accent. Computed hsl() rather than palette vars
+// because velocity is continuous; the mid-lightness, rising-chroma sweep
+// reads on both the light and dark editor backgrounds.
+export const NOTE_HUE_LOW = 226; // velocity 0 — muted indigo
+export const NOTE_HUE_HIGH = 373; // velocity 1 — hot red-orange (mod 360)
+
+export function noteVelocityFill(velocity: number): string {
+  const v = Math.max(0, Math.min(1, velocity));
+  const h = (NOTE_HUE_LOW + (NOTE_HUE_HIGH - NOTE_HUE_LOW) * v) % 360;
+  return `hsl(${h.toFixed(1)} ${(42 + 43 * v).toFixed(1)}% ${(47 + 9 * v).toFixed(1)}%)`;
+}
+
+// The 1px outline — same hue, one step darker, so adjacent equal-velocity
+// notes still separate instead of fusing into one bar.
+export function noteVelocityBorder(velocity: number): string {
+  const v = Math.max(0, Math.min(1, velocity));
+  const h = (NOTE_HUE_LOW + (NOTE_HUE_HIGH - NOTE_HUE_LOW) * v) % 360;
+  return `hsl(${h.toFixed(1)} ${(46 + 40 * v).toFixed(1)}% ${(33 + 8 * v).toFixed(1)}%)`;
+}
+
+// Logic's inner duration stripe. White-alpha works across the whole ramp
+// because every fill sits at mid lightness.
+export const COLOR_NOTE_STRIPE = "rgba(255, 255, 255, 0.55)";
+// A selected note keeps its velocity fill (the colour IS the data —
+// swapping it would lie about velocity); selection is a bright outline,
+// the keyframe-diamond rule. Near-white reads against the entire ramp
+// because every fill sits at mid lightness.
+export const COLOR_NOTE_SELECTED_BORDER = "rgba(255, 255, 255, 0.92)";
+/** A note never renders thinner than this, whatever the zoom. */
+export const NOTE_MIN_WIDTH_PX = 2;
+/** Default pitch-row height — the piano roll's vertical zoom unit. */
+export const NOTE_ROW_PX = 12;
+
+// Keyboard gutter (the keybed column on the roll's left edge). Literal
+// ivory/charcoal rather than theme neutrals ON PURPOSE: a keybed should
+// read as a piano in both themes, and theme-flipped neutrals would leave
+// the "black" keys lighter than the "white" ones in dark mode.
+export const KEYBOARD_GUTTER_PX = 64;
+export const COLOR_KEY_WHITE = "#f4f3ef";
+export const COLOR_KEY_BLACK = "#232327";
+export const COLOR_KEY_LABEL = "#75757e";
+/** Separator where two white keys meet (below every C and every F). */
+export const COLOR_KEYBED_SEP = "rgba(0, 0, 0, 0.18)";
+
+// ---- MIDI keybed audition + selection highlight (M2) ----
+// Pressed key (audition in flight): a heavy accent wash that reads as
+// "down" over ivory and charcoal keys alike.
+export const COLOR_KEY_PRESSED =
+  "color-mix(in srgb, var(--tb-a-blue-500) 55%, transparent)";
+// Keys under the current SELECTION — same accent family but lighter than
+// the press so the two states stay distinct at a glance; split by key
+// colour for legibility (denser over ivory, brighter over charcoal).
+export const COLOR_KEY_SELECTED_WHITE =
+  "color-mix(in srgb, var(--tb-a-blue-500) 24%, transparent)";
+export const COLOR_KEY_SELECTED_BLACK =
+  "color-mix(in srgb, var(--tb-a-blue-400) 46%, transparent)";
+
+// ---- MIDI loop region (M2) ----
+// Loop-end marker: the playhead's green family, pulled toward neutral so
+// it reads as transport structure without being mistaken for the
+// playhead itself.
+export const COLOR_LOOP_MARKER =
+  "color-mix(in srgb, var(--tb-a-green-500) 55%, var(--tb-n-10))";
+// Wash over the silent post-loop region of the grid.
+export const COLOR_LOOP_DIM = "rgba(0, 0, 0, 0.35)";
+/** Notes starting at/after the loop end (silent while looping). */
+export const LOOP_SILENT_NOTE_OPACITY = 0.45;
+
+// Black-key pitch rows across the note grid. Same --tb-lift contract as
+// the frame ticks: a translucent contrast wash over the lane bg in both
+// themes (darkens the light theme Logic-style, lifts the dark one).
+export const COLOR_PITCH_ROW_BLACK_BG =
+  "color-mix(in srgb, var(--tb-lift) 4%, transparent)";
+// The line under each C (octave boundary) — one step stronger than the
+// row wash so octaves stay countable when zoomed out.
+export const COLOR_PITCH_OCTAVE_LINE =
+  "color-mix(in srgb, var(--tb-lift) 9%, transparent)";

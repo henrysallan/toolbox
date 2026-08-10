@@ -11,11 +11,24 @@
 // All distance work happens in CANVAS-PIXEL space so strokes stay round
 // on non-square canvases (same rule as multi-stroke's px-space offsets);
 // the marching-squares step maps straight back into [0,1]² Y-DOWN UV.
+//
+// Structure: buildFieldJob (flatten + grid + spatial hash) feeds a field
+// evaluator that fills the gw×gh sample grid; marching squares + the
+// bezier refit consume only that grid. The evaluator is swappable —
+// evaluateFieldCpu below is THE REFERENCE (fp64, bit-stable), and
+// spline-blend-intersections-gpu.ts is a fragment-shader port that must
+// match it to <1e-3 px (gate: npm run check:blend-gpu) and falls back
+// here on any failure. Do not "optimize" the CPU loop — when in doubt,
+// the CPU path is the spec (see specdocs/080826_blend-intersections-gpu.md).
 
 import type { SplineAnchor, SplineSubpath, SplineValue } from "./types";
 import { flattenSpline } from "./spline-flatten";
 import { marchingSquares } from "./marching-squares";
 import { fitSplineToPolyline } from "./spline-math";
+import {
+  evaluateFieldGpu,
+  type BlendFieldGpuContext,
+} from "./spline-blend-intersections-gpu";
 
 export interface BlendIntersectionsOptions {
   // Stroke body thickness (diameter) in canvas px.
@@ -39,7 +52,7 @@ const CURVE_STEPS = 16;
 // separate branches and blend; adjacent segments of one pass collapse
 // into a single branch and can't inflate the field (the sum-of-blobs
 // artifact of naive per-segment metaballs).
-const BRANCH_GAP = 8;
+export const BRANCH_GAP = 8;
 
 // Hard cap on field samples — a runaway resolution × elongated bbox
 // guard, far above any useful setting.
@@ -55,8 +68,15 @@ function smin(a: number, b: number, k: number): number {
   return Math.min(a, b) - h * h * k * 0.25;
 }
 
-// Squared-distance from point p to segment a→b (all px space).
-function segDist(
+// SQUARED distance from point p to segment a→b (all px space).
+//
+// Squared, because the caller's first use of the result is a cull against
+// `influence`, and d² ≤ influence² answers that identically without the root.
+// The candidate lists come from a 3×3 bucket neighborhood, which reaches ~3×
+// further than `influence` does, so most candidates are rejected — taking the
+// root before the cull spent it on points that were about to be discarded.
+// Survivors are rooted by the caller.
+function segDistSq(
   px: number,
   py: number,
   ax: number,
@@ -74,19 +94,49 @@ function segDist(
   }
   const ex = px - (ax + dx * t);
   const ey = py - (ay + dy * t);
-  // sqrt, not Math.hypot — this runs per (sample × candidate) and hypot's
-  // overflow guards cost real time there.
-  return Math.sqrt(ex * ex + ey * ey);
+  return ex * ex + ey * ey;
 }
 
-export function blendIntersections(
+// Everything the field-sample loop needs, produced once per call by
+// buildFieldJob. Segment coordinates stay fp64 (number[]) — the CPU
+// reference consumes them exactly; the GPU packer rounds to fp32 on
+// upload, which is that path's accepted divergence.
+export interface BlendFieldJob {
+  // Flattened segments in canvas px with (subpath, ordinal) identity.
+  segX0: number[];
+  segY0: number[];
+  segX1: number[];
+  segY1: number[];
+  segSub: number[];
+  segOrd: number[];
+  subSegCount: number[];
+  subClosed: boolean[];
+  segCount: number;
+  // Sample grid: origin + cell in canvas px, gw×gh samples.
+  bx0: number;
+  by0: number;
+  cell: number;
+  gw: number;
+  gh: number;
+  // Field parameters (canvas px).
+  r: number;
+  k: number;
+  influence: number;
+  influenceSq: number;
+  farSlack: number;
+  // Spatial hash: segment indices per bucket cell.
+  bucket: number;
+  bCols: number;
+  bRows: number;
+  buckets: Map<number, number[]>;
+}
+
+export function buildFieldJob(
   spline: SplineValue,
   canvasW: number,
   canvasH: number,
   opts: BlendIntersectionsOptions
-): SplineValue {
-  if (canvasW <= 0 || canvasH <= 0) return EMPTY;
-
+): BlendFieldJob | null {
   // ---- Flatten each subpath separately so segments keep (subpath,
   // ordinal) identity for branch clustering.
   const segX0: number[] = [];
@@ -134,7 +184,7 @@ export function blendIntersections(
     }
   }
   const segCount = segSub.length;
-  if (segCount === 0) return EMPTY;
+  if (segCount === 0) return null;
 
   const r = Math.max(0.25, opts.widthPx / 2);
   const k = Math.max(0, opts.blendPx);
@@ -166,6 +216,7 @@ export function blendIntersections(
   // distance is within ~k of the running minimum (≤ r + k/4 there), so
   // this radius bounds what any sample must gather.
   const influence = r + k * 1.25 + cell * Math.SQRT2;
+  const influenceSq = influence * influence;
   const bucket = Math.max(influence, cell);
   const bCols = Math.max(1, Math.ceil((bx1 - bx0) / bucket));
   const bRows = Math.max(1, Math.ceil((by1 - by0) / bucket));
@@ -193,15 +244,74 @@ export function blendIntersections(
     }
   }
 
-  // ---- Sample the field. Candidate gathering is cached per hash bucket
-  // (every sample inside a bucket sees the same 3×3 neighborhood);
-  // distances + branch folding run per sample on reusable scratch,
-  // allocation-free in the hot loop.
+  // Beyond this the smooth-min deepening (≤ k/4) can't move the iso into
+  // a neighboring cell — plain nearest-distance is exact enough there.
+  const farSlack = k * 0.25 + cell * 2;
+
+  return {
+    segX0,
+    segY0,
+    segX1,
+    segY1,
+    segSub,
+    segOrd,
+    subSegCount,
+    subClosed,
+    segCount,
+    bx0,
+    by0,
+    cell,
+    gw,
+    gh,
+    r,
+    k,
+    influence,
+    influenceSq,
+    farSlack,
+    bucket,
+    bCols,
+    bRows,
+    buckets,
+  };
+}
+
+// ---- Sample the field (CPU reference). Candidate gathering is cached
+// per hash bucket (every sample inside a bucket sees the same 3×3
+// neighborhood); distances + branch folding run per sample on reusable
+// scratch, allocation-free in the hot loop.
+export function evaluateFieldCpu(job: BlendFieldJob): Float32Array {
+  const {
+    segX0,
+    segY0,
+    segX1,
+    segY1,
+    segSub,
+    segOrd,
+    subSegCount,
+    subClosed,
+    segCount,
+    bx0,
+    by0,
+    cell,
+    gw,
+    gh,
+    r,
+    k,
+    influence,
+    influenceSq,
+    farSlack,
+    bucket,
+    bCols,
+    bRows,
+    buckets,
+  } = job;
+
   const grid = new Float32Array(gw * gh);
   const segKey = new Float64Array(segCount);
   for (let i = 0; i < segCount; i++) {
     segKey[i] = segSub[i] * 1048576 + segOrd[i];
   }
+  const bIdx = (cx: number, cy: number) => cy * bCols + cx;
   const bucketCand: (Int32Array | null)[] = new Array(bCols * bRows).fill(
     null
   );
@@ -233,9 +343,6 @@ export function blendIntersections(
   const candSeg: number[] = [];
   const candDist: number[] = [];
   const branchDists: number[] = [];
-  // Beyond this the smooth-min deepening (≤ k/4) can't move the iso into
-  // a neighboring cell — plain nearest-distance is exact enough there.
-  const farSlack = k * 0.25 + cell * 2;
 
   for (let gy = 0; gy < gh; gy++) {
     const py = by0 + gy * cell;
@@ -253,8 +360,9 @@ export function blendIntersections(
       let minD = Infinity;
       for (let ci = 0; ci < cand.length; ci++) {
         const si = cand[ci];
-        const d = segDist(px, py, segX0[si], segY0[si], segX1[si], segY1[si]);
-        if (d <= influence) {
+        const d2 = segDistSq(px, py, segX0[si], segY0[si], segX1[si], segY1[si]);
+        if (d2 <= influenceSq) {
+          const d = Math.sqrt(d2);
           candSeg[m] = si;
           candDist[m] = d;
           m++;
@@ -329,14 +437,65 @@ export function blendIntersections(
       }
 
       // Fold ascending for a deterministic smooth-min.
-      branchDists.sort((a, b) => a - b);
+      //
+      // Insertion sort, not Array.prototype.sort. This runs on ~26% of grid
+      // samples — tens of thousands per call — over a handful of branches
+      // each, where sort()'s comparator dispatch and setup dwarf the compare
+      // itself. Same ascending order, and the values are plain numbers, so
+      // the fold sees an identical sequence.
+      const bn = branchDists.length;
+      for (let i = 1; i < bn; i++) {
+        const v = branchDists[i];
+        let j = i - 1;
+        while (j >= 0 && branchDists[j] > v) {
+          branchDists[j + 1] = branchDists[j];
+          j--;
+        }
+        branchDists[j + 1] = v;
+      }
       let acc = branchDists[0];
-      for (let i = 1; i < branchDists.length; i++) {
+      for (let i = 1; i < bn; i++) {
         acc = smin(acc, branchDists[i], k);
       }
       grid[gi] = acc - r;
     }
   }
+
+  return grid;
+}
+
+export function blendIntersections(
+  spline: SplineValue,
+  canvasW: number,
+  canvasH: number,
+  opts: BlendIntersectionsOptions,
+  gpu?: BlendFieldGpuContext | null
+): SplineValue {
+  if (canvasW <= 0 || canvasH <= 0) return EMPTY;
+
+  const job = buildFieldJob(spline, canvasW, canvasH, opts);
+  if (!job) return EMPTY;
+
+  // GPU field when a context is provided; evaluateFieldGpu returns null on
+  // any failure (no float-render support, compile error, branch-cap
+  // overflow, forceCpu A/B override) and the CPU reference takes over.
+  const grid =
+    (gpu ? evaluateFieldGpu(gpu, job) : null) ?? evaluateFieldCpu(job);
+
+  return recoverContours(job, grid, canvasW, canvasH, opts.smoothing);
+}
+
+// Marching squares + cleanup + optional bezier refit over an evaluated
+// field grid. Exported (like the two field evaluators) so the
+// check:blend-gpu harness can run the identical downstream on a GPU grid.
+export function recoverContours(
+  job: BlendFieldJob,
+  grid: Float32Array,
+  canvasW: number,
+  canvasH: number,
+  smoothingOpt: number
+): SplineValue {
+  const { cell, gw, gh, bx0, by0 } = job;
 
   // ---- Contour back into canvas UV.
   const contours = marchingSquares(grid, gw, gh, {
@@ -349,7 +508,7 @@ export function blendIntersections(
   // Marching squares on thin/tangent features leaves saddle debris:
   // sub-cell slivers, and rings split into open chains whose endpoints
   // nearly meet. Drop the former, re-close the latter.
-  const smoothing = Math.max(0, Math.min(1, opts.smoothing));
+  const smoothing = Math.max(0, Math.min(1, smoothingOpt));
   const errPx = 0.25 + smoothing * cell * 1.5;
   const out: SplineSubpath[] = [];
   for (const c of contours) {
@@ -381,6 +540,21 @@ export function blendIntersections(
     // their seam point for the fit, then merge the duplicate end anchor
     // back into the start.
     if (closed) pts.push([pts[0][0], pts[0][1]]);
+    // DO NOT thin this polyline before fitting. It looks like free money —
+    // it carries one point per cell-edge crossing, far denser than Schneider's
+    // fit needs, and simplifyPolyline(pts, errPx * 0.5) cuts the node from
+    // ~24.5ms to ~18ms (-27%) with the subpath count unchanged.
+    //
+    // It was tried and reverted: it makes the output POP in motion. Measured
+    // on a 12-frame animated sweep, mean frame-to-frame contour movement went
+    // 7.60px -> 10.76px (+42%) for the same 1.41px of input motion. RDP picks
+    // its keep-set by max deviation, so a sub-pixel change in the contour
+    // flips which points survive, and the fit — now under-constrained between
+    // the survivors — swings visibly. Static frames look fine, which is why
+    // this needs to be checked in motion.
+    //
+    // scripts/bench-spline-chain.mts measures the speed; the jitter test that
+    // caught it is described in specdocs/080726_perf-profiler.md.
     const fitted = fitSplineToPolyline(pts, errPx);
     if (fitted.length < 2) {
       out.push({ anchors: c.anchors, closed });

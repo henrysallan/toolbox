@@ -89,6 +89,34 @@ export async function renderExportAudioBuffer(
   return await offline.startRendering();
 }
 
+// Sum two audio buffers into one (080926 M-B): the legacy element mixdown
+// plus the chain render become a single buffer for the encoders. An
+// OfflineAudioContext does the summing AND any resampling (buffer sources
+// resample to the context rate natively), so mismatched sample rates and
+// channel counts are handled by the platform, not by hand.
+export async function mixAudioBuffers(
+  a: AudioBuffer | null,
+  b: AudioBuffer | null
+): Promise<AudioBuffer | null> {
+  if (!a) return b;
+  if (!b) return a;
+  const sampleRate = Math.max(a.sampleRate, b.sampleRate);
+  const channels = Math.max(a.numberOfChannels, b.numberOfChannels, 1);
+  const length = Math.max(
+    Math.ceil(a.duration * sampleRate),
+    Math.ceil(b.duration * sampleRate),
+    1
+  );
+  const off = new OfflineAudioContext(channels, length, sampleRate);
+  for (const buf of [a, b]) {
+    const src = off.createBufferSource();
+    src.buffer = buf;
+    src.connect(off.destination);
+    src.start(0);
+  }
+  return off.startRendering();
+}
+
 // 16-bit PCM WAV bytes from an AudioBuffer — the ffmpeg path writes this
 // into the wasm FS and muxes it as a second input.
 export function audioBufferToWav(buffer: AudioBuffer): Uint8Array {

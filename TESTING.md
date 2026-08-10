@@ -19,6 +19,7 @@ Run these before claiming a change works. The first three are CI gates.
 | `npm run check` | ~60s | 13 offline `check-*.mts` scripts. Hard gate. |
 | `npm run lint:ratchet` | ~90s | Fails only on errors **above** `scripts/lint-baseline.json`. |
 | `npm run check:shaders` | ~20s | GLSL compiles/links + blend equivalence. Needs Electron + GL. |
+| `npm run check:blend-gpu` | ~2min | Blend Intersections GPU field ≡ CPU reference (field/contour/temporal gates). Needs Electron + GL. |
 | `npm run bench:nodes` | ~2min | Per-node cost ranking. Needs Electron + hardware GL. |
 
 **The lint ratchet is not "zero errors."** It fails only when a file gains
@@ -52,7 +53,17 @@ broken — use `check:shaders` or the live app.
    wrong blend formula is invisible to typecheck and to every stubbed check
    script; it only shows up as wrong pixels in someone's project.
 3. If the node might be expensive, `npm run bench:nodes` and find it in
-   `bench/node-bench.md`.
+   `bench/node-bench.md`. Nodes it cannot measure: Blend
+   Intersections (its geometry-signature cache hits on the harness's
+   repeated identical input — use `npm run bench:blend-gpu`, which also
+   A/Bs its CPU vs GPU field paths on hardware GL), Rasterize Spline
+   (same internal-signature pattern; its default params also exercise
+   the cheap flat path, not the per-subpath ramp path) — and anything
+   else with the same internal-cache pattern.
+4. If you touched `spline-blend-intersections*.ts`, run
+   `npm run check:blend-gpu` — the GPU field must keep matching the CPU
+   reference (field < 1e-3 px, contours, temporal jitter). The CPU loop
+   is the spec; `__perf.blendGpu(false)` A/Bs the paths live.
 
 `scripts/check-shaders.cjs` must stay `.cjs` — it is an Electron **main
 process** entry loaded by the Electron binary, not Node's ESM loader. As
@@ -66,9 +77,16 @@ instead of exiting, which looks exactly like a hang.
 Capture is **off** by default and costs nothing until armed.
 
 **In the UI:** switch any panel to **Performance** via its kind chip
-(top-left), pick a level, drive the workload.
+(top-left), pick a level, press play. The panel records **only while the
+timeline is playing** (`playingOnly` capture), and **seeking to frame 0
+clears the trace** — rewind-and-play is how a fresh benchmark run starts.
 
 **Over MCP** (tools: `set_perf_capture`, `get_perf`, `get_perf_frame`):
+these arm WITHOUT `playingOnly`, so paused interactions (a `set_param`, a
+scrub) ARE recorded — the agent workflow depends on that. Two consequences:
+arming from either side replaces the other's mode (and clears), and the
+frame-0 auto-clear applies to MCP captures too — a `transport` seek to
+frame 0 wipes whatever you had accumulated, so read the trace first.
 
 ```
 set_perf_capture({ level: 3, frames: 400 })
@@ -99,6 +117,16 @@ get_perf({ top: 10 })
   reported as absent, never as 0.
 - **The editor evaluates only on playback, a param edit, or a graph change.**
   An idle editor records nothing — that is correct, not a broken capture.
+- **Level 3 inflates the CPU cost of nodes that make sync GL calls.** The
+  GPU timer queries serialize around readbacks/fences: sdf-to-spline read
+  ~9 ms/eval at level 3 and ~3 ms at level 1, same conditions. Before
+  attributing CPU time to a node that calls readPixels / getBufferSubData /
+  clientWaitSync, re-measure it at level 1.
+- **A loop's sections are not interchangeable.** Content-dependent nodes
+  (marching, boolean, per-subpath rasters) can cost 3× more in a dense
+  section of the timeline than a sparse one — an A/B whose two runs covered
+  different loop spans compares content, not code. Cover the same span, or
+  full loops.
 
 ### Reading the output
 

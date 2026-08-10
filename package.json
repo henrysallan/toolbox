@@ -1,6 +1,6 @@
 {
   "name": "toolbox",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "description": "Node-graph motion design tool",
   "author": "Isthishenry",
@@ -14,11 +14,13 @@
     "typecheck": "tsc --noEmit",
     "gen:theme-css": "tsx scripts/gen-theme-css.mts",
     "check:theme-css": "tsx scripts/gen-theme-css.mts --check",
-    "check": "tsx scripts/check-no-nul.mts && tsx scripts/check-validator.mts && tsx scripts/check-builder.mts && tsx scripts/check-edit.mts && tsx scripts/check-fragment-roundtrip.mts && tsx scripts/check-recipe-loop.mts && tsx scripts/check-edit-loop.mts && tsx scripts/check-persistence.mts && tsx scripts/check-graph-ops.mts && tsx scripts/check-kernel.mts && tsx scripts/check-sim-preroll.mts && tsx scripts/check-profiler.mts && tsx scripts/check-output-gating.mts",
+    "check": "tsx scripts/check-no-nul.mts && tsx scripts/check-validator.mts && tsx scripts/check-builder.mts && tsx scripts/check-edit.mts && tsx scripts/check-fragment-roundtrip.mts && tsx scripts/check-recipe-loop.mts && tsx scripts/check-edit-loop.mts && tsx scripts/check-persistence.mts && tsx scripts/check-graph-ops.mts && tsx scripts/check-kernel.mts && tsx scripts/check-sim-preroll.mts && tsx scripts/check-profiler.mts && tsx scripts/check-output-gating.mts && tsx scripts/check-offset.mts && tsx scripts/check-marching-squares.mts && tsx scripts/check-audio-chain.mts && tsx scripts/check-note-ops.mts",
     "mcp": "node scripts/mcp-server.mjs",
     "check:mcp": "tsx scripts/check-mcp.mts",
+    "check:audio-live": "env -u ELECTRON_RUN_AS_NODE electron scripts/check-audio-live.cjs",
     "bench:nodes": "env -u ELECTRON_RUN_AS_NODE electron scripts/bench-nodes.cjs",
     "check:shaders": "tsx scripts/emit-shaders.mts .shaders.tmp.json && env -u ELECTRON_RUN_AS_NODE electron scripts/check-shaders.cjs .shaders.tmp.json",
+    "check:blend-gpu": "tsx scripts/check-blend-gpu-emit.mts .blendgpu.cases.tmp.json && env -u ELECTRON_RUN_AS_NODE electron scripts/check-blend-gpu.cjs .blendgpu.cases.tmp.json .blendgpu.grids.tmp.json && tsx scripts/check-blend-gpu-verify.mts .blendgpu.grids.tmp.json",
     "check:persistence": "tsx scripts/check-persistence.mts",
     "check:graph-ops": "tsx scripts/check-graph-ops.mts",
     "check:kernel": "tsx scripts/check-kernel.mts",
@@ -35,7 +37,10 @@
     "desktop:publish": "npm run desktop:prepare && electron-builder --mac -p always",
     "desktop:publish:win": "npm run desktop:prepare && electron-builder --win -p always",
     "build:export-template": "node scripts/build-export-template.mjs",
-    "install:export-template": "npm --prefix src/export-template install"
+    "install:export-template": "npm --prefix src/export-template install",
+    "bench:spline": "tsx scripts/bench-spline-chain.mts",
+    "bench:jitter": "tsx scripts/bench-spline-jitter.mts",
+    "bench:blend-gpu": "env -u ELECTRON_RUN_AS_NODE electron scripts/bench-blend-gpu.cjs"
   },
   "build": {
     "appId": "com.isthishenry.toolbox",
@@ -127,7 +132,8 @@
     "polygon-clipping": "^0.15.7",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "three": "^0.184.0"
+    "three": "^0.184.0",
+    "tone": "^15.1.22"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

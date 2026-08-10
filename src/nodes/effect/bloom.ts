@@ -1,4 +1,8 @@
-import type { ImageValue, NodeDefinition } from "@/engine/types";
+import type {
+  ImageValue,
+  NodeDefinition,
+  RenderContext,
+} from "@/engine/types";
 import {
   disposePlaceholderTex,
   getPlaceholderTex,
@@ -241,6 +245,29 @@ function lerp3(
   ];
 }
 
+// Persistent mip-chain render targets. Bloom's intermediate mips have the
+// same sizes every frame, but there is no free list behind allocImage —
+// each of the 10–12 per-eval allocs was a real createTexture + texImage2D
+// and each release a real deleteTexture. The chain now lives in ctx.state
+// and is re-specified only when the layout (base size × levels) changes.
+// Reuse is safe because every pass overwrites its whole target (fullscreen
+// triangle, no blend) — no frame ever reads stale pixels. `down[levels-1]`
+// doubles as the upsample seed exactly as before; `up` has levels-1 entries.
+interface MipChain {
+  key: string;
+  down: ImageValue[];
+  up: ImageValue[];
+}
+
+function mipStateKey(nodeId: string): string {
+  return `bloom2:${nodeId}:mips`;
+}
+
+function releaseMipChain(ctx: RenderContext, mc: MipChain) {
+  for (const m of mc.down) ctx.releaseTexture(m.texture);
+  for (const m of mc.up) if (m) ctx.releaseTexture(m.texture);
+}
+
 // ------------------------------------------------------------
 // Node
 // ------------------------------------------------------------
@@ -251,7 +278,7 @@ export const bloomNode: NodeDefinition = {
   category: "image",
   subcategory: "modifier",
   description:
-    "Mip-chain bloom (COD / UE5 / Unity HDRP technique). Soft-knee threshold + Karis-average downsample + 9-tap tent upsample give a crisp bright core with hundreds of pixels of soft tail at constant cost. Optional per-mip tint, anamorphic stretch, and lens dirt overlay.",
+    "Mip-chain bloom (COD / UE5 / Unity HDRP technique). Soft-knee threshold + Karis-average downsample + 9-tap tent upsample give a crisp bright core with hundreds of pixels of soft tail at constant cost. Optional per-mip tint, anamorphic stretch, and lens dirt overlay. Quality picks where the pyramid starts: balanced/performance trade the glow's finest detail octave(s) for most of the pre-composite GPU cost, keeping the halo width unchanged.",
   backend: "webgl2",
   inputs: [
     { name: "image", type: "image", required: true },
@@ -303,6 +330,22 @@ export const bloomNode: NodeDefinition = {
       label: "Karis (firefly fix)",
       type: "boolean",
       default: true,
+    },
+    {
+      // Where the mip pyramid STARTS, in octaves below the source. The
+      // composite pass (the full-res output write) is untouched, so this
+      // trades only the glow's finest octave of detail for the threshold +
+      // chain cost. Levels are reduced to match, so the halo WIDTH is
+      // preserved — balanced/performance look like a slightly softer bloom,
+      // not a wider one. "high" is byte-identical to the pre-quality node.
+      // "performance" undersamples the threshold (4 taps over an 8×8
+      // footprint), so isolated 1–2 px highlights can shimmer in motion —
+      // that's the tradeoff, use "balanced" if it shows.
+      name: "quality",
+      label: "Quality",
+      type: "enum",
+      options: ["high", "balanced", "performance"],
+      default: "high",
     },
     {
       name: "anamorphic",
@@ -384,31 +427,76 @@ export const bloomNode: NodeDefinition = {
     const tintLowRgb = hexToRgb((params.tint_low as string) ?? "#ffffff");
     const tintHighRgb = hexToRgb((params.tint_high as string) ?? "#ffffff");
 
-    // Cap levels by what actually fits in the source — at least 4
-    // pixels wide for the smallest mip so the tent kernel still
-    // means something.
+    // Quality → pyramid start octave (see the `quality` param comment).
+    // div = source-size divisor of the chain base; skip = octaves removed
+    // from the level count so the smallest mip — and therefore the halo
+    // width — stays at the same screen-space size across modes.
+    const quality = (params.quality as string) ?? "high";
+    const div = quality === "performance" ? 8 : quality === "balanced" ? 4 : 2;
+    const skip = quality === "performance" ? 2 : quality === "balanced" ? 1 : 0;
+
+    // ---- Persistent mip chain (see MipChain above) ----
+    const baseW = Math.max(2, Math.floor(src.width / div));
+    const baseH = Math.max(2, Math.floor(src.height / div));
+
+    // Cap levels by what actually fits in the chain base — at least 4
+    // pixels wide for the smallest mip so the tent kernel still means
+    // something. (Base-relative: for div 2 this equals the old
+    // source-relative cap, so "high" output is unchanged.)
     const maxByRes = Math.max(
       1,
-      Math.floor(Math.log2(Math.min(src.width, src.height)) - 2)
+      Math.floor(Math.log2(Math.min(baseW, baseH)) - 1)
     );
-    const levels = Math.max(1, Math.min(8, Math.min(maxByRes, levelsRaw)));
+    const levels = Math.max(
+      1,
+      Math.min(8, Math.min(maxByRes, Math.max(1, levelsRaw - skip)))
+    );
+    const layoutKey = `${baseW}x${baseH}:${levels}`;
+    const stateKey = mipStateKey(nodeId);
+    let chain = ctx.state[stateKey] as MipChain | undefined;
+    if (!chain || chain.key !== layoutKey) {
+      if (chain) releaseMipChain(ctx, chain);
+      const down: ImageValue[] = [
+        ctx.allocImage({ width: baseW, height: baseH }),
+      ];
+      for (let i = 1; i < levels; i++) {
+        const p = down[i - 1];
+        down.push(
+          ctx.allocImage({
+            width: Math.max(2, Math.floor(p.width / 2)),
+            height: Math.max(2, Math.floor(p.height / 2)),
+          })
+        );
+      }
+      const up: ImageValue[] = [];
+      for (let i = 0; i < levels - 1; i++) {
+        up.push(
+          ctx.allocImage({ width: down[i].width, height: down[i].height })
+        );
+      }
+      chain = { key: layoutKey, down, up };
+      ctx.state[stateKey] = chain;
+    }
+    const mipsDown = chain.down;
+    const mipsUp: ImageValue[] = [];
 
     // ---- Pass 1: threshold + ½× downsample ----
-    const baseW = Math.max(2, Math.floor(src.width / 2));
-    const baseH = Math.max(2, Math.floor(src.height / 2));
-    const mipsDown: ImageValue[] = [];
-    const mipsUp: ImageValue[] = [];
-    const bright = ctx.allocImage({ width: baseW, height: baseH });
+    const bright = mipsDown[0];
     {
       const prog = ctx.getShader("bloom2/threshold", THRESHOLD_FS);
       ctx.drawFullscreen(prog, bright, (gl) => {
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, src.texture);
         gl.uniform1i(gl.getUniformLocation(prog, "u_src"), 0);
+        // Tap spread scales with the start octave: ±0.5·(div/2) source
+        // texels. div 2 → ±0.5 (unchanged); div 4 → ±1.0, where the four
+        // bilinear taps cover the 4×4 source block exactly (each averages
+        // one 2×2 quad); div 8 → ±2.0, deliberately undersampled — see the
+        // quality param comment.
         gl.uniform2f(
           gl.getUniformLocation(prog, "u_invSrc"),
-          1 / src.width,
-          1 / src.height
+          div / 2 / src.width,
+          div / 2 / src.height
         );
         gl.uniform1f(
           gl.getUniformLocation(prog, "u_threshold"),
@@ -420,31 +508,28 @@ export const bloomNode: NodeDefinition = {
         );
       });
     }
-    mipsDown.push(bright);
 
     // ---- Pass 2: downsample chain ----
     const dsProg = ctx.getShader("bloom2/downsample", DOWNSAMPLE_FS);
     let prev = bright;
     for (let i = 1; i < levels; i++) {
-      const w = Math.max(2, Math.floor(prev.width / 2));
-      const h = Math.max(2, Math.floor(prev.height / 2));
-      const dst = ctx.allocImage({ width: w, height: h });
+      const dst = mipsDown[i];
       const useKaris = karis && i === 1;
+      const from = prev;
       ctx.drawFullscreen(dsProg, dst, (gl) => {
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, prev.texture);
+        gl.bindTexture(gl.TEXTURE_2D, from.texture);
         gl.uniform1i(gl.getUniformLocation(dsProg, "u_src"), 0);
         gl.uniform2f(
           gl.getUniformLocation(dsProg, "u_texel"),
-          1 / prev.width,
-          1 / prev.height
+          1 / from.width,
+          1 / from.height
         );
         gl.uniform1i(
           gl.getUniformLocation(dsProg, "u_karis"),
           useKaris ? 1 : 0
         );
       });
-      mipsDown.push(dst);
       prev = dst;
     }
 
@@ -459,10 +544,7 @@ export const bloomNode: NodeDefinition = {
     for (let i = levels - 2; i >= 0; i--) {
       const lower = mipsUp[i + 1]; // smaller, source for tent
       const sameSize = mipsDown[i]; // larger, additive base
-      const dst = ctx.allocImage({
-        width: sameSize.width,
-        height: sameSize.height,
-      });
+      const dst = chain.up[i];
       // Tint blends from low (smallest mip) → high (largest).
       // Levels=1 → t=0 always; otherwise normalize i over (levels-1).
       const t = levels > 1 ? 1 - i / (levels - 1) : 0;
@@ -553,17 +635,8 @@ export const bloomNode: NodeDefinition = {
       });
     }
 
-    // Free intermediate mips. The upsample chain's outputs (mipsUp)
-    // are independent allocations, so we free both chains except
-    // mipsUp[0] which we just sampled — actually that's done too,
-    // we already wrote `output` and `bloomOnly` from it. Safe.
-    for (const m of mipsDown) ctx.releaseTexture(m.texture);
-    for (let i = 0; i < mipsUp.length; i++) {
-      // mipsUp[levels-1] alias to mipsDown — already released above.
-      if (i === levels - 1) continue;
-      const m = mipsUp[i];
-      if (m) ctx.releaseTexture(m.texture);
-    }
+    // Intermediate mips persist in ctx.state (see MipChain) — nothing to
+    // free per eval; dispose() releases the chain.
 
     return {
       primary: output,
@@ -573,5 +646,9 @@ export const bloomNode: NodeDefinition = {
 
   dispose(ctx, nodeId) {
     disposePlaceholderTex(ctx.gl, ctx.state, `bloom2:${nodeId}:dirt`);
+    const stateKey = mipStateKey(nodeId);
+    const chain = ctx.state[stateKey] as MipChain | undefined;
+    if (chain) releaseMipChain(ctx, chain);
+    delete ctx.state[stateKey];
   },
 };

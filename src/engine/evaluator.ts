@@ -13,7 +13,13 @@ import {
   type RampStopField,
 } from "./conventions";
 import { getNodeDef } from "./registry";
-import { flattenGraph, resolvePreviewProducer } from "./flatten";
+import { audioEngine } from "./audio-engine";
+import { DEFAULT_BPM, type AudioChainRoot } from "./audio-chain";
+import {
+  collectLayerAudioAuditions,
+  flattenGraph,
+  resolvePreviewProducer,
+} from "./flatten";
 import { ITERATE_EDGE_PREFIX, ITERATE_TYPE, LAYER_TYPE } from "./groups";
 import { paramSocketType, parseTargetHandleKind } from "./graph-helpers";
 import * as prof from "./profiler";
@@ -31,6 +37,7 @@ import {
   type ClipBlock,
 } from "./clips";
 import type {
+  AudioChainNode,
   ImageValue,
   MaskValue,
   NodeDefinition,
@@ -190,6 +197,18 @@ export interface EvalResult {
   // are reported as ~0 since no compute happened. Drives the in-
   // editor "node timing" overlay.
   timings: Map<string, number>;
+  // Node ids on an audible audio path this eval — the transitive
+  // `audioRoutedToOutput` pre-pass set (seeded by Output `audio` edges,
+  // layer-boundary audition producers, and the Active node). Drives the
+  // not-audible glyph on audio nodes (080926_audio-v2-integration.md
+  // M-D). Top-level evals only; absent on nested (Iterate-interior)
+  // passes.
+  audibleAudioNodeIds?: ReadonlySet<string>;
+  // Chain roots audible by AUTHORED routing — Output's audio socket or a
+  // layer-boundary audition, never audition-by-active. What the export
+  // mixdown renders (080926 M-B). Deduped by root nodeId; top-level live
+  // evals only.
+  exportAudioChains?: AudioChainNode[];
 }
 
 // Stable stringify for params. Sorts object keys, and gives opaque browser
@@ -709,8 +728,9 @@ export function evaluateGraph(
 ): EvalResult {
   const nested = opts?.nested === true;
   // Held in a local so every profiler call below is guarded by one boolean
-  // rather than re-reading the module's level. False whenever capture is off.
-  const capturing = prof.beginEval(nested);
+  // rather than re-reading the module's level. False whenever capture is off
+  // — or when a playingOnly capture gates out this paused eval.
+  const capturing = prof.beginEval(nested, ctx.playing);
   // Iterate rejects nesting inside a nested pass, so interior samples are
   // always exactly one level down.
   const evalDepthTag = nested ? 1 : 0;
@@ -723,6 +743,25 @@ export function evaluateGraph(
   // land in frames already committed — see profiler.resolveNodeGpu.
   if (gpuTimer) gpuTimer.poll(prof.resolveNodeGpu);
   const extraTargets = opts?.extraTargets ?? [];
+
+  // --- Layer-level audio audition (080826_audio-nodes.md, revised) --------
+  // An audio wire into a Layer Output's `audio` socket is audible on its
+  // own — no composition-level hookup required. Resolved on the RAW graph
+  // (the boundary dissolves at flatten, so an unpulled chain would leave no
+  // trace), skipped while the layer is clip-gated (a layer cut out of the
+  // timeline is silent like it is invisible), forced into the needed set
+  // below, and treated as an audible sink by the audio engine — alongside
+  // anything landing on Output's `audio` socket and the ACTIVE node
+  // (audition-by-active: set an audio node Active to hear it unwired).
+  const auditionProducerIds: string[] = [];
+  if (!nested) {
+    const rawById = new Map(nodes.map((n) => [n.id, n]));
+    for (const a of collectLayerAudioAuditions(nodes, edges)) {
+      const layer = rawById.get(a.layerId);
+      if (!layer || resolveClipAt(layer.clips, ctx.tick).gated) continue;
+      auditionProducerIds.push(a.producerId);
+    }
+  }
   // Group shells and Group Output boundary nodes are dissolved by flatten,
   // so previewing one directly shows nothing on the canvas. Remap a
   // structural Active / preview target to the interior producer feeding the
@@ -917,8 +956,12 @@ export function evaluateGraph(
     nodes,
     edges,
     activeNodeId,
-    previewNodeId || extraTargets.length > 0
-      ? [...(previewNodeId ? [previewNodeId] : []), ...extraTargets]
+    previewNodeId || extraTargets.length > 0 || auditionProducerIds.length > 0
+      ? [
+          ...(previewNodeId ? [previewNodeId] : []),
+          ...extraTargets,
+          ...auditionProducerIds,
+        ]
       : undefined
   );
   // Folded into the same bucket as the topo sort — both are "work the
@@ -959,13 +1002,35 @@ export function evaluateGraph(
       for (const k of keys) markConsumed(nodeId, k);
     }
   }
+  // Audition producers are read by the audio engine, not by a wire — mark
+  // their audio-bearing outputs consumed (Video Source emits audio on an
+  // aux; a future gatesOutputs audio def must see the read).
+  for (const id of auditionProducerIds) {
+    markConsumed(id, "primary");
+    markConsumed(id, "aux:audio");
+  }
 
-  // Audio sources whose primary output is wired into an Output node's
-  // `audio` socket. Only these play audibly; every other audio source
-  // keeps advancing its element (for data) but stays muted. Recomputed
-  // each eval so re-wiring takes effect immediately.
+  // Audio sources on a path into an Output node's `audio` socket. Only
+  // these play audibly; every other audio source keeps advancing its
+  // element (for data) but stays muted. Recomputed each eval so re-wiring
+  // takes effect immediately.
+  //
+  // The walk is TRANSITIVE through audio-typed inputs: with processing
+  // chains (080826_audio-nodes.md) the node wired into Output is a Filter
+  // or mixer, and the Audio Source feeding it sits upstream — but its
+  // element must stay unmuted, because a muted element produces silence
+  // into the chain's MediaElementSource capture just as it does to the
+  // speakers. Dynamic audio sockets resolve through resolveInputs off
+  // params alone (the merge.ts pattern), so the pre-pass sees them.
   if (!nested) {
     const audioRoutedToOutput = new Set<string>();
+    const frontier: string[] = [];
+    const enqueue = (id: string) => {
+      if (!audioRoutedToOutput.has(id)) {
+        audioRoutedToOutput.add(id);
+        frontier.push(id);
+      }
+    };
     for (const e of edges) {
       if (e.targetHandle !== "in:audio") continue;
       // Audio Source emits audio on its primary; Video Source emits it on an
@@ -978,7 +1043,42 @@ export function evaluateGraph(
       }
       const target = byId.get(e.target);
       if (target && getNodeDef(target.type)?.type === "output") {
-        audioRoutedToOutput.add(e.source);
+        enqueue(e.source);
+      }
+    }
+    // Layer-boundary auditions and the Active node are audible sinks too —
+    // seed the same transitive walk so element sources feeding them
+    // un-mute (a muted element feeds silence into its chain capture).
+    for (const id of auditionProducerIds) enqueue(id);
+    if (activeNodeId) enqueue(activeNodeId);
+    while (frontier.length > 0) {
+      const id = frontier.pop()!;
+      const node = byId.get(id);
+      const def = node ? getNodeDef(node.type) : undefined;
+      if (!node || !def) continue;
+      let inputs = def.inputs;
+      try {
+        inputs = def.resolveInputs?.(node.params, { connectedTypes: {} }) ?? def.inputs;
+      } catch {
+        // A resolveInputs that needs live connectedTypes — fall back to the
+        // static list; audio sockets are static on every audio def today.
+      }
+      const audioInputs = new Set(
+        inputs.filter((i) => i.type === "audio").map((i) => i.name)
+      );
+      if (audioInputs.size === 0) continue;
+      for (const e of edges) {
+        if (e.target !== id) continue;
+        if (
+          e.sourceHandle !== "out:primary" &&
+          e.sourceHandle !== "out:aux:audio"
+        ) {
+          continue;
+        }
+        const parsed = parseTargetHandleKind(e.targetHandle);
+        if (parsed?.kind === "input" && audioInputs.has(parsed.name)) {
+          enqueue(e.source);
+        }
       }
     }
     ctx.audioRoutedToOutput = audioRoutedToOutput;
@@ -1796,6 +1896,101 @@ export function evaluateGraph(
   // themselves survive the OUTER sweep because presentIds is pre-flatten.
   if (!nested) sweepNodeState(ctx, presentIds);
 
+  // --- Audio chain reconcile (specdocs/080826_audio-nodes.md) -------------
+  // Hand every audio-chain descriptor produced this pass to the audio
+  // engine, tagging the ones that landed on an Output node's `audio`
+  // socket as routed (audible) sinks. Runs only at the top level of a LIVE
+  // eval: offline export renders chains deterministically through
+  // audioEngine.renderOffline instead, and nested (Iterate-interior)
+  // passes surface their values through the shell. With no chains and no
+  // live audio graph this is a cheap no-op — Tone never even loads.
+  let exportAudioChains: EvalResult["exportAudioChains"];
+  if (!nested && !ctx.offline) {
+    const routedChainIds = new Set<string>();
+    for (const e of edges) {
+      if (e.targetHandle !== "in:audio") continue;
+      const target = byId.get(e.target);
+      if (!target || getNodeDef(target.type)?.type !== "output") continue;
+      const srcOut = outputs.get(e.source);
+      if (!srcOut) continue;
+      const ps = parseSourceHandle(e.sourceHandle);
+      const v =
+        ps?.kind === "aux" ? srcOut.aux?.[ps.name] : srcOut.primary;
+      if (v && v.kind === "audio" && v.chain) routedChainIds.add(v.chain.nodeId);
+    }
+    // Audible sinks beyond Output's audio socket (revised audibility): a
+    // layer-boundary audition producer, or the Active node (audition an
+    // audio chain by making it active — no wiring at all). AUTHORED
+    // audibility (Output + layer boundary) is tracked separately: it is
+    // what exports mix down — audition-by-active is an editor gesture and
+    // must never leak into a rendered file (080926 M-B).
+    const authoredProducerIds = new Set(auditionProducerIds);
+    const audibleProducerIds = new Set(auditionProducerIds);
+    if (activeNodeId) audibleProducerIds.add(activeNodeId);
+
+    // Bare element leaves are NOT roots: a plain Audio/Video Source value
+    // that nothing processes keeps the legacy element-direct path (no
+    // MediaElementSource wrap, no Tone load). The leaf enters the engine
+    // only embedded inside a processing chain's descriptor. (An audible
+    // bare Source still plays — the transitive un-mute walk above covers
+    // it on the element path.)
+    const roots: AudioChainRoot[] = [];
+    const exportChains: NonNullable<EvalResult["exportAudioChains"]> = [];
+    const exportSeen = new Set<string>();
+    const pushRoot = (
+      v: { kind: string; chain?: unknown } | undefined,
+      producerId: string
+    ) => {
+      if (!v || v.kind !== "audio") return;
+      const chain = (v as { chain?: AudioChainRoot["chain"] }).chain;
+      if (!chain || chain.kind === "element") return;
+      roots.push({
+        chain,
+        routed:
+          routedChainIds.has(chain.nodeId) ||
+          audibleProducerIds.has(producerId),
+      });
+      if (
+        (routedChainIds.has(chain.nodeId) ||
+          authoredProducerIds.has(producerId)) &&
+        !exportSeen.has(chain.nodeId)
+      ) {
+        exportSeen.add(chain.nodeId);
+        exportChains.push(chain);
+      }
+    };
+    for (const [producerId, out] of outputs) {
+      pushRoot(out.primary, producerId);
+      if (out.aux) {
+        for (const v of Object.values(out.aux)) pushRoot(v, producerId);
+      }
+    }
+    exportAudioChains = exportChains;
+    audioEngine.reconcile(
+      roots,
+      {
+        playing: ctx.playing,
+        timeSec: globalTime,
+        bpm: ctx.bpm ?? DEFAULT_BPM,
+        fps: ctx.fps,
+        ticksPerFrame: ctx.ticksPerFrame,
+      },
+      ctx
+    );
+  }
+
   prof.endEval(nested, { tick: globalTick, playing: ctx.playing });
-  return { outputs, terminalImage, errors, fingerprints, timings, inspectInputs };
+  return {
+    outputs,
+    terminalImage,
+    errors,
+    fingerprints,
+    timings,
+    inspectInputs,
+    // The audible-path set the pre-pass stashed on ctx above — surfaced
+    // for the UI's not-audible glyph. Nested passes omit it (ctx would
+    // hold the OUTER eval's set, not one of their own).
+    audibleAudioNodeIds: nested ? undefined : ctx.audioRoutedToOutput,
+    exportAudioChains,
+  };
 }

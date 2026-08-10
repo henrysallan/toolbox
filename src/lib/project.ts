@@ -194,6 +194,10 @@ export interface SavedScene {
   // saving both keeps the loop's *duration* stable even if the
   // project is opened on a machine with a different default FPS.
   fps?: number;
+  // Project tempo in beats/min for the audio note-domain nodes
+  // (specdocs/080826_audio-nodes.md). ADDITIVE — absent on older saves,
+  // which load with the current editor default (120).
+  bpm?: number;
   // Project render resolution in pixels. Omitted on saves that
   // predate resolution persistence — leave the user's current
   // resolution alone in that case (don't snap to a default).

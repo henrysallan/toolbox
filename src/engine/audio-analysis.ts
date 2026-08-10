@@ -1,5 +1,5 @@
 import { pushMediaSettle } from "./offline-settle";
-import type { AudioValue, RenderContext } from "./types";
+import type { AudioChainNode, AudioValue, RenderContext } from "./types";
 
 // =====================================================================
 // Shared audio-analysis layer
@@ -41,15 +41,57 @@ import type { AudioValue, RenderContext } from "./types";
 
 const AUDIO_CTX_KEY = "__audio_ctx__";
 const ANALYSER_MAP_KEY = "__audio_analysers__";
+const ELEMENT_SOURCE_KEY = "__audio_element_sources__";
 const FRAME_CACHE_KEY = "__audio_frame_cache__";
+const CHAIN_FRAME_CACHE_KEY = "__audio_chain_frame_cache__";
 const DECODE_MAP_KEY = "__audio_decoded__";
+
+// ---------------------------------------------------------------------
+// Chain taps (080926_audio-v2-integration.md M-A)
+// ---------------------------------------------------------------------
+//
+// Synth-chain AudioValues carry no media element — their analysis source
+// is the live Tone graph (an analyser on the stage's output) or, offline,
+// a deterministic render of the chain sliced per frame. Both live in
+// audio-engine.ts, which this module cannot import (it imports US for the
+// shared context / element sources) — so the engine INJECTS itself here
+// at module load. Provider absent (engine chunk not loaded yet, stage not
+// built yet) → callers fall back to the element passthrough or emit rest
+// values; the engine's pipeline-bump re-evals once it comes up.
+
+export interface ChainTapProvider {
+  // Latest time-domain window from the live stage's analyser tap, or null
+  // while the stage isn't built.
+  readLiveTap(
+    chainNodeId: string
+  ): { timeDomain: Float32Array; sampleRate: number } | null;
+  // Deterministic offline buffer for the chain covering at least
+  // [0, minEndSec). Null while rendering (a settle promise is registered
+  // on ctx so the export driver waits) or when rendering is impossible.
+  getOfflineChainBuffer(
+    chain: AudioChainNode,
+    ctx: RenderContext,
+    minEndSec: number
+  ): AudioBuffer | null;
+}
+
+let chainTapProvider: ChainTapProvider | null = null;
+export function setChainTapProvider(p: ChainTapProvider): void {
+  chainTapProvider = p;
+}
 
 // FFT window size for the analyser and the JS spectrum. 2048 samples ≈
 // 46 ms at 44.1 kHz — a reasonable time/frequency tradeoff for control
 // signals. Bin resolution is sampleRate / fftSize ≈ 21.5 Hz.
 export const ANALYSIS_FFT_SIZE = 2048;
 
-function getAudioContext(ctx: RenderContext): AudioContext | null {
+// The ONE AudioContext for the whole app. Shared by the analysis taps here,
+// the audio→scalar coercion, AND the audio-chain engine (audio-engine.ts
+// mounts Tone.js on this same raw context) — a MediaElementSource is bound
+// to its context forever, so everything that touches elements must agree on
+// one. Exported for audio-engine.ts only; everyone else goes through
+// getAudioFrame.
+export function getSharedAudioContext(ctx: RenderContext): AudioContext | null {
   const existing = ctx.state[AUDIO_CTX_KEY] as AudioContext | undefined;
   if (existing) {
     if (existing.state === "suspended") existing.resume().catch(() => {});
@@ -65,6 +107,65 @@ function getAudioContext(ctx: RenderContext): AudioContext | null {
   }
 }
 
+// ---------------------------------------------------------------------
+// Shared per-element source registry
+// ---------------------------------------------------------------------
+//
+// createMediaElementSource is ONE-SHOT per element (a second call throws)
+// and permanently diverts the element's direct audio output through the
+// context. So the element's WebAudio wrap is a shared resource: analysis
+// taps read from it, and an audio chain (Filter etc. downstream of an
+// Audio/Video Source) claims it as a chain leaf. The `direct` gain is the
+// element's default path to the speakers (source → direct → destination);
+// audio-engine.ts zeroes it while a chain is processing the element so the
+// dry signal doesn't leak alongside the processed one, and restores it when
+// the chain goes away. Mic elements tap their MediaStream instead (no
+// direct gain — the mic never had a default speaker path here; routing it
+// to the destination would feed back).
+
+export interface ElementSourceEntry {
+  source: AudioNode;
+  direct: GainNode | null;
+}
+
+export function getOrCreateElementSource(
+  ctx: RenderContext,
+  element: HTMLMediaElement,
+  sourceKind: "file" | "mic" | "video"
+): ElementSourceEntry | null {
+  const map = (ctx.state[ELEMENT_SOURCE_KEY] ??= new Map()) as Map<
+    HTMLMediaElement,
+    ElementSourceEntry
+  >;
+  const cached = map.get(element);
+  if (cached) return cached;
+
+  const audioCtx = getSharedAudioContext(ctx);
+  if (!audioCtx) return null;
+
+  try {
+    let entry: ElementSourceEntry;
+    if (sourceKind === "mic") {
+      const stream = (element as HTMLMediaElement & {
+        srcObject: MediaStream | null;
+      }).srcObject;
+      if (!stream) return null;
+      entry = { source: audioCtx.createMediaStreamSource(stream), direct: null };
+    } else {
+      const source = audioCtx.createMediaElementSource(element);
+      const direct = audioCtx.createGain();
+      direct.gain.value = 1;
+      source.connect(direct);
+      direct.connect(audioCtx.destination);
+      entry = { source, direct };
+    }
+    map.set(element, entry);
+    return entry;
+  } catch {
+    return null;
+  }
+}
+
 interface AnalyserEntry {
   analyser: AnalyserNode;
 }
@@ -73,40 +174,27 @@ function getOrCreateAnalyser(
   ctx: RenderContext,
   value: AudioValue
 ): AnalyserEntry | null {
+  const element = value.element;
+  if (!element) return null;
   const map = (ctx.state[ANALYSER_MAP_KEY] ??= new Map()) as Map<
     HTMLMediaElement,
     AnalyserEntry
   >;
-  const cached = map.get(value.element);
+  const cached = map.get(element);
   if (cached) return cached;
 
-  const audioCtx = getAudioContext(ctx);
+  const audioCtx = getSharedAudioContext(ctx);
   if (!audioCtx) return null;
 
   try {
-    let source: AudioNode;
-    if (value.source === "mic") {
-      // `srcObject` carries the MediaStream for mic-mode elements —
-      // createMediaStreamSource taps it without interrupting the
-      // element's own audible playback path.
-      const stream = (value.element as HTMLMediaElement & {
-        srcObject: MediaStream | null;
-      }).srcObject;
-      if (!stream) return null;
-      source = audioCtx.createMediaStreamSource(stream);
-    } else {
-      // createMediaElementSource is one-shot per element. It ALSO diverts
-      // the element's normal audio output through WebAudio, so we must
-      // connect to destination ourselves to keep file playback audible.
-      source = audioCtx.createMediaElementSource(value.element);
-      source.connect(audioCtx.destination);
-    }
+    const src = getOrCreateElementSource(ctx, element, value.source ?? "file");
+    if (!src) return null;
     const analyser = audioCtx.createAnalyser();
     analyser.fftSize = ANALYSIS_FFT_SIZE;
     analyser.smoothingTimeConstant = 0.3;
-    source.connect(analyser);
+    src.source.connect(analyser);
     const entry: AnalyserEntry = { analyser };
-    map.set(value.element, entry);
+    map.set(element, entry);
     return entry;
   } catch {
     return null;
@@ -159,6 +247,17 @@ export function getAudioFrame(
   value: AudioValue,
   ctx: RenderContext
 ): AudioFrame | null {
+  // Chain tap WINS over the element passthrough (080926 M-A): an effect's
+  // AudioValue carries both, and the tap reads the POST-effect signal —
+  // the one a reactive visual should follow — where the element is the
+  // raw source. Falls through to the element when the tap isn't up yet
+  // (engine loading, stage not built) so chainless/legacy values behave
+  // exactly as before.
+  if (value.chain) {
+    const frame = chainFrame(value.chain, ctx);
+    if (frame) return frame;
+  }
+  if (!value.element) return null;
   const cache = frameCache(ctx);
   const cached = cache.get(value.element);
   if (cached && cached.frame === ctx.frame) return cached.value;
@@ -167,6 +266,50 @@ export function getAudioFrame(
   if (!frame) return null;
   cache.set(value.element, { frame: ctx.frame, value: frame });
   return frame;
+}
+
+function chainFrameCache(
+  ctx: RenderContext
+): Map<string, FrameCacheEntry> {
+  return (ctx.state[CHAIN_FRAME_CACHE_KEY] ??= new Map()) as Map<
+    string,
+    FrameCacheEntry
+  >;
+}
+
+// Analysis frame for a chain value at the current ctx.frame — live via the
+// engine's stage analyser, offline by slicing the chain's deterministic
+// render at the scene time. Cached per chain root per frame (Bands + Pitch
+// + Spectral on one chain share a read, same as elements).
+function chainFrame(chain: AudioChainNode, ctx: RenderContext): AudioFrame | null {
+  if (!chainTapProvider) return null;
+  const cache = chainFrameCache(ctx);
+  const cached = cache.get(chain.nodeId);
+  if (cached && cached.frame === ctx.frame) return cached.value;
+
+  let frame: AudioFrame | null = null;
+  if (ctx.offline) {
+    const buf = chainTapProvider.getOfflineChainBuffer(chain, ctx, ctx.time + 1);
+    if (buf) frame = sliceBufferAt(buf, ctx.time);
+  } else {
+    const tap = chainTapProvider.readLiveTap(chain.nodeId);
+    if (tap) frame = makeFrame(tap.timeDomain, tap.sampleRate);
+  }
+  if (!frame) return null;
+  cache.set(chain.nodeId, { frame: ctx.frame, value: frame });
+  return frame;
+}
+
+// Offline-only: chain-analysis frame at an arbitrary time (Spectral's
+// deterministic spectrogram history — the chain sibling of offlineFrameAt).
+export function offlineChainFrameAt(
+  chain: AudioChainNode,
+  ctx: RenderContext,
+  timeSec: number
+): AudioFrame | null {
+  if (!chainTapProvider) return null;
+  const buf = chainTapProvider.getOfflineChainBuffer(chain, ctx, ctx.time + 1);
+  return buf ? sliceBufferAt(buf, Math.max(0, timeSec)) : null;
 }
 
 // Live backend: read the most recent samples from the per-element analyser.
@@ -203,23 +346,24 @@ interface DecodeEntry {
 }
 
 function getDecodedBuffer(value: AudioValue, ctx: RenderContext): AudioBuffer | null {
-  if (value.source === "mic") return null;
+  if (value.source === "mic" || !value.element) return null;
+  const element = value.element;
   const map = (ctx.state[DECODE_MAP_KEY] ??= new Map()) as Map<
     HTMLMediaElement,
     DecodeEntry
   >;
-  const existing = map.get(value.element);
+  const existing = map.get(element);
   if (existing) return existing.status === "ready" ? existing.buffer : null;
 
-  const url = value.element.currentSrc || value.element.src;
+  const url = element.currentSrc || element.src;
   if (!url) {
-    map.set(value.element, { buffer: null, status: "failed" });
+    map.set(element, { buffer: null, status: "failed" });
     return null;
   }
   const entry: DecodeEntry = { buffer: null, status: "pending" };
-  map.set(value.element, entry);
+  map.set(element, entry);
 
-  const audioCtx = getAudioContext(ctx);
+  const audioCtx = getSharedAudioContext(ctx);
   const job: Promise<void> = audioCtx
     ? fetch(url)
         .then((r) => r.arrayBuffer())
@@ -278,7 +422,7 @@ function sliceBufferAt(buf: AudioBuffer, timeSec: number): AudioFrame {
 
 function offlineFrame(value: AudioValue, ctx: RenderContext): AudioFrame | null {
   const buf = getDecodedBuffer(value, ctx);
-  if (!buf) return null;
+  if (!buf || !value.element) return null;
   // The source node seeks element.currentTime to the deterministic playhead.
   return sliceBufferAt(buf, value.element.currentTime || 0);
 }

@@ -12,7 +12,6 @@ import {
 import {
   BLEND_FS,
   BLEND_MODE_ORDER,
-  BLIT_FS,
   modeToInt,
   type BlendMode,
 } from "@/nodes/effect/merge";
@@ -129,26 +128,37 @@ export const layerNode: NodeDefinition = {
 
     // Nothing inside and nothing below — emit transparent black so the
     // chain above keeps compositing sanely.
-    const output = ctx.allocImage();
     if (!hasContent && !hasStack) {
+      const output = ctx.allocImage();
       ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output };
     }
     if (!hasContent) {
-      // Empty layer: the stack passes through untouched.
-      const blit = ctx.getShader("merge/blit", BLIT_FS);
-      ctx.drawFullscreen(blit, output, (gl) => {
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, (stack as ImageValue).texture);
-        gl.uniform1i(gl.getUniformLocation(blit, "u_src"), 0);
-      });
-      return { primary: output };
+      // Empty layer: the stack passes through untouched — returned
+      // directly (the bypass/gated-layer pattern) instead of paying a
+      // full-canvas blit + a canvas-sized alloc for a verbatim copy.
+      // ownsTextures: false — the upstream cache entry owns the texture.
+      return { primary: stack, ownsTextures: false };
     }
 
     // Composite content over the stack (or over transparency for the
     // bottom layer) — same shader and semantics as one Merge layer.
     const mode = ((params.blendMode as string) ?? "normal") as BlendMode;
     const opacity = Math.max(0, Math.min(1, (params.opacity as number) ?? 1));
+
+    // Bottom layer, normal blend at full opacity: compositing over a
+    // transparent base is the identity (compositeOver with a.a = 0 gives
+    // outA = b.a, outRgb = b.rgb for mode "normal"), so return the
+    // content untouched. NOT valid for other modes — blendRgb reads the
+    // base RGB unweighted by base alpha, so e.g. multiply over
+    // transparent black darkens. At 4K the skipped pass + the two
+    // canvas-sized allocs (output + cleared scratch base) were ~4.4 ms
+    // of GPU per frame.
+    if (!hasStack && mode === "normal" && opacity >= 1) {
+      return { primary: content, ownsTextures: false };
+    }
+
+    const output = ctx.allocImage();
     let base: ImageValue | null = hasStack ? (stack as ImageValue) : null;
     let baseOwned = false;
     if (!base) {

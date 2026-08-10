@@ -12,6 +12,10 @@
 
 import * as prof from "@/engine/profiler";
 import type { FrameSample, RecomputeReason } from "@/engine/profiler";
+import {
+  getBlendFieldForceCpu,
+  setBlendFieldForceCpu,
+} from "@/engine/spline-blend-intersections-gpu";
 
 export interface NodeAggregate {
   id: string;
@@ -534,6 +538,17 @@ export function installPerfConsole(getEdges: () => readonly GraphEdgeLite[]): vo
     /** __perf.frame(seq) — one frame's full node list. */
     frame(seq: number) {
       return prof.readFrame(seq);
+    },
+    /**
+     * __perf.blendGpu(false) — manual A/B for Blend Intersections' GPU
+     * field: false forces the CPU reference path, true (default) re-enables
+     * the GPU port. No argument reads the current setting.
+     */
+    blendGpu(enabled?: boolean) {
+      if (enabled !== undefined) setBlendFieldForceCpu(!enabled);
+      return `blend-intersections GPU field ${
+        getBlendFieldForceCpu() ? "OFF (CPU forced)" : "on"
+      }`;
     },
   };
   (window as unknown as Record<string, unknown>).__perf = api;

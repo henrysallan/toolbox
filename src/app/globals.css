@@ -181,43 +181,6 @@ input.param-slider-bare[type="range"]::-moz-range-thumb {
   cursor: ew-resize;
 }
 
-/* Color Correction bottom-bar sliders: a thin track whose fill is supplied
-   per field via the --track CSS var (the Temp/Tint/Hue/Cont gradients, or a
-   plain grey for the rest), with a small round knob. */
-input.ccbar-slider[type="range"] {
-  height: 14px;
-  background: transparent;
-}
-input.ccbar-slider[type="range"]::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--track, var(--tb-n-9));
-}
-input.ccbar-slider[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 11px;
-  height: 11px;
-  margin-top: -3.5px;
-  border-radius: 50%;
-  background: var(--tb-n-16);
-  border: 1px solid var(--tb-n-0);
-  cursor: pointer;
-}
-input.ccbar-slider[type="range"]::-moz-range-track {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--track, var(--tb-n-9));
-}
-input.ccbar-slider[type="range"]::-moz-range-thumb {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: var(--tb-n-16);
-  border: 1px solid var(--tb-n-0);
-  cursor: pointer;
-}
-
 /* Thin, unfilled scrollbar for compact panels (node search popup, etc.).
    Just a hairline track outline with a muted thumb — no heavy chrome. */
 .thin-scrollbar {

@@ -3,6 +3,7 @@ import {
   binToHz,
   getAudioFrame,
   hzToMidi,
+  offlineChainFrameAt,
   offlineFrameAt,
 } from "@/engine/audio-analysis";
 import type {
@@ -264,13 +265,21 @@ function buildSpectrogramRows(
     buildField(frame, "log", bins, dbFloor, dbCeil, gamma, fMin);
 
   if (ctx.offline) {
-    const now = audio.element.currentTime || 0;
+    // Chain taps win over the element passthrough, same precedence as
+    // getAudioFrame: the chain buffer is the POST-effect signal. `now` for
+    // a chain is scene time (the buffer renders from scene t=0); for an
+    // element it stays the seeked currentTime.
+    const chain = audio.chain;
+    if (!chain && !audio.element) return null;
+    const now = chain ? ctx.time : audio.element!.currentTime || 0;
     const dt = 1 / Math.max(1, ctx.fps);
     const rows: Float32Array[] = [];
     let anyReady = false;
     for (let r = 0; r < history; r++) {
       const age = history - 1 - r; // r=0 → oldest
-      const f = offlineFrameAt(audio, ctx, Math.max(0, now - age * dt));
+      const f = chain
+        ? offlineChainFrameAt(chain, ctx, Math.max(0, now - age * dt))
+        : offlineFrameAt(audio, ctx, Math.max(0, now - age * dt));
       if (f) {
         anyReady = true;
         rows.push(column(f));

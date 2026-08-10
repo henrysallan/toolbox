@@ -724,3 +724,497 @@ Everything below ~4 ms is in normal territory for a full-canvas pass.
 - **Both UI surfaces** (panel + graph heatmap) rather than either alone.
 - **Diagnose before optimizing.** No GPU port work starts until traces name
   the bottleneck.
+
+---
+
+# Session 2 (2026-08-08) — the spline chain
+
+Owner set up `Benchmark_01_blendintersections_offsetpath` to work three
+nodes: **blend-intersections, rasterize-spline, spline-offset**. The graph:
+
+```
+noise -> advect-points (100 pts, accumulate, trails)
+      -> points-to-spline (linear) -> blend-intersections
+      -> spline-offset -> rasterize-spline (layered + punch holes)
+```
+
+Opening trace: **3.1 fps, 309 ms/frame, 99.6% CPU** (total GPU 1.29 ms).
+
+| node | ms/frame | share |
+|---|---|---|
+| `spline-offset` | 244.58 | 79% |
+| `blend-intersections` | 50.78 | 16% |
+| `rasterize-spline` | 13.21 (+0.57 GPU) | 4% |
+
+## Fix 3 — Offset Path: bisection instead of a linear t-scan
+
+`offsetSubpath` called bezier-js's `.offset(d)` per segment. That delegates to
+`reduce()`, whose second pass finds "simple" spans by **linear scan at t-step
+0.01**, constructing a throwaway `Bezier` via `split(t1,t2)` at every step. A
+span already simple end to end still paid ~100 splits to discover that; with
+the extrema pre-pass, ~500 Bezier constructions per source segment. At 925
+segments/frame that is ~460k allocations per frame. Measured **264 µs per
+segment**.
+
+Replaced with bisection (`reduceToSimple` / `reduceSpan` in `spline-math.ts`):
+test the span, and only when `simple()` fails split at the midpoint and
+recurse. A simple span now costs ONE split and one test. `scale()` is still
+bezier-js's, so the offset geometry is unchanged.
+
+Also: `offsetSubpath` built its segments via `subpathToBeziers`, which runs a
+24-sample Gauss-Legendre `length()` per segment — and the offset never reads
+arc length. Added `subpathToCurves` (no lengths) and pointed the three
+length-discarding callers at it.
+
+**Result (deterministic bench, identical input): 466–501 µs/segment -> 20–36,
+i.e. 13–25x.** Output anchor count is slightly LOWER (954->916, 1018->994),
+so downstream is not paying for the win.
+
+### A bug this introduced, and the escape it needed
+
+`simple()` compares endpoint normals through `acos`. On a **zero-extent span**
+those normals are NaN, so `simple()` is false forever — bisection recursed
+straight to the depth cap and emitted 2^8 pieces: **259 anchors, 257 of them
+non-finite, from one zero-length input segment.** bezier-js escaped this via
+reduce()'s "we can never form a reduction" bail-out. `spanHasExtent()` is the
+equivalent, plus an `allFinite()` guard on `scale()`'s output (it can return
+non-finite control points without throwing). Regression-guarded in
+`scripts/check-offset.mts`.
+
+## Fix 4 — Rasterize Spline: bbox prefilter for hole islands
+
+`groupHoleIslands` is **O(n²) in subpaths**, and each containment test walked
+the candidate's whole flattened polygon — O(n²·m). At 218 subpaths × ~150
+vertices that is ~7M crossing tests per frame, and it runs for BOTH `holes`
+and `layered`, which per the owner are the two modes actually worth using
+("the ones that are cheaper are the ones that are less useful").
+
+Added an axis-aligned bbox reject before the crossing test (a point outside
+the box cannot be inside the polygon, so grouping is unchanged), and memoized
+`polyArea` per container.
+
+Also **raised the silent cap 256 -> 2048**. Above the old cap `groupHoleIslands`
+returned null and punch-holes SILENTLY STOPPED WORKING with no diagnostic —
+and the benchmark graph sits at 218, just under the cliff. The cap stays
+because the prefilter degrades to the old cost when boxes genuinely overlap
+(concentric rings).
+
+Not separately measurable in this graph: at the 120–144 subpaths the live
+trace actually produced, n² is only ~20k tests. It matters at the 218+ counts
+seen in the opening trace.
+
+## Neutral: squared-distance culling in blend-intersections
+
+`segDist` rooted before the caller's `d <= influence` cull, and the candidate
+lists come from a 3×3 bucket neighborhood reaching ~3x further than
+`influence`, so most roots were spent on points about to be discarded.
+Switched to `segDistSq` + cull on `influenceSq`.
+
+**Measured: no gain** (36.5/38.1 ms -> 34.9/36.3, inside noise). `Math.sqrt`
+is one instruction; the loop is memory/branch bound. Kept only because the
+old comment claimed "Squared-distance" on a function that returned a rooted
+one. Recorded here so nobody re-attempts it expecting a win.
+
+## The measurement trap this session (important)
+
+`advect-points` in `accumulate` mode is **stateful**: its geometry evolves
+every frame AND resets whenever HMR reloads a module. So **every before/after
+comparison taken from the live editor is confounded** — subpath count moves
+between runs, and subpath count is exactly what these nodes scale on.
+
+Concretely, this bit twice:
+- A visual A/B of the offset change produced a completely different image. The
+  points had moved — which is UPSTREAM of the node being toggled, so the node
+  could not have caused it. The reload had reset the sim.
+- After the rasterize fix the frame appeared to get *worse* (53 -> 65 ms) and
+  `blend-intersections`, which was not touched, appeared to move 42.6 -> 51.9.
+
+`scripts/bench-spline-chain.mts` (`npm run bench:spline`) exists for this:
+fixed synthetic input, pure functions, min-of-reps timing. Use the profiler
+trace to find WHICH node is hot in a real graph; use the bench to decide
+whether an edit made it faster.
+
+Note min-of-reps, not mean — the mean drifts ~10% run to run, the same size as
+some of the wins being measured.
+
+## Fix 5 — marching squares: integer endpoint keys (5.7x)
+
+Phase-timed `blendIntersections` before optimizing, which overturned the
+guess. The SDF field loop was NOT the biggest phase:
+
+| phase | share |
+|---|---|
+| field sampling | ~40% |
+| **marching squares** | **~37%** |
+| bezier refit | ~21% |
+| setup | ~1% |
+
+(Absolute phase numbers ran high — instrumenting the function appears to cost
+it some optimization — but the split is what mattered, and going straight at
+the field loop would have capped out at ~40%.)
+
+Two things in `marching-squares.ts`:
+
+1. **`chainSegments` keyed endpoints by STRING** — a template literal
+   `` `${qx}:${qy}` `` into a `Map<string, …>`, built twice per segment and
+   re-derived on *every step of every walk*. Replaced with an integer key
+   (same 1/8-cell quantization, so the same points match), precomputed once
+   per segment endpoint, into a `Map<number, number[]>` whose entries are
+   `idx*2+isStart` rather than `{segIdx, isStart}` objects.
+2. **Four arrow functions allocated per boundary cell** (`top`/`right`/
+   `bottom`/`left`), to lazily evaluate the two edges a case needs. That
+   traded four closure allocations for two divisions. Inlined as plain
+   numbers.
+
+**Result: 5.68 ms -> 1.01 ms (5.7x) on a 320² field, byte-identical output**
+across a 9-field corpus (rings, nested rings, saddles, thin sub-cell bars,
+degenerate all-in/all-out). End to end that took blend-intersections from
+~36 ms to ~24.5 ms (**-32%**) on fixed input.
+
+Six callers benefit, not just this one: `sdf-to-spline` (already on the
+worklist), `text`, `spline-flow`, `points-to-surface`, `growth-emit`.
+
+`scripts/check-marching-squares.mts` guards it. The strongest assertion there
+is geometric, not a snapshot: every emitted point must bilinearly sample the
+field to ~0, which catches a mis-indexed corner or a wrong edge assignment
+that a point count would sail past.
+
+### Pre-existing chaining quality, recorded not fixed
+
+The corpus exposes that rings fragment: `two-overlapping` yields 9 subpaths
+with 1 closed where 1 closed ring is geometrically right; `blob-field` gives
+34 subpaths with 6 closed for 24 blobs. This is why blend-intersections
+re-closes near-meeting endpoints and drops sub-cell debris downstream. The
+characterization counts in the check pin current behavior; if chaining is
+deliberately improved they SHOULD move.
+
+## `resolution` is mostly inert at typical widths
+
+`cell = min(cell, max(0.5, r * 0.75))` — the thin-feature guard — clamps the
+grid independently of `resolution`. At `width: 6` (r = 3) the cell can never
+exceed 2.25 px, so over a ~717 px bbox the grid is ≥319 regardless. Measured:
+resolution 144 -> 25.1 ms, 288 -> 23.1 ms (identical within noise), 512 ->
+36.0 ms.
+
+So **turning Resolution down does not make this node faster** — only raising
+Width coarsens the grid. Worth surfacing in the param's help text.
+
+## Where it stands
+
+After fixes 3 and 5, `blend-intersections` is ~24.5 ms on fixed input, split:
+
+| piece | ms | share |
+|---|---|---|
+| **bezier refit** (`fitSplineToPolyline`) | **11.6** | **43%** |
+| field sampling + march + setup | 15.3 | 57% |
+
+### Polyline thinning before the fit — TRIED AND REVERTED
+
+Douglas-Peucker at errPx/2 before `fitSplineToPolyline` (owner signed off on
+changing geometry). It worked, on every metric that was being watched:
+
+- ~24.5ms -> ~18ms (**-27%**)
+- subpath count IDENTICAL (26/29/29) — topology preserved
+- fewer output anchors (245 -> 206), so spline-offset got cheaper too
+- static render looked correct
+
+The owner saw it immediately: "significantly more snapping and popping."
+
+Measured on a 12-frame animated sweep — mean frame-to-frame contour movement
+for 1.41px of input motion:
+
+| | mean jump | max jump |
+|---|---|---|
+| current | **7.60 px** | 15.38 px |
+| with thinning | **10.76 px** | 13.70 px |
+
+**+42% mean jitter.** RDP picks its keep-set by max deviation, so a sub-pixel
+change in the contour flips which points survive, and the fit — now
+under-constrained between the survivors — swings visibly. Reverted; the
+reason is written above the fit call so it isn't re-attempted.
+
+Note the MAX went the other way (15.38 -> 13.70). Reading the max would have
+concluded the change was fine. `npm run bench:jitter` prints the mean first
+for that reason.
+
+### The popping is partly inherent — and it points at the chaining
+
+Baseline amplification is **5.39x**: for 1.41px of input motion the contour
+moves 7.60px per frame with no thinning at all. The subpath count over a
+12-frame sweep is not stable either:
+
+```
+29 27 27 27 27 27 25 25 24 24 24 24
+```
+
+Whole contours appear and vanish. That is the same defect the marching-squares
+corpus exposed — rings fragment into open chains, so blend-intersections'
+downstream "re-close near-meeting endpoints, drop sub-cell debris" heuristics
+fire differently frame to frame.
+
+Owner's call on this: **the original output is the target — "basically good,
+just not fast enough."** The popping above is the node's existing character,
+not a defect to fix; optimizations must not change output at all. That closes
+the chaining-quality thread and rules out anything geometry-changing.
+
+## Fix 6 — bit-identical scalar rewrites (~24.5 -> ~21.5ms)
+
+Two changes, both verified BIT-IDENTICAL on an 18-configuration snapshot of
+blendIntersections (3 sizes x 2 phases x 3 smoothing values, 52,823 anchors
+compared exactly, handles included):
+
+1. **Schneider fit de-vectorized** (`newtonStep`, `maxFitError`,
+   `generateBezier` in spline-math.ts). V2 is `[number, number]`, so every
+   vSub/vScale/vAdd allocated a fresh array; newtonStep alone built ~15 per
+   call, per sample, per iteration, per recursion level. Rewritten in scalars
+   with THE SAME operations in THE SAME order — including Math.hypot where
+   vLen used it, which is not bit-equal to sqrt(x*x+y*y), and a changed last
+   bit can flip a split-point choice and cascade. Fit: 11.6 -> 9.0ms (-22%).
+   Also benefits the pencil tool and spline-weave, which share the fit.
+2. **Branch smooth-min sort** — `branchDists.sort((a,b)=>a-b)` ran per deep
+   grid sample (~26% of ~140k samples) on a handful of numbers each, where
+   comparator dispatch dwarfs the compare. Insertion sort, same ascending
+   sequence. Field portion: 15.3 -> 12.5ms.
+
+Where the node stands after fixes 3, 5, 6: **~52ms (session start) ->
+~21.5ms**, output unchanged at every step. Remaining split: ~12.5ms field
+sampling + marching + setup, ~9ms fit.
+
+What's left is structural, not shaveable: the field loop's remaining cost is
+the loop itself (~3.7 candidates/sample means the distance math is NOT the
+bottleneck — it's per-sample overhead over 140k samples), and the fit is
+Schneider's algorithm doing its job. The two real options if this needs to go
+further:
+
+- **GPU field evaluation** (fragment shader computes the SDF grid, readPixels,
+  march on CPU). The branch clustering makes the shader nontrivial but not
+  impossible — branches are per-subpath runs, which could be one draw per
+  subpath with min-blending, though smooth-min needs the branches SEPARATED,
+  so it likely means a multi-layer target or a fixed max-branch count.
+- **Incremental/dirty-region evaluation** — only resample grid cells whose
+  candidate set changed. Complex bookkeeping; the sim invalidates most of the
+  bbox every frame anyway, so probably poor return here.
+
+Neither is a quick win; both change no output. Stop here unless the node is
+still the limiting factor in real use.
+
+The field loop is the other half and is where "put it on the GPU" applies
+cleanly — an SDF evaluation is a natural fragment shader. The obstacle is
+that the per-sample branch clustering (sort candidates by (subpath, ordinal),
+split at ordinal gaps, fold with smooth-min) is awkward in GLSL.
+
+`blend-intersections` was ~52 ms live earlier. Its cost is the SDF field sample loop: ~101k grid samples ×
+~36 candidate segments, each a point-segment distance. That is not a
+micro-optimization target — it is the one place in this chain where the
+owner's original "get it on the GPU" instinct is straightforwardly right: an
+SDF field evaluation plus marching squares is a natural fragment-shader
+workload.
+
+Still open:
+- `spline-boolean` crash on self-intersecting input (from session 1).
+- `layer` still does a full-canvas composite per layer; the fused Merge
+  shader already exists and shares `BLEND_MODE_GLSL`.
+
+---
+
+# Session 3 (2026-08-08) — Blend Intersections field on the GPU
+
+Spec `080826_blend-intersections-gpu.md` implemented end to end (its
+§Outcome carries the full record; the short version + the lessons live
+here). The SDF field loop is now a fragment shader
+(`spline-blend-intersections-gpu.ts`); marching, cleanup and the fit are
+untouched, and the CPU loop stays in the file as reference + fallback,
+byte-identical (18-config snapshot, 52,115 anchors).
+
+| case (hardware GL, M4 Pro) | field CPU→GPU | node CPU→GPU |
+|---|---|---|
+| wander-100 (bench:spline shape) | 5.0 → 4.1 ms | 10.5 → 10.0 ms |
+| 8-lobe network @1920×1080 | 220 → **19.8 ms** | 253.6 → **52.0 ms** |
+
+Gates: field ≤ 8e-5 px vs CPU on the bench corpus (gate 1e-3); contours
+bit-close at smoothing 0 (≤ 3e-4 px); jitter mean 7.582 vs CPU 7.596
+(ref 7.60) — no added popping. `npm run check:blend-gpu` pins all of it
+headlessly; `npm run bench:blend-gpu` is the timing harness.
+
+Things measurement overturned, so they don't get re-learned:
+
+- **The spec's candidate-array shader design was unbuildable.** Max
+  survivors/sample is 34 on the light corpus but 276–424 on dense
+  networks (GPU gather has no dedup) — no register budget holds that.
+  Replaced with STREAMING branch accumulation (interval-merge = the same
+  transitive partition as the CPU's sort-then-split; proven bit-exact in
+  fp64 over ~3.3M samples before writing GLSL). Max live branches: 26
+  dense / 59 stress; cap 64, overflow → detected → CPU.
+- **A sync readPixels has a ~3–4 ms latency floor on ANGLE/Metal**
+  regardless of size — it cancels the win on light inputs (hence parity
+  on wander-100, not the spec's projected "field ~1–2 ms"). The win
+  lives where the node actually hurts: dense self-crossing networks,
+  5–11×. GPU was never slower at node level, so no dispatch heuristic.
+- **fp32 cannot cross the CPU field's own discontinuities cleanly**: the
+  farSlack cheap exit and empty-neighborhood `influence` emit are step
+  functions, and a handful of samples per million land on the other side
+  (3 in 755k on the dense case, every one pinned at a threshold, all far
+  from the iso). Same class: one 6.8 px output sliver sitting exactly on
+  the `len < cell*3` debris threshold. The check classifies these
+  knife-edges explicitly and fails anything unexplained.
+- **Contour equivalence at 0.05 px is impossible at smoothing > 0 for
+  any non-bit-identical field** — Schneider split choices flip on
+  last-bit changes (Fix 6's cascade, now measured from the other side:
+  0.21–0.49 px curve wiggle from 1e-4 polyline agreement, 4 of 18
+  cases). The gate pins the recovery at smoothing 0 strictly and bounds
+  fitted curves by the fit's own errPx budget.
+- **bench:nodes cannot measure this node** (geometry-signature cache
+  hits → the standing 0.100 ms artifact) and **bench:spline (tsx) runs
+  this code ~2× slower than the Electron renderer** on the same machine
+  (20.6 vs 10.5 ms) — never compare numbers across those environments.
+  `bench:blend-gpu` exists because neither could see the A/B.
+- A/B in the live app: `__perf.blendGpu(false)` forces the CPU path.
+
+
+# Session 4 (2026-08-09) — the full-canvas pass tax (`kaminotests_03` @ true 4K)
+
+Baseline with the viewport at full 3840×2160: **GPU 34.1 ms/frame, 24 fps
+against the 30 fps target**, CPU 3.4 ms (irrelevant). Every full-canvas pass
+costs ~3.4 ms at this size, and the frame was a stack of them — several
+carrying no information. Four fixes, all output-identical (screenshot-pinned
+at a fixed frame), took it to **GPU 16.5 ms/frame, p5 fps 32.6**:
+
+| Fix | What | GPU won |
+|---|---|---|
+| 7 | `rasterize-spline` flat path returns its persistent upload texture directly (`ownsTextures: false`, Y-flip baked into the upload via `UNPACK_FLIP_Y_WEBGL`) instead of pool-alloc + full-canvas blit | 3.4 ×2 instances |
+| 8 | `points-on-path` gates its dot-viz aux on `consumedOutputs` (+`gatesOutputs`) — it rendered a full-canvas image every eval that nothing consumed (same shape as Fix 2) | 3.9 |
+| 9 | `layer` passthrough fast paths: empty layer returns `stack`; bottom layer at normal/opacity≥1 returns `content` (compositing over transparency is the identity for `normal` ONLY — `blendRgb` reads base RGB unweighted by base alpha, so other modes must keep the pass) | 4.4 |
+| 10 | `bloom` mip-chain targets persist in `ctx.state` keyed on (base size × levels) instead of 11 alloc/free per eval | 2.1 |
+
+**Fix 10 answers the texture-churn question with a number.** Same passes,
+same pixels — the 2.1 ms was purely createTexture/texImage2D/deleteTexture
+churn. The engine-wide free-list pool (still unbuilt) is therefore real GPU
+time, not just hygiene: the remaining 5 allocs/frame (merges, grain,
+points-on-path positions, bloom output) are worth roughly another
+0.5–1 ms by the same ratio.
+
+Method notes that made the diagnosis cheap (details in the MCP session):
+paused single evals run ~1.8–2× hotter than the same work under playback —
+compare paused conditions only to each other; a sig-hit condition can be
+manufactured by wiggling an upstream param whose output values don't change
+(`dot_color`), which isolates a node's fixed overhead from its draw+upload.
+Found along the way: MCP `set_param` rejects all number/boolean values
+(they arrive stringified — enum/string/color params work), and the
+rasterize-spline CPU split at 1526 subpaths is ~66% per-subpath ramp
+`stroke()` calls / ~24% signature `JSON.stringify` / ~8% actual drawing —
+both documented as future CPU candidates, not yet acted on.
+
+Remaining GPU frame (16.5 ms): bloom 5.5, merge 3.7 + 3.7, grain 2.9. All
+genuine full-canvas work now — further wins mean fusing the merge chain
+across nodes, precision drops (R11F_G11F_B10F bloom mips — needs sign-off,
+not bit-identical), or the pool.
+
+### Fix 11 — the texture pool exists now (gl.ts free list)
+
+The free list the devguide always described: `allocTexture` leases from a
+per-(size, format) list, `releaseTexture` files back into it. Reused
+textures are CLEARED on hand-out (WebGL zero-inits fresh textures and nodes
+may rely on that — a render-pass clear is far cheaper than the driver's
+create-time zeroing of a 66 MB allocation, which is where the cost was
+hiding). A WeakSet guards double-release; entries age out after ~2k leases;
+resize()/destroy() flush. Profiler alloc/release counts are unchanged in
+semantics — they now measure pool TRAFFIC; driver allocations are only the
+misses.
+
+**Measured: GPU 16.5 → 12.1 ms/frame (−4.4 ms), fps p5 87.** Far above the
+"~0.5–1 ms" projection scaled from Fix 10 — because the remaining 5
+allocs/frame were mostly FULL-CANVAS 66 MB textures, and per-alloc cost
+scales with size (mandatory zero-init). Per node: bloom 5.5 → 3.8,
+merge-tz 3.7 → 2.4, merge-1y 3.6 → 1.4. Verified: pixel-identical frame,
+all gates, bench:nodes clean on hardware GL.
+
+Session 4 cumulative (`kaminotests_03`, true 4K): **GPU 34.1 → 12.1
+ms/frame (−65%), fps p5 23 → 87.**
+
+### Bloom quality modes — measured, and a negative result worth keeping
+
+A `quality` enum (high / balanced / performance) was added: the pyramid
+starts at ½ / ¼ / ⅛ res with the level count reduced to match, so the halo
+WIDTH is preserved and only the finest octave(s) of glow detail go. "high"
+is byte-identical to before (the tap-spread is a pre-scaled uniform — no
+GLSL change); the modes verifiably engage (⅛ start is visibly softer).
+
+Measured at 4K on the M-series dev machine: **5.53 / 5.40 / 5.43 ms GPU** —
+the knob buys ~0.1 ms. The pyramid was never the cost; bloom's GPU time
+sits in its two fixed full-res touches (the threshold's source read and the
+composite read/write) plus per-pass overhead, none of which resolution
+scaling below ½ can remove. This is the mip-chain technique working as
+designed ("constant cost"), not a defect. Do not re-attempt pyramid-res
+scaling expecting frame-rate wins on this class of GPU; the modes may still
+matter on fill/bandwidth-starved hardware, which is the only reason to keep
+them.
+
+# Session 5 (2026-08-09) — Sketch_01, the readback saga
+
+Project: 75 nodes, 2048×2048 @ 60 fps target, playing at ~19 fps. The trail
+led through three wrong-looking answers before the right one; each step is
+recorded because the traps generalize.
+
+1. **Level-3 trace said `sdf-to-spline` cost 28.4 ms/frame CPU** (70% of
+   eval) — a 254² march whose own design budget is ~1 ms. Paused isolation
+   (own-param wiggle → upstream cache-hits → drained queue): 8.1 ms.
+   Resolution probe 254²→128²: 8.1→7.1 — cost is FIXED, not per-pixel.
+   Diagnosis at this point: sync-readback stall + fixed floor.
+2. **Async PBO readback built** (opt-in `async_readback` param on
+   sdf-to-spline — 1-frame contour lag interactive, sync path for export
+   (`ctx.offline`), cold start, and the toggle off; PIXEL_PACK_BUFFER +
+   fence, 2-slot round robin, never blocks). Paused cost: unchanged (!),
+   which broke the diagnosis and forced honesty:
+3. **`scripts/bench-readback.cjs`** (standalone hardware-GL harness) says
+   the machinery is fine: PBO issue+collect ≈ 0.0 ms even against a busy
+   queue; sync readPixels ≈ 0.9 ms idle / 2.3 busy. Also: ANGLE/Metal's
+   native read for RGBA16F is RGBA/**HALF_FLOAT** — the app's RGBA/FLOAT
+   takes a conversion path (~0.4 ms, minor but free to fix).
+4. **The 8 ms floor was an observer effect.** At capture level 1 the same
+   paused eval costs 2.9 ms. Level 3's GPU timer queries serialize around
+   sync GL calls (fences/readbacks) and bill ~6 ms/eval to the node under
+   measurement. Now in TESTING.md.
+5. **Honest level-1 playback A/B** (sync 28.5 vs async 19.6 ms/frame billed
+   to the node, async run covering the denser loop span): the toggle saves
+   ~9+ ms of CPU frame. fps moved only 19→22, because the project's binding
+   constraint is **GPU oversubscription** — ~96 ms of queued passes per
+   frame (four masked, linearized gaussian blurs at 2048² ≈ 28 ms, JFA 11,
+   texts/copies/bloom/merge the rest). On a stream that deep, ANY sync GL
+   round trip (even a fence poll) waits behind the service-side backlog —
+   which is where the async path's remaining playback cost sits, and why
+   no CPU fix alone can rescue this project.
+
+Where Sketch_01's remaining time actually is: (a) the four blurs — the
+graph-level fix; (b) `rasterize-spline-mp0rdg` 3–10 ms CPU depending on
+loop section (dense march output through the image-fill path — the
+rasterize-spline CPU candidates from Session 4 apply directly);
+(c) fingerprint building at 0.6–1.1 ms/frame (583 KB of spline
+serialization — the hash-instead-of-concatenate item, now with a real
+workload behind it).
+
+## Panel capture semantics (2026-08-08, owner request)
+
+The panel previously accumulated every eval — paused param edits, scrubs —
+into the same stats until Clear was hit, blending "how fast is my graph"
+with "what did I poke while reading the panel". Changed:
+
+- **The panel arms with `playingOnly: true`** (new `setCaptureLevel` option).
+  Paused evals are gated at `beginEval` — not discarded at commit, which
+  matters: a commit-time discard leaves its seq reusable, and a late GPU
+  resolve for the discarded frame would bill into whichever committed frame
+  reused that seq. Gated at open, nothing happens at all: no frame, no GPU
+  queries, no arena writes, no seq.
+- **Seeking to frame 0 auto-clears an armed trace** (any armed trace, panel
+  or MCP). Hooked in EffectsApp's `setTime`, which every user path funnels
+  through — transport rewind, scrub, MCP seek. The rAF loop-wrap writes the
+  clock directly and does NOT clear, so looping playback accumulates across
+  passes. Guarded on `currentSeq() > 0` because `resetTrace` reallocates the
+  ring and a scrub parked at the head fires per pointermove.
+- **MCP `set_perf_capture` unchanged** (records paused evals) — the agent
+  workflow traces paused edits deliberately. Arming from either side
+  replaces the other's mode and clears.
+
+Covered in `scripts/check-profiler.mts` (gate, trigger consumption, seq
+stability, nested-inside-gated, default unchanged). Verified live over MCP:
+600 accumulated frames → seek frame 0 → 14 (the post-clear paused evals);
+seek frame 50 → seq continues, no clear.

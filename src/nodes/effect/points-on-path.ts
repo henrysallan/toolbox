@@ -1,8 +1,10 @@
 import type {
+  ImageValue,
   NodeDefinition,
   OutputSocketDef,
   PointsValue,
   RenderContext,
+  SocketValue,
   UvValue,
 } from "@/engine/types";
 import { measureSpline, sampleSplineAt } from "@/engine/spline-math";
@@ -209,8 +211,13 @@ export const pointsOnPathNode: NodeDefinition = {
     // you want it rendered.
     { name: "viz", type: "image" },
   ],
+  // The viz aux is skipped when nothing consumes it (below). This def is
+  // cacheable, so the consumed-handle set must fold into the fingerprint —
+  // without it, wiring the viz for the first time would cache-hit and hand
+  // back a texture that was never rendered. See NodeDefinition.gatesOutputs.
+  gatesOutputs: true,
 
-  compute({ inputs, params, ctx, nodeId }) {
+  compute({ inputs, params, ctx, nodeId, consumedOutputs }) {
     const src = inputs.path;
     const W = ctx.width;
     const H = ctx.height;
@@ -273,59 +280,70 @@ export const pointsOnPathNode: NodeDefinition = {
       }
     }
 
-    // ---- Primary: visualization image ----
-    const showViz = !!params.show_viz;
-    const vizSig = JSON.stringify({
-      pos: positions.slice(0, count),
-      r: params.dot_radius,
-      c: params.dot_color,
-      sv: showViz,
-      W,
-      H,
-    });
-    const needsRepaint = vizSig !== state.lastSig;
-    if (needsRepaint) {
-      const canvas = state.vizCanvas;
-      if (canvas.width !== W || canvas.height !== H) {
-        canvas.width = W;
-        canvas.height = H;
-      }
-      const c2d = canvas.getContext("2d");
-      if (c2d) {
-        c2d.clearRect(0, 0, W, H);
-        if (showViz && positions.length > 0 && src?.kind === "spline") {
-          c2d.fillStyle = hexToRgba((params.dot_color as string) ?? "#ffffff");
-          const r = Math.max(0, (params.dot_radius as number) ?? 3);
-          for (let i = 0; i < count; i++) {
-            const p = positions[i];
-            c2d.beginPath();
-            c2d.arc(p[0] * W, p[1] * H, r, 0, Math.PI * 2);
-            c2d.fill();
-          }
+    // ---- Aux: dot-visualization image ----
+    // Full-canvas Canvas2D repaint + upload + fullscreen pass — built ONLY
+    // when something actually consumes it (a wire, or the viewport preview).
+    // With Animate on, the repaint re-runs every frame, so an unconsumed viz
+    // was a full-canvas GPU pass + a canvas-sized upload for nothing.
+    // `gatesOutputs` on the def makes this safe for a cacheable node; the
+    // sig check below still repaints correctly on first consumption because
+    // lastSig only advances when the viz is actually built.
+    const wantViz = !consumedOutputs || consumedOutputs.has("aux:viz");
+    let image: ImageValue | null = null;
+    if (wantViz) {
+      const showViz = !!params.show_viz;
+      const vizSig = JSON.stringify({
+        pos: positions.slice(0, count),
+        r: params.dot_radius,
+        c: params.dot_color,
+        sv: showViz,
+        W,
+        H,
+      });
+      const needsRepaint = vizSig !== state.lastSig;
+      if (needsRepaint) {
+        const canvas = state.vizCanvas;
+        if (canvas.width !== W || canvas.height !== H) {
+          canvas.width = W;
+          canvas.height = H;
         }
-        const gl = ctx.gl;
-        gl.bindTexture(gl.TEXTURE_2D, state.vizTex);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
-        gl.texImage2D(
-          gl.TEXTURE_2D,
-          0,
-          gl.RGBA,
-          gl.RGBA,
-          gl.UNSIGNED_BYTE,
-          canvas
-        );
-        gl.bindTexture(gl.TEXTURE_2D, null);
+        const c2d = canvas.getContext("2d");
+        if (c2d) {
+          c2d.clearRect(0, 0, W, H);
+          if (showViz && positions.length > 0 && src?.kind === "spline") {
+            c2d.fillStyle = hexToRgba((params.dot_color as string) ?? "#ffffff");
+            const r = Math.max(0, (params.dot_radius as number) ?? 3);
+            for (let i = 0; i < count; i++) {
+              const p = positions[i];
+              c2d.beginPath();
+              c2d.arc(p[0] * W, p[1] * H, r, 0, Math.PI * 2);
+              c2d.fill();
+            }
+          }
+          const gl = ctx.gl;
+          gl.bindTexture(gl.TEXTURE_2D, state.vizTex);
+          gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            canvas
+          );
+          gl.bindTexture(gl.TEXTURE_2D, null);
+        }
+        state.lastSig = vizSig;
       }
-      state.lastSig = vizSig;
-    }
 
-    const image = ctx.allocImage();
-    const vizProg = ctx.getShader("points-on-path/viz", VIZ_FS);
-    ctx.drawFullscreen(vizProg, image, (gl2) => {
-      gl2.activeTexture(gl2.TEXTURE0);
-      gl2.bindTexture(gl2.TEXTURE_2D, state.vizTex);
-      gl2.uniform1i(gl2.getUniformLocation(vizProg, "u_src"), 0);
-    });
+      image = ctx.allocImage();
+      const vizProg = ctx.getShader("points-on-path/viz", VIZ_FS);
+      ctx.drawFullscreen(vizProg, image, (gl2) => {
+        gl2.activeTexture(gl2.TEXTURE0);
+        gl2.bindTexture(gl2.TEXTURE_2D, state.vizTex);
+        gl2.uniform1i(gl2.getUniformLocation(vizProg, "u_src"), 0);
+      });
+    }
 
     // ---- Aux: positions UV texture, width=count, height=1 ----
     const positionsTex: UvValue = ctx.allocUv({ width: count, height: 1 });
@@ -373,10 +391,9 @@ export const pointsOnPathNode: NodeDefinition = {
       }))
     );
 
-    return {
-      primary: pointsValue,
-      aux: { positions: positionsTex, viz: image },
-    };
+    const aux: Record<string, SocketValue> = { positions: positionsTex };
+    if (image) aux.viz = image;
+    return { primary: pointsValue, aux };
   },
 
   dispose(ctx, nodeId) {

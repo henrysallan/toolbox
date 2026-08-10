@@ -313,6 +313,15 @@ function resetStorage(): void {
 // Control
 // ---------------------------------------------------------------------------
 
+// When set, only evals with the transport playing are captured — paused
+// param edits, scrubs, and preview renders are gated out at beginEval, so
+// they open no frame, no GPU queries, and no arena writes. The Performance
+// panel arms with this ON (its stats should describe playback, not whatever
+// the user happened to click while reading them); the MCP tools arm with it
+// OFF, because the agent workflow explicitly traces paused edits
+// ("set_param, then get_perf").
+let playingOnly = false;
+
 /**
  * Arm or disarm capture. Setting a level always clears the existing trace —
  * mixing samples from two capture levels would produce a trace whose columns
@@ -320,9 +329,10 @@ function resetStorage(): void {
  */
 export function setCaptureLevel(
   next: CaptureLevel,
-  opts?: { frames?: number }
+  opts?: { frames?: number; playingOnly?: boolean }
 ): void {
   level = next;
+  playingOnly = opts?.playingOnly ?? false;
   resetStorage();
   if (next === 0) {
     // Drop the arrays so an idle session doesn't hold ~40MB of typed arrays.
@@ -373,12 +383,29 @@ export function markTriggerDefault(t: FrameTrigger): void {
  * can hold it in a local and skip every other profiler call at level 0.
  * Nested passes (Iterate interiors) do not open a frame — their samples land
  * in the enclosing frame tagged with depth > 0.
+ *
+ * `playing` is the transport state for THIS eval (the same value endEval
+ * records). Under `playingOnly` capture, a paused eval is gated HERE rather
+ * than discarded at commit: no frame opens, so recordNode/countAlloc all
+ * no-op on their frameOpen guards, the evaluator sees `false` and skips its
+ * GPU timer entirely, and seqCounter never advances — which matters because
+ * a late resolveNodeGpu(seq, …) for a discarded-at-commit frame would have
+ * matched the NEXT committed frame reusing that seq and billed a stale GPU
+ * time to the wrong frame's nodes.
  */
-export function beginEval(nested: boolean): boolean {
+export function beginEval(nested: boolean, playing?: boolean): boolean {
   if (level === 0) return false;
   if (nested) {
     evalDepth++;
     return frameOpen;
+  }
+  if (playingOnly && !playing) {
+    // Consume the trigger — it labeled this (uncaptured) eval; leaving it
+    // pending would mislabel the first captured frame after play starts.
+    pendingTrigger = null;
+    evalDepth = 1;
+    frameOpen = false;
+    return false;
   }
   // Keyed purely off `nested`, not off evalDepth: a root pass is a root pass.
   // If a previous eval threw before endEval, the depth counter is stale — this

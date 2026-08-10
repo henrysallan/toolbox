@@ -1,5 +1,6 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
+  AudioChainElementLeaf,
   AudioValue,
   ImageSequenceParamValue,
   NodeDefinition,
@@ -55,6 +56,10 @@ void main() {
 
 interface VideoState {
   videoRef: HTMLVideoElement | null;
+  // Identity-stable element-leaf chain descriptor for the audio aux
+  // (080826_audio-nodes.md) — minted once per element/url so the audio
+  // reconciler's identity diff short-circuits (this node is stable:false).
+  audioLeaf: AudioChainElementLeaf | null;
   tex: WebGLTexture | null;
   // True once we've successfully uploaded at least one decoded frame.
   // Lets us render the last good frame while a seek is in flight —
@@ -84,7 +89,7 @@ function ensureState(
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.bindTexture(gl.TEXTURE_2D, null);
   const s: VideoState = {
-    videoRef: null, tex,
+    videoRef: null, audioLeaf: null, tex,
     hasUploadedFrame: false,
     lastVideoWidth: 0, lastVideoHeight: 0,
   };
@@ -686,11 +691,35 @@ export const videoNode: NodeDefinition = {
     const audible = ctx.audioRoutedToOutput?.has(nodeId) ?? false;
     video.volume = Math.max(0, Math.min(1, (params.volume as number) ?? 1));
     video.muted = !audible;
+    if (
+      !state.audioLeaf ||
+      state.audioLeaf.element !== video ||
+      state.audioLeaf.url !== (paramFile.url ?? null) ||
+      state.audioLeaf.sync !== !!params.sync_to_scene_time ||
+      state.audioLeaf.loop !== !!params.loop ||
+      state.audioLeaf.startOffset !== ((params.start_offset as number) ?? 0) ||
+      state.audioLeaf.volume !== video.volume
+    ) {
+      state.audioLeaf = {
+        kind: "element",
+        nodeId,
+        element: video,
+        source: "video",
+        url: paramFile.url ?? null,
+        // Offline playback hints (080926 M-B). Playback `speed` ≠ 1 is a
+        // known offline-audio limitation, same as the legacy export path.
+        sync: !!params.sync_to_scene_time,
+        loop: !!params.loop,
+        startOffset: (params.start_offset as number) ?? 0,
+        volume: video.volume,
+      };
+    }
     const audioAux = {
       audio: {
         kind: "audio",
         element: video,
         source: "video",
+        chain: state.audioLeaf,
       } satisfies AudioValue,
     };
 

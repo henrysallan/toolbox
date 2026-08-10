@@ -234,6 +234,18 @@ export { CURVE_CHANNELS };
 export const GRADE_WHEELS = ["dark", "shadow", "light", "global"] as const;
 export type GradeWheel = (typeof GRADE_WHEELS)[number];
 
+// The bottom-bar grade fields, in display order. ParamPanel renders these as
+// standard param rows (keyframeable + exposable) under the wheels panel.
+export const CC_BAR_PARAM_NAMES = [
+  "temp",
+  "tint",
+  "hue",
+  "contrast",
+  "pivot",
+  "md",
+  "boffset",
+] as const;
+
 // The DaVinci-style primaries params: per wheel a balance (X/Y), master (Lum),
 // Exp, and Sat; plus the bottom bar (Temp/Tint/Pivot/MD/Black Offset). Hue and
 // Contrast already exist above and serve the bar's Hue/Cont fields.
@@ -249,8 +261,8 @@ const GRADE_PARAMS: ParamDef[] = (() => {
     );
   }
   ps.push(
-    { name: "temp", label: "Temp", type: "scalar", min: -1, max: 1, step: 0.001, default: 0 },
-    { name: "tint", label: "Tint", type: "scalar", min: -1, max: 1, step: 0.001, default: 0 },
+    { name: "temp", label: "Temp", type: "scalar", min: -1, max: 1, step: 0.001, default: 0, trackGradient: "linear-gradient(90deg,var(--tb-a-blue-500),var(--tb-a-amber-500))" },
+    { name: "tint", label: "Tint", type: "scalar", min: -1, max: 1, step: 0.001, default: 0, trackGradient: "linear-gradient(90deg,var(--tb-a-green-500),#d946ef)" },
     { name: "pivot", label: "Pivot", type: "scalar", min: 0, max: 1, step: 0.001, default: 0.5 },
     { name: "md", label: "Midtone Detail", type: "scalar", min: -1, max: 1, step: 0.001, default: 0 },
     { name: "boffset", label: "Black Offset", type: "scalar", min: -1, max: 1, step: 0.001, default: 0 }
@@ -276,6 +288,8 @@ export const colorCorrectionNode: NodeDefinition = {
       max: 180,
       step: 1,
       default: 0,
+      trackGradient:
+        "linear-gradient(90deg,#ff0000,#ffff00,#00ff00,#00ffff,#0000ff,#ff00ff,#ff0000)",
     },
     {
       name: "saturation",
@@ -296,6 +310,7 @@ export const colorCorrectionNode: NodeDefinition = {
       softMax: 2,
       step: 0.01,
       default: 1,
+      trackGradient: "linear-gradient(90deg,#000,#fff)",
     },
     {
       name: "brightness",

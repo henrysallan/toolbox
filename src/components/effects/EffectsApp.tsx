@@ -239,6 +239,7 @@ import {
 } from "@/lib/media-relink";
 import { registerImageOriginal } from "@/lib/image-bytes";
 import { playbackClock } from "@/state/playback-clock";
+import { audibleAudioSet } from "@/state/audio-audibility";
 import MediaRelinkModal, {
   type RelinkItem,
   type RelinkStatus,
@@ -284,10 +285,17 @@ import SocketPeekPopover from "./SocketPeekPopover";
 import { buildExportManifest } from "@/lib/export-manifest";
 import {
   audioBufferToWav,
+  mixAudioBuffers,
   renderExportAudioBuffer,
   type ExportAudioSpec,
 } from "@/lib/export-audio";
-import type { AudioFileParamValue, VideoFileParamValue } from "@/engine/types";
+import type {
+  AudioChainNode,
+  AudioFileParamValue,
+  NoteEvent,
+  VideoFileParamValue,
+} from "@/engine/types";
+import { MidiEditor } from "./midi-editor/MidiEditor";
 import PublicPrivateConfirm from "./PublicPrivateConfirm";
 import NewProjectConfirm from "./NewProjectConfirm";
 import {
@@ -698,6 +706,12 @@ function EffectsShell({
   const [selectedId, setSelectedId] = useState<string | null>(
     rehydrate?.selectedId ?? null
   );
+  // Piano-roll engagement (080926_midi-editor.md): which MIDI Editor node
+  // owns the viewport right now. Opened by node double-click or the header
+  // Edit button; STICKY — closes only on Esc (the editor's onClose), on
+  // selecting a DIFFERENT node, or when the node stops existing.
+  // Empty-space deselect keeps it open.
+  const [midiEditNodeId, setMidiEditNodeId] = useState<string | null>(null);
   const [canvasRes, setCanvasRes] = useState<[number, number]>(
     rehydrate?.canvasRes ?? [1024, 1024]
   );
@@ -898,6 +912,7 @@ function EffectsShell({
         if (scene) {
           if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
           if (scene.fps !== undefined) setFps(scene.fps);
+          if (scene.bpm !== undefined) setBpm(scene.bpm);
           if (scene.width !== undefined && scene.height !== undefined)
             setCanvasRes([scene.width, scene.height]);
         }
@@ -1855,6 +1870,27 @@ function EffectsShell({
       playbackClock.set({
         time: typeof v === "function" ? v(playbackClock.get().time) : v,
       });
+      // Seeking to frame 0 auto-clears an armed perf capture: rewinding to
+      // the top is how a benchmark run starts, so each run gets a fresh
+      // trace without hunting for the panel's Clear button. This hook covers
+      // every USER path to frame 0 — transport rewind, a scrub to the head,
+      // the MCP seek — because they all funnel through setTime. The rAF
+      // loop-wrap does NOT (the advancer writes playbackClock.set directly),
+      // so looping playback keeps accumulating across passes. The frame is
+      // read back from the store because its fps lives there — this
+      // callback's [] deps would hold a stale fps closure.
+      //
+      // currentSeq() > 0 gates the reset to traces that actually hold
+      // frames: resetTrace reallocates the whole ring, and a scrub parked
+      // at the head fires setTime per pointermove — without the guard that
+      // would churn megabytes of typed arrays at pointer rate.
+      if (
+        playbackClock.get().frame === 0 &&
+        prof.getCaptureLevel() > 0 &&
+        prof.currentSeq() > 0
+      ) {
+        prof.resetTrace();
+      }
     },
     []
   );
@@ -1875,6 +1911,9 @@ function EffectsShell({
     playbackClock.set({ time: 0, playing: false });
   }, []);
   const [fps, setFps] = useState(60);
+  // Project tempo (beats/min) for the audio note-domain nodes
+  // (080826_audio-nodes.md). Musical only — the visual clock never reads it.
+  const [bpm, setBpm] = useState(120);
   const [loopFrames, setLoopFrames] = useState<number | null>(null);
   // Per-parameter keyframe time model. `time` (seconds) remains the
   // source of truth for playback (RAF still ticks in seconds); `tick` is
@@ -2403,6 +2442,7 @@ function EffectsShell({
           tick: Math.round(renderTime * renderFps * tpf),
           ticksPerFrame: tpf,
           fps: renderFps,
+          bpm: bpmRef.current,
         },
         offlineRenderingRef.current,
         wedgeIndexRef.current
@@ -2474,6 +2514,34 @@ function EffectsShell({
         for (const k of nextKeys) if (prev[k] !== next[k]) return next;
         return prev;
       });
+
+      // Publish the audible-audio set for the not-audible node glyph
+      // (audio-audibility store). Same churn discipline as setErrors: the
+      // evaluator builds a fresh Set every eval, so publish only when
+      // membership actually changed — a steady playback loop never
+      // notifies node chrome.
+      const audible = result.audibleAudioNodeIds;
+      if (audible) {
+        const prevAudible = audibleAudioSet.get();
+        let audibleChanged =
+          !prevAudible || prevAudible.size !== audible.size;
+        if (!audibleChanged && prevAudible) {
+          for (const nid of audible) {
+            if (!prevAudible.has(nid)) {
+              audibleChanged = true;
+              break;
+            }
+          }
+        }
+        if (audibleChanged) audibleAudioSet.set(audible);
+      }
+
+      // Latest AUTHORED-audible chain roots (Output + layer boundary,
+      // never audition-by-active) — the export mixdown reads this ref at
+      // export start (080926 M-B).
+      if (result.exportAudioChains) {
+        exportAudioChainsRef.current = result.exportAudioChains;
+      }
 
       // Stash inspect snapshots for the popups. Inputs come from the
       // eval result; outputs are pulled from the same `outputs` map the
@@ -5970,6 +6038,10 @@ function EffectsShell({
           }
           return [...prev, detail.id];
         });
+      } else if (detail.kind === "midiEditorOpen") {
+        // Header Edit button — same engagement as double-clicking the node
+        // (080926_midi-editor.md).
+        setMidiEditNodeId(detail.id);
       } else if (detail.kind === "mergeAddLayer") {
         setNodes((prev) =>
           prev.map((n) => {
@@ -6313,6 +6385,11 @@ function EffectsShell({
   }, []);
   const fpsRef = useRef(fps);
   fpsRef.current = fps;
+  const bpmRef = useRef(bpm);
+  bpmRef.current = bpm;
+  // Authored-audible audio chain roots from the latest live eval — what
+  // the export mixdown renders (080926 M-B).
+  const exportAudioChainsRef = useRef<AudioChainNode[]>([]);
   const loopFramesRef = useRef(loopFrames);
   loopFramesRef.current = loopFrames;
 
@@ -6366,6 +6443,7 @@ function EffectsShell({
       const scene = {
         loopFrames: loopFramesRef.current,
         fps: fpsRef.current,
+        bpm: bpmRef.current,
         width: canvasResRef.current[0],
         height: canvasResRef.current[1],
       };
@@ -6391,6 +6469,7 @@ function EffectsShell({
     if (!scene) return;
     if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
     if (scene.fps !== undefined) setFps(scene.fps);
+    if (scene.bpm !== undefined) setBpm(scene.bpm);
     if (scene.width !== undefined && scene.height !== undefined)
       setCanvasRes([scene.width, scene.height]);
     const lf = "loopFrames" in scene ? scene.loopFrames ?? null : null;
@@ -6437,6 +6516,7 @@ function EffectsShell({
       scene: {
         loopFrames: loopFramesRef.current,
         fps: fpsRef.current,
+        bpm: bpmRef.current,
         width: canvasResRef.current[0],
         height: canvasResRef.current[1],
       },
@@ -7452,11 +7532,39 @@ function EffectsShell({
       // ---- Fast / live path (MediaRecorder) ------------------------------
       if (quality === "fast") {
         const liveContainer = container === "webm" ? "webm" : "mp4";
-        // Pull a live audio track (file or mic) from the wired Audio Source
-        // and mix it into the captured stream. Picked before the mime so we
-        // can request an audio-capable codec string when there's audio.
+        // Pull a live audio track and mix it into the captured stream.
+        // Picked before the mime so we can request an audio-capable codec
+        // string when there's audio. With authored-audible CHAINS in the
+        // graph (080926 M-B), capture the audio engine's master instead —
+        // one track carries the chain mix plus (via the shared element
+        // sources) any bare wired Source the legacy path covered.
         const audioSpec = getOutputAudioSpec(nodeId);
-        const audioTrack = audioSpec ? getLiveAudioTrack(audioSpec) : null;
+        let audioTrack: MediaStreamTrack | null = null;
+        if (exportAudioChainsRef.current.length > 0) {
+          try {
+            const { audioEngine } = await import("@/engine/audio-engine");
+            const bareElements =
+              audioSpec?.element != null
+                ? [
+                    {
+                      element: audioSpec.element,
+                      source: (audioSpec.mode === "microphone"
+                        ? "mic"
+                        : "file") as "mic" | "file",
+                    },
+                  ]
+                : [];
+            const blitCtx = backendRef.current?.makeContext(0, 0);
+            if (blitCtx) {
+              audioTrack = audioEngine.getCaptureTrack(blitCtx, bareElements);
+            }
+          } catch (e) {
+            console.warn("Chain capture for fast export failed:", e);
+          }
+        }
+        if (!audioTrack) {
+          audioTrack = audioSpec ? getLiveAudioTrack(audioSpec) : null;
+        }
         const picked = pickVideoMime(liveContainer, !!audioTrack);
         if (!picked) {
           console.error("No supported video codec in this browser");
@@ -7586,6 +7694,52 @@ function EffectsShell({
           } catch (e) {
             console.warn(
               "Audio render for export failed; exporting video only:",
+              e
+            );
+          }
+        }
+        // Audio-chain mixdown (080926 M-B): everything audible by AUTHORED
+        // routing — Output's audio socket and layer-boundary auditions,
+        // never audition-by-active. One offline render sums every chain
+        // sink; the legacy element buffer (bare Source → Output wires)
+        // mixes on top. Timebase fps is the PROJECT fps: note ticks map to
+        // seconds through it regardless of the export frame rate.
+        const exportChains = exportAudioChainsRef.current;
+        if (exportChains.length > 0) {
+          try {
+            const { audioEngine } = await import("@/engine/audio-engine");
+            const { buildAudioAutomationTimeline } = await import(
+              "@/lib/export-audio-automation"
+            );
+            // Keyframed audio params replay as scheduled ramps inside the
+            // render (080926 M-B automation) — sampled from the animation
+            // blocks directly, no second render pass.
+            const automation = buildAudioAutomationTimeline(
+              exportChains,
+              nodesRef.current,
+              {
+                startFrame,
+                durationFrames,
+                exportFps,
+                projectFps: fpsRef.current,
+                ticksPerFrame: DEFAULT_TICKS_PER_FRAME,
+              }
+            );
+            const chainBuffer = await audioEngine.renderOffline(
+              exportChains.map((chain) => ({ chain, routed: true })),
+              durationFrames / exportFps,
+              startFrame / exportFps,
+              {
+                bpm: bpmRef.current,
+                fps: fpsRef.current,
+                ticksPerFrame: DEFAULT_TICKS_PER_FRAME,
+              },
+              automation
+            );
+            audioBuffer = await mixAudioBuffers(audioBuffer, chainBuffer);
+          } catch (e) {
+            console.warn(
+              "Audio chain render for export failed; continuing without it:",
               e
             );
           }
@@ -9104,6 +9258,7 @@ function EffectsShell({
         if (scene) {
           if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
           if (scene.fps !== undefined) setFps(scene.fps);
+          if (scene.bpm !== undefined) setBpm(scene.bpm);
           if (scene.width !== undefined && scene.height !== undefined)
             setCanvasRes([scene.width, scene.height]);
         }
@@ -9335,6 +9490,7 @@ function EffectsShell({
         if (scene) {
           if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
           if (scene.fps !== undefined) setFps(scene.fps);
+          if (scene.bpm !== undefined) setBpm(scene.bpm);
           if (scene.width !== undefined && scene.height !== undefined)
             setCanvasRes([scene.width, scene.height]);
         }
@@ -10132,6 +10288,51 @@ function EffectsShell({
       )
     : undefined;
 
+  // Piano-roll takeover (080926_midi-editor.md): the engaged MIDI Editor
+  // node, resolved against the live graph so a deleted node disengages.
+  // NOT gated on showGizmos — that toggle is for on-canvas handles, and
+  // hiding gizmos must not close the note editor.
+  const midiEditNode = midiEditNodeId
+    ? nodes.find(
+        (n) => n.id === midiEditNodeId && n.data.defType === "midi-editor"
+      )
+    : undefined;
+  // Sticky-exit rule: close when a DIFFERENT node is selected or the node
+  // vanished; empty-space deselect keeps the editor open.
+  useEffect(() => {
+    if (!midiEditNodeId) return;
+    const gone = !nodesRef.current.some((n) => n.id === midiEditNodeId);
+    if (gone || (selectedId && selectedId !== midiEditNodeId)) {
+      setMidiEditNodeId(null);
+    }
+  }, [selectedId, midiEditNodeId, nodes]);
+  // Audition target: BFS forward from the midi node's notes output,
+  // through notes-domain passthroughs, to the first instrument — the
+  // previewNote stage id (the active3DSceneRenderId forward-walk
+  // precedent). Null → the engine's fallback synth auditions instead.
+  const findPreviewInstrument = useCallback((startId: string): string | null => {
+    const INSTRUMENTS = new Set(["audio-synth", "audio-fm-synth", "audio-sampler"]);
+    const NOTES_PASSTHROUGH = new Set(["audio-transpose"]);
+    const seen = new Set<string>([startId]);
+    let frontier = [startId];
+    for (let depth = 0; depth < 8 && frontier.length > 0; depth++) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const e of edgesRef.current) {
+          if (e.source !== id) continue;
+          const t = nodesRef.current.find((n) => n.id === e.target);
+          if (!t || seen.has(t.id)) continue;
+          seen.add(t.id);
+          const dt = t.data.defType;
+          if (INSTRUMENTS.has(dt)) return t.id;
+          if (NOTES_PASSTHROUGH.has(dt)) next.push(t.id);
+        }
+      }
+      frontier = next;
+    }
+    return null;
+  }, []);
+
   // Gradient handle overlay: active for a selected Gradient node in linear,
   // radial, or multipoint mode (polar/wave have no positional handles yet).
   const activeGradientNode = selectedId
@@ -10362,6 +10563,7 @@ function EffectsShell({
       onGroupSelection={handleGroupSelection}
       onUngroupSelection={handleUngroupSelection}
       onDiveIntoGroup={handleDiveIntoGroup}
+      onOpenMidiEditor={setMidiEditNodeId}
       onReparentNode={handleReparentNode}
       onStyleNodes={handleStyleNodes}
       onFrameSelection={handleFrameSelection}
@@ -10760,6 +10962,8 @@ function EffectsShell({
       onCanvasResChange={setCanvasRes}
       fps={fps}
       onFpsChange={setFps}
+      bpm={bpm}
+      onBpmChange={setBpm}
       onParamChange={onParamChange}
       onConvertToEditable={convertSvgToEditable}
       onToggleParamExposed={onToggleParamExposed}
@@ -11490,6 +11694,48 @@ function EffectsShell({
               node={activeGradientNode}
               canvas={canvasRef.current}
               onParamChange={onParamChange}
+            />
+          )}
+          {/* Piano-roll takeover (080926_midi-editor.md): a FULL-COVER
+              sibling inside the clip wrapper — the canvas underneath must
+              NEVER unmount (renderFrame bails on a null canvas, which
+              would stop evals and with them the audio engine's reconcile:
+              the editor would silence the very notes it authors). */}
+          {midiEditNode && backendReady && (
+            <MidiEditor
+              nodeId={midiEditNode.id}
+              notes={
+                (midiEditNode.data.params.notes as NoteEvent[] | undefined) ??
+                []
+              }
+              bpm={bpm}
+              fps={fps}
+              ticksPerFrame={ticksPerFrame}
+              sceneDurationTicks={sceneDurationTicks}
+              onSeekTick={handleSeekTick}
+              onNotesChange={(next, gestureKey) =>
+                onParamChange(midiEditNode.id, "notes", next, gestureKey)
+              }
+              defaultVelocity={
+                (midiEditNode.data.params.default_velocity as number) ?? 0.8
+              }
+              onPreviewNote={(pitch, velocity, durationSec) => {
+                // Lazy import keeps the Tone-free-bundle rule; the module
+                // is cached after the first audition.
+                void import("@/engine/audio-engine").then(({ audioEngine }) =>
+                  audioEngine.previewNote(
+                    findPreviewInstrument(midiEditNode.id),
+                    pitch,
+                    velocity,
+                    durationSec
+                  )
+                );
+              }}
+              loopEnabled={midiEditNode.data.params.loop === true}
+              loopEndBars={
+                (midiEditNode.data.params.loop_end_bars as number) ?? 4
+              }
+              onClose={() => setMidiEditNodeId(null)}
             />
           )}
           {recording && <RecordingBanner state={recording} />}

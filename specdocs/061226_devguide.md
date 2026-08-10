@@ -50,6 +50,21 @@ src/
     audio-analysis.ts     Shared audio DSP: getAudioFrame() (live AnalyserNode / offline
                           decoded-buffer), radix-2 FFT, band energy, MPM pitch. Feeds the
                           audio→scalar coercion AND the Audio Bands/Pitch/Spectral nodes.
+                          Also owns THE app AudioContext (getSharedAudioContext) and the
+                          per-element source registry (getOrCreateElementSource — a
+                          MediaElementSource is one-shot per element, so analysis taps
+                          and audio chains share one wrap; `direct` is the element's
+                          gateable default speaker path).
+    audio-chain.ts        PURE audio-chain plans (080826_audio-nodes.md): flatten
+                          descriptor trees → stage plan, diff plans → create/dispose/
+                          retune/rewire ops, tick↔seconds/beats + midiToFreq. No Tone,
+                          no DOM — guarded by scripts/check-audio-chain.mts.
+    audio-engine.ts       The ONE module that touches Tone.js (lazy dynamic import,
+                          mounted on the shared AudioContext). Reconciles chain
+                          descriptors into a live Tone graph per eval, slaves the
+                          transport to the scene clock, gates audibility on Output
+                          routing, Tone.Offline export render. Node defs NEVER import
+                          Tone — they emit descriptors (see types.ts AudioChainNode).
     conventions.ts        Universal opacity param + universal mask input helpers.
     exr/                  OpenEXR import: vendored EXRLoader fork (exr-core.js,
                           multilayer/DWA fixes), layer grouping, worker decode
@@ -607,7 +622,11 @@ Text's `text`; no cross-type coercions) · `spline` (multi-subpath cubic
 beziers, CPU) ·
 `points` (typed-array SoA + lazy `Point[]` view — producers use
 `makePoints`/`pointsFromArray`, hot consumers read typed arrays) · `audio`
-(live HTMLAudioElement) · `image_group` (ordered ImageValue list; splines/
+(live HTMLMediaElement and/or an AudioChainNode descriptor — the processable
+signal chain; audio-engine.ts reconciles descriptors into a live Tone graph,
+080826_audio-nodes.md) · `notes` (symbolic NoteEvent list in TICKS — the
+"spline" of the audio pipeline; instruments are the notes→audio rasterizers.
+Data-only, no coercions) · `image_group` (ordered ImageValue list; splines/
 points instead carry per-item `groupIndex` tags) · `list` (ordered,
 possibly-MIXED `SocketValue[]` — the List node emits it and the list
 transform nodes chain on it. Items are BORROWED, like image_group's: the
@@ -1602,6 +1621,77 @@ baseline. Spec: archive/070826_riskfix-plan.md §2.
   (Hable) view transforms applied in scene-linear; **Apply LUT** gained a
   log2 HDR shaper + 16F volume so `ociobakelut` shaper+cube LUTs grade
   scene-linear footage (and 8-bit banding is gone).
+- **Audio chains** (spec 080826_audio-nodes.md, M0+M1 shipped): 21 audio
+  nodes — Oscillator/Noise/Player, Synth/FM Synth/Sampler (notes→audio),
+  Filter/EQ/Distortion/BitCrusher/Compressor/Limiter/Channel,
+  Delay/Reverb/Chorus/Phaser, Audio Merge/Crossfade (descriptor-composed
+  onto the `mix` stage), Step Pattern/Transpose (`notes` domain) — emit
+  **AudioChainNode descriptors** — zero audio work in compute(), the
+  SDF-AST pattern —
+  and [audio-engine.ts](../src/engine/audio-engine.ts) reconciles the trees
+  that arrive each eval into a persistent Tone.js graph (params RAMP, no
+  zipper noise; Tone loads lazily on first chain). Audibility = scene
+  playing AND the chain reaches ANY audible sink: the root Output's
+  `audio` socket, a **Layer Output boundary's `audio` socket** (wiring
+  inside the layer is enough — collectLayerAudioAuditions in flatten.ts
+  resolves boundary wires on the RAW graph and the evaluator forces those
+  producers into the needed set; clip-gated layers drop their audition),
+  or the **Active node** (audition-by-active, no wiring; also un-mutes an
+  active element source). The `audioRoutedToOutput` pre-pass walks audio
+  paths TRANSITIVELY so an element source feeding a chain stays unmuted. Element
+  leaves ride the shared element-source registry; their direct speaker path
+  is muted only while they feed a ROUTED chain (sinkReachableIds), and a
+  BARE Source → Output wire never enters the engine at all (legacy
+  element-direct path, no Tone load). Project **bpm** (scene block,
+  additive; `ctx.bpm`) is musical time for the `notes` domain — note data
+  stays in ticks, authoring nodes convert beats→ticks at compute. New audio
+  node = descriptor-emitting def + an adapter in the matching
+  `audio-adapters-*.ts` family module (contract: audio-adapter-types.ts);
+  never import Tone in a def. Sharp edges already paid for: dB-unit Tone
+  Params must `targetRampTo` (never `rampTo` — exponential ramps fail
+  across 0); AudioWorklet stages render silence offline unless
+  renderOffline's `workletsAreReady` await stays; a Tone-class-swapping
+  param folds into the fx key (shape change), never into update(). Pure
+  plan/diff logic guarded by `scripts/check-audio-chain.mts`; the LIVE
+  path (real Tone graph, tap RMS, offline determinism incl. worklets) by
+  `npm run check:audio-live` (Electron, file:// for secure context).
+  **Audio v2** (080926_audio-v2-integration.md, shipped): analysis nodes
+  read CHAINS (post-effect signal — live stage taps via an injected
+  ChainTapProvider, offline via chunked signature-cached renders);
+  audio-rate modulation via `mods` descriptor edges + `modTarget` adapter
+  opt-ins (Audio LFO → Filter cutoff / Osc freq+level / Channel
+  gain+pan; depth lives on the LFO's min/max, destination units); export
+  mixdown renders every AUTHORED-audible chain (Output + layer boundary,
+  never audition-by-active — `EvalResult.exportAudioChains`) in one
+  offline pass summed with the legacy element buffer; element leaves
+  carry offline playback hints. Not-audible glyph on audio node headers
+  rides src/state/audio-audibility.ts. Keyframed audio params AUTOMATE in
+  exports (lib/export-audio-automation.ts samples animation blocks →
+  renderOffline replays via the adapters' `update(…, at)` arg — new
+  adapters must schedule continuous params at `at` and guard discrete
+  ones); the Fast tier captures chains via audioEngine.getCaptureTrack.
+  Still open (deferred): Tone in exported standalone apps (they render
+  mute); wire-driven / enum / mix-lane params still export as
+  start-of-window snapshots.
+- **MIDI Editor / piano roll** (080926_midi-editor.md, shipped): the
+  `midi-editor` node stores a NoteEvent[] clip in the hidden `notes_clip`
+  param (plain JSON; optional per-note `id` = editor identity only) and
+  emits `notes`; optional region loop (`loop`/`loop_end_bars`/
+  `loop_repeats`, bpm in fingerprintExtras only while looping). The
+  editor (components/effects/midi-editor/) COVERS the primary viewport on
+  node double-click / header Edit (never unmounts the canvas — evals and
+  the audio engine keep running), reuses the timeline machinery
+  (useTimelineView, PlayheadChrome leaves, TrackEditor wheel grammar) +
+  a pitch-view sibling, and routes every mutation through pure
+  note-ops.ts (anchor-head snap, unit delta clamps, dragged-wins row
+  overlaps; `scripts/check-note-ops.mts`). One onNotesChange per gesture
+  via nextGestureKey. Shift@pointerdown on a note = copy-drag
+  (latch-minted clones); Shift live = snap bypass. Auditions ride
+  `audioEngine.previewNote` (instrument `triggerNote?` + an always-open
+  preview gain that taps the chain sink while the transport is stopped;
+  fallback synth when unwired). NEW-FILE hooks lint is strict: no ref
+  writes in render, no setState-in-effect — follow MidiEditor.tsx's
+  effect-mirror + base-identity-preview patterns.
 - **Audio analysis nodes** (Audio Bands, Audio Pitch, Audio Spectral) all
   read through `getAudioFrame` ([audio-analysis.ts](../src/engine/audio-analysis.ts)),
   which has two backends behind one API: **live** taps the per-element

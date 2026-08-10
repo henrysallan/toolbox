@@ -15,9 +15,11 @@ import {
 // path's travel direction; negative to the left. Handled per-subpath so
 // compound paths (letter holes, etc.) offset independently.
 //
-// Built on top of bezier-js's `.offset(d)`, which subdivides around high-
+// Built on spline-math's offsetCurve(), which subdivides around high-
 // curvature regions and returns a chain of cubics. We stitch those back
-// into our SplineSubpath shape.
+// into our SplineSubpath shape. (It replaces bezier-js's own `.offset(d)`,
+// whose span search scans t linearly and cost 264µs per segment — see the
+// comment above offsetSubpath.)
 
 export const offsetPathNode: NodeDefinition = {
   type: "spline-offset",
