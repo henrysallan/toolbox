@@ -37,7 +37,7 @@
     "desktop:publish": "npm run desktop:prepare && electron-builder --mac -p always",
     "desktop:publish:win": "npm run desktop:prepare && electron-builder --win -p always",
     "build:export-template": "node scripts/build-export-template.mjs",
-    "install:export-template": "npm --prefix src/export-template install",
+    "install:export-template": "npm --prefix src/export-template install --include=dev",
     "bench:spline": "tsx scripts/bench-spline-chain.mts",
     "bench:jitter": "tsx scripts/bench-spline-jitter.mts",
     "bench:blend-gpu": "env -u ELECTRON_RUN_AS_NODE electron scripts/bench-blend-gpu.cjs"

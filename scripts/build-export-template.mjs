@@ -13,6 +13,12 @@
 // weight, while ML exports are rare. Desktop / local builds stay full-fat.
 // The manifest records `mlRuntime: false` so the editor blocks an ML export
 // against a slim template instead of shipping an app that 404s its runtime.
+//
+// The template's vite toolchain lives in its devDependencies, and npm omits
+// dev deps whenever NODE_ENV=production — which Vercel sets during builds.
+// `install:export-template` therefore passes --include=dev; without it the
+// install brings in only react/react-dom and `npx vite` falls back to an
+// ephemeral latest-vite that can't load vite.config.ts's plugin imports.
 
 import { execSync } from "node:child_process";
 import { mkdirSync, rmSync, cpSync, writeFileSync, readdirSync, statSync, readFileSync, existsSync } from "node:fs";
