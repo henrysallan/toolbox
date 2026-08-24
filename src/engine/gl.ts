@@ -38,6 +38,22 @@ void main() {
   outColor = texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y));
 }`;
 
+// Crop readback. `u_rect` is (x, y, w, h) in canvas ImageData pixels
+// (y-down, top-left origin). Same Y-flip as READBACK_FS so readPixels
+// row 0 is the visual top of the crop. Spec: 082226_motion-tracking.md §7.2.
+const READBACK_CROP_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform vec4 u_rect;
+uniform vec2 u_srcSize;
+out vec4 outColor;
+void main() {
+  vec2 px = u_rect.xy + v_uv * u_rect.zw;
+  vec2 srcUV = vec2(px.x / u_srcSize.x, 1.0 - px.y / u_srcSize.y);
+  outColor = texture(u_src, srcUV);
+}`;
+
 function compileShader(
   gl: WebGL2RenderingContext,
   type: number,
@@ -252,6 +268,7 @@ export function createEngineBackend(
 
   const blitProgram = getShader("__blit__", BLIT_FS);
   const readbackProgram = getShader("__readback__", READBACK_FS);
+  const readbackCropProgram = getShader("__readback_crop__", READBACK_CROP_FS);
 
   // ---- CPU pixel readback --------------------------------------------
   // Replaces the blitToCanvas + getImageData recipe for nodes that need
@@ -271,13 +288,7 @@ export function createEngineBackend(
   const readbackFbo = gl.createFramebuffer();
   if (!readbackFbo) throw new Error("Failed to create readback FBO");
 
-  function readImagePixelsInternal(
-    image: ImageValue,
-    width?: number,
-    height?: number
-  ): Uint8ClampedArray<ArrayBuffer> | null {
-    const w = Math.max(1, Math.floor(width ?? image.width));
-    const h = Math.max(1, Math.floor(height ?? image.height));
+  function acquireReadbackTarget(w: number, h: number): WebGLTexture | null {
     const key = `${w}x${h}`;
     let tex = readbackTargets.get(key);
     if (!tex) {
@@ -307,6 +318,18 @@ export function createEngineBackend(
       readbackTargets.set(key, created);
       tex = created;
     }
+    return tex;
+  }
+
+  function readImagePixelsInternal(
+    image: ImageValue,
+    width?: number,
+    height?: number
+  ): Uint8ClampedArray<ArrayBuffer> | null {
+    const w = Math.max(1, Math.floor(width ?? image.width));
+    const h = Math.max(1, Math.floor(height ?? image.height));
+    const tex = acquireReadbackTarget(w, h);
+    if (!tex) return null;
 
     gl!.bindFramebuffer(gl!.FRAMEBUFFER, readbackFbo);
     gl!.framebufferTexture2D(
@@ -337,6 +360,64 @@ export function createEngineBackend(
     // Zero-copy view — values are already 0..255 so clamping semantics
     // are moot; the type just matches ImageData.data for drop-in reuse.
     return new Uint8ClampedArray(bytes.buffer);
+  }
+
+  function readImageRegionInternal(
+    image: ImageValue | MaskValue,
+    x: number,
+    y: number,
+    w0: number,
+    h0: number,
+    opts?: { gray?: boolean }
+  ): Float32Array | null {
+    const w = Math.max(1, Math.floor(w0));
+    const h = Math.max(1, Math.floor(h0));
+    const rx = Math.floor(x);
+    const ry = Math.floor(y);
+    const tex = acquireReadbackTarget(w, h);
+    if (!tex) return null;
+
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, readbackFbo);
+    gl!.framebufferTexture2D(
+      gl!.FRAMEBUFFER,
+      gl!.COLOR_ATTACHMENT0,
+      gl!.TEXTURE_2D,
+      tex,
+      0
+    );
+    if (gl!.checkFramebufferStatus(gl!.FRAMEBUFFER) !== gl!.FRAMEBUFFER_COMPLETE) {
+      gl!.bindFramebuffer(gl!.FRAMEBUFFER, null);
+      return null;
+    }
+    gl!.viewport(0, 0, w, h);
+    gl!.disable(gl!.DEPTH_TEST);
+    gl!.disable(gl!.BLEND);
+    gl!.useProgram(readbackCropProgram);
+    gl!.bindVertexArray(vao);
+    gl!.activeTexture(gl!.TEXTURE0);
+    gl!.bindTexture(gl!.TEXTURE_2D, image.texture);
+    gl!.uniform1i(gl!.getUniformLocation(readbackCropProgram, "u_src"), 0);
+    gl!.uniform4f(gl!.getUniformLocation(readbackCropProgram, "u_rect"), rx, ry, w, h);
+    gl!.uniform2f(
+      gl!.getUniformLocation(readbackCropProgram, "u_srcSize"),
+      image.width,
+      image.height
+    );
+    gl!.drawArrays(gl!.TRIANGLES, 0, 3);
+    gl!.bindVertexArray(null);
+
+    const bytes = new Uint8Array(w * h * 4);
+    gl!.readPixels(0, 0, w, h, gl!.RGBA, gl!.UNSIGNED_BYTE, bytes);
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, null);
+
+    if (opts?.gray) {
+      const out = new Float32Array(w * h);
+      for (let i = 0; i < out.length; i++) out[i] = bytes[i * 4]! / 255;
+      return out;
+    }
+    const out = new Float32Array(w * h * 4);
+    for (let i = 0; i < bytes.length; i++) out[i] = bytes[i]! / 255;
+    return out;
   }
 
   // ---- Texture free-list pool ----
@@ -649,6 +730,7 @@ export function createEngineBackend(
       readImageToFloat32: readImageToFloat32Internal,
       uploadFloat32ToImage: uploadFloat32ToImageInternal,
       readImagePixels: readImagePixelsInternal,
+      readImageRegion: readImageRegionInternal,
     };
   }
 

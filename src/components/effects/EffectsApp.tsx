@@ -315,6 +315,7 @@ import SegmentDotsOverlay from "./SegmentDotsOverlay";
 import KeyerSampleOverlay, {
   type KeyerSourcePixels,
 } from "./KeyerSampleOverlay";
+import { TrackerOverlayAtTick } from "./tracking/TrackerOverlay";
 import type { SegmentDot } from "@/lib/ai/segment";
 import {
   clearLiveSegment,
@@ -338,7 +339,27 @@ import {
   type ProjectTimeline,
 } from "@/engine/keyframes";
 import type { ClipBlock } from "@/engine/clips";
-import type { PointsValue, SocketType, ResolveCtx } from "@/engine/types";
+import type {
+  ImageValue,
+  MaskValue,
+  PointsValue,
+  RenderContext,
+  ResolveCtx,
+  SocketType,
+} from "@/engine/types";
+import {
+  asPointTrackerData,
+  authoredToCanvasPx,
+  classicalBackend,
+  emptyRuntime,
+  grayFromFullFrame,
+  preprocessTrackingImage,
+  sampleTrackAtFrame,
+  stepTracksOnImage,
+} from "@/engine/tracking";
+import type { TrackRuntime, TrackStepSettings } from "@/engine/tracking";
+import type { WarpType } from "@/engine/tracking/lk";
+import { trackerSelection } from "@/state/tracker-selection";
 
 registerAllNodes();
 
@@ -2356,6 +2377,10 @@ function EffectsShell({
   // The live/MediaRecorder path leaves this false (it's realtime; the
   // continuous loop lets deferred results catch up).
   const offlineRenderingRef = useRef(false);
+  const trackingCancelRef = useRef(false);
+  const trackingRunningRef = useRef(false);
+  const trackerRuntimeRef = useRef(new Map<string, Map<number, TrackRuntime>>());
+  const [trackingBusy, setTrackingBusy] = useState(false);
 
   // Wedge batch-render iteration. Set by the batch export driver around each
   // variation's render (exportWedged) and flowed into ctx.wedgeIndex by
@@ -8337,21 +8362,22 @@ function EffectsShell({
     ]
   );
 
-  // Step the offline clock through a list of frames and hand the upstream
-  // node's rendered pixels to a callback at each one — the Segment node's
-  // bake driver. Same deterministic two-pass render as the offline
-  // exporters (issue async media seeks, await settle, render again), but
-  // reading a specific node's output instead of the canvas. The callback
-  // may be slow (ML inference per frame) — the clock simply waits; return
-  // false from it to stop early.
-  const captureNodeFrames = useCallback(
+  // Step the offline clock through a list of frames and hand the named
+  // node's rendered ImageValue to a callback at each one. Tracking uses
+  // this form directly (no PNG encode). captureNodeFrames is the PNG
+  // adapter for Segment / Depth bake. Spec: 082226_motion-tracking.md §7.1.
+  const walkNodeFrames = useCallback(
     async (
       sourceNodeId: string,
       frames: number[],
-      onFrame: (frame: number, blob: Blob) => Promise<boolean | void>
+      onImage: (
+        frame: number,
+        img: ImageValue,
+        ctx: RenderContext
+      ) => Promise<boolean | void>,
+      opts?: { restorePlaying?: boolean }
     ): Promise<void> => {
       const fps = fpsRef.current;
-      const savedTime = timeRef.current;
       const savedPlaying = playingRef.current;
       setPlaying(false);
       offlineRenderingRef.current = true;
@@ -8360,37 +8386,265 @@ function EffectsShell({
           const t = Math.max(0, frame) / Math.max(1, fps);
           await renderSettledFrameAt(t, fps, { flush: true });
           const backend = backendRef.current;
-          // Stable upstreams live in the eval cache; uncacheable ones
-          // (Video/Webcam) only exist in the last pass's outputs map.
           const entry = evalCacheRef.current.get(sourceNodeId);
           const primary =
             entry?.output.primary ??
             lastEvalOutputsRef.current?.get(sourceNodeId)?.primary;
           if (!primary || primary.kind !== "image" || !backend) {
             throw new Error(
-              "Couldn't read the upstream image — make the Segment node's chain visible on the canvas (set it or a downstream node Active), then retry."
+              "Couldn't read the upstream image — wire an image into the tracker and make the chain visible (set it or a downstream node Active), then retry."
             );
           }
-          const blitCtx = backend.makeContext(0, 0);
-          const tmp = document.createElement("canvas");
-          tmp.width = primary.width;
-          tmp.height = primary.height;
-          blitCtx.blitToCanvas(primary, tmp);
-          const blob = await new Promise<Blob | null>((res) =>
-            tmp.toBlob((b) => res(b), "image/png")
-          );
-          if (!blob) throw new Error("Failed to read frame pixels.");
-          const cont = await onFrame(frame, blob);
+          const ctx = backend.makeContext(t, frame);
+          const cont = await onImage(frame, primary as ImageValue, ctx);
           if (cont === false) break;
         }
       } finally {
         offlineRenderingRef.current = false;
-        setPlaying(savedPlaying);
+        if (opts?.restorePlaying !== false) setPlaying(savedPlaying);
+      }
+    },
+    [renderSettledFrameAt, setPlaying]
+  );
+
+  const captureNodeFrames = useCallback(
+    async (
+      sourceNodeId: string,
+      frames: number[],
+      onFrame: (frame: number, blob: Blob) => Promise<boolean | void>
+    ): Promise<void> => {
+      const savedTime = timeRef.current;
+      try {
+        await walkNodeFrames(sourceNodeId, frames, async (frame, img, ctx) => {
+          const tmp = document.createElement("canvas");
+          tmp.width = img.width;
+          tmp.height = img.height;
+          ctx.blitToCanvas(img, tmp);
+          const blob = await new Promise<Blob | null>((res) =>
+            tmp.toBlob((b) => res(b), "image/png")
+          );
+          if (!blob) throw new Error("Failed to read frame pixels.");
+          return onFrame(frame, blob);
+        });
+      } finally {
         setTime(savedTime);
       }
     },
-    [renderSettledFrameAt]
+    [walkNodeFrames, setTime]
   );
+
+  const cancelTrackingSession = useCallback(() => {
+    trackingCancelRef.current = true;
+  }, []);
+
+  const runTrackingSession = useCallback(
+    async (
+      nodeId: string,
+      dir: 1 | -1,
+      n: number | "toEnd" | "toStart" | "regrab"
+    ): Promise<void> => {
+      if (trackingRunningRef.current) return;
+      const node = nodesRef.current.find((x) => x.id === nodeId);
+      if (!node || node.data.defType !== "tracker-point") return;
+      const inEdge = edgesRef.current.find(
+        (e) => e.target === nodeId && e.targetHandle === "in:image"
+      );
+      if (!inEdge) {
+        flashToast("Wire an image into the Point Tracker");
+        return;
+      }
+      const maskEdge = edgesRef.current.find(
+        (e) => e.target === nodeId && e.targetHandle === "in:mask"
+      );
+      const params = node.data.params;
+      let data = asPointTrackerData(params.tracks);
+      const sel = trackerSelection.get();
+      const selectedIds = sel.nodeId === nodeId ? sel.ids : [];
+      const trackIds =
+        selectedIds.length > 0
+          ? selectedIds
+          : data.tracks.filter((t) => t.enabled).map((t) => t.id);
+      if (trackIds.length === 0) {
+        flashToast("No tracks to follow — add or enable a track");
+        return;
+      }
+      const fps = fpsRef.current;
+      const sceneLen =
+        loopFramesRef.current != null && loopFramesRef.current > 0
+          ? loopFramesRef.current
+          : fps * 5;
+      const sceneEnd = Math.max(0, Math.round(sceneLen) - 1);
+      const current = Math.max(0, Math.min(sceneEnd, Math.floor(timeRef.current * fps)));
+      let frames: number[];
+      if (n === "regrab") {
+        frames = [current];
+      } else if (n === "toEnd") {
+        frames = [];
+        for (let f = current + 1; f <= sceneEnd; f++) frames.push(f);
+      } else if (n === "toStart") {
+        frames = [];
+        for (let f = current - 1; f >= 0; f--) frames.push(f);
+      } else if (dir === 1) {
+        frames = [];
+        for (let i = 1; i <= n && current + i <= sceneEnd; i++) frames.push(current + i);
+      } else {
+        frames = [];
+        for (let i = 1; i <= n && current - i >= 0; i++) frames.push(current - i);
+      }
+      if (frames.length === 0) return;
+
+      const settings: TrackStepSettings = {
+        warp: ((params.warp as WarpType) ?? "translate") as WarpType,
+        predict: params.predict !== false,
+        regrab: (params.regrab as TrackStepSettings["regrab"]) ?? "adaptive",
+        regrabN: Math.max(1, Math.round((params.regrab_n as number) ?? 5)),
+        lostBelow: typeof params.lost_below === "number" ? params.lost_below : 0.6,
+        verify: !!params.verify,
+        stopWhenLost: params.stop_when_lost !== false,
+      };
+      let runtimes = trackerRuntimeRef.current.get(nodeId);
+      if (!runtimes) {
+        runtimes = new Map();
+        trackerRuntimeRef.current.set(nodeId, runtimes);
+      }
+      trackingCancelRef.current = false;
+      trackingRunningRef.current = true;
+      setTrackingBusy(true);
+      let prevGray: ReturnType<typeof grayFromFullFrame> | undefined;
+      const progress = (done: number, total: number) => {
+        window.dispatchEvent(
+          new CustomEvent("node-progress", {
+            detail: {
+              label: `Tracking ${done}/${total}`,
+              progress: total ? done / total : 0,
+              tone: "load",
+            },
+          })
+        );
+      };
+      try {
+        await walkNodeFrames(inEdge.source, frames, async (frame, img, ctx) => {
+          if (trackingCancelRef.current) return false;
+          const maskOut = maskEdge
+            ? evalCacheRef.current.get(maskEdge.source)?.output.primary ??
+              lastEvalOutputsRef.current?.get(maskEdge.source)?.primary
+            : null;
+          const mask = maskOut?.kind === "mask" ? (maskOut as MaskValue) : null;
+          const tracking = preprocessTrackingImage(ctx, img, params, mask);
+          const raw = ctx.readImageRegion(
+            tracking,
+            0,
+            0,
+            tracking.width,
+            tracking.height,
+            { gray: true }
+          );
+          ctx.releaseTexture(tracking.texture);
+          if (!raw) throw new Error("Couldn't read the tracking image.");
+          const gray = grayFromFullFrame(raw, tracking.width, tracking.height);
+
+          if (n === "regrab") {
+            for (const id of trackIds) {
+              const track = data.tracks.find((t) => t.id === id);
+              if (!track) continue;
+              let rt = runtimes.get(id);
+              if (!rt) {
+                rt = emptyRuntime();
+                runtimes.set(id, rt);
+              }
+              const s = sampleTrackAtFrame(track, frame, "hold");
+              const [sx, sy] = authoredToCanvasPx(
+                s?.x ?? track.ref.x,
+                s?.y ?? track.ref.y,
+                tracking.width,
+                tracking.height
+              );
+              if (!rt.handle) {
+                rt.handle = classicalBackend.seed(gray, sx, sy, {
+                  patternW: track.patternW,
+                  patternH: track.patternH,
+                  searchW: track.searchW,
+                  searchH: track.searchH,
+                  warp: settings.warp,
+                });
+              } else {
+                classicalBackend.regrab(rt.handle, gray, sx, sy);
+              }
+            }
+            return false;
+          }
+
+          const result = stepTracksOnImage({
+            data,
+            trackIds,
+            frame,
+            dir,
+            img: gray,
+            canvasW: tracking.width,
+            canvasH: tracking.height,
+            settings,
+            runtimes,
+            prevImg: prevGray,
+          });
+          data = result.data;
+          prevGray = gray;
+          onParamChange(nodeId, "tracks", data, `track-run:${nodeId}`);
+          progress(frames.indexOf(frame) + 1, frames.length);
+          if (settings.stopWhenLost && result.lostIds.length > 0) {
+            return false;
+          }
+          return true;
+        }, { restorePlaying: false });
+      } catch (err) {
+        flashToast(err instanceof Error ? err.message : "Tracking failed");
+      } finally {
+        window.dispatchEvent(new CustomEvent("node-progress", { detail: null }));
+        setTrackingBusy(false);
+        trackingRunningRef.current = false;
+        trackingCancelRef.current = false;
+      }
+    },
+    [walkNodeFrames, onParamChange, flashToast]
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
+      const id = selectedIdRef.current;
+      if (!id) return;
+      const node = nodesRef.current.find((n) => n.id === id);
+      if (node?.data.defType !== "tracker-point") return;
+      if (e.key === "Escape") {
+        if (trackingRunningRef.current) trackingCancelRef.current = true;
+        if (node.data.params.place_mode) {
+          onParamChange(id, "place_mode", false);
+        }
+        e.preventDefault();
+        return;
+      }
+      if ((e.key === "p" || e.key === "P") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        onParamChange(id, "place_mode", true);
+        return;
+      }
+      if (e.altKey && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+        e.preventDefault();
+        const dir: 1 | -1 = e.key === "ArrowRight" ? 1 : -1;
+        const spec = e.shiftKey ? (dir === 1 ? "toEnd" : "toStart") : 1;
+        void runTrackingSession(id, dir, spec);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onParamChange, runTrackingSession]);
 
   // Resolve a Render Queue node into its ordered rows, each paired with the
   // Output node wired into the matching `item:<id>` socket (or null). Used by
@@ -10373,6 +10627,12 @@ function EffectsShell({
       )
     : undefined;
 
+  const activeTrackerNode = selectedId
+    ? nodes.find(
+        (n) => n.id === selectedId && n.data.defType === "tracker-point"
+      )
+    : undefined;
+
   // WebGPU Particle Test (Phase 0 spike). Presence-driven: the overlay
   // mounts whenever any node of this type exists in the graph, no
   // selection required. We only support one at a time — extras would
@@ -10987,6 +11247,9 @@ function EffectsShell({
       edges={edges}
       getRefImageBlob={getRefImageBlob}
       captureNodeFrames={captureNodeFrames}
+      runTrackingSession={runTrackingSession}
+      cancelTrackingSession={cancelTrackingSession}
+      trackingBusy={trackingBusy}
       sceneFrames={
         loopFrames != null && loopFrames > 0 ? loopFrames : fps * 5
       }
@@ -11548,7 +11811,8 @@ function EffectsShell({
           {showGizmos &&
             selectedPoints &&
             selectedPoints.count > 0 &&
-            backendReady && (
+            backendReady &&
+            !activeTrackerNode && (
               <PointsOverlay
                 canvas={canvasRef.current}
                 value={selectedPoints}
@@ -11645,6 +11909,14 @@ function EffectsShell({
               getSourcePixels={() =>
                 getKeyerSourcePixels(activeKeyerNode.id)
               }
+            />
+          )}
+          {showGizmos && activeTrackerNode && backendReady && (
+            <TrackerOverlayAtTick
+              canvas={canvasRef.current}
+              nodeId={activeTrackerNode.id}
+              params={activeTrackerNode.data.params}
+              onParamChange={onParamChange}
             />
           )}
           {showGizmos &&

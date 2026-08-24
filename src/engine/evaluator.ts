@@ -22,6 +22,7 @@ import {
 } from "./flatten";
 import { ITERATE_EDGE_PREFIX, ITERATE_TYPE, LAYER_TYPE } from "./groups";
 import { paramSocketType, parseTargetHandleKind } from "./graph-helpers";
+import { trackDataFingerprintToken } from "./tracking/track-data";
 import * as prof from "./profiler";
 import { getGpuTimer } from "./gpu-timer";
 import {
@@ -244,6 +245,11 @@ function stableStringify(v: unknown): string {
     return opaqueId(v, "blob");
   }
   if (t === "object") {
+    // Track samples can be megabytes of parallel arrays. Identity-token
+    // so the fingerprint stays O(1) and still changes on every edit
+    // (helpers bump `rev`). Spec: 082226_motion-tracking.md §4.4.
+    const trk = trackDataFingerprintToken(v);
+    if (trk) return trk;
     const entries = Object.entries(v as Record<string, unknown>).sort(
       (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)
     );

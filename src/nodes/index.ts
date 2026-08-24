@@ -138,6 +138,7 @@ import { segmentAnythingNode } from "./effect/segment";
 import { depthAnythingNode } from "./effect/depth-anything";
 import { edgeDetectNode } from "./effect/edge-detect";
 import { objectTrackerNode } from "./effect/object-tracker";
+import { trackerPointNode } from "./effect/tracker-point";
 import { handTrackerNode } from "./effect/hand-tracker";
 import { collectNode } from "./effect/collect";
 import { nodeGroupNode } from "./group/node-group";
@@ -403,6 +404,7 @@ export function registerAllNodes() {
   registerNode(depthAnythingNode);
   registerNode(edgeDetectNode);
   registerNode(objectTrackerNode);
+  registerNode(trackerPointNode);
   registerNode(handTrackerNode);
   registerNode(collectNode);
   // Back-compat: "Collect" was named "Group" before node groups

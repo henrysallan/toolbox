@@ -1115,6 +1115,9 @@ export type ParamType =
   // from the generic panel (edited via the Brush Editor window), not
   // keyframable/exposable/controllable. Spec: 071926_paint-toolkit.md.
   | "brush_settings"
+  // Authored motion-track samples. Not keyframable or exposable; the
+  // TrackerPanel owns the editor. Spec: 082226_motion-tracking.md §4.1.
+  | "track_data"
   | "merge_layers"
   | "color_ramp"
   | "curves"
@@ -1393,6 +1396,57 @@ export interface SvgFileParamValue {
   // to fit inside [0,1]², so this is informational (e.g. for a future
   // "original size" restore button).
   aspect: number;
+}
+
+// Authored motion-track samples (082226_motion-tracking.md §4.1). Stored
+// as a param (`tracks` / `plane`); edits go through engine/tracking/track-data
+// helpers that return a new object with `rev` bumped from a session-wide
+// counter. Positions are authored [0,1]² Y-down; pattern/search boxes are
+// canvas pixels; planar H is canvas-pixel homography (ref → this frame).
+export type TrackSampleStatus =
+  | 0 // tracked  — kernel, confidence ≥ lost threshold
+  | 1 // manual   — user dragged this frame; kernel never overwrites
+  | 2 // repaired — spike/gap repair pass
+  | 3 // predicted — kernel lost the pattern; motion-model fallback
+  | 4; // lost     — no usable position (output holds last good)
+
+export interface PointTrack {
+  id: number; // stable per-node ordinal, never reused
+  name: string;
+  enabled: boolean;
+  offset: [number, number];
+  ref: { frame: number; x: number; y: number };
+  patternW: number;
+  patternH: number;
+  searchW: number;
+  searchH: number;
+  frames: number[];
+  x: number[];
+  y: number[];
+  rot?: number[];
+  scale?: number[];
+  conf: number[];
+  status: TrackSampleStatus[];
+}
+
+export interface PointTrackerData {
+  kind: "track_data";
+  version: 1;
+  rev: number;
+  nextId: number;
+  tracks: PointTrack[];
+}
+
+export interface PlanarTrackerData {
+  kind: "track_data";
+  version: 1;
+  rev: number;
+  ref: { frame: number; corners: [number, number][] };
+  frames: number[];
+  corners: number[]; // 8 per frame, authored space
+  H: number[]; // 9 per frame: ref → this-frame homography in canvas px
+  conf: number[];
+  status: TrackSampleStatus[];
 }
 
 export interface ParamDef {
@@ -1833,4 +1887,21 @@ export interface RenderContext {
     width?: number,
     height?: number
   ): Uint8ClampedArray<ArrayBuffer> | null;
+
+  // Crop-and-readback: draw a pixel-space rectangle of `image` (or a
+  // single-channel tracking mask) through a crop shader into a pooled
+  // RGBA8 target and readPixels. Coordinates are canvas ImageData space
+  // (y-down, row 0 = visual top), matching `readImagePixels`. `gray`
+  // returns one float per pixel from the R channel (the tracking-image
+  // convention: preprocess writes the signal into R). Sync GPU stall —
+  // one region per frame-step is the budget. Returns null if the
+  // readback framebuffer can't be built. Spec: 082226_motion-tracking.md §7.2.
+  readImageRegion(
+    image: ImageValue | MaskValue,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    opts?: { gray?: boolean }
+  ): Float32Array | null;
 }

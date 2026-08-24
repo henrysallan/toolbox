@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PointsValue } from "@/engine/types";
 import { aspectCorrectY } from "@/engine/aspect";
+import { TRACK_PALETTE } from "@/engine/tracking/sample";
 import { rectsEqual } from "./overlay-rect";
 
 // Read-only visualization for a points value. Renders dots via a single
@@ -71,6 +72,7 @@ export default function PointsOverlay({ canvas, value }: Props) {
 
     const pos = value.positions;
     const n = value.count;
+    const groups = value.groupIndices;
     const r = 3;
     const tau = Math.PI * 2;
     // Match the rasterizers' aspect correction so dots sit on the rendered
@@ -79,6 +81,11 @@ export default function PointsOverlay({ canvas, value }: Props) {
     for (let i = 0; i < n; i++) {
       const x = pos[i * 2] * cssW;
       const y = aspectCorrectY(pos[i * 2 + 1], aspect) * cssH;
+      if (groups) {
+        const g = groups[i] ?? i;
+        ctx.fillStyle =
+          TRACK_PALETTE[((g % TRACK_PALETTE.length) + TRACK_PALETTE.length) % TRACK_PALETTE.length]!;
+      }
       ctx.beginPath();
       ctx.arc(x, y, r, 0, tau);
       ctx.fill();

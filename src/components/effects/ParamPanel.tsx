@@ -41,6 +41,7 @@ import SegmentPanel from "./SegmentPanel";
 import DepthAnythingPanel from "./DepthAnythingPanel";
 import DatamoshPanel from "./DatamoshPanel";
 import ColorCorrectionPanel from "./ColorCorrectionPanel";
+import TrackerPanel from "./TrackerPanel";
 import { CC_BAR_PARAM_NAMES } from "@/nodes/effect/color-correction";
 import RgbCurvesPanel from "./RgbCurvesPanel";
 import AutoLayoutPanel from "./AutoLayoutPanel";
@@ -252,7 +253,12 @@ interface Props {
   // (080826_audio-nodes.md). Lives beside fps in Project Settings.
   bpm: number;
   onBpmChange: (bpm: number) => void;
-  onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
+  onParamChange: (
+    nodeId: string,
+    paramName: string,
+    value: unknown,
+    coalesceKey?: string
+  ) => void;
   onToggleParamExposed: (nodeId: string, paramName: string) => void;
   // Toggles whether a param shows up as a knob in an exported app's control
   // panel. Independent of expose — both can be on; they answer different
@@ -339,6 +345,13 @@ interface Props {
     frames: number[],
     onFrame: (frame: number, blob: Blob) => Promise<boolean | void>
   ) => Promise<void>;
+  runTrackingSession?: (
+    nodeId: string,
+    dir: 1 | -1,
+    n: number | "toEnd" | "toStart" | "regrab"
+  ) => Promise<void>;
+  cancelTrackingSession?: () => void;
+  trackingBusy?: boolean;
   // Scene length in frames — convenience default for bake-range fields.
   sceneFrames?: number;
   // Live batch-render state for the Render Queue panel. Null when idle.
@@ -507,6 +520,9 @@ function ParamPanel({
   edges,
   getRefImageBlob,
   captureNodeFrames,
+  runTrackingSession,
+  cancelTrackingSession,
+  trackingBusy,
   sceneFrames,
   queueRender,
   onSelectNode,
@@ -1072,6 +1088,19 @@ function ParamPanel({
           )}
           {/* Group shells have no def params — their name + interface
               sections above are the whole panel. */}
+          {def.type === "tracker-point" && (
+            <Section label="tracker">
+              <TrackerPanel
+                node={selected}
+                onParamChange={onParamChange}
+                runTrackingSession={runTrackingSession}
+                cancelTrackingSession={cancelTrackingSession}
+                trackingBusy={trackingBusy}
+                sceneFrames={sceneFrames}
+                canvasRes={canvasRes}
+              />
+            </Section>
+          )}
           {def.type !== GROUP_TYPE && (
           <Section
             // The section header IS the node's title, in an editable box:
@@ -1155,7 +1184,8 @@ function ParamPanel({
               const controlSupported =
                 p.type !== "paint" &&
                 p.type !== "spline_anchors" &&
-                p.type !== "brush_settings";
+                p.type !== "brush_settings" &&
+                p.type !== "track_data";
               const override = selected.data.paramOverrides?.[p.name];
               // Resolve chain-link UI state for this param. A param can
               // appear in at most one pair (linked pairs are exclusive

@@ -42,6 +42,9 @@ broken — use `check:shaders` or the live app.
 - `check-profiler` — the perf collector: ring-buffer wrap, recompute-reason
   classification, GPU results resolving into already-committed frames.
 - `check-output-gating` — `NodeDefinition.gatesOutputs`. See §5.
+- `check-tracker` — motion-tracking kernel (ZNCC + LK + homography/ESM +
+  smoothing/repair) and `track_data` identity-token fingerprinting. See
+  specdocs/082226_motion-tracking.md M0.
 
 ---
 

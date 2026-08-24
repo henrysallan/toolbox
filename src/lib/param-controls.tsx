@@ -1992,6 +1992,7 @@ export function ParamControl({
   // Per-stop expose/control toggles for color ramps — see RampIoApi.
   rampIo?: RampIoApi;
 }) {
+  if (param.type === "track_data") return null;
   if (param.type === "scalar") {
     const num = typeof value === "number" ? value : (param.default as number);
     // Effective range: per-instance override wins over the param def.

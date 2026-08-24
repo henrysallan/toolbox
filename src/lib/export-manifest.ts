@@ -38,6 +38,7 @@ const UNSUPPORTED_CONTROL_TYPES = new Set<ParamType>([
   "paint",
   "spline_anchors",
   "brush_settings",
+  "track_data",
 ]);
 
 export interface ExportWarning {
