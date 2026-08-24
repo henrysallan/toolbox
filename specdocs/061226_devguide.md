@@ -83,8 +83,33 @@ src/
                           raster and its Auto Layout element (maxWidth = word-wrap).
     keyframes.ts          Tick-based keyframe model + easing + evaluateKeyframesAt.
     clips.ts              Per-node timeline clip windows (gate + local time).
+    time-offset.ts        Time Offset closure walk (081426_time-offset.md): the
+                          pure ancestor-collection behind the Time Offset node
+                          (re-evaluate a branch at tick − Δ via nested eval, the
+                          Iterate pattern). Boundaries = simulation:true /
+                          retimeable:false defs + Iterate shells (outer value
+                          boundary-fed un-shifted); chained shells reject.
+                          Guarded by scripts/check-time-offset.mts. Also home
+                          of TIME_OFFSET_CARRIED_TYPES (what the node's `in`
+                          may carry). Sibling def flags in types.ts:
+                          `retimeable:false` (live-external-state nodes that
+                          can't run at two clocks) and `clockInput` (sample a
+                          def's keyframes at a WIRED time — Animated Value).
     graph-helpers.ts      Handle-id parsing, param→socket type mapping.
     sdf*.ts, spline-*.ts, points.ts, noise.ts, marching-squares.ts, …  domain math.
+                          points.ts also owns the PointsValue construction
+                          primitives: copyPointsWith (spread-and-replace
+                          per-point-transform copy) and gatherPoints
+                          (subset/reorder through one index map). Nodes
+                          must ride these instead of hand-rolling
+                          `{kind:"points",…}` literals — a literal
+                          silently strands z/normals and any future named
+                          attributes (081326_point-attributes.md M0).
+    table-model.ts        tableForValue(): lazy column/row projection over
+                          socket values (points/points3d, spline anchors,
+                          lists) feeding the Spreadsheet panel; engine-side
+                          so a future Debug node can ride it
+                          (081326_spreadsheet-panel.md).
     voronoi-geometry.ts   pcg3d integer hash (bit-exact GLSL↔TS mirror — the
                           only hash allowed where CPU geometry must overlay a
                           shader render) + shared Voronoi diagram derivation
@@ -186,9 +211,12 @@ src/
                           SSR-safe; owns the PANEL_FRAME/PANEL_GAP chrome + gutter
                           divider resize), PanelKindMenu.tsx (per-panel editor-kind
                           chip). Every leaf shows Viewport / Node Editor /
-                          Parameters / Timeline (PANEL_KINDS in model.ts is the
+                          Parameters / Timeline / Performance / Spreadsheet
+                          (PANEL_KINDS in model.ts is the
                           single source of truth — menu + both validators read
-                          it); duplicates are legal. ONE viewport leaf is
+                          it; a new kind also needs a KindIcon branch and an
+                          entry in panelKindMenuFor's last-viewport
+                          disabledReason map); duplicates are legal. ONE viewport leaf is
                           PRIMARY (sticky, see below) — it owns canvasRef,
                           every overlay/gizmo and the Shift+S A/B
                           split (the kind menu refuses to retire the LAST viewport);
@@ -354,6 +382,15 @@ src/
                           handleRenameNode. cloneSubgraph remaps frameId
                           with the clone set; deleting a frame strands
                           member ids harmlessly (undo-friendly).
+    SpreadsheetPanel.tsx  The Spreadsheet panel kind (081326_spreadsheet-
+                          panel.md): virtualized table over the selected (or
+                          pinned) node's evaluated output via engine/
+                          table-model.ts, socket dropdown + pin + norm/px
+                          units, 300ms identity-guarded polling of the eval
+                          cache. Its watched socket is force-evaluated
+                          through the peek popover's extraTargets/
+                          extraConsumed path (spreadsheetTargetsRef in
+                          EffectsApp).
     NodeInspectorPopup.tsx / SocketPeekPopover.tsx   data readouts. The `i`
                           inspector panel lists a node's inputs/outputs as
                           text summaries; dwelling ~2s on an OUTPUT handle
@@ -369,7 +406,7 @@ src/
                           theme.ts (one palette/metrics — the editors had
                           3 drifted copies), view.ts (useTimelineView:
                           tick↔px, cursor-anchored zoom, gutter-aware fit),
-                          keyframe-ops.ts (move/scale/stagger with the
+                          keyframe-ops.ts (move/scale/stagger/space with the
                           unified policy: Shift bypasses frame-snap, ticks
                           clamp ≥0 via gesture-delta, collisions resolve
                           dragged-key-wins, scale pins at a 1-frame span;
@@ -471,6 +508,24 @@ src/
     graph.ts              NodeDataPayload (what lives in each xyflow node's data).
     graph-ops.ts          ALL structural graph mutations (pure functions). New
                           structural logic goes here, not in EffectsApp.
+    presets.ts            Built-in add-menu presets: canned node-group fragments,
+                          authored in code, inserted via cloneSubgraph.
+    node-presets.ts       USER node presets — right-click a node → "Save as
+                          Preset…" (081226_user-node-presets.md). Payload = the
+                          clipboard fragment envelope (serializeGraph), so media
+                          inlining, keyframes, and schema migration come free and
+                          groups travel with their interiors. Module store
+                          (useSyncExternalStore, audio-audibility pattern) read
+                          directly by both add menus (same "Presets" column/
+                          category, hover-× deletes); persistence is the brush/
+                          layout-preset strategy: localStorage + Supabase
+                          user_preferences.node_presets, cloud wins, migration
+                          sql_archive/user-preferences-node-presets-migration.sql.
+                          Insertion = onAddNode's "user-preset:<id>" branch —
+                          async deserializeGraph, then the built-in preset:
+                          branch's clone-into-scope path + compositionId re-tag.
+                          Caps: 60 presets / 4 MB serialized each. Guarded by
+                          scripts/check-node-presets.mts.
     history.ts            Undo/redo snapshots. editor-session.ts: docs-nav stash.
   lib/
     project.ts            serializeGraph/deserializeGraph, SavedProject SCHEMA (v4).
@@ -500,6 +555,19 @@ src/
     media-relink.ts       Missing-media handles (video/audio re-pick on load).
     export*.ts            Image/video export, audio mixdown, exported-app manifest+packager.
     live-viewer/          LiveViewer + control panel used by /live and exported apps.
+                          design.ts owns the per-project LiveDesign block
+                          (081426_live-link-designer.md): layout/theme/
+                          preset-id/control-order config, validated from
+                          untrusted blobs, delivered to BOTH surfaces via
+                          ExportManifest.design. live-root.tsx is THE
+                          .live-root wrapper (inline token sheet incl. the
+                          --tb-* names form-controls.css reads, so no
+                          surface inherits host-document values); authored
+                          in components/effects/livelink/ (File → Live
+                          Link…, full-screen designer w/ iframe-isolated
+                          preview). viewer-export.ts = viewer-facing
+                          image/video/gif capture, gated per-link by
+                          design.export.
     fonts.ts font-*.ts    Curated + custom font loading, variable-font axis parsing.
     local-fonts.ts        OS-installed fonts via queryLocalFonts (Chromium/desktop);
                           enumerate for the Text picker + read bytes for save-bundling.
@@ -599,6 +667,14 @@ Wires reference handles `out:primary` / `out:aux:<name>` →
   only space in which a `radius` bounds a circle and a collider normal
   survives the trip. This exact bug has been fixed five times — check it
   when adding any producer, consumer, or simulator.
+- **`points3d` is WORLD space — Y-up, meters, unbounded** (three-native,
+  like the 3D scene). The TYPE is the space tag: `points` and `points3d`
+  deliberately coerce in NEITHER direction because no canonical
+  world↔canvas mapping exists — every crossing is an explicit node or
+  polymorphic input (3D Copy to Points maps 2D points onto a plane).
+  Authored-space UI surfaces (PointsOverlay, socket peek) skip drawing 3D
+  values. Never weaken this to a runtime tag on one shared socket type —
+  that trade was analyzed and rejected (081026 spec §2.1).
 - Alpha is **straight (non-premultiplied)** throughout;
   `UNPACK_PREMULTIPLY_ALPHA_WEBGL` is explicitly disabled on uploads.
   Compositing is Porter-Duff source-over done manually in shaders
@@ -621,7 +697,12 @@ emits it; any `string` param exposed as an input socket consumes it, e.g.
 Text's `text`; no cross-type coercions) · `spline` (multi-subpath cubic
 beziers, CPU) ·
 `points` (typed-array SoA + lazy `Point[]` view — producers use
-`makePoints`/`pointsFromArray`, hot consumers read typed arrays) · `audio`
+`makePoints`/`pointsFromArray`, hot consumers read typed arrays) ·
+`points3d` (SAME PointsValue shape with the optional `z`/`normals` arrays
+present — `is3DPoints()` discriminates; world-space Y-up meters, see the
+coordinate-conventions bullet. The `Point[]` view is 2D-only: 3D code
+reads typed arrays, never `ensurePointArray`, which dev-warns on 3D
+values. 081026_3d-geometry-points-materials.md §2) · `audio`
 (live HTMLMediaElement and/or an AudioChainNode descriptor — the processable
 signal chain; audio-engine.ts reconciles descriptors into a live Tone graph,
 080826_audio-nodes.md) · `notes` (symbolic NoteEvent list in TICKS — the
@@ -644,7 +725,24 @@ work** until SDF Rasterize compiles the tree to one shader · `render`
 `ColorRampStop[]` + interp mode as a value; Color Ramp's `ramp` aux output
 feeds any `color_ramp` PARAM, so one authored palette drives Stroke,
 Rasterize Spline's fill/stroke ramps, Ascii… — archive/080526_on-node-color-ramp.md.
-No coercions: it only meets its own type).
+No coercions: it only meets its own type) · 3D sockets (runtime-only
+retained-three values, engine/three-types.ts): `object3d` (a placed scene
+object — mesh/light/group/instanced — converging into Scene Render, which
+renders on an ISOLATED three context and bridges to `image` via
+three-bridge.ts), `geometry` (raw local-space mesh data + carried TRS +
+material slots flowing through the modeling chain; primitives emit it;
+coerces one-way into `object3d` via the retained wrap in
+three-geometry.ts, which also owns MaterialDesc resolution), `camera` (CPU
+camera descriptor). A modeling op NEVER mutates its input's
+BufferGeometry — it builds a new one in its own ctx.state keyed on input
+identity + params sig (081026 spec §1.2). Model files load through the
+shared refcounted cache in engine/model-cache.ts (one parse per URL —
+per-top-level-object local-frame merges + world TRS, lights/cameras
+index, base-color bitmap extraction, 8s dispose grace); Import 3D's
+`object` param picks one object, and a multi-object GLB auto-expands
+into a node group of real Import 3D / Light / Camera / Material nodes
+via state/model-group-fragment.ts + the preset insertion path
+(081626_glb-scene-import.md; guarded by scripts/check-model-group.mts).
 
 Coercions ([coerce.ts](../src/engine/coerce.ts)): mask↔image,
 spline→mask (the shape's filled silhouette — even-odd, open subpaths closed
@@ -695,7 +793,12 @@ itself: spline→mask is styling-independent).
    interiors onto the layer node's hidden `content` input. Node objects
    pass by reference so param identity survives for caching.
 2. Topo sort; `computeNeededSet` walks back from the active/terminal node —
-   disconnected branches never compute. `render` edges are ignored here.
+   disconnected branches never compute. `render` edges are ignored here, and
+   so is a Time Offset node's `in` edge — that branch evaluates NESTED at
+   `tick − offset` inside the shell's compute instead (closure stashed on
+   ctx post-flatten, the Iterate stash pattern; non-retimeable upstream
+   nodes are boundary-fed their outer value through evaluator-minted
+   mirror edges — see engine/time-offset.ts and 081426_time-offset.md).
 3. Per node, in order:
    - Layer-local clock: nodes inside a layer run on
      `globalTick − layerOffset` (AE-style). Clip windows gate output
@@ -857,7 +960,41 @@ To add a node:
   per anchor from the overlay's context menu ("Animate anchor"); autokey
   mirrors drags into just the dragged anchors' tracks; deleting an anchor
   drops its tracks in the same onParamChange pass.
-  The graph editor stays scalar-only; non-scalar tracks just show diamonds.
+  The graph editor graphs the lanes of whatever keyframes are selected in
+  the Tracks / Layers editor (EffectsApp lifts that selection, sticky
+  against fresh editor instances reporting empty; the old per-row ∿
+  `graphVisible` toggle is gone — the flag survives on disk, unread).
+  Scalar lanes graph directly; vec2/3/4 lanes expand into per-component
+  X/Y/Z/W tracks — scalar VIEWS whose edits merge back into the vec
+  keyframes (componentViewBlock / mergeComponentEdit in GraphEditor: the
+  source array rides each view key under a hidden field, inserted keys
+  sample the real curve for their other components). Virtual tracks with
+  no param def (per-anchor spline vec2s, gradient-point / ramp-stop
+  scalars) infer their shape from the values (inferValueShape). Custom
+  bezier and saved easings stay scalar-only (vec evaluation runs through
+  easeOf and ignores handles), so component views hide those options.
+  Colors / splines / step-only params don't graph and say so. The
+  editors seed their keyframe selection from the lifted state on mount
+  (tab round-trips keep the selection), and the graph seeds its own
+  selection ACROSS ALL LANES + fits the view to the active lane's
+  selected keys. The graph is multi-track-editable: the active track
+  (header picker, or click any curve's key to activate it) owns the
+  y-axis, bezier handles and the easing dropdown; every other selected
+  lane draws as a color-cycled curve fitted to its own value range with
+  real diamonds. Selection (click / shift-click / marquee), drag-move,
+  G/S/R modals and Delete all operate across every track at once: the
+  transform runs in screen space (`applyScreenTransform`), each track
+  inverts y through its own mapping, and commits group component views
+  of one vec param into a single write (`commitMultiTrackPatches` —
+  two separate merges of the same param would be last-writer-wins).
+  Custom bezier evaluates the full 2D cubic (exact x→u solve in
+  interpolate(); handle dx is time, clamped into the segment) with
+  missing-handle defaults shared with the editor's drawing
+  (defaultSegmentHandles) — the plotted curve IS the played curve. Users
+  can save a shaped curve as a named per-project easing (Save button by
+  the graph header's easing dropdown; normalized like CSS cubic-bezier,
+  persists on `SavedProject.savedEasings`, applied by denormalizing onto
+  each selected key's outgoing segment).
 - **Panel readouts are animated**: controls display the keyframe-evaluated
   value at the playhead (`animatedValueAt` in engine/conventions.ts — the
   keyframe step of wire > keyframe > constant), so sliders/fields/swatches
@@ -876,7 +1013,10 @@ To add a node:
   in clips.ts) an in-trim slips `sourceInTick` by the trim delta so the
   content stays anchored (NLE trim = reveal; the in-handle clamps at the
   content anchor), while a bar move slides content with the window;
-  pure-gate types trim without slipping.
+  pure-gate types trim without slipping. Tracks: a trim/move handle on a
+  selected clip applies the same delta to every other selected clip
+  (Shift-click to multi-select) and to every clip on other selected
+  clippable tracks; one undo entry per gesture.
 - Timeline UIs: PlaybackBar (transport), TrackEditor (per-param tracks +
   graph editor), LayersEditor (AE-style layer stack at root). Shared
   behavior (tick↔px view, keyframe move/scale/stagger, clip drag math,
@@ -893,6 +1033,9 @@ To add a node:
   `host` only decides what sits left of the tab toggle — the close ✕ in
   the modal, the panel-kind chip in a panel. The tab is per-instance so
   the two don't fight; the other dock toggles are deliberately shared.
+  Play / skip-to-start sit centered on the toolbar (same
+  `TransportButtons` as PlaybackBar; absolutely positioned so the
+  modal's empty-middle drag handle is preserved).
   Spec: archive/080226_timeline-modal-panel.md.
 
 ## Groups & layers
@@ -989,7 +1132,7 @@ To add a node:
 ## Persistence & sharing
 
 - `serializeGraph`/`deserializeGraph` ([project.ts](../src/lib/project.ts)),
-  `CURRENT_SCHEMA = 10` — the version history is documented at the top of
+  `CURRENT_SCHEMA = 11` — the version history is documented at the top of
   that file; bump it when the wire shape changes and keep loading old ones.
   (v6 renamed Text's `mask` input to `morph_mask` and migrates old
   `in:mask`→`in:morph_mask` edges on load — see below. v7 removed Merge's
@@ -1002,10 +1145,32 @@ To add a node:
   Storage; see the cloud-asset bullet below. v10 switched Lissajous 3D's
   `phase_x/y/z` from units of π to turns so a keyframed phase loops over
   each whole 0→1 span; load halves the param, its keyframe values and
-  bezier `dy`, and any custom slider range. Lissajous 2D still uses × π.)
+  bezier `dy`, and any custom slider range. Lissajous 2D still uses × π.
+  v11 lets video/audio/model envelopes carry `cloud:{hash,ext,owner}` — an
+  R2 object; see the heavy-media bullet below.)
 - Media (image bitmaps, paint canvases) inline as data-URLs; video/audio
   don't serialize — they become "missing media" entries re-picked via
-  MediaRelinkModal ([media-relink.ts](../src/lib/media-relink.ts)).
+  MediaRelinkModal ([media-relink.ts](../src/lib/media-relink.ts)) —
+  UNLESS they carry a v11 cloud ref (next bullet), which loads by
+  streaming and skips relink entirely.
+- **Heavy media = content-addressed R2 (v11, entitled accounts).**
+  Separate system from the Supabase images tier: video/audio/model files
+  upload AT PICK TIME (not at save) — hash → `/api/media/presign` →
+  presigned PUT → `/api/media/commit` — via
+  [cloud-media-upload.ts](../src/lib/cloud-media-upload.ts), whose
+  module-level registry (keyed `filename|size`) is what serialize consults
+  and deserialize seeds; param values and engine types never carry the
+  ref. Envelopes gain `cloud:{hash,ext,owner}` NESTED (a top-level `asset`
+  would trip the images tier's `isAssetRef` walk); objects live at
+  `<uploader>/<sha256>.<ext>` on the public `media.isthishenry.com` bucket
+  domain, so playback needs no entitlement (live viewers, collaborators)
+  — only UPLOAD is gated (`user_entitlements.cloud_media`, set via
+  `setCloudMediaEnabled` from EffectsApp; param-controls can't read
+  entitlements itself — it's export-bundle-shared). Load order: cloud URL
+  (`registerVideoUrl`/`registerAudioUrl`, model url pass-through) →
+  stored FSA handle → missing-media marker, which PRESERVES the ref for
+  the next save (guarded by check-persistence §6). Upload failure never
+  blocks pick or save. Spec: 081626_r2-media-storage.md.
 - **Cloud media = content-addressed Storage (v9, Tier 2).** The cloud save
   path ([supabase/project-assets.ts](../src/lib/supabase/project-assets.ts))
   post-processes serialize's inline graph: extract each asset → upload the
@@ -1088,6 +1253,75 @@ To add a node:
 - Supabase: auth (AuthProvider), `projects` table (private/public, slugs →
   `/p/[slug]` public editor, `/live/[slug]` live viewer), user preferences,
   image-gen edge function. SQL migrations live as `specdocs/*-migration.sql`.
+- **Shared projects** (M1, specdocs/081426_shared-projects.md):
+  `project_collaborators` rows let non-owners open + save a project
+  in place. The principle is "saves are safe, locks are advisory" — the
+  `updated_at` CAS in updateProject is the correctness layer; a lost CAS
+  arms SaveConflictModal ("<name> saved N minutes ago" via the
+  trigger-stamped `projects.updated_by`) with Save-a-copy / Overwrite
+  (CAS'd against the FRESH stamp) / Discard-and-reload. Collaborator
+  saves thread the OWNER's user_id into updateProject so assets +
+  thumbnails land under the owner's Storage prefix (resolveAssetRefs
+  resolves against row.user_id — a collaborator-keyed upload would
+  strand every ref); Storage RLS admits collaborator writes there.
+  loadProject serves its 60-min cache for OWN rows only — rows others
+  can write always fetch fresh — and sets `shared_with_me`, which
+  EffectsApp carries as `currentProject.sharedWithMe` to pick in-place
+  CAS save over the fork-a-`_copy` path. Rename/visibility/folder/delete
+  stay owner-only (DB trigger guard + existing UI gates). LoadGrid grew
+  a "Shared" tab (listSharedProjects; no folders; author labels; row
+  ownership already hides rename/delete). The overwrite-by-name save
+  path stays fenced to own rows because findConflict only searches
+  privateRows. Rollout-safe pre-migration: collaborator lookups degrade
+  to false/[] on 42P01/42703. Known M1 edge: a collaborator opening a
+  public shared row via `/p/[slug]` is treated as a public viewer
+  (fork-on-save) — the Shared tab is the collaborative entry point.
+  M2 (invites): `project_invites` bearer-token links —
+  lib/supabase/project-collaborators.ts (no session cache; management
+  calls fetch fresh), CollaboratorsModal (opened from the load grid
+  right-click popover on own rows AND the file-name pill dropdown:
+  member list/remove + ONE live invite link with copy/reset — reset
+  revokes so leaked links die), and `/join/[token]` (preview via
+  security-definer `get_project_invite` RPC, membership via
+  `redeem_project_invite` on an explicit Join click — never on page
+  load, so link prefetch can't grant access; redeemers never SELECT
+  the invites table).
+  M3 (advisory lease): `project_editing` (one row per project = the
+  holder; writes ONLY via security-definer RPCs so acquisition is one
+  atomic upsert; members may SELECT for badges). Client:
+  lib/supabase/project-editing.ts (LEASE_EXPIRY_MS 8 min — mirrors the
+  interval inlined in acquire_project_lease, keep in sync;
+  LEASE_HEARTBEAT_MS 2 min) + components/effects/useEditingLease.ts.
+  The lease is COURTESY, the save CAS is correctness — every lease
+  call fails soft, take-over is always allowed, and nothing ever
+  blocks an open. Acquire happens only for collaborative rows
+  (shared_with_me || has_collaborators — loadProject probes the
+  latter with a limit-1 query on own rows), so solo projects pay zero
+  lease writes. The heartbeat renews only if the user interacted
+  since the last beat (idle tab ⇒ lapse ⇒ reads as free); a false
+  renew re-acquires non-steal to learn who took over (acquiring
+  instead = they left, stay silent). Release: self-healing effect
+  keyed on currentProjectId (covers switch/New/file-load/sign-out),
+  plus pagehide fetch-keepalive with a pre-cached access token
+  (getSession can't be awaited in pagehide). Load grid shows
+  "● <name>" badges (private/shared tabs) fetched WITH the listing —
+  refresh button, never a poll.
+  M4 first slice (recovery autosave): lib/recovery-autosave.ts —
+  LOCAL-only IndexedDB snapshots of unsaved work (meta + graphs in
+  split stores sharing one id, so listing reads only meta; 5 kept per
+  bucket, bucket = cloud project id or "untitled"). The EffectsApp
+  clock is triple-gated (pill dirty + graphRevRef advanced since the
+  last snapshot + 2-min interval elapsed) — graphRevRef is bumped by
+  the same five wrappers that flip the pill dirty, so idling while
+  dirty never re-snapshots. Payload assembly mirrors saveToRow minus
+  the thumbnail (keep in sync). Successful CLOUD saves clear the
+  working bucket; file saves deliberately don't. File → Recover
+  Autosave… (RecoveryModal) restores a snapshot as UNSAVED work:
+  currentProject null (Save falls through to Save As — never a stale
+  LWW write onto a cloud row), pill dirty, snapshot kept. No
+  migration; works signed-out and offline.
+  Migrations, run in order: specdocs/shared-projects-migration.sql →
+  shared-invites-migration.sql → shared-lease-migration.sql.
 - **Project folders** (Private tab of the load grid): per-user,
   arbitrarily nestable `project_folders` table + `projects.folder_id`
   (null = root) — specdocs/project-folders-migration.sql. LoadGrid
@@ -1279,6 +1513,17 @@ To add a node:
   template (public/export-template/v1) with project.json + assets. The
   same manifest powers `/live/[slug]` via lib/live-viewer/LiveViewer.tsx.
   **This is why src/engine + src/nodes must stay self-contained.**
+  The per-project **LiveDesign** block (081426_live-link-designer.md)
+  rides `SavedProject.liveDesign` (additive, layout-block pattern —
+  EffectsApp attaches/applies around serialize) and reaches the viewers
+  as `manifest.design`, attached by LiveClient (/live) and runExportApp
+  (packaging): layout modes, dark/light + tint token sheet, control
+  order/renames, style-preset ids, and the viewer export toggles
+  (image/video/gif, viewer-export.ts — video is a silent MediaRecorder
+  one-loop capture; GIF frame-steps runFrame through the shared
+  ffmpeg+gifsicle pipeline, which is why the template's package.json
+  carries @ffmpeg/* + gifsicle-wasm-browser and its vite config opts
+  export-ffmpeg-args.js into commonjs handling).
   Packaging rules (073126_export-resolution-and-app-slim.md): the 25 MB
   cap applies to USER content (serialized graph + manifest — embedded
   media is the payload), NOT the fixed template weight — counting the
@@ -1805,10 +2050,11 @@ baseline. Spec: archive/070826_riskfix-plan.md §2.
   vec4 output per extra color; the `+` (`colorAddOutput`) bumps count, and
   shrinking count via panel drops edges to the removed outputs in
   onParamChange. Spec: archive/071026_color-node-multi-output.md. (2) *Auto-grow from
-  edges* (Proximity Join/Merge — archive/070126_proximity-join-merge.md; and Spline
-  Interpolate — archive/070626_spline-interpolate.md — which share the effect): a
+  edges* (Proximity Join/Merge — archive/070126_proximity-join-merge.md; Spline
+  Interpolate — archive/070626_spline-interpolate.md; Spline Morph; SDF Smooth
+  Union — which share the effect): a
   `slots: string[]` param whose value is **derived from the node's edges** by a
-  dedicated `useEffect` in EffectsApp keyed on `edges` (guarded on those two
+  dedicated `useEffect` in EffectsApp keyed on `edges` (guarded on those
   `defType`s), kept equal to (connected sockets) + one trailing empty spare. Wiring the spare mints
   the next; disconnecting prunes. It's undo-safe *because* it's derived
   (edges are in history) and writes `data.inputs` without a `pushGraph`

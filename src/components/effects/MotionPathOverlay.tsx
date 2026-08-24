@@ -8,6 +8,7 @@ import {
 } from "@/engine/keyframes";
 import { rectsEqual } from "./overlay-rect";
 import { useClock } from "@/state/playback-clock";
+import { claimPointerGesture } from "@/lib/pointer-claim";
 
 // On-canvas motion path for a node's animated position. Draws a dashed line
 // through the interpolated (x(t), y(t)) trajectory and a draggable diamond at
@@ -216,6 +217,8 @@ export default function MotionPathOverlay({
   const startDrag = (tick: number) => (e: React.PointerEvent<SVGElement>) => {
     e.stopPropagation();
     e.preventDefault();
+    // Overlay gesture — keep it out of the graph's cursor press facts.
+    claimPointerGesture(e.pointerId);
     const aspect = rect.width / rect.height;
     const c = centerAt(tick);
     const pyRaw = (e.clientY - rect.top) / rect.height;

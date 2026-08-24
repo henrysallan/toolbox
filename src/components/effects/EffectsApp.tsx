@@ -24,6 +24,7 @@ import { CompositionTabBar } from "./CompositionTabBar";
 import { ProjectView } from "./ProjectView";
 import { AssetsView, type AssetItem } from "./AssetsView";
 import ParamPanel from "./ParamPanel";
+import ProjectSettingsPopover from "./ProjectSettingsPopover";
 import {
   LayoutRegion,
   PANEL_FRAME,
@@ -64,12 +65,17 @@ import {
 } from "./layout/presets";
 import NewLayoutPresetModal from "./NewLayoutPresetModal";
 import { feedWheel, wheelWantsZoom } from "./input-device";
+import { isGatewayInputLocked } from "@/lib/shortcut-freeze";
+import {
+  mountCursorCapture,
+  type CursorCaptureHandle,
+} from "@/lib/cursor-capture";
 import { applyStoredUiFont } from "./ui-font";
 import { applyStoredTheme } from "./theme/theme";
 // import CustomCursor from "./CustomCursor"; // temporarily disabled — using native cursor
 import UserPreferencesModal from "./UserPreferencesModal";
 import PaintOverlay from "./paint-editor/PaintOverlay";
-import PlaybackBar from "./PlaybackBar";
+import PlaybackBar, { TransportButtons } from "./PlaybackBar";
 import MenuBar from "./MenuBar";
 import { type ConsoleEntry } from "./MessageConsole";
 import Landing from "./Landing";
@@ -99,6 +105,13 @@ import {
 import * as prof from "@/engine/profiler";
 import { installPerfConsole, summarize } from "@/lib/perf-console";
 import { PerfPanel } from "./PerfPanel";
+import SpreadsheetPanel, {
+  type SpreadsheetTarget,
+} from "./SpreadsheetPanel";
+import {
+  attrNamesFromValue,
+  registerAttrNameReader,
+} from "./attr-name-source";
 import { splineToSvg } from "@/engine/svg-serialize";
 import {
   svgExportStashKey,
@@ -167,9 +180,29 @@ import {
   GROUP_TYPE,
   ITERATE_TYPE,
   LAYER_TYPE,
+  readGroupInterface,
 } from "@/engine/groups";
+import {
+  acquireModelIndex,
+  releaseModel,
+  takeModelBaseColorMaps,
+} from "@/engine/model-cache";
+import {
+  modelGroupFragment,
+  shouldExpandModel,
+} from "@/state/model-group-fragment";
 import { editorCanCoerce } from "@/engine/graph-validation";
 import { getPreset } from "@/state/presets";
+import {
+  getUserNodePreset,
+  getUserNodePresets,
+  loadUserNodePresets,
+  MAX_NODE_PRESETS,
+  MAX_NODE_PRESET_JSON,
+  upsertUserNodePreset,
+  useUserNodePresets,
+} from "@/state/node-presets";
+import PresetNameModal from "./PresetNameModal";
 import { newLayerId, type MergeLayer } from "@/nodes/effect/merge";
 import { MAX_COLORS, colorParamName } from "@/nodes/source/color-literal";
 import { newExprInput } from "@/nodes/effect/expression";
@@ -246,6 +279,8 @@ import MediaRelinkModal, {
 } from "./MediaRelinkModal";
 import {
   deleteProject as deleteProjectRow,
+  getProjectSaveStamp,
+  invalidateProjectCaches,
   listPrivateProjects,
   loadProject as loadProjectRow,
   renameProject as renameProjectRow,
@@ -254,12 +289,33 @@ import {
   updateProject as updateProjectRow,
   type ProjectRow,
 } from "@/lib/supabase/projects";
+import SaveConflictModal from "./SaveConflictModal";
+import CollaboratorsModal from "./CollaboratorsModal";
+import RecoveryModal from "./RecoveryModal";
+import {
+  clearRecoveryBucket,
+  getRecoverySnapshotGraph,
+  saveRecoverySnapshot,
+  UNTITLED_BUCKET,
+  type RecoverySnapshotMeta,
+} from "@/lib/recovery-autosave";
 import { AuthProvider, useUser } from "@/lib/auth-context";
+import { useEntitlements } from "@/lib/entitlements";
+import {
+  maybeUploadCloudMedia,
+  setCloudMediaEnabled,
+} from "@/lib/cloud-media-upload";
 import SaveModal from "./SaveModal";
 import AiRecipePanel from "./AiRecipePanel";
 import McpPairingDialog from "./McpPairingDialog";
 import { useMcpBridge } from "./useMcpBridge";
 import { buildMcpHandlers } from "./mcp-handlers";
+import AgentPanel from "./AgentPanel";
+import AgentOverlay from "./AgentOverlay";
+import { useAgentSession } from "./useAgentSession";
+import { useEditingLease } from "./useEditingLease";
+import { LeaseBanner, LeaseHeldDialog } from "./EditingLeaseUi";
+import { isAgentAvailable } from "@/lib/agent-bridge";
 import type { BridgeHandlers } from "@/lib/mcp-bridge";
 import { generateRecipe } from "@/lib/ai/generate-recipe-client";
 import { editGroupRecipe } from "@/lib/ai/edit-recipe-client";
@@ -280,9 +336,14 @@ import {
   TOUCH_DRAG_STYLE,
 } from "@/lib/pointer-drag";
 import ExportAppModal from "./ExportAppModal";
+import LiveLinkDesigner from "./livelink/LiveLinkDesigner";
 import NodeInspectorPopup from "./NodeInspectorPopup";
 import SocketPeekPopover from "./SocketPeekPopover";
 import { buildExportManifest } from "@/lib/export-manifest";
+import {
+  fromSavedLiveDesign,
+  type LiveDesign,
+} from "@/lib/live-viewer/design";
 import {
   audioBufferToWav,
   mixAudioBuffers,
@@ -292,9 +353,25 @@ import {
 import type {
   AudioChainNode,
   AudioFileParamValue,
+  ImageValue,
+  MaskValue,
   NoteEvent,
+  RenderContext,
   VideoFileParamValue,
 } from "@/engine/types";
+import {
+  asPointTrackerData,
+  authoredToCanvasPx,
+  classicalBackend,
+  emptyRuntime,
+  grayFromFullFrame,
+  preprocessTrackingImage,
+  sampleTrackAtFrame,
+  stepTracksOnImage,
+} from "@/engine/tracking";
+import type { TrackRuntime, TrackStepSettings } from "@/engine/tracking";
+import type { WarpType } from "@/engine/tracking/lk";
+import { trackerSelection } from "@/state/tracker-selection";
 import { MidiEditor } from "./midi-editor/MidiEditor";
 import PublicPrivateConfirm from "./PublicPrivateConfirm";
 import NewProjectConfirm from "./NewProjectConfirm";
@@ -325,41 +402,33 @@ import {
 import PointsOverlay from "./PointsOverlay";
 import WebGPUParticleOverlay from "./WebGPUParticleOverlay";
 import Scene3DViewport from "./Scene3DViewport";
+import {
+  SPLINE3D_DEFAULT_POINTS,
+  effectiveBezierHandles,
+} from "@/nodes/three/spline-3d";
 import { resolveParticleTestCount } from "@/nodes/effect/webgpu-particle-test";
 import { TrackEditor } from "./TrackEditor";
 import { GraphEditor } from "./GraphEditor";
 import { LayersEditor } from "./LayersEditor";
+import type { SelectionKey } from "./timeline/keyframe-ops";
 import {
   DEFAULT_TICKS_PER_FRAME,
   emptyAnimationBlock,
   evaluateKeyframesAt,
   isKeyframable,
   upsertKeyframe,
+  sanitizeSavedEasings,
   type KeyframeAnimationBlock,
   type ProjectTimeline,
+  type SavedEasing,
 } from "@/engine/keyframes";
 import type { ClipBlock } from "@/engine/clips";
 import type {
-  ImageValue,
-  MaskValue,
+  ModelFileParamValue,
   PointsValue,
-  RenderContext,
-  ResolveCtx,
   SocketType,
+  ResolveCtx,
 } from "@/engine/types";
-import {
-  asPointTrackerData,
-  authoredToCanvasPx,
-  classicalBackend,
-  emptyRuntime,
-  grayFromFullFrame,
-  preprocessTrackingImage,
-  sampleTrackAtFrame,
-  stepTracksOnImage,
-} from "@/engine/tracking";
-import type { TrackRuntime, TrackStepSettings } from "@/engine/tracking";
-import type { WarpType } from "@/engine/tracking/lk";
-import { trackerSelection } from "@/state/tracker-selection";
 
 registerAllNodes();
 
@@ -552,6 +621,21 @@ const CONNECTED_TYPE_RETYPE_NODES = new Set([
   // Switch: on "auto" (the default) every numbered slot AND the output adopt
   // the unified type of whatever is wired in — a Reroute with N inputs.
   SWITCH_TYPE,
+  // 3D points polymorphism (081026 spec §2.3/§4): Filter Points' input +
+  // output follow points↔points3d; 3D Scatter's source follows
+  // geometry↔object3d; 3D Copy to Points' points socket follows
+  // points3d↔points (the plane bridge); Transform 3D's source + output
+  // follow geometry↔instances (spec M6).
+  "filter-points",
+  "scatter-points-3d",
+  "copy-to-points-3d",
+  "transform-3d",
+  // Points on Path's `path` + output follow spline↔curve3d (spec M11).
+  "points-on-path",
+  // 3D Scene auto-expands its object slots — the socket LIST (not just
+  // types) depends on which slots are wired, so the edges-keyed resync
+  // must re-resolve it.
+  "scene-render",
 ]);
 
 // --- timeline dock (080226_timeline-modal-panel.md) -----------------------
@@ -735,6 +819,20 @@ function EffectsShell({
   const [midiEditNodeId, setMidiEditNodeId] = useState<string | null>(null);
   const [canvasRes, setCanvasRes] = useState<[number, number]>(
     rehydrate?.canvasRes ?? [1024, 1024]
+  );
+  // Per-project user-saved easing curves (Graph Editor "Save" button).
+  // Persisted on SavedProject.savedEasings; replaced wholesale by every
+  // project load and cleared by File → New.
+  const [savedEasings, setSavedEasings] = useState<SavedEasing[]>(
+    rehydrate?.savedEasings ?? []
+  );
+  // Live-link look-and-feel (081426_live-link-designer.md). Null until the
+  // project authors one — absent stays absent on save, so existing
+  // projects don't grow a default block. Persisted on
+  // SavedProject.liveDesign; replaced wholesale by every project load and
+  // cleared by File → New. The Live Link Designer (spec M2) is the writer.
+  const [liveDesign, setLiveDesign] = useState<LiveDesign | null>(
+    rehydrate?.liveDesign ?? null
   );
 
   // Composition registry (v5): the project's compositions and which one is
@@ -942,6 +1040,19 @@ function EffectsShell({
         applyLoadedLayout(
           (initialProject.graph as { layout?: unknown }).layout
         );
+        setSavedEasings(
+          sanitizeSavedEasings(
+            (initialProject.graph as { savedEasings?: unknown }).savedEasings
+          )
+        );
+        // Live-link design: absent stays null (never materialize a
+        // default block), present is validated as an untrusted blob.
+        const rawLiveDesign = (
+          initialProject.graph as { liveDesign?: unknown }
+        ).liveDesign;
+        setLiveDesign(
+          rawLiveDesign == null ? null : fromSavedLiveDesign(rawLiveDesign)
+        );
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[EffectsApp] /p/<slug> bootstrap failed:", err);
@@ -1039,7 +1150,7 @@ function EffectsShell({
   //   • initialProject is present — /p/<slug> route opens straight to
   //     a specific project; the load grid would just hide it.
   const [paramView, setParamView] = useState<
-    "project" | "node" | "load" | "ai-recipe" | "assets"
+    "project" | "node" | "load" | "ai-recipe" | "assets" | "agent"
   >(
     rehydrate?.paramView ?? (initialProject ? "node" : "load")
   );
@@ -1394,12 +1505,29 @@ function EffectsShell({
   const [userPrefsOpen, setUserPrefsOpen] = useState(false);
   // New-layout-preset modal — Window → Layouts → + New Preset….
   const [newLayoutPresetOpen, setNewLayoutPresetOpen] = useState(false);
+  // Save-as-preset modal — node context menu → Save as Preset…. Holds the
+  // clicked node's id; the fragment is captured at save time so edits made
+  // while the modal sits open are included (081226_user-node-presets.md).
+  const [saveNodePresetTarget, setSaveNodePresetTarget] = useState<
+    string | null
+  >(null);
+  const userNodePresets = useUserNodePresets();
   // Export App modal — populated with the target Output node id when the
   // user hits Export App from either the node header or ParamPanel.
   const [exportApp, setExportApp] = useState<{ outputNodeId: string } | null>(
     null
   );
   const [exportAppBusy, setExportAppBusy] = useState(false);
+  // Live Link Designer (081426_live-link-designer.md M2). The poster is a
+  // one-shot preview-canvas snapshot captured when the designer opens —
+  // its preview renders no engine, just this still at the right aspect.
+  const [liveLinkDesignerOpen, setLiveLinkDesignerOpen] = useState(false);
+  const [liveLinkPoster, setLiveLinkPoster] = useState<string | null>(null);
+  // The designer's WORKING draft, mirrored on every edit and cleared on
+  // close/save. The save-path attach prefers it over the committed
+  // state, so a plain ⌘S taken mid-design still captures what's on
+  // screen instead of silently dropping it.
+  const liveLinkDraftRef = useRef<LiveDesign | null>(null);
   // Node IDs whose data inspector is currently open. The eval loop
   // captures their inputs each frame; the popups read from
   // inspectSnapshotsRef. Stored as an array so React equality is cheap;
@@ -1473,6 +1601,19 @@ function EffectsShell({
   );
   const makeEditableCompleteRef = useRef<((nodeId: string) => void) | null>(
     null
+  );
+  // Spreadsheet panels' watched sockets, keyed by leaf id (duplicates are
+  // legal, each with its own target). renderFrame forces each entry into
+  // the pass exactly like a peek, so a disconnected or consumption-gated
+  // socket still tabulates. A ref, not state — targets change inside the
+  // panels' effects and only the render loop reads them.
+  const spreadsheetTargetsRef = useRef(new Map<string, SpreadsheetTarget>());
+  const handleSpreadsheetTarget = useCallback(
+    (leafId: string, target: SpreadsheetTarget | null) => {
+      if (target) spreadsheetTargetsRef.current.set(leafId, target);
+      else spreadsheetTargetsRef.current.delete(leafId);
+    },
+    []
   );
   const peekHideTimerRef = useRef<number | null>(null);
   const clearSocketPeek = useCallback(() => {
@@ -1597,6 +1738,13 @@ function EffectsShell({
         // clobber a save made elsewhere. Absent/null = no guard (e.g. a
         // freshly inserted row, or pre-plumbing paths).
         updatedAt?: string | null;
+        // True when this row belongs to someone else but is shared with
+        // the viewer via project_collaborators (M1 —
+        // specdocs/081426_shared-projects.md). Save then updates the
+        // owner's row in place (CAS) instead of forking a `_copy`.
+        // Absent/false everywhere else, including rows opened before
+        // the collaborators migration.
+        sharedWithMe?: boolean;
       }
     | null
   >(
@@ -1619,6 +1767,25 @@ function EffectsShell({
   const [saveState, setSaveState] = useState<SaveState>(
     rehydrate?.saveState ?? "saved"
   );
+  // Save-conflict dialog (shared projects M1): set when the save CAS
+  // matched zero rows — someone saved a newer version after this editor
+  // loaded its copy. Holds the FRESH stamp fetched at conflict time;
+  // Overwrite CAS's against exactly that stamp so a third writer racing
+  // the dialog re-conflicts instead of being clobbered.
+  const [saveConflict, setSaveConflict] = useState<null | {
+    id: string;
+    name: string;
+    updatedAt: string | null;
+    updatedByName: string | null;
+  }>(null);
+  const [saveConflictBusy, setSaveConflictBusy] = useState(false);
+  // Collaborators modal for the OPEN project (menu-bar entry; the load
+  // grid owns a separate instance for right-clicked rows). Holds the
+  // id + name of the project being managed.
+  const [collabTarget, setCollabTarget] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
   // Visibility confirm modal: `null` closed, otherwise the direction
   // the user is trying to toggle to.
   const [pendingVisibility, setPendingVisibility] = useState<
@@ -1648,6 +1815,24 @@ function EffectsShell({
   );
   const { user } = useUser();
   const signedIn = !!user;
+  // Cloud media (R2) upload gate — a module flag rather than prop-drilling
+  // because the pick sites span param-controls (export-bundle-shared, so it
+  // can't read entitlements itself), drag-drop, and relink. Server
+  // re-checks entitlement on every presign; this only decides whether
+  // uploads are attempted. Spec 081626 §7.2.
+  const { entitlements } = useEntitlements();
+  useEffect(() => {
+    setCloudMediaEnabled(entitlements.cloudMedia);
+  }, [entitlements.cloudMedia]);
+  // M3 advisory editing lease (specdocs/081426_shared-projects.md).
+  // Acquired in handleLoadProject for collaborative rows only (shared
+  // with me, or my own row with ≥1 collaborator) — solo projects never
+  // pay lease writes. Self-heals on project switch/sign-out via
+  // currentProjectId.
+  const lease = useEditingLease({
+    enabled: signedIn,
+    currentProjectId: currentProject?.id ?? null,
+  });
   // Layout presets follow the user, so (re)load whenever the signed-in
   // identity changes — signing in mid-session pulls the cloud copy over
   // the local-only one.
@@ -1659,6 +1844,11 @@ function EffectsShell({
     return () => {
       alive = false;
     };
+  }, [user?.id]);
+  // Node presets follow the user the same way; the module store publishes
+  // to both add menus (state/node-presets.ts).
+  useEffect(() => {
+    void loadUserNodePresets();
   }, [user?.id]);
   // Window → Layouts → + New Preset…: capture the live tree under a name.
   const saveLayoutPreset = useCallback(
@@ -1756,122 +1946,60 @@ function EffectsShell({
     return () => window.removeEventListener("pipeline-bump", onBump);
   }, []);
 
-  // Live cursor position in canvas UV. The ref carries the fresh value so
-  // the render context always sees the current pointer; `cursorTick` is a
-  // rAF-throttled state bump so paused pipelines re-evaluate on move.
   // Raw screen-px cursor position, tracked on every pointermove — the
   // keydown that opens the pie menu carries no mouse coords, so we read
   // the last-known pointer from here. Also the origin the pie's "Add
   // Node" item hands to the node-search popup.
   const lastPointerRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const cursorRef = useRef<{
-    x: number;
-    y: number;
-    active: boolean;
-    pressed: boolean;
-  }>({
-    x: 0.5,
-    y: 0.5,
-    active: false,
-    pressed: false,
-  });
+  // ctx.cursor comes from the shared capture module (lib/cursor-capture —
+  // the SAME module LiveViewer mounts, which is what keeps the editor and
+  // exported apps behaviorally identical; extend cursor facts there, not
+  // here). The handle's commit() runs once per render pass at the
+  // makeContext site; `cursorTick` is a rAF-throttled state bump off the
+  // capture's input revision so paused pipelines re-evaluate on pointer
+  // activity (move, press, release).
+  const cursorCaptureRef = useRef<CursorCaptureHandle | null>(null);
   const [cursorTick, setCursorTick] = useState(0);
-  // Mirror playback flags into a ref so the pointermove listener
-  // (which lives in a setup-once useEffect) can read the live value
-  // without re-binding listeners on every play / pause toggle.
+  // Mirror playback flags into a ref so the input callback (registered
+  // once) can read the live value without re-binding listeners on every
+  // play / pause toggle.
   const playbackActiveRef = useRef(false);
   useEffect(() => {
     let rafId: number | null = null;
-    let lastBumpedActive = false;
-    let lastBumpedPressed = false;
-    let lastBumpedX = -1;
-    let lastBumpedY = -1;
-    const scheduleBump = () => {
+    const onInput = () => {
       if (rafId != null) return;
       // While playback is running the renderFrame effect is already
       // scheduled every frame from the playback rAF — bumping
       // cursorTick on top would just queue an extra render per
       // pointermove. Skipping here keeps the cursor-driven re-render
-      // path scoped to the paused case it was intended for.
+      // path scoped to the paused case it was intended for. The
+      // identical-state churn guard lives in the capture module now:
+      // onInput only fires when its input revision advanced.
       if (playbackActiveRef.current) return;
       rafId = requestAnimationFrame(() => {
         rafId = null;
-        // Skip the state churn entirely when nothing changed since
-        // the last bump. This is what guards against the runaway
-        // re-render React was tripping on — repeated `setState((n)
-        // => n + 1)` calls with identical incoming pointer state.
-        const c = cursorRef.current;
-        if (
-          c.active === lastBumpedActive &&
-          c.pressed === lastBumpedPressed &&
-          Math.abs(c.x - lastBumpedX) < 1e-4 &&
-          Math.abs(c.y - lastBumpedY) < 1e-4
-        ) {
-          return;
-        }
-        lastBumpedActive = c.active;
-        lastBumpedPressed = c.pressed;
-        lastBumpedX = c.x;
-        lastBumpedY = c.y;
         setCursorTick((n) => n + 1);
       });
     };
-    const onMove = (e: PointerEvent) => {
+    const onRawMove = (e: PointerEvent) => {
       lastPointerRef.current = { x: e.clientX, y: e.clientY };
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const x = (e.clientX - rect.left) / rect.width;
-      // DOM y-down → pipeline y-up. All pipeline textures treat v_uv.y = 0
-      // as the bottom of the frame, so we flip the pointer value here.
-      const yDom = (e.clientY - rect.top) / rect.height;
-      const y = 1 - yDom;
-      const inside = x >= 0 && x <= 1 && yDom >= 0 && yDom <= 1;
-      const prev = cursorRef.current;
-      cursorRef.current = { x, y, active: inside, pressed: prev.pressed };
-      // Only nudge a re-render when the pointer is actually inside
-      // the canvas (or just left it). Pointer movement anywhere else
-      // on the page has no bearing on what the pipeline produces, so
-      // there's no point re-rendering for it.
-      if (inside || prev.active) scheduleBump();
     };
-    const onLeave = () => {
-      const prev = cursorRef.current;
-      cursorRef.current = { ...prev, active: false };
-      if (prev.active) scheduleBump();
-    };
-    // Primary-button press that STARTS inside the preview canvas box =
-    // the drawing gesture (ctx.cursor.pressed — Cursor Trail Points).
-    // Capture phase so overlay handlers that preventDefault their
-    // pointerdown can't hide the press from the pipeline.
-    const onDown = (e: PointerEvent) => {
-      if (e.button !== 0) return;
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const xr = (e.clientX - rect.left) / rect.width;
-      const yr = (e.clientY - rect.top) / rect.height;
-      if (xr < 0 || xr > 1 || yr < 0 || yr > 1) return;
-      cursorRef.current = { ...cursorRef.current, pressed: true };
-      scheduleBump();
-    };
-    const onUp = () => {
-      const prev = cursorRef.current;
-      if (!prev.pressed) return;
-      cursorRef.current = { ...prev, pressed: false };
-      scheduleBump();
-    };
-    window.addEventListener("pointermove", onMove);
-    document.addEventListener("pointerleave", onLeave);
-    window.addEventListener("pointerdown", onDown, true);
-    window.addEventListener("pointerup", onUp, true);
-    window.addEventListener("pointercancel", onUp, true);
+    window.addEventListener("pointermove", onRawMove);
+    const capture = mountCursorCapture({
+      getBox: () => canvasRef.current,
+      // The landing gateway veils the canvas — pointer traffic over it
+      // must not leak into the graph's cursor context (Cursor Trail
+      // Points would record strokes into the project behind the veil).
+      // The gateway's capture gate can't kill these events for us: the
+      // landing needs left-button pointer events for its own tile drag.
+      isEnabled: () => !isGatewayInputLocked(),
+      onInput,
+    });
+    cursorCaptureRef.current = capture;
     return () => {
-      window.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerleave", onLeave);
-      window.removeEventListener("pointerdown", onDown, true);
-      window.removeEventListener("pointerup", onUp, true);
-      window.removeEventListener("pointercancel", onUp, true);
+      window.removeEventListener("pointermove", onRawMove);
+      capture.dispose();
+      cursorCaptureRef.current = null;
       if (rafId != null) cancelAnimationFrame(rafId);
     };
   }, []);
@@ -2137,6 +2265,35 @@ function EffectsShell({
   const [tracksSelectedOnly, setTracksSelectedOnly] = useState(false);
   const [graphNormalizeY, setGraphNormalizeY] = useState(false);
   const [graphRefitVersion, setGraphRefitVersion] = useState(0);
+  // Keyframe selection lifted from whichever Tracks/Layers editor the
+  // user last touched — the Graph Editor graphs these keyframes' lanes
+  // (replaced the per-track ∿ graphVisible toggle). Kept here so it
+  // survives dock-tab switches and reaches a graph panel in another
+  // pane or popped-out window.
+  const [timelineKfSelection, setTimelineKfSelection] = useState<
+    SelectionKey[]
+  >([]);
+  // STICKY: only non-empty reports land. Several editor instances can
+  // mount over time (the floating dock and every timeline panel each
+  // hold their own Tracks/Layers editor, and tab switches remount them)
+  // and each fresh instance reports its initial empty selection — that
+  // must not blank the graph the user just populated. The graph shows
+  // the last keyframes worked with; lanes whose animation disappears
+  // drop out in GraphEditor's own filter.
+  const onTimelineKfSelection = useCallback((sel: SelectionKey[]) => {
+    if (sel.length > 0) setTimelineKfSelection(sel);
+  }, []);
+  const graphLanes = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { nodeId: string; paramName: string }[] = [];
+    for (const s of timelineKfSelection) {
+      const k = `${s.nodeId}|${s.paramName}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push({ nodeId: s.nodeId, paramName: s.paramName });
+    }
+    return out;
+  }, [timelineKfSelection]);
   const [trackFitVersion, setTrackFitVersion] = useState(0);
   const [collapsedTrackNodes, setCollapsedTrackNodes] = useState<Set<string>>(
     new Set()
@@ -2182,6 +2339,10 @@ function EffectsShell({
   saveStateRef.current = saveState;
   const canvasResRef = useRef(canvasRes);
   canvasResRef.current = canvasRes;
+  const savedEasingsRef = useRef(savedEasings);
+  savedEasingsRef.current = savedEasings;
+  const liveDesignRef = useRef(liveDesign);
+  liveDesignRef.current = liveDesign;
 
   // Capsule for surviving a same-tab route change (e.g. docs "i"
   // button). Effect has empty deps on purpose: we only want the
@@ -2193,17 +2354,22 @@ function EffectsShell({
         edges: edgesRef.current,
         currentProject: currentProjectRef.current,
         selectedId: selectedIdRef.current,
-        // The AI Recipe composer is a transient view — never restore into it
-        // across a docs round-trip; fall back to the node panel.
+        // The AI Recipe composer and the Assistant are transient views —
+        // never restore into them across a docs round-trip; fall back to the
+        // node panel. (The Assistant's session lives in the host process and
+        // is gone by the time we'd restore anyway.)
         paramView:
           paramViewRef.current === "ai-recipe" ||
-          paramViewRef.current === "assets"
+          paramViewRef.current === "assets" ||
+          paramViewRef.current === "agent"
             ? "node"
             : paramViewRef.current,
         saveState: saveStateRef.current,
         canvasRes: canvasResRef.current,
         compositions: compositionsRef.current,
         activeCompositionId: activeCompositionIdRef.current,
+        savedEasings: savedEasingsRef.current,
+        liveDesign: liveDesignRef.current,
         layoutTree: layoutTreeRef.current,
         primaryViewportLeafId: primaryViewportLeafIdRef.current,
       });
@@ -2296,12 +2462,17 @@ function EffectsShell({
     applyGraphSnapshot,
     onPaintRestore,
   });
+  // Monotonic graph revision — bumped by every dirtying mutation below.
+  // The recovery autosave compares it against the last snapshot's rev so
+  // idling while dirty never re-snapshots identical state.
+  const graphRevRef = useRef(0);
   // Wrap the history mutators so any graph/paint change — including
   // undo/redo — transparently marks the menu-bar pill as dirty. Saves
   // and loads are the only paths that flip back to "saved".
   const pushGraph = useCallback<typeof rawPushGraph>(
     (before, coalesceKey) => {
       rawPushGraph(before, coalesceKey);
+      graphRevRef.current++;
       setSaveState("dirty");
     },
     [rawPushGraph]
@@ -2309,19 +2480,43 @@ function EffectsShell({
   const pushPaint = useCallback<typeof rawPushPaint>(
     (snap) => {
       rawPushPaint(snap);
+      graphRevRef.current++;
       setSaveState("dirty");
     },
     [rawPushPaint]
   );
   const undo = useCallback(() => {
     rawUndo();
+    graphRevRef.current++;
     setSaveState("dirty");
   }, [rawUndo]);
   const redo = useCallback(() => {
     rawRedo();
+    graphRevRef.current++;
     setSaveState("dirty");
   }, [rawRedo]);
   useUndoShortcuts(undo, redo);
+
+  // Graph Editor "Save" button → add a named easing to the project's
+  // list. Upsert by (trimmed) name so re-saving under the same name
+  // replaces the curve instead of piling up duplicates — the existing
+  // entry keeps its id, so dropdown selections stay stable. Not part of
+  // graph history (no undo), but it persists, so the pill goes dirty.
+  const saveEasing = useCallback((easing: SavedEasing) => {
+    const name = easing.name.trim();
+    if (!name) return;
+    setSavedEasings((prev) => {
+      const existing = prev.find((e) => e.name === name);
+      if (existing) {
+        return prev.map((e) =>
+          e.name === name ? { ...easing, id: existing.id, name } : e
+        );
+      }
+      return [...prev, { ...easing, name }];
+    });
+    graphRevRef.current++;
+    setSaveState("dirty");
+  }, []);
 
   useEffect(() => {
     try {
@@ -2458,10 +2653,14 @@ function EffectsShell({
       }));
 
       const tpf = DEFAULT_TICKS_PER_FRAME;
+      // One cursor commit per render pass: every eval in the pass (peek /
+      // bake / spreadsheet forced branches, nested Iterate/Time Offset
+      // evals) shares this frozen snapshot, and the commit's serial bump
+      // is what clears last pass's derived press/release pulses.
       const ctx = backend.makeContext(
         renderTime,
         Math.floor(renderTime * renderFps),
-        cursorRef.current,
+        cursorCaptureRef.current?.commit(),
         playingHint,
         {
           tick: Math.round(renderTime * renderFps * tpf),
@@ -2482,7 +2681,12 @@ function EffectsShell({
       // Make Editable bake target — forced into the pass the same way as a
       // peek so a disconnected/gated spline output produces real data.
       const bake = offlineRenderingRef.current ? null : pendingBakeRef.current;
-      const forced = [peek, bake].filter(
+      // Spreadsheet panels' watched sockets, same treatment (and same
+      // offline-export skip — no panel is watching a headless render).
+      const sheets = offlineRenderingRef.current
+        ? []
+        : [...spreadsheetTargetsRef.current.values()];
+      const forced = [peek, bake, ...sheets].filter(
         (f): f is { nodeId: string; handle: string } => !!f
       );
       const peekOpts = forced.length
@@ -2847,14 +3051,15 @@ function EffectsShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [errors]);
 
-  // Auto-grow the input sockets of Proximity Join/Merge and Spline Interpolate
-  // nodes: keep each one's `slots` param equal to (connected sockets, in stable
-  // order) + exactly one trailing empty spare. Derived purely from edges, so
-  // it's undo-safe (edges are in history; slots follow them) and needs no
-  // pushGraph snapshot. Runs whenever edges change — connect fills a spare →
-  // next spare appears; disconnect prunes the emptied middle. (The `t`/`mask`
-  // name exclusions below are for Proximity Merge; Spline Interpolate has
-  // neither input, so they're inert there.)
+  // Auto-grow the input sockets of Proximity Join/Merge, Spline Interpolate,
+  // Spline Morph, and SDF Smooth Union: keep each one's `slots` param equal
+  // to (connected sockets, in stable order) + exactly one trailing empty
+  // spare. Derived purely from edges, so it's undo-safe (edges are in
+  // history; slots follow them) and needs no pushGraph snapshot. Runs
+  // whenever edges change — connect fills a spare → next spare appears;
+  // disconnect prunes the emptied middle. (The `t`/`mask`/`spine`/
+  // `smoothness`/`amount` exclusions below skip each node's fixed sockets
+  // so wiring them does not mint a slot.)
   //
   // Merge grows here too, but grow-only: once every layer's image socket is
   // wired, append a fresh layer so there's always an open one. No pruning —
@@ -2887,14 +3092,18 @@ function EffectsShell({
         if (
           n.data.defType !== "proximity-merge" &&
           n.data.defType !== "spline-interpolate" &&
-          n.data.defType !== "sdf-smooth-union"
+          n.data.defType !== "sdf-smooth-union" &&
+          n.data.defType !== "spline-morph"
         )
           return n;
-        // Each auto-grow node's starting slot list. SDF Smooth Union
-        // seeds with its original a/b socket names so saved projects
-        // keep their wires.
+        // Each auto-grow node's starting slot list. SDF Smooth Union and
+        // Spline Morph seed with their original a/b socket names so saved
+        // two-input projects keep their wires.
         const seed =
-          n.data.defType === "sdf-smooth-union" ? ["a", "b"] : ["in"];
+          n.data.defType === "sdf-smooth-union" ||
+          n.data.defType === "spline-morph"
+            ? ["a", "b"]
+            : ["in"];
         const raw = n.data.params.slots;
         const current: string[] =
           Array.isArray(raw) &&
@@ -2909,14 +3118,15 @@ function EffectsShell({
           const parsed = parseTargetHandleKind(e.targetHandle ?? "");
           if (parsed?.kind !== "input") continue;
           // Fixed (non-slot) sockets these nodes declare alongside the
-          // auto-grow list: t/mask, and Spline Interpolate's blend spine
-          // (spec 072726 M4) — wiring them must not mint a slot.
+          // auto-grow list: t/mask, Spline Interpolate's blend spine
+          // (spec 072726 M4), SDF Smooth Union's Smoothness, Spline
+          // Morph's Amount — wiring them must not mint a slot.
           if (
             parsed.name === "t" ||
             parsed.name === "mask" ||
             parsed.name === "spine" ||
-            // SDF Smooth Union's scalar Smoothness input.
-            parsed.name === "smoothness"
+            parsed.name === "smoothness" ||
+            parsed.name === "amount"
           )
             continue;
           connected.add(parsed.name);
@@ -2933,7 +3143,14 @@ function EffectsShell({
           while (taken.has(`s${k}`)) k++;
           spare = `s${k}`;
         }
-        const desired = [...kept, spare];
+        let desired = [...kept, spare];
+        // Spline Morph keeps its original A/B sockets so a fresh node
+        // (and saved two-input projects with nothing yet wired) don't
+        // collapse to a single spare the way N-ary-from-the-start nodes
+        // do.
+        if (n.data.defType === "spline-morph" && desired.length < 2) {
+          desired = ["a", "b"];
+        }
         if (
           desired.length === current.length &&
           desired.every((s, i) => s === current[i])
@@ -3328,17 +3545,20 @@ function EffectsShell({
   // file. Returns null for anything we can't auto-route.
   function detectFileKind(
     file: File
-  ): "image" | "video" | "audio" | "svg" | null {
+  ): "image" | "video" | "audio" | "svg" | "model" | null {
     const mime = file.type;
     if (mime === "image/svg+xml") return "svg";
     if (mime.startsWith("image/")) return "image";
     if (mime.startsWith("video/")) return "video";
     if (mime.startsWith("audio/")) return "audio";
+    if (mime.startsWith("model/")) return "model";
     const n = file.name.toLowerCase();
     if (n.endsWith(".svg")) return "svg";
     if (/\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(n)) return "image";
     if (/\.(mp4|webm|mov|m4v|avi|mkv)$/i.test(n)) return "video";
     if (/\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(n)) return "audio";
+    // 3D models usually arrive with no/generic MIME — go by extension.
+    if (/\.(glb|gltf|obj|stl)$/i.test(n)) return "model";
     return null;
   }
 
@@ -3393,6 +3613,57 @@ function EffectsShell({
   // this ref at command time, so declaration order only matters here.
   const mcpHandlersRef = useRef<BridgeHandlers>({});
   const mcp = useMcpBridge(mcpHandlersRef);
+  // In-app assistant (spec 080826_claude-agent-panel.md). Shares the handler
+  // table above — one set of editor verbs, two drivers (Claude Desktop via
+  // the MCP bridge, and this panel via the local agent host).
+  //
+  // ONE session per window, two shells onto it: the docked params-panel view
+  // and the floating overlay. The session is owned here, above both, so
+  // dismissing the overlay mid-run doesn't kill the work.
+  const [agentOverlayOpen, setAgentOverlayOpen] = useState(false);
+  // Hosted web can't run an agent host, so its ENTRY POINTS are withheld
+  // (Edit menu, add menu, panel-kind menu). Read during render, which is safe
+  // because every one of those surfaces only reaches the DOM after a click —
+  // long after hydration — so the SSR pass never disagrees with the client.
+  // The assistant PANEL itself is deliberately NOT gated: if a layout made on
+  // desktop is opened in a browser, it renders and explains itself rather
+  // than vanishing.
+  const agentAvailable = isAgentAvailable();
+  // A tiled "assistant" leaf counts as showing the session too, so docking
+  // the panel connects it exactly like opening the overlay does.
+  const hasAssistantLeaf = useMemo(
+    () =>
+      [...layoutComputed.leaves.values()].some((l) => l.panel === "assistant"),
+    [layoutComputed]
+  );
+  const agent = useAgentSession(
+    mcpHandlersRef,
+    paramView === "agent" || agentOverlayOpen || hasAssistantLeaf,
+    {
+      // Checkpoint rail (M3): snapshots at iteration boundaries, so an
+      // unattended run is rewindable without Cmd-Z × 400. Reuses the same
+      // primitives undo/redo rides on.
+      snapshot: () => getGraphSnapshot(),
+      restore: (snap) => applyGraphSnapshot(snap as GraphSnapshot),
+      // Everything read through refs: this runs at send time, and the
+      // values it wants are declared all over this component.
+      buildContext: () => {
+        const ns = nodesRef.current;
+        const sel = selectedIdRef.current;
+        const selNode = sel ? ns.find((n) => n.id === sel) : null;
+        const [cw, ch] = canvasResRef.current ?? [0, 0];
+        return [
+          "Live editor context (no need to re-fetch this):",
+          `- project: ${currentProjectRef.current?.name ?? "Untitled"}`,
+          `- canvas: ${cw}×${ch} @ ${fpsRef.current}fps`,
+          `- nodes in the current graph: ${ns.length}`,
+          selNode
+            ? `- selected node: ${selNode.id} (${selNode.data?.defType})`
+            : "- selected node: none",
+        ].join("\n");
+      },
+    }
+  );
   const mcpState = mcp.status.state;
   const prevMcpStateRef = useRef(mcpState);
   useEffect(() => {
@@ -3677,6 +3948,63 @@ function EffectsShell({
     [setNodes, setEdges, navigateScope]
   );
 
+  // Insert a GLB scene-expansion group at a canvas position
+  // (081626_glb-scene-import.md §3). Same insertion mechanics as the
+  // preset: branch of onAddNode — cloneSubgraph mints fresh ids and
+  // retargets into the current scope, auto-wrapping into a new layer at
+  // strict root. Caller pushes undo first. Returns the group clone.
+  const commitModelGroup = useCallback(
+    (
+      frag: { nodes: Node<NodeDataPayload>[]; edges: Edge[] },
+      pos: { x: number; y: number },
+      label: string
+    ): Node<NodeDataPayload> | null => {
+      let targetScope = currentGroupIdRef.current;
+      let baseNodes = nodesRef.current;
+      let baseEdges = edgesRef.current;
+      let wrapped: string | null = null;
+      if (!targetScope) {
+        const res = createLayer(
+          baseNodes,
+          baseEdges,
+          { name: label },
+          activeCompositionIdRef.current
+        );
+        baseNodes = res.nodes;
+        baseEdges = res.edges;
+        targetScope = res.layerId;
+        wrapped = res.layerId;
+      }
+      const minX = Math.min(...frag.nodes.map((n) => n.position.x));
+      const minY = Math.min(...frag.nodes.map((n) => n.position.y));
+      const offset = { x: pos.x - minX, y: pos.y - minY };
+      const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
+        frag.nodes,
+        frag.edges,
+        offset,
+        { parentId: targetScope }
+      );
+      setNodes([
+        ...baseNodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
+        ...newNodes,
+      ]);
+      setEdges([...baseEdges, ...newEdges]);
+      const groupClone = newNodes.find((n) => n.data.defType === GROUP_TYPE);
+      if (wrapped) {
+        navigateScope(wrapped);
+        setNodes((prev) =>
+          prev.map((n) =>
+            newNodes.some((c) => c.id === n.id) ? { ...n, selected: true } : n
+          )
+        );
+      }
+      if (groupClone) setSelectedId(groupClone.id);
+      setParamView("node");
+      return groupClone ?? null;
+    },
+    [navigateScope]
+  );
+
   // Create a source node for a dropped / pasted file. Mirrors the
   // per-ParamType registration path ParamPanel uses when the user
   // picks a file interactively — we get the same param value shape
@@ -3690,6 +4018,9 @@ function EffectsShell({
 
       let nodeType: string;
       let paramValue: unknown;
+      // Most dropped files land on a `file` param; 3D models land on the
+      // Import 3D node's `model` param.
+      let paramName = "file";
       try {
         if (kind === "image") {
           nodeType = "image-source";
@@ -3712,10 +4043,60 @@ function EffectsShell({
           nodeType = "video-source";
           const mod = await import("@/lib/video");
           paramValue = await mod.registerVideoFile(file, flashToast);
+          void maybeUploadCloudMedia(file, "video");
+        } else if (kind === "model") {
+          // GLB / glTF / OBJ / STL → Import 3D pre-loaded (same value the
+          // node's Load Model button builds).
+          nodeType = "import-3d";
+          paramName = "model";
+          const lower = file.name.toLowerCase();
+          const modelValue = {
+            url: URL.createObjectURL(file),
+            filename: file.name,
+            size: file.size,
+            format: lower.endsWith(".obj")
+              ? "obj"
+              : lower.endsWith(".stl")
+                ? "stl"
+                : lower.endsWith(".gltf")
+                  ? "gltf"
+                  : "glb",
+          } satisfies ModelFileParamValue;
+          paramValue = modelValue;
+          void maybeUploadCloudMedia(file, "model");
+          // Multi-object GLB/glTF (or any lights/cameras) → parse first
+          // and expand into a scene group instead of one merged node
+          // (081626_glb-scene-import.md §3). Every interior node shares
+          // THIS modelValue by identity — one file, one cache entry.
+          if (modelValue.format === "glb" || modelValue.format === "gltf") {
+            const token = {};
+            const index = await acquireModelIndex(
+              modelValue.url,
+              modelValue.format,
+              token
+            );
+            if (index && shouldExpandModel(index)) {
+              const label = fileLabel(file.name);
+              const frag = modelGroupFragment({
+                index,
+                model: modelValue,
+                name: label,
+                baseColorMaps:
+                  takeModelBaseColorMaps(modelValue.url) ?? undefined,
+              });
+              pushGraph(getGraphSnapshot());
+              commitModelGroup(frag, flowPos, label);
+              releaseModel(modelValue.url, token);
+              flashToast(`${label} expanded into a scene group`);
+              return;
+            }
+            releaseModel(modelValue.url, token);
+          }
         } else {
           nodeType = "audio-source";
           const mod = await import("@/lib/audio");
           paramValue = await mod.registerAudioFile(file);
+          void maybeUploadCloudMedia(file, "audio");
         }
       } catch (err) {
         // Bad SVG text, corrupt video metadata, unsupported codec, etc.
@@ -3731,14 +4112,22 @@ function EffectsShell({
 
       pushGraph(getGraphSnapshot());
       const newNode = spawnNode(nodeType, flowPos);
-      newNode.data.params = { ...newNode.data.params, file: paramValue };
-      // Match the Load-button path: a dropped image/video names its node.
-      if (kind === "image" || kind === "video") {
+      newNode.data.params = { ...newNode.data.params, [paramName]: paramValue };
+      // Match the Load-button path: a dropped image/video/model names its
+      // node.
+      if (kind === "image" || kind === "video" || kind === "model") {
         newNode.data.name = fileLabel(file.name);
       }
       placeSourceNode(newNode, fileLabel(file.name));
     },
-    [pushGraph, getGraphSnapshot, spawnNode, placeSourceNode, flashToast]
+    [
+      pushGraph,
+      getGraphSnapshot,
+      spawnNode,
+      placeSourceNode,
+      flashToast,
+      commitModelGroup,
+    ]
   );
 
   // Clipboard SVG text pasted over the flow (Figma "Copy as SVG" markup or
@@ -4122,6 +4511,99 @@ function EffectsShell({
       // setter, so this adds nothing to the dependency list.)
       if (type === "ai-recipe") {
         setParamView("ai-recipe");
+        return;
+      }
+      // Same pseudo-type trick for the assistant session — it isn't a node
+      // either, it's a view (spec 080826_claude-agent-panel.md). M2 gives it
+      // its own panel kind and a pie-menu/Edit-menu entry.
+      if (type === "agent") {
+        setParamView("agent");
+        return;
+      }
+      // Compound: "user-preset:<id>" inserts a saved user preset — a
+      // fragment captured by Save as Preset… (081226_user-node-presets.md).
+      // Mirrors the built-in preset: branch below, plus the compositionId
+      // re-tag from insertClonedFragment (the fragment may have been saved
+      // in another project and carry a foreign composition tag that would
+      // filter its wrap-layer out of this project's chain). Sits BEFORE the
+      // shared pushGraph: deserializeGraph is async (inlined media
+      // re-fetches), so the undo snapshot is taken at commit time — pushing
+      // it now would misorder against any edit landing mid-flight.
+      if (type.startsWith("user-preset:")) {
+        const preset = getUserNodePreset(type.slice("user-preset:".length));
+        if (!preset) return;
+        const upBase = lastPanePointerRef.current ?? { x: 200, y: 200 };
+        const upJitter = {
+          x: (Math.random() - 0.5) * 24,
+          y: (Math.random() - 0.5) * 24,
+        };
+        const upPos = { x: upBase.x + upJitter.x, y: upBase.y + upJitter.y };
+        void (async () => {
+          let frag: { nodes: Node<NodeDataPayload>[]; edges: Edge[] };
+          try {
+            frag = await deserializeGraph(preset.fragment);
+          } catch {
+            flashToast("couldn't insert preset — its stored data is invalid");
+            return;
+          }
+          if (frag.nodes.length === 0) return;
+          pushGraph(getGraphSnapshot());
+          let targetScope = currentGroupIdRef.current;
+          let baseNodes = nodesRef.current;
+          let baseEdges = edgesRef.current;
+          let wrapped: string | null = null;
+          if (!targetScope) {
+            const res = createLayer(
+              baseNodes,
+              baseEdges,
+              undefined,
+              activeCompositionIdRef.current
+            );
+            baseNodes = res.nodes;
+            baseEdges = res.edges;
+            targetScope = res.layerId;
+            wrapped = res.layerId;
+          }
+          const minX = Math.min(...frag.nodes.map((n) => n.position.x));
+          const minY = Math.min(...frag.nodes.map((n) => n.position.y));
+          const offset = { x: upPos.x - minX, y: upPos.y - minY };
+          const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
+            frag.nodes,
+            frag.edges,
+            offset,
+            { parentId: targetScope }
+          );
+          const active = activeCompositionIdRef.current;
+          const tagActive = (
+            n: Node<NodeDataPayload>
+          ): Node<NodeDataPayload> =>
+            n.data.compositionId === active
+              ? n
+              : { ...n, data: { ...n.data, compositionId: active } };
+          setNodes([
+            ...baseNodes.map((n) => {
+              const t = tagActive(n);
+              return t.selected ? { ...t, selected: false } : t;
+            }),
+            ...newNodes.map(tagActive),
+          ]);
+          setEdges([...baseEdges, ...newEdges]);
+          const top = newNodes.find((n) => n.data.parentId === targetScope);
+          if (wrapped) {
+            flashToast("preset added to a new layer");
+            navigateScope(wrapped);
+            // navigateScope clears selection — keep the clones selected.
+            setNodes((prev) =>
+              prev.map((n) =>
+                newNodes.some((c) => c.id === n.id)
+                  ? { ...n, selected: true }
+                  : n
+              )
+            );
+          }
+          if (top) setSelectedId(top.id);
+          setParamView("node");
+        })();
         return;
       }
       pushGraph(getGraphSnapshot());
@@ -5189,6 +5671,103 @@ function EffectsShell({
     [pushGraph, getGraphSnapshot, setEdges]
   );
 
+  // Picking a multi-object GLB/glTF into an EXISTING Import 3D node
+  // converts the node into a scene group in place (081626 §3): parse,
+  // then swap node → group at its position, re-landing existing
+  // out-wires on the group's first geometry socket. Async (the parse),
+  // so everything re-resolves by id at commit time — the node may be
+  // gone or re-picked by then. When the file does NOT expand, a stale
+  // "top:<i>" sub-object selection from the previous file is reset.
+  const maybeExpandImportModel = useCallback(
+    (nodeId: string, value: unknown) => {
+      const model = value as ModelFileParamValue | null;
+      const url = model?.url;
+      if (!url || (model.format !== "glb" && model.format !== "gltf")) return;
+      const src = nodesRef.current.find((n) => n.id === nodeId);
+      if (!src || src.data.defType !== "import-3d") return;
+      void (async () => {
+        const token = {};
+        const index = await acquireModelIndex(url, model.format, token);
+        try {
+          const node = nodesRef.current.find((n) => n.id === nodeId);
+          if (
+            !node ||
+            (node.data.params.model as ModelFileParamValue | null)?.url !== url
+          ) {
+            return; // deleted or re-picked mid-parse
+          }
+          if (!index || !shouldExpandModel(index)) {
+            if (node.data.params.object) {
+              // No snapshot: this rides the model-change undo entry, so
+              // undoing the pick restores file + selection together.
+              setNodes((prev) =>
+                prev.map((n) =>
+                  n.id === nodeId
+                    ? withUpdatedParams(n, { ...n.data.params, object: "" })
+                    : n
+                )
+              );
+            }
+            return;
+          }
+          const label = fileLabel(model.filename);
+          const frag = modelGroupFragment({
+            index,
+            model,
+            name: label,
+            baseColorMaps: takeModelBaseColorMaps(url) ?? undefined,
+          });
+          pushGraph(getGraphSnapshot());
+          const minX = Math.min(...frag.nodes.map((n) => n.position.x));
+          const minY = Math.min(...frag.nodes.map((n) => n.position.y));
+          const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
+            frag.nodes,
+            frag.edges,
+            { x: node.position.x - minX, y: node.position.y - minY },
+            { parentId: node.data.parentId }
+          );
+          const groupClone = newNodes.find(
+            (n) => n.data.defType === GROUP_TYPE
+          );
+          const iface = groupClone
+            ? readGroupInterface(groupClone.data.params)
+            : { inputs: [], outputs: [] };
+          const firstGeo =
+            iface.outputs.find((o) => o.type === "geometry") ??
+            iface.outputs[0];
+          setNodes((prev) => [
+            ...prev
+              .filter((n) => n.id !== nodeId)
+              .map((n) => (n.selected ? { ...n, selected: false } : n)),
+            ...newNodes,
+          ]);
+          setEdges((prev) => [
+            ...prev
+              // Wires INTO the old node (exposed params) die with it;
+              // out-wires re-land on the group's first geometry socket.
+              .filter((e) => e.target !== nodeId)
+              .map((e) =>
+                e.source === nodeId && groupClone && firstGeo
+                  ? {
+                      ...e,
+                      source: groupClone.id,
+                      sourceHandle: `out:aux:${firstGeo.name}`,
+                    }
+                  : e
+              )
+              .filter((e) => e.source !== nodeId),
+            ...newEdges,
+          ]);
+          if (groupClone) setSelectedId(groupClone.id);
+          flashToast(`${label} expanded into a scene group`);
+        } finally {
+          releaseModel(url, token);
+        }
+      })();
+    },
+    [pushGraph, getGraphSnapshot, flashToast]
+  );
+
   const onParamChange = useCallback(
     (
       nodeId: string,
@@ -5688,8 +6267,11 @@ function EffectsShell({
           )
         );
       }
+      // Import 3D model pick: a multi-object GLB converts the node into
+      // a scene group in place (async — parses first, no-ops otherwise).
+      if (paramName === "model") maybeExpandImportModel(nodeId, value);
     },
-    [setNodes, setEdges, pushGraph, getGraphSnapshot]
+    [setNodes, setEdges, pushGraph, getGraphSnapshot, maybeExpandImportModel]
   );
 
   // Per-parameter animation block read/write. Used by ParamPanel and the
@@ -5859,10 +6441,11 @@ function EffectsShell({
   // drags fire many times per gesture, so coalesce the whole drag under one
   // undo entry keyed by node id — same pattern as slider drags. An empty
   // array is normalized to undefined so the field disappears when the last
-  // window is removed.
+  // window is removed. A multi-node gesture passes a shared coalesce key
+  // so the whole set undoes as one step.
   const onClipChange = useCallback(
-    (nodeId: string, next: ClipBlock[] | undefined) => {
-      pushGraph(getGraphSnapshot(), `clip:${nodeId}`);
+    (nodeId: string, next: ClipBlock[] | undefined, coalesceKey?: string) => {
+      pushGraph(getGraphSnapshot(), coalesceKey ?? `clip:${nodeId}`);
       const normalized = next && next.length > 0 ? next : undefined;
       setNodes((prev) =>
         prev.map((n) =>
@@ -8872,6 +9455,14 @@ function EffectsShell({
           outputNodeId: session.outputNodeId,
           canvasRes,
         });
+        // Live-link design (081426_live-link-designer.md): the exported
+        // app reads it from the manifest, same as /live does — including
+        // the author's canvas-size override.
+        if (liveDesignRef.current) {
+          manifest.design = liveDesignRef.current;
+          const designRes = liveDesignRef.current.export.resolution;
+          if (designRes) manifest.canvasRes = designRes;
+        }
         const graphJson = await serializeGraph(
           overlayLandedMedia(nodesRef.current),
           edgesRef.current,
@@ -9199,7 +9790,12 @@ function EffectsShell({
   async function saveToRow(
     name: string,
     mode: "insert" | "update",
-    existingId?: string
+    existingId?: string,
+    // Overwrite-after-conflict only: the FRESH updated_at shown in the
+    // conflict dialog. A string CAS's against that stamp; explicit null
+    // forces last-writer-wins (stamp unavailable — pre-migration DB).
+    // undefined = normal behavior (CAS against currentProject.updatedAt).
+    expectedOverride?: string | null
   ): Promise<{ id: string } | null> {
     // Wait out any in-flight streamed images so serialize never captures a
     // not-yet-loaded image as null. Failed streams settle to their envelope,
@@ -9232,6 +9828,29 @@ function EffectsShell({
     // serializeGraph's signature (and its other callers: fragments,
     // exported apps) stay untouched.
     graph.layout = toSavedLayout(layoutTreeRef.current);
+    // User-saved easing curves ride the same way (omitted when empty).
+    if (savedEasingsRef.current.length > 0) {
+      graph.savedEasings = savedEasingsRef.current;
+    }
+    // Live-link design rides the same way (omitted when never authored).
+    // The designer's live draft wins over committed state — a ⌘S taken
+    // while designing captures what's on screen.
+    const liveDesignToSave =
+      liveLinkDraftRef.current ?? liveDesignRef.current;
+    if (liveDesignToSave) {
+      graph.liveDesign = liveDesignToSave;
+    }
+    // Dev breadcrumb for the "design didn't persist" class of bug — says
+    // which source (if any) rode this save.
+    console.log(
+      `[live-design] cloud save: ${
+        liveLinkDraftRef.current
+          ? "draft attached"
+          : liveDesignRef.current
+            ? "state attached"
+            : "absent"
+      }`
+    );
     setProgressStatus({ label: "saving", progress: SERIALIZE_SHARE, tone: "save" });
     // Heads-up on the INLINE media size. Post-Tier-2 the DB row is tiny
     // (media lives in Storage as refs), so this no longer gates the save —
@@ -9248,15 +9867,44 @@ function EffectsShell({
       // Compare-and-swap only when updating the row THIS editor loaded —
       // the overwrite-by-name path targets a row we never loaded, so it
       // keeps last-writer-wins.
+      const isCurrent = existingId === currentProject?.id;
       const expected =
-        existingId === currentProject?.id
-          ? currentProject?.updatedAt ?? undefined
+        expectedOverride !== undefined
+          ? expectedOverride ?? undefined
+          : isCurrent
+            ? currentProject?.updatedAt ?? undefined
+            : undefined;
+      // Shared rows save in place against the OWNER's row: assets and
+      // thumbnail must land under the owner's Storage prefix, not this
+      // user's (resolveAssetRefs resolves against row.user_id).
+      const assetOwnerId =
+        isCurrent && currentProject && user && currentProject.ownerId !== user.id
+          ? currentProject.ownerId
           : undefined;
-      const res = await updateProjectRow(existingId, graph, thumbnail, expected);
+      const res = await updateProjectRow(
+        existingId,
+        graph,
+        thumbnail,
+        expected,
+        assetOwnerId
+      );
       if (res.conflict) {
-        throw new Error(
-          "This project was saved from another window — reload it (or Save As a copy) before saving here."
-        );
+        // Someone saved a newer version after this editor loaded its
+        // copy. Nothing was written. Fetch the fresh stamp (who/when)
+        // and arm the resolution dialog; callers detect the marker to
+        // skip their generic save-failed toast.
+        const stamp = await getProjectSaveStamp(existingId);
+        setSaveConflict({
+          id: existingId,
+          name,
+          updatedAt: stamp?.updatedAt ?? null,
+          updatedByName: stamp?.updatedByName ?? null,
+        });
+        const err = new Error(
+          "A newer version of this project was saved — choose how to resolve the conflict."
+        ) as Error & { isSaveConflict?: boolean };
+        err.isSaveConflict = true;
+        throw err;
       }
       if (!res.ok) return null;
       // Carry the new row version forward so the next save's guard matches.
@@ -9268,11 +9916,17 @@ function EffectsShell({
         );
       }
       setProgressStatus({ label: "saving", progress: 1, tone: "save" });
+      // Explicit cloud save landed — the working bucket's recovery
+      // snapshots have done their job. (File saves deliberately don't
+      // clear: the pill stays cloud-dirty there, and a snapshot under a
+      // deletable file is still a net safety win.)
+      void clearRecoveryBucket(currentProject?.id ?? UNTITLED_BUCKET);
       return { id: existingId };
     }
     const result = await saveProjectRow(name, graph, thumbnail);
     if (!result) return null;
     setProgressStatus({ label: "saving", progress: 1, tone: "save" });
+    void clearRecoveryBucket(currentProject?.id ?? UNTITLED_BUCKET);
     return result;
   }
 
@@ -9357,10 +10011,11 @@ function EffectsShell({
       return "opened-modal";
     }
     const isMine = currentProject.ownerId === user.id;
-    if (!isMine) {
+    if (!isMine && !currentProject.sharedWithMe) {
       // Copy-on-save: RLS would reject an update against someone
       // else's row anyway. Create our own private copy under a
-      // derived name instead.
+      // derived name instead. (Rows shared via project_collaborators
+      // fall through to the in-place CAS update below instead.)
       const copyName = `${currentProject.name}_copy`;
       try {
         const result = await saveToRow(copyName, "insert");
@@ -9410,6 +10065,12 @@ function EffectsShell({
       flashToast("save failed");
       return "failed";
     } catch (e) {
+      // The conflict dialog is already open and owns the resolution —
+      // a toast on top of it would just be noise.
+      if ((e as { isSaveConflict?: boolean })?.isSaveConflict) {
+        setSaveState("error");
+        return "failed";
+      }
       // Surface the real reason — a thrown serialize/thumbnail error here was
       // previously swallowed, leaving only a bare "save failed" with no clue.
       console.error("save failed (update):", e);
@@ -9518,6 +10179,17 @@ function EffectsShell({
         }
         // Per-project tiled layout (M4): absent/malformed → default preset.
         applyLoadedLayout((saved.graph as { layout?: unknown }).layout);
+        setSavedEasings(
+          sanitizeSavedEasings(
+            (saved.graph as { savedEasings?: unknown }).savedEasings
+          )
+        );
+        // Live-link design: absent stays null, present is validated.
+        const rawLiveDesign = (saved.graph as { liveDesign?: unknown })
+          .liveDesign;
+        setLiveDesign(
+          rawLiveDesign == null ? null : fromSavedLiveDesign(rawLiveDesign)
+        );
         setSelectedId(null);
         setParamView("node");
         setCurrentProject({
@@ -9534,7 +10206,15 @@ function EffectsShell({
               ? null
               : saved.author?.display_name ?? null,
           updatedAt: saved.updated_at,
+          sharedWithMe: saved.shared_with_me,
         });
+        // Advisory lease, collaborative rows only. Fire-and-forget: a
+        // held-by-other result opens the take-over dialog on top of the
+        // already-loaded editor; failures degrade silently (the save
+        // CAS remains the correctness layer).
+        if (saved.shared_with_me || saved.has_collaborators) {
+          void lease.acquireFor(id);
+        }
         recordCloudRecent(id, saved.name);
         // Load applies a graph snapshot via setNodes/setEdges, which
         // doesn't flow through pushGraph — so saveState isn't auto-
@@ -9548,8 +10228,98 @@ function EffectsShell({
         setProgressStatus(null);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia, streamPendingMedia, frameGraph, flashToast, applyLoadedLayout]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia, streamPendingMedia, frameGraph, flashToast, applyLoadedLayout, lease.acquireFor]
   );
+
+  // --- Save-conflict resolution (shared projects M1) ------------------------
+  // Three ways out of the dialog saveToRow armed. Each is busy-guarded so
+  // a double-click can't fire twice; each closes the dialog only on
+  // success (Overwrite can re-conflict against a third writer, in which
+  // case saveToRow re-arms the dialog with a fresh stamp).
+
+  const handleConflictSaveCopy = useCallback(async () => {
+    if (!saveConflict || !user) return;
+    setSaveConflictBusy(true);
+    try {
+      const copyName = `${saveConflict.name}_copy`;
+      const result = await saveToRow(copyName, "insert");
+      if (!result) {
+        flashToast("save failed");
+        return;
+      }
+      setCurrentProject({
+        id: result.id,
+        name: copyName,
+        isPublic: false,
+        publicSlug: null,
+        ownerId: user.id,
+        authorName: null,
+      });
+      recordCloudRecent(result.id, copyName);
+      setSaveState("saved");
+      setLoadRefreshKey((n) => n + 1);
+      setSaveConflict(null);
+      flashToast("saved a copy");
+    } catch (e) {
+      console.error("conflict save-copy failed:", e);
+      flashToast(e instanceof Error ? e.message : "save failed");
+    } finally {
+      setSaveConflictBusy(false);
+      setProgressStatus(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saveConflict, user, flashToast]);
+
+  const handleConflictOverwrite = useCallback(async () => {
+    if (!saveConflict) return;
+    setSaveConflictBusy(true);
+    try {
+      // CAS against the stamp the dialog showed; null stamp (pre-
+      // migration DB) degrades to last-writer-wins — the user has
+      // explicitly chosen to overwrite either way.
+      const result = await saveToRow(
+        saveConflict.name,
+        "update",
+        saveConflict.id,
+        saveConflict.updatedAt
+      );
+      if (!result) {
+        flashToast("save failed");
+        return;
+      }
+      recordCloudRecent(saveConflict.id, saveConflict.name);
+      setSaveState("saved");
+      setLoadRefreshKey((n) => n + 1);
+      setSaveConflict(null);
+      flashToast("overwrote the newer save");
+    } catch (e) {
+      // A re-conflict re-armed the dialog with a fresh stamp — keep it
+      // open silently. Anything else surfaces.
+      if (!(e as { isSaveConflict?: boolean })?.isSaveConflict) {
+        console.error("conflict overwrite failed:", e);
+        flashToast(e instanceof Error ? e.message : "save failed");
+      }
+    } finally {
+      setSaveConflictBusy(false);
+      setProgressStatus(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saveConflict, flashToast]);
+
+  const handleConflictDiscard = useCallback(async () => {
+    if (!saveConflict) return;
+    setSaveConflictBusy(true);
+    try {
+      // The newer save must actually be fetched — every mutation path
+      // invalidates, but the winning write happened in ANOTHER window,
+      // so this client's caches never saw it.
+      invalidateProjectCaches();
+      setSaveConflict(null);
+      await handleLoadProject(saveConflict.id);
+    } finally {
+      setSaveConflictBusy(false);
+    }
+  }, [saveConflict, handleLoadProject]);
 
   // --- Local .toolbox files (File → Save to File / Load…) ------------------
   // Self-contained project files, independent of the cloud. The base name of
@@ -9587,6 +10357,17 @@ function EffectsShell({
       );
       // Per-project tiled layout (M4) — rides project.json in the zip.
       graph.layout = toSavedLayout(layoutTreeRef.current);
+      // User-saved easing curves ride the same way (omitted when empty).
+      if (savedEasingsRef.current.length > 0) {
+        graph.savedEasings = savedEasingsRef.current;
+      }
+      // Live-link design rides the same way (omitted when never
+      // authored); the designer's live draft wins, as in the cloud path.
+      const liveDesignToFile =
+        liveLinkDraftRef.current ?? liveDesignRef.current;
+      if (liveDesignToFile) {
+        graph.liveDesign = liveDesignToFile;
+      }
       const name =
         currentProject?.name ?? projectFileNameRef.current ?? "Untitled";
       const { writeProjectFile, TOOLBOX_EXTENSION } = await import(
@@ -9642,6 +10423,13 @@ function EffectsShell({
             m.envelope.kind === "video_file"
               ? await (await import("@/lib/video")).registerVideoFile(file)
               : await (await import("@/lib/audio")).registerAudioFile(file);
+          // Entitled accounts migrate legacy projects to cloud media as a
+          // side effect of relinking — the next save carries the ref and
+          // this clip never needs relinking again. No-op otherwise.
+          void maybeUploadCloudMedia(
+            file,
+            m.envelope.kind === "video_file" ? "video" : "audio"
+          );
           onParamChange(m.nodeId, m.paramName, value);
           status.set(m, "ok");
           relinked++;
@@ -9750,6 +10538,16 @@ function EffectsShell({
         }
         // Per-project tiled layout (M4): absent/malformed → default preset.
         applyLoadedLayout((graph as { layout?: unknown }).layout);
+        setSavedEasings(
+          sanitizeSavedEasings(
+            (graph as { savedEasings?: unknown }).savedEasings
+          )
+        );
+        // Live-link design: absent stays null, present is validated.
+        const rawLiveDesign = (graph as { liveDesign?: unknown }).liveDesign;
+        setLiveDesign(
+          rawLiveDesign == null ? null : fromSavedLiveDesign(rawLiveDesign)
+        );
         setSelectedId(null);
         setParamView("node");
         // A file-loaded project has no cloud row — cloud Save falls through
@@ -9778,6 +10576,159 @@ function EffectsShell({
       }
     },
     [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia, frameGraph, applyLoadedLayout]
+  );
+
+  // --- Local recovery autosave (shared projects M4, first slice) -----------
+  // Every AUTOSAVE_INTERVAL_MS of unsaved work, snapshot the serialized
+  // graph into IndexedDB (lib/recovery-autosave.ts) — local-only crash
+  // recovery, no cloud writes. Triple-gated: the pill must be dirty, the
+  // graph must have CHANGED since the last snapshot (graphRevRef — idling
+  // while dirty never re-snapshots identical state), and at most one
+  // snapshot per interval. The payload assembly mirrors saveToRow minus
+  // the thumbnail — keep the two in sync. Successful cloud saves clear
+  // the working bucket (see saveToRow).
+  const AUTOSAVE_INTERVAL_MS = 2 * 60_000;
+  const lastSnapshotAtRef = useRef(0);
+  const lastSnapshotRevRef = useRef(0);
+  const autosaveBusyRef = useRef(false);
+  const maybeAutosave = useCallback(async () => {
+    if (autosaveBusyRef.current) return;
+    if (saveStateRef.current !== "dirty") return;
+    if (graphRevRef.current === lastSnapshotRevRef.current) return;
+    if (Date.now() - lastSnapshotAtRef.current < AUTOSAVE_INTERVAL_MS) return;
+    autosaveBusyRef.current = true;
+    try {
+      // Capture the rev BEFORE serializing — edits made mid-serialize
+      // then re-qualify the next tick instead of being silently skipped.
+      const rev = graphRevRef.current;
+      if (mediaLoadRef.current) await mediaLoadRef.current;
+      const graph = await serializeGraph(
+        overlayLandedMedia(nodesRef.current),
+        edgesRef.current,
+        () => {},
+        {
+          loopFrames: loopFramesRef.current,
+          fps: fpsRef.current,
+          width: canvasResRef.current[0],
+          height: canvasResRef.current[1],
+        },
+        {
+          compositions: compositionsForSave(null),
+          activeCompositionId: activeCompositionIdRef.current,
+        }
+      );
+      graph.layout = toSavedLayout(layoutTreeRef.current);
+      if (savedEasingsRef.current.length > 0) {
+        graph.savedEasings = savedEasingsRef.current;
+      }
+      if (liveDesignRef.current) {
+        graph.liveDesign = liveDesignRef.current;
+      }
+      const bucket = currentProjectRef.current?.id ?? UNTITLED_BUCKET;
+      const snapName =
+        currentProjectRef.current?.name ??
+        projectFileNameRef.current ??
+        "Untitled";
+      await saveRecoverySnapshot(bucket, snapName, graph);
+      lastSnapshotAtRef.current = Date.now();
+      lastSnapshotRevRef.current = rev;
+    } catch (e) {
+      // A failed snapshot must never surface as UI noise — the next
+      // tick simply tries again.
+      console.warn("recovery autosave failed:", e);
+    } finally {
+      autosaveBusyRef.current = false;
+    }
+  }, [compositionsForSave]);
+  useEffect(() => {
+    // Tick faster than the interval so a due snapshot lands within ~30s;
+    // the gates above do the real pacing.
+    const id = window.setInterval(() => void maybeAutosave(), 30_000);
+    return () => window.clearInterval(id);
+  }, [maybeAutosave]);
+
+  // File → Recover Autosave… — restore a snapshot into the editor as
+  // UNSAVED work: currentProject clears (Save falls through to Save As),
+  // the pill goes dirty, and the snapshot itself survives until an
+  // explicit save or a manual delete. Mirrors loadToolboxFile's
+  // deserialize, with cloud-style deferred media (a snapshot of a
+  // cloud-loaded project carries Storage-URL envelopes).
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const handleRestoreRecovery = useCallback(
+    async (snapshot: RecoverySnapshotMeta) => {
+      setRecoveryOpen(false);
+      try {
+        setProgressStatus({ label: "loading", progress: 0.1, tone: "load" });
+        const graph = await getRecoverySnapshotGraph(snapshot.id);
+        if (!graph) {
+          flashToast("Could not read that autosave");
+          return;
+        }
+        const {
+          nodes: nextNodes,
+          edges: nextEdges,
+          scene,
+          compositions: nextComps,
+          activeCompositionId: nextActiveComp,
+          missingMedia,
+          pendingMedia,
+        } = await deserializeGraph(
+          graph as SavedProject,
+          (f) =>
+            setProgressStatus({
+              label: "loading",
+              progress: 0.1 + f * 0.9,
+              tone: "load",
+            }),
+          { deferRemoteMedia: true }
+        );
+        pushGraph(getGraphSnapshot());
+        suppressNextSelectionViewFlipRef.current = true;
+        setNodes(nextNodes);
+        setEdges(nextEdges);
+        setCompositions(nextComps);
+        setActiveCompositionId(nextActiveComp);
+        setOpenCompositionIds(nextComps.map((c) => c.id));
+        setView("editor");
+        setAssetsFolder(null);
+        setCurrentGroupId(defaultScopeFor(nextNodes, nextActiveComp));
+        setMissingMedia(missingMedia);
+        streamPendingMedia(pendingMedia);
+        frameGraph();
+        if (scene) {
+          if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
+          if (scene.fps !== undefined) setFps(scene.fps);
+          if (scene.bpm !== undefined) setBpm(scene.bpm);
+          if (scene.width !== undefined && scene.height !== undefined)
+            setCanvasRes([scene.width, scene.height]);
+        }
+        applyLoadedLayout((graph as { layout?: unknown }).layout);
+        setSavedEasings(
+          sanitizeSavedEasings(
+            (graph as { savedEasings?: unknown }).savedEasings
+          )
+        );
+        const rawLiveDesign = (graph as { liveDesign?: unknown }).liveDesign;
+        setLiveDesign(
+          rawLiveDesign == null ? null : fromSavedLiveDesign(rawLiveDesign)
+        );
+        setSelectedId(null);
+        setParamView("node");
+        setCurrentProject(null);
+        projectFileNameRef.current = snapshot.name;
+        setSaveState("dirty");
+        setProgressStatus({ label: "loading", progress: 1, tone: "load" });
+        flashToast("autosave restored — not saved yet");
+      } catch (e) {
+        console.error("[recovery] restore failed:", e);
+        flashToast(
+          e instanceof Error ? e.message : "Could not restore the autosave"
+        );
+      } finally {
+        setProgressStatus(null);
+      }
+    },
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia, streamPendingMedia, frameGraph, applyLoadedLayout]
   );
 
   const handleOpenProjectFile = useCallback(() => {
@@ -10087,6 +11038,8 @@ function EffectsShell({
     setCurrentProject(null);
     projectFileNameRef.current = null;
     setSaveState("saved");
+    setSavedEasings([]);
+    setLiveDesign(null);
     frameGraph();
     // Drop any survival snapshot from a prior session — otherwise a
     // docs round-trip after File → New would resurrect the graph
@@ -10405,7 +11358,15 @@ function EffectsShell({
     if (!sel) return null;
     if (sel.data.defType === "scene-render") return sel.id;
     const out = getNodeDef(sel.data.defType)?.primaryOutput;
-    if (out !== "object3d" && out !== "camera") return null;
+    // `geometry` and `instances` count: both reach the scene through
+    // their object3d coercions (081026 spec §1.3 / §4.4).
+    if (
+      out !== "object3d" &&
+      out !== "geometry" &&
+      out !== "instances" &&
+      out !== "camera"
+    )
+      return null;
     // BFS forward along edges to the nearest Scene Render.
     const adj = new Map<string, string[]>();
     for (const e of edges) {
@@ -10459,13 +11420,46 @@ function EffectsShell({
     const n = nodes.find((nn) => nn.id === selectedId);
     if (!n) return none;
     const def = getNodeDef(n.data.defType);
-    if (def?.primaryOutput !== "object3d") return none;
+    if (def?.primaryOutput !== "object3d" && def?.primaryOutput !== "geometry")
+      return none;
     const hasPos = def.params.some((p) => p.name === "pos_x");
     if (!hasPos) return none;
     return {
       id: selectedId,
       canRotate: def.params.some((p) => p.name === "rot_x"),
       canScale: def.params.some((p) => p.name === "scale_x"),
+    };
+  }, [selectedId, active3DSceneRenderId, nodes]);
+
+  // 3D curve editing (M10, unified M10.6): when the selection is a 3D
+  // Spline node, hand its id + anchors (+ effective bezier handles when in
+  // bezier mode — stored, or synthesized from the smooth tangents so the
+  // dots always match the rendered curve) to the viewport's per-point rig.
+  const active3DSpline = useMemo<{
+    id: string;
+    points: [number, number, number][];
+    handles: [number, number, number][] | null;
+    mirrored: boolean;
+  } | null>(() => {
+    if (!selectedId || !active3DSceneRenderId) return null;
+    const n = nodes.find((nn) => nn.id === selectedId);
+    if (!n || n.data.defType !== "spline-3d") return null;
+    const raw = n.data.params.points;
+    const points = Array.isArray(raw)
+      ? (raw as [number, number, number][])
+      : SPLINE3D_DEFAULT_POINTS;
+    const bezier = n.data.params.mode === "bezier";
+    return {
+      id: n.id,
+      points,
+      handles: bezier
+        ? effectiveBezierHandles(
+            points,
+            n.data.params.handles,
+            !!n.data.params.closed
+          )
+        : null,
+      mirrored: n.data.params.handle_mode !== "free",
     };
   }, [selectedId, active3DSceneRenderId, nodes]);
 
@@ -10671,6 +11665,35 @@ function EffectsShell({
     (id: string | null) => navigateScope(id ?? undefined),
     [navigateScope]
   );
+  // Latest evaluated output for a node — the peek popover's read, shared
+  // with the Spreadsheet panels (eval cache first, last-outputs fallback
+  // for uncacheable stable:false nodes). Stable: touches only refs.
+  const readNodeOutput = useCallback(
+    (nodeId: string) =>
+      evalCacheRef.current.get(nodeId)?.output ??
+      lastEvalOutputsRef.current?.get(nodeId),
+    []
+  );
+  // Feed the attribute-name lookup singleton (attr-name-source.ts): the
+  // panel rows and on-node fields resolve a node's wired input to its
+  // upstream's channel names through this one closure.
+  useEffect(() => {
+    registerAttrNameReader((nodeId, socketName) => {
+      const edge = edges.find(
+        (e) => e.target === nodeId && e.targetHandle === `in:${socketName}`
+      );
+      if (!edge?.source) return { known: false, names: [] };
+      const out = readNodeOutput(edge.source);
+      const value =
+        !edge.sourceHandle || edge.sourceHandle === "out:primary"
+          ? out?.primary
+          : out?.aux?.[edge.sourceHandle.slice("out:aux:".length)];
+      if (!value || (value.kind !== "points" && value.kind !== "spline")) {
+        return { known: false, names: [] };
+      }
+      return { known: true, names: attrNamesFromValue(value) };
+    });
+  }, [edges, readNodeOutput]);
 
   // Switch the param panel to the Project Settings view. Shared by File →
   // Project Settings… and the gear chip in a Parameters panel's header.
@@ -10689,6 +11712,31 @@ function EffectsShell({
     setParamView("project");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Switch the param panel to the Projects (load) grid. Shared by File →
+  // Projects… and the folder chip in a Parameters panel's header. Same
+  // deselect rule as openProjectSettings.
+  const openLoadGrid = useCallback(() => {
+    suppressNextSelectionViewFlipRef.current = true;
+    setSelectedId(null);
+    setNodes((prev) =>
+      prev.map((n) => (n.selected ? { ...n, selected: false } : n))
+    );
+    setParamView("load");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The gear chip in a Parameters panel's header opens Project Settings
+  // as a floating popover — anchored to whichever chip was clicked
+  // (there can be one per Parameters leaf). The element doubles as the
+  // popover's anchor and its dismiss exemption. File → Project
+  // Settings… keeps the full-panel "project" view.
+  const [projectSettingsAnchor, setProjectSettingsAnchor] =
+    useState<HTMLElement | null>(null);
+  const closeProjectSettingsPopover = useCallback(
+    () => setProjectSettingsAnchor(null),
+    []
+  );
 
   // The per-panel editor-kind switcher chip. Re-assigning the LAST
   // viewport leaf away is blocked — the engine blit target, overlays
@@ -10729,7 +11777,13 @@ function EffectsShell({
                   "Retype this window's panel in place, or close it first",
               }
             : lastViewport
-              ? { nodes: reason, params: reason, timeline: reason }
+              ? {
+                  nodes: reason,
+                  params: reason,
+                  timeline: reason,
+                  perf: reason,
+                  spreadsheet: reason,
+                }
               : undefined
         }
         onPopOut={
@@ -10806,6 +11860,7 @@ function EffectsShell({
       onDuplicateOnDrag={handleDuplicateOnDrag}
       onDetachNode={handleDetachNode}
       onDuplicateNode={handleDuplicateNode}
+      onSaveNodeAsPreset={setSaveNodePresetTarget}
       onMakeEditableNode={handleMakeEditableNode}
       onDuplicateSelection={handleDuplicateSelection}
       onMergeSelection={handleMergeSelection}
@@ -10956,6 +12011,27 @@ function EffectsShell({
         </div>
       );
     }
+    if (panel === "assistant") {
+      // Kind chip rides inline in the header, like PerfPanel. No close
+      // button: a tiled panel is closed through its kind menu. Same session
+      // as the overlay and the params-panel view — this is a third window
+      // onto it, not a third session.
+      return (
+        <AgentPanel
+          kindMenu={panelKindMenuFor(leafId, "assistant", false)}
+          status={agent.status}
+          events={agent.events}
+          permission={agent.permission}
+          busy={agent.busy}
+          onSend={agent.send}
+          onInterrupt={agent.interrupt}
+          onAnswerPermission={agent.answerPermission}
+          onClear={agent.clear}
+          checkpoints={agent.checkpoints}
+          onRestore={agent.restoreCheckpoint}
+        />
+      );
+    }
     if (panel === "perf") {
       // Its own kind chip rides in the panel header row (PerfPanel renders
       // it inline next to the capture controls), so no floating chip here.
@@ -10965,6 +12041,22 @@ function EffectsShell({
           getEdges={getPerfEdges}
           fps={fps}
           onSelectNode={setSelectedId}
+        />
+      );
+    }
+    if (panel === "spreadsheet") {
+      // Kind chip rides inline in its header row, like PerfPanel. The
+      // panel reports its watched socket through onTargetChange so
+      // renderFrame keeps it force-evaluated.
+      return (
+        <SpreadsheetPanel
+          leafId={leafId}
+          kindMenu={panelKindMenuFor(leafId, "spreadsheet", false)}
+          nodes={nodes}
+          selectedId={selectedId}
+          canvasRes={canvasRes}
+          readOutput={readNodeOutput}
+          onTargetChange={handleSpreadsheetTarget}
         />
       );
     }
@@ -11011,15 +12103,30 @@ function EffectsShell({
           }}
         >
           {panelKindMenuFor(leafId, "params", false)}
-          <ProjectSettingsChip
-            active={paramView === "project"}
-            // Toggling back lands on the node view — Project Settings has
+          <ProjectsChip
+            active={paramView === "load"}
+            // Toggling back lands on the node view — the load grid has
             // no back affordance of its own, so the chip is the way out.
             onClick={() =>
-              paramView === "project"
-                ? setParamView("node")
-                : openProjectSettings()
+              paramView === "load" ? setParamView("node") : openLoadGrid()
             }
+          />
+          <ProjectSettingsChip
+            active={!!projectSettingsAnchor || paramView === "project"}
+            // Opens Project Settings as a popover anchored to this chip.
+            // The popover's outside-mousedown dismiss exempts the anchor,
+            // so a second click lands here and closes it (instead of
+            // close-on-mousedown + reopen-on-click). When the full-panel
+            // "project" view is up (File → Project Settings…), the chip
+            // stays its way out — that view has no back affordance.
+            onClick={(e) => {
+              if (paramView === "project") {
+                setParamView("node");
+                return;
+              }
+              const el = e.currentTarget;
+              setProjectSettingsAnchor((cur) => (cur ? null : el));
+            }}
           />
         </div>
         <div
@@ -11207,6 +12314,20 @@ function EffectsShell({
       }}
       onOpenPreferences={() => setUserPrefsOpen(true)}
     />
+  ) : paramView === "agent" ? (
+    <AgentPanel
+      status={agent.status}
+      events={agent.events}
+      permission={agent.permission}
+      busy={agent.busy}
+      onSend={agent.send}
+      onInterrupt={agent.interrupt}
+      onAnswerPermission={agent.answerPermission}
+      onClear={agent.clear}
+      checkpoints={agent.checkpoints}
+      onRestore={agent.restoreCheckpoint}
+      onClose={() => setParamView("node")}
+    />
   ) : paramView === "assets" ? (
     <AssetsView
       assets={projectAssets}
@@ -11283,13 +12404,16 @@ function EffectsShell({
       <>
         <div
           // The modal's drag bar. Only presses on the bar ITSELF start a
-          // drag (see startDockDrag) — its buttons and the two cluster
+          // drag (see startDockDrag) — its buttons and the cluster
           // wrappers are descendants, so they keep working normally.
+          // The transport pair is absolutely centered so the empty
+          // middle of the bar stays the drag handle.
           onPointerDown={host === "modal" ? startDockDrag : undefined}
           style={{
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
+            position: "relative",
             // Equal margin on all sides around the buttons.
             padding: 6,
             background: "var(--tb-frame)",
@@ -11312,8 +12436,22 @@ function EffectsShell({
             )}
             <DockTabToggle value={dockTab} onChange={setDockTab} />
             {dockTab !== "graph" && (
-              <StaggerControl ticksPerFrame={ticksPerFrame} />
+              <>
+                <StaggerControl ticksPerFrame={ticksPerFrame} />
+                <SpacingControl ticksPerFrame={ticksPerFrame} />
+              </>
             )}
+          </div>
+          <div
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: "50%",
+              transform: "translate(-50%, -50%)",
+              zIndex: 1,
+            }}
+          >
+            <TransportButtons onPlayPause={onPlayPause} onReset={onReset} />
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             {dockTab === "tracks" && (
@@ -11386,6 +12524,8 @@ function EffectsShell({
               getAnimation={getAnimation}
               onAnimationChange={onAnimationChange}
               fitVersion={trackFitVersion}
+              onKeyframeSelectionChange={onTimelineKfSelection}
+              initialKeyframeSelection={timelineKfSelection}
             />
           ) : dockTab === "tracks" ? (
             <TrackEditor
@@ -11428,20 +12568,26 @@ function EffectsShell({
                 setSelectedId(nodeId);
                 setParamView("node");
               }}
+              onKeyframeSelectionChange={onTimelineKfSelection}
+              initialKeyframeSelection={timelineKfSelection}
             />
           ) : (
             <GraphEditor
-              // Not scope-filtered: the graph view is a global curve
-              // pinboard — a track is shown only when its `graphVisible`
-              // flag is on, which the user sets explicitly. This also
-              // surfaces a group's promoted params (keyframes live on deep
-              // interior nodes outside the current scope).
+              // Not scope-filtered: the graph follows the keyframes
+              // selected in the Tracks / Layers editor (visibleLanes),
+              // wherever their nodes live. This also surfaces a group's
+              // promoted params (keyframes live on deep interior nodes
+              // outside the current scope).
               nodes={nodes}
               timeline={projectTimeline}
               onAnimationChange={onAnimationChange}
               onScrub={(tick) => onSeek(tick / (fps * ticksPerFrame))}
               normalizeY={graphNormalizeY}
               refitVersion={graphRefitVersion}
+              visibleLanes={graphLanes}
+              timelineSelection={timelineKfSelection}
+              savedEasings={savedEasings}
+              onSaveEasing={saveEasing}
             />
           )}
         </div>
@@ -11512,6 +12658,12 @@ function EffectsShell({
       >
       <MenuBar
         onUndo={undo}
+        // Omitted on hosted web — the assistant needs an agent host on the
+        // user's own machine, so the Edit-menu item is not offered at all.
+        // AI Recipe and the MCP bridge are untouched and stay available.
+        onOpenAssistant={
+          agentAvailable ? () => setAgentOverlayOpen(true) : undefined
+        }
         onRedo={redo}
         canUndo={canUndo}
         canRedo={canRedo}
@@ -11529,14 +12681,7 @@ function EffectsShell({
           setLandingReopened(true);
           setShowLanding(true);
         }}
-        onOpenLoad={() => {
-          suppressNextSelectionViewFlipRef.current = true;
-          setSelectedId(null);
-          setNodes((prev) =>
-            prev.map((n) => (n.selected ? { ...n, selected: false } : n))
-          );
-          setParamView("load");
-        }}
+        onOpenLoad={openLoadGrid}
         onOpenAssets={() => {
           suppressNextSelectionViewFlipRef.current = true;
           setParamView("assets");
@@ -11546,6 +12691,12 @@ function EffectsShell({
         onOpenRecent={handleOpenRecent}
         onClearRecents={handleClearRecents}
         onSaveToFile={handleSaveToFile}
+        onRecoverAutosave={() => setRecoveryOpen(true)}
+        onOpenLiveLink={() => {
+          const canvas = canvasRef.current;
+          setLiveLinkPoster(canvas ? generateThumbnail(canvas, 1024) : null);
+          setLiveLinkDesignerOpen(true);
+        }}
         canvasRes={canvasRes}
         onCanvasResChange={setCanvasRes}
         projectName={currentProject?.name ?? "Untitled"}
@@ -11554,11 +12705,18 @@ function EffectsShell({
         isPublic={currentProject?.isPublic ?? false}
         publicSlug={currentProject?.publicSlug ?? null}
         // When the viewer doesn't own the loaded row, rename and the
-        // visibility toggle need to be disabled — Save still works, but
-        // it forks a private copy instead of overwriting.
+        // visibility toggle need to be disabled — those stay owner-only
+        // even for collaborators. Save still works: in place (CAS) on
+        // rows shared via project_collaborators, else as a private
+        // `_copy` fork.
         ownedByMe={
           !currentProject ||
           (!!user && currentProject.ownerId === user.id)
+        }
+        onCollaborators={
+          currentProject && user && currentProject.ownerId === user.id
+            ? () => setCollabTarget(currentProject)
+            : undefined
         }
         authorName={currentProject?.authorName ?? null}
         onRenameProject={handleRenameProject}
@@ -11582,6 +12740,7 @@ function EffectsShell({
         onNewLayoutPreset={() => setNewLayoutPresetOpen(true)}
         onOpenUserPreferences={() => setUserPrefsOpen(true)}
         mcpStatus={mcp.status.state}
+        mcpClient={mcp.status.state === "connected" ? mcp.status.client : null}
         onToggleMcpBridge={mcp.toggle}
         statusToast={toast}
         consoleLog={consoleLog}
@@ -11818,7 +12977,12 @@ function EffectsShell({
                 value={selectedPoints}
               />
             )}
-          {showGizmos && active3DSceneRenderId && backendReady && (
+          {/* NOT gated on showGizmos: the viewport owns 3D navigation
+              (orbit/pan/zoom, camera drive), which must survive the
+              overlays toggle. The toggle rides in as `showOverlays` and
+              hides the visuals (grid, gizmos, spline dots, toolbars)
+              while the input layer stays live. */}
+          {active3DSceneRenderId && backendReady && (
             <Scene3DViewport
               canvas={canvasRef.current}
               sceneRenderId={active3DSceneRenderId}
@@ -11826,6 +12990,11 @@ function EffectsShell({
               gizmoNodeId={active3DGizmo.id}
               gizmoCanRotate={active3DGizmo.canRotate}
               gizmoCanScale={active3DGizmo.canScale}
+              splineNodeId={active3DSpline?.id ?? null}
+              splinePoints={active3DSpline?.points ?? null}
+              splineHandles={active3DSpline?.handles ?? null}
+              splineMirrored={active3DSpline?.mirrored ?? true}
+              showOverlays={showGizmos}
               onParamChange={onParamChange}
             />
           )}
@@ -12217,6 +13386,82 @@ function EffectsShell({
           onCancel={mcp.cancelPairing}
         />
       )}
+      {projectSettingsAnchor && (
+        <ProjectSettingsPopover
+          anchorEl={projectSettingsAnchor}
+          canvasRes={canvasRes}
+          onCanvasResChange={setCanvasRes}
+          fps={fps}
+          onFpsChange={setFps}
+          bpm={bpm}
+          onBpmChange={setBpm}
+          onClose={closeProjectSettingsPopover}
+        />
+      )}
+      {agentOverlayOpen && (
+        <AgentOverlay
+          status={agent.status}
+          events={agent.events}
+          permission={agent.permission}
+          busy={agent.busy}
+          onSend={agent.send}
+          onInterrupt={agent.interrupt}
+          onAnswerPermission={agent.answerPermission}
+          checkpoints={agent.checkpoints}
+          onRestore={agent.restoreCheckpoint}
+          onClose={() => setAgentOverlayOpen(false)}
+          onExpandToPanel={() => {
+            // Same session, different shell — the transcript is owned above
+            // both, so nothing restarts.
+            setAgentOverlayOpen(false);
+            setParamView("agent");
+          }}
+        />
+      )}
+      {liveLinkDesignerOpen && (
+        <LiveLinkDesigner
+          design={liveDesign}
+          nodes={nodes}
+          edges={edges}
+          canvasRes={canvasRes}
+          posterUrl={liveLinkPoster}
+          loopSecs={
+            loopFrames != null && loopFrames > 0 && fps > 0
+              ? loopFrames / fps
+              : null
+          }
+          // Flush against the menu bar: MenuBar renders at BAR_HEIGHT 22,
+          // +10 on the frameless desktop build — same detection as its
+          // own height expression (client-only mount, so no SSR skew).
+          topInset={
+            22 + (platform.isNative && platform.windowControls ? 10 : 0)
+          }
+          projectName={currentProject?.name ?? "Untitled"}
+          onDraftChange={(d) => {
+            liveLinkDraftRef.current = d;
+          }}
+          onSave={(d) => {
+            setLiveDesign(d);
+            // Sync the ref NOW — the save below serializes before
+            // React's state round-trip would re-mirror it. The draft is
+            // superseded by the committed value.
+            liveDesignRef.current = d;
+            liveLinkDraftRef.current = null;
+            // Dirty first so a failed/cancelled save leaves the pill
+            // honest; a successful save flips it back to "saved".
+            setSaveState("dirty");
+            setLiveLinkDesignerOpen(false);
+            // Designer Save commits to the PROJECT — same flow as
+            // File → Save (falls through to Save As when no row yet).
+            handleSave();
+          }}
+          onClose={() => {
+            // Cancel discards the draft — a later ⌘S must not resurrect it.
+            liveLinkDraftRef.current = null;
+            setLiveLinkDesignerOpen(false);
+          }}
+        />
+      )}
       {(() => {
         if (!exportApp) return null;
         const node = nodes.find((n) => n.id === exportApp.outputNodeId);
@@ -12266,6 +13511,48 @@ function EffectsShell({
         onCancel={() => setPendingVisibility(null)}
         onConfirm={handleConfirmVisibility}
       />
+      <SaveConflictModal
+        open={!!saveConflict}
+        projectName={saveConflict?.name ?? ""}
+        updatedByName={saveConflict?.updatedByName ?? null}
+        updatedAt={saveConflict?.updatedAt ?? null}
+        busy={saveConflictBusy}
+        onSaveCopy={handleConflictSaveCopy}
+        onOverwrite={handleConflictOverwrite}
+        onDiscard={handleConflictDiscard}
+        onCancel={() => {
+          if (!saveConflictBusy) setSaveConflict(null);
+        }}
+      />
+      {collabTarget && (
+        <CollaboratorsModal
+          projectId={collabTarget.id}
+          projectName={collabTarget.name}
+          onClose={() => setCollabTarget(null)}
+        />
+      )}
+      {recoveryOpen && (
+        <RecoveryModal
+          onRestore={(s) => void handleRestoreRecovery(s)}
+          onClose={() => setRecoveryOpen(false)}
+        />
+      )}
+      {lease.heldDialog && (
+        <LeaseHeldDialog
+          holderName={lease.heldDialog.holderName}
+          renewedAt={lease.heldDialog.renewedAt}
+          busy={lease.busy}
+          onOpenAnyway={lease.openAnyway}
+          onTakeOver={() => void lease.takeOver()}
+        />
+      )}
+      {lease.banner && (
+        <LeaseBanner
+          kind={lease.banner.kind}
+          name={lease.banner.name}
+          onDismiss={lease.dismissBanner}
+        />
+      )}
       <NewProjectConfirm
         open={newConfirmOpen}
         canSave={signedIn}
@@ -12284,6 +13571,54 @@ function EffectsShell({
           onClose={() => setNewLayoutPresetOpen(false)}
           onSave={saveLayoutPreset}
           existingNames={layoutPresets.map((p) => p.name)}
+        />
+      )}
+      {saveNodePresetTarget && (
+        <PresetNameModal
+          title="Save node as preset"
+          description="Saves this node exactly as it is — values, keyframes, media — to your presets in the add menu."
+          initialName={(() => {
+            const n = nodes.find((n) => n.id === saveNodePresetTarget);
+            return n ? (n.data.displayName ?? n.data.name) : "";
+          })()}
+          existingNames={userNodePresets.map((p) => p.name)}
+          onClose={() => setSaveNodePresetTarget(null)}
+          onSave={async (name) => {
+            // Fragment captured NOW, not at menu time — same expansion as
+            // the copy path, so group/iterate shells bring their interiors.
+            // Selection/active flags are stripped so inserting the preset
+            // never steals the viewport.
+            const live = nodesRef.current.find(
+              (n) => n.id === saveNodePresetTarget
+            );
+            if (!live) throw new Error("Node no longer exists.");
+            const existing = getUserNodePresets();
+            const replacing = existing.some(
+              (p) => p.name.toLowerCase() === name.toLowerCase()
+            );
+            if (!replacing && existing.length >= MAX_NODE_PRESETS)
+              throw new Error(
+                `Preset limit reached (${MAX_NODE_PRESETS}) — delete one from the add menu first.`
+              );
+            const ids = expandWithDescendants(nodesRef.current, [live.id]);
+            const fragNodes = nodesRef.current
+              .filter((n) => ids.has(n.id))
+              .map((n) => ({
+                ...n,
+                selected: false,
+                data: { ...n.data, active: false, active2: false },
+              }));
+            const fragEdges = edgesRef.current.filter(
+              (e) => ids.has(e.source) && ids.has(e.target)
+            );
+            const saved = await serializeGraph(fragNodes, fragEdges);
+            if (JSON.stringify(saved).length > MAX_NODE_PRESET_JSON)
+              throw new Error(
+                "Preset too large — its embedded media exceeds the 4 MB cap."
+              );
+            upsertUserNodePreset(name, saved);
+            flashToast(`saved preset "${name}"`);
+          }}
         />
       )}
       {/* First-load gateway. Mounts over the editor; picking a project
@@ -12322,12 +13657,16 @@ function EffectsShell({
 // Mirrors the branching in handleSave so the button's effect isn't
 // a surprise.
 function newSaveHint(
-  currentProject: { name: string; ownerId: string } | null,
+  currentProject: {
+    name: string;
+    ownerId: string;
+    sharedWithMe?: boolean;
+  } | null,
   userId: string | undefined
 ): string {
   if (!currentProject) return "You'll be prompted for a name first.";
   const isMine = !!userId && currentProject.ownerId === userId;
-  if (!isMine) {
+  if (!isMine && !currentProject.sharedWithMe) {
     return `Saving will fork a private copy named "${currentProject.name}_copy".`;
   }
   return `Save will overwrite "${currentProject.name}".`;
@@ -13098,13 +14437,193 @@ function StaggerControl({ ticksPerFrame }: { ticksPerFrame: number }) {
   );
 }
 
+// Even-spacing control — the square button beside the stagger one
+// (three vertical ticks). Clicking pops a panel with a frames field and
+// a Set button: Set (or Enter) re-spaces the selected keyframes so
+// consecutive keyframe columns sit exactly that many frames apart, the
+// earliest keyframe staying put. Drives the editors over the same
+// window CustomEvent contract as stagger: "keyframe-space-begin" makes
+// whichever editor owns a ≥2-distinct-tick selection snapshot it and
+// respond with the current gap (pre-filling the field),
+// "keyframe-space" applies from that snapshot, "keyframe-space-end"
+// drops it. Unlike stagger the value doesn't apply live — only Set
+// commits, per the deliberate type-a-number workflow this is for.
+function SpacingControl({ ticksPerFrame }: { ticksPerFrame: number }) {
+  const [open, setOpen] = useState(false);
+  const [frames, setFrames] = useState(1);
+  const [hasEffect, setHasEffect] = useState(false);
+  const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(
+    null
+  );
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const popRef = useRef<HTMLDivElement | null>(null);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    broadcastAppEvent(() => new CustomEvent("keyframe-space-end"));
+  }, []);
+
+  const toggle = () => {
+    if (open) {
+      close();
+      return;
+    }
+    // The owning editor responds synchronously (see StaggerControl) with
+    // the selection's current first-gap in frames; -1 = no editor claimed
+    // the gesture (selection has fewer than two distinct ticks).
+    let current = -1;
+    broadcastAppEvent(
+      () =>
+        new CustomEvent("keyframe-space-begin", {
+          detail: { respond: (spacingFrames: number) => (current = spacingFrames) },
+        })
+    );
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setAnchor({ left: r.left, top: r.top });
+    setHasEffect(current >= 0);
+    setFrames(current >= 0 ? current : 1);
+    setOpen(true);
+  };
+
+  const apply = (v: number) => {
+    if (!hasEffect) return;
+    broadcastAppEvent(
+      () =>
+        new CustomEvent("keyframe-space", {
+          detail: { stepTicks: Math.max(1, Math.round(v)) * ticksPerFrame },
+        })
+    );
+    close();
+  };
+
+  // Click-outside closes without applying.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as globalThis.Node;
+      if (!rootRef.current?.contains(t) && !popRef.current?.contains(t)) {
+        close();
+      }
+    };
+    const id = window.setTimeout(
+      () => window.addEventListener("mousedown", onDown),
+      0
+    );
+    return () => {
+      window.clearTimeout(id);
+      window.removeEventListener("mousedown", onDown);
+    };
+  }, [open, close]);
+
+  return (
+    <div ref={rootRef} style={{ position: "relative" }}>
+      <button
+        ref={btnRef}
+        type="button"
+        title="Evenly space selected keyframes"
+        onClick={toggle}
+        style={{
+          width: DOCK_CTRL_H,
+          height: DOCK_CTRL_H,
+          boxSizing: "border-box",
+          borderRadius: DOCK_RADIUS_INNER,
+          background: open ? "var(--tb-a-navy-deep)" : "var(--tb-n-0)",
+          border: `1px solid ${open ? "var(--tb-a-navy-tint)" : "var(--tb-n-7)"}`,
+          color: open ? "var(--tb-a-blue-200)" : "var(--tb-n-12)",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 0,
+        }}
+      >
+        <svg width={12} height={12} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
+          <line x1={2} y1={3} x2={2} y2={9} />
+          <line x1={6} y1={3} x2={6} y2={9} />
+          <line x1={10} y1={3} x2={10} y2={9} />
+        </svg>
+      </button>
+      {open && anchor &&
+        createPortal(
+          <div
+            ref={popRef}
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              position: "fixed",
+              left: anchor.left,
+              top: anchor.top - 6,
+              transform: "translateY(-100%)",
+              zIndex: 1000,
+              background: "var(--tb-n-3)",
+              border: "1px solid var(--tb-n-7)",
+              borderRadius: 6,
+              boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+              padding: 8,
+              width: 160,
+            }}
+          >
+          <div
+            style={{
+              color: "var(--tb-n-11)",
+              fontSize: 9,
+              textTransform: "uppercase",
+              letterSpacing: 1,
+              marginBottom: 6,
+            }}
+          >
+            Spacing
+          </div>
+          {hasEffect ? (
+            <div style={{ display: "flex", gap: 6, alignItems: "stretch" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <StaggerNumber
+                  value={frames}
+                  onChange={setFrames}
+                  onSubmit={apply}
+                />
+              </div>
+              <button
+                type="button"
+                title="Move the selected keyframes to this spacing"
+                onClick={() => apply(frames)}
+                style={{
+                  background: "var(--tb-a-navy-deep)",
+                  border: "1px solid var(--tb-a-navy-tint)",
+                  color: "var(--tb-a-blue-200)",
+                  borderRadius: 4,
+                  fontFamily: "var(--ui-font)",
+                  fontSize: 10,
+                  padding: "0 8px",
+                  cursor: "pointer",
+                }}
+              >
+                Set
+              </button>
+            </div>
+          ) : (
+            <div style={{ color: "var(--tb-n-10)", fontSize: 10, lineHeight: 1.4 }}>
+              Select two or more keyframes first.
+            </div>
+          )}
+          </div>,
+          document.body
+        )}
+    </div>
+  );
+}
+
 // Compact frames field: drag horizontally to scrub, or click to type.
+// `onSubmit` (optional) fires on Enter with the committed value — for
+// panels where Enter should also apply, not just finish typing.
 function StaggerNumber({
   value,
   onChange,
+  onSubmit,
 }: {
   value: number;
   onChange: (v: number) => void;
+  onSubmit?: (v: number) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(String(value));
@@ -13147,7 +14666,17 @@ function StaggerNumber({
       onChange={(e) => setText(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        if (e.key === "Enter") {
+          if (onSubmit) {
+            const n = parseInt(text, 10);
+            const v = Number.isFinite(n) ? n : 0;
+            onChange(v);
+            setEditing(false);
+            onSubmit(v);
+          } else {
+            (e.target as HTMLInputElement).blur();
+          }
+        }
         if (e.key === "Escape") setEditing(false);
       }}
       style={{
@@ -13327,19 +14856,30 @@ function DockButton({
 // opens from File → Project Settings…. Sized and coloured to match the
 // PanelKindMenu chip it shares the strip with; `active` reuses DockButton's
 // navy-on-blue treatment so "you are here" reads the same everywhere.
-function ProjectSettingsChip({
+// Shared shell for the Parameters-header shortcut chips (Projects folder,
+// Project Settings gear). `pushRight` marks the first chip of the
+// right-aligned group; the rest sit flush after it.
+function ParamHeaderChip({
+  title,
+  ariaLabel,
   active,
+  pushRight,
   onClick,
+  children,
 }: {
+  title: string;
+  ariaLabel: string;
   active: boolean;
-  onClick: () => void;
+  pushRight?: boolean;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  children: React.ReactNode;
 }) {
   const [hover, setHover] = useState(false);
   return (
     <button
       type="button"
-      title={active ? "Close Project Settings" : "Project Settings"}
-      aria-label="Project Settings"
+      title={title}
+      aria-label={ariaLabel}
       aria-pressed={active}
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
@@ -13348,8 +14888,7 @@ function ProjectSettingsChip({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        // Pushes the chip to the far right of the header strip.
-        marginLeft: "auto",
+        marginLeft: pushRight ? "auto" : 3,
         width: 19,
         height: 17,
         boxSizing: "border-box",
@@ -13377,6 +14916,55 @@ function ProjectSettingsChip({
         transition: "background 80ms, border-color 80ms, color 80ms",
       }}
     >
+      {children}
+    </button>
+  );
+}
+
+function ProjectsChip({
+  active,
+  onClick,
+}: {
+  active: boolean;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <ParamHeaderChip
+      title={active ? "Close Projects" : "Projects"}
+      ariaLabel="Projects"
+      active={active}
+      pushRight
+      onClick={onClick}
+    >
+      {/* The pie menu's ProjectsIcon folder, halved to the chip's 12px grid. */}
+      <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden>
+        <path
+          d="M1.5 3.5a1 1 0 0 1 1-1h2l1 1h3a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H2.5a1 1 0 0 1-1-1z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.1}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </ParamHeaderChip>
+  );
+}
+
+function ProjectSettingsChip({
+  active,
+  onClick,
+}: {
+  active: boolean;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <ParamHeaderChip
+      title={active ? "Close Project Settings" : "Project Settings"}
+      ariaLabel="Project Settings"
+      active={active}
+      onClick={onClick}
+    >
       <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden>
         <g
           fill="none"
@@ -13390,7 +14978,7 @@ function ProjectSettingsChip({
           <path d="M9.5 6h1.4M2.5 6H1.1M7.75 2.97l.7-1.21M4.25 2.97l-.7-1.21M4.25 9.03l-.7 1.21M7.75 9.03l.7 1.21" />
         </g>
       </svg>
-    </button>
+    </ParamHeaderChip>
   );
 }
 

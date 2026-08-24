@@ -31,12 +31,23 @@ grandfathered). Never re-baseline to make your own new errors pass — fix them.
 change touches shaders or real rendering, they will pass while the app is
 broken — use `check:shaders` or the live app.
 
+**Calling `def.compute()` directly bypasses the evaluator's wire coercion.**
+In the app every wired value goes through `coerceValue(value, socketType)`
+first (evaluator.ts) — a node-level test that hands values straight to
+compute can pass while the live node receives `undefined` (this shipped a
+"3D Copy to Points renders nothing" bug: 3D points values carry kind
+"points" but ride `points3d` sockets, and coerceValue had no routing for
+that pair). Offline node tests should push each input through
+`coerceValue` with the socket's resolved type.
+
 ### Which check guards what
 
 - `check-validator/builder/edit/*-loop`, `check-mcp` — the AI-recipe and MCP
   trust boundary.
 - `check-persistence`, `check-graph-ops`, `check-fragment-roundtrip` — save
   format and structural graph edits.
+- `check-node-presets` — user node presets ("Save as Preset"): fragment
+  round trip + the untrusted-JSON sanitize gate.
 - `check-kernel`, `check-sim-preroll` — the vector kernel and simulation
   pre-roll predicate.
 - `check-profiler` — the perf collector: ring-buffer wrap, recompute-reason

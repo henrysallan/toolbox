@@ -32,6 +32,10 @@ export const sceneMergeNode: NodeDefinition = {
   category: "3d",
   description: "Combines several 3D objects into one group for the 3D Scene node.",
   backend: "webgl2",
+  // Retired from the menu in favor of Combine's "object" mode (081026
+  // spec §3.1) — same reconciliation, dynamic 1–26 inputs. Registration
+  // stays for saved projects (back-compat invariant #2).
+  hidden: true,
   noMaskInput: true,
   inputs: SLOT_INPUTS,
   params: [],

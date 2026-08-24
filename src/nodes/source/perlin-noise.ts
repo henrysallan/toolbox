@@ -1,6 +1,7 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
   NodeDefinition,
+  NoiseFieldValue,
   PositionNode,
   PositionValue,
   ScalarFieldValue,
@@ -754,6 +755,13 @@ export const perlinNoiseNode: NodeDefinition = {
       description:
         "Per-pixel scalar shader expression. Sampled at `field_position` (defaults to canvas UV). Wire into SDF Rotate.angle_field / SDF Twist.strength_field for per-pixel modulation; pair with SDF Repeat.cell_id for per-tile variation. Output is remapped through Field Lo / Field Hi.",
     },
+    {
+      name: "field3d",
+      type: "noise_field",
+      label: "3D field",
+      description:
+        "The same noise as a WORLD-space 3D field — true 3D noise sharing this node's type/scale/octaves/seed, with W as evolution. Wire into Instance Transform's noise input to weight per-copy motion spatially; one world unit spans `scale` noise units.",
+    },
   ],
 
   compute({ inputs, params, ctx, nodeId }) {
@@ -919,6 +927,21 @@ export const perlinNoiseNode: NodeDefinition = {
       aux: {
         value: { kind: "scalar", value: valueScalar },
         field: fieldOut,
+        // The 3D face (spec M6.5): same params, world-space CPU field.
+        // Animated-loop evolution folds into the offset (the same circle
+        // walk the image path uses); manual W rides the slice-blend.
+        field3d: {
+          kind: "noise_field",
+          noiseType: (params.type as string) ?? "simplex",
+          scale,
+          octaves,
+          persistence,
+          lacunarity,
+          offset: [offX + animOffX, offY + animOffY],
+          seed,
+          w: effW,
+          contrast,
+        } satisfies NoiseFieldValue,
       },
     };
   },

@@ -114,6 +114,9 @@ export const audioSourceNode: NodeDefinition = {
   // of-band with params. Always re-evaluate so play/pause tracks
   // ctx.playing.
   stable: false,
+  // One element / one mic stream / one Tone transport — live external
+  // state. Time Offset boundary-feeds the outer value through un-shifted.
+  retimeable: false,
   inputs: [],
   params: [
     {

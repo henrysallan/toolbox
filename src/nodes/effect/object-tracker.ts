@@ -255,6 +255,9 @@ export const objectTrackerNode: NodeDefinition = {
   // contents, not just params. Also needs a time-bump so downstream
   // nodes see fresh results on every eval.
   stable: false,
+  // IoU identity matching accumulates across evals — history state. Time
+  // Offset boundary-feeds the current detections through un-shifted.
+  retimeable: false,
   inputs: [{ name: "image", type: "image", required: true }],
   params: [
     {

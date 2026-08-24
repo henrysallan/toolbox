@@ -23,6 +23,10 @@ import {
   SWITCH_TYPE,
   switchTypeIsAuto,
 } from "./graph-helpers";
+import {
+  TIME_OFFSET_CARRIED_TYPES,
+  TIME_OFFSET_TYPE,
+} from "./time-offset";
 import { withMaskInput } from "./conventions";
 
 // Minimal structural node shape — both the engine GraphNode ({id, type, params})
@@ -102,6 +106,18 @@ export function editorCanCoerce(
   // Displace). Its resting type reads "image" before anything connects, so
   // without this a spline/points/etc. couldn't land on a fresh reroute.
   if (targetDefType === REROUTE_TYPE) return true;
+  // Time Offset's `in` socket adopts any carried type (resolveInputs
+  // retyping like Reroute, restricted to TIME_OFFSET_CARRIED_TYPES — the
+  // values a shifted nested pass can safely hand across its boundary).
+  // The resting type reads "scalar" before anything connects; this is
+  // what lets the node splice onto any carried wire.
+  if (
+    targetDefType === TIME_OFFSET_TYPE &&
+    targetHandle === "in:in" &&
+    TIME_OFFSET_CARRIED_TYPES.includes(src as SocketType)
+  ) {
+    return true;
+  }
   // Math accepts UV even while in scalar mode — onConnect flips the mode
   // param so the socket becomes properly typed on the next render.
   if (targetDefType === "math" && src === "uv" && tgt === "scalar") return true;
@@ -127,6 +143,16 @@ export function editorCanCoerce(
     (src === "spline" || src === "points")
   )
     return true;
+  // Bounding Box's `source` socket is polymorphic like Transform's — it
+  // accepts image, mask, spline, or points and retypes from connectedTypes;
+  // the socket reads "image" before anything connects (mask already lands
+  // through the mask→image entry in the type table).
+  if (
+    targetDefType === "bounding-box" &&
+    targetHandle === "in:source" &&
+    (src === "spline" || src === "points")
+  )
+    return true;
   // Mirror's `source` socket rests as spline but accepts points — it
   // retypes itself (and its output) from connectedTypes like Transform.
   if (
@@ -143,6 +169,55 @@ export function editorCanCoerce(
     targetDefType === "scatter-points" &&
     targetHandle === "in:density" &&
     src === "spline"
+  )
+    return true;
+  // Filter Points' `points` socket accepts BOTH point families and retypes
+  // itself + its output from connectedTypes (081026 spec §2.3 — the
+  // in-place polymorphic upgrade pattern for point utilities). Both
+  // directions listed because the resting type follows the current wire:
+  // a points3d wire must land while the socket reads "points" and vice
+  // versa when re-wiring.
+  if (
+    targetDefType === "filter-points" &&
+    targetHandle === "in:points" &&
+    (src === "points" || src === "points3d")
+  )
+    return true;
+  // 3D Scatter Points' `source` rests as geometry but accepts a placed
+  // object3d (imported GLB, group) — it traverses the meshes inside.
+  // (geometry always lands via the geometry→object3d table entry when the
+  // socket reads object3d.)
+  if (
+    targetDefType === "scatter-points-3d" &&
+    targetHandle === "in:source" &&
+    src === "object3d"
+  )
+    return true;
+  // 3D Copy to Points' `points` socket rests as points3d but accepts 2D
+  // points — the explicit authored→world plane-mapping bridge (081026
+  // spec §4.2). Both directions, same re-wiring logic as Filter Points.
+  if (
+    targetDefType === "copy-to-points-3d" &&
+    targetHandle === "in:points" &&
+    (src === "points" || src === "points3d")
+  )
+    return true;
+  // Transform 3D's `source` accepts geometry OR an instance stream and
+  // retypes itself + its output to match (spec M6). Both directions, same
+  // re-wiring logic as Filter Points.
+  if (
+    targetDefType === "transform-3d" &&
+    targetHandle === "in:source" &&
+    (src === "geometry" || src === "instances")
+  )
+    return true;
+  // Points on Path's `path` accepts a 3D curve and retypes itself + its
+  // output to points3d (spec M11). Both directions for re-wiring, same
+  // logic as Filter Points.
+  if (
+    targetDefType === "points-on-path" &&
+    targetHandle === "in:path" &&
+    (src === "spline" || src === "curve3d")
   )
     return true;
   return false;

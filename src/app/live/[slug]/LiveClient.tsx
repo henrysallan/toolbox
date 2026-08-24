@@ -4,6 +4,8 @@ import { useMemo } from "react";
 import dynamic from "next/dynamic";
 import type { SavedProject } from "@/lib/project";
 import { buildExportManifest } from "@/lib/export-manifest";
+import { fromSavedLiveDesign } from "@/lib/live-viewer/design";
+import { LiveRoot } from "@/lib/live-viewer/live-root";
 import { registerAllNodes } from "@/nodes";
 import "@/lib/live-viewer/styles.css";
 
@@ -87,34 +89,50 @@ export default function LiveClient({ slug, name, authorName, graph }: Props) {
       target: e.target,
       targetHandle: e.targetHandle ?? undefined,
     }));
+    // The project's real resolution rides SavedScene.width/height (the
+    // top-level compat mirror of the active composition's scene, written
+    // on every save). 1024² only for saves genuinely predating it.
+    const scene = graph.scene;
+    const canvasRes: [number, number] =
+      scene?.width !== undefined && scene?.height !== undefined
+        ? [scene.width, scene.height]
+        : [1024, 1024];
     const built = buildExportManifest({
       nodes,
       edges,
       appName: name,
       outputNodeId,
-      // The saved graph doesn't carry canvas resolution today (it lives
-      // in editor state, not the project). Default to 1024² — the same
-      // value the editor seeds new projects with.
-      canvasRes: [1024, 1024],
+      canvasRes,
     });
+    // Live-link design (081426_live-link-designer.md): validated as an
+    // untrusted blob (this is a public row) and threaded onto the
+    // manifest — the only place the viewer reads it from. Absent →
+    // undefined → the viewer's built-in defaults.
+    if (graph.liveDesign != null) {
+      built.manifest.design = fromSavedLiveDesign(graph.liveDesign);
+      // The author's canvas-size override (designer Export section)
+      // retargets the whole viewer — render and capture.
+      const res = built.manifest.design.export.resolution;
+      if (res) built.manifest.canvasRes = res;
+    }
     return built.manifest;
   }, [graph, name, outputNodeId]);
 
   if (!outputNodeId || !manifest) {
     return (
-      <main className="live-root">
+      <LiveRoot>
         <div className="fatal">
           This patch has no terminal output to render.
         </div>
-      </main>
+      </LiveRoot>
     );
   }
 
   return (
-    <main className="live-root">
+    <LiveRoot design={manifest.design}>
       <LiveViewer graph={graph} manifest={manifest} />
       <ShareCorner slug={slug} name={name} authorName={authorName} />
-    </main>
+    </LiveRoot>
   );
 }
 

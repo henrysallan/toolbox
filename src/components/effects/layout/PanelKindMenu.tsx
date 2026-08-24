@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { isAgentAvailable } from "@/lib/agent-bridge";
 import { PANEL_KINDS, PANEL_LABELS, type PanelKind } from "./model";
 
 // The per-panel editor-kind switcher (Blender's editor-type dropdown):
@@ -46,6 +47,23 @@ function KindIcon({ kind }: { kind: PanelKind }) {
       <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden>
         <path d="M1 10.2h10" {...common} />
         <path d="M1.4 8.4l1.8-.2 1.4-3.2L6.2 2l1.5 5.2 1.3-1.4 1.6-.2" {...common} />
+      </svg>
+    );
+  }
+  if (kind === "spreadsheet") {
+    // A header row over a 2×3 cell grid.
+    return (
+      <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden>
+        <rect x={1} y={1.5} width={10} height={9} rx={1} {...common} />
+        <path d="M1 4.2h10M1 7.2h10M5.2 4.2v6.3" {...common} />
+      </svg>
+    );
+  }
+  if (kind === "assistant") {
+    // The four-point sparkle used everywhere else the assistant appears.
+    return (
+      <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden>
+        <path d="M6 1l.9 3.1L10 5l-3.1.9L6 9l-.9-3.1L2 5l3.1-.9z" {...common} />
       </svg>
     );
   }
@@ -206,7 +224,14 @@ export function PanelKindMenu({
             minWidth: 130,
           }}
         >
-          {PANEL_KINDS.map((kind) => {
+          {/* Filtered here, NOT in PANEL_KINDS: that list is also what the
+              layout validators check against, so dropping "assistant" from it
+              would make a browser reject an entire layout tree saved on the
+              desktop app (model.ts documents that fallback). Hide the choice;
+              keep the kind legal. */}
+          {PANEL_KINDS.filter(
+            (kind) => kind !== "assistant" || isAgentAvailable() || kind === value
+          ).map((kind) => {
             const active = kind === value;
             const disabled = !active && !!disabledReason?.[kind];
             return (

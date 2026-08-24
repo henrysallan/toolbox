@@ -3,6 +3,10 @@
 import { useMemo } from "react";
 import { allNodeDefs } from "@/engine/registry";
 import { PRESETS } from "@/state/presets";
+import {
+  removeUserNodePreset,
+  useUserNodePresets,
+} from "@/state/node-presets";
 import type { NodeCategory, NodeSubcategory } from "@/engine/types";
 
 // Menu-bar dropdown that enumerates every registered node. Typed
@@ -69,6 +73,7 @@ const TYPED_CATEGORIES: ReadonlySet<NodeCategory> = new Set([
 ]);
 
 export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
+  const userPresets = useUserNodePresets();
   const entries = useMemo<NodeEntry[]>(() => {
     // Strict root: only layers (the compositing chain) and Render Queue
     // (a batch organizer) live at root scope. "layer" is a compound the
@@ -178,10 +183,12 @@ export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
           </div>
         );
       })}
-      {/* Presets: canned subgraphs (node-groups). A separate column — these
-          aren't node defs, so they sit outside the NodeCategory machinery.
-          Shown at root too: onAddNode auto-wraps them into a new layer. */}
-      {PRESETS.length > 0 && (
+      {/* Presets: canned subgraphs (node-groups), then the user's saved
+          node presets (081226_user-node-presets.md). A separate column —
+          these aren't node defs, so they sit outside the NodeCategory
+          machinery. Shown at root too: onAddNode auto-wraps them into a
+          new layer. */}
+      {(PRESETS.length > 0 || userPresets.length > 0) && (
         <div
           key="presets"
           style={{ minWidth: 150, display: "flex", flexDirection: "column" }}
@@ -199,6 +206,17 @@ export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
                   onAdd(`preset:${p.id}`);
                   onClose();
                 }}
+              />
+            ))}
+            {userPresets.map((p) => (
+              <NodeRow
+                key={p.id}
+                label={p.name}
+                onClick={() => {
+                  onAdd(`user-preset:${p.id}`);
+                  onClose();
+                }}
+                onDelete={() => removeUserNodePreset(p.id)}
               />
             ))}
           </div>
@@ -284,9 +302,13 @@ function SubHeader({ children }: { children: React.ReactNode }) {
 function NodeRow({
   label,
   onClick,
+  onDelete,
 }: {
   label: string;
   onClick: () => void;
+  // User-preset rows only: renders a trailing × that deletes the preset
+  // instead of inserting it.
+  onDelete?: () => void;
 }) {
   return (
     <button
@@ -296,7 +318,9 @@ function NodeRow({
         (e.currentTarget.style.background = "transparent")
       }
       style={{
-        display: "block",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
         width: "100%",
         padding: "3px 10px",
         background: "transparent",
@@ -307,12 +331,44 @@ function NodeRow({
         fontSize: 11,
         cursor: "default",
         borderRadius: 3,
-        whiteSpace: "nowrap",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
       }}
     >
-      {label}
+      <span
+        style={{
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {label}
+      </span>
+      {onDelete && (
+        <span
+          title="Delete preset"
+          onClick={(e) => {
+            // The row button's onClick would insert the preset.
+            e.stopPropagation();
+            onDelete();
+          }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLSpanElement).style.color =
+              "var(--tb-a-red-500)";
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLSpanElement).style.color =
+              "var(--tb-n-10)";
+          }}
+          style={{
+            color: "var(--tb-n-10)",
+            fontSize: 11,
+            lineHeight: 1,
+            padding: "0 2px",
+            marginLeft: 8,
+          }}
+        >
+          ×
+        </span>
+      )}
     </button>
   );
 }

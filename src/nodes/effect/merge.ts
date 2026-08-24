@@ -116,6 +116,11 @@ export interface MergeLayer {
   // Optional/undefined = enabled, so old saves (which never wrote it) keep
   // compositing every layer.
   enabled?: boolean;
+  // Inverts this layer's wired mask (coverage becomes 1 − mask). Only takes
+  // effect when a mask is actually connected — an absent matte stays full
+  // coverage, so the toggle is inert on unmasked layers rather than blanking
+  // them. Optional/undefined = off (old saves never wrote it).
+  maskInvert?: boolean;
 }
 
 export const BLIT_FS = `#version 300 es
@@ -290,7 +295,13 @@ export function fusedMergeFs(n: number): string {
   const steps = Array.from({ length: n }, (_, i) => `
   {
     vec4 b = texture(u_layer${i}, v_uv);
-    float m = u_hasMatte[${i}] == 1 ? texture(u_matte${i}, v_uv).r : 1.0;
+    float m = 1.0;
+    if (u_hasMatte[${i}] == 1) {
+      m = texture(u_matte${i}, v_uv).r;
+      // Invert lives INSIDE the hasMatte branch: flipping the no-matte
+      // fallback (1.0) would silently blank the whole layer.
+      if (u_invMatte[${i}] == 1) m = 1.0 - m;
+    }
     acc = compositeOver(acc, b, u_opacity[${i}], m, u_mode[${i}]);
   }`).join("");
   return `#version 300 es
@@ -303,6 +314,7 @@ ${samplers}
 uniform float u_opacity[${n}];
 uniform int u_mode[${n}];
 uniform int u_hasMatte[${n}];
+uniform int u_invMatte[${n}];
 out vec4 outColor;
 ${BLEND_MODE_GLSL}
 void main() {
@@ -363,7 +375,8 @@ export const mergeNode: NodeDefinition = {
     "carries its own mask input underneath — the matte for that layer " +
     "(multiplies its per-pixel coverage, like a track matte). In AI " +
     "recipes/edits: size the stack by setting `layers` to " +
-    "[{mode, opacity}, …] (ids are minted automatically), and wire inputs " +
+    "[{mode, opacity, maskInvert?}, …] (ids are minted automatically; " +
+    "maskInvert flips a wired mask's coverage), and wire inputs " +
     "ordinally — layer1, layer2, … (mask1, mask2, … for the mattes) — " +
     "they resolve to the real per-layer sockets, growing the stack when " +
     "layerN points past the end.",
@@ -486,7 +499,7 @@ export const mergeNode: NodeDefinition = {
       const isLastChunk = start + perPass >= connected.length;
       const dest = isLastChunk ? output : ctx.allocImage();
       const n = chunk.length;
-      const prog = ctx.getShader(`merge/fused-v1-${n}`, fusedMergeFs(n));
+      const prog = ctx.getShader(`merge/fused-v2-${n}`, fusedMergeFs(n));
       const applyBaseMatte = baseMatteePending;
 
       ctx.drawFullscreen(prog, dest, (gl) => {
@@ -510,6 +523,7 @@ export const mergeNode: NodeDefinition = {
         const opacities = new Float32Array(n);
         const modes = new Int32Array(n);
         const hasMatte = new Int32Array(n);
+        const invMatte = new Int32Array(n);
         for (let i = 0; i < n; i++) {
           const { layer, img, matte } = chunk[i];
           const imgUnit = 2 + i * 2;
@@ -523,10 +537,12 @@ export const mergeNode: NodeDefinition = {
           opacities[i] = layer.opacity;
           modes[i] = modeToInt(layer.mode);
           hasMatte[i] = matte ? 1 : 0;
+          invMatte[i] = layer.maskInvert ? 1 : 0;
         }
         gl.uniform1fv(gl.getUniformLocation(prog, "u_opacity"), opacities);
         gl.uniform1iv(gl.getUniformLocation(prog, "u_mode"), modes);
         gl.uniform1iv(gl.getUniformLocation(prog, "u_hasMatte"), hasMatte);
+        gl.uniform1iv(gl.getUniformLocation(prog, "u_invMatte"), invMatte);
       });
 
       baseMatteePending = false;

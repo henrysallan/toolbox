@@ -141,6 +141,12 @@ interface Props {
   // shells (no eval-cache entry to bake from), and reroutes.
   onMakeEditableNode?: (nodeId: string) => void;
   onDuplicateNode?: (nodeId: string) => void;
+  // Right-click → "Save as Preset…": the parent captures the node (+
+  // descendants) as a fragment and saves it to the user's preset list
+  // (081226_user-node-presets.md). NodeEditor owns only the menu gating —
+  // hidden for structural chrome (reroutes, frames, layer shells,
+  // group/iterate boundary nodes).
+  onSaveNodeAsPreset?: (nodeId: string) => void;
   onDuplicateSelection?: () => void;
   // Shift+M: wrap the currently selected image/mask-output nodes in a
   // new Merge node, wiring them in as base + layers. Parent owns the
@@ -288,6 +294,7 @@ function NodeEditor({
   onEditWithAINode,
   onMakeEditableNode,
   onDuplicateNode,
+  onSaveNodeAsPreset,
   onDuplicateSelection,
   onMergeSelection,
   onCopyNodes,
@@ -1610,6 +1617,60 @@ function NodeEditor({
     };
   }, [rfGetNodes, rfSetNodes, panelWin]);
 
+  // Select on press, not on release. React Flow only selects a node on a
+  // completed click or once a drag passes nodeDragThreshold; selecting here
+  // makes the node (and the param panel, via onSelectionChange) respond the
+  // moment the pointer goes down. Only an UNSELECTED node changes anything —
+  // a press on a member of a multi-selection must leave the selection intact
+  // so a group drag can follow, and the plain-click collapse to a single
+  // node still happens at mouseup via React Flow's own click handling. The
+  // event is left untouched, so React Flow runs its normal gesture and its
+  // own click/drag-start selection lands as a no-op on top of ours.
+  useEffect(() => {
+    const el = flowWrapperRef.current;
+    if (!el) return;
+    const onDown = (e: PointerEvent) => {
+      // The G-move commit press swallows its MOUSEdown (capture, above),
+      // but this fires on POINTERdown, before that swallow can protect us
+      // — an explicit gate keeps a commit over some background node from
+      // collapsing the G selection.
+      if (gMoveRef.current) return;
+      // Plain left press only — Shift belongs to the connect gesture
+      // above, Meta/Ctrl to additive multiselect (both resolve at
+      // release), other buttons to pan / context menu, which don't select.
+      if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey) return;
+      const targetEl = e.target as HTMLElement | null;
+      if (!targetEl) return;
+      // Same exclusions as the connect gesture — and like it, this runs in
+      // the capture phase, BEFORE node controls can stopPropagation, so
+      // the target check is the only thing keeping a slider grab or a
+      // socket drag from selecting the node.
+      if (targetEl.closest(".react-flow__handle")) return;
+      if (targetEl.closest(".nodrag")) return;
+      const nodeId = targetEl
+        .closest(".react-flow__node")
+        ?.getAttribute("data-id");
+      if (!nodeId) return;
+      if (rfGetNodes().find((n) => n.id === nodeId)?.selected) return;
+      rfSetNodes((nodes) =>
+        nodes.map((n) =>
+          n.id === nodeId
+            ? { ...n, selected: true }
+            : n.selected
+              ? { ...n, selected: false }
+              : n
+        )
+      );
+      // Node selection displaces edge selection, mirroring React Flow's
+      // click-select and the explicit onEdgeClick handler.
+      rfSetEdges((edges) =>
+        edges.map((ed) => (ed.selected ? { ...ed, selected: false } : ed))
+      );
+    };
+    el.addEventListener("pointerdown", onDown, true);
+    return () => el.removeEventListener("pointerdown", onDown, true);
+  }, [rfGetNodes, rfSetNodes, rfSetEdges]);
+
   // Open the node-search popup at a screen point, clamped into the
   // editor so a request from outside it (e.g. the pie menu opened over
   // the canvas) still lands somewhere sensible. Shared by Shift+A and
@@ -2893,6 +2954,26 @@ function NodeEditor({
                 }
               : undefined
           }
+          onSaveAsPreset={(() => {
+            if (!onSaveNodeAsPreset) return undefined;
+            const d = nodes.find((n) => n.id === contextMenu.nodeId)?.data;
+            if (!d) return undefined;
+            // Structural chrome isn't a meaningful standalone preset:
+            // reroutes/frames are wiring cosmetics, layer shells only live
+            // in the root chain, boundary nodes only inside their shells.
+            // Group / Iterate shells ARE offered — the parent expands the
+            // capture with their descendants so the interior travels.
+            if (
+              d.defType === REROUTE_TYPE ||
+              d.defType === FRAME_TYPE ||
+              d.defType === LAYER_TYPE ||
+              d.defType === GROUP_INPUT_TYPE ||
+              d.defType === GROUP_OUTPUT_TYPE ||
+              d.defType === ITERATE_INPUT_TYPE
+            )
+              return undefined;
+            return () => onSaveNodeAsPreset(contextMenu.nodeId);
+          })()}
           onDetach={
             onDetachNode
               ? () => {
@@ -2943,6 +3024,7 @@ function NodeContextMenu({
   onCopy,
   onPaste,
   onDuplicate,
+  onSaveAsPreset,
   onDetach,
   onEditWithAI,
   onMakeEditable,
@@ -2957,6 +3039,7 @@ function NodeContextMenu({
   onCopy?: () => void;
   onPaste?: () => void;
   onDuplicate?: () => void;
+  onSaveAsPreset?: () => void;
   onDetach?: () => void;
   onEditWithAI?: () => void;
   onMakeEditable?: () => void;
@@ -3008,6 +3091,11 @@ function NodeContextMenu({
     { label: "Copy", shortcut: "⌘C", onClick: onCopy },
     { label: "Paste", shortcut: "⌘V", onClick: onPaste },
     { label: "Duplicate", onClick: onDuplicate },
+    // Only offered on nodes that make sense standalone (gating at the
+    // call site) — saves the node as-is into the user's preset list.
+    ...(onSaveAsPreset
+      ? [{ label: "Save as Preset…", onClick: onSaveAsPreset }]
+      : []),
     { label: "Detach", shortcut: "⌘-drag", onClick: onDetach },
     // Bold outline toggle — check shows the clicked node's current state.
     ...(onToggleBold

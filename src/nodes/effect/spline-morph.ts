@@ -1,25 +1,55 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
 import type {
+  InputSocketDef,
   NodeDefinition,
   OutputSocketDef,
   RenderContext,
+  SocketType,
   SplineValue,
 } from "@/engine/types";
 import { buildPath2D, hexToRgba } from "@/engine/spline-raster";
 import {
-  buildMorphCorrespondence,
-  applyMorph,
+  buildMorphChain,
+  applyMorphChain,
   type MorphCorrespondence,
 } from "@/engine/spline-morph";
 
-// Morph (tween) between two splines. Both shapes are put into
+// Morph (tween) along a chain of splines. Adjacent shapes are put into
 // correspondence — resampled to a matched anchor count and aligned by
-// orientation + start vertex — then interpolated per anchor by Amount
-// (0 = A, 1 = B). Outputs the tweened spline, plus a rasterized image
-// when stroke or fill is enabled, exactly like the spline primitives.
+// orientation + start vertex — then interpolated per anchor by Amount.
+// Amount 0 is the first wired spline, 1 is the last; the 0..1 slider is
+// split evenly across the gaps (2 shapes → 0=A, 1=B; 3 → 0 / 0.5 / 1;
+// 4 → 0 / .33 / .66 / 1). Inputs auto-grow: A/B are the default sockets
+// (saved two-input projects keep their wires) and wiring the spare mints
+// the next. Outputs the tweened spline, plus a rasterized image when
+// stroke or fill is enabled, exactly like the spline primitives.
 //
 // Amount is a keyframable param and a wireable scalar input, so you can
 // drive the transition from a curve, an LFO, audio, anything.
+
+const DEFAULT_SLOTS = ["a", "b"];
+const FIXED_INPUTS = new Set(["amount", "mask"]);
+
+function readSlots(params: Record<string, unknown>): string[] {
+  const raw = params.slots;
+  return Array.isArray(raw) &&
+    raw.length > 0 &&
+    raw.every((x) => typeof x === "string") &&
+    !raw.some((x) => FIXED_INPUTS.has(x as string))
+    ? (raw as string[])
+    : DEFAULT_SLOTS;
+}
+
+// A, B, … Z, then S27, S28 — same ordinals as SDF Smooth Union.
+function slotLabel(i: number): string {
+  return i < 26 ? String.fromCharCode(65 + i) : `S${i + 1}`;
+}
+
+function sameInputs(a: SplineValue[], b: SplineValue[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 
 const BLIT_FS = `#version 300 es
 precision highp float;
@@ -35,17 +65,16 @@ const EMPTY_SPLINE: SplineValue = { kind: "spline", subpaths: [] };
 interface MorphState {
   rasterCanvas: HTMLCanvasElement;
   rasterTex: WebGLTexture | null;
-  // Correspondence depends only on the two shapes + resolution, not on
-  // Amount — cache it so animating Amount is just a per-anchor lerp.
-  // Shapes are compared by OBJECT IDENTITY: upstream re-renders hand us
-  // new SplineValue objects exactly when geometry changed (the evaluator
-  // caches otherwise), so identity invalidates precisely — and avoids
-  // JSON-stringifying potentially huge splines (e.g. SDF→Spline on
-  // video) every eval.
-  corrA: SplineValue | null;
-  corrB: SplineValue | null;
+  // Per-segment correspondences depend only on the shape chain +
+  // resolution, not on Amount — cache them so animating Amount is just a
+  // per-anchor lerp. Shapes are compared by OBJECT IDENTITY: upstream
+  // re-renders hand us new SplineValue objects exactly when geometry
+  // changed (the evaluator caches otherwise), so identity invalidates
+  // precisely — and avoids JSON-stringifying potentially huge splines
+  // (e.g. SDF→Spline on video) every eval.
+  corrInputs: SplineValue[];
   corrRes: number;
-  corr: MorphCorrespondence;
+  corrs: MorphCorrespondence[];
   // Bumped on every correspondence rebuild — stands in for the result
   // geometry in the raster signature (corrGen + amount fully determine
   // the morphed shape), so the sig never serializes anchor data.
@@ -69,10 +98,9 @@ function ensureState(ctx: RenderContext, nodeId: string): MorphState {
   const s: MorphState = {
     rasterCanvas: document.createElement("canvas"),
     rasterTex: tex,
-    corrA: null,
-    corrB: null,
+    corrInputs: [],
     corrRes: 0,
-    corr: [],
+    corrs: [],
     corrGen: 0,
     lastRasterSig: null,
   };
@@ -86,13 +114,30 @@ export const splineMorphNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Morph (tween) between two splines by Amount (0 = A, 1 = B). Shapes are auto-aligned by orientation and start vertex; surplus subpaths grow/shrink from a point. Outputs a spline, plus an image when stroke or fill is on.",
+    "Morph (tween) between two or more splines by Amount (0 = first, 1 = last). Extra spline sockets auto-grow; Amount is split evenly across the chain (3 shapes → 0 / 0.5 / 1). Shapes are auto-aligned by orientation and start vertex; surplus subpaths grow/shrink from a point. Outputs a spline, plus an image when stroke or fill is on.",
   backend: "webgl2",
   inputs: [
-    { name: "a", type: "spline", required: true, label: "A" },
-    { name: "b", type: "spline", required: true, label: "B" },
+    { name: "a", type: "spline", required: false, label: "A" },
+    { name: "b", type: "spline", required: false, label: "B" },
     { name: "amount", type: "scalar", required: false, label: "Amount" },
   ],
+  resolveInputs(params): InputSocketDef[] {
+    const slots = readSlots(params);
+    return [
+      ...slots.map((name, i) => ({
+        name,
+        type: "spline" as SocketType,
+        required: false,
+        label: slotLabel(i),
+      })),
+      {
+        name: "amount",
+        type: "scalar" as SocketType,
+        required: false,
+        label: "Amount",
+      },
+    ];
+  },
   params: [
     OPACITY_PARAM,
     {
@@ -162,10 +207,11 @@ export const splineMorphNode: NodeDefinition = {
   },
 
   compute({ inputs, params, ctx, nodeId }) {
-    const a = inputs.a;
-    const b = inputs.b;
-    const aSpline: SplineValue = a && a.kind === "spline" ? a : EMPTY_SPLINE;
-    const bSpline: SplineValue = b && b.kind === "spline" ? b : EMPTY_SPLINE;
+    const shapes: SplineValue[] = [];
+    for (const name of readSlots(params)) {
+      const v = inputs[name];
+      if (v && v.kind === "spline" && v.subpaths.length > 0) shapes.push(v);
+    }
 
     // Wired scalar wins over the keyframable param.
     const rawAmount =
@@ -180,20 +226,20 @@ export const splineMorphNode: NodeDefinition = {
 
     const state = ensureState(ctx, nodeId);
 
-    // Rebuild the correspondence only when shapes / resolution change —
-    // NOT when Amount sweeps.
-    if (
-      state.corrA !== aSpline ||
-      state.corrB !== bSpline ||
-      state.corrRes !== resolution
-    ) {
-      state.corr = buildMorphCorrespondence(aSpline, bSpline, resolution);
-      state.corrA = aSpline;
-      state.corrB = bSpline;
+    // Rebuild the chain only when shapes / resolution change — NOT when
+    // Amount sweeps. Zero/one wired spline has nothing to interpolate.
+    if (state.corrRes !== resolution || !sameInputs(state.corrInputs, shapes)) {
+      state.corrs = buildMorphChain(shapes, resolution);
+      state.corrInputs = shapes.slice();
       state.corrRes = resolution;
       state.corrGen++;
     }
-    const resultSpline = applyMorph(state.corr, amount);
+    const resultSpline =
+      shapes.length === 0
+        ? EMPTY_SPLINE
+        : shapes.length === 1
+          ? shapes[0]
+          : applyMorphChain(state.corrs, amount);
 
     const strokeOn = !!params.stroke_enabled;
     const fillOn = !!params.fill_enabled;

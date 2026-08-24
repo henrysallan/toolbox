@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import LiveViewer from "@/lib/live-viewer/LiveViewer";
+import { LiveRoot } from "@/lib/live-viewer/live-root";
 import "@/lib/live-viewer/styles.css";
 import { loadData, type ExportData } from "./load-data";
 
@@ -26,25 +27,25 @@ export default function App() {
 
   if (error) {
     return (
-      <div className="live-root">
+      <LiveRoot>
         <div className="fatal">
           Export failed to load:{"\n"}
           {error}
         </div>
-      </div>
+      </LiveRoot>
     );
   }
   if (!data) {
     return (
-      <div className="live-root">
+      <LiveRoot>
         <div className="fatal">Loading…</div>
-      </div>
+      </LiveRoot>
     );
   }
 
   return (
-    <div className="live-root">
+    <LiveRoot design={data.manifest.design}>
       <LiveViewer graph={data.graph} manifest={data.manifest} />
-    </div>
+    </LiveRoot>
   );
 }

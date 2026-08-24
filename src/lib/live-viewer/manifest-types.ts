@@ -4,13 +4,15 @@
 // export-template copy so both code paths reuse the same renderer.
 
 import type { ParamDef, ParamType } from "@/engine/types";
+import type { LiveDesign } from "./design";
 
 export type FileParamType =
   | "file"
   | "video_file"
   | "audio_file"
   | "svg_file"
-  | "font";
+  | "font"
+  | "model_file";
 
 export interface ExportManifestFileInput {
   nodeId: string;
@@ -38,4 +40,11 @@ export interface ExportManifest {
   controls: ExportManifestControl[];
   generatedAt: string;
   schemaVersion: 1;
+  // Look-and-feel block (081426_live-link-designer.md), attached by the
+  // manifest CALLERS (LiveClient / runExportApp) from
+  // SavedProject.liveDesign, already validated through
+  // fromSavedLiveDesign. Additive — absent means render exactly like the
+  // pre-design viewer; old bundled viewers ignore it. schemaVersion
+  // stays 1.
+  design?: LiveDesign;
 }

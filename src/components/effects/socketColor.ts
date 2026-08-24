@@ -84,6 +84,26 @@ export const SOCKET_PALETTE: Record<string, SocketColorPair> = {
   // distinctly from the scene contents.
   object3d: { dark: "#f59e0b", light: "#b55800" },
   camera: { dark: "#2dd4bf", light: "#008f7b" },
+  // Geometry (raw mesh data in the modeling chain) — object3d's hue
+  // shifted darker, the image/image_group "related but distinct"
+  // treatment: not yet a placed thing, but the same pipeline.
+  geometry: { dark: "#d97706", light: "#8f4f00" },
+  // 3D points (world-space, Y-up) — the points family's orange shifted
+  // deeper/redder. Related to 2D points at a glance, but its own wire:
+  // the two deliberately never coerce (space differs — 081026 spec §2).
+  points3d: { dark: "#c2410c", light: "#9c3a10" },
+  // Instance streams (081026 spec §4.4) — fuchsia, a deliberate cousin of
+  // text_instance's lighter fuchsia (both are "copies awaiting placement")
+  // while staying clear of the 3D ambers and the vec lavenders.
+  instances: { dark: "#d946ef", light: "#a21caf" },
+  // 3D noise field (spec M6.5) — a darker cousin of scalar_field's amber:
+  // both are "per-position scalar signal" wires; this one is the CPU/
+  // world-space face.
+  noise_field: { dark: "#ca8a04", light: "#8a5c00" },
+  // 3D curve (spec M11) — spline's cyan shifted deeper, the same
+  // related-but-distinct family treatment as points/points3d: a curve,
+  // but living in world space.
+  curve3d: { dark: "#0891b2", light: "#0e7490" },
   // Colour-ramp wires — coral. Sits in the widest free slice of the hue
   // circle (31° between particles at 16° and vector at 48°), so it reads
   // apart from both the pink-red particle descriptors and pure orange. The

@@ -1,8 +1,13 @@
 import { getAudioFrame, rms } from "./audio-analysis";
 import { elementToCanvasImage, wrapImageAsElement } from "./element";
 import { buildPath2D } from "./spline-raster";
+import {
+  resolveInstancesAsObject,
+  wrapGeometryAsObject,
+} from "./three-geometry";
 import type {
   MaskValue,
+  PointsValue,
   RenderContext,
   SocketType,
   SocketValue,
@@ -131,6 +136,19 @@ export function coerceValue(
   ctx: RenderContext
 ): SocketValue | undefined {
   if (!value) return undefined;
+  // points and points3d share ONE value kind ("points"); the SOCKET type
+  // is the space tag and the z array is the value-side discriminator
+  // (081026 spec §2.2). Route BEFORE the kind===target identity check:
+  // without this, a 3D value never matches a points3d socket (kind
+  // "points" ≠ "points3d" → undefined → the consumer sees nothing), and a
+  // 3D value WOULD match a plain points socket — silently passing
+  // world-space data into authored-space consumers, the exact failure the
+  // split wire type exists to prevent. Cross-space pairings refuse.
+  if (value.kind === "points") {
+    const is3d = (value as PointsValue).z !== undefined;
+    if (target === "points3d") return is3d ? value : undefined;
+    if (target === "points") return is3d ? undefined : value;
+  }
   if (value.kind === target) return value;
 
   if (value.kind === "mask" && target === "image") {
@@ -245,6 +263,26 @@ export function coerceValue(
   // preview canvas works. Identity-cached inside the helper.
   if (value.kind === "element" && target === "image") {
     return elementToCanvasImage(value, ctx);
+  }
+
+  // Geometry → object3d: auto-wrap raw mesh data in a THREE.Mesh with its
+  // carried transform + material slot 0 (081026 spec §1.3). This is what
+  // lets primitives wire straight into Scene Render / Combine's object
+  // sockets — and what keeps every pre-retype saved wire working. The
+  // wrap is retained (keyed on the producer-owned BufferGeometry) inside
+  // the helper, so per-eval cost is a TRS/material sync, not a rebuild.
+  // NOTE: `points3d` deliberately has NO coercions — no canonical
+  // world↔canvas mapping exists (081026 spec §2.2).
+  if (value.kind === "geometry" && target === "object3d") {
+    return wrapGeometryAsObject(value, ctx);
+  }
+
+  // Instances → object3d: resolve the instance stream into its retained
+  // InstancedMesh (three-geometry.ts, keyed on the value's retainKey).
+  // instances→geometry is deliberately NOT here — that's the Realize
+  // Instances node's explicit N×-vertex bake (081026 spec §4.4).
+  if (value.kind === "instances" && target === "object3d") {
+    return resolveInstancesAsObject(value, ctx);
   }
 
   return undefined;

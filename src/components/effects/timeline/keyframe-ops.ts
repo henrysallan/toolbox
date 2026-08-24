@@ -263,6 +263,32 @@ export function staggerKeyframes(
   });
 }
 
+// Evenly space the selection: distinct selected ticks become "columns"
+// (keys sharing a tick — usually across lanes — move together), sorted
+// and re-laid-out so consecutive columns sit exactly `stepTicks` apart.
+// The earliest column stays put, so results never go below 0. The step
+// is frame-snapped and clamped to ≥ one frame — a zero step would
+// collapse every column onto one tick, where the dedup destroys keys
+// (same no-data-loss policy as scale's minimum span).
+export function spaceKeyframes(
+  bases: GroupBase[],
+  stepTicks: number,
+  opts: KeyframeOpOptions
+): KeyframeOpResult {
+  const step = Math.max(
+    opts.ticksPerFrame,
+    Math.round(snapTickToFrame(stepTicks, opts.ticksPerFrame))
+  );
+  const columns = new Set<number>();
+  for (const b of bases) {
+    for (const t of b.selectedOriginalTicks) columns.add(t);
+  }
+  const sorted = [...columns].sort((a, b) => a - b);
+  const target = new Map<number, number>();
+  sorted.forEach((t, i) => target.set(t, sorted[0] + i * step));
+  return collectResult(bases, () => (tick) => target.get(tick) ?? tick);
+}
+
 // Scale the selection in time about `anchorTick` (a bounding-box edge
 // drag; the anchor is the opposite edge). Returns null when the gesture
 // can't produce a valid result yet — the caller keeps the last applied

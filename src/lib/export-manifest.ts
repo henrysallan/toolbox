@@ -27,6 +27,10 @@ const FILE_PARAM_TYPES = new Set<ParamType>([
   "audio_file",
   "svg_file",
   "font",
+  // v11 cloud refs made 3D models loadable in live/export contexts, so a
+  // model param is now a meaningful viewer-supplied (or cloud-prefilled)
+  // input rather than a dead end.
+  "model_file",
 ]);
 
 // The only param types with no inline editor in the shared ParamControl —

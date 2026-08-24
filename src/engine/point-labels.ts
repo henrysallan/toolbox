@@ -68,7 +68,10 @@ export function resolveTemplate(
 //   {i}      index (0-based)   {n}  total count
 //   {rot}    rotation, degrees {rad} rotation, radians
 //   {sx} {sy} per-axis scale   {g}  group tag
+//   {attr:name}  a named channel's component 0 (081326_point-attributes.md
+//                M4); missing channels read 0, like everywhere else
 const TOKEN_RE = /\{(x|y|i|n|rot|rad|sx|sy|g)\}/g;
+const ATTR_TOKEN_RE = /\{attr:([A-Za-z_][\w]*)\}/g;
 
 export function formatPointLabel(
   pts: PointsValue,
@@ -82,6 +85,10 @@ export function formatPointLabel(
   const rawY = pts.positions[i * 2 + 1];
   const x = px ? rawX * opts.width : rawX;
   const y = px ? rawY * opts.height : rawY;
+  tpl = tpl.replace(ATTR_TOKEN_RE, (_m, name: string) => {
+    const a = pts.attributes?.[name];
+    return (a ? a.data[i * a.arity] : 0).toFixed(prec);
+  });
   return tpl.replace(TOKEN_RE, (_m, tok: string) => {
     switch (tok) {
       case "x":

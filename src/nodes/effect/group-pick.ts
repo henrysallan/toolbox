@@ -6,7 +6,12 @@ import type {
   SocketType,
   SplineValue,
 } from "@/engine/types";
-import { ensurePointArray, pointsFromArray } from "@/engine/points";
+import {
+  copyPointsWith,
+  EMPTY_POINTS,
+  gatherPoints,
+  getGroupIndex,
+} from "@/engine/points";
 
 // Select one group member by index.
 //
@@ -140,23 +145,18 @@ export const groupPickNode: NodeDefinition = {
     // points
     const src = inputs.group;
     if (!src || src.kind !== "points") {
-      return { primary: pointsFromArray([]) };
+      return { primary: EMPTY_POINTS };
     }
-    const srcPts = ensurePointArray(src);
-    const { matches } = pickByGroupIndex(
-      srcPts.map((p) => p.groupIndex ?? 0),
-      rawIdx
-    );
+    const groups: number[] = new Array(src.count);
+    for (let i = 0; i < src.count; i++) groups[i] = getGroupIndex(src, i);
+    const { matches } = pickByGroupIndex(groups, rawIdx);
+    // Gather every channel by the match map, then drop the groupIndex on
+    // the way out for the same reason as splines — the selected subset is
+    // its own group now.
     return {
-      primary: pointsFromArray(
-        matches.map((i) => {
-          // Drop the groupIndex on the way out for the same reason
-          // as splines — the selected subset is its own group now.
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          const { groupIndex, ...rest } = srcPts[i];
-          return rest;
-        })
-      ) satisfies PointsValue,
+      primary: copyPointsWith(gatherPoints(src, matches), {
+        groupIndices: undefined,
+      }),
     };
   },
 };

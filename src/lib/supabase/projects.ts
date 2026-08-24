@@ -179,6 +179,9 @@ interface ListCacheEntry {
 
 let privateListCache: ListCacheEntry | null = null;
 let publicListCache: ListCacheEntry | null = null;
+// Shared-with-me rows (M1 collaborators — specdocs/081426_shared-projects.md).
+// Same TTL/refresh-button contract as the other listings.
+let sharedListCache: ListCacheEntry | null = null;
 const loadedCache = new Map<
   string,
   { project: LoadedProject; fetchedAt: number }
@@ -194,6 +197,7 @@ function fresh(entry: { fetchedAt: number } | null | undefined): boolean {
 export function invalidateProjectCaches() {
   privateListCache = null;
   publicListCache = null;
+  sharedListCache = null;
   loadedCache.clear();
 }
 
@@ -307,12 +311,19 @@ export async function updateProject(
   // it — zero rows updated ⇒ conflict, and the newer row is left intact.
   // Omit to keep the old last-writer-wins behavior (e.g. the overwrite-
   // by-name path, which targets a row this editor never loaded).
-  expectedUpdatedAt?: string
+  expectedUpdatedAt?: string,
+  // The row owner's user_id when saving a project shared with you.
+  // Assets and thumbnails ALWAYS live under the OWNER's Storage prefix —
+  // resolveAssetRefs resolves against row.user_id, so a collaborator
+  // save keyed to their own uid would strand every media ref. Storage
+  // RLS admits collaborator writes to the owner's prefix (see
+  // specdocs/shared-projects-migration.sql). Omit for your own rows.
+  ownerId?: string
 ): Promise<UpdateProjectResult> {
   const supabase = createClient();
   const { data: userResp } = await supabase.auth.getUser();
   if (!userResp.user) return { ok: false };
-  const userId = userResp.user.id;
+  const userId = ownerId ?? userResp.user.id;
   // Assets first, row last: upload media to Storage and reduce the graph to
   // content-addressed refs (unchanged media re-hashes to existing objects =
   // zero upload; falls back to the inline graph if Storage is unavailable).
@@ -686,6 +697,80 @@ export async function listPublicProjects(): Promise<ProjectRow[]> {
   }
 }
 
+// Rows shared WITH the current user via project_collaborators (M1 —
+// specdocs/081426_shared-projects.md). Two-step: membership ids from the
+// collaborators table (RLS: own rows readable), then the project rows
+// (RLS: collaborator SELECT). Authors are merged in like the public
+// listing — every row here is by-definition someone else's. Degrades to
+// [] on pre-migration DBs (42P01: table doesn't exist).
+export async function listSharedProjects(): Promise<ProjectRow[]> {
+  const supabase = createClient();
+  try {
+    const { data: sess } = await supabase.auth.getSession();
+    const uid = sess.session?.user?.id;
+    if (!uid) return [];
+    if (
+      sharedListCache &&
+      sharedListCache.ownerId === uid &&
+      fresh(sharedListCache)
+    ) {
+      return sharedListCache.rows;
+    }
+    if (definitelyOffline()) {
+      return sharedListCache?.ownerId === uid ? sharedListCache.rows : [];
+    }
+    const { data: memberships, error: mErr } = await withTimeout(
+      supabase
+        .from("project_collaborators")
+        .select("project_id")
+        .eq("user_id", uid),
+      LIST_TIMEOUT_MS
+    );
+    if (mErr) {
+      if (mErr.code !== "42P01") {
+        console.error("listSharedProjects memberships failed:", mErr);
+      }
+      return sharedListCache?.ownerId === uid ? sharedListCache.rows : [];
+    }
+    const ids = (memberships ?? []).map((m) => m.project_id as string);
+    if (ids.length === 0) {
+      sharedListCache = { rows: [], fetchedAt: Date.now(), ownerId: uid };
+      return [];
+    }
+    const { data, error } = await withTimeout(
+      supabase
+        .from("projects")
+        .select(BASE_COLS)
+        .in("id", ids)
+        .order("updated_at", { ascending: false }),
+      LIST_TIMEOUT_MS
+    );
+    if (error) {
+      console.error("listSharedProjects failed:", error);
+      return sharedListCache?.ownerId === uid ? sharedListCache.rows : [];
+    }
+    const rows = data ?? [];
+    const uids = Array.from(new Set(rows.map((r) => r.user_id)));
+    const { data: profs } = await withTimeout(
+      supabase
+        .from("profiles")
+        .select("id, display_name, avatar_url")
+        .in("id", uids),
+      LIST_TIMEOUT_MS
+    );
+    const byId = new Map<string, ProjectAuthor>();
+    for (const p of profs ?? []) byId.set(p.id as string, p as ProjectAuthor);
+    const enriched = rows.map(
+      (r) => ({ ...r, author: byId.get(r.user_id) ?? null }) as ProjectRow
+    );
+    sharedListCache = { rows: enriched, fetchedAt: Date.now(), ownerId: uid };
+    return enriched;
+  } catch (e) {
+    console.warn("listSharedProjects unavailable (offline?):", e);
+    return [];
+  }
+}
+
 // ========================================================================
 // per-project load (cached)
 // ========================================================================
@@ -703,6 +788,18 @@ export interface LoadedProject {
   // expectedUpdatedAt so a save from a stale window is detected
   // instead of silently clobbering the newer row.
   updated_at: string | null;
+  // True when the row belongs to someone else but has a
+  // project_collaborators row for the current user — the editor then
+  // saves in place (CAS against the owner's row) instead of forking a
+  // private copy. Always false for own rows and pre-migration DBs.
+  shared_with_me: boolean;
+  // Own rows only: true when at least one collaborator exists. Gates
+  // the M3 editing lease — a solo project never pays acquire/heartbeat
+  // writes. Always false for non-owned rows (shared_with_me already
+  // implies collaborative there). Rides the 60-min cache for own rows,
+  // so a collaborator added mid-session starts leasing on the next
+  // fresh load.
+  has_collaborators: boolean;
 }
 
 // Server-side variant: resolves a public project by its URL slug. Takes
@@ -754,10 +851,64 @@ export async function loadPublicProjectBySlug(
   };
 }
 
-export async function loadProject(id: string): Promise<LoadedProject | null> {
-  const cached = loadedCache.get(id);
-  if (cached && fresh(cached)) return cached.project;
+// Fresh row stamp for the save-conflict dialog: who moved the row, and
+// to what version. Always bypasses caches — the whole point is to see
+// the write that just beat ours. `updatedByName` is null when the
+// updated_by column hasn't been migrated in yet (42703), when the stamp
+// predates the migration, or when the profile lookup comes up empty —
+// the dialog then falls back to anonymous copy.
+export interface ProjectSaveStamp {
+  updatedAt: string | null;
+  updatedByName: string | null;
+}
+
+export async function getProjectSaveStamp(
+  id: string
+): Promise<ProjectSaveStamp | null> {
   const supabase = createClient();
+  let { data, error } = await supabase
+    .from("projects")
+    .select("updated_at, updated_by")
+    .eq("id", id)
+    .maybeSingle();
+  if (error?.code === "42703") {
+    ({ data, error } = await supabase
+      .from("projects")
+      .select("updated_at")
+      .eq("id", id)
+      .maybeSingle());
+  }
+  if (error || !data) {
+    if (error) console.error("getProjectSaveStamp failed:", error);
+    return null;
+  }
+  const row = data as { updated_at: string | null; updated_by?: string | null };
+  let updatedByName: string | null = null;
+  if (row.updated_by) {
+    const { data: prof } = await supabase
+      .from("profiles")
+      .select("display_name")
+      .eq("id", row.updated_by)
+      .maybeSingle();
+    updatedByName = (prof?.display_name as string | null) ?? null;
+  }
+  return { updatedAt: row.updated_at ?? null, updatedByName };
+}
+
+export async function loadProject(id: string): Promise<LoadedProject | null> {
+  const supabase = createClient();
+  // getSession is local (no network) — the uid decides cache policy below.
+  const { data: sess } = await supabase.auth.getSession();
+  const uid = sess.session?.user?.id ?? null;
+  const cached = loadedCache.get(id);
+  // Serve the cache for OWN rows only. Rows someone else can write to
+  // (shared with me / another author's public row) always fetch fresh:
+  // the hour-long TTL would otherwise hand the editor a stale graph and
+  // a guaranteed CAS conflict at save time. Post-Tier-2 rows are tiny
+  // (media = Storage refs), so the extra fetch is cheap.
+  if (cached && fresh(cached) && !!uid && cached.project.user_id === uid) {
+    return cached.project;
+  }
   const { data, error } = await supabase
     .from("projects")
     .select("name, graph, is_public, user_id, public_slug, updated_at")
@@ -767,17 +918,43 @@ export async function loadProject(id: string): Promise<LoadedProject | null> {
     console.error("loadProject failed:", error);
     return null;
   }
+  const isMine = !!uid && (data.user_id as string) === uid;
   let author: ProjectAuthor | null = null;
-  // Only bother looking up the author for public projects — private
-  // projects are always authored by the current user, and we already
-  // know who that is.
-  if (data.is_public) {
+  // Only bother looking up the author for rows the viewer doesn't own —
+  // for own projects we already know who that is. Non-owned covers both
+  // public rows and rows shared with the viewer (the "by <name>" hint).
+  if (!isMine) {
     const { data: prof } = await supabase
       .from("profiles")
       .select("id, display_name, avatar_url")
       .eq("id", data.user_id)
       .maybeSingle();
     if (prof) author = prof as ProjectAuthor;
+  }
+  // Collaborator membership decides save behavior (in-place CAS vs fork
+  // a copy). Only worth asking for non-owned rows; pre-migration DBs
+  // error here (42P01 missing table) and degrade to false.
+  let sharedWithMe = false;
+  if (!isMine && uid) {
+    const { data: collab } = await supabase
+      .from("project_collaborators")
+      .select("user_id")
+      .eq("project_id", id)
+      .eq("user_id", uid)
+      .maybeSingle();
+    sharedWithMe = !!collab;
+  }
+  // Own rows: does ANYONE collaborate here? Gates the M3 editing lease
+  // (limit-1 existence probe — cost is one indexed row). Same graceful
+  // pre-migration degrade.
+  let hasCollaborators = false;
+  if (isMine) {
+    const { data: anyCollab } = await supabase
+      .from("project_collaborators")
+      .select("user_id")
+      .eq("project_id", id)
+      .limit(1);
+    hasCollaborators = !!anyCollab && anyCollab.length > 0;
   }
   const project: LoadedProject = {
     name: data.name as string,
@@ -792,6 +969,8 @@ export async function loadProject(id: string): Promise<LoadedProject | null> {
     author,
     public_slug: (data.public_slug as string | null) ?? null,
     updated_at: (data.updated_at as string | null) ?? null,
+    shared_with_me: sharedWithMe,
+    has_collaborators: hasCollaborators,
   };
   loadedCache.set(id, { project, fetchedAt: Date.now() });
   return project;

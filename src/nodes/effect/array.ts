@@ -10,7 +10,13 @@ import type {
   SplineValue,
 } from "@/engine/types";
 import { transformSubpath } from "@/engine/spline-transform";
-import { ensurePointArray, pointsFromArray } from "@/engine/points";
+import {
+  EMPTY_POINTS,
+  gatherPoints,
+  getRotation,
+  getScaleX,
+  getScaleY,
+} from "@/engine/points";
 import {
   disposePlaceholderTex,
   getPlaceholderTex,
@@ -428,12 +434,20 @@ export const arrayNode: NodeDefinition = {
     if (mode === "point") {
       const inst = inputs.instance;
       if (!inst || inst.kind !== "points") {
-        const empty: PointsValue = pointsFromArray([]);
-        return { primary: empty };
+        return { primary: EMPTY_POINTS };
       }
-      const instPoints = ensurePointArray(inst);
-      const out: Point[] = [];
+      // Tiled gather (cell c, row i ← source row i) carries every channel
+      // — groups/z/normals/attributes — then geometry is overwritten per
+      // copy in the fresh arrays the gather minted.
+      const nPts = inst.count;
       const total = countX * countY;
+      const map = new Int32Array(nPts * total);
+      for (let c = 0; c < total; c++) {
+        for (let i = 0; i < nPts; i++) map[c * nPts + i] = i;
+      }
+      const out = gatherPoints(inst, map);
+      const rotations = new Float32Array(nPts * total);
+      const scales = new Float32Array(nPts * total * 2);
       const localRot = (localRotateDeg * Math.PI) / 180;
       const cosR = Math.cos(localRot);
       const sinR = Math.sin(localRot);
@@ -442,25 +456,24 @@ export const arrayNode: NodeDefinition = {
         const iy = rowFirst ? Math.floor(n / countX) : n % countY;
         const cellCenterX = (ix + 0.5) * stepX + patternX;
         const cellCenterY = (iy + 0.5) * stepY + patternY;
-        for (const src of instPoints) {
+        for (let i = 0; i < nPts; i++) {
+          const w = n * nPts + i;
           // Source point's offset from its own (0.5, 0.5) anchor →
           // scale → rotate → place at the cell center + per-copy nudge.
-          const dx = (src.pos[0] - 0.5) * localScaleX;
-          const dy = (src.pos[1] - 0.5) * localScaleY;
+          const dx = (inst.positions[i * 2] - 0.5) * localScaleX;
+          const dy = (inst.positions[i * 2 + 1] - 0.5) * localScaleY;
           const rx = cosR * dx - sinR * dy;
           const ry = sinR * dx + cosR * dy;
-          out.push({
-            pos: [cellCenterX + localX + rx, cellCenterY + localY + ry],
-            rotation: (src.rotation ?? 0) + localRot,
-            scale: [
-              (src.scale?.[0] ?? 1) * localScaleX,
-              (src.scale?.[1] ?? 1) * localScaleY,
-            ],
-            groupIndex: src.groupIndex,
-          });
+          out.positions[w * 2] = cellCenterX + localX + rx;
+          out.positions[w * 2 + 1] = cellCenterY + localY + ry;
+          rotations[w] = getRotation(inst, i) + localRot;
+          scales[w * 2] = getScaleX(inst, i) * localScaleX;
+          scales[w * 2 + 1] = getScaleY(inst, i) * localScaleY;
         }
       }
-      return { primary: pointsFromArray(out) };
+      out.rotations = rotations;
+      out.scales = scales;
+      return { primary: out };
     }
 
     // ---- image mode (original full-screen tiling shader) -------------

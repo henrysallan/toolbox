@@ -17,11 +17,19 @@
 // is held in ctx.state across frames (that persistence IS the simulation);
 // textures are pool-leased and freed in disposeFlowState.
 //
-// Coordinate space: a SQUARE field with an identity normalized→texel map, so
-// the output spline is raw normalized [0,1]² Y-DOWN — byte-for-byte the same
-// space the exact boolean merge emits, so toggling Flow on/off never shifts
-// the shape. (Screen-isotropic goo on non-square canvases — anisotropic blur
-// radii — is a documented later refinement; square-ish canvases are exact.)
+// Coordinate space: the field covers the CANVAS RECT in authored space plus
+// a margin (flowFieldGeometry). Authored space is a uniform scale of screen
+// space (aspectCorrectY renders the authored unit square as a W×W-pixel
+// square), so one isotropic texels-per-authored-unit scale keeps field
+// texels square on screen — blur and tension need no per-axis radii.
+// Extraction maps subpaths back to authored Y-DOWN coordinates
+// (marchingSquares uvOrigin/uvSize), the same space the exact boolean
+// emits, so toggling Flow on/off never shifts the shape. The field used to
+// be the authored UNIT SQUARE with an identity map — but on portrait
+// canvases visible content is authored outside [0,1] (y spans 0.5 ± H/2W),
+// so shapes were flat-cut at the square's edge, visibly INSIDE the frame.
+// The margin keeps the field's cut edges offscreen and gives the goo room
+// to bridge near the canvas border.
 
 import type {
   ImageValue,
@@ -40,7 +48,7 @@ export interface FlowParams {
   tension: number; // 0..1 — surface tension (neck thinning / smoothing)
   adhesion: number; // 0..1 — how hard separation "holds on"
   blend: number; // normalized 0..~0.25 — goo / pre-touch bridge radius
-  detail: number; // field resolution (square, longest-axis px)
+  detail: number; // field resolution (texels across the canvas's longer side)
 }
 
 interface FlowState {
@@ -51,7 +59,7 @@ interface FlowState {
   fieldB: ImageValue | null; // ping-pong scratch
   target: ImageValue | null; // T
   scratch: ImageValue | null; // separable-blur intermediate
-  size: number;
+  geom: FlowFieldGeom | null;
   lastTick: number | null;
   seeded: boolean;
   result: SplineValue;
@@ -61,6 +69,48 @@ const EMPTY_SPLINE: SplineValue = { kind: "spline", subpaths: [] };
 
 const MIN_DETAIL = 128;
 const MAX_DETAIL = 768;
+
+// Field padding beyond the canvas rect, as a fraction of the canvas's longer
+// side. Marching squares closes contours flat along the grid border; a
+// border on (or inside) the visible frame draws as a straight cut, so the
+// cut edges are pushed offscreen, and the blur gets room to bridge shapes
+// near the canvas edge. Comfortably above the default blend (0.06) goo
+// radius; blur reaching past it degrades gracefully via CLAMP_TO_EDGE.
+const PAD_FRAC = 0.125;
+
+// Field geometry for a canvas aspect (W/H) and detail dial. Authored units
+// throughout (Y-DOWN; canvas width = 1, canvas height = H/W, vertically
+// centered on 0.5): one isotropic texels-per-authored-unit scale plus the
+// authored coordinate of the field's top-left corner. Exported for the
+// offline mapping check.
+export interface FlowFieldGeom {
+  fw: number; // field width in texels
+  fh: number; // field height in texels
+  scale: number; // texels per authored unit (same for both axes)
+  originX: number; // authored x of the field's left edge
+  originY: number; // authored y of the field's top edge
+}
+
+export function flowFieldGeometry(
+  canvasAspect: number,
+  detail: number
+): FlowFieldGeom {
+  const a =
+    Number.isFinite(canvasAspect) && canvasAspect > 0 ? canvasAspect : 1;
+  const ah = 1 / a; // canvas height in authored units (width is 1)
+  const long = Math.max(1, ah);
+  const margin = PAD_FRAC * long;
+  const scale = detail / long; // `detail` texels across the longer side
+  const fw = Math.max(2, Math.round((1 + 2 * margin) * scale));
+  const fh = Math.max(2, Math.round((ah + 2 * margin) * scale));
+  return {
+    fw,
+    fh,
+    scale,
+    originX: -margin,
+    originY: 0.5 - ah / 2 - margin,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Shaders
@@ -156,7 +206,7 @@ function ensureState(ctx: RenderContext, nodeId: string): FlowState {
       fieldB: null,
       target: null,
       scratch: null,
-      size: 0,
+      geom: null,
       lastTick: null,
       seeded: false,
       result: EMPTY_SPLINE,
@@ -187,22 +237,29 @@ function releaseField(ctx: RenderContext, img: ImageValue | null) {
   ctx.releaseTexture(img.texture);
 }
 
-function ensureTargets(ctx: RenderContext, s: FlowState, size: number): void {
-  if (s.size === size && s.fieldA && s.fieldB && s.target && s.scratch) return;
+function ensureTargets(
+  ctx: RenderContext,
+  s: FlowState,
+  geom: FlowFieldGeom
+): void {
+  // Origin/scale ride along even when the texel dims are unchanged (a tiny
+  // aspect nudge can move the mapping without changing the rounded dims).
+  const same = s.geom && s.geom.fw === geom.fw && s.geom.fh === geom.fh;
+  s.geom = geom;
+  if (same && s.fieldA && s.fieldB && s.target && s.scratch) return;
   releaseField(ctx, s.fieldA);
   releaseField(ctx, s.fieldB);
   releaseField(ctx, s.target);
   releaseField(ctx, s.scratch);
-  s.fieldA = ctx.allocImage({ width: size, height: size });
-  s.fieldB = ctx.allocImage({ width: size, height: size });
-  s.target = ctx.allocImage({ width: size, height: size });
-  s.scratch = ctx.allocImage({ width: size, height: size });
+  s.fieldA = ctx.allocImage({ width: geom.fw, height: geom.fh });
+  s.fieldB = ctx.allocImage({ width: geom.fw, height: geom.fh });
+  s.target = ctx.allocImage({ width: geom.fw, height: geom.fh });
+  s.scratch = ctx.allocImage({ width: geom.fw, height: geom.fh });
   for (const img of [s.fieldA, s.fieldB, s.target, s.scratch]) {
     setFilter(ctx.gl, img.texture, ctx.gl.LINEAR);
   }
-  s.canvas.width = size;
-  s.canvas.height = size;
-  s.size = size;
+  s.canvas.width = geom.fw;
+  s.canvas.height = geom.fh;
   s.seeded = false; // field must be re-seeded from the new-res target
 }
 
@@ -213,18 +270,23 @@ function ensureTargets(ctx: RenderContext, s: FlowState, size: number): void {
 function drawCoverage(
   s: FlowState,
   subpaths: SplineSubpath[],
-  op: SplineMergeOp,
-  size: number
+  op: SplineMergeOp
 ): void {
   const c2d = s.c2d;
-  if (!c2d) return;
+  const geom = s.geom;
+  if (!c2d || !geom) return;
   c2d.setTransform(1, 0, 0, 1, 0, 0);
-  c2d.clearRect(0, 0, size, size);
+  c2d.clearRect(0, 0, geom.fw, geom.fh);
   c2d.globalCompositeOperation = "source-over";
   c2d.fillStyle = "#ffffff";
-  // Identity normalized→texel map (no aspect correction — see file header).
+  // Authored → field texels: shift by the field origin, scale isotropically.
+  // This IS the aspect-correct map — authored space is a uniform scale of
+  // screen space (see file header).
   const map = (p: readonly [number, number]) =>
-    [p[0] * size, p[1] * size] as const;
+    [
+      (p[0] - geom.originX) * geom.scale,
+      (p[1] - geom.originY) * geom.scale,
+    ] as const;
 
   if (op === "exclude") {
     // Even-odd XOR across all subpaths in one fill.
@@ -281,8 +343,9 @@ function uploadCoverage(ctx: RenderContext, s: FlowState): void {
 function blurToTarget(ctx: RenderContext, s: FlowState, radius: number): void {
   const gl = ctx.gl;
   const prog = ctx.getShader("spline-flow/blur", BLUR_FS);
-  const size = s.size;
-  const texel: [number, number] = [1 / size, 1 / size];
+  // Texels are screen-square, so one radius (in texels) is isotropic on
+  // screen; only the UV step differs per axis.
+  const texel: [number, number] = [1 / s.geom!.fw, 1 / s.geom!.fh];
   const runPass = (
     src: WebGLTexture | null,
     dst: ImageValue,
@@ -317,8 +380,7 @@ function integrate(
   dtFrames: number
 ): void {
   const prog = ctx.getShader("spline-flow/sim", SIM_FS);
-  const size = s.size;
-  const texel: [number, number] = [1 / size, 1 / size];
+  const texel: [number, number] = [1 / s.geom!.fw, 1 / s.geom!.fh];
   // Sub-step so the explicit tension term stays stable on big frame jumps.
   const nSub = Math.max(1, Math.min(8, Math.ceil(dtFrames / 0.5)));
   const dtSub = dtFrames / nSub;
@@ -369,10 +431,13 @@ function extractSpline(ctx: RenderContext, s: FlowState): SplineValue {
       grid[dstRow + x] = data[(srcRow + x) * 4];
     }
   }
+  // Grid texels → authored space via the field geometry (inverse of
+  // drawCoverage's map).
+  const g = s.geom!;
   const subpaths = marchingSquares(grid, w, h, {
     iso: 0.5,
-    uvOrigin: [0, 0],
-    uvSize: [1, 1],
+    uvOrigin: [g.originX, g.originY],
+    uvSize: [w / g.scale, h / g.scale],
   });
   return { kind: "spline", subpaths };
 }
@@ -388,16 +453,21 @@ export function runSplineFlow(
   p: FlowParams
 ): SplineValue {
   const s = ensureState(ctx, nodeId);
-  const size = Math.max(
+  const detail = Math.max(
     MIN_DETAIL,
     Math.min(MAX_DETAIL, Math.round(p.detail))
   );
-  ensureTargets(ctx, s, size);
+  // A canvas-resize (aspect change) lands here as new field dims →
+  // realloc + reseed, same as a detail change.
+  const geom = flowFieldGeometry(ctx.width / ctx.height, detail);
+  ensureTargets(ctx, s, geom);
 
-  // 1–2: coverage → blurred target field T.
-  drawCoverage(s, src.subpaths, p.operation, size);
+  // 1–2: coverage → blurred target field T. Blend is authored units
+  // (fractions of the canvas width), converted to texels via the field
+  // scale — identical to the old blend·detail on a square canvas.
+  drawCoverage(s, src.subpaths, p.operation);
   uploadCoverage(ctx, s);
-  blurToTarget(ctx, s, Math.max(0, p.blend * size));
+  blurToTarget(ctx, s, Math.max(0, p.blend * geom.scale));
 
   // 3: advance / snap the persistent field F.
   const tick = ctx.tick;

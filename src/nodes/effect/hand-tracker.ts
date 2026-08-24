@@ -263,6 +263,10 @@ export const handTrackerNode: NodeDefinition = {
   backend: "webgl2",
   // Output depends on upstream frame contents, not just params.
   stable: false,
+  // Detector throttling + exponential smoothing accumulate across evals
+  // (and the upstream is usually live video anyway). Time Offset
+  // boundary-feeds the current skeleton through un-shifted.
+  retimeable: false,
   inputs: [{ name: "image", type: "image", required: true }],
   params: [
     {

@@ -140,6 +140,11 @@
   --tb-s-element: #818cf8;
   --tb-s-object3d: #f59e0b;
   --tb-s-camera: #2dd4bf;
+  --tb-s-geometry: #d97706;
+  --tb-s-points3d: #c2410c;
+  --tb-s-instances: #d946ef;
+  --tb-s-noise_field: #ca8a04;
+  --tb-s-curve3d: #0891b2;
   --tb-s-color_ramp: #f87962;
   --tb-s-fallback: #9ca3af;
 
@@ -294,6 +299,11 @@
   --tb-s-element: #5e63d9;
   --tb-s-object3d: #b55800;
   --tb-s-camera: #008f7b;
+  --tb-s-geometry: #8f4f00;
+  --tb-s-points3d: #9c3a10;
+  --tb-s-instances: #a21caf;
+  --tb-s-noise_field: #8a5c00;
+  --tb-s-curve3d: #0e7490;
   --tb-s-color_ramp: #ca3a23;
   --tb-s-fallback: #6b7280;
 

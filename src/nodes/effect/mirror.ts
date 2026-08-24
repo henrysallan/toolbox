@@ -7,7 +7,12 @@ import type {
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
-import { ensurePointArray, pointsFromArray } from "@/engine/points";
+import {
+  gatherPoints,
+  getRotation,
+  getScaleX,
+  getScaleY,
+} from "@/engine/points";
 
 // Duplicate CPU geometry under a symmetry: reflect across the X / Y axis
 // (or both), or repeat radially around a center with a count slider.
@@ -208,21 +213,41 @@ export const mirrorNode: NodeDefinition = {
     };
 
     if (src?.kind === "points") {
-      const pts = ensurePointArray(src);
-      const out: Point[] = [];
+      // Tiled gather (copy c, row i ← source row i) carries every channel
+      // — z/normals/attributes/groups — then the geometry is overwritten
+      // per copy in the fresh arrays the gather minted.
+      const n = src.count;
+      const copies = ops.length;
+      const map = new Int32Array(n * copies);
+      for (let c = 0; c < copies; c++) {
+        for (let i = 0; i < n; i++) map[c * n + i] = i;
+      }
+      const out = gatherPoints(src, map);
+      const rotations = new Float32Array(n * copies);
+      const scales = new Float32Array(n * copies * 2);
+      const groupIndices = tagGroups
+        ? new Int32Array(n * copies)
+        : out.groupIndices;
       ops.forEach((op, copyIdx) => {
-        for (const p of pts) {
-          const pos = mapPos(p.pos[0], p.pos[1], op);
+        for (let i = 0; i < n; i++) {
+          const w = copyIdx * n + i;
+          const pos = mapPos(
+            src.positions[i * 2],
+            src.positions[i * 2 + 1],
+            op
+          );
+          out.positions[w * 2] = pos[0];
+          out.positions[w * 2 + 1] = pos[1];
           // A single flip is orientation-reversing — no rotation +
           // positive scale can represent it, so the point's frame
           // mirrors: rotation negates and the flipped axis's scale
           // negates (M·R(θ) = R(−θ)·diag(−1,1) for an X flip), so
           // Copy-to-Points stamps genuinely mirrored instances. Two
           // flips compose to a pure 180° rotation.
-          const theta = p.rotation ?? 0;
+          const theta = getRotation(src, i);
           let rot: number;
-          let sx = p.scale?.[0] ?? 1;
-          let sy = p.scale?.[1] ?? 1;
+          let sx = getScaleX(src, i);
+          let sy = getScaleY(src, i);
           if (op.flipX && op.flipY) {
             rot = theta + Math.PI;
           } else if (op.flipX) {
@@ -234,15 +259,16 @@ export const mirrorNode: NodeDefinition = {
           } else {
             rot = theta;
           }
-          out.push({
-            pos,
-            rotation: rot + op.angle,
-            scale: [sx, sy],
-            groupIndex: tagGroups ? copyIdx : p.groupIndex,
-          });
+          rotations[w] = rot + op.angle;
+          scales[w * 2] = sx;
+          scales[w * 2 + 1] = sy;
+          if (tagGroups) (groupIndices as Int32Array)[w] = copyIdx;
         }
       });
-      return { primary: pointsFromArray(out) };
+      out.rotations = rotations;
+      out.scales = scales;
+      out.groupIndices = groupIndices;
+      return { primary: out };
     }
 
     if (src?.kind === "spline") {

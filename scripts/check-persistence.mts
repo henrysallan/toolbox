@@ -10,9 +10,30 @@ import type { SavedProject } from "@/lib/project";
 // Minimal DOM stubs — importing @/lib/project pulls the engine/registry in.
 const g = globalThis as any;
 const stub = () => ({ getContext: () => null, style: {}, addEventListener() {} });
+// Media elements fire their `error` listener on the next tick: the v11
+// cloud-media load path awaits loadedmetadata|error on a real element, so
+// a listener-swallowing stub would hang deserialize forever. Erroring is
+// also the honest offline behavior — it exercises the unreachable-stream
+// fallback (park the envelope, keep the ref).
+const mediaStub = () => ({
+  style: {},
+  addEventListener(type: string, cb: () => void) {
+    if (type === "error") setTimeout(cb, 0);
+  },
+  removeEventListener() {},
+  removeAttribute() {},
+  load() {},
+});
 g.window ??= g;
 g.self ??= g;
-g.document ??= { createElement: stub, createElementNS: stub, fonts: { add() {}, forEach() {} }, body: { appendChild() {} }, addEventListener() {} };
+g.document ??= {
+  createElement: (tag: string) =>
+    tag === "video" || tag === "audio" ? mediaStub() : stub(),
+  createElementNS: stub,
+  fonts: { add() {}, forEach() {} },
+  body: { appendChild() {} },
+  addEventListener() {},
+};
 g.navigator ??= { userAgent: "node" };
 g.HTMLCanvasElement ??= class {};
 g.OffscreenCanvas ??= class { getContext() { return null; } };
@@ -167,6 +188,117 @@ const imageParam = (g2: SavedProject) => (g2.nodes[0].params as any).image;
   check(
     "prune SPARES the concurrently-uploaded asset (Z) absent from the snapshot",
     fake.store.has(`${PREFIX}/Z.png`) && !fake.removes.includes(`${PREFIX}/Z.png`)
+  );
+}
+
+// --- 6. v11 cloud media refs: survive an unreachable stream, survive a
+//        re-save, seed the session registry, and attach on serialize ---
+{
+  const { registerNode } = await import("@/engine/registry");
+  const { serializeGraph } = await import("@/lib/project");
+  const { getCloudMediaRef, seedCloudMediaRef } = await import(
+    "@/lib/cloud-media-upload"
+  );
+  const { MEDIA_PUBLIC_BASE } = await import("@/lib/cloud-media");
+  registerNode({
+    type: "fake-media",
+    name: "Fake Media",
+    category: "source",
+    inputs: [],
+    auxOutputs: [],
+    primaryOutput: "image",
+    params: [
+      { name: "file", type: "video_file" },
+      { name: "model", type: "model_file" },
+    ],
+    compute: () => ({}),
+  } as any);
+
+  const CLOUD = { hash: "H".repeat(64), ext: "mp4", owner: "owner-1" };
+  const MODEL_CLOUD = { hash: "M".repeat(64), ext: "glb", owner: "owner-1" };
+  const saved = {
+    schemaVersion: CURRENT_SCHEMA,
+    nodes: [
+      {
+        id: "n1",
+        defType: "fake-media",
+        position: { x: 0, y: 0 },
+        params: {
+          file: {
+            kind: "video_file",
+            filename: "clip.mp4",
+            size: 123,
+            duration: 4,
+            cloud: CLOUD,
+          },
+          model: {
+            kind: "model_file",
+            filename: "mesh.glb",
+            size: 456,
+            format: "glb",
+            cloud: MODEL_CLOUD,
+          },
+        },
+      },
+    ],
+    edges: [],
+  } as unknown as SavedProject;
+
+  const res = await deserializeGraph(saved);
+  const params = res.nodes[0].data.params as any;
+  check(
+    "cloud video envelope parks with its ref on a failed stream",
+    params.file === null &&
+      params.file__missingMedia?.cloud?.hash === CLOUD.hash,
+    JSON.stringify(params.file__missingMedia ?? null)
+  );
+  check(
+    "cloud ref seeds the session registry on load",
+    getCloudMediaRef("clip.mp4", 123)?.hash === CLOUD.hash
+  );
+  check(
+    "cloud model rebuilds a loadable value (URL from the media base)",
+    params.model?.url === `${MEDIA_PUBLIC_BASE}/owner-1/${MODEL_CLOUD.hash}.glb` &&
+      params.model?.format === "glb",
+    JSON.stringify(params.model ?? null)
+  );
+
+  // Re-save without ever relinking: the parked video envelope and the
+  // rebuilt model value must both keep their refs — losing them here is
+  // the silent back-to-relink regression the schema bump guards against.
+  const reser = await serializeGraph(res.nodes, res.edges);
+  const rp = reser.nodes[0].params as any;
+  check(
+    "re-save keeps the parked video cloud ref",
+    rp.file?.cloud?.hash === CLOUD.hash,
+    JSON.stringify(rp.file ?? null)
+  );
+  check(
+    "re-save keeps the model cloud ref",
+    rp.model?.cloud?.hash === MODEL_CLOUD.hash,
+    JSON.stringify(rp.model ?? null)
+  );
+
+  // Save-side attach: a LIVE video value whose file is in the registry
+  // serializes with the ref (the upload-completed-then-saved path).
+  seedCloudMediaRef("live.mp4", 99, { hash: "L".repeat(64), ext: "mp4", owner: "owner-1" });
+  const liveNodes = [
+    {
+      id: "n2",
+      type: "effect",
+      position: { x: 0, y: 0 },
+      data: {
+        defType: "fake-media",
+        params: { file: { video: {}, filename: "live.mp4", size: 99 }, model: null },
+      },
+    },
+  ] as any;
+  const ser2 = await serializeGraph(liveNodes, []);
+  const lp = ser2.nodes[0].params as any;
+  check(
+    "live video value serializes with its registry ref",
+    lp.file?.kind === "video_file" && lp.file?.cloud?.hash === "L".repeat(64),
+    JSON.stringify(lp.file ?? null)
   );
 }
 

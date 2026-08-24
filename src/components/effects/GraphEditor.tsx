@@ -23,12 +23,15 @@ import type {
   Keyframe,
   KeyframeAnimationBlock,
   ProjectTimeline,
+  SavedEasing,
 } from "@/engine/keyframes";
 import {
   EASING_PRESET_LABELS,
   EASING_PRESET_ORDER,
+  defaultSegmentHandles,
   easeOf,
   emptyAnimationBlock,
+  evaluateKeyframesAt,
   framesToTicks,
   snapTickToFrame,
   ticksToFrames,
@@ -39,6 +42,7 @@ import { LAYER_OPACITY_PREFIX } from "@/engine/conventions";
 import { getShortcutScope } from "./shortcut-scope";
 import { wheelWantsZoom, getEffectiveDevice } from "./input-device";
 import { EasingTile } from "./timeline/EasingTile";
+import type { SelectionKey } from "./timeline/keyframe-ops";
 
 // ---------------------------------------------------------------------
 // Public API
@@ -62,6 +66,19 @@ interface GraphEditorProps {
   // Bumped by the dock header's refresh button to force an immediate
   // y-fit to the current keyframes regardless of `normalizeY` state.
   refitVersion?: number;
+  // Which lanes to graph: the lanes of the keyframes currently selected
+  // in the Tracks / Layers editor (EffectsApp lifts that selection and
+  // derives this). Replaces the old per-track `graphVisible` ∿ toggle.
+  visibleLanes?: { nodeId: string; paramName: string }[];
+  // The lifted keyframe selection itself — seeds the graph's selection
+  // and the fit-to-selection when the active lane changes.
+  timelineSelection?: SelectionKey[];
+  // Per-project user-saved easing curves. Listed in the easing dropdown
+  // under "Saved"; the header's Save button appends to the list via
+  // `onSaveEasing` (EffectsApp owns the list and persists it on the
+  // project). Both optional so graph-only embeds keep working.
+  savedEasings?: SavedEasing[];
+  onSaveEasing?(easing: SavedEasing): void;
 }
 
 // ---------------------------------------------------------------------
@@ -91,6 +108,197 @@ const FIT_PAD = 0.1;
 const EASING_PRESETS: { id: EasingPreset; label: string }[] =
   EASING_PRESET_ORDER.map((id) => ({ id, label: EASING_PRESET_LABELS[id] }));
 
+// Dropdown option values for user-saved easings — namespaced so a saved
+// easing id can never collide with an EasingPreset name.
+const SAVED_EASING_VALUE_PREFIX = "saved:";
+
+// One graphable track. Scalar lanes map 1:1; a vec2/3/4 lane appears as
+// `componentCount` tracks, each carrying `component` and a scalar VIEW
+// block (componentViewBlock) whose edits merge back into the vec block.
+interface VisibleTrack {
+  key: string;
+  nodeId: string;
+  paramName: string;
+  label: string;
+  block: KeyframeAnimationBlock;
+  yMin?: number;
+  yMax?: number;
+  component?: number;
+  componentCount?: number;
+}
+
+const VEC_COMPONENT_LABELS = ["X", "Y", "Z", "W"];
+const VEC_COMPONENT_COUNT: Partial<Record<string, number>> = {
+  vec2: 2,
+  vec3: 3,
+  vec4: 4,
+};
+
+// Ghost-curve palette — the non-active tracks of a cross-track
+// selection, cycled by track index. Muted hues distinct from the active
+// curve's blue.
+const GHOST_CURVE_COLORS = [
+  "#d1a05a",
+  "#7fb069",
+  "#c17fd1",
+  "#5bc0be",
+  "#d1667f",
+  "#8a91d1",
+];
+
+// SVG path segments for a keyframe curve. Each segment respects
+// prev.easingOut — the same geometry for the active curve and the
+// ghosts; only the coordinate mapping differs.
+function buildCurvePathSegments(
+  ks: Keyframe[],
+  tickToX: (tick: number) => number,
+  valueToY: (v: number) => number
+): string[] {
+  if (ks.length === 0) return [];
+  if (ks.length === 1) {
+    return [`M ${tickToX(ks[0].tick)} ${valueToY(ks[0].value as number)}`];
+  }
+  const out: string[] = [];
+  out.push(`M ${tickToX(ks[0].tick)} ${valueToY(ks[0].value as number)}`);
+  for (let i = 0; i < ks.length - 1; i++) {
+    const a = ks[i];
+    const b = ks[i + 1];
+    const ay = valueToY(a.value as number);
+    const bx = tickToX(b.tick);
+    const by = valueToY(b.value as number);
+    const av = a.value as number;
+    const bv = b.value as number;
+    const span = b.tick - a.tick;
+    if (a.easingOut === "linear") {
+      out.push(`L ${bx} ${by}`);
+    } else if (a.easingOut === "hold") {
+      out.push(`L ${bx} ${ay} L ${bx} ${by}`);
+    } else if (a.easingOut === "customBezier") {
+      const right = a.bezierHandles?.rightHandle ?? defaultRightHandle(ks, i);
+      const left = b.bezierHandles?.leftHandle ?? defaultLeftHandle(ks, i + 1);
+      const c1x = tickToX(a.tick + right.dx);
+      const c1y = valueToY(av + right.dy);
+      const c2x = tickToX(b.tick + left.dx);
+      const c2y = valueToY(bv + left.dy);
+      out.push(`C ${c1x} ${c1y} ${c2x} ${c2y} ${bx} ${by}`);
+    } else {
+      const ctrl = PRESET_CTRL[a.easingOut];
+      if (ctrl) {
+        const c1Tick = a.tick + ctrl.p1[0] * span;
+        const c1Val = av + ctrl.p1[1] * (bv - av);
+        const c2Tick = a.tick + ctrl.p2[0] * span;
+        const c2Val = av + ctrl.p2[1] * (bv - av);
+        out.push(
+          `C ${tickToX(c1Tick)} ${valueToY(c1Val)} ${tickToX(c2Tick)} ${valueToY(c2Val)} ${bx} ${by}`
+        );
+      } else {
+        // Sampled polyline for non-cubic-bezier presets
+        // (sine/expo/back/bounce/elastic).
+        const SAMPLES = 32;
+        for (let s = 1; s <= SAMPLES; s++) {
+          const u = s / SAMPLES;
+          const v = easeOf(a.easingOut, u);
+          out.push(
+            `L ${tickToX(a.tick + u * span)} ${valueToY(av + v * (bv - av))}`
+          );
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// The full source array rides each view keyframe under this field so a
+// later edit can merge back losslessly. Every editor op spreads keyframes
+// (`{...k, tick}` / `{...k, value}`), so it survives moves and patches;
+// mergeComponentEdit strips it before the block leaves the editor.
+const VEC_SOURCE = "__vecSource";
+type ViewKeyframe = Keyframe & { [VEC_SOURCE]?: unknown };
+
+// Curve shape of a param-def-less (virtual) track, inferred from its
+// keyframe values: every value a number → scalar; every value a number
+// array of one shared length 2–4 → that many per-component views;
+// anything else → not graphable.
+function inferValueShape(ks: Keyframe[]): "scalar" | 2 | 3 | 4 | null {
+  if (ks.length === 0) return null;
+  let arrLen: number | null = null;
+  let sawNumber = false;
+  for (const k of ks) {
+    if (typeof k.value === "number") {
+      if (arrLen != null) return null;
+      sawNumber = true;
+      continue;
+    }
+    if (
+      sawNumber ||
+      !Array.isArray(k.value) ||
+      k.value.some((v) => typeof v !== "number")
+    ) {
+      return null;
+    }
+    if (arrLen == null) arrLen = k.value.length;
+    else if (arrLen !== k.value.length) return null;
+  }
+  if (sawNumber) return "scalar";
+  return arrLen === 2 || arrLen === 3 || arrLen === 4
+    ? (arrLen as 2 | 3 | 4)
+    : null;
+}
+
+// Scalar VIEW of one component of a vec lane.
+function componentViewBlock(
+  block: KeyframeAnimationBlock,
+  c: number
+): KeyframeAnimationBlock {
+  return {
+    ...block,
+    keyframes: block.keyframes.map((k) => ({
+      ...k,
+      value: Array.isArray(k.value) ? ((k.value[c] as number) ?? 0) : 0,
+      [VEC_SOURCE]: k.value,
+    })),
+  };
+}
+
+// Merge an edited component view back into vec keyframes. The view is
+// authoritative for ticks / count / order / easing; each key's OTHER
+// components come from its ridden-along source array, or — for keys the
+// editor inserted (no source) — from sampling the real curve at that
+// tick, so an insert pins the curve instead of zeroing the other axes.
+// (Exported for offline testing only.)
+export function mergeComponentEdit(
+  view: KeyframeAnimationBlock,
+  c: number,
+  count: number,
+  real: KeyframeAnimationBlock | undefined
+): KeyframeAnimationBlock {
+  const vecType = count === 2 ? "vec2" : count === 3 ? "vec3" : "vec4";
+  const sample = (tick: number): number[] => {
+    if (real && real.keyframes.length > 0) {
+      const v = evaluateKeyframesAt({ ...real, animated: true }, vecType, tick);
+      if (Array.isArray(v)) return (v as number[]).slice();
+    }
+    return new Array(count).fill(0);
+  };
+  const keyframes = view.keyframes.map((k) => {
+    const { [VEC_SOURCE]: source, ...rest } = k as ViewKeyframe;
+    const base = Array.isArray(source)
+      ? (source as number[]).slice()
+      : sample(k.tick);
+    while (base.length < count) base.push(0);
+    base.length = count;
+    base[c] = k.value as number;
+    return { ...rest, value: base };
+  });
+  return { ...view, keyframes };
+}
+
+let savedEasingSeq = 0;
+function newSavedEasingId(): string {
+  savedEasingSeq += 1;
+  return `ease-${Date.now().toString(36)}-${savedEasingSeq}`;
+}
+
 // Implicit cubic-bezier control points for the *legacy* named presets
 // that still have a clean two-handle representation. Other presets
 // (sine, expo, back, bounce, elastic, etc.) are drawn by sampling
@@ -117,6 +325,18 @@ const PRESET_CTRL: Partial<
 // Drag state machine
 // ---------------------------------------------------------------------
 
+// One selected key's gesture-start snapshot: exact data (tick/value —
+// cancel restores write these back verbatim) plus its screen position
+// under the mapping its track had when the gesture began.
+interface StartPoint {
+  tick: number;
+  value: number;
+  sx: number;
+  sy: number;
+}
+// trackKey → key index → snapshot, across every track with selection.
+type MultiStarts = Map<string, Map<number, StartPoint>>;
+
 type DragState =
   | { kind: "none" }
   | {
@@ -125,6 +345,10 @@ type DragState =
       startMouseX: number;
       startMouseY: number;
       starts: Map<number, { tick: number; value: number }>;
+      // Present when the selection spans other tracks too — the move
+      // then runs through the unified screen-space transform path
+      // instead of the single-track patchMany.
+      multiStarts?: MultiStarts;
     }
   | {
       kind: "handle";
@@ -155,6 +379,8 @@ type DragState =
       // Selection to union the box hits into (the prior selection when
       // shift-dragging; empty otherwise).
       base: Set<number>;
+      // Same, for the non-active tracks' selections.
+      baseExtra: Map<string, Set<number>>;
     }
   | {
       // Drag a handle of the multi-select transform box → scale the
@@ -169,18 +395,24 @@ type DragState =
 
 type BoxHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
-// Blender-style keyboard-driven modal transform (G grab / S scale) with
-// optional X/Y axis constraint. Confirmed by click/Enter, cancelled by
-// Esc/right-click. Updates follow the cursor (no button held).
+// Blender-style keyboard-driven modal transform (G grab / S scale /
+// R rotate) with optional X/Y axis constraint (grab/scale only).
+// Confirmed by click/Enter, cancelled by Esc/right-click. Updates follow
+// the cursor (no button held). Operates on the WHOLE cross-track
+// selection: starts snapshot every selected key on every track, the
+// transform runs in screen space, and each track inverts through its
+// own value mapping.
 type ModalTransform =
   | null
   | {
-      mode: "grab" | "scale";
+      mode: "grab" | "scale" | "rotate";
       axis: "x" | "y" | null;
       origin: { x: number; y: number }; // cursor when the modal began
-      starts: Map<number, { tick: number; value: number }>;
-      anchorTick: number; // scale pivot (playhead) in tick space
-      anchorValue: number; // scale pivot (selection centroid) in value space
+      starts: MultiStarts;
+      // Screen-space pivot. Scale: playhead in x, selection centroid in
+      // y (the playhead line has no y). Rotate: the centroid in both.
+      // Grab: unused.
+      anchor: { sx: number; sy: number };
     };
 
 // ---------------------------------------------------------------------
@@ -194,28 +426,30 @@ export function GraphEditor({
   onScrub,
   normalizeY = false,
   refitVersion = 0,
+  visibleLanes = [],
+  timelineSelection = [],
+  savedEasings = [],
+  onSaveEasing,
 }: GraphEditorProps) {
   // Clock read from the playback store (clock-store spec, step 3) — this
   // editor re-renders per frame by design (playhead line).
   const currentTick = useClock((s) => s.tick);
-  // Collect all scalar tracks whose `graphVisible` toggle is on. The
-  // graph icon on each track row in the Track Editor flips this flag.
+  // Collect the graphable tracks among `visibleLanes` — the lanes of the
+  // keyframes selected in the Tracks / Layers editor. Scalar lanes graph
+  // directly; vec2/3/4 lanes expand into one per-component X/Y/Z/W view
+  // track each (componentViewBlock), edited through a merge-back in
+  // onChange below. Colors / splines / step-only types stay ungraphed.
   const visibleTracks = useMemo(() => {
-    const out: {
-      key: string;
-      nodeId: string;
-      paramName: string;
-      label: string;
-      block: KeyframeAnimationBlock;
-      yMin?: number;
-      yMax?: number;
-    }[] = [];
+    const wanted = new Set(
+      visibleLanes.map((l) => `${l.nodeId}|${l.paramName}`)
+    );
+    const out: VisibleTrack[] = [];
     for (const n of nodes) {
       const anim = n.data?.animation;
       if (!anim) continue;
       const def = getNodeDef(n.data.defType);
       for (const [pname, b] of Object.entries(anim)) {
-        if (!b || !b.animated || !b.graphVisible) continue;
+        if (!b || !b.animated || !wanted.has(`${n.id}|${pname}`)) continue;
         const pdef = def?.params.find((p) => p.name === pname);
         // Virtual per-layer opacity keys (merge node) have no param def
         // but are plain 0..1 scalars — graph them like one.
@@ -240,20 +474,72 @@ export function GraphEditor({
           });
           continue;
         }
-        if (!pdef || pdef.type !== "scalar") continue;
-        out.push({
-          key: `${n.id}|${pname}`,
-          nodeId: n.id,
-          paramName: pname,
-          label: `${n.data.name} · ${pdef.label ?? pname}`,
-          block: b,
-          yMin: pdef.min,
-          yMax: pdef.max,
-        });
+        if (!pdef) {
+          // Virtual tracks — per-anchor spline vec2s (anchor_p/in/out:<id>),
+          // gradient-point and ramp-stop scalars, etc. — have no param
+          // def, so infer the curve shape from the values themselves:
+          // all numbers → scalar, all same-length number arrays →
+          // per-component views. Anything else (colors as objects,
+          // strings) stays ungraphed. This is what puts marquee-selected
+          // anchor keyframes on the graph.
+          const shape = inferValueShape(b.keyframes);
+          if (shape === "scalar") {
+            out.push({
+              key: `${n.id}|${pname}`,
+              nodeId: n.id,
+              paramName: pname,
+              label: `${n.data.name} · ${pname}`,
+              block: b,
+            });
+          } else if (shape) {
+            for (let c = 0; c < shape; c++) {
+              out.push({
+                key: `${n.id}|${pname}|${c}`,
+                nodeId: n.id,
+                paramName: pname,
+                component: c,
+                componentCount: shape,
+                label: `${n.data.name} · ${pname} · ${VEC_COMPONENT_LABELS[c]}`,
+                block: componentViewBlock(b, c),
+              });
+            }
+          }
+          continue;
+        }
+        if (pdef.type === "scalar") {
+          out.push({
+            key: `${n.id}|${pname}`,
+            nodeId: n.id,
+            paramName: pname,
+            label: `${n.data.name} · ${pdef.label ?? pname}`,
+            block: b,
+            yMin: pdef.min,
+            yMax: pdef.max,
+          });
+          continue;
+        }
+        const count = VEC_COMPONENT_COUNT[pdef.type];
+        if (count) {
+          for (let c = 0; c < count; c++) {
+            out.push({
+              key: `${n.id}|${pname}|${c}`,
+              nodeId: n.id,
+              paramName: pname,
+              component: c,
+              componentCount: count,
+              label: `${n.data.name} · ${pdef.label ?? pname} · ${
+                VEC_COMPONENT_LABELS[c]
+              }`,
+              block: componentViewBlock(b, c),
+              yMin: pdef.min,
+              yMax: pdef.max,
+            });
+          }
+        }
       }
     }
     return out;
-  }, [nodes]);
+  }, [nodes, visibleLanes]);
 
   const [activeKey, setActiveKey] = useState<string | null>(null);
   // Auto-select the first visible track when the prior selection
@@ -280,9 +566,26 @@ export function GraphEditor({
   const paramLabel = active?.label ?? "";
   const yMin = active?.yMin;
   const yMax = active?.yMax;
+  // On a per-component view track, every edit merges back into the real
+  // vec block: the view's scalar value lands in its component, the other
+  // components ride along on the hidden source array (or, for inserted
+  // keys, sample the real curve at that tick so the insert pins it).
   const onChange = active
     ? (next: KeyframeAnimationBlock) =>
-        onAnimationChange(active.nodeId, active.paramName, next)
+        onAnimationChange(
+          active.nodeId,
+          active.paramName,
+          active.component == null
+            ? next
+            : mergeComponentEdit(
+                next,
+                active.component,
+                active.componentCount ?? 2,
+                nodes.find((n) => n.id === active.nodeId)?.data?.animation?.[
+                  active.paramName
+                ]
+              )
+        )
     : () => {};
   const trackPicker =
     visibleTracks.length > 1 ? (
@@ -352,11 +655,80 @@ export function GraphEditor({
   const innerW = Math.max(40, width - PADDING.left - PADDING.right);
   const innerH = Math.max(40, height - HEADER_H - PADDING.top - PADDING.bottom);
 
+  // Selected keys on NON-active tracks (trackKey → view-key indices).
+  // The active track's selection stays in `selected`, so every
+  // single-track path keeps working; cross-track gestures union the
+  // two. Stale trackKeys (lane left the selection) no-op harmlessly.
+  const [extraSel, setExtraSel] = useState<Map<string, Set<number>>>(
+    () => new Map()
+  );
+  const extraCount = useMemo(() => {
+    let n = 0;
+    for (const s of extraSel.values()) n += s.size;
+    return n;
+  }, [extraSel]);
+
   // Re-fit y bounds when the active track changes, when normalize is
   // toggled, when refresh is clicked, or when the param's declared
   // bounds change. With normalize off and a declared range, use that;
   // otherwise auto-fit to keyframe extents.
+  //
+  // Lifted-selection seed, folded in so the two can't fight over the
+  // view: the FIRST time a lane becomes active, adopt the timeline
+  // selection across EVERY visible lane — the active lane's keys become
+  // the graph selection (view fitted to them, not the whole track), the
+  // other lanes' keys become the cross-track extras — so a timeline
+  // marquee lands in the graph fully selected and G/S/R-ready. After
+  // that the default refit behavior applies.
+  const seededForRef = useRef<string | null>(null);
   useEffect(() => {
+    if (active && seededForRef.current !== active.key) {
+      seededForRef.current = active.key;
+      // Selected ticks per lane. A component view adopts its vec lane's
+      // ticks — a timeline diamond is the whole vec keyframe.
+      const byLane = new Map<string, Set<number>>();
+      for (const s of timelineSelection) {
+        const lk = `${s.nodeId}|${s.paramName}`;
+        let set = byLane.get(lk);
+        if (!set) {
+          set = new Set();
+          byLane.set(lk, set);
+        }
+        set.add(s.tick);
+      }
+      const indicesFor = (t: VisibleTrack): Set<number> => {
+        const ticks = byLane.get(`${t.nodeId}|${t.paramName}`);
+        const set = new Set<number>();
+        if (ticks) {
+          t.block.keyframes.forEach((k, i) => {
+            if (ticks.has(k.tick)) set.add(i);
+          });
+        }
+        return set;
+      };
+      const extras = new Map<string, Set<number>>();
+      for (const t of visibleTracks) {
+        if (t.key === active.key) continue;
+        const set = indicesFor(t);
+        if (set.size > 0) extras.set(t.key, set);
+      }
+      setExtraSel(extras);
+      const sel = indicesFor(active);
+      if (sel.size > 0) {
+        setSelected(sel);
+        const fit = computeFitBoundsFromKeys(
+          active.block.keyframes.filter((_, i) => sel.has(i)),
+          innerW,
+          yMin,
+          yMax
+        );
+        setViewTickOffset(fit.viewTickOffset);
+        setPixelsPerTick(fit.pixelsPerTick);
+        setYMinView(fit.yMinView);
+        setYMaxView(fit.yMaxView);
+        return;
+      }
+    }
     if (!normalizeY && yMin != null && yMax != null) {
       setYMinView(yMin);
       setYMaxView(yMax);
@@ -409,6 +781,46 @@ export function GraphEditor({
     [yMinView, yMaxView, innerH]
   );
 
+  // ----- Multi-track editing -----
+  // Per-track screen mappings: the active track through the live axis,
+  // every other through its own auto-fit (position and opacity rarely
+  // share units). One source for ghost drawing, cross-track hit-testing,
+  // marquee and transforms.
+  const trackViews = useMemo(() => {
+    return visibleTracks.map((t) => {
+      if (t.key === active?.key) {
+        return {
+          track: t,
+          isActive: true,
+          yFor: valueToScreen,
+          yInv: screenToValue,
+        };
+      }
+      const fit = computeFitBoundsFromKeys(t.block.keyframes, innerW, t.yMin, t.yMax);
+      const span = fit.yMaxView - fit.yMinView || 1;
+      return {
+        track: t,
+        isActive: false,
+        yFor: (v: number) =>
+          PADDING.top + (1 - (v - fit.yMinView) / span) * innerH,
+        yInv: (sy: number) =>
+          fit.yMinView + (1 - (sy - PADDING.top) / innerH) * span,
+      };
+    });
+  }, [visibleTracks, active?.key, valueToScreen, screenToValue, innerW, innerH]);
+
+  // Live mirrors for gesture handlers — a mid-drag commit re-renders and
+  // the drag effect's closures go stale; refs keep commits aimed at the
+  // fresh blocks. Assigned in an effect (not render) for the hooks lint.
+  const trackViewsRef = useRef(trackViews);
+  const graphNodesRef = useRef(nodes);
+  const extraSelRef = useRef(extraSel);
+  useEffect(() => {
+    trackViewsRef.current = trackViews;
+    graphNodesRef.current = nodes;
+    extraSelRef.current = extraSel;
+  });
+
   function getMousePos(e: React.MouseEvent | MouseEvent | React.PointerEvent | PointerEvent) {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
@@ -457,6 +869,222 @@ export function GraphEditor({
     return null;
   }
 
+  // Hit-test a keyframe on ANY visible track (active first, so its keys
+  // win ties with overlapping ghosts).
+  function pointAtAnyTrack(
+    sx: number,
+    sy: number
+  ): { trackKey: string; idx: number; isActive: boolean } | null {
+    const views = trackViewsRef.current;
+    const ordered = [...views].sort(
+      (a, b) => Number(b.isActive) - Number(a.isActive)
+    );
+    for (const v of ordered) {
+      const ks = v.track.block.keyframes;
+      for (let i = 0; i < ks.length; i++) {
+        const px = tickToScreen(ks[i].tick);
+        const py = v.yFor(ks[i].value as number);
+        if (Math.hypot(px - sx, py - sy) <= POINT_HIT) {
+          return { trackKey: v.track.key, idx: i, isActive: v.isActive };
+        }
+      }
+    }
+    return null;
+  }
+
+  // Gesture-start snapshot of every selected key on every track: exact
+  // tick/value (cancel restores) + screen position under each track's
+  // current mapping. `activeIndices` overrides the active track's set
+  // for gestures that adjust the selection in the same event.
+  function snapshotMultiStarts(
+    activeIndices: Iterable<number> = selected
+  ): MultiStarts {
+    const out: MultiStarts = new Map();
+    const add = (trackKey: string, indices: Iterable<number>) => {
+      const v = trackViewsRef.current.find((tv) => tv.track.key === trackKey);
+      if (!v) return;
+      const m = new Map<number, StartPoint>();
+      for (const i of indices) {
+        const k = v.track.block.keyframes[i];
+        if (!k) continue;
+        m.set(i, {
+          tick: k.tick,
+          value: k.value as number,
+          sx: tickToScreen(k.tick),
+          sy: v.yFor(k.value as number),
+        });
+      }
+      if (m.size > 0) out.set(trackKey, m);
+    };
+    if (active) add(active.key, activeIndices);
+    for (const [tkey, set] of extraSelRef.current) {
+      if (tkey !== active?.key) add(tkey, set);
+    }
+    return out;
+  }
+
+  // Commit per-track keyframe patches. Scalar lanes write through their
+  // own block; component views of the same vec param are grouped into
+  // ONE write built from the real block, so simultaneous X/Y edits can't
+  // clobber each other (two merges of the same param would be
+  // last-writer-wins).
+  function commitMultiTrackPatches(
+    patches: Map<string, Map<number, Partial<Keyframe>>>
+  ) {
+    const groups = new Map<
+      string,
+      {
+        nodeId: string;
+        paramName: string;
+        entries: { track: VisibleTrack; m: Map<number, Partial<Keyframe>> }[];
+      }
+    >();
+    for (const [tkey, m] of patches) {
+      if (m.size === 0) continue;
+      const v = trackViewsRef.current.find((tv) => tv.track.key === tkey);
+      if (!v) continue;
+      const t = v.track;
+      const gk = `${t.nodeId}|${t.paramName}`;
+      let g = groups.get(gk);
+      if (!g) {
+        g = { nodeId: t.nodeId, paramName: t.paramName, entries: [] };
+        groups.set(gk, g);
+      }
+      g.entries.push({ track: t, m });
+    }
+    for (const g of groups.values()) {
+      const first = g.entries[0].track;
+      if (first.component == null) {
+        // Plain scalar lane — its view block IS the real block.
+        const block = first.block;
+        const next = block.keyframes
+          .map((k, i) => {
+            const p = g.entries[0].m.get(i);
+            return p ? { ...k, ...p } : k;
+          })
+          .sort((a, b) => a.tick - b.tick);
+        onAnimationChange(g.nodeId, g.paramName, {
+          ...block,
+          keyframes: next,
+        });
+        continue;
+      }
+      // Component views — patch the REAL vec block by original index
+      // (component view blocks are 1:1 and order-preserving).
+      const real = graphNodesRef.current.find((n) => n.id === g.nodeId)?.data
+        ?.animation?.[g.paramName];
+      if (!real) continue;
+      const count = first.componentCount ?? 2;
+      const next = real.keyframes
+        .map((k, i) => {
+          let tick = k.tick;
+          const value = Array.isArray(k.value)
+            ? (k.value as number[]).slice()
+            : new Array<number>(count).fill(0);
+          let changed = false;
+          for (const { track, m } of g.entries) {
+            const p = m.get(i);
+            if (!p) continue;
+            changed = true;
+            if (p.tick != null) tick = p.tick;
+            if (typeof p.value === "number" && track.component != null) {
+              value[track.component] = p.value;
+            }
+          }
+          return changed ? { ...k, tick, value } : k;
+        })
+        .sort((a, b) => a.tick - b.tick);
+      onAnimationChange(g.nodeId, g.paramName, { ...real, keyframes: next });
+    }
+  }
+
+  // Apply a screen-space point transform to every snapshotted key and
+  // commit — each track inverts y through its own mapping, x through the
+  // shared time axis.
+  function applyScreenTransform(
+    starts: MultiStarts,
+    mapPoint: (sx: number, sy: number) => [number, number]
+  ) {
+    const tpf = timeline.ticksPerFrame;
+    const patches = new Map<string, Map<number, Partial<Keyframe>>>();
+    for (const [tkey, keyStarts] of starts) {
+      const v = trackViewsRef.current.find((tv) => tv.track.key === tkey);
+      if (!v) continue;
+      const m = new Map<number, Partial<Keyframe>>();
+      for (const [i, s] of keyStarts) {
+        const [nx, ny] = mapPoint(s.sx, s.sy);
+        m.set(i, {
+          tick: snapTickToFrame(Math.round(screenToTick(nx)), tpf),
+          value: v.yInv(ny),
+        });
+      }
+      patches.set(tkey, m);
+    }
+    commitMultiTrackPatches(patches);
+  }
+
+  // Cancel restore: write every snapshotted key's exact original
+  // tick/value back.
+  function restoreMultiStarts(starts: MultiStarts) {
+    const patches = new Map<string, Map<number, Partial<Keyframe>>>();
+    for (const [tkey, keyStarts] of starts) {
+      const m = new Map<number, Partial<Keyframe>>();
+      for (const [i, s] of keyStarts) m.set(i, { tick: s.tick, value: s.value });
+      patches.set(tkey, m);
+    }
+    commitMultiTrackPatches(patches);
+  }
+
+  // Delete the whole cross-track selection. On a vec param, a key
+  // selected on ANY component view deletes the whole vec keyframe (one
+  // point in time across components).
+  function deleteSelectedMulti() {
+    const sel = new Map<string, Set<number>>();
+    if (active && selected.size > 0) sel.set(active.key, new Set(selected));
+    for (const [tkey, set] of extraSelRef.current) {
+      if (tkey !== active?.key && set.size > 0) sel.set(tkey, new Set(set));
+    }
+    if (sel.size === 0) return;
+    const groups = new Map<
+      string,
+      { nodeId: string; paramName: string; isComponent: boolean; drop: Set<number> }
+    >();
+    for (const [tkey, set] of sel) {
+      const v = trackViewsRef.current.find((tv) => tv.track.key === tkey);
+      if (!v) continue;
+      const t = v.track;
+      const gk = `${t.nodeId}|${t.paramName}`;
+      let g = groups.get(gk);
+      if (!g) {
+        g = {
+          nodeId: t.nodeId,
+          paramName: t.paramName,
+          isComponent: t.component != null,
+          drop: new Set<number>(),
+        };
+        groups.set(gk, g);
+      }
+      for (const i of set) g.drop.add(i);
+    }
+    for (const g of groups.values()) {
+      const block = g.isComponent
+        ? graphNodesRef.current.find((n) => n.id === g.nodeId)?.data
+            ?.animation?.[g.paramName]
+        : trackViewsRef.current.find(
+            (tv) =>
+              tv.track.nodeId === g.nodeId &&
+              tv.track.paramName === g.paramName
+          )?.track.block;
+      if (!block) continue;
+      onAnimationChange(g.nodeId, g.paramName, {
+        ...block,
+        keyframes: block.keyframes.filter((_, i) => !g.drop.has(i)),
+      });
+    }
+    setSelected(new Set());
+    setExtraSel(new Map());
+  }
+
   // ----- Mutation primitives -----
   const commit = useCallback(
     (next: KeyframeAnimationBlock) => onChange(next),
@@ -494,6 +1122,47 @@ export function GraphEditor({
     const next = [...ks.slice(0, insertAt), newKf, ...ks.slice(insertAt)];
     commit({ ...blockRef.current, keyframes: next });
     return insertAt;
+  }
+
+  // Apply a saved easing to every selected key's outgoing segment: the
+  // key gets customBezier + the denormalized right handle, and the NEXT
+  // key (selected or not) gets the matching left handle — that pair is
+  // what interpolate() reads for the segment. A key that is both a
+  // segment start and the previous segment's end accumulates both edits.
+  function applySavedEasing(s: SavedEasing) {
+    const ksLocal = blockRef.current.keyframes;
+    const handles = new Map<number, BezierHandles>();
+    const workingHandles = (i: number): BezierHandles => {
+      let h = handles.get(i);
+      if (!h) {
+        h = {
+          ...(ksLocal[i].bezierHandles ?? defaultBezierHandles(ksLocal, i)),
+        };
+        handles.set(i, h);
+      }
+      return h;
+    };
+    const starts = new Set<number>();
+    for (const i of selected) {
+      const a = ksLocal[i];
+      const b = ksLocal[i + 1];
+      if (!a || !b) continue;
+      const seg = easingHandlesForSegment(s, a, b);
+      workingHandles(i).rightHandle = seg.right;
+      workingHandles(i + 1).leftHandle = seg.left;
+      starts.add(i);
+    }
+    if (starts.size === 0) return;
+    const next = new Map<number, Partial<Keyframe>>();
+    for (const [i, bezierHandles] of handles) {
+      next.set(
+        i,
+        starts.has(i)
+          ? { easingOut: "customBezier", bezierHandles }
+          : { bezierHandles }
+      );
+    }
+    patchMany(next);
   }
 
   // ----- Wheel: 2-finger scroll = pan; Cmd/Ctrl + scroll = zoom -----
@@ -655,24 +1324,31 @@ export function GraphEditor({
 
   // ----- Keyboard: space / delete / escape / F -----
   useEffect(() => {
-    function startModal(mode: "grab" | "scale") {
-      const kks = blockRef.current.keyframes;
-      const starts = new Map<number, { tick: number; value: number }>();
-      let sum = 0;
-      for (const i of selected) {
-        const k = kks[i];
-        if (!k) continue;
-        starts.set(i, { tick: k.tick, value: k.value as number });
-        sum += k.value as number;
+    function startModal(mode: "grab" | "scale" | "rotate") {
+      // The whole cross-track selection, snapshotted in screen space.
+      const starts = snapshotMultiStarts();
+      let n = 0;
+      let sxSum = 0;
+      let sySum = 0;
+      for (const m of starts.values()) {
+        for (const s of m.values()) {
+          n++;
+          sxSum += s.sx;
+          sySum += s.sy;
+        }
       }
-      if (starts.size === 0) return;
+      if (n === 0 || (mode === "rotate" && n < 2)) return;
       setModal({
         mode,
         axis: null,
         origin: { ...cursorRef.current },
         starts,
-        anchorTick: currentTick,
-        anchorValue: sum / starts.size,
+        // Scale pivots x on the playhead; rotate on the selection's
+        // screen centroid (the playhead line has no y).
+        anchor:
+          mode === "scale"
+            ? { sx: tickToScreen(currentTick), sy: sySum / n }
+            : { sx: sxSum / n, sy: sySum / n },
       });
     }
 
@@ -683,11 +1359,8 @@ export function GraphEditor({
       // ----- Modal transform live: capture its controls -----
       if (modal) {
         if (e.key === "Escape") {
-          // Cancel — restore the original positions.
-          const restore = new Map<number, Partial<Keyframe>>();
-          for (const [i, s] of modal.starts)
-            restore.set(i, { tick: s.tick, value: s.value });
-          patchMany(restore);
+          // Cancel — restore the original positions on every track.
+          restoreMultiStarts(modal.starts);
           setModal(null);
           e.preventDefault();
           return;
@@ -724,32 +1397,32 @@ export function GraphEditor({
       }
       if (e.key === "Escape") {
         setSelected(new Set());
+        setExtraSel(new Map());
         setContextMenu(null);
       }
-      // Contextual transforms — need a keyframe selection.
-      if (
-        (e.key === "g" || e.key === "G") &&
-        !inInput &&
-        selected.size > 0
-      ) {
+      // Contextual transforms — need a keyframe selection (any track).
+      const totalSel = selected.size + extraCount;
+      if ((e.key === "g" || e.key === "G") && !inInput && totalSel > 0) {
         e.preventDefault();
         startModal("grab");
         return;
       }
-      if (
-        (e.key === "s" || e.key === "S") &&
-        !inInput &&
-        selected.size > 0
-      ) {
+      if ((e.key === "s" || e.key === "S") && !inInput && totalSel > 0) {
         e.preventDefault();
         startModal("scale");
         return;
       }
-      if ((e.key === "Delete" || e.key === "Backspace") && !inInput) {
-        if (selected.size === 0) return;
+      // Rotate needs ≥2 keys — a single key rotating about the selection
+      // centroid (itself) is a no-op.
+      if ((e.key === "r" || e.key === "R") && !inInput && totalSel > 1) {
         e.preventDefault();
-        deleteKeyframes(selected);
-        setSelected(new Set());
+        startModal("rotate");
+        return;
+      }
+      if ((e.key === "Delete" || e.key === "Backspace") && !inInput) {
+        if (totalSel === 0) return;
+        e.preventDefault();
+        deleteSelectedMulti();
       }
       if ((e.key === "f" || e.key === "F") && !inInput) {
         const ks = blockRef.current.keyframes;
@@ -783,7 +1456,7 @@ export function GraphEditor({
       window.removeEventListener("keyup", onUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [selected, innerW, yMin, yMax, modal, currentTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selected, extraCount, active?.key, innerW, yMin, yMax, modal, currentTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ----- Pointer interactions on the SVG surface -----
   // Pointer, not mouse: iPadOS emits no mousemove stream during a touch or
@@ -843,10 +1516,49 @@ export function GraphEditor({
       return;
     }
 
-    // Then keyframes.
-    const ph = pointAt(x, y);
+    // Then keyframes — on ANY visible track.
+    const hit = pointAtAnyTrack(x, y);
+    if (hit && !hit.isActive) {
+      // A ghost track's key. Shift toggles it into the cross-track
+      // selection; a click on an already-selected one drags the whole
+      // group; a plain click activates that track (axis, handles and
+      // easing dropdown follow) with just that key selected — the next
+      // press drags, once the axis has settled.
+      if (e.shiftKey) {
+        setExtraSel((prev) => {
+          const next = new Map(prev);
+          const set = new Set(next.get(hit.trackKey) ?? []);
+          if (set.has(hit.idx)) set.delete(hit.idx);
+          else set.add(hit.idx);
+          if (set.size === 0) next.delete(hit.trackKey);
+          else next.set(hit.trackKey, set);
+          return next;
+        });
+        return;
+      }
+      if (extraSel.get(hit.trackKey)?.has(hit.idx)) {
+        setDrag({
+          kind: "point",
+          group: [],
+          startMouseX: x,
+          startMouseY: y,
+          starts: new Map(),
+          multiStarts: snapshotMultiStarts(),
+        });
+        return;
+      }
+      // Suppress the lifted-selection seed — this activation is an
+      // explicit in-graph click, not a lane arriving from the timeline.
+      seededForRef.current = hit.trackKey;
+      setActiveKey(hit.trackKey);
+      setSelected(new Set([hit.idx]));
+      setExtraSel(new Map());
+      return;
+    }
+    const ph = hit ? hit.idx : null;
     if (ph !== null) {
       let nextSel: Set<number>;
+      let keepExtras = extraCount > 0;
       if (e.shiftKey) {
         nextSel = new Set(selected);
         if (nextSel.has(ph)) nextSel.delete(ph);
@@ -854,7 +1566,10 @@ export function GraphEditor({
       } else if (selected.has(ph)) {
         nextSel = new Set(selected);
       } else {
+        // Replacement click — the cross-track extras drop too.
         nextSel = new Set([ph]);
+        if (keepExtras) setExtraSel(new Map());
+        keepExtras = false;
       }
       setSelected(nextSel);
       const ks = blockRef.current.keyframes;
@@ -867,6 +1582,7 @@ export function GraphEditor({
         startMouseX: x,
         startMouseY: y,
         starts,
+        multiStarts: keepExtras ? snapshotMultiStarts(nextSel) : undefined,
       });
       return;
     }
@@ -891,6 +1607,9 @@ export function GraphEditor({
       curX: x,
       curY: y,
       base: e.shiftKey ? new Set(selected) : new Set(),
+      baseExtra: e.shiftKey
+        ? new Map([...extraSel].map(([k, s]) => [k, new Set(s)]))
+        : new Map(),
     });
   }
 
@@ -905,16 +1624,14 @@ export function GraphEditor({
       : snapTickToFrame(Math.round(tickAt), timeline.ticksPerFrame);
     const newIdx = insertKeyframeAt(snapped, value);
     setSelected(new Set([newIdx]));
+    setExtraSel(new Map());
   }
 
   function onContextMenuHandler(e: React.MouseEvent) {
     // Right-click cancels an in-progress modal transform (Blender style).
     if (modal) {
       e.preventDefault();
-      const restore = new Map<number, Partial<Keyframe>>();
-      for (const [i, s] of modal.starts)
-        restore.set(i, { tick: s.tick, value: s.value });
-      patchMany(restore);
+      restoreMultiStarts(modal.starts);
       setModal(null);
       return;
     }
@@ -922,7 +1639,10 @@ export function GraphEditor({
     const ph = pointAt(x, y);
     if (ph === null) return;
     e.preventDefault();
-    if (!selected.has(ph)) setSelected(new Set([ph]));
+    if (!selected.has(ph)) {
+      setSelected(new Set([ph]));
+      setExtraSel(new Map());
+    }
     setContextMenu({
       clientX: e.clientX,
       clientY: e.clientY,
@@ -962,14 +1682,30 @@ export function GraphEditor({
         const maxX = Math.max(drag.startX, x);
         const minY = Math.min(drag.startY, y);
         const maxY = Math.max(drag.startY, y);
-        const mks = blockRef.current.keyframes;
+        // Box-select across EVERY visible track, each through its own
+        // y mapping.
         const hits = new Set(drag.base);
-        for (let i = 0; i < mks.length; i++) {
-          const px = tickToScreen(mks[i].tick);
-          const py = valueToScreen(mks[i].value as number);
-          if (px >= minX && px <= maxX && py >= minY && py <= maxY) hits.add(i);
+        const extraHits = new Map(
+          [...drag.baseExtra].map(([k, s]) => [k, new Set(s)])
+        );
+        for (const v of trackViewsRef.current) {
+          const mks = v.track.block.keyframes;
+          for (let i = 0; i < mks.length; i++) {
+            const px = tickToScreen(mks[i].tick);
+            const py = v.yFor(mks[i].value as number);
+            if (px >= minX && px <= maxX && py >= minY && py <= maxY) {
+              if (v.isActive) {
+                hits.add(i);
+              } else {
+                const set = extraHits.get(v.track.key) ?? new Set<number>();
+                set.add(i);
+                extraHits.set(v.track.key, set);
+              }
+            }
+          }
         }
         setSelected(hits);
+        setExtraSel(extraHits);
         setDrag({ ...drag, curX: x, curY: y });
         return;
       }
@@ -987,6 +1723,14 @@ export function GraphEditor({
           else dxPx = 0;
         } else {
           shiftAxisRef.current = null;
+        }
+        // Cross-track selection → unified screen-space path.
+        if (drag.multiStarts) {
+          applyScreenTransform(drag.multiStarts, (sx, sy) => [
+            sx + dxPx,
+            sy + dyPx,
+          ]);
+          return;
         }
         const dTickRaw = dxPx / pixelsPerTick;
         const ySpan = yMaxView - yMinView;
@@ -1076,7 +1820,10 @@ export function GraphEditor({
           Math.abs(drag.curX - drag.startX) > 3 ||
           Math.abs(drag.curY - drag.startY) > 3;
         // Bare click on empty space (no drag, no shift) clears selection.
-        if (!moved && drag.base.size === 0) setSelected(new Set());
+        if (!moved && drag.base.size === 0) {
+          setSelected(new Set());
+          setExtraSel(new Map());
+        }
       }
       setDrag({ kind: "none" });
     }
@@ -1102,29 +1849,38 @@ export function GraphEditor({
     screenToValue,
   ]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ----- Modal G/S transform: follow the cursor, apply continuously -----
+  // ----- Modal G/S/R transform: follow the cursor, apply continuously -----
+  // One screen-space point map per mode, applied to the whole
+  // cross-track starts snapshot; each track inverts through its own
+  // value mapping (applyScreenTransform).
   useEffect(() => {
     if (!modal) return;
     const apply = (cur: { x: number; y: number }) => {
-      const updates = new Map<number, Partial<Keyframe>>();
-      const tpf = timeline.ticksPerFrame;
+      let mapPoint: (sx: number, sy: number) => [number, number];
       if (modal.mode === "grab") {
         let dxPx = cur.x - modal.origin.x;
         let dyPx = cur.y - modal.origin.y;
         if (modal.axis === "x") dyPx = 0;
         else if (modal.axis === "y") dxPx = 0;
-        const dTick = dxPx / pixelsPerTick;
-        const dValue = -(dyPx / innerH) * (yMaxView - yMinView);
-        for (const [i, s] of modal.starts) {
-          updates.set(i, {
-            tick: snapTickToFrame(Math.round(s.tick + dTick), tpf),
-            value: s.value + dValue,
-          });
-        }
+        mapPoint = (sx, sy) => [sx + dxPx, sy + dyPx];
+      } else if (modal.mode === "rotate") {
+        // Rotate around the selection's screen centroid — the only
+        // space where an angle means anything (x is ticks, y is value
+        // units; view zoom decides their relative weight, exactly as
+        // the user sees it).
+        const { sx: px, sy: py } = modal.anchor;
+        const a0 = Math.atan2(modal.origin.y - py, modal.origin.x - px);
+        const a1 = Math.atan2(cur.y - py, cur.x - px);
+        const cos = Math.cos(a1 - a0);
+        const sin = Math.sin(a1 - a0);
+        mapPoint = (sx, sy) => {
+          const rx = sx - px;
+          const ry = sy - py;
+          return [px + rx * cos - ry * sin, py + rx * sin + ry * cos];
+        };
       } else {
         // Scale around the playhead (x) / selection centroid (y).
-        const ax = tickToScreen(modal.anchorTick);
-        const ay = valueToScreen(modal.anchorValue);
+        const { sx: ax, sy: ay } = modal.anchor;
         const dx0 = modal.origin.x - ax;
         const dy0 = modal.origin.y - ay;
         let fx = dx0 !== 0 ? (cur.x - ax) / dx0 : 1;
@@ -1138,17 +1894,9 @@ export function GraphEditor({
           fx = f;
           fy = f;
         }
-        for (const [i, s] of modal.starts) {
-          updates.set(i, {
-            tick: snapTickToFrame(
-              Math.round(modal.anchorTick + (s.tick - modal.anchorTick) * fx),
-              tpf
-            ),
-            value: modal.anchorValue + (s.value - modal.anchorValue) * fy,
-          });
-        }
+        mapPoint = (sx, sy) => [ax + (sx - ax) * fx, ay + (sy - ay) * fy];
       }
-      patchMany(updates);
+      applyScreenTransform(modal.starts, mapPoint);
     };
     // Re-apply right away so axis-toggles update without needing a move.
     apply(cursorRef.current);
@@ -1167,67 +1915,47 @@ export function GraphEditor({
 
   const ks = block.keyframes;
 
-  // Build the curve path. Each segment respects prev.easingOut.
-  const pathSegments = useMemo(() => {
-    if (ks.length === 0) return [] as string[];
-    if (ks.length === 1) {
-      const sx = tickToScreen(ks[0].tick);
-      const sy = valueToScreen(ks[0].value as number);
-      return [`M ${sx} ${sy}`];
-    }
-    const out: string[] = [];
-    out.push(`M ${tickToScreen(ks[0].tick)} ${valueToScreen(ks[0].value as number)}`);
-    for (let i = 0; i < ks.length - 1; i++) {
-      const a = ks[i];
-      const b = ks[i + 1];
-      const ay = valueToScreen(a.value as number);
-      const bx = tickToScreen(b.tick);
-      const by = valueToScreen(b.value as number);
-      const av = a.value as number;
-      const bv = b.value as number;
-      const span = b.tick - a.tick;
-      if (a.easingOut === "linear") {
-        out.push(`L ${bx} ${by}`);
-      } else if (a.easingOut === "hold") {
-        out.push(`L ${bx} ${ay} L ${bx} ${by}`);
-      } else if (a.easingOut === "customBezier") {
-        const right =
-          a.bezierHandles?.rightHandle ?? defaultRightHandle(ks, i);
-        const left =
-          b.bezierHandles?.leftHandle ?? defaultLeftHandle(ks, i + 1);
-        const c1x = tickToScreen(a.tick + right.dx);
-        const c1y = valueToScreen(av + right.dy);
-        const c2x = tickToScreen(b.tick + left.dx);
-        const c2y = valueToScreen(bv + left.dy);
-        out.push(`C ${c1x} ${c1y} ${c2x} ${c2y} ${bx} ${by}`);
-      } else {
-        const ctrl = PRESET_CTRL[a.easingOut];
-        if (ctrl) {
-          const c1Tick = a.tick + ctrl.p1[0] * span;
-          const c1Val = av + ctrl.p1[1] * (bv - av);
-          const c2Tick = a.tick + ctrl.p2[0] * span;
-          const c2Val = av + ctrl.p2[1] * (bv - av);
-          out.push(
-            `C ${tickToScreen(c1Tick)} ${valueToScreen(c1Val)} ${tickToScreen(c2Tick)} ${valueToScreen(c2Val)} ${bx} ${by}`
-          );
-        } else {
-          // Sampled polyline for non-cubic-bezier presets
-          // (sine/expo/back/bounce/elastic).
-          const SAMPLES = 32;
-          for (let s = 1; s <= SAMPLES; s++) {
-            const u = s / SAMPLES;
-            const v = easeOf(a.easingOut, u);
-            const tk = a.tick + u * span;
-            const vv = av + v * (bv - av);
-            out.push(`L ${tickToScreen(tk)} ${valueToScreen(vv)}`);
-          }
-        }
-      }
-    }
-    return out;
-  }, [ks, tickToScreen, valueToScreen]);
+  // Build the active curve's path (shared builder — the ghost curves of
+  // the other visible tracks use it too, with their own y mapping).
+  const pathSegments = useMemo(
+    () => buildCurvePathSegments(ks, tickToScreen, valueToScreen),
+    [ks, tickToScreen, valueToScreen]
+  );
 
   const pathD = pathSegments.join(" ");
+
+  // The other visible tracks' curves, drawn behind the active one so a
+  // cross-track selection reads (and edits) as one picture. Shared time
+  // axis; each track keeps its own value fit (tracks rarely share units
+  // — position vs opacity — so a shared y-axis would flatten most of
+  // them into lines). Their keyframes render as real diamonds and light
+  // up when in the cross-track selection.
+  const ghostCurves = useMemo(() => {
+    const out: {
+      key: string;
+      d: string;
+      color: string;
+      keys: { x: number; y: number; sel: boolean }[];
+    }[] = [];
+    if (trackViews.length < 2) return out;
+    trackViews.forEach((v, idx) => {
+      if (v.isActive) return;
+      const gks = v.track.block.keyframes;
+      if (gks.length === 0) return;
+      const selSet = extraSel.get(v.track.key);
+      out.push({
+        key: v.track.key,
+        d: buildCurvePathSegments(gks, tickToScreen, v.yFor).join(" "),
+        color: GHOST_CURVE_COLORS[idx % GHOST_CURVE_COLORS.length],
+        keys: gks.map((k, i) => ({
+          x: tickToScreen(k.tick),
+          y: v.yFor(k.value as number),
+          sel: selSet?.has(i) ?? false,
+        })),
+      });
+    });
+    return out;
+  }, [trackViews, tickToScreen, extraSel]);
 
   // Grid lines.
   const yTicks = useMemo(
@@ -1254,6 +1982,21 @@ export function GraphEditor({
     selected.size > 0
       ? ks[Math.min(...Array.from(selected))]
       : undefined;
+
+  // Custom bezier (handle shaping + saved easings) is scalar-only: on a
+  // vec lane's per-component view, evaluation runs through easeOf() and
+  // ignores handles, so offering the option would draw a curve that
+  // doesn't play. Gates the dropdown option, the Saved group, the Save
+  // button, and the context menu tile.
+  const componentView = active?.component != null;
+
+  // What the header's Save button would capture: the first selected
+  // key's outgoing custom curve, or null when there's nothing saveable
+  // (preset easing, no following key) — which disables the button.
+  const saveableEasing =
+    selected.size > 0 && !componentView
+      ? normalizedEasingFromSegment(ks, Math.min(...Array.from(selected)))
+      : null;
 
   // Screen-space bounding box of the selection — drives the multi-select
   // transform box (shown for 2+ keyframes). Recomputed live so it tracks
@@ -1323,8 +2066,12 @@ export function GraphEditor({
           textAlign: "center",
         }}
       >
-        No curves visible. Click the ∿ icon on a scalar track in the Track
-        Editor to show it here.
+        {visibleLanes.length > 0
+          ? "The selected tracks can't be graphed — colors, splines and " +
+            "step params have no curve. Select keyframes on scalar or " +
+            "vector tracks instead."
+          : "No curves to show. Select keyframes in the Tracks or Layers " +
+            "editor and their curves appear here."}
       </div>
     );
   }
@@ -1371,42 +2118,83 @@ export function GraphEditor({
         </span>
         <div style={{ flex: 1 }} />
         {selected.size > 0 && firstSelected && (
-          <select
-            value={firstSelected.easingOut}
-            onChange={(e) => {
-              const preset = e.target.value as EasingPreset;
-              const next = new Map<number, Partial<Keyframe>>();
-              const ksLocal = blockRef.current.keyframes;
-              for (const i of selected) {
-                const k = ksLocal[i];
-                if (!k) continue;
-                let bezierHandles = k.bezierHandles;
-                if (preset === "customBezier") {
-                  bezierHandles =
-                    bezierHandles ?? defaultBezierHandles(ksLocal, i);
-                } else {
-                  bezierHandles = undefined;
+          <>
+            <select
+              value={firstSelected.easingOut}
+              onChange={(e) => {
+                const v = e.target.value;
+                // "saved:<id>" options — apply the saved curve's handles.
+                // The controlled value stays firstSelected.easingOut, which
+                // lands on "customBezier" once the patch commits.
+                if (v.startsWith(SAVED_EASING_VALUE_PREFIX)) {
+                  const s = savedEasings.find(
+                    (x) => SAVED_EASING_VALUE_PREFIX + x.id === v
+                  );
+                  if (s) applySavedEasing(s);
+                  return;
                 }
-                next.set(i, { easingOut: preset, bezierHandles });
-              }
-              patchMany(next);
-            }}
-            style={{
-              background: BG,
-              color: TEXT,
-              border: `1px solid ${BORDER}`,
-              borderRadius: 3,
-              padding: "1px 4px",
-              fontSize: 11,
-              fontFamily: "var(--ui-font)",
-            }}
-          >
-            {EASING_PRESETS.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
+                const preset = v as EasingPreset;
+                const next = new Map<number, Partial<Keyframe>>();
+                const ksLocal = blockRef.current.keyframes;
+                for (const i of selected) {
+                  const k = ksLocal[i];
+                  if (!k) continue;
+                  let bezierHandles = k.bezierHandles;
+                  if (preset === "customBezier") {
+                    bezierHandles =
+                      bezierHandles ?? defaultBezierHandles(ksLocal, i);
+                  } else {
+                    bezierHandles = undefined;
+                  }
+                  next.set(i, { easingOut: preset, bezierHandles });
+                }
+                patchMany(next);
+              }}
+              style={{
+                background: BG,
+                color: TEXT,
+                border: `1px solid ${BORDER}`,
+                borderRadius: 3,
+                padding: "1px 4px",
+                fontSize: 11,
+                fontFamily: "var(--ui-font)",
+              }}
+            >
+              {EASING_PRESETS.filter(
+                (p) => !componentView || p.id !== "customBezier"
+              ).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+              {!componentView && savedEasings.length > 0 && (
+                <optgroup label="Saved">
+                  {savedEasings.map((s) => (
+                    <option
+                      key={s.id}
+                      value={SAVED_EASING_VALUE_PREFIX + s.id}
+                    >
+                      {s.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+            {onSaveEasing && !componentView && (
+              <SaveEasingButton
+                canSave={saveableEasing != null}
+                onSave={(name) => {
+                  // Re-read at commit time — the popover can outlive edits.
+                  const shape = normalizedEasingFromSegment(
+                    blockRef.current.keyframes,
+                    Math.min(...Array.from(selected))
+                  );
+                  if (!shape) return;
+                  onSaveEasing({ id: newSavedEasingId(), name, ...shape });
+                }}
+              />
+            )}
+          </>
         )}
         {trackPicker}
       </div>
@@ -1501,6 +2289,35 @@ export function GraphEditor({
             </g>
           );
         })}
+
+        {/* The other tracks of a cross-track selection, behind the
+            active curve — fully selectable/editable: click a diamond to
+            activate the track, shift-click to build a cross-track
+            selection, marquee/G/S/R/drag/delete work across all. */}
+        {ghostCurves.map((g) => (
+          <g key={g.key} pointerEvents="none">
+            <path
+              d={g.d}
+              fill="none"
+              stroke={g.color}
+              strokeWidth={1}
+              opacity={0.55}
+            />
+            {g.keys.map((p, i) => (
+              <rect
+                key={i}
+                x={p.x - (p.sel ? 4.5 : 3.5)}
+                y={p.y - (p.sel ? 4.5 : 3.5)}
+                width={p.sel ? 9 : 7}
+                height={p.sel ? 9 : 7}
+                transform={`rotate(45 ${p.x} ${p.y})`}
+                fill={p.sel ? ACCENT : g.color}
+                stroke={p.sel ? "#fff" : "none"}
+                opacity={p.sel ? 1 : 0.75}
+              />
+            ))}
+          </g>
+        ))}
 
         {/* Curve */}
         {pathD && (
@@ -1831,7 +2648,11 @@ export function GraphEditor({
             letterSpacing: 0.5,
           }}
         >
-          {modal.mode === "grab" ? "GRAB" : "SCALE"}
+          {modal.mode === "grab"
+            ? "GRAB"
+            : modal.mode === "rotate"
+              ? "ROTATE"
+              : "SCALE"}
           {modal.axis ? ` ${modal.axis.toUpperCase()}` : ""} · click/↵ confirm ·
           esc cancel
         </div>
@@ -1846,7 +2667,10 @@ export function GraphEditor({
           onSubmenu={(sub) =>
             setContextMenu({ ...contextMenu, sub })
           }
+          hideCustomBezier={componentView}
           onPickEasing={(preset) => {
+            // Scalar-only guard (see componentView above).
+            if (componentView && preset === "customBezier") return;
             // Apply to all selected keys (so power-users can change a group).
             const updates = new Map<number, Partial<Keyframe>>();
             const ksLocal = blockRef.current.keyframes;
@@ -1884,6 +2708,179 @@ export function GraphEditor({
 }
 
 // ---------------------------------------------------------------------
+// Save-easing button + naming popover
+// ---------------------------------------------------------------------
+
+// "Save" button beside the easing dropdown. Click opens a small fixed
+// popover right above the button (below when the header sits too close
+// to the viewport top) with a name field; Enter or the Save button
+// commits via `onSave`, Escape / click-outside dismisses. Disabled until
+// the selection has a saveable custom curve.
+function SaveEasingButton({
+  canSave,
+  onSave,
+}: {
+  canSave: boolean;
+  onSave: (name: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [anchor, setAnchor] = useState<{
+    left: number;
+    top: number;
+    below: boolean;
+  } | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  const toggle = () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const r = rootRef.current?.getBoundingClientRect();
+    if (!r) return;
+    // Above the button per the header's position at the top of the dock
+    // panel; flip below when a popped-out window leaves no headroom.
+    const below = r.top < 80;
+    setAnchor({
+      left: r.left,
+      top: below ? r.bottom + 6 : r.top - 6,
+      below,
+    });
+    setName("");
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e: MouseEvent) {
+      const target = e.target as HTMLElement;
+      if (target.closest("[data-save-easing]")) return;
+      setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const commit = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    onSave(trimmed);
+    setOpen(false);
+  };
+
+  return (
+    <div ref={rootRef} data-save-easing style={{ position: "relative" }}>
+      <button
+        type="button"
+        disabled={!canSave}
+        title={
+          canSave
+            ? "Save this curve as a named easing (this project)"
+            : "Select a Custom Bezier keyframe (with a following keyframe) to save its curve"
+        }
+        onClick={toggle}
+        style={{
+          background: open ? PANEL : BG,
+          color: canSave ? TEXT : MUTED,
+          border: `1px solid ${BORDER}`,
+          borderRadius: 3,
+          padding: "1px 6px",
+          fontSize: 11,
+          fontFamily: "var(--ui-font)",
+          cursor: canSave ? "pointer" : "default",
+        }}
+      >
+        Save
+      </button>
+      {open && anchor && (
+        <div
+          data-save-easing
+          style={{
+            position: "fixed",
+            left: anchor.left,
+            top: anchor.top,
+            transform: anchor.below ? undefined : "translateY(-100%)",
+            zIndex: 1000,
+            background: PANEL,
+            border: `1px solid ${BORDER}`,
+            borderRadius: 4,
+            boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+            padding: 8,
+            width: 180,
+          }}
+        >
+          <div
+            style={{
+              color: MUTED,
+              fontSize: 9,
+              textTransform: "uppercase",
+              letterSpacing: 1,
+              marginBottom: 6,
+            }}
+          >
+            Save easing
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              autoFocus
+              type="text"
+              value={name}
+              placeholder="Name"
+              spellCheck={false}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commit();
+              }}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                background: BG,
+                border: `1px solid ${BORDER}`,
+                color: TEXT,
+                fontFamily: "var(--ui-font)",
+                fontSize: 11,
+                padding: "3px 6px",
+                borderRadius: 3,
+                boxSizing: "border-box",
+                outline: "none",
+              }}
+            />
+            <button
+              type="button"
+              onClick={commit}
+              disabled={name.trim().length === 0}
+              style={{
+                background: "var(--tb-a-navy-deep)",
+                border: "1px solid var(--tb-a-navy-tint)",
+                color:
+                  name.trim().length === 0
+                    ? MUTED
+                    : "var(--tb-a-blue-200)",
+                borderRadius: 3,
+                fontFamily: "var(--ui-font)",
+                fontSize: 10,
+                padding: "0 8px",
+                cursor: name.trim().length === 0 ? "default" : "pointer",
+              }}
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
 // Context menu
 // ---------------------------------------------------------------------
 
@@ -1896,6 +2893,9 @@ interface ContextMenuProps {
   onPickEasing: (preset: EasingPreset) => void;
   onDelete: () => void;
   onClose: () => void;
+  // True on a vec lane's per-component view — custom bezier is
+  // scalar-only, so its tile is dropped from the easing grid.
+  hideCustomBezier?: boolean;
 }
 
 function KeyframeContextMenu({
@@ -1907,6 +2907,7 @@ function KeyframeContextMenu({
   onPickEasing,
   onDelete,
   onClose,
+  hideCustomBezier = false,
 }: ContextMenuProps) {
   useEffect(() => {
     function onDoc(e: MouseEvent) {
@@ -1964,7 +2965,9 @@ function KeyframeContextMenu({
               gap: 4,
             }}
           >
-            {EASING_PRESETS.map((p) => (
+            {EASING_PRESETS.filter(
+              (p) => !hideCustomBezier || p.id !== "customBezier"
+            ).map((p) => (
               <EasingTile
                 key={p.id}
                 preset={p.id}
@@ -2029,6 +3032,8 @@ function KeyframeContextMenu({
 // Pure helpers (no hooks; safe to call from render and handlers)
 // ---------------------------------------------------------------------
 
+// Both delegate to the engine's defaultSegmentHandles so the drawn
+// defaults and the evaluated ones can never drift apart again.
 function defaultRightHandle(
   ks: Keyframe[],
   i: number
@@ -2036,10 +3041,7 @@ function defaultRightHandle(
   const a = ks[i];
   const b = ks[i + 1];
   if (!b) return { dx: 0, dy: 0 };
-  const span = b.tick - a.tick;
-  const dv = (b.value as number) - (a.value as number);
-  // Half the segment in x, with a third of the dy as a soft default.
-  return { dx: span * 0.33, dy: dv * 0.33 };
+  return defaultSegmentHandles(a, b).right;
 }
 
 function defaultLeftHandle(
@@ -2049,15 +3051,58 @@ function defaultLeftHandle(
   const a = ks[i - 1];
   const b = ks[i];
   if (!a) return { dx: 0, dy: 0 };
-  const span = b.tick - a.tick;
-  const dv = (b.value as number) - (a.value as number);
-  return { dx: -span * 0.33, dy: -dv * 0.33 };
+  return defaultSegmentHandles(a, b).left;
 }
 
 function defaultBezierHandles(ks: Keyframe[], i: number): BezierHandles {
   return {
     rightHandle: defaultRightHandle(ks, i),
     leftHandle: defaultLeftHandle(ks, i),
+  };
+}
+
+// Normalize key `i`'s outgoing customBezier segment into segment-relative
+// control points (SavedEasing shape): x as a fraction of the segment's
+// duration, y of its value delta. Missing handles fall back to the same
+// defaults the curve path draws with, so what saves is what the plot
+// shows. A flat segment (Δvalue ≈ 0) normalizes dy against 1 raw value
+// unit — a dip on a flat segment has no delta to be relative to.
+// Returns null when the segment isn't a saveable custom curve.
+// (Exported with easingHandlesForSegment for offline testing only.)
+export function normalizedEasingFromSegment(
+  ks: Keyframe[],
+  i: number
+): Pick<SavedEasing, "x1" | "y1" | "x2" | "y2"> | null {
+  const a = ks[i];
+  const b = ks[i + 1];
+  if (!a || !b || a.easingOut !== "customBezier") return null;
+  const span = b.tick - a.tick;
+  if (!(span > 0)) return null;
+  const dv = (b.value as number) - (a.value as number);
+  const vd = Math.abs(dv) > 1e-9 ? dv : 1;
+  const right = a.bezierHandles?.rightHandle ?? defaultRightHandle(ks, i);
+  const left = b.bezierHandles?.leftHandle ?? defaultLeftHandle(ks, i + 1);
+  const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
+  return {
+    x1: clamp01(right.dx / span),
+    y1: right.dy / vd,
+    x2: clamp01(1 + left.dx / span),
+    y2: 1 + left.dy / vd,
+  };
+}
+
+// Denormalize a saved easing onto the segment a→b: tick/value-unit
+// handles for the outgoing key (right) and the incoming key (left).
+export function easingHandlesForSegment(
+  e: Pick<SavedEasing, "x1" | "y1" | "x2" | "y2">,
+  a: Keyframe,
+  b: Keyframe
+): { right: { dx: number; dy: number }; left: { dx: number; dy: number } } {
+  const span = b.tick - a.tick;
+  const dv = (b.value as number) - (a.value as number);
+  return {
+    right: { dx: e.x1 * span, dy: e.y1 * dv },
+    left: { dx: (e.x2 - 1) * span, dy: (e.y2 - 1) * dv },
   };
 }
 

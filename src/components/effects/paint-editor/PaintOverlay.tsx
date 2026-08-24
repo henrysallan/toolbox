@@ -30,6 +30,7 @@ import { rectsEqual } from "../overlay-rect";
 import { resolveBrush } from "./brushes";
 import { PaintBrushShelf, PaintToolDock } from "./dock";
 import { floodFill, StrokeSession } from "./engine";
+import { claimPointerGesture } from "@/lib/pointer-claim";
 import type { PaintTool } from "./types";
 
 interface Props {
@@ -333,6 +334,9 @@ export default function PaintOverlay({
     if (e.button !== 0) return; // middle-click pan / right-click pass through
     const canvas = paint?.canvas;
     if (!canvas) return;
+    // Paint stroke / eyedropper — keep it out of the graph's cursor
+    // press facts.
+    claimPointerGesture(e.pointerId);
     if (effectiveTool === "eyedropper") {
       e.preventDefault();
       sampleColor(e.clientX, e.clientY);

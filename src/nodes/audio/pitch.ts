@@ -89,6 +89,9 @@ export const audioPitchNode: NodeDefinition = {
     "Detect the pitch of an audio signal and quantize it to a musical scale. Drive a parameter with melody — note as MIDI, normalized 0..1, or raw Hz, with hold + glide for smooth stepping.",
   backend: "webgl2",
   stable: false,
+  // Reads the LIVE AnalyserNode tap — external audio state. Time Offset
+  // boundary-feeds the current pitch through un-shifted.
+  retimeable: false,
   noMaskInput: true,
   inputs: [{ name: "audio", type: "audio", required: true, label: "Audio" }],
   params: [

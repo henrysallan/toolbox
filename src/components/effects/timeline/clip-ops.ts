@@ -12,6 +12,10 @@
 //     trim = reveal); the in-handle clamps at the content anchor.
 //   • With a known source length (video), the out-handle clamps at the
 //     end of the footage.
+//   • Multi-clip trim/move applies one already-snapped delta to every
+//     peer; each window still runs the clamps above independently. A
+//     group move that would push any head past 0 is clamped as a unit
+//     by the caller (same policy as keyframe drags).
 
 import type { ClipBlock } from "@/engine/clips";
 import { snapTickToFrame } from "@/engine/keyframes";
@@ -91,4 +95,54 @@ export function trimClipWindow(
     updated = { ...win, outTick: newOut };
   }
   return startClips.map((c, i) => (i === clipIndex ? updated : c));
+}
+
+// Trim several windows on one node's array by the same tick delta.
+// `deltaTicks` is already snapped; this only applies per-window clamps.
+// Rebuilds from `startClips` so two peers on the same node don't stomp
+// each other. Returns null if every index was stale.
+export function trimClipsByDelta(
+  startClips: ClipBlock[],
+  clipIndexes: number[],
+  side: "in" | "out",
+  deltaTicks: number,
+  opts: Omit<ClipTrimOptions, "snap">
+): ClipBlock[] | null {
+  const trimOpts: ClipTrimOptions = { ...opts, snap: false };
+  let clips = startClips;
+  let any = false;
+  for (const i of clipIndexes) {
+    const win = startClips[i];
+    if (!win) continue;
+    const target = (side === "in" ? win.inTick : win.outTick) + deltaTicks;
+    const next = trimClipWindow(clips, i, side, target, trimOpts);
+    if (next) {
+      clips = next;
+      any = true;
+    }
+  }
+  return any ? clips : null;
+}
+
+// Shift several windows on one node's array by the same tick delta.
+// `deltaTicks` is already snapped (and ≥0-clamped across the group by
+// the caller). Returns null if every index was stale.
+export function moveClipsByDelta(
+  startClips: ClipBlock[],
+  clipIndexes: number[],
+  deltaTicks: number,
+  ticksPerFrame: number
+): ClipBlock[] | null {
+  const opts: ClipDragOptions = { snap: false, ticksPerFrame };
+  let clips = startClips;
+  let any = false;
+  for (const i of clipIndexes) {
+    if (!startClips[i]) continue;
+    const next = moveClipWindow(clips, i, deltaTicks, opts);
+    if (next) {
+      clips = next;
+      any = true;
+    }
+  }
+  return any ? clips : null;
 }

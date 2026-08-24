@@ -38,6 +38,14 @@ export default defineConfig({
         srcRoot,
         "components/effects/KeyframeDiamond"
       ),
+      // lib/live-viewer/design.ts (the LiveDesign block) imports two pure
+      // leaves from the editor's theme dir: oklch (tint math) and tokens
+      // (the neutral-ramp dark/light pairs its --tb-* sheet is generated
+      // from). Directory alias — exact-or-slash matching covers both.
+      "@/components/effects/theme": path.resolve(
+        srcRoot,
+        "components/effects/theme"
+      ),
       // The React-free half, imported directly by node definitions that
       // broadcast app events (nodes/source/color-literal.ts). Listed
       // separately because alias matching is exact-or-followed-by-slash:
@@ -67,5 +75,14 @@ export default defineConfig({
     emptyOutDir: true,
     target: "es2020",
     sourcemap: false,
+    commonjsOptions: {
+      // lib/export-ffmpeg-args.js is CommonJS (module.exports) because
+      // Electron's main process requires() it verbatim. Vite only runs
+      // the commonjs plugin over node_modules by default, so the viewer
+      // export path (viewer-export → export-gif → export-ffmpeg → args)
+      // needs it opted in here; Next's webpack build interops it for free.
+      include: [/node_modules/, /export-ffmpeg-args/],
+      transformMixedEsModules: true,
+    },
   },
 });

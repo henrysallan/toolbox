@@ -1,4 +1,10 @@
-import type { Object3DValue, CameraValue } from "./three-types";
+import type {
+  Object3DValue,
+  CameraValue,
+  GeometryValue,
+  InstancesValue,
+  Curve3DValue,
+} from "./three-types";
 import type { TextStyle } from "./text-raster";
 import type { ColorRampInterp, ColorRampStop } from "./color-ramp";
 
@@ -19,6 +25,18 @@ export type SocketType =
   | "string"
   | "spline"
   | "points"
+  // 3D point cloud — world-space, Y-UP, meters. Carries the SAME
+  // PointsValue shape as `points` but with the optional `z` (and usually
+  // `normals`) arrays present; `is3DPoints()` in engine/points.ts is the
+  // discriminator. The wire TYPE is the space tag: `points` is authored
+  // [0,1]² Y-down, `points3d` is world space — the editor refusing to mix
+  // them is what keeps the authored-space invariant intact (the bug class
+  // the devguide says was fixed five times). NO coercions in either
+  // direction — there is no canonical world↔canvas mapping, so every
+  // crossing is an explicit node/polymorphic input (3D Copy to Points
+  // maps 2D points onto a plane). Spec:
+  // specdocs/081026_3d-geometry-points-materials.md §2.
+  | "points3d"
   | "audio"
   // Symbolic note events (a NotesValue) — the "vector" side of the audio
   // pipeline, as `spline` is to `image`. Produced by note-domain nodes
@@ -82,12 +100,36 @@ export type SocketType =
   // precedent of runtime-only data with the terminal node doing the
   // rendering. Plain `image` wires coerce both ways (coerce.ts).
   | "element"
-  // 3D scene sockets (M1). Carry references to retained three.js objects
-  // (object3d) or a CPU camera descriptor (camera). Runtime-only — see
-  // engine/three-types.ts. The 3D context renders these to an `image` at
-  // its Scene Render / Scene Output boundary. `geometry` and `material`
-  // join in M2.
+  // 3D scene sockets. Carry references to retained three.js objects
+  // (object3d), raw mesh data + carried transform/material (geometry — the
+  // modeling-chain type, see GeometryValue in engine/three-types.ts), or a
+  // CPU camera descriptor (camera). Runtime-only. The 3D context renders
+  // these to an `image` at its Scene Render boundary. `geometry` coerces
+  // to `object3d` (auto-wrap in a Mesh — coerce.ts) so primitives wire
+  // straight into scene sockets. Spec:
+  // specdocs/081026_3d-geometry-points-materials.md §1.
   | "object3d"
+  | "geometry"
+  // The instance domain (081026 spec §4.4): copies of one source geometry
+  // with per-instance TRS (+ optional color) kept LIQUID on the wire so
+  // instance modifiers can act before the scene boundary bakes an
+  // InstancedMesh (instances→object3d coercion). Realize Instances is the
+  // explicit instances→geometry bake — no implicit coercion there (it
+  // multiplies vertex data N×, a cost that belongs in the graph).
+  | "instances"
+  // A 3D curve as a VALUE (Curve3DValue, M11) — anchors + optional bezier
+  // handles + closed/tension, world-space. The 3D sibling of `spline`:
+  // curve primitives and 3D Spline's `curve` aux produce it; Points on
+  // Path (polymorphic) and future Sweep consume it. Pure data, no
+  // coercions.
+  | "curve3d"
+  // A 3D noise field as a VALUE (NoiseFieldValue) — the Noise node's
+  // params packaged for CPU evaluation at world-space points
+  // (engine/noise.ts sampleNoiseField). The 3D face of the same node
+  // whose image output is the 2D face: one param set, two outputs.
+  // Consumers: Instance Transform's noise weight; Displace later. Pure
+  // data, no coercions. 081026 spec M6.5.
+  | "noise_field"
   | "camera"
   // A colour ramp as a value (see ColorRampValue) — a CPU descriptor, no
   // texture, in the same shape as sdf/position/force. Produced by the Color
@@ -121,6 +163,23 @@ export type UvValue = {
   texture: WebGLTexture;
   width: number;
   height: number;
+};
+
+// 3D noise field descriptor — see the `noise_field` SocketType comment.
+// `offset` folds the node's offset params + any animated-loop offset; `w`
+// is the resolved evolution slice. Evaluate with sampleNoiseField
+// (engine/noise.ts): world point in, [0,1] out.
+export type NoiseFieldValue = {
+  kind: "noise_field";
+  noiseType: string;
+  scale: number;
+  octaves: number;
+  persistence: number;
+  lacunarity: number;
+  offset: [number, number];
+  seed: number;
+  w: number;
+  contrast: number;
 };
 
 export type ScalarValue = { kind: "scalar"; value: number };
@@ -187,6 +246,13 @@ export interface SplineAnchor {
   // and the shared spline rasterizer. Authored with the Width tool (W);
   // lerps in Path Animation like cornerRadius.
   width?: number;
+  // Named per-anchor channels (081326_point-attributes.md M3) — the
+  // generalization of width/cornerRadius. OBJECT-attached, not SoA like
+  // PointsValue.attributes, because spline topology mutates (inserts,
+  // fillets, booleans) and the `{...a}` spread every spline op already
+  // does carries these intact where a parallel array would desync.
+  // number | number[] keeps the value plain-JSON like its siblings.
+  attrs?: Record<string, number | number[]>;
 }
 export interface SplineSubpath {
   anchors: SplineAnchor[];
@@ -205,6 +271,10 @@ export interface SplineSubpath {
   // it. First producer: Space Fill's per-line weight
   // (072726_space-fill.md). Runtime-only, like the rest of the value.
   driver?: number;
+  // Named per-subpath channels (081326_point-attributes.md M3) — the
+  // generalization of `driver`. Same object-attached rationale as
+  // SplineAnchor.attrs.
+  attrs?: Record<string, number | number[]>;
 }
 export type SplineValue = {
   kind: "spline";
@@ -243,12 +313,45 @@ export type PointsValue = {
   rotations?: Float32Array;
   // Length = count if present. Absent ⇒ all 0.
   groupIndices?: Int32Array;
+  // Length = count if present. PRESENCE of this array is what makes the
+  // value 3D (`is3DPoints()` in points.ts) and what routes it onto a
+  // `points3d` socket instead of `points`. When present, `positions` xy
+  // and this z are WORLD-space Y-up meters, NOT authored [0,1]² — the
+  // socket type is the space tag (081026 spec §2.2). 2D consumers never
+  // see these values (the editor refuses the wire).
+  z?: Float32Array;
+  // Length = count * 3 if present (3D only) — surface normals from
+  // scatter, consumed by Copy to Points' align-to-normal. Absent ⇒
+  // consumers fall back to world-up.
+  normals?: Float32Array;
+  // Named per-point channels (081326_point-attributes.md). Additive and
+  // optional like z/normals; the fixed fields above are NOT part of the
+  // map (they have their own semantics — groupIndex is an identity tag).
+  // Names must not shadow the built-in column set (position/x/y/index/
+  // rotation/scale/group/z/nx/ny/nz). Missing channel reads as 0.
+  // Runtime-only, never serialized. Every transform must carry these —
+  // build outputs with copyPointsWith/gatherPoints (points.ts), never a
+  // hand-rolled literal.
+  attributes?: Record<string, PointAttribute>;
   // Lazy view onto the typed arrays. Producers may emit `[]` and let
   // `ensurePointArray()` build it on demand. Never mutate this without
   // also writing back into the typed arrays — they are the source of
-  // truth.
+  // truth. 2D-ONLY: `Point.pos` is [x, y], so this view silently drops
+  // z/normals — 3D producers/consumers read the typed arrays directly
+  // and never call ensurePointArray (it warns in dev on 3D values).
+  // Attributes are likewise SoA-only: the view never carries them.
   points: Point[];
 };
+
+// One named per-point channel. `data` is interleaved when arity > 1
+// (length = count * arity). `color` is a display hint only — arity 3/4
+// channels tagged color render as swatches (spreadsheet) and can feed
+// per-instance tint directly.
+export interface PointAttribute {
+  arity: 1 | 2 | 3 | 4;
+  color?: boolean;
+  data: Float32Array;
+}
 
 // Audio stream reference. Two generations live in one value
 // (specdocs/080826_audio-nodes.md):
@@ -738,6 +841,10 @@ export type SocketValue =
   | ScalarFieldValue
   | ElementValue
   | Object3DValue
+  | GeometryValue
+  | InstancesValue
+  | Curve3DValue
+  | NoiseFieldValue
   | CameraValue
   | ColorRampValue;
 
@@ -1115,9 +1222,6 @@ export type ParamType =
   // from the generic panel (edited via the Brush Editor window), not
   // keyframable/exposable/controllable. Spec: 071926_paint-toolkit.md.
   | "brush_settings"
-  // Authored motion-track samples. Not keyframable or exposable; the
-  // TrackerPanel owns the editor. Spec: 082226_motion-tracking.md §4.1.
-  | "track_data"
   | "merge_layers"
   | "color_ramp"
   | "curves"
@@ -1129,6 +1233,11 @@ export type ParamType =
   // identity multiplier.
   | "float_curve"
   | "spline_anchors"
+  // [x, y, z][] — the 3D Spline node's control points (world space).
+  // Edited exclusively in the 3D viewport (per-point transform controls —
+  // the spline_anchors/midi pattern: declared `hidden` on the param, no
+  // panel renderer). Plain-JSON serialization, not keyframable.
+  | "vec3_list"
   | "svg_file"
   | "audio_file"
   | "lut_file"
@@ -1159,7 +1268,12 @@ export type ParamType =
   // (080926_midi-editor.md). Edited exclusively in the viewport piano
   // roll (declared `hidden` on the def, like spline_anchors' on-canvas
   // editing); plain-JSON serialization, not keyframable.
-  | "notes_clip";
+  | "notes_clip"
+  // PointTrackerData | PlanarTrackerData — authored track samples on the
+  // Point / Planar Tracker nodes (082226_motion-tracking.md). Plain JSON,
+  // not keyframable, hidden from generic param rows (TrackerPanel owns it).
+  // Fingerprinted by identity token (`trk:<rev>`), not the sample arrays.
+  | "track_data";
 
 // One named input variable on the Expression node. `name` is the JS
 // identifier the bound socket value is exposed as inside the expression
@@ -1194,15 +1308,15 @@ export interface WedgeValueItem {
   value: number | string | [number, number];
 }
 
-// Imported 3D model. The Import 3D node loads the file (GLB/glTF/OBJ) and
-// retains the parsed three.Object3D. Like video/audio, the live ObjectURL
+// Imported 3D model. The Import 3D node loads the file (GLB/glTF/OBJ/STL)
+// and retains the merged geometry. Like video/audio, the live ObjectURL
 // can't round-trip a save — it's stripped on serialize and the user re-picks
 // (no relink yet). `format` selects which loader the node uses.
 export interface ModelFileParamValue {
   url?: string; // object URL (blob:); absent after reload → re-pick
   filename: string;
   size?: number;
-  format: "glb" | "gltf" | "obj";
+  format: "glb" | "gltf" | "obj" | "stl";
 }
 
 // One color point of a multipoint gradient. Position is normalized UV,
@@ -1485,6 +1599,19 @@ export interface ParamDef {
   placeholder?: string;
   // For "string" params: render a textarea instead of a single-line input.
   multiline?: boolean;
+  // For "string" params naming a point/spline attribute: the input socket
+  // whose evaluated upstream value supplies channel-name suggestions
+  // (ParamPanel offers them as a picker over the free-text field — the
+  // Blender-v1 name-plumbing fix, 081326_point-attributes.md M3).
+  // UI-only hint; the engine ignores it.
+  suggestAttrsFrom?: string;
+  // With `suggestAttrsFrom`: the name must EXIST on the wired upstream
+  // (consumer nodes — Attribute Math/Blur/Transfer). A verified-missing
+  // name renders the field with the error tint on both the panel row and
+  // the on-node input. Writers (Set Named Attribute) omit this — a
+  // not-yet-existing name is exactly what they create — and only
+  // reserved names flag. UI-only hint.
+  suggestAttrsRequire?: boolean;
   // For "expr_inputs" params: show a "Sync" button that scans the node's
   // sibling `expression` param for ch("name", default) channel references and
   // mints the matching slider inputs (Houdini-style). See Point Expression.
@@ -1506,7 +1633,7 @@ export interface ParamDef {
   //                 param it remains exposable and wire-drivable (that's the
   //                 whole reason the List node's source isn't a file param —
   //                 080526_list-socket.md).
-  control?: "segmented" | "font" | "exr_layer" | "file_text";
+  control?: "segmented" | "font" | "exr_layer" | "file_text" | "model_object";
   // For "color" params: the value may carry an alpha channel as 8-digit
   // `#rrggbbaa` hex. 6-digit always reads as fully opaque, controls keep
   // writing 6-digit while alpha is 1 (so opting in never rewrites stored
@@ -1525,7 +1652,23 @@ export interface ParamDef {
   hidden?: boolean;
   // Optional predicate over the node's current params. Returning false hides
   // the row in the UI without affecting the underlying stored value.
-  visibleIf?: (params: Record<string, unknown>) => boolean;
+  //
+  // The optional second arg carries the node's RESOLVED input socket types
+  // (from the stored resolveInputs result — for polymorphic nodes this
+  // reflects what's wired, e.g. Filter Points' `points` socket reading
+  // "points3d") and `wired` — which input sockets currently have an edge
+  // (for rows that swap on a STATIC optional socket being connected, e.g.
+  // Instance Transform's weight rows vs its noise input). ADDITIVE:
+  // ParamPanel's main row filter passes it; other call sites (docs,
+  // export controls, merged-layer paths) may not, so a predicate must
+  // degrade sensibly when `meta` is undefined. 081026 spec §2.3.
+  visibleIf?: (
+    params: Record<string, unknown>,
+    meta?: {
+      inputTypes?: Record<string, SocketType | undefined>;
+      wired?: Record<string, boolean>;
+    }
+  ) => boolean;
   // Collapsible grouping (ParamPanel-only hint; engine ignores it). Params
   // sharing a `group` id are rendered nested under the one flagged
   // `groupHeader: true` (typically a boolean toggle), with a caret on the
@@ -1597,6 +1740,10 @@ export interface NodeDefinition {
   // Top-level utility/effect/output ignore it.
   subcategory?: NodeSubcategory;
   description?: string;
+  // Extra names the add-node search matches besides name/type — what
+  // the node is called in other packages ("mix" finds Lerp). Never
+  // displayed anywhere; search fodder only.
+  searchAliases?: string[];
   // Which GPU API this node uses. Today almost every node is "webgl2";
   // "webgpu" is reserved for compute-heavy nodes that own their own
   // WebGPU pipeline (Phase 0: WebGPU Particle Test). The evaluator
@@ -1646,6 +1793,30 @@ export interface NodeDefinition {
   // visibly change the node's output AND ctx.time (never wall-clock) drives
   // the accumulation, since a pre-roll can only reproduce the former.
   simulation?: boolean;
+  // Marks a def whose output depends on LIVE EXTERNAL STATE — a media
+  // element with one currentTime (Video, Audio), a live capture (Webcam),
+  // the pointer (Cursor), an ML tracker riding one of those, an async
+  // external service (Image Generate), or the live audio analyser taps.
+  // Such a node cannot be evaluated at a shifted clock: the Time Offset
+  // node treats it as a closure boundary and feeds its outer value through
+  // un-shifted (specdocs/081426_time-offset.md). The test for flagging:
+  // could two copies of this node at two different ticks coexist in one
+  // eval and both be right, given only ctx? `simulation: true` defs are
+  // boundaries automatically and don't need this. Defaults true
+  // (retimeable) when absent — pure `stable:false` defs (Scene Time,
+  // Wave) retime exactly and must NOT be flagged.
+  retimeable?: boolean;
+  // Sample this def's keyframes at a WIRED clock instead of the playhead
+  // (specdocs/081426_time-offset.md, Part 2 — Animated Value). `input`
+  // names a declared scalar input socket; when it resolves to a finite
+  // scalar, the evaluator's keyframe-resolution step samples EVERY one of
+  // this node's animation blocks at that time instead of ctx.tick (and
+  // folds the effective sample tick into the animation fingerprint).
+  // `unitParam` optionally names an enum param ("frames" | "seconds")
+  // saying how the wired value converts to ticks; absent ⇒ frames.
+  // Unwired ⇒ normal playhead sampling. Wire > keyframe precedence is
+  // untouched — this changes WHEN keyframes sample, never whether.
+  clockInput?: { input: string; unitParam?: string };
   inputs: InputSocketDef[];
   // Optional: derive the active input socket list from params and from
   // the source-output types of any currently-wired edges. The
@@ -1722,6 +1893,17 @@ export interface NodeDefinition {
 // (cursor outside canvas, window unfocused, etc.). Nodes that care about
 // the cursor should read this each compute — it always reflects the
 // latest pointer position when evaluation fires.
+//
+// Event encoding (081726_pointer-interaction.md §1): the graph is
+// pull-based and re-entrant — several evals can run per visual frame — so
+// press/release are published as monotonic FACTS, never as cleared-after-
+// read flags. Nodes derive edges by diffing the counters against their own
+// ctx.state via engine/cursor-signals.ts (don't hand-roll the diff; the
+// serial handshake there is what makes pulses idempotent under re-eval).
+// Snapshots are produced by lib/cursor-capture.ts, which both the editor
+// and the live viewer mount — a field added here without going through
+// that module silently degrades one surface. All new fields are optional
+// so older embedders and the gl.ts fallback stay valid.
 export interface CursorState {
   x: number;
   y: number;
@@ -1730,7 +1912,33 @@ export interface CursorState {
   // STARTED inside the preview canvas — the drawing gesture (Cursor Trail
   // Points' `emit: press`). Optional so contexts that don't track buttons
   // (gl.ts fallback, older embedders) stay valid; absent reads as false.
+  // Presses claimed by an editor overlay gesture (lib/pointer-claim.ts)
+  // never set it.
   pressed?: boolean;
+  // Increments once per host render pass (one cursor-capture commit()).
+  // Every eval within a pass — including nested Iterate / Time Offset
+  // evals — sees the same serial; the NEXT pass bumps it, which is what
+  // clears a derived one-frame pulse.
+  serial?: number;
+  // Monotonic gesture counters. +1 per unsuppressed primary-button press
+  // that started inside the preview box / per its release. Never reset —
+  // a fast click can advance both by 1 within a single commit.
+  pressCount?: number;
+  releaseCount?: number;
+  // Facts of the latest counted press / release, canvas UV Y-UP (same
+  // space as x/y) and wall-clock performance.now() milliseconds.
+  pressX?: number;
+  pressY?: number;
+  releaseX?: number;
+  releaseY?: number;
+  pressTimeMs?: number;
+  releaseTimeMs?: number;
+  // Max pointer travel from the press point, CSS px — reset at press,
+  // live while held, frozen after release (a pointercancel or a
+  // late-claimed gesture freezes it huge so it can never read as a
+  // click). The HOST measures because pointermoves between frames are
+  // invisible to nodes; nodes only threshold it against their slop param.
+  gestureMaxDistPx?: number;
 }
 
 export interface RenderContext {
@@ -1805,6 +2013,18 @@ export interface RenderContext {
     runId: number;
     values: Record<string, SocketValue | undefined>;
   };
+  // Boundary-fed outer values during a Time Offset shell's nested
+  // evaluation (specdocs/081426_time-offset.md). Set ONLY by the shell's
+  // compute around its nested evaluateGraph call; undefined everywhere
+  // else. Read by the time-offset-feed def, which re-emits `values` (keyed
+  // by the shell's hidden `to__e_<edgeId>` input names). `runId`
+  // increments per shell compute so the private cache busts when a fed
+  // value changes without the interior structure changing — the feed def
+  // folds it into fingerprintExtras (the iterate-feed pattern exactly).
+  timeOffsetFeed?: {
+    runId: number;
+    values: Record<string, SocketValue | undefined>;
+  };
   cursor: CursorState;
   state: Record<string, unknown>;
   allocImage(opts?: { width?: number; height?: number }): ImageValue;
@@ -1821,6 +2041,18 @@ export interface RenderContext {
     rgba?: [number, number, number, number]
   ): void;
   getShader(key: string, fragSrc: string): WebGLProgram;
+  // getShader for USER-AUTHORED sources (GLSL Expression,
+  // 081426_glsl-expression.md): a compile/link failure returns the info
+  // log instead of throwing, and re-calling the same key with DIFFERENT
+  // source replaces the cached program (deleting the old one) — so a
+  // node whose shader the user edits recompiles in place without minting
+  // a cache entry per keystroke. Same key + same source is a cache hit,
+  // including cached FAILURES (a broken source doesn't recompile per
+  // frame).
+  tryShader(
+    key: string,
+    fragSrc: string
+  ): { program: WebGLProgram | null; error: string | null };
   blitToCanvas(image: ImageValue, targetCanvas: HTMLCanvasElement): void;
   // Renders the image to the backend's internal WebGL canvas at the
   // requested size and returns that canvas. MediaPipe + other GPU

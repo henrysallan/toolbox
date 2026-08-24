@@ -20,6 +20,7 @@
 // forget the file.
 
 import { platform } from "./platform";
+import type { CloudMediaRef } from "./cloud-media";
 
 export interface MediaEnvelope {
   kind: "video_file" | "audio_file";
@@ -28,6 +29,12 @@ export interface MediaEnvelope {
   duration?: number;
   width?: number;
   height?: number;
+  // v11+: content-addressed object in the R2 media bucket (spec
+  // 081626_r2-media-storage.md §7.1). Present ⇒ load streams from the
+  // cloud URL and relink is never needed; absent/unreachable ⇒ the relink
+  // strategies below, unchanged. NESTED on purpose — a top-level `asset`
+  // field would trip the Supabase images tier's isAssetRef() walk.
+  cloud?: CloudMediaRef;
 }
 
 export interface MissingMedia {

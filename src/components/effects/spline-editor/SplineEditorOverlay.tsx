@@ -119,6 +119,7 @@ import {
   shapeSignatureAtClient,
 } from "./tools/shape";
 import { SplineContextMenu, ToolDock } from "./dock";
+import { claimPointerGesture } from "@/lib/pointer-claim";
 
 // The overlay edits one ACTIVE subpath at a time (anchors/handles/segments),
 // while rendering every other subpath as a muted outline. Multi-subpath
@@ -568,6 +569,21 @@ export default function SplineEditorOverlay({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modalOn]);
+
+  // While the spline editor is engaged, every primary-button press on the
+  // canvas is a tool action (pen click, anchor drag, modal confirm, …) —
+  // claim them all so none read as graph cursor gestures
+  // (ctx.cursor.pressed / press counters). Window capture phase so it
+  // also covers handlers that stopPropagation; claims for presses outside
+  // the preview box are harmless no-ops (those were never counted).
+  useEffect(() => {
+    const onAnyDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      claimPointerGesture(e.pointerId);
+    };
+    window.addEventListener("pointerdown", onAnyDown, true);
+    return () => window.removeEventListener("pointerdown", onAnyDown, true);
+  }, []);
 
   // P / V switch modes — matching the Photoshop/Figma convention. Skipped
   // while focus is in a text field so typing into the param panel doesn't

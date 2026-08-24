@@ -7,7 +7,11 @@ import type {
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
-import { EMPTY_POINTS } from "@/engine/points";
+import {
+  copyPointsWith,
+  EMPTY_POINTS,
+  gatherPoints,
+} from "@/engine/points";
 
 // Advect Points — move points through a velocity field derived from an
 // image. Unlike Displace (one sample, one push), advection re-samples the
@@ -607,8 +611,6 @@ function computeIntegrate(
   const stride = Math.max(1, Math.floor((params.trail_stride as number) ?? 1));
   const n = src.count;
   const inPos = src.positions;
-  const inScales = src.scales;
-  const inRots = src.rotations;
   const inGroups = src.groupIndices;
 
   const outPositions = new Float32Array(n * 2);
@@ -671,16 +673,7 @@ function computeIntegrate(
 
   const trails: SplineValue = { kind: "spline", subpaths };
   return {
-    primary: compactPoints(
-      src,
-      outPositions,
-      headings,
-      alive,
-      aliveCount,
-      inScales,
-      inRots,
-      inGroups
-    ),
+    primary: compactPoints(src, outPositions, headings, alive, aliveCount),
     aux: { trails },
   };
 }
@@ -688,57 +681,26 @@ function computeIntegrate(
 // Build the output PointsValue, culling dead points. When nothing died,
 // attribute buffers are shared with the source (evaluator treats
 // PointsValue as immutable across consumers); positions are always fresh.
+// Riding copyPointsWith/gatherPoints means every channel — including any
+// the value grows later — carries or gathers uniformly
+// (081326_point-attributes.md M0).
 function compactPoints(
   src: PointsValue,
   positions: Float32Array,
   headings: Float32Array | null,
   alive: Uint8Array,
-  aliveCount: number,
-  inScales: Float32Array | undefined,
-  inRots: Float32Array | undefined,
-  inGroups: Int32Array | undefined
+  aliveCount: number
 ): PointsValue {
   const n = src.count;
-  if (aliveCount === n) {
-    return {
-      kind: "points",
-      count: n,
-      positions,
-      scales: inScales,
-      rotations: headings ?? inRots,
-      groupIndices: inGroups,
-      points: [],
-    };
-  }
-  const outPos = new Float32Array(aliveCount * 2);
-  const outScales = inScales ? new Float32Array(aliveCount * 2) : undefined;
-  const outRots =
-    headings || inRots ? new Float32Array(aliveCount) : undefined;
-  const outGroups = inGroups ? new Int32Array(aliveCount) : undefined;
+  const merged = copyPointsWith(src, {
+    positions,
+    rotations: headings ?? src.rotations,
+  });
+  if (aliveCount === n) return merged;
+  const map = new Int32Array(aliveCount);
   let j = 0;
-  for (let i = 0; i < n; i++) {
-    if (!alive[i]) continue;
-    outPos[j * 2] = positions[i * 2];
-    outPos[j * 2 + 1] = positions[i * 2 + 1];
-    if (outScales && inScales) {
-      outScales[j * 2] = inScales[i * 2];
-      outScales[j * 2 + 1] = inScales[i * 2 + 1];
-    }
-    if (outRots) {
-      outRots[j] = headings ? headings[i] : inRots ? inRots[i] : 0;
-    }
-    if (outGroups && inGroups) outGroups[j] = inGroups[i];
-    j++;
-  }
-  return {
-    kind: "points",
-    count: aliveCount,
-    positions: outPos,
-    scales: outScales,
-    rotations: outRots,
-    groupIndices: outGroups,
-    points: [],
-  };
+  for (let i = 0; i < n; i++) if (alive[i]) map[j++] = i;
+  return gatherPoints(merged, map);
 }
 
 // ─── Accumulate mode ───────────────────────────────────────────────────────
@@ -877,40 +839,30 @@ function computeAccumulate(
   st.lastTime = ctx.time;
 
   // Emit a COPY — state buffers mutate next frame and emitted PointsValues
-  // must stay immutable for downstream consumers/caches.
+  // must stay immutable for downstream consumers/caches. gatherPoints
+  // copies positions out of the mutable state buffer and re-reads every
+  // other channel from the CURRENT seed input by index, so animated
+  // upstream scales/rotations keep flowing; only positions persist.
   let aliveCount = 0;
   for (let i = 0; i < n; i++) if (st.alive[i]) aliveCount++;
-  const outPos = new Float32Array(aliveCount * 2);
-  const outScales = src.scales ? new Float32Array(aliveCount * 2) : undefined;
-  const outRots =
-    cfg.alignRotation || src.rotations
-      ? new Float32Array(aliveCount)
-      : undefined;
-  const outGroups = src.groupIndices ? new Int32Array(aliveCount) : undefined;
-  const vOut: [number, number] = [0, 0];
-  let j = 0;
-  for (let i = 0; i < n; i++) {
-    if (!st.alive[i]) continue;
-    const x = st.positions[i * 2];
-    const y = st.positions[i * 2 + 1];
-    outPos[j * 2] = x;
-    outPos[j * 2 + 1] = y;
-    // Attributes re-read from the CURRENT seed input by index, so animated
-    // upstream scales/rotations keep flowing; only positions persist.
-    if (outScales && src.scales) {
-      outScales[j * 2] = src.scales[i * 2];
-      outScales[j * 2 + 1] = src.scales[i * 2 + 1];
+  const map = new Int32Array(aliveCount);
+  {
+    let j = 0;
+    for (let i = 0; i < n; i++) if (st.alive[i]) map[j++] = i;
+  }
+  const out = gatherPoints(
+    copyPointsWith(src, { positions: st.positions }),
+    map
+  );
+  // Field-aligned heading wins over the gathered seed rotations.
+  if (cfg.alignRotation && vel) {
+    const rots = new Float32Array(aliveCount);
+    const vOut: [number, number] = [0, 0];
+    for (let w = 0; w < aliveCount; w++) {
+      vel(out.positions[w * 2], out.positions[w * 2 + 1], vOut);
+      rots[w] = Math.atan2(vOut[1] * cfg.sign, vOut[0] * cfg.sign);
     }
-    if (outRots) {
-      if (cfg.alignRotation && vel) {
-        vel(x, y, vOut);
-        outRots[j] = Math.atan2(vOut[1] * cfg.sign, vOut[0] * cfg.sign);
-      } else {
-        outRots[j] = src.rotations ? src.rotations[i] : 0;
-      }
-    }
-    if (outGroups && src.groupIndices) outGroups[j] = src.groupIndices[i];
-    j++;
+    out.rotations = rots;
   }
 
   let trails: SplineValue = EMPTY_SPLINE;
@@ -936,16 +888,5 @@ function computeAccumulate(
     trails = { kind: "spline", subpaths };
   }
 
-  return {
-    primary: {
-      kind: "points",
-      count: aliveCount,
-      positions: outPos,
-      scales: outScales,
-      rotations: outRots,
-      groupIndices: outGroups,
-      points: [],
-    },
-    aux: { trails },
-  };
+  return { primary: out, aux: { trails } };
 }

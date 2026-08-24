@@ -41,8 +41,37 @@ export async function registerVideoFile(
   }
 }
 
-async function loadVideoElement(file: File): Promise<VideoFileParamValue> {
-  const url = URL.createObjectURL(file);
+// Load a cloud-hosted clip by URL (spec 081626 §7.4) — the same element
+// wiring as a local File, minus the ObjectURL. crossOrigin="anonymous" is
+// already set below, which the WebGL texture upload requires for
+// cross-origin media; playback streams with range requests instead of
+// downloading first. The media-domain CORS policy allows GET from any
+// origin, so this works in the editor, live viewer, and exported apps.
+export async function registerVideoUrl(
+  url: string,
+  meta: { filename: string; size?: number }
+): Promise<VideoFileParamValue> {
+  return loadVideoElement(url, {
+    filename: meta.filename,
+    size: meta.size,
+    isObjectUrl: false,
+  });
+}
+
+async function loadVideoElement(file: File): Promise<VideoFileParamValue>;
+async function loadVideoElement(
+  src: string,
+  meta: { filename: string; size?: number; isObjectUrl: boolean }
+): Promise<VideoFileParamValue>;
+async function loadVideoElement(
+  fileOrSrc: File | string,
+  meta?: { filename: string; size?: number; isObjectUrl: boolean }
+): Promise<VideoFileParamValue> {
+  const isFile = typeof fileOrSrc !== "string";
+  const url = isFile ? URL.createObjectURL(fileOrSrc) : fileOrSrc;
+  const filename = isFile ? fileOrSrc.name : (meta?.filename ?? "video");
+  const size = isFile ? fileOrSrc.size : meta?.size;
+  const ownsObjectUrl = isFile || meta?.isObjectUrl === true;
   const video = document.createElement("video");
   video.src = url;
   video.muted = true;
@@ -63,7 +92,7 @@ async function loadVideoElement(file: File): Promise<VideoFileParamValue> {
       try {
         video.removeAttribute("src");
         video.load();
-        URL.revokeObjectURL(url);
+        if (ownsObjectUrl) URL.revokeObjectURL(url);
       } catch {
         // best-effort
       }
@@ -75,7 +104,7 @@ async function loadVideoElement(file: File): Promise<VideoFileParamValue> {
       const detail = me
         ? ` (MediaError code ${me.code}${me.message ? `: ${me.message}` : ""})`
         : "";
-      reject(new Error(`Video load failed: ${file.name}${detail}`));
+      reject(new Error(`Video load failed: ${filename}${detail}`));
     };
     const cleanup = () => {
       video.removeEventListener("loadedmetadata", onMeta);
@@ -116,8 +145,8 @@ async function loadVideoElement(file: File): Promise<VideoFileParamValue> {
   return {
     video,
     url,
-    filename: file.name,
-    size: file.size,
+    filename,
+    size,
     duration: video.duration,
     width: video.videoWidth,
     height: video.videoHeight,

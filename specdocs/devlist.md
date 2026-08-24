@@ -139,6 +139,37 @@ So I think you should first set up the modal, the infrastructure for calling the
 
 89. a spreadsheet viewer and node for using data. 
 
+    → Viewer half shipped 08/13/26 (081326_spreadsheet-panel.md): a
+    Spreadsheet panel kind showing the selected/pinned node's evaluated
+    output as a virtualized table (points/points3d, spline anchors, lists;
+    summary fallback otherwise), riding engine/table-model.ts. The "node
+    for using data" half (and #135's Debug node) remains — table-model.ts
+    is engine-side so it can feed both.
+
+    → Named point attributes designed 08/13/26
+    (081326_point-attributes.md): M0 (helpers + the five z/normals-lossy
+    transforms) shipped 08/13; M1 (the attributes field, combiner rules,
+    Point[]-roundtrip migrations, spreadsheet attribute columns) shipped
+    08/14; M2 (the Set Named Attribute node, Point Expression
+    attr()/setattr(), the on-node name field, and the
+    /docs/editor/point-attributes user docs) also shipped 08/14; M3
+    (Attribute Math / Blur / Transfer nodes, spline attributes on anchor
+    + subpath domains, and the upstream-reading attribute-name picker)
+    shipped 08/14 too. Point Expression grew a Target param (points |
+    spline anchors — the wrangle-context idea: same language, per-anchor
+    element contract) 08/14. M4's 2D half shipped 08/14: Map Attribute
+    node, Filter Points attribute mode (+ fixed its attribute-dropping
+    compaction), Copy-to-Points per-instance tint channel (data-texture
+    free floats), {attr:name} label token. Remaining: the 3D leg —
+    Set Named Attribute points3d target + channels into InstancesValue
+    (Instance Color attribute source). The per-pixel member of the
+    expression family SHIPPED M1 08/14 (081426_glsl-expression.md): the
+    GLSL Expression node — user fragment body in a node-owned template,
+    ctx.tryShader (source-aware, error-returning shader compile), a–d
+    image inputs, ch()-comment channels as float uniforms, time folded
+    into the fingerprint only when referenced. M2 = panel error log +
+    debounced recompile.
+
 90. an api node for setting up live data sources
 
 91. speed up dither shader?
@@ -785,3 +816,31 @@ Let me know if you understand.
     physarum" item in archive/080226_behavioral-growth.md §8; that node's CPU
     `physarum` mode is still worth building where agent positions must
     leave as a `points` value. Spec: specdocs/080226_physarum.md.
+
+208. DONE Save node as preset — right-click any node → "Save as
+    Preset…" captures it exactly as it stands (name, params, keyframes,
+    cosmetics, inlined media; groups/Iterate shells bring their
+    interiors) into the user's personal preset list, listed after the
+    built-ins in both add menus' Presets section with a hover-× to
+    delete. Payload is the clipboard fragment envelope, so schema
+    migration and media handling come free; storage is the brush/layout
+    preset pattern (localStorage + user_preferences.node_presets, cloud
+    wins). Save modal upserts by name (case-insensitive replace);
+    inserting clones into the current scope, auto-wrapping into a layer
+    at root. Spec: specdocs/081226_user-node-presets.md.
+
+209. Motion tracking nodes — Point Tracker (click-to-place with a
+    magnifying loupe, track fwd/back/one-frame/stop buttons in the
+    Parameters tab), Planar Tracker (drag a 4-corner quad, track features
+    inside it → homography + corners), Corner Pin as the planar consumer.
+    Track path drawn in the viewport with a draggable dot per frame;
+    non-destructive smoothing (Gaussian / Savitzky–Golay) and error
+    correction (spike fix, gap fill, lost-track prediction + re-acquire);
+    Nuke/mocha-style pre-process toggles (channel, band-pass, denoise,
+    contrast, mask). Live `position` vec2 + `points` outputs on the node
+    AND a Bake → Point node (keyframed x/y). Classical kernel (ZNCC +
+    Lucas-Kanade, RANSAC homography + ESM) behind a backend interface so a
+    deep tracker (CoTracker3 via ONNX WebGPU) can slot in later; 3D camera
+    solve deferred. N tracks per node with a track list; bake rewires
+    consumers onto the Point nodes. Spec: specdocs/082226_motion-tracking.md
+    (designed 2026-08-22, not yet built).

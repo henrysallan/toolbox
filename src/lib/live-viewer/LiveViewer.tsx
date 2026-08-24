@@ -14,8 +14,17 @@ import type { ColorRampStop } from "@/engine/color-ramp";
 import type { ImageValue } from "@/engine/types";
 import { registerAllNodes } from "@/nodes";
 import { deserializeGraph, type SavedProject } from "@/lib/project";
+import {
+  mountCursorCapture,
+  type CursorCaptureHandle,
+} from "@/lib/cursor-capture";
 import type { ExportManifest } from "./manifest-types";
 import { ControlPanel } from "./ControlPanel";
+import {
+  exportViewerGif,
+  exportViewerImage,
+  recordViewerVideo,
+} from "./viewer-export";
 
 // Node defs are global state — register once on module init. Safe to call
 // repeatedly (the registry no-ops on dupes), but module-init keeps it
@@ -65,6 +74,15 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
   const playingRef = useRef(false);
   const timeRef = useRef(0);
   const lastFrameRef = useRef<number | null>(null);
+  // Viewer export (081426_live-link-designer.md M3). While a GIF export's
+  // frame-stepped drive owns the canvas, exportingRef gates the RAF loop
+  // and the evalBump repaint so two writers never race a capture.
+  const exportingRef = useRef(false);
+  const [exportStatus, setExportStatus] = useState<{
+    label: string;
+    cancel?: () => void;
+  } | null>(null);
+  const failTimerRef = useRef(0);
   // Use the project's saved playback metadata when present. Pre-v2
   // saves omit `scene`; fall back to the editor's defaults so they
   // play back exactly as they did before the field landed.
@@ -77,67 +95,21 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
       ? graph.scene.loopFrames / fps
       : null;
 
-  // Live cursor in canvas UV. Updated on pointermove and read on every
-  // frame — mirrors the editor's wiring so cursor-aware nodes (Cursor
-  // source, scatter-points, etc.) behave the same way in /live/.
-  const cursorRef = useRef<{
-    x: number;
-    y: number;
-    active: boolean;
-    pressed: boolean;
-  }>({
-    x: 0.5,
-    y: 0.5,
-    active: false,
-    pressed: false,
-  });
+  // ctx.cursor comes from the shared capture module — the SAME module the
+  // editor mounts (lib/cursor-capture), so cursor-aware and interaction
+  // nodes behave identically in /live/ and exported apps. The rAF loop
+  // below runs runFrame every frame whether playing or paused, so the
+  // per-pass commit() in runFrame is all the pacing the snapshot needs
+  // (no onInput bump — nothing here waits on pointer activity to render).
+  const cursorCaptureRef = useRef<CursorCaptureHandle | null>(null);
   useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const x = (e.clientX - rect.left) / rect.width;
-      // DOM y-down → pipeline y-up. Engine textures use v_uv.y = 0 at
-      // the bottom of the frame, so we flip here once.
-      const yDom = (e.clientY - rect.top) / rect.height;
-      const y = 1 - yDom;
-      const inside = x >= 0 && x <= 1 && yDom >= 0 && yDom <= 1;
-      cursorRef.current = {
-        x,
-        y,
-        active: inside,
-        pressed: cursorRef.current.pressed,
-      };
-    };
-    const onLeave = () => {
-      cursorRef.current = { ...cursorRef.current, active: false };
-    };
-    // Primary-button press starting inside the canvas box = the drawing
-    // gesture (ctx.cursor.pressed) — mirrors the editor's wiring.
-    const onDown = (e: PointerEvent) => {
-      if (e.button !== 0) return;
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const xr = (e.clientX - rect.left) / rect.width;
-      const yr = (e.clientY - rect.top) / rect.height;
-      if (xr < 0 || xr > 1 || yr < 0 || yr > 1) return;
-      cursorRef.current = { ...cursorRef.current, pressed: true };
-    };
-    const onUp = () => {
-      cursorRef.current = { ...cursorRef.current, pressed: false };
-    };
-    window.addEventListener("pointermove", onMove);
-    document.addEventListener("pointerleave", onLeave);
-    window.addEventListener("pointerdown", onDown, true);
-    window.addEventListener("pointerup", onUp, true);
-    window.addEventListener("pointercancel", onUp, true);
+    const capture = mountCursorCapture({
+      getBox: () => canvasRef.current,
+    });
+    cursorCaptureRef.current = capture;
     return () => {
-      window.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerleave", onLeave);
-      window.removeEventListener("pointerdown", onDown, true);
-      window.removeEventListener("pointerup", onUp, true);
-      window.removeEventListener("pointercancel", onUp, true);
+      capture.dispose();
+      cursorCaptureRef.current = null;
     };
   }, []);
 
@@ -188,10 +160,23 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
   }, [graph]);
 
   const canvasRes = manifest.canvasRes;
+  // Render-resolution scale (2026-08-17) — the live-link analogue of the
+  // editor's previewScale: drops the GL buffer size for framerate on
+  // weak machines. Recreating the backend resets stateful sims (same
+  // trade the editor makes); the CSS box is unchanged, so lowering it
+  // just softens the image.
+  const [renderScale, setRenderScale] = useState(1);
+  const renderRes = useMemo<[number, number]>(
+    () => [
+      Math.max(2, Math.round(canvasRes[0] * renderScale)),
+      Math.max(2, Math.round(canvasRes[1] * renderScale)),
+    ],
+    [canvasRes, renderScale]
+  );
   useEffect(() => {
     try {
       evalCacheRef.current = new Map();
-      const backend = createEngineBackend(canvasRes[0], canvasRes[1]);
+      const backend = createEngineBackend(renderRes[0], renderRes[1]);
       backendRef.current = backend;
       setEvalBump((n) => n + 1);
       return () => {
@@ -203,7 +188,7 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
       console.error("Engine init failed", err);
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [canvasRes[0], canvasRes[1]]);
+  }, [renderRes[0], renderRes[1]]);
 
   const drivenParams = useMemo(
     () => buildDrivenSet(runtimeGraph?.graphEdges ?? []),
@@ -215,10 +200,12 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
       const backend = backendRef.current;
       const canvas = canvasRef.current;
       if (!backend || !canvas || !runtimeGraph) return;
+      // One cursor commit per pass — the serial bump clears last pass's
+      // derived press/release pulses (engine/cursor-signals.ts).
       const ctx = backend.makeContext(
         renderTime,
         Math.floor(renderTime * fps),
-        cursorRef.current,
+        cursorCaptureRef.current?.commit(),
         playingRef.current
       );
       const result = evaluateGraph(
@@ -243,6 +230,13 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
     lastFrameRef.current = null;
     const tick = (now: number) => {
       if (cancelled) return;
+      // A GIF export's frame-stepped drive owns the canvas; idle the
+      // interactive loop and re-seed dt on resume so time doesn't jump.
+      if (exportingRef.current) {
+        lastFrameRef.current = null;
+        raf = requestAnimationFrame(tick);
+        return;
+      }
       const last = lastFrameRef.current;
       lastFrameRef.current = now;
       if (playingRef.current && last !== null) {
@@ -269,6 +263,7 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
 
   useEffect(() => {
     if (playingRef.current) return;
+    if (exportingRef.current) return;
     runFrame(timeRef.current);
   }, [evalBump, runFrame]);
 
@@ -333,6 +328,106 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
     setEvalBump((n) => n + 1);
   }, []);
 
+  const onSeek = useCallback((t: number) => {
+    timeRef.current = t;
+    setTime(t);
+    setEvalBump((n) => n + 1);
+  }, []);
+
+  // --- viewer export (081426 M3) ----------------------------------------
+  // Which buttons exist is the author's call (design.export); the drivers
+  // are lean captures of what's on screen — see viewer-export.ts.
+  const appName = manifest.appName;
+  // One loop; open-ended (no-loop) projects cap at 10s.
+  const exportDurationSecs =
+    loopSecs != null && loopSecs > 0 ? loopSecs : 10;
+
+  const showExportError = useCallback((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    setExportStatus({ label: `Export failed: ${msg}` });
+    window.clearTimeout(failTimerRef.current);
+    failTimerRef.current = window.setTimeout(
+      () => setExportStatus(null),
+      6000
+    );
+  }, []);
+
+  const onExportImage = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || exportingRef.current) return;
+    exportViewerImage(canvas, appName).catch(showExportError);
+  }, [appName, showExportError]);
+
+  const onExportVideo = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || exportingRef.current) return;
+    // Restart from 0 and make sure we're playing — the recording is a
+    // live capture of the RAF loop covering exactly one loop.
+    timeRef.current = 0;
+    setTime(0);
+    if (!playingRef.current) {
+      playingRef.current = true;
+      setPlaying(true);
+      lastFrameRef.current = null;
+    }
+    const handle = recordViewerVideo({
+      canvas,
+      fps,
+      durationSecs: exportDurationSecs,
+      baseName: appName,
+    });
+    setExportStatus({ label: "Recording…", cancel: handle.cancel });
+    handle.done
+      .then(() => setExportStatus(null))
+      .catch(showExportError);
+  }, [appName, exportDurationSecs, fps, showExportError]);
+
+  const onExportGif = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || exportingRef.current) return;
+    const controller = new AbortController();
+    exportingRef.current = true;
+    setExportStatus({
+      label: "Preparing GIF…",
+      cancel: () => controller.abort(),
+    });
+    exportViewerGif({
+      canvas,
+      durationSecs: exportDurationSecs,
+      baseName: appName,
+      renderFrame: (t) => runFrame(t),
+      onProgress: (label) =>
+        setExportStatus((s) => ({ label, cancel: s?.cancel })),
+      signal: controller.signal,
+    })
+      .then(() => setExportStatus(null))
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          setExportStatus(null);
+        } else {
+          showExportError(err);
+        }
+      })
+      .finally(() => {
+        exportingRef.current = false;
+        // Repaint the interactive frame the export drive painted over.
+        setEvalBump((n) => n + 1);
+      });
+  }, [appName, exportDurationSecs, runFrame, showExportError]);
+
+  const exportFlags = manifest.design?.export;
+  const exportHandlers = useMemo(() => {
+    if (!exportFlags) return undefined;
+    if (!exportFlags.image && !exportFlags.video && !exportFlags.gif) {
+      return undefined;
+    }
+    return {
+      image: exportFlags.image ? onExportImage : undefined,
+      video: exportFlags.video ? onExportVideo : undefined,
+      gif: exportFlags.gif ? onExportGif : undefined,
+    };
+  }, [exportFlags, onExportImage, onExportVideo, onExportGif]);
+
   if (error) {
     return (
       <div className="fatal">
@@ -347,8 +442,11 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
       <div className="canvas-area">
         <canvas
           ref={canvasRef}
-          width={canvasRes[0]}
-          height={canvasRes[1]}
+          width={renderRes[0]}
+          height={renderRes[1]}
+          // The CSS box keeps the project's aspect regardless of the
+          // render-scale buffer size.
+          style={{ aspectRatio: `${canvasRes[0]} / ${canvasRes[1]}` }}
         />
       </div>
       <ControlPanel
@@ -360,6 +458,12 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
         onTogglePlay={onTogglePlay}
         onReset={onReset}
         time={time}
+        loopSecs={loopSecs}
+        onSeek={onSeek}
+        renderScale={renderScale}
+        onRenderScale={setRenderScale}
+        exportHandlers={exportHandlers}
+        exportStatus={exportStatus}
       />
     </div>
   );

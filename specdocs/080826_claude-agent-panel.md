@@ -1,7 +1,8 @@
 # Claude agent panel — the generate loop, driven from inside the editor
 
-Spec — 2026-08-08. Status: **design approved** (decisions at the bottom, one
-open); implementation not started.
+Spec — 2026-08-08. Status: **M1 in progress** (decisions at the bottom, one
+open). Host, session isolation, renderer client, token handshake and Electron
+supervision are built and checked; UI and packaging remain — see Milestones.
 
 ## Why
 
@@ -124,11 +125,54 @@ The renderer connects to a localhost WebSocket either way, so there is no
 preload/IPC path to write and no branching in app code. Electron is a
 packaging decision, not an architectural one.
 
-**Agent SDK API caveat.** The shape is settled — spawn the binary, consume a
-typed message stream, register tools in-process, supply a permission callback,
-resume and interrupt by session. Exact signatures must come from
-`code.claude.com/docs/en/agent-sdk` at implementation time; do not write
-against recalled names.
+### Agent SDK — verified, not assumed
+
+`@anthropic-ai/claude-agent-sdk` **0.3.229**, smoke-tested 2026-08-13 against
+`claude` 2.1.153 at `/usr/local/bin/claude`. All four M1 preconditions pass:
+subscription auth with no `ANTHROPIC_API_KEY` in env; an in-process MCP tool
+registered, offered, called, and its result consumed; built-in tools fully
+absent; permission callback invoked.
+
+**The published docs page disagrees with the shipped types. Trust the types.**
+`code.claude.com/docs/en/agent-sdk/typescript` documents `canUseTool` as
+`(request: {toolName, toolUse, requestId}) => {allowed: boolean}`. The shipped
+`sdk.d.ts` has:
+
+```ts
+type CanUseTool = (
+  toolName: string,
+  input: Record<string, unknown>,
+  options: { signal, toolUseID, requestId, suggestions?, title?,
+             displayName?, description?, blockedPath?, decisionReason?, ... }
+) => Promise<PermissionResult | null>;
+
+type PermissionResult =
+  | { behavior: 'allow'; updatedInput?: Record<string, unknown>; updatedPermissions?: PermissionUpdate[] }
+  | { behavior: 'deny';  message: string; interrupt?: boolean };
+```
+
+Writing the documented shape fails at runtime with a permission-system error
+that the model reports back as a tool failure — it does **not** surface as an
+exception. Pin the SDK version and read `sdk.d.ts` on upgrade.
+
+Three findings that shape the design:
+
+- **`tools: []` + `strictMcpConfig: true` removes built-ins entirely.** Bash /
+  Read / Write are not offered, so they are never attempted — a stronger
+  guarantee than denying them in `canUseTool`, and how the security decision
+  below is actually enforced. `canUseTool` stays as a belt-and-braces deny.
+- **`options.displayName` / `title` / `description` are pre-rendered prompt
+  text** ("Get Status"). The Allow/Deny card uses them rather than
+  reconstructing a sentence from `toolName` + input.
+- **Pin the model.** The CLI defaulted to `claude-fable-5` (per `modelUsage`
+  in the result message). The panel passes `model` explicitly so behaviour
+  does not drift with the user's CLI config.
+
+Also available and worth using: `startup()` pre-warms the subprocess (a cold
+one-tool round trip measured 6.6s wall, warm is materially better);
+`resumeSessionAt` + `resumeDropsTurn` give **truncating resume**, which is
+exactly what the checkpoint rail needs to keep transcript and document
+consistent on rewind; `maxTurns` enforces the iteration cap at the SDK level.
 
 ## Session model
 
@@ -171,8 +215,17 @@ and stops on pass, on a hard iteration cap, or on no-progress (two consecutive
 iterations with no rubric movement). Both the rubric and the per-iteration
 grade are surfaced in the panel, so the user can see *why* it kept going.
 
-Iteration cap default: **8**. Small enough to bound a runaway, large enough
-for the loop to be worth having; revisit with real usage.
+Iteration cap default: **8**, enforced via `maxTurns`. Small enough to bound a
+runaway, large enough for the loop to be worth having; revisit with real usage.
+
+**The real budget is the rate limit, not dollars.** The stream emits
+`rate_limit_event` with `{status, resetsAt, rateLimitType, overageStatus,
+isUsingOverage}`, and the terminal `result` message carries `total_cost_usd`
+— but on a subscription that figure is nominal, not a charge. An unattended
+loop that burns the user's Pro window is the actual failure mode, so:
+surface `rate_limit_event` in the panel, stop the loop cleanly on a limited
+status rather than letting turns fail, and show `resetsAt`. `maxBudgetUsd`
+is the wrong guard here and is not used.
 
 ### Permission and checkpoints
 
@@ -197,30 +250,85 @@ Split it:
   truncates the transcript to match, so the agent's context and the document
   stay consistent. Rewinding mid-run interrupts the session first.
 
-## Panel
+## UI
 
-New `"assistant"` kind in `PANEL_KINDS` + `PANEL_LABELS`. Note the compat
-caveat already documented at [layout/model.ts:15](../src/components/effects/layout/model.ts#L15):
-an older build reading a tree containing an unknown kind rejects the whole
-tree and falls back to the default preset. Layout only, project content
-untouched — acceptable, but it means the panel should land in a release users
-are expected to take, not a side branch.
+Two entry points, **one implementation**. The transcript renderer and the
+composer are shared components; the two entry points are shells that host
+them. Do not fork the rendering.
 
-**Render the structured event stream, not a terminal.** No PTY, no ANSI, no
-xterm.js. The SDK emits typed messages and each maps to something native:
+Both derive their look from [AiRecipePanel.tsx](../src/components/effects/AiRecipePanel.tsx),
+which already establishes the visual language for "talking to Claude" in this
+app: pinned uppercase 10px header with the violet `Sparkle`, scrollable middle,
+composer pinned bottom in a `--tb-n-2` rounded rect with a `--tb-n-7` border,
+a model pill, and a violet submit pill. Reuse the tokens and the components
+(`Sparkle`, `Pulse`, `smallBtn`) rather than restyling — the agent panel should
+read as the same feature family as AI Recipe, not a second dialect.
+`Cmd/Ctrl+Enter` submits, matching the existing composer.
 
-| Event | Renders as |
-|---|---|
-| Assistant text | Prose |
-| `insert_recipe` call | A recipe chip — name + node count, click to select the inserted nodes |
-| `set_param` / `edit_group` call | A param chip styled like the inspector row it edits |
-| `screenshot` result | Inline thumbnail, click to compare against the previous iteration |
-| Permission request | Inline Allow/Deny card |
-| Iteration boundary | Divider + rubric grade + checkpoint marker |
-| Usage / cost | Quiet footer line |
+### 1. Docked panel
 
-A raw-JSON toggle stays available for debugging the stream. It is a debug
-affordance, not the default view.
+New `"assistant"` kind in `PANEL_KINDS` + `PANEL_LABELS`
+([layout/model.ts](../src/components/effects/layout/model.ts#L20)). Layout is
+`AiRecipePanel`'s three-band structure verbatim — header / scrolling transcript
+/ pinned composer — filling its tile.
+
+Compat caveat, already documented at
+[layout/model.ts:15](../src/components/effects/layout/model.ts#L15): an older
+build reading a tree containing an unknown kind rejects the **whole tree** and
+falls back to the default preset. Layout only, project content untouched — but
+it means this lands in a release users are expected to take, not a side branch.
+
+### 2. Floating overlay
+
+Opened from the pie menu ([PieMenu.tsx](../src/components/effects/PieMenu.tsx),
+`shift+space`) or the Edit menu ([MenuBar.tsx:481](../src/components/effects/MenuBar.tsx#L481)).
+For the quick "ask for a thing without rearranging my workspace" case.
+
+- **Position** — horizontally centred, anchored to the bottom of the viewport
+  with enough bottom padding that it reads as floating *on top of* the
+  timeline rather than docked into it. Fixed width (~560px), not full-bleed.
+- **Composer** — the shared composer block, unchanged. This is the resting
+  state: before anything is sent, the overlay is just the prompt box.
+- **Response surface** — a rounded rect that appears directly above the
+  composer on first send. It opens at a base height, then **expands to ~1.5×
+  that height once messages arrive**, and scrolls internally beyond that. It
+  never grows to fill the screen; the overlay stays a heads-up surface.
+- **Dismiss** — `Esc` or click-outside. Dismissing does **not** end the
+  session (see below).
+
+### Session continuity across shells
+
+A window has one session (Decision 2), and both shells are views onto it.
+Dismissing the overlay leaves the session running; reopening it — or opening
+the docked panel — shows the same transcript, mid-flight tool calls included.
+Users will start something in the overlay and then want the full panel to
+watch it work, and that must not mean starting over.
+
+### Rendering the stream
+
+**Structured events, not a terminal.** No PTY, no ANSI, no xterm.js. Message
+shapes below are as observed from the SDK, not as documented — note in
+particular that tool *results* arrive as `user` messages, and that `system`
+carries a `subtype` (largely hook noise that should be filtered, not shown).
+
+| Stream event | Source | Renders as |
+|---|---|---|
+| Assistant prose | `assistant` → `message.content[].text` | Prose |
+| `insert_recipe` call | `assistant` → `content[].tool_use` | Recipe chip: name + node count; click selects the inserted nodes |
+| `set_param` / `edit_group` call | same | Param chip styled like the inspector row it edits |
+| `screenshot` result | `user` → `tool_use_result` | Inline thumbnail; click to compare against the previous iteration |
+| Permission request | `canUseTool` callback | Inline Allow/Deny card, labelled from `options.displayName` / `description` |
+| Rate limit | `rate_limit_event` | Inline warning + `resetsAt`; halts the loop |
+| Iteration boundary | host-synthesised | Divider + rubric grade + checkpoint marker |
+| Cost / turns / duration | `result` → `total_cost_usd`, `num_turns`, `usage` | Quiet footer line |
+| Hook chatter | `system` (`subtype: hook_started`, …) | Not rendered |
+
+`includePartialMessages` enables token-level streaming for the prose case;
+worth it in the panel, and the existing `Pulse` component already covers the
+pre-first-token state.
+
+A raw-JSON toggle stays available for debugging. It is a debug affordance,
+not the default view.
 
 ## Security
 
@@ -266,23 +374,141 @@ and sampling work.
 
 ## Milestones
 
-**M1 — host + sessions.** `scripts/agent-host.mjs`; Agent SDK wired to the
-local `claude` binary; `sessionId` on bridge frames; host-side session map;
-in-process tool registration marshalling to existing handlers; Electron main
-spawns and supervises. Panel renders the raw event stream, unstyled. Ship
-gate: two windows, two independent sessions, neither stealing the other's
-tools; a prompt round-trips and mutates the right graph.
+**M1 — host + sessions.** Ship gate: two windows, two independent sessions,
+neither stealing the other's tools; a prompt round-trips and mutates the right
+graph.
 
-**M2 — native panel.** `"assistant"` panel kind; typed event rendering per the
-table above; session-scoped authorization; Allow/Deny card; agent-control
-token. Ship gate: the loop is usable without reading JSON, and a
-non-editor tool request visibly blocks on the card.
+Done:
 
-**M3 — the loop.** Composed system prompt with live editor context; rubric
-generation from the brief; per-iteration grading; iteration cap and
-no-progress stop; per-iteration checkpoints + rewind rail. Ship gate: "make me
-a drifting particle field that feels underwater" runs unattended to a stop and
-is rewindable to any iteration.
+- [scripts/toolbox-tool-defs.mjs](../scripts/toolbox-tool-defs.mjs) — the 12
+  bridged editor verbs as shared data (name, description, zod schema, timeout,
+  `mutates`, `resultKind`) plus result/error marshalling. Written so
+  `mcp-server.mjs` can fold onto it; it has uncommitted work in flight, so its
+  inline copies were left alone. **Until that lands, edits must be mirrored.**
+- [scripts/agent-host.mjs](../scripts/agent-host.mjs) — WebSocket host, one
+  session per socket, in-process MCP tools marshalling back down the
+  originating socket, streaming-input query per session, interrupt,
+  session-scoped permission, 32-byte control token, handshake file.
+- [src/lib/agent-bridge/index.ts](../src/lib/agent-bridge/index.ts) — renderer
+  client. Shares the `cmd`/`result` frame shape with `mcp-bridge`, so the same
+  `BridgeHandlers` table serves both drivers.
+- [src/app/api/agent-handshake/route.ts](../src/app/api/agent-handshake/route.ts)
+  — token delivery, same-origin gated, with a pid liveness check.
+- [electron/agent.js](../electron/agent.js) + main wiring — `utilityProcess`
+  supervision, env allowlist forwarding `PATH`/`HOME` (needed to find the
+  binary and read `~/.claude`) and deliberately **not** `ANTHROPIC_API_KEY`.
+- [scripts/check-agent-host.mts](../scripts/check-agent-host.mts) —
+  `npm run check:agent-host`. 12 checks, all passing: bad token rejected, two
+  windows authorize independently, each window's tool calls reach only itself,
+  each sees only its own state, and only `mcp__toolbox__*` tools are ever
+  called. Makes real inference calls, so it is **not** part of `npm run check`.
+
+- [src/components/effects/useAgentSession.ts](../src/components/effects/useAgentSession.ts)
+  — React owner. Connects **lazily**, only while the panel is open: each
+  session is a real `claude` subprocess, so an always-on socket per window
+  would be a subprocess doing nothing. Reads the same `mcpHandlersRef` the MCP
+  bridge uses — one handler table, two drivers.
+- [src/components/effects/AgentPanel.tsx](../src/components/effects/AgentPanel.tsx)
+  — M1 view. AiRecipePanel's three-band shell and tokens, with the event list
+  rendered close to raw (prose, tool name + arg gist, result summaries, rate
+  limits, permission card). M2 replaces the list body, not the shell.
+- `EffectsApp` wiring via the existing `paramView` seam (+ `"agent"` pseudo-type
+  in `onAddNode`, matching how `ai-recipe` already works), and an
+  "Assistant…" pseudo-entry in `NodeSearchPopup` at both root and group scope.
+  `paramView: "agent"` is excluded from session persistence — the host-side
+  session is gone by the time a reload would restore it.
+
+Verified end to end: handshake file written 0600 and removed on exit; the Next
+route serves the token to a same-origin request and refuses a cross-origin one;
+typecheck clean; `lint:ratchet` 120 errors vs 120 baseline (no new).
+
+Remaining:
+
+- **Packaging.** `scripts/` is not in electron-builder's `files` allowlist and
+  `node_modules` is excluded, and `@anthropic-ai/claude-agent-sdk` ships a
+  per-platform binary (`…-darwin-x64`) which the Windows build must also
+  resolve. `electron/agent.js` therefore starts the host in unpackaged runs
+  only; packaged builds skip it and the panel reports the host unavailable.
+  Needs its own pass before the desktop app can ship this.
+
+**M2 — native UI.** Ship gate: the loop is usable without reading JSON; a
+prompt started in the overlay is still live when the docked panel is opened;
+a non-editor tool request visibly blocks on the card.
+
+Done:
+
+- [agent-ui.tsx](../src/components/effects/agent-ui.tsx) — shared primitives
+  (Sparkle/Pulse, the style vocabulary, `agentReadiness`). One place, so the
+  two shells can't drift.
+- [AgentTranscript.tsx](../src/components/effects/AgentTranscript.tsx) — typed
+  rendering per the table: recipe chips carrying name + node count, param
+  chips reading `node.param = value`, inline screenshot thumbnails, rate-limit
+  warnings, the Allow/Deny card, hook chatter filtered out. Builds a
+  `tool_use id → name` map so results are labelled by what asked for them.
+- [AgentComposer.tsx](../src/components/effects/AgentComposer.tsx) — the prompt
+  box, shared verbatim. Stops keydown propagation so editor shortcuts don't
+  fire while typing.
+- [AgentPanel.tsx](../src/components/effects/AgentPanel.tsx) — docked shell,
+  now just a header around the two shared components.
+- [AgentOverlay.tsx](../src/components/effects/AgentOverlay.tsx) — floating
+  shell. Centred, `bottom: 96` so it reads as sitting over the timeline, 560px.
+  Composer only at rest; response surface appears on first send at 180px and
+  expands to 270px (1.5×) once a reply arrives, scrolling beyond. Esc and
+  click-outside dismiss; an "open panel" link hands the live session to the
+  docked shell.
+- **Session continuity.** `useAgentSession` connects on first visible and
+  tears down *only* on unmount — there is deliberately no teardown when
+  `visible` goes false, which is what lets the overlay be dismissed mid-run.
+  Owned in `EffectsApp` above both shells.
+- Edit-menu entry (`MenuBar` → `onOpenAssistant`) alongside the existing
+  add-menu pseudo-entry.
+
+- **`"assistant"` panel kind** in `PANEL_KINDS` / `PANEL_LABELS`, with a
+  sparkle icon in `PanelKindMenu` and a render branch in `EffectsApp`. A tiled
+  assistant leaf counts as showing the session, so docking connects it exactly
+  as opening the overlay does. Tiled hosting drops the close button (the kind
+  menu owns that) and renders the kind chip inline, matching `PerfPanel`.
+  Compat caveat from `layout/model.ts` applies: an older build rejects a whole
+  layout tree containing an unknown kind.
+
+**M3 — the loop.** Ship gate: "make me a drifting particle field that feels
+underwater" runs unattended to a stop and is rewindable to any iteration.
+
+Done:
+
+- **Live editor context.** The `prompt` frame carries a `context` preamble the
+  host prepends to the user message — project, canvas size, fps, node count,
+  selected node. Saves an orientation round-trip and supplies things the model
+  cannot infer, which is context the Claude Desktop path structurally cannot
+  have. Built from refs at send time.
+- **Rubric + stopping criterion** (system prompt): restate the request as a
+  short checklist of checkable criteria before building, grade each render
+  against it, and stop on all-pass, on the iteration cap, or on two
+  consecutive iterations with no improvement.
+- **Iteration cap** — `maxTurns` (default 8), stated in the prompt so the
+  model paces itself rather than being cut off mid-thought.
+- **Checkpoint rail.** `useAgentSession` wraps the handler table and snapshots
+  the graph lazily — just before the first *mutating* command of an iteration,
+  so read-only exploration costs nothing. An iteration ends at a "look"
+  (`screenshot` / `screenshot_strip`), which is the real rhythm of
+  build → look → adjust. Driven from the COMMAND path, not the event stream:
+  the snapshot must be ordered before the mutation, and only the command path
+  is. Reuses `getGraphSnapshot` / `applyGraphSnapshot`, the same primitives
+  undo rides on.
+- **Rewind.** Checkpoints render inline in the transcript with a "revert"
+  action. Restoring puts the graph back, interrupts any run in flight (letting
+  it keep mutating a rewound graph is how you get an incoherent document), and
+  truncates the transcript so what the user sees and what the document holds
+  agree.
+
+Remaining:
+
+- **Verification.** The loop's behaviour under a real brief is unproven —
+  `check:agent-host` covers transport, isolation, tool scoping and catalog
+  recovery, not whether the rubric actually converges. That needs real runs.
+- The **no-progress stop** is prompt-level, not enforced in code. If models
+  grind through it anyway, it needs to become a host-side check on rubric
+  grades across iterations.
 
 **M4 — animation.** Keyframe-aware strip sampling; curve-read-back
 choreography; whatever the M3 loop turns out to need for motion. Scoped after
@@ -296,9 +522,12 @@ security model recorded at the same time.
 1. **Coexists with Claude Desktop.** Not a migration. The stdio server keeps
    working; this is a second driver.
 2. **One session per window.** Bound at panel open; pop-outs included.
-3. **Checkpoint granularity — OPEN.** Recommendation: per iteration, reasoning
-   under "Permission and checkpoints". Per tool call is the alternative.
-   Needs owner sign-off before M3; does not block M1–M2.
+3. **Checkpoint granularity — per iteration** (implemented 2026-08-13 under
+   the standing recommendation; owner did not object when M3 was greenlit).
+   Reasoning under "Permission and checkpoints": a tool call is rarely the
+   unit anyone wants back, whereas "before it tried the version with the noise
+   displacement" is. Per-call rewind remains available through normal undo.
+   Revisit if real runs show iterations are too coarse to be useful.
 4. **Subscription auth via the local Claude Code binary.** Users install and
    log into Claude Code themselves. No credential handling in our code, and no
    attempt at a subscription-backed endpoint of our own.
@@ -309,3 +538,117 @@ security model recorded at the same time.
 7. **The in-app recipe node is untouched.** Different billing, different UX,
    still useful for a quick one-shot. Convergence — the node becoming the
    agent scoped to one subtree — is a later question, not this spec's.
+8. **Two entry points, one implementation.** Docked panel and floating
+   overlay are shells around shared transcript/composer components, styled
+   from `AiRecipePanel`. Dismissing the overlay does not end the session.
+9. **SDK pinned at 0.3.229**, verified by smoke test. The published docs
+   contradict the shipped `sdk.d.ts` on `canUseTool`; the types win. Re-verify
+   on any upgrade — the failure mode is silent (surfaces as a tool error the
+   model narrates, not an exception).
+10. **Built-ins removed except a scoped `Read`** (revised 2026-08-13 after the
+    first real session). Originally `tools: []`, on the theory that the panel
+    should offer nothing but editor verbs. That was wrong, for two reasons
+    found by running it:
+
+    - **`tools: []` did not hold.** A real session was still offered `Read`
+      and `Bash`, because omitting `settingSources` loads
+      `~/.claude/settings.json` et al — "matches CLI defaults" — and the
+      user's own config re-added them. Fixed with `settingSources: []` (SDK
+      isolation mode) plus an explicit `disallowedTools`. A shipped feature
+      must not vary with each developer's terminal config.
+    - **Large tool results never arrive inline.** Claude Code truncates them
+      and spills the full text to `~/.claude/…/tool-results/`, expecting the
+      agent to `Read` it back. `get_catalog` is ~174k chars, so it ALWAYS
+      spills. Under Claude Desktop / Claude Code this is invisible because
+      `Read` exists. With `Read` disabled the spill became a dead end: the
+      model reported "no file access", then probed for node types by
+      inserting throwaway recipes — which is precisely the garbage a real
+      session produced.
+
+    So `Read` is enabled and gated in `canUseTool` to paths under
+    `~/.claude` that contain a `tool-results` segment. It is not a filesystem
+    grant and cannot be widened by the user clicking Allow; an arbitrary path
+    is refused outright. `MAX_MCP_OUTPUT_TOKENS` is NOT the lever — raising it
+    changed nothing.
+
+    Covered by three checks: no shell/write tool is reachable, an arbitrary
+    path is refused, and a 111k-char catalog is recovered in full.
+11. **Build into the current composition, not into a new group** (owner,
+    2026-08-13). `insert_recipe` always wraps its output in a node-group,
+    which is wrong for "make me an X" — the first real session produced an
+    unwanted wrapper. The system prompt now directs building into the target
+    layer's interior via `edit_group` add_node/add_edge, reserving
+    `insert_recipe` for genuinely reusable groups. Choreography only; the
+    shared MCP handler is unchanged. If this proves insufficient, the deeper
+    fix is an `asGroup: false` option on `insert_recipe`, which would change
+    the tool surface Claude Desktop also sees and so needs its own decision.
+11. **Drive the user's installed CLI, don't bundle one** (owner, 2026-08-13).
+    The SDK ships a 303MB per-platform binary and uses it unless
+    `pathToClaudeCodeExecutable` is set. We set it.
+
+    | | Bundle it | Use the user's (chosen) |
+    |---|---|---|
+    | App size | 433MB → ~736MB | +4.3MB |
+    | Cross-build | npm installs only the HOST platform's optional package, so `desktop:build:win` from macOS has no Windows binary | unaffected |
+    | Version drift | none — matched pair | **real risk**, mitigated by reporting the resolved path + version to the panel |
+    | Install prerequisite | **not removed** | not removed |
+
+    The decisive point is the last row: credentials live in the OS keychain,
+    not in the package, so bundling still leaves a user who never logged into
+    Claude with nothing. It buys version pinning at ~300MB and a cross-build
+    problem, and does not buy away the prerequisite. Verified the SDK loads
+    and runs with its platform package absent, so the exclusion is real.
+    Revisit only if shipping to people who have never used Claude Code — and
+    note that would still require solving an interactive login flow.
+12. **Model is `claude-opus-5`** (owner, 2026-08-13), overridable via
+    `TOOLBOX_AGENT_MODEL`. Verified accepted and actually used.
+13. **This is a LOCAL-ONLY feature** (2026-08-13). The agent host must run on
+    the user's machine — it spawns their `claude` binary and holds a socket to
+    their browser — so there are exactly two supported environments:
+
+    | Environment | How the host starts |
+    |---|---|
+    | Desktop app (Electron) | `electron/agent.js` starts it automatically |
+    | Local dev (`localhost`) | the developer runs `npm run agent` |
+    | **Hosted web** | **not supported** |
+
+    A hosted visitor cannot run it and cannot be made to. There is no repo to
+    run `npm` in; `/api/agent-handshake` reads the handshake file
+    **server-side**, which on a deployment is the server's disk rather than
+    theirs; and an `https` page cannot reliably open `ws://127.0.0.1` anyway.
+    A local companion binary would solve only the first of those.
+
+    So `agentEnvironment()` classifies native / local / hosted, hosted never
+    probes for a host, and each environment gets its own explanation —
+    "`npm run agent`" is a developer instruction and was previously shown to
+    everyone, which is meaningless to a web visitor. Hosted is pointed at the
+    desktop app instead.
+
+    The alternative that would work on hosted web is running inference
+    server-side on an API key — which is the billing model this whole spec
+    exists to avoid (see §Why). Not a gap to close; a boundary to state.
+14. **Hosted web is gated OUT of the entry points** (owner, 2026-08-13), not
+    merely shown a message. Withheld there: the Edit-menu "Assistant…" item,
+    the add-menu pseudo-entry, and `assistant` in the panel-kind menu.
+    **Unaffected and available to everyone: AI Recipe and the MCP bridge** —
+    different features, different billing, no local host required.
+
+    Two things this deliberately does NOT do:
+
+    - **`PANEL_KINDS` still contains `assistant`.** That list is also what the
+      layout validators check, and `model.ts` documents that an unknown kind
+      makes a build reject the ENTIRE tree and fall back to the default
+      preset. Dropping it would mean a layout saved in the desktop app blows
+      up when the same project is opened in a browser. The menu is filtered;
+      the kind stays legal. (The current kind is also never filtered out of
+      its own menu, so a panel already set to `assistant` can still be
+      changed away from.)
+    - **The panel itself is not gated.** If a desktop-made layout with an
+      assistant leaf is opened on the web it renders and explains that it
+      needs the desktop app, rather than silently vanishing.
+
+    Gating is read during render rather than from state, which is safe
+    because every gated surface only reaches the DOM after a click — long
+    after hydration — so the SSR pass never disagrees with the client. The
+    panel is left ungated for the same reason in reverse: it CAN render at
+    first paint, so gating it would risk a hydration mismatch.

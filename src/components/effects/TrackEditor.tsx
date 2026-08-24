@@ -117,9 +117,10 @@ import {
   nextGestureKey,
   scaleKeyframes as scaleKeyframesOp,
   selKey,
+  spaceKeyframes as spaceKeyframesOp,
   staggerKeyframes as staggerKeyframesOp,
 } from "./timeline/keyframe-ops";
-import { moveClipWindow, trimClipWindow } from "./timeline/clip-ops";
+import { moveClipsByDelta, trimClipsByDelta } from "./timeline/clip-ops";
 import { rulerSpacing as computeRulerSpacing } from "./timeline/ruler";
 import { LaneFrameTicks, RulerFrameStubs } from "./timeline/FrameTicks";
 import { EasingTile } from "./timeline/EasingTile";
@@ -154,8 +155,13 @@ export interface TrackEditorProps {
 
   // Set/clear a node's timeline clip windows. Called during clip drag
   // (move/trim), on clip creation, and on split. `undefined` (or an empty
-  // array) removes all clips from the node.
-  onClipChange?(nodeId: string, next: ClipBlock[] | undefined): void;
+  // array) removes all clips from the node. Optional coalesce key so a
+  // multi-node gesture is one undo entry (defaults to per-node).
+  onClipChange?(
+    nodeId: string,
+    next: ClipBlock[] | undefined,
+    coalesceKey?: string
+  ): void;
 
   collapsedNodeIds?: Set<string>;
   onToggleCollapsed?(nodeId: string): void;
@@ -167,6 +173,14 @@ export interface TrackEditorProps {
   // corresponding node lights up in the node editor and surfaces in
   // the param panel — the inverse of the "selected only" filter.
   onSelectNode?(nodeId: string): void;
+  // Reports every keyframe-selection change (including empty). EffectsApp
+  // lifts this so the Graph Editor can show the selected keyframes'
+  // lanes — which replaced the per-track ∿ graphVisible toggle.
+  onKeyframeSelectionChange?(sel: SelectionKey[]): void;
+  // Seeds the keyframe selection at mount (read once). EffectsApp passes
+  // the lifted selection back so a dock-tab round-trip (tracks → graph →
+  // tracks) re-mounts with the same keyframes selected.
+  initialKeyframeSelection?: SelectionKey[];
 }
 
 // ---------------------------------------------------------------------
@@ -226,6 +240,16 @@ type LaneRow =
       selected: boolean;
     };
 
+type ClipRef = { nodeId: string; clipIndex: number };
+
+type ClipDragNode = {
+  nodeId: string;
+  startClips: ClipBlock[];
+  clipIndexes: number[];
+  slipsInTrim: boolean;
+  sourceDurationTicks?: number;
+};
+
 type DragKind =
   | { kind: "none" }
   | {
@@ -262,28 +286,26 @@ type DragKind =
       stagger?: boolean;
     }
   | {
-      // Dragging a clip body — shifts inTick/outTick together. `startClips`
-      // is the snapshot of the node's whole window array at drag-start so each
-      // move rebuilds from a stable baseline; `clipIndex` is the dragged one.
+      // Dragging a clip body — shifts inTick/outTick together. `nodes` is
+      // the drag-start snapshot of every peer (the clicked clip plus any
+      // other selected clips / clips on selected tracks), rebuilt from
+      // that baseline each move. `originInTick` is the dragged window's
+      // head, used to snap the shared delta.
       kind: "clipMove";
-      nodeId: string;
-      clipIndex: number;
       startMouseX: number;
-      startClips: ClipBlock[];
+      originInTick: number;
+      nodes: ClipDragNode[];
+      gestureKey: string;
     }
   | {
-      // Dragging a clip edge — trims in or out. For clock-carrying clips
-      // (video, layer) the in-edge also slips sourceInTick so the content
-      // stays anchored.
+      // Dragging a clip edge — trims in or out on every peer by the same
+      // delta. For clock-carrying clips (video, layer) the in-edge also
+      // slips sourceInTick so the content stays anchored.
       kind: "clipTrim";
-      nodeId: string;
-      clipIndex: number;
       side: "in" | "out";
-      startClips: ClipBlock[];
-      slipsInTrim: boolean;
-      // Source footage length in ticks (video only) — bounds the trim so the
-      // window can't extend past the available footage. Undefined ⇒ unbounded.
-      sourceDurationTicks?: number;
+      originEdgeTick: number;
+      nodes: ClipDragNode[];
+      gestureKey: string;
     }
   | {
       kind: "scaleSelection";
@@ -320,6 +342,8 @@ export function TrackEditor(props: TrackEditorProps) {
     collapsedNodeIds,
     onToggleCollapsed,
     onSelectNode,
+    onKeyframeSelectionChange,
+    initialKeyframeSelection,
     fitVersion,
   } = props;
   // Null in the main window; the child Window when this editor is
@@ -354,11 +378,21 @@ export function TrackEditor(props: TrackEditorProps) {
   // preserved for the inspector); the Set is derived for membership
   // tests. Previously these were two parallel useStates kept in sync by
   // hand at every call site.
-  const [selectionList, setSelectionList] = useState<SelectionKey[]>([]);
+  // Seeded from the lifted selection so a tab round-trip (tracks →
+  // graph → tracks) re-mounts with the same keyframes selected. Lazy —
+  // read once at mount; from then on this instance is the source.
+  const [selectionList, setSelectionList] = useState<SelectionKey[]>(
+    () => initialKeyframeSelection ?? []
+  );
   const selection = useMemo(
     () => new Set(selectionList.map(selKey)),
     [selectionList]
   );
+  // Lift every selection change so the Graph Editor (possibly in another
+  // pane/window) can graph the selected keyframes' lanes.
+  useEffect(() => {
+    onKeyframeSelectionChange?.(selectionList);
+  }, [selectionList, onKeyframeSelectionChange]);
 
   // ---- Anchor link with the Spline Draw overlay --------------------------
   // (spline-anchor-scope.ts). A Spline Draw node's per-anchor keyframes
@@ -455,15 +489,16 @@ export function TrackEditor(props: TrackEditorProps) {
   // keydown handler always splits at the live tick.
   const splitAtPlayheadRef = useRef<() => void>(() => {});
 
-  // Clip selection (one window) and hover, for styling + cursor + delete.
-  type ClipRef = { nodeId: string; clipIndex: number };
-  const [selectedClip, setSelectedClip] = useState<ClipRef | null>(null);
+  // Clip selection (one or more windows) and hover, for styling + cursor
+  // + delete. Shift-click toggles; a handle/body drag on a selected clip
+  // moves/trims the whole set by the same delta.
+  const [selectedClips, setSelectedClips] = useState<ClipRef[]>([]);
   const [hoveredClip, setHoveredClip] = useState<
     (ClipRef & { region: "in" | "out" | "body" }) | null
   >(null);
   // Refs so the once-subscribed keydown handler sees the live values
   // (synced in the every-render effect below, next to the actions).
-  const selectedClipRef = useRef<ClipRef | null>(null);
+  const selectedClipsRef = useRef<ClipRef[]>([]);
   const deleteSelectedClipRef = useRef<() => void>(() => {});
 
   // Refs for measuring and event capture.
@@ -808,12 +843,27 @@ export function TrackEditor(props: TrackEditorProps) {
     fit: () => {},
     focusSelection: () => {},
     hasSelection: false,
+    startKfModal: (_mode: "grab" | "scale") => {},
+    cancelKfModal: () => {},
   });
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea") return;
       const acts = keyActionsRef.current;
+
+      // A live G/S modal transform captures its control keys before
+      // anything else (Escape must cancel the modal, not clear the
+      // selection it's transforming).
+      if (kfModalRef.current) {
+        if (e.key === "Escape") {
+          acts.cancelKfModal();
+        } else if (e.key === "Enter") {
+          setKfModal(null); // confirm — positions already committed
+        }
+        e.preventDefault();
+        return;
+      }
 
       if (e.code === "Space" && !spaceDownRef.current && !e.shiftKey) {
         // !shiftKey so Shift+Space (the pie menu chord) never starts a pan.
@@ -824,7 +874,7 @@ export function TrackEditor(props: TrackEditorProps) {
       }
       if (e.key === "Escape") {
         setSelectionList([]);
-        setSelectedClip(null);
+        setSelectedClips([]);
         setMenu(null);
         setRazorMode(false);
         return;
@@ -854,6 +904,20 @@ export function TrackEditor(props: TrackEditorProps) {
           acts.focusSelection();
           return;
         }
+        // Blender-style modal transforms on the keyframe selection:
+        // G = move in time, S = scale in time about the playhead.
+        if (e.key.toLowerCase() === "g" && hoveredRef.current) {
+          if (!acts.hasSelection) return;
+          e.preventDefault();
+          acts.startKfModal("grab");
+          return;
+        }
+        if (e.key.toLowerCase() === "s" && hoveredRef.current) {
+          if (!acts.hasSelection) return;
+          e.preventDefault();
+          acts.startKfModal("scale");
+          return;
+        }
       }
       // Cmd/Ctrl+B — split the clip(s) under the playhead.
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
@@ -866,7 +930,7 @@ export function TrackEditor(props: TrackEditorProps) {
       if (e.key === "Delete" || e.key === "Backspace") {
         if (!hoveredRef.current) return;
         // A selected clip takes precedence over keyframe selection.
-        if (selectedClipRef.current) {
+        if (selectedClipsRef.current.length > 0) {
           e.preventDefault();
           e.stopPropagation();
           deleteSelectedClipRef.current();
@@ -1309,6 +1373,65 @@ export function TrackEditor(props: TrackEditorProps) {
     return null;
   }
 
+  function sameClip(a: ClipRef, b: ClipRef) {
+    return a.nodeId === b.nodeId && a.clipIndex === b.clipIndex;
+  }
+
+  // Real clip windows on currently selected clippable tracks (node.selected).
+  // Ghosts aren't listed — they have no window until a drag materializes one.
+  function clipsOnSelectedTracks(): ClipRef[] {
+    const out: ClipRef[] = [];
+    for (const row of lanes) {
+      if (row.kind !== "nodeHeader" || !row.selected || !row.clippable) continue;
+      if (!row.clips || row.clips.length === 0) continue;
+      for (let i = 0; i < row.clips.length; i++) {
+        out.push({ nodeId: row.nodeId, clipIndex: i });
+      }
+    }
+    return out;
+  }
+
+  function snapshotClipGroups(refs: ClipRef[]): ClipDragNode[] {
+    const byNode = new Map<string, number[]>();
+    for (const r of refs) {
+      const arr = byNode.get(r.nodeId);
+      if (arr) {
+        if (!arr.includes(r.clipIndex)) arr.push(r.clipIndex);
+      } else {
+        byNode.set(r.nodeId, [r.clipIndex]);
+      }
+    }
+    const groups: ClipDragNode[] = [];
+    for (const [nodeId, clipIndexes] of byNode) {
+      let startClips = clipsForNode(nodeId);
+      if (!startClips || startClips.length === 0) {
+        startClips = [defaultClipForNode(nodeId)];
+      }
+      const valid = clipIndexes.filter((i) => i >= 0 && i < startClips.length);
+      if (valid.length === 0) continue;
+      const header = lanes.find(
+        (r): r is Extract<LaneRow, { kind: "nodeHeader" }> =>
+          r.kind === "nodeHeader" && r.nodeId === nodeId
+      );
+      groups.push({
+        nodeId,
+        startClips,
+        clipIndexes: valid,
+        slipsInTrim: header?.slipsInTrim ?? false,
+        sourceDurationTicks: sourceDurationTicksFor(nodeId),
+      });
+    }
+    return groups;
+  }
+
+  function originWindow(
+    groups: ClipDragNode[],
+    origin: ClipRef
+  ): ClipBlock | undefined {
+    const g = groups.find((n) => n.nodeId === origin.nodeId);
+    return g?.startClips[origin.clipIndex];
+  }
+
   // Split the window containing `tick` on a node into two. A window-less
   // clippable node is treated as one implicit full-scene window, so a razor
   // cut materializes it into two real windows.
@@ -1350,15 +1473,28 @@ export function TrackEditor(props: TrackEditorProps) {
     }
   }
 
-  // Remove the currently selected clip window.
+  // Remove the currently selected clip window(s). Multi-node deletes
+  // share one coalesce key so they undo as a single step.
   function deleteSelectedClip() {
-    const sel = selectedClipRef.current;
-    if (!sel) return;
-    const clips = clipsForNode(sel.nodeId);
-    if (!clips) return;
-    const next = clips.filter((_, i) => i !== sel.clipIndex);
-    onClipChange?.(sel.nodeId, next.length > 0 ? next : undefined);
-    setSelectedClip(null);
+    const sel = selectedClipsRef.current;
+    if (sel.length === 0) return;
+    const byNode = new Map<string, Set<number>>();
+    for (const c of sel) {
+      let s = byNode.get(c.nodeId);
+      if (!s) {
+        s = new Set();
+        byNode.set(c.nodeId, s);
+      }
+      s.add(c.clipIndex);
+    }
+    const gestureKey = nextGestureKey("clip-delete");
+    for (const [nodeId, indexes] of byNode) {
+      const clips = clipsForNode(nodeId);
+      if (!clips) continue;
+      const next = clips.filter((_, i) => !indexes.has(i));
+      onClipChange?.(nodeId, next.length > 0 ? next : undefined, gestureKey);
+    }
+    setSelectedClips([]);
     setHoveredClip(null);
   }
 
@@ -1368,7 +1504,7 @@ export function TrackEditor(props: TrackEditorProps) {
   // these only when the selection identity changed.
   useEffect(() => {
     razorModeRef.current = razorMode;
-    selectedClipRef.current = selectedClip;
+    selectedClipsRef.current = selectedClips;
     splitAtPlayheadRef.current = splitAtPlayhead;
     deleteSelectedClipRef.current = deleteSelectedClip;
     keyActionsRef.current = {
@@ -1378,6 +1514,8 @@ export function TrackEditor(props: TrackEditorProps) {
       fit,
       focusSelection,
       hasSelection: selectionList.length > 0,
+      startKfModal,
+      cancelKfModal,
     };
   });
 
@@ -1443,9 +1581,6 @@ export function TrackEditor(props: TrackEditorProps) {
     const contentY = my + scrollY;
 
     setMenu(null);
-    // Any mousedown clears the clip selection; the clip branch below re-sets
-    // it when a window was actually clicked (last write wins in this batch).
-    setSelectedClip(null);
 
     // Space + drag = pan.
     if (spaceDownRef.current) {
@@ -1464,52 +1599,91 @@ export function TrackEditor(props: TrackEditorProps) {
     // priority over marquee/keyframe hits since header rows hold no keys.
     const clipHit = hitTestClip(contentX, contentY);
     if (clipHit) {
-      onSelectNode?.(clipHit.nodeId);
       // Razor tool: click cuts the window at the click position.
       if (razorModeRef.current) {
+        onSelectNode?.(clipHit.nodeId);
         const raw = pxToTick(contentX);
         const tick = e.shiftKey
           ? raw
           : snapTickToFrame(raw, timeline.ticksPerFrame);
         splitClipAtTick(clipHit.nodeId, tick);
+        setSelectedClips([]);
         e.preventDefault();
         return;
       }
-      // Select this window (and clear any keyframe selection so Backspace is
-      // unambiguous).
-      setSelectedClip({ nodeId: clipHit.nodeId, clipIndex: clipHit.clipIndex });
+      const clicked: ClipRef = {
+        nodeId: clipHit.nodeId,
+        clipIndex: clipHit.clipIndex,
+      };
+      const hasRealClips = (clipsForNode(clicked.nodeId)?.length ?? 0) > 0;
+      // Shift-click toggles membership; no drag. Ghosts have no window
+      // to select, so shift on a ghost is a no-op.
+      if (e.shiftKey) {
+        if (hasRealClips) {
+          setSelectedClips((prev) =>
+            prev.some((c) => sameClip(c, clicked))
+              ? prev.filter((c) => !sameClip(c, clicked))
+              : [...prev, clicked]
+          );
+          setSelectionList([]);
+        }
+        e.preventDefault();
+        return;
+      }
+      const alreadyIn =
+        selectedClips.some((c) => sameClip(c, clicked)) &&
+        selectedClips.length > 1;
+      const fromTracks = clipsOnSelectedTracks();
+      const clickedTrackSelected = lanes.some(
+        (r) =>
+          r.kind === "nodeHeader" &&
+          r.selected &&
+          r.nodeId === clicked.nodeId
+      );
+      let targets: ClipRef[];
+      if (alreadyIn) {
+        targets = selectedClips;
+      } else if (fromTracks.length > 1 && clickedTrackSelected) {
+        targets = fromTracks.some((c) => sameClip(c, clicked))
+          ? fromTracks
+          : [...fromTracks, clicked];
+        setSelectedClips(targets);
+      } else {
+        targets = [clicked];
+        setSelectedClips(targets);
+        onSelectNode?.(clipHit.nodeId);
+      }
+      // Clear any keyframe selection so Backspace is unambiguous.
       setSelectionList([]);
-      // A window-less node's ghost gets a full-duration default as the
-      // drag baseline, but it is NOT written until the drag actually
-      // moves (the mousemove handlers emit from this snapshot) — a plain
-      // click no longer dirties the document. For video the default is
-      // clamped to the footage length.
-      let startClips = clipsForNode(clipHit.nodeId);
-      if (!startClips || startClips.length === 0) {
-        startClips = [defaultClipForNode(clipHit.nodeId)];
+      const groups = snapshotClipGroups(targets);
+      const origin = originWindow(groups, clicked);
+      if (!origin || groups.length === 0) {
+        e.preventDefault();
+        return;
       }
       if (clipHit.region === "body") {
         setDrag({
           kind: "clipMove",
-          nodeId: clipHit.nodeId,
-          clipIndex: clipHit.clipIndex,
           startMouseX: e.clientX,
-          startClips,
+          originInTick: origin.inTick,
+          nodes: groups,
+          gestureKey: nextGestureKey("clip-move"),
         });
       } else {
         setDrag({
           kind: "clipTrim",
-          nodeId: clipHit.nodeId,
-          clipIndex: clipHit.clipIndex,
           side: clipHit.region,
-          startClips,
-          slipsInTrim: clipHit.slipsInTrim,
-          sourceDurationTicks: sourceDurationTicksFor(clipHit.nodeId),
+          originEdgeTick:
+            clipHit.region === "in" ? origin.inTick : origin.outTick,
+          nodes: groups,
+          gestureKey: nextGestureKey("clip-trim"),
         });
       }
       e.preventDefault();
       return;
     }
+
+    setSelectedClips([]);
 
     // Bounding-box scale handles take priority when a selection exists.
     if (selectionBox) {
@@ -1766,29 +1940,53 @@ export function TrackEditor(props: TrackEditorProps) {
         return;
       }
       if (drag.kind === "clipMove") {
-        const next = moveClipWindow(
-          drag.startClips,
-          drag.clipIndex,
-          (e.clientX - drag.startMouseX) / pixelsPerTick,
-          { snap: !e.shiftKey, ticksPerFrame: timeline.ticksPerFrame }
-        );
-        if (next) onClipChange?.(drag.nodeId, next);
+        let delta = (e.clientX - drag.startMouseX) / pixelsPerTick;
+        if (!e.shiftKey) {
+          delta =
+            snapTickToFrame(
+              drag.originInTick + delta,
+              timeline.ticksPerFrame
+            ) - drag.originInTick;
+        }
+        let minIn = Infinity;
+        for (const n of drag.nodes) {
+          for (const i of n.clipIndexes) {
+            const w = n.startClips[i];
+            if (w && w.inTick < minIn) minIn = w.inTick;
+          }
+        }
+        if (minIn + delta < 0) delta = -minIn;
+        for (const n of drag.nodes) {
+          const next = moveClipsByDelta(
+            n.startClips,
+            n.clipIndexes,
+            delta,
+            timeline.ticksPerFrame
+          );
+          if (next) onClipChange?.(n.nodeId, next, drag.gestureKey);
+        }
         return;
       }
       if (drag.kind === "clipTrim") {
-        const next = trimClipWindow(
-          drag.startClips,
-          drag.clipIndex,
-          drag.side,
-          pxToTick(mx),
-          {
-            snap: !e.shiftKey,
-            ticksPerFrame: timeline.ticksPerFrame,
-            slipsInTrim: drag.slipsInTrim,
-            sourceDurationTicks: drag.sourceDurationTicks,
-          }
-        );
-        if (next) onClipChange?.(drag.nodeId, next);
+        let target = pxToTick(mx);
+        if (!e.shiftKey) {
+          target = snapTickToFrame(target, timeline.ticksPerFrame);
+        }
+        const delta = target - drag.originEdgeTick;
+        for (const n of drag.nodes) {
+          const next = trimClipsByDelta(
+            n.startClips,
+            n.clipIndexes,
+            drag.side,
+            delta,
+            {
+              ticksPerFrame: timeline.ticksPerFrame,
+              slipsInTrim: n.slipsInTrim,
+              sourceDurationTicks: n.sourceDurationTicks,
+            }
+          );
+          if (next) onClipChange?.(n.nodeId, next, drag.gestureKey);
+        }
         return;
       }
     }
@@ -1999,6 +2197,169 @@ export function TrackEditor(props: TrackEditorProps) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectionList, panelWin]);
+
+  // ---- Even spacing from the dock header control ----
+  // Same event contract as stagger: `keyframe-space-begin` snapshots a
+  // selection with ≥2 distinct ticks and responds with the current gap
+  // (first two columns, in frames) so the panel opens pre-filled;
+  // `keyframe-space` re-spaces from the snapshot; `-end` drops it.
+  const spaceBaseRef = useRef<{
+    bases: GroupBase[];
+    gestureKey: string;
+  } | null>(null);
+  useEffect(() => {
+    const onBegin = (e: Event) => {
+      const ticks = [...new Set(selectionList.map((s) => s.tick))].sort(
+        (a, b) => a - b
+      );
+      if (ticks.length >= 2) {
+        spaceBaseRef.current = {
+          bases: buildGroupBases(selectionList, getBlockForBases),
+          gestureKey: nextGestureKey("space"),
+        };
+        (e as CustomEvent).detail?.respond?.(
+          Math.max(1, Math.round((ticks[1] - ticks[0]) / timeline.ticksPerFrame))
+        );
+      } else {
+        spaceBaseRef.current = null;
+      }
+    };
+    const onStep = (e: Event) => {
+      const base = spaceBaseRef.current;
+      if (!base) return;
+      const ticks = (e as CustomEvent<{ stepTicks: number }>).detail?.stepTicks;
+      if (typeof ticks === "number") {
+        applyKeyframeOp(
+          spaceKeyframesOp(base.bases, ticks, {
+            snap: true,
+            ticksPerFrame: timeline.ticksPerFrame,
+          }),
+          base.gestureKey
+        );
+      }
+    };
+    const onEnd = () => {
+      spaceBaseRef.current = null;
+    };
+    const win = panelWin ?? window;
+    win.addEventListener("keyframe-space-begin", onBegin);
+    win.addEventListener("keyframe-space", onStep);
+    win.addEventListener("keyframe-space-end", onEnd);
+    return () => {
+      win.removeEventListener("keyframe-space-begin", onBegin);
+      win.removeEventListener("keyframe-space", onStep);
+      win.removeEventListener("keyframe-space-end", onEnd);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionList, panelWin]);
+
+  // ---- Blender-style keyboard modal transforms (G move / S scale) ----
+  // Started from the keyboard while hovering with a selection; follows
+  // the cursor with no button held. Click/Enter confirms, Esc/right-
+  // click cancels. Scale pivots on the playhead. Each move rebuilds from
+  // the start snapshot (standard gesture contract) and every write
+  // shares one gesture key → one undo entry.
+  const [kfModal, setKfModal] = useState<null | {
+    mode: "grab" | "scale";
+    bases: GroupBase[];
+    gestureKey: string;
+    anchorTick: number; // scale pivot: the playhead at modal start
+  }>(null);
+  const kfModalRef = useRef(kfModal);
+  kfModalRef.current = kfModal;
+
+  function startKfModal(mode: "grab" | "scale") {
+    if (kfModalRef.current || drag.kind !== "none") return;
+    if (selectionList.length === 0) return;
+    setKfModal({
+      mode,
+      bases: buildGroupBases(selectionList, getBlockForBases),
+      gestureKey: nextGestureKey(`modal-${mode}`),
+      anchorTick: playbackClock.get().tick,
+    });
+  }
+
+  // Cancel = re-apply the snapshot verbatim (zero-delta move restores
+  // every lane from its originals), then drop the modal.
+  function cancelKfModal() {
+    const m = kfModalRef.current;
+    if (!m) return;
+    applyKeyframeOp(
+      moveKeyframes(m.bases, 0, {
+        snap: false,
+        ticksPerFrame: timeline.ticksPerFrame,
+      }),
+      m.gestureKey
+    );
+    setKfModal(null);
+  }
+
+  useEffect(() => {
+    if (!kfModal) return;
+    const win = panelWin ?? window;
+    // Armed by the FIRST move — the transform is relative to where the
+    // cursor was when it started moving, so a stale hover position can't
+    // jolt the selection.
+    let originTick: number | null = null;
+    const tickAt = (clientX: number): number | null => {
+      const rect = lanesAreaRef.current?.getBoundingClientRect();
+      if (!rect) return null;
+      return pxToTick(clientX - rect.left);
+    };
+    const onMove = (e: PointerEvent) => {
+      const cur = tickAt(e.clientX);
+      if (cur == null) return;
+      if (originTick == null) {
+        originTick = cur;
+        return;
+      }
+      const opts = {
+        snap: !e.shiftKey,
+        ticksPerFrame: timeline.ticksPerFrame,
+      };
+      if (kfModal.mode === "grab") {
+        applyKeyframeOp(
+          moveKeyframes(kfModal.bases, cur - originTick, opts),
+          kfModal.gestureKey
+        );
+      } else {
+        // Scale in time about the playhead; a null result (origin at the
+        // pivot / span pinned at a frame) keeps the last applied state.
+        applyKeyframeOp(
+          scaleKeyframesOp(
+            kfModal.bases,
+            kfModal.anchorTick,
+            originTick,
+            cur,
+            opts
+          ),
+          kfModal.gestureKey
+        );
+      }
+    };
+    const onDown = (e: PointerEvent) => {
+      // Left click confirms (positions are already applied); right
+      // click cancels. Capture phase + preventDefault so the click
+      // can't also start a marquee/drag underneath.
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.button === 2) {
+        cancelKfModal();
+      } else {
+        setKfModal(null);
+      }
+    };
+    const onContext = (e: Event) => e.preventDefault();
+    win.addEventListener("pointermove", onMove);
+    win.addEventListener("pointerdown", onDown, true);
+    win.addEventListener("contextmenu", onContext, true);
+    return () => {
+      win.removeEventListener("pointermove", onMove);
+      win.removeEventListener("pointerdown", onDown, true);
+      win.removeEventListener("contextmenu", onContext, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kfModal, panelWin, timeline.ticksPerFrame]);
 
   // ---- Proximity snapping (playhead ↔ keyframes) ----
   // Every keyframe tick on the VISIBLE lanes, deduped and sorted — the
@@ -2323,8 +2684,6 @@ export function TrackEditor(props: TrackEditorProps) {
                 row.paramType === "vec3" ||
                 row.paramType === "vec4";
               const badge = isVecBadge ? row.paramType : null;
-              const isScalarTrack = row.paramType === "scalar";
-              const graphOn = !!row.block.graphVisible;
               // This lane's anchor is selected on the Spline Draw canvas
               // — a marker so it's obvious which lane is which anchor.
               const anchorLit = isAnchorHighlighted(row.nodeId, row.paramName);
@@ -2389,34 +2748,6 @@ export function TrackEditor(props: TrackEditorProps) {
                     >
                       {badge}
                     </span>
-                  )}
-                  {isScalarTrack && (
-                    <button
-                      type="button"
-                      title={
-                        graphOn
-                          ? "Hide curve in Graph Editor"
-                          : "Show curve in Graph Editor"
-                      }
-                      onClick={() =>
-                        onAnimationChange(row.nodeId, row.paramName, {
-                          ...row.block,
-                          graphVisible: !graphOn,
-                        })
-                      }
-                      style={{
-                        background: graphOn ? COLOR_ACCENT : "transparent",
-                        color: graphOn ? "#fff" : COLOR_MUTED,
-                        border: `1px solid ${COLOR_BORDER}`,
-                        borderRadius: 2,
-                        cursor: "pointer",
-                        fontSize: 10,
-                        padding: "0 4px",
-                        lineHeight: "16px",
-                      }}
-                    >
-                      {"∿"}
-                    </button>
                   )}
                 </div>
               );
@@ -2528,9 +2859,9 @@ export function TrackEditor(props: TrackEditorProps) {
                     clipBar = windows.map((c, ci) => {
                       const leftPx = tickToPx(c.inTick);
                       const widthPx = Math.max(2, tickToPx(c.outTick) - leftPx);
-                      const isSelected =
-                        selectedClip?.nodeId === row.nodeId &&
-                        selectedClip.clipIndex === ci;
+                      const isSelected = selectedClips.some(
+                        (s) => s.nodeId === row.nodeId && s.clipIndex === ci
+                      );
                       const isHovered =
                         hoveredClip?.nodeId === row.nodeId &&
                         hoveredClip.clipIndex === ci;

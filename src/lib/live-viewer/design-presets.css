@@ -1,0 +1,28 @@
+/* Control-style preset packs for the live viewer / exported apps
+   (081426_live-link-designer.md). Imported by styles.css, so both
+   surfaces (and the designer's preview iframe) load it.
+
+   THE CONTRACT: every non-classic preset must FULLY re-specify its
+   control's chrome — track, thumb, appearance, borders, the lot —
+   scoped under the matching data attribute on .live-root:
+
+     .live-root[data-slider="<id>"]   input[type="range"]::…
+     .live-root[data-dropdown="<id>"] select, .select-input …
+     .live-root[data-numeric="<id>"]  input[type="number"]…
+
+   Never style a preset by patching individual properties on top of the
+   base chrome — a preset that half-inherits form-controls.css will
+   render differently wherever the base changes, which is exactly the
+   accuracy trap the design system exists to close. Color values come
+   from the design token sheet (var(--…), see design.ts designTokens),
+   never literals, so every preset works in both theme modes and under
+   tint.
+
+   A new pack = a registry entry in design.ts (SLIDER_PRESETS /
+   DROPDOWN_PRESETS / NUMERIC_PRESETS) + a rule block here.
+
+   "classic" (the default for all three classes) deliberately has NO
+   rules in this file: the base chrome — form-controls.css driven by the
+   pinned `--tb-*` tokens from the design sheet — IS the classic look,
+   and stating it once keeps it pixel-identical to the editor's
+   controls. */

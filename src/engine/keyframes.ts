@@ -70,9 +70,10 @@ export interface KeyframeAnimationBlock {
   // Mirrors the visibility eye — controls whether the param shows as a
   // track in the Track Editor. Independent of `animated`.
   trackVisible: boolean;
-  // Toggled by the per-row graph icon — controls whether this curve is
-  // drawn in the Graph Editor view. Defaults off; user opts in per
-  // track. Has no effect on evaluation.
+  // LEGACY — the old per-row ∿ toggle that opted a track into the Graph
+  // Editor. No longer read (the graph follows the keyframe selection in
+  // the Tracks/Layers editor); kept so old saves round-trip. Never
+  // affected evaluation.
   graphVisible?: boolean;
   keyframes: Keyframe[];
   // Color-only: interpolation color space. Default "oklab".
@@ -303,6 +304,50 @@ export const EASING_PRESET_LABELS: Record<EasingPreset, string> = {
   easeInOut: "Ease In-Out",
 };
 
+// A named easing curve the user saved from the Graph Editor, reusable
+// across the project (persists on SavedProject.savedEasings). Control
+// points are normalized to the segment, curve from (0,0) to (1,1): x is
+// a fraction of the segment's duration, y a fraction of its value delta
+// — CSS cubic-bezier semantics, except evaluation stays parametric in
+// time like customBezier (see interpolate()). Applying one to a segment
+// denormalizes back into tick/value-unit BezierHandles.
+export interface SavedEasing {
+  id: string;
+  name: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+// Validate a loaded `savedEasings` payload (untrusted: hand-edited
+// files, older/newer builds). Keeps well-formed entries, drops the rest.
+export function sanitizeSavedEasings(v: unknown): SavedEasing[] {
+  if (!Array.isArray(v)) return [];
+  const out: SavedEasing[] = [];
+  for (const e of v) {
+    if (e == null || typeof e !== "object") continue;
+    const { id, name, x1, y1, x2, y2 } = e as Record<string, unknown>;
+    if (typeof id !== "string" || typeof name !== "string") continue;
+    if (
+      ![x1, y1, x2, y2].every(
+        (n) => typeof n === "number" && Number.isFinite(n)
+      )
+    ) {
+      continue;
+    }
+    out.push({
+      id,
+      name,
+      x1: x1 as number,
+      y1: y1 as number,
+      x2: x2 as number,
+      y2: y2 as number,
+    });
+  }
+  return out;
+}
+
 // Sample an easing function (or `hold`) into an SVG polyline path
 // covering the box [0..w, 0..h]. Y is flipped so 0 = bottom, 1 = top.
 // Includes a small vertical pad so back/elastic overshoot stays visible.
@@ -527,6 +572,62 @@ function lerpSpline(
   };
 }
 
+// Default handle geometry for a customBezier segment a→b when a key
+// doesn't carry explicit handles: one third of the segment in x and y —
+// control points on the chord, i.e. a straight line. Shared by
+// evaluation and the Graph Editor's drawing/editing defaults so the
+// curve the plot shows is exactly the curve that plays.
+export function defaultSegmentHandles(
+  a: Keyframe,
+  b: Keyframe
+): {
+  right: { dx: number; dy: number };
+  left: { dx: number; dy: number };
+} {
+  const span = b.tick - a.tick;
+  const dv = (b.value as number) - (a.value as number);
+  return {
+    right: { dx: span * 0.33, dy: dv * 0.33 },
+    left: { dx: -span * 0.33, dy: -dv * 0.33 },
+  };
+}
+
+function clamp01(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+
+// Solve u ∈ [0,1] such that bezierX(u) = x for the 1D cubic with control
+// points 0, x1, x2, 1. Callers clamp x1/x2 into [0,1], which makes the
+// curve monotonic non-decreasing (CSS cubic-bezier semantics), so a
+// solution exists and is unique. Newton from a good seed, bisection
+// fallback for flat spots.
+function solveBezierX(x1: number, x2: number, x: number): number {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  const bez = (u: number) =>
+    3 * (1 - u) * (1 - u) * u * x1 + 3 * (1 - u) * u * u * x2 + u * u * u;
+  const deriv = (u: number) =>
+    3 * (1 - u) * (1 - u) * x1 +
+    6 * (1 - u) * u * (x2 - x1) +
+    3 * u * u * (1 - x2);
+  let u = x;
+  for (let i = 0; i < 8; i++) {
+    const err = bez(u) - x;
+    if (Math.abs(err) < 1e-7) return u;
+    const d = deriv(u);
+    if (d < 1e-6) break;
+    u = clamp01(u - err / d);
+  }
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 32; i++) {
+    u = (lo + hi) / 2;
+    if (bez(u) < x) lo = u;
+    else hi = u;
+  }
+  return (lo + hi) / 2;
+}
+
 function interpolate(
   paramType: ParamType,
   prev: Keyframe,
@@ -543,19 +644,25 @@ function interpolate(
 
   let t: number;
   if (prev.easingOut === "customBezier" && paramType === "scalar") {
-    // Custom bezier on scalars: build a 1D cubic from prev.value (y0) to
-    // next.value (y3) using prev.rightHandle.dy and next.leftHandle.dy as
-    // the control-point y offsets. Time is parametric: assume the handles'
-    // dx components are small enough that we can treat u≈rawT (approx —
-    // exact x→t solve is a future-tightening). Keeps the data contract
-    // honest: handles store dy in value units.
-    const right = prev.bezierHandles?.rightHandle?.dy ?? 0;
-    const left = next.bezierHandles?.leftHandle?.dy ?? 0;
+    // Custom bezier on scalars: the full 2D cubic the Graph Editor
+    // draws. x comes from the handles' dx (as a fraction of the
+    // segment's duration, clamped into [0,1] so time stays monotonic),
+    // y from their dy (value units). Solve x(u) = rawT for u, then
+    // evaluate y(u). Handles a key doesn't carry fall back to the same
+    // chord-third defaults the plot draws with — previously time was
+    // parametric (u ≈ rawT) and missing dys read as 0, so horizontal
+    // handle edits silently didn't play back.
+    const span = next.tick - prev.tick;
+    const defaults = defaultSegmentHandles(prev, next);
+    const right = prev.bezierHandles?.rightHandle ?? defaults.right;
+    const left = next.bezierHandles?.leftHandle ?? defaults.left;
+    const x1 = clamp01(span > 0 ? right.dx / span : 0);
+    const x2 = clamp01(span > 0 ? 1 + left.dx / span : 1);
+    const u = solveBezierX(x1, x2, rawT);
     const y0 = prev.value as number;
     const y3 = next.value as number;
-    const y1 = y0 + right;
-    const y2 = y3 + left;
-    const u = rawT;
+    const y1 = y0 + right.dy;
+    const y2 = y3 + left.dy;
     const omu = 1 - u;
     return (
       omu * omu * omu * y0 +

@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -9,7 +10,12 @@ import {
 } from "react";
 import { allNodeDefs } from "@/engine/registry";
 import { PRESETS } from "@/state/presets";
+import {
+  removeUserNodePreset,
+  useUserNodePresets,
+} from "@/state/node-presets";
 import { fuzzyScoreFields } from "@/lib/fuzzy-search";
+import { isAgentAvailable } from "@/lib/agent-bridge";
 import type { NodeCategory, NodeSubcategory } from "@/engine/types";
 
 // Display order + labels mirror NodeBrowserDropdown so the two add-
@@ -106,9 +112,68 @@ export default function NodeSearchPopup({
   atRoot,
 }: Props) {
   const [query, setQuery] = useState(initialQuery);
+  const userPresets = useUserNodePresets();
   const [hoveredCategory, setHoveredCategory] = useState<string | null>(null);
   const [activeMatchIdx, setActiveMatchIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Screen placement. (x, y) is only the anchor — the popup may open
+  // up/left from it instead of down/right when the cursor sits near a
+  // viewport edge, and is always clamped fully on-screen. Measured
+  // against the popup's own window so popped-out panels clamp to their
+  // own bounds, and re-run via ResizeObserver because the popup changes
+  // size as the query / hovered category changes.
+  //
+  // The flip decision is locked on the first measurement: once open the
+  // popup grows/shrinks in place (the clamp still slides it as needed)
+  // instead of jumping between above/below the cursor while typing.
+  const [pos, setPos] = useState<{ left: number; top: number }>({
+    left: x,
+    top: y,
+  });
+  const flipRef = useRef<{ left: boolean; up: boolean } | null>(null);
+  useLayoutEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    flipRef.current = null;
+    const place = () => {
+      const win = el.ownerDocument.defaultView ?? window;
+      const vw = win.innerWidth;
+      const vh = win.innerHeight;
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      const MARGIN = 8;
+      const flip = (flipRef.current ??= {
+        left: x + w + MARGIN > vw,
+        up: y + h + MARGIN > vh,
+      });
+      // Flipped, the popup's far edge lands just shy of the anchor so
+      // the cursor stays outside it — mirroring the parent's +4 nudge.
+      let left = flip.left ? x - w - 8 : x;
+      let top = flip.up ? y - h - 8 : y;
+      left = Math.max(MARGIN, Math.min(left, vw - w - MARGIN));
+      top = Math.max(MARGIN, Math.min(top, vh - h - MARGIN));
+      setPos({ left, top });
+    };
+    place();
+    const ro = new ResizeObserver(place);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [x, y]);
+
+  // Saved user presets join the same "presets" pseudo-category; onAdd
+  // routes "user-preset:<id>" specially (081226_user-node-presets.md).
+  const userPresetRows = useMemo(
+    () =>
+      userPresets.map((p) => ({
+        type: `user-preset:${p.id}`,
+        name: p.name,
+        category: "presets",
+        description: "Saved node preset — inserts the node exactly as saved.",
+      })),
+    [userPresets]
+  );
 
   const defs = useMemo(() => {
     // Pull every registered node definition AND append compound entries —
@@ -130,6 +195,22 @@ export default function NodeSearchPopup({
       category: "presets",
       description: "Describe a node group in words and generate it with AI.",
     } as unknown as (typeof real)[number];
+    // Assistant: the same pseudo-entry trick. onAdd routes "agent" to the
+    // in-app agent session, which builds and iterates on graphs by looking
+    // at what it made (spec 080826_claude-agent-panel.md).
+    //
+    // Omitted where it can't run (hosted web): it needs an agent host on the
+    // user's own machine. AI Recipe above is unaffected — different feature,
+    // different billing, works everywhere.
+    const assistant = isAgentAvailable()
+      ? ({
+          type: "agent",
+          name: "Assistant…",
+          category: "presets",
+          description:
+            "Describe what you want and have Claude build it, look at the result, and refine.",
+        } as unknown as (typeof real)[number])
+      : null;
     // Strict root: layers (the compositing chain) and Render Queue live
     // at root scope.
     if (atRoot) {
@@ -149,7 +230,9 @@ export default function NodeSearchPopup({
             "Collects Output nodes into an ordered batch render.",
         } as unknown as (typeof real)[number],
         aiRecipe,
+        ...(assistant ? [assistant] : []),
         ...(presetDefs() as unknown as (typeof real)[number][]),
+        ...(userPresetRows as unknown as (typeof real)[number][]),
       ];
     }
     return [
@@ -170,9 +253,11 @@ export default function NodeSearchPopup({
           "A zone that evaluates the nodes inside it K times, collecting the results as variants (an image group or grouped spline/points). Wire its index / t / random into exposed params to vary each iteration.",
       } as unknown as (typeof real)[number],
       aiRecipe,
+      ...(assistant ? [assistant] : []),
       ...(presetDefs() as unknown as (typeof real)[number][]),
+      ...(userPresetRows as unknown as (typeof real)[number][]),
     ];
-  }, [atRoot]);
+  }, [atRoot, userPresetRows]);
   const byCategory = useMemo(() => {
     const m: Record<string, typeof defs> = {};
     for (const d of defs) (m[d.category] ??= []).push(d);
@@ -192,8 +277,8 @@ export default function NodeSearchPopup({
   const normalized = query.trim().toLowerCase();
   const flatMatches = useMemo(() => {
     if (!normalized) return [];
-    // Fuzzy match against name/type/category, best score first — typos
-    // ("guassian"), abbreviations ("rastspline"), and split tokens
+    // Fuzzy match against name/type/aliases/category, best score first —
+    // typos ("guassian"), abbreviations ("rastspline"), and split tokens
     // ("part sim") all land. Category hits weigh least so typing a
     // category name lists its nodes after any name/type matches.
     const scored: { def: (typeof defs)[number]; score: number }[] = [];
@@ -201,6 +286,7 @@ export default function NodeSearchPopup({
       const score = fuzzyScoreFields(normalized, [
         { text: d.name, weight: 1 },
         { text: d.type, weight: 0.9 },
+        ...(d.searchAliases ?? []).map((text) => ({ text, weight: 0.9 })),
         { text: d.category, weight: 0.5 },
       ]);
       if (score !== null) scored.push({ def: d, score });
@@ -278,14 +364,15 @@ export default function NodeSearchPopup({
 
   return (
     <div
+      ref={rootRef}
       data-node-search-popup
       // mousedown inside the popup must not propagate out, or the
       // global dismiss-on-click-outside handler would also fire.
       onMouseDown={(e) => e.stopPropagation()}
       style={{
         position: "fixed",
-        left: x,
-        top: y,
+        left: pos.left,
+        top: pos.top,
         display: "flex",
         gap: 0,
         background: "var(--tb-n-0)",
@@ -396,6 +483,9 @@ export default function NodeSearchPopup({
           ) => {
             const highlight =
               !!normalized && flatIdx !== null && flatIdx === activeMatchIdx;
+            const userPresetId = def.type.startsWith("user-preset:")
+              ? def.type.slice("user-preset:".length)
+              : null;
             return (
               <button
                 key={def.type}
@@ -432,11 +522,41 @@ export default function NodeSearchPopup({
                 }}
               >
                 <span>{def.name}</span>
-                {normalized && (
-                  <span style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
-                    {labelFor(def.category)}
-                  </span>
-                )}
+                <span
+                  style={{ display: "flex", alignItems: "center", gap: 6 }}
+                >
+                  {normalized && (
+                    <span style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
+                      {labelFor(def.category)}
+                    </span>
+                  )}
+                  {userPresetId && (
+                    <span
+                      title="Delete preset"
+                      onClick={(e) => {
+                        // Row button's onClick would insert the preset.
+                        e.stopPropagation();
+                        removeUserNodePreset(userPresetId);
+                      }}
+                      onMouseEnter={(e) => {
+                        (e.currentTarget as HTMLSpanElement).style.color =
+                          "var(--tb-a-red-500)";
+                      }}
+                      onMouseLeave={(e) => {
+                        (e.currentTarget as HTMLSpanElement).style.color =
+                          "var(--tb-n-10)";
+                      }}
+                      style={{
+                        color: "var(--tb-n-10)",
+                        fontSize: 11,
+                        lineHeight: 1,
+                        padding: "0 2px",
+                      }}
+                    >
+                      ×
+                    </span>
+                  )}
+                </span>
               </button>
             );
           };

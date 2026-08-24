@@ -8,7 +8,7 @@ import type {
   VideoFileParamValue,
 } from "@/engine/types";
 import { DEFAULT_BRUSH_SETTINGS } from "@/engine/types";
-import type { AnimationMap } from "@/engine/keyframes";
+import type { AnimationMap, SavedEasing } from "@/engine/keyframes";
 import type { ClipBlock } from "@/engine/clips";
 import { getNodeDef } from "@/engine/registry";
 import { withMaskInput } from "@/engine/conventions";
@@ -18,6 +18,11 @@ import {
   type MediaEnvelope,
   type MissingMedia,
 } from "@/lib/media-relink";
+import { cloudMediaUrl, type CloudMediaRef } from "@/lib/cloud-media";
+import {
+  getCloudMediaRef,
+  seedCloudMediaRef,
+} from "@/lib/cloud-media-upload";
 import { getImageOriginal, registerImageOriginal } from "@/lib/image-bytes";
 import {
   bitmapToPngDataUrl,
@@ -100,7 +105,17 @@ import { FRAME_XY_PROPS, newCompositionId } from "@/state/graph";
 // a ≤v9 save halves the stored params, any keyframed values, and any custom
 // slider range on those params (see deserializeGraph). Lissajous 2D keeps its
 // × π phases and is untouched.
-export const CURRENT_SCHEMA = 10;
+//
+// v11 — cloud media refs: video_file / audio_file / model_file envelopes
+// MAY carry `cloud: { hash, ext, owner }`, a content-addressed object in
+// the public R2 media bucket (uploaded at pick time by entitled users —
+// lib/cloud-media-upload.ts). Load streams from the cloud URL instead of
+// relinking; absent/unreachable refs fall back to the relink flow
+// unchanged, so ≤v10 saves load identically. Bumped (not just additive)
+// because an older build's re-save drops the `cloud` field — recoverable
+// (object + ledger survive) but silently back to relink. See
+// specdocs/081626_r2-media-storage.md §7.1.
+export const CURRENT_SCHEMA = 11;
 
 // Thrown when a project was saved by a NEWER client than this one. Without
 // this guard the load silently drops fields the older client doesn't know,
@@ -245,6 +260,23 @@ export interface SavedProject {
   // it on resave, losing only the layout. Live viewer / exported apps
   // never read it.
   layout?: unknown;
+  // User-named easing curves (Graph Editor "Save" button), reusable
+  // across the whole project. ADDITIVE and attached by EffectsApp around
+  // serialize/deserialize like `layout` above — this module just carries
+  // it. Absent on older saves; older builds ignore it and drop it on
+  // resave, losing only the saved list. Live viewer / exported apps
+  // never read it (applied easings are baked into keyframe handles).
+  savedEasings?: SavedEasing[];
+  // Live-link look-and-feel (081426_live-link-designer.md). ADDITIVE and
+  // opaque here — lib/live-viewer/design.ts owns the shape
+  // (fromSavedLiveDesign validates untrusted blobs) and EffectsApp
+  // attaches/applies it around serialize/deserialize like `layout`
+  // above. UNLIKE layout, the live viewer / exported apps DO read it:
+  // LiveClient and runExportApp thread a validated copy onto
+  // ExportManifest.design. Absent on older saves (= default design);
+  // older builds ignore it and drop it on resave, losing only the
+  // design.
+  liveDesign?: unknown;
 }
 
 // --- image helpers -------------------------------------------------------
@@ -440,6 +472,10 @@ async function serializeParams(
       const marker = params[`${key}${MISSING_MEDIA_SUFFIX}`] as
         | MediaEnvelope
         | undefined;
+      // v11: attach the cloud ref when this clip is in the session
+      // registry (uploaded at pick time, or seeded by a prior load) — the
+      // envelope then loads by streaming instead of relinking. An upload
+      // still in flight simply misses the lookup; the next save catches it.
       out[key] = v?.video
         ? ({
             kind: "video_file",
@@ -448,17 +484,25 @@ async function serializeParams(
             duration: v.duration,
             width: v.width,
             height: v.height,
+            cloud: getCloudMediaRef(v.filename, v.size) ?? undefined,
           } satisfies MediaEnvelope)
         : marker ?? null;
     } else if (p.type === "model_file") {
       // The live ObjectURL can't round-trip; persist a lightweight envelope
       // (filename/size/format) so the panel can show the name and the user
-      // re-picks on load. No relink yet.
+      // re-picks on load. With a v11 cloud ref the load rebuilds the value
+      // from the cloud URL instead (no re-pick).
       const m = val as
         | import("@/engine/types").ModelFileParamValue
         | null;
       out[key] = m?.url
-        ? { kind: "model_file", filename: m.filename, size: m.size, format: m.format }
+        ? {
+            kind: "model_file",
+            filename: m.filename,
+            size: m.size,
+            format: m.format,
+            cloud: getCloudMediaRef(m.filename, m.size) ?? undefined,
+          }
         : null;
     } else if (p.type === "audio_file") {
       // Same envelope treatment as video_file.
@@ -472,6 +516,7 @@ async function serializeParams(
             filename: a.filename ?? "audio",
             size: a.size,
             duration: a.duration,
+            cloud: getCloudMediaRef(a.filename, a.size) ?? undefined,
           } satisfies MediaEnvelope)
         : marker ?? null;
     } else if (p.type === "image_sequence") {
@@ -643,25 +688,76 @@ async function deserializeParams(
       out[key] = null;
     } else if (p.type === "video_file" || p.type === "audio_file") {
       // Saved value is an identity envelope (or null from older saves /
-      // empty params). Try the silent relink path first: a stored file
-      // handle whose permission grant persisted reads the file with zero
-      // clicks. Otherwise park the envelope under a marker key — the
-      // relink banner picks it up, and re-saving keeps the reference.
+      // empty params). Resolution order (v11):
+      //   1. cloud ref → stream from the R2 URL (works on any machine, no
+      //      gesture, no entitlement — reads are public);
+      //   2. silent relink — a stored file handle whose permission grant
+      //      persisted reads the local file with zero clicks;
+      //   3. park the envelope under the marker key — the relink banner
+      //      picks it up, and re-saving keeps the reference (cloud ref
+      //      included, so a failed stream can retry on the next load).
       out[key] = null;
       const env = val as MediaEnvelope | null;
       if (env?.kind === p.type && env.filename) {
-        const file = await readStoredMediaFile(env, { allowPrompt: false });
-        if (file) {
+        if (env.cloud) {
+          // Seed the session registry FIRST: even if the stream fails, a
+          // re-save must keep emitting the ref rather than re-uploading.
+          seedCloudMediaRef(env.filename, env.size, env.cloud);
           try {
+            const url = cloudMediaUrl(env.cloud);
             out[key] =
               p.type === "video_file"
-                ? await (await import("@/lib/video")).registerVideoFile(file)
-                : await (await import("@/lib/audio")).registerAudioFile(file);
-          } catch {
-            // Corrupt / unreadable file — fall through to the marker.
+                ? await (
+                    await import("@/lib/video")
+                  ).registerVideoUrl(url, env)
+                : await (
+                    await import("@/lib/audio")
+                  ).registerAudioUrl(url, env);
+          } catch (e) {
+            // Offline / object deleted — fall through to relink.
+            console.warn(`[load] cloud media unreachable for ${env.filename}`, e);
+          }
+        }
+        if (!out[key]) {
+          const file = await readStoredMediaFile(env, { allowPrompt: false });
+          if (file) {
+            try {
+              out[key] =
+                p.type === "video_file"
+                  ? await (await import("@/lib/video")).registerVideoFile(file)
+                  : await (await import("@/lib/audio")).registerAudioFile(file);
+            } catch {
+              // Corrupt / unreadable file — fall through to the marker.
+            }
           }
         }
         if (!out[key]) out[`${key}${MISSING_MEDIA_SUFFIX}`] = env;
+      }
+    } else if (p.type === "model_file") {
+      // ≤v10 the envelope passes through as the (url-less) runtime value —
+      // the pill shows "re-pick" and the model is session-lost. A v11
+      // cloud ref rebuilds a loadable value instead: loadGeometry / the
+      // model cache fetch any URL, so the https URL slots straight in.
+      const env = val as
+        | {
+            kind?: string;
+            filename?: string;
+            size?: number;
+            format?: string;
+            cloud?: CloudMediaRef;
+            url?: string;
+          }
+        | null;
+      if (env?.cloud && env.filename && env.format) {
+        seedCloudMediaRef(env.filename, env.size, env.cloud);
+        out[key] = {
+          url: cloudMediaUrl(env.cloud),
+          filename: env.filename,
+          size: env.size,
+          format: env.format as "glb" | "gltf" | "obj" | "stl",
+        } satisfies import("@/engine/types").ModelFileParamValue;
+      } else {
+        out[key] = val;
       }
     } else {
       out[key] = val;
@@ -898,7 +994,11 @@ export async function serializeGraph(
 // look without a version gate. Mutates `params` in place.
 function migrateLoadedParams(
   defType: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  // Target fps of the node's composition — converts the old seconds-based
+  // ping-pong `rate` into `period_frames`. Fragments (clipboard / node
+  // presets) carry no scene, so those fall back to the 60 fps default.
+  fps: number
 ): void {
   if (defType === "gradient" && params.start_x === undefined) {
     // Linear gradient gained start/end handle endpoints (replacing the
@@ -926,32 +1026,46 @@ function migrateLoadedParams(
     // default, so old projects get the corrected edges.
     params.linearize = false;
   }
-  if (defType === "scene-time" && params.rate === undefined) {
-    // Ping-pong speed switched from `period` (half-cycle, i.e. min→max time, in
-    // the selected unit) to `rate` (full min→max→min cycles per unit). A full
-    // cycle is 2·period, so rate = 1 / (2·period). Applies regardless of mode
-    // (period was only used by ping-pong; harmless otherwise).
-    const period = typeof params.period === "number" ? params.period : 2;
-    params.rate = period > 0 ? 1 / (2 * period) : 0.25;
-    delete params.period;
-    if (params.mode === "pingpong") {
-      // Ping-pong no longer applies the global scale/offset; `amplitude` (a
-      // swing multiplier around the range centre) replaces the old `scale`.
-      // Old output was `(lo + t·span)·scale + offset` — a linear remap of the
-      // ramp — so fold scale/offset into min/max to preserve it exactly, set
-      // amplitude 1, and neutralize scale/offset (so switching to a scale-using
-      // mode later starts clean). Correct for any easing: the fold is a linear
-      // remap of the (possibly eased) ramp, which easing doesn't disturb.
-      const scale = typeof params.scale === "number" ? params.scale : 1;
-      const offset = typeof params.offset === "number" ? params.offset : 0;
-      const lo = typeof params.min === "number" ? params.min : 0;
-      const hi = typeof params.max === "number" ? params.max : 1;
-      params.min = lo * scale + offset;
-      params.max = hi * scale + offset;
-      params.amplitude = 1;
-      params.scale = 1;
-      params.offset = 0;
+  if (defType === "scene-time" && params.period_frames === undefined) {
+    if (params.rate === undefined) {
+      // Ping-pong speed switched from `period` (half-cycle, i.e. min→max time,
+      // in the selected unit) to `rate` (full min→max→min cycles per unit). A
+      // full cycle is 2·period, so rate = 1 / (2·period). Applies regardless of
+      // mode (period was only used by ping-pong; harmless otherwise).
+      const period = typeof params.period === "number" ? params.period : 2;
+      params.rate = period > 0 ? 1 / (2 * period) : 0.25;
+      delete params.period;
+      if (params.mode === "pingpong") {
+        // Ping-pong no longer applies the global scale/offset; `amplitude` (a
+        // swing multiplier around the range centre) replaces the old `scale`.
+        // Old output was `(lo + t·span)·scale + offset` — a linear remap of the
+        // ramp — so fold scale/offset into min/max to preserve it exactly, set
+        // amplitude 1, and neutralize scale/offset (so switching to a scale-using
+        // mode later starts clean). Correct for any easing: the fold is a linear
+        // remap of the (possibly eased) ramp, which easing doesn't disturb.
+        const scale = typeof params.scale === "number" ? params.scale : 1;
+        const offset = typeof params.offset === "number" ? params.offset : 0;
+        const lo = typeof params.min === "number" ? params.min : 0;
+        const hi = typeof params.max === "number" ? params.max : 1;
+        params.min = lo * scale + offset;
+        params.max = hi * scale + offset;
+        params.amplitude = 1;
+        params.scale = 1;
+        params.offset = 0;
+      }
     }
+    // Ping-pong speed then moved from `rate` (cycles per `unit`) to
+    // `period_frames` (frames per full cycle, unit-independent). Same speed:
+    // a cycle is 1/rate seconds (fps/rate frames) in seconds mode, 1/rate
+    // frames in frames mode. Clamped ≥1 so a degenerate stored rate can't
+    // produce a zero-length cycle.
+    const rate =
+      typeof params.rate === "number" && params.rate > 0 ? params.rate : 0.5;
+    params.period_frames = Math.max(
+      1,
+      params.unit === "frames" ? 1 / rate : fps / rate
+    );
+    delete params.rate;
   }
   if (defType === "fracture") {
     // Fracture merged into Voronoi as its "scatter" source
@@ -1060,7 +1174,10 @@ export async function deserializeGraph(
           }
         : undefined
     );
-    migrateLoadedParams(sn.defType, params);
+    const nodeScene =
+      compositions.find((c) => c.id === (sn.compositionId ?? activeCompositionId))
+        ?.scene ?? activeScene;
+    migrateLoadedParams(sn.defType, params, nodeScene?.fps ?? 60);
     for (const [k, v] of Object.entries(params)) {
       if (k.endsWith(MISSING_MEDIA_SUFFIX) && v) {
         missingMedia.push({

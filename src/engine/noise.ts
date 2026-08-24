@@ -296,3 +296,264 @@ export function noiseFnFor(type: string): NoiseFn {
       return snoise;
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// 3D noise — the `noise_field` value's CPU evaluators (081026 spec M6.5)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// True 3D lattice/gradient noise for world-space consumers (Instance
+// Transform's noise weight; Displace later). These are NOT bit-mirrors of
+// the 2D GLSL — nothing overlays a shader render (the voronoi pcg3d rule
+// doesn't apply), they just need to be deterministic, seeded, and in the
+// same visual family. All return roughly [-1, 1].
+
+// Deterministic integer-lattice hash → [0, 1). Same sin-fract recipe as
+// the 2D hashes above.
+function hash13(ix: number, iy: number, iz: number): number {
+  const n = Math.sin(ix * 12.9898 + iy * 78.233 + iz * 37.719) * 43758.5453;
+  return n - Math.floor(n);
+}
+
+const GRAD3: [number, number, number][] = [
+  [1, 1, 0], [-1, 1, 0], [1, -1, 0], [-1, -1, 0],
+  [1, 0, 1], [-1, 0, 1], [1, 0, -1], [-1, 0, -1],
+  [0, 1, 1], [0, -1, 1], [0, 1, -1], [0, -1, -1],
+];
+
+function grad3Dot(
+  ix: number,
+  iy: number,
+  iz: number,
+  dx: number,
+  dy: number,
+  dz: number
+): number {
+  const g = GRAD3[(hash13(ix, iy, iz) * 12) | 0];
+  return g[0] * dx + g[1] * dy + g[2] * dz;
+}
+
+// Classic (improved) Perlin, quintic fade — 3D analog of cnoise.
+export function cnoise3(x: number, y: number, z: number): number {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const iz = Math.floor(z);
+  const fx = x - ix;
+  const fy = y - iy;
+  const fz = z - iz;
+  const u = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
+  const v = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+  const w = fz * fz * fz * (fz * (fz * 6 - 15) + 10);
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+  const n000 = grad3Dot(ix, iy, iz, fx, fy, fz);
+  const n100 = grad3Dot(ix + 1, iy, iz, fx - 1, fy, fz);
+  const n010 = grad3Dot(ix, iy + 1, iz, fx, fy - 1, fz);
+  const n110 = grad3Dot(ix + 1, iy + 1, iz, fx - 1, fy - 1, fz);
+  const n001 = grad3Dot(ix, iy, iz + 1, fx, fy, fz - 1);
+  const n101 = grad3Dot(ix + 1, iy, iz + 1, fx - 1, fy, fz - 1);
+  const n011 = grad3Dot(ix, iy + 1, iz + 1, fx, fy - 1, fz - 1);
+  const n111 = grad3Dot(ix + 1, iy + 1, iz + 1, fx - 1, fy - 1, fz - 1);
+  const nx00 = lerp(n000, n100, u);
+  const nx10 = lerp(n010, n110, u);
+  const nx01 = lerp(n001, n101, u);
+  const nx11 = lerp(n011, n111, u);
+  const nxy0 = lerp(nx00, nx10, v);
+  const nxy1 = lerp(nx01, nx11, v);
+  // Gradient dot ranges cover ~[-√2·0.75, +√2·0.75]; the classic ~0.9
+  // scale lands output in [-1, 1] territory.
+  return lerp(nxy0, nxy1, w) * 0.9;
+}
+
+// 3D simplex (Gustavson-style skew/unskew) — 3D analog of snoise.
+const F3 = 1 / 3;
+const G3 = 1 / 6;
+export function snoise3(x: number, y: number, z: number): number {
+  const s = (x + y + z) * F3;
+  const i = Math.floor(x + s);
+  const j = Math.floor(y + s);
+  const k = Math.floor(z + s);
+  const t = (i + j + k) * G3;
+  const x0 = x - (i - t);
+  const y0 = y - (j - t);
+  const z0 = z - (k - t);
+  // Rank the components to pick the simplex traversal order.
+  let i1: number, j1: number, k1: number, i2: number, j2: number, k2: number;
+  if (x0 >= y0) {
+    if (y0 >= z0) { i1 = 1; j1 = 0; k1 = 0; i2 = 1; j2 = 1; k2 = 0; }
+    else if (x0 >= z0) { i1 = 1; j1 = 0; k1 = 0; i2 = 1; j2 = 0; k2 = 1; }
+    else { i1 = 0; j1 = 0; k1 = 1; i2 = 1; j2 = 0; k2 = 1; }
+  } else {
+    if (y0 < z0) { i1 = 0; j1 = 0; k1 = 1; i2 = 0; j2 = 1; k2 = 1; }
+    else if (x0 < z0) { i1 = 0; j1 = 1; k1 = 0; i2 = 0; j2 = 1; k2 = 1; }
+    else { i1 = 0; j1 = 1; k1 = 0; i2 = 1; j2 = 1; k2 = 0; }
+  }
+  const x1 = x0 - i1 + G3;
+  const y1 = y0 - j1 + G3;
+  const z1 = z0 - k1 + G3;
+  const x2 = x0 - i2 + 2 * G3;
+  const y2 = y0 - j2 + 2 * G3;
+  const z2 = z0 - k2 + 2 * G3;
+  const x3 = x0 - 1 + 3 * G3;
+  const y3 = y0 - 1 + 3 * G3;
+  const z3 = z0 - 1 + 3 * G3;
+  let n = 0;
+  let tt = 0.6 - x0 * x0 - y0 * y0 - z0 * z0;
+  if (tt > 0) {
+    tt *= tt;
+    n += tt * tt * grad3Dot(i, j, k, x0, y0, z0);
+  }
+  tt = 0.6 - x1 * x1 - y1 * y1 - z1 * z1;
+  if (tt > 0) {
+    tt *= tt;
+    n += tt * tt * grad3Dot(i + i1, j + j1, k + k1, x1, y1, z1);
+  }
+  tt = 0.6 - x2 * x2 - y2 * y2 - z2 * z2;
+  if (tt > 0) {
+    tt *= tt;
+    n += tt * tt * grad3Dot(i + i2, j + j2, k + k2, x2, y2, z2);
+  }
+  tt = 0.6 - x3 * x3 - y3 * y3 - z3 * z3;
+  if (tt > 0) {
+    tt *= tt;
+    n += tt * tt * grad3Dot(i + 1, j + 1, k + 1, x3, y3, z3);
+  }
+  return 32 * n;
+}
+
+// Hashed-lattice value noise, trilinear with quintic fade — 3D vnoise.
+export function vnoise3(x: number, y: number, z: number): number {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const iz = Math.floor(z);
+  const fx = x - ix;
+  const fy = y - iy;
+  const fz = z - iz;
+  const u = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
+  const v = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+  const w = fz * fz * fz * (fz * (fz * 6 - 15) + 10);
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+  const n000 = hash13(ix, iy, iz);
+  const n100 = hash13(ix + 1, iy, iz);
+  const n010 = hash13(ix, iy + 1, iz);
+  const n110 = hash13(ix + 1, iy + 1, iz);
+  const n001 = hash13(ix, iy, iz + 1);
+  const n101 = hash13(ix + 1, iy, iz + 1);
+  const n011 = hash13(ix, iy + 1, iz + 1);
+  const n111 = hash13(ix + 1, iy + 1, iz + 1);
+  const nx00 = lerp(n000, n100, u);
+  const nx10 = lerp(n010, n110, u);
+  const nx01 = lerp(n001, n101, u);
+  const nx11 = lerp(n011, n111, u);
+  return lerp(lerp(nx00, nx10, v), lerp(nx01, nx11, v), w) * 2 - 1;
+}
+
+export type NoiseFn3 = (x: number, y: number, z: number) => number;
+
+export function noiseFn3For(type: string): NoiseFn3 {
+  switch (type) {
+    case "perlin":
+    case "perlin-deriv":
+      return cnoise3;
+    case "value":
+      return vnoise3;
+    // simplex + the OS family + flow/curl all read as simplex in 3D.
+    default:
+      return snoise3;
+  }
+}
+
+function fbm3At(
+  fn: NoiseFn3,
+  x: number,
+  y: number,
+  z: number,
+  octaves: number,
+  persistence: number,
+  lacunarity: number
+): number {
+  let total = 0;
+  let amp = 1;
+  let freq = 1;
+  let maxAmp = 0;
+  for (let i = 0; i < octaves; i++) {
+    total += fn(x * freq, y * freq, z * freq) * amp;
+    maxAmp += amp;
+    amp *= persistence;
+    freq *= lacunarity;
+  }
+  return total / Math.max(maxAmp, 1e-4);
+}
+
+// W-slice evolution for the 3D field — the same slice-blend mechanism the
+// 2D pipeline uses (w stays a SEPARATE evolution axis; z is spatial now).
+function hashOffset3(wi: number): [number, number, number] {
+  if (wi === 0) return [0, 0, 0];
+  const a = Math.sin(wi * 12.9898) * 43758.5453;
+  const b = Math.sin(wi * 78.233) * 43758.5453;
+  const c = Math.sin(wi * 37.719) * 43758.5453;
+  return [
+    (a - Math.floor(a)) * 1000,
+    (b - Math.floor(b)) * 1000,
+    (c - Math.floor(c)) * 1000,
+  ];
+}
+
+export function fbm3WithW(
+  fn: NoiseFn3,
+  x: number,
+  y: number,
+  z: number,
+  w: number,
+  octaves: number,
+  persistence: number,
+  lacunarity: number
+): number {
+  const wi = Math.floor(w);
+  let wf = w - wi;
+  wf = wf * wf * (3 - 2 * wf);
+  const [o0x, o0y, o0z] = hashOffset3(wi);
+  if (wf === 0) {
+    return fbm3At(fn, x + o0x, y + o0y, z + o0z, octaves, persistence, lacunarity);
+  }
+  const [o1x, o1y, o1z] = hashOffset3(wi + 1);
+  const a = fbm3At(fn, x + o0x, y + o0y, z + o0z, octaves, persistence, lacunarity);
+  const b = fbm3At(fn, x + o1x, y + o1y, z + o1z, octaves, persistence, lacunarity);
+  return a + (b - a) * wf;
+}
+
+// Evaluate a NoiseFieldValue at a WORLD-space point → [0, 1]. One world
+// unit spans `scale` noise units (isotropic — no canvas aspect here).
+// Seed offsets mirror the 2D pipeline's constants (+ a third axis);
+// contrast shapes around the midpoint like the image path.
+export function sampleNoiseField(
+  field: {
+    noiseType: string;
+    scale: number;
+    octaves: number;
+    persistence: number;
+    lacunarity: number;
+    offset: [number, number];
+    seed: number;
+    w: number;
+    contrast: number;
+  },
+  x: number,
+  y: number,
+  z: number
+): number {
+  const fn = noiseFn3For(field.noiseType);
+  const sx = x * field.scale + field.offset[0] + field.seed * 127.1;
+  const sy = y * field.scale + field.offset[1] + field.seed * 311.7;
+  const sz = z * field.scale + field.seed * 74.7;
+  const n = fbm3WithW(
+    fn,
+    sx,
+    sy,
+    sz,
+    field.w,
+    field.octaves,
+    field.persistence,
+    field.lacunarity
+  );
+  const v = 0.5 + n * 0.5 * field.contrast;
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}

@@ -10,6 +10,7 @@ import { uvCoordsNode } from "./source/uv-coords";
 import { textNode } from "./source/text";
 import { cursorNode } from "./source/cursor";
 import { cursorTrailPointsNode } from "./source/cursor-trail-points";
+import { pointerNode } from "./source/pointer";
 import { videoNode } from "./source/video";
 import { audioSourceNode } from "./source/audio";
 import { audioBandsNode } from "./audio/bands";
@@ -67,6 +68,29 @@ import { camera3DNode } from "./three/camera";
 import { import3DNode } from "./three/import-3d";
 import { sceneMergeNode } from "./three/scene-merge";
 import { sceneRenderNode } from "./three/scene-render";
+import { scatterPoints3DNode } from "./three/scatter-points-3d";
+import { copyToPoints3DNode } from "./three/copy-to-points-3d";
+import { extrudeFaces3DNode } from "./three/extrude-faces";
+import { material3DNode } from "./three/material";
+import { bump3DNode } from "./three/bump";
+import { textureProjection3DNode } from "./three/texture-projection";
+import { realizeInstances3DNode } from "./three/realize-instances";
+import { instanceColor3DNode } from "./three/instance-color";
+import { extrudeSpline3DNode } from "./three/extrude-spline";
+import { lathe3DNode } from "./three/lathe";
+import { transform3DNode } from "./three/transform-3d";
+import { array3DNode } from "./three/array-3d";
+import { instanceTransform3DNode } from "./three/instance-transform";
+import { alignToCamera3DNode } from "./three/align-to-camera";
+import { projectToScreen3DNode } from "./three/project-to-screen";
+import { bevel3DNode } from "./three/bevel";
+import { spline3DNode } from "./three/spline-3d";
+import { bezierPath3DNode } from "./three/bezier-path-3d";
+import {
+  rectCurve3DNode,
+  circleCurve3DNode,
+  polygonCurve3DNode,
+} from "./three/curve-primitives";
 import { autoLayoutNode } from "./effect/autolayout";
 import { sampleAlongPathNode } from "./effect/sample-along-path";
 import { resampleNode } from "./effect/resample";
@@ -131,6 +155,11 @@ import { matterSimulatorNode } from "./effect/matter-simulator";
 import { pointsToSurfaceNode } from "./effect/points-to-surface";
 import { diffusionCurvesNode } from "./effect/diffusion-curves";
 import { accumulatorNode } from "./effect/accumulator";
+import { triggerEnvelopeNode } from "./effect/trigger-envelope";
+import { sampleHoldNode } from "./effect/sample-hold";
+import { hitRegionNode } from "./effect/hit-region";
+import { dragPointsNode } from "./effect/drag-points";
+import { draggableNode } from "./effect/draggable";
 import { sharpenNode } from "./effect/sharpen";
 import { grainNode } from "./effect/grain";
 import { bgRemoveNode } from "./effect/bg-remove";
@@ -172,6 +201,7 @@ import { rgbCurvesNode } from "./effect/rgb-curves";
 import { lutNode } from "./effect/lut";
 import { colorSpaceTransformNode } from "./effect/color-space-transform";
 import { transformNode } from "./effect/transform";
+import { boundingBoxNode } from "./effect/bounding-box";
 import { mathNode } from "./effect/math";
 import { rerouteNode } from "./effect/reroute";
 import { frameZoneNode } from "./effect/frame-zone";
@@ -196,11 +226,20 @@ import { behavioralGrowthNode } from "./effect/behavioral-growth";
 import { jitterNode } from "./effect/jitter";
 import { thresholdNode } from "./effect/threshold";
 import { constantNode } from "./source/constant";
+import { animatedValueNode } from "./source/animated-value";
+import { timeOffsetNode } from "./effect/time-offset";
+import { timeOffsetFeedNode } from "./effect/time-offset-feed";
 import { lfoNode } from "./source/lfo";
 import { wedgeNode } from "./source/wedge";
 import { smoothNode } from "./effect/smooth";
 import { switchNode } from "./effect/switch";
 import { sampleTextureAtPointsNode } from "./effect/sample-texture-at-points";
+import { setNamedAttributeNode } from "./effect/set-named-attribute";
+import { attributeMathNode } from "./effect/attribute-math";
+import { attributeBlurNode } from "./effect/attribute-blur";
+import { attributeTransferNode } from "./effect/attribute-transfer";
+import { glslExpressionNode } from "./effect/glsl-expression";
+import { mapAttributeNode } from "./effect/map-attribute";
 import { filterPointsNode } from "./effect/filter-points";
 import { filterSplinesNode } from "./effect/filter-splines";
 import { lerpNode } from "./effect/lerp";
@@ -216,6 +255,7 @@ import { randomNode } from "./source/random";
 import { compareNode } from "./effect/compare";
 import { logicNode } from "./effect/logic";
 import { clampNode } from "./effect/clamp";
+import { floatCurveNode } from "./effect/float-curve";
 import { sdfCircleNode } from "./sdf/circle";
 import { sdfRectangleNode } from "./sdf/rectangle";
 import { sdfUnionNode } from "./sdf/union";
@@ -277,6 +317,7 @@ export function registerAllNodes() {
   registerNode(textNode);
   registerNode(cursorNode);
   registerNode(cursorTrailPointsNode);
+  registerNode(pointerNode);
   registerNode(videoNode);
   registerNode(cube3DTestNode);
   // 3D node family (M1) — convergent dataflow into Scene Render.
@@ -291,6 +332,36 @@ export function registerAllNodes() {
   registerNode(import3DNode);
   registerNode(sceneMergeNode);
   registerNode(sceneRenderNode);
+  // Wave 2 (081026_3d-geometry-points-materials.md M2–M4): 3D instancing,
+  // modeling, materials.
+  registerNode(scatterPoints3DNode);
+  registerNode(copyToPoints3DNode);
+  registerNode(extrudeFaces3DNode);
+  registerNode(material3DNode);
+  registerNode(bump3DNode);
+  registerNode(textureProjection3DNode);
+  // M4.5: the instance domain (spec §4.4).
+  registerNode(realizeInstances3DNode);
+  registerNode(instanceColor3DNode);
+  // M6 (Tier 1 brainstorm): spline bridges, transforms, arrays.
+  registerNode(extrudeSpline3DNode);
+  registerNode(lathe3DNode);
+  registerNode(transform3DNode);
+  registerNode(array3DNode);
+  registerNode(instanceTransform3DNode);
+  // M12: per-copy billboarding.
+  registerNode(alignToCamera3DNode);
+  // Tier 2 picks (2026-08-11): the 3D→2D points bridge.
+  registerNode(projectToScreen3DNode);
+  // M8: the bevel (finally).
+  registerNode(bevel3DNode);
+  // M10: viewport-authored 3D curves.
+  registerNode(spline3DNode);
+  registerNode(bezierPath3DNode);
+  // M11: parametric 3D curve primitives.
+  registerNode(rectCurve3DNode);
+  registerNode(circleCurve3DNode);
+  registerNode(polygonCurve3DNode);
   registerNode(audioSourceNode);
   registerNode(audioBandsNode);
   registerNode(audioPitchNode);
@@ -397,6 +468,11 @@ export function registerAllNodes() {
   registerNode(pointsToSurfaceNode);
   registerNode(diffusionCurvesNode);
   registerNode(accumulatorNode);
+  registerNode(triggerEnvelopeNode);
+  registerNode(sampleHoldNode);
+  registerNode(hitRegionNode);
+  registerNode(dragPointsNode);
+  registerNode(draggableNode);
   registerNode(sharpenNode);
   registerNode(grainNode);
   registerNode(bgRemoveNode);
@@ -453,6 +529,7 @@ export function registerAllNodes() {
   registerNode(lutNode);
   registerNode(colorSpaceTransformNode);
   registerNode(transformNode);
+  registerNode(boundingBoxNode);
   registerNode(mathNode);
   registerNode(rerouteNode);
   registerNode(frameZoneNode);
@@ -478,11 +555,20 @@ export function registerAllNodes() {
   registerNode(jitterNode);
   registerNode(thresholdNode);
   registerNode(constantNode);
+  registerNode(animatedValueNode);
+  registerNode(timeOffsetNode);
+  registerNode(timeOffsetFeedNode);
   registerNode(lfoNode);
   registerNode(wedgeNode);
   registerNode(smoothNode);
   registerNode(switchNode);
   registerNode(sampleTextureAtPointsNode);
+  registerNode(setNamedAttributeNode);
+  registerNode(attributeMathNode);
+  registerNode(attributeBlurNode);
+  registerNode(attributeTransferNode);
+  registerNode(glslExpressionNode);
+  registerNode(mapAttributeNode);
   registerNode(filterPointsNode);
   registerNode(filterSplinesNode);
   registerNode(lerpNode);
@@ -498,6 +584,7 @@ export function registerAllNodes() {
   registerNode(compareNode);
   registerNode(logicNode);
   registerNode(clampNode);
+  registerNode(floatCurveNode);
   registerNode(sdfCircleNode);
   registerNode(sdfRectangleNode);
   registerNode(sdfUnionNode);

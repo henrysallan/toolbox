@@ -279,6 +279,9 @@ export const videoNode: NodeDefinition = {
   backend: "webgl2",
   // Always re-evaluate — video frames change over time regardless of params.
   stable: false,
+  // One media element, one currentTime — cannot exist at two clocks in one
+  // eval. Time Offset boundary-feeds the outer frame through un-shifted.
+  retimeable: false,
   inputs: [{ name: "uv_in", label: "UV", type: "uv", required: false }],
   params: [
     OPACITY_PARAM,

@@ -60,6 +60,11 @@ export interface GifExportOptions {
   transparent: boolean;
   renderFrame: (frameIndex: number, timeSec: number) => void | Promise<void>;
   onProgress?: (label: string, fraction: number) => void;
+  // Optional cancel (live-viewer export, 081426_live-link-designer.md M3):
+  // checked between captured frames and before the encode. Aborting
+  // throws a DOMException("AbortError") — callers treat it as "user
+  // cancelled", not a failure.
+  signal?: AbortSignal;
 }
 
 // paletteuse dither token per UI choice. floyd_steinberg = error diffusion
@@ -127,6 +132,10 @@ export async function exportGif(
 
   const captureStart = performance.now();
   for (let i = 0; i < opts.durationFrames; i++) {
+    if (opts.signal?.aborted) {
+      await cleanupGifFs(ffmpeg);
+      throw new DOMException("GIF export cancelled", "AbortError");
+    }
     const t = i / opts.fps;
     await opts.renderFrame(i, t);
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -144,6 +153,11 @@ export async function exportGif(
         (done / opts.durationFrames) * CAPTURE_SHARE
       );
     }
+  }
+
+  if (opts.signal?.aborted) {
+    await cleanupGifFs(ffmpeg);
+    throw new DOMException("GIF export cancelled", "AbortError");
   }
 
   const filter = buildFilter(opts.colors, opts.dither, opts.transparent);

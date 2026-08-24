@@ -24,7 +24,7 @@
 
 import { emptyElement } from "./element";
 import { emptyTextInstance } from "./text-raster";
-import { pointsFromArray } from "./points";
+import { makePoints, pointsFromArray } from "./points";
 import type { NodeOutput, RenderContext, SocketType } from "./types";
 
 export interface ClipBlock {
@@ -176,6 +176,10 @@ export function emptyClipOutput(
       return { primary: { kind: "notes", notes: [] } };
     case "points":
       return { primary: pointsFromArray([]) };
+    case "points3d":
+      // Empty but still 3D-typed (z array present ⇒ is3DPoints holds),
+      // so downstream 3D consumers see a consistent shape off-clip.
+      return { primary: makePoints(0, { withZ: true }) };
     case "image_group":
       return { primary: { kind: "image_group", items: [] } };
     case "list":

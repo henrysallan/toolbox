@@ -7,12 +7,27 @@
 // only transport, pairing, and dispatch.
 //
 // Protocol frames:
-//   server → page: {type:"hello", code, serverVersion}
+//   server → page: {type:"hello", code, serverVersion, client?}
+//                  {type:"client_info", client}  (identity resolved post-hello)
 //                  {type:"cmd", id, cmd, args} · {type:"replaced"}
 //   page → server: {type:"pair", ok:true, code, appVersion}  (code echoes hello)
 //                  {type:"result", id, ok, result?, error?}
 
 export const MCP_BRIDGE_URL = "ws://127.0.0.1:38275";
+
+// Who is on the other end of the MCP stdio channel — which of the (often
+// many) running Claude instances owns this bridge. `app`/`appVersion` come
+// from the MCP initialize handshake (e.g. "claude-code"); `host` classifies
+// the process that spawned the server (VS Code / Claude Desktop / a terminal
+// binary); `pid` is that process; `cwd` is the checkout the server runs in.
+// Every field is best-effort null.
+export interface BridgeClientInfo {
+  app: string | null;
+  appVersion: string | null;
+  host: string | null;
+  pid: number | null;
+  cwd: string | null;
+}
 
 // A command handler returns the JSON-serializable result (or a promise of
 // one). Throwing (or rejecting) turns into an {ok:false, error} frame the
@@ -25,7 +40,14 @@ export type BridgeStatus =
   | { state: "connecting" }
   // Waiting on the user to confirm the 4-digit code matches the server's.
   | { state: "pairing"; code: string }
-  | { state: "connected"; code: string; serverVersion: string };
+  | {
+      state: "connected";
+      code: string;
+      serverVersion: string;
+      // Identity of the Claude client behind the server (menu tooltip);
+      // null when the server predates the identity frames.
+      client: BridgeClientInfo | null;
+    };
 
 export interface BridgeClient {
   // Confirm the pairing code currently shown (no-op unless pairing).
@@ -57,7 +79,12 @@ export function connectBridge(opts: BridgeOptions): BridgeClient {
   let closed = false;
   let retryMs = RETRY_BASE_MS;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
-  let hello: { code: string; serverVersion: string } | null = null;
+  let hello: {
+    code: string;
+    serverVersion: string;
+    client: BridgeClientInfo | null;
+  } | null = null;
+  let paired = false;
 
   const status = (s: BridgeStatus) => {
     if (!closed) opts.onStatus(s);
@@ -75,7 +102,13 @@ export function connectBridge(opts: BridgeOptions): BridgeClient {
       })
     );
     opts.onCodeTrusted?.(hello.code);
-    status({ state: "connected", code: hello.code, serverVersion: hello.serverVersion });
+    paired = true;
+    status({
+      state: "connected",
+      code: hello.code,
+      serverVersion: hello.serverVersion,
+      client: hello.client,
+    });
   };
 
   const runCommand = async (id: number, cmd: string, args: Record<string, unknown>) => {
@@ -103,6 +136,7 @@ export function connectBridge(opts: BridgeOptions): BridgeClient {
     if (closed) return;
     status({ state: "connecting" });
     hello = null;
+    paired = false;
     ws = new WebSocket(url);
 
     ws.onopen = () => {
@@ -117,6 +151,7 @@ export function connectBridge(opts: BridgeOptions): BridgeClient {
         args?: Record<string, unknown>;
         code?: string;
         serverVersion?: string;
+        client?: BridgeClientInfo;
       };
       try {
         msg = JSON.parse(String(ev.data));
@@ -124,9 +159,27 @@ export function connectBridge(opts: BridgeOptions): BridgeClient {
         return;
       }
       if (msg.type === "hello" && msg.code) {
-        hello = { code: msg.code, serverVersion: msg.serverVersion ?? "?" };
+        hello = {
+          code: msg.code,
+          serverVersion: msg.serverVersion ?? "?",
+          client: msg.client ?? null,
+        };
         if (opts.isCodeTrusted?.(msg.code)) pair();
         else status({ state: "pairing", code: msg.code });
+        return;
+      }
+      if (msg.type === "client_info" && hello) {
+        // The server resolved its client's identity after the hello (the MCP
+        // initialize handshake races the tab connecting) — refresh the status.
+        hello.client = msg.client ?? hello.client;
+        if (paired) {
+          status({
+            state: "connected",
+            code: hello.code,
+            serverVersion: hello.serverVersion,
+            client: hello.client,
+          });
+        }
         return;
       }
       if (msg.type === "cmd" && typeof msg.id === "number" && msg.cmd) {
@@ -144,6 +197,7 @@ export function connectBridge(opts: BridgeOptions): BridgeClient {
     ws.onclose = () => {
       ws = null;
       hello = null;
+      paired = false;
       if (closed) return;
       // Server not up (or dropped) — keep retrying until the user toggles off.
       status({ state: "connecting" });

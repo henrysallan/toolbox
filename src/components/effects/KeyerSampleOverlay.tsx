@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { KEYER_MAX_SAMPLES } from "@/nodes/effect/keyer";
 import { rectsEqual } from "./overlay-rect";
+import { claimPointerGesture } from "@/lib/pointer-claim";
 
 // Draw-to-sample overlay for the Keyer node's `sample` mode. Mounted while
 // a Keyer in sample mode is selected (same gating as SegmentDotsOverlay).
@@ -183,6 +184,8 @@ export default function KeyerSampleOverlay({
         if (e.button !== 0) return;
         const px = getSourcePixels();
         if (!px) return; // nothing wired upstream yet
+        // Sampling stroke — keep it out of the graph's cursor press facts.
+        claimPointerGesture(e.pointerId);
         const seed = colors.filter((c) => typeof c === "string");
         strokeRef.current = {
           px,

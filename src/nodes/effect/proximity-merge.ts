@@ -2,13 +2,21 @@ import type {
   InputSocketDef,
   NodeDefinition,
   Point,
+  PointAttribute,
   PointsValue,
   SocketType,
   SplineAnchor,
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
-import { ensurePointArray, pointsFromArray } from "@/engine/points";
+import {
+  concatPoints,
+  copyPointsWith,
+  EMPTY_POINTS,
+  ensurePointArray,
+  gatherPoints,
+  pointsFromArray,
+} from "@/engine/points";
 
 // Proximity Join/Merge — combine multiple splines (or point sets) and
 // weld the parts that fall within a UV-space distance threshold. Two
@@ -160,12 +168,16 @@ export const proximityMergeNode: NodeDefinition = {
 
     if (mode === "points") {
       const dedupe = !!params.dedupe && commit;
-      const all: Point[] = [];
+      // SoA concat (channel-presence union) instead of a Point[] splat, so
+      // z/normals/attributes survive into the merge.
+      const sources: PointsValue[] = [];
       for (const name of slots) {
         const v = inputs[name];
-        if (v && v.kind === "points") all.push(...ensurePointArray(v));
+        if (v && v.kind === "points") sources.push(v);
       }
-      return { primary: mergePoints(all, distance, t, dedupe) };
+      return {
+        primary: mergePoints(concatPoints(sources), distance, t, dedupe),
+      };
     }
 
     // spline mode — concatenate every connected input's subpaths.
@@ -234,13 +246,14 @@ function dist2(a: [number, number], b: [number, number]): number {
 // ---------------------------------------------------------------------
 
 function mergePoints(
-  points: Point[],
+  src: PointsValue,
   distance: number,
   t: number,
   dedupe: boolean
 ): PointsValue {
-  const n = points.length;
-  if (n === 0) return pointsFromArray([]);
+  const points = ensurePointArray(src);
+  const n = src.count;
+  if (n === 0) return EMPTY_POINTS;
   const { find, union } = unionFind(n);
   const d2 = distance * distance;
   for (let i = 0; i < n; i++) {
@@ -292,7 +305,48 @@ function mergePoints(
       groupIndex: p.groupIndex,
     };
   });
-  if (!dedupe) return pointsFromArray(merged);
+  // SoA the blended geometry, re-attaching carried channels from the
+  // source. Named attributes blend toward their cluster mean at the same
+  // t as the geometry.
+  const m = pointsFromArray(merged);
+  let attributes = src.attributes;
+  if (attributes) {
+    const blendedAttrs: Record<string, PointAttribute> = {};
+    for (const name of Object.keys(attributes)) {
+      const a = attributes[name];
+      const k = a.arity;
+      // Per-cluster sums; slot k holds the member count.
+      const sums = new Map<number, Float64Array>();
+      for (let i = 0; i < n; i++) {
+        const r = find(i);
+        let s = sums.get(r);
+        if (!s) {
+          s = new Float64Array(k + 1);
+          sums.set(r, s);
+        }
+        for (let c = 0; c < k; c++) s[c] += a.data[i * k + c];
+        s[k] += 1;
+      }
+      const data = new Float32Array(n * k);
+      for (let i = 0; i < n; i++) {
+        const s = sums.get(find(i))!;
+        for (let c = 0; c < k; c++) {
+          const p = a.data[i * k + c];
+          data[i * k + c] = p + (s[c] / s[k] - p) * t;
+        }
+      }
+      blendedAttrs[name] = { arity: a.arity, color: a.color, data };
+    }
+    attributes = blendedAttrs;
+  }
+  const blended = copyPointsWith(src, {
+    positions: m.positions,
+    scales: m.scales,
+    rotations: m.rotations,
+    groupIndices: m.groupIndices,
+    attributes,
+  });
+  if (!dedupe) return blended;
   // Per-cluster representative: lowest groupIndex wins (earliest socket),
   // matching Collect's ordering; ties fall back to first-seen index.
   const winnerByRoot = new Map<number, number>();
@@ -307,9 +361,10 @@ function mergePoints(
     const eIdx = points[existing].groupIndex ?? Number.POSITIVE_INFINITY;
     if (iIdx < eIdx) winnerByRoot.set(r, i);
   }
-  const reduced: Point[] = [];
-  for (const idx of winnerByRoot.values()) reduced.push(merged[idx]);
-  return pointsFromArray(reduced);
+  const map = new Int32Array(winnerByRoot.size);
+  let w = 0;
+  for (const idx of winnerByRoot.values()) map[w++] = idx;
+  return gatherPoints(blended, map);
 }
 
 // ---------------------------------------------------------------------

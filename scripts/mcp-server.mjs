@@ -11,6 +11,8 @@
 //
 // IMPORTANT: stdout is the MCP protocol channel — all logging goes to stderr.
 
+import { execSync } from "node:child_process";
+import os from "node:os";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebSocketServer } from "ws";
@@ -28,6 +30,45 @@ const SCREENSHOT_TIMEOUT_MS = 30_000; // reserved for milestone 2
 const PAIRING_CODE = String(Math.floor(1000 + Math.random() * 9000));
 
 const log = (...args) => console.error("[toolbox-mcp]", ...args);
+
+// ---------------------------------------------------------------------------
+// Client identity — WHO is on the other end of the stdio channel. With many
+// Claude instances running, only one server wins the port, and the editor
+// has no way to tell which; this snapshot is forwarded over the bridge so
+// the Toolbox menu can show it. Best-effort throughout — nulls are fine.
+// ---------------------------------------------------------------------------
+
+// The process that spawned us is the Claude client itself (stdio MCP servers
+// are direct children). Its command line distinguishes the Desktop app, the
+// VS Code extension, and a terminal CLI.
+function classifyHost() {
+  let cmd;
+  try {
+    cmd = execSync(`ps -o command= -p ${process.ppid}`, { encoding: "utf8" }).trim();
+  } catch {
+    return null;
+  }
+  if (!cmd) return null;
+  if (/\.vscode[/-]|vscode/i.test(cmd)) return "VS Code";
+  if (/\.cursor[/-]|cursor/i.test(cmd)) return "Cursor";
+  if (/Claude(?: Desktop)?\.app|Claude Helper/i.test(cmd)) return "Claude Desktop";
+  return cmd.split(/\s+/)[0]?.split("/").pop() || null;
+}
+const HOST = classifyHost();
+const SERVER_CWD = process.cwd().replace(os.homedir(), "~");
+
+// `app`/`appVersion` come from the MCP initialize handshake and are null
+// until it completes (the oninitialized push below covers that race).
+function clientIdentity() {
+  const info = server.server.getClientVersion();
+  return {
+    app: info?.name ?? null,
+    appVersion: info?.version ?? null,
+    host: HOST,
+    pid: process.ppid,
+    cwd: SERVER_CWD,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Editor connection (one at a time; last-connected wins).
@@ -96,7 +137,12 @@ wss.on("connection", (ws) => {
   editor = { ws, paired: false, appVersion: null };
   log("editor connected, awaiting pairing confirmation…");
   ws.send(
-    JSON.stringify({ type: "hello", code: PAIRING_CODE, serverVersion: VERSION })
+    JSON.stringify({
+      type: "hello",
+      code: PAIRING_CODE,
+      serverVersion: VERSION,
+      client: clientIdentity(),
+    })
   );
 
   ws.on("message", (raw) => {
@@ -176,6 +222,19 @@ function callEditor(cmd, args = {}, timeoutMs = CMD_TIMEOUT_MS) {
 // so the model can read and react (repair loop).
 // ---------------------------------------------------------------------------
 const server = new McpServer({ name: "toolbox", version: VERSION });
+
+// The initialize handshake (where clientInfo arrives) can complete after an
+// editor tab has already received its hello — push the completed identity so
+// the tab never sticks on nulls.
+server.server.oninitialized = () => {
+  const info = server.server.getClientVersion();
+  log(`MCP client: ${info?.name ?? "?"} v${info?.version ?? "?"}${HOST ? ` (${HOST})` : ""}`);
+  try {
+    editor?.ws.send(JSON.stringify({ type: "client_info", client: clientIdentity() }));
+  } catch {
+    // editor gone — the next hello carries it anyway
+  }
+};
 
 // Source-reading tools (spec 071226_mcp-node-source-tools.md). These read the
 // repo checkout directly — no bridge round-trip, so they work unpaired. The

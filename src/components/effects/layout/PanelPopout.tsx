@@ -43,8 +43,12 @@ function isStyleNode(n: Node): n is HTMLStyleElement | HTMLLinkElement {
  * `<link>` clones re-fetch (from cache) asynchronously, which is why
  * the caller keeps the body hidden until the first paint settles.
  * The observer is what makes dev HMR style injection follow.
+ *
+ * Exported for the Live Link Designer's preview iframe (livelink/
+ * DesignerPreview.tsx), which needs the same host-document style copy
+ * into a same-origin child document.
  */
-function syncStyles(src: Document, dst: Document): () => void {
+export function syncStyles(src: Document, dst: Document): () => void {
   const clones = new Map<Node, Node>();
   const sync = () => {
     const live = new Set<Node>();

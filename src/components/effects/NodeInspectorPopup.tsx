@@ -249,6 +249,30 @@ export function ValueSummary({ value }: { value: SocketValue | undefined }) {
       return <span>audio · {value.source === "mic" ? "mic" : "file"}</span>;
     case "image_group":
       return <ImageGroupSummary value={value} />;
+    case "instances": {
+      const src = value.source.geometry.getAttribute("position");
+      return (
+        <span>
+          instances · {value.count} × {src ? src.count : 0} verts
+          {value.colors ? ", colored" : ""}
+        </span>
+      );
+    }
+    case "geometry": {
+      // Raw mesh data in the 3D modeling chain — vertex/triangle counts
+      // read straight off the retained BufferGeometry.
+      const pos = value.geometry.getAttribute("position");
+      const verts = pos ? pos.count : 0;
+      const idx = value.geometry.getIndex();
+      const tris = Math.floor((idx ? idx.count : verts) / 3);
+      return (
+        <span>
+          geometry · {verts} vert{verts === 1 ? "" : "s"}, {tris} tri
+          {tris === 1 ? "" : "s"}
+          {value.materials[0] ? ", material" : ""}
+        </span>
+      );
+    }
     case "list":
       return <ListSummary value={value} />;
     case "string":
@@ -297,10 +321,16 @@ function SplineSummary({ value }: { value: SplineValue }) {
 }
 
 function PointsSummary({ value }: { value: PointsValue }) {
+  // A z array marks a world-space 3D value (rides `points3d` sockets) —
+  // say so, since the count line is otherwise identical to 2D points.
+  const is3d = value.z !== undefined;
+  const nAttrs = value.attributes ? Object.keys(value.attributes).length : 0;
   return (
     <span>
-      points · {value.count} point
+      {is3d ? "points3d" : "points"} · {value.count} point
       {value.count === 1 ? "" : "s"}
+      {is3d && value.normals ? ", normals" : ""}
+      {nAttrs > 0 ? `, ${nAttrs} attr${nAttrs === 1 ? "" : "s"}` : ""}
     </span>
   );
 }

@@ -9,9 +9,12 @@ import {
   useState,
 } from "react";
 import {
+  deleteProject,
   invalidateProjectCaches,
   listPrivateProjects,
   listPublicProjects,
+  listSharedProjects,
+  renameProject,
   thumbnailSrc,
   type ProjectRow,
 } from "@/lib/supabase/projects";
@@ -26,6 +29,11 @@ import {
   type FolderRow,
 } from "@/lib/supabase/project-folders";
 import RateProjectPopover from "./RateProjectPopover";
+import CollaboratorsModal from "./CollaboratorsModal";
+import {
+  listActiveLeases,
+  type ActiveLease,
+} from "@/lib/supabase/project-editing";
 import { platform, type LocalRecent } from "@/lib/platform";
 
 interface RatePopover {
@@ -62,7 +70,7 @@ function staggerStyle(shown: boolean, index: number): React.CSSProperties {
   };
 }
 
-type Tab = "private" | "public" | "local";
+type Tab = "private" | "shared" | "public" | "local";
 // "list" is the compact text table; "detail" is the same table with taller
 // rows carrying a thumbnail in the leading column.
 type View = "grid" | "list" | "detail";
@@ -96,6 +104,8 @@ let suppressClick = false;
 interface DragPayload {
   kind: "project" | "folder";
   id: string;
+  // Projects being moved together (list/detail multi-select drag).
+  projectIds?: string[];
 }
 
 // What beginDrag needs to know about the grabbed tile.
@@ -116,6 +126,9 @@ interface DragState extends DragPayload {
   startLeft: number;
   startTop: number;
 }
+
+// List/detail checkbox column width.
+const LIST_CHECK = 28;
 
 // Edge auto-scroll while dragging: zone depth inside the scroll
 // container's top/bottom edges, and the max px/frame at the very edge
@@ -269,6 +282,7 @@ function useTileDrag(opts: {
       setDrag({
         kind: spec.kind,
         id: spec.id,
+        projectIds: spec.projectIds,
         row: spec.row ?? null,
         folder: spec.folder ?? null,
         count: spec.count ?? 0,
@@ -449,6 +463,15 @@ interface FolderCtx {
   dropHoverKey: string | null;
   // Id of the tile being dragged — its source dims while the ghost flies.
   dragId: string | null;
+  // All project ids in a multi-select drag (null when dragging a folder).
+  dragProjectIds: string[] | null;
+}
+
+// Multi-select in list/detail views: checkbox toggles, bulk delete, bulk move.
+interface SelectionCtx {
+  selectedIds: Set<string>;
+  toggle: (id: string) => void;
+  isSelected: (id: string) => boolean;
 }
 
 interface Props {
@@ -493,6 +516,13 @@ export default function LoadGrid({
   // Right-click → rate popover. Stored at top-level so it survives
   // re-renders inside the grid/list child views.
   const [ratePopover, setRatePopover] = useState<RatePopover | null>(null);
+  // Collaborators modal target (own rows, M2 shared projects) — opened
+  // from the rate popover's manage section.
+  const [collabTarget, setCollabTarget] = useState<ProjectRow | null>(null);
+  // "● editing" badges (M3 lease): who currently holds each listed
+  // project's editing lease. Fetched alongside the private/shared
+  // listings; refresh rides the refresh button — never a poll.
+  const [leases, setLeases] = useState<Map<string, ActiveLease>>(new Map());
 
   // Folder hierarchy (Private tab only). `folders` is the user's WHOLE
   // flat folder list — drill-in is pure client-side filtering on
@@ -507,6 +537,25 @@ export default function LoadGrid({
     y: number;
   } | null>(null);
   const [renameId, setRenameId] = useState<string | null>(null);
+  // List/detail multi-select — cleared on tab/folder navigation.
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(
+    () => new Set()
+  );
+
+  const toggleProjectSelection = (id: string) => {
+    setSelectedProjectIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectionCtx: SelectionCtx = {
+    selectedIds: selectedProjectIds,
+    toggle: toggleProjectSelection,
+    isSelected: (id) => selectedProjectIds.has(id),
+  };
 
   // Desktop "Local" tab: detected post-mount (client-only) to avoid a
   // hydration mismatch. Recents come from the native bridge.
@@ -537,7 +586,7 @@ export default function LoadGrid({
   const [seenSignedIn, setSeenSignedIn] = useState(signedIn);
   if (seenSignedIn !== signedIn) {
     setSeenSignedIn(signedIn);
-    if (!signedIn && tab === "private") setTab("public");
+    if (!signedIn && (tab === "private" || tab === "shared")) setTab("public");
     if (signedIn && tab === "public") setTab("private");
   }
 
@@ -558,6 +607,14 @@ export default function LoadGrid({
     setFolderId(null);
     setRenameId(null);
     setFolderMenu(null);
+    setSelectedProjectIds(new Set());
+  }
+
+  // Folder drill-in clears selection — selected items may not be visible.
+  const [seenFolderId, setSeenFolderId] = useState(folderId);
+  if (seenFolderId !== folderId) {
+    setSeenFolderId(folderId);
+    setSelectedProjectIds(new Set());
   }
 
   // The current folder vanished (deleted in another window + refresh) —
@@ -567,14 +624,30 @@ export default function LoadGrid({
   }
 
   useEffect(() => {
-    // Private tab shows a sign-in message when logged out (Body handles
-    // that case via a prop check) — skip the doomed request entirely.
-    if (tab === "private" && !signedIn) return;
+    // Private/Shared tabs show a sign-in message when logged out (Body
+    // handles that case via a prop check) — skip the doomed request
+    // entirely.
+    if ((tab === "private" || tab === "shared") && !signedIn) return;
     let cancelled = false;
     const loader =
-      tab === "private" ? listPrivateProjects : listPublicProjects;
+      tab === "private"
+        ? listPrivateProjects
+        : tab === "shared"
+          ? listSharedProjects
+          : listPublicProjects;
     loader().then((list) => {
-      if (!cancelled) setRows(list);
+      if (cancelled) return;
+      setRows(list);
+      // Editing badges only make sense where the viewer is a member
+      // (lease RLS returns nothing elsewhere) — skip the query on the
+      // public tab entirely.
+      if (tab === "private" || tab === "shared") {
+        void listActiveLeases(list.map((r) => r.id)).then((m) => {
+          if (!cancelled) setLeases(m);
+        });
+      } else {
+        setLeases(new Map());
+      }
     });
     return () => {
       cancelled = true;
@@ -722,6 +795,46 @@ export default function LoadGrid({
     });
   };
 
+  // Rename / delete from the project tile's right-click popover (own
+  // projects only — the popover render below gates on ownership). Same
+  // optimistic contract as the folder handlers: update local rows now,
+  // resync from the server if persistence fails. expectedUpdatedAt is
+  // omitted on rename — these rows were never loaded into an editor, so
+  // last-writer-wins is the documented contract (see renameProject).
+  const handleRenameProject = (row: ProjectRow, name: string) => {
+    setRows((cur) =>
+      cur ? cur.map((r) => (r.id === row.id ? { ...r, name } : r)) : cur
+    );
+    void renameProject(row.id, name).then((res) => {
+      if (!res.ok) resyncFolders();
+    });
+  };
+
+  const handleDeleteProject = (row: ProjectRow) => {
+    const allRows = rows ?? [];
+    const targets =
+      selectedProjectIds.size > 0 && selectedProjectIds.has(row.id)
+        ? allRows.filter((r) => selectedProjectIds.has(r.id))
+        : [row];
+    const ownTargets = targets.filter(
+      (r) => currentUserId && r.user_id === currentUserId
+    );
+    if (ownTargets.length === 0) return;
+    const msg =
+      ownTargets.length === 1
+        ? `Delete project "${ownTargets[0].name}"? This can't be undone.`
+        : `Delete ${ownTargets.length} projects? This can't be undone.`;
+    if (!window.confirm(msg)) return;
+    const ids = new Set(ownTargets.map((r) => r.id));
+    setRows((cur) => (cur ? cur.filter((r) => !ids.has(r.id)) : cur));
+    setSelectedProjectIds(new Set());
+    for (const r of ownTargets) {
+      void deleteProject(r.id).then((ok) => {
+        if (!ok) resyncFolders();
+      });
+    }
+  };
+
   // Is `candidate` inside `ancestor`'s subtree (or the same folder)?
   const isWithin = (candidate: string, ancestor: string): boolean => {
     let cur: FolderRow | undefined = folderById.get(candidate);
@@ -741,13 +854,19 @@ export default function LoadGrid({
     return !isWithin(into, p.id);
   };
 
-  const handleDropProject = (pid: string, into: string | null) => {
+  const handleDropProjects = (pids: string[], into: string | null) => {
+    const idSet = new Set(pids);
     setRows((cur) =>
-      cur ? cur.map((r) => (r.id === pid ? { ...r, folder_id: into } : r)) : cur
+      cur
+        ? cur.map((r) => (idSet.has(r.id) ? { ...r, folder_id: into } : r))
+        : cur
     );
-    void moveProjectToFolder(pid, into).then((ok) => {
-      if (!ok) resyncFolders();
-    });
+    setSelectedProjectIds(new Set());
+    for (const pid of pids) {
+      void moveProjectToFolder(pid, into).then((ok) => {
+        if (!ok) resyncFolders();
+      });
+    }
   };
 
   const handleDropFolder = (fid: string, into: string | null) => {
@@ -768,12 +887,19 @@ export default function LoadGrid({
 
   const { drag, hoverKey, beginDrag, ghostRef } = useTileDrag({
     canDrop: canDropPayload,
-    onDrop: (p, into) =>
-      p.kind === "project"
-        ? handleDropProject(p.id, into)
-        : handleDropFolder(p.id, into),
+    onDrop: (p, into) => {
+      if (p.kind === "project") {
+        const ids = p.projectIds ?? [p.id];
+        handleDropProjects(ids, into);
+      } else {
+        handleDropFolder(p.id, into);
+      }
+    },
     scrollRef: gridScrollRef,
   });
+
+  const dragProjectIds =
+    drag?.kind === "project" ? (drag.projectIds ?? [drag.id]) : null;
 
   const folderCtx: FolderCtx | undefined = showFolders
     ? {
@@ -785,12 +911,24 @@ export default function LoadGrid({
         onMenu: (f, x, y) => setFolderMenu({ folder: f, x, y }),
         onRenameCommit: handleRenameCommit,
         onRenameCancel: () => setRenameId(null),
-        beginDragProject: (e, row) =>
-          beginDrag(e, { kind: "project", id: row.id, row, view }),
+        beginDragProject: (e, row) => {
+          const ids =
+            selectedProjectIds.has(row.id) && selectedProjectIds.size > 0
+              ? Array.from(selectedProjectIds)
+              : [row.id];
+          beginDrag(e, {
+            kind: "project",
+            id: row.id,
+            row,
+            view,
+            projectIds: ids,
+          });
+        },
         beginDragFolder: (e, folder, count) =>
           beginDrag(e, { kind: "folder", id: folder.id, folder, count, view }),
         dropHoverKey: hoverKey,
         dragId: drag?.id ?? null,
+        dragProjectIds,
       }
     : undefined;
 
@@ -882,6 +1020,8 @@ export default function LoadGrid({
             staggerReady={chromeIn}
             onNewProject={onNewProject}
             folderCtx={folderCtx}
+            leases={leases}
+            selectionCtx={selectionCtx}
           />
         )}
       </div>
@@ -898,6 +1038,31 @@ export default function LoadGrid({
             invalidateProjectCaches();
             setManualRefresh((n) => n + 1);
           }}
+          // Manage actions only on the user's own rows — RLS would
+          // reject anyone else's anyway; hiding them keeps the popover
+          // honest about what can happen.
+          onRename={
+            !!currentUserId && ratePopover.row.user_id === currentUserId
+              ? (name) => handleRenameProject(ratePopover.row, name)
+              : undefined
+          }
+          onDelete={
+            !!currentUserId && ratePopover.row.user_id === currentUserId
+              ? () => handleDeleteProject(ratePopover.row)
+              : undefined
+          }
+          onCollaborators={
+            !!currentUserId && ratePopover.row.user_id === currentUserId
+              ? () => setCollabTarget(ratePopover.row)
+              : undefined
+          }
+        />
+      )}
+      {collabTarget && (
+        <CollaboratorsModal
+          projectId={collabTarget.id}
+          projectName={collabTarget.name}
+          onClose={() => setCollabTarget(null)}
         />
       )}
       {folderMenu && (
@@ -1075,6 +1240,14 @@ function SegmentedTabs({
       label: "Private",
       disabled: !signedIn,
       title: signedIn ? "Your saved projects" : "Sign in to see your projects",
+    },
+    {
+      key: "shared",
+      label: "Shared",
+      disabled: !signedIn,
+      title: signedIn
+        ? "Projects other users shared with you"
+        : "Sign in to see projects shared with you",
     },
     {
       key: "public",
@@ -1288,6 +1461,8 @@ function Body({
   staggerReady,
   onNewProject,
   folderCtx,
+  leases,
+  selectionCtx,
 }: {
   tab: Tab;
   view: View;
@@ -1305,11 +1480,16 @@ function Body({
   onNewProject?: () => void;
   // Present on the Private tab only — folder tiles/rows + DnD.
   folderCtx?: FolderCtx;
+  // "● editing" badges (M3 lease): active lease per listed project id.
+  leases?: Map<string, ActiveLease>;
+  selectionCtx: SelectionCtx;
 }) {
-  if (tab === "private" && !signedIn) {
+  if ((tab === "private" || tab === "shared") && !signedIn) {
     return (
       <div style={{ color: "var(--tb-n-10)" }}>
-        Sign in to see your saved projects.
+        {tab === "private"
+          ? "Sign in to see your saved projects."
+          : "Sign in to see projects shared with you."}
       </div>
     );
   }
@@ -1326,7 +1506,9 @@ function Body({
           ? folderCtx?.inFolder
             ? "This folder is empty — drag projects here."
             : "No saved projects yet — use File → Save."
-          : "No public projects yet."}
+          : tab === "shared"
+            ? "No projects shared with you yet."
+            : "No public projects yet."}
       </div>
     );
   }
@@ -1338,12 +1520,14 @@ function Body({
         sort={sort}
         onSort={onSort}
         currentUserId={currentUserId}
-        showAuthor={tab === "public"}
+        showAuthor={tab === "public" || tab === "shared"}
         onLoad={onLoad}
         onRate={onRate}
         staggerReady={staggerReady}
         onNewProject={onNewProject}
         folderCtx={folderCtx}
+        leases={leases}
+        selectionCtx={selectionCtx}
       />
     );
   }
@@ -1351,12 +1535,14 @@ function Body({
     <GridView
       rows={rows}
       currentUserId={currentUserId}
-      showAuthor={tab === "public"}
+      showAuthor={tab === "public" || tab === "shared"}
+      leases={leases}
       onLoad={onLoad}
       onRate={onRate}
       staggerReady={staggerReady}
       onNewProject={onNewProject}
       folderCtx={folderCtx}
+      selectionCtx={selectionCtx}
     />
   );
 }
@@ -1370,6 +1556,8 @@ function GridView({
   staggerReady,
   onNewProject,
   folderCtx,
+  leases,
+  selectionCtx,
 }: {
   rows: ProjectRow[];
   currentUserId: string | null;
@@ -1379,6 +1567,8 @@ function GridView({
   staggerReady: boolean;
   onNewProject?: () => void;
   folderCtx?: FolderCtx;
+  leases?: Map<string, ActiveLease>;
+  selectionCtx: SelectionCtx;
 }) {
   const shown = useStaggerShown(staggerReady);
   // The New Project tile, when present, takes slot 0; folder tiles come
@@ -1416,13 +1606,16 @@ function GridView({
           row={r}
           showAuthor={showAuthor}
           isMine={!!currentUserId && currentUserId === r.user_id}
+          editingLabel={leaseLabel(leases?.get(r.id), currentUserId)}
           onLoad={onLoad}
           onRate={onRate}
           appearStyle={staggerStyle(shown, i + offset)}
           beginDrag={
             folderCtx ? (e) => folderCtx.beginDragProject(e, r) : undefined
           }
-          dimmed={folderCtx?.dragId === r.id}
+          dimmed={folderCtx?.dragProjectIds?.includes(r.id)}
+          selected={selectionCtx.isSelected(r.id)}
+          onToggleSelection={() => selectionCtx.toggle(r.id)}
         />
       ))}
     </div>
@@ -1525,6 +1718,8 @@ function ListView({
   staggerReady,
   onNewProject,
   folderCtx,
+  leases,
+  selectionCtx,
 }: {
   rows: ProjectRow[];
   // Taller rows with a thumbnail in the leading column.
@@ -1538,13 +1733,15 @@ function ListView({
   staggerReady: boolean;
   onNewProject?: () => void;
   folderCtx?: FolderCtx;
+  leases?: Map<string, ActiveLease>;
+  selectionCtx: SelectionCtx;
 }) {
   const shown = useStaggerShown(staggerReady);
   const folders = folderCtx?.folders ?? [];
   const folderOffset = onNewProject ? 1 : 0;
   const offset = folderOffset + folders.length;
   // Grid so column widths are consistent between header and body rows.
-  const grid = "1fr 160px 90px 140px";
+  const grid = `${LIST_CHECK}px 1fr 160px 90px 140px`;
   // Rows in detail mode are thumbnail-tall, so their contents centre
   // against it rather than sitting on the text baseline.
   const rowStyle: React.CSSProperties = {
@@ -1576,6 +1773,7 @@ function ListView({
           borderBottom: "1px solid var(--tb-n-7)",
         }}
       >
+        <span />
         <HeaderCell
           active={sort.key === "name"}
           dir={sort.key === "name" ? sort.dir : null}
@@ -1626,6 +1824,7 @@ function ListView({
               (e.currentTarget.style.background = "transparent")
             }
           >
+            <span />
             <span
               style={{
                 display: "inline-flex",
@@ -1679,6 +1878,9 @@ function ListView({
               ? "you"
               : r.author?.display_name?.trim() || "unknown"
             : "you";
+          const selected = selectionCtx.isSelected(r.id);
+          const baseBg = selected ? "var(--tb-n-3)" : "transparent";
+          const dragging = folderCtx?.dragProjectIds?.includes(r.id);
           return (
             <button
               key={r.id}
@@ -1695,20 +1897,26 @@ function ListView({
               }
               style={{
                 ...rowStyle,
-                background: "transparent",
+                background: baseBg,
                 color: "var(--tb-n-16)",
                 ...staggerStyle(shown, i),
-                ...(folderCtx?.dragId === r.id
+                ...(dragging
                   ? { opacity: 0.3, transition: "opacity 120ms ease" }
                   : {}),
               }}
-              onMouseEnter={(e) =>
-                (e.currentTarget.style.background = "var(--tb-n-3)")
-              }
-              onMouseLeave={(e) =>
-                (e.currentTarget.style.background = "transparent")
-              }
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = selected
+                  ? "var(--tb-n-4)"
+                  : "var(--tb-n-3)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = baseBg;
+              }}
             >
+              <RowCheckbox
+                checked={selected}
+                onToggle={() => selectionCtx.toggle(r.id)}
+              />
               <span
                 style={{
                   display: "flex",
@@ -1728,6 +1936,21 @@ function ListView({
                 >
                   {r.name}
                 </span>
+                {(() => {
+                  const editing = leaseLabel(leases?.get(r.id), currentUserId);
+                  return editing ? (
+                    <span
+                      style={{
+                        color: "var(--tb-a-green-400)",
+                        fontSize: 9,
+                        flexShrink: 0,
+                        marginLeft: 6,
+                      }}
+                    >
+                      ● {editing}
+                    </span>
+                  ) : null;
+                })()}
               </span>
               <span
                 style={{
@@ -1819,6 +2042,41 @@ function RowThumb({ row }: { row: ProjectRow }) {
   );
 }
 
+function RowCheckbox({
+  checked,
+  onToggle,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={() => onToggle()}
+        aria-label={checked ? "Deselect project" : "Select project"}
+        style={{
+          width: 13,
+          height: 13,
+          margin: 0,
+          cursor: "pointer",
+          accentColor: "var(--tb-a-blue-400)",
+        }}
+      />
+    </span>
+  );
+}
+
 function HeaderCell({
   active,
   dir,
@@ -1869,15 +2127,21 @@ function ProjectTile({
   row,
   showAuthor,
   isMine,
+  editingLabel,
   onLoad,
   onRate,
   appearStyle,
   beginDrag,
   dimmed,
+  selected,
+  onToggleSelection,
 }: {
   row: ProjectRow;
   showAuthor: boolean;
   isMine: boolean;
+  // Non-null when someone holds this project's editing lease (M3):
+  // their display label ("you" for the viewer's own other window).
+  editingLabel?: string | null;
   onLoad: (id: string) => void;
   onRate: (row: ProjectRow, x: number, y: number) => void;
   // Staggered fade-in style supplied by the parent grid.
@@ -1887,7 +2151,10 @@ function ProjectTile({
   beginDrag?: (e: React.PointerEvent) => void;
   // True while this tile's ghost is in flight — the source fades back.
   dimmed?: boolean;
+  selected?: boolean;
+  onToggleSelection?: () => void;
 }) {
+  const [hover, setHover] = useState(false);
   const authorLabel = isMine
     ? "you"
     : row.author?.display_name?.trim() || "unknown";
@@ -1895,6 +2162,8 @@ function ProjectTile({
     row.ratings_count > 0
       ? `★ ${(row.ratings_avg ?? 0).toFixed(1)} (${row.ratings_count})`
       : "";
+  const baseBg = selected ? "var(--tb-n-3)" : "var(--tb-n-1)";
+  const hoverBg = selected ? "var(--tb-n-4)" : "var(--tb-n-3)";
   return (
     <button
       onClick={() => {
@@ -1906,20 +2175,23 @@ function ProjectTile({
         onRate(row, e.clientX, e.clientY);
       }}
       onPointerDown={beginDrag}
-      title={`${row.name}${showAuthor ? ` · by ${authorLabel}` : ""}${ratingLabel ? ` · ${ratingLabel}` : ""} · ${new Date(row.updated_at).toLocaleString()} · right-click to rate`}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={`${row.name}${showAuthor ? ` · by ${authorLabel}` : ""}${ratingLabel ? ` · ${ratingLabel}` : ""} · ${new Date(row.updated_at).toLocaleString()} · ${isMine ? "right-click to rate, rename or delete" : "right-click to rate"}`}
       style={{
         display: "flex",
         flexDirection: "column",
         alignItems: "stretch",
         padding: 0,
-        background: "var(--tb-n-1)",
-        border: "1px solid var(--tb-n-7)",
+        background: hover ? hoverBg : baseBg,
+        border: `1px solid ${hover ? "var(--tb-n-9)" : "var(--tb-n-7)"}`,
         borderRadius: 4,
         overflow: "hidden",
         color: "var(--tb-n-16)",
         cursor: "pointer",
         fontFamily: "inherit",
         position: "relative",
+        transition: "background 100ms, border-color 100ms",
         ...appearStyle,
         ...(dimmed ? { opacity: 0.3, transition: "opacity 120ms ease" } : {}),
       }}
@@ -1980,6 +2252,25 @@ function ProjectTile({
             {ratingLabel}
           </span>
         )}
+        {editingLabel && (
+          <span
+            style={{
+              position: "absolute",
+              top: 4,
+              left: 4,
+              padding: "1px 4px",
+              borderRadius: 2,
+              background: "rgba(0,0,0,0.6)",
+              color: "var(--tb-a-green-400)",
+              fontSize: 9,
+              lineHeight: "12px",
+              fontFamily: "inherit",
+              pointerEvents: "none",
+            }}
+          >
+            ● {editingLabel}
+          </span>
+        )}
       </div>
       <div
         style={{
@@ -1992,13 +2283,30 @@ function ProjectTile({
       >
         <div
           style={{
-            fontSize: 10,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            minWidth: 0,
           }}
         >
-          {row.name}
+          {onToggleSelection && (
+            <RowCheckbox
+              checked={!!selected}
+              onToggle={onToggleSelection}
+            />
+          )}
+          <div
+            style={{
+              fontSize: 10,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              minWidth: 0,
+              flex: 1,
+            }}
+          >
+            {row.name}
+          </div>
         </div>
         {showAuthor && (
           <div
@@ -2251,6 +2559,7 @@ function FolderListRow({
         ...(dimmed ? { opacity: 0.3, transition: "opacity 120ms ease" } : {}),
       }}
     >
+      <span />
       <span
         style={{
           display: "flex",
@@ -2567,6 +2876,10 @@ function DragGhost({
 // Grid-view ghost: full tile replica (thumb/glyph square + label strip).
 function GhostTile({ drag }: { drag: DragState }) {
   const src = drag.row ? thumbnailSrc(drag.row) : null;
+  const bulk =
+    drag.projectIds && drag.projectIds.length > 1
+      ? drag.projectIds.length
+      : 0;
   return (
     <>
       <div
@@ -2627,6 +2940,11 @@ function GhostTile({ drag }: { drag: DragState }) {
             {drag.count} item{drag.count === 1 ? "" : "s"}
           </div>
         )}
+        {bulk > 0 && (
+          <div style={{ fontSize: 9, color: "var(--tb-n-11)" }}>
+            {bulk} project{bulk === 1 ? "" : "s"}
+          </div>
+        )}
       </div>
     </>
   );
@@ -2636,6 +2954,10 @@ function GhostTile({ drag }: { drag: DragState }) {
 // (thumb/glyph + name) rather than hauling a full-width bar around.
 function GhostChip({ drag }: { drag: DragState }) {
   const src = drag.row ? thumbnailSrc(drag.row) : null;
+  const bulk =
+    drag.projectIds && drag.projectIds.length > 1
+      ? drag.projectIds.length
+      : 0;
   return (
     <div
       style={{
@@ -2677,6 +2999,7 @@ function GhostChip({ drag }: { drag: DragState }) {
         }}
       >
         {drag.row ? drag.row.name : (drag.folder?.name ?? "")}
+        {bulk > 0 ? ` (${bulk})` : ""}
       </span>
     </div>
   );
@@ -2700,6 +3023,18 @@ function sortFolders(
 // ========================================================================
 // sort helper
 // ========================================================================
+
+// "● editing" badge label for a project's active lease (M3): the
+// holder's display name, "you" when it's the viewer's own other window,
+// null when nobody holds it.
+function leaseLabel(
+  lease: ActiveLease | undefined,
+  currentUserId: string | null
+): string | null {
+  if (!lease) return null;
+  if (currentUserId && lease.userId === currentUserId) return "you";
+  return lease.displayName?.trim() || "someone";
+}
 
 function sortRows(
   rows: ProjectRow[],

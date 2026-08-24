@@ -54,7 +54,6 @@ export default function PlaybackBar({
   // re-renders per frame BY DESIGN (it draws the playhead + frame
   // readout); subscribing here keeps that off the shell's props.
   const time = useClock((s) => s.time);
-  const playing = useClock((s) => s.playing);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
   // Cursor x (px within the track) while hovering — drives the faded
@@ -276,25 +275,16 @@ export default function PlaybackBar({
         boxSizing: "border-box",
       }}
     >
-      <PlaybackBarButton
-        title="Reset to start"
-        onClick={() => {
+      <TransportButtons
+        onPlayPause={onPlayPause}
+        onReset={() => {
           onReset();
           // Re-frame the view so the playhead (now at t=0) is on screen.
           // Keep any zoom override the user dialed in — they probably
           // want to keep looking at the same scale, just from the start.
           setViewOffset(0);
         }}
-      >
-        <ResetIcon />
-      </PlaybackBarButton>
-      <PlaybackBarButton
-        title={playing ? "Pause" : "Play"}
-        onClick={onPlayPause}
-        highlighted={playing}
-      >
-        {playing ? <PauseIcon /> : <PlayIcon />}
-      </PlaybackBarButton>
+      />
       {onToggleTracks && (
         <PlaybackBarButton
           title={tracksOpen ? "Hide Track Editor" : "Open Track Editor"}
@@ -458,6 +448,33 @@ export default function PlaybackBar({
         frame={Math.floor(time * fps)}
         onJump={(f) => onSeek(f / fps)}
       />
+    </div>
+  );
+}
+
+// Play + skip-to-start. Shared with the timeline dock header so both
+// surfaces stay one visual and one click-handler pair. Subscribes to
+// `playing` here so a second mount doesn't force EffectsApp to tick.
+export function TransportButtons({
+  onPlayPause,
+  onReset,
+}: {
+  onPlayPause: () => void;
+  onReset: () => void;
+}) {
+  const playing = useClock((s) => s.playing);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <PlaybackBarButton title="Reset to start" onClick={onReset}>
+        <ResetIcon />
+      </PlaybackBarButton>
+      <PlaybackBarButton
+        title={playing ? "Pause" : "Play"}
+        onClick={onPlayPause}
+        highlighted={playing}
+      >
+        {playing ? <PauseIcon /> : <PlayIcon />}
+      </PlaybackBarButton>
     </div>
   );
 }

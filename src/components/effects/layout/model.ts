@@ -7,7 +7,14 @@
 // computeRects() as 0..1 fractions, so SSR renders deterministically
 // (no window measurement during render).
 
-export type PanelKind = "viewport" | "nodes" | "params" | "timeline" | "perf";
+export type PanelKind =
+  | "viewport"
+  | "nodes"
+  | "params"
+  | "timeline"
+  | "perf"
+  | "spreadsheet"
+  | "assistant";
 
 /**
  * Every assignable panel kind, in menu order. The single source of
@@ -23,6 +30,8 @@ export const PANEL_KINDS: readonly PanelKind[] = [
   "params",
   "timeline",
   "perf",
+  "spreadsheet",
+  "assistant",
 ];
 
 /**
@@ -36,6 +45,8 @@ export const PANEL_LABELS: Record<PanelKind, string> = {
   params: "Parameters",
   timeline: "Timeline",
   perf: "Performance",
+  spreadsheet: "Spreadsheet",
+  assistant: "Assistant",
 };
 
 export interface LayoutLeaf {

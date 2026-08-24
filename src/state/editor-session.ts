@@ -1,8 +1,10 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { NodeDataPayload } from "./graph";
 import type { SavedComposition } from "@/lib/project";
+import type { SavedEasing } from "@/engine/keyframes";
 import type { SaveState } from "@/components/effects/FileNameMenu";
 import type { LayoutTree } from "@/components/effects/layout/model";
+import type { LiveDesign } from "@/lib/live-viewer/design";
 
 // Module-level survival capsule for editor state across a client-side
 // route change (e.g. clicking the docs "i" button).
@@ -41,6 +43,12 @@ export interface EditorSessionSnapshot {
   // exact compositions and active selection, not just the tagged nodes.
   compositions: SavedComposition[];
   activeCompositionId: string;
+  // Per-project user-saved easing curves (Graph Editor "Save" button) —
+  // carried so a docs round-trip doesn't drop unsaved additions.
+  savedEasings: SavedEasing[];
+  // Live-link look-and-feel (081426_live-link-designer.md). Null = the
+  // project never authored one (absent stays absent on save).
+  liveDesign: LiveDesign | null;
   // Tiled window layout (072726_window-tiling.md M4). Carried by
   // reference — leaf ids survive, so the sticky primary election (and
   // NodeEditor's per-pane camera stash, keyed on leaf ids) restore

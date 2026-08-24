@@ -17,7 +17,11 @@ import { resolveWedgeBatchInfo } from "@/lib/wedge-batch";
 import { paramSocketType } from "@/state/graph";
 import { useClock } from "@/state/playback-clock";
 import type { NodeDataPayload } from "@/state/graph";
-import type { ParamDef, RenderQueueItem } from "@/engine/types";
+import type { ParamDef, RenderQueueItem, SocketType } from "@/engine/types";
+import {
+  isAttrNameInvalid,
+  readUpstreamAttrNames,
+} from "@/components/effects/attr-name-source";
 import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
@@ -34,6 +38,12 @@ import { evalNumExpr } from "@/lib/num-expr";
 import { EXPORT_PARAMS } from "@/nodes/output/output";
 import { SVG_STYLE_PARAMS } from "@/nodes/output/svg-export";
 import { colorForSocket } from "./socketColor";
+import {
+  AspectLock,
+  RES_PRESETS,
+  ResField,
+  useAspectLock,
+} from "./res-controls";
 import LoadGrid from "./LoadGrid";
 import ImageGeneratePanel from "./ImageGeneratePanel";
 import BgRemovePanel from "./BgRemovePanel";
@@ -370,22 +380,6 @@ interface Props {
   onSelectNode?: (nodeId: string) => void;
 }
 
-// Drop-in <input type="range"> wrapper that dampens the per-event delta
-// to 10% while the user holds Shift during a drag. Tracks shift via a
-// window listener (the slider's `change` event doesn't carry modifier
-// keys), and tracks the slider's "native" position via a ref so each
-// onChange is interpreted as an incremental delta from the prior event.
-// While dampened, the thumb visually lags behind the cursor — the
-// cumulative drag still moves, just at a finer rate.
-const RES_PRESETS: Array<{ label: string; w: number; h: number }> = [
-  { label: "512 × 512", w: 512, h: 512 },
-  { label: "1024 × 1024", w: 1024, h: 1024 },
-  { label: "2048 × 2048", w: 2048, h: 2048 },
-  { label: "1280 × 720", w: 1280, h: 720 },
-  { label: "1920 × 1080", w: 1920, h: 1080 },
-  { label: "3840 × 2160", w: 3840, h: 2160 },
-];
-
 // Panel width (px) below which one-line param rows split into two lines.
 // A single-line row spends ~300px on fixed furniture (90px label, eye,
 // number field, keyframe diamond + carets, expose/control toggles), so
@@ -608,7 +602,28 @@ function ParamPanel({
           ) {
             return false;
           }
-          return p.visibleIf?.(selected.data.params) ?? true;
+          return (
+            p.visibleIf?.(selected.data.params, {
+              // Resolved socket types (polymorphic nodes store the
+              // resolveInputs result) — lets a row key off what's wired,
+              // e.g. Filter Points' Z rows on a points3d input.
+              inputTypes: Object.fromEntries(
+                selected.data.inputs.map((i) => [i.name, i.type as SocketType])
+              ),
+              // Which input sockets have an edge — for rows that swap on
+              // a static optional socket being connected (Instance
+              // Transform's weight rows vs its noise input).
+              wired: Object.fromEntries(
+                (edges ?? [])
+                  .filter(
+                    (e) =>
+                      e.target === selected.id &&
+                      e.targetHandle?.startsWith("in:")
+                  )
+                  .map((e) => [e.targetHandle!.slice(3), true])
+              ),
+            }) ?? true
+          );
         })
       : [];
   const searchQuery = paramQuery.trim();
@@ -1172,6 +1187,25 @@ function ParamPanel({
             // One param's row element — shared by standalone rows, group
             // headers, and grouped children.
             const renderRow = (p: ParamDef) => {
+              // Attribute-name picker + invalid tint: the wired input's
+              // channel names (attr-name-source singleton, same read the
+              // on-node field uses) feed a datalist, and a verified-wrong
+              // name renders the field in the error tint.
+              let attrSuggestions: string[] | undefined;
+              let attrInvalid = false;
+              if (p.suggestAttrsFrom) {
+                const info = readUpstreamAttrNames(
+                  selected.id,
+                  p.suggestAttrsFrom
+                );
+                if (info.names.length > 0) attrSuggestions = info.names;
+                const current = selected.data.params[p.name];
+                attrInvalid = isAttrNameInvalid(
+                  typeof current === "string" ? current : "",
+                  info,
+                  !!p.suggestAttrsRequire
+                );
+              }
               const exposable = paramSocketType(p.type) !== null;
               const isExposed = exposedSet.has(p.name);
               const isControlled = controlSet.has(p.name);
@@ -1206,6 +1240,8 @@ function ParamPanel({
                   param={p}
                   value={selected.data.params[p.name]}
                   allParams={selected.data.params}
+                  attrSuggestions={attrSuggestions}
+                  attrInvalid={attrInvalid}
                   onChange={(v) => onParamChange(selected.id, p.name, v)}
                   exposed={isExposed}
                   exposable={exposable}
@@ -1520,7 +1556,9 @@ function KeyerSamplesRow({
   );
 }
 
-function ProjectSettings({
+// Exported for ProjectSettingsPopover — the gear chip in a Parameters
+// panel's header shows this same panel as a floating popover.
+export function ProjectSettings({
   canvasRes,
   onCanvasResChange,
   fps,
@@ -1537,78 +1575,103 @@ function ProjectSettings({
 }) {
   const resKey = `${canvasRes[0]}×${canvasRes[1]}`;
   const isPreset = RES_PRESETS.some((r) => `${r.w}×${r.h}` === resKey);
+  const aspect = useAspectLock(canvasRes, onCanvasResChange);
 
+  // Same controls as the file-name dropdown's resolution row (res-controls)
+  // — scrub-to-type fields, aspect-lock chain, preset select — laid out as
+  // labelled inspector rows matching the param rows' label column.
   return (
     <Section label="project settings">
       <div
         style={{
-          padding: 8,
-          background: "var(--tb-n-1)",
-          border: "1px solid var(--tb-n-5)",
-          borderRadius: 4,
+          maxWidth: 440,
           display: "flex",
           flexDirection: "column",
-          gap: 6,
+          gap: 8,
         }}
       >
-        <span style={{ color: "var(--tb-n-15)" }}>resolution</span>
-        <Dropdown
-          value={isPreset ? resKey : "__custom__"}
-          options={[
-            ...RES_PRESETS.map((r) => ({
-              value: `${r.w}×${r.h}`,
-              label: r.label,
-            })),
-            ...(!isPreset
-              ? [
-                  {
-                    value: "__custom__",
-                    label: `${canvasRes[0]} × ${canvasRes[1]} (custom)`,
-                  },
-                ]
-              : []),
-          ]}
-          onChange={(v) => {
-            if (v === "__custom__") return;
-            const [w, h] = v.split("×").map(Number);
-            onCanvasResChange([w, h]);
-          }}
-        />
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <ResInput
+        <SettingRow label="resolution">
+          <ResField
+            label="Width"
             value={canvasRes[0]}
-            onCommit={(w) => onCanvasResChange([w, canvasRes[1]])}
+            onGestureStart={aspect.snapRatio}
+            onCommit={aspect.applyWidth}
           />
-          <span style={{ color: "var(--tb-n-10)" }}>×</span>
-          <ResInput
+          <AspectLock locked={aspect.locked} onToggle={aspect.toggle} />
+          <ResField
+            label="Height"
             value={canvasRes[1]}
-            onCommit={(h) => onCanvasResChange([canvasRes[0], h])}
+            onGestureStart={aspect.snapRatio}
+            onCommit={aspect.applyHeight}
           />
-        </div>
-        <span style={{ color: "var(--tb-n-15)", marginTop: 4 }}>frame rate</span>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <ResInput
+          <Dropdown
+            value={isPreset ? resKey : "__custom__"}
+            options={[
+              // Only offered as a readout of the current off-preset
+              // size; picking it is a no-op below.
+              ...(isPreset ? [] : [{ value: "__custom__", label: "custom" }]),
+              ...RES_PRESETS.map((r) => ({
+                value: `${r.w}×${r.h}`,
+                label: r.label,
+              })),
+            ]}
+            onChange={(v) => {
+              if (v === "__custom__") return;
+              const [w, h] = v.split("×").map(Number);
+              onCanvasResChange([w, h]);
+            }}
+            title="Resolution preset"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              height: 30,
+              borderRadius: 10,
+              padding: "0 10px",
+              color: "var(--tb-n-16)",
+            }}
+          />
+        </SettingRow>
+        <SettingRow label="frame rate">
+          <ResField
+            label="Frame rate"
             value={fps}
-            onCommit={onFpsChange}
             min={1}
             max={240}
-            width={56}
+            perPx={1}
+            onCommit={onFpsChange}
           />
           <span style={{ color: "var(--tb-n-10)" }}>fps</span>
-        </div>
-        <span style={{ color: "var(--tb-n-15)", marginTop: 4 }}>tempo</span>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <ResInput
+        </SettingRow>
+        <SettingRow label="tempo">
+          <ResField
+            label="Tempo"
             value={bpm}
-            onCommit={onBpmChange}
             min={20}
             max={999}
-            width={56}
+            perPx={1}
+            onCommit={onBpmChange}
           />
           <span style={{ color: "var(--tb-n-10)" }}>bpm</span>
-        </div>
+        </SettingRow>
       </div>
     </Section>
+  );
+}
+
+// Labelled Project Settings row: fixed label column (same 90px as the
+// param rows') with the control cluster beside it.
+function SettingRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <span style={{ flex: "0 0 90px", color: "var(--tb-n-12)" }}>{label}</span>
+      {children}
+    </div>
   );
 }
 
@@ -2787,6 +2850,8 @@ function ParamRow({
   param,
   value,
   allParams,
+  attrSuggestions,
+  attrInvalid,
   onChange,
   exposed,
   exposable,
@@ -2814,6 +2879,12 @@ function ParamRow({
   // (font_variations reading `custom_font.axes` from the same node)
   // can opt in without restructuring the whole row.
   allParams?: Record<string, unknown>;
+  // Upstream channel names for `suggestAttrsFrom` params — rendered as a
+  // datalist picker over the string input.
+  attrSuggestions?: string[];
+  // The typed name is verified wrong (reserved, or absent upstream on a
+  // `suggestAttrsRequire` param) — the input renders in the error tint.
+  attrInvalid?: boolean;
   onChange: (v: unknown) => void;
   exposed?: boolean;
   exposable?: boolean;
@@ -3154,6 +3225,8 @@ function ParamRow({
         param={param}
         value={displayValue}
         allParams={allParams}
+        attrSuggestions={attrSuggestions}
+        attrInvalid={attrInvalid}
         onChange={onChange}
         rangeOverride={rangeOverride}
         onRangeChange={onRangeChange}

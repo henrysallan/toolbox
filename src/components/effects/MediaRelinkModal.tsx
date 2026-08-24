@@ -170,7 +170,11 @@ export default function MediaRelinkModal({
                   {it.media.envelope.kind === "video_file" ? "video" : "audio"}
                 </span>
                 <span
-                  title={it.media.envelope.filename}
+                  title={
+                    it.media.envelope.cloud
+                      ? `${it.media.envelope.filename} — cloud copy exists but couldn't stream (offline?); relinking uses the local file`
+                      : it.media.envelope.filename
+                  }
                   style={{
                     flex: 1,
                     minWidth: 0,
@@ -181,6 +185,11 @@ export default function MediaRelinkModal({
                   }}
                 >
                   {it.media.envelope.filename}
+                  {it.media.envelope.cloud && it.status !== "ok" && (
+                    <span style={{ color: "var(--tb-n-11)", marginLeft: 6 }}>
+                      ☁ unreachable
+                    </span>
+                  )}
                 </span>
                 {size && (
                   <span

@@ -2,9 +2,9 @@ import type {
   ImageValue,
   InputSocketDef,
   NodeDefinition,
-  PointsValue,
   RenderContext,
 } from "@/engine/types";
+import { copyPointsWith, EMPTY_POINTS } from "@/engine/points";
 
 // Per-point modulation. Reads a points input and writes per-point
 // `scale` / `rotation` based on:
@@ -224,12 +224,17 @@ function buildLumaSampler(
   const h = targetH;
   const wMinus = w - 1;
   const hMinus = h - 1;
+  // Callers pass AUTHORED point coords — convert y to canvas space
+  // (authored is aspect-compressed around 0.5) so the sample lands
+  // where the point visually sits; localized fields (Cursor falloff)
+  // drifted on non-square canvases without this.
+  const canvasAspect = ctx.height > 0 ? ctx.width / ctx.height : 1;
   return (u: number, v: number): number => {
-    // Point/subpath UVs are Y-DOWN (v=0 = top). readPixels returns
-    // pixels Y-UP (row 0 is the bottom of the framebuffer), so flip v
-    // when indexing into the buffer.
+    // Authored y-DOWN → canvas y-DOWN, then flip: readPixels returns
+    // pixels Y-UP (row 0 is the bottom of the framebuffer).
+    const vc = 0.5 + (v - 0.5) * canvasAspect;
     let px = (u * w) | 0;
-    let py = ((1 - v) * h) | 0;
+    let py = ((1 - vc) * h) | 0;
     if (px < 0) px = 0;
     else if (px > wMinus) px = wMinus;
     if (py < 0) py = 0;
@@ -360,13 +365,7 @@ export const modulatePointsNode: NodeDefinition = {
   compute({ inputs, params, ctx, nodeId }) {
     const src = inputs.points;
     if (!src || src.kind !== "points") {
-      const empty: PointsValue = {
-        kind: "points",
-        count: 0,
-        positions: new Float32Array(0),
-        points: [],
-      };
-      return { primary: empty };
+      return { primary: EMPTY_POINTS };
     }
 
     // Uniform scalars: wired value (if present) wins; else fall back
@@ -416,7 +415,6 @@ export const modulatePointsNode: NodeDefinition = {
     const inPos = src.positions;
     const inScales = src.scales;
     const inRots = src.rotations;
-    const inGroups = src.groupIndices;
 
     // Positions are unchanged — share the buffer.
     const outPositions = inPos;
@@ -446,16 +444,15 @@ export const modulatePointsNode: NodeDefinition = {
       outRotations[i] = (inRots ? inRots[i] : 0) + rotAdd;
     }
 
-    const out: PointsValue = {
-      kind: "points",
-      count: n,
-      positions: outPositions,
-      scales: outScales,
-      rotations: outRotations,
-      groupIndices: inGroups,
-      points: [],
+    // Positions stay shared; only scales/rotations are replaced, so
+    // z/normals (a 3D value) and any future channels pass through.
+    return {
+      primary: copyPointsWith(src, {
+        positions: outPositions,
+        scales: outScales,
+        rotations: outRotations,
+      }),
     };
-    return { primary: out };
   },
 
   dispose(ctx, nodeId) {

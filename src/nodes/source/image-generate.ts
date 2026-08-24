@@ -171,6 +171,10 @@ export const imageGenerateNode: NodeDefinition = {
   description:
     "Generate images via OpenAI's gpt-image-2 with a chat interface in the param panel. Bring-your-own OpenAI key (Toolbox → User Preferences). Three optional reference image inputs feed the model as context. Outputs the currently-selected generation, or transparent when none is selected.",
   backend: "webgl2",
+  // Async external service + per-node session store — live external
+  // state. Time Offset boundary-feeds the selected image through
+  // un-shifted.
+  retimeable: false,
   inputs: [
     { name: "ref_a", label: "Ref A", type: "image", required: false },
     { name: "ref_b", label: "Ref B", type: "image", required: false },

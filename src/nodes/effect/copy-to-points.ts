@@ -11,7 +11,11 @@ import type {
   SplineValue,
 } from "@/engine/types";
 import { transformSubpath } from "@/engine/spline-transform";
-import { ensurePointArray, pointsFromArray } from "@/engine/points";
+import {
+  ensurePointArray,
+  gatherAttributes,
+  pointsFromArray,
+} from "@/engine/points";
 import { renderStyledTextToImage } from "@/engine/text-raster";
 
 // Duplicate an "instance" at every target point.
@@ -60,12 +64,13 @@ import { renderStyledTextToImage } from "@/engine/text-raster";
 // Spline and point modes are pure CPU math.
 
 // Vertex shader: every instance is a unit quad in [0,1]². For the
-// instance with id `gl_InstanceID`, fetch two RGBA32F texels from
-// u_xforms — a tiled data texture, u_xformTileW instances per row-pair
+// instance with id `gl_InstanceID`, fetch three RGBA32F texels from
+// u_xforms — a tiled data texture, u_xformTileW instances per row-triple
 // (instance counts beyond MAX_TEXTURE_SIZE would fail as a single row;
 // tiling removes the ceiling):
-//   row 2k   = (posX, posY, rotation, scaleX)
-//   row 2k+1 = (scaleY, _, _, _)
+//   row 3k   = (posX, posY, rotation, scaleX)
+//   row 3k+1 = (scaleY, tintR, tintG, tintB)
+//   row 3k+2 = (opacity, _, _, _)     ← two slots still free (M4)
 //
 // Per-instance modulation:
 //   - u_scaleMul: global scalar multiplier (audio amplitude, etc.)
@@ -111,23 +116,46 @@ uniform float u_scaleFieldHi;
 uniform sampler2D u_rotateField;
 uniform int u_useRotateField;
 uniform float u_rotateFieldAmount;
+// Per-instance tint + opacity from named point channels — packed into
+// the second and third rows (081326_point-attributes.md M4). Opacity
+// packs its OFF state as 1.0, so no enable uniform is needed.
+uniform int u_useTint;
+out vec3 v_tint;
+out float v_opacity;
 
 void main() {
   int id = gl_InstanceID + u_instBase;
-  ivec2 cell = ivec2(id % u_xformTileW, (id / u_xformTileW) * 2);
+  ivec2 cell = ivec2(id % u_xformTileW, (id / u_xformTileW) * 3);
   vec4 t1 = texelFetch(u_xforms, cell, 0);
   vec4 t2 = texelFetch(u_xforms, cell + ivec2(0, 1), 0);
+  vec4 t3 = texelFetch(u_xforms, cell + ivec2(0, 2), 0);
   vec2 pos = t1.xy;
   float rot = t1.z;
   float sx = t1.w;
   float sy = t2.x;
+  v_tint = u_useTint == 1 ? t2.yzw : vec3(1.0);
+  v_opacity = t3.x;
+
+  // Aspect-correct the instance center so copies sit on the rendered points
+  // (and on aspect-corrected geometry); the instance quad stays in pixels, so
+  // it remains round. Square canvas = no change. Computed BEFORE the field
+  // sampling below — fields must sample at the instance's true canvas
+  // position, not its authored one.
+  float aspect = u_canvasRes.x / u_canvasRes.y;
+  vec2 center = vec2(pos.x, 0.5 + (pos.y - 0.5) * aspect);
+  // Field sample UV: center is canvas Y-DOWN; textures sample Y-UP.
+  // Sampling the fields at raw authored pos (the old code) drifted on
+  // non-square canvases (authored y is aspect-compressed) AND was
+  // vertically mirrored — invisible with noise fields, obvious the
+  // moment a localized field (Cursor falloff) drives scale.
+  vec2 fieldUv = vec2(center.x, 1.0 - center.y);
 
   // Per-instance scale modulation.
   float fieldMul = 1.0;
   if (u_useScaleField == 1) {
-    // Sample R channel at the instance's UV. Map [0,1] linearly
-    // into [lo, hi] so the user can pick the dynamic range.
-    float r = texture(u_scaleField, pos).r;
+    // Sample R channel at the instance's canvas position. Map [0,1]
+    // linearly into [lo, hi] so the user can pick the dynamic range.
+    float r = texture(u_scaleField, fieldUv).r;
     fieldMul = mix(u_scaleFieldLo, u_scaleFieldHi, r);
   }
   // Unclamped on purpose — a negative multiplier point-mirrors copies
@@ -139,7 +167,7 @@ void main() {
   // to [-amount, +amount] so 0.5 = no extra rotation.
   float rotMod = u_rotateAdd;
   if (u_useRotateField == 1) {
-    float r = texture(u_rotateField, pos).r;
+    float r = texture(u_rotateField, fieldUv).r;
     rotMod += (r - 0.5) * 2.0 * u_rotateFieldAmount;
   }
   rot += rotMod;
@@ -148,11 +176,6 @@ void main() {
   float c = cos(rot);
   float s = sin(rot);
   vec2 r2 = vec2(c * local.x - s * local.y, s * local.x + c * local.y);
-  // Aspect-correct the instance center so copies sit on the rendered points
-  // (and on aspect-corrected geometry); the instance quad stays in pixels, so
-  // it remains round. Square canvas = no change.
-  float aspect = u_canvasRes.x / u_canvasRes.y;
-  vec2 center = vec2(pos.x, 0.5 + (pos.y - 0.5) * aspect);
   vec2 pixel = center * u_canvasRes + r2;
   vec2 clip = (pixel / u_canvasRes) * 2.0 - 1.0;
   // Pipeline UV is Y-down; clip space is Y-up. Flip vertically.
@@ -171,12 +194,19 @@ void main() {
 const COPY_INST_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
+in vec3 v_tint;
+in float v_opacity;
 uniform sampler2D u_src;
 out vec4 outColor;
 void main() {
   // v_uv already carries the Y-down→Y-up conversion (see the VS), so we
-  // sample the upstream pipeline texture directly here.
+  // sample the upstream pipeline texture directly here. The per-instance
+  // tint multiplies rgb only, opacity multiplies alpha only — straight
+  // alpha throughout (engine invariant); both are 1.0 when no channel is
+  // chosen.
   outColor = texture(u_src, v_uv);
+  outColor.rgb *= v_tint;
+  outColor.a *= v_opacity;
 }`;
 
 // CPU-side luminance samplers built from image inputs (pick / scale
@@ -309,6 +339,7 @@ const INST_UNIFORMS = [
   "u_rotateField",
   "u_useRotateField",
   "u_rotateFieldAmount",
+  "u_useTint",
 ] as const;
 
 // Lazy GL setup — compiles the instanced shader pair, creates the
@@ -429,11 +460,19 @@ function getLumaSampler(
   }
   const data = ctx.readImagePixels(img, w, h);
   if (!data) return null;
+  // Callers pass AUTHORED point coords; the grid covers the canvas.
+  // Convert y (authored is aspect-compressed around 0.5) so the sample
+  // lands where the point visually sits — without it, localized fields
+  // (Cursor falloff) drifted on non-square canvases. The canvas aspect
+  // is the right one even if the texture isn't canvas-sized: display
+  // stretches the texture over the canvas.
+  const canvasAspect = ctx.height > 0 ? ctx.width / ctx.height : 1;
   const sample: LumaSampler = (u, v) => {
-    // Point/subpath UVs are Y-DOWN (matches canvas image-data row
-    // order — row 0 = visual top). Sample directly without flipping.
+    // Authored y-DOWN → canvas y-DOWN (matches image-data row order —
+    // row 0 = visual top — so no flip on the read).
+    const vc = 0.5 + (v - 0.5) * canvasAspect;
     const px = Math.max(0, Math.min(w - 1, Math.floor(u * w)));
-    const py = Math.max(0, Math.min(h - 1, Math.floor(v * h)));
+    const py = Math.max(0, Math.min(h - 1, Math.floor(vc * h)));
     const i = (py * w + px) * 4;
     return (
       (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255
@@ -466,6 +505,9 @@ function chooseVariantGroup(opts: {
   v: number;
   targetGroup: number;
   seed: number;
+  // "attribute" mode: the target point's channel value (component 0),
+  // already clamped to [0,1] by the caller; null when no channel.
+  attrValue?: number | null;
 }): number | null {
   const { distinct } = opts;
   const n = distinct.length;
@@ -474,6 +516,12 @@ function chooseVariantGroup(opts: {
     case "image":
       return opts.sampler
         ? luminanceToIndexPick(distinct, opts.sampler(opts.u, opts.v))
+        : null;
+    case "attribute":
+      // Same [0,1]→variant spread as the image sampler's luminance, so
+      // an Index/Random-sourced channel maps predictably.
+      return opts.attrValue !== null && opts.attrValue !== undefined
+        ? luminanceToIndexPick(distinct, opts.attrValue)
         : null;
     case "random": {
       const r = hash01(opts.index, opts.seed);
@@ -666,7 +714,7 @@ export const copyToPointsNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Duplicate an image (or image group), spline, or point at every target point. Each copy respects per-point rotation and scale, anchored at the instance's content center (or canvas center / custom). Per-instance modulation works in every mode: scalar inputs drive every copy uniformly (e.g. audio amplitude on `scale_mul` makes everything pulse), and image inputs are sampled at each copy's position (e.g. noise on `scale_field` gives every copy a different size). Variants — grouped splines / points, or image-group items — land per point via the pick mode: all, image-driven (`pick` input), seeded random, cycle, or by the target point's own group. Draw order controls stacking (painter's by-y, shuffled). In spline/point modes, Tag copies chooses the groupIndex the copies carry out: the instance's own tags, the copy's index (so downstream per-group styling — Stroke color/thickness sources, Select by Index — varies per copy), or the target point's group.",
+    "Duplicate an image (or image group), spline, or point at every target point. Each copy respects per-point rotation and scale, anchored at the instance's content center (or canvas center / custom). Per-instance modulation works in every mode: scalar inputs drive every copy uniformly (e.g. audio amplitude on `scale_mul` makes everything pulse), and image inputs are sampled at each copy's position (e.g. noise on `scale_field` gives every copy a different size). Variants — grouped splines / points, or image-group items — land per point via the pick mode: all, image-driven (`pick` input), seeded random, cycle, by the target point's own group, or by a named attribute on the target points. In image mode, named attributes can also tint each copy (Tint attribute, rgb) and fade it (Opacity attribute, alpha). Draw order controls stacking (painter's by-y, shuffled). In spline/point modes, Tag copies chooses the groupIndex the copies carry out: the instance's own tags, the copy's index (so downstream per-group styling — Stroke color/thickness sources, Select by Index — varies per copy), or the target point's group.",
   backend: "webgl2",
   inputs: [
     { name: "points", type: "points", required: true },
@@ -741,8 +789,28 @@ export const copyToPointsNode: NodeDefinition = {
       type: "enum",
       // "by index" pairs variant i with target point i (1:1, clamped) — the
       // parallel pairing that lands Points-to-Text's string[i] on point[i].
-      options: ["all", "image", "random", "cycle", "by index", "target group"],
+      // "attribute" reads a named channel on the TARGET points (M4) —
+      // same [0,1]→variant mapping as image luminance.
+      options: [
+        "all",
+        "image",
+        "random",
+        "cycle",
+        "by index",
+        "target group",
+        "attribute",
+      ],
       default: "all",
+    },
+    {
+      name: "pick_attr",
+      label: "Pick attribute",
+      type: "string",
+      default: "",
+      placeholder: "attribute name",
+      suggestAttrsFrom: "points",
+      suggestAttrsRequire: true,
+      visibleIf: (p) => p.pick_mode === "attribute",
     },
     {
       name: "pick_seed",
@@ -863,6 +931,31 @@ export const copyToPointsNode: NodeDefinition = {
       step: 0.001,
       default: 1.5,
     },
+    // Per-instance tint + opacity (image mode): multiply each copy's rgb
+    // by an arity≥3 named channel, and its alpha by any channel's
+    // component 0, both read off the target points — Attribute Transfer
+    // a photo's colors onto a scatter, then stamp tinted copies that
+    // fade by weight. Empty = off (081326_point-attributes.md M4).
+    {
+      name: "tint_attr",
+      label: "Tint attribute",
+      type: "string",
+      default: "",
+      placeholder: "color attribute",
+      suggestAttrsFrom: "points",
+      suggestAttrsRequire: true,
+      visibleIf: (p) => p.mode === "image",
+    },
+    {
+      name: "opacity_attr",
+      label: "Opacity attribute",
+      type: "string",
+      default: "",
+      placeholder: "attribute name",
+      suggestAttrsFrom: "points",
+      suggestAttrsRequire: true,
+      visibleIf: (p) => p.mode === "image",
+    },
     {
       name: "rotate_field_amount",
       label: "Rotate field amount (rad)",
@@ -919,6 +1012,18 @@ export const copyToPointsNode: NodeDefinition = {
     // to "all").
     const pickMode = (params.pick_mode as string | undefined) ?? "image";
     const pickSeed = Math.floor((params.pick_seed as number) ?? 0);
+    // "attribute" pick: the TARGET point's channel (component 0, clamped
+    // to [0,1]) drives which variant lands there — shared by every
+    // instance mode, since picking is CPU-side (M4).
+    const pickAttrName = ((params.pick_attr as string) ?? "").trim();
+    const pickAttr =
+      pickMode === "attribute" && pickAttrName && ptsValue
+        ? ptsValue.attributes?.[pickAttrName]
+        : undefined;
+    const pickAttrAt = (i: number): number | null =>
+      pickAttr
+        ? Math.min(1, Math.max(0, pickAttr.data[i * pickAttr.arity]))
+        : null;
 
     // Anchor. Same legacy rule: nodes saved before the param anchored
     // at canvas center, so a missing value keeps that; new nodes
@@ -1019,6 +1124,7 @@ export const copyToPointsNode: NodeDefinition = {
           v: pt.pos[1],
           targetGroup: pt.groupIndex ?? 0,
           seed: pickSeed,
+          attrValue: pickAttrAt(i),
         });
         const subpathsForPt: SplineSubpath[] =
           chosen === null
@@ -1077,6 +1183,10 @@ export const copyToPointsNode: NodeDefinition = {
             : [0.5, 0.5];
 
       const outPoints: Point[] = [];
+      // Original target index per emitted row — the gather map that
+      // carries the TARGET's named channels onto the product
+      // (081326_point-attributes.md: the instance side's channels drop).
+      const targetMap: number[] = [];
       for (let oi = 0; oi < points.length; oi++) {
         const i = order ? order[oi] : oi;
         const target = points[i];
@@ -1095,6 +1205,7 @@ export const copyToPointsNode: NodeDefinition = {
           v: target.pos[1],
           targetGroup: target.groupIndex ?? 0,
           seed: pickSeed,
+          attrValue: pickAttrAt(i),
         });
         const srcForTarget: Point[] =
           chosen === null
@@ -1116,9 +1227,17 @@ export const copyToPointsNode: NodeDefinition = {
             ],
             groupIndex: tagFor(src.groupIndex, i, target.groupIndex),
           });
+          targetMap.push(i);
         }
       }
       const out: PointsValue = pointsFromArray(outPoints);
+      // `out` is fresh and owned here, so attaching the gathered channels
+      // directly (rather than re-copying) keeps its lazy view intact.
+      out.attributes = gatherAttributes(
+        ptsValue!.attributes,
+        targetMap,
+        out.count
+      );
       return { primary: out };
     }
 
@@ -1232,6 +1351,7 @@ export const copyToPointsNode: NodeDefinition = {
               v: positionsTA[i * 2 + 1],
               targetGroup: groupIdxTA ? groupIdxTA[i] : 0,
               seed: pickSeed,
+              attrValue: pickAttrAt(i),
             }) ?? 0;
         }
         segCounts = new Array<number>(M).fill(0);
@@ -1268,14 +1388,25 @@ export const copyToPointsNode: NodeDefinition = {
     // MAX_TEXTURE_SIZE past ~16k instances (2k on minimal GPUs);
     // tiling bounds the width and grows rows instead.
     const tileW = Math.min(T, XFORM_TILE_W);
-    const texH = Math.ceil(T / tileW) * 2;
+    const texH = Math.ceil(T / tileW) * 3;
 
     // Skip the pack + upload when the texture already holds exactly
     // this points value in this order (identity ⇒ same data —
     // producers emit a new value object whenever their output
     // changes). Single-item only: group assignment depends on more
     // state than the points value.
-    const orderKey = `${drawOrderMode}:${pickSeed}`;
+    // Per-instance tint + opacity channels (M4): an arity≥3 channel's rgb
+    // rides the second row, any channel's component 0 the third row's
+    // opacity slot. The names are part of the pack-skip key — the points
+    // identity alone can't see a param-only change.
+    const tintName = ((params.tint_attr as string) ?? "").trim();
+    const tintAttr = tintName ? ptsValue!.attributes?.[tintName] : undefined;
+    const tint = tintAttr && tintAttr.arity >= 3 ? tintAttr : undefined;
+    const opacityName = ((params.opacity_attr as string) ?? "").trim();
+    const opacity = opacityName
+      ? ptsValue!.attributes?.[opacityName]
+      : undefined;
+    const orderKey = `${drawOrderMode}:${pickSeed}:${tint ? tintName : ""}:${opacity ? opacityName : ""}`;
     const xformsCurrent =
       M === 1 &&
       state.lastPoints === ptsValue &&
@@ -1284,9 +1415,10 @@ export const copyToPointsNode: NodeDefinition = {
       state.instXformHeight === texH;
     if (!xformsCurrent) {
       // Pack per-instance transforms. Layout matches the VS: slot t
-      // lives at column (t % tileW), row-pair floor(t / tileW):
-      //   row 2k   = (posX, posY, rotation, scaleX)
-      //   row 2k+1 = (scaleY, 0, 0, 0)
+      // lives at column (t % tileW), row-triple floor(t / tileW):
+      //   row 3k   = (posX, posY, rotation, scaleX)
+      //   row 3k+1 = (scaleY, tintR, tintG, tintB)
+      //   row 3k+2 = (opacity, 0, 0, 0)
       const needBufFloats = tileW * texH * 4;
       if (
         !state.instXformBuf ||
@@ -1302,17 +1434,26 @@ export const copyToPointsNode: NodeDefinition = {
       for (let t = 0; t < T; t++) {
         const i = srcIndex(t);
         const col = t % tileW;
-        const rowPair = (t / tileW) | 0;
-        const o1 = (rowPair * 2 * tileW + col) * 4;
+        const rowTriple = (t / tileW) | 0;
+        const o1 = (rowTriple * 3 * tileW + col) * 4;
         buf[o1 + 0] = positionsTA[i * 2];
         buf[o1 + 1] = positionsTA[i * 2 + 1];
         buf[o1 + 2] = rotationsTA ? rotationsTA[i] : 0;
         buf[o1 + 3] = scalesTA ? scalesTA[i * 2] : 1;
-        const o2 = ((rowPair * 2 + 1) * tileW + col) * 4;
+        const o2 = ((rowTriple * 3 + 1) * tileW + col) * 4;
         buf[o2 + 0] = scalesTA ? scalesTA[i * 2 + 1] : 1;
-        buf[o2 + 1] = 0;
-        buf[o2 + 2] = 0;
-        buf[o2 + 3] = 0;
+        buf[o2 + 1] = tint ? tint.data[i * tint.arity] : 0;
+        buf[o2 + 2] = tint ? tint.data[i * tint.arity + 1] : 0;
+        buf[o2 + 3] = tint ? tint.data[i * tint.arity + 2] : 0;
+        const o3 = ((rowTriple * 3 + 2) * tileW + col) * 4;
+        // OFF packs as fully opaque; ON clamps to [0,1] — negative
+        // coverage breaks source-over downstream (the convolve lesson).
+        buf[o3 + 0] = opacity
+          ? Math.min(1, Math.max(0, opacity.data[i * opacity.arity]))
+          : 1;
+        buf[o3 + 1] = 0;
+        buf[o3 + 2] = 0;
+        buf[o3 + 3] = 0;
       }
       // Upload to the data texture. Re-allocate when the tiled
       // dimensions change; otherwise just texSubImage2D the fresh
@@ -1410,6 +1551,7 @@ export const copyToPointsNode: NodeDefinition = {
     gl.uniform1i(L.u_rotateField, 3);
     gl.uniform1i(L.u_useRotateField, rotateFieldImg ? 1 : 0);
     gl.uniform1f(L.u_rotateFieldAmount, rotFieldAmt);
+    gl.uniform1i(L.u_useTint, tint ? 1 : 0);
 
     // One instanced draw per item over its packed segment. Texture
     // unit 0 → the item being copied; the rect/anchor uniforms carry

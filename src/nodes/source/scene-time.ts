@@ -3,14 +3,20 @@ import { EASING_OPTIONS, applyEasing } from "@/engine/easing";
 
 // Scene time as a scalar output.
 //
-// Base value comes from `ctx.time` (seconds) or `ctx.frame` (integer frame
-// index at the current target FPS), selected by `unit`. A post-processing
+// Base value comes from `ctx.time` (seconds) or tick-derived fractional
+// frames (`ctx.tick / ctx.ticksPerFrame`), selected by `unit`. A post-processing
 // `mode` then shapes the base value:
 //
 //   linear    : pass through, then `scale`/`offset`.
 //   pingpong  : oscillates min→max→min. Its own intuitive controls:
-//                 rate       — full cycles per unit (cycles/sec in seconds
-//                              mode). Higher = faster. Replaces the old `period`.
+//                 period_frames — frames per full min→max→min cycle. Always
+//                              frame-based, regardless of `unit` (which is
+//                              hidden for this mode): frames are how loops
+//                              are timed here. Replaces the old `rate`
+//                              (cycles per unit), which itself replaced
+//                              `period`. Reads the tick clock, so motion
+//                              stays sub-frame smooth when the RAF outruns
+//                              the project fps.
 //                 min / max  — the base range (defines the centre + span).
 //                 amplitude  — multiplies the swing symmetrically around the
 //                              range centre. 1 = exactly min↔max; 2 = double
@@ -37,16 +43,16 @@ import { EASING_OPTIONS, applyEasing } from "@/engine/easing";
 // frame — downstream caches invalidate but independent subgraphs don't.
 //
 // The easing curve set + intensity coefficient live in engine/easing.ts,
-// shared with the Text node's per-character animators. The `period → rate` and
-// `scale/offset → amplitude` migration for old saves lives in
-// migrateLoadedParams (lib/project.ts).
+// shared with the Text node's per-character animators. The `period → rate →
+// period_frames` and `scale/offset → amplitude` migrations for old saves live
+// in migrateLoadedParams (lib/project.ts).
 
 export const sceneTimeNode: NodeDefinition = {
   type: "scene-time",
   name: "Scene Time",
   category: "utility",
   description:
-    "Emits the current playback time as a scalar. Modes: linear, ping-pong (rate + amplitude + min/max, with an easing curve on each ramp), or stepped with easing. Connect to an exposed scalar input to drive animation.",
+    "Emits the current playback time as a scalar in seconds or frames. Modes: linear, ping-pong (period in frames + amplitude + min/max, with an easing curve on each ramp), or stepped with easing. Connect to an exposed scalar input to drive animation.",
   backend: "webgl2",
   stable: false,
   inputs: [],
@@ -56,7 +62,11 @@ export const sceneTimeNode: NodeDefinition = {
       label: "Unit",
       type: "enum",
       options: ["seconds", "frames"],
+      control: "segmented",
       default: "seconds",
+      // Ping-pong is timed in frames via period_frames, so the unit only
+      // affects linear/stepped.
+      visibleIf: (p) => p.mode !== "pingpong",
     },
     {
       name: "mode",
@@ -66,15 +76,17 @@ export const sceneTimeNode: NodeDefinition = {
       default: "linear",
     },
     {
-      name: "rate",
-      label: "Rate",
+      name: "period_frames",
+      label: "Period (frames)",
       type: "scalar",
-      // Full min→max→min cycles per unit (cycles/sec in seconds mode).
-      min: 0.01,
-      max: 20,
-      softMax: 4,
-      step: 0.01,
-      default: 0.5,
+      // Frames per full min→max→min cycle. Frame-based regardless of `unit`
+      // (hidden for this mode). Default 120 = a 2 s cycle at 60 fps, matching
+      // the old default rate of 0.5 cycles/sec.
+      min: 2,
+      max: 3600,
+      softMax: 600,
+      step: 1,
+      default: 120,
       visibleIf: (p) => p.mode === "pingpong",
     },
     {
@@ -180,16 +192,25 @@ export const sceneTimeNode: NodeDefinition = {
     const unit = (params.unit as string) ?? "seconds";
     const mode = (params.mode as string) ?? "linear";
 
-    const base = unit === "frames" ? ctx.frame : ctx.time;
+    const base =
+      unit === "frames"
+        ? ctx.ticksPerFrame > 0
+          ? ctx.tick / ctx.ticksPerFrame
+          : ctx.frame
+        : ctx.time;
     const intensity = (params.ease_intensity as number) ?? 1;
 
     if (mode === "pingpong") {
-      // rate = full min→max→min cycles per unit; half-cycle drives the triangle.
-      const rate = Math.max(1e-4, (params.rate as number) ?? 0.5);
-      const half = 0.5 / rate; // time from min to max
-      const full = half * 2; // one full cycle = 1 / rate
-      // mod-mod trick keeps phased non-negative even when base is.
-      const phased = ((base % full) + full) % full;
+      // period_frames = frames per full min→max→min cycle; half-cycle drives
+      // the triangle. The timebase is the tick-derived fractional frame — not
+      // integer ctx.frame — so motion stays smooth when the RAF outruns the
+      // project fps, and not `base`, since ping-pong ignores `unit`.
+      const full = Math.max(1e-4, (params.period_frames as number) ?? 120);
+      const frames =
+        ctx.ticksPerFrame > 0 ? ctx.tick / ctx.ticksPerFrame : ctx.frame;
+      const half = full / 2; // frames from min to max
+      // mod-mod trick keeps phased non-negative even when frames is.
+      const phased = ((frames % full) + full) % full;
       const ramp = half - Math.abs(phased - half);
       const t = ramp / half; // normalized triangle ∈ [0,1], eased below
       const easing = (params.pingpong_easing as string) ?? "linear";

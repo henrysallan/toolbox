@@ -1,4 +1,5 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
+import { aspectUncorrectY } from "@/engine/aspect";
 import type { ImageValue, NodeDefinition, RenderContext } from "@/engine/types";
 
 // Source node emitting a circular falloff field centered on the pointer,
@@ -123,6 +124,9 @@ export const cursorNode: NodeDefinition = {
   // Cursor changes every frame (externally tracked) — want compute to
   // re-run even when params are identical.
   stable: false,
+  // Live pointer state — no past/future to sample. Time Offset
+  // boundary-feeds the current field through un-shifted.
+  retimeable: false,
   inputs: [],
   params: [
     OPACITY_PARAM,
@@ -193,6 +197,12 @@ export const cursorNode: NodeDefinition = {
     // vec2 input (or a scalar input, which reads .x) without needing
     // to sample the image first.
     { name: "velocity_vec", type: "vec2" },
+    // Live pointer position in AUTHORED space (y-down [0,1]², like
+    // points/splines/transform params) — Shortest Path's start/end and
+    // any vec2 param take it directly. Note velocity_vec stays in
+    // canvas-UV units per second; position is the one authored-space
+    // output here. The Pointer node is the full signal vocabulary.
+    { name: "position", type: "vec2" },
   ],
 
   // Mix live cursor state into this node's fingerprint so downstream
@@ -284,16 +294,31 @@ export const cursorNode: NodeDefinition = {
       );
     });
 
+    // ctx.cursor is y-UP canvas UV; authored space is y-DOWN and
+    // aspect-uncorrected (engine/aspect.ts) — flip at the socket.
+    const aspect = ctx.height > 0 ? ctx.width / ctx.height : 1;
     return {
       // Textures live in this node's persistent state (redrawn in place) —
       // the evaluator must not release them (see NodeOutput.ownsTextures).
       ownsTextures: false,
-      primary: state.primary!,
+      // FRESH wrapper objects every eval, same underlying textures.
+      // Consumers key CPU-readback caches on ImageValue IDENTITY (Copy
+      // to Points / Modulate Points field samplers: "a new object means
+      // the upstream recomputed") — returning the persistent state
+      // objects directly made those caches read the falloff once and
+      // freeze, so Cursor → scale_field/rotate_field never responded to
+      // the pointer. Identity must track content: redrawn-in-place ⇒
+      // re-wrap.
+      primary: { ...state.primary! },
       aux: {
-        velocity: state.velocity!,
+        velocity: { ...state.velocity! },
         velocity_vec: {
           kind: "vec2",
           value: [state.smoothVx * velScale, state.smoothVy * velScale],
+        },
+        position: {
+          kind: "vec2",
+          value: [x, aspectUncorrectY(1 - y, aspect)],
         },
       },
     };

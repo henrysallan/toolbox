@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { rectsEqual } from "./overlay-rect";
+import { claimPointerGesture } from "@/lib/pointer-claim";
 
 // On-canvas handles for the Gradient node. Linear mode shows two endpoint
 // handles joined by a line (start → end); radial mode shows a center handle
@@ -157,6 +158,8 @@ export default function GradientOverlay({
   const startDrag = (d: Drag) => (e: React.PointerEvent<SVGElement>) => {
     e.stopPropagation();
     e.preventDefault();
+    // Overlay gesture — keep it out of the graph's cursor press facts.
+    claimPointerGesture(e.pointerId);
     setDrag(d);
   };
 

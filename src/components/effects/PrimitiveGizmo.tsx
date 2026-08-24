@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { claimPointerGesture } from "@/lib/pointer-claim";
 
 // On-canvas transform handles for centered shape primitives (Circle,
 // Rectangle, …). The gizmo works in a node-agnostic "center + half-extents"
@@ -580,6 +581,8 @@ export default function PrimitiveGizmo({
     (kind: DragKind) => (e: React.PointerEvent<SVGElement>) => {
       e.stopPropagation();
       e.preventDefault();
+      // Gizmo gesture — keep it out of the graph's cursor press facts.
+      claimPointerGesture(e.pointerId);
       setDrag({
         kind,
         startPointer: {
@@ -829,6 +832,7 @@ export function PrimitivePointHandles({
               onPointerDown={(e) => {
                 e.stopPropagation();
                 e.preventDefault();
+                claimPointerGesture(e.pointerId);
                 setDragIndex(i);
               }}
             />

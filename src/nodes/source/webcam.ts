@@ -205,6 +205,9 @@ export const webcamSourceNode: NodeDefinition = {
     "Live webcam feed via getUserMedia. First eval triggers the browser permission prompt. Mirror toggle defaults on to match how video-chat tools render the feed.",
   backend: "webgl2",
   stable: false,
+  // Live capture — there is no "the webcam at tick − Δ". Time Offset
+  // boundary-feeds the current frame through un-shifted.
+  retimeable: false,
   inputs: [{ name: "uv_in", label: "UV", type: "uv", required: false }],
   params: [
     OPACITY_PARAM,

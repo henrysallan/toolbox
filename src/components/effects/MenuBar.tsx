@@ -18,6 +18,7 @@ import MessageConsole, {
 import { useDesktopUpdates } from "./useDesktopUpdates";
 import type { RecentProjectEntry } from "@/lib/recent-projects";
 import type { LayoutPresetEntry } from "./layout/presets";
+import type { BridgeClientInfo } from "@/lib/mcp-bridge";
 import {
   isShortcutFrozen,
   setShortcutFrozen,
@@ -31,6 +32,8 @@ type MenuItem =
       shortcut?: string;
       onClick?: () => void;
       disabled?: boolean;
+      // Native hover tooltip (supports \n for multi-line detail rows).
+      title?: string;
     }
   | { kind: "divider" }
   // One level of nesting: a row with a ▸ that opens a flyout of plain
@@ -48,6 +51,10 @@ export interface MenuBarProps {
   onRedo: () => void;
   canUndo?: boolean;
   canRedo?: boolean;
+  // Opens the floating assistant overlay (spec 080826_claude-agent-panel.md).
+  // Undefined where the assistant can't run (hosted web) — the Edit-menu item
+  // is omitted entirely rather than shown and failing.
+  onOpenAssistant?: () => void;
   onOpenProjectSettings: () => void;
   // File → New. Clears the current graph back to a fresh seed,
   // prompting the user first if there's unsaved work.
@@ -77,6 +84,12 @@ export interface MenuBarProps {
   onClearRecents: () => void;
   // Downloads the current project as a self-contained .toolbox file.
   onSaveToFile: () => void;
+  // Opens the local recovery-autosave browser (M4 —
+  // specdocs/081426_shared-projects.md). Always available: snapshots
+  // are local IndexedDB, no auth involved.
+  onRecoverAutosave: () => void;
+  // Opens the Live Link Designer (081426_live-link-designer.md M2).
+  onOpenLiveLink: () => void;
   // Project resolution — surfaced in the file-name dropdown so it can be
   // changed without opening Project Settings.
   canvasRes: [number, number];
@@ -100,6 +113,9 @@ export interface MenuBarProps {
   // conflicting row (or null) so the pill can relabel Rename →
   // Overwrite when typing over another of the user's projects.
   findNameConflict?: (name: string) => { name: string } | null;
+  // Own cloud rows only — Collaborators entry in the file-name pill
+  // (M2 shared projects). Undefined hides it.
+  onCollaborators?: () => void;
   // Called by the Node menu when the user picks a node type from the
   // dropdown. Same signature as the Shift+A popup's add path so the
   // parent can reuse onAddNode verbatim.
@@ -145,8 +161,12 @@ export interface MenuBarProps {
   // settings that live in Project Settings.
   onOpenUserPreferences: () => void;
   // Claude MCP bridge (spec 070926_claude-mcp-bridge.md): connection state
-  // drives the Toolbox-menu label; the toggle connects/disconnects.
+  // drives the Toolbox-menu label; the toggle connects/disconnects. When
+  // connected, `mcpClient` identifies WHICH Claude instance holds the bridge
+  // (many can be running; only one owns the server port) — shown as a hover
+  // tooltip on the menu row.
   mcpStatus: "off" | "connecting" | "pairing" | "connected";
+  mcpClient: BridgeClientInfo | null;
   onToggleMcpBridge: () => void;
   // Status messages (EffectsApp's flashToast). `statusToast` is the
   // currently-flashing message (null once it times out); `consoleLog` is
@@ -165,6 +185,7 @@ const BAR_HEIGHT = 22;
 export default function MenuBar({
   onUndo,
   onRedo,
+  onOpenAssistant,
   canUndo,
   canRedo,
   onOpenProjectSettings,
@@ -182,6 +203,8 @@ export default function MenuBar({
   onOpenRecent,
   onClearRecents,
   onSaveToFile,
+  onRecoverAutosave,
+  onOpenLiveLink,
   canvasRes,
   onCanvasResChange,
   projectName,
@@ -194,6 +217,7 @@ export default function MenuBar({
   onRenameProject,
   onRequestToggleVisibility,
   findNameConflict,
+  onCollaborators,
   onAddNode,
   atRoot,
   fullCanvas,
@@ -210,6 +234,7 @@ export default function MenuBar({
   onNewLayoutPreset,
   onOpenUserPreferences,
   mcpStatus,
+  mcpClient,
   onToggleMcpBridge,
   statusToast,
   consoleLog,
@@ -316,6 +341,23 @@ export default function MenuBar({
     }
   }
 
+  // Hover detail for the Claude row — which of the (often many) running
+  // Claude instances actually owns the bridge. Nulls are expected from an
+  // older server or before the MCP initialize handshake lands.
+  const mcpTitle =
+    mcpStatus === "connected"
+      ? mcpClient
+        ? [
+            `${mcpClient.app ?? "unknown client"}${mcpClient.appVersion ? ` v${mcpClient.appVersion}` : ""}`,
+            mcpClient.host &&
+              `via ${mcpClient.host}${mcpClient.pid ? ` · pid ${mcpClient.pid}` : ""}`,
+            mcpClient.cwd && `in ${mcpClient.cwd}`,
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : "Connected — client identity unavailable (older toolbox-mcp server)"
+      : undefined;
+
   const menus: MenuDef[] = [
     {
       id: "toolbox",
@@ -362,6 +404,7 @@ export default function MenuBar({
                 : mcpStatus === "pairing"
                   ? "Cancel Claude Pairing"
                   : "Connect to Claude…",
+          title: mcpTitle,
           onClick: onToggleMcpBridge,
         },
       ],
@@ -447,6 +490,20 @@ export default function MenuBar({
           label: "Save to File…",
           onClick: onSaveToFile,
         },
+        {
+          // Local IndexedDB crash-recovery snapshots — no account needed.
+          kind: "item",
+          label: "Recover Autosave…",
+          onClick: onRecoverAutosave,
+        },
+        { kind: "divider" },
+        {
+          // Author the live link's look & feel (layout, theme, control
+          // order/renames, viewer export toggles). Saved into the project.
+          kind: "item",
+          label: "Live Link…",
+          onClick: onOpenLiveLink,
+        },
         { kind: "item", label: "Export…", disabled: true },
       ],
     },
@@ -468,6 +525,12 @@ export default function MenuBar({
           disabled: !canRedo,
           onClick: onRedo,
         },
+        ...(onOpenAssistant
+          ? ([
+              { kind: "divider" },
+              { kind: "item", label: "Assistant…", onClick: onOpenAssistant },
+            ] as const)
+          : []),
       ],
     },
     // Node menu is special-cased in the render loop below — it uses
@@ -722,6 +785,7 @@ export default function MenuBar({
           onSave={onSave}
           onSaveAsNamed={onSaveAsNamed}
           findConflict={findNameConflict}
+          onCollaborators={onCollaborators}
         />
         {process.env.NODE_ENV === "development" && <FreezePill />}
       </div>
@@ -883,6 +947,7 @@ function MenuRow({
   return (
     <button
       disabled={disabled}
+      title={item.title}
       onClick={() => {
         if (disabled) return;
         item.onClick?.();

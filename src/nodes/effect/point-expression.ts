@@ -2,8 +2,12 @@ import type {
   ExprInput,
   InputSocketDef,
   NodeDefinition,
+  PointAttribute,
   PointsValue,
   RenderContext,
+  SocketType,
+  SplineAnchor,
+  SplineSubpath,
   SplineValue,
 } from "@/engine/types";
 import {
@@ -55,6 +59,13 @@ import {
 // channels the Sync button discovers.
 export { newExprInput } from "./expression";
 import { newExprInputId } from "./expression";
+import {
+  copyPointsWith,
+  EMPTY_POINTS,
+  gatherAttributes,
+  gatherPoints,
+  RESERVED_POINT_ATTR_NAMES,
+} from "@/engine/points";
 
 // Recompute the cache every frame only when the source is time-dependent —
 // same predicate as expression.ts. `rand` is deliberately NOT here (it's
@@ -63,6 +74,7 @@ const TIME_RE = /\b(t|time|frame|random)\b/;
 
 const DEFAULT_EXPRESSION = `// read:  index, count, groupIndex, px, py, rot0, sx0, sy0
 // write: x, y, rot, sx, sy, scale, keep   (declare temps with let/const)
+// channels: attr("name") reads, setattr("name", v) writes — see Spreadsheet
 // tunables: ch("name", default) — then hit Sync to make sliders
 x = px;
 y = py;`;
@@ -171,11 +183,24 @@ function makePathEnv(
 // Env (built once per frame; constant across points).
 // ---------------------------------------------------------------------------
 
+// Named-attribute access (081326_point-attributes.md M2). The functions are
+// env keys (fixed shape — the compiled prologue destructures ENV_KEYS), and
+// they close over a per-eval cursor the compute loop advances, so the hot
+// PointCtx struct stays monomorphic. `attr` reads the SOURCE value's
+// channels only — same-pass setattr writes are deliberately not readable,
+// so results never depend on point iteration order.
+interface AttrEnv {
+  attr: (name: string, component?: number) => number;
+  setattr: (name: string, value: number) => void;
+}
+const NO_ATTRS: AttrEnv = { attr: () => 0, setattr: () => {} };
+
 function makeEnv(
   ctx: RenderContext,
   nodeId: string,
   path: PathEnv,
-  channels: Record<string, number | string>
+  channels: Record<string, number | string>,
+  attrs: AttrEnv
 ): Record<string, unknown> {
   const M = Math;
   const rng = mulberry32(hashString(nodeId) ^ ((ctx.frame >>> 0) + 0x9e3779b9));
@@ -243,6 +268,8 @@ function makeEnv(
     pathX: path.pathX,
     pathY: path.pathY,
     pathAngle: path.pathAngle,
+    attr: attrs.attr,
+    setattr: attrs.setattr,
   };
 }
 
@@ -251,7 +278,8 @@ const ENV_KEYS = Object.keys(
     { time: 0, frame: 0, fps: 60 } as RenderContext,
     "sample",
     makePathEnv(null, null),
-    {}
+    {},
+    NO_ATTRS
   )
 ).join(",");
 
@@ -269,14 +297,27 @@ interface PointCtx {
   sy0: number;
 }
 
-// Compiled function: (__env, __pt) → [x, y, sx, sy, scale, rot, keep] (keep as
-// 0/1). The block runs against writable locals initialised from the point; we
-// read them back after. Channel inputs are read via ch() from __env, never
+// Compiled function: (__env, __pt) → the domain's packed tuple (keep as
+// 0/1). The block runs against writable locals initialised from the element;
+// we read them back after. Channel inputs are read via ch() from __env, never
 // injected as parameters — so nothing user-named lands in the kernel's scope.
 type CompiledFn = (env: unknown, pt: unknown) => unknown;
 
+// The kernel's element domain (the Houdini wrangle-context idea): same
+// language + env, different per-element contract. Points read/write
+// position+scale+rotation; spline anchors read/write position, handle
+// offsets, and the width profile.
+type ExprTarget = "points" | "spline anchors";
+
+// Packed-tuple length per domain — the call sites check it so a stray user
+// `return` keeps the element unchanged instead of smuggling a wrong shape.
+function tupleLenFor(target: ExprTarget): number {
+  return target === "spline anchors" ? 8 : 7;
+}
+
 interface Compiled {
   source: string;
+  target: ExprTarget;
   fn: CompiledFn | null;
   error: string | null;
 }
@@ -328,29 +369,39 @@ const SHADOWED_GLOBALS = [
 ];
 const GLOBAL_SHADOW_PRELUDE = `const ${SHADOWED_GLOBALS.map((g) => `${g}=void 0`).join(",")};`;
 
-function compile(source: string): Compiled {
+function compile(source: string, target: ExprTarget): Compiled {
   const body = source.trim();
+  // Per-element locals are declared from __pt; the user's block mutates the
+  // writable ones; we return the packed result. A stray `return` in the
+  // user block early-exits → the call site detects the wrong shape and
+  // keeps the element unchanged. No user-controlled identifiers enter this
+  // scope (channels are read via ch()), so there's no collision surface.
+  const prologue =
+    target === "spline anchors"
+      ? `let index=__pt.index,count=__pt.count,subpath=__pt.subpath,groupIndex=__pt.groupIndex,px=__pt.px,py=__pt.py,inx0=__pt.inx0,iny0=__pt.iny0,outx0=__pt.outx0,outy0=__pt.outy0,width0=__pt.width0;
+let x=px,y=py,inx=inx0,iny=iny0,outx=outx0,outy=outy0,width=width0,keep=true;`
+      : `let index=__pt.index,count=__pt.count,groupIndex=__pt.groupIndex,px=__pt.px,py=__pt.py,rot0=__pt.rot0,sx0=__pt.sx0,sy0=__pt.sy0;
+let x=px,y=py,rot=rot0,sx=sx0,sy=sy0,scale=1,keep=true;`;
+  const epilogue =
+    target === "spline anchors"
+      ? `return [x,y,inx,iny,outx,outy,width,keep?1:0];`
+      : `return [x,y,sx,sy,scale,rot,keep?1:0];`;
   try {
-    // Per-point locals are declared from __pt; the user's block mutates the
-    // writable ones; we return the packed result. A stray `return` in the
-    // user block early-exits → we detect the non-array below and keep the
-    // point unchanged. No user-controlled identifiers enter this scope
-    // (channels are read via ch()), so there's no collision surface.
     const fn = new Function(
       "__env",
       "__pt",
       `"use strict";
 ${GLOBAL_SHADOW_PRELUDE}
 const{${ENV_KEYS}}=__env;
-let index=__pt.index,count=__pt.count,groupIndex=__pt.groupIndex,px=__pt.px,py=__pt.py,rot0=__pt.rot0,sx0=__pt.sx0,sy0=__pt.sy0;
-let x=px,y=py,rot=rot0,sx=sx0,sy=sy0,scale=1,keep=true;
+${prologue}
 ${body}
-return [x,y,sx,sy,scale,rot,keep?1:0];`
+${epilogue}`
     ) as CompiledFn;
-    return { source, fn, error: null };
+    return { source, target, fn, error: null };
   } catch (e) {
     return {
       source,
+      target,
       fn: null,
       error: e instanceof Error ? e.message : String(e),
     };
@@ -460,12 +511,198 @@ function toNum(v: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-const EMPTY: PointsValue = {
-  kind: "points",
-  count: 0,
-  positions: new Float32Array(0),
-  points: [],
-};
+const EMPTY = EMPTY_POINTS;
+const EMPTY_SPLINE: SplineValue = { kind: "spline", subpaths: [] };
+
+// The spline-anchor domain's mutable per-element record — same monomorphic
+// reuse discipline as PointCtx. Handle offsets read 0 when absent; width
+// reads its render default 1.
+interface AnchorCtx {
+  index: number;
+  count: number;
+  subpath: number;
+  groupIndex: number;
+  px: number;
+  py: number;
+  inx0: number;
+  iny0: number;
+  outx0: number;
+  outy0: number;
+  width0: number;
+}
+
+// Run the kernel once per anchor across all subpaths (row order = the
+// spreadsheet's). Writes position, handle offsets, width, and `keep`;
+// attr() reads anchor channels (falling back to the subpath's), setattr()
+// writes float anchor channels. Subpaths whose anchors are all culled drop.
+function runAnchorExpression(
+  spline: SplineValue,
+  fn: CompiledFn,
+  ctx: RenderContext,
+  nodeId: string,
+  pathEnv: PathEnv,
+  channels: Record<string, number | string>,
+  onErrorZero: boolean,
+  state: ExprState
+): { primary: SplineValue } {
+  let total = 0;
+  for (const sub of spline.subpaths) total += sub.anchors.length;
+  if (total === 0) return { primary: EMPTY_SPLINE };
+
+  const cursor: { a: SplineAnchor | null; sub: SplineSubpath | null } = {
+    a: null,
+    sub: null,
+  };
+  const written = new Map<string, Float32Array>();
+  let row = 0;
+  const env = makeEnv(ctx, nodeId, pathEnv, channels, {
+    attr: (name, component = 0) => {
+      const v = cursor.a?.attrs?.[name] ?? cursor.sub?.attrs?.[name];
+      const c = component | 0;
+      if (typeof v === "number") return c === 0 ? v : 0;
+      if (Array.isArray(v)) {
+        const x = v[c];
+        return typeof x === "number" && Number.isFinite(x) ? x : 0;
+      }
+      return 0;
+    },
+    setattr: (name, value) => {
+      if (
+        typeof name !== "string" ||
+        !name ||
+        RESERVED_POINT_ATTR_NAMES.has(name)
+      ) {
+        return;
+      }
+      let arr = written.get(name);
+      if (!arr) {
+        arr = new Float32Array(total);
+        written.set(name, arr);
+      }
+      const v = +value;
+      arr[row] = Number.isFinite(v) ? v : 0;
+    },
+  });
+
+  const pt: AnchorCtx = {
+    index: 0,
+    count: total,
+    subpath: 0,
+    groupIndex: 0,
+    px: 0,
+    py: 0,
+    inx0: 0,
+    iny0: 0,
+    outx0: 0,
+    outy0: 0,
+    width0: 1,
+  };
+
+  let runtimeErr = false;
+  const outSubpaths: SplineSubpath[] = [];
+  // Kept output anchors + the source row each came from, for the setattr
+  // merge below (a channel minted late in the loop must still cover
+  // earlier rows, so merging can't happen inline).
+  const keptAnchors: SplineAnchor[] = [];
+  const keptRows: number[] = [];
+
+  for (let s = 0; s < spline.subpaths.length; s++) {
+    const sub = spline.subpaths[s];
+    const outAnchors: SplineAnchor[] = [];
+    for (const a of sub.anchors) {
+      const hadIn = a.inHandle !== undefined;
+      const hadOut = a.outHandle !== undefined;
+      pt.index = row;
+      pt.subpath = s;
+      pt.groupIndex = sub.groupIndex ?? 0;
+      pt.px = a.pos[0];
+      pt.py = a.pos[1];
+      pt.inx0 = hadIn ? a.inHandle![0] : 0;
+      pt.iny0 = hadIn ? a.inHandle![1] : 0;
+      pt.outx0 = hadOut ? a.outHandle![0] : 0;
+      pt.outy0 = hadOut ? a.outHandle![1] : 0;
+      pt.width0 = a.width ?? 1;
+      cursor.a = a;
+      cursor.sub = sub;
+
+      let x = pt.px;
+      let y = pt.py;
+      let inx = pt.inx0;
+      let iny = pt.iny0;
+      let outx = pt.outx0;
+      let outy = pt.outy0;
+      let width = pt.width0;
+      let keep = true;
+      try {
+        const raw = fn(env, pt);
+        if (Array.isArray(raw) && raw.length === 8) {
+          x = toNum(raw[0], pt.px);
+          y = toNum(raw[1], pt.py);
+          inx = toNum(raw[2], pt.inx0);
+          iny = toNum(raw[3], pt.iny0);
+          outx = toNum(raw[4], pt.outx0);
+          outy = toNum(raw[5], pt.outy0);
+          width = toNum(raw[6], pt.width0);
+          keep = !!raw[7];
+        }
+      } catch (e) {
+        if (!runtimeErr) {
+          state.error = e instanceof Error ? e.message : String(e);
+          warnOnce(state, nodeId);
+          runtimeErr = true;
+        }
+        if (onErrorZero) {
+          x = 0;
+          y = 0;
+          inx = 0;
+          iny = 0;
+          outx = 0;
+          outy = 0;
+          width = 0;
+        }
+        // passthrough (default): originals stand.
+      }
+
+      if (!keep) {
+        row++;
+        continue;
+      }
+      const na: SplineAnchor = {
+        ...a,
+        pos: [x, y],
+        // A handle exists on output if it existed on input OR the kernel
+        // moved it off zero — so plain corner anchors stay corners.
+        inHandle: hadIn || inx !== 0 || iny !== 0 ? [inx, iny] : undefined,
+        outHandle:
+          hadOut || outx !== 0 || outy !== 0 ? [outx, outy] : undefined,
+        width: width === 1 && a.width === undefined ? undefined : width,
+      };
+      outAnchors.push(na);
+      keptAnchors.push(na);
+      keptRows.push(row);
+      row++;
+    }
+    if (outAnchors.length > 0) {
+      outSubpaths.push({ ...sub, anchors: outAnchors });
+    }
+  }
+
+  if (written.size > 0) {
+    for (let k = 0; k < keptAnchors.length; k++) {
+      const merged: Record<string, number | number[]> = {
+        ...keptAnchors[k].attrs,
+      };
+      for (const [name, buf] of written) merged[name] = buf[keptRows[k]];
+      keptAnchors[k].attrs = merged;
+    }
+  }
+
+  if (!runtimeErr) {
+    state.error = null;
+    state.lastWarned = null;
+  }
+  return { primary: { kind: "spline", subpaths: outSubpaths } };
+}
 
 export const pointExpressionNode: NodeDefinition = {
   type: "point-expression",
@@ -479,7 +716,14 @@ export const pointExpressionNode: NodeDefinition = {
     "Set `keep=false` to cull a point. Wire a spline into `path` to sample " +
     "guide curves with pathPos(factor, sub) / pathLen(sub) / pathAngle(...). " +
     "Deterministic rand(seed) hashes on index for stable per-point randomness; " +
-    "random() varies per frame. Mark tunables with ch(\"name\", default) " +
+    "random() varies per frame. attr(\"name\") reads a named point channel " +
+    "(attr(\"name\", c) for a component) and setattr(\"name\", v) writes a " +
+    "float channel — inspect them in the Spreadsheet panel. " +
+    "Target switches the element domain: `spline anchors` runs the code " +
+    "once per anchor instead (read px/py, handle offsets inx0/iny0/" +
+    "outx0/outy0, width0, subpath; write x, y, inx, iny, outx, outy, " +
+    "width, keep). " +
+    "Mark tunables with ch(\"name\", default) " +
     "(sliders) or pick(\"name\", \"optA\", \"optB\") (dropdowns) and hit Sync to " +
     "turn them into standard controls you can drive. Every ch() channel is " +
     "also a wireable scalar input socket addressed by its channel name — " +
@@ -498,8 +742,15 @@ export const pointExpressionNode: NodeDefinition = {
   ],
   resolveInputs(params): InputSocketDef[] {
     const entries = (params.inputs as ExprInput[]) ?? [];
+    const target = ((params.target as string) ??
+      "points") as ExprTarget;
     return [
-      { name: "points", type: "points", required: true },
+      {
+        name: "points",
+        type: target === "spline anchors" ? "spline" : "points",
+        required: true,
+        label: target === "spline anchors" ? "Spline" : "Points",
+      },
       { name: "path", type: "spline", required: false, label: "Path" },
       // Scalar (ch) channels get a wireable socket; enum (pick) channels are
       // panel-only dropdowns.
@@ -514,6 +765,13 @@ export const pointExpressionNode: NodeDefinition = {
     ];
   },
   params: [
+    {
+      name: "target",
+      label: "Target",
+      type: "enum",
+      options: ["points", "spline anchors"],
+      default: "points",
+    },
     {
       name: "inputs",
       label: "Channels",
@@ -541,29 +799,32 @@ export const pointExpressionNode: NodeDefinition = {
     },
   ],
   primaryOutput: "points",
+  resolvePrimaryOutput(params): SocketType {
+    return ((params.target as string) ?? "points") === "spline anchors"
+      ? "spline"
+      : "points";
+  },
   auxOutputs: [],
 
   compute({ inputs, params, ctx, nodeId }) {
-    const src = inputs.points;
-    if (!src || src.kind !== "points" || src.count === 0) {
-      return { primary: EMPTY };
-    }
+    const target = ((params.target as string) ?? "points") as ExprTarget;
+    const srcIn = inputs.points;
 
     const entries = (params.inputs as ExprInput[]) ?? [];
     const source = (params.expression as string) ?? "";
     const onErrorZero = (params.on_error as string) === "zero";
 
     const state = getState(ctx, nodeId);
-    if (!state.compiled || state.compiled.source !== source) {
-      state.compiled = compile(source);
+    if (
+      !state.compiled ||
+      state.compiled.source !== source ||
+      state.compiled.target !== target
+    ) {
+      state.compiled = compile(source, target);
       state.error = state.compiled.error;
       warnOnce(state, nodeId);
     }
     const fn = state.compiled.fn;
-    if (!fn) {
-      // Compile error (or empty) → pass the points through untouched.
-      return { primary: src };
-    }
 
     // Channel values by name. Enum (pick) channels carry a selected string and
     // have no socket; scalar (ch) channels take the wired scalar if present,
@@ -591,9 +852,62 @@ export const pointExpressionNode: NodeDefinition = {
       pathSrc,
       pathSrc ? measureSpline(pathSrc) : null
     );
-    const env = makeEnv(ctx, nodeId, pathEnv, channels);
 
+    if (target === "spline anchors") {
+      if (!srcIn || srcIn.kind !== "spline" || srcIn.subpaths.length === 0) {
+        return { primary: EMPTY_SPLINE };
+      }
+      // Compile error (or empty) → pass the spline through untouched.
+      if (!fn) return { primary: srcIn };
+      return runAnchorExpression(
+        srcIn,
+        fn,
+        ctx,
+        nodeId,
+        pathEnv,
+        channels,
+        onErrorZero,
+        state
+      );
+    }
+
+    const src = srcIn;
+    if (!src || src.kind !== "points" || src.count === 0) {
+      return { primary: EMPTY };
+    }
+    // Compile error (or empty) → pass the points through untouched.
+    if (!fn) return { primary: src };
     const n = src.count;
+    // attr/setattr close over a cursor the loop advances. Writes land in
+    // full-length buffers (compacted with keptMap below); reads see the
+    // SOURCE value only, so results never depend on iteration order.
+    const cursor = { i: 0 };
+    const written = new Map<string, Float32Array>();
+    const srcAttrs = src.attributes;
+    const env = makeEnv(ctx, nodeId, pathEnv, channels, {
+      attr: (name, component = 0) => {
+        const a = srcAttrs?.[name];
+        if (!a) return 0;
+        const c = Math.max(0, Math.min(a.arity - 1, component | 0));
+        return a.data[cursor.i * a.arity + c];
+      },
+      setattr: (name, value) => {
+        if (
+          typeof name !== "string" ||
+          !name ||
+          RESERVED_POINT_ATTR_NAMES.has(name)
+        ) {
+          return;
+        }
+        let arr = written.get(name);
+        if (!arr) {
+          arr = new Float32Array(n);
+          written.set(name, arr);
+        }
+        const v = +value;
+        arr[cursor.i] = Number.isFinite(v) ? v : 0;
+      },
+    });
     const inPos = src.positions;
     const inScales = src.scales;
     const inRots = src.rotations;
@@ -603,6 +917,9 @@ export const pointExpressionNode: NodeDefinition = {
     const outScales = new Float32Array(n * 2);
     const outRots = new Float32Array(n);
     const outGroups = inGroups ? new Int32Array(n) : undefined;
+    // Source index of each kept row — the gather map for channels the
+    // kernel doesn't compute (z/normals, future attributes).
+    const keptMap = new Int32Array(n);
     let kept = 0;
     let runtimeErr = false;
 
@@ -624,6 +941,7 @@ export const pointExpressionNode: NodeDefinition = {
       const sy0 = inScales ? inScales[i * 2 + 1] : 1;
       const rot0 = inRots ? inRots[i] : 0;
       pt.index = i;
+      cursor.i = i;
       pt.groupIndex = inGroups ? inGroups[i] : 0;
       pt.px = px;
       pt.py = py;
@@ -677,6 +995,7 @@ export const pointExpressionNode: NodeDefinition = {
       outScales[kept * 2 + 1] = syOut;
       outRots[kept] = rotOut;
       if (outGroups) outGroups[kept] = pt.groupIndex;
+      keptMap[kept] = i;
       kept++;
     }
 
@@ -687,26 +1006,44 @@ export const pointExpressionNode: NodeDefinition = {
 
     if (kept === 0) return { primary: EMPTY };
 
-    const out: PointsValue =
-      kept === n
-        ? {
-            kind: "points",
-            count: n,
-            positions: outPos,
-            scales: outScales,
-            rotations: outRots,
-            groupIndices: outGroups,
-            points: [],
-          }
-        : {
-            kind: "points",
-            count: kept,
-            positions: outPos.slice(0, kept * 2),
-            scales: outScales.slice(0, kept * 2),
-            rotations: outRots.slice(0, kept),
-            groupIndices: outGroups ? outGroups.slice(0, kept) : undefined,
-            points: [],
-          };
+    // The kernel computed positions/scales/rotations/groups; everything it
+    // doesn't know about (z/normals, other channels) carries from the
+    // source — whole when nothing was culled, gathered by keptMap
+    // otherwise. setattr results overlay the carried channels last, so a
+    // same-name write wins.
+    let writtenAttrs: Record<string, PointAttribute> | undefined;
+    if (written.size > 0) {
+      writtenAttrs = {};
+      for (const [name, data] of written) {
+        writtenAttrs[name] = { arity: 1, data };
+      }
+    }
+    let out: PointsValue;
+    if (kept === n) {
+      out = copyPointsWith(src, {
+        positions: outPos,
+        scales: outScales,
+        rotations: outRots,
+        groupIndices: outGroups,
+        ...(writtenAttrs
+          ? { attributes: { ...src.attributes, ...writtenAttrs } }
+          : {}),
+      });
+    } else {
+      const base = gatherPoints(src, keptMap, kept);
+      const compactWritten = writtenAttrs
+        ? gatherAttributes(writtenAttrs, keptMap, kept)
+        : undefined;
+      out = copyPointsWith(base, {
+        positions: outPos.slice(0, kept * 2),
+        scales: outScales.slice(0, kept * 2),
+        rotations: outRots.slice(0, kept),
+        groupIndices: outGroups ? outGroups.slice(0, kept) : undefined,
+        ...(compactWritten
+          ? { attributes: { ...base.attributes, ...compactWritten } }
+          : {}),
+      });
+    }
     return { primary: out };
   },
 
@@ -725,35 +1062,56 @@ export const pointExpressionNode: NodeDefinition = {
     const raw = params.expression;
     if (raw !== undefined && typeof raw !== "string")
       return ["expression must be a string of JavaScript."];
-    const compiled = compile(raw ?? "");
+    const target = ((params.target as string) ?? "points") as ExprTarget;
+    const compiled = compile(raw ?? "", target);
     if (!compiled.fn)
       return [`expression does not compile: ${compiled.error ?? "unknown error"}`];
-    const pt: PointCtx = {
-      index: 0,
-      count: 1,
-      groupIndex: 0,
-      px: 0.5,
-      py: 0.5,
-      rot0: 0,
-      sx0: 1,
-      sy0: 1,
-    };
+    const pt: PointCtx | AnchorCtx =
+      target === "spline anchors"
+        ? {
+            index: 0,
+            count: 1,
+            subpath: 0,
+            groupIndex: 0,
+            px: 0.5,
+            py: 0.5,
+            inx0: 0,
+            iny0: 0,
+            outx0: 0,
+            outy0: 0,
+            width0: 1,
+          }
+        : {
+            index: 0,
+            count: 1,
+            groupIndex: 0,
+            px: 0.5,
+            py: 0.5,
+            rot0: 0,
+            sx0: 1,
+            sy0: 1,
+          };
+    const writables =
+      target === "spline anchors"
+        ? "x, y, inx, iny, outx, outy, width, keep"
+        : "x, y, rot, sx, sy, scale, keep";
     try {
       const env = makeEnv(
         { time: 0, frame: 0, fps: 60 } as RenderContext,
         "validate",
         makePathEnv(null, null),
-        {}
+        {},
+        NO_ATTRS
       );
       const result = compiled.fn(env, pt);
-      if (!Array.isArray(result) || result.length !== 7)
+      if (!Array.isArray(result) || result.length !== tupleLenFor(target))
         return [
-          "expression must use assignments (x = …, y = …, keep = …), not `return` — a returned value replaces the point outputs and the expression does nothing.",
+          "expression must use assignments (x = …, y = …, keep = …), not `return` — a returned value replaces the element outputs and the expression does nothing.",
         ];
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return [
-        `expression throws when run (${msg}) — declare temporaries with let/const and assign to the writable outputs x, y, rot, sx, sy, scale, keep.`,
+        `expression throws when run (${msg}) — declare temporaries with let/const and assign to the writable outputs ${writables}.`,
       ];
     }
     return [];

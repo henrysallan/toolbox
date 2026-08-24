@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SegmentDot } from "@/lib/ai/segment";
 import { rectsEqual } from "./overlay-rect";
+import { claimPointerGesture } from "@/lib/pointer-claim";
 
 // Click-to-place prompt dots for the Segment Anything node. Mounted while
 // a segment node is selected (same gating as the spline pen overlay).
@@ -114,6 +115,8 @@ export default function SegmentDotsOverlay({
         const x = (e.clientX - rect.left) / rect.width;
         const y = (e.clientY - rect.top) / rect.height;
         if (x < 0 || x > 1 || y < 0 || y > 1) return;
+        // Overlay click — keep it out of the graph's cursor press facts.
+        claimPointerGesture(e.pointerId);
         // Hit-test existing dots in CSS pixels — click one to remove it.
         for (let i = 0; i < dots.length; i++) {
           const dx = (dots[i].x - x) * rect.width;

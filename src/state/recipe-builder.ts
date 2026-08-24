@@ -174,6 +174,7 @@ export function vetMergeLayers(
       mode?: unknown;
       opacity?: unknown;
       enabled?: unknown;
+      maskInvert?: unknown;
     } | null;
     if (raw === null || typeof raw !== "object")
       return { ok: false, reason: `entry ${i} must be an object` };
@@ -191,12 +192,17 @@ export function vetMergeLayers(
       return { ok: false, reason: `entry ${i}: enabled must be a boolean` };
     const enabled =
       raw.enabled === undefined ? existing?.[i]?.enabled : raw.enabled;
+    if (raw.maskInvert !== undefined && typeof raw.maskInvert !== "boolean")
+      return { ok: false, reason: `entry ${i}: maskInvert must be a boolean` };
+    const maskInvert =
+      raw.maskInvert === undefined ? existing?.[i]?.maskInvert : raw.maskInvert;
     out.push({
       id: existing?.[i]?.id ?? newLayerId(),
       mode: mode as BlendMode,
       opacity,
-      // Omit when enabled (the default) so the authored shape stays minimal.
+      // Omit the flags at their defaults so the authored shape stays minimal.
       ...(enabled === false ? { enabled: false } : {}),
+      ...(maskInvert === true ? { maskInvert: true } : {}),
     });
   }
   return { ok: true, value: out };

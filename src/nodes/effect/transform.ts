@@ -7,7 +7,13 @@ import type {
   SplineValue,
 } from "@/engine/types";
 import { transformSpline } from "@/engine/spline-transform";
-import { ensurePointArray, pointsFromArray } from "@/engine/points";
+import {
+  copyPointsWith,
+  ensurePointArray,
+  getRotation,
+  getScaleX,
+  getScaleY,
+} from "@/engine/points";
 
 // Scale/rotate/translate around a user-controlled pivot. All params are in
 // normalized (0-1) screen space — pivot (0,0) is the top-left of the frame,
@@ -285,33 +291,44 @@ export const transformNode: NodeDefinition = {
       // transform's — additive for rotation, multiplicative for
       // scale — so a Copy-to-Points chain down the line sees the
       // combined effect.
-      const pts = ensurePointArray(src);
       const p =
         localSpace
-          ? localPivot(pointsAABB(pts), pivotXParam, pivotYParam)
+          ? localPivot(
+              pointsAABB(ensurePointArray(src)),
+              pivotXParam,
+              pivotYParam
+            )
           : { x: pivotXParam, y: pivotYParam };
       const pivotX = p.x;
       const pivotY = p.y;
       const rad = (rotateDeg * Math.PI) / 180;
       const cos = Math.cos(rad);
       const sin = Math.sin(rad);
-      const transformed: Point[] = pts.map((p) => {
-        const dx = (p.pos[0] - pivotX) * scaleX;
-        const dy = (p.pos[1] - pivotY) * scaleY;
+      // SoA transform: positions/rotations/scales replaced, everything
+      // else (groupIndices included — the Point[] round-trip used to drop
+      // them) carries through the copy.
+      const n = src.count;
+      const positions = new Float32Array(n * 2);
+      const rotations = new Float32Array(n);
+      const outScales = new Float32Array(n * 2);
+      for (let i = 0; i < n; i++) {
+        const dx = (src.positions[i * 2] - pivotX) * scaleX;
+        const dy = (src.positions[i * 2 + 1] - pivotY) * scaleY;
         const rx = cos * dx - sin * dy;
         const ry = sin * dx + cos * dy;
-        const baseScale = p.scale ?? [1, 1];
-        return {
-          pos: [translateX + pivotX + rx, translateY + pivotY + ry],
-          rotation: (p.rotation ?? 0) + rad,
-          scale: [
-            baseScale[0] * Math.abs(scaleX),
-            baseScale[1] * Math.abs(scaleY),
-          ],
-        };
-      });
-      const out: PointsValue = pointsFromArray(transformed);
-      return { primary: out };
+        positions[i * 2] = translateX + pivotX + rx;
+        positions[i * 2 + 1] = translateY + pivotY + ry;
+        rotations[i] = getRotation(src, i) + rad;
+        outScales[i * 2] = getScaleX(src, i) * Math.abs(scaleX);
+        outScales[i * 2 + 1] = getScaleY(src, i) * Math.abs(scaleY);
+      }
+      return {
+        primary: copyPointsWith(src, {
+          positions,
+          rotations,
+          scales: outScales,
+        }),
+      };
     }
 
     const output = ctx.allocImage();

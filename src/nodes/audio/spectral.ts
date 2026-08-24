@@ -318,6 +318,9 @@ export const audioSpectralNode: NodeDefinition = {
     "Turn audio into a spectrum image — a scalar field (frequency × magnitude) to drive Displace, Copy-to-Points, gradients, SDF fields, and more. Linear / log / mel / waveform / chroma / 2D spectrogram.",
   backend: "webgl2",
   stable: false,
+  // Reads the LIVE AnalyserNode tap — external audio state. Time Offset
+  // boundary-feeds the current spectrum through un-shifted.
+  retimeable: false,
   noMaskInput: true,
   inputs: [{ name: "audio", type: "audio", required: true, label: "Audio" }],
   params: [

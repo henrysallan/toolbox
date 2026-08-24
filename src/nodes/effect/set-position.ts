@@ -8,7 +8,7 @@ import type {
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
-import { ensurePointArray, pointsFromArray } from "@/engine/points";
+import { copyPointsWith, EMPTY_POINTS } from "@/engine/points";
 
 // Translate a spline or point cluster so its geometric center lands at
 // (X, Y). Absolute "place this thing here" semantics — unlike
@@ -30,17 +30,6 @@ function innerTypeFor(mode: Mode): SocketType {
   return mode === "spline" ? "spline" : "points";
 }
 
-function centroidOfPoints(points: Point[]): [number, number] | null {
-  if (points.length === 0) return null;
-  let sx = 0;
-  let sy = 0;
-  for (const p of points) {
-    sx += p.pos[0];
-    sy += p.pos[1];
-  }
-  return [sx / points.length, sy / points.length];
-}
-
 function centroidOfSpline(
   spline: SplineValue
 ): [number, number] | null {
@@ -56,13 +45,6 @@ function centroidOfSpline(
   }
   if (n === 0) return null;
   return [sx / n, sy / n];
-}
-
-function shiftPoints(points: Point[], dx: number, dy: number): Point[] {
-  return points.map((p) => ({
-    ...p,
-    pos: [p.pos[0] + dx, p.pos[1] + dy],
-  }));
 }
 
 function shiftSubpath(
@@ -155,20 +137,25 @@ export const setPositionNode: NodeDefinition = {
 
     if (mode === "points") {
       if (!src || src.kind !== "points") {
-        const empty: PointsValue = pointsFromArray([]);
-        return { primary: empty };
+        return { primary: EMPTY_POINTS };
       }
-      const srcPts = ensurePointArray(src);
-      const c = centroidOfPoints(srcPts);
-      if (!c) {
-        return { primary: src };
+      const n = src.count;
+      if (n === 0) return { primary: src };
+      // Centroid + shift in SoA — positions replaced, all else carries.
+      let cx = 0;
+      let cy = 0;
+      for (let i = 0; i < n; i++) {
+        cx += src.positions[i * 2];
+        cy += src.positions[i * 2 + 1];
       }
-      const dx = target[0] - c[0];
-      const dy = target[1] - c[1];
-      const out: PointsValue = pointsFromArray(
-        shiftPoints(srcPts, dx, dy)
-      );
-      return { primary: out };
+      const dx = target[0] - cx / n;
+      const dy = target[1] - cy / n;
+      const positions = new Float32Array(n * 2);
+      for (let i = 0; i < n; i++) {
+        positions[i * 2] = src.positions[i * 2] + dx;
+        positions[i * 2 + 1] = src.positions[i * 2 + 1] + dy;
+      }
+      return { primary: copyPointsWith(src, { positions }) };
     }
 
     // spline mode

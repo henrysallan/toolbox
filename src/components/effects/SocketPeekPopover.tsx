@@ -169,6 +169,11 @@ function PeekVisual({
     case "spline":
       return <SplineThumb value={value} aspect={canvasAspect} />;
     case "points":
+      // 3D values (z present — world-space, rides points3d sockets) skip
+      // the drawing: PointsThumb plots authored [0,1]² coordinates, and
+      // world meters drawn in that space are nonsense. The shared summary
+      // line already says "points3d · N points".
+      if (value.z !== undefined) return null;
       return <PointsThumb value={value} aspect={canvasAspect} />;
     case "string":
       return (

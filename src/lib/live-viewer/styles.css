@@ -2,6 +2,14 @@
    bundle (no Next.js globals.css) renders sliders identically to the
    editor and the live link. */
 @import "./form-controls.css";
+/* Control-style preset packs (081426_live-link-designer.md). */
+@import "./design-presets.css";
+
+/* The var values below are FALLBACKS: LiveRoot (live-root.tsx) applies
+   the full computed token sheet inline from the project's design block
+   (design.ts designTokens), so these only show for a .live-root rendered
+   outside LiveRoot — which shouldn't exist. Keep them in step with the
+   dark palette in design.ts. */
 
 .live-root {
   --bg: #0a0a0a;
@@ -28,6 +36,8 @@
   display: flex;
   width: 100%;
   height: 100%;
+  /* Anchor for the floating panel card. */
+  position: relative;
 }
 
 .live-root .canvas-area {
@@ -35,7 +45,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #050505;
+  background: var(--bg-deep, #050505);
   overflow: hidden;
   padding: 24px;
 }
@@ -43,22 +53,87 @@
 .live-root .canvas-area canvas {
   max-width: 100%;
   max-height: 100%;
-  background: #000;
+  background: var(--canvas-bg, #000);
   display: block;
   box-shadow: 0 4px 32px rgba(0, 0, 0, 0.6);
+  border-radius: var(--lv-radius, 0px);
 }
 
 .live-root .sidebar {
   width: 280px;
   flex-shrink: 0;
   height: 100%;
-  background: var(--bg-2);
+  /* --panel-bg = bg-2 with the design's panel opacity (design.ts);
+     --panel-backdrop is only emitted when blur > 0. */
+  background: var(--panel-bg, var(--bg-2));
+  backdrop-filter: var(--panel-backdrop, none);
+  -webkit-backdrop-filter: var(--panel-backdrop, none);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   font-size: 11px;
   color: var(--text);
   overflow-y: auto;
+}
+
+/* --- design-block layout branches (081426_live-link-designer.md M1).
+   The data attributes come from LiveRoot; with no design block the
+   defaults (inset / right / full-height / radius 0) match the base
+   rules above exactly. --- */
+
+/* Panel on the left: flip the flex order and the divider side. */
+.live-root[data-panel-side="left"] .app {
+  flex-direction: row-reverse;
+}
+.live-root[data-panel-side="left"] .sidebar {
+  border-left: none;
+  border-right: 1px solid var(--border);
+}
+
+/* Floating panel: an overlay card over the canvas area instead of a
+   flanking column. Absolute pulls it out of the flex flow, so the
+   canvas area takes the full width behind it. */
+.live-root[data-panel-mode="floating"] .sidebar {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  height: auto;
+  max-height: calc(100% - 32px);
+  border: 1px solid var(--border);
+  border-radius: var(--lv-radius, 0px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+.live-root[data-panel-mode="floating"][data-panel-side="left"] .sidebar {
+  left: 16px;
+  right: auto;
+}
+
+/* Vertical anchor of the floating card (full-height ignores it — the
+   column always spans). Middle centers via transform; the card's portal
+   popovers are unaffected (they target the document body). */
+.live-root[data-panel-mode="floating"][data-panel-align="middle"] .sidebar {
+  top: 50%;
+  transform: translateY(-50%);
+}
+.live-root[data-panel-mode="floating"][data-panel-align="bottom"] .sidebar {
+  top: auto;
+  bottom: 16px;
+}
+
+/* Full-bleed canvas: cover the whole area, crop the overflow. object-fit
+   scales the fixed-resolution buffer like any replaced element once the
+   element is given explicit 100% dimensions. */
+.live-root[data-canvas="full-bleed"] .canvas-area {
+  padding: 0;
+}
+.live-root[data-canvas="full-bleed"] .canvas-area canvas {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .live-root .sidebar .section {
@@ -118,7 +193,9 @@
   gap: 6px;
 }
 
-.live-root .transport button {
+.live-root .transport button,
+.live-root .export-row button,
+.live-root .export-status button {
   background: var(--bg-3);
   border: 1px solid var(--border);
   color: var(--text);
@@ -129,8 +206,85 @@
   font-family: inherit;
 }
 
-.live-root .transport button:hover {
-  background: #232328;
+.live-root .transport button:hover,
+.live-root .export-row button:hover:not(:disabled),
+.live-root .export-status button:hover {
+  background: var(--bg-hover, #232328);
+}
+
+/* Default transport extras (2026-08-17): scrub + resolution. */
+.live-root .scrub {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.live-root .res-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.live-root .res-row .res-label {
+  color: var(--text-dim);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.live-root .res-row input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.live-root .res-row .res-value {
+  color: var(--text-faint);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  width: 32px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* Viewer export (081426_live-link-designer.md M3). */
+.live-root .export-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.live-root .export-row button {
+  flex: 1;
+  font-size: 11px;
+}
+
+.live-root .export-row button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.live-root .export-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.live-root .export-status span {
+  flex: 1;
+  min-width: 0;
+}
+
+.live-root .export-status button {
+  padding: 1px 6px;
+  font-size: 10px;
+}
+
+.live-root .export-hint {
+  margin-top: 4px;
+  color: var(--text-faint);
+  font-size: 9px;
 }
 
 .live-root .transport .time {

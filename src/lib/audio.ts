@@ -8,7 +8,27 @@ import type { AudioFileParamValue } from "@/engine/types";
 export async function registerAudioFile(
   file: File
 ): Promise<AudioFileParamValue> {
-  const url = URL.createObjectURL(file);
+  return loadAudioElement(URL.createObjectURL(file), {
+    filename: file.name,
+    size: file.size,
+  });
+}
+
+// Load a cloud-hosted clip by URL (spec 081626 §7.4). Same element wiring
+// as a local File, minus the ObjectURL; crossOrigin="anonymous" keeps the
+// Web Audio analysis taps working on cross-origin media (a non-CORS
+// element feeds MediaElementSource silence).
+export async function registerAudioUrl(
+  url: string,
+  meta: { filename: string; size?: number }
+): Promise<AudioFileParamValue> {
+  return loadAudioElement(url, meta);
+}
+
+async function loadAudioElement(
+  url: string,
+  meta: { filename: string; size?: number }
+): Promise<AudioFileParamValue> {
   const element = document.createElement("audio");
   element.src = url;
   element.crossOrigin = "anonymous";
@@ -22,7 +42,7 @@ export async function registerAudioFile(
     };
     const onErr = () => {
       cleanup();
-      reject(new Error(`Audio load failed: ${file.name}`));
+      reject(new Error(`Audio load failed: ${meta.filename}`));
     };
     const cleanup = () => {
       element.removeEventListener("loadedmetadata", onMeta);
@@ -35,8 +55,8 @@ export async function registerAudioFile(
   return {
     element,
     url,
-    filename: file.name,
-    size: file.size,
+    filename: meta.filename,
+    size: meta.size,
     duration: element.duration,
   };
 }

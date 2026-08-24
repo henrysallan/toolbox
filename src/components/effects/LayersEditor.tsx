@@ -85,6 +85,7 @@ import {
   nextGestureKey,
   scaleKeyframes as scaleKeyframesOp,
   selKey,
+  spaceKeyframes as spaceKeyframesOp,
   staggerKeyframes as staggerKeyframesOp,
 } from "./timeline/keyframe-ops";
 import { moveClipWindow, trimClipWindow } from "./timeline/clip-ops";
@@ -171,6 +172,14 @@ export interface LayersEditorProps {
     coalesceKey?: string
   ): void;
   fitVersion?: number;
+  // Reports every keyframe-selection change (including empty). EffectsApp
+  // lifts this so the Graph Editor can show the selected keyframes'
+  // lanes — which replaced the per-track ∿ graphVisible toggle.
+  onKeyframeSelectionChange?(sel: SelectionKey[]): void;
+  // Seeds the keyframe selection at mount (read once). EffectsApp passes
+  // the lifted selection back so a dock-tab round-trip (layers → graph →
+  // layers) re-mounts with the same keyframes selected.
+  initialKeyframeSelection?: SelectionKey[];
 }
 
 type Drag =
@@ -252,6 +261,8 @@ export function LayersEditor({
   getAnimation,
   onAnimationChange,
   fitVersion,
+  onKeyframeSelectionChange,
+  initialKeyframeSelection,
 }: LayersEditorProps) {
   // Null in the main window; the child Window when the timeline panel
   // is popped out (080226_panel-popout-windows.md §3).
@@ -317,8 +328,17 @@ export function LayersEditor({
   );
 
   // --- keyframe selection ---
-  const [selection, setSelection] = useState<SelectionKey[]>([]);
+  // Seeded from the lifted selection so a tab round-trip re-mounts with
+  // the same keyframes selected. Lazy — read once at mount.
+  const [selection, setSelection] = useState<SelectionKey[]>(
+    () => initialKeyframeSelection ?? []
+  );
   const selSet = useMemo(() => new Set(selection.map(selKey)), [selection]);
+  // Lift every selection change so the Graph Editor (possibly in another
+  // pane/window) can graph the selected keyframes' lanes.
+  useEffect(() => {
+    onKeyframeSelectionChange?.(selection);
+  }, [selection, onKeyframeSelectionChange]);
   // Keep a live ref so drag handlers and the keyboard handler read the
   // current selection without re-subscribing every change (synced in the
   // every-render effect below rowLayout).
@@ -604,6 +624,59 @@ export function LayersEditor({
     timeline.ticksPerFrame,
   ]);
 
+  // Even spacing from the dock header's spacing control. Same contract
+  // as stagger: `keyframe-space-begin` snapshots a selection with ≥2
+  // distinct ticks and responds with the current first-gap in frames
+  // (so the panel opens pre-filled), `keyframe-space` re-spaces from
+  // the snapshot, `keyframe-space-end` drops it.
+  const spaceBaseRef = useRef<{
+    bases: GroupBase[];
+    gestureKey: string;
+  } | null>(null);
+  useEffect(() => {
+    const onBegin = (e: Event) => {
+      const sel = selectionRef.current;
+      const ticks = [...new Set(sel.map((s) => s.tick))].sort((a, b) => a - b);
+      if (ticks.length >= 2) {
+        spaceBaseRef.current = {
+          bases: buildGroupBases(sel, getAnimation),
+          gestureKey: nextGestureKey("space"),
+        };
+        (e as CustomEvent).detail?.respond?.(
+          Math.max(1, Math.round((ticks[1] - ticks[0]) / timeline.ticksPerFrame))
+        );
+      } else {
+        spaceBaseRef.current = null;
+      }
+    };
+    const onStep = (e: Event) => {
+      const base = spaceBaseRef.current;
+      if (!base) return;
+      const ticks = (e as CustomEvent<{ stepTicks: number }>).detail?.stepTicks;
+      if (typeof ticks === "number") {
+        applyKeyframeOp(
+          spaceKeyframesOp(base.bases, ticks, {
+            snap: true,
+            ticksPerFrame: timeline.ticksPerFrame,
+          }),
+          base.gestureKey
+        );
+      }
+    };
+    const onEnd = () => {
+      spaceBaseRef.current = null;
+    };
+    const win = panelWin ?? window;
+    win.addEventListener("keyframe-space-begin", onBegin);
+    win.addEventListener("keyframe-space", onStep);
+    win.addEventListener("keyframe-space-end", onEnd);
+    return () => {
+      win.removeEventListener("keyframe-space-begin", onBegin);
+      win.removeEventListener("keyframe-space", onStep);
+      win.removeEventListener("keyframe-space-end", onEnd);
+    };
+  }, [panelWin, applyKeyframeOp, getAnimation, timeline.ticksPerFrame]);
+
   // Toggle a keyframe at the playhead (the lane-label diamond). Reads
   // the playhead imperatively so the toggle always lands at the live
   // tick.
@@ -629,20 +702,6 @@ export function LayersEditor({
       }
     },
     [getAnimation, onAnimationChange, currentValueOf]
-  );
-
-  // Toggle whether a track's curve shows in the Graph editor (the ∿
-  // button). Only meaningful once the param has an animation block.
-  const toggleGraphFor = useCallback(
-    (track: LayerTrack) => {
-      const block = getAnimation(track.nodeId, track.paramName);
-      const base = block ?? emptyAnimationBlock();
-      onAnimationChange(track.nodeId, track.paramName, {
-        ...base,
-        graphVisible: !base.graphVisible,
-      });
-    },
-    [getAnimation, onAnimationChange]
   );
 
   // Which window the cursor is over, and which third of it (for grip
@@ -1880,12 +1939,6 @@ export function LayersEditor({
                 selSet={selSet}
                 onToggleKey={() => toggleKeyAtPlayhead(track)}
                 onSeek={onScrub}
-                graphOn={!!laneBlock?.graphVisible}
-                onToggleGraph={
-                  track.type === "scalar"
-                    ? () => toggleGraphFor(track)
-                    : undefined
-                }
                 onDiamondPointerDown={(e, tick) =>
                   startDiamondDrag(e, track, tick)
                 }
@@ -2212,8 +2265,6 @@ function KeyframeLane({
   selSet,
   onToggleKey,
   onSeek,
-  graphOn,
-  onToggleGraph,
   onDiamondPointerDown,
   onSegmentPointerDown,
   onDiamondContextMenu,
@@ -2225,9 +2276,6 @@ function KeyframeLane({
   selSet: Set<string>;
   onToggleKey: () => void;
   onSeek: (tick: number) => void;
-  graphOn: boolean;
-  // Present only for scalar tracks (the graph editor draws scalars).
-  onToggleGraph?: () => void;
   onDiamondPointerDown: (e: React.PointerEvent, tick: number) => void;
   /** The two keyframes bounding the clicked connector segment. */
   onSegmentPointerDown: (e: React.PointerEvent, ticks: [number, number]) => void;
@@ -2275,31 +2323,6 @@ function KeyframeLane({
         >
           {track.label}
         </span>
-        {onToggleGraph && (
-          <button
-            type="button"
-            title={
-              graphOn ? "Hide curve in Graph Editor" : "Show curve in Graph Editor"
-            }
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleGraph();
-            }}
-            style={{
-              flexShrink: 0,
-              background: graphOn ? "var(--tb-a-blue-500)" : "transparent",
-              color: graphOn ? "#fff" : "var(--tb-n-10)",
-              border: "1px solid var(--tb-n-7)",
-              borderRadius: 2,
-              cursor: "pointer",
-              fontSize: 10,
-              padding: "0 4px",
-              lineHeight: "15px",
-            }}
-          >
-            {"∿"}
-          </button>
-        )}
       </div>
       <div
         style={{

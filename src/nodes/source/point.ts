@@ -1,9 +1,12 @@
 import type { NodeDefinition, PointsValue } from "@/engine/types";
 import { pointsFromArray } from "@/engine/points";
 
-// Single-point generator. Outputs a `points` value with exactly one entry.
-// Useful as the identity element for Copy-to-Points ("place one instance
-// at (x, y)") and as a seed for operations that transform points.
+// Point generator. Outputs a `points` value with `count` entries, all at
+// (x, y) — coincident on purpose. Each copy still gets its own index (its
+// slot in the positions array), so downstream per-point nodes (Point
+// Expression, Modulate Points, Filter Points) can fan the stack apart.
+// Count 1 (the default) is the classic single-point identity element for
+// Copy-to-Points ("place one instance at (x, y)").
 //
 // Rotation is stored in radians to match how Copy-to-Points applies it;
 // the UI exposes degrees and we convert. Scale defaults to 1,1.
@@ -14,7 +17,7 @@ export const pointNode: NodeDefinition = {
   category: "point",
   subcategory: "generator",
   description:
-    "Emit a single point at (x, y). Combine with Copy to Points to place one instance of an image or spline at a specific location.",
+    "Emit Count points at (x, y). They start stacked at the same location but each has its own index, so per-point nodes (Point Expression, Modulate Points) can spread them apart. With Count 1, combine with Copy to Points to place one instance of an image or spline at a specific location.",
   backend: "webgl2",
   // When `position` is connected, its vec2 value overrides the x/y
   // params so you can drive Point's location from any vec2 source
@@ -22,6 +25,16 @@ export const pointNode: NodeDefinition = {
   // without splitting to scalars first.
   inputs: [{ name: "position", type: "vec2", required: false }],
   params: [
+    {
+      name: "count",
+      label: "Count",
+      type: "scalar",
+      min: 1,
+      max: 4096,
+      softMax: 64,
+      step: 1,
+      default: 1,
+    },
     {
       name: "x",
       label: "X",
@@ -76,13 +89,14 @@ export const pointNode: NodeDefinition = {
     }
     const rotDeg = (params.rotation_deg as number) ?? 0;
     const scale = (params.scale as number) ?? 1;
-    const out: PointsValue = pointsFromArray([
-      {
-        pos: [x, y],
+    const count = Math.max(1, Math.round((params.count as number) ?? 1));
+    const out: PointsValue = pointsFromArray(
+      Array.from({ length: count }, () => ({
+        pos: [x, y] as [number, number],
         rotation: (rotDeg * Math.PI) / 180,
-        scale: [scale, scale],
-      },
-    ]);
+        scale: [scale, scale] as [number, number],
+      }))
+    );
     return { primary: out };
   },
 };

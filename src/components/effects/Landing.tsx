@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { useUser } from "@/lib/auth-context";
 import { platform } from "@/lib/platform";
+import { setGatewayInputLock } from "@/lib/shortcut-freeze";
 import LoadGrid from "./LoadGrid";
 import WindowControls from "./WindowControls";
 
@@ -70,6 +72,11 @@ export default function Landing({
   const [isWindows, setIsWindows] = useState(false);
   // Web download button: lead with the visitor's OS (sniffed from navigator).
   const [downloadWin, setDownloadWin] = useState(false);
+  // Maximize toggle: grows the projects card to near-fullscreen. The
+  // maximized width/height below are sized so the header's pills clear the
+  // web download cluster (top-right) and the card bottom clears the privacy
+  // link (bottom-left) — see the clearance math at each value.
+  const [maximized, setMaximized] = useState(false);
   useEffect(() => {
     const id = requestAnimationFrame(() => setShown(true));
     const t = setTimeout(() => setRevealed(true), REVEAL_DELAY_MS);
@@ -80,6 +87,21 @@ export default function Landing({
       cancelAnimationFrame(id);
       clearTimeout(t);
     };
+  }, []);
+
+  // The editor stays mounted (and interactive) behind the veil: its
+  // hotkeys, clipboard paste, wheel-pan and middle-click handlers all
+  // listen on `window`, and the wheel/middle-click ones hit-test the
+  // cursor against viewport rects — DOM occlusion doesn't protect them.
+  // Lock all of that out at the capture phase for as long as the landing
+  // is up (shortcut-freeze.ts). Blur whatever held focus so keystrokes
+  // can't keep typing into an editor field behind the veil — the gate
+  // deliberately exempts editable targets so the landing's own rename
+  // fields keep working.
+  useEffect(() => {
+    setGatewayInputLock(true);
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    return () => setGatewayInputLock(false);
   }, []);
 
   // Escape backs out to the project underneath (re-open only). Bubble
@@ -195,14 +217,85 @@ export default function Landing({
         </div>
       )}
 
+      {/* Privacy policy — quiet corner link, mirroring the download
+          cluster's inset. Plain <Link> (same rationale as DocsInfoButton):
+          client-side nav to the docs, native middle/Cmd-click behavior. */}
+      <Link
+        href="/docs/privacy"
+        style={{
+          position: "absolute",
+          bottom: 16,
+          left: 16,
+          zIndex: 10,
+          fontFamily: INTER,
+          fontSize: 11,
+          color: "color-mix(in srgb, var(--tb-n-11) 55%, transparent)",
+          textDecoration: "none",
+          cursor: "pointer",
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.color = "var(--tb-n-13)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.color =
+            "color-mix(in srgb, var(--tb-n-11) 55%, transparent)";
+        }}
+      >
+        Privacy policy
+      </Link>
+
+      {/* Maximize toggle — upper-left green circle, borrowing the macOS
+          traffic-light green (WindowControls' fullscreen light) so it reads
+          as a zoom control. On native macOS it sits BELOW the real traffic
+          lights (strip is 22px tall) so it doesn't read as a fourth light. */}
+      <button
+        onClick={() => setMaximized((v) => !v)}
+        title={maximized ? "Restore size" : "Expand projects browser"}
+        aria-label={
+          maximized ? "Restore projects browser size" : "Expand projects browser"
+        }
+        style={{
+          position: "absolute",
+          top: isWeb || isWindows ? 16 : 34,
+          left: 16,
+          zIndex: 10,
+          width: 16,
+          height: 16,
+          borderRadius: "50%",
+          background: "#28c840",
+          border: "1px solid rgba(0, 0, 0, 0.15)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 0,
+          cursor: "pointer",
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = "#1aab29")}
+        onMouseLeave={(e) => (e.currentTarget.style.background = "#28c840")}
+      >
+        <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden>
+          <path
+            d={maximized ? "M1 4h6" : "M4 1v6M1 4h6"}
+            stroke="#0d5c16"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      </button>
+
       <div
         style={{
           display: "flex",
           flexDirection: "column",
-          width: "min(900px, 92vw)",
+          // Maximized: 16px inset each side, matching the corner links.
+          width: maximized ? "calc(100vw - 32px)" : "min(900px, 92vw)",
           opacity: shown ? 1 : 0,
-          transform: shown ? "translateY(0)" : "translateY(8px)",
-          transition: "opacity 220ms ease, transform 220ms ease",
+          // `undefined` (not translateY(0)) once shown: a live transform
+          // would make this wrapper the containing block for the grid's
+          // position:fixed overlays (context menus, drag ghost), shifting
+          // them by the wrapper's offset from the viewport origin.
+          transform: shown ? undefined : "translateY(8px)",
+          transition: "opacity 220ms ease, transform 220ms ease, width 240ms ease",
         }}
       >
         {/* Header row, floating just above the card. */}
@@ -238,7 +331,17 @@ export default function Landing({
         {/* Card — the projects grid, full width. */}
         <div
           style={{
-            height: "min(560px, 80vh)",
+            // Maximized: 100vh minus 200px of chrome. The wrapper is
+            // flex-centered, so with the 94px header that leaves 53px
+            // margins top and bottom — the header's right-side pills
+            // (y≈91–135) clear the web download cluster (ends y≈76), and
+            // the card bottom stays ~23px above the privacy link. The
+            // outer max() means a short window never shrinks below the
+            // normal size.
+            height: maximized
+              ? "max(min(560px, 80vh), calc(100vh - 200px))"
+              : "min(560px, 80vh)",
+            transition: "height 240ms ease",
             background: "var(--tb-n-0)",
             border: "1px solid var(--tb-n-7)",
             borderRadius: 8,

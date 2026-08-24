@@ -67,6 +67,9 @@ export const audioBandsNode: NodeDefinition = {
   // Reads the live signal each frame; the actual data changes out of band
   // with params (same as Audio Source / LFO).
   stable: false,
+  // Reads the LIVE AnalyserNode tap — external audio state. Time Offset
+  // boundary-feeds the current band energies through un-shifted.
+  retimeable: false,
   noMaskInput: true,
   inputs: [{ name: "audio", type: "audio", required: true, label: "Audio" }],
   params: [

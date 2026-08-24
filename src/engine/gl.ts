@@ -266,6 +266,42 @@ export function createEngineBackend(
     return prog;
   }
 
+  // getShader for user-authored sources (GLSL Expression). Unlike
+  // getShader, the source is part of the cache entry: same key + new
+  // source deletes the old program and recompiles in place, and failures
+  // cache too (with their info log) so a broken shader is one compile,
+  // not one per frame. Kept OUT of shaderCache — its entries are
+  // immutable-by-key.
+  const tryShaderCache = new Map<
+    string,
+    { src: string; program: WebGLProgram | null; error: string | null }
+  >();
+  function tryShader(
+    key: string,
+    fragSrc: string
+  ): { program: WebGLProgram | null; error: string | null } {
+    const cached = tryShaderCache.get(key);
+    if (cached && cached.src === fragSrc) {
+      return { program: cached.program, error: cached.error };
+    }
+    if (cached?.program) gl!.deleteProgram(cached.program);
+    let entry: { src: string; program: WebGLProgram | null; error: string | null };
+    try {
+      const fs = compileShader(gl!, gl!.FRAGMENT_SHADER, fragSrc);
+      const prog = linkProgram(gl!, sharedVs, fs);
+      gl!.deleteShader(fs);
+      entry = { src: fragSrc, program: prog, error: null };
+    } catch (e) {
+      entry = {
+        src: fragSrc,
+        program: null,
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
+    tryShaderCache.set(key, entry);
+    return { program: entry.program, error: entry.error };
+  }
+
   const blitProgram = getShader("__blit__", BLIT_FS);
   const readbackProgram = getShader("__readback__", READBACK_FS);
   const readbackCropProgram = getShader("__readback_crop__", READBACK_CROP_FS);
@@ -287,39 +323,6 @@ export function createEngineBackend(
   const readbackTargets = new Map<string, WebGLTexture>();
   const readbackFbo = gl.createFramebuffer();
   if (!readbackFbo) throw new Error("Failed to create readback FBO");
-
-  function acquireReadbackTarget(w: number, h: number): WebGLTexture | null {
-    const key = `${w}x${h}`;
-    let tex = readbackTargets.get(key);
-    if (!tex) {
-      if (readbackTargets.size >= 8) {
-        for (const t of readbackTargets.values()) gl!.deleteTexture(t);
-        readbackTargets.clear();
-      }
-      const created = gl!.createTexture();
-      if (!created) return null;
-      gl!.bindTexture(gl!.TEXTURE_2D, created);
-      gl!.texImage2D(
-        gl!.TEXTURE_2D,
-        0,
-        gl!.RGBA8,
-        w,
-        h,
-        0,
-        gl!.RGBA,
-        gl!.UNSIGNED_BYTE,
-        null
-      );
-      gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_MIN_FILTER, gl!.NEAREST);
-      gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_MAG_FILTER, gl!.NEAREST);
-      gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_WRAP_S, gl!.CLAMP_TO_EDGE);
-      gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_WRAP_T, gl!.CLAMP_TO_EDGE);
-      gl!.bindTexture(gl!.TEXTURE_2D, null);
-      readbackTargets.set(key, created);
-      tex = created;
-    }
-    return tex;
-  }
 
   function readImagePixelsInternal(
     image: ImageValue,
@@ -360,6 +363,39 @@ export function createEngineBackend(
     // Zero-copy view — values are already 0..255 so clamping semantics
     // are moot; the type just matches ImageData.data for drop-in reuse.
     return new Uint8ClampedArray(bytes.buffer);
+  }
+
+  function acquireReadbackTarget(w: number, h: number): WebGLTexture | null {
+    const key = `${w}x${h}`;
+    let tex = readbackTargets.get(key);
+    if (!tex) {
+      if (readbackTargets.size >= 8) {
+        for (const t of readbackTargets.values()) gl!.deleteTexture(t);
+        readbackTargets.clear();
+      }
+      const created = gl!.createTexture();
+      if (!created) return null;
+      gl!.bindTexture(gl!.TEXTURE_2D, created);
+      gl!.texImage2D(
+        gl!.TEXTURE_2D,
+        0,
+        gl!.RGBA8,
+        w,
+        h,
+        0,
+        gl!.RGBA,
+        gl!.UNSIGNED_BYTE,
+        null
+      );
+      gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_MIN_FILTER, gl!.NEAREST);
+      gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_MAG_FILTER, gl!.NEAREST);
+      gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_WRAP_S, gl!.CLAMP_TO_EDGE);
+      gl!.texParameteri(gl!.TEXTURE_2D, gl!.TEXTURE_WRAP_T, gl!.CLAMP_TO_EDGE);
+      gl!.bindTexture(gl!.TEXTURE_2D, null);
+      readbackTargets.set(key, created);
+      tex = created;
+    }
+    return tex;
   }
 
   function readImageRegionInternal(
@@ -612,7 +648,19 @@ export function createEngineBackend(
       playing,
       offline,
       wedgeIndex,
-      cursor: cursor ?? { x: 0.5, y: 0.5, active: false },
+      // Headless/offline fallback: every fact present and inert, so
+      // interaction nodes see consistent zeros (no edges ever derive)
+      // instead of undefined — offline export renders rest values.
+      cursor: cursor ?? {
+        x: 0.5,
+        y: 0.5,
+        active: false,
+        pressed: false,
+        serial: 0,
+        pressCount: 0,
+        releaseCount: 0,
+        gestureMaxDistPx: 0,
+      },
       state: persistentState,
       allocImage(opts) {
         const w = opts?.width ?? width;
@@ -675,6 +723,7 @@ export function createEngineBackend(
         gl!.clear(gl!.COLOR_BUFFER_BIT);
       },
       getShader,
+      tryShader,
       blitToCanvas(image, targetCanvas) {
         const w = targetCanvas.width;
         const h = targetCanvas.height;

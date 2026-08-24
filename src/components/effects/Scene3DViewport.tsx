@@ -3,7 +3,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
+import { createLightGizmo } from "./light-gizmo";
+import { claimPointerGesture } from "@/lib/pointer-claim";
 import { getSceneRender } from "@/engine/three-viewport-registry";
+import { applyInstanceBillboards } from "@/engine/three-geometry";
 
 type GizmoMode = "translate" | "rotate" | "scale";
 
@@ -45,6 +48,23 @@ interface Props {
   gizmoNodeId: string | null;
   gizmoCanRotate: boolean;
   gizmoCanScale: boolean;
+  // 3D Spline editing (M10, unified M10.6): when the selected node is the
+  // curve node, its id + anchors (`splinePoints` → the `points` param) and,
+  // in bezier mode, the EFFECTIVE handles ([in0, out0, …] flat, 2× anchors
+  // — `splineHandles`, written back to the `handles` param; null in smooth
+  // mode). Anchors render as large dots, handles as smaller tethered dots;
+  // dragging an anchor carries its handles; `splineMirrored` makes a
+  // handle drag mirror its partner across the anchor. All writes share the
+  // per-gesture coalesce key (one undo per drag).
+  splineNodeId: string | null;
+  splinePoints: [number, number, number][] | null;
+  splineHandles: [number, number, number][] | null;
+  splineMirrored: boolean;
+  // The app's overlays toggle. False hides every VISUAL (grid/axes, light
+  // gizmo, transform gizmo, spline rig, toolbars, viewport border) but the
+  // component stays mounted with its input layer live — turning overlays
+  // off must never take orbit/pan/zoom or camera drive away.
+  showOverlays: boolean;
   onParamChange: ParamChange;
 }
 
@@ -87,6 +107,11 @@ export default function Scene3DViewport({
   gizmoNodeId,
   gizmoCanRotate,
   gizmoCanScale,
+  splineNodeId,
+  splinePoints,
+  splineHandles,
+  splineMirrored,
+  showOverlays,
   onParamChange,
 }: Props) {
   // `rect` = the letterboxed preview canvas (where the 3D view renders).
@@ -147,6 +172,116 @@ export default function Scene3DViewport({
   // True while a gizmo handle is being dragged — suppresses camera orbit.
   const gizmoDraggingRef = useRef(false);
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
+  const gizmoModeRef = useRef(gizmoMode);
+
+  // -- 3D Spline editing state ------------------------------------------
+  const splineNodeIdRef = useRef(splineNodeId);
+  const splinePointsRef = useRef(splinePoints);
+  const splineHandlesRef = useRef(splineHandles);
+  const splineMirroredRef = useRef(splineMirrored);
+  // Hovered dot index (rAF-rendered; no React state needed).
+  const splineHoverRef = useRef<number | null>(null);
+  // Selection keyed to the node id — a different node derives to "none"
+  // with no reset effect needed.
+  const [splineSelRaw, setSplineSelRaw] = useState<{
+    id: string | null;
+    index: number | null;
+  }>({ id: null, index: null });
+  const splineSel = splineSelRaw.id === splineNodeId ? splineSelRaw.index : null;
+  const splineSelRef = useRef<number | null>(null);
+  const showOverlaysRef = useRef(true);
+  // Ref mirrors for the rAF loop (written in an effect — not render — to
+  // satisfy the hooks rules; one-frame staleness is irrelevant at rAF).
+  useEffect(() => {
+    gizmoModeRef.current = gizmoMode;
+    splineNodeIdRef.current = splineNodeId;
+    splinePointsRef.current = splinePoints;
+    splineHandlesRef.current = splineHandles;
+    splineMirroredRef.current = splineMirrored;
+    splineSelRef.current = splineSel;
+    showOverlaysRef.current = showOverlays;
+  });
+  const selectSplinePoint = (index: number | null) =>
+    setSplineSelRaw({ id: splineNodeIdRef.current, index });
+  // Set of pickable dot meshes, rebuilt when the point count changes.
+  const splineDotsRef = useRef<THREE.Mesh[]>([]);
+  // Picking bridge from the input effect into the renderer effect's camera.
+  const pickSplineDotRef = useRef<
+    ((clientX: number, clientY: number) => number | null) | null
+  >(null);
+  // Structural edits from the HUD (+/−). Anchors are dot indices < n;
+  // handle dots (bezier mode) live at n + 2·anchor (+1 for out). Insert
+  // adds an anchor after the selected one's (segment midpoint with
+  // tangent handles, or extended past the end); remove deletes the anchor
+  // (with its handles), keeping ≥ 2. A selected HANDLE resolves to its
+  // anchor for both operations.
+  const splineAnchorOfSel = (): number | null => {
+    const pts = splinePointsRef.current;
+    const i = splineSelRef.current;
+    if (!pts || i == null) return null;
+    return i < pts.length ? i : Math.floor((i - pts.length) / 2);
+  };
+  const splineAddPoint = () => {
+    const id = splineNodeIdRef.current;
+    const pts = splinePointsRef.current;
+    if (!id || !pts || pts.length < 2) return;
+    const handles = splineHandlesRef.current;
+    const g = Math.min(pts.length - 1, splineAnchorOfSel() ?? pts.length - 1);
+    const a = pts[g];
+    const next = g + 1 < pts.length ? pts[g + 1] : null;
+    let anchor: [number, number, number];
+    let dir: [number, number, number];
+    if (next) {
+      anchor = [(a[0] + next[0]) / 2, (a[1] + next[1]) / 2, (a[2] + next[2]) / 2];
+      dir = [next[0] - a[0], next[1] - a[1], next[2] - a[2]];
+    } else {
+      const prev = pts[g - 1] ?? [a[0] - 1, a[1], a[2]];
+      dir = [a[0] - prev[0], a[1] - prev[1], a[2] - prev[2]];
+      anchor = [a[0] + dir[0] * 0.8, a[1] + dir[1] * 0.8, a[2] + dir[2] * 0.8];
+    }
+    const outPts = [...pts.slice(0, g + 1), anchor, ...pts.slice(g + 1)];
+    onParamChangeRef.current(id, "points", outPts);
+    if (handles) {
+      const len = Math.max(1e-4, Math.hypot(dir[0], dir[1], dir[2]));
+      const h: [number, number, number] = [
+        (dir[0] / len) * 0.3,
+        (dir[1] / len) * 0.3,
+        (dir[2] / len) * 0.3,
+      ];
+      const pair: [number, number, number][] = [
+        [anchor[0] - h[0], anchor[1] - h[1], anchor[2] - h[2]], // in
+        [anchor[0] + h[0], anchor[1] + h[1], anchor[2] + h[2]], // out
+      ];
+      const at = (g + 1) * 2;
+      onParamChangeRef.current(id, "handles", [
+        ...handles.slice(0, at),
+        ...pair,
+        ...handles.slice(at),
+      ]);
+    }
+    selectSplinePoint(g + 1);
+  };
+  const splineRemovePoint = () => {
+    const id = splineNodeIdRef.current;
+    const pts = splinePointsRef.current;
+    if (!id || !pts || pts.length <= 2) return;
+    const g = splineAnchorOfSel();
+    if (g == null) return;
+    const handles = splineHandlesRef.current;
+    onParamChangeRef.current(
+      id,
+      "points",
+      pts.filter((_, k) => k !== g)
+    );
+    if (handles) {
+      onParamChangeRef.current(
+        id,
+        "handles",
+        handles.filter((_, k) => Math.floor(k / 2) !== g)
+      );
+    }
+    selectSplinePoint(Math.max(0, g - 1));
+  };
 
   // Rotate/scale aren't available for every object (lights are position-
   // only) — fall back to Move when the current mode isn't supported.
@@ -208,6 +343,51 @@ export default function Scene3DViewport({
     const grid = new THREE.GridHelper(20, 20, 0x4b5563, 0x27272f);
     helpers.add(grid);
     helpers.add(new THREE.AxesHelper(1.5));
+    // Blender-style representation of the selected light (icon rings, aim
+    // line, spot cone) — synced from the live light object each frame.
+    const lightGizmo = createLightGizmo();
+    helpers.add(lightGizmo.group);
+
+    // 3D Spline editing rig (M10): pickable control-point dots + a dashed
+    // control polyline, in the helpers scene (never in the render).
+    const splineGroup = new THREE.Group();
+    splineGroup.visible = false;
+    helpers.add(splineGroup);
+    const splinePolyMat = new THREE.LineDashedMaterial({
+      color: 0x9ca3af,
+      dashSize: 0.06,
+      gapSize: 0.05,
+      depthTest: false,
+      transparent: true,
+    });
+    const splinePoly = new THREE.Line(new THREE.BufferGeometry(), splinePolyMat);
+    splineGroup.add(splinePoly);
+    // Bezier handle tethers (anchor→in, anchor→out), rebuilt per frame.
+    const splineHandleMat = new THREE.LineBasicMaterial({
+      color: 0x7dd3fc,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.8,
+    });
+    const splineHandleLines = new THREE.LineSegments(
+      new THREE.BufferGeometry(),
+      splineHandleMat
+    );
+    splineGroup.add(splineHandleLines);
+    let splineDotsBezier = false;
+    const disposeSplineDots = () => {
+      for (const d of splineDotsRef.current) {
+        // Each pickable dot is an invisible hit disc with the visible dot
+        // as its child.
+        const child = d.children[0] as THREE.Mesh | undefined;
+        child?.geometry.dispose();
+        (child?.material as THREE.Material | undefined)?.dispose();
+        d.geometry.dispose();
+        (d.material as THREE.Material).dispose();
+        splineGroup.remove(d);
+      }
+      splineDotsRef.current = [];
+    };
     // Depth-only material for the overlay pass: writes depth (so the grid is
     // occluded by objects) but no color (so the geometry isn't drawn over the
     // composite behind us).
@@ -221,11 +401,83 @@ export default function Scene3DViewport({
     let gizmoKey = "";
     const onDraggingChanged = (e: { value: unknown }) => {
       gizmoDraggingRef.current = !!e.value;
-      if (e.value) gizmoKey = `gizmo:${gizmoNodeIdRef.current}:${++gizmoGesture}`;
+      if (e.value)
+        gizmoKey = `gizmo:${
+          gizmoNodeIdRef.current ?? `spline:${splineNodeIdRef.current}`
+        }:${++gizmoGesture}`;
     };
     const onObjectChange = () => {
-      const id = gizmoNodeIdRef.current;
       const obj = controls?.object;
+      // Spline control-point drag: write the whole points array (one
+      // vec3_list param) with the dragged index replaced.
+      if (obj?.userData.__splineDot) {
+        const sid = splineNodeIdRef.current;
+        const pts = splinePointsRef.current;
+        if (!sid || !pts) return;
+        const handles = splineHandlesRef.current;
+        const idx = obj.userData.index as number;
+        const px = obj.position.x;
+        const py = obj.position.y;
+        const pz = obj.position.z;
+        if (idx < pts.length) {
+          // Anchor drag — carry its two handles by the same delta
+          // (computed against one snapshot, so repeated objectChange
+          // events stay self-consistent).
+          const base = pts[idx] ?? [0, 0, 0];
+          const dx = px - base[0];
+          const dy = py - base[1];
+          const dz = pz - base[2];
+          onParamChangeRef.current(
+            sid,
+            "points",
+            pts.map((p, k) =>
+              k === idx ? [px, py, pz] : p
+            ),
+            gizmoKey
+          );
+          if (handles) {
+            onParamChangeRef.current(
+              sid,
+              "handles",
+              handles.map((h, k) =>
+                Math.floor(k / 2) === idx
+                  ? ([h[0] + dx, h[1] + dy, h[2] + dz] as [
+                      number,
+                      number,
+                      number,
+                    ])
+                  : h
+              ),
+              gizmoKey
+            );
+          }
+          return;
+        }
+        // Handle drag — write it, and in mirrored mode reflect the
+        // partner across the anchor (full point mirror).
+        if (!handles) return;
+        const k = idx - pts.length;
+        const anchor = pts[Math.floor(k / 2)] ?? [0, 0, 0];
+        const partner = k % 2 === 0 ? k + 1 : k - 1;
+        const mirrored = splineMirroredRef.current;
+        onParamChangeRef.current(
+          sid,
+          "handles",
+          handles.map((h, j) => {
+            if (j === k) return [px, py, pz] as [number, number, number];
+            if (mirrored && j === partner)
+              return [
+                2 * anchor[0] - px,
+                2 * anchor[1] - py,
+                2 * anchor[2] - pz,
+              ] as [number, number, number];
+            return h;
+          }),
+          gizmoKey
+        );
+        return;
+      }
+      const id = gizmoNodeIdRef.current;
       if (!id || !obj) return;
       const opc = onParamChangeRef.current;
       opc(id, "pos_x", obj.position.x, gizmoKey);
@@ -259,6 +511,26 @@ export default function Scene3DViewport({
     let lastW = 0;
     let lastH = 0;
     const tmp = new THREE.Vector3();
+    const camWorld = new THREE.Vector3();
+
+    // Spline-dot picking for the input effect (which has no camera access):
+    // client coords → NDC → raycast against the dot meshes.
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    pickSplineDotRef.current = (clientX: number, clientY: number) => {
+      if (!splineDotsRef.current.length) return null;
+      const rect = viewCanvas.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return null;
+      ndc.set(
+        ((clientX - rect.left) / rect.width) * 2 - 1,
+        -((clientY - rect.top) / rect.height) * 2 + 1
+      );
+      raycaster.setFromCamera(ndc, cam);
+      const hits = raycaster.intersectObjects(splineDotsRef.current, false);
+      return hits.length
+        ? (hits[0].object.userData.index as number)
+        : null;
+    };
 
     const loop = () => {
       raf = requestAnimationFrame(loop);
@@ -276,24 +548,155 @@ export default function Scene3DViewport({
       }
       cam.aspect = w / h;
 
+      const showOv = showOverlaysRef.current;
+
       // Attach/detach the gizmo to the selected object (found by nodeId in
       // the shared scene). Suppressed while looking through the camera.
-      if (controls) {
+      // Overlays off ⇒ keep it detached: an invisible gizmo would still
+      // set `.axis` under the pointer and swallow orbit drags.
+      if (controls && !showOv) {
+        if (controls.object) controls.detach();
+      } else if (controls) {
         // Keep the gizmo attached in look-through too — handle drags move
         // the object, empty-space drags still drive the camera (onDown bails
         // to TransformControls when a handle is under the pointer).
         const wantId = gizmoNodeIdRef.current;
         const cur = controls.object;
         if (!wantId) {
-          if (cur) controls.detach();
+          // Spline dots own the controls while a point is selected —
+          // don't let the node-gizmo path detach them.
+          if (cur && !cur.userData.__splineDot) controls.detach();
         } else if (!cur || cur.userData.nodeId !== wantId) {
           let found: THREE.Object3D | undefined;
           handle?.scene.traverse((o) => {
             if (o.userData.nodeId === wantId) found = o;
           });
-          if (found) controls.attach(found);
-          else if (cur) controls.detach();
+          if (found) {
+            controls.attach(found);
+            // Restore the toolbar's mode (spline editing forces translate).
+            controls.setMode(gizmoModeRef.current);
+          } else if (cur) controls.detach();
         }
+      }
+      // Light gizmo follows whatever the selection resolved to (hides for
+      // non-lights / ambient / nothing).
+      lightGizmo.sync(showOv ? (controls?.object ?? null) : null, cam);
+
+      // -- 3D Spline editing rig sync -----------------------------------
+      const spts = splinePointsRef.current;
+      const editingSpline =
+        showOv && !!splineNodeIdRef.current && !!spts && spts.length >= 2;
+      splineGroup.visible = editingSpline;
+      if (editingSpline) {
+        const shandles = splineHandlesRef.current;
+        const bezier = !!shandles;
+        const nAnchors = spts.length;
+        const totalDots = nAnchors + (bezier ? nAnchors * 2 : 0);
+        const dots = splineDotsRef.current;
+        if (dots.length !== totalDots || splineDotsBezier !== bezier) {
+          disposeSplineDots();
+          splineDotsBezier = bezier;
+          for (let i = 0; i < totalDots; i++) {
+            const isHandle = i >= nAnchors;
+            // Invisible hit disc (~2.3× the visible dot) = the click
+            // target; the visible dot rides as a child.
+            const hit = new THREE.Mesh(
+              new THREE.CircleGeometry(isHandle ? 0.13 : 0.16, 12),
+              new THREE.MeshBasicMaterial({
+                depthTest: false,
+                depthWrite: false,
+                transparent: true,
+                opacity: 0,
+                side: THREE.DoubleSide,
+              })
+            );
+            hit.userData.__splineDot = true;
+            hit.userData.index = i;
+            const vis = new THREE.Mesh(
+              new THREE.CircleGeometry(isHandle ? 0.05 : 0.07, 16),
+              new THREE.MeshBasicMaterial({
+                color: isHandle ? 0x7dd3fc : 0xd9d9e0,
+                depthTest: false,
+                transparent: true,
+                side: THREE.DoubleSide,
+              })
+            );
+            hit.add(vis);
+            splineGroup.add(hit);
+            splineDotsRef.current.push(hit);
+          }
+        }
+        const selIdx = splineSelRef.current;
+        const hovIdx = splineHoverRef.current;
+        camWorld.setFromMatrixPosition(cam.matrixWorld);
+        for (let i = 0; i < splineDotsRef.current.length; i++) {
+          const dot = splineDotsRef.current[i];
+          const isHandle = i >= nAnchors;
+          // The dragged dot is the source of truth mid-gesture (its
+          // mirrored partner follows through the prop echo).
+          if (!(gizmoDraggingRef.current && i === selIdx)) {
+            const src = isHandle ? shandles![i - nAnchors] : spts[i];
+            if (src) dot.position.set(src[0], src[1], src[2]);
+          }
+          dot.quaternion.copy(cam.quaternion);
+          const hovered = i === hovIdx && i !== selIdx;
+          dot.scale.setScalar(
+            Math.max(1e-4, camWorld.distanceTo(dot.position) * 0.03) *
+              (hovered ? 1.3 : 1)
+          );
+          const vis = dot.children[0] as THREE.Mesh;
+          (vis.material as THREE.MeshBasicMaterial).color.set(
+            i === selIdx
+              ? 0xffa733
+              : hovered
+                ? 0xffffff
+                : isHandle
+                  ? 0x7dd3fc
+                  : 0xd9d9e0
+          );
+        }
+        // Smooth mode: dashed polyline through the anchors. Bezier mode:
+        // handle tethers (anchor→in, anchor→out) instead.
+        splinePoly.visible = !bezier;
+        splineHandleLines.visible = bezier;
+        if (!bezier) {
+          splinePoly.geometry.dispose();
+          splinePoly.geometry = new THREE.BufferGeometry().setFromPoints(
+            splineDotsRef.current.map((d) => d.position)
+          );
+          splinePoly.computeLineDistances();
+        } else {
+          const segs: THREE.Vector3[] = [];
+          for (let g = 0; g < nAnchors; g++) {
+            const a = splineDotsRef.current[g].position;
+            segs.push(a, splineDotsRef.current[nAnchors + g * 2].position);
+            segs.push(a, splineDotsRef.current[nAnchors + g * 2 + 1].position);
+          }
+          splineHandleLines.geometry.dispose();
+          splineHandleLines.geometry = new THREE.BufferGeometry().setFromPoints(
+            segs
+          );
+        }
+        // Selected dot takes the transform controls (translate only —
+        // a point has no meaningful rotation/scale).
+        if (controls) {
+          const want =
+            selIdx != null ? (splineDotsRef.current[selIdx] ?? null) : null;
+          const cur = controls.object;
+          if (want) {
+            if (cur !== want) {
+              controls.detach();
+              controls.attach(want);
+              controls.setMode("translate");
+            }
+          } else if (cur && cur.userData.__splineDot) {
+            controls.detach();
+          }
+        }
+      } else {
+        if (splineDotsRef.current.length) disposeSplineDots();
+        const cur = controls?.object;
+        if (cur && cur.userData.__splineDot) controls?.detach();
       }
 
       if (lookThroughRef.current && driveRef.current.active) {
@@ -317,6 +720,11 @@ export default function Scene3DViewport({
       }
       cam.updateProjectionMatrix();
 
+      // Render-time billboarding (M12): marked instance streams face THIS
+      // viewport's camera every frame — orbiting tracks live. (Markers
+      // pinned to a wired Camera keep their own position instead.)
+      if (handle) applyInstanceBillboards(handle.scene, cam.position);
+
       // Look-through = overlay mode: transparent clear (the composite shows
       // behind), and the geometry is rendered DEPTH-ONLY so it occludes the
       // grid without drawing color that would double the composite. Free
@@ -334,7 +742,7 @@ export default function Scene3DViewport({
           r.render(handle.scene, cam);
         }
       }
-      r.render(helpers, cam);
+      if (showOv) r.render(helpers, cam);
     };
     raf = requestAnimationFrame(loop);
 
@@ -347,6 +755,13 @@ export default function Scene3DViewport({
         controls.dispose();
       }
       controlsRef.current = null;
+      pickSplineDotRef.current = null;
+      disposeSplineDots();
+      splinePoly.geometry.dispose();
+      splinePolyMat.dispose();
+      splineHandleLines.geometry.dispose();
+      splineHandleMat.dispose();
+      lightGizmo.dispose();
       grid.geometry.dispose();
       (grid.material as THREE.Material).dispose();
       depthOnlyMat.dispose();
@@ -442,9 +857,24 @@ export default function Scene3DViewport({
     };
 
     const onDown = (e: PointerEvent) => {
+      // Every press on the 3D viewport is 3D interaction (gizmo drag,
+      // dot pick, orbit/pan) — keep it out of the graph's cursor press
+      // facts. Claim before the TransformControls early-return so axis
+      // drags are covered too.
+      if (e.button === 0) claimPointerGesture(e.pointerId);
       // A gizmo handle is under the pointer → let TransformControls own this
       // drag; don't orbit/pan/drive.
       if (controlsRef.current?.axis) return;
+      // A spline control point under the pointer → select it (the gizmo
+      // attaches next frame); no orbit on this press.
+      if (e.button === 0) {
+        const hit = pickSplineDotRef.current?.(e.clientX, e.clientY);
+        if (hit != null) {
+          e.preventDefault();
+          selectSplinePoint(hit);
+          return;
+        }
+      }
       e.preventDefault();
       mode = e.button === 1 || e.button === 2 || e.shiftKey ? "pan" : "orbit";
       lastX = e.clientX;
@@ -507,11 +937,31 @@ export default function Scene3DViewport({
 
     const onContext = (e: Event) => e.preventDefault();
 
+    // Hover feedback for spline control points: highlight + pointer cursor
+    // (idle only — never mid-orbit/mid-gizmo-drag).
+    const onHover = (e: PointerEvent) => {
+      if (mode || gizmoDraggingRef.current) {
+        splineHoverRef.current = null;
+        return;
+      }
+      const hit = pickSplineDotRef.current?.(e.clientX, e.clientY) ?? null;
+      splineHoverRef.current = hit;
+      el.style.cursor = hit != null ? "pointer" : "grab";
+    };
+    const onLeave = () => {
+      splineHoverRef.current = null;
+      el.style.cursor = "grab";
+    };
+
     el.addEventListener("pointerdown", onDown);
+    el.addEventListener("pointermove", onHover);
+    el.addEventListener("pointerleave", onLeave);
     el.addEventListener("wheel", onWheel, { passive: false });
     el.addEventListener("contextmenu", onContext);
     return () => {
       el.removeEventListener("pointerdown", onDown);
+      el.removeEventListener("pointermove", onHover);
+      el.removeEventListener("pointerleave", onLeave);
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("contextmenu", onContext);
       window.removeEventListener("pointermove", onMove);
@@ -541,7 +991,8 @@ export default function Scene3DViewport({
           zIndex: 3,
           touchAction: "none",
           pointerEvents: rect ? "auto" : "none",
-          border: "1px solid #2dd4bf55",
+          // Overlays off ⇒ frameless (the input layer is invisible chrome).
+          border: showOverlays ? "1px solid #2dd4bf55" : "none",
         }}
       >
         <canvas
@@ -553,7 +1004,7 @@ export default function Scene3DViewport({
       {/* Toolbars dock to the parent module's corners. This layer spans the
           whole panel but is click-through — only the pills capture events,
           so orbiting over the canvas still works underneath. */}
-      {base && (
+      {showOverlays && base && (
         <div
           style={{
             position: "fixed",
@@ -565,6 +1016,27 @@ export default function Scene3DViewport({
             pointerEvents: "none",
           }}
         >
+          {splineNodeId && (
+            <div style={toolbarStyle("left")}>
+              <IconBtn
+                label="Add point (after selected)"
+                accent={GIZMO_ACCENT}
+                onClick={splineAddPoint}
+              >
+                <span style={{ fontSize: 13, fontWeight: 700 }}>+</span>
+              </IconBtn>
+              <IconBtn
+                label={splineHandles ? "Remove selected anchor" : "Remove selected point"}
+                accent={GIZMO_ACCENT}
+                disabled={
+                  splineSel == null || (splinePoints?.length ?? 0) <= 2
+                }
+                onClick={splineRemovePoint}
+              >
+                <span style={{ fontSize: 13, fontWeight: 700 }}>−</span>
+              </IconBtn>
+            </div>
+          )}
           {gizmoNodeId && (
             <div style={toolbarStyle("left")}>
               <IconBtn

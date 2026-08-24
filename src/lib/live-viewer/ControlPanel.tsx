@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import type {
   ExportManifest,
   ExportManifestControl,
   ExportManifestFileInput,
 } from "./manifest-types";
+import { orderControlRefs } from "./design";
 import { ParamControl } from "@/lib/param-controls";
 import { registerAudioFile, disposeAudioFile } from "@/lib/audio";
 import { registerCustomFont } from "@/lib/fonts";
@@ -32,6 +33,23 @@ export interface ControlPanelProps {
   onTogglePlay: () => void;
   onReset: () => void;
   time: number;
+  // Transport extras (2026-08-17): the default scrub slider (rendered
+  // when the project loops) and the render-resolution scale. Handlers
+  // are optional so the designer preview can render them inert.
+  loopSecs?: number | null;
+  onSeek?: (timeSec: number) => void;
+  renderScale?: number;
+  onRenderScale?: (scale: number) => void;
+  // Viewer export (081426_live-link-designer.md M3). WHICH buttons render
+  // comes from manifest.design.export (so the designer preview shows them
+  // too); the handlers are optional per mode — absent handler = an inert
+  // button (the preview's case).
+  exportHandlers?: {
+    image?: () => void;
+    video?: () => void;
+    gif?: () => void;
+  };
+  exportStatus?: { label: string; cancel?: () => void } | null;
 }
 
 function paramKey(nodeId: string, paramName: string) {
@@ -48,6 +66,12 @@ export function ControlPanel(props: ControlPanelProps) {
     onTogglePlay,
     onReset,
     time,
+    loopSecs,
+    onSeek,
+    renderScale,
+    onRenderScale,
+    exportHandlers,
+    exportStatus,
   } = props;
 
   const getValue = useCallback(
@@ -56,6 +80,35 @@ export function ControlPanel(props: ControlPanelProps) {
     },
     [paramValues]
   );
+
+  // Design-block ordering + renames (081426_live-link-designer.md M1).
+  // One order list spans both sections; each section sorts its own
+  // members by index in it. Absent design → manifest order, no renames.
+  const design = manifest.design;
+  const fileInputs = useMemo(
+    () =>
+      orderControlRefs(
+        manifest.fileInputs,
+        (fi) => paramKey(fi.nodeId, fi.paramName),
+        design
+      ),
+    [manifest.fileInputs, design]
+  );
+  const controls = useMemo(
+    () =>
+      orderControlRefs(
+        manifest.controls,
+        (c) => paramKey(c.nodeId, c.paramName),
+        design
+      ),
+    [manifest.controls, design]
+  );
+
+  const exportFlags = design?.export;
+  const anyExport =
+    !!exportFlags &&
+    (exportFlags.image || exportFlags.video || exportFlags.gif);
+  const exportBusy = !!exportStatus?.cancel;
 
   return (
     <aside className="sidebar">
@@ -72,15 +125,79 @@ export function ControlPanel(props: ControlPanelProps) {
           </button>
           <span className="time">{time.toFixed(2)}s</span>
         </div>
+        {loopSecs != null && loopSecs > 0 && (
+          <input
+            className="scrub"
+            type="range"
+            min={0}
+            max={loopSecs}
+            step={0.01}
+            value={Math.min(time, loopSecs)}
+            onChange={(e) => onSeek?.(Number(e.target.value))}
+            aria-label="Seek"
+          />
+        )}
+        <div className="res-row">
+          <span className="res-label">Resolution</span>
+          <input
+            type="range"
+            min={0.25}
+            max={1}
+            step={0.05}
+            value={renderScale ?? 1}
+            onChange={(e) => onRenderScale?.(Number(e.target.value))}
+            aria-label="Render resolution"
+          />
+          <span className="res-value">
+            {Math.round((renderScale ?? 1) * 100)}%
+          </span>
+        </div>
+        {anyExport && (
+          <div className="export-row">
+            {exportFlags.image && (
+              <button onClick={exportHandlers?.image} disabled={exportBusy}>
+                Image
+              </button>
+            )}
+            {exportFlags.video && (
+              <button onClick={exportHandlers?.video} disabled={exportBusy}>
+                Video
+              </button>
+            )}
+            {exportFlags.gif && (
+              <button onClick={exportHandlers?.gif} disabled={exportBusy}>
+                GIF
+              </button>
+            )}
+          </div>
+        )}
+        {exportStatus && (
+          <div className="export-status">
+            <span>{exportStatus.label}</span>
+            {exportStatus.cancel && (
+              <button onClick={exportStatus.cancel} aria-label="Cancel export">
+                ✕
+              </button>
+            )}
+          </div>
+        )}
+        {exportBusy && (
+          <div className="export-hint">
+            Keep this tab visible while exporting.
+          </div>
+        )}
       </div>
 
-      {manifest.fileInputs.length > 0 && (
+      {fileInputs.length > 0 && (
         <div className="section">
           <div className="section-header">File Inputs</div>
-          {manifest.fileInputs.map((fi) => (
+          {fileInputs.map((fi) => (
             <FileInputRow
               key={paramKey(fi.nodeId, fi.paramName)}
               entry={fi}
+              labelOverride={
+                design?.controls.labels[paramKey(fi.nodeId, fi.paramName)]
+              }
               value={getValue(fi.nodeId, fi.paramName)}
               onChange={(v) =>
                 onParamChange(
@@ -93,13 +210,16 @@ export function ControlPanel(props: ControlPanelProps) {
         </div>
       )}
 
-      {manifest.controls.length > 0 && (
+      {controls.length > 0 && (
         <div className="section">
           <div className="section-header">Controls</div>
-          {manifest.controls.map((c) => (
+          {controls.map((c) => (
             <ControlRow
               key={paramKey(c.nodeId, c.paramName)}
               entry={c}
+              labelOverride={
+                design?.controls.labels[paramKey(c.nodeId, c.paramName)]
+              }
               value={getValue(c.nodeId, c.paramName)}
               driven={drivenParams.has(paramKey(c.nodeId, c.paramName))}
               onChange={(v) =>
@@ -115,14 +235,16 @@ export function ControlPanel(props: ControlPanelProps) {
 
 function FileInputRow({
   entry,
+  labelOverride,
   value,
   onChange,
 }: {
   entry: ExportManifestFileInput;
+  labelOverride?: string;
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
-  const label = `${entry.nodeName} — ${entry.label}`;
+  const label = labelOverride ?? `${entry.nodeName} — ${entry.label}`;
   return (
     <div className="row">
       <div className="label">{label}</div>
@@ -140,6 +262,9 @@ function FileInputRow({
       )}
       {entry.paramType === "font" && (
         <FontFileRow value={value} onChange={onChange} />
+      )}
+      {entry.paramType === "model_file" && (
+        <ModelFileRow value={value} onChange={onChange} />
       )}
     </div>
   );
@@ -250,6 +375,55 @@ function AudioFileRow({
   );
 }
 
+// 3D model input (v11): with a cloud ref the value arrives pre-loaded
+// from deserialize (the meta line shows it); the picker is the override,
+// building the same lightweight value the editor's ModelFileControl does.
+function ModelFileRow({
+  value,
+  onChange,
+}: {
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  const current = value as
+    | import("@/engine/types").ModelFileParamValue
+    | null
+    | undefined;
+  return (
+    <div className="file-row">
+      <input
+        type="file"
+        accept=".glb,.gltf,.obj,.stl,model/gltf-binary,model/gltf+json,model/stl"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          const lower = file.name.toLowerCase();
+          if (current?.url?.startsWith("blob:")) {
+            try {
+              URL.revokeObjectURL(current.url);
+            } catch {
+              // already revoked
+            }
+          }
+          onChange({
+            url: URL.createObjectURL(file),
+            filename: file.name,
+            size: file.size,
+            format: lower.endsWith(".obj")
+              ? "obj"
+              : lower.endsWith(".stl")
+                ? "stl"
+                : lower.endsWith(".gltf")
+                  ? "gltf"
+                  : "glb",
+          } satisfies import("@/engine/types").ModelFileParamValue);
+        }}
+      />
+      {current?.filename && <div className="meta">{current.filename}</div>}
+    </div>
+  );
+}
+
 function SvgFileRow({
   value,
   onChange,
@@ -330,16 +504,18 @@ function FontFileRow({
 
 function ControlRow({
   entry,
+  labelOverride,
   value,
   driven,
   onChange,
 }: {
   entry: ExportManifestControl;
+  labelOverride?: string;
   value: unknown;
   driven: boolean;
   onChange: (v: unknown) => void;
 }) {
-  const label = `${entry.nodeName} — ${entry.label}`;
+  const label = labelOverride ?? `${entry.nodeName} — ${entry.label}`;
   return (
     <div className={`row${driven ? " driven" : ""}`}>
       <div className="label">

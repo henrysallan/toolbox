@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { aspectCorrectY, aspectUncorrectY } from "@/engine/aspect";
+import { claimPointerGesture } from "@/lib/pointer-claim";
 
 export interface TransformGizmoPatch {
   translateX?: number;
@@ -565,6 +566,8 @@ export default function TransformGizmo({
     (e: React.PointerEvent<SVGElement>) => {
       e.stopPropagation();
       e.preventDefault();
+      // Gizmo gesture — keep it out of the graph's cursor press facts.
+      claimPointerGesture(e.pointerId);
       // Reset modifier-driven axis lock at every drag start so the
       // previous drag's decision doesn't persist into a new gesture.
       lockedAxisRef.current = null;

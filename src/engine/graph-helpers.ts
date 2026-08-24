@@ -93,6 +93,19 @@ export function coercible(src: string, tgt: string): boolean {
   // Image ↔ element: wrap as full-canvas element / flatten to image.
   if (src === "image" && tgt === "element") return true;
   if (src === "element" && tgt === "image") return true;
+  // Geometry → object3d: auto-wrap in a Mesh with carried transform +
+  // material (coerce.ts / three-geometry.ts). One-way — an object3d may be
+  // a light/group/instanced mesh, so there's no honest reverse.
+  // `points` ↔ `points3d` deliberately coerce in NEITHER direction: the
+  // types differ by SPACE (authored [0,1]² vs world meters), and no
+  // canonical mapping exists — crossings are explicit nodes/polymorphic
+  // inputs only (081026 spec §2).
+  if (src === "geometry" && tgt === "object3d") return true;
+  // Instances → object3d: the scene boundary resolves the stream into a
+  // retained InstancedMesh (three-geometry.ts). One-way, like geometry.
+  // instances → geometry is deliberately NOT a coercion — that's Realize
+  // Instances, an explicit N×-vertex bake (081026 spec §4.4).
+  if (src === "instances" && tgt === "object3d") return true;
   return false;
 }
 

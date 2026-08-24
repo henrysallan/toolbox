@@ -73,6 +73,9 @@ export const cursorTrailPointsNode: NodeDefinition = {
   backend: "webgl2",
   // External cursor + wall-clock state — recompute every eval.
   stable: false,
+  // Live pointer history accumulated across evals — Time Offset
+  // boundary-feeds the current trail through un-shifted.
+  retimeable: false,
   inputs: [],
   params: [
     {

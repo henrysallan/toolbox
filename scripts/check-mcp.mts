@@ -226,6 +226,23 @@ check("unpaired error", isError(r2) && textOf(r2).includes("pairing isn't confir
 // --- 3. confirm pairing → tools work ---
 bridge.confirmPairing();
 await waitFor(() => statuses.some((s) => s.state === "connected"));
+// The connected status must identify the MCP client behind the server: the
+// initialize-handshake clientInfo plus the spawning process (us — the server
+// is our direct child, so its reported pid is this process).
+{
+  const conn = statuses.find((s) => s.state === "connected") as Extract<
+    BridgeStatus,
+    { state: "connected" }
+  >;
+  check(
+    "connected status carries the MCP client identity",
+    conn.client?.app === "e2e-test" &&
+      conn.client?.appVersion === "0.0.0" &&
+      conn.client?.pid === process.pid &&
+      typeof conn.client?.cwd === "string",
+    JSON.stringify(conn.client)
+  );
+}
 const r3 = await client.callTool({ name: "get_status", arguments: {} });
 const status = JSON.parse(textOf(r3));
 check("get_status round-trips", !isError(r3) && status.projectName === "E2E Test" && status.frame === 12);

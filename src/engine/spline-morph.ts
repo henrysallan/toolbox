@@ -1,15 +1,17 @@
 import type { SplineAnchor, SplineSubpath, SplineValue } from "./types";
 import { resampleSubpath } from "./spline-math";
 
-// Shape morphing between two splines. A morph is a per-anchor lerp once
-// the two shapes are put into correspondence: both resampled to a matched
-// anchor count, then aligned so anchor i of A pairs with the geometrically
-// nearest run of B (orientation + cyclic start-vertex for closed loops).
+// Shape morphing between two (or a chain of) splines. A morph is a
+// per-anchor lerp once shapes are put into correspondence: both resampled
+// to a matched anchor count, then aligned so anchor i of A pairs with the
+// geometrically nearest run of B (orientation + cyclic start-vertex for
+// closed loops). A chain of N shapes is N−1 such pairs; Amount 0..1 walks
+// them in equal slices.
 //
-// The expensive part (resample + alignment) depends only on the two input
+// The expensive part (resample + alignment) depends only on the input
 // shapes and the resolution — NOT on the morph amount t. So we build a
-// `MorphCorrespondence` once and re-apply it cheaply every frame as t
-// animates. The node caches the correspondence by an input signature.
+// `MorphCorrespondence` (or chain) once and re-apply it cheaply every
+// frame as t animates. The node caches the correspondence by identity.
 //
 // Handles are OFFSETS from their anchor (see SplineAnchor), so lerping
 // them is direct — no absolute/relative conversion. Reversing a subpath's
@@ -249,6 +251,37 @@ export function applyMorph(
     closed: p.closed,
   }));
   return { kind: "spline", subpaths };
+}
+
+// Chain N shapes into N−1 correspondences. Each pair's B (t=1) becomes the
+// next pair's A so knots are seamless — independently aligning each adjacent
+// pair would resample/reorient the shared shape twice and pop at the join.
+export function buildMorphChain(
+  shapes: SplineValue[],
+  resolution: number
+): MorphCorrespondence[] {
+  if (shapes.length < 2) return [];
+  const corrs: MorphCorrespondence[] = [];
+  let current = shapes[0];
+  for (let k = 0; k < shapes.length - 1; k++) {
+    const corr = buildMorphCorrespondence(current, shapes[k + 1], resolution);
+    corrs.push(corr);
+    current = applyMorph(corr, 1);
+  }
+  return corrs;
+}
+
+// Map amount 0..1 across the chain: N shapes split the slider into N−1
+// equal segments (2 → 0=A, 1=B; 3 → 0 / 0.5 / 1; 4 → 0 / 0.33 / 0.66 / 1).
+export function applyMorphChain(
+  corrs: MorphCorrespondence[],
+  amount: number
+): SplineValue {
+  if (corrs.length === 0) return { kind: "spline", subpaths: [] };
+  const t = Math.max(0, Math.min(1, amount));
+  const scaled = t * corrs.length;
+  const index = Math.min(Math.floor(scaled), corrs.length - 1);
+  return applyMorph(corrs[index], scaled - index);
 }
 
 // One-shot convenience (no caching).

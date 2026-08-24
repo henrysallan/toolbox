@@ -17,6 +17,9 @@ import SavingAndLoadingPage, {
 import PublicPrivatePage, {
   TOC as PublicPrivateToc,
 } from "@/components/docs/pages/PublicPrivate";
+import PointAttributesPage, {
+  TOC as PointAttributesToc,
+} from "@/components/docs/pages/PointAttributes";
 import ImageNodesPage, {
   TOC as ImageNodesToc,
 } from "@/components/docs/pages/nodes/ImageNodes";
@@ -38,6 +41,9 @@ import EffectNodesPage, {
 import OutputNodesPage, {
   TOC as OutputNodesToc,
 } from "@/components/docs/pages/nodes/OutputNodes";
+import PrivacyPolicyPage, {
+  TOC as PrivacyPolicyToc,
+} from "@/components/docs/pages/PrivacyPolicy";
 
 // Single source of truth for the /docs tree. Every entry lives
 // under a section (for sidebar grouping) and carries the URL slug
@@ -113,6 +119,14 @@ export const DOCS: DocSection[] = [
         summary: "Every shortcut in one table.",
         Component: KeyboardShortcutsPage,
       },
+      {
+        slug: ["editor", "point-attributes"],
+        title: "Point data & the Spreadsheet",
+        summary:
+          "Inspect per-point data in a live table, and author named attributes that flow through the graph.",
+        Component: PointAttributesPage,
+        toc: PointAttributesToc,
+      },
     ],
   },
   {
@@ -185,6 +199,18 @@ export const DOCS: DocSection[] = [
         summary: "Terminal nodes — what the preview canvas sees.",
         Component: OutputNodesPage,
         toc: OutputNodesToc,
+      },
+    ],
+  },
+  {
+    title: "Legal",
+    pages: [
+      {
+        slug: ["privacy"],
+        title: "Privacy policy",
+        summary: "What Toolbox stores, where it lives, and when anything leaves your machine.",
+        Component: PrivacyPolicyPage,
+        toc: PrivacyPolicyToc,
       },
     ],
   },

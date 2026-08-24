@@ -17,6 +17,7 @@ const { registerRecentsHandlers } = require("./recents");
 const { registerAssetsHandlers } = require("./assets");
 const { registerUpdater } = require("./updater");
 const { startServer, waitForReady, stopServer, serverUrl } = require("./server");
+const { startAgentHost, stopAgentHost } = require("./agent");
 
 const DEV_URL = process.env.TOOLBOX_DEV_URL || null;
 const REMOTE_URL = process.env.TOOLBOX_REMOTE_URL || null;
@@ -110,6 +111,11 @@ async function createWindow() {
   };
   win.on("maximize", sendMaxState);
   win.on("unmaximize", sendMaxState);
+
+  // Assistant panel's agent host. Started for both the dev-URL and embedded
+  // paths — it is independent of how the page itself is served, and the
+  // renderer discovers it through /api/agent-handshake either way.
+  startAgentHost();
 
   if (DEV_URL || REMOTE_URL) {
     const url = appUrl;
@@ -215,10 +221,12 @@ app.whenReady().then(() => {
 
 app.on("before-quit", () => {
   killAllSessions();
+  stopAgentHost();
   stopServer();
 });
 app.on("window-all-closed", () => {
   killAllSessions();
+  stopAgentHost();
   stopServer();
   // macOS apps conventionally stay alive until Cmd+Q.
   if (process.platform !== "darwin") app.quit();

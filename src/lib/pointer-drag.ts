@@ -22,6 +22,7 @@
 // The gesture ends exactly once, whichever way it ends.
 
 import { useEffect, useState } from "react";
+import { claimPointerGesture } from "./pointer-claim";
 
 /**
  * Spread onto any element that starts a drag. `touchAction: "none"` tells the
@@ -103,6 +104,10 @@ export function startPointerDrag(
   } catch {
     return false;
   }
+  // Every drag that rides this scaffold is UI chrome, not canvas content —
+  // keep its press out of the graph's cursor gesture facts. Harmless for
+  // drags outside the preview box (those were never counted).
+  claimPointerGesture(pointerId);
 
   const prevCursor = document.body.style.cursor;
   const prevSelect = document.body.style.userSelect;

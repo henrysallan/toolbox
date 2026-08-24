@@ -1,8 +1,5 @@
-import type {
-  NodeDefinition,
-  PointsValue,
-  RenderContext,
-} from "@/engine/types";
+import type { NodeDefinition, RenderContext } from "@/engine/types";
+import { copyPointsWith, EMPTY_POINTS } from "@/engine/points";
 
 // Sample an image at each point's UV position and write the value into
 // a chosen per-point attribute (scale or rotation). The base primitive
@@ -134,13 +131,7 @@ export const sampleTextureAtPointsNode: NodeDefinition = {
   compute({ inputs, params, ctx }) {
     const src = inputs.points;
     if (!src || src.kind !== "points") {
-      const empty: PointsValue = {
-        kind: "points",
-        count: 0,
-        positions: new Float32Array(0),
-        points: [],
-      };
-      return { primary: empty };
+      return { primary: EMPTY_POINTS };
     }
 
     const img = inputs.image;
@@ -163,14 +154,18 @@ export const sampleTextureAtPointsNode: NodeDefinition = {
     const inPos = src.positions;
     const inScales = src.scales;
     const inRots = src.rotations;
-    const inGroups = src.groupIndices;
 
     const outScales = new Float32Array(n * 2);
     const outRotations = new Float32Array(n);
 
+    // Authored y-DOWN → canvas y-DOWN before sampling (authored is
+    // aspect-compressed around 0.5): the sample must land where the
+    // point visually sits. Same correction as Copy to Points' and
+    // Modulate Points' field samplers.
+    const canvasAspect = ctx.height > 0 ? ctx.width / ctx.height : 1;
     for (let i = 0; i < n; i++) {
       const px = inPos[i * 2];
-      const py = inPos[i * 2 + 1];
+      const py = 0.5 + (inPos[i * 2 + 1] - 0.5) * canvasAspect;
       const sample = pickChannel(buf, channel, px, py);
       const remapped = lo + (hi - lo) * sample;
 
@@ -212,18 +207,14 @@ export const sampleTextureAtPointsNode: NodeDefinition = {
       }
     }
 
-    const out: PointsValue = {
-      kind: "points",
-      count: n,
-      // Positions unchanged — share the buffer to keep the hot path
-      // allocation-free.
-      positions: inPos,
-      scales: outScales,
-      rotations: outRotations,
-      groupIndices: inGroups,
-      points: [],
+    // Positions stay shared; only scales/rotations are replaced, so
+    // z/normals (a 3D value) and any future channels pass through.
+    return {
+      primary: copyPointsWith(src, {
+        scales: outScales,
+        rotations: outRotations,
+      }),
     };
-    return { primary: out };
   },
 
   dispose(ctx, nodeId) {

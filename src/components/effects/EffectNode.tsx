@@ -24,6 +24,7 @@ import { MAX_COLORS, getExtractedPalette } from "@/nodes/source/color-literal";
 import { ColorPickerPopover } from "@/lib/color-picker-popover";
 import {
   BAR_SLIDER_RADIUS,
+  FloatCurveEditor,
   MiniBarSlider,
   NumberField,
   hexAlpha01,
@@ -33,6 +34,7 @@ import {
   sampleRampColor,
   withHexAlpha,
 } from "@/lib/param-controls";
+import { sanitizeFloatCurve, type CurvePoint } from "@/engine/float-curve";
 import { HslField } from "@/lib/number-field";
 import { COLOR_RAMP_MAX_STOPS, newStopId } from "@/nodes/effect/color-ramp";
 import {
@@ -41,6 +43,10 @@ import {
   TOUCH_DRAG_STYLE,
 } from "@/lib/pointer-drag";
 import { colorForSocket } from "./socketColor";
+import {
+  isAttrNameInvalid,
+  readUpstreamAttrNames,
+} from "./attr-name-source";
 import { tintRgba } from "./node-tints";
 import { Spinner } from "./Spinner";
 import { useAudioAudible } from "@/state/audio-audibility";
@@ -64,17 +70,28 @@ const HANDLE_HIT = 20;
 const PEEK_DWELL_MS = 2000;
 
 // Node types that surface an editable text box directly on the node body,
-// mapped to the string param it edits. Every param here is declared
-// `multiline: true`, so the on-node control is a <textarea>. Edits route
-// through the shared `effect-node-param` event (→ onParamChange), same as
-// the header dropdowns and Color swatches.
-const STRING_INPUT_PARAMS: Record<string, string> = {
-  "string-literal": "value",
-  text: "text",
+// mapped to the string param it edits. Multiline params render a
+// <textarea> that fills the body; `singleLine` renders a compact one-row
+// <input> (Set Named Attribute's channel name — the name IS the node's
+// meaning, so it belongs on the body). Edits route through the shared
+// `effect-node-param` event (→ onParamChange), same as the header
+// dropdowns and Color swatches.
+const STRING_INPUT_PARAMS: Record<
+  string,
+  { param: string; singleLine?: boolean }
+> = {
+  "string-literal": { param: "value" },
+  text: { param: "text" },
   // Expression's source is the whole point of the node — reading the graph
   // means reading the formula, so it goes on the body next to the input
   // variables the header `+` mints rather than only in the panel.
-  expression: "expression",
+  expression: { param: "expression" },
+  // The shader source IS the node, same reasoning as Expression.
+  "glsl-expression": { param: "expression" },
+  "set-named-attribute": { param: "attr_name", singleLine: true },
+  "attribute-math": { param: "attr_name", singleLine: true },
+  "attribute-blur": { param: "attr_name", singleLine: true },
+  "attribute-transfer": { param: "attr_name", singleLine: true },
 };
 
 // Node types that surface an inline scalar slider on the node body, mapped to
@@ -126,6 +143,17 @@ const COLOR_SWATCH_PARAMS: Record<
 // the header dropdown (def.headerControl) instead of eating a body row.
 const RAMP_WIDGET_PARAMS: Record<string, string> = {
   "color-ramp": "stops",
+};
+
+// Node types that surface the float-curve editor on the node body, mapped to
+// the `float_curve` param it edits. The Float Curve node IS its curve —
+// burying the editor in the panel costs a selection round-trip per tweak.
+// Reuses the panel's FloatCurveEditor wholesale (click-to-add, drag,
+// drag-off-to-remove, x/y row); edits route through the same
+// `effect-node-param` event. Unlike the ramp there's no wired/read-only
+// case: float_curve params aren't exposable (paramSocketType → null).
+const CURVE_WIDGET_PARAMS: Record<string, string> = {
+  "float-curve": "curve",
 };
 
 interface ExposedSocket {
@@ -425,15 +453,32 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
     data.primaryOutput === "audio" &&
     getNodeDef(data.defType)?.category === "audio";
 
-  // On-node text box: String source (`value`), Text (`text`) and Expression
-  // (`expression`) render an editable box on the node body. The placeholder
-  // comes from the def.
-  const stringInputParam: string | undefined = STRING_INPUT_PARAMS[data.defType];
-  const stringPlaceholder = useMemo(() => {
+  // On-node text box: String source (`value`), Text (`text`), Expression
+  // (`expression`) and the attribute nodes (`attr_name`, single-line)
+  // render an editable box on the node body. Placeholder + attr-name
+  // semantics come from the def's ParamDef.
+  const stringInput = STRING_INPUT_PARAMS[data.defType];
+  const stringInputParam: string | undefined = stringInput?.param;
+  const stringParamDef = useMemo(() => {
     if (!stringInputParam) return undefined;
-    const def = getNodeDef(data.defType);
-    return def?.params.find((p) => p.name === stringInputParam)?.placeholder;
+    return getNodeDef(data.defType)?.params.find(
+      (p) => p.name === stringInputParam
+    );
   }, [data.defType, stringInputParam]);
+  const stringPlaceholder = stringParamDef?.placeholder;
+  // Invalid-attribute tint: same singleton read + rule as the panel row
+  // (attr-name-source.ts). Refreshes when the node re-renders (param
+  // edits); a purely-upstream channel change can lag one render — the
+  // suggestions' freshness contract.
+  let stringInvalid = false;
+  if (stringParamDef?.suggestAttrsFrom && stringInputParam) {
+    const current = data.params[stringInputParam];
+    stringInvalid = isAttrNameInvalid(
+      typeof current === "string" ? current : "",
+      readUpstreamAttrNames(id, stringParamDef.suggestAttrsFrom),
+      !!stringParamDef.suggestAttrsRequire
+    );
+  }
 
   // On-node scalar slider (Constant). Range mirrors the ParamPanel logic —
   // per-node paramOverride wins, softMax caps the slider (number field keeps
@@ -475,6 +520,16 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   }, [rampParam, data.params]);
   const [rampSelId, setRampSelId] = useState<string | null>(null);
 
+  // On-node float-curve editor (Float Curve). Memoized so the editor sees a
+  // stable array identity per param value — a valid param passes through
+  // sanitize with its ids intact, so drag-by-id survives re-renders. The
+  // (0, 1) fallback endpoints match the node's ParamDef default.
+  const curveParam: string | undefined = CURVE_WIDGET_PARAMS[data.defType];
+  const curvePoints: CurvePoint[] | null = useMemo(() => {
+    if (!curveParam) return null;
+    return sanitizeFloatCurve(data.params[curveParam], 0, 1);
+  }, [curveParam, data.params]);
+
   // The two nodes whose output IS a colour: the Color node (one swatch per
   // colour output) and Solid Color (one colour, one image out). Both carry a
   // clickable swatch on the output row and the shared H/S/L/A row below.
@@ -497,7 +552,9 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           // tall control, and a node that's mostly gradient reads better than
           // one padded out to fit a single row of number fields. Still
           // resizable: bar and grid both flex if it's dragged wider.
-          rampParam
+          // Curve nodes share the ramp's narrow floor: the chart scales to
+          // node width, and a square editor at 150 is already comfortable.
+          rampParam || curveParam
           ? 150
           : // Constant is half the default: its whole body is one bar + one
             // number, so 200 was mostly empty padding, and these tend to
@@ -1478,9 +1535,10 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           style={{
             padding: "6px 8px",
             borderTop: "1px solid var(--tb-n-7)",
-            // Fill the remaining height of a resized node so the textarea can
-            // grow with it; minHeight:0 lets it shrink inside the flex column.
-            flex: "1 1 auto",
+            // Multiline fills the remaining height of a resized node so the
+            // textarea can grow with it; the single-line variant keeps its
+            // natural row height.
+            flex: stringInput?.singleLine ? undefined : "1 1 auto",
             minHeight: 0,
             display: "flex",
           }}
@@ -1494,6 +1552,8 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                 : ""
             }
             placeholder={stringPlaceholder}
+            singleLine={stringInput?.singleLine}
+            invalid={stringInvalid}
           />
         </div>
       )}
@@ -1592,6 +1652,33 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             stops={rampStops}
             selectedId={rampSelId}
             setSelectedId={setRampSelId}
+          />
+        </div>
+      )}
+
+      {curveParam && curvePoints && (
+        <div
+          className="nodrag"
+          // Both, deliberately: `nodrag` + stopping POINTERdown is what holds
+          // on touch (React Flow's node drag is pointer-driven). On the
+          // wrapper rather than inside the editor — the panel component has
+          // no reason to know about xyflow.
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            padding: "6px 8px",
+            borderTop: "1px solid var(--tb-n-7)",
+          }}
+        >
+          <FloatCurveEditor
+            points={curvePoints}
+            onChange={(next) =>
+              window.dispatchEvent(
+                new CustomEvent("effect-node-param", {
+                  detail: { id, name: curveParam, value: next },
+                })
+              )
+            }
           />
         </div>
       )}
@@ -1847,11 +1934,17 @@ function NodeStringInput({
   paramName,
   value,
   placeholder,
+  singleLine,
+  invalid,
 }: {
   id: string;
   paramName: string;
   value: string;
   placeholder?: string;
+  /** Compact one-row <input> instead of the body-filling <textarea>. */
+  singleLine?: boolean;
+  /** Verified-wrong attribute name — error tint (attr-name-source.ts). */
+  invalid?: boolean;
 }) {
   const [text, setText] = useState(value);
   const editing = useRef(false);
@@ -1869,6 +1962,62 @@ function NodeStringInput({
   useEffect(() => {
     if (!editing.current) setText(value);
   }, [value]);
+
+  if (singleLine) {
+    return (
+      <input
+        type="text"
+        className="nodrag"
+        value={wired ? value : text}
+        readOnly={wired}
+        placeholder={placeholder}
+        title={
+          invalid
+            ? "No attribute with this name on the wired input (reserved names can't be attributes)"
+            : undefined
+        }
+        spellCheck={false}
+        onFocus={() => {
+          editing.current = true;
+        }}
+        onBlur={() => {
+          editing.current = false;
+          setText(value);
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          // Enter commits (the change already dispatched) and drops focus.
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+        onChange={(e) => {
+          const next = e.target.value;
+          setText(next);
+          window.dispatchEvent(
+            new CustomEvent("effect-node-param", {
+              detail: { id, name: paramName, value: next },
+            })
+          );
+        }}
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          background: invalid
+            ? "color-mix(in srgb, var(--tb-a-red-400) 12%, var(--tb-n-1))"
+            : "var(--tb-n-1)",
+          color: wired ? "var(--tb-n-11)" : "var(--tb-n-16)",
+          border: `1px solid ${invalid ? "var(--tb-a-red-400)" : "var(--tb-n-7)"}`,
+          borderRadius: 4,
+          fontFamily: "inherit",
+          fontSize: 11,
+          lineHeight: 1.4,
+          padding: "3px 6px",
+          outline: "none",
+        }}
+      />
+    );
+  }
 
   return (
     <textarea

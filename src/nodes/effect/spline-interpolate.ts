@@ -28,9 +28,10 @@ import { transformSpline } from "@/engine/spline-transform";
 // free; we cache the per-segment correspondences by input-object identity
 // (upstream hands us new SplineValue objects exactly when geometry changed).
 //
-// Sibling to Spline Morph (spline-morph.ts): that node is a two-input, animated,
-// rasterizing A→B tween; this one is a multi-input, static, spline-out family
-// generator on the same engine. Design: specdocs/archive/070626_spline-interpolate.md.
+// Sibling to Spline Morph (spline-morph.ts): that node is an animated,
+// rasterizing tween along the same auto-grow chain (Amount 0..1 walks it);
+// this one is a static, spline-out family generator on the same engine.
+// Design: specdocs/archive/070626_spline-interpolate.md.
 
 const EMPTY_SPLINE: SplineValue = { kind: "spline", subpaths: [] };
 

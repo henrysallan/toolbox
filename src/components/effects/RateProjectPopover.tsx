@@ -36,6 +36,17 @@ export interface RateProjectPopoverProps {
   // Called after a successful rate / clear — parent should refresh
   // the listing so the tile's avg + count display the new values.
   onChanged: () => void;
+  // Present only for the user's own projects — adds a manage section.
+  // Rename swaps the row for an inline field; commit hands the trimmed
+  // new name up. The optimistic row update + persistence live in the
+  // parent (same split as the folder menu).
+  onRename?: (name: string) => void;
+  // Confirm + optimistic removal also live in the parent.
+  onDelete?: () => void;
+  // Own rows only (M2 shared projects): opens the Collaborators modal
+  // (member list + invite link). The modal itself lives in the parent —
+  // this popover closes when it opens.
+  onCollaborators?: () => void;
 }
 
 const STARS = [1, 2, 3, 4, 5] as const;
@@ -47,11 +58,15 @@ export default function RateProjectPopover({
   signedIn,
   onClose,
   onChanged,
+  onRename,
+  onDelete,
+  onCollaborators,
 }: RateProjectPopoverProps) {
   const [ownRating, setOwnRating] = useState<number | null>(null);
   const [hovered, setHovered] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
   const liveSlug = row.is_public ? row.public_slug : null;
@@ -140,10 +155,12 @@ export default function RateProjectPopover({
 
   // Clamp to viewport — prevents the popover from jutting off-screen
   // when the user right-clicks a tile near the bottom-right corner.
-  // Height grows when the share section is rendered so we still fit
-  // on small viewports.
+  // Height grows when the share / manage sections are rendered so we
+  // still fit on small viewports.
+  const manage = !!(onRename || onDelete || onCollaborators);
   const W = 240;
-  const H = liveUrl ? 180 : 120;
+  const H =
+    (liveUrl ? 180 : 120) + (manage ? 62 : 0) + (onCollaborators ? 24 : 0);
   const vw = typeof window !== "undefined" ? window.innerWidth : 0;
   const vh = typeof window !== "undefined" ? window.innerHeight : 0;
   const left = Math.max(8, Math.min(vw - W - 8, x));
@@ -325,6 +342,148 @@ export default function RateProjectPopover({
           Make this project public to get a shareable live link.
         </div>
       )}
+      {manage && (
+        <div
+          style={{
+            marginTop: 10,
+            paddingTop: 6,
+            borderTop: "1px solid var(--tb-n-7)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 1,
+          }}
+        >
+          {onCollaborators && (
+            <ActionRow
+              label="Collaborators…"
+              onClick={() => {
+                // Close first — the modal renders from the parent, and
+                // stacking it under a live popover reads as broken.
+                onClose();
+                onCollaborators();
+              }}
+            />
+          )}
+          {onRename &&
+            (renaming ? (
+              <RenameField
+                initial={row.name}
+                onCommit={(name) => {
+                  setRenaming(false);
+                  const trimmed = name.trim();
+                  if (!trimmed || trimmed === row.name) return;
+                  onRename(trimmed);
+                  onClose();
+                }}
+                onCancel={() => setRenaming(false)}
+              />
+            ) : (
+              <ActionRow label="Rename" onClick={() => setRenaming(true)} />
+            ))}
+          {onDelete && (
+            <ActionRow
+              label="Delete…"
+              danger
+              onClick={() => {
+                // Close first so the parent's window.confirm doesn't
+                // block with the popover still up — same order as the
+                // folder menu.
+                onClose();
+                onDelete();
+              }}
+            />
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+// Menu-style row for the manage section — mirrors the folder context
+// menu's items (LoadGrid's FolderMenuPopover) so both right-click menus
+// read as one family.
+function ActionRow({
+  label,
+  danger,
+  onClick,
+}: {
+  label: string;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  const [hot, setHot] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHot(true)}
+      onMouseLeave={() => setHot(false)}
+      style={{
+        display: "block",
+        width: "100%",
+        textAlign: "left",
+        background: hot
+          ? danger
+            ? "var(--tb-t-red-d-1)"
+            : "var(--tb-n-6)"
+          : "transparent",
+        border: "none",
+        borderRadius: 3,
+        color: danger ? "var(--tb-a-red-400)" : "var(--tb-n-16)",
+        fontFamily: "inherit",
+        fontSize: 11,
+        padding: "5px 8px",
+        cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+// Inline rename field — same commit contract as LoadGrid's
+// FolderNameInput: Enter/blur commit once, Escape cancels. Escape stops
+// propagation so it cancels the rename without also closing the popover
+// (the popover's window-level key listener sits behind it).
+function RenameField({
+  initial,
+  onCommit,
+  onCancel,
+}: {
+  initial: string;
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const doneRef = useRef(false);
+  const finish = (fn: () => void) => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    fn();
+  };
+  return (
+    <input
+      autoFocus
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onFocus={(e) => e.currentTarget.select()}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") finish(() => onCommit(value));
+        else if (e.key === "Escape") finish(onCancel);
+      }}
+      onBlur={() => finish(() => onCommit(value))}
+      style={{
+        width: "100%",
+        boxSizing: "border-box",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-a-navy-tint)",
+        borderRadius: 3,
+        color: "var(--tb-n-16)",
+        fontFamily: "inherit",
+        fontSize: 11,
+        padding: "4px 7px",
+        outline: "none",
+      }}
+    />
   );
 }

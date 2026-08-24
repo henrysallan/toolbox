@@ -37,6 +37,14 @@ import {
   resolveClipAt,
   type ClipBlock,
 } from "./clips";
+import {
+  carriedSocketTypeOf,
+  collectTimeOffsetClosures,
+  TIME_OFFSET_EDGE_PREFIX,
+  TIME_OFFSET_STASH_KEY,
+  TIME_OFFSET_TYPE,
+  type TimeOffsetStash,
+} from "./time-offset";
 import type {
   AudioChainNode,
   ImageValue,
@@ -319,7 +327,14 @@ export function computeNeededSet(
   activeNodeId: string | null | undefined,
   // Extra nodes to evaluate even when they don't feed the active/terminal
   // node — e.g. a selected node we want to preview on its own.
-  extraTargets?: Iterable<string>
+  extraTargets?: Iterable<string>,
+  // Time Offset shells whose upstream branch evaluates NESTED at a shifted
+  // clock instead of outer-side: edges into their `in` socket are skipped
+  // so the branch leaves the outer needed set (boundary producers re-enter
+  // through the evaluator's mirror edges). Passed only by evaluateGraph —
+  // outside callers (export-manifest, save flows) omit it and keep the
+  // conservative full-branch answer, which is what asset bundling wants.
+  timeOffsetShellIds?: ReadonlySet<string>
 ): Set<string> {
   // `render` edges (Output → Render Queue) are organizational, not data —
   // they must NOT pull the wired Output chains into evaluation just because
@@ -334,6 +349,11 @@ export function computeNeededSet(
   const parents = new Map<string, string[]>();
   for (const e of edges) {
     if (renderQueueIds.has(e.target)) continue;
+    // A Time Offset shell's `in` branch runs nested at the shifted clock —
+    // it must not be pulled into the OUTER pass through this edge.
+    if (timeOffsetShellIds?.has(e.target) && e.targetHandle === "in:in") {
+      continue;
+    }
     const list = parents.get(e.target);
     if (list) list.push(e.source);
     else parents.set(e.target, [e.source]);
@@ -938,6 +958,98 @@ export function evaluateGraph(
             )
         );
 
+  // --- Time Offset closures (specdocs/081426_time-offset.md) --------------
+  // Walk each shell's upstream closure off the FINAL flat edge list (post
+  // layer gating, so a gated interior is honestly absent), hash the
+  // structure for the shells' fingerprintExtras, and stash on ctx — the
+  // Iterate stash contract under its own key. Each boundary crossing edge
+  // is mirrored onto a hidden `to__e_<edgeId>` shell input: making the
+  // mirror a REAL edge gives us outer evaluation of the boundary producer,
+  // topo ordering, consumption marking, and value-change cache busting
+  // (via the shell's input fingerprints) all in one move. The hash folds
+  // NO time — the shell's fingerprintExtras appends the scoped tick itself
+  // when the closure is time-driven, so a layer-offset change while paused
+  // still busts correctly.
+  const toClosures = collectTimeOffsetClosures(nodes, edges);
+  let timeOffsetShellIds: Set<string> | undefined;
+  if (toClosures) {
+    // Outer pass: fresh map (stale shells drop). Nested pass (a shell or
+    // Iterate zone containing another shell structurally): MERGE into the
+    // outer stash rather than clobbering it mid-outer-eval.
+    const existing = nested
+      ? (ctx.state[TIME_OFFSET_STASH_KEY] as TimeOffsetStash | undefined)
+      : undefined;
+    const stash: TimeOffsetStash = existing ?? new Map();
+    timeOffsetShellIds = new Set();
+    const mirrors: GraphEdge[] = [];
+    for (const [shellId, closure] of toClosures) {
+      const parts: string[] = [];
+      let timeDriven = false;
+      for (const n of closure.nodes) {
+        parts.push(
+          n.id,
+          n.type,
+          n.bypassed ? "B" : "C",
+          stableStringify(n.params),
+          n.animation ? "a:" + stableStringify(n.animation) : "_"
+        );
+        // Clip windows gate/remap inside the shifted domain — edits must
+        // bust, and their presence makes the closure tick-dependent.
+        if (n.clips && n.clips.length > 0) {
+          parts.push("c:" + stableStringify(n.clips));
+          timeDriven = true;
+        }
+        if (getNodeDef(n.type)?.stable === false) timeDriven = true;
+        if (!timeDriven && n.animation) {
+          for (const block of Object.values(n.animation)) {
+            if (block?.animated && block.keyframes.length > 0) {
+              timeDriven = true;
+              break;
+            }
+          }
+        }
+      }
+      for (const e of closure.edges) {
+        parts.push(e.source, e.sourceHandle, e.target, e.targetHandle);
+      }
+      if (closure.tap) {
+        parts.push(
+          "tap:" + closure.tap.producerId + "/" + closure.tap.sourceHandle
+        );
+      }
+      for (const f of closure.feeds) {
+        parts.push(
+          "feed:" + f.edge.id + ">" + f.edge.target + "/" + f.edge.targetHandle
+        );
+      }
+      if (closure.chained) parts.push("chained");
+      if (closure.tapIsBoundary) parts.push("tapboundary");
+      stash.set(shellId, { ...closure, hash: parts.join("|"), timeDriven });
+      // The shell's `in` edge leaves the outer needed set (the branch
+      // evaluates nested instead) — except the tap-is-boundary
+      // passthrough, which reads `inputs.in` outer-side through the
+      // normal edge, and needs no nested pass at all.
+      if (closure.tap && !closure.tapIsBoundary) {
+        timeOffsetShellIds.add(shellId);
+        if (!closure.chained) {
+          for (const f of closure.feeds) {
+            mirrors.push({
+              id: `to__mirror_${f.edge.id}_${shellId}`,
+              source: f.edge.source,
+              sourceHandle: f.edge.sourceHandle,
+              target: shellId,
+              targetHandle: `in:${f.inputName}`,
+            });
+          }
+        }
+      }
+    }
+    ctx.state[TIME_OFFSET_STASH_KEY] = stash;
+    if (mirrors.length > 0) edges = [...edges, ...mirrors];
+  } else if (!nested) {
+    delete ctx.state[TIME_OFFSET_STASH_KEY];
+  }
+
   // Hand the profiler the POST-flatten, post-gating edge list — the topology
   // this pass actually ran against. Raw project edges would stop at every
   // group boundary and break the chain-poisoning walk.
@@ -968,7 +1080,8 @@ export function evaluateGraph(
           ...extraTargets,
           ...auditionProducerIds,
         ]
-      : undefined
+      : undefined,
+    timeOffsetShellIds
   );
   // Folded into the same bucket as the topo sort — both are "work the
   // evaluator does to decide what to run", and separating them would imply
@@ -1239,6 +1352,36 @@ export function evaluateGraph(
       }
     }
 
+    // Time Offset shells: undeclared hidden `to__e_<edgeId>` inputs carry
+    // boundary-fed outer values (mirror edges minted in the stash block
+    // above). Raw and UNCOERCED — the closure member's socket does its own
+    // coercion when the nested feed node re-emits the value. The fp push
+    // is what busts the shell's cache when a fed value changes.
+    if (node.type === TIME_OFFSET_TYPE) {
+      for (const e of edges) {
+        if (e.target !== id) continue;
+        const parsed = parseTargetHandleKind(e.targetHandle);
+        if (
+          parsed?.kind !== "input" ||
+          !parsed.name.startsWith(TIME_OFFSET_EDGE_PREFIX)
+        ) {
+          continue;
+        }
+        const srcOut = outputs.get(e.source);
+        const p = parseSourceHandle(e.sourceHandle);
+        const raw =
+          p?.kind === "primary"
+            ? srcOut?.primary
+            : p?.kind === "aux"
+              ? srcOut?.aux?.[p.name]
+              : undefined;
+        inputs[parsed.name] = raw;
+        inputFpParts.push(
+          `${parsed.name}=${fingerprints.get(e.source) ?? "_"}`
+        );
+      }
+    }
+
     // Resolve exposed-param overrides. Each exposed param with a connected
     // edge substitutes its value into the params map passed to compute.
     // Disconnected exposed params are no-ops (just a visible socket on the
@@ -1317,6 +1460,27 @@ export function evaluateGraph(
     // block contributes to the fingerprint via `tick` so caches bust on
     // playhead movement (only when at least one param is animated; an
     // unanimated node stays cacheable across frames).
+    //
+    // Wired-clock sampling (NodeDefinition.clockInput — Animated Value,
+    // specdocs/081426_time-offset.md Part 2): when the declared clock
+    // input resolves to a finite scalar, EVERY one of this node's
+    // animation blocks samples at that time instead of the playhead.
+    // kfTick is also what lands in animTickFp below, so the cache busts
+    // with the wired clock even while the playhead is paused. Defs
+    // without clockInput sample at ctx.tick exactly as before.
+    let kfTick = ctx.tick;
+    if (def.clockInput) {
+      const cv = inputs[def.clockInput.input];
+      if (cv?.kind === "scalar" && Number.isFinite(cv.value)) {
+        const unit = def.clockInput.unitParam
+          ? node.params[def.clockInput.unitParam]
+          : undefined;
+        kfTick =
+          unit === "seconds"
+            ? Math.round(cv.value * ctx.ticksPerFrame * ctx.fps)
+            : Math.round(cv.value * ctx.ticksPerFrame);
+      }
+    }
     const animation = node.animation;
     const keyframeOverrides: Record<string, unknown> = {};
     if (animation) {
@@ -1327,7 +1491,7 @@ export function evaluateGraph(
         const block = animation[pdef.name];
         if (!block || !block.animated || block.keyframes.length === 0) continue;
         anyAnimated = true;
-        const v = evaluateKeyframesAt(block, pdef.type, ctx.tick);
+        const v = evaluateKeyframesAt(block, pdef.type, kfTick);
         if (v !== undefined) {
           // Interpolated colors come back as 0..1 RGBA tuples — normalize
           // to the hex form the param stores (same contract as the wired
@@ -1359,7 +1523,7 @@ export function evaluateGraph(
           if (!block || !block.animated || block.keyframes.length === 0) {
             continue;
           }
-          const v = evaluateKeyframesAt(block, "scalar", ctx.tick);
+          const v = evaluateKeyframesAt(block, "scalar", kfTick);
           if (typeof v !== "number") continue;
           if (!layers) {
             const base = node.params[layersParam.name];
@@ -1414,7 +1578,7 @@ export function evaluateGraph(
           const v = evaluateKeyframesAt(
             block,
             field === "color" ? "color" : "scalar",
-            ctx.tick
+            kfTick
           );
           if (v === undefined) continue;
           const id = key.slice(prefix.length);
@@ -1448,7 +1612,7 @@ export function evaluateGraph(
           const v = evaluateKeyframesAt(
             block,
             rk.field === "color" ? "color" : "scalar",
-            ctx.tick
+            kfTick
           );
           if (v === undefined) continue;
           let stops = clones.get(pdef.name);
@@ -1493,7 +1657,7 @@ export function evaluateGraph(
           const resolved = resolveAnchorTracks(
             base as { subpaths: SplineSubpath[] },
             animation,
-            ctx.tick
+            kfTick
           );
           if (resolved) {
             anyAnimated = true;
@@ -1512,7 +1676,7 @@ export function evaluateGraph(
         // "input" — i.e. report itself as a victim of its own ancestors —
         // which hid the real roots from the chain-poisoning report. It
         // still lands in the fingerprint, just in its own segment.
-        animTickFp = `anim:${ctx.tick}`;
+        animTickFp = `anim:${kfTick}`;
       }
     }
 
@@ -1593,6 +1757,14 @@ export function evaluateGraph(
       result = prev.output;
       outputs.set(id, result);
       outputTypeCache.set(id, resolvePrimaryType(def, node.params, resolveCtx));
+      // Time Offset shells: the tap producer never outer-evaluates, so
+      // connectedTypesFor can't type the shell's `in` and the resolved
+      // output reads its resting type. The emitted value is the authority
+      // — override so polymorphic consumers downstream retype correctly.
+      if (node.type === TIME_OFFSET_TYPE && result.primary) {
+        const k = carriedSocketTypeOf(result.primary);
+        if (k) outputTypeCache.set(id, k);
+      }
       // Cache hit means no compute ran — surface 0 so the overlay
       // shows the node as cheap rather than persisting an old timing.
       timings.set(id, 0);
@@ -1757,6 +1929,12 @@ export function evaluateGraph(
 
         outputs.set(id, result);
         outputTypeCache.set(id, resolvePrimaryType(def, node.params, resolveCtx));
+        // Same override as the cache-hit path: a Time Offset shell's
+        // emitted value types its output (its tap never outer-evaluates).
+        if (node.type === TIME_OFFSET_TYPE && result.primary) {
+          const k = carriedSocketTypeOf(result.primary);
+          if (k) outputTypeCache.set(id, k);
+        }
 
         if (cacheable) {
           if (prev) releaseCachedTextures(ctx, prev);

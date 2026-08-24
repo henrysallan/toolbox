@@ -1,8 +1,11 @@
 import type {
+  InputSocketDef,
   NodeDefinition,
   PointsValue,
   RenderContext,
+  SocketType,
 } from "@/engine/types";
+import { gatherPoints, makePoints } from "@/engine/points";
 
 // Keep or discard points by predicate. Four modes:
 //
@@ -24,6 +27,11 @@ import type {
 //           `rand(index)`, so the two nodes agree. This is the fix for the
 //           classic per-frame-random shimmer.
 //
+//   attribute: keep points whose named channel (component 0) is ≥
+//           Threshold — the consumption half of the attribute system
+//           (081326_point-attributes.md M4). Space-blind; a missing
+//           channel passes through unchanged.
+//
 // Output count is unbounded by the input — empty result is valid.
 // Per-point attributes (scale / rotation / groupIndex) are preserved
 // for the kept points; their indices in the output are sequential
@@ -32,6 +40,18 @@ import type {
 // Stability note (index/random): both key off the point's INDEX, so a
 // fixed upstream point set stays put frame-to-frame. If the incoming count
 // changes, which indices exist changes with it.
+//
+// 3D upgrade (081026 spec §2.3) — the polymorphic in-place pattern for
+// point utilities: the `points` input accepts points OR points3d
+// (editorCanCoerce exception; the node is in CONNECTED_TYPE_RETYPE_NODES
+// so the stored sockets track the wire), and the output re-advertises the
+// input's type. On a 3D input, bbox switches to the WORLD-space box rows
+// (wx/wy/wz, default −10..10 = keep everything — the 2D rows' [0..1]
+// authored defaults would clip an origin-centered world cloud), index and
+// random work unchanged (count-based, space-blind), and mask passes
+// through untouched (it samples authored space, which 3D points don't
+// live in — threshold row hides to signal it). Compaction goes through
+// typed arrays only, carrying z + normals — never the 2D Point[] view.
 
 interface ImageBuffer {
   data: Uint8ClampedArray;
@@ -83,15 +103,37 @@ function hash01(seed: number): number {
   return (x >>> 0) / 4294967296;
 }
 
-const MODES = ["bbox", "mask", "index", "random"] as const;
+const MODES = ["bbox", "mask", "index", "random", "attribute"] as const;
 type Mode = (typeof MODES)[number];
 
-function emptyPoints(): PointsValue {
+function emptyPoints(is3d: boolean): PointsValue {
+  // Mirror the input's dimensionality so downstream consumers see a
+  // consistent shape (a 3D-empty keeps its z array ⇒ is3DPoints holds).
+  if (is3d) return makePoints(0, { withZ: true });
   return {
     kind: "points",
     count: 0,
     positions: new Float32Array(0),
     points: [],
+  };
+}
+
+// One world-space box row (3D bbox). Full-range default = keep everything.
+function worldRow(
+  name: string,
+  label: string,
+  def: number
+): NodeDefinition["params"][number] {
+  return {
+    name,
+    label,
+    type: "scalar",
+    min: -10,
+    max: 10,
+    step: 0.01,
+    default: def,
+    visibleIf: (p, meta) =>
+      p.mode === "bbox" && meta?.inputTypes?.points === "points3d",
   };
 }
 
@@ -101,12 +143,24 @@ export const filterPointsNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Keep or discard points by predicate. Bbox keeps points inside an XY window; Mask keeps points where the wired image's luminance is ≥ threshold; Index keeps 1 of every N points; Random keeps a stable random subset (hashed on index, so points don't flicker in/out — raising Amount reveals more of the same points, Seed re-rolls the selection). Invert flips which side is kept.",
+    "Keep or discard points by predicate. Bbox keeps points inside an XY window; Mask keeps points where the wired image's luminance is ≥ threshold; Index keeps 1 of every N points; Random keeps a stable random subset (hashed on index, so points don't flicker in/out — raising Amount reveals more of the same points, Seed re-rolls the selection). Invert flips which side is kept. Also accepts 3D points (from 3D Scatter Points): bbox becomes a world-space box with Z rows, index/random work identically, mask passes through.",
   backend: "webgl2",
   inputs: [
     { name: "points", type: "points", required: true },
     { name: "mask", type: "image", required: false, label: "Mask" },
   ],
+  // Polymorphic `points` input: adopts points3d when a 3D wire lands
+  // (editorCanCoerce lets it land; CONNECTED_TYPE_RETYPE_NODES keeps the
+  // stored sockets in sync). The mask input STAYS visible on 3D — hiding
+  // it would orphan an existing mask edge — it's just ignored there.
+  resolveInputs(params, ctx): InputSocketDef[] {
+    const t: SocketType =
+      ctx?.connectedTypes?.points === "points3d" ? "points3d" : "points";
+    return [
+      { name: "points", type: t, required: true },
+      { name: "mask", type: "image", required: false, label: "Mask" },
+    ];
+  },
   params: [
     {
       name: "mode",
@@ -114,6 +168,30 @@ export const filterPointsNode: NodeDefinition = {
       type: "enum",
       options: MODES as unknown as string[],
       default: "bbox",
+    },
+    // attribute mode: keep points whose named channel (component 0) is
+    // ≥ threshold — space-blind, so it works on 2D and 3D alike
+    // (081326_point-attributes.md M4).
+    {
+      name: "attr_name",
+      label: "Name",
+      type: "string",
+      default: "weight",
+      placeholder: "attribute name",
+      suggestAttrsFrom: "points",
+      suggestAttrsRequire: true,
+      visibleIf: (p) => p.mode === "attribute",
+    },
+    {
+      name: "attr_threshold",
+      label: "Threshold",
+      type: "scalar",
+      min: -100,
+      max: 100,
+      softMax: 1,
+      step: 0.001,
+      default: 0.5,
+      visibleIf: (p) => p.mode === "attribute",
     },
     {
       name: "x_min",
@@ -123,7 +201,8 @@ export const filterPointsNode: NodeDefinition = {
       max: 2,
       step: 0.001,
       default: 0,
-      visibleIf: (p) => p.mode === "bbox",
+      visibleIf: (p, meta) =>
+        p.mode === "bbox" && meta?.inputTypes?.points !== "points3d",
     },
     {
       name: "x_max",
@@ -133,7 +212,8 @@ export const filterPointsNode: NodeDefinition = {
       max: 2,
       step: 0.001,
       default: 1,
-      visibleIf: (p) => p.mode === "bbox",
+      visibleIf: (p, meta) =>
+        p.mode === "bbox" && meta?.inputTypes?.points !== "points3d",
     },
     {
       name: "y_min",
@@ -143,7 +223,8 @@ export const filterPointsNode: NodeDefinition = {
       max: 2,
       step: 0.001,
       default: 0,
-      visibleIf: (p) => p.mode === "bbox",
+      visibleIf: (p, meta) =>
+        p.mode === "bbox" && meta?.inputTypes?.points !== "points3d",
     },
     {
       name: "y_max",
@@ -153,8 +234,16 @@ export const filterPointsNode: NodeDefinition = {
       max: 2,
       step: 0.001,
       default: 1,
-      visibleIf: (p) => p.mode === "bbox",
+      visibleIf: (p, meta) =>
+        p.mode === "bbox" && meta?.inputTypes?.points !== "points3d",
     },
+    // World-space box rows — the 3D input's bbox (081026 spec §2.3).
+    worldRow("wx_min", "X min", -10),
+    worldRow("wx_max", "X max", 10),
+    worldRow("wy_min", "Y min", -10),
+    worldRow("wy_max", "Y max", 10),
+    worldRow("wz_min", "Z min", -10),
+    worldRow("wz_max", "Z max", 10),
     {
       name: "threshold",
       label: "Threshold",
@@ -163,7 +252,10 @@ export const filterPointsNode: NodeDefinition = {
       max: 1,
       step: 0.001,
       default: 0.5,
-      visibleIf: (p) => p.mode === "mask",
+      // Hidden on 3D input: mask sampling is authored-space, so mask mode
+      // passes 3D points through untouched.
+      visibleIf: (p, meta) =>
+        p.mode === "mask" && meta?.inputTypes?.points !== "points3d",
     },
     {
       // index mode: keep 1 of every N points.
@@ -220,14 +312,19 @@ export const filterPointsNode: NodeDefinition = {
     },
   ],
   primaryOutput: "points",
+  // Filtered stream re-advertises whatever came in.
+  resolvePrimaryOutput(params, ctx): SocketType {
+    return ctx?.connectedTypes?.points === "points3d" ? "points3d" : "points";
+  },
   auxOutputs: [],
 
   compute({ inputs, params, ctx }) {
     const src = inputs.points;
     if (!src || src.kind !== "points") {
-      return { primary: emptyPoints() };
+      return { primary: emptyPoints(false) };
     }
 
+    const is3d = src.z !== undefined;
     const mode = ((params.mode as string) ?? "bbox") as Mode;
     const invert = !!params.invert;
     const n = src.count;
@@ -236,7 +333,40 @@ export const filterPointsNode: NodeDefinition = {
     const keep = new Uint8Array(n);
     let keepCount = 0;
 
-    if (mode === "bbox") {
+    if (mode === "bbox" && is3d) {
+      // World-space box. Guaranteed-present z (is3d) read from src.z.
+      const z = src.z!;
+      const lo = [
+        (params.wx_min as number) ?? -10,
+        (params.wy_min as number) ?? -10,
+        (params.wz_min as number) ?? -10,
+      ];
+      const hi = [
+        (params.wx_max as number) ?? 10,
+        (params.wy_max as number) ?? 10,
+        (params.wz_max as number) ?? 10,
+      ];
+      for (let a = 0; a < 3; a++) {
+        if (lo[a] > hi[a]) {
+          const t = lo[a];
+          lo[a] = hi[a];
+          hi[a] = t;
+        }
+      }
+      for (let i = 0; i < n; i++) {
+        const x = src.positions[i * 2];
+        const y = src.positions[i * 2 + 1];
+        const inside =
+          x >= lo[0] && x <= hi[0] &&
+          y >= lo[1] && y <= hi[1] &&
+          z[i] >= lo[2] && z[i] <= hi[2];
+        const k = invert ? !inside : inside;
+        if (k) {
+          keep[i] = 1;
+          keepCount++;
+        }
+      }
+    } else if (mode === "bbox") {
       const xMin = (params.x_min as number) ?? 0;
       const xMax = (params.x_max as number) ?? 1;
       const yMin = (params.y_min as number) ?? 0;
@@ -282,8 +412,29 @@ export const filterPointsNode: NodeDefinition = {
           keepCount++;
         }
       }
+    } else if (mode === "attribute") {
+      const name = ((params.attr_name as string) ?? "").trim();
+      const attr = name ? src.attributes?.[name] : undefined;
+      // No such channel — pass through unchanged, same grammar as an
+      // unwired mask (the red name-field tint already explains why).
+      if (!attr) return { primary: src };
+      const threshold = (params.attr_threshold as number) ?? 0.5;
+      const k = attr.arity;
+      for (let i = 0; i < n; i++) {
+        const passes = attr.data[i * k] >= threshold;
+        const kk = invert ? !passes : passes;
+        if (kk) {
+          keep[i] = 1;
+          keepCount++;
+        }
+      }
     } else {
       // mask mode
+      if (is3d) {
+        // Authored-space sampling has no meaning for world-space points —
+        // pass through unchanged (threshold row is hidden to signal it).
+        return { primary: src };
+      }
       const maskImg = inputs.mask;
       if (!maskImg || maskImg.kind !== "image") {
         // No mask wired — pass through unchanged so the user can wire it.
@@ -306,39 +457,15 @@ export const filterPointsNode: NodeDefinition = {
     }
 
     if (keepCount === n) return { primary: src };
-    if (keepCount === 0) return { primary: emptyPoints() };
+    if (keepCount === 0) return { primary: emptyPoints(is3d) };
 
-    const outPos = new Float32Array(keepCount * 2);
-    const outScales = src.scales ? new Float32Array(keepCount * 2) : undefined;
-    const outRots = src.rotations ? new Float32Array(keepCount) : undefined;
-    const outGroups = src.groupIndices
-      ? new Int32Array(keepCount)
-      : undefined;
-
+    // gatherPoints carries every channel — the fixed arrays AND named
+    // attributes — through one index map (this loop used to hand-gather
+    // and silently dropped attributes).
+    const map = new Int32Array(keepCount);
     let w = 0;
-    for (let i = 0; i < n; i++) {
-      if (!keep[i]) continue;
-      outPos[w * 2] = src.positions[i * 2];
-      outPos[w * 2 + 1] = src.positions[i * 2 + 1];
-      if (outScales && src.scales) {
-        outScales[w * 2] = src.scales[i * 2];
-        outScales[w * 2 + 1] = src.scales[i * 2 + 1];
-      }
-      if (outRots && src.rotations) outRots[w] = src.rotations[i];
-      if (outGroups && src.groupIndices) outGroups[w] = src.groupIndices[i];
-      w++;
-    }
-
-    const out: PointsValue = {
-      kind: "points",
-      count: keepCount,
-      positions: outPos,
-      scales: outScales,
-      rotations: outRots,
-      groupIndices: outGroups,
-      points: [],
-    };
-    return { primary: out };
+    for (let i = 0; i < n; i++) if (keep[i]) map[w++] = i;
+    return { primary: gatherPoints(src, map) };
   },
 
   dispose(ctx, nodeId) {

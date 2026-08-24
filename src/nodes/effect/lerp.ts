@@ -1,11 +1,13 @@
 import type {
   InputSocketDef,
   NodeDefinition,
+  PointAttribute,
   PointsValue,
   SocketType,
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
+import { copyPointsWith, EMPTY_POINTS } from "@/engine/points";
 
 // Linear interpolation between two values by `t`. Polymorphic across
 // the basic shapes you'd want to mix:
@@ -67,17 +69,59 @@ function lerpPoints(
       rotations[i] = lerp(ar, br, t);
     }
   }
-  return {
-    kind: "points",
-    count: n,
+  // 3D data: lerp z when both sides carry it; a lone A-side z passes
+  // through the copy below so the value never silently flattens to 2D.
+  // Normals lerp + renormalize (a straight lerp shortens them).
+  let z: Float32Array | undefined;
+  if (a.z && b.z) {
+    z = new Float32Array(n);
+    for (let i = 0; i < n; i++) z[i] = lerp(a.z[i], b.z[i], t);
+  }
+  let normals: Float32Array | undefined;
+  if (a.normals && b.normals) {
+    normals = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const nx = lerp(a.normals[i * 3], b.normals[i * 3], t);
+      const ny = lerp(a.normals[i * 3 + 1], b.normals[i * 3 + 1], t);
+      const nz = lerp(a.normals[i * 3 + 2], b.normals[i * 3 + 2], t);
+      const len = Math.hypot(nx, ny, nz);
+      const inv = len > 1e-8 ? 1 / len : 0;
+      normals[i * 3] = nx * inv;
+      normals[i * 3 + 1] = ny * inv;
+      normals[i * 3 + 2] = nz * inv;
+    }
+  }
+  // Named channels: lerp where both sides carry the channel at the same
+  // arity; A-only channels ride the copy below untouched; B-only channels
+  // drop (A is the identity side, same reasoning as groupIndices).
+  let attributes: Record<string, PointAttribute> | undefined;
+  if (a.attributes && b.attributes) {
+    attributes = {};
+    for (const name of Object.keys(a.attributes)) {
+      const aa = a.attributes[name];
+      const ba = b.attributes[name];
+      if (ba && ba.arity === aa.arity) {
+        const data = new Float32Array(n * aa.arity);
+        for (let i = 0; i < data.length; i++) {
+          data[i] = lerp(aa.data[i], ba.data[i], t);
+        }
+        attributes[name] = { arity: aa.arity, color: aa.color, data };
+      } else {
+        attributes[name] = aa;
+      }
+    }
+  }
+  // copyPointsWith carries groupIndices from A untouched — they're
+  // identity tags, not numeric attributes, so interpolating them would
+  // be meaningless.
+  return copyPointsWith(a, {
     positions,
     scales,
     rotations,
-    // groupIndices come from A — they're identity tags, not numeric
-    // attributes, so interpolating them would be meaningless.
-    groupIndices: a.groupIndices,
-    points: [],
-  };
+    ...(z ? { z } : {}),
+    ...(normals ? { normals } : {}),
+    ...(attributes ? { attributes } : {}),
+  });
 }
 
 function lerpSpline(a: SplineValue, b: SplineValue, t: number): SplineValue {
@@ -141,7 +185,10 @@ export const lerpNode: NodeDefinition = {
   name: "Lerp",
   category: "utility",
   description:
-    "Linear interpolation between A and B by t. Works on scalars, vec2, points sets, or splines (matching counts required for points/splines). t can be wired or set in the panel; Clamp restricts it to [0..1].",
+    "Linear interpolation (mix) between A and B by t. Works on scalars, vec2, points sets, or splines (matching counts required for points/splines). t can be wired or set in the panel; Clamp restricts it to [0..1].",
+  // This is the Mix node of other packages (Blender's Mix, GLSL mix()
+  // with its fac) — alias so searching those names lands here.
+  searchAliases: ["mix", "fac", "interpolate"],
   backend: "webgl2",
   headerControl: { paramName: "type" },
   inputs: [
@@ -247,14 +294,7 @@ export const lerpNode: NodeDefinition = {
       if (a && b) return { primary: lerpPoints(a, b, t) };
       if (a) return { primary: a };
       if (b) return { primary: b };
-      return {
-        primary: {
-          kind: "points",
-          count: 0,
-          positions: new Float32Array(0),
-          points: [],
-        },
-      };
+      return { primary: EMPTY_POINTS };
     }
 
     // spline

@@ -66,6 +66,10 @@ export default function PointsOverlay({ canvas, value }: Props) {
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
+    // 3D values (z present — world-space, points3d sockets) don't draw:
+    // this overlay plots authored [0,1]² coordinates, and world meters in
+    // that space are nonsense. The 3D viewport is their home.
+    if (value.z !== undefined) return;
     ctx.fillStyle = "#ffffff";
     ctx.strokeStyle = "#000";
     ctx.lineWidth = 0.75;

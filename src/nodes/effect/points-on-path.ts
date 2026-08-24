@@ -1,14 +1,18 @@
 import type {
   ImageValue,
+  InputSocketDef,
   NodeDefinition,
   OutputSocketDef,
   PointsValue,
   RenderContext,
+  SocketType,
   SocketValue,
   UvValue,
 } from "@/engine/types";
+import type { Curve3DValue } from "@/engine/three-types";
 import { measureSpline, sampleSplineAt } from "@/engine/spline-math";
-import { pointsFromArray } from "@/engine/points";
+import { makePoints, pointsFromArray } from "@/engine/points";
+import { curveFromValue } from "@/nodes/three/curve-tube";
 
 // Emit N evenly-spaced positions along the total arc length of a spline.
 //
@@ -119,6 +123,19 @@ export const pointsOnPathNode: NodeDefinition = {
     "Emit N evenly-spaced positions along a spline. Optionally aligns each point's rotation to the path tangent or normal, so Copy-to-Points orients copies along the path. Turn on Animate to slide the points along the path with the Offset slider — points that reach the end wrap back to the start (a continuous stream; keyframe Offset or wire a Scene Time / LFO ramp to drive it). Primary output is a `points` value for direct wiring into Copy-to-Points / Set Position / etc. Aux outputs: a UV texture of positions (one pixel per point) and a dot visualization image.",
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
+  // Polymorphic path (M11): a 3D curve (`curve3d` — 3D Spline's curve aux,
+  // the 3D curve primitives) retypes the input and the output becomes
+  // `points3d` (count/animate/offset/align all apply; align ≠ off puts the
+  // curve TANGENT in the normals channel for Copy to Points). The 2D-only
+  // auxes (positions UV, viz) stay empty on a 3D input.
+  resolveInputs(params, ctx): InputSocketDef[] {
+    const t: SocketType =
+      ctx?.connectedTypes?.path === "curve3d" ? "curve3d" : "spline";
+    return [{ name: "path", type: t, required: true }];
+  },
+  resolvePrimaryOutput(params, ctx): SocketType {
+    return ctx?.connectedTypes?.path === "curve3d" ? "points3d" : "points";
+  },
   params: [
     {
       name: "count",
@@ -251,6 +268,47 @@ export const pointsOnPathNode: NodeDefinition = {
     let sampledCount = 0;
     const animate = !!params.animate;
     const offset = (params.offset as number) ?? 0;
+
+    // ---- 3D curve input: sample in world space, emit points3d ----
+    if (src && src.kind === "curve3d") {
+      const curve = curveFromValue(src as Curve3DValue);
+      if (!curve) return { primary: makePoints(0, { withZ: true }) };
+      const closed = (src as Curve3DValue).closed;
+      const withNormals = align !== "off";
+      const out3d = makePoints(count, { withZ: true, withNormals });
+      const divisor = closed ? count : Math.max(1, count - 1);
+      for (let i = 0; i < count; i++) {
+        let t: number;
+        if (animate) {
+          t = i / count + offset;
+          t -= Math.floor(t);
+        } else {
+          t = count === 1 ? 0 : Math.min(1, i / divisor);
+        }
+        const p = curve.getPointAt(t);
+        out3d.positions[i * 2] = p.x;
+        out3d.positions[i * 2 + 1] = p.y;
+        out3d.z![i] = p.z;
+        if (withNormals) {
+          const tan = curve.getTangentAt(t);
+          out3d.normals![i * 3] = tan.x;
+          out3d.normals![i * 3 + 1] = tan.y;
+          out3d.normals![i * 3 + 2] = tan.z;
+        }
+      }
+      // 2D-only auxes stay empty: a blank positions texture keeps the
+      // socket alive, viz is skipped unless consumed (and draws nothing).
+      const positionsTex3d: UvValue = ctx.allocUv({ width: count, height: 1 });
+      ctx.clearTarget(positionsTex3d, [0, 0, 0, 0]);
+      const aux3d: Record<string, SocketValue> = { positions: positionsTex3d };
+      if (!consumedOutputs || consumedOutputs.has("aux:viz")) {
+        const blank = ctx.allocImage();
+        ctx.clearTarget(blank, [0, 0, 0, 0]);
+        aux3d.viz = blank;
+      }
+      return { primary: out3d, aux: aux3d };
+    }
+
     if (src && src.kind === "spline") {
       const lengths = measureSpline(src);
       if (lengths.total > 0) {

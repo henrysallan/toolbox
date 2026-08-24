@@ -20,8 +20,19 @@ import type {
   WedgeValueItem,
 } from "@/engine/types";
 import { parseCsv, type CsvDelimiter } from "@/engine/csv-parse";
+import {
+  MODEL_CACHE_EVENT,
+  modelObjectToken,
+  peekModelObjects,
+} from "@/engine/model-cache";
 import { listParseOptions, parseList } from "@/engine/list-parse";
 import { registerImageOriginal } from "@/lib/image-bytes";
+import {
+  getCloudMediaRef,
+  maybeUploadCloudMedia,
+  useCloudUploadState,
+  type CloudUploadState,
+} from "@/lib/cloud-media-upload";
 import { evalNumExpr } from "@/lib/num-expr";
 import { newExprInput } from "@/nodes/effect/expression";
 import { newWedgeValueId, WEDGE_TYPE_DEFAULTS } from "@/nodes/source/wedge";
@@ -425,6 +436,22 @@ function ExrSwatch() {
   );
 }
 
+// "☁ …" pill suffix for a media file: live progress while the clip
+// uploads to cloud storage, a plain ☁ once a ref exists (the clip follows
+// the project — no relink), empty for local-only files. Upload state
+// changes re-render via useCloudUploadState, so the ☁ appears the moment
+// a commit lands.
+function cloudPillSuffix(
+  state: CloudUploadState | null,
+  filename?: string,
+  size?: number
+): string {
+  if (state?.phase === "hashing") return " · ☁ preparing…";
+  if (state?.phase === "uploading") return ` · ☁ ${state.pct}%`;
+  if (state?.phase === "error") return " · ☁ upload failed";
+  return getCloudMediaRef(filename, size) ? " · ☁" : "";
+}
+
 // Video `video_file` param control. Mirrors the image control; the
 // thumbnail is drawn from the live <video> element's current frame.
 export function VideoFileControl({
@@ -438,11 +465,14 @@ export function VideoFileControl({
   const current =
     (value as import("@/engine/types").VideoFileParamValue | null | undefined) ??
     null;
+  const upload = useCloudUploadState(current?.filename, current?.size);
   const applyFile = async (file: File) => {
     const { registerVideoFile, disposeVideoFile } = await import(
       "@/lib/video"
     );
     const v = await registerVideoFile(file);
+    // No-op unless this account has the cloud-media entitlement.
+    void maybeUploadCloudMedia(file, "video");
     // Release the previous clip's <video>/ObjectURL — replacing via
     // the button is the only path now that the clear button is gone.
     if (current) {
@@ -486,7 +516,10 @@ export function VideoFileControl({
       {current && (
         <LoadedFilePill
           thumb={<VideoThumb video={current.video} />}
-          name={current.filename ?? "video"}
+          name={
+            (current.filename ?? "video") +
+            cloudPillSuffix(upload, current.filename, current.size)
+          }
         />
       )}
       {current && (
@@ -592,8 +625,53 @@ export function ImageSequenceControl({
   );
 }
 
-// 3D model `model_file` param control. Picks a GLB/glTF/OBJ file, makes an
-// ObjectURL, and stores a lightweight value the Import 3D node loads from.
+// Object picker for Import 3D (`model_object` control,
+// 081626_glb-scene-import.md §1). Options come from the shared model
+// cache — the loaded file's top-level object list lives there, not on the
+// param value (the EXR-layer-picker pattern, one step removed) — and the
+// cache's MODEL_CACHE_EVENT re-renders this when the async parse lands.
+// Stored value is "" (whole file merged) or "top:<i>".
+export function ModelObjectControl({
+  url,
+  value,
+  onChange,
+}: {
+  url: string | undefined;
+  value: string;
+  onChange: (v: unknown) => void;
+}) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const h = () => setTick((t) => t + 1);
+    window.addEventListener(MODEL_CACHE_EVENT, h);
+    return () => window.removeEventListener(MODEL_CACHE_EVENT, h);
+  }, []);
+  if (!url) {
+    return <div style={{ color: "var(--tb-n-10)" }}>(no model loaded)</div>;
+  }
+  const objects = peekModelObjects(url);
+  if (!objects) {
+    return <div style={{ color: "var(--tb-n-10)" }}>(loading…)</div>;
+  }
+  const options = [
+    { value: "", label: "All (merged)" },
+    ...objects.map((o) => ({
+      value: modelObjectToken(o.index),
+      label: o.label,
+    })),
+  ];
+  const effective = options.some((o) => o.value === value) ? value : "";
+  return (
+    <Dropdown
+      value={effective}
+      options={options}
+      onChange={(v) => onChange(v)}
+    />
+  );
+}
+
+// 3D model `model_file` param control. Picks a GLB/glTF/OBJ/STL file, makes
+// an ObjectURL, and stores a lightweight value the Import 3D node loads from.
 export function ModelFileControl({
   value,
   onChange,
@@ -605,13 +683,18 @@ export function ModelFileControl({
   const current =
     (value as import("@/engine/types").ModelFileParamValue | null | undefined) ??
     null;
+  const upload = useCloudUploadState(current?.filename, current?.size);
   const applyFile = (file: File) => {
     const lower = file.name.toLowerCase();
-    const format: "glb" | "gltf" | "obj" = lower.endsWith(".obj")
+    const format: "glb" | "gltf" | "obj" | "stl" = lower.endsWith(".obj")
       ? "obj"
-      : lower.endsWith(".gltf")
-        ? "gltf"
-        : "glb";
+      : lower.endsWith(".stl")
+        ? "stl"
+        : lower.endsWith(".gltf")
+          ? "gltf"
+          : "glb";
+    // No-op unless this account has the cloud-media entitlement.
+    void maybeUploadCloudMedia(file, "model");
     // Release the previous ObjectURL before replacing it.
     if (current?.url) {
       try {
@@ -634,7 +717,7 @@ export function ModelFileControl({
       <input
         ref={inputRef}
         type="file"
-        accept=".glb,.gltf,.obj,model/gltf-binary,model/gltf+json"
+        accept=".glb,.gltf,.obj,.stl,model/gltf-binary,model/gltf+json,model/stl"
         style={{ display: "none" }}
         onChange={(e) => {
           const file = e.target.files?.[0];
@@ -668,7 +751,10 @@ export function ModelFileControl({
               </svg>
             </div>
           }
-          name={current.url ? current.filename : `${current.filename} — re-pick`}
+          name={
+            (current.url ? current.filename : `${current.filename} — re-pick`) +
+            cloudPillSuffix(upload, current.filename, current.size)
+          }
         />
       )}
     </div>
@@ -689,11 +775,14 @@ export function AudioFileControl({
   const current =
     (value as import("@/engine/types").AudioFileParamValue | null | undefined) ??
     null;
+  const upload = useCloudUploadState(current?.filename, current?.size);
   const applyFile = async (file: File) => {
     const { registerAudioFile, disposeAudioFile } = await import(
       "@/lib/audio"
     );
     const v = await registerAudioFile(file);
+    // No-op unless this account has the cloud-media entitlement.
+    void maybeUploadCloudMedia(file, "audio");
     if (current) {
       try {
         disposeAudioFile(current);
@@ -736,7 +825,7 @@ export function AudioFileControl({
             Number.isFinite(current.duration)
               ? `${current.duration.toFixed(1)}s`
               : "stream"
-          }`}
+          }${cloudPillSuffix(upload, current.filename, current.size)}`}
         />
       )}
       {current && (
@@ -1971,6 +2060,8 @@ export function ParamControl({
   param,
   value,
   allParams,
+  attrSuggestions,
+  attrInvalid,
   onChange,
   rangeOverride,
   onRangeChange,
@@ -1982,6 +2073,12 @@ export function ParamControl({
   // Sibling params on the same node — only consumed by renderers
   // that need cross-param context (font_variations).
   allParams?: Record<string, unknown>;
+  // Upstream channel names for `suggestAttrsFrom` string params —
+  // rendered as a datalist picker over the free-text input
+  // (081326_point-attributes.md M3).
+  attrSuggestions?: string[];
+  // The typed attribute name is verified wrong — error tint.
+  attrInvalid?: boolean;
   onChange: (v: unknown) => void;
   rangeOverride?: { min?: number; max?: number; softMax?: number };
   onRangeChange?: (
@@ -2082,24 +2179,49 @@ export function ParamControl({
         />
       );
     }
+    // Attribute-name params get a native datalist over the free-text
+    // field: focus/typing shows the wired upstream's channel names, but
+    // any name still types freely (a channel that doesn't exist YET is
+    // legal — Set Named Attribute creates it).
+    const suggestId =
+      attrSuggestions && attrSuggestions.length > 0
+        ? `attr-suggest-${param.name}`
+        : undefined;
     return (
-      <input
-        type="text"
-        value={current}
-        placeholder={param.placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        spellCheck={false}
-        style={{
-          width: "100%",
-          background: "var(--tb-n-0)",
-          border: "1px solid var(--tb-n-7)",
-          color: "var(--tb-n-16)",
-          fontFamily: "inherit",
-          fontSize: 11,
-          padding: "2px 4px",
-          boxSizing: "border-box",
-        }}
-      />
+      <>
+        <input
+          type="text"
+          value={current}
+          placeholder={param.placeholder}
+          list={suggestId}
+          title={
+            attrInvalid
+              ? "No attribute with this name on the wired input (reserved names can't be attributes)"
+              : undefined
+          }
+          onChange={(e) => onChange(e.target.value)}
+          spellCheck={false}
+          style={{
+            width: "100%",
+            background: attrInvalid
+              ? "color-mix(in srgb, var(--tb-a-red-400) 12%, var(--tb-n-0))"
+              : "var(--tb-n-0)",
+            border: `1px solid ${attrInvalid ? "var(--tb-a-red-400)" : "var(--tb-n-7)"}`,
+            color: "var(--tb-n-16)",
+            fontFamily: "inherit",
+            fontSize: 11,
+            padding: "2px 4px",
+            boxSizing: "border-box",
+          }}
+        />
+        {suggestId && (
+          <datalist id={suggestId}>
+            {attrSuggestions!.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+        )}
+      </>
     );
   }
 
@@ -2330,6 +2452,21 @@ export function ParamControl({
           value={effective}
           options={layers.map((l) => ({ value: l.id, label: l.label }))}
           onChange={(v) => onChange(v)}
+        />
+      );
+    }
+    if (param.control === "model_object") {
+      // Sibling `model` param carries the file; the object list comes from
+      // the shared model cache (see ModelObjectControl).
+      const model = allParams?.model as
+        | import("@/engine/types").ModelFileParamValue
+        | null
+        | undefined;
+      return (
+        <ModelObjectControl
+          url={model?.url}
+          value={current}
+          onChange={onChange}
         />
       );
     }
@@ -3032,9 +3169,33 @@ function MergeEyeIcon({ open }: { open: boolean }) {
   );
 }
 
+// Invert badge for the per-layer mask-invert toggle: a split circle whose
+// left half fills when active (the classic invert glyph). Off = outline only.
+function MaskInvertIcon({ active }: { active: boolean }) {
+  return (
+    <svg
+      width={12}
+      height={12}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.25}
+    >
+      <circle cx="7" cy="7" r="5.25" />
+      {active ? (
+        <path d="M7 1.75 A5.25 5.25 0 0 0 7 12.25 Z" fill="currentColor" stroke="none" />
+      ) : (
+        <line x1="7" y1="1.75" x2="7" y2="12.25" />
+      )}
+    </svg>
+  );
+}
+
 // Editor for the Merge node's `merge_layers` param. One card per layer (blend
 // mode + opacity + keyframe diamond), plus a grip handle to drag-reorder the
-// stack and an eye toggle to bypass a layer. Reordering rewrites the array,
+// stack, an eye toggle to bypass a layer, and a mask-invert badge next to
+// remove (flips the layer's wired matte; inert until a mask is connected).
+// Reordering rewrites the array,
 // which re-derives the node's `layer:<id>`/`mask:<id>` socket order via
 // resolveInputs (wires reference ids, so they follow their layer); bypass sets
 // `enabled:false`, skipped in merge.ts's blend chain but keeping the socket.
@@ -3186,28 +3347,56 @@ export function MergeLayersControl({
                   )}
                 </span>
               </div>
-              <button
-                onClick={() => {
-                  const next = layers.filter((x) => x.id !== l.id);
-                  onChange(next);
-                  // Drop the layer's opacity keyframes with it.
-                  layerAnim?.set(layerOpacityKey(l.id), undefined);
-                }}
-                title="Remove layer"
+              <div
                 style={{
-                  background: "transparent",
-                  border: "1px solid var(--tb-n-9)",
-                  color: "var(--tb-n-13)",
-                  fontSize: 10,
-                  padding: "1px 6px",
-                  borderRadius: 3,
-                  cursor: "pointer",
-                  fontFamily: "inherit",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
                   flexShrink: 0,
                 }}
               >
-                remove
-              </button>
+                <button
+                  onClick={() => patch(l.id, { maskInvert: !l.maskInvert })}
+                  title={
+                    l.maskInvert
+                      ? "Mask inverted (1 − coverage) — click to restore"
+                      : "Invert this layer's mask (applies once a mask is wired)"
+                  }
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "transparent",
+                    border: "none",
+                    padding: 0,
+                    cursor: "pointer",
+                    color: l.maskInvert ? "var(--tb-n-16)" : "var(--tb-n-10)",
+                  }}
+                >
+                  <MaskInvertIcon active={!!l.maskInvert} />
+                </button>
+                <button
+                  onClick={() => {
+                    const next = layers.filter((x) => x.id !== l.id);
+                    onChange(next);
+                    // Drop the layer's opacity keyframes with it.
+                    layerAnim?.set(layerOpacityKey(l.id), undefined);
+                  }}
+                  title="Remove layer"
+                  style={{
+                    background: "transparent",
+                    border: "1px solid var(--tb-n-9)",
+                    color: "var(--tb-n-13)",
+                    fontSize: 10,
+                    padding: "1px 6px",
+                    borderRadius: 3,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  remove
+                </button>
+              </div>
             </div>
             {/* Blend mode + opacity share one line: dropdown first, then a bar
                 slider + number field styled like the main scalar sliders. Dimmed

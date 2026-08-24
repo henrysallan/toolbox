@@ -6,7 +6,7 @@
 // compatibility view — call `ensurePointArray()` before iterating it
 // in code that hasn't been migrated to read typed arrays directly.
 
-import type { Point, PointsValue } from "./types";
+import type { Point, PointAttribute, PointsValue } from "./types";
 
 // Sentinel cached on PointsValue to memoize ensurePointArray() output.
 // We use a WeakMap keyed by the value so we can attach internal state
@@ -22,14 +22,35 @@ export const EMPTY_POINTS: PointsValue = Object.freeze({
   points: [],
 }) as PointsValue;
 
+// Channel names that would shadow the built-in point schema in UIs and
+// by-name lookups (the spreadsheet's fixed columns). Attribute writers
+// (Set Named Attribute, Point Expression's setattr) refuse them.
+export const RESERVED_POINT_ATTR_NAMES: ReadonlySet<string> = new Set([
+  "position",
+  "x",
+  "y",
+  "index",
+  "rotation",
+  "scale",
+  "group",
+  "z",
+  "nx",
+  "ny",
+  "nz",
+]);
+
 // Allocate a points value with reserved capacity. Caller fills the
 // returned typed arrays in place. `points` starts empty (lazy).
+// `withZ` mints a 3D value (world-space — rides `points3d` sockets, see
+// the PointsValue comment in types.ts); `withNormals` implies 3D use.
 export function makePoints(
   count: number,
   opts: {
     withScales?: boolean;
     withRotations?: boolean;
     withGroupIndices?: boolean;
+    withZ?: boolean;
+    withNormals?: boolean;
   } = {}
 ): PointsValue {
   return {
@@ -39,8 +60,17 @@ export function makePoints(
     scales: opts.withScales ? new Float32Array(count * 2) : undefined,
     rotations: opts.withRotations ? new Float32Array(count) : undefined,
     groupIndices: opts.withGroupIndices ? new Int32Array(count) : undefined,
+    z: opts.withZ || opts.withNormals ? new Float32Array(count) : undefined,
+    normals: opts.withNormals ? new Float32Array(count * 3) : undefined,
     points: [],
   };
+}
+
+// The 2D/3D discriminator: presence of the z array ⇔ the value is
+// world-space 3D data and belongs on a `points3d` socket. Cheap enough
+// to call anywhere.
+export function is3DPoints(p: PointsValue): boolean {
+  return p.z !== undefined;
 }
 
 // Convert a legacy `Point[]` into the typed-array shape. Use this in
@@ -111,6 +141,16 @@ export function pointsFromArray(pts: Point[]): PointsValue {
 // Idempotent and cheap on re-call. Call this in any UI/inspector path
 // that iterates `value.points` directly.
 export function ensurePointArray(p: PointsValue): Point[] {
+  // 2D-ONLY view: Point.pos is [x, y], so building it from a 3D value
+  // silently drops z/normals — the flattening bug the 081026 spec's
+  // split-wire design exists to prevent. 3D code reads typed arrays
+  // directly; a call landing here means a shared code path needs a port.
+  if (process.env.NODE_ENV !== "production" && p.z !== undefined) {
+    console.warn(
+      "ensurePointArray() called on a 3D points value — z/normals are " +
+        "dropped by the legacy Point[] view. Read the typed arrays instead."
+    );
+  }
   // Empty value: the view is already `[]`. Return it WITHOUT the
   // `p.points = out` rebuild below — that assignment would throw on the
   // frozen shared `EMPTY_POINTS` sentinel (emitted by e.g. an empty
@@ -137,9 +177,221 @@ export function ensurePointArray(p: PointsValue): Point[] {
   return out;
 }
 
+// Spread-and-replace copy — the per-point-transform primitive
+// (081326_point-attributes.md M0). New value object; the named arrays are
+// replaced, EVERYTHING else is shared by reference (the InstancesValue
+// convention: "copy the value, replace the arrays you change, share the
+// rest"). An explicit `undefined` replacement drops that channel. The lazy
+// `points` view resets — it's memoized per value object. A transform built
+// on this can never silently strand z/normals (or, later, named
+// attributes) the way a hand-rolled literal can.
+export function copyPointsWith(
+  src: PointsValue,
+  replacements: Partial<
+    Pick<
+      PointsValue,
+      | "count"
+      | "positions"
+      | "scales"
+      | "rotations"
+      | "groupIndices"
+      | "z"
+      | "normals"
+      | "attributes"
+    >
+  >
+): PointsValue {
+  return {
+    kind: "points",
+    count: src.count,
+    positions: src.positions,
+    scales: src.scales,
+    rotations: src.rotations,
+    groupIndices: src.groupIndices,
+    z: src.z,
+    normals: src.normals,
+    attributes: src.attributes,
+    ...replacements,
+    points: [],
+  };
+}
+
+// Gather a named-channel map through an index map — the attributes half
+// of gatherPoints, exported for consumers whose geometry doesn't come
+// from a plain gather (Copy to Points' instance product carries the
+// TARGET's channels through its own expansion map).
+export function gatherAttributes(
+  attrs: Record<string, PointAttribute> | undefined,
+  map: Int32Array | number[],
+  count: number
+): Record<string, PointAttribute> | undefined {
+  if (!attrs) return undefined;
+  const out: Record<string, PointAttribute> = {};
+  for (const name of Object.keys(attrs)) {
+    const a = attrs[name];
+    const k = a.arity;
+    const data = new Float32Array(count * k);
+    for (let w = 0; w < count; w++) {
+      const i = map[w];
+      for (let c = 0; c < k; c++) data[w * k + c] = a.data[i * k + c];
+    }
+    out[name] = { arity: a.arity, color: a.color, data };
+  }
+  return out;
+}
+
+// Subset/reorder gather — the index-map primitive (081326_point-attributes.md
+// M0). Row w of the result is row map[w] of the source, for positions and
+// every present optional array uniformly (filter-points' canonical pattern,
+// hoisted). `count` defaults to the whole map; pass it to use a prefix of a
+// pre-sized map (the compaction idiom).
+export function gatherPoints(
+  src: PointsValue,
+  map: Int32Array | number[],
+  count: number = map.length
+): PointsValue {
+  const positions = new Float32Array(count * 2);
+  const scales = src.scales ? new Float32Array(count * 2) : undefined;
+  const rotations = src.rotations ? new Float32Array(count) : undefined;
+  const groupIndices = src.groupIndices ? new Int32Array(count) : undefined;
+  const z = src.z ? new Float32Array(count) : undefined;
+  const normals = src.normals ? new Float32Array(count * 3) : undefined;
+  for (let w = 0; w < count; w++) {
+    const i = map[w];
+    positions[w * 2] = src.positions[i * 2];
+    positions[w * 2 + 1] = src.positions[i * 2 + 1];
+    if (scales) {
+      scales[w * 2] = src.scales![i * 2];
+      scales[w * 2 + 1] = src.scales![i * 2 + 1];
+    }
+    if (rotations) rotations[w] = src.rotations![i];
+    if (groupIndices) groupIndices[w] = src.groupIndices![i];
+    if (z) z[w] = src.z![i];
+    if (normals) {
+      normals[w * 3] = src.normals![i * 3];
+      normals[w * 3 + 1] = src.normals![i * 3 + 1];
+      normals[w * 3 + 2] = src.normals![i * 3 + 2];
+    }
+  }
+  return {
+    kind: "points",
+    count,
+    positions,
+    scales,
+    rotations,
+    groupIndices,
+    z,
+    normals,
+    attributes: gatherAttributes(src.attributes, map, count),
+    points: [],
+  };
+}
+
+// Concatenate point sets — the combiner primitive. Channel presence
+// unions across sources: a channel any source carries exists on the
+// output, with rows from channel-less sources filled with the channel's
+// default (scale 1, everything else 0). Named attributes union by name;
+// the first-seen arity wins and a later same-name-different-arity source
+// zero-fills (an honest conflict answer that never mixes strides).
+// `groupIndexFromSource` overwrites groupIndices with each source's
+// ordinal — Collect's identity-tagging convention.
+export function concatPoints(
+  sources: PointsValue[],
+  opts: { groupIndexFromSource?: boolean } = {}
+): PointsValue {
+  let total = 0;
+  for (const s of sources) total += s.count;
+  if (total === 0) return EMPTY_POINTS;
+  const hasScales = sources.some((s) => s.scales);
+  const hasRots = sources.some((s) => s.rotations);
+  const hasGroups =
+    opts.groupIndexFromSource || sources.some((s) => s.groupIndices);
+  const hasZ = sources.some((s) => s.z);
+  const hasNormals = sources.some((s) => s.normals);
+  const positions = new Float32Array(total * 2);
+  const scales = hasScales ? new Float32Array(total * 2) : undefined;
+  const rotations = hasRots ? new Float32Array(total) : undefined;
+  const groupIndices = hasGroups ? new Int32Array(total) : undefined;
+  const z = hasZ ? new Float32Array(total) : undefined;
+  const normals = hasNormals ? new Float32Array(total * 3) : undefined;
+  let attributes: Record<string, PointAttribute> | undefined;
+  for (const s of sources) {
+    if (!s.attributes) continue;
+    attributes ??= {};
+    for (const name of Object.keys(s.attributes)) {
+      attributes[name] ??= {
+        arity: s.attributes[name].arity,
+        color: s.attributes[name].color,
+        data: new Float32Array(total * s.attributes[name].arity),
+      };
+    }
+  }
+  let base = 0;
+  for (let si = 0; si < sources.length; si++) {
+    const s = sources[si];
+    const c = s.count;
+    positions.set(s.positions.subarray(0, c * 2), base * 2);
+    if (scales) {
+      if (s.scales) scales.set(s.scales.subarray(0, c * 2), base * 2);
+      else scales.fill(1, base * 2, (base + c) * 2);
+    }
+    if (rotations && s.rotations) {
+      rotations.set(s.rotations.subarray(0, c), base);
+    }
+    if (groupIndices) {
+      if (opts.groupIndexFromSource) {
+        groupIndices.fill(si, base, base + c);
+      } else if (s.groupIndices) {
+        groupIndices.set(s.groupIndices.subarray(0, c), base);
+      }
+    }
+    if (z && s.z) z.set(s.z.subarray(0, c), base);
+    if (normals && s.normals) {
+      normals.set(s.normals.subarray(0, c * 3), base * 3);
+    }
+    if (attributes) {
+      for (const name of Object.keys(attributes)) {
+        const dst = attributes[name];
+        const srcA = s.attributes?.[name];
+        if (srcA && srcA.arity === dst.arity) {
+          dst.data.set(
+            srcA.data.subarray(0, c * dst.arity),
+            base * dst.arity
+          );
+        }
+      }
+    }
+    base += c;
+  }
+  return {
+    kind: "points",
+    count: total,
+    positions,
+    scales,
+    rotations,
+    groupIndices,
+    z,
+    normals,
+    attributes,
+    points: [],
+  };
+}
+
 // Deep copy a points value (typed arrays are cloned). Use when you
 // need a value you'll mutate without disturbing the upstream cache.
 export function clonePoints(p: PointsValue): PointsValue {
+  let attributes: Record<string, PointAttribute> | undefined;
+  if (p.attributes) {
+    attributes = {};
+    for (const name of Object.keys(p.attributes)) {
+      const a = p.attributes[name];
+      attributes[name] = {
+        arity: a.arity,
+        color: a.color,
+        data: new Float32Array(a.data),
+      };
+    }
+  }
   return {
     kind: "points",
     count: p.count,
@@ -147,6 +399,9 @@ export function clonePoints(p: PointsValue): PointsValue {
     scales: p.scales ? new Float32Array(p.scales) : undefined,
     rotations: p.rotations ? new Float32Array(p.rotations) : undefined,
     groupIndices: p.groupIndices ? new Int32Array(p.groupIndices) : undefined,
+    z: p.z ? new Float32Array(p.z) : undefined,
+    normals: p.normals ? new Float32Array(p.normals) : undefined,
+    attributes,
     points: [],
   };
 }

@@ -4,20 +4,25 @@ import type {
   ParamDef,
   RenderContext,
 } from "@/engine/types";
-import type { Object3DValue } from "@/engine/three-types";
+import type { GeometryValue } from "@/engine/three-types";
+import { makeMaterialDesc } from "@/engine/three-geometry";
 
 // =====================================================================
-// 3D primitives (M1) — shared factory
+// 3D primitives — shared factory
 // =====================================================================
 //
-// Each primitive owns a RETAINED three.Mesh in ctx.state. Transform +
+// Each primitive owns a RETAINED BufferGeometry in ctx.state. Transform +
 // default-material params are shared; size/shape params are per-primitive
 // and rebuild the BufferGeometry when they change (tracked by a signature;
-// the meshes are tiny so a rebuild on a size drag is cheap). M2's
-// flow-through Material node will later override the default material.
+// the geometries are tiny so a rebuild on a size drag is cheap).
 //
-// All primitives emit `object3d` (variant "mesh"). The `geometry` socket
-// type arrives in M3 with modeling ops.
+// All primitives emit `geometry` (081026 spec §3.2) — LOCAL-space mesh
+// data with the TRS params carried on the value and the color/metalness/
+// roughness params folded into a default MaterialDesc (slot 0; the M4
+// Material node overrides it downstream). Wiring into an `object3d`
+// socket (Scene Render, Combine) auto-wraps via the coerce.ts →
+// three-geometry.ts retained wrap, which is what keeps pre-retype saved
+// projects rendering identically.
 
 const DEG = Math.PI / 180;
 
@@ -40,7 +45,7 @@ const MATERIAL_PARAMS: ParamDef[] = [
 ];
 
 interface PrimState {
-  mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
+  geometry: THREE.BufferGeometry;
   geomSig: string;
 }
 
@@ -61,7 +66,7 @@ function makePrimitiveNode(opts: {
     backend: "webgl2",
     inputs: [],
     params: [...opts.sizeParams, ...TRANSFORM_PARAMS, ...MATERIAL_PARAMS],
-    primaryOutput: "object3d",
+    primaryOutput: "geometry",
     auxOutputs: [],
 
     compute({ params, ctx, nodeId }: { params: Record<string, unknown>; ctx: RenderContext; nodeId: string }) {
@@ -69,48 +74,54 @@ function makePrimitiveNode(opts: {
       let st = ctx.state[key] as PrimState | undefined;
       const sig = opts.geomSig(params);
       if (!st) {
-        const mesh = new THREE.Mesh(
-          opts.buildGeometry(params),
-          new THREE.MeshStandardMaterial()
-        );
-        mesh.userData.nodeId = nodeId;
-        st = { mesh, geomSig: sig };
+        st = { geometry: opts.buildGeometry(params), geomSig: sig };
         ctx.state[key] = st;
       } else if (st.geomSig !== sig) {
-        st.mesh.geometry.dispose();
-        st.mesh.geometry = opts.buildGeometry(params);
+        // New object on rebuild (never mutate in place): downstream wrap/
+        // modeling-op caches key on BufferGeometry identity.
+        st.geometry.dispose();
+        st.geometry = opts.buildGeometry(params);
         st.geomSig = sig;
       }
-      const m = st.mesh;
-      m.position.set(
-        (params.pos_x as number) ?? 0,
-        (params.pos_y as number) ?? 0,
-        (params.pos_z as number) ?? 0
-      );
-      m.rotation.set(
-        ((params.rot_x as number) ?? 0) * DEG,
-        ((params.rot_y as number) ?? 0) * DEG,
-        ((params.rot_z as number) ?? 0) * DEG
-      );
-      m.scale.set(
-        (params.scale_x as number) ?? 1,
-        (params.scale_y as number) ?? 1,
-        (params.scale_z as number) ?? 1
-      );
-      m.material.color.set((params.color as string) ?? "#ff6633");
-      m.material.metalness = (params.metalness as number) ?? 0.1;
-      m.material.roughness = (params.roughness as number) ?? 0.45;
 
-      const out: Object3DValue = { kind: "object3d", object: m, variant: "mesh" };
+      const out: GeometryValue = {
+        kind: "geometry",
+        geometry: st.geometry,
+        nodeId,
+        transform: {
+          position: [
+            (params.pos_x as number) ?? 0,
+            (params.pos_y as number) ?? 0,
+            (params.pos_z as number) ?? 0,
+          ],
+          rotationEuler: [
+            ((params.rot_x as number) ?? 0) * DEG,
+            ((params.rot_y as number) ?? 0) * DEG,
+            ((params.rot_z as number) ?? 0) * DEG,
+          ],
+          scale: [
+            (params.scale_x as number) ?? 1,
+            (params.scale_y as number) ?? 1,
+            (params.scale_z as number) ?? 1,
+          ],
+        },
+        materials: [
+          makeMaterialDesc({
+            baseColor: (params.color as string) ?? "#ff6633",
+            roughness: (params.roughness as number) ?? 0.45,
+            metalness: (params.metalness as number) ?? 0.1,
+            transmission: 0,
+            ior: 1.5,
+            alpha: 1,
+          }),
+        ],
+      };
       return { primary: out };
     },
 
     dispose(ctx: RenderContext, nodeId: string) {
       const st = ctx.state[stateKey(nodeId)] as PrimState | undefined;
-      if (st) {
-        st.mesh.geometry.dispose();
-        st.mesh.material.dispose();
-      }
+      if (st) st.geometry.dispose();
       delete ctx.state[stateKey(nodeId)];
     },
   };
