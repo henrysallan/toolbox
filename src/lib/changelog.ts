@@ -11,6 +11,19 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.5.3",
+    date: "2026-08-26",
+    added: [
+      "Painterly flow-guided filters — Image Flow Field, Flow Blur, Kuwahara, Flow Bilateral, Shock Filter, and Line Art, steered by a shared orientation field.",
+      "Point Tracker — classical kernel plus an editor tracking session.",
+      "3D nodes, Claude agent panel, and shared-project collaboration from the recent editor land.",
+    ],
+    changed: [
+      "Browser tab title is Toolbox.Design. Local OAuth callbacks stay on localhost instead of bouncing to production.",
+      "Trails, Rasterize Spline, and Points on Path keep up with the painterly/spline work.",
+    ],
+  },
+  {
     version: "0.4.3",
     date: "2026-07-14",
     added: [
