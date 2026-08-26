@@ -260,7 +260,7 @@ interface MipChain {
 }
 
 function mipStateKey(nodeId: string): string {
-  return `bloom2:${nodeId}:mips`;
+  return `bloom:${nodeId}:mips`;
 }
 
 function releaseMipChain(ctx: RenderContext, mc: MipChain) {
@@ -582,7 +582,7 @@ export const bloomNode: NodeDefinition = {
     }
 
     // ---- Lens dirt placeholder if not connected ----
-    const dirtKey = `bloom2:${nodeId}:dirt`;
+    const dirtKey = `bloom:${nodeId}:dirt`;
     let dirtTex: WebGLTexture;
     let hasDirt = 0;
     if (dirt && dirt.kind === "image") {
@@ -645,7 +645,7 @@ export const bloomNode: NodeDefinition = {
   },
 
   dispose(ctx, nodeId) {
-    disposePlaceholderTex(ctx.gl, ctx.state, `bloom2:${nodeId}:dirt`);
+    disposePlaceholderTex(ctx.gl, ctx.state, `bloom:${nodeId}:dirt`);
     const stateKey = mipStateKey(nodeId);
     const chain = ctx.state[stateKey] as MipChain | undefined;
     if (chain) releaseMipChain(ctx, chain);

@@ -6,19 +6,26 @@ import {
   getScaleX,
   getScaleY,
 } from "@/engine/points";
+import {
+  defaultFloatCurve,
+  sampleFloatCurve,
+  sanitizeFloatCurve,
+} from "@/engine/float-curve";
 
 // Map Attribute — drive the built-in point data from a named channel
 // (081326_point-attributes.md M4): the bridge from "data on the wire" to
-// "pixels move". Reads the channel's component 0, remaps [In Lo..In Hi] →
-// [Out Lo..Out Hi] (clamped), and applies it to the chosen target:
+// "pixels move". Pipeline per point:
 //
-//   scale      — uniform multiply of the existing per-point scale
-//   rotation   — radians ADDED to the existing rotation
-//   position x/y — authored-space offset added to the position
+//   1. Read the channel's component 0, normalize [In Lo..In Hi] → [0,1]
+//      (clamped).
+//   2. Sample the 0..1 float curve (identity by default — a linear ramp
+//      leaves this step a no-op, so old graphs keep their linear remap).
+//   3. Map the curve's y through [Out Lo..Out Hi] and apply it:
+//        scale      — uniform multiply of the existing per-point scale
+//        rotation   — radians ADDED to the existing rotation
+//        position x/y — authored-space offset added to the position
 //
-// The remap is the whole interface — a weight in [0,1] becomes "sizes
-// between 0.2 and 1.8" by typing two numbers, no math node needed. A
-// missing channel passes through unchanged (the name field's red tint
+// A missing channel passes through unchanged (the name field's red tint
 // explains why).
 
 const TARGET_OPTIONS = [
@@ -35,7 +42,7 @@ export const mapAttributeNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Drives built-in point data from a named channel: remap the channel's value through In/Out ranges and apply it as a scale multiplier, a rotation offset (radians), or a position offset. The bridge from authored attributes to visible motion. A missing channel passes through unchanged.",
+    "Drives built-in point data from a named channel: normalize through In Lo/Hi, shape with a 0–1 curve, then map through Out Lo/Hi and apply as a scale multiplier, a rotation offset (radians), or a position offset. The curve defaults to a linear ramp, so a straight diagonal is the old In→Out remap. A missing channel passes through unchanged.",
   backend: "webgl2",
   inputs: [{ name: "points", type: "points", required: true }],
   params: [
@@ -54,6 +61,14 @@ export const mapAttributeNode: NodeDefinition = {
       type: "enum",
       options: TARGET_OPTIONS as unknown as string[],
       default: "scale",
+    },
+    {
+      // 0..1 shaper after In-range normalize, before Out-range. Identity
+      // (0,0)→(1,1) is a no-op so existing linear remaps stay linear.
+      name: "curve",
+      label: "Curve",
+      type: "float_curve",
+      default: defaultFloatCurve(0, 1),
     },
     {
       name: "in_lo",
@@ -112,6 +127,7 @@ export const mapAttributeNode: NodeDefinition = {
     const outLo = (params.out_lo as number) ?? 0;
     const outHi = (params.out_hi as number) ?? 1;
     const span = inHi - inLo;
+    const curve = sanitizeFloatCurve(params.curve, 0, 1);
 
     const n = src.count;
     const k = attr.arity;
@@ -120,7 +136,8 @@ export const mapAttributeNode: NodeDefinition = {
         Math.max(span === 0 ? 0 : (attr.data[i * k] - inLo) / span, 0),
         1
       );
-      return outLo + t * (outHi - outLo);
+      const shaped = sampleFloatCurve(curve, t);
+      return outLo + shaped * (outHi - outLo);
     };
 
     if (target === "scale") {

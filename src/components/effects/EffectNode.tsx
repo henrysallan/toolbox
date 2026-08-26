@@ -92,6 +92,7 @@ const STRING_INPUT_PARAMS: Record<
   "attribute-math": { param: "attr_name", singleLine: true },
   "attribute-blur": { param: "attr_name", singleLine: true },
   "attribute-transfer": { param: "attr_name", singleLine: true },
+  "map-attribute": { param: "attr_name", singleLine: true },
 };
 
 // Node types that surface an inline scalar slider on the node body, mapped to

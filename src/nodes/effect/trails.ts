@@ -23,37 +23,49 @@ void main() {
   outColor = texture(u_src, v_uv);
 }`;
 
-// Feedback/ring blend. `u_prev` is already decayed by u_decay on the CPU side
-// (we do it here so the ring path can skip-update without also decaying the
-// not-yet-replaced history — cleaner weighting).
-const BLEND_FS = `#version 300 es
+// Current frame over faded history. Decay scales history alpha only —
+// RGB of each echo stays the original color, just more transparent.
+// Straight-alpha src-over (same formula as Merge).
+export const OVER_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_cur;
 uniform sampler2D u_prev;
 uniform float u_decay;
-uniform int u_blend;
 out vec4 outColor;
 
 void main() {
   vec4 c = texture(u_cur, v_uv);
   vec4 p = texture(u_prev, v_uv);
-  vec3 pRgb = p.rgb * u_decay;
   float pA = p.a * u_decay;
-  vec3 r;
-  if (u_blend == 0)       r = max(c.rgb, pRgb);                              // max
-  else if (u_blend == 1)  r = c.rgb + pRgb;                                   // add
-  else if (u_blend == 2)  r = 1.0 - (1.0 - c.rgb) * (1.0 - pRgb);             // screen
-  else                    r = mix(pRgb, c.rgb, c.a);                          // over (alpha)
-  float a = max(c.a, pA);
-  outColor = vec4(r, a);
+  float outA = c.a + pA * (1.0 - c.a);
+  vec3 outRgb;
+  if (outA < 1e-4) {
+    outRgb = vec3(0.0);
+  } else {
+    outRgb = (c.rgb * c.a + p.rgb * pA * (1.0 - c.a)) / outA;
+  }
+  outColor = vec4(outRgb, outA);
+}`;
+
+// History-only fade: RGB stays put, alpha scales. Used for the `trail` aux
+// (echoes without the current frame) and as a decayed source for `over`.
+export const FADE_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform float u_decay;
+out vec4 outColor;
+void main() {
+  vec4 p = texture(u_src, v_uv);
+  outColor = vec4(p.rgb, p.a * u_decay);
 }`;
 
 // Velocity directional blur. Samples prev N times backwards along the
 // velocity vector, falling off geometrically by u_decay per tap. When a
 // per-pixel UV-velocity field is connected, u_hasVelUv = 1 and we read the
 // local velocity from it instead of using the global uniform.
-const VELOCITY_FS = `#version 300 es
+export const VELOCITY_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_cur;
@@ -63,13 +75,14 @@ uniform int u_taps;
 uniform float u_decay;
 uniform int u_hasVelUv;
 uniform sampler2D u_velUv;
+uniform int u_includeCur;
 out vec4 outColor;
 
 void main() {
   vec4 c = texture(u_cur, v_uv);
   vec2 vel = u_hasVelUv == 1 ? (texture(u_velUv, v_uv).rg - 0.5) * 2.0 : u_velocity;
-  vec4 acc = c;
-  float wsum = 1.0;
+  vec4 acc = u_includeCur == 1 ? c : vec4(0.0);
+  float wsum = u_includeCur == 1 ? 1.0 : 0.0;
   float w = 1.0;
   for (int i = 1; i <= 64; i++) {
     if (i > u_taps) break;
@@ -81,7 +94,11 @@ void main() {
     acc += s * w;
     wsum += w;
   }
-  outColor = acc / wsum;
+  if (wsum < 1e-4) {
+    outColor = vec4(0.0);
+  } else {
+    outColor = acc / wsum;
+  }
 }`;
 
 // ─── State ─────────────────────────────────────────────────────────────────
@@ -101,6 +118,9 @@ interface TrailsState {
   // Initialized fresh on reset so the user sees a clean starting state.
   frameCounter: number;
   lastResetCounter: number;
+  // Last ctx.time we considered for the play-gate. -1 so the first playing
+  // eval after a reset always counts as a time change.
+  lastTime: number;
 }
 
 function stateKey(nodeId: string): string {
@@ -125,7 +145,10 @@ function ensureState(
     existing.height !== H ||
     existing.lastResetCounter !== resetCounter;
 
-  if (!shouldReset) return existing;
+  if (!shouldReset) {
+    if (typeof existing.lastTime !== "number") existing.lastTime = -1;
+    return existing;
+  }
 
   if (existing) {
     ctx.releaseTexture(existing.prev.texture);
@@ -144,24 +167,51 @@ function ensureState(
     scratch,
     frameCounter: 0,
     lastResetCounter: resetCounter,
+    lastTime: -1,
   };
   ctx.state[key] = state;
   return state;
 }
 
-// Copies a source image into the persistent prev buffer (via the scratch
-// ping-pong partner). After this call `state.prev` holds `src`.
+// Fullscreen blit. captureInto uses this into the ping-pong scratch.
+function copyImage(
+  ctx: RenderContext,
+  src: ImageValue,
+  dest: ImageValue
+): void {
+  const prog = ctx.getShader("trails/copy", COPY_FS);
+  ctx.drawFullscreen(prog, dest, (gl) => {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.texture);
+    gl.uniform1i(gl.getUniformLocation(prog, "u_src"), 0);
+  });
+}
+
+function fadeImage(
+  ctx: RenderContext,
+  src: ImageValue,
+  dest: ImageValue,
+  decay: number
+): void {
+  if (decay >= 1 - 1e-6) {
+    copyImage(ctx, src, dest);
+    return;
+  }
+  const prog = ctx.getShader("trails/fade", FADE_FS);
+  ctx.drawFullscreen(prog, dest, (gl) => {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.texture);
+    gl.uniform1i(gl.getUniformLocation(prog, "u_src"), 0);
+    gl.uniform1f(gl.getUniformLocation(prog, "u_decay"), decay);
+  });
+}
+
 function captureInto(
   ctx: RenderContext,
   state: TrailsState,
   src: ImageValue
 ): void {
-  const prog = ctx.getShader("trails/copy", COPY_FS);
-  ctx.drawFullscreen(prog, state.scratch, (gl) => {
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, src.texture);
-    gl.uniform1i(gl.getUniformLocation(prog, "u_src"), 0);
-  });
+  copyImage(ctx, src, state.scratch);
   // Swap: scratch now holds the newly-captured frame, prev becomes the
   // write target for future passes.
   const tmp = state.prev;
@@ -169,19 +219,65 @@ function captureInto(
   state.scratch = tmp;
 }
 
-const BLEND_OPTIONS = ["max", "add", "screen", "over"] as const;
-function blendToInt(s: string): number {
-  switch (s) {
-    case "max":
-      return 0;
-    case "add":
-      return 1;
-    case "screen":
-      return 2;
-    case "over":
-    default:
-      return 3;
-  }
+function resultOf(
+  primary: ImageValue,
+  trail: ImageValue | null
+): { primary: ImageValue; aux?: { trail: ImageValue } } {
+  return trail ? { primary, aux: { trail } } : { primary };
+}
+
+function compositeOver(
+  ctx: RenderContext,
+  cur: ImageValue,
+  prev: ImageValue,
+  dest: ImageValue,
+  decay: number
+): void {
+  const prog = ctx.getShader("trails/over", OVER_FS);
+  ctx.drawFullscreen(prog, dest, (gl) => {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, cur.texture);
+    gl.uniform1i(gl.getUniformLocation(prog, "u_cur"), 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, prev.texture);
+    gl.uniform1i(gl.getUniformLocation(prog, "u_prev"), 1);
+    gl.uniform1f(gl.getUniformLocation(prog, "u_decay"), decay);
+  });
+}
+
+function drawVelocity(
+  ctx: RenderContext,
+  dest: ImageValue,
+  src: ImageValue,
+  prev: ImageValue,
+  vx: number,
+  vy: number,
+  taps: number,
+  decay: number,
+  hasVelUv: number,
+  velUvTex: WebGLTexture,
+  includeCur: boolean
+): void {
+  const prog = ctx.getShader("trails/velocity-v2", VELOCITY_FS);
+  ctx.drawFullscreen(prog, dest, (gl) => {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.texture);
+    gl.uniform1i(gl.getUniformLocation(prog, "u_cur"), 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, prev.texture);
+    gl.uniform1i(gl.getUniformLocation(prog, "u_prev"), 1);
+    gl.uniform2f(gl.getUniformLocation(prog, "u_velocity"), vx, vy);
+    gl.uniform1i(gl.getUniformLocation(prog, "u_taps"), taps);
+    gl.uniform1f(gl.getUniformLocation(prog, "u_decay"), decay);
+    gl.uniform1i(gl.getUniformLocation(prog, "u_hasVelUv"), hasVelUv);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, velUvTex);
+    gl.uniform1i(gl.getUniformLocation(prog, "u_velUv"), 2);
+    gl.uniform1i(
+      gl.getUniformLocation(prog, "u_includeCur"),
+      includeCur ? 1 : 0
+    );
+  });
 }
 
 // ─── Node ──────────────────────────────────────────────────────────────────
@@ -192,7 +288,7 @@ export const trailsNode: NodeDefinition = {
   category: "image",
   subcategory: "modifier",
   description:
-    "Temporal trails. Feedback mode: exponential analog-video look. Ring: stepped stop-motion feel. Velocity: directional motion blur along a vector or UV field.",
+    "Temporal trails — each echo is a faded copy of an earlier frame (opacity only, no color mix). Primary is the current frame over the echoes; the trail aux is echoes only. Feedback: continuous motion trail. Ring: stepped stop-motion echoes. Velocity: directional motion blur along a vector or UV field. History advances only while the timeline plays.",
   backend: "webgl2",
   // Time-dependent by nature — each eval reads last frame's output.
   stable: false,
@@ -229,14 +325,6 @@ export const trailsNode: NodeDefinition = {
       max: 1,
       step: 0.001,
       default: 0.92,
-    },
-    {
-      name: "blend_mode",
-      label: "Blend",
-      type: "enum",
-      options: BLEND_OPTIONS as unknown as string[],
-      default: "max",
-      visibleIf: (p) => p.mode === "feedback" || p.mode === "ring",
     },
     {
       name: "step_frames",
@@ -290,21 +378,47 @@ export const trailsNode: NodeDefinition = {
     },
   ],
   primaryOutput: "image",
-  auxOutputs: [],
+  auxOutputs: [
+    {
+      name: "trail",
+      type: "image",
+      label: "trail",
+      description:
+        "Faded echoes only — the current frame is not composited on top.",
+    },
+  ],
 
-  compute({ inputs, params, ctx, nodeId }) {
+  compute({ inputs, params, ctx, nodeId, consumedOutputs }) {
+    const wantTrail =
+      !consumedOutputs || consumedOutputs.has("aux:trail");
+    const allocTrail = (): ImageValue | null => {
+      if (!wantTrail) return null;
+      const t = ctx.allocImage();
+      ctx.clearTarget(t, [0, 0, 0, 0]);
+      return t;
+    };
+
     const src = inputs.image;
     if (!src || src.kind !== "image") {
       const out = ctx.allocImage();
       ctx.clearTarget(out, [0, 0, 0, 0]);
-      return { primary: out };
+      return resultOf(out, allocTrail());
     }
 
     const mode = ((params.mode as string) ?? "feedback") as TrailsMode;
     const decay = Math.max(0, Math.min(1, (params.decay as number) ?? 0.92));
     const resetCounter = (params._reset_counter as number) ?? 0;
     const state = ensureState(ctx, nodeId, mode, resetCounter);
-    state.frameCounter += 1;
+
+    // House sim contract: history only advances while the timeline is
+    // playing (or an offline export is stepping). Same-time re-evals —
+    // paused param tweaks, cursor, split-view second pass, export settle
+    // re-render — freeze the buffer so trails don't keep decaying or
+    // picking up extra echoes. Time going backward (loop wrap) still
+    // counts as a change so the next loop doesn't freeze.
+    const timeChanged = Math.abs(ctx.time - state.lastTime) > 1e-6;
+    const active = (ctx.playing || ctx.offline) && timeChanged;
+    state.lastTime = ctx.time;
 
     const output = ctx.allocImage();
 
@@ -313,37 +427,36 @@ export const trailsNode: NodeDefinition = {
         1,
         Math.floor((params.step_frames as number) ?? 2)
       );
-      // Ring quantizes history captures: only blend on an on-step frame so
-      // visible echoes land at fixed temporal intervals.
-      const shouldUpdate =
-        mode === "feedback" || state.frameCounter % stepFrames === 0;
+      if (active) state.frameCounter += 1;
+      // Ring quantizes history captures: only commit on an on-step frame
+      // so visible echoes land at fixed temporal intervals.
+      const shouldCapture =
+        active &&
+        (mode === "feedback" || state.frameCounter % stepFrames === 0);
+      const fade = shouldCapture ? decay : 1;
 
-      if (!shouldUpdate) {
-        // Output unchanged prev; downstream sees the same image as last frame.
-        const copy = ctx.getShader("trails/copy", COPY_FS);
-        ctx.drawFullscreen(copy, output, (gl) => {
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, state.prev.texture);
-          gl.uniform1i(gl.getUniformLocation(copy, "u_src"), 0);
-        });
-        return { primary: output };
+      if (mode === "ring" && active && !shouldCapture) {
+        // Stop-motion hold: primary is the last captured composite. Trail
+        // aux copies that same freeze (the hold has no separate live current
+        // to strip — the next on-step frame will).
+        copyImage(ctx, state.prev, output);
+        const trail = wantTrail ? ctx.allocImage() : null;
+        if (trail) fadeImage(ctx, state.prev, trail, fade);
+        return resultOf(output, trail);
       }
 
-      const blendMode = blendToInt((params.blend_mode as string) ?? "max");
-      const prog = ctx.getShader("trails/blend", BLEND_FS);
-      ctx.drawFullscreen(prog, output, (gl) => {
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, src.texture);
-        gl.uniform1i(gl.getUniformLocation(prog, "u_cur"), 0);
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, state.prev.texture);
-        gl.uniform1i(gl.getUniformLocation(prog, "u_prev"), 1);
-        gl.uniform1f(gl.getUniformLocation(prog, "u_decay"), decay);
-        gl.uniform1i(gl.getUniformLocation(prog, "u_blend"), blendMode);
-      });
-      // Commit the new output into prev for next frame.
-      captureInto(ctx, state, output);
-      return { primary: output };
+      // Trail aux = faded history without this frame's current. Primary
+      // then sits current over that. Paused evals use fade=1 so history
+      // doesn't decay, and we skip capture so the live frame isn't baked in.
+      const trail = wantTrail ? ctx.allocImage() : null;
+      if (trail) {
+        fadeImage(ctx, state.prev, trail, fade);
+        compositeOver(ctx, src, trail, output, 1);
+      } else {
+        compositeOver(ctx, src, state.prev, output, fade);
+      }
+      if (shouldCapture) captureInto(ctx, state, output);
+      return resultOf(output, trail);
     }
 
     // Velocity mode.
@@ -366,27 +479,40 @@ export const trailsNode: NodeDefinition = {
       velUvTex = (velUv as UvValue).texture;
     }
 
-    const prog = ctx.getShader("trails/velocity", VELOCITY_FS);
-    ctx.drawFullscreen(prog, output, (gl) => {
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, src.texture);
-      gl.uniform1i(gl.getUniformLocation(prog, "u_cur"), 0);
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, state.prev.texture);
-      gl.uniform1i(gl.getUniformLocation(prog, "u_prev"), 1);
-      gl.uniform2f(gl.getUniformLocation(prog, "u_velocity"), vx, vy);
-      gl.uniform1i(gl.getUniformLocation(prog, "u_taps"), taps);
-      gl.uniform1f(gl.getUniformLocation(prog, "u_decay"), decay);
-      gl.uniform1i(gl.getUniformLocation(prog, "u_hasVelUv"), hasVelUv);
-      gl.activeTexture(gl.TEXTURE2);
-      gl.bindTexture(gl.TEXTURE_2D, velUvTex);
-      gl.uniform1i(gl.getUniformLocation(prog, "u_velUv"), 2);
-    });
+    drawVelocity(
+      ctx,
+      output,
+      src,
+      state.prev,
+      vx,
+      vy,
+      taps,
+      decay,
+      hasVelUv,
+      velUvTex,
+      true
+    );
+    const trail = wantTrail ? ctx.allocImage() : null;
+    if (trail) {
+      drawVelocity(
+        ctx,
+        trail,
+        src,
+        state.prev,
+        vx,
+        vy,
+        taps,
+        decay,
+        hasVelUv,
+        velUvTex,
+        false
+      );
+    }
     // Velocity mode remembers raw current input as history; the next frame
     // smears along the new velocity, not the blurred output (avoids runaway
-    // compounding of the directional blur).
-    captureInto(ctx, state, src);
-    return { primary: output };
+    // compounding of the directional blur). Skip the capture while paused.
+    if (active) captureInto(ctx, state, src);
+    return resultOf(output, trail);
   },
 
   dispose(ctx, nodeId) {

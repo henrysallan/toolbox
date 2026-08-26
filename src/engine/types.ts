@@ -242,9 +242,9 @@ export interface SplineAnchor {
   // Width profile (spec 072726_spline-animation-program.md M3): a MULTIPLIER
   // on the consuming stroke's base thickness at this anchor (absent = 1).
   // Interpolated smoothly along arc length between anchors; consumed by the
-  // variable-width envelope renderer (spline-width.ts) in the Stroke node
-  // and the shared spline rasterizer. Authored with the Width tool (W);
-  // lerps in Path Animation like cornerRadius.
+  // variable-width envelope renderer (spline-width.ts) in the Stroke node,
+  // Rasterize Spline, and the shared spline rasterizer. Authored with the
+  // Width tool (W); lerps in Path Animation like cornerRadius.
   width?: number;
   // Named per-anchor channels (081326_point-attributes.md M3) — the
   // generalization of width/cornerRadius. OBJECT-attached, not SoA like

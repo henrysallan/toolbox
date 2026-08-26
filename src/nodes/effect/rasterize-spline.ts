@@ -5,6 +5,10 @@ import type {
 } from "@/engine/types";
 import { buildPath2D, hexToRgba } from "@/engine/spline-raster";
 import {
+  buildWidthEnvelopePath,
+  subpathHasWidthProfile,
+} from "@/engine/spline-width";
+import {
   compositeSplineFill,
   makeZeroTex,
   type SplineFillFit,
@@ -15,6 +19,8 @@ import {
   type ColorRampBy,
 } from "@/engine/spline-color-source";
 import { resolveStrokePx, strokeUnitsParam } from "@/engine/stroke-units";
+import { aspectCorrectY } from "@/engine/aspect";
+import { subpathToCurves, curveTangent } from "@/engine/spline-math";
 import { SPLINE_FILL_INPUT } from "@/nodes/source/spline-raster-aux";
 
 // One-shot rasterizer that does Fill + Stroke in a single Canvas2D pass.
@@ -296,6 +302,132 @@ function drawSplineFill(
 // miter, `stroke_color`) to the 2D context. Split out so both the combined
 // stroke (flatten mode) and the per-subpath stroke (layered mode) share it.
 // `colorStyle` overrides the flat stroke_color for per-subpath ramp colors.
+
+// Canvas only knows round / butt / square. Arrowhead is a filled triangle we
+// paint ourselves, so the stroke behind it uses a butt cap (nothing pokes
+// past the tip).
+function canvasLineCap(params: Record<string, unknown>): CanvasLineCap {
+  const cap = (params.cap as string) ?? "round";
+  if (cap === "arrowhead") return "butt";
+  if (cap === "butt" || cap === "square") return cap;
+  return "round";
+}
+
+function arrowheadsWanted(params: Record<string, unknown>): boolean {
+  return (
+    params.cap === "arrowhead" &&
+    params.style !== "dotted" &&
+    !params.close_open_paths &&
+    (params.arrow_start === true || params.arrow_end !== false)
+  );
+}
+
+// Isosceles arrow at tip (x,y), shaft along unit (dx,dy) pointing in the
+// arrow direction (outward from the path). `length` is tip→base along the
+// shaft; `angleDeg` is each wing's angle from the shaft.
+//   filled — solid triangle
+//   stroke — open chevron (two wings, no base), same weight as the path
+function paintArrowHead(
+  c2d: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  dx: number,
+  dy: number,
+  length: number,
+  angleDeg: number,
+  filled: boolean
+) {
+  const half = length * Math.tan((angleDeg * Math.PI) / 180);
+  const bx = x - dx * length;
+  const by = y - dy * length;
+  const px = -dy * half;
+  const py = dx * half;
+  c2d.beginPath();
+  if (filled) {
+    c2d.moveTo(x, y);
+    c2d.lineTo(bx + px, by + py);
+    c2d.lineTo(bx - px, by - py);
+    c2d.closePath();
+    c2d.fill();
+  } else {
+    c2d.moveTo(bx + px, by + py);
+    c2d.lineTo(x, y);
+    c2d.lineTo(bx - px, by - py);
+    c2d.stroke();
+  }
+}
+
+function drawArrowheads(
+  c2d: CanvasRenderingContext2D,
+  subpaths: SplineSubpath[],
+  params: Record<string, unknown>,
+  W: number,
+  H: number,
+  colorStyle?: string
+) {
+  if (!arrowheadsWanted(params)) return;
+  const atStart = params.arrow_start === true;
+  const atEnd = params.arrow_end !== false;
+  if (!atStart && !atEnd) return;
+  const length = Math.max(
+    0,
+    resolveStrokePx((params.arrow_length as number) ?? 16, params.units, W)
+  );
+  if (length <= 0) return;
+  const angleDeg = Math.max(
+    1,
+    Math.min(80, (params.arrow_angle as number) ?? 25)
+  );
+  const filled = (params.arrow_style as string) !== "stroke";
+  const color = colorStyle ?? (c2d.strokeStyle as string);
+  if (filled) c2d.fillStyle = color;
+  else {
+    c2d.strokeStyle = color;
+    c2d.setLineDash([]);
+    c2d.lineJoin = "miter";
+    c2d.miterLimit = 24;
+    c2d.lineCap = "round";
+  }
+
+  const aspect = W / H;
+  const toPx = (nx: number, ny: number): [number, number] => [
+    nx * W,
+    aspectCorrectY(ny, aspect) * H,
+  ];
+  const tanPx = (tx: number, ty: number): [number, number] => {
+    const dx = tx * W;
+    const dy = ty * aspect * H;
+    const m = Math.hypot(dx, dy);
+    return m > 1e-9 ? [dx / m, dy / m] : [0, 0];
+  };
+
+  for (const sub of subpaths) {
+    if (sub.closed) continue;
+    const curves = subpathToCurves(sub);
+    if (curves.length === 0) continue;
+    if (atStart) {
+      const c = curves[0];
+      const p = c.get(0);
+      const [tx, ty] = curveTangent(c, 0);
+      const [dx, dy] = tanPx(-tx, -ty);
+      if (dx !== 0 || dy !== 0) {
+        const [x, y] = toPx(p.x, p.y);
+        paintArrowHead(c2d, x, y, dx, dy, length, angleDeg, filled);
+      }
+    }
+    if (atEnd) {
+      const c = curves[curves.length - 1];
+      const p = c.get(1);
+      const [tx, ty] = curveTangent(c, 1);
+      const [dx, dy] = tanPx(tx, ty);
+      if (dx !== 0 || dy !== 0) {
+        const [x, y] = toPx(p.x, p.y);
+        paintArrowHead(c2d, x, y, dx, dy, length, angleDeg, filled);
+      }
+    }
+  }
+}
+
 function applyStrokeStyle(
   c2d: CanvasRenderingContext2D,
   params: Record<string, unknown>,
@@ -325,7 +457,7 @@ function applyStrokeStyle(
       resolveStrokePx((params.dash_gap as number) ?? 8, units, W)
     );
     c2d.setLineDash([dash, gap]);
-    c2d.lineCap = (params.cap as CanvasLineCap) ?? ("round" as CanvasLineCap);
+    c2d.lineCap = canvasLineCap(params);
   } else if (style === "dotted") {
     const spacing = Math.max(
       1,
@@ -335,14 +467,69 @@ function applyStrokeStyle(
     c2d.lineCap = "round";
   } else {
     c2d.setLineDash([]);
-    c2d.lineCap = (params.cap as CanvasLineCap) ?? ("round" as CanvasLineCap);
+    c2d.lineCap = canvasLineCap(params);
   }
 }
 
-// Stroke the spline. Flat color strokes all subpaths in ONE pass (a single
-// stroke() composites once, so translucent stroke colors don't double-blend
-// where subpaths overlap — the legacy behavior). A stroke ramp needs a
-// distinct color per subpath, so it strokes each one individually.
+// Paint the stroke for `subs` in the current color/style. Unprofiled
+// subpaths keep a canvas stroke (byte-identical when no anchor carries a
+// width). Profiled ones fill the variable-width envelope: each anchor's
+// `width` (absent = 1) multiplies this node's Thickness, matching Stroke
+// and Spline Draw's own raster. Dash/dot are ignored for a profiled
+// subpath (fills don't dash — the profile wins). Envelope failure falls
+// back to a plain stroke so a degenerate profile never goes invisible.
+function paintStroke(
+  c2d: CanvasRenderingContext2D,
+  subs: SplineSubpath[],
+  params: Record<string, unknown>,
+  W: number,
+  H: number,
+  colorStyle?: string
+) {
+  if (subs.length === 0) return;
+  applyStrokeStyle(c2d, params, W, colorStyle);
+  const thicknessPx = c2d.lineWidth;
+  const close = !!params.close_open_paths;
+
+  const profiled: SplineSubpath[] = [];
+  const plain: SplineSubpath[] = [];
+  for (const s of subs) {
+    if (subpathHasWidthProfile(s)) profiled.push(s);
+    else plain.push(s);
+  }
+
+  if (plain.length > 0) {
+    const path = buildPath2D(plain, W, H, close);
+    if (path) c2d.stroke(path);
+  }
+
+  if (profiled.length > 0) {
+    const fillColor = (colorStyle ?? (c2d.strokeStyle as string)) as string;
+    const fallback: SplineSubpath[] = [];
+    c2d.fillStyle = fillColor;
+    for (const s of profiled) {
+      const envSub = close && !s.closed ? { ...s, closed: true } : s;
+      const env =
+        thicknessPx > 0
+          ? buildWidthEnvelopePath(envSub, W, H, thicknessPx)
+          : null;
+      if (env) c2d.fill(env);
+      else fallback.push(s);
+    }
+    if (fallback.length > 0) {
+      const path = buildPath2D(fallback, W, H, close);
+      if (path) c2d.stroke(path);
+    }
+  }
+
+  drawArrowheads(c2d, subs, params, W, H, colorStyle);
+}
+
+// Stroke the spline. Flat color strokes all unprofiled subpaths in ONE
+// pass (a single stroke() composites once, so translucent stroke colors
+// don't double-blend where subpaths overlap — the legacy behavior). A
+// stroke ramp needs a distinct color per subpath, so it strokes each one
+// individually. Profiled subpaths always go through paintStroke's envelope.
 function drawSplineStroke(
   c2d: CanvasRenderingContext2D,
   subpaths: SplineSubpath[],
@@ -353,22 +540,11 @@ function drawSplineStroke(
   if ((params.stroke_source as string) === "ramp") {
     const colorAt = makeStrokeColorFn(subpaths, params);
     for (let i = 0; i < subpaths.length; i++) {
-      const path = buildPath2D(
-        [subpaths[i]],
-        W,
-        H,
-        !!params.close_open_paths
-      );
-      if (!path) continue;
-      applyStrokeStyle(c2d, params, W, colorAt(i, subpaths[i]));
-      c2d.stroke(path);
+      paintStroke(c2d, [subpaths[i]], params, W, H, colorAt(i, subpaths[i]));
     }
     return;
   }
-  const path = buildPath2D(subpaths, W, H, !!params.close_open_paths);
-  if (!path) return;
-  applyStrokeStyle(c2d, params, W);
-  c2d.stroke(path);
+  paintStroke(c2d, subpaths, params, W, H);
 }
 
 // Builds a per-subpath fill-color resolver. With `fill_source: "ramp"` each
@@ -441,7 +617,6 @@ function drawSplineFlat(
   const useRamp = (params.fill_source as string) === "ramp";
   const strokeRamp = (params.stroke_source as string) === "ramp";
   const layered = (params.overlap as string) === "layered";
-  const closeStroke = !!params.close_open_paths;
   // Hole islands: nested contours punch out of their container while
   // per-island colors and stacking order survive (see groupHoleIslands).
   const islands =
@@ -467,18 +642,17 @@ function drawSplineFlat(
           if (strokeRamp) {
             // Each member strokes in its own ramp color (holes included).
             for (const idx of [isl.root, ...isl.holes]) {
-              const p = buildPath2D([subpaths[idx]], W, H, closeStroke);
-              if (p) {
-                applyStrokeStyle(c2d, params, W, strokeColorAt(idx, subpaths[idx]));
-                c2d.stroke(p);
-              }
+              paintStroke(
+                c2d,
+                [subpaths[idx]],
+                params,
+                W,
+                H,
+                strokeColorAt(idx, subpaths[idx])
+              );
             }
           } else {
-            const p = buildPath2D(members, W, H, closeStroke);
-            if (p) {
-              applyStrokeStyle(c2d, params, W);
-              c2d.stroke(p);
-            }
+            paintStroke(c2d, members, params, W, H);
           }
         }
       }
@@ -494,11 +668,7 @@ function drawSplineFlat(
         }
       }
       if (enableStroke) {
-        const p = buildPath2D([sub], W, H, closeStroke);
-        if (p) {
-          applyStrokeStyle(c2d, params, W, strokeColorAt(i, sub));
-          c2d.stroke(p);
-        }
+        paintStroke(c2d, [sub], params, W, H, strokeColorAt(i, sub));
       }
     }
     return;
@@ -547,7 +717,7 @@ export const rasterizeSplineNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Rasterize a spline as fill, stroke, or both in a single pass. Fill draws underneath the stroke. Toggle each independently. Fill and stroke colors can each be a flat color or a per-subpath ramp keyed by index, seeded random, group, centroid position, or driver — sourced independently, so e.g. fill by index and stroke by random. A wired fill image can drive the fill, the stroke, or both via the Image → fill / Image → stroke toggles.",
+    "Rasterize a spline as fill, stroke, or both in a single pass. Fill draws underneath the stroke. Toggle each independently. Fill and stroke colors can each be a flat color or a per-subpath ramp keyed by index, seeded random, group, centroid position, or driver — sourced independently, so e.g. fill by index and stroke by random. A wired fill image can drive the fill, the stroke, or both via the Image → fill / Image → stroke toggles. Per-anchor width (Spline Draw's Width tool) rides the spline: Thickness is the base, each anchor's width is a multiplier on it.",
   backend: "webgl2",
   inputs: [
     { name: "path", type: "spline", required: true },
@@ -820,6 +990,9 @@ export const rasterizeSplineNode: NodeDefinition = {
       default: false,
       visibleIf: (p) => p.enable_stroke !== false,
     },
+    // Base stroke weight. When the incoming spline carries a width profile
+    // (Spline Draw's Width tool, `SplineAnchor.width`), each anchor's
+    // multiplier scales this — same contract as the Stroke node.
     {
       name: "thickness",
       label: "Thickness",
@@ -880,9 +1053,68 @@ export const rasterizeSplineNode: NodeDefinition = {
       name: "cap",
       label: "Cap",
       type: "enum",
-      options: ["round", "butt", "square"],
+      options: ["round", "butt", "square", "arrowhead"],
       default: "round",
       visibleIf: (p) => p.enable_stroke !== false && p.style !== "dotted",
+    },
+    {
+      name: "arrow_length",
+      label: "Arrow length",
+      type: "scalar",
+      min: 0,
+      max: 200,
+      softMax: 40,
+      step: 0.5,
+      default: 16,
+      visibleIf: (p) =>
+        p.enable_stroke !== false &&
+        p.style !== "dotted" &&
+        p.cap === "arrowhead",
+    },
+    {
+      name: "arrow_angle",
+      label: "Arrow angle",
+      type: "scalar",
+      min: 5,
+      max: 80,
+      step: 1,
+      default: 25,
+      visibleIf: (p) =>
+        p.enable_stroke !== false &&
+        p.style !== "dotted" &&
+        p.cap === "arrowhead",
+    },
+    {
+      name: "arrow_style",
+      label: "Arrow style",
+      type: "enum",
+      options: ["filled", "stroke"],
+      default: "filled",
+      control: "segmented",
+      visibleIf: (p) =>
+        p.enable_stroke !== false &&
+        p.style !== "dotted" &&
+        p.cap === "arrowhead",
+    },
+    {
+      name: "arrow_start",
+      label: "Arrow at start",
+      type: "boolean",
+      default: false,
+      visibleIf: (p) =>
+        p.enable_stroke !== false &&
+        p.style !== "dotted" &&
+        p.cap === "arrowhead",
+    },
+    {
+      name: "arrow_end",
+      label: "Arrow at end",
+      type: "boolean",
+      default: true,
+      visibleIf: (p) =>
+        p.enable_stroke !== false &&
+        p.style !== "dotted" &&
+        p.cap === "arrowhead",
     },
     {
       name: "join",
@@ -975,6 +1207,11 @@ export const rasterizeSplineNode: NodeDefinition = {
         dg: params.dash_gap,
         ds: params.dot_spacing,
         cap: params.cap,
+        al: params.arrow_length,
+        aa: params.arrow_angle,
+        ast: params.arrow_style,
+        as: params.arrow_start,
+        ae: params.arrow_end,
         jn: params.join,
         ml: params.miter_limit,
         close: !!params.close_open_paths,
@@ -1064,6 +1301,11 @@ export const rasterizeSplineNode: NodeDefinition = {
       dg: params.dash_gap,
       ds: params.dot_spacing,
       cap: params.cap,
+      al: params.arrow_length,
+      aa: params.arrow_angle,
+      ast: params.arrow_style,
+      as: params.arrow_start,
+      ae: params.arrow_end,
       jn: params.join,
       ml: params.miter_limit,
       close: !!params.close_open_paths,

@@ -33,7 +33,12 @@ export interface GroupOutputSpec {
 export interface GroupInputSpec {
   name: string;
   type: SocketType;
-  to: { nodeId: string; handle: string }; // interior target, e.g. "in:image"
+  // One interior target ("in:image") — or several, when one boundary
+  // socket fans out (the Painterly preset's image input feeds the filter
+  // chain AND the flow-field estimate).
+  to:
+    | { nodeId: string; handle: string }
+    | { nodeId: string; handle: string }[];
 }
 
 // One interior param to surface as an editable/keyframable knob (and input
@@ -75,13 +80,15 @@ export function groupFragment(opts: {
   const inputEdges: Edge[] = [];
   for (const inp of opts.inputs ?? []) {
     inSockets.push({ name: inp.name, type: inp.type });
-    inputEdges.push({
-      id: newEdgeId(),
-      source: groupInput.id,
-      sourceHandle: `out:aux:${inp.name}`,
-      target: inp.to.nodeId,
-      targetHandle: inp.to.handle,
-    });
+    for (const tgt of Array.isArray(inp.to) ? inp.to : [inp.to]) {
+      inputEdges.push({
+        id: newEdgeId(),
+        source: groupInput.id,
+        sourceHandle: `out:aux:${inp.name}`,
+        target: tgt.nodeId,
+        targetHandle: tgt.handle,
+      });
+    }
   }
 
   const promoteEdges: Edge[] = [];

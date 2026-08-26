@@ -280,8 +280,9 @@ export default function PointAttributesPage() {
         </LI>
         <LI>
           <strong>Map Attribute</strong> — the bridge to visible motion:
-          remap a channel through In/Out ranges and apply it as a scale
-          multiplier, rotation offset, or position offset.
+          remap a channel through In/Out ranges, shape it with a 0–1
+          curve, and apply it as a scale multiplier, rotation offset, or
+          position offset.
         </LI>
       </UL>
       <P>

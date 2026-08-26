@@ -180,9 +180,27 @@ export function sampleSplineAt(
     subIdx = i;
   }
   const sub = lengths.perSubpath[subIdx];
-  if (!sub || sub.total <= 0) return { pos: [0, 0], tangent: [0, 0] };
   const lenInSub = targetLen - lengths.offsets[subIdx];
-  // Locate segment within subpath.
+  return sampleSubpathAtLength(sub, lenInSub);
+}
+
+// Sample one subpath at t ∈ [0,1] of *that* subpath's own arc length
+// (not the concatenated spline). Closed/open and wrap are the caller's
+// problem — this just locates the cubic.
+export function sampleSubpathAt(
+  lengths: SubpathLengths,
+  t: number
+): SampleResult {
+  if (lengths.total <= 0) return { pos: [0, 0], tangent: [0, 0] };
+  const clamped = Math.max(0, Math.min(1, t));
+  return sampleSubpathAtLength(lengths, clamped * lengths.total);
+}
+
+function sampleSubpathAtLength(
+  sub: SubpathLengths | undefined,
+  lenInSub: number
+): SampleResult {
+  if (!sub || sub.total <= 0) return { pos: [0, 0], tangent: [0, 0] };
   let segIdx = 0;
   let prevCum = 0;
   for (let i = 0; i < sub.segments.length; i++) {

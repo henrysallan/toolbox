@@ -309,7 +309,66 @@ function buildIntersected(): { nodes: GraphNode[]; edges: Edge[] } {
   });
 }
 
+// --- Painterly ---------------------------------------------------------
+// The painterly stack from painterlyspec/082426_kuwahara.md: one shared
+// Image Flow Field steering Kuwahara → Coherence Shock, with a Line Art
+// ink layer composited over via Merge. The graph IS the convenience
+// wrapper — no modes-monolith; every stage stays tweakable by diving in.
+function buildPainterly(): { nodes: GraphNode[]; edges: Edge[] } {
+  const field = node("image-flow-field", { x: 0, y: -200 });
+  const kuwahara = node("kuwahara", { x: 260, y: 0 });
+  const shock = node("shock-filter", { x: 520, y: 0 });
+  const ink = node("line-art", { x: 520, y: 220 }, { threshold: 0.4 });
+  const merge = node("merge", { x: 800, y: 60 });
+  const layerId = (
+    merge.data.params.layers as { id: string }[]
+  )[0].id;
+
+  return groupFragment({
+    name: "Painterly",
+    interior: [field, kuwahara, shock, ink, merge],
+    inputs: [
+      {
+        name: "image",
+        type: "image",
+        to: [
+          { nodeId: field.id, handle: "in:source" },
+          { nodeId: kuwahara.id, handle: "in:image" },
+          { nodeId: ink.id, handle: "in:image" },
+        ],
+      },
+    ],
+    promote: [
+      { node: kuwahara, param: "radius", label: "Radius" },
+      { node: shock, param: "amount", label: "Sharpen" },
+      { node: ink, param: "threshold", label: "Ink threshold" },
+    ],
+    edges: [
+      edge(field, "out:primary", kuwahara, "in:field"),
+      edge(field, "out:primary", shock, "in:field"),
+      edge(field, "out:primary", ink, "in:field"),
+      edge(kuwahara, "out:primary", shock, "in:image"),
+      edge(shock, "out:primary", merge, "in:base"),
+      edge(ink, "out:primary", merge, `in:layer:${layerId}`),
+    ],
+    outputs: [
+      {
+        from: { nodeId: merge.id, handle: "out:primary" },
+        name: "image",
+        type: "image",
+      },
+    ],
+  });
+}
+
 export const PRESETS: PresetDef[] = [
+  {
+    id: "painterly",
+    name: "Painterly",
+    description:
+      "Hand-painted look for any image or video: flow-aligned Kuwahara brush facets, coherence-shock edge crispening, and an ink line layer, all steered by one shared Image Flow Field. Wire an image in; tune Radius / Sharpen / Ink threshold on the group, or dive in (Tab) for everything else.",
+    build: buildPainterly,
+  },
   {
     id: "cover-envelope",
     name: "Cover · Envelope",

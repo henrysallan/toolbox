@@ -8,12 +8,21 @@ import type {
   SocketType,
   SplineValue,
 } from "@/engine/types";
+import { aspectUncorrectY } from "@/engine/aspect";
 import { pointsFromArray } from "@/engine/points";
 import { buildPath2D } from "@/engine/spline-raster";
 
 // Scatter N points across the canvas. When a density input is attached,
 // uses rejection sampling on the density's R channel (brighter = more
 // likely to accept). No density → uniform random.
+//
+// Positions are sampled in canvas UV (so they fill the pixel rectangle
+// uniformly, and density images / spline silhouettes — which live in
+// canvas space — are probed where they actually draw). The socket
+// carries AUTHORED coordinates (engine/aspect.ts), so y is uncorrected
+// on the way out. Emitting canvas UV as authored was the reason a
+// square scatter collapsed to a mid-canvas band (portrait) or spilled
+// off the top/bottom (landscape) the moment the project aspect changed.
 //
 // The density socket is polymorphic:
 //   image  — GPU texture read back once per compute via readImagePixels
@@ -234,6 +243,13 @@ export const scatterPointsNode: NodeDefinition = {
   primaryOutput: "points",
   auxOutputs: [],
 
+  // Authored y depends on canvas aspect (see compute). The default
+  // fingerprint is params+inputs only, so a resolution change would
+  // otherwise cache-hit and keep the old layout.
+  fingerprintExtras(_params, ctx) {
+    return `${ctx.width}x${ctx.height}`;
+  },
+
   compute({ inputs, params, ctx, nodeId }) {
     const density = inputs.density as ImageValue | SplineValue | undefined;
     const count = Math.max(
@@ -249,14 +265,21 @@ export const scatterPointsNode: NodeDefinition = {
     const rng = mulberry32(seed);
     const state = ensureState(ctx, nodeId);
     const points: Point[] = [];
+    const aspect = ctx.height > 0 ? ctx.width / ctx.height : 1;
 
     // Per-point transform. Rotation in radians; scale is symmetric.
-    const makePoint = (x: number, y: number): Point => {
+    // `x, yCanvas` are canvas UV; y converts to authored so consumers
+    // that aspect-correct on the way in land on the sampled pixel.
+    const makePoint = (x: number, yCanvas: number): Point => {
       const rj = (rng() - 0.5) * 2 * rotJitterDeg;
       const rot = ((rotDeg + rj) * Math.PI) / 180;
       const sj = scaleJitter > 0 ? (rng() - 0.5) * 2 * scaleJitter : 0;
       const s = Math.max(0, scaleBase + sj);
-      return { pos: [x, y], rotation: rot, scale: [s, s] };
+      return {
+        pos: [x, aspectUncorrectY(yCanvas, aspect)],
+        rotation: rot,
+        scale: [s, s],
+      };
     };
 
     if (density && (density.kind === "image" || density.kind === "spline")) {

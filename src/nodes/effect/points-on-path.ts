@@ -7,14 +7,25 @@ import type {
   RenderContext,
   SocketType,
   SocketValue,
+  StringValue,
   UvValue,
 } from "@/engine/types";
 import type { Curve3DValue } from "@/engine/three-types";
-import { measureSpline, sampleSplineAt } from "@/engine/spline-math";
+import {
+  measureSpline,
+  measureSubpath,
+  sampleSplineAt,
+  sampleSubpathAt,
+} from "@/engine/spline-math";
 import { makePoints, pointsFromArray } from "@/engine/points";
 import { curveFromValue } from "@/nodes/three/curve-tube";
 
-// Emit N evenly-spaced positions along the total arc length of a spline.
+// Emit N evenly-spaced positions along a spline.
+//
+// Domain Combined (default): one arc-length domain across every subpath —
+// points can slide off one onto the next. Domain Per subpath: Count
+// points on each subpath as its own loop (progress wraps per subpath;
+// points inherit that subpath's groupIndex).
 //
 // Primary output: a canvas-sized IMAGE visualization (dots at each sample
 // position) so you can see what the node is doing. Useful on its own as a
@@ -80,6 +91,42 @@ function hexToRgba(hex: string, alpha = 1): string {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
 
+// Per-point arc-length factor in [0, 1]. Rides the points value as a named
+// `progress` channel (the honest carrier for per-point data — there is no
+// scalar-per-point socket). Copy to Points reads it by name (pick / tint /
+// opacity); Map Attribute and Filter Points consume it the same way. The
+// string aux below is only the channel's *name*, so you can wire the
+// reference into those params instead of typing it.
+const PROGRESS_CHANNEL = "progress";
+const PROGRESS_NAME: StringValue = {
+  kind: "string",
+  value: PROGRESS_CHANNEL,
+};
+
+function pathSampleT(
+  i: number,
+  count: number,
+  animate: boolean,
+  offset: number,
+  closed: boolean
+): number {
+  if (animate) {
+    const t = i / count + offset;
+    return t - Math.floor(t);
+  }
+  if (count === 1) return 0;
+  const divisor = closed ? count : Math.max(1, count - 1);
+  return Math.min(1, i / divisor);
+}
+
+function attachProgress(pts: PointsValue, data: Float32Array): void {
+  if (pts.count === 0) return;
+  pts.attributes = {
+    ...pts.attributes,
+    [PROGRESS_CHANNEL]: { arity: 1, data },
+  };
+}
+
 function ensureState(ctx: RenderContext, nodeId: string): PointsState {
   const key = `points-on-path:${nodeId}`;
   const existing = ctx.state[key] as PointsState | undefined;
@@ -120,7 +167,7 @@ export const pointsOnPathNode: NodeDefinition = {
   category: "point",
   subcategory: "generator",
   description:
-    "Emit N evenly-spaced positions along a spline. Optionally aligns each point's rotation to the path tangent or normal, so Copy-to-Points orients copies along the path. Turn on Animate to slide the points along the path with the Offset slider — points that reach the end wrap back to the start (a continuous stream; keyframe Offset or wire a Scene Time / LFO ramp to drive it). Primary output is a `points` value for direct wiring into Copy-to-Points / Set Position / etc. Aux outputs: a UV texture of positions (one pixel per point) and a dot visualization image.",
+    "Emit N evenly-spaced positions along a spline. Each point carries a `progress` attribute (0 at the start of the path, 1 at the end; Animate wraps) that Copy to Points can read by name — pick variants, tint, or fade copies by how far along the spline they are. Domain Combined treats every subpath as one concatenated length (points can slide from one onto the next); Per subpath emits Count points on each subpath as its own loop, tagged with that subpath's group. Optionally aligns each point's rotation to the path tangent or normal. Turn on Animate to slide the points along the path with the Offset slider — points that reach the end wrap back to the start (a continuous stream; keyframe Offset or wire a Scene Time / LFO ramp to drive it). Primary output is a `points` value for direct wiring into Copy-to-Points / Set Position / etc. Aux outputs: a UV texture of positions (one pixel per point), a dot visualization image, and a `progress` string (the channel name, for wiring into attribute-name params).",
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   // Polymorphic path (M11): a 3D curve (`curve3d` — 3D Spline's curve aux,
@@ -146,6 +193,18 @@ export const pointsOnPathNode: NodeDefinition = {
       softMax: 1024,
       step: 1,
       default: 24,
+    },
+    {
+      // Combined = today's concatenation (one arc-length domain, points
+      // can slide off one subpath onto the next). Per subpath = Count
+      // points on each subpath as its own loop; progress wraps per
+      // subpath; points inherit the subpath's groupIndex (or its index).
+      name: "domain",
+      label: "Domain",
+      type: "enum",
+      options: ["combined", "per subpath"],
+      control: "segmented",
+      default: "combined",
     },
     {
       // Slide points along the path (see `offset`). Off = the original
@@ -227,6 +286,10 @@ export const pointsOnPathNode: NodeDefinition = {
     // sample positions on canvas. Wire it into a Merge or Output if
     // you want it rendered.
     { name: "viz", type: "image" },
+    // Channel-name reference (always "progress"). The per-point values
+    // ride the points output; wire this into Copy to Points' pick /
+    // opacity / tint attribute, Map Attribute, or Filter Points.
+    { name: "progress", type: "string" },
   ],
   // The viz aux is skipped when nothing consumes it (below). This def is
   // cacheable, so the consumed-handle set must fold into the fingerprint —
@@ -250,6 +313,12 @@ export const pointsOnPathNode: NodeDefinition = {
     // Per-point orientation (radians), baked from the path tangent when
     // `align` is on. Parallel to `positions` for the sampled prefix.
     const rotations: number[] = [];
+    // Arc-length factor per sample (0 at start, 1 at end) — baked onto
+    // the points value as the `progress` channel.
+    const factors: number[] = [];
+    // Per-point group tags, filled only in per-subpath domain so
+    // Select by Index / Copy to Points' target-group pick still work.
+    const groups: number[] = [];
     // Resolve the alignment mode once. tangent is a unit vec2 in the same
     // normalized Y-DOWN space as positions, so atan2(ty, tx) is the angle
     // that orients a shape's +X axis along the direction of travel.
@@ -272,19 +341,19 @@ export const pointsOnPathNode: NodeDefinition = {
     // ---- 3D curve input: sample in world space, emit points3d ----
     if (src && src.kind === "curve3d") {
       const curve = curveFromValue(src as Curve3DValue);
-      if (!curve) return { primary: makePoints(0, { withZ: true }) };
+      if (!curve) {
+        return {
+          primary: makePoints(0, { withZ: true }),
+          aux: { progress: PROGRESS_NAME },
+        };
+      }
       const closed = (src as Curve3DValue).closed;
       const withNormals = align !== "off";
       const out3d = makePoints(count, { withZ: true, withNormals });
-      const divisor = closed ? count : Math.max(1, count - 1);
+      const progressData = new Float32Array(count);
       for (let i = 0; i < count; i++) {
-        let t: number;
-        if (animate) {
-          t = i / count + offset;
-          t -= Math.floor(t);
-        } else {
-          t = count === 1 ? 0 : Math.min(1, i / divisor);
-        }
+        const t = pathSampleT(i, count, animate, offset, closed);
+        progressData[i] = t;
         const p = curve.getPointAt(t);
         out3d.positions[i * 2] = p.x;
         out3d.positions[i * 2 + 1] = p.y;
@@ -296,11 +365,15 @@ export const pointsOnPathNode: NodeDefinition = {
           out3d.normals![i * 3 + 2] = tan.z;
         }
       }
+      attachProgress(out3d, progressData);
       // 2D-only auxes stay empty: a blank positions texture keeps the
       // socket alive, viz is skipped unless consumed (and draws nothing).
       const positionsTex3d: UvValue = ctx.allocUv({ width: count, height: 1 });
       ctx.clearTarget(positionsTex3d, [0, 0, 0, 0]);
-      const aux3d: Record<string, SocketValue> = { positions: positionsTex3d };
+      const aux3d: Record<string, SocketValue> = {
+        positions: positionsTex3d,
+        progress: PROGRESS_NAME,
+      };
       if (!consumedOutputs || consumedOutputs.has("aux:viz")) {
         const blank = ctx.allocImage();
         ctx.clearTarget(blank, [0, 0, 0, 0]);
@@ -310,31 +383,52 @@ export const pointsOnPathNode: NodeDefinition = {
     }
 
     if (src && src.kind === "spline") {
-      const lengths = measureSpline(src);
-      if (lengths.total > 0) {
-        // Static distribution: for open paths, include both endpoints; for a
-        // closed spline the last sample would coincide with the first, so stop
-        // just before that to avoid a duplicate.
-        const hasClosed = src.subpaths.some((s) => s.closed);
-        const divisor = hasClosed ? count : Math.max(1, count - 1);
-        for (let i = 0; i < count; i++) {
-          let t: number;
-          if (animate) {
-            // Uniform loop (divisor = count) so points stay evenly spaced
-            // across the wrap seam; slide by `offset` and wrap into [0,1).
-            // A point crossing t=1 re-enters at t=0 — the "kill at the end,
-            // respawn at the start" behavior (a seam-free circulation on a
-            // closed path; a visible teleport on an open one, as intended).
-            t = i / count + offset;
-            t -= Math.floor(t);
-          } else {
-            t = count === 1 ? 0 : i / divisor;
+      const perSubpath = (params.domain as string) === "per subpath";
+      if (perSubpath) {
+        const nSubs = src.subpaths.length;
+        const per =
+          nSubs <= 0
+            ? 0
+            : Math.max(
+                1,
+                Math.min(count, Math.floor(MAX_POINTS / Math.max(1, nSubs)))
+              );
+        for (let s = 0; s < nSubs; s++) {
+          const sub = src.subpaths[s];
+          const lengths = measureSubpath(sub);
+          if (lengths.total <= 0) continue;
+          const g = sub.groupIndex ?? s;
+          for (let i = 0; i < per; i++) {
+            const t = pathSampleT(i, per, animate, offset, sub.closed);
+            const sample = sampleSubpathAt(lengths, t);
+            positions.push(sample.pos);
+            rotations.push(angleFor(sample.tangent));
+            factors.push(t);
+            groups.push(g);
           }
-          const s = sampleSplineAt(src, lengths, t);
-          positions.push(s.pos);
-          rotations.push(angleFor(s.tangent));
         }
-        sampledCount = count;
+        sampledCount = positions.length;
+      } else {
+        const lengths = measureSpline(src);
+        if (lengths.total > 0) {
+          // Static distribution: for open paths, include both endpoints; for a
+          // closed spline the last sample would coincide with the first, so stop
+          // just before that to avoid a duplicate.
+          const hasClosed = src.subpaths.some((s) => s.closed);
+          for (let i = 0; i < count; i++) {
+            // Uniform loop when Animate is on (divisor = count) so points stay
+            // evenly spaced across the wrap seam; slide by `offset` and wrap
+            // into [0,1). A point crossing t=1 re-enters at t=0 — the "kill at
+            // the end, respawn at the start" behavior (a seam-free circulation
+            // on a closed path; a visible teleport on an open one, as intended).
+            const t = pathSampleT(i, count, animate, offset, hasClosed);
+            const s = sampleSplineAt(src, lengths, t);
+            positions.push(s.pos);
+            rotations.push(angleFor(s.tangent));
+            factors.push(t);
+          }
+          sampledCount = count;
+        }
       }
     }
 
@@ -351,7 +445,7 @@ export const pointsOnPathNode: NodeDefinition = {
     if (wantViz) {
       const showViz = !!params.show_viz;
       const vizSig = JSON.stringify({
-        pos: positions.slice(0, count),
+        pos: positions,
         r: params.dot_radius,
         c: params.dot_color,
         sv: showViz,
@@ -371,7 +465,7 @@ export const pointsOnPathNode: NodeDefinition = {
           if (showViz && positions.length > 0 && src?.kind === "spline") {
             c2d.fillStyle = hexToRgba((params.dot_color as string) ?? "#ffffff");
             const r = Math.max(0, (params.dot_radius as number) ?? 3);
-            for (let i = 0; i < count; i++) {
+            for (let i = 0; i < positions.length; i++) {
               const p = positions[i];
               c2d.beginPath();
               c2d.arc(p[0] * W, p[1] * H, r, 0, Math.PI * 2);
@@ -403,15 +497,16 @@ export const pointsOnPathNode: NodeDefinition = {
       });
     }
 
-    // ---- Aux: positions UV texture, width=count, height=1 ----
-    const positionsTex: UvValue = ctx.allocUv({ width: count, height: 1 });
+    // ---- Aux: positions UV texture, width=emitCount, height=1 ----
+    const emitCount = Math.max(1, sampledCount > 0 ? sampledCount : count);
+    const positionsTex: UvValue = ctx.allocUv({ width: emitCount, height: 1 });
     const posProg = ctx.getShader("points-on-path/positions", POSITIONS_FS);
-    // Upload the sampled positions into the RGBA32F data texture (count×1,
+    // Upload the sampled positions into the RGBA32F data texture (emitCount×1,
     // RG = x,y) that the shader reads by texel index. Any unsampled tail (from
     // a missing input) stays zero. Replaces the old vec2[256] uniform array,
     // so the ceiling is MAX_POINTS with no GPU uniform-array limit.
-    const data = new Float32Array(count * 4);
-    const n = Math.min(positions.length, count);
+    const data = new Float32Array(emitCount * 4);
+    const n = Math.min(positions.length, emitCount);
     for (let i = 0; i < n; i++) {
       data[i * 4] = positions[i][0];
       data[i * 4 + 1] = positions[i][1];
@@ -423,7 +518,7 @@ export const pointsOnPathNode: NodeDefinition = {
       glp.TEXTURE_2D,
       0,
       glp.RGBA32F,
-      count,
+      emitCount,
       1,
       0,
       glp.RGBA,
@@ -435,7 +530,7 @@ export const pointsOnPathNode: NodeDefinition = {
       gl2.activeTexture(gl2.TEXTURE0);
       gl2.bindTexture(gl2.TEXTURE_2D, state.posDataTex);
       gl2.uniform1i(gl2.getUniformLocation(posProg, "u_positions"), 0);
-      gl2.uniform1i(gl2.getUniformLocation(posProg, "u_count"), count);
+      gl2.uniform1i(gl2.getUniformLocation(posProg, "u_count"), emitCount);
     });
 
     // ---- Aux: points (CPU-side) ----
@@ -446,10 +541,17 @@ export const pointsOnPathNode: NodeDefinition = {
         pos: [p[0], p[1]],
         rotation: rotations[i],
         scale: [1, 1],
+        ...(groups.length > 0 ? { groupIndex: groups[i] } : {}),
       }))
     );
+    if (sampledCount > 0) {
+      attachProgress(pointsValue, Float32Array.from(factors));
+    }
 
-    const aux: Record<string, SocketValue> = { positions: positionsTex };
+    const aux: Record<string, SocketValue> = {
+      positions: positionsTex,
+      progress: PROGRESS_NAME,
+    };
     if (image) aux.viz = image;
     return { primary: pointsValue, aux };
   },

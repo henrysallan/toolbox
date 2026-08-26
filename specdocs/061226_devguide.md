@@ -2265,6 +2265,33 @@ baseline. Spec: archive/070826_riskfix-plan.md §2.
   Advect Points; two passes so its uv map is a first-class `uv` aux
   (built unconditionally — loop-weave rule). CAVEAT: matting an encoded
   field decodes as v=(−1,−1) — matte consumer outputs, not fields.
+  **Orientation fields** (painterlyspec/082426_orientation-field.md)
+  extend the encoding: unit tangent in RG (π-periodic, sign-canonical
+  tx>0 — streamline walkers must step sign-coherently) + coherence in
+  the previously-unused B. [orientation-field.ts](../src/engine/orientation-field.ts)
+  owns the convention, the GLSL helpers, AND the shared
+  `computeOrientationField` structure-tensor passes — used by the
+  **Image Flow Field** producer (`image-flow-field`, coherence mask aux)
+  and by painterly consumers whose optional `field` input is unwired
+  (the consumer contract: every painterly node works standalone).
+  Consumers (all share the contract, the premultiply rule —
+  convolve/boundary.ts's fringe rationale, inlined — and an
+  `Internal smooth` fallback param): **Flow Blur** (`flow-blur`, LIC
+  smear + THE field visualizer — wire in noise), **Kuwahara**
+  (`kuwahara`, anisotropic/generalized polynomial-sector region filter;
+  no classic 4-box, no LUTs), **Flow Bilateral** (`flow-bilateral`,
+  orientation-aligned separable bilateral; Kang's FBL = this + an ETF
+  field once the field node's `etf` method lands), **Coherence Shock**
+  (`shock-filter`, along-flow smooth + across-flow directional
+  dilate/erode; iterative but STATELESS — all iterations inside one
+  compute, never an accumulator), **Line Art** (`line-art`, XDoG/FDoG
+  ink-on-transparency, `noMaskBase`, affine-encoded DoG intermediates
+  for the RGBA8 pool fallback). The **Painterly** add-menu preset
+  (state/presets.ts) wires one field into Kuwahara → Shock with a Line
+  Art ink layer over via Merge; groupFragment's GroupInputSpec.to now
+  accepts an array so one boundary socket fans out. New shader sources
+  get compile/link coverage by exporting the FS and listing it in
+  scripts/emit-shaders.mts (the blendField precedent).
 - **Fluid Simulator** (`fluid-simulator`, spec archive/072626_fluid-simulator.md)
   is the 2D Eulerian ink/smoke sim: Stam stable fluids + advection-
   reflection (energy-preserving mid-step reflection, two warm-started

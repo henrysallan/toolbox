@@ -23,13 +23,18 @@
 //     consumers apply their own distance/step dials. Encoding clamps to
 //     [-1, 1] — a hard clamp technically breaks divergence-freeness where
 //     it engages, so producers should scale strength to live inside it.
-//   - B is unused (0), alpha 1. The universal mask post-pass matting an
+//   - B is unused (0) by VELOCITY producers, alpha 1. ORIENTATION fields
+//     (orientation-field.ts, spec 082426) extend this convention by
+//     carrying coherence/anisotropy in B — velocity consumers ignore it,
+//     and a velocity field's B = 0 honestly reads as "no anisotropy" to
+//     orientation consumers. The universal mask post-pass matting an
 //     encoded field to transparent black decodes as v = (-1, -1) — don't
 //     matte field images; matte the consumer's OUTPUT instead.
 //
 // Producers today: Perlin Noise (type "curl"), Spline Flow Field,
-// Flow Obstacle (modifier). Consumers: Advect Image, Advect Points
-// (field_mode "vector"), Displace (channels R/G, midlevel 0.5).
+// Flow Obstacle (modifier), Image Flow Field (orientation). Consumers:
+// Advect Image, Advect Points (field_mode "vector"), Displace (channels
+// R/G, midlevel 0.5), Flow Blur (+ the painterly program as it lands).
 
 // GLSL 300 es snippets — inline into a fragment shader's declarations.
 export const VELOCITY_DECODE_GLSL = `
