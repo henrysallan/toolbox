@@ -2196,7 +2196,7 @@ export function ParamControl({
           list={suggestId}
           title={
             attrInvalid
-              ? "No attribute with this name on the wired input (reserved names can't be attributes)"
+              ? "No attribute with this name on the wired input"
               : undefined
           }
           onChange={(e) => onChange(e.target.value)}
@@ -2403,9 +2403,12 @@ export function ParamControl({
   }
 
   if (param.type === "enum") {
-    const options = param.options ?? [];
+    const rawOptions = param.options ?? [];
     const current = typeof value === "string" ? value : (param.default as string);
     if (param.control === "segmented") {
+      const options = rawOptions.map((o) =>
+        param.optionLabels?.[o] ? { value: o, label: param.optionLabels[o] } : o
+      );
       return (
         <SegmentedControl
           value={current}
@@ -2414,6 +2417,7 @@ export function ParamControl({
         />
       );
     }
+    const options = rawOptions;
     if (param.control === "font") {
       return (
         <FontPicker value={current} options={options} onChange={(v) => onChange(v)} />

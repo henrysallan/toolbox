@@ -27,6 +27,7 @@ const {
   FDOG_ALONG_FS,
   LINE_THRESH_FS,
 } = await import("@/nodes/effect/line-art");
+const { TRANSFORM_FS, TRANSFORM_MATRIX_FS } = await import("@/nodes/effect/transform");
 const {
   OVER_FS: TRAILS_OVER_FS,
   FADE_FS: TRAILS_FADE_FS,
@@ -58,6 +59,8 @@ out.lineThresh = LINE_THRESH_FS;
 out.trailsOver = TRAILS_OVER_FS;
 out.trailsFade = TRAILS_FADE_FS;
 out.trailsVelocity = TRAILS_VELOCITY_FS;
+out.transform = TRANSFORM_FS;
+out.transformMatrix = TRANSFORM_MATRIX_FS;
 
 writeFileSync(process.argv[2] ?? "shaders.json", JSON.stringify(out));
 console.log(`emitted ${Object.keys(out).length} shader sources`);

@@ -67,6 +67,7 @@ export const TIME_OFFSET_CARRIED_TYPES: readonly SocketType[] = [
   "uv",
   "notes",
   "color_ramp",
+  "transform",
 ];
 
 // A boundary crossing edge: `edge.source` is outside the closure (flagged
@@ -131,6 +132,7 @@ export function carriedSocketTypeOf(v: SocketValue): SocketType | null {
     case "uv":
     case "notes":
     case "color_ramp":
+    case "transform":
       return v.kind;
     default:
       return null;

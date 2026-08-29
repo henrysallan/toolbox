@@ -72,6 +72,24 @@ export function polylineCrossesSegment(
   return false;
 }
 
+// Any segment of `a` crosses any segment of `b`. Used to hit-test a
+// freehand drag path against a sampled edge.
+export function polylineCrossesPolyline(a: Pt[], b: Pt[]): boolean {
+  if (a.length < 2 || b.length < 2) return false;
+  for (let i = 0; i < b.length - 1; i++) {
+    if (polylineCrossesSegment(a, b[i], b[i + 1])) return true;
+  }
+  return false;
+}
+
+// Append `pt` when it's far enough from the last sample that the SVG
+// trail stays smooth without a vertex on every pointermove.
+export function appendPathPoint(path: Pt[], pt: Pt, minDist = 2): void {
+  const last = path[path.length - 1];
+  if (last && Math.hypot(pt[0] - last[0], pt[1] - last[1]) < minDist) return;
+  path.push(pt);
+}
+
 // Find the screen-space center of a React Flow handle DOM element.
 // Returns null if the handle isn't rendered (node collapsed, not in
 // viewport, etc.) so callers can skip those edges gracefully.

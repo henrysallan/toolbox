@@ -26,13 +26,23 @@ import {
   type GroupSocketSpec,
 } from "@/engine/groups";
 import {
+  accumulatorDomainForSource,
+  collectModeForSource,
   FRAME_TYPE,
+  isAccumulatorInputHandle,
+  isCollectSlotHandle,
+  isCollectType,
   paramSocketType,
   parseTargetHandleKind,
   REROUTE_TYPE,
 } from "@/engine/graph-helpers";
 import { EXPORT_PARAMS } from "@/nodes/output/output";
-import type { ParamType, SocketType, SplineSubpath } from "@/engine/types";
+import type {
+  ParamType,
+  ResolveCtx,
+  SocketType,
+  SplineSubpath,
+} from "@/engine/types";
 import type { ClipBlock } from "@/engine/clips";
 import {
   FRAME_XY_PROPS,
@@ -379,28 +389,34 @@ export function insertReroutesOnEdges(
 // param-change handlers need. Use THIS instead of hand-rolling the
 // resolveInputs / withMaskInput / resolveAuxOutputs dance at call sites —
 // the inline copies drifted (one dropped aux-output re-resolution;
-// riskfix-plan 070826 §5). Not for connectedTypes-driven retyping — that
-// path needs a ResolveCtx the UI doesn't have (see the devguide's
-// "Dynamic input sockets" note).
+// riskfix-plan 070826 §5). Pass `ctx` when the caller already knows the
+// live connectedTypes (incoming-wire promotion); omit it from the
+// param-panel path, which must not overwrite connectedTypes-retyping
+// nodes — EffectsApp skips those entirely.
 export function withUpdatedParams(
   n: GraphNode,
-  nextParams: Record<string, unknown>
+  nextParams: Record<string, unknown>,
+  ctx?: ResolveCtx
 ): GraphNode {
-  return refreshNodeSockets({
-    ...n,
-    data: { ...n.data, params: nextParams },
-  });
+  return refreshNodeSockets(
+    {
+      ...n,
+      data: { ...n.data, params: nextParams },
+    },
+    ctx
+  );
 }
 
 // Recompute a node's cached socket arrays (data.inputs / auxOutputs /
 // primaryOutput) from its def resolvers and current params. Call after
 // any params change made outside the param-panel path, which keeps
-// these caches fresh on its own.
-export function refreshNodeSockets(n: GraphNode): GraphNode {
+// these caches fresh on its own. Optional `ctx` threads connectedTypes
+// so polymorphic nodes (Transform, Switch, …) retype in the same pass.
+export function refreshNodeSockets(n: GraphNode, ctx?: ResolveCtx): GraphNode {
   const def = getNodeDef(n.data.defType);
   if (!def) return n;
   const resolved = withMaskInput(
-    def.resolveInputs?.(n.data.params) ?? def.inputs,
+    def.resolveInputs?.(n.data.params, ctx) ?? def.inputs,
     def
   );
   return {
@@ -422,9 +438,109 @@ export function refreshNodeSockets(n: GraphNode): GraphNode {
         disabled: a.disabled,
       })),
       primaryOutput:
-        def.resolvePrimaryOutput?.(n.data.params) ?? def.primaryOutput,
+        def.resolvePrimaryOutput?.(n.data.params, ctx) ?? def.primaryOutput,
     },
   };
+}
+
+const COPY_INSTANCE_TYPE_TO_MODE: Record<string, string> = {
+  image: "image",
+  image_group: "image",
+  spline: "spline",
+  points: "point",
+  text_instance: "text",
+};
+
+// Live connectedTypes map for one consumer: every currently-wired input,
+// plus an optional extra that hasn't landed in `edges` yet (the wire
+// about to be added). An existing edge on the extra's handle is skipped
+// so a replacement wire types the socket, not the wire it displaces.
+export function connectedTypesFromEdges(
+  nodeId: string,
+  nodes: GraphNode[],
+  edges: Edge[],
+  extra?: { targetHandle: string; srcType: SocketType }
+): Record<string, SocketType | undefined> {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const ct: Record<string, SocketType | undefined> = {};
+  for (const e of edges) {
+    if (e.target !== nodeId) continue;
+    if (extra && e.targetHandle === extra.targetHandle) continue;
+    const tp = parseTargetHandleKind(e.targetHandle ?? "");
+    if (tp?.kind !== "input") continue;
+    const src = byId.get(e.source);
+    if (!src) continue;
+    let t: string | null | undefined;
+    if (e.sourceHandle === "out:primary") t = src.data.primaryOutput;
+    else if (e.sourceHandle?.startsWith("out:aux:")) {
+      const an = e.sourceHandle.slice("out:aux:".length);
+      t = src.data.auxOutputs.find((a) => a.name === an)?.type;
+    }
+    if (t) ct[tp.name] = t as SocketType;
+  }
+  if (extra) {
+    const tp = parseTargetHandleKind(extra.targetHandle);
+    if (tp?.kind === "input") ct[tp.name] = extra.srcType;
+  }
+  return ct;
+}
+
+// Flip mode params (Math UV, Copy-to-Points instance, Combine type) and
+// re-resolve sockets with the prospective connectedTypes so an incoming
+// wire autocoerces the target in the same pass — used by the add-menu
+// into-target path, which cannot go through onConnect (the producer
+// isn't in nodesRef yet).
+export function applyIncomingWireToTarget(
+  target: GraphNode,
+  targetHandle: string,
+  srcType: string,
+  connectedTypes: Record<string, SocketType | undefined>
+): GraphNode {
+  let params = target.data.params;
+  const parsed = parseTargetHandleKind(targetHandle);
+  const isInput = parsed?.kind === "input";
+
+  if (
+    isInput &&
+    target.data.defType === "math" &&
+    srcType === "uv" &&
+    params.mode === "scalar"
+  ) {
+    params = { ...params, mode: "uv" };
+  }
+
+  if (
+    isInput &&
+    target.data.defType === "copy-to-points" &&
+    targetHandle === "in:instance"
+  ) {
+    const mode = COPY_INSTANCE_TYPE_TO_MODE[srcType];
+    if (mode && params.mode !== mode) params = { ...params, mode };
+  }
+
+  if (
+    isInput &&
+    isCollectType(target.data.defType) &&
+    isCollectSlotHandle(targetHandle)
+  ) {
+    const mode = collectModeForSource(srcType);
+    if (mode && params.mode !== mode) params = { ...params, mode };
+  }
+
+  if (
+    isInput &&
+    target.data.defType === "accumulator" &&
+    isAccumulatorInputHandle(targetHandle)
+  ) {
+    const domain = accumulatorDomainForSource(srcType);
+    if (domain && params.type !== domain) params = { ...params, type: domain };
+  }
+
+  const next =
+    params === target.data.params
+      ? target
+      : { ...target, data: { ...target.data, params } };
+  return refreshNodeSockets(next, { connectedTypes });
 }
 
 // Re-derive a group node's `interface` param from its interior

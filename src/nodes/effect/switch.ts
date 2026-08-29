@@ -62,6 +62,7 @@ const TYPES: SocketType[] = [
   "emitter",
   "collider",
   "particles",
+  "transform",
 ];
 
 const TYPE_OPTIONS: string[] = [SWITCH_AUTO, ...TYPES];

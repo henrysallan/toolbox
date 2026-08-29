@@ -1,18 +1,17 @@
 import type {
   NodeDefinition,
-  NodeOutput,
   SplineAnchor,
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
 import {
   SPLINE_FILL_INPUT,
+  TRANSFORM_INPUT,
   SPLINE_RASTER_PARAMS,
   SPLINE_TRIM_PARAMS,
   applyTrimParams,
-  buildSplineElement,
+  emitSplinePrimitive,
   disposeSplineRasterAux,
-  rasterizeSplineAux,
   resolveSplineRasterAux,
 } from "./spline-raster-aux";
 
@@ -53,7 +52,7 @@ export const starNode: NodeDefinition = {
   description:
     "Generate an N-point star as a closed spline — set the point count, outer/inner radius, and rotation.",
   backend: "webgl2",
-  inputs: [SPLINE_FILL_INPUT],
+  inputs: [SPLINE_FILL_INPUT, TRANSFORM_INPUT],
   params: [
     { name: "centerX", label: "Center X", type: "scalar", min: 0, max: 1, step: 0.001, default: 0.5 },
     { name: "centerY", label: "Center Y", type: "scalar", min: 0, max: 1, step: 0.001, default: 0.5 },
@@ -83,12 +82,7 @@ export const starNode: NodeDefinition = {
       subpaths: applyTrimParams([makeStarSubpath(cx, cy, rOuter, rInner, points, rot)], params),
     };
 
-    const fillImage = inputs.fill?.kind === "image" ? inputs.fill : null;
-    const image = rasterizeSplineAux(ctx, nodeId, out.subpaths, params, fillImage);
-    const element = buildSplineElement(ctx, out.subpaths, params);
-    const aux: NodeOutput["aux"] = { element };
-    if (image) aux.image = image;
-    return { primary: out, aux };
+    return emitSplinePrimitive(ctx, nodeId, out, params, inputs);
   },
 
   dispose: disposeSplineRasterAux,

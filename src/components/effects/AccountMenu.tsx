@@ -129,7 +129,7 @@ export default function AccountMenu() {
             minWidth: 220,
             background: "var(--tb-n-3)",
             border: "1px solid var(--tb-n-7)",
-            borderRadius: 4,
+            borderRadius: 8,
             boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
             padding: 4,
             marginTop: 2,
@@ -152,21 +152,24 @@ export default function AccountMenu() {
               display: "block",
               width: "100%",
               padding: "4px 10px",
+              boxSizing: "border-box",
               background: "transparent",
-              border: "none",
+              border: "1px solid transparent",
               color: "var(--tb-n-16)",
               textAlign: "left",
               fontFamily: "inherit",
               fontSize: 11,
               cursor: "default",
-              borderRadius: 3,
+              borderRadius: 5,
             }}
-            onMouseEnter={(e) =>
-              (e.currentTarget.style.background = "var(--tb-a-blue-900)")
-            }
-            onMouseLeave={(e) =>
-              (e.currentTarget.style.background = "transparent")
-            }
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "var(--tb-n-5)";
+              e.currentTarget.style.borderColor = "var(--tb-n-12)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "transparent";
+              e.currentTarget.style.borderColor = "transparent";
+            }}
           >
             Sign out
           </button>

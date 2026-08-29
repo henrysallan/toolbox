@@ -285,6 +285,14 @@ export function ValueSummary({ value }: { value: SocketValue | undefined }) {
           &quot;
         </span>
       );
+    case "transform": {
+      const n = value.ops.length;
+      return (
+        <span>
+          transform · {n === 0 ? "identity" : `${n} op${n === 1 ? "" : "s"}`}
+        </span>
+      );
+    }
     default:
       // Runtime-only kinds (sdf, element, particles, …) — name the kind
       // rather than rendering an opaque "?".

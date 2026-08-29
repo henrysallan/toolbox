@@ -2,11 +2,15 @@ import type {
   ElementValue,
   ImageValue,
   InputSocketDef,
+  NodeOutput,
   OutputSocketDef,
   ParamDef,
   RenderContext,
+  SocketValue,
   SplineSubpath,
+  SplineValue,
 } from "@/engine/types";
+import { applyTransformInputToSpline } from "@/engine/transform-value";
 import { buildPath2D, buildPath2DWith, hexToRgba } from "@/engine/spline-raster";
 import {
   buildWidthEnvelopePath,
@@ -131,6 +135,33 @@ export const SPLINE_FILL_INPUT: InputSocketDef = {
   type: "image",
   required: false,
 };
+
+// Shared placement input — Gizmo (or any `transform` producer) drives the
+// generated shape without replacing size params. Spec: 082826_gizmo-node.md.
+export const TRANSFORM_INPUT: InputSocketDef = {
+  name: "transform",
+  label: "Transform",
+  type: "transform",
+  required: false,
+};
+
+// Apply an incoming transform, then rasterize. Shared tail of every spline
+// primitive so the image / element aux match the transformed spline.
+export function emitSplinePrimitive(
+  ctx: RenderContext,
+  nodeId: string,
+  spline: SplineValue,
+  params: Record<string, unknown>,
+  inputs: Record<string, SocketValue | undefined>
+): NodeOutput {
+  const out = applyTransformInputToSpline(spline, inputs.transform);
+  const fillImage = inputs.fill?.kind === "image" ? inputs.fill : null;
+  const image = rasterizeSplineAux(ctx, nodeId, out.subpaths, params, fillImage);
+  const element = buildSplineElement(ctx, out.subpaths, params);
+  const aux: NodeOutput["aux"] = { element };
+  if (image) aux.image = image;
+  return { primary: out, aux };
+}
 
 // Use as a node's `resolveAuxOutputs`: expose the `image` socket only when
 // something is actually drawn (otherwise it would always emit transparent

@@ -131,7 +131,7 @@ export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
         left: 0,
         background: "var(--tb-n-3)",
         border: "1px solid var(--tb-n-7)",
-        borderRadius: 4,
+        borderRadius: 8,
         boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
         padding: 6,
         marginTop: 2,
@@ -313,24 +313,29 @@ function NodeRow({
   return (
     <button
       onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--tb-a-blue-900)")}
-      onMouseLeave={(e) =>
-        (e.currentTarget.style.background = "transparent")
-      }
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = "var(--tb-n-5)";
+        e.currentTarget.style.borderColor = "var(--tb-n-12)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "transparent";
+        e.currentTarget.style.borderColor = "transparent";
+      }}
       style={{
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
         width: "100%",
         padding: "3px 10px",
+        boxSizing: "border-box",
         background: "transparent",
-        border: "none",
+        border: "1px solid transparent",
         color: "var(--tb-n-16)",
         textAlign: "left",
         fontFamily: "inherit",
         fontSize: 11,
         cursor: "default",
-        borderRadius: 3,
+        borderRadius: 5,
       }}
     >
       <span

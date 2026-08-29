@@ -11,6 +11,7 @@
 //   - Alt/Option       → the press point is the CENTRE, not a corner.
 //   - Alt+Shift        → both: a square/circle centred on the press point.
 //   - Cmd/Ctrl         → suppress snapping (same escape hatch as everywhere).
+// The viewport-bar lock turns snapping off entirely.
 // The constraint math runs in client px, so "1:1" means square ON SCREEN —
 // correct on a non-square canvas, where normalized space is anisotropic.
 
@@ -44,7 +45,12 @@ export function beginPrimitiveDraw(
 ) {
   let sx = e.clientX;
   let sy = e.clientY;
-  if (env.rect && !e.metaKey && !e.ctrlKey) {
+  if (
+    env.rect &&
+    env.snapEnabledRef.current &&
+    !e.metaKey &&
+    !e.ctrlKey
+  ) {
     const res = snapPoint(
       env.rect,
       ops.anchorSnapTargets(null),
@@ -79,7 +85,13 @@ export function primitiveBoxAt(
   let py = e.clientY;
   // Shift owns the corner (it forces the ratio), so corner snapping stands
   // down while it's held rather than fighting it.
-  if (env.rect && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+  if (
+    env.rect &&
+    env.snapEnabledRef.current &&
+    !e.metaKey &&
+    !e.ctrlKey &&
+    !e.shiftKey
+  ) {
     const res = snapPoint(
       env.rect,
       ops.anchorSnapTargets(null),

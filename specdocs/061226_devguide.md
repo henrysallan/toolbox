@@ -2020,30 +2020,35 @@ baseline. Spec: archive/070826_riskfix-plan.md §2.
   listener a click on a spline point wouldn't claim the `"spline"` scope and
   Delete would remove the graph node instead of the point.
 - **Browser-ML nodes (bg-remove / Segment / Depth Anything) never run
-  inference in `compute`.** Heavy work (HF Transformers.js) runs from the
-  custom param panel and writes results into a **session store** parked on
-  `globalThis` ([segment-session.ts](../src/lib/ai/segment-session.ts),
-  [depth-session.ts](../src/lib/ai/depth-session.ts)); `compute` only resolves
+  inference in `compute`.** Heavy work (HF Transformers.js, or onnxruntime-web
+  for RVM) runs from the custom param panel and writes results into a
+  **session store** parked on `globalThis` ([segment-session.ts](../src/lib/ai/segment-session.ts),
+  [depth-session.ts](../src/lib/ai/depth-session.ts),
+  [rvm-session.ts](../src/lib/ai/rvm-session.ts)); `compute` only resolves
   which bitmap applies at `ctx.frame`, uploads it, and runs a shader. Two
-  modes: a **live** single-frame result (Preview / dot-click) and a **bake** —
-  per-frame PNG cache over an in/out range, driven by EffectsApp's generic
-  `captureNodeFrames` frame-stepper, LRU-decoded on playback, settled into the
-  offline-export queue (`pushMediaSettle`) for frame accuracy. Invariants when
-  adding/maintaining one: (a) bakes are **session-only**, deliberately not
-  serialized — params save, the cache doesn't, so reopen → re-bake; (b) key
-  baked frames by the node's **scoped** clock (`recordScopedFrame`/
-  `getScopedFrame`), trusting it only if it advanced across the capture, or a
-  node inside an offset layer freezes at frame 0; (c) fold the session
-  `version` + per-frame readiness into `fingerprintExtras` so a static chain
-  caches as a constant and a baked range re-fingerprints only per frame.
-  Depth Anything specifics in archive/061926_depth-anything-node.md (incl. the
-  per-frame normalization flicker caveat for video).
+  modes: a **live** single-frame result (Preview / dot-click / RMBG Bake) and a
+  **bake** — per-frame PNG cache over an in/out range, driven by EffectsApp's
+  generic `captureNodeFrames` frame-stepper, LRU-decoded on playback, settled
+  into the offline-export queue (`pushMediaSettle`) for frame accuracy.
+  Invariants when adding/maintaining one: (a) bakes are **session-only**,
+  deliberately not serialized — params save, the cache doesn't, so reopen →
+  re-bake (RMBG still-image Bake is the exception: source+mask ImageBitmaps
+  serialize with the project); (b) key baked frames by the node's **scoped**
+  clock (`recordScopedFrame`/`getScopedFrame`), trusting it only if it
+  advanced across the capture, or a node inside an offset layer freezes at
+  frame 0; (c) fold the session `version` + per-frame readiness into
+  `fingerprintExtras` so a static chain caches as a constant and a baked
+  range re-fingerprints only per frame. RVM (Robust Video Matting) is a
+  model option on bg-remove: Bake walks the range sequentially and recycles
+  the ONNX recurrent states (`r1i`…`r4i`) so the matte is temporally
+  consistent; RGB stays live from the upstream. Depth Anything specifics in
+  archive/061926_depth-anything-node.md (incl. the per-frame normalization
+  flicker caveat for video).
 - **Dynamic input sockets — two patterns.** (1) *Param-backed* (Merge's
-  `merge_layers`, Render Queue's `render_queue`, Collect's `count`): the
+  `merge_layers`, Render Queue's `render_queue`): the
   socket list lives in a param and `resolveInputs(params)` derives sockets
   from it; the UI re-syncs `data.inputs` on param change. Growth is a
-  manual `+` (an `effect-node-toggle` event; Combine/collect also grows this
-  way via a `collectAddInput` bump of its `count` param). The Color node
+  manual `+` (an `effect-node-toggle` event). The Color node
   (`color-literal`) applies the same pattern to OUTPUTS: a `count` param
   (1..8) unlocks declared `color2..color8` params (each a first-class color
   param — keyframe/expose/control for free) and `resolveAuxOutputs` mints a
@@ -2052,13 +2057,15 @@ baseline. Spec: archive/070826_riskfix-plan.md §2.
   onParamChange. Spec: archive/071026_color-node-multi-output.md. (2) *Auto-grow from
   edges* (Proximity Join/Merge — archive/070126_proximity-join-merge.md; Spline
   Interpolate — archive/070626_spline-interpolate.md; Spline Morph; SDF Smooth
-  Union — which share the effect): a
+  Union; Combine/collect — which share the effect): a
   `slots: string[]` param whose value is **derived from the node's edges** by a
   dedicated `useEffect` in EffectsApp keyed on `edges` (guarded on those
   `defType`s), kept equal to (connected sockets) + one trailing empty spare. Wiring the spare mints
   the next; disconnecting prunes. It's undo-safe *because* it's derived
   (edges are in history) and writes `data.inputs` without a `pushGraph`
-  snapshot. Why not just read `connectedTypes` in `resolveInputs`? Because
+  snapshot. Combine still honors a hidden `count` param when `slots` is
+  absent so old saves and AI recipes that pre-size inputs keep their
+  `a`/`b`/`c`… handles. Why not just read `connectedTypes` in `resolveInputs`? Because
   the UI socket-refresh path (`refreshNodeSockets`, the param-change
   handlers) calls `resolveInputs(params)` **without** a `ResolveCtx` —
   `connectedTypes` is populated only inside the evaluator — so any

@@ -194,6 +194,9 @@ export function emptyClipOutput(
       // identity greyscale ramp, so an off-clip ramp reads as "unmodified"
       // rather than as a solid colour.
       return { primary: { kind: "color_ramp", stops: [], interp: "linear" } };
+    case "transform":
+      // Identity affine — off-clip placement is "do nothing".
+      return { primary: { kind: "transform", ops: [] } };
     default:
       // No representable empty (or a non-data output) — emit nothing.
       return {};

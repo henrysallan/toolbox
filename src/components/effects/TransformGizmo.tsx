@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { aspectCorrectY, aspectUncorrectY } from "@/engine/aspect";
 import { claimPointerGesture } from "@/lib/pointer-claim";
+import { isLocalPivotSpace, localPivot } from "@/engine/transform-pivot";
 
 export interface TransformGizmoPatch {
   translateX?: number;
@@ -31,11 +32,18 @@ interface Props {
   // since the relevant "shape" is the canvas itself.
   boundsMin?: [number, number];
   boundsMax?: [number, number];
+  // Spline/points Transform: "local" reinterprets pivotX/Y as a fraction
+  // of `boundsMin/Max` (matching compute). Default "global" = canvas coords.
+  pivotSpace?: "global" | "local";
   // Restrict the translate drag surface to the gizmo's bounds polygon
   // instead of the whole canvas. Multi-select renders several gizmos at
   // once — stacked canvas-wide rects would all feed the topmost gizmo,
   // so each box only grabs drags that start inside it.
   boxTranslate?: boolean;
+  // Viewport snapping toggle. Off skips canvas edge / centre snap;
+  // Cmd/Ctrl still suppresses a single gesture while it's on. Default
+  // on so callers that don't pass it keep the historical behaviour.
+  snapEnabled?: boolean;
 }
 
 type DragKind =
@@ -93,10 +101,16 @@ export default function TransformGizmo({
   onChange,
   boundsMin,
   boundsMax,
+  pivotSpace = "global",
   boxTranslate = false,
+  snapEnabled = true,
 }: Props) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // Live so flipping the viewport-bar lock mid-drag takes effect on
+  // the next pointermove without rebinding the listener.
+  const snapEnabledRef = useRef(snapEnabled);
+  snapEnabledRef.current = snapEnabled;
 
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -126,6 +140,16 @@ export default function TransformGizmo({
   const bMinY = boundsMin?.[1] ?? 0;
   const bMaxX = boundsMax?.[0] ?? 1;
   const bMaxY = boundsMax?.[1] ?? 1;
+  const bbox =
+    bMaxX > bMinX && bMaxY > bMinY
+      ? { minX: bMinX, minY: bMinY, maxX: bMaxX, maxY: bMaxY }
+      : null;
+  const localSpace = isLocalPivotSpace(pivotSpace);
+  const worldPivot = localSpace
+    ? localPivot(bbox, pivotX, pivotY)
+    : { x: pivotX, y: pivotY };
+  const pivotXw = worldPivot.x;
+  const pivotYw = worldPivot.y;
 
   // Sync to the rendered canvas box — covers window resize, splitter drags
   // (ResizeObserver), and scroll.
@@ -153,11 +177,11 @@ export default function TransformGizmo({
   const sin = Math.sin(angleRad);
 
   const fwd = (sx: number, sy: number) => {
-    const dx = (sx - pivotX) * scaleX;
-    const dy = (sy - pivotY) * scaleY;
+    const dx = (sx - pivotXw) * scaleX;
+    const dy = (sy - pivotYw) * scaleY;
     const rx = cos * dx - sin * dy;
     const ry = sin * dx + cos * dy;
-    return { x: translateX + pivotX + rx, y: translateY + pivotY + ry };
+    return { x: translateX + pivotXw + rx, y: translateY + pivotYw + ry };
   };
 
   // Inverse-rotate a screen-space offset back into box-local axes (for
@@ -207,19 +231,20 @@ export default function TransformGizmo({
           // (X = 0 / 0.5 / 1) and top/center/bottom (Y same). Each
           // axis picks the closest target within SNAP_THRESHOLD;
           // farther = no snap. Rendered as a red snap line at the
-          // target UV. Cmd / ctrl disables snapping for the drag.
+          // target UV. Off when the viewport-bar lock is open; Cmd /
+          // ctrl still disables snapping for one drag while it's on.
           let nextSnapX:
             | { kind: "left" | "center" | "right"; lineUv: number }
             | null = null;
           let nextSnapY:
             | { kind: "top" | "center" | "bottom"; lineUv: number }
             | null = null;
-          if (!e.metaKey && !e.ctrlKey) {
+          if (snapEnabledRef.current && !e.metaKey && !e.ctrlKey) {
             const SNAP_THRESHOLD = 0.015;
 
             // AABB of the four box corners in canvas-UV after the
             // proposed translate. `cos` / `sin` / `scaleX` / `scaleY`
-            // / `pivotX` / `pivotY` are captured from the closure.
+            // / `pivotXw` / `pivotYw` are captured from the closure.
             const cornerCanvasUv = (tx: number, ty: number) => {
               const corners: Array<[number, number]> = [
                 [bMinX, bMinY],
@@ -232,12 +257,12 @@ export default function TransformGizmo({
               let mnY = Infinity;
               let mxY = -Infinity;
               for (const [sx, sy] of corners) {
-                const ox = (sx - pivotX) * scaleX;
-                const oy = (sy - pivotY) * scaleY;
+                const ox = (sx - pivotXw) * scaleX;
+                const oy = (sy - pivotYw) * scaleY;
                 const rx2 = cos * ox - sin * oy;
                 const ry2 = sin * ox + cos * oy;
-                const x = tx + pivotX + rx2;
-                const y = ty + pivotY + ry2;
+                const x = tx + pivotXw + rx2;
+                const y = ty + pivotYw + ry2;
                 if (x < mnX) mnX = x;
                 if (x > mxX) mxX = x;
                 if (y < mnY) mnY = y;
@@ -324,21 +349,33 @@ export default function TransformGizmo({
           break;
         }
         case "pivot": {
-          // Pivot is stored in source coords. The pivot marker is drawn at
-          // translate + pivot in screen, so dragging it just subtracts the
-          // current translate to recover the pivot.
-          onChangeRef.current({
-            pivotX: clamp01(px - translateX),
-            pivotY: clamp01(py - translateY),
-          });
+          // Pivot is stored in source coords (global) or as a bbox
+          // fraction (local). The marker draws at translate + worldPivot,
+          // so dragging subtracts translate to recover the world point,
+          // then remaps to a fraction when following the source.
+          const worldX = px - translateX;
+          const worldY = py - translateY;
+          if (localSpace && bMaxX > bMinX && bMaxY > bMinY) {
+            const w = bMaxX - bMinX;
+            const h = bMaxY - bMinY;
+            onChangeRef.current({
+              pivotX: clamp01((worldX - bMinX) / w),
+              pivotY: clamp01((worldY - bMinY) / h),
+            });
+          } else {
+            onChangeRef.current({
+              pivotX: clamp01(worldX),
+              pivotY: clamp01(worldY),
+            });
+          }
           break;
         }
         case "rotate": {
           // Measure the angle in node space (the space the transform rotates
           // in), so it stays consistent with the rendered result.
           const ptrAngle = Math.atan2(
-            py - (translateY + pivotY),
-            px - (translateX + pivotX)
+            py - (translateY + pivotYw),
+            px - (translateX + pivotXw)
           );
           const startA = drag.startAngle ?? 0;
           const startR = drag.startRotate ?? 0;
@@ -351,12 +388,12 @@ export default function TransformGizmo({
           break;
         }
         case "edge-right": {
-          const ux = px - translateX - pivotX;
-          const uy = py - translateY - pivotY;
+          const ux = px - translateX - pivotXw;
+          const uy = py - translateY - pivotYw;
           const local = unrotate(ux, uy);
           // Edge handle at the right edge of the bounds. ex = its
           // source-space distance from the pivot along the X axis.
-          const ex = bMaxX - pivotX;
+          const ex = bMaxX - pivotXw;
           if (Math.abs(ex) > 0.0001) {
             const proposedX = local.x / ex;
             const patch: TransformGizmoPatch = { scaleX: proposedX };
@@ -370,10 +407,10 @@ export default function TransformGizmo({
           break;
         }
         case "edge-top": {
-          const ux = px - translateX - pivotX;
-          const uy = py - translateY - pivotY;
+          const ux = px - translateX - pivotXw;
+          const uy = py - translateY - pivotYw;
           const local = unrotate(ux, uy);
-          const ey = bMinY - pivotY;
+          const ey = bMinY - pivotYw;
           if (Math.abs(ey) > 0.0001) {
             const proposedY = local.y / ey;
             const patch: TransformGizmoPatch = { scaleY: proposedY };
@@ -394,11 +431,11 @@ export default function TransformGizmo({
             drag.kind === "corner-bl" || drag.kind === "corner-br"
               ? bMaxY
               : bMinY;
-          const ux = px - translateX - pivotX;
-          const uy = py - translateY - pivotY;
+          const ux = px - translateX - pivotXw;
+          const uy = py - translateY - pivotYw;
           const local = unrotate(ux, uy);
-          const ex = cornerX - pivotX;
-          const ey = cornerY - pivotY;
+          const ex = cornerX - pivotXw;
+          const ey = cornerY - pivotYw;
           const proposedX =
             Math.abs(ex) > 0.0001 ? local.x / ex : drag.startScale?.x ?? scaleX;
           const proposedY =
@@ -462,8 +499,9 @@ export default function TransformGizmo({
     rect,
     translateX,
     translateY,
-    pivotX,
-    pivotY,
+    pivotXw,
+    pivotYw,
+    localSpace,
     scaleX,
     scaleY,
     angleRad,
@@ -494,13 +532,13 @@ export default function TransformGizmo({
       // Recompute corner screen positions inline using the current
       // closure's transform values.
       const fwdLocal = (sx: number, sy: number) => {
-        const dx = (sx - pivotX) * scaleX;
-        const dy = (sy - pivotY) * scaleY;
+        const dx = (sx - pivotXw) * scaleX;
+        const dy = (sy - pivotYw) * scaleY;
         const c = Math.cos(angleRad);
         const s = Math.sin(angleRad);
         return {
-          x: translateX + pivotX + (c * dx - s * dy),
-          y: translateY + pivotY + (s * dx + c * dy),
+          x: translateX + pivotXw + (c * dx - s * dy),
+          y: translateY + pivotYw + (s * dx + c * dy),
         };
       };
       const toScreen = (n: { x: number; y: number }) => ({
@@ -535,8 +573,8 @@ export default function TransformGizmo({
     hoveredCorner,
     translateX,
     translateY,
-    pivotX,
-    pivotY,
+    pivotXw,
+    pivotYw,
     scaleX,
     scaleY,
     angleRad,
@@ -559,7 +597,7 @@ export default function TransformGizmo({
   const bl = toPx(fwd(bMinX, bMaxY));
   const rightMid = toPx(fwd(bMaxX, (bMinY + bMaxY) / 2));
   const topMid = toPx(fwd((bMinX + bMaxX) / 2, bMinY));
-  const pivotPx = toPx({ x: translateX + pivotX, y: translateY + pivotY });
+  const pivotPx = toPx({ x: translateX + pivotXw, y: translateY + pivotYw });
 
   const startDrag =
     (kind: DragKind, fromCorner?: CornerKey) =>
@@ -581,8 +619,8 @@ export default function TransformGizmo({
           aspect
         );
         const startAngle = Math.atan2(
-          startPy - (translateY + pivotY),
-          startPx - (translateX + pivotX)
+          startPy - (translateY + pivotYw),
+          startPx - (translateX + pivotXw)
         );
         setDrag({
           kind,

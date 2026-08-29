@@ -24,8 +24,14 @@ g.WebGL2RenderingContext ??= class {};
 
 const { registerAllNodes } = await import("@/nodes/index");
 registerAllNodes(); // createLayer mints nodes via the registry (makeInstanceNode)
-const { createLayer, reorderLayers, makeInstanceNode, makeSplineEditable } =
-  await import("@/state/graph-ops");
+const {
+  createLayer,
+  reorderLayers,
+  makeInstanceNode,
+  makeSplineEditable,
+  applyIncomingWireToTarget,
+  connectedTypesFromEdges,
+} = await import("@/state/graph-ops");
 const { LAYER_TYPE } = await import("@/engine/groups");
 
 let failures = 0;
@@ -155,6 +161,121 @@ const newLayerNode = (before: any[], after: any[]) => {
   check("selection cleared elsewhere", res?.nodes.find((n) => n.id === "cons")?.selected === false);
   check("composition + scope carried over", draw?.data.compositionId === "compA");
   check("non-spline handle is refused", makeSplineEditable(nodes, edges, "circ", "out:aux:image", subpaths) === null);
+}
+
+// --- incoming-wire autocoerce (add-menu into-target path) ---
+{
+  const xf = makeInstanceNode("transform", { x: 0, y: 0 });
+  check(
+    "fresh Transform source socket is image",
+    xf.data.inputs.find((i) => i.name === "image")?.type === "image"
+  );
+  const xfNext = applyIncomingWireToTarget(xf, "in:image", "spline", {
+    image: "spline",
+  });
+  check(
+    "Transform autocoerces input to spline",
+    xfNext.data.inputs.find((i) => i.name === "image")?.type === "spline"
+  );
+  check("Transform output follows spline", xfNext.data.primaryOutput === "spline");
+}
+
+{
+  const ctp = makeInstanceNode("copy-to-points", { x: 0, y: 0 });
+  const next = applyIncomingWireToTarget(ctp, "in:instance", "spline", {
+    instance: "spline",
+  });
+  check("Copy-to-Points mode flips to spline", next.data.params.mode === "spline");
+  check(
+    "Copy-to-Points instance socket is spline",
+    next.data.inputs.find((i) => i.name === "instance")?.type === "spline"
+  );
+}
+
+{
+  const sw = makeInstanceNode("switch", { x: 0, y: 0 });
+  check(
+    "fresh Switch slot is scalar",
+    sw.data.inputs.find((i) => i.name === "in0")?.type === "scalar"
+  );
+  const next = applyIncomingWireToTarget(sw, "in:in0", "image", { in0: "image" });
+  check(
+    "Switch autocoerces slots to image",
+    next.data.inputs.find((i) => i.name === "in0")?.type === "image"
+  );
+  check("Switch output follows image", next.data.primaryOutput === "image");
+}
+
+{
+  const col = makeInstanceNode("collect", { x: 0, y: 0 });
+  check(
+    "fresh Combine slot is image",
+    col.data.inputs.find((i) => i.name === "a")?.type === "image"
+  );
+  const next = applyIncomingWireToTarget(col, "in:a", "spline", { a: "spline" });
+  check("Combine mode flips to spline", next.data.params.mode === "spline");
+  check(
+    "Combine slot autocoerces to spline",
+    next.data.inputs.find((i) => i.name === "a")?.type === "spline"
+  );
+  check("Combine output follows spline", next.data.primaryOutput === "spline");
+}
+
+{
+  const bb = makeInstanceNode("bounding-box", { x: 0, y: 0 });
+  const next = applyIncomingWireToTarget(bb, "in:source", "points", {
+    source: "points",
+  });
+  check(
+    "Bounding Box autocoerces source to points",
+    next.data.inputs.find((i) => i.name === "source")?.type === "points"
+  );
+}
+
+{
+  const producer = makeInstanceNode("spline-draw", { x: 0, y: 0 });
+  const xf = makeInstanceNode("transform", { x: 100, y: 0 });
+  const ct = connectedTypesFromEdges(
+    xf.id,
+    [producer, xf],
+    [],
+    { targetHandle: "in:image", srcType: "spline" }
+  );
+  check("connectedTypesFromEdges extra types the target input", ct.image === "spline");
+}
+
+{
+  const acc = makeInstanceNode("accumulator", { x: 0, y: 0 });
+  check(
+    "fresh Accumulator input is scalar",
+    acc.data.inputs.find((i) => i.name === "input")?.type === "scalar"
+  );
+  check("fresh Accumulator output is scalar", acc.data.primaryOutput === "scalar");
+  const next = applyIncomingWireToTarget(acc, "in:input", "points", {
+    input: "points",
+  });
+  check("Accumulator type flips to points", next.data.params.type === "points");
+  check(
+    "Accumulator input autocoerces to points",
+    next.data.inputs.find((i) => i.name === "input")?.type === "points"
+  );
+  check("Accumulator output follows points", next.data.primaryOutput === "points");
+
+  const splineNext = applyIncomingWireToTarget(acc, "in:input", "spline", {
+    input: "spline",
+  });
+  check(
+    "Accumulator type flips to points on a spline wire",
+    splineNext.data.params.type === "points"
+  );
+  check(
+    "Accumulator input stays spline (coerced inside compute)",
+    splineNext.data.inputs.find((i) => i.name === "input")?.type === "spline"
+  );
+  check(
+    "Accumulator output is points for a spline wire",
+    splineNext.data.primaryOutput === "points"
+  );
 }
 
 if (failures === 0) console.log("\nALL GREEN ✅");

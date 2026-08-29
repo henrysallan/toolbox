@@ -164,6 +164,13 @@ export default function PointAttributesPage() {
         <Code>rotation</Code>, <Code>scale</Code>, <Code>group</Code>, …) —
         those are reserved and writes to them are ignored.
       </Note>
+      <Note>
+        Accumulator (points mode) and Advect Points (accumulate mode) stamp
+        a well-known <Code>age</Code> channel: seconds since each point
+        joined that node&rsquo;s state. Map Attribute can drive scale from
+        it; Filter Points can drop old points. The node owns the name
+        — an incoming <Code>age</Code> is overwritten.
+      </Note>
 
       <H2 id="set-named-attribute">Writing: Set Named Attribute</H2>
       <P>
@@ -280,9 +287,11 @@ export default function PointAttributesPage() {
         </LI>
         <LI>
           <strong>Map Attribute</strong> — the bridge to visible motion:
-          remap a channel through In/Out ranges, shape it with a 0–1
-          curve, and apply it as a scale multiplier, rotation offset, or
-          position offset.
+          remap any point column (a named channel, or a built-in like{" "}
+          <Code>index</Code>, <Code>x</Code>, <Code>y</Code>,{" "}
+          <Code>scale.x</Code>, <Code>rotation</Code>, <Code>group</Code>)
+          through In/Out ranges, shape it with a 0–1 curve, and apply it
+          as a scale multiplier, rotation offset, or position offset.
         </LI>
       </UL>
       <P>
@@ -296,7 +305,9 @@ export default function PointAttributesPage() {
         across the variant set exactly like image luminance); and{" "}
         <strong>Point Labels / Points to Text</strong> templates accept{" "}
         <Code>{"{attr:name}"}</Code> alongside <Code>{"{x}"}</Code> and
-        friends.
+        friends. <strong>Points to String</strong> joins a column (built-in
+        or named) into one caption — comma-separated, one per line, or a
+        grid — and wires into a Text node&rsquo;s text.
       </P>
 
       <H2 id="spline-attributes">Attributes on splines</H2>
@@ -351,7 +362,8 @@ export default function PointAttributesPage() {
         <LI>
           <strong>Simulators</strong> re-read channels from their seed input
           each frame, so animated upstream values keep flowing while
-          positions simulate.
+          positions simulate. Accumulator and Advect Points (accumulate)
+          overlay their own <Code>age</Code> after that.
         </LI>
       </UL>
 

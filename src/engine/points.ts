@@ -39,6 +39,76 @@ export const RESERVED_POINT_ATTR_NAMES: ReadonlySet<string> = new Set([
   "nz",
 ]);
 
+// Well-known named channel stamped by time-integrating point sims
+// (Accumulator points mode, Advect Points accumulate mode): seconds since
+// the point joined that node's state. Not reserved — Set Named Attribute
+// can still write it — but those sims own the name on their output and
+// overwrite any incoming `age`.
+export const POINT_AGE_ATTR = "age";
+
+// Spreadsheet keys for the built-in columns, plus the aliases a by-name
+// reader accepts (`scale` → scale.x, `position` → x). Writers still refuse
+// the reserved set above; consumers (Map Attribute) can read any of these.
+const BUILTIN_POINT_ATTR_ALIASES: ReadonlySet<string> = new Set([
+  "index",
+  "x",
+  "y",
+  "z",
+  "position",
+  "position.x",
+  "position.y",
+  "position x",
+  "position y",
+  "rotation",
+  "scale",
+  "scale.x",
+  "scale.y",
+  "scale x",
+  "scale y",
+  "sx",
+  "sy",
+  "group",
+  "nx",
+  "ny",
+  "nz",
+]);
+
+const ATTR_AXIS = ["x", "y", "z", "w"] as const;
+
+export function isBuiltinPointAttrName(name: string): boolean {
+  return BUILTIN_POINT_ATTR_ALIASES.has(name.trim());
+}
+
+// Built-in columns a picker should offer for this value. Always-readable
+// fallbacks (scale 1, rotation/group 0) are listed even when the typed
+// array is absent; z / normals only when the value actually carries them.
+export function builtinPointAttrNames(p: PointsValue): string[] {
+  const names: string[] = [
+    "index",
+    "x",
+    "y",
+    "scale.x",
+    "scale.y",
+    "rotation",
+    "group",
+  ];
+  if (p.z) names.push("z");
+  if (p.normals) names.push("nx", "ny", "nz");
+  return names;
+}
+
+// 2D fallback when the upstream hasn't evaluated yet — the columns every
+// points value can answer. Map Attribute offers these while unwired.
+export const BUILTIN_POINT_ATTR_SUGGESTIONS_2D: readonly string[] = [
+  "index",
+  "x",
+  "y",
+  "scale.x",
+  "scale.y",
+  "rotation",
+  "group",
+];
+
 // Allocate a points value with reserved capacity. Caller fills the
 // returned typed arrays in place. `points` starts empty (lazy).
 // `withZ` mints a 3D value (world-space — rides `points3d` sockets, see
@@ -214,6 +284,27 @@ export function copyPointsWith(
     ...replacements,
     points: [],
   };
+}
+
+// Overlay the well-known `age` channel: age[i] = max(0, time − births[i]).
+// Births are scene-time join stamps (parallel to the current index order);
+// deriving age on emit keeps pause/scrub honest. Empty sets pass through
+// unchanged (no empty `age` channel on EMPTY_POINTS).
+export function overlayAge(
+  pts: PointsValue,
+  births: ArrayLike<number>,
+  time: number
+): PointsValue {
+  const n = pts.count;
+  if (n === 0) return pts;
+  const data = new Float32Array(n);
+  for (let i = 0; i < n; i++) data[i] = Math.max(0, time - births[i]);
+  return copyPointsWith(pts, {
+    attributes: {
+      ...pts.attributes,
+      [POINT_AGE_ATTR]: { arity: 1, data },
+    },
+  });
 }
 
 // Gather a named-channel map through an index map — the attributes half
@@ -428,4 +519,76 @@ export function getRotation(p: PointsValue, i: number): number {
 }
 export function getGroupIndex(p: PointsValue, i: number): number {
   return p.groupIndices ? p.groupIndices[i] : 0;
+}
+
+// By-name read of a built-in column or named channel (component 0, or a
+// dotted axis like `color.y`). Missing named channels return undefined;
+// absent optional built-ins (no scales array, no z) return the same
+// defaults the render path uses. Empty name → undefined.
+export function readPointAttr(
+  p: PointsValue,
+  name: string,
+  i: number
+): number | undefined {
+  const n = name.trim();
+  if (!n) return undefined;
+  switch (n) {
+    case "index":
+      return i;
+    case "x":
+    case "position":
+    case "position.x":
+    case "position x":
+      return p.positions[i * 2];
+    case "y":
+    case "position.y":
+    case "position y":
+      return p.positions[i * 2 + 1];
+    case "z":
+      return p.z ? p.z[i] : 0;
+    case "rotation":
+      return getRotation(p, i);
+    case "scale":
+    case "scale.x":
+    case "scale x":
+    case "sx":
+      return getScaleX(p, i);
+    case "scale.y":
+    case "scale y":
+    case "sy":
+      return getScaleY(p, i);
+    case "group":
+      return getGroupIndex(p, i);
+    case "nx":
+      return p.normals ? p.normals[i * 3] : 0;
+    case "ny":
+      return p.normals ? p.normals[i * 3 + 1] : 0;
+    case "nz":
+      return p.normals ? p.normals[i * 3 + 2] : 0;
+  }
+  const attr = p.attributes?.[n];
+  if (attr) return attr.data[i * attr.arity];
+  const dot = n.lastIndexOf(".");
+  if (dot > 0) {
+    const a = p.attributes?.[n.slice(0, dot)];
+    const c = ATTR_AXIS.indexOf(n.slice(dot + 1) as (typeof ATTR_AXIS)[number]);
+    if (a && c >= 0 && c < a.arity) return a.data[i * a.arity + c];
+  }
+  return undefined;
+}
+
+// True when `name` is a built-in (always readable) or a named channel
+// actually present on this value (including `name.x` component access).
+export function pointAttrExists(p: PointsValue, name: string): boolean {
+  const n = name.trim();
+  if (!n) return false;
+  if (isBuiltinPointAttrName(n)) return true;
+  if (p.attributes?.[n]) return true;
+  const dot = n.lastIndexOf(".");
+  if (dot > 0) {
+    const a = p.attributes?.[n.slice(0, dot)];
+    const c = ATTR_AXIS.indexOf(n.slice(dot + 1) as (typeof ATTR_AXIS)[number]);
+    if (a && c >= 0 && c < a.arity) return true;
+  }
+  return false;
 }

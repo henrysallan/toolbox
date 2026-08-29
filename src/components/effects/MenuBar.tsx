@@ -845,7 +845,7 @@ function MenuDropdown({
         minWidth: 200,
         background: "var(--tb-n-3)",
         border: "1px solid var(--tb-n-7)",
-        borderRadius: 4,
+        borderRadius: 8,
         boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
         padding: 4,
       }}
@@ -912,14 +912,15 @@ function SubmenuRow({
           gap: 24,
           width: "100%",
           padding: "3px 10px",
-          background: hover || open ? "var(--tb-a-blue-900)" : "transparent",
-          border: "none",
+          boxSizing: "border-box",
+          background: hover || open ? "var(--tb-n-5)" : "transparent",
+          border: `1px solid ${hover || open ? "var(--tb-n-12)" : "transparent"}`,
           color: "var(--tb-n-16)",
           textAlign: "left",
           fontFamily: "inherit",
           fontSize: "inherit",
           cursor: "default",
-          borderRadius: 3,
+          borderRadius: 5,
         }}
       >
         <span>{item.label}</span>
@@ -965,14 +966,15 @@ function MenuRow({
         gap: 24,
         width: "100%",
         padding: "3px 10px",
-        background: !disabled && hover ? "var(--tb-a-blue-900)" : "transparent",
-        border: "none",
+        boxSizing: "border-box",
+        background: !disabled && hover ? "var(--tb-n-5)" : "transparent",
+        border: `1px solid ${!disabled && hover ? "var(--tb-n-12)" : "transparent"}`,
         color: disabled ? "var(--tb-n-10)" : "var(--tb-n-16)",
         textAlign: "left",
         fontFamily: "inherit",
         fontSize: "inherit",
         cursor: disabled ? "not-allowed" : "default",
-        borderRadius: 3,
+        borderRadius: 5,
       }}
     >
       <span

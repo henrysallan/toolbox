@@ -11,6 +11,7 @@ import {
   copyPointsWith,
   EMPTY_POINTS,
   gatherPoints,
+  overlayAge,
 } from "@/engine/points";
 
 // Advect Points — move points through a velocity field derived from an
@@ -31,7 +32,9 @@ import {
 //                animates, no Simulation Zone required. Resets on scene
 //                loop (like Sim Start); seed-count changes MIGRATE
 //                instead of resetting — growth joins new points into the
-//                running flow, shrink truncates from the top.
+//                running flow, shrink truncates from the top. Each slot
+//                carries a well-known `age` channel (seconds since it
+//                joined this sim); the node owns that name on output.
 //
 // Field interpretations (field_mode):
 //   angle    — luminance → heading (θ = (luma·turns + offset)·2π), unit
@@ -80,6 +83,10 @@ interface AccumState {
   positions: Float32Array;
   count: number;
   alive: Uint8Array;
+  // Scene-time join stamp per slot (index identity). Age on the wire is
+  // derived at emit; this lives next to positions because simulators
+  // otherwise re-read channels from the seed.
+  births: Float32Array;
   initialized: boolean;
   lastTime: number;
   trail?: TrailRing;
@@ -341,7 +348,7 @@ export const advectPointsNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Move points through a velocity field derived from an image — the field is re-sampled at every step, so points follow its curves (unlike Displace's single push). Integrate mode traces N deterministic steps per eval and emits streamline trails (flow-field line art: noise → Advect → trails → Stroke). Accumulate mode keeps persistent positions and advances once per frame — endless drift that responds to an animating field, no Simulation Zone needed. Field modes: angle (luminance → heading), vector (signed RG map), gradient (flow toward bright), contour (orbit level sets).",
+    "Move points through a velocity field derived from an image — the field is re-sampled at every step, so points follow its curves (unlike Displace's single push). Integrate mode traces N deterministic steps per eval and emits streamline trails (flow-field line art: noise → Advect → trails → Stroke). Accumulate mode keeps persistent positions and advances once per frame — endless drift that responds to an animating field, no Simulation Zone needed. Each slot carries an `age` channel (seconds since it joined the flow). Field modes: angle (luminance → heading), vector (signed RG map), gradient (flow toward bright), contour (orbit level sets).",
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   simulation: true,
@@ -714,7 +721,8 @@ function compactPoints(
 function resizeAccumState(
   st: AccumState,
   src: PointsValue,
-  n: number
+  n: number,
+  joinTime: number
 ): void {
   const old = st.count;
   const keep = Math.min(old, n);
@@ -722,10 +730,13 @@ function resizeAccumState(
   positions.set(st.positions.subarray(0, keep * 2));
   const alive = new Uint8Array(n);
   alive.set(st.alive.subarray(0, keep));
+  const births = new Float32Array(n);
+  if (st.births) births.set(st.births.subarray(0, Math.min(st.births.length, keep)));
   for (let i = old; i < n; i++) {
     positions[i * 2] = src.positions[i * 2];
     positions[i * 2 + 1] = src.positions[i * 2 + 1];
     alive[i] = 1;
+    births[i] = joinTime;
   }
   if (st.trail) {
     const ring = st.trail;
@@ -744,6 +755,7 @@ function resizeAccumState(
   }
   st.positions = positions;
   st.alive = alive;
+  st.births = births;
   st.count = n;
 }
 
@@ -778,6 +790,7 @@ function computeAccumulate(
       positions: new Float32Array(src.positions),
       count: n,
       alive: new Uint8Array(n).fill(1),
+      births: new Float32Array(n).fill(ctx.time),
       initialized: true,
       lastTime: ctx.time,
       trail: undefined,
@@ -785,7 +798,14 @@ function computeAccumulate(
     state.accum = st;
     justReset = true;
   } else if (st.count !== n) {
-    resizeAccumState(st, src, n);
+    resizeAccumState(st, src, n, ctx.time);
+  }
+
+  if (
+    !(st.births instanceof Float32Array) ||
+    st.births.length !== st.count
+  ) {
+    st.births = new Float32Array(st.count).fill(ctx.time);
   }
 
   // Trail ring lifecycle: exists only while consumed (history starts when
@@ -843,6 +863,8 @@ function computeAccumulate(
   // copies positions out of the mutable state buffer and re-reads every
   // other channel from the CURRENT seed input by index, so animated
   // upstream scales/rotations keep flowing; only positions persist.
+  // `age` is the exception: it is sim-owned (index join time) and
+  // overlaid before the alive-gather so dead slots drop with their age.
   let aliveCount = 0;
   for (let i = 0; i < n; i++) if (st.alive[i]) aliveCount++;
   const map = new Int32Array(aliveCount);
@@ -851,7 +873,11 @@ function computeAccumulate(
     for (let i = 0; i < n; i++) if (st.alive[i]) map[j++] = i;
   }
   const out = gatherPoints(
-    copyPointsWith(src, { positions: st.positions }),
+    overlayAge(
+      copyPointsWith(src, { positions: st.positions }),
+      st.births,
+      ctx.time
+    ),
     map
   );
   // Field-aligned heading wins over the gathered seed rotations.

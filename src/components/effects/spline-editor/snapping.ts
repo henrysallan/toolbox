@@ -17,10 +17,11 @@
 //
 // Modifier vocabulary (documented in the overlay header): snapping is ON by
 // default for pen-click placement, anchor drags, and primitive (rect /
-// ellipse) draws; hold Cmd/Ctrl mid-drag to suppress it. Shift during a
-// handle (or new-anchor) drag locks the handle angle to 45° increments —
-// Shift is free there (its pen-mode insert-on-path meaning applies only to
-// background clicks).
+// ellipse) draws; the viewport-bar lock turns it off, and Cmd/Ctrl
+// suppresses it mid-drag while it's on. Shift during a handle (or new-
+// anchor) drag locks the handle angle to 45° increments — Shift is free
+// there (its pen-mode insert-on-path meaning applies only to background
+// clicks).
 
 import { SNAP_R } from "./constants";
 

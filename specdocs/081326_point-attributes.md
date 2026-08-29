@@ -64,7 +64,9 @@ Every points-touching node is one of six classes; each has ONE rule:
 - **Producer**: may emit channels (none required).
 - **Simulator**: rebuild per frame, re-reading channels from the CURRENT
   seed input by original index — the advect-points idiom ("only positions
-  persist").
+  persist"). Exception: Accumulator (points mode) and Advect accumulate
+  overlay a sim-owned `age` channel (seconds since the point/slot joined)
+  after that gather; they overwrite any incoming `age`.
 - **Consumer**: opt-in reads.
 
 ## Milestones

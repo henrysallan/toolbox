@@ -78,10 +78,12 @@ export function dragMove(
       if (drag.moved) {
         // Intended target from gesture start (grabOffset keeps the grab
         // point under the cursor), then snap it against other anchors +
-        // canvas guides unless Cmd/Ctrl suppresses (snapping.ts).
+        // canvas guides unless the viewport-bar lock is off or Cmd/Ctrl
+        // suppresses (snapping.ts).
         let tx = nx + drag.grabOffset.x;
         let ty = ny + drag.grabOffset.y;
-        const suppress = e.metaKey || e.ctrlKey;
+        const suppress =
+          !env.snapEnabledRef.current || e.metaKey || e.ctrlKey;
         if (!suppress && env.rect) {
           const exclude =
             drag.groupStarts && drag.groupStarts.size > 1

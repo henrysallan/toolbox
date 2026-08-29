@@ -44,6 +44,7 @@ import {
 } from "@/lib/pointer-drag";
 import { colorForSocket } from "./socketColor";
 import {
+  attrNameSuggestions,
   isAttrNameInvalid,
   readUpstreamAttrNames,
 } from "./attr-name-source";
@@ -472,13 +473,19 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   // edits); a purely-upstream channel change can lag one render — the
   // suggestions' freshness contract.
   let stringInvalid = false;
+  let stringAttrSuggestions: string[] | undefined;
   if (stringParamDef?.suggestAttrsFrom && stringInputParam) {
     const current = data.params[stringInputParam];
+    const info = readUpstreamAttrNames(id, stringParamDef.suggestAttrsFrom);
+    const includeBuiltins = !!stringParamDef.suggestAttrsIncludeBuiltins;
     stringInvalid = isAttrNameInvalid(
       typeof current === "string" ? current : "",
-      readUpstreamAttrNames(id, stringParamDef.suggestAttrsFrom),
-      !!stringParamDef.suggestAttrsRequire
+      info,
+      !!stringParamDef.suggestAttrsRequire,
+      includeBuiltins
     );
+    const suggestions = attrNameSuggestions(info, includeBuiltins);
+    if (suggestions.length > 0) stringAttrSuggestions = suggestions;
   }
 
   // On-node scalar slider (Constant). Range mirrors the ParamPanel logic —
@@ -1079,22 +1086,6 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               }
             />
           )}
-          {data.defType === "collect" && (
-            <HeaderToggle
-              on={false}
-              label="+"
-              title="Add input"
-              activeBg="var(--tb-a-gray-700)"
-              activeFg="var(--tb-n-16)"
-              onClick={() =>
-                window.dispatchEvent(
-                  new CustomEvent("effect-node-toggle", {
-                    detail: { id, kind: "collectAddInput" },
-                  })
-                )
-              }
-            />
-          )}
           {isColorNode && colorNodeCount < MAX_COLORS && (
             <HeaderToggle
               on={false}
@@ -1555,6 +1546,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             placeholder={stringPlaceholder}
             singleLine={stringInput?.singleLine}
             invalid={stringInvalid}
+            attrSuggestions={stringAttrSuggestions}
           />
         </div>
       )}
@@ -1937,6 +1929,7 @@ function NodeStringInput({
   placeholder,
   singleLine,
   invalid,
+  attrSuggestions,
 }: {
   id: string;
   paramName: string;
@@ -1946,6 +1939,8 @@ function NodeStringInput({
   singleLine?: boolean;
   /** Verified-wrong attribute name — error tint (attr-name-source.ts). */
   invalid?: boolean;
+  /** Upstream channel names for a `suggestAttrsFrom` param — native datalist. */
+  attrSuggestions?: string[];
 }) {
   const [text, setText] = useState(value);
   const editing = useRef(false);
@@ -1964,59 +1959,73 @@ function NodeStringInput({
     if (!editing.current) setText(value);
   }, [value]);
 
+  const suggestId =
+    attrSuggestions && attrSuggestions.length > 0
+      ? `attr-suggest-node-${id}-${paramName}`
+      : undefined;
+
   if (singleLine) {
     return (
-      <input
-        type="text"
-        className="nodrag"
-        value={wired ? value : text}
-        readOnly={wired}
-        placeholder={placeholder}
-        title={
-          invalid
-            ? "No attribute with this name on the wired input (reserved names can't be attributes)"
-            : undefined
-        }
-        spellCheck={false}
-        onFocus={() => {
-          editing.current = true;
-        }}
-        onBlur={() => {
-          editing.current = false;
-          setText(value);
-        }}
-        onPointerDown={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          e.stopPropagation();
-          // Enter commits (the change already dispatched) and drops focus.
-          if (e.key === "Enter") e.currentTarget.blur();
-        }}
-        onChange={(e) => {
-          const next = e.target.value;
-          setText(next);
-          window.dispatchEvent(
-            new CustomEvent("effect-node-param", {
-              detail: { id, name: paramName, value: next },
-            })
-          );
-        }}
-        style={{
-          width: "100%",
-          boxSizing: "border-box",
-          background: invalid
-            ? "color-mix(in srgb, var(--tb-a-red-400) 12%, var(--tb-n-1))"
-            : "var(--tb-n-1)",
-          color: wired ? "var(--tb-n-11)" : "var(--tb-n-16)",
-          border: `1px solid ${invalid ? "var(--tb-a-red-400)" : "var(--tb-n-7)"}`,
-          borderRadius: 4,
-          fontFamily: "inherit",
-          fontSize: 11,
-          lineHeight: 1.4,
-          padding: "3px 6px",
-          outline: "none",
-        }}
-      />
+      <>
+        {suggestId && (
+          <datalist id={suggestId}>
+            {attrSuggestions!.map((n) => (
+              <option key={n} value={n} />
+            ))}
+          </datalist>
+        )}
+        <input
+          type="text"
+          className="nodrag"
+          value={wired ? value : text}
+          readOnly={wired}
+          placeholder={placeholder}
+          list={suggestId}
+          title={
+            invalid
+              ? "No attribute with this name on the wired input"
+              : undefined
+          }
+          spellCheck={false}
+          onFocus={() => {
+            editing.current = true;
+          }}
+          onBlur={() => {
+            editing.current = false;
+            setText(value);
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+          onChange={(e) => {
+            const next = e.target.value;
+            setText(next);
+            window.dispatchEvent(
+              new CustomEvent("effect-node-param", {
+                detail: { id, name: paramName, value: next },
+              })
+            );
+          }}
+          style={{
+            width: "100%",
+            boxSizing: "border-box",
+            background: invalid
+              ? "color-mix(in srgb, var(--tb-a-red-400) 12%, var(--tb-n-1))"
+              : "var(--tb-n-1)",
+            color: wired ? "var(--tb-n-11)" : "var(--tb-n-16)",
+            border: `1px solid ${invalid ? "var(--tb-a-red-400)" : "var(--tb-n-7)"}`,
+            borderRadius: 4,
+            fontFamily: "inherit",
+            fontSize: 11,
+            lineHeight: 1.4,
+            padding: "3px 6px",
+            outline: "none",
+          }}
+        />
+      </>
     );
   }
 

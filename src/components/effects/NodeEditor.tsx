@@ -38,6 +38,7 @@ import IterateZoneUnderlay, {
 import { useEffectiveDevice } from "./input-device";
 import { getNodeDef } from "@/engine/registry";
 import {
+  appendPathPoint,
   defaultBezierCps,
   handleCenter,
   sampleCubic,
@@ -879,15 +880,18 @@ function NodeEditor({
     handleType: "source" | "target";
   } | null>(null);
   const shiftDownRef = useRef(false);
+  const connectPathRef = useRef<Pt[]>([]);
   const [connectRing, setConnectRing] = useState<{
     x: number;
     y: number;
     overNode: boolean;
+    path: Pt[];
   } | null>(null);
   // Mirror of "is the ring currently shown" so the imperative handlers can
   // skip redundant setState calls without reading React state.
   const connectRingShownRef = useRef(false);
   const hideConnectRing = useCallback(() => {
+    connectPathRef.current = [];
     if (connectRingShownRef.current) {
       connectRingShownRef.current = false;
       setConnectRing(null);
@@ -909,6 +913,7 @@ function NodeEditor({
     x: number;
     y: number;
     overNode: boolean;
+    path: Pt[];
   } | null>(null);
   const processNodeDropRef = useRef<
     (originId: string, clientX: number, clientY: number) => void
@@ -1464,8 +1469,14 @@ function NodeEditor({
       const nodeEl = el?.closest(".react-flow__node") as HTMLElement | null;
       const id = nodeEl?.getAttribute("data-id");
       const overNode = !!id && id !== drag.fromNodeId;
+      appendPathPoint(connectPathRef.current, [clientX, clientY]);
       connectRingShownRef.current = true;
-      setConnectRing({ x: clientX, y: clientY, overNode });
+      setConnectRing({
+        x: clientX,
+        y: clientY,
+        overNode,
+        path: connectPathRef.current,
+      });
     };
     const onPointerMove = (e: PointerEvent) => {
       if (!connectDragRef.current) return;
@@ -1560,6 +1571,7 @@ function NodeEditor({
       const startY = e.clientY;
       let dragging = false;
       const THRESHOLD = 4;
+      const path: Pt[] = [anchor];
 
       const onMove = (ev: PointerEvent) => {
         if (
@@ -1569,6 +1581,8 @@ function NodeEditor({
           return;
         }
         dragging = true;
+        const pt: Pt = [ev.clientX, ev.clientY];
+        appendPathPoint(path, pt);
         const under = ownerDocument(flowWrapperRef.current).elementFromPoint(
           ev.clientX,
           ev.clientY
@@ -1582,6 +1596,7 @@ function NodeEditor({
           x: ev.clientX,
           y: ev.clientY,
           overNode: !!overId && overId !== originId,
+          path,
         });
       };
       const onUp = (ev: PointerEvent) => {
@@ -2475,8 +2490,9 @@ function NodeEditor({
           if (shift) {
             const x = typeof me.clientX === "number" ? me.clientX : lastCursorRef.current.x;
             const y = typeof me.clientY === "number" ? me.clientY : lastCursorRef.current.y;
+            connectPathRef.current = [[x, y]];
             connectRingShownRef.current = true;
-            setConnectRing({ x, y, overNode: false });
+            setConnectRing({ x, y, overNode: false, path: connectPathRef.current });
           }
         }}
         onReconnectStart={(_event, edge) => {
@@ -2713,16 +2729,29 @@ function NodeEditor({
           node. Purely visual (pointer-events: none) — the actual landing is
           done in onConnectEnd. */}
       {connectRing && (
-        <ConnectDropRing
-          x={connectRing.x}
-          y={connectRing.y}
-          over={connectRing.overNode}
-          wrapper={flowWrapperRef.current}
-        />
+        <>
+          <DragPathOverlay
+            path={connectRing.path}
+            x={connectRing.x}
+            y={connectRing.y}
+            stroke={
+              connectRing.overNode
+                ? "var(--tb-a-blue-300)"
+                : "color-mix(in srgb, var(--tb-a-blue-400) 85%, transparent)"
+            }
+            wrapper={flowWrapperRef.current}
+          />
+          <ConnectDropRing
+            x={connectRing.x}
+            y={connectRing.y}
+            over={connectRing.overNode}
+            wrapper={flowWrapperRef.current}
+          />
+        </>
       )}
 
-      {/* Shift-drag-from-node line + ring. The straight line runs from the
-          origin node's first output to the cursor (React Flow draws no
+      {/* Shift-drag-from-node line + ring. The line follows the cursor
+          path from the origin node's first output (React Flow draws no
           connection line here since this gesture bypasses its connection
           system), and the same ring brightens over a droppable node. */}
       {nodeConnect && (
@@ -2732,6 +2761,7 @@ function NodeEditor({
             y1={nodeConnect.originY}
             x2={nodeConnect.x}
             y2={nodeConnect.y}
+            path={nodeConnect.path}
             over={nodeConnect.overNode}
             wrapper={flowWrapperRef.current}
           />
@@ -3488,15 +3518,17 @@ function ConnectDropRing({
   );
 }
 
-// Straight wire preview for the Shift-drag-from-node gesture: origin output →
-// cursor. A full-wrapper SVG overlay (pointer-events: none so it never blocks
-// the elementFromPoint node probe); coordinates are wrapper-local. Brightens
+// Wire preview for the Shift-drag-from-node gesture. Follows the cursor
+// path from the origin output so the drag trail stays visible. Full-
+// wrapper SVG (pointer-events: none so it never blocks the
+// elementFromPoint node probe); coordinates are wrapper-local. Brightens
 // to match the ring while the cursor is over a droppable node.
 function NodeConnectLine({
   x1,
   y1,
   x2,
   y2,
+  path,
   over,
   wrapper,
 }: {
@@ -3504,7 +3536,55 @@ function NodeConnectLine({
   y1: number;
   x2: number;
   y2: number;
+  path: Pt[];
   over: boolean;
+  wrapper: HTMLDivElement | null;
+}) {
+  if (!wrapper) return null;
+  const rect = wrapper.getBoundingClientRect();
+  const stroke = over
+    ? "var(--tb-a-blue-300)"
+    : "color-mix(in srgb, var(--tb-a-blue-400) 85%, transparent)";
+  const trail = path.length > 0 ? path : ([[x1, y1], [x2, y2]] as Pt[]);
+  return (
+    <svg
+      style={{
+        position: "absolute",
+        left: 0,
+        top: 0,
+        width: "100%",
+        height: "100%",
+        pointerEvents: "none",
+        zIndex: 54,
+        overflow: "visible",
+      }}
+    >
+      <DragPathPolylines
+        path={trail}
+        x={x2}
+        y={y2}
+        ox={rect.left}
+        oy={rect.top}
+        stroke={stroke}
+      />
+    </svg>
+  );
+}
+
+// Cursor-path trail for Shift-drag wire gestures. Wrapper-local SVG so it
+// sits in the editor overlay stack; pointer-events none so it never steals
+// the elementFromPoint probe the drop ring uses.
+function DragPathOverlay({
+  path,
+  x,
+  y,
+  stroke,
+  wrapper,
+}: {
+  path: Pt[];
+  x: number;
+  y: number;
+  stroke: string;
   wrapper: HTMLDivElement | null;
 }) {
   if (!wrapper) return null;
@@ -3522,16 +3602,59 @@ function NodeConnectLine({
         overflow: "visible",
       }}
     >
-      <line
-        x1={x1 - rect.left}
-        y1={y1 - rect.top}
-        x2={x2 - rect.left}
-        y2={y2 - rect.top}
-        stroke={over ? "var(--tb-a-blue-300)" : "color-mix(in srgb, var(--tb-a-blue-400) 85%, transparent)"}
-        strokeWidth={2}
-        strokeLinecap="round"
+      <DragPathPolylines
+        path={path}
+        x={x}
+        y={y}
+        ox={rect.left}
+        oy={rect.top}
+        stroke={stroke}
       />
     </svg>
+  );
+}
+
+function DragPathPolylines({
+  path,
+  x,
+  y,
+  ox,
+  oy,
+  stroke,
+}: {
+  path: Pt[];
+  x: number;
+  y: number;
+  ox: number;
+  oy: number;
+  stroke: string;
+}) {
+  const last = path[path.length - 1];
+  const pts = path.map((p) => `${p[0] - ox},${p[1] - oy}`);
+  if (!last || last[0] !== x || last[1] !== y) {
+    pts.push(`${x - ox},${y - oy}`);
+  }
+  if (pts.length < 2) return null;
+  const points = pts.join(" ");
+  return (
+    <>
+      <polyline
+        points={points}
+        fill="none"
+        stroke="rgba(0,0,0,0.45)"
+        strokeWidth={3.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <polyline
+        points={points}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </>
   );
 }
 

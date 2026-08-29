@@ -1,20 +1,31 @@
 import type { NodeDefinition, RenderContext } from "@/engine/types";
+import { pushMediaSettle } from "@/engine/offline-settle";
+import {
+  getDecodedMask,
+  hasDecodedMask,
+  peekRvmSession,
+  prefetchMaskDecodes,
+  recordScopedFrame,
+  requestMaskDecode,
+} from "@/lib/ai/rvm-session";
 
-// Background-removal node. The expensive ML inference runs once,
-// triggered by the Bake button in the custom param panel
-// (BgRemovePanel.tsx). Bake stashes two ImageBitmaps in node
-// params:
+// Background-removal node. The expensive ML inference NEVER runs
+// inside compute() — it's triggered by the Bake button in the custom
+// param panel (BgRemovePanel.tsx).
 //
-//   bakedSource — the input RGB at bake-time (decoded from the
-//                 upstream node's output blob).
-//   bakedMask   — the foreground alpha mask, single-channel
-//                 packed into RGBA luminance.
+// Two model families, two bake shapes:
+//
+//   RMBG (still) — Bake stashes two ImageBitmaps in node params
+//     (bakedSource + bakedMask). Upstream is frozen until re-bake.
+//   RVM (video)  — Bake walks an in/out range, recycling the model's
+//     recurrent states so alpha is temporally consistent. Masks live
+//     in the session store (lib/ai/rvm-session.ts); RGB comes from the
+//     live upstream so the video plays through. Session-only: reopen
+//     → re-bake.
 //
 // Live params (`feather`, `threshold`) post-process the mask each
 // frame via a small shader so the user can tweak the cutout edge
-// without paying for another inference pass. Upstream changes are
-// IGNORED until the user re-bakes — the whole point of the node is
-// to freeze a snapshot of the chain so we don't do ML per frame.
+// without paying for another inference pass.
 
 interface BakedTex {
   // Local cache of WebGL textures uploaded from the baked
@@ -89,9 +100,9 @@ function disposeCache(ctx: RenderContext, nodeId: string) {
 // with feather (Gaussian blur, radius scaled by `u_feather`) and
 // threshold (sigmoid / smoothstep around `u_threshold`).
 //
-// Y-flip on the source and mask reads because the bake path
-// uploads bitmaps without UNPACK_FLIP_Y, which the rest of the
-// engine treats as Y-up.
+// Y-flip on the mask read because bake/preview uploads bitmaps without
+// UNPACK_FLIP_Y. RGB flip is gated by u_flipSource: RMBG's baked source
+// bitmap is Y-down; RVM samples the live pipeline texture (Y-up).
 const CUTOUT_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -100,6 +111,7 @@ uniform sampler2D u_mask;
 uniform vec2  u_invMask;     // 1.0 / mask size
 uniform float u_feather;     // 0..1 — fraction of mask width
 uniform float u_threshold;   // 0..1 — alpha cutoff (0.5 = identity)
+uniform float u_flipSource;  // 1 = Y-flip the RGB (baked bitmap)
 out vec4 outColor;
 
 float maskAt(vec2 uv) {
@@ -133,7 +145,10 @@ void main() {
   float knee = max(0.05 - abs(u_threshold - 0.5) * 0.05, 0.005);
   a = smoothstep(u_threshold - knee, u_threshold + knee, a);
 
-  vec3 rgb = texture(u_source, vec2(v_uv.x, 1.0 - v_uv.y)).rgb;
+  // RMBG uploads bitmaps without UNPACK_FLIP_Y (Y-down); RVM samples the
+  // live pipeline texture (Y-up). u_flipSource selects.
+  vec2 srcUv = u_flipSource > 0.5 ? vec2(v_uv.x, 1.0 - v_uv.y) : v_uv;
+  vec3 rgb = texture(u_source, srcUv).rgb;
   outColor = vec4(rgb, a);
 }`;
 
@@ -193,7 +208,7 @@ export const bgRemoveNode: NodeDefinition = {
   category: "image",
   subcategory: "modifier",
   description:
-    "Remove the background from an image using BRIA's RMBG model running locally via Transformers.js. Bake captures the upstream input + alpha mask once; live `feather` / `threshold` params tweak the edge per frame without a re-bake. Outputs the cutout (primary) plus the mask as both a typed mask aux and a grayscale image aux.",
+    "Remove the background from an image or video. RMBG (still) runs BRIA's model locally via Transformers.js — Bake captures the upstream frame + alpha once. RVM (video) runs PeterLin's Robust Video Matting ONNX in the browser; Bake walks an in/out range and recycles the model's recurrent states so the matte stays temporally consistent. Live `feather` / `threshold` tweak the edge without a re-bake. RVM bakes are session-only (reopen → re-bake). Outputs the cutout (primary) plus the mask as both a typed mask aux and a grayscale image aux.",
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [
@@ -201,7 +216,12 @@ export const bgRemoveNode: NodeDefinition = {
       name: "model",
       label: "Model",
       type: "enum",
-      options: ["rmbg-1.4", "rmbg-2.0"],
+      options: [
+        "rmbg-1.4",
+        "rmbg-2.0",
+        "rvm-mobilenetv3",
+        "rvm-resnet50",
+      ],
       default: "rmbg-1.4",
     },
     {
@@ -238,6 +258,32 @@ export const bgRemoveNode: NodeDefinition = {
       type: "file",
       default: null,
     },
+    {
+      name: "downsample",
+      label: "Downsample",
+      type: "enum",
+      options: ["auto", "0.125", "0.25", "0.375", "0.5", "1"],
+      default: "auto",
+      visibleIf: (p) => String(p.model).startsWith("rvm-"),
+    },
+    {
+      name: "inFrame",
+      label: "In Frame",
+      type: "scalar",
+      min: 0,
+      step: 1,
+      default: 0,
+      hidden: true,
+    },
+    {
+      name: "outFrame",
+      label: "Out Frame",
+      type: "scalar",
+      min: 0,
+      step: 1,
+      default: 120,
+      hidden: true,
+    },
   ],
   primaryOutput: "image",
   auxOutputs: [
@@ -254,19 +300,27 @@ export const bgRemoveNode: NodeDefinition = {
     },
   ],
 
+  fingerprintExtras(params, ctx, nodeId) {
+    if (!nodeId || !String(params.model ?? "").startsWith("rvm-")) return "";
+    const s = peekRvmSession(nodeId);
+    if (s.baked && s.bakeRange) {
+      const { inFrame, outFrame } = s.bakeRange;
+      const f = Math.min(outFrame, Math.max(inFrame, ctx.frame));
+      return `v${s.version}:f${f}:${hasDecodedMask(nodeId, f) ? 1 : 0}`;
+    }
+    return `v${s.version}:${s.live ? "live" : "none"}`;
+  },
+
   compute({ inputs, params, ctx, nodeId }) {
     const output = ctx.allocImage();
     const maskOut = ctx.allocMask();
     const maskImg = ctx.allocImage();
-
-    const baked = params.bakedSource as ImageBitmap | null | undefined;
-    const bakedMask = params.bakedMask as ImageBitmap | null | undefined;
     const src = inputs.image;
+    const rvm = String(params.model ?? "").startsWith("rvm-");
+    const feather = (params.feather as number) ?? 0;
+    const threshold = (params.threshold as number) ?? 0.5;
 
-    // No bake yet → passthrough so users can wire downstream nodes
-    // before the first bake. mask aux is fully white (foreground
-    // is "everything" pre-bake).
-    if (!baked || !bakedMask) {
+    const passthrough = () => {
       if (src && src.kind === "image") {
         const prog = ctx.getShader("bg-remove/passthrough", PASSTHROUGH_FS);
         ctx.drawFullscreen(prog, output, (gl) => {
@@ -283,7 +337,97 @@ export const bgRemoveNode: NodeDefinition = {
         primary: output,
         aux: { mask: maskOut, mask_image: maskImg },
       };
+    };
+
+    const drawMaskAux = (maskTex: WebGLTexture, maskW: number, maskH: number) => {
+      const prog = ctx.getShader("bg-remove/mask_image", MASK_IMAGE_FS);
+      const drawMask = (target: typeof maskImg | typeof maskOut) => {
+        ctx.drawFullscreen(prog, target, (gl) => {
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, maskTex);
+          gl.uniform1i(gl.getUniformLocation(prog, "u_mask"), 0);
+          gl.uniform2f(
+            gl.getUniformLocation(prog, "u_invMask"),
+            1 / maskW,
+            1 / maskH
+          );
+          gl.uniform1f(gl.getUniformLocation(prog, "u_feather"), feather);
+          gl.uniform1f(gl.getUniformLocation(prog, "u_threshold"), threshold);
+        });
+      };
+      drawMask(maskImg);
+      drawMask(maskOut);
+    };
+
+    const drawCutout = (
+      sourceTex: WebGLTexture,
+      maskTex: WebGLTexture,
+      maskW: number,
+      maskH: number,
+      flipSource: number
+    ) => {
+      const prog = ctx.getShader("bg-remove/cutout", CUTOUT_FS);
+      ctx.drawFullscreen(prog, output, (gl) => {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, sourceTex);
+        gl.uniform1i(gl.getUniformLocation(prog, "u_source"), 0);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, maskTex);
+        gl.uniform1i(gl.getUniformLocation(prog, "u_mask"), 1);
+        gl.uniform2f(
+          gl.getUniformLocation(prog, "u_invMask"),
+          1 / maskW,
+          1 / maskH
+        );
+        gl.uniform1f(gl.getUniformLocation(prog, "u_feather"), feather);
+        gl.uniform1f(gl.getUniformLocation(prog, "u_threshold"), threshold);
+        gl.uniform1f(gl.getUniformLocation(prog, "u_flipSource"), flipSource);
+      });
+    };
+
+    if (rvm) {
+      recordScopedFrame(nodeId, ctx.frame);
+      const session = peekRvmSession(nodeId);
+      let bitmap: ImageBitmap | null = null;
+      if (session.baked && session.bakeRange) {
+        const { inFrame, outFrame } = session.bakeRange;
+        const f = Math.min(outFrame, Math.max(inFrame, ctx.frame));
+        bitmap = getDecodedMask(nodeId, f);
+        if (!bitmap) {
+          const settle = requestMaskDecode(nodeId, f);
+          if (ctx.offline) pushMediaSettle(ctx, settle);
+        } else {
+          prefetchMaskDecodes(nodeId, f);
+        }
+      } else if (session.live) {
+        bitmap = session.live;
+      }
+
+      const cache = ensureCache(ctx, nodeId);
+      if (bitmap && cache.maskRef !== bitmap) {
+        cache.mask = uploadBitmap(ctx.gl, bitmap, cache.mask);
+        cache.maskRef = bitmap;
+        cache.maskW = bitmap.width;
+        cache.maskH = bitmap.height;
+      }
+      if (!cache.mask) return passthrough();
+
+      if (src && src.kind === "image") {
+        drawCutout(src.texture, cache.mask, cache.maskW, cache.maskH, 0);
+      } else {
+        ctx.clearTarget(output, [0, 0, 0, 0]);
+      }
+      drawMaskAux(cache.mask, cache.maskW, cache.maskH);
+      return { primary: output, aux: { mask: maskOut, mask_image: maskImg } };
     }
+
+    const baked = params.bakedSource as ImageBitmap | null | undefined;
+    const bakedMask = params.bakedMask as ImageBitmap | null | undefined;
+
+    // No bake yet → passthrough so users can wire downstream nodes
+    // before the first bake. mask aux is fully white (foreground
+    // is "everything" pre-bake).
+    if (!baked || !bakedMask) return passthrough();
 
     // Upload the baked bitmaps to GL textures (only when the bitmap
     // reference changes — so a re-bake drops the old textures and
@@ -311,56 +455,8 @@ export const bgRemoveNode: NodeDefinition = {
       };
     }
 
-    const feather = (params.feather as number) ?? 0;
-    const threshold = (params.threshold as number) ?? 0.5;
-
-    // Cutout primary output.
-    {
-      const prog = ctx.getShader("bg-remove/cutout", CUTOUT_FS);
-      ctx.drawFullscreen(prog, output, (gl) => {
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, cache.source);
-        gl.uniform1i(gl.getUniformLocation(prog, "u_source"), 0);
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, cache.mask);
-        gl.uniform1i(gl.getUniformLocation(prog, "u_mask"), 1);
-        gl.uniform2f(
-          gl.getUniformLocation(prog, "u_invMask"),
-          1 / cache.maskW,
-          1 / cache.maskH
-        );
-        gl.uniform1f(gl.getUniformLocation(prog, "u_feather"), feather);
-        gl.uniform1f(
-          gl.getUniformLocation(prog, "u_threshold"),
-          threshold
-        );
-      });
-    }
-
-    // Mask as grayscale image — same shader, drawing to maskImg.
-    {
-      const prog = ctx.getShader("bg-remove/mask_image", MASK_IMAGE_FS);
-      const drawMask = (target: typeof maskImg | typeof maskOut) => {
-        ctx.drawFullscreen(prog, target, (gl) => {
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, cache.mask);
-          gl.uniform1i(gl.getUniformLocation(prog, "u_mask"), 0);
-          gl.uniform2f(
-            gl.getUniformLocation(prog, "u_invMask"),
-            1 / cache.maskW,
-            1 / cache.maskH
-          );
-          gl.uniform1f(gl.getUniformLocation(prog, "u_feather"), feather);
-          gl.uniform1f(
-            gl.getUniformLocation(prog, "u_threshold"),
-            threshold
-          );
-        });
-      };
-      drawMask(maskImg);
-      drawMask(maskOut);
-    }
-
+    drawCutout(cache.source, cache.mask, cache.maskW, cache.maskH, 1);
+    drawMaskAux(cache.mask, cache.maskW, cache.maskH);
     return { primary: output, aux: { mask: maskOut, mask_image: maskImg } };
   },
 

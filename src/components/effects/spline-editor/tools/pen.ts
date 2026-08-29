@@ -30,11 +30,17 @@ export function penBackgroundDown(
   // Snap the placement against OTHER subpaths' anchors + canvas guides
   // (never the active subpath's own anchors — a coincident neighbor is a
   // degenerate segment, and clicking ON an anchor is the hit ring's toggle
-  // anyway). Cmd/Ctrl suppresses. The guides set here stay visible until
-  // the "new" drag moves or the pointer lifts (drag.ts clears them).
+  // anyway). The viewport-bar lock turns this off; Cmd/Ctrl suppresses
+  // for the gesture. The guides set here stay visible until the "new"
+  // drag moves or the pointer lifts (drag.ts clears them).
   let cx = e.clientX;
   let cy = e.clientY;
-  if (env.rect && !e.metaKey && !e.ctrlKey) {
+  if (
+    env.rect &&
+    env.snapEnabledRef.current &&
+    !e.metaKey &&
+    !e.ctrlKey
+  ) {
     const activeAnchors =
       subpathsOf(env.valueRef.current)[env.activeSubpathRef.current]
         ?.anchors ?? [];

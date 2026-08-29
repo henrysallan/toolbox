@@ -1,6 +1,7 @@
-// Point-data → string formatter, shared by the Points to Text node and the
-// self-contained Point Labels node. Pure (no GL, no DOM) so it lives engine-
-// side and both nodes import it.
+// Point-data → string formatter, shared by Points to Text, Point Labels, and
+// Points to String. Pure (no GL, no DOM) so it lives engine-side and the
+// nodes import it. Points to String also uses joinPointLabelStrings to
+// collapse the per-point list into one caption.
 //
 // A `points` value has a fixed, knowable schema (positions + optional scale/
 // rotation/groupIndex typed arrays, plus implicit index/count), so the "which
@@ -126,4 +127,44 @@ export function formatPointLabels(
     out[i] = formatPointLabel(pts, i, tpl, opts);
   }
   return out;
+}
+
+// Join layouts for Points to String (the caption sibling of Points to Text).
+// Comma / lines / grid collapse the per-point strings into ONE string for a
+// Text node's `text` input. Grid is still a string — N values per line —
+// not typography; Text owns font/leading.
+export const POINT_STRING_LAYOUTS = ["comma", "lines", "grid"] as const;
+export type PointStringLayout = (typeof POINT_STRING_LAYOUTS)[number];
+
+export const POINT_STRING_COL_SEPS = ["space", "tab", "comma"] as const;
+export type PointStringColSep = (typeof POINT_STRING_COL_SEPS)[number];
+
+const COL_SEP: Record<PointStringColSep, string> = {
+  space: "  ",
+  tab: "\t",
+  comma: ", ",
+};
+
+export function joinPointLabelStrings(
+  strings: string[],
+  layout: PointStringLayout,
+  columns = 4,
+  columnSep: PointStringColSep = "space"
+): string {
+  if (strings.length === 0) return "";
+  switch (layout) {
+    case "lines":
+      return strings.join("\n");
+    case "grid": {
+      const cols = Math.max(1, Math.round(columns));
+      const sep = COL_SEP[columnSep] ?? COL_SEP.space;
+      const rows: string[] = [];
+      for (let i = 0; i < strings.length; i += cols) {
+        rows.push(strings.slice(i, i + cols).join(sep));
+      }
+      return rows.join("\n");
+    }
+    default:
+      return strings.join(", ");
+  }
 }

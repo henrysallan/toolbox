@@ -54,6 +54,73 @@ export function switchTypeIsAuto(t: unknown): boolean {
   return t == null || t === SWITCH_AUTO;
 }
 
+// Combine (internal type `collect`; load alias `group`). onConnect flips
+// `mode` to match the wire; editorCanCoerce lets the wire land while the
+// sockets still read the previous type.
+export const COLLECT_TYPE = "collect";
+export const COLLECT_ALIAS_TYPE = "group";
+export function isCollectType(t: string | undefined | null): boolean {
+  return t === COLLECT_TYPE || t === COLLECT_ALIAS_TYPE;
+}
+export type CollectMode = "image" | "spline" | "points" | "object";
+export function collectModeForSource(
+  src: string | null | undefined
+): CollectMode | null {
+  if (src === "spline") return "spline";
+  if (src === "points") return "points";
+  if (src === "object3d" || src === "geometry" || src === "instances") {
+    return "object";
+  }
+  if (src === "image" || src === "mask" || src === "element") return "image";
+  return null;
+}
+export function isCollectSlotHandle(
+  handle: string | undefined | null
+): boolean {
+  if (!handle) return false;
+  const parsed = parseTargetHandleKind(handle);
+  return parsed?.kind === "input" && parsed.name !== "mask";
+}
+
+// Accumulator (scalar integrator, or a persistent points pile). onConnect
+// flips `type` to match the wire; editorCanCoerce lets points / spline /
+// vec2 land while the socket still reads scalar. Spline anchors and a
+// vec2 become points inside the node — the output is always `points`
+// once the domain is points.
+export const ACCUMULATOR_TYPE = "accumulator";
+export type AccumulatorDomain = "scalar" | "points";
+export const ACCUMULATOR_POINTS_SOURCES: ReadonlySet<string> = new Set([
+  "points",
+  "spline",
+  "vec2",
+]);
+export function accumulatorDomainForSource(
+  src: string | null | undefined
+): AccumulatorDomain | null {
+  if (src && ACCUMULATOR_POINTS_SOURCES.has(src)) return "points";
+  if (src === "scalar") return "scalar";
+  return null;
+}
+export function isAccumulatorInputHandle(
+  handle: string | undefined | null
+): boolean {
+  if (!handle) return false;
+  const parsed = parseTargetHandleKind(handle);
+  return parsed?.kind === "input" && parsed.name === "input";
+}
+export function accumulatorDomain(
+  params: Record<string, unknown>,
+  wired?: SocketType
+): AccumulatorDomain {
+  if (wired && ACCUMULATOR_POINTS_SOURCES.has(wired)) return "points";
+  if (wired === "scalar") return "scalar";
+  return params.type === "points" ? "points" : "scalar";
+}
+export function accumulatorInputType(wired?: SocketType): SocketType {
+  if (wired && ACCUMULATOR_POINTS_SOURCES.has(wired)) return wired;
+  return "points";
+}
+
 // ---------------------------------------------------------------------------
 // Coercion table — the canonical cross-type wires. Mirrors coerce.ts (the
 // RUNTIME truth); this is the pure predicate form, used by the editor's

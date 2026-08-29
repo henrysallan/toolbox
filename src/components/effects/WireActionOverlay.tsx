@@ -4,22 +4,26 @@ import { useEffect, useRef, useState } from "react";
 import type { Edge } from "@xyflow/react";
 import { useReactFlow } from "@xyflow/react";
 import {
+  appendPathPoint,
   defaultBezierCps,
   handleCenter,
-  polylineCrossesSegment,
+  polylineCrossesPolyline,
   sampleCubic,
   type Pt,
 } from "@/engine/wire-geometry";
 
 // Captures two drag gestures over the node editor:
 //
-//   Shift + drag   — "combine" gesture. Every edge the line crosses is
+//   Shift + drag   — "combine" gesture. Every edge the drawn path crosses is
 //                    grouped by source (nodeId + sourceHandle); any group
 //                    with ≥2 members gets a junction waypoint set at the
-//                    line's midpoint, so in the renderer those edges fan
+//                    path's midpoint, so in the renderer those edges fan
 //                    out from a shared trunk + dot.
-//   Alt   + drag   — "cut" gesture. Every edge the line crosses is
+//   Alt   + drag   — "cut" gesture. Every edge the path crosses is
 //                    deleted.
+//
+// The overlay traces the cursor path (not a start→end rubber-band) so a
+// curved drag is both visible and what gets hit-tested.
 //
 // We attach at the WINDOW level in the capture phase so we can preempt
 // React Flow's own selection-marquee and node-drag handlers when the
@@ -42,6 +46,7 @@ interface DragState {
   mode: Mode;
   start: Pt;
   current: Pt;
+  path: Pt[];
 }
 
 export default function WireActionOverlay({
@@ -85,10 +90,12 @@ export default function WireActionOverlay({
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
+      const start: Pt = [e.clientX, e.clientY];
       setDrag({
         mode,
-        start: [e.clientX, e.clientY],
-        current: [e.clientX, e.clientY],
+        start,
+        current: start,
+        path: [start],
       });
     };
 
@@ -96,7 +103,9 @@ export default function WireActionOverlay({
       const d = dragRef.current;
       if (!d) return;
       e.preventDefault();
-      setDrag({ ...d, current: [e.clientX, e.clientY] });
+      const next: Pt = [e.clientX, e.clientY];
+      appendPathPoint(d.path, next);
+      setDrag({ ...d, current: next, path: d.path });
     };
 
     const onUp = (e: PointerEvent) => {
@@ -105,6 +114,8 @@ export default function WireActionOverlay({
       e.preventDefault();
       e.stopPropagation();
       const end: Pt = [e.clientX, e.clientY];
+      const last = d.path[d.path.length - 1];
+      if (!last || last[0] !== end[0] || last[1] !== end[1]) d.path.push(end);
       // Reject tiny gestures — probably a mis-click.
       const dx = end[0] - d.start[0];
       const dy = end[1] - d.start[1];
@@ -113,7 +124,7 @@ export default function WireActionOverlay({
         return;
       }
 
-      const crossed = findCrossedEdges(edgesRef.current, d.start, end);
+      const crossed = findCrossedEdges(edgesRef.current, d.path);
       if (d.mode === "cut") {
         if (crossed.length > 0) onCut(crossed.map((c) => c.id));
       } else if (crossed.length > 0) {
@@ -121,11 +132,9 @@ export default function WireActionOverlay({
         // (insertReroutesOnEdges) groups them by shared source and mints one
         // reroute per group, so a single crossed wire reroutes too — no ≥2
         // requirement anymore. Anchor in FLOW coords so it zooms with the
-        // viewport.
-        const midScreen: Pt = [
-          (d.start[0] + end[0]) / 2,
-          (d.start[1] + end[1]) / 2,
-        ];
+        // viewport. Place it at the path's midpoint so a curved drag
+        // doesn't drop the reroute on the start→end chord.
+        const midScreen = pathMidpoint(d.path);
         const midFlow = screenToFlowPosition({
           x: midScreen[0],
           y: midScreen[1],
@@ -172,6 +181,13 @@ export default function WireActionOverlay({
 
   if (!drag) return null;
   const stroke = drag.mode === "combine" ? "var(--tb-a-cyan-400)" : "var(--tb-a-red-500)";
+  const last = drag.path[drag.path.length - 1];
+  const tip =
+    last && last[0] === drag.current[0] && last[1] === drag.current[1]
+      ? []
+      : [drag.current];
+  const verts = [...drag.path, ...tip];
+  const points = verts.map((p) => `${p[0]},${p[1]}`).join(" ");
 
   return (
     <svg
@@ -182,31 +198,67 @@ export default function WireActionOverlay({
         zIndex: 100,
       }}
     >
-      <line
-        x1={drag.start[0]}
-        y1={drag.start[1]}
-        x2={drag.current[0]}
-        y2={drag.current[1]}
-        stroke={stroke}
-        strokeWidth={2}
-        strokeDasharray="6 4"
-      />
+      {verts.length >= 2 && (
+        <>
+          <polyline
+            points={points}
+            fill="none"
+            stroke="rgba(0,0,0,0.45)"
+            strokeWidth={3.5}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <polyline
+            points={points}
+            fill="none"
+            stroke={stroke}
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeDasharray="6 4"
+          />
+        </>
+      )}
     </svg>
   );
 }
 
+function pathMidpoint(path: Pt[]): Pt {
+  if (path.length === 0) return [0, 0];
+  if (path.length === 1) return path[0];
+  let total = 0;
+  for (let i = 1; i < path.length; i++) {
+    total += Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
+  }
+  if (total === 0) return path[0];
+  let acc = 0;
+  const half = total / 2;
+  for (let i = 1; i < path.length; i++) {
+    const d = Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
+    if (acc + d >= half) {
+      const t = d === 0 ? 0 : (half - acc) / d;
+      return [
+        path[i - 1][0] + (path[i][0] - path[i - 1][0]) * t,
+        path[i - 1][1] + (path[i][1] - path[i - 1][1]) * t,
+      ];
+    }
+    acc += d;
+  }
+  return path[path.length - 1];
+}
+
 // Walk every edge, resolve its endpoints from the rendered DOM handles,
 // sample a cubic bezier along its path, and check whether any segment of
-// that polyline crosses the user's straight line.
+// that polyline crosses the user's drawn drag path.
 function findCrossedEdges(
   edges: Edge[],
-  a: Pt,
-  b: Pt
+  path: Pt[]
 ): Array<{
   id: string;
   source: string;
   sourceHandle: string | null | undefined;
 }> {
+  if (path.length < 2) return [];
   const hits: Array<{
     id: string;
     source: string;
@@ -227,7 +279,7 @@ function findCrossedEdges(
     // sampling until it visibly matters in practice.
     const { c1, c2 } = defaultBezierCps(src, tgt);
     const samples = sampleCubic(src, c1, c2, tgt, 14);
-    if (polylineCrossesSegment(samples, a, b)) {
+    if (polylineCrossesPolyline(samples, path)) {
       hits.push({
         id: e.id,
         source: e.source,

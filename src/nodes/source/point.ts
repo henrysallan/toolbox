@@ -1,5 +1,6 @@
 import type { NodeDefinition, PointsValue } from "@/engine/types";
 import { pointsFromArray } from "@/engine/points";
+import { applyTransformInputToPoints } from "@/engine/transform-value";
 
 // Point generator. Outputs a `points` value with `count` entries, all at
 // (x, y) — coincident on purpose. Each copy still gets its own index (its
@@ -17,13 +18,16 @@ export const pointNode: NodeDefinition = {
   category: "point",
   subcategory: "generator",
   description:
-    "Emit Count points at (x, y). They start stacked at the same location but each has its own index, so per-point nodes (Point Expression, Modulate Points) can spread them apart. With Count 1, combine with Copy to Points to place one instance of an image or spline at a specific location.",
+    "Emit Count points at (x, y). They start stacked at the same location but each has its own index, so per-point nodes (Point Expression, Modulate Points) can spread them apart. With Count 1, combine with Copy to Points to place one instance of an image or spline at a specific location. Wire a Gizmo into Transform to share placement (TRS applies on top of x/y).",
   backend: "webgl2",
   // When `position` is connected, its vec2 value overrides the x/y
   // params so you can drive Point's location from any vec2 source
   // (Sample Along Path, Cursor.velocity_vec, Combine Vec2, etc.)
   // without splitting to scalars first.
-  inputs: [{ name: "position", type: "vec2", required: false }],
+  inputs: [
+    { name: "position", type: "vec2", required: false },
+    { name: "transform", type: "transform", required: false, label: "Transform" },
+  ],
   params: [
     {
       name: "count",
@@ -97,6 +101,6 @@ export const pointNode: NodeDefinition = {
         scale: [scale, scale] as [number, number],
       }))
     );
-    return { primary: out };
+    return { primary: applyTransformInputToPoints(out, inputs.transform) };
   },
 };

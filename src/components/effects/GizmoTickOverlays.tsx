@@ -13,6 +13,12 @@ import SplineEditorOverlay from "./spline-editor/SplineEditorOverlay";
 import GradientOverlay from "./GradientOverlay";
 import { evaluateKeyframesAt } from "@/engine/keyframes";
 import {
+  geometryAABBFromOutput,
+  isLocalPivotSpace,
+  localPivot,
+} from "@/engine/transform-pivot";
+import { GIZMO_REST_AABB } from "@/engine/transform-value";
+import {
   anchorTrackId,
   gpointXKey,
   gpointYKey,
@@ -96,6 +102,7 @@ export function SplineEditorOverlayAtTick({
   node,
   nodes,
   canvas,
+  snapEnabled = true,
   onParamChange,
   onSelectNode,
   onAnchorAnimate,
@@ -105,6 +112,9 @@ export function SplineEditorOverlayAtTick({
   // spline (keyframe-aware) and lets select-tool clicks switch to it.
   nodes: EffectsNode[];
   canvas: HTMLCanvasElement | null;
+  // Viewport snapping toggle. Off skips anchor / canvas-guide snap
+  // (Cmd/Ctrl still suppresses a single gesture while it's on).
+  snapEnabled?: boolean;
   onParamChange: ParamChange;
   onSelectNode?: (nodeId: string) => void;
   // Per-anchor keyframing (spec 072726 M6): create/remove the anchor
@@ -164,6 +174,7 @@ export function SplineEditorOverlayAtTick({
       // with the Tracks editor (spline-anchor-scope.ts).
       nodeId={node.id}
       value={value}
+      snapEnabled={snapEnabled}
       onChange={(next) => onParamChange(node.id, "spline", next)}
       onionPrev={onionPrev}
       onionNext={onionNext}
@@ -196,20 +207,27 @@ export function TransformGizmoAtTick({
   node,
   canvas,
   boundsSourceId,
+  boundsSourceHandle,
   evalCacheRef,
   multiGizmo,
   ticksPerFrame,
+  snapEnabled = true,
   onParamChange,
   onMotionPathPointChange,
 }: {
   node: EffectsNode;
   canvas: HTMLCanvasElement | null;
-  // Upstream node feeding in:image when the transform is in spline mode —
-  // its latest eval output provides the geometry the bounds polygon hugs.
+  // Upstream node feeding in:image when the transform is in spline/points
+  // mode — its latest eval output provides the geometry the bounds polygon
+  // hugs. Handle picks primary vs aux.
   boundsSourceId?: string;
+  boundsSourceHandle?: string;
   evalCacheRef: MutableRefObject<EvalCache>;
   multiGizmo: boolean;
   ticksPerFrame: number;
+  // Viewport snapping toggle. Off skips canvas edge / centre snap
+  // (Cmd/Ctrl still suppresses a single gesture while it's on).
+  snapEnabled?: boolean;
   onParamChange: ParamChange;
   onMotionPathPointChange: MotionPathPointChange;
 }) {
@@ -217,41 +235,47 @@ export function TransformGizmoAtTick({
   const animMap = node.data.animation;
   const effective = (name: string, fallback: number): number =>
     effectiveScalar(node, name, currentTick, fallback);
-  // Spline-mode bounds: hug the actual spline geometry instead of the unit
-  // canvas box. We pull the spline value off the upstream node's most
-  // recent eval result; if the upstream hasn't evaluated yet (or isn't a
-  // spline), fall back to canvas bounds. Anchors-only AABB — close enough
-  // at typical spline densities and avoids per-frame Bézier eval.
+  // Spline/points bounds: hug the actual geometry instead of the unit
+  // canvas box. Pulled from the wired upstream eval result (primary or
+  // aux, matching the edge). Degenerate/missing → canvas bounds.
   let boundsMin: [number, number] | undefined;
   let boundsMax: [number, number] | undefined;
-  if (boundsSourceId) {
+  const isGizmo = node.data.defType === "gizmo";
+  if (isGizmo) {
+    boundsMin = [GIZMO_REST_AABB.minX, GIZMO_REST_AABB.minY];
+    boundsMax = [GIZMO_REST_AABB.maxX, GIZMO_REST_AABB.maxY];
+  } else if (boundsSourceId) {
     // eslint-disable-next-line react-hooks/refs -- engine-owned eval cache, mutated outside React with no change notifications; sampled at render exactly like the pre-detach shell did (the tick subscription that caused this render also caused the eval)
-    const srcOut = evalCacheRef.current.get(boundsSourceId);
-    const splineVal = srcOut?.output?.primary;
-    if (splineVal && splineVal.kind === "spline") {
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      for (const sub of splineVal.subpaths) {
-        for (const a of sub.anchors) {
-          if (a.pos[0] < minX) minX = a.pos[0];
-          if (a.pos[0] > maxX) maxX = a.pos[0];
-          if (a.pos[1] < minY) minY = a.pos[1];
-          if (a.pos[1] > maxY) maxY = a.pos[1];
-        }
-      }
-      if (Number.isFinite(minX) && maxX - minX > 1e-4 && maxY - minY > 1e-4) {
-        boundsMin = [minX, minY];
-        boundsMax = [maxX, maxY];
-      }
+    const bbox = geometryAABBFromOutput(
+      evalCacheRef.current.get(boundsSourceId)?.output,
+      boundsSourceHandle
+    );
+    if (bbox && bbox.maxX - bbox.minX > 1e-4 && bbox.maxY - bbox.minY > 1e-4) {
+      boundsMin = [bbox.minX, bbox.minY];
+      boundsMax = [bbox.maxX, bbox.maxY];
     }
   }
-  // Motion-path anchor = the transform's position (translate + pivot), so
-  // the current-frame diamond coincides with the gizmo's pivot marker.
-  // Pivot is read at the playhead (rarely animated).
-  const mpPivotX = effective("pivotX", 0.5);
-  const mpPivotY = effective("pivotY", 0.5);
+  // Motion-path anchor = the transform's position (translate + world pivot),
+  // so the current-frame diamond coincides with the gizmo's pivot marker.
+  // In source (local) space the stored pivot is a bbox fraction.
+  const storedPivotX = effective("pivotX", 0.5);
+  const storedPivotY = effective("pivotY", 0.5);
+  const localSpace = isLocalPivotSpace(node.data.params.space);
+  const worldPivot =
+    localSpace && boundsMin && boundsMax
+      ? localPivot(
+          {
+            minX: boundsMin[0],
+            minY: boundsMin[1],
+            maxX: boundsMax[0],
+            maxY: boundsMax[1],
+          },
+          storedPivotX,
+          storedPivotY
+        )
+      : { x: storedPivotX, y: storedPivotY };
+  const mpPivotX = worldPivot.x;
+  const mpPivotY = worldPivot.y;
   const txConst =
     typeof node.data.params.translateX === "number"
       ? node.data.params.translateX
@@ -264,8 +288,8 @@ export function TransformGizmoAtTick({
     <>
       <TransformGizmo
         canvas={canvas}
-        pivotX={mpPivotX}
-        pivotY={mpPivotY}
+        pivotX={storedPivotX}
+        pivotY={storedPivotY}
         translateX={effective("translateX", 0)}
         translateY={effective("translateY", 0)}
         scaleX={effective("scaleX", 1)}
@@ -273,7 +297,9 @@ export function TransformGizmoAtTick({
         rotate={effective("rotate", 0)}
         boundsMin={boundsMin}
         boundsMax={boundsMax}
+        pivotSpace={isGizmo || !localSpace ? "global" : "local"}
         boxTranslate={multiGizmo}
+        snapEnabled={snapEnabled}
         onChange={(patch) => {
           const id = node.id;
           // Single coalescing key for the whole drag so a 60-frame gizmo

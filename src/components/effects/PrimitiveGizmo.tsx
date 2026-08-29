@@ -256,6 +256,7 @@ export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
   },
 
   circle: {
+    hideWhenWired: ["transform"],
     motionPath: { x: "centerX", y: "centerY" },
     read: (g) => ({
       cx: g("centerX", 0.5),
@@ -273,6 +274,7 @@ export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
     },
   },
   rectangle: {
+    hideWhenWired: ["transform"],
     motionPath: { x: "originX", y: "originY" },
     read: (g) => ({
       cx: g("originX", 0.5),

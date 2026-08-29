@@ -48,6 +48,7 @@ const CANVAS: Shortcut[] = [
   { keys: <><Kbd>⌘</Kbd>+scroll</>, action: "Zoom the active preview viewport, anchored at the cursor." },
   { keys: <><Kbd>0</Kbd></>, action: "Reset both preview viewports' pan and zoom to 1:1." },
   { keys: "Drag files onto the canvas", action: "Drops an image / video / audio / SVG as a new source node." },
+  { keys: "Lock chip in the viewport bar", action: "Toggle snapping for transform gizmos and spline drawing. On by default; hold ⌘ / Ctrl while dragging to suppress one gesture." },
 ];
 
 const SPLINE_DRAW: Shortcut[] = [
@@ -68,7 +69,7 @@ const SPLINE_DRAW: Shortcut[] = [
   { keys: "Double-click a segment or sub-path", action: "Select every anchor of that sub-path (activating it first if needed)." },
   { keys: <><Kbd>Alt</Kbd>+drag a segment</>, action: "Bend the curve between its two anchors (a plain drag moves the segment instead)." },
   { keys: <><Kbd>J</Kbd></>, action: "Join — close the active open sub-path (both endpoints selected), or splice it onto the nearest other open sub-path." },
-  { keys: <><Kbd>⌘</Kbd> / <Kbd>Ctrl</Kbd> while dragging</>, action: "Suppress snapping — anchors otherwise snap onto, and line up with, other anchors and the canvas edges / centre / thirds." },
+  { keys: <><Kbd>⌘</Kbd> / <Kbd>Ctrl</Kbd> while dragging</>, action: "Suppress snapping for the gesture — anchors otherwise snap onto, and line up with, other anchors and the canvas edges / centre / thirds. The lock chip in the viewport bar turns snapping off entirely." },
   { keys: <><Kbd>Delete</Kbd> / <Kbd>Backspace</Kbd></>, action: "Delete every selected anchor (select tool)." },
   { keys: <><Kbd>Esc</Kbd></>, action: "Clear the current anchor selection." },
   { keys: <><Kbd>Alt</Kbd>+drag a handle</>, action: "Break handle symmetry for the gesture (asymmetric tangents)." },

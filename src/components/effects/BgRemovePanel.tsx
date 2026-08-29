@@ -1,17 +1,41 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Edge, Node } from "@xyflow/react";
+import { evalNumExpr } from "@/lib/num-expr";
 import type { NodeDataPayload } from "@/state/graph";
 import type { BgModelId, BgProgress } from "@/lib/ai/bg-remove";
+import {
+  isRvmModel,
+  type RvmDownsample,
+  type RvmModelId,
+  type RvmRecState,
+} from "@/lib/ai/rvm";
+import {
+  addBakeFrame,
+  beginBake,
+  commitBake,
+  freeBake,
+  getRvmStatus,
+  getRvmStoreRev,
+  getScopedFrame,
+  isRvmBaked,
+  isRvmLocked,
+  runLivePreview,
+  setRvmStatusBusy,
+  subscribeRvmStore,
+} from "@/lib/ai/rvm-session";
 
 export interface BgRemovePanelProps {
   node: Node<NodeDataPayload>;
   edges: Edge[];
-  // Bridge into the engine that returns the upstream node's
-  // primary IMAGE output as a PNG Blob. Same helper Image Generate
-  // uses for ref images.
   getRefImageBlob?: (sourceNodeId: string) => Promise<Blob | null>;
+  captureNodeFrames?: (
+    sourceNodeId: string,
+    frames: number[],
+    onFrame: (frame: number, blob: Blob) => Promise<boolean | void>
+  ) => Promise<void>;
+  sceneFrames?: number;
   onParamChange: (
     nodeId: string,
     paramName: string,
@@ -20,27 +44,57 @@ export interface BgRemovePanelProps {
   ) => void;
 }
 
-// Custom param panel for the Background Remove node. Replaces the
-// standard property iteration with a Bake button + status row +
-// the live params (feather / threshold).
+const MODEL_LABELS: Record<BgModelId, string> = {
+  "rmbg-1.4": "RMBG 1.4 (still)",
+  "rmbg-2.0": "RMBG 2.0 (still)",
+  "rvm-mobilenetv3": "RVM MobileNetV3 (video)",
+  "rvm-resnet50": "RVM ResNet50 (video)",
+};
+
+const DOWNSAMPLE_LABELS: Record<RvmDownsample, string> = {
+  auto: "Auto (max 512)",
+  "0.125": "0.125 (4K portrait)",
+  "0.25": "0.25 (1080p portrait)",
+  "0.375": "0.375 (720p)",
+  "0.5": "0.5",
+  "1": "1 (native)",
+};
 
 export default function BgRemovePanel({
   node,
   edges,
   getRefImageBlob,
+  captureNodeFrames,
+  sceneFrames,
   onParamChange,
 }: BgRemovePanelProps) {
+  useSyncExternalStore(subscribeRvmStore, getRvmStoreRev, getRvmStoreRev);
+
   const model = (node.data.params.model as BgModelId) ?? "rmbg-1.4";
+  const rvm = isRvmModel(model);
   const feather = (node.data.params.feather as number) ?? 0;
   const threshold = (node.data.params.threshold as number) ?? 0.5;
-  const baked = !!node.data.params.bakedSource && !!node.data.params.bakedMask;
+  const downsample = ((node.data.params.downsample as RvmDownsample) ??
+    "auto") as RvmDownsample;
+  const inFrame = Math.max(
+    0,
+    Math.round((node.data.params.inFrame as number) ?? 0)
+  );
+  const outFrame = Math.max(
+    inFrame,
+    Math.round((node.data.params.outFrame as number) ?? 120)
+  );
+
+  const rmbgBaked =
+    !!node.data.params.bakedSource && !!node.data.params.bakedMask;
+  const rvmBaked = isRvmBaked(node.id);
+  const rvmLocked = isRvmLocked(node.id);
+  const rvmStatus = getRvmStatus(node.id);
 
   const [progress, setProgress] = useState<BgProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const cancelRef = useRef(false);
 
-  // Find the upstream image source from the live edge list. We
-  // use this both to gate the Bake button (no input → can't bake)
-  // and to capture the bytes for inference.
   const upstreamId = useMemo(() => {
     for (const e of edges) {
       if (e.target === node.id && e.targetHandle === "in:image") {
@@ -50,7 +104,26 @@ export default function BgRemovePanel({
     return null;
   }, [edges, node.id]);
 
-  const bake = async () => {
+  const rvmBusy =
+    rvmStatus.phase === "loading-model" ||
+    rvmStatus.phase === "running" ||
+    rvmStatus.phase === "baking";
+  const rmbgBusy = progress !== null;
+  const busy = rvm ? rvmBusy : rmbgBusy;
+
+  const changeModel = (next: string) => {
+    if (isRvmModel(model) && !isRvmModel(next)) {
+      freeBake(node.id);
+    }
+    if (!isRvmModel(model) && isRvmModel(next)) {
+      onParamChange(node.id, "bakedSource", null);
+      onParamChange(node.id, "bakedMask", null);
+    }
+    onParamChange(node.id, "model", next);
+    setError(null);
+  };
+
+  const bakeRmbg = async () => {
     if (!upstreamId || !getRefImageBlob) return;
     setError(null);
     try {
@@ -63,16 +136,12 @@ export default function BgRemovePanel({
       }
       const { removeBackground } = await import("@/lib/ai/bg-remove");
       const out = await removeBackground(blob, {
-        model,
+        model: model === "rmbg-2.0" ? "rmbg-2.0" : "rmbg-1.4",
         onProgress: (p) => setProgress(p),
       });
-      // Two ImageBitmaps land on the params; the file-typed
-      // params auto-serialize via project.ts on save.
       onParamChange(node.id, "bakedSource", out.source);
       onParamChange(node.id, "bakedMask", out.mask);
       setProgress(null);
-      // Trigger a pipeline re-eval so the cutout shows up
-      // immediately even on a paused timeline.
       window.dispatchEvent(new Event("pipeline-bump"));
     } catch (e) {
       setError((e as Error).message ?? "Bake failed.");
@@ -80,32 +149,141 @@ export default function BgRemovePanel({
     }
   };
 
-  const clearBake = () => {
+  const clearRmbgBake = () => {
     onParamChange(node.id, "bakedSource", null);
     onParamChange(node.id, "bakedMask", null);
     setError(null);
     window.dispatchEvent(new Event("pipeline-bump"));
   };
 
-  const busy = progress !== null;
-  const canBake = !!upstreamId && !busy;
+  const previewRvm = () => {
+    if (!upstreamId || !getRefImageBlob) return;
+    void runLivePreview(
+      node.id,
+      () => getRefImageBlob(upstreamId),
+      model as RvmModelId,
+      downsample
+    );
+  };
 
-  const statusText = busy
-    ? phaseLabel(progress)
-    : baked
-    ? "Baked"
-    : upstreamId
-    ? "Not baked"
-    : "Wire an Image input";
+  const bakeRvm = async () => {
+    if (!upstreamId || !captureNodeFrames) return;
+    const frames: number[] = [];
+    for (let f = inFrame; f <= outFrame; f++) frames.push(f);
+    cancelRef.current = false;
+    beginBake(node.id, frames.length);
+    let rec: RvmRecState | null = null;
+    try {
+      const { mattingFrame, blobHash, freeRvmRec } = await import("@/lib/ai/rvm");
+      const captured: Array<{
+        globalFrame: number;
+        scoped: number | null;
+        png: Blob;
+      }> = [];
+      const hashes = new Set<string>();
+      await captureNodeFrames(upstreamId, frames, async (frame, blob) => {
+        if (cancelRef.current) return false;
+        hashes.add(await blobHash(blob));
+        const out = await mattingFrame(blob, rec, {
+          model: model as RvmModelId,
+          downsample,
+        });
+        rec = out.rec;
+        captured.push({
+          globalFrame: frame,
+          scoped: getScopedFrame(node.id),
+          png: out.png,
+        });
+        setRvmStatusBusy(node.id, {
+          phase: "baking",
+          frameDone: captured.length,
+          frameTotal: frames.length,
+        });
+        return !cancelRef.current;
+      });
+      if (cancelRef.current) {
+        freeRvmRec(rec);
+        freeBake(node.id);
+        return;
+      }
+      const scopedOk =
+        captured.length > 0 &&
+        captured.every(
+          (c, i) =>
+            c.scoped != null && (i === 0 || c.scoped > captured[i - 1].scoped!)
+        );
+      for (const c of captured) {
+        addBakeFrame(
+          node.id,
+          scopedOk ? (c.scoped as number) : c.globalFrame,
+          c.png
+        );
+      }
+      freeRvmRec(rec);
+      commitBake(
+        node.id,
+        captured.length > 1 && hashes.size === 1
+          ? "Every captured frame had identical pixels — the input may not be animating over this range."
+          : undefined
+      );
+    } catch (e) {
+      const { freeRvmRec } = await import("@/lib/ai/rvm");
+      freeRvmRec(rec);
+      freeBake(node.id, (e as Error)?.message ?? "Bake failed.");
+    }
+  };
+
+  const baked = rvm ? rvmBaked : rmbgBaked;
+  const canRmbgBake = !!upstreamId && !busy;
+  const canRvmPreview =
+    !!upstreamId && !!getRefImageBlob && !busy && !rvmLocked;
+  const canRvmBake = !!upstreamId && !!captureNodeFrames && !busy && !rvmBaked;
+
+  const statusText = (() => {
+    if (rvm) {
+      switch (rvmStatus.phase) {
+        case "loading-model":
+          return rvmStatus.progress != null
+            ? `Loading model… ${Math.round(rvmStatus.progress * 100)}%`
+            : "Loading model…";
+        case "running":
+          return "Running…";
+        case "baking":
+          return `Baking ${rvmStatus.frameDone ?? 0}/${rvmStatus.frameTotal ?? 0}`;
+        case "error":
+          return "Error";
+        default:
+          return rvmBaked
+            ? `Baked ${inFrame}–${outFrame}`
+            : !upstreamId
+            ? "Wire an Image input"
+            : "Preview or bake a range";
+      }
+    }
+    if (rmbgBusy) return phaseLabel(progress);
+    if (rmbgBaked) return "Baked";
+    if (upstreamId) return "Not baked";
+    return "Wire an Image input";
+  })();
+
+  const barProgress = rvm
+    ? rvmStatus.phase === "baking" && rvmStatus.frameTotal
+      ? (rvmStatus.frameDone ?? 0) / rvmStatus.frameTotal
+      : rvmStatus.phase === "loading-model"
+      ? rvmStatus.progress ?? null
+      : null
+    : progress?.phase === "loading-model"
+    ? progress.progress ?? null
+    : null;
+
+  const displayError = rvm
+    ? rvmStatus.phase === "error"
+      ? rvmStatus.error
+      : null
+    : error;
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 12,
-      }}
-    >
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <div
         style={{
           display: "flex",
@@ -127,11 +305,20 @@ export default function BgRemovePanel({
         >
           Background Remove
         </div>
-        <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>{model}</div>
+        <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
+          {MODEL_LABELS[model] ?? model}
+        </div>
         <div style={{ flex: 1 }} />
         <div
           style={{
-            color: baked ? "var(--tb-a-green-400)" : busy ? "var(--tb-a-amber-400)" : "var(--tb-n-11)",
+            color:
+              displayError
+                ? "var(--tb-a-red-400)"
+                : baked
+                ? "var(--tb-a-green-400)"
+                : busy
+                ? "var(--tb-a-amber-400)"
+                : "var(--tb-n-11)",
             fontSize: 10,
             display: "flex",
             alignItems: "center",
@@ -143,8 +330,7 @@ export default function BgRemovePanel({
         </div>
       </div>
 
-      {/* Inference progress bar */}
-      {busy && progress?.phase === "loading-model" && (
+      {busy && barProgress != null && (
         <div
           style={{
             background: "var(--tb-n-0)",
@@ -158,18 +344,19 @@ export default function BgRemovePanel({
             style={{
               background: "var(--tb-a-blue-900)",
               height: "100%",
-              width: `${(progress.progress ?? 0) * 100}%`,
+              width: `${barProgress * 100}%`,
               transition: "width 200ms linear",
             }}
           />
         </div>
       )}
 
-      {error && (
+      {displayError && (
         <div
           style={{
             padding: "6px 10px",
-            background: "color-mix(in srgb, var(--tb-a-red-500) 10%, transparent)",
+            background:
+              "color-mix(in srgb, var(--tb-a-red-500) 10%, transparent)",
             border: "1px solid var(--tb-a-red-700)",
             color: "var(--tb-a-red-200)",
             borderRadius: 4,
@@ -177,18 +364,88 @@ export default function BgRemovePanel({
             lineHeight: 1.4,
           }}
         >
-          {error}
+          {displayError}
         </div>
       )}
 
-      {/* Live params */}
+      {rvm && rvmStatus.warning && rvmStatus.phase !== "error" && (
+        <div
+          style={{
+            padding: "6px 10px",
+            background:
+              "color-mix(in srgb, var(--tb-a-amber-400) 8%, transparent)",
+            border: "1px solid var(--tb-a-amber-800)",
+            color: "var(--tb-a-amber-200)",
+            borderRadius: 4,
+            fontSize: 11,
+            lineHeight: 1.4,
+          }}
+        >
+          {rvmStatus.warning}
+        </div>
+      )}
+
       <Field label="Model">
-        <Select
-          value={model}
-          options={["rmbg-1.4", "rmbg-2.0"]}
-          onChange={(v) => onParamChange(node.id, "model", v)}
-        />
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <select
+            value={model}
+            disabled={rvm ? rvmLocked : rmbgBusy}
+            onChange={(e) => changeModel(e.target.value)}
+            style={{
+              flex: 1,
+              padding: "3px 6px",
+              background: "var(--tb-n-1)",
+              border: "1px solid var(--tb-n-7)",
+              color: rvm && rvmLocked ? "var(--tb-n-10)" : "var(--tb-n-16)",
+              fontFamily: "inherit",
+              fontSize: 11,
+              borderRadius: 3,
+            }}
+          >
+            {(Object.keys(MODEL_LABELS) as BgModelId[]).map((m) => (
+              <option key={m} value={m}>
+                {MODEL_LABELS[m]}
+              </option>
+            ))}
+          </select>
+          {rvm && (
+            <SmallButton
+              label="Preview"
+              disabled={!canRvmPreview}
+              onClick={previewRvm}
+            />
+          )}
+        </div>
       </Field>
+
+      {rvm && (
+        <Field label="Downsample">
+          <select
+            value={downsample}
+            disabled={rvmLocked}
+            onChange={(e) =>
+              onParamChange(node.id, "downsample", e.target.value)
+            }
+            style={{
+              width: "100%",
+              padding: "3px 6px",
+              background: "var(--tb-n-1)",
+              border: "1px solid var(--tb-n-7)",
+              color: rvmLocked ? "var(--tb-n-10)" : "var(--tb-n-16)",
+              fontFamily: "inherit",
+              fontSize: 11,
+              borderRadius: 3,
+            }}
+          >
+            {(Object.keys(DOWNSAMPLE_LABELS) as RvmDownsample[]).map((d) => (
+              <option key={d} value={d}>
+                {DOWNSAMPLE_LABELS[d]}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+
       <Field label="Feather">
         <Slider
           value={feather}
@@ -208,54 +465,111 @@ export default function BgRemovePanel({
         />
       </Field>
 
-      {/* Action buttons */}
+      {rvm && (
+        <>
+          <Field label="In Frame">
+            <FrameInput
+              value={inFrame}
+              disabled={rvmLocked}
+              onChange={(v) => onParamChange(node.id, "inFrame", v)}
+            />
+          </Field>
+          <Field label="Out Frame">
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <FrameInput
+                value={outFrame}
+                disabled={rvmLocked}
+                onChange={(v) => onParamChange(node.id, "outFrame", v)}
+              />
+              {sceneFrames != null && !rvmLocked && (
+                <SmallButton
+                  label="End"
+                  disabled={false}
+                  onClick={() =>
+                    onParamChange(
+                      node.id,
+                      "outFrame",
+                      Math.max(inFrame, Math.round(sceneFrames) - 1)
+                    )
+                  }
+                />
+              )}
+            </div>
+          </Field>
+        </>
+      )}
+
       <div style={{ display: "flex", gap: 6 }}>
-        <button
-          type="button"
-          onClick={bake}
-          disabled={!canBake}
-          style={{
-            flex: 1,
-            padding: "6px 10px",
-            background: canBake ? "var(--tb-a-blue-900)" : "transparent",
-            border: `1px solid ${canBake ? "var(--tb-a-blue-700)" : "var(--tb-n-9)"}`,
-            color: canBake ? "var(--tb-a-blue-200)" : "var(--tb-n-10)",
-            fontFamily: "inherit",
-            fontSize: 11,
-            borderRadius: 3,
-            cursor: canBake ? "pointer" : "not-allowed",
-            opacity: canBake ? 1 : 0.6,
-          }}
-        >
-          {baked ? "Re-bake" : "Bake"}
-        </button>
-        {baked && (
-          <button
-            type="button"
-            onClick={clearBake}
-            disabled={busy}
-            style={{
-              padding: "6px 10px",
-              background: "transparent",
-              border: "1px solid var(--tb-n-9)",
-              color: "var(--tb-n-13)",
-              fontFamily: "inherit",
-              fontSize: 11,
-              borderRadius: 3,
-              cursor: "pointer",
-            }}
-          >
-            Clear
-          </button>
+        {rvm ? (
+          rvmBaked ? (
+            <ActionButton
+              label="Free Bake"
+              enabled={!busy}
+              onClick={() => freeBake(node.id)}
+            />
+          ) : rvmStatus.phase === "baking" ? (
+            <ActionButton
+              label="Cancel Bake"
+              enabled
+              onClick={() => {
+                cancelRef.current = true;
+              }}
+            />
+          ) : (
+            <ActionButton
+              label="Bake"
+              enabled={canRvmBake}
+              onClick={() => void bakeRvm()}
+            />
+          )
+        ) : (
+          <>
+            <ActionButton
+              label={rmbgBaked ? "Re-bake" : "Bake"}
+              enabled={canRmbgBake}
+              onClick={() => void bakeRmbg()}
+            />
+            {rmbgBaked && (
+              <button
+                type="button"
+                onClick={clearRmbgBake}
+                disabled={busy}
+                style={{
+                  padding: "6px 10px",
+                  background: "transparent",
+                  border: "1px solid var(--tb-n-9)",
+                  color: "var(--tb-n-13)",
+                  fontFamily: "inherit",
+                  fontSize: 11,
+                  borderRadius: 3,
+                  cursor: "pointer",
+                }}
+              >
+                Clear
+              </button>
+            )}
+          </>
         )}
       </div>
 
       <div style={{ color: "var(--tb-n-10)", fontSize: 10, lineHeight: 1.5 }}>
-        Bake runs the model in your browser via Transformers.js. The
-        first run downloads ~177 MB ({model}) which is cached for
-        future runs. Tweaking <i>feather</i> / <i>threshold</i>{" "}
-        afterwards is free — no re-bake needed. Upstream changes are
-        ignored until you re-bake.
+        {rvm ? (
+          <>
+            <i>Preview</i> mattes the current frame. <i>Bake</i> walks the
+            in/out range sequentially, recycling RVM&apos;s recurrent states so
+            the alpha stays temporally consistent. RGB comes from the live
+            input — the bake stores masks only (session-only: reopen → re-bake).
+            First run downloads ~14 MB, cached afterwards. Tweaking{" "}
+            <i>feather</i> / <i>threshold</i> is free.
+          </>
+        ) : (
+          <>
+            Bake runs RMBG in your browser via Transformers.js. The first run
+            downloads ~177 MB ({model}) which is cached for future runs.
+            Tweaking <i>feather</i> / <i>threshold</i> afterwards is free — no
+            re-bake needed. Upstream changes are ignored until you re-bake.
+          </>
+        )}
       </div>
     </div>
   );
@@ -328,39 +642,6 @@ function Field({
   );
 }
 
-function Select({
-  value,
-  options,
-  onChange,
-}: {
-  value: string;
-  options: readonly string[];
-  onChange: (v: string) => void;
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      style={{
-        width: "100%",
-        padding: "3px 6px",
-        background: "var(--tb-n-1)",
-        border: "1px solid var(--tb-n-7)",
-        color: "var(--tb-n-16)",
-        fontFamily: "inherit",
-        fontSize: 11,
-        borderRadius: 3,
-      }}
-    >
-      {options.map((o) => (
-        <option key={o} value={o}>
-          {o}
-        </option>
-      ))}
-    </select>
-  );
-}
-
 function Slider({
   value,
   min,
@@ -397,5 +678,118 @@ function Slider({
         {value.toFixed(3)}
       </span>
     </div>
+  );
+}
+
+function FrameInput({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: number;
+  disabled: boolean;
+  onChange: (v: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const commit = () => {
+    setEditing(false);
+    const p = evalNumExpr(draft);
+    const n = p === null ? NaN : Math.max(0, Math.round(p));
+    if (Number.isFinite(n) && n !== value) onChange(n);
+  };
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={editing ? draft : String(value)}
+      disabled={disabled}
+      onFocus={() => {
+        setDraft(String(value));
+        setEditing(true);
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        else if (e.key === "Escape") {
+          setEditing(false);
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+      style={{
+        width: 72,
+        padding: "3px 6px",
+        background: "var(--tb-n-1)",
+        border: "1px solid var(--tb-n-7)",
+        color: disabled ? "var(--tb-n-10)" : "var(--tb-n-16)",
+        fontFamily: "inherit",
+        fontSize: 11,
+        borderRadius: 3,
+      }}
+    />
+  );
+}
+
+function SmallButton({
+  label,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        padding: "3px 8px",
+        background: "transparent",
+        border: "1px solid var(--tb-n-9)",
+        color: disabled ? "var(--tb-n-10)" : "var(--tb-n-13)",
+        fontFamily: "inherit",
+        fontSize: 10,
+        borderRadius: 3,
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.6 : 1,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function ActionButton({
+  label,
+  enabled,
+  onClick,
+}: {
+  label: string;
+  enabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!enabled}
+      style={{
+        flex: 1,
+        padding: "6px 10px",
+        background: enabled ? "var(--tb-a-blue-900)" : "transparent",
+        border: `1px solid ${enabled ? "var(--tb-a-blue-700)" : "var(--tb-n-9)"}`,
+        color: enabled ? "var(--tb-a-blue-200)" : "var(--tb-n-10)",
+        fontFamily: "inherit",
+        fontSize: 11,
+        borderRadius: 3,
+        cursor: enabled ? "pointer" : "not-allowed",
+        opacity: enabled ? 1 : 0.6,
+      }}
+    >
+      {label}
+    </button>
   );
 }

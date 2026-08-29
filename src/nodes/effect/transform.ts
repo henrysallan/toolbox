@@ -1,19 +1,30 @@
 import type {
   InputSocketDef,
   NodeDefinition,
-  Point,
-  PointsValue,
   SocketType,
   SplineValue,
 } from "@/engine/types";
 import { transformSpline } from "@/engine/spline-transform";
 import {
   copyPointsWith,
-  ensurePointArray,
   getRotation,
   getScaleX,
   getScaleY,
 } from "@/engine/points";
+import {
+  isLocalPivotSpace,
+  localPivot,
+  pointsPositionsAABB,
+  splineAABB,
+} from "@/engine/transform-pivot";
+import {
+  applyTransformToPoints,
+  applyTransformToSpline,
+  asTransform,
+  composeOpsToAffine,
+  invertAffine,
+  transformTrsVisible,
+} from "@/engine/transform-value";
 
 // Scale/rotate/translate around a user-controlled pivot. All params are in
 // normalized (0-1) screen space — pivot (0,0) is the top-left of the frame,
@@ -27,7 +38,12 @@ import {
 // (and the output) via `resolveInputs`/`resolvePrimaryOutput` + `connectedTypes`
 // — same pattern as the Displace node. The legacy `mode` param is kept hidden
 // for save back-compat but no longer read.
-const TRANSFORM_FS = `#version 300 es
+//
+// Image Tile (AE RepeTile): wrap the inverse-sampled UV instead of clipping
+// it, so extra copies fall out of scale/translate for free. Cost is one
+// fullscreen pass regardless of tile count — no extra draws, no larger
+// target. Unfold mirrors odd cells so adjacent tiles meet edge-to-edge.
+export const TRANSFORM_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_src;
@@ -35,6 +51,10 @@ uniform vec2 u_translate; // screen convention (Y down)
 uniform vec2 u_scale;     // uniform passed as vec2 so we can do non-uniform later
 uniform float u_angle;    // radians
 uniform vec2 u_pivot;     // screen convention (Y down)
+// Extra source-widths past each edge: (left, right, down, up). Y is UV-up
+// (down expands uv.y < 0, up expands uv.y > 1). Ignored when u_tileMode is 0.
+uniform vec4 u_tileExpand;
+uniform int u_tileMode; // 0 off, 1 repeat, 2 unfold
 out vec4 outColor;
 
 void main() {
@@ -57,9 +77,64 @@ void main() {
   p /= max(u_scale, vec2(0.0001));
   uv = p + pivot;
 
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+  vec2 lo = vec2(0.0);
+  vec2 hi = vec2(1.0);
+  if (u_tileMode != 0) {
+    lo = vec2(-u_tileExpand.x, -u_tileExpand.z);
+    hi = vec2(1.0 + u_tileExpand.y, 1.0 + u_tileExpand.w);
+  }
+  if (uv.x < lo.x || uv.x > hi.x || uv.y < lo.y || uv.y > hi.y) {
     outColor = vec4(0.0);
     return;
+  }
+
+  if (u_tileMode == 1) {
+    uv = fract(uv);
+  } else if (u_tileMode == 2) {
+    // Mirror odd cells; cell 0 (the original) stays unflipped.
+    vec2 t = mod(uv, 2.0);
+    uv = mix(t, 2.0 - t, step(1.0, t));
+  }
+  outColor = texture(u_src, uv);
+}`;
+
+// Inverse-sample via a 2×3 affine (Y-down), for a wired `transform` value
+// whose op list may be longer than one TRS. Converts UV-up ↔ Y-down around
+// the multiply so tile wrap still happens in UV space.
+export const TRANSFORM_MATRIX_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+uniform sampler2D u_src;
+uniform vec4 u_invA; // inverse linear part: a, b, c, d
+uniform vec2 u_invT; // inverse translation
+uniform vec4 u_tileExpand;
+uniform int u_tileMode;
+out vec4 outColor;
+
+void main() {
+  vec2 p = vec2(v_uv.x, 1.0 - v_uv.y);
+  vec2 src = vec2(
+    u_invA.x * p.x + u_invA.y * p.y + u_invT.x,
+    u_invA.z * p.x + u_invA.w * p.y + u_invT.y
+  );
+  vec2 uv = vec2(src.x, 1.0 - src.y);
+
+  vec2 lo = vec2(0.0);
+  vec2 hi = vec2(1.0);
+  if (u_tileMode != 0) {
+    lo = vec2(-u_tileExpand.x, -u_tileExpand.z);
+    hi = vec2(1.0 + u_tileExpand.y, 1.0 + u_tileExpand.w);
+  }
+  if (uv.x < lo.x || uv.x > hi.x || uv.y < lo.y || uv.y > hi.y) {
+    outColor = vec4(0.0);
+    return;
+  }
+
+  if (u_tileMode == 1) {
+    uv = fract(uv);
+  } else if (u_tileMode == 2) {
+    vec2 t = mod(uv, 2.0);
+    uv = mix(t, 2.0 - t, step(1.0, t));
   }
   outColor = texture(u_src, uv);
 }`;
@@ -75,53 +150,33 @@ function modeForType(
   return "image";
 }
 
-type AABB = { minX: number; minY: number; maxX: number; maxY: number };
-
-// Local-pivot remap: reinterpret a [0,1] pivot fraction against the geometry's
-// own bounding box so rotate/scale happen about the shape itself. Returns the
-// pivot unchanged when the bbox is degenerate/empty (falls back to global).
-function localPivot(
-  bbox: AABB | null,
-  pivotX: number,
-  pivotY: number
-): { x: number; y: number } {
-  if (!bbox || bbox.maxX <= bbox.minX || bbox.maxY <= bbox.minY) {
-    return { x: pivotX, y: pivotY };
-  }
-  return {
-    x: bbox.minX + pivotX * (bbox.maxX - bbox.minX),
-    y: bbox.minY + pivotY * (bbox.maxY - bbox.minY),
-  };
+// Tile is image-only (UV wrap in the shader). Spline/points would have to
+// duplicate geometry, which is neither RepeTile nor O(1). Degrade to visible
+// when `meta` is missing (docs / export) — additive visibleIf contract.
+function isImageInput(
+  _p: Record<string, unknown>,
+  meta?: { inputTypes?: Record<string, SocketType | undefined> }
+): boolean {
+  const t = meta?.inputTypes?.image;
+  return t !== "spline" && t !== "points";
 }
 
-function splineAABB(s: SplineValue): AABB | null {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const sub of s.subpaths) {
-    for (const a of sub.anchors) {
-      if (a.pos[0] < minX) minX = a.pos[0];
-      if (a.pos[0] > maxX) maxX = a.pos[0];
-      if (a.pos[1] < minY) minY = a.pos[1];
-      if (a.pos[1] > maxY) maxY = a.pos[1];
-    }
-  }
-  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+function tileEnabled(
+  p: Record<string, unknown>,
+  meta?: { inputTypes?: Record<string, SocketType | undefined> }
+): boolean {
+  return isImageInput(p, meta) && p.tile === true;
 }
 
-function pointsAABB(pts: Point[]): AABB | null {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const p of pts) {
-    if (p.pos[0] < minX) minX = p.pos[0];
-    if (p.pos[0] > maxX) maxX = p.pos[0];
-    if (p.pos[1] < minY) minY = p.pos[1];
-    if (p.pos[1] > maxY) maxY = p.pos[1];
-  }
-  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+// Pivot-from Source/Canvas is spline/points-only (images have no intrinsic
+// bounds). Degrade to visible when `meta` is missing (docs / export).
+function isGeometryInput(
+  _p: Record<string, unknown>,
+  meta?: { inputTypes?: Record<string, SocketType | undefined> }
+): boolean {
+  if (!meta?.inputTypes) return true;
+  const t = meta.inputTypes.image;
+  return t === "spline" || t === "points";
 }
 
 export const transformNode: NodeDefinition = {
@@ -129,13 +184,16 @@ export const transformNode: NodeDefinition = {
   name: "Transform",
   category: "utility",
   description:
-    "Scale, rotate, and translate the input around a pivot. Works on images, splines, or points. For SDFs use the Position-pipeline operators (Position Translate / Scale / Rotate) — they compose with Position Repeat / Mirror / Polar for tile-local transforms.",
+    "Scale, rotate, and translate the input around a pivot. Works on images, splines, or points. Wire a Gizmo into Transform to drive the same placement from a shared on-canvas control (that replaces this node's own TRS). Spline/points Pivot from Source (the default) follows the incoming shape's bounds so scale/rotate stay about the shape when you move it; Canvas pins the pivot to a fixed frame point. Image mode can Tile the source past its edges (AE RepeTile) with per-side extent and Unfold. For SDFs use the Position-pipeline operators (Position Translate / Scale / Rotate) — they compose with Position Repeat / Mirror / Polar for tile-local transforms.",
   backend: "webgl2",
   supportsTransformGizmo: true,
   // Input socket is named "image" for back-compat with saved projects; its
   // type (and label) retype from whatever is connected via resolveInputs +
   // connectedTypes — image / spline / points.
-  inputs: [{ name: "image", type: "image", required: true }],
+  inputs: [
+    { name: "image", type: "image", required: true },
+    { name: "transform", type: "transform", required: false, label: "Transform" },
+  ],
   resolveInputs(params, ctx): InputSocketDef[] {
     const mode = modeForType(ctx?.connectedTypes?.image);
     const t: SocketType =
@@ -148,6 +206,12 @@ export const transformNode: NodeDefinition = {
         label,
         type: t,
         required: true,
+      },
+      {
+        name: "transform",
+        type: "transform",
+        required: false,
+        label: "Transform",
       },
     ];
   },
@@ -170,6 +234,7 @@ export const transformNode: NodeDefinition = {
       max: 1,
       step: 0.001,
       default: 0,
+      visibleIf: transformTrsVisible,
     },
     {
       name: "translateY",
@@ -179,6 +244,7 @@ export const transformNode: NodeDefinition = {
       max: 1,
       step: 0.001,
       default: 0,
+      visibleIf: transformTrsVisible,
     },
     {
       name: "scaleX",
@@ -189,6 +255,7 @@ export const transformNode: NodeDefinition = {
       softMax: 4,
       step: 0.01,
       default: 1,
+      visibleIf: transformTrsVisible,
     },
     {
       name: "scaleY",
@@ -199,6 +266,7 @@ export const transformNode: NodeDefinition = {
       softMax: 4,
       step: 0.01,
       default: 1,
+      visibleIf: transformTrsVisible,
     },
     {
       name: "rotate",
@@ -208,6 +276,7 @@ export const transformNode: NodeDefinition = {
       max: 360,
       step: 0.5,
       default: 0,
+      visibleIf: transformTrsVisible,
     },
     {
       name: "pivotX",
@@ -217,6 +286,7 @@ export const transformNode: NodeDefinition = {
       max: 1,
       step: 0.001,
       default: 0.5,
+      visibleIf: transformTrsVisible,
     },
     {
       name: "pivotY",
@@ -226,20 +296,93 @@ export const transformNode: NodeDefinition = {
       max: 1,
       step: 0.001,
       default: 0.5,
+      visibleIf: transformTrsVisible,
     },
     {
       // Pivot space (splines/points only; ignored for images, which have no
-      // intrinsic bounds). Global: pivot X/Y are absolute canvas coords.
-      // Local: pivot X/Y are a fraction of the INCOMING geometry's bounding
+      // intrinsic bounds). Canvas: pivot X/Y are absolute frame coords.
+      // Source: pivot X/Y are a fraction of the INCOMING geometry's bounding
       // box (0.5,0.5 = its center), so rotate/scale happen about the shape
-      // wherever an upstream transform placed it — the anchor "follows" the
-      // previous transforms. Translate stays in canvas units either way.
+      // wherever you (or an upstream transform) placed it. Translate stays
+      // in canvas units either way. Default Source — the usual "scale this
+      // circle" case; Canvas is for scaling toward a fixed frame point.
       name: "space",
-      label: "Pivot space",
+      label: "Pivot from",
       type: "enum",
       options: ["global", "local"],
+      optionLabels: { global: "Canvas", local: "Source" },
       control: "segmented",
-      default: "global",
+      default: "local",
+      visibleIf: (p, meta) =>
+        isGeometryInput(p, meta) && transformTrsVisible(p, meta),
+    },
+    // RepeTile-style expansion. Units are source-widths (1 = one extra copy
+    // past that edge). Default 1 so enabling Tile immediately shows neighbors
+    // once the image is scaled down enough to leave room.
+    {
+      name: "tile",
+      label: "Tile",
+      type: "boolean",
+      default: false,
+      group: "tile",
+      groupHeader: true,
+      visibleIf: isImageInput,
+    },
+    {
+      name: "tileLeft",
+      label: "Left",
+      type: "scalar",
+      min: 0,
+      max: 16,
+      softMax: 4,
+      step: 0.01,
+      default: 1,
+      group: "tile",
+      visibleIf: tileEnabled,
+    },
+    {
+      name: "tileRight",
+      label: "Right",
+      type: "scalar",
+      min: 0,
+      max: 16,
+      softMax: 4,
+      step: 0.01,
+      default: 1,
+      group: "tile",
+      visibleIf: tileEnabled,
+    },
+    {
+      name: "tileUp",
+      label: "Up",
+      type: "scalar",
+      min: 0,
+      max: 16,
+      softMax: 4,
+      step: 0.01,
+      default: 1,
+      group: "tile",
+      visibleIf: tileEnabled,
+    },
+    {
+      name: "tileDown",
+      label: "Down",
+      type: "scalar",
+      min: 0,
+      max: 16,
+      softMax: 4,
+      step: 0.01,
+      default: 1,
+      group: "tile",
+      visibleIf: tileEnabled,
+    },
+    {
+      name: "tileUnfold",
+      label: "Unfold",
+      type: "boolean",
+      default: false,
+      group: "tile",
+      visibleIf: tileEnabled,
     },
   ],
   primaryOutput: "image",
@@ -256,6 +399,60 @@ export const transformNode: NodeDefinition = {
     // Behavior follows the actual input value's kind (the evaluator has
     // already coerced it to the socket type resolveInputs picked).
     const src = inputs["image"];
+    const wired = asTransform(inputs.transform);
+
+    if (wired) {
+      if (src?.kind === "spline") {
+        return { primary: applyTransformToSpline(src, wired) };
+      }
+      if (src?.kind === "points") {
+        return { primary: applyTransformToPoints(src, wired) };
+      }
+      const output = ctx.allocImage();
+      if (!src || src.kind !== "image") {
+        ctx.clearTarget(output, [0, 0, 0, 0]);
+        return { primary: output };
+      }
+      const affine = composeOpsToAffine(wired.ops);
+      const inv = invertAffine(affine) ?? {
+        a: 1,
+        b: 0,
+        tx: 0,
+        c: 0,
+        d: 1,
+        ty: 0,
+      };
+      const tile = params.tile === true;
+      const tileMode = !tile ? 0 : params.tileUnfold === true ? 2 : 1;
+      const tileLeft = Math.max(0, (params.tileLeft as number) ?? 1);
+      const tileRight = Math.max(0, (params.tileRight as number) ?? 1);
+      const tileDown = Math.max(0, (params.tileDown as number) ?? 1);
+      const tileUp = Math.max(0, (params.tileUp as number) ?? 1);
+      const prog = ctx.getShader("transform/matrix", TRANSFORM_MATRIX_FS);
+      ctx.drawFullscreen(prog, output, (gl) => {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, src.texture);
+        gl.uniform1i(gl.getUniformLocation(prog, "u_src"), 0);
+        gl.uniform4f(
+          gl.getUniformLocation(prog, "u_invA"),
+          inv.a,
+          inv.b,
+          inv.c,
+          inv.d
+        );
+        gl.uniform2f(gl.getUniformLocation(prog, "u_invT"), inv.tx, inv.ty);
+        gl.uniform4f(
+          gl.getUniformLocation(prog, "u_tileExpand"),
+          tileLeft,
+          tileRight,
+          tileDown,
+          tileUp
+        );
+        gl.uniform1i(gl.getUniformLocation(prog, "u_tileMode"), tileMode);
+      });
+      return { primary: output };
+    }
+
     const translateX = (params.translateX as number) ?? 0;
     const translateY = (params.translateY as number) ?? 0;
     const scaleX = Math.max(0.0001, (params.scaleX as number) ?? 1);
@@ -266,7 +463,7 @@ export const transformNode: NodeDefinition = {
     // Local pivot space (splines/points): pivot is a fraction of the incoming
     // geometry's bbox, so the shape rotates/scales about itself no matter where
     // upstream transforms placed it. Image mode has no intrinsic bounds → global.
-    const localSpace = params.space === "local";
+    const localSpace = isLocalPivotSpace(params.space);
 
     if (src?.kind === "spline") {
       const p =
@@ -294,7 +491,7 @@ export const transformNode: NodeDefinition = {
       const p =
         localSpace
           ? localPivot(
-              pointsAABB(ensurePointArray(src)),
+              pointsPositionsAABB(src.positions, src.count),
               pivotXParam,
               pivotYParam
             )
@@ -337,8 +534,14 @@ export const transformNode: NodeDefinition = {
       return { primary: output };
     }
 
-    const prog = ctx.getShader("transform/main", TRANSFORM_FS);
+    const prog = ctx.getShader("transform/tile", TRANSFORM_FS);
     const angle = (rotateDeg * Math.PI) / 180;
+    const tile = params.tile === true;
+    const tileMode = !tile ? 0 : params.tileUnfold === true ? 2 : 1;
+    const tileLeft = Math.max(0, (params.tileLeft as number) ?? 1);
+    const tileRight = Math.max(0, (params.tileRight as number) ?? 1);
+    const tileDown = Math.max(0, (params.tileDown as number) ?? 1);
+    const tileUp = Math.max(0, (params.tileUp as number) ?? 1);
 
     ctx.drawFullscreen(prog, output, (gl) => {
       gl.activeTexture(gl.TEXTURE0);
@@ -356,6 +559,14 @@ export const transformNode: NodeDefinition = {
         pivotXParam,
         pivotYParam
       );
+      gl.uniform4f(
+        gl.getUniformLocation(prog, "u_tileExpand"),
+        tileLeft,
+        tileRight,
+        tileDown,
+        tileUp
+      );
+      gl.uniform1i(gl.getUniformLocation(prog, "u_tileMode"), tileMode);
     });
 
     return { primary: output };

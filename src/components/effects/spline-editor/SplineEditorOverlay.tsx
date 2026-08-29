@@ -193,8 +193,9 @@ import { claimPointerGesture } from "@/lib/pointer-claim";
 //   - Pen clicks, anchor drags and primitive draws snap to OTHER anchors —
 //     landing right on one (ring guide) or LINING UP with one on either axis
 //     (dashed alignment guide spanning the participants, ticked at each) —
-//     and to canvas edges / center / thirds (solid hairline guides). Hold
-//     Cmd/Ctrl to suppress snapping mid-gesture.
+//     and to canvas edges / center / thirds (solid hairline guides). The
+//     lock chip in the viewport bar turns this off; hold Cmd/Ctrl to
+//     suppress snapping mid-gesture while it's on.
 //   - Shift during a handle drag (or while pulling handles out of a new
 //     anchor) locks the handle angle to 45° increments. Shift is free there;
 //     its pen-mode insert-on-path meaning applies only to background clicks.
@@ -274,6 +275,9 @@ interface Props {
   // join the snap service, and delete when dropped outside the canvas.
   guides?: SplineGuide[];
   onGuidesChange?: (next: SplineGuide[]) => void;
+  // Viewport snapping toggle. Off skips anchor / canvas-guide snap;
+  // Cmd/Ctrl still suppresses a single gesture while it's on.
+  snapEnabled?: boolean;
 }
 
 export default function SplineEditorOverlay({
@@ -290,6 +294,7 @@ export default function SplineEditorOverlay({
   onAnchorAnimate,
   guides,
   onGuidesChange,
+  snapEnabled = true,
 }: Props) {
   const valueRef = useRef(value);
   valueRef.current = value;
@@ -335,6 +340,10 @@ export default function SplineEditorOverlay({
   // Active snap guides (spec 071926 M2) — written by the drag handlers /
   // pen-click placement, rendered as hairlines + rings, cleared on pointerup.
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
+  // Live so flipping the viewport-bar lock mid-drag takes effect on the
+  // next pointermove (env is captured at gesture start).
+  const snapEnabledRef = useRef(snapEnabled);
+  snapEnabledRef.current = snapEnabled;
   // Shape Builder (spec 071926 M3): the planar-face geometry cache the tools
   // read at event time (synced from the memo by an effect below), and the
   // face currently under the cursor.
@@ -436,6 +445,7 @@ export default function SplineEditorOverlay({
     setHoverSeg,
     setMenu,
     setSnapGuides,
+    snapEnabledRef,
     setHud,
     setMeasure,
     guides: guides ?? [],

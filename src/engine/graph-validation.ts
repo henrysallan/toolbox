@@ -16,6 +16,11 @@ import type { SocketType, ResolveCtx } from "./types";
 import { getNodeDef } from "./registry";
 import {
   coercible,
+  accumulatorDomainForSource,
+  collectModeForSource,
+  isAccumulatorInputHandle,
+  isCollectSlotHandle,
+  isCollectType,
   isSwitchSlotHandle,
   parseTargetHandleKind,
   paramSocketType,
@@ -131,6 +136,24 @@ export function editorCanCoerce(
       src === "spline" ||
       src === "points" ||
       src === "text_instance")
+  )
+    return true;
+  // Combine's slots rest as whatever `mode` last said (image by default)
+  // but accept any family the node can hold — onConnect flips `mode` so
+  // the sockets retype. The mask socket stays a real mask (plain table).
+  if (
+    isCollectType(targetDefType) &&
+    isCollectSlotHandle(targetHandle) &&
+    collectModeForSource(src) != null
+  )
+    return true;
+  // Accumulator's `input` rests as scalar but accepts points / spline /
+  // vec2 — onConnect flips `type` to points and the node coerces those
+  // families into a persistent point set.
+  if (
+    targetDefType === "accumulator" &&
+    isAccumulatorInputHandle(targetHandle) &&
+    accumulatorDomainForSource(src) != null
   )
     return true;
   // Displace / Transform source sockets are polymorphic — they accept

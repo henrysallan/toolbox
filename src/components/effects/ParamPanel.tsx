@@ -19,6 +19,7 @@ import { useClock } from "@/state/playback-clock";
 import type { NodeDataPayload } from "@/state/graph";
 import type { ParamDef, RenderQueueItem, SocketType } from "@/engine/types";
 import {
+  attrNameSuggestions,
   isAttrNameInvalid,
   readUpstreamAttrNames,
 } from "@/components/effects/attr-name-source";
@@ -676,13 +677,17 @@ function ParamPanel({
         />
       ) : selected && selected.data.defType === "bg-remove" ? (
         // Custom BG-remove panel: Bake button + status + live edge
-        // params (feather, threshold). Same key trick as Image
-        // Generate keeps state isolated per node instance.
+        // params (feather, threshold). RVM models also get an in/out
+        // range driven by the same captureNodeFrames stepper as
+        // Segment / Depth. Same key trick as Image Generate keeps
+        // state isolated per node instance.
         <BgRemovePanel
           key={selected.id}
           node={selected}
           edges={edges ?? []}
           getRefImageBlob={getRefImageBlob}
+          captureNodeFrames={captureNodeFrames}
+          sceneFrames={sceneFrames}
           onParamChange={onParamChange}
         />
       ) : selected && selected.data.defType === "segment-anything" ? (
@@ -1198,12 +1203,15 @@ function ParamPanel({
                   selected.id,
                   p.suggestAttrsFrom
                 );
-                if (info.names.length > 0) attrSuggestions = info.names;
+                const includeBuiltins = !!p.suggestAttrsIncludeBuiltins;
+                const suggestions = attrNameSuggestions(info, includeBuiltins);
+                if (suggestions.length > 0) attrSuggestions = suggestions;
                 const current = selected.data.params[p.name];
                 attrInvalid = isAttrNameInvalid(
                   typeof current === "string" ? current : "",
                   info,
-                  !!p.suggestAttrsRequire
+                  !!p.suggestAttrsRequire,
+                  includeBuiltins
                 );
               }
               const exposable = paramSocketType(p.type) !== null;
@@ -2882,8 +2890,9 @@ function ParamRow({
   // Upstream channel names for `suggestAttrsFrom` params — rendered as a
   // datalist picker over the string input.
   attrSuggestions?: string[];
-  // The typed name is verified wrong (reserved, or absent upstream on a
-  // `suggestAttrsRequire` param) — the input renders in the error tint.
+  // The typed name is verified wrong (reserved on a writer, or absent
+  // upstream on a `suggestAttrsRequire` param) — the input renders in
+  // the error tint.
   attrInvalid?: boolean;
   onChange: (v: unknown) => void;
   exposed?: boolean;

@@ -33,6 +33,10 @@ import { concatPoints } from "@/engine/points";
 // than stubbed with placeholder values — the group's effective size
 // equals the number of actually-connected sockets.
 //
+// Inputs auto-grow (EffectsApp `slots` reconciler, same as Proximity
+// Join/Merge): there is always one spare empty socket. Type auto-coerces
+// on wire (onConnect flips `mode` to match the source family).
+//
 //  - Objects (081026 spec §3.1): 3D scene objects group into one
 //    retained THREE.Group, re-membered each eval (Scene Merge's exact
 //    reconciliation — this mode replaces it in the menu; the group
@@ -43,6 +47,38 @@ import { concatPoints } from "@/engine/points";
 type Mode = "image" | "spline" | "points" | "object";
 
 const INPUT_LABELS = "abcdefghijklmnopqrstuvwxyz";
+export const COLLECT_MAX_SLOTS = 26;
+const DEFAULT_SLOTS = ["a", "b"];
+
+function slotsFromCount(count: number): string[] {
+  const n = Math.max(1, Math.min(COLLECT_MAX_SLOTS, Math.floor(count)));
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) out.push(INPUT_LABELS[i]);
+  return out;
+}
+
+// Auto-grow input list. EffectsApp keeps `slots` equal to (connected
+// sockets) + one trailing spare. Pre-auto-grow saves used `count` (1–26)
+// with sockets a, b, c… — honor that when `slots` is absent so old
+// projects and AI recipes that set count still resolve the same handles.
+export function readCollectSlots(params: Record<string, unknown>): string[] {
+  const s = params.slots;
+  if (Array.isArray(s) && s.every((x) => typeof x === "string") && s.length) {
+    return s as string[];
+  }
+  if (typeof params.count === "number") return slotsFromCount(params.count);
+  return DEFAULT_SLOTS;
+}
+
+export function nextCollectSlot(taken: Set<string>): string {
+  for (let i = 0; i < COLLECT_MAX_SLOTS; i++) {
+    const ch = INPUT_LABELS[i];
+    if (!taken.has(ch)) return ch;
+  }
+  let k = 0;
+  while (taken.has(`s${k}`)) k++;
+  return `s${k}`;
+}
 
 function socketTypeFor(mode: Mode): SocketType {
   if (mode === "spline") return "spline";
@@ -73,22 +109,21 @@ export const collectNode: NodeDefinition = {
   name: "Combine",
   category: "utility",
   description:
-    "Bundle N homogeneous inputs. For images, produces an image_group. For splines and points, concatenates into a single value with per-subpath / per-point groupIndex metadata matching the socket order (a=0, b=1, c=2…). Nodes that don't understand groupIndex just treat the output as a normal spline/points value; Select by Index and Count Indices key off the tags. For 3D objects, groups the inputs into one object3d for the 3D Scene node — primitives wire straight in.",
+    "Bundle N homogeneous inputs. Type follows the first wire (image, spline, points, or 3D object) and can still be set from the header. Inputs auto-grow — there's always one spare empty socket. For images, produces an image_group. For splines and points, concatenates into a single value with per-subpath / per-point groupIndex metadata matching the socket order (a=0, b=1, c=2…). Nodes that don't understand groupIndex just treat the output as a normal spline/points value; Select by Index and Count Indices key off the tags. For 3D objects, groups the inputs into one object3d for the 3D Scene node — primitives wire straight in.",
   backend: "webgl2",
   headerControl: { paramName: "mode" },
-  inputs: [{ name: "a", type: "image", required: false }],
+  inputs: [
+    { name: "a", type: "image", required: false },
+    { name: "b", type: "image", required: false },
+  ],
   resolveInputs(params): InputSocketDef[] {
     const mode = ((params.mode as string) ?? "image") as Mode;
-    const count = Math.max(
-      1,
-      Math.min(26, Math.floor((params.count as number) ?? 2))
-    );
     const t = socketTypeFor(mode);
-    const out: InputSocketDef[] = [];
-    for (let i = 0; i < count; i++) {
-      out.push({ name: INPUT_LABELS[i], type: t, required: false });
-    }
-    return out;
+    return readCollectSlots(params).map((name) => ({
+      name,
+      type: t,
+      required: false,
+    }));
   },
   params: [
     {
@@ -99,13 +134,17 @@ export const collectNode: NodeDefinition = {
       default: "image",
     },
     {
+      // Hidden: the editor auto-grows `slots`. Kept so old saves and
+      // recipes that set `count` still size the socket list when `slots`
+      // is absent (readCollectSlots).
       name: "count",
       label: "Inputs",
       type: "scalar",
       min: 1,
-      max: 26,
+      max: COLLECT_MAX_SLOTS,
       step: 1,
       default: 2,
+      hidden: true,
     },
   ],
   primaryOutput: "image_group",
@@ -116,10 +155,7 @@ export const collectNode: NodeDefinition = {
 
   compute({ inputs, params, ctx, nodeId }) {
     const mode = ((params.mode as string) ?? "image") as Mode;
-    const count = Math.max(
-      1,
-      Math.min(26, Math.floor((params.count as number) ?? 2))
-    );
+    const slots = readCollectSlots(params);
 
     if (mode === "object") {
       // Retained group, clear-and-re-add membership each eval (children
@@ -132,8 +168,8 @@ export const collectNode: NodeDefinition = {
         ctx.state[key] = group;
       }
       group.clear();
-      for (let i = 0; i < count; i++) {
-        const v = inputs[INPUT_LABELS[i]];
+      for (const name of slots) {
+        const v = inputs[name];
         if (v && v.kind === "object3d") group.add((v as Object3DValue).object);
       }
       const out: Object3DValue = { kind: "object3d", object: group, variant: "group" };
@@ -147,8 +183,8 @@ export const collectNode: NodeDefinition = {
       // a disconnected socket doesn't reserve an index).
       const subpaths: SplineSubpath[] = [];
       let outerIdx = 0;
-      for (let i = 0; i < count; i++) {
-        const v = inputs[INPUT_LABELS[i]];
+      for (const name of slots) {
+        const v = inputs[name];
         if (!v || v.kind !== "spline") continue;
         for (const sub of v.subpaths) {
           subpaths.push({
@@ -169,8 +205,8 @@ export const collectNode: NodeDefinition = {
       // along); groupIndex = connected-socket ordinal, compacted, as the
       // legacy Point[] loop always did.
       const sources: PointsValue[] = [];
-      for (let i = 0; i < count; i++) {
-        const v = inputs[INPUT_LABELS[i]];
+      for (const name of slots) {
+        const v = inputs[name];
         if (v && v.kind === "points") sources.push(v);
       }
       return {
@@ -179,8 +215,8 @@ export const collectNode: NodeDefinition = {
     }
 
     const items: ImageValue[] = [];
-    for (let i = 0; i < count; i++) {
-      const v = inputs[INPUT_LABELS[i]];
+    for (const name of slots) {
+      const v = inputs[name];
       if (v && v.kind === "image") items.push(v);
     }
     return {

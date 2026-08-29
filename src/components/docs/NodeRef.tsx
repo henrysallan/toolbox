@@ -292,7 +292,10 @@ function ParamTable({ params }: { params: ParamDef[] }) {
                   marginTop: 3,
                 }}
               >
-                {p.options.join(" · ")}
+                {(p.optionLabels
+                  ? p.options.map((o) => p.optionLabels![o] ?? o)
+                  : p.options
+                ).join(" · ")}
               </div>
             )}
           </Cell>

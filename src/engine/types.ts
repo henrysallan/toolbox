@@ -139,7 +139,11 @@ export type SocketType =
   // colour, Rasterize Spline's fill AND stroke ramps, Ascii, Diffusion
   // Curves… instead of each node carrying a hand-rebuilt copy.
   // Spec: 080526_on-node-color-ramp.md.
-  | "color_ramp";
+  | "color_ramp"
+  // CPU affine (TRS around a pivot). Produced by the Gizmo node; consumed
+  // by primitives and Transform. Empty `ops` is identity. Spec:
+  // specdocs/082826_gizmo-node.md.
+  | "transform";
 
 export type ImageValue = {
   kind: "image";
@@ -577,6 +581,25 @@ export type ColorRampValue = {
   interp: ColorRampInterp;
 };
 
+// One TRS-around-pivot step. Matches Transform / transformSpline math:
+// T · P · R · S · P⁻¹ in authored [0,1]² Y-down. Spec: 082826_gizmo-node.md.
+export type TransformOp = {
+  translateX: number;
+  translateY: number;
+  scaleX: number;
+  scaleY: number;
+  rotateDeg: number;
+  pivotX: number;
+  pivotY: number;
+};
+
+// Shared placement. `ops` is applied first-to-last (local first, then
+// parent). Empty = identity. No texture, no coercions.
+export type TransformValue = {
+  kind: "transform";
+  ops: TransformOp[];
+};
+
 // =====================================================================
 // Particle-engine descriptors
 // =====================================================================
@@ -846,7 +869,8 @@ export type SocketValue =
   | Curve3DValue
   | NoiseFieldValue
   | CameraValue
-  | ColorRampValue;
+  | ColorRampValue
+  | TransformValue;
 
 // SDF AST. Every SDF node's compute() returns one of these — a small
 // data tree, no GL work. The Rasterize node walks the tree, emits a
@@ -1595,6 +1619,10 @@ export interface ParamDef {
   maxFrom?: (params: Record<string, unknown>) => number | undefined;
   default: unknown;
   options?: string[];
+  // Optional display labels for `options` values. The stored/enum value
+  // stays the option string; ParamPanel's segmented control (and docs)
+  // show the label when present. UI-only — the engine ignores it.
+  optionLabels?: Record<string, string>;
   // Placeholder text for string-type params when the value is empty.
   placeholder?: string;
   // For "string" params: render a textarea instead of a single-line input.
@@ -1612,6 +1640,12 @@ export interface ParamDef {
   // not-yet-existing name is exactly what they create — and only
   // reserved names flag. UI-only hint.
   suggestAttrsRequire?: boolean;
+  // With `suggestAttrsFrom`: also offer (and accept) the built-in point
+  // columns — index, x, y, scale.x, rotation, group, … — not just named
+  // channels. Map Attribute is the consumer that remaps any of those onto
+  // scale / rotation / position. Writers must omit this: reserved names
+  // stay illegal to write. UI-only hint; the engine ignores it.
+  suggestAttrsIncludeBuiltins?: boolean;
   // For "expr_inputs" params: show a "Sync" button that scans the node's
   // sibling `expression` param for ch("name", default) channel references and
   // mints the matching slider inputs (Houdini-style). See Point Expression.

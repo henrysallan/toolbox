@@ -15,7 +15,10 @@
 // AutoModel + AutoProcessor with a hand-supplied config —
 // matching the exact snippet BRIA publishes on the HF model card.
 
-export type BgModelId = "rmbg-1.4" | "rmbg-2.0";
+import type { RvmModelId } from "./rvm";
+
+export type RmbgModelId = "rmbg-1.4" | "rmbg-2.0";
+export type BgModelId = RmbgModelId | RvmModelId;
 
 export interface BgProgress {
   phase:
@@ -42,7 +45,7 @@ export interface BgRemoveResult {
   mask: ImageBitmap;
 }
 
-function modelRepo(id: BgModelId): string {
+function modelRepo(id: RmbgModelId): string {
   switch (id) {
     case "rmbg-2.0":
       return "briaai/RMBG-2.0";
@@ -86,11 +89,11 @@ interface LoadedModel {
 
 // Cache the loaded handles by model id. Subsequent bakes against
 // the same model skip the load entirely.
-const modelCache = new Map<BgModelId, LoadedModel>();
-const inFlight = new Map<BgModelId, Promise<LoadedModel>>();
+const modelCache = new Map<RmbgModelId, LoadedModel>();
+const inFlight = new Map<RmbgModelId, Promise<LoadedModel>>();
 
 async function loadModel(
-  id: BgModelId,
+  id: RmbgModelId,
   onProgress?: (p: BgProgress) => void
 ): Promise<LoadedModel> {
   const cached = modelCache.get(id);
@@ -244,7 +247,7 @@ function resizeMaskToCanvas(
 export async function removeBackground(
   blob: Blob,
   options: {
-    model: BgModelId;
+    model: RmbgModelId;
     onProgress?: (p: BgProgress) => void;
   }
 ): Promise<BgRemoveResult> {

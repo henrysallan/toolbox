@@ -298,6 +298,10 @@ export interface SplineEditorEnv {
   // Active snap guides (drag handlers write, the component renders them as
   // hairlines / rings; cleared on pointerup). Spec 071926 M2.
   setSnapGuides: Dispatch<SetStateAction<SnapGuide[]>>;
+  // Viewport snapping toggle — live via a ref so flipping the lock
+  // mid-drag takes effect on the next pointermove. Cmd/Ctrl still
+  // suppresses a single gesture while it's on.
+  snapEnabledRef: Ref<boolean>;
   // Numeric drag HUD (see HudState). Written per move, cleared on pointerup.
   setHud: Dispatch<SetStateAction<HudState | null>>;
   // Measurement line (spec 080226 M4) — written by the measure drag,

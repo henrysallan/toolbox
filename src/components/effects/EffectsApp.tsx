@@ -110,6 +110,7 @@ import SpreadsheetPanel, {
 } from "./SpreadsheetPanel";
 import {
   attrNamesFromValue,
+  builtinsFromValue,
   registerAttrNameReader,
 } from "./attr-name-source";
 import { splineToSvg } from "@/engine/svg-serialize";
@@ -137,7 +138,15 @@ import type { SplineAnchor, SplineSubpath } from "@/engine/types";
 import type { ColorRampStop } from "@/engine/color-ramp";
 import type { NodeDataPayload } from "@/state/graph";
 import { parseTargetHandleKind, newCompositionId } from "@/state/graph";
-import { FRAME_TYPE, SWITCH_TYPE } from "@/engine/graph-helpers";
+import {
+  accumulatorDomainForSource,
+  collectModeForSource,
+  FRAME_TYPE,
+  isAccumulatorInputHandle,
+  isCollectSlotHandle,
+  isCollectType,
+  SWITCH_TYPE,
+} from "@/engine/graph-helpers";
 import {
   computeFrameRects,
   FRAME_DEFAULT_H,
@@ -172,6 +181,8 @@ import {
   removeGroupSocket,
   renameGroupSocket,
   ungroupNode,
+  applyIncomingWireToTarget,
+  connectedTypesFromEdges,
   withUpdatedParams,
 } from "@/state/graph-ops";
 import {
@@ -204,6 +215,11 @@ import {
 } from "@/state/node-presets";
 import PresetNameModal from "./PresetNameModal";
 import { newLayerId, type MergeLayer } from "@/nodes/effect/merge";
+import {
+  COLLECT_MAX_SLOTS,
+  nextCollectSlot,
+  readCollectSlots,
+} from "@/nodes/effect/collect";
 import { MAX_COLORS, colorParamName } from "@/nodes/source/color-literal";
 import { newExprInput } from "@/nodes/effect/expression";
 import { defaultAutoLayoutItem } from "@/nodes/effect/autolayout";
@@ -226,6 +242,10 @@ import type {
   SvgFileParamValue,
 } from "@/engine/types";
 import { transformSpline } from "@/engine/spline-transform";
+import {
+  geometryAABBFromOutput,
+  remapPivotForSpaceChange,
+} from "@/engine/transform-pivot";
 import { useHistory, useUndoShortcuts, type GraphSnapshot } from "@/state/history";
 import {
   defaultFilename,
@@ -636,6 +656,16 @@ const CONNECTED_TYPE_RETYPE_NODES = new Set([
   // types) depends on which slots are wired, so the edges-keyed resync
   // must re-resolve it.
   "scene-render",
+  // Bounding Box's `source` and Time Offset's `in` retype from
+  // connectedTypes like Transform (editorCanCoerce exceptions already
+  // let the wires land). Without these entries the UI socket stays at
+  // the resting type after a connect.
+  "bounding-box",
+  "time-offset",
+  // Accumulator: `input` + output follow scalar↔points from the type
+  // param and the live wire (spline/vec2 stay on the input socket and
+  // coerce to a points pile inside compute).
+  "accumulator",
 ]);
 
 // --- timeline dock (080226_timeline-modal-panel.md) -----------------------
@@ -675,6 +705,8 @@ const VIEWPORT_FLAT = "var(--tb-frame)";
 const VIEWPORT_CHECKER_KEY = "viewport.checker";
 /** Same, for the on-canvas GUI (gizmo/handle overlay) toggle. */
 const VIEWPORT_GIZMOS_KEY = "viewport.gizmos";
+/** Same, for transform-gizmo + spline-editor snapping. */
+const VIEWPORT_SNAP_KEY = "viewport.snap";
 
 // Every control in the dock toolbar — the tab toggle, the buttons either
 // side of it, the stagger popover trigger, the panel-kind chip — is
@@ -1118,6 +1150,19 @@ function EffectsShell({
     if (typeof window === "undefined") return;
     window.localStorage.setItem(VIEWPORT_GIZMOS_KEY, showGizmos ? "1" : "0");
   }, [showGizmos]);
+  // Snapping for the transform gizmo (canvas edges / centre) and the
+  // spline editor (anchors + canvas guides). On by default; the lock
+  // chip in the viewport bar turns it off. Cmd/Ctrl still suppresses
+  // a single gesture while it's on. Same per-machine viewing-preference
+  // rule as the checker / gizmos — localStorage, never the project file.
+  const [snapEnabled, setSnapEnabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem(VIEWPORT_SNAP_KEY) !== "0";
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(VIEWPORT_SNAP_KEY, snapEnabled ? "1" : "0");
+  }, [snapEnabled]);
   // Export resolution override (073126_export-resolution-and-app-slim.md).
   // While set, the engine renders at exactly this size — previewScale is
   // deliberately not applied, so exports never inherit a lowered preview
@@ -3051,15 +3096,15 @@ function EffectsShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [errors]);
 
-  // Auto-grow the input sockets of Proximity Join/Merge, Spline Interpolate,
-  // Spline Morph, and SDF Smooth Union: keep each one's `slots` param equal
-  // to (connected sockets, in stable order) + exactly one trailing empty
-  // spare. Derived purely from edges, so it's undo-safe (edges are in
-  // history; slots follow them) and needs no pushGraph snapshot. Runs
-  // whenever edges change — connect fills a spare → next spare appears;
-  // disconnect prunes the emptied middle. (The `t`/`mask`/`spine`/
-  // `smoothness`/`amount` exclusions below skip each node's fixed sockets
-  // so wiring them does not mint a slot.)
+  // Auto-grow the input sockets of Combine, Proximity Join/Merge, Spline
+  // Interpolate, Spline Morph, and SDF Smooth Union: keep each one's
+  // `slots` param equal to (connected sockets, in stable order) + exactly
+  // one trailing empty spare. Derived purely from edges, so it's undo-safe
+  // (edges are in history; slots follow them) and needs no pushGraph
+  // snapshot. Runs whenever edges change — connect fills a spare → next
+  // spare appears; disconnect prunes the emptied middle. (The `t`/`mask`/
+  // `spine`/`smoothness`/`amount` exclusions below skip each node's fixed
+  // sockets so wiring them does not mint a slot.)
   //
   // Merge grows here too, but grow-only: once every layer's image socket is
   // wired, append a fresh layer so there's always an open one. No pruning —
@@ -3089,28 +3134,34 @@ function EffectsShell({
             ],
           });
         }
+        const isCollect = isCollectType(n.data.defType);
         if (
+          !isCollect &&
           n.data.defType !== "proximity-merge" &&
           n.data.defType !== "spline-interpolate" &&
           n.data.defType !== "sdf-smooth-union" &&
           n.data.defType !== "spline-morph"
         )
           return n;
-        // Each auto-grow node's starting slot list. SDF Smooth Union and
-        // Spline Morph seed with their original a/b socket names so saved
-        // two-input projects keep their wires.
-        const seed =
-          n.data.defType === "sdf-smooth-union" ||
-          n.data.defType === "spline-morph"
-            ? ["a", "b"]
-            : ["in"];
-        const raw = n.data.params.slots;
-        const current: string[] =
-          Array.isArray(raw) &&
-          raw.every((x) => typeof x === "string") &&
-          raw.length
-            ? (raw as string[])
-            : seed;
+        // Each auto-grow node's starting slot list. Combine honors a
+        // legacy `count` (sockets a, b, c…) when `slots` is absent; SDF
+        // Smooth Union and Spline Morph seed with their original a/b
+        // names so saved two-input projects keep their wires.
+        const current: string[] = isCollect
+          ? readCollectSlots(n.data.params)
+          : (() => {
+              const seed =
+                n.data.defType === "sdf-smooth-union" ||
+                n.data.defType === "spline-morph"
+                  ? ["a", "b"]
+                  : ["in"];
+              const raw = n.data.params.slots;
+              return Array.isArray(raw) &&
+                raw.every((x) => typeof x === "string") &&
+                raw.length
+                ? (raw as string[])
+                : seed;
+            })();
         // Socket names wired into this node (exclude the t + mask inputs).
         const connected = new Set<string>();
         for (const e of edges) {
@@ -3138,17 +3189,27 @@ function EffectsShell({
         for (const name of connected) if (!kept.includes(name)) kept.push(name);
         let spare = current.find((s) => !connected.has(s));
         if (spare === undefined || kept.includes(spare)) {
-          let k = 0;
           const taken = new Set(kept);
-          while (taken.has(`s${k}`)) k++;
-          spare = `s${k}`;
+          spare = isCollect
+            ? nextCollectSlot(taken)
+            : (() => {
+                let k = 0;
+                while (taken.has(`s${k}`)) k++;
+                return `s${k}`;
+              })();
         }
-        let desired = [...kept, spare];
-        // Spline Morph keeps its original A/B sockets so a fresh node
+        let desired =
+          isCollect && kept.length >= COLLECT_MAX_SLOTS
+            ? kept
+            : [...kept, spare];
+        // Spline Morph and Combine keep two sockets so a fresh node
         // (and saved two-input projects with nothing yet wired) don't
         // collapse to a single spare the way N-ary-from-the-start nodes
         // do.
-        if (n.data.defType === "spline-morph" && desired.length < 2) {
+        if (
+          (n.data.defType === "spline-morph" || isCollect) &&
+          desired.length < 2
+        ) {
           desired = ["a", "b"];
         }
         if (
@@ -3430,6 +3491,53 @@ function EffectsShell({
               ? // withUpdatedParams also re-resolves aux outputs — this
                 // inline copy had drifted and skipped them.
                 withUpdatedParams(n, { ...n.data.params, mode: nextMode })
+              : n
+          )
+        );
+      }
+
+      // Combine: flip Type to match the incoming wire so a spline /
+      // points / object/image can land on a node that still reads the
+      // previous family. Same onConnect promotion as Copy-to-Points.
+      const srcForCollect = sourceOutputType(
+        sourceNode,
+        connection.sourceHandle ?? null
+      );
+      const collectMode = collectModeForSource(srcForCollect);
+      const shouldPromoteCollect =
+        isCollectType(targetNode?.data.defType) &&
+        isCollectSlotHandle(connection.targetHandle) &&
+        collectMode != null &&
+        targetNode != null &&
+        targetNode.data.params.mode !== collectMode;
+      if (shouldPromoteCollect && targetNode && collectMode) {
+        setNodes((prev) =>
+          prev.map((n) =>
+            n.id === targetNode.id
+              ? withUpdatedParams(n, { ...n.data.params, mode: collectMode })
+              : n
+          )
+        );
+      }
+
+      // Accumulator: flip Type to points when a points/spline/vec2 wire
+      // lands on the still-scalar input (and back to scalar if a number
+      // lands on a points accumulator). Same onConnect promotion as Combine.
+      const srcForAccum = sourceOutputType(
+        sourceNode,
+        connection.sourceHandle ?? null
+      );
+      const accumDomain = accumulatorDomainForSource(srcForAccum);
+      const shouldPromoteAccum =
+        targetNode?.data.defType === "accumulator" &&
+        isAccumulatorInputHandle(connection.targetHandle) &&
+        accumDomain != null &&
+        targetNode.data.params.type !== accumDomain;
+      if (shouldPromoteAccum && targetNode && accumDomain) {
+        setNodes((prev) =>
+          prev.map((n) =>
+            n.id === targetNode.id
+              ? withUpdatedParams(n, { ...n.data.params, type: accumDomain })
               : n
           )
         );
@@ -4716,8 +4824,9 @@ function EffectsShell({
       // the new node; from an input socket, connect a compatible
       // output on the new node back into it. Mirrors
       // `isValidConnection` + the onConnect promotion rules for math
-      // (uv) and copy-to-points (instance).
+      // (uv), copy-to-points (instance), and Combine (type).
       let autoEdge: Edge | null = null;
+      let promotedTarget: Node<NodeDataPayload> | null = null;
       if (pendingWire?.kind === "from-source") {
         const def = getNodeDef(type);
         if (def) {
@@ -4748,6 +4857,24 @@ function EffectsShell({
               newNode.data.params = {
                 ...newNode.data.params,
                 mode: nextMode,
+              };
+            }
+          }
+          if (isCollectType(def.type)) {
+            const nextMode = collectModeForSource(srcType);
+            if (nextMode && newNode.data.params.mode !== nextMode) {
+              newNode.data.params = {
+                ...newNode.data.params,
+                mode: nextMode,
+              };
+            }
+          }
+          if (def.type === "accumulator") {
+            const nextDomain = accumulatorDomainForSource(srcType);
+            if (nextDomain && newNode.data.params.type !== nextDomain) {
+              newNode.data.params = {
+                ...newNode.data.params,
+                type: nextDomain,
               };
             }
           }
@@ -4928,13 +5055,43 @@ function EffectsShell({
           }
 
           if (sourceHandle) {
+            const handle = sourceHandle;
             autoEdge = {
               id: `e-auto-${newNode.id}-${targetNodeId}-${targetHandle}`,
               source: newNode.id,
-              sourceHandle,
+              sourceHandle: handle,
               target: targetNodeId,
               targetHandle,
             };
+            const srcOutType =
+              handle === "out:primary"
+                ? primaryType
+                : handle.startsWith("out:aux:")
+                  ? liveAux.find(
+                      (a) => a.name === handle.slice("out:aux:".length)
+                    )?.type
+                  : null;
+            // The new node is the producer; the stashed input is the
+            // consumer. onConnect would flip mode / retype that target,
+            // but we can't call it — the producer isn't in nodesRef yet.
+            // Promote + resolve the target here so Combine / Transform /
+            // Copy-to-Points / Switch (etc.) autocoerce in this pass.
+            if (stashTarget && srcOutType) {
+              promotedTarget = applyIncomingWireToTarget(
+                stashTarget,
+                targetHandle,
+                srcOutType,
+                connectedTypesFromEdges(
+                  stashTarget.id,
+                  [...nodesRef.current, newNode],
+                  edgesRef.current,
+                  {
+                    targetHandle,
+                    srcType: srcOutType as SocketType,
+                  }
+                )
+              );
+            }
           }
         }
       }
@@ -4944,7 +5101,11 @@ function EffectsShell({
       // extra click. setSelectedId mirrors the flag for the param panel /
       // canvas preview without waiting on React Flow's selection echo.
       setNodes((prev) => [
-        ...prev.map((n) => (n.selected ? { ...n, selected: false } : n)),
+        ...prev.map((n) => {
+          const base =
+            promotedTarget && n.id === promotedTarget.id ? promotedTarget : n;
+          return base.selected ? { ...base, selected: false } : base;
+        }),
         { ...newNode, selected: true },
       ]);
       if (autoEdge) {
@@ -5490,7 +5651,7 @@ function EffectsShell({
   // so here we only remove the old edge and add two new ones. Also
   // apply the same mode-promotion the onConnect path runs — if the
   // node is math in scalar mode receiving uv, flip; if copy-to-points
-  // with a fresh instance type, flip.
+  // with a fresh instance type, flip; if Combine, adopt the wire's family.
   const handleSpliceNode = useCallback(
     (args: {
       nodeId: string;
@@ -5555,6 +5716,22 @@ function EffectsShell({
                     : null;
           if (nextMode && nextParams.mode !== nextMode) {
             nextParams = { ...nextParams, mode: nextMode };
+          }
+        } else if (
+          isCollectType(def.type) &&
+          isCollectSlotHandle(`in:${args.inputName}`)
+        ) {
+          const nextMode = collectModeForSource(srcType);
+          if (nextMode && nextParams.mode !== nextMode) {
+            nextParams = { ...nextParams, mode: nextMode };
+          }
+        } else if (
+          def.type === "accumulator" &&
+          args.inputName === "input"
+        ) {
+          const nextDomain = accumulatorDomainForSource(srcType);
+          if (nextDomain && nextParams.type !== nextDomain) {
+            nextParams = { ...nextParams, type: nextDomain };
           }
         }
         if (nextParams !== promoted.data.params) {
@@ -6113,6 +6290,32 @@ function EffectsShell({
             }
           }
           const nextParams = { ...n.data.params, [paramName]: value };
+          // Transform pivot-space flip: remap pivot X/Y so the on-canvas
+          // marker stays put (canvas coords ↔ source-bbox fraction).
+          if (
+            paramName === "space" &&
+            n.data.defType === "transform"
+          ) {
+            const inEdge = edgesRef.current.find(
+              (e) => e.target === n.id && e.targetHandle === "in:image"
+            );
+            if (inEdge) {
+              const remapped = remapPivotForSpaceChange(
+                n.data.params.space,
+                value,
+                (n.data.params.pivotX as number) ?? 0.5,
+                (n.data.params.pivotY as number) ?? 0.5,
+                geometryAABBFromOutput(
+                  evalCacheRef.current.get(inEdge.source)?.output,
+                  inEdge.sourceHandle ?? undefined
+                )
+              );
+              if (remapped) {
+                nextParams.pivotX = remapped.pivotX;
+                nextParams.pivotY = remapped.pivotY;
+              }
+            }
+          }
           const def = getNodeDef(n.data.defType);
           // If this param is half of an active chain-link, write the
           // partner's value too. Numeric guards skip the link if either
@@ -6587,7 +6790,6 @@ function EffectsShell({
         detail.kind === "autolayoutAddItem" ||
         detail.kind === "queueAddItem" ||
         detail.kind === "exprAddInput" ||
-        detail.kind === "collectAddInput" ||
         detail.kind === "colorAddOutput" ||
         detail.kind === "trailsReset"
       ) {
@@ -6719,23 +6921,6 @@ function EffectsShell({
               Math.floor((n.data.params.count as number) ?? 1)
             );
             const nextCount = Math.min(MAX_COLORS, cur + 1);
-            return withUpdatedParams(n, {
-              ...n.data.params,
-              count: nextCount,
-            });
-          })
-        );
-      } else if (detail.kind === "collectAddInput") {
-        // Combine (collect) grows via its `count` param (1–26). Bump it by
-        // one and re-resolve sockets — same shape as the other socket-adders.
-        setNodes((prev) =>
-          prev.map((n) => {
-            if (n.id !== detail.id) return n;
-            const cur = Math.max(
-              1,
-              Math.floor((n.data.params.count as number) ?? 2)
-            );
-            const nextCount = Math.min(26, cur + 1);
             return withUpdatedParams(n, {
               ...n.data.params,
               count: nextCount,
@@ -11485,10 +11670,19 @@ function EffectsShell({
   }, [nodes, selectedId]);
   const transformGizmoNodes = useMemo(
     () =>
-      selectedGizmoCandidates.filter(
-        (n) => !!getNodeDef(n.data.defType)?.supportsTransformGizmo
-      ),
-    [selectedGizmoCandidates]
+      selectedGizmoCandidates.filter((n) => {
+        if (!getNodeDef(n.data.defType)?.supportsTransformGizmo) return false;
+        // Transform's own handles lie when a `transform` value is wired —
+        // those params are ignored. The Gizmo node that authored the value
+        // owns the widget. Spec: 082826_gizmo-node.md.
+        if (n.data.defType === "transform") {
+          return !edges.some(
+            (e) => e.target === n.id && e.targetHandle === "in:transform"
+          );
+        }
+        return true;
+      }),
+    [selectedGizmoCandidates, edges]
   );
   // On-canvas shape handles for selected spline primitives (Circle,
   // Rectangle, …). Driven by the adapter map so new primitives opt in
@@ -11682,16 +11876,20 @@ function EffectsShell({
       const edge = edges.find(
         (e) => e.target === nodeId && e.targetHandle === `in:${socketName}`
       );
-      if (!edge?.source) return { known: false, names: [] };
+      if (!edge?.source) return { known: false, names: [], builtins: [] };
       const out = readNodeOutput(edge.source);
       const value =
         !edge.sourceHandle || edge.sourceHandle === "out:primary"
           ? out?.primary
           : out?.aux?.[edge.sourceHandle.slice("out:aux:".length)];
       if (!value || (value.kind !== "points" && value.kind !== "spline")) {
-        return { known: false, names: [] };
+        return { known: false, names: [], builtins: [] };
       }
-      return { known: true, names: attrNamesFromValue(value) };
+      return {
+        known: true,
+        names: attrNamesFromValue(value),
+        builtins: builtinsFromValue(value),
+      };
     });
   }, [edges, readNodeOutput]);
 
@@ -12794,6 +12992,10 @@ function EffectsShell({
                   on={showChecker}
                   onToggle={() => setShowChecker((v) => !v)}
                 />
+                <ViewportSnapToggle
+                  on={snapEnabled}
+                  onToggle={() => setSnapEnabled((v) => !v)}
+                />
               </>
             }
           />
@@ -13031,6 +13233,7 @@ function EffectsShell({
               node={activeSplineNode}
               nodes={nodes}
               canvas={canvasRef.current}
+              snapEnabled={snapEnabled}
               onParamChange={onParamChange}
               onSelectNode={handlePanelSelectNode}
               onAnchorAnimate={onAnchorAnimate}
@@ -13090,27 +13293,27 @@ function EffectsShell({
           )}
           {showGizmos &&
             backendReady &&
-            transformGizmoNodes.map((gizmoNode) => (
-              <TransformGizmoAtTick
-                key={gizmoNode.id}
-                node={gizmoNode}
-                canvas={canvasRef.current}
-                boundsSourceId={
-                  gizmoNode.data.params.mode === "spline"
-                    ? edges.find(
-                        (e) =>
-                          e.target === gizmoNode.id &&
-                          e.targetHandle === "in:image"
-                      )?.source
-                    : undefined
-                }
-                evalCacheRef={evalCacheRef}
-                multiGizmo={multiGizmo}
-                ticksPerFrame={ticksPerFrame}
-                onParamChange={onParamChange}
-                onMotionPathPointChange={onMotionPathPointChange}
-              />
-            ))}
+            transformGizmoNodes.map((gizmoNode) => {
+              const inEdge = edges.find(
+                (e) =>
+                  e.target === gizmoNode.id && e.targetHandle === "in:image"
+              );
+              return (
+                <TransformGizmoAtTick
+                  key={gizmoNode.id}
+                  node={gizmoNode}
+                  canvas={canvasRef.current}
+                  boundsSourceId={inEdge?.source}
+                  boundsSourceHandle={inEdge?.sourceHandle ?? undefined}
+                  evalCacheRef={evalCacheRef}
+                  multiGizmo={multiGizmo}
+                  ticksPerFrame={ticksPerFrame}
+                  snapEnabled={snapEnabled}
+                  onParamChange={onParamChange}
+                  onMotionPathPointChange={onMotionPathPointChange}
+                />
+              );
+            })}
           {/* Shape-primitive handles (Circle, Rectangle, …) — move the
               center, drag edges/corners to resize. */}
           {showGizmos &&
@@ -14149,10 +14352,10 @@ function ViewportCheckerToggle({
 }
 
 /**
- * On-canvas GUI switch — sits immediately left of the transparency-grid
- * toggle in the viewport menu bar's trailing slot, and shares its chrome
- * (19×17 chip, pressed fill when on) so the two read as one pair of view
- * options.
+ * On-canvas GUI switch — sits in the viewport menu bar's trailing slot
+ * with the transparency-grid and snapping chips, and shares their chrome
+ * (19×17 chip, pressed fill when on) so the three read as one cluster of
+ * view / interaction options.
  *
  * The glyph is a miniature gizmo: a bounds box with corner handles, which
  * is what most of the overlays it controls actually look like. Struck
@@ -14225,6 +14428,78 @@ function ViewportGizmoToggle({
             strokeWidth={1.25}
           />
         )}
+      </svg>
+    </button>
+  );
+}
+
+/**
+ * Snapping switch — rightmost of the viewport menu bar's trailing
+ * chips. Closed lock = snapping on (the default); open lock = off.
+ * Drives the transform gizmo's edge/centre snap and the spline
+ * editor's anchor + canvas-guide snap. Cmd/Ctrl still suppresses
+ * a single gesture while it's on.
+ */
+function ViewportSnapToggle({
+  on,
+  onToggle,
+}: {
+  on: boolean;
+  onToggle: () => void;
+}) {
+  const stroke = on ? "var(--tb-n-16)" : "var(--tb-n-11)";
+  return (
+    <button
+      onClick={onToggle}
+      aria-pressed={on}
+      aria-label={on ? "Snapping on" : "Snapping off"}
+      title={
+        on
+          ? "Snapping on — click to let handles move freely"
+          : "Snapping off — click to snap to edges, centres, and other anchors"
+      }
+      style={{
+        width: 19,
+        height: 17,
+        padding: 0,
+        display: "grid",
+        placeItems: "center",
+        boxSizing: "border-box",
+        background: on ? "var(--tb-n-5)" : "var(--tb-n-3)",
+        border: `1px solid ${on ? "var(--tb-n-9)" : "var(--tb-n-7)"}`,
+        borderRadius: 3,
+        cursor: "pointer",
+      }}
+    >
+      <svg width={11} height={11} viewBox="0 0 11 11" aria-hidden>
+        <rect
+          x={2}
+          y={5.25}
+          width={7}
+          height={4.5}
+          rx={1}
+          fill="none"
+          stroke={stroke}
+          strokeWidth={1}
+        />
+        {on ? (
+          <path
+            d="M3.5 5.25V3.75a2 2 0 0 1 4 0V5.25"
+            fill="none"
+            stroke={stroke}
+            strokeWidth={1}
+            strokeLinecap="round"
+          />
+        ) : (
+          <path
+            d="M3.5 5.25V3.75a2 2 0 0 1 3.7-1"
+            fill="none"
+            stroke={stroke}
+            strokeWidth={1}
+            strokeLinecap="round"
+          />
+        )}
+        <circle cx={5.5} cy={7.35} r={0.7} fill={stroke} />
       </svg>
     </button>
   );

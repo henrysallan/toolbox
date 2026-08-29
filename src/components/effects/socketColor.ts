@@ -112,6 +112,9 @@ export const SOCKET_PALETTE: Record<string, SocketColorPair> = {
   // params, so a blue ramp wire would be ambiguous on the very node that
   // wants it most. Spec: 080526_on-node-color-ramp.md.
   color_ramp: { dark: "#f87962", light: "#ca3a23" },
+  // Transform wires (Gizmo → primitives / Transform) — cyan-300, a cousin
+  // of spline's cyan the way points3d is of points. Spec: 082826_gizmo-node.md.
+  transform: { dark: "#67e8f9", light: "#0e7490" },
 };
 
 /** Fallback for an unknown socket type — the neutral slate. */
