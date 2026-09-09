@@ -196,6 +196,20 @@ export const lensFlareNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Lens flare: chromatic ghosts + halo ring + anamorphic streak. Outputs the FLARE LAYER ONLY (transparent background) — composite back over the source with a Merge (additive) so you can pre-blur / tint between if you want.",
+  facts: {
+    space: {
+      "param:ghost_dispersal": "uv01",
+      "param:chromatic_aberration": "uv01",
+      "param:halo_width": "uv01",
+      "param:streak_length": "uv01",
+    },
+    gotchas: [
+      "ghost_dispersal, chromatic_aberration, halo_width, and streak_length are UV-fraction offsets in raw v_uv space (uv01), not aspect-corrected.",
+      "Ghosts, halo, and streak all render at half the source resolution before the full-res composite; threshold/soft_knee affect all three via one shared bright-pass buffer.",
+      "streak is skipped entirely (rendered blank) when streak_strength or streak_length is 0, instead of computing a zero-length blur.",
+      "num_ghosts is rounded and clamped to 0..8 in JS; the shader loop itself hard-caps at 8 ghosts regardless of the param value.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

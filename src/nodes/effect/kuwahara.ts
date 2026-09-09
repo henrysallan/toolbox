@@ -150,6 +150,15 @@ export const kuwaharaNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Painterly smoothing: each pixel pools the least-varying sectors of its neighborhood, flattening texture into paint-like facets while edges stay crisp. `Anisotropic` (default) stretches the facets into strokes along the local flow — steered by the `field` input (Image Flow Field, or any velocity field), or by an internal estimate when unwired — and is the temporally stable choice for video. `Generalized` keeps round isotropic facets. `Radius` is the brush size (cost grows with its square); `Sharpness`/`Hardness` set how crisply the winning facet dominates; `Anisotropy` scales how strongly flow coherence elongates strokes, with `Min coherence` forcing elongation where the field reports none (e.g. plain velocity fields).",
+  facts: {
+    space: { "param:radius": "pixels" },
+    gotchas: [
+      "radius is in pixels at render resolution and does not scale with output size; the ellipse major half-axis caps at 48px (MAX_EXTENT) regardless of anisotropy.",
+      "anisotropy and min_coherence only apply in mode=anisotropic; generalized mode uses isotropic sectors and ignores the field entirely.",
+      "field unwired computes an internal structure-tensor field from the source using the smooth param; smooth is ignored once field is wired.",
+      "Sector means/variances accumulate in premultiplied color and un-premultiply on write, matching the convolve/boundary.ts convention.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", type: "image", required: true },

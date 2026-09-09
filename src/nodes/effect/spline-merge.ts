@@ -60,6 +60,16 @@ export const splineMergeNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Merge all subpaths of one spline into combined region(s). Union collapses overlapping shapes into a single silhouette (one clean outer stroke when rasterized); also intersect and exclude (even-odd XOR). Flow turns the merge into a liquid simulation — the silhouette flows toward the new shape, bridging and snapping as parts meet and stretching before it pinches off as they part. Outputs a spline — wire into Rasterize Spline to draw. Note: union treats each subpath as solid, so holes inside a single shape fill in.",
+  facts: {
+    space: { "param:blend": "canvas01" },
+    gotchas: [
+      "resolution (curve flattening steps) only applies in exact mode (flow off); Flow rasterizes true beziers and ignores it.",
+      "flow_speed is a 0..1 dial mapped onto a much smaller actual relaxation rate (dial 1.0 → 0.001), so the useful slow range spans the whole slider.",
+      "blend is the goo/bridge radius as a canvas-width-relative distance, converted internally to field texels via detail's grid scale.",
+      "detail sets the flow field's grid resolution (texels across the canvas's longer side, 128..768); higher is sharper but heavier per tick.",
+      "Exact mode caches its result and only recomputes when geometry, operation, or resolution change; Flow instead advances every tick via fingerprintExtras.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [

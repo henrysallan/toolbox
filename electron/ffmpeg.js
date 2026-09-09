@@ -53,7 +53,19 @@ function abortSession(sessionId) {
 
 // Quit-time sweep: without it, closing the app mid-export leaves an orphaned
 // ffmpeg process writing a truncated file to the user-chosen path.
+// Scrub proxies (specdocs/090526_video-scrub-optimizations.md M4): 1080p
+// all-intra re-encodes that only the renderer's WebCodecs decode source
+// reads, by byte range over IPC. Temp files, unlinked on dispose and quit.
+const proxies = new Map(); // token → { path, size }
+function cleanupProxies() {
+  for (const p of proxies.values()) {
+    try { fs.unlinkSync(p.path); } catch { /* best-effort */ }
+  }
+  proxies.clear();
+}
+
 function killAllSessions() {
+  cleanupProxies();
   for (const id of [...sessions.keys()]) abortSession(id);
 }
 
@@ -197,6 +209,60 @@ function register() {
 
   ipcMain.handle("toolbox:encodeVideoAbort", async (_event, sessionId) => {
     abortSession(sessionId);
+  });
+
+  // Build a scrub proxy: long side ≤ 1920, every frame a keyframe, frame
+  // timing preserved (-fps_mode passthrough), rotation baked in (ffmpeg
+  // autorotates), no audio. CRF 23 keeps a minute of 1080p near 50 MB.
+  ipcMain.handle("toolbox:scrubProxyBegin", async (_event, { bytes, name }) => {
+    if (!ffmpegAvailable) throw new Error("native ffmpeg unavailable");
+    const id = ++counter;
+    const inExt = (name && path.extname(String(name))) || ".bin";
+    const inPath = path.join(os.tmpdir(), `toolbox-proxy-in-${id}${inExt}`);
+    const outPath = path.join(os.tmpdir(), `toolbox-proxy-${id}.mp4`);
+    await fsp.writeFile(inPath, Buffer.from(bytes));
+    try {
+      await runFfmpeg([
+        "-y", "-i", inPath,
+        "-vf", "scale=w='if(gt(iw,ih),min(1920,iw),-2)':h='if(gt(iw,ih),-2,min(1920,ih))'",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+        "-g", "1", "-keyint_min", "1", "-fps_mode", "passthrough",
+        "-an", "-movflags", "+faststart",
+        outPath,
+      ]);
+    } catch (e) {
+      fsp.unlink(outPath).catch(() => {});
+      throw e;
+    } finally {
+      fsp.unlink(inPath).catch(() => {});
+    }
+    const { size } = await fsp.stat(outPath);
+    const token = `proxy-${id}`;
+    proxies.set(token, { path: outPath, size });
+    return { token, size };
+  });
+
+  ipcMain.handle("toolbox:scrubProxyRead", async (_event, token, start, end) => {
+    const p = proxies.get(token);
+    if (!p) throw new Error("scrubProxyRead: unknown proxy");
+    const s = Math.max(0, Math.floor(Number(start)));
+    const e = Math.min(p.size, Math.floor(Number(end)));
+    if (!(e > s)) return new ArrayBuffer(0);
+    const fh = await fsp.open(p.path, "r");
+    try {
+      const buf = Buffer.alloc(e - s);
+      const { bytesRead } = await fh.read(buf, 0, e - s, s);
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + bytesRead);
+    } finally {
+      await fh.close();
+    }
+  });
+
+  ipcMain.handle("toolbox:scrubProxyDispose", async (_event, token) => {
+    const p = proxies.get(token);
+    if (!p) return;
+    proxies.delete(token);
+    fsp.unlink(p.path).catch(() => {});
   });
 
   // Transcode a video Chromium can't decode into a playable form. 10-bit

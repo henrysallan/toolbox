@@ -29,6 +29,7 @@ import {
 import { gizmoNode } from "../src/nodes/effect/gizmo.ts";
 import { transformNode } from "../src/nodes/effect/transform.ts";
 import { circleNode } from "../src/nodes/source/circle.ts";
+import { lineNode } from "../src/nodes/source/line.ts";
 import { pointNode } from "../src/nodes/source/point.ts";
 
 let failures = 0;
@@ -339,6 +340,78 @@ check(
     "Circle-style compose applies after generate",
     close(c2.x, 0.4) && close(c2.y, 0.4),
     `got (${c2.x}, ${c2.y})`
+  );
+}
+
+// ── Line primitive ─────────────────────────────────────────────────────
+{
+  check(
+    "Line declares transform input",
+    lineNode.inputs.some((s) => s.name === "transform" && s.type === "transform")
+  );
+  const lineCtx = { width: 1920, height: 1080, state: {} } as RenderContext;
+  const out = lineNode.compute({
+    inputs: {},
+    auxIn: {},
+    params: {
+      startX: 0.1,
+      startY: 0.2,
+      endX: 0.8,
+      endY: 0.9,
+      stroke_enabled: false,
+      fill_enabled: false,
+    },
+    ctx: lineCtx,
+    nodeId: "ln",
+  }) as NodeOutput;
+  check("Line unwired emits spline", out.primary?.kind === "spline");
+  const sub = (out.primary as SplineValue).subpaths[0];
+  check(
+    "Line is one open 2-anchor subpath",
+    !!sub && sub.closed === false && sub.anchors.length === 2
+  );
+  const a = sub?.anchors[0]?.pos;
+  const b = sub?.anchors[1]?.pos;
+  check(
+    "Line endpoints match params",
+    !!a &&
+      !!b &&
+      close(a[0], 0.1) &&
+      close(a[1], 0.2) &&
+      close(b[0], 0.8) &&
+      close(b[1], 0.9),
+    a && b ? `got (${a[0]}, ${a[1]}) → (${b[0]}, ${b[1]})` : "missing anchors"
+  );
+  const moved = lineNode.compute({
+    inputs: {
+      transform: { kind: "transform", ops: [translateOp(0.05)] },
+    },
+    auxIn: {},
+    params: {
+      startX: 0.1,
+      startY: 0.2,
+      endX: 0.8,
+      endY: 0.9,
+      stroke_enabled: false,
+      fill_enabled: false,
+    },
+    ctx: lineCtx,
+    nodeId: "ln2",
+  }) as NodeOutput;
+  const msub = (moved.primary as SplineValue).subpaths[0];
+  const ma = msub?.anchors[0]?.pos;
+  const mb = msub?.anchors[1]?.pos;
+  check(
+    "Line composes transform after generate",
+    !!ma &&
+      !!mb &&
+      close(ma[0], 0.15) &&
+      close(ma[1], 0.2) &&
+      close(mb[0], 0.85) &&
+      close(mb[1], 0.9),
+    ma && mb
+      ? `got (${ma[0]}, ${ma[1]}) → (${mb[0]}, ${mb[1]})`
+      : "missing anchors"
   );
 }
 

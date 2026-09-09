@@ -4,7 +4,7 @@ import { memo, useRef, useState } from "react";
 import type { Node, NodeProps } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
 import { FRAME_TYPE } from "@/engine/graph-helpers";
-import { ITERATE_TYPE } from "@/engine/groups";
+import { isZoneShell } from "@/engine/groups";
 import { FRAME_NEUTRAL, tintRgba } from "./node-tints";
 
 // Blender-style frame zone (073026_node-cosmetics-and-frames.md): a shaded
@@ -79,7 +79,7 @@ export function collectFrameMemberIds(
   for (const n of nodes) {
     if (n.hidden || members.has(n.id)) continue;
     const p = n.data.parentId ? byId.get(n.data.parentId) : undefined;
-    if (p && p.data.defType === ITERATE_TYPE && members.has(p.id)) {
+    if (p && isZoneShell(p.data.defType) && members.has(p.id)) {
       members.add(n.id);
     }
   }

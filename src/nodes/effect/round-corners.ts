@@ -17,6 +17,15 @@ export const roundCornersNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Round the sharp corners of a spline with circular fillets. Radius is in normalized space (0.5 = half the canvas), capped per corner at half each edge. Curved anchors and open-path endpoints are left as-is. Outputs a spline — view it with Stroke or Rasterize Spline.",
+  facts: {
+    space: { "param:radius": "canvas01" },
+    gotchas: [
+      "radius is a canvas01 distance like anchor positions, capped per corner at half the length of each adjacent edge, so tight polygons round less than the slider value.",
+      "Only handle-less (straight) interior corners round; anchors that already carry a handle and the endpoints of an open subpath pass through untouched.",
+      "A per-anchor cornerStyle (chamfer/scoop) set upstream via Spline Draw's live corner tool is still honored even though this node exposes only one uniform radius.",
+      "radius<=0 returns the input spline unchanged (same object reference), skipping the fillet pass entirely.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [

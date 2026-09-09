@@ -30,6 +30,14 @@ export const renderQueueNode: NodeDefinition = {
   category: "output",
   description:
     "Collects Output nodes into an ordered batch and renders them one after another. Wire each Output's `render` output into a socket here; reorder the rows in the parameters panel; hit Render to export the whole queue.",
+  facts: {
+    gotchas: [
+      "compute() is a no-op; render edges are ignored by the evaluator's reachability pass, so wiring an Output in here does not force it to evaluate every frame.",
+      "Input sockets are dynamic — one item:<id> per row of the `items` (render_queue-type) param; reordering or removing rows changes the socket list.",
+      "Each socket only accepts a `render` wire from an Output node, the sole producer of that type; the panel reads the wire to show that Output's filename/frame-count inline.",
+      "delivery is hidden from the normal param list and surfaced only via a gear popover in the custom param panel, not a plain dropdown.",
+    ],
+  },
   backend: "webgl2",
   // No universal mask socket — this node renders nothing to mask.
   noMaskInput: true,

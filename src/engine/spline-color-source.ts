@@ -12,7 +12,9 @@ import {
 // a flat value or a color ramp keyed by ordinal index, a seeded hash, the
 // subpath's groupIndex, its centroid projected on a steerable axis, or the
 // producer-authored `driver` scalar carried on the subpath itself (e.g.
-// Space Fill's per-line weight — 072726_space-fill.md).
+// Space Fill's per-line weight — 072726_space-fill.md), or a named
+// subpath channel when `attr` is set (Set Named Attribute / Copy to
+// Points' gathered point attrs).
 //
 // Engine-side (invariant #1) so it stays in the export bundle. Returns an
 // `rgba(...)` string ready for a Canvas2D fillStyle/strokeStyle.
@@ -27,6 +29,12 @@ export interface SubpathColorConfig {
   seed: number;
   angleDeg: number; // gradient axis for `position` mode
   interp: ColorRampInterp;
+  // Phase shift on the sampled t; wraps so 1.2 ≡ 0.2. 0 = no shift
+  // (legacy clamp, t=1 still hits the last stop).
+  offset?: number;
+  // Named subpath channel for `by: "driver"` — forwarded to the shared
+  // driver resolver. See SubpathDriverConfig.attr.
+  attr?: string;
 }
 
 // Deterministic per-subpath hash → [0, 1) for the "random" mode. Index-stable
@@ -65,6 +73,11 @@ export interface SubpathDriverConfig {
   by: ColorRampBy;
   seed: number;
   angleDeg: number; // gradient axis for `position` mode
+  // When `by === "driver"`: read this named subpath channel (component 0)
+  // instead of `sub.driver`. Empty / missing falls back to `sub.driver`.
+  // Lets Set Named Attribute / Copy to Points' gathered point attrs drive
+  // ramps and thickness without a separate producer-authored scalar.
+  attr?: string;
 }
 
 export function makeSubpathDriverFn(
@@ -92,7 +105,16 @@ export function makeSubpathDriverFn(
   return (i, sub) => {
     if (by === "random") return hash01(i, seed);
     if (by === "driver") {
-      // Producer-authored scalar; subpaths without one sit at mid-ramp.
+      // Named attr (component 0) wins when configured; else the
+      // producer-authored scalar. Missing either sits at mid-ramp.
+      const name = (cfg.attr ?? "").trim();
+      if (name) {
+        const v = sub.attrs?.[name];
+        const n = Array.isArray(v) ? v[0] : v;
+        if (typeof n === "number" && Number.isFinite(n)) {
+          return Math.min(1, Math.max(0, n));
+        }
+      }
       const d = sub.driver;
       return typeof d === "number" && Number.isFinite(d)
         ? Math.min(1, Math.max(0, d))
@@ -123,6 +145,7 @@ export function makeSubpathColorFn(
 
   const stops = Array.isArray(cfg.stops) ? cfg.stops : [];
   const interp = cfg.interp ?? "linear";
+  const offset = cfg.offset ?? 0;
   const driverAt = makeSubpathDriverFn(subpaths, cfg);
-  return (i, sub) => sampleColorRamp(stops, driverAt(i, sub), interp);
+  return (i, sub) => sampleColorRamp(stops, driverAt(i, sub), interp, offset);
 }

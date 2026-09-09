@@ -38,6 +38,16 @@ export const pointsToTextNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Format each point's own data into a string — position (x, y), index, rotation, scale, or group — one label per point. Pick a field or write a custom token template ({x} {y} {i} {n} {rot} {rad} {sx} {sy} {g}); coordinates read normalized [0,1] or in pixels, with adjustable precision. Emits a text_instance: wire it into Copy to Points (text mode, 'by index' pairing) to place each label on its point. Style comes from a wired Text node, or the local font/size/color params.",
+  facts: {
+    space: { "param:size": "pixels" },
+    reads: ["attr:rotation", "attr:scale", "attr:group"],
+    gotchas: [
+      "field=custom's {token} template is shared with Point Labels/Points to String; unrecognized {…} sequences pass through literally.",
+      "units=pixels multiplies x by canvas width and y by canvas height independently (anisotropic) — not one aspect-scaled number.",
+      "Pairing with Copy to Points (text mode, 'by index') matches strings to points strictly by INDEX; a filter/reorder/resample in between desyncs labels from dots.",
+      "style input (a wired Text node's text_instance) overrides font_family/size/color/alignment entirely; the local params are only the no-wire fallback.",
+    ],
+  },
   backend: "webgl2",
   // Output is a text_instance, not an image — the universal mask/opacity
   // conventions don't apply, so skip the appended mask input.

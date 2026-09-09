@@ -14,6 +14,14 @@ export const audioPhaserNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Classic swirling phaser: an LFO sweeps a bank of all-pass filters through the spectrum. Rate sets the sweep speed, octaves its range above the base frequency.",
+  facts: {
+    gotchas: [
+      "Descriptor in, descriptor out: compute() wraps the upstream chain in an effect descriptor; the audio engine builds the Tone.Phaser when the chain reaches an output.",
+      "Element taps downstream (audio-to-scalar, Audio Bands) read the pre-phaser element signal, not the phased output, until true post-stage taps land.",
+      "octaves sets the sweep range above base_freq; rate is the LFO speed in Hz, not the notch count.",
+      "The LFO starts at phase 0 in the offline export context, so exports are deterministic against live playback.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "audio", type: "audio", required: true, label: "Audio" }],

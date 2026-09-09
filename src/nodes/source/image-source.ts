@@ -17,18 +17,24 @@ import {
   type ExrDecodeResult,
 } from "@/engine/exr";
 import { pushMediaSettle } from "@/engine/offline-settle";
+import {
+  TRANSFORM_TRS_PARAMS,
+  bindTrsUniforms,
+} from "@/engine/transform-value";
 
 // u_hasUvIn: 0 = no UV field connected (use v_uv), 1 = UV texture, 2 = scalar
-// broadcast (whole frame samples the same point). Fit math runs on the
-// resolved UV so warps happen in output/canvas space before the aspect fit.
+// broadcast (whole frame samples the same point). Inverse TRS then fit math
+// run on the resolved UV so warps happen in output space before the aspect fit.
 const FIT_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_src;
 uniform vec2 u_invScale;
 uniform float u_letterbox;
-uniform vec2 u_offset; // placement pan, screen convention (Y down)
-uniform float u_zoom;  // placement zoom about the canvas center
+uniform vec2 u_translate; // screen convention (Y down)
+uniform vec2 u_scale;
+uniform float u_angle;    // radians
+uniform vec2 u_pivot;     // screen convention (Y down)
 uniform int u_hasUvIn;
 uniform sampler2D u_uvIn;
 uniform vec2 u_uvConst;
@@ -39,18 +45,33 @@ void main() {
   else if (u_hasUvIn == 2) uv = u_uvConst;
   else uv = v_uv;
 
-  // Placement: pan/zoom in output space before the aspect fit, so cover's
-  // crop is a movable sampling window over the full-res source, not a
-  // bake. Screen → UV y-flip for the offset, same as transform.ts.
-  uv = 0.5 + (uv - vec2(u_offset.x, -u_offset.y) - 0.5) / u_zoom;
-  vec2 s = 0.5 + (uv - 0.5) * u_invScale;
-  if (u_letterbox > 0.5 && (s.x < 0.0 || s.x > 1.0 || s.y < 0.0 || s.y > 1.0)) {
-    outColor = vec4(0.0, 0.0, 0.0, 1.0);
+  // Inverse TRS in output space before the aspect fit — same contract as
+  // transform.ts TRANSFORM_FS — so cover's crop stays a movable sampling
+  // window over the full-res source. Screen → UV y-flip for pivot/translate.
+  vec2 pivot = vec2(u_pivot.x, 1.0 - u_pivot.y);
+  vec2 translate = vec2(u_translate.x, -u_translate.y);
+  uv = uv - translate;
+  vec2 p = uv - pivot;
+  float c = cos(u_angle);
+  float s = sin(u_angle);
+  p = vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+  vec2 sc = u_scale;
+  if (abs(sc.x) < 1e-4) sc.x = 1e-4;
+  if (abs(sc.y) < 1e-4) sc.y = 1e-4;
+  p /= sc;
+  uv = p + pivot;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    outColor = vec4(0.0);
+    return;
+  }
+  vec2 samp = 0.5 + (uv - 0.5) * u_invScale;
+  if (u_letterbox > 0.5 && (samp.x < 0.0 || samp.x > 1.0 || samp.y < 0.0 || samp.y > 1.0)) {
+    outColor = vec4(0.0);
     return;
   }
   // Source bitmap is uploaded without UNPACK_FLIP_Y (unreliable for ImageBitmap across browsers).
   // Flip vertically here so row 0 of the bitmap ends up at the top of the WebGL-Y-up render target.
-  outColor = texture(u_src, vec2(s.x, 1.0 - s.y));
+  outColor = texture(u_src, vec2(samp.x, 1.0 - samp.y));
 }`;
 
 interface SourceState {
@@ -105,7 +126,24 @@ export const imageSourceNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Uploads an image and produces it as the canonical output. Accepts EXR files (single or multilayer, scene-linear HDR) with a layer picker.",
+  facts: {
+    space: {
+      "param:translateX": "uv01",
+      "param:translateY": "uv01",
+      "param:pivotX": "uv01",
+      "param:pivotY": "uv01",
+    },
+    gotchas: [
+      "translateX/Y, scaleX/Y, rotate and pivotX/Y apply as inverse TRS in output UV before the aspect fit, so cover's crop stays a movable window over the full-res source.",
+      "fit=contain letterboxes with transparent alpha outside the image bounds; pixels outside the transformed unit square are also transparent.",
+      "No file loaded emits fully transparent output, not black.",
+      "exr_unpremultiply defaults on because EXR stores associated (premultiplied) alpha while the engine composites straight alpha.",
+      "EXR layer/alpha decode is async; the previous texture keeps showing until the new decode lands, with decode progress folded into the node's fingerprint so the cache doesn't stick on stale data.",
+      "uv_in, when wired, replaces v_uv before TRS/fit is applied, so a UV warp happens in output space ahead of the aspect fit; a scalar input broadcasts to both UV axes.",
+    ],
+  },
   backend: "webgl2",
+  supportsTransformGizmo: true,
   inputs: [
     { name: "uv_in", label: "UV", type: "uv", required: false },
   ],
@@ -140,39 +178,10 @@ export const imageSourceNode: NodeDefinition = {
       options: ["cover", "contain", "stretch"],
       default: "cover",
     },
-    // Placement within the canvas — sampling-time pan/zoom against the
-    // full-res source texture, so pixels cover crops away stay
-    // recoverable at full fidelity (no re-rasterize). Transform-node
-    // conventions: offsets in canvas fractions, +Y down. Primary output
-    // only; the element aux carries the untouched bitmap.
-    {
-      name: "offsetX",
-      label: "Offset X",
-      type: "scalar",
-      min: -1,
-      max: 1,
-      step: 0.001,
-      default: 0,
-    },
-    {
-      name: "offsetY",
-      label: "Offset Y",
-      type: "scalar",
-      min: -1,
-      max: 1,
-      step: 0.001,
-      default: 0,
-    },
-    {
-      name: "zoom",
-      label: "Zoom",
-      type: "scalar",
-      min: 0.01,
-      max: 10,
-      softMax: 4,
-      step: 0.01,
-      default: 1,
-    },
+    // Standard TRS block — same names as Transform / SVG Source so the
+    // on-canvas gizmo drives them. Inverse-sampled in output UV before
+    // the aspect fit; primary only (the element aux is the untouched bitmap).
+    ...TRANSFORM_TRS_PARAMS,
   ],
   primaryOutput: "image",
   auxOutputs: [
@@ -183,6 +192,7 @@ export const imageSourceNode: NodeDefinition = {
         "The source bitmap as an intrinsically-sized element for Auto Layout — natural size is the bitmap's own pixels, so aspect is correct and resampling stays crisp without a Frame node. The primary output's canvas fit doesn't apply; the layout slot's fit does.",
     },
   ],
+  linkedPairs: [{ a: "scaleX", b: "scaleY" }],
 
   // The node is cached (stable); an EXR decode lands asynchronously, so its
   // progress has to show up in the fingerprint or the cached black frame
@@ -319,11 +329,9 @@ export const imageSourceNode: NodeDefinition = {
     if (!srcTex || !srcW || !srcH) {
       // No file loaded — emit an EMPTY frame, not a black plate. Opaque
       // black is real content: it mattes over whatever it composites onto
-      // and shows as a black canvas in the viewport (which is what a fresh
-      // starter graph — Image Source → Bloom → Layer → Output with no
-      // Active node — used to look like). Transparent reads correctly
-      // everywhere: checker in the viewport, nothing in a stack blend,
-      // real alpha in an export.
+      // and shows as a black canvas in the viewport. Transparent reads
+      // correctly everywhere: checker in the viewport, nothing in a
+      // stack blend, real alpha in an export.
       ctx.clearTarget(output, [0, 0, 0, 0]);
       return { primary: output, aux: { element: emptyElement() } };
     }
@@ -351,9 +359,6 @@ export const imageSourceNode: NodeDefinition = {
     const outAspect = output.width / output.height;
     const alpha = imgAspect / outAspect;
     const fit = (params.fit as string) ?? "cover";
-    const offsetX = (params.offsetX as number) ?? 0;
-    const offsetY = (params.offsetY as number) ?? 0;
-    const zoom = Math.max(0.0001, (params.zoom as number) ?? 1);
 
     let invScale: [number, number];
     let letterbox = 0;
@@ -379,8 +384,7 @@ export const imageSourceNode: NodeDefinition = {
         invScale[1]
       );
       gl2.uniform1f(gl2.getUniformLocation(prog, "u_letterbox"), letterbox);
-      gl2.uniform2f(gl2.getUniformLocation(prog, "u_offset"), offsetX, offsetY);
-      gl2.uniform1f(gl2.getUniformLocation(prog, "u_zoom"), zoom);
+      bindTrsUniforms(gl2, prog, params);
 
       gl2.activeTexture(gl2.TEXTURE1);
       gl2.bindTexture(gl2.TEXTURE_2D, boundUvTex);
@@ -426,6 +430,7 @@ export const imageSourceNode: NodeDefinition = {
 
     return { primary: output, aux: { element } };
   },
+
 
   dispose(ctx, nodeId) {
     const stateKey = `image-source:${nodeId}`;

@@ -11,6 +11,19 @@ export const pointEmitterNode: NodeDefinition = {
   category: "effect",
   description:
     "Emit particles from a single point with positional and velocity jitter.",
+  facts: {
+    space: {
+      "param:position": "canvas01",
+      "param:spread": "canvas01",
+      "param:velocity": "canvas01",
+      "param:vJitter": "canvas01",
+    },
+    gotchas: [
+      "position, spread, and velocity are canvas01 (authored) space: width-relative and vertically undistorted, independent of canvas aspect ratio.",
+      "velocity is width px/sec on both axes, matching Point Force and other simulators so combined forces feel consistent across sim types.",
+      "Emits a descriptor only; nothing spawns until wired into a Particle Simulator, which reads rate/vJitter/lifetime on its own spawn pass.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

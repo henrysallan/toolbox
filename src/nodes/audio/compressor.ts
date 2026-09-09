@@ -15,6 +15,13 @@ export const audioCompressorNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Dynamic range compressor: signal above the threshold is reduced by the ratio, with attack/release envelope timing and a soft knee. Wire an audio chain through it to tame peaks or glue a mix — parameter changes ramp click-free and are keyframable.",
+  facts: {
+    gotchas: [
+      "Descriptor in, descriptor out: compute() does no audio work; the audio engine builds a Tone.Compressor once the chain reaches an audio output.",
+      "attack/release are in seconds, not milliseconds; knee is a soft-knee WIDTH in dB, not a threshold offset.",
+      "Default knee (30 dB) is very soft — close to the 40 dB max — so gain reduction engages gradually well below threshold rather than as a hard cutoff.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "audio", type: "audio", required: true, label: "Audio" }],

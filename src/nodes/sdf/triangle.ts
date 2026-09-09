@@ -26,6 +26,25 @@ export const sdfTriangleNode: NodeDefinition = {
   category: "utility",
   description:
     "SDF primitive — a triangle through three corners (A, B, C). For a regular triangle, prefer SDF Polygon with sides=3. Wire `position` to feed a transformed coordinate space.",
+  facts: {
+    space: {
+      "in:position": "canvas01",
+      "in:a": "canvas01",
+      "in:b": "canvas01",
+      "in:c": "canvas01",
+      "param:ax": "canvas01",
+      "param:ay": "canvas01",
+      "param:bx": "canvas01",
+      "param:by": "canvas01",
+      "param:cx": "canvas01",
+      "param:cy": "canvas01",
+    },
+    gotchas: [
+      "Builds an SDF tree only; nothing is drawn until a terminal (Rasterize / Shade / To Mask / To Distance Image) evaluates it per pixel.",
+      "Unwired position = canvas UV; wire a Translate/Repeat/Mirror position chain to change the space the triangle is evaluated in.",
+      "Vertex coordinates are width-relative only while the consuming terminal's aspect_correct is on; off, they become per-axis UV fractions and the triangle skews on non-square canvases.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

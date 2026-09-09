@@ -20,6 +20,11 @@ export const logicNode: NodeDefinition = {
   category: "utility",
   description:
     "Boolean gate over scalar inputs. Any non-zero is treated as true. Output is 1 (true) or 0 (false). Ops: and, or, xor, not (1-input).",
+  facts: {
+    gotchas: [
+      "op=not is single-input: the b socket and param are hidden and b is ignored regardless of what is wired.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

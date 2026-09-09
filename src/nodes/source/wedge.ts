@@ -230,6 +230,14 @@ export const wedgeNode: NodeDefinition = {
   category: "utility",
   description:
     "Batch-render variation source. Defines a set of values — scalar (explicit list, range, seeded random, or the bare iteration index), color, vec2, or string — and emits one per render when the export runs a wedge batch: wire it into a seed, a Switch index, a fill color, a Text string, or any exposed param. Outside a batch it emits the value at Preview, so scrubbing Preview auditions variations live. Multiple Wedge nodes zip: the batch runs max(counts) iterations and shorter wedges hold their last value.",
+  facts: {
+    space: { out: "unitless" },
+    gotchas: [
+      "mode (range/random/index) only applies when type=scalar; every other type always uses the explicit values list regardless of mode.",
+      "enabled=false reports count=1 to the batch driver and always emits the Preview value — a way to render just one variation without unwiring the node.",
+      "mode=random's sequence is a deterministic hash of (seed, index), so the same seed reproduces the same variation set across sessions and machines.",
+    ],
+  },
   backend: "webgl2",
   // Pure CPU value — no image to matte.
   noMaskInput: true,

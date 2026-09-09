@@ -81,6 +81,15 @@ export const flowBilateralNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Edge-preserving smoothing aligned to the image's flow: a 1D bilateral filter runs across the local edge direction, then along it, per iteration — flattening texture and noise while edges and flowing detail survive. Much cheaper than a full 2D bilateral and calmer on video. The abstraction base of the toon look (follow with Posterize and Line Art). Steered by the `field` input (Image Flow Field or any velocity field) or an internal estimate when unwired. `Spatial σ` is the smoothing reach in px, `Range σ` how different colors must be to count as an edge (lower preserves more), `Across scale` shrinks the across-edge reach to protect edges harder.",
+  facts: {
+    space: { "param:sigma_s": "pixels" },
+    gotchas: [
+      "sigma_s is the spatial reach in pixels of each 1D pass; across_scale multiplies it only for the across-edge (gradient-axis) pass, not the along-edge (tangent) pass.",
+      "field unwired computes its own orientation field internally from the source each evaluation; smooth only affects that internal estimate and is ignored while field is wired.",
+      "Each iteration runs one across-edge pass then one along-edge pass in that fixed order; iterations (1..4) roughly multiply the cost.",
+      "Both the spatial/range weighting and the range-distance comparison operate on premultiplied RGBA, so a soft edge is smoothed by its composited color, not its stored straight color.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", type: "image", required: true },

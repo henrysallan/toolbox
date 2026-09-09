@@ -86,6 +86,15 @@ export const sdfBevelNode: NodeDefinition = {
   category: "utility",
   description:
     "Terminal that rasterizes an SDF with two-light bevel shading. Outer / Inner / Emboss / Pillow styles. Each light has its own angle / elevation / opacity; highlight + shadow colors and blend modes are shared. Replaces SDF Rasterize when you want a 3D-button or relief look.",
+  facts: {
+    space: { "param:depth": "canvas01", "param:soften": "pixels" },
+    gotchas: [
+      "depth is a canvas-UV distance, the same coordinate space as every other SDF radius/thickness, not pixels; it is aspect-correct dependent like SDF Rasterize.",
+      "soften is a pixel multiplier on the central-difference step used to derive the bevel's lighting normal; it softens the highlight/shadow edge without changing depth.",
+      "This is a terminal that replaces SDF Rasterize — it renders the bevel shading itself, it does not feed into a separate Rasterize node downstream.",
+      "Light 1 and Light 2 each get independent angle/elevation/highlight/shadow strength, but share one highlight color+blend mode and one shadow color+blend mode.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "sdf", type: "sdf", required: true, label: "SDF" }],
   params: [

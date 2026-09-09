@@ -133,6 +133,15 @@ export const depthAnythingNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Estimate a depth map from an image locally via Transformers.js (Depth Anything V2). The header toggle switches the output between the depth map (grayscale, near=white) and a normal map derived from the depth gradient. Invert flips near/far; Near/Far set the depth black/white points. For animated inputs, Preview runs depth on the current frame and Bake runs the model over an in/out frame range and caches a depth map per frame (held in memory for this session — reopen → re-bake). Note: the model normalizes each frame independently, so brightness can drift over a clip.",
+  facts: {
+    reads: ["time"],
+    gotchas: [
+      "precision (fp32/fp16/q8) only affects inference quality when the panel bakes or previews; compute() and the render path ignore it entirely.",
+      "near/far only affect outputMode=depth; the normal map uses only invert and normalStrength and ignores near/far.",
+      "If far <= near, the denominator clamps to a 1e-4 epsilon instead of erroring, blowing the depth remap out to near-solid black or white.",
+      "Before any Preview/Bake, the primary passes the input through unchanged while the aux depth mask reads solid 0, not transparent or undefined.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "outputMode" },
   inputs: [{ name: "image", type: "image", required: true }],

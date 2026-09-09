@@ -34,6 +34,14 @@ export const midiEditorNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Author notes on a piano roll. Double-click the node (or press its Edit button) to open the editor over the viewport; wire the notes output into an instrument (Synth, FM Synth, Sampler). Notes live on the scene timeline — bars follow the project BPM.",
+  facts: {
+    gotchas: [
+      "Notes live in the hidden `notes` param (notes_clip, absolute scene ticks) authored via the piano-roll editor (double-click the node, or its Edit button) — not the param panel.",
+      "loop=true tiles only notes starting inside [0, loop_end_bars) for loop_repeats cycles; notes at/after the loop point go silent while looping, and a boundary-crossing note keeps its full duration.",
+      "Unlike Step Pattern, this data is authored, not tempo-derived: changing the project BPM moves the piano-roll grid but never the stored notes.",
+      "fingerprintExtras only folds in bpm/ticksPerFrame/fps while loop=true; with loop off the def caches purely off params, unaffected by tempo changes.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [],

@@ -20,6 +20,12 @@ export const audioDelayNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Echo effect: repeats the signal after a set time, with feedback controlling how many repeats trail off. Ping-pong mode bounces the echoes between left and right channels.",
+  facts: {
+    gotchas: [
+      "mode swaps the underlying Tone class (FeedbackDelay vs PingPongDelay) via the effect's fx key, so switching modes recreates the stage rather than retuning it in place.",
+      "feedback (0..0.95) is the per-repeat decay ratio, not a repeat count; time is the delay length in seconds (0.001..2).",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "audio", type: "audio", required: true, label: "Audio" }],

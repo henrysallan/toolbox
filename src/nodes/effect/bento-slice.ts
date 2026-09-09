@@ -369,6 +369,21 @@ export const bentoSliceNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Slice the image into bento-box rectangles (recursive cuts driven by a luminance map — the Size Map input, or the image's own luminance) and offset every piece along a seeded scatter direction by Fac: 0 = assembled, 1 = split apart. Animate Fac to assemble or shatter the image. Steps > 1 makes pieces travel an axis-aligned staircase (2 = slide in sideways, then drop into place), with one easing curve per step. Emits one point per piece at its animated center for driving systems downstream.",
+  facts: {
+    space: {
+      "param:piece_min": "pixels",
+      "param:piece_max": "pixels",
+      "param:gap": "pixels",
+      "param:distance": "canvas01",
+    },
+    gotchas: [
+      "distance is a fraction of canvas width (distance x W); piece_min/piece_max/gap are literal raster pixels that stay fixed as output resolution changes.",
+      "The cut grid is cached by a layout signature plus the driver's (size_map or image) identity; only geometry params rebuild it, not fac/steps/easing.",
+      "steps >= 2 alternates horizontal/vertical legs per first_axis, splitting fac's 0..1 domain into equal per-leg ranges each shaped by easing.",
+      "aux:points' y is (cy+offY)/H, a plain UV fraction, not the aspect-corrected canvas01 convention other points outputs use, so it reads off on non-square canvases.",
+      "piece_min is silently raised toward sqrt(W*H/65536) to keep the worst-case piece count bounded, regardless of the slider value.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", type: "image", required: true },

@@ -109,6 +109,23 @@ export const pointerNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Mouse / touch interaction signals: cursor position (authored space), press / release / click pulses, held and drag-active levels, per-gesture drag delta, and an accumulated drag offset with axis lock and sensitivity — the virtual-scrub control. Click vs drag is split by the slop threshold. Wire click into Trigger Envelope for motion, drag_offset into a Transform translate, press into an Accumulator for click counting.",
+  facts: {
+    space: {
+      out: "canvas01",
+      "aux:click_position": "canvas01",
+      "aux:drag_delta": "canvas01",
+      "aux:drag_offset": "canvas01",
+      "param:slop": "pixels",
+    },
+    reads: ["time"],
+    gotchas: [
+      "Position and the vec2 aux outputs are authored space (y-down, aspect-uncorrected) — wire straight into Transform translate or point params.",
+      "slop compares on-screen CSS pixels of pointer travel (clientX/Y), not canvas render-resolution pixels, so it doesn't scale with the project's render resolution.",
+      "duration and the held-bucket used for re-eval use wall-clock performance.now(), not scene time, so a live held gesture's reported duration ignores timeline scrubbing.",
+      "reset > 0.5 zeroes drag_offset, click_count, and click_position and holds them there while high; clear_on_loop does the same automatically whenever scene time jumps backward.",
+      "Presses claimed by editor overlay gestures (gizmos, spline tools, paint) never reach this node; held/press/click stay at rest during those.",
+    ],
+  },
   backend: "webgl2",
   // External pointer + wall-clock state — recompute every eval.
   stable: false,

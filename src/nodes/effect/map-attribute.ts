@@ -46,6 +46,17 @@ export const mapAttributeNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Drives built-in point data from any point column — a named channel, or a built-in like index, x, y, scale.x, rotation, or group. Normalize through In Lo/Hi, shape with a 0–1 curve, then map through Out Lo/Hi and apply as a scale multiplier, a rotation offset (radians), or a position offset. The curve defaults to a linear ramp, so a straight diagonal is the old In→Out remap. A missing named channel passes through unchanged.",
+  facts: {
+    space: { "param:out_lo": "canvas01", "param:out_hi": "canvas01" },
+    reads: ["attr:scale", "attr:rotation", "attr:position"],
+    writes: ["attr:scale", "attr:rotation", "attr:position"],
+    gotchas: [
+      "attr_name is read at runtime and can be any named channel or a built-in (index, x, y, scale.x, rotation, group, ...); an unknown name passes points through unchanged.",
+      "map_target picks exactly one destination per point: scale multiplies existing scale, rotation adds radians to existing rotation, position x/y offsets one position axis.",
+      "Position x/y offsets add directly into the point's stored canvas01 coordinate (authored space); for the other targets out_lo/out_hi become a scale multiplier or radians instead.",
+      "The curve defaults to an identity (0,0)-(1,1) ramp, so an untouched curve behaves as a plain In Lo/Hi -> Out Lo/Hi linear remap.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "points", type: "points", required: true }],
   params: [

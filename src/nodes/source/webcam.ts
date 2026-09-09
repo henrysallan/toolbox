@@ -203,6 +203,15 @@ export const webcamSourceNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Live webcam feed via getUserMedia. First eval triggers the browser permission prompt. Mirror toggle defaults on to match how video-chat tools render the feed.",
+  facts: {
+    space: { "param:offsetX": "uv01", "param:offsetY": "uv01" },
+    gotchas: [
+      "offsetX/offsetY pan in per-axis UV fractions before the fit, not aspect-corrected; zoom scales about the canvas center.",
+      "mirror flips the sample X axis after offset/zoom is applied, so a positive offsetX pans the opposite screen direction while mirror (the default) is on.",
+      "Switching facing tears down the current getUserMedia stream and re-requests camera permission for the new facing; audio is never requested.",
+      "Live capture only, so this node is not retimeable; a wrapping Time Offset passes the current frame through unshifted instead of retiming it.",
+    ],
+  },
   backend: "webgl2",
   stable: false,
   // Live capture — there is no "the webcam at tick − Δ". Time Offset

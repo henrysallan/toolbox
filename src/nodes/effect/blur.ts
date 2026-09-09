@@ -40,6 +40,14 @@ export const blurNode: NodeDefinition = {
     "Bokeh for true circular apertures (disc, ring, soft) with the " +
     "flat-topped shape and hot rim a Gaussian cannot produce. Filters " +
     "in premultiplied linear light.",
+  facts: {
+    space: { "param:radius": "pixels" },
+    gotchas: [
+      "radius is in pixels at render resolution and does not scale with output size; Gaussian sigma = radius/2, capped at 64 taps per side (radius ≈43).",
+      "The kernel input only exists when mode=convolve; in gaussian/bokeh modes there is nothing to wire it to.",
+      "Filters in premultiplied linear light, so transparent edges do not darken but results differ from an sRGB-space blur.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   // The kernel socket only exists in Convolve mode, so the node does not

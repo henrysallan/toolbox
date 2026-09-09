@@ -208,6 +208,28 @@ export const shortestPathNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Route through a network and output the path as a spline. Points mode: hops between points within the max distance, from a start position (snapped to the nearest point) to an end position or group — visited points ride the aux output. Spline mode: walks a wired network's own curved segments between two groups, or emits N seeded random routes. Tree mode: one root point (by index) fans out to every reachable point as a branching tree that never re-crosses — wander morphs direct↔minimal branching, and the update mode locks the topology at frame 0 (edges stretch as points move) or rebuilds live with an optional glide. Points and tree modes share Connect Points' path shaping (arcs / S-curves, sag, flow, network smoothing, bundling, attract). Animate the draw-on with Trim Path.",
+  facts: {
+    space: {
+      "param:max_distance": "canvas01",
+      "param:start_x": "canvas01",
+      "param:start_y": "canvas01",
+      "param:end_x": "canvas01",
+      "param:end_y": "canvas01",
+      "param:weld_distance": "canvas01",
+      "in:start": "canvas01",
+      "in:end": "canvas01",
+    },
+    gotchas: [
+      "mode=points/tree treat any two points within max_distance as a hop (Connect Points graph); mode=spline instead walks a spline's own segments, welded within weld_distance.",
+      "points mode: end_mode=group routes to the nearest member of a groupIndex bucket; end_mode=position uses the end vec2/x,y — both resolve to the nearest existing point.",
+      "tree mode: wander=0 grows a direct shortest-path tree to root_index (radial); wander=1 a minimum-spanning tree (least wire); values between blend via one Prim/Dijkstra pass.",
+      "tree mode jitter hashes on the unordered point-index pair, not edge order, so the wobble stays stable when a live rebuild reorders or drops edges.",
+      "tree update=locked freezes topology at tick 0 (or a topology/count change), so edges just stretch as points move; update=live rebuilds every frame instead.",
+      "tree update=live's `smooth` eases a reconnected branch's far end to its new parent — the node's only per-frame stateful behavior.",
+      "Path shaping (arcs, sag, flow, network, bundle, attract) applies only to points and tree modes; spline mode always re-emits the network's own authored bezier geometry.",
+      "The `points` aux (visited points, original attributes intact) exists only for points and tree modes; spline mode has no points aux.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   simulation: true,

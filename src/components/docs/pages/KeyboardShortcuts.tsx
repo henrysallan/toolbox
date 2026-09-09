@@ -36,7 +36,8 @@ const NODE_GRAPH: Shortcut[] = [
   { keys: <><Kbd>Alt</Kbd>+drag a node</>, action: "Duplicate-on-drag — clones the node, keeping its edges on the original." },
   { keys: <><Kbd>Cmd</Kbd>+drag a node</>, action: "Detach — strips all incoming and outgoing edges." },
   { keys: <><Kbd>Shift</Kbd>+<Kbd>F</Kbd></>, action: "Frame the selected nodes (a Blender-style shaded frame that follows them; empty frame at the cursor when nothing is selected). Drag a node in to add it, Cmd-drag it out to remove it; drag the frame's edges or label to move it and everything inside; click the label to rename." },
-  { keys: "Right-click a node", action: "Context menu — tint swatches and Bold outline live here, alongside copy/paste/duplicate/detach. With a multi-selection, styling applies to every selected node." },
+  { keys: "Right-click a node", action: "Context menu — tint swatches and Bold outline live here, alongside copy/paste/duplicate/detach and Tidy. With a multi-selection, styling applies to every selected node, and an align / distribute strip appears (left, centre, right, top, middle, bottom; distribute horizontally / vertically). A zone or a frame's members move as one unit." },
+  { keys: <><Kbd>L</Kbd></>, action: "Tidy — lay the selected nodes (or the whole scope when nothing is selected) out along their wires: left-to-right columns, straight wires, fan-in in socket order, zones and frames kept together. Unselected nodes are ignored and the selection stays centred where it was; the move animates and is one undo step. Right-click → Tidy does the same for the selection, or for the clicked node's connected nodes; right-click empty space → Tidy All." },
   { keys: <><Kbd>Alt</Kbd>+drag a wire</>, action: "Cut the wire." },
   { keys: <><Kbd>Shift</Kbd>+drag across wires</>, action: "Drop a reroute node on the wires (double-click a wire also inserts one)." },
   { keys: "Middle-click drag", action: "Pan the graph." },
@@ -49,6 +50,7 @@ const CANVAS: Shortcut[] = [
   { keys: <><Kbd>0</Kbd></>, action: "Reset both preview viewports' pan and zoom to 1:1." },
   { keys: "Drag files onto the canvas", action: "Drops an image / video / audio / SVG as a new source node." },
   { keys: "Lock chip in the viewport bar", action: "Toggle snapping for transform gizmos and spline drawing. On by default; hold ⌘ / Ctrl while dragging to suppress one gesture." },
+  { keys: <><Kbd>Shift</Kbd>+drag a transform handle</>, action: "Constrain the move to the X or Y axis based on the initial drag direction (text box, spline primitives, and other on-canvas gizmos)." },
 ];
 
 const SPLINE_DRAW: Shortcut[] = [

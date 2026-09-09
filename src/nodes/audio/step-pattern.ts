@@ -21,6 +21,16 @@ export const audioStepPatternNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Text-pattern note trigger: each character is one step — `x` = hit, `X` = accented hit (velocity 1), `.` or `-` = rest, anything else is ignored (spaces are fine as separators). One step lasts the chosen division at the Project Settings BPM; the pattern tiles from the timeline start. Wire the notes output into an instrument (Synth / FM Synth / Sampler) to hear it.",
+  facts: {
+    gotchas: [
+      "\"X\" (accent) always fires at velocity 1, ignoring the velocity param, which only applies to lowercase \"x\" hits.",
+      "Any character besides x/X/./- is skipped entirely, not treated as a rest, so \"x... x...\" reads identically to \"x...x...\" — separators don't shift the grid.",
+      "gate is the note's duration as a fraction of one step (0.05..1), not seconds; duration = gate x step length.",
+      "swing delays every 2nd step by swing x step/2 on the absolute tick-0 grid (not the pattern-local index), so odd-length patterns swing consistently across repeats.",
+      "One step's length is set by division (beats = 4/denominator) at the project's BPM (Project Settings), so changing BPM re-times the whole pattern.",
+      "The tick math reads ctx.bpm/ticksPerFrame/fps outside the params fingerprint; fingerprintExtras folds them in so a BPM change busts the cache instead of serving a stale-tempo pattern.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [],

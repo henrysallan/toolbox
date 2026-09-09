@@ -172,6 +172,15 @@ export const relaxNode: NodeDefinition = {
   category: "utility",
   description:
     "Iteratively even out geometry. Points: push apart every pair closer than the radius (de-clump a Scatter). Splines: Laplacian-smooth anchor positions along each subpath (endpoints pinned, closed wraps; handles unchanged). Mix blends back toward the original.",
+  facts: {
+    space: { "param:radius": "canvas01", out: "in:in" },
+    gotchas: [
+      "Points mode uses a spatial hash sized to radius; pairs beyond adjacent cells never interact, and each iteration applies all pushes Jacobi-style with a fixed 0.5 damping.",
+      "Spline mode Laplacian-smooths only anchor positions per subpath; handles ride along unchanged, so re-fit with Set Spline Type afterwards if curvature drifted.",
+      "Spline mode pins the endpoints of an open subpath and wraps around a closed one; points mode has no pinning, every point can move.",
+      "Exactly-coincident point pairs separate along a deterministic per-index hashed angle instead of a random one, keeping output stable and cacheable frame to frame.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   inputs: [{ name: "in", type: "points", required: true }],

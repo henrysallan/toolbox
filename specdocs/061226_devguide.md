@@ -66,6 +66,24 @@ src/
                           routing, Tone.Offline export render. Node defs NEVER import
                           Tone — they emit descriptors (see types.ts AudioChainNode).
     conventions.ts        Universal opacity param + universal mask input helpers.
+    video-frame-cache.ts  Video Source frame cache, pure half (090426_video-
+                          frame-cache.md, 090526_video-scrub-optimizations.md):
+                          byte-budgeted LRU keyed by media time, window
+                          planner (+ GOP widening, sliding-job accept rules),
+                          sequence decode-ahead planner, and the per-eval
+                          draw planners (paused / playing catch-up) whose
+                          decision the node fingerprint stamps (vf:c:/vf:e:).
+    video-frame-store.ts  ONE store per video file, shared by every node
+                          reading it: the texture cache + the single decode
+                          job (forward jobs idle at their limit and follow
+                          the pointer) + scratch canvas. Nodes acquire/
+                          release; last user out drops textures.
+    video-decode-source.ts WebCodecs access to a Video Source file via
+                          mediabunny (dynamic import), one per
+                          VideoFileParamValue: samples(start,end) in the
+                          element's time origin, gopAround() via the packet
+                          sink, canDecode gate, optional decoder PROXY swap
+                          through a platform-registered ScrubProxyProvider.
     exr/                  OpenEXR import: vendored EXRLoader fork (exr-core.js,
                           multilayer/DWA fixes), layer grouping, worker decode
                           pool. See "EXR import + color pipeline" sharp edge.
@@ -382,6 +400,21 @@ src/
                           handleRenameNode. cloneSubgraph remaps frameId
                           with the clone set; deleting a frame strands
                           member ids harmlessly (undo-friendly).
+    AssetsView.tsx        The Assets panel kind (090326_asset-library.md) —
+                          ALSO the File → Assets param-panel mount and the
+                          Project view's Comps/Assets pill (one component,
+                          three mounts). Library grid (images / SVGs /
+                          videos from state/user-assets.ts + node presets
+                          from state/node-presets.ts), Assets ▾ menu
+                          (Upload Asset…, Refresh — reuses MenuBar's
+                          exported MenuDropdown), filter chips, fuzzy
+                          search, card context menu (Rename / Replace
+                          Thumbnail / Delete), OS-file drop → upload.
+                          Cards drag (`application/x-toolbox-asset`,
+                          source "library" | "preset") or double-click
+                          (onInsert) into the node editor; EffectsApp's
+                          onAddAssetNode resolves both. The June
+                          "In project" / "Folder" sections render below.
     SpreadsheetPanel.tsx  The Spreadsheet panel kind (081326_spreadsheet-
                           panel.md): virtualized table over the selected (or
                           pinned) node's evaluated output via engine/
@@ -525,11 +558,69 @@ src/
                           async deserializeGraph, then the built-in preset:
                           branch's clone-into-scope path + compositionId re-tag.
                           Caps: 60 presets / 4 MB serialized each. Guarded by
-                          scripts/check-node-presets.mts.
+                          scripts/check-node-presets.mts. Presets carry an
+                          optional `thumbnail` data-URL (≤96 K chars, captured
+                          at save from the node's primary output — EffectsApp
+                          captureNodeThumbnail; the modal's node is forced
+                          into the eval pass via saveNodePresetTargetRef so a
+                          disconnected node still captures) plus
+                          renameUserNodePreset / setUserNodePresetThumbnail
+                          for the Assets panel.
+    user-assets.ts        The ASSET LIBRARY store (090326_asset-library.md):
+                          per-user, project-agnostic images / SVGs / videos.
+                          Module store (useSyncExternalStore) over
+                          lib/supabase/user-assets.ts; cloud-only (signed
+                          out ⇒ empty + hint). Ops do the whole add
+                          pipeline — bytes → sha256 → dedup probe → object
+                          upload → thumbnail upload → row insert → publish
+                          ("assets first, row last"; ids minted client-side
+                          so the thumb lands before the row). Video rows
+                          hold no bytes: they point at the clip's existing
+                          R2 object (storage='r2', owner = uploader).
     history.ts            Undo/redo snapshots. editor-session.ts: docs-nav stash.
+    node-layout.ts        PURE wire-aware layout (090626_tidy-layout.md):
+                          tidyLayout (layered left→right, straight wires,
+                          fan-in in socket order, zones/frames as compound
+                          units, pillars pinned, reroutes re-placed,
+                          idempotent), alignLayout / distributeLayout,
+                          placeNewNodes (agent insertion: beside the first
+                          consumer, never moving existing nodes), and the
+                          unmeasured-box estimate. Gate: check-node-layout.
+    node-layout-graph.ts  xyflow → LayoutNode adapter (kinds, visible handle
+                          order, measured box / real handle offsets else the
+                          estimate). Shared by NodeEditor (right-click Tidy,
+                          align strip, L, pane Tidy All — animated via
+                          onNodesChange dragging flags ⇒ one undo entry),
+                          EffectsApp (MCP `tidy` on a scope that isn't open),
+                          mcp-handlers (edit_group add_node placement) and
+                          recipe-builder (insert_recipe interior tidy).
   lib/
     project.ts            serializeGraph/deserializeGraph, SavedProject SCHEMA (v4).
     project-file.ts       .toolbox zip container (manifest + project.json + assets).
+    asset-import.ts       Asset-library import pipeline: a picked file or a
+                          node's live param value → kind, bytes, thumbnail,
+                          store op (importImageBlob / importSvgText /
+                          importVideoFile + the *SourceValue variants the
+                          node context menu's "Add to Assets" calls).
+    asset-thumbnails.ts   256px thumbnail makers: bitmap / blob / video-URL
+                          (own <video>, seeks to 10 %) / GPU readback /
+                          spline (buildPath2D, aspect-corrected — the
+                          viewport's default spline preview) / 2D points.
+                          Raster → JPEG over a fixed dark plate, vector →
+                          PNG; data-URL for presets, Blob for Storage.
+    svg-write.ts          svgFromSubpaths(): SVG Source keeps only parsed
+                          geometry, so an SVG asset is synthesized —
+                          viewBox 0 0 W H (max edge 1000, W/H = aspect)
+                          chosen so parseSvg's contain-fit round-trips the
+                          anchors exactly. Guarded by check-svg-write.mts
+                          via svg-parse.ts's DOM-free parsePathData seam.
+    supabase/user-assets.ts  `user_assets` row CRUD + the public
+                          `user-assets` bucket (content-addressed
+                          <uid>/<hash>.<ext>, thumbs at <uid>/thumbs/<id>.jpg
+                          with thumb_rev as the cache-buster). SVGs are
+                          stored as application/octet-stream ON PURPOSE (a
+                          public bucket must never serve script-bearing SVG
+                          inline). Migration: specdocs/user-assets-migration.sql.
     recent-projects.ts    File → Open Recent local cache (073026_open-recent.md):
                           cloud entries in localStorage + FSA handles in
                           IndexedDB for web-local .toolbox reopens, merged with
@@ -913,6 +1004,12 @@ To add a node:
    ParamPanel — copy an existing one. `color_ramp` additionally supports
    per-item expose/control via the same virtual names (see § Animation).
 6. Check the docs page renders it sanely (descriptions come from the def).
+7. Add `facts` (NodeFacts: per-socket `space`, `reads`/`writes` attributes,
+   `gotchas`) — `npm run check` fails without it on a visible def. Use the
+   `node-facts` skill: it reads the source, writes JSON, applies it with
+   `scripts/apply-node-facts.mts`, and runs `check-node-facts`. Keep
+   `description` to one sentence of what the node does; operational facts
+   go in `facts`. Spec: 090626_node-facts.md.
 
 ## Animation & time
 
@@ -995,6 +1092,19 @@ To add a node:
   the graph header's easing dropdown; normalized like CSS cubic-bezier,
   persists on `SavedProject.savedEasings`, applied by denormalizing onto
   each selected key's outgoing segment).
+- **Per-point time is a channel** (specdocs/090426_stagger-node.md): the
+  Stagger node (`stagger`, point/modifier) gives each point a start time
+  from its DENSE rank in an ordering (index / reverse / center / edges /
+  seeded random / ascending by any point column — ties share a step) and
+  writes a 0→1 `phase` attribute (+ optional `<name>_t0` / `<name>_active`
+  with Extras). Spacing vs Fit-total, Duration, positive-only Jitter,
+  Start, Loop (cycle / ping-pong over the WHOLE sequence), one `unit`
+  param (frames | seconds) shared by every timing param and the optional
+  wired `clock` scalar (unwired = the scoped tick in fractional frames).
+  Pure and stateless — scrub/export exact, Time Offset retimes it — with
+  `fingerprintExtras` stamping the tick. Deliberately NO easing param:
+  consumers shape phase (Map Attribute's curve), the Text animators'
+  "ease after the split" rule. Guard: scripts/check-stagger.mts.
 - **Panel readouts are animated**: controls display the keyframe-evaluated
   value at the playhead (`animatedValueAt` in engine/conventions.ts — the
   keyframe step of wire > keyframe > constant), so sliders/fields/swatches
@@ -1228,6 +1338,24 @@ To add a node:
   the cache serves stale bytes. The `.toolbox` writer STOREs pre-compressed
   mimes (png/jpeg/webp/gif/exr) instead of re-DEFLATing them. Spec:
   archive/071426_save-optimization.md.
+- **Asset Library = per-user, project-agnostic media (090326_asset-
+  library.md).** A third storage tier beside the per-project images
+  bucket and the per-user R2 media: `user_assets` rows (own-row RLS,
+  client-writable — nothing quota-relevant lives there) + the public
+  `user-assets` bucket for image/SVG bytes and 256px thumbnails; video
+  rows point at the clip's existing R2 object. Entry points: node
+  context menu → **Add to Assets** (Image / SVG / Video Source; video
+  needs the cloud-media entitlement and an uploaded ref, else the row is
+  disabled with a hint), the Assets panel's Upload / OS drop, and Save
+  as Preset… (presets show in the same panel with an inline thumbnail).
+  Re-entry: an image/SVG card drops as a File through onAddFileNode, so
+  the project copies the bytes into its own prefix on the next save; a
+  video card seeds the cloud-media registry with the row's ref and
+  registers the R2 URL, so the save carries `cloud:{…}` with no
+  re-upload; a preset card runs insertUserPresetAt (the extracted
+  `user-preset:` branch). Deleting an image/SVG asset removes its
+  objects (projects are unaffected — they own copies); deleting a video
+  asset removes only the row (projects reference the R2 object directly).
 - Fonts: uploaded `custom_font` bytes bundle (v5). The Text `font_family`
   picker (`control:"font"`, [param-controls.tsx](../src/lib/param-controls.tsx))
   merges the user's **installed local fonts** ([local-fonts.ts](../src/lib/local-fonts.ts),
@@ -1584,7 +1712,9 @@ native window controls: archive/070626_windows-desktop-build.md.
 - **The bridge** (`electron/preload.js`, contextIsolation + sandbox, no
   nodeIntegration): narrow, intent-level methods only — `saveFile`,
   `pickSaveFolder`/`writeFileInFolder`, `pickOpenFiles`, `encodeVideo*`,
-  `transcodeForPlayback`, `window.*` (controls), `recents.*`. Paths are chosen by
+  `transcodeForPlayback`, `scrubProxyBegin/Read/Dispose` (decoder-only
+  1080p intra proxy in tmp, read by byte range — 090526_video-scrub-
+  optimizations.md M4), `window.*` (controls), `recents.*`. Paths are chosen by
   native dialogs in main, never supplied by the page; bytes cross as ArrayBuffer.
 - **Native export** (`electron/ffmpeg.js`): the renderer keeps the frame loop
   (engine settle), reads RGBA8 per frame and streams it to a bundled
@@ -1829,6 +1959,33 @@ baseline. Spec: archive/070826_riskfix-plan.md §2.
   analyser tap treats it like a file element). Offline export decodes the
   audio track straight from the video's ObjectURL via `decodeAudioData`
   (`ExportAudioSpec` now carries `url`/`element`, not a typed file value).
+  **Scrubbing** (090426_video-frame-cache.md, from the 090426 scrub audit):
+  the video kind uploads the element's frame BEFORE the sync block can
+  seek (a currentTime write drops readyState synchronously, so the old
+  order discarded every frame that landed mid-drag), and on the paused
+  path — sync on, scene paused or pre-rolling, not offline — draws from a
+  per-node WebCodecs frame cache: a decode job fills a 0.25 s / 1.0 s window
+  around the playhead (leaning in the drag direction) as RGBA8 textures
+  (512 MB budget, long side capped at 1920 — larger sources are scrub
+  proxies the element refines at rest). `fingerprintExtras` stamps THE
+  FRAME THIS EVAL WILL DRAW (`vf:c:<ts>` cache / `vf:e:<ts>` element,
+  `sq:<idx>` for sequences), never the element clock — while seeking,
+  currentTime already reports the pending target, which used to leave
+  downstream caches on the stale composite. Playback, audio, offline export
+  and every fallback (no WebCodecs, undecodable, insecure context) keep the
+  element path. Guard: scripts/check-video-frame-cache.mts.
+  Round 2 (090526_video-scrub-optimizations.md): the cache is per FILE
+  (engine/video-frame-store.ts, shared by every node on the clip); a
+  forward drag is one continuous decode (the job idles at its limit and
+  follows the pointer); windows widen to the whole GOP when it fits half
+  the budget; after 300 ms at rest the element is parked under the playhead
+  (instant play, proxy refinement); while playing, a cached frame covers
+  for the element during a hard seek; image sequences decode ahead in the
+  drag direction; `pipeline-bump` re-evaluates imperatively (one rAF) and
+  only re-renders the shell on a 250 ms trailing timer; on desktop a
+  1080p all-intra decoder proxy (electron/ffmpeg.js `toolbox:scrubProxy*`,
+  read by byte range via mediabunny StreamSource) replaces keyframe-distance
+  cold misses for large or long-GOP sources — the element never sees it.
 - **EXR import + color pipeline** (spec archive/070926_exr-color-pipeline.md).
   Image Source and Video Source's sequence kind accept OpenEXR — single or
   multilayer, DWAA/DWAB/ZIP(S)/PIZ/RLE/PXR24/B44 — with a per-node layer
@@ -2173,20 +2330,44 @@ baseline. Spec: archive/070826_riskfix-plan.md §2.
   Expression is the one exception: a `"use strict"` JS block run **once per
   point** with `index/count/groupIndex/px/py/rot0/sx0/sy0` + the frame clock +
   optional `path`-spline sampling (`pathPos/pathLen/pathAngle`), writing
-  `x/y/sx/sy/scale/rot` and culling via `keep` (count shrinks — Blender
-  Delete-Geometry parity). `rand(seed)` is a frame-independent triple32 hash
+  `x/y/sx/sy/scale/rot/groupIndex` and culling via `keep` (count shrinks — Blender
+  Delete-Geometry parity). `groupIndex` is the partition tag Points to Spline
+  / Select by Index / Copy-to-Points already key off — `groupIndex = floor(index/2)`
+  is the whole "split this cloud into subpaths by rule" move. `rand(seed)` is a frame-independent triple32 hash
   (index-stable windows/gates — the "Random Value hashed on Index" primitive);
-  `random()` varies per frame. **Tunables are Houdini-style channels**:
-  `ch("name", default)` reads a named slider input (wired scalar ?? slider ??
-  inline default), and the panel **Sync** button (`ParamDef.channelSync`) scans
-  the expression for `ch(…)` calls and mints the sliders (`syncChannelInputs`,
-  add-only). Channels are read via `ch()` — **never bare variables** — so a
-  channel name can't collide with a built-in (`ch("x")` is fine); the kernel
-  signature is fixed `(__env, __pt)`. Reuses the `expr_inputs` param UI
-  (type-driven in param-controls.tsx). The scalar Expression node stays
+  `random()` varies per frame. **Tunables are Houdini-style channels**
+  (specdocs/090426_expression-channel-kinds.md; engine home
+  [expr-channels.ts](../src/engine/expr-channels.ts)): six kinds, each a
+  named reference in the source that the panel **Sync** button
+  (`ParamDef.channelSync`) — or a committed recipe/MCP `expression` write —
+  mints as a row on the `expr_inputs` param (`syncChannelInputs`,
+  add-only, id-stable): `ch("k", 0.5, 0, 1)` slider (scalar socket),
+  `toggle("on", true)` pill (scalar socket, ≠ 0), `pick("mode", "a", "b")`
+  segmented pill ≤ 3 options / dropdown (no socket), `color("tint",
+  "#hex")` swatch → `[r,g,b,a]` (vec4 socket), `ramp("ink", t, "#hex", …)`
+  gradient editor sampled at t (color_ramp socket), `curve("f", x, 1, 0)`
+  float-curve editor sampled at x (no socket). Seeds are the literals
+  after the name (`ch` positional; hex / number lists space stops /
+  points evenly); the runtime `t`/`x` args are skipped by the scanner, so
+  the same grammar works as `//` comments in GLSL Expression, whose
+  template mints `uniform float/bool/int(+const int mode_a)/vec4` and
+  `vec4 ink(float t)` / `float f(float x)` lookups backed by 256×1 LUT
+  textures (units 4+). `ExprInput.kind` is derived when absent (legacy
+  rows). Channels are read via their function — **never bare variables**
+  — so a channel name can't collide with a built-in (`ch("x")` is fine).
+  The kernel compiles to a FACTORY (env destructured one function level
+  above the user block, bound per eval by `bindKernel`) so `let color =
+  …` shadows the env instead of throwing a redeclaration error; call sites
+  still see `(__env, __pt)`. Recipes/MCP address channels by NAME:
+  `"<id>:in:ink"` edges, `expose_param` (boundary socket = the channel's
+  socket type), and `set_param` with the channel name as `param` (the only
+  way to tune an existing row — Sync never overwrites); `get_graph` lists
+  them under `channels`. Guard: scripts/check-expression-channels.mts.
+  Reuses the `expr_inputs` param UI (type-driven in param-controls.tsx —
+  `channelParamDef` synthesizes the row's ParamDef). The scalar Expression node stays
   once-per-frame and keeps its bare-variable inputs. Strict mode means
   intermediates need `let`/`const` (bare assignment throws → fails safe to
-  passthrough). At runtime only the compiled epilogue's exact 7-tuple counts
+  passthrough). At runtime only the compiled epilogue's exact 8-tuple counts
   as a result — a user `return` of any other shape keeps the point unchanged
   (a returned short array used to leave `keep` undefined and cull every
   point). **AI recipes can author the expression** (`expression` is a

@@ -79,6 +79,18 @@ export const splineTrailsNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Trace each input point's motion over time as its own spline — the classic motion trail. Feed it anything animated (Points on Path with Animate, a particle sim's points, Modulate Points wiggle) and wire the output into Stroke or Rasterize Spline. Length sets how many seconds of history each trail keeps; Tail width tapers the stroke toward the oldest end (0 = fades to nothing, 1 = uniform). Trails follow point identity through membership changes, so a vanished point's trail fades out naturally. Scene-time driven: paused edits reposition trail heads without growing them, and exports reproduce the preview.",
+  facts: {
+    gotchas: [
+      "length is seconds of scene time (ctx.time), min 0.05s; not wall-clock, so retiming/export pre-roll reproduces the preview exactly.",
+      "Identity is groupIndex+ordinal when the input is tagged, else array index; a vanished point's trail keeps aging out instead of vanishing.",
+      "clear_on_loop wipes every trail when scene time jumps backward (timeline loop/rewind); off, old trails just keep aging out normally.",
+      "Paused or same-tick re-evals move the newest sample to the point's current position without growing the trail's history.",
+      "tail_width < 1 stamps anchor width tapering from tail_width at the oldest sample to 1 at the head; at 1 no width is written.",
+      "Each trail is emitted oldest-to-newest, so the path's end anchor is the current point position (matters for Trim/draw-on reveal).",
+      "A stationary point (moved under ~1e-6 units) refreshes its head sample's timestamp instead of pushing a near-duplicate.",
+      "curve=smooth fits a Catmull-Rom spline through samples; linear emits a straight polyline through the raw sample points.",
+    ],
+  },
   backend: "webgl2",
   // State advances with the eval clock — recompute every eval; the
   // evaluator's stable:false time stamp busts downstream while playing.

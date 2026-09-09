@@ -1,10 +1,16 @@
 import type { NodeDefinition, RenderContext } from "@/engine/types";
-import { copyPointsWith, EMPTY_POINTS } from "@/engine/points";
+import {
+  copyPointsWith,
+  EMPTY_POINTS,
+  RESERVED_POINT_ATTR_NAMES,
+} from "@/engine/points";
 
 // Sample an image at each point's UV position and write the value into
-// a chosen per-point attribute (scale or rotation). The base primitive
-// for "drive geometry from an image" — height-mapping a scatter, sizing
-// dots by a mask, twisting copies by luminance, etc.
+// a chosen per-point attribute (scale, rotation, or a named channel).
+// The base primitive for "drive geometry from an image" — height-mapping
+// a scatter, sizing dots by a mask, twisting copies by luminance, or
+// stamping setattr("lum", …) so Copy to Points / Point Expression can
+// read it without hijacking scale.
 //
 // Mechanically similar to Modulate Points' field samplers, but this is
 // a dedicated, discoverable name doing the simplest thing: read the
@@ -19,7 +25,7 @@ import { copyPointsWith, EMPTY_POINTS } from "@/engine/points";
 const CHANNEL_OPTIONS = ["luminance", "r", "g", "b", "a"] as const;
 type Channel = (typeof CHANNEL_OPTIONS)[number];
 
-const TARGET_OPTIONS = ["scale", "rotation"] as const;
+const TARGET_OPTIONS = ["scale", "rotation", "named attribute"] as const;
 type Target = (typeof TARGET_OPTIONS)[number];
 
 const BLEND_OPTIONS = ["replace", "multiply", "add"] as const;
@@ -76,7 +82,19 @@ export const sampleTextureAtPointsNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Reads a channel of an image at each point's position and writes the value into the chosen attribute (scale or rotation). The sampled [0..1] value remaps linearly to [Lo..Hi] before being combined via Replace / Multiply / Add.",
+    "Reads a channel of an image at each point's position and writes the value into the chosen attribute (scale, rotation, or a named channel). The sampled [0..1] value remaps linearly to [Lo..Hi] before being combined via Replace / Multiply / Add.",
+  facts: {
+    reads: ["attr:scale", "attr:rotation"],
+    writes: ["attr:scale", "attr:rotation"],
+    gotchas: [
+      "target picks which attribute is overwritten (scale, rotation, or a named channel via attr_name); the others pass through unchanged.",
+      "blend=replace ignores the existing attribute entirely; multiply/add combine the remapped sample with the point's current scale/rotation/named value.",
+      "target=scale writes the same value to both x and y (isotropic); for anisotropic scaling, chain two of these after splitting the source.",
+      "target=named attribute writes a float channel named by attr_name (setattr-style); reserved names (position/x/y/index/rotation/scale/group/…) pass the points through unchanged.",
+      "Point UV is aspect-corrected before sampling (py = 0.5 + (y-0.5)*canvasAspect) so the sample lands where the point visually sits on non-square canvases.",
+      "No image wired, or an image whose pixels fail to read back, passes the points through unchanged rather than erroring.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "points", type: "points", required: true },
@@ -96,6 +114,15 @@ export const sampleTextureAtPointsNode: NodeDefinition = {
       type: "enum",
       options: TARGET_OPTIONS as unknown as string[],
       default: "scale",
+    },
+    {
+      name: "attr_name",
+      label: "Name",
+      type: "string",
+      default: "lum",
+      placeholder: "attribute name",
+      suggestAttrsFrom: "points",
+      visibleIf: (p) => p.target === "named attribute",
     },
     {
       name: "blend",
@@ -146,17 +173,29 @@ export const sampleTextureAtPointsNode: NodeDefinition = {
     const blend = ((params.blend as string) ?? "replace") as Blend;
     const lo = (params.lo as number) ?? 0;
     const hi = (params.hi as number) ?? 1;
+    const attrName = ((params.attr_name as string) ?? "").trim();
 
     const buf = readImage(ctx, img);
     if (!buf) return { primary: src };
+
+    if (
+      target === "named attribute" &&
+      (!attrName || RESERVED_POINT_ATTR_NAMES.has(attrName))
+    ) {
+      return { primary: src };
+    }
 
     const n = src.count;
     const inPos = src.positions;
     const inScales = src.scales;
     const inRots = src.rotations;
+    const existing =
+      target === "named attribute" ? src.attributes?.[attrName] : undefined;
 
     const outScales = new Float32Array(n * 2);
     const outRotations = new Float32Array(n);
+    const outAttr =
+      target === "named attribute" ? new Float32Array(n) : undefined;
 
     // Authored y-DOWN → canvas y-DOWN before sampling (authored is
     // aspect-compressed around 0.5): the sample must land where the
@@ -168,47 +207,65 @@ export const sampleTextureAtPointsNode: NodeDefinition = {
       const py = 0.5 + (inPos[i * 2 + 1] - 0.5) * canvasAspect;
       const sample = pickChannel(buf, channel, px, py);
       const remapped = lo + (hi - lo) * sample;
-
       const oldSx = inScales ? inScales[i * 2] : 1;
       const oldSy = inScales ? inScales[i * 2 + 1] : 1;
       const oldRot = inRots ? inRots[i] : 0;
 
+      if (target === "named attribute" && outAttr) {
+        const old =
+          existing && i < existing.data.length / existing.arity
+            ? existing.data[i * existing.arity]
+            : blend === "multiply"
+              ? 1
+              : 0;
+        outAttr[i] =
+          blend === "multiply"
+            ? old * remapped
+            : blend === "add"
+              ? old + remapped
+              : remapped;
+        continue;
+      }
+
       if (target === "scale") {
-        let s: number;
-        if (blend === "multiply") s = remapped;
-        else if (blend === "add") s = remapped;
-        else s = remapped;
-        // Combine with existing scale per blend mode.
         const sx =
           blend === "multiply"
-            ? oldSx * s
+            ? oldSx * remapped
             : blend === "add"
-              ? oldSx + s
-              : s;
+              ? oldSx + remapped
+              : remapped;
         const sy =
           blend === "multiply"
-            ? oldSy * s
+            ? oldSy * remapped
             : blend === "add"
-              ? oldSy + s
-              : s;
+              ? oldSy + remapped
+              : remapped;
         outScales[i * 2] = sx;
         outScales[i * 2 + 1] = sy;
         outRotations[i] = oldRot;
       } else {
-        const r =
+        outRotations[i] =
           blend === "multiply"
             ? oldRot * remapped
             : blend === "add"
               ? oldRot + remapped
               : remapped;
-        outRotations[i] = r;
         outScales[i * 2] = oldSx;
         outScales[i * 2 + 1] = oldSy;
       }
     }
 
-    // Positions stay shared; only scales/rotations are replaced, so
-    // z/normals (a 3D value) and any future channels pass through.
+    if (target === "named attribute" && outAttr) {
+      return {
+        primary: copyPointsWith(src, {
+          attributes: {
+            ...src.attributes,
+            [attrName]: { arity: 1, data: outAttr },
+          },
+        }),
+      };
+    }
+
     return {
       primary: copyPointsWith(src, {
         scales: outScales,

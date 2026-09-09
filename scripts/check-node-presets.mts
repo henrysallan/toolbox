@@ -5,6 +5,9 @@
 //      with node/edge counts, params, and data.name preserved.
 //   2. sanitize drops malformed rows (non-array, missing name, fragment
 //      without a nodes array) and caps the list length.
+//   3. The optional `thumbnail` field (asset-library spec §1.3) survives
+//      sanitize only as a bounded `data:image/…` URL; anything else drops
+//      the field, never the preset.
 //
 //   npx tsx scripts/check-node-presets.mts
 
@@ -154,6 +157,40 @@ const check = (label: string, cond: boolean, detail = "") => {
     }))
   );
   check("sanitize: list capped at 60", overCap.length === 60, String(overCap.length));
+}
+
+// --- 3. thumbnails (090326_asset-library.md §1.3) -----------------------
+{
+  const { MAX_THUMB_DATA_URL_CHARS } = await import("@/lib/asset-thumbnails");
+  const good = "data:image/jpeg;base64,/9j/4AAQ";
+  const [withThumb] = sanitizeNodePresets([
+    { id: "t1", name: "T", fragment: { nodes: [] }, thumbnail: good },
+  ]);
+  check("thumbnail: valid data-URL kept", withThumb?.thumbnail === good);
+  const [notImage] = sanitizeNodePresets([
+    { id: "t2", name: "T", fragment: { nodes: [] }, thumbnail: "data:text/html,<b>x" },
+  ]);
+  check(
+    "thumbnail: non-image data-URL dropped, preset kept",
+    !!notImage && notImage.thumbnail === undefined
+  );
+  const [https] = sanitizeNodePresets([
+    { id: "t3", name: "T", fragment: { nodes: [] }, thumbnail: "https://x/y.jpg" },
+  ]);
+  check("thumbnail: non-data URL dropped", !!https && https.thumbnail === undefined);
+  const [huge] = sanitizeNodePresets([
+    {
+      id: "t4",
+      name: "T",
+      fragment: { nodes: [] },
+      thumbnail: "data:image/png;base64," + "A".repeat(MAX_THUMB_DATA_URL_CHARS),
+    },
+  ]);
+  check("thumbnail: oversized dropped, preset kept", !!huge && huge.thumbnail === undefined);
+  const [wrongType] = sanitizeNodePresets([
+    { id: "t5", name: "T", fragment: { nodes: [] }, thumbnail: 42 },
+  ]);
+  check("thumbnail: non-string dropped", !!wrongType && wrongType.thumbnail === undefined);
 }
 
 console.log(`\n${failures === 0 ? "ALL GREEN ✅" : `${failures} FAILURE(S) ❌`}`);

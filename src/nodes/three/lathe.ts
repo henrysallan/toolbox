@@ -23,6 +23,16 @@ export const lathe3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Revolves a drawn profile around the vertical axis — the spline's distance from canvas center is the radius. Draw half an outline, get a vase. Chain Transform 3D to place it and Material to style it.",
+  facts: {
+    space: { "param:size": "world3d" },
+    gotchas: [
+      "Only the spline's first subpath is used; any other subpaths in a multi-subpath spline are ignored entirely.",
+      "Radius is |x| of each sampled profile point after mapping canvas [0,1] to world units by size, so points authored left of center fold onto the same radius as their mirror on the right.",
+      "Profile y maps canvas y-down to world y-up, the same (0.5-v)*size convention as Extrude Spline.",
+      "sweep < 1 leaves the cutaway's two straight edges open (THREE.LatheGeometry does not cap phiStart/phiEnd), so the interior profile shows as a hole rather than a filled wall.",
+      "Output starts with an identity transform and a single materials:[null] slot; chain Transform 3D and Material afterward since this node has no TRS or material params.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "profile", type: "spline", required: true }],

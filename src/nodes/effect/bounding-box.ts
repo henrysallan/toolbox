@@ -228,6 +228,21 @@ export const boundingBoxNode: NodeDefinition = {
   category: "utility",
   description:
     "Measure the bounding box of an image (alpha extent), mask, spline, or points and output it as edge scalars, midpoint/corner points, the box as a spline, and optional full-canvas guide lines.",
+  facts: {
+    space: {
+      "aux:left": "canvas01",
+      "aux:right": "canvas01",
+      "aux:top": "canvas01",
+      "aux:bottom": "canvas01",
+      "aux:size": "canvas01",
+    },
+    gotchas: [
+      "Masks and images share one <=256px alpha/R-channel proxy readback (cached per value identity) — not the mask-to-image coercion shader, which writes alpha=1 everywhere.",
+      "No content (fully transparent image, empty spline/points) yields empty outputs — zero-length points/spline and size=[0,0] — never a full-canvas box.",
+      "guides_v/guides_h only exist when guides=true; they are full canvas-height/width lines through the box edges, not the box outline.",
+      "Spline bounds include the flattened bezier curve, not just anchors, so a bulging curve can extend the box past its own anchor points.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "source", type: "image", required: true }],

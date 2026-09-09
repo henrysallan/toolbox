@@ -114,6 +114,24 @@ export const sdfShadeNode: NodeDefinition = {
   category: "utility",
   description:
     "Shading terminal for SDFs: fill, color bleed, relief lighting, glow and contours composited in one pass. Per-shape colors come from SDF Material / a primitive's Paint swatch; Fill Color is the fallback for unpainted shapes. Aux outputs expose the normal, height, glow and bleed layers for re-compositing.",
+  facts: {
+    space: {
+      "param:softness": "pixels",
+      "param:soften": "pixels",
+      "param:contour_width": "pixels",
+      "param:depth": "canvas01",
+      "param:glow_radius": "canvas01",
+      "param:bleed_radius": "canvas01",
+      "param:contour_spacing": "canvas01",
+    },
+    gotchas: [
+      "softness, soften, and contour_width are pixels at render resolution (scaled by 1/max(width,height)).",
+      "depth, glow_radius, bleed_radius, and contour_spacing are canvas-UV distances compared directly against the signed distance, independent of resolution.",
+      "aspect_correct governs how this terminal itself samples the tree, separate from any upstream Rasterize; off, the canvas-UV distances scale per-axis and distort on non-square canvases.",
+      "Aux normal/height/glow/bleed/mask each cost one extra full-screen draw and only render when that socket is actually wired or viewed.",
+      "height_mode=curve samples height_curve through a 256-entry LUT rebuilt only when the curve points change; the other four height modes ignore height_curve entirely.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "sdf", type: "sdf", required: true, label: "SDF" }],
   params: [

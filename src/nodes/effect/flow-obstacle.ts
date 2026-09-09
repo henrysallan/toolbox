@@ -77,6 +77,15 @@ export const flowObstacleNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Make a velocity field respect a shape: wire a field (Perlin Noise curl / Spline Flow Field) and an obstacle mask (any spline or shape coerces in), and flow deflects around the silhouette instead of passing through it. `deflect` redirects flow to slide along the boundary (and stalls it inside); `block` just damps flow by coverage for a dead-water stop. `radius` sets how far out the boundary's influence reaches — blur the mask upstream for an even softer approach. Chain several obstacles in series for multiple shapes.",
+  facts: {
+    space: { "param:radius": "canvas01" },
+    gotchas: [
+      "radius sets the finite-difference tap distance (canvas-width fraction, y-tap scaled by aspect) that mints a soft shell around the obstacle mask.",
+      "mode=deflect removes the velocity component pointing into the shell and damps flow deep inside (coverage above ~0.5); mode=block just damps by coverage everywhere.",
+      "Coverage is a 5-tap weighted average ((2*center + N+S+E+W)/6), not a true SDF falloff, so a hard mask still gets a soft shell from the taps alone.",
+      "obstacle unwired: falls back to sampling the field texture itself as a dummy and forces strength to 0, i.e. a pure pass-through.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "field", type: "image", required: true },

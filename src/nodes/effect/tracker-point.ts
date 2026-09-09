@@ -27,6 +27,18 @@ export const trackerPointNode: NodeDefinition = {
   searchAliases: ["tracker", "track", "matchmove", "point track", "ncc"],
   description:
     "Track N image features across frames. Place tracks on the preview, then step or run the transport in the Parameters tab. Outputs live points (and per-track vec2 sockets) from authored track data — tracking itself runs in the editor, not in compute.",
+  facts: {
+    writes: ["attr:confidence"],
+    gotchas: [
+      "compute() only plays back recorded track data at the current frame; pattern_size/search_size/warp/predict/regrab*/lost_below/verify/stop_when_lost drive the editor's live tracking, not compute.",
+      "position_<id> and offset_<id> aux outputs (one vec2 per track) are canvas01 point positions/deltas, not unitless vectors.",
+      "reference=first_sample measures offset_<id> from each track's first recorded sample, not its placement frame, plus the track's authored offset.",
+      "gap_fill=hold repeats a track's last known position through a lost/missing frame; interpolate fills between its neighboring samples instead.",
+      "Disabled tracks are dropped from the primary points output, including a per-point confidence channel, but still emit their position/offset/confidence aux sockets.",
+      "The path aux only computes when consumed and traces each track's raw, unsmoothed recorded trajectory — smooth_radius/smooth_mode affect points, not path.",
+      "image aux is the input passthrough unless view_tracking_image is on, which swaps in the preprocessed (channel/denoise/bandpass) tracking image instead.",
+    ],
+  },
   backend: "webgl2",
   stable: false,
   noMaskInput: true,

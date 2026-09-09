@@ -90,6 +90,9 @@ follow the user across devices (Supabase) and work signed-out (localStorage).
 
 ## Follow-ups (not in v1)
 
-- Rename in place (workaround: re-save under the new name, × the old).
-- Preset descriptions / thumbnails.
+- ~~Rename in place~~ — DONE 2026-09-03 (`renameUserNodePreset`, from the
+  Assets panel card menu; 090326_asset-library.md).
+- ~~Preset thumbnails~~ — DONE 2026-09-03 (`thumbnail` field captured
+  at save from the node's primary output, replaceable from the Assets
+  panel; 090326_asset-library.md §1.3/§3.3). Descriptions still open.
 - Exposing user presets to the MCP `add_node` tool and AI Recipe.

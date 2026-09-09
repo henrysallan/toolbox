@@ -67,6 +67,16 @@ export const randomNode: NodeDefinition = {
   category: "utility",
   description:
     "Random scalar or vec2. Seeded mode is deterministic per frame; Frame mode re-rolls each eval. Uniform draws from [Lo, Hi]; Gauss returns normals centered on (Lo+Hi)/2 with ±3σ ≈ Hi-Lo.",
+  facts: {
+    space: { out: "unitless" },
+    reads: ["time"],
+    gotchas: [
+      "mode=seeded hashes (seed, frame index), so it is reproducible per frame but only changes when the frame advances; mode=frame re-rolls Math.random() every eval and is not reproducible across runs.",
+      "gauss maps a Box-Muller sample by +/-3 sigma into [lo, hi] (sigma=(hi-lo)/6), so ~99.7% of samples land inside the range but outliers can exceed lo/hi.",
+      "In seeded mode, multiple downstream reads within the same frame return the identical cached value rather than being redrawn per pull.",
+      "shape=vec2 draws two independent samples from the same seed via different hash salts, not one value duplicated on both axes.",
+    ],
+  },
   backend: "webgl2",
   stable: false,
   inputs: [],

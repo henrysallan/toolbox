@@ -273,6 +273,16 @@ export const reactionDiffusionNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Gray-Scott / FitzHugh-Nagumo reaction-diffusion patterns. Pick a preset, tune step count. Optional seed image sets the initial U/V fields (R → U, G → V); otherwise starts from a central splat.",
+  facts: {
+    reads: ["time"],
+    gotchas: [
+      "Seed image only reads the R channel as brightness × seed_intensity to set V (U = 1−V); it is not a literal R→U, G→V split despite the description.",
+      "Steps only run while ctx.playing is true; scrubbing or pausing freezes the sim unless drive_by_scene_time is on, which instead steps when the wired time input advances past its last value.",
+      "Resets (re-seed from the seed image or the central splat) whenever scene time drops back near 0 after being nonzero, i.e. a loop, or on the first eval.",
+      "resolution (0.1-1) scales the internal sim texture relative to canvas size, floored at 4px per side; output upsamples the V channel to full canvas with linear filtering.",
+      "preset != custom ignores feed/kill/alpha/beta/gamma entirely; only preset=custom reads those raw model params.",
+    ],
+  },
   backend: "webgl2",
   // Stateful — the simulation's output depends on accumulated steps,
   // not just current params. Force re-eval each tick by mixing time

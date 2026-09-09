@@ -109,6 +109,14 @@ export const triggerEnvelopeNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Rising edge in, attack / hold / release envelope out (0→1→0 scalar). Stretches a one-frame pulse — a Pointer click, an audio beat, a Compare crossing — into usable motion. Wall clock responds while paused; timeline clock makes deterministic triggers export-exact. Retrigger restarts or ignores edges mid-envelope.",
+  facts: {
+    reads: ["time"],
+    gotchas: [
+      "clock=wall (default) uses performance.now(), so the envelope keeps animating while the timeline is paused; clock=timeline uses scene time and only moves with playback/export.",
+      "A rising edge is the trigger crossing from <=0.5 to >0.5; retrigger=restart resets the envelope on each edge, retrigger=ignore drops edges while still active.",
+      "Switching the clock param mid-envelope kills the running envelope (resets to idle) instead of comparing a wall-clock start time against scene time.",
+    ],
+  },
   backend: "webgl2",
   // Wall-clock envelope + edge state — recompute every eval.
   stable: false,

@@ -17,6 +17,14 @@ export const sdfOnionNode: NodeDefinition = {
   category: "utility",
   description:
     "Modifier — turn the SDF into a hollow shell of the given thickness. Stack multiple Onions for concentric rings.",
+  facts: {
+    space: { "in:thickness": "canvas01", "param:thickness": "canvas01" },
+    gotchas: [
+      "thickness is a canvas-UV distance, like the underlying SDF; whether it reads as width-relative pixels depends on SDF Rasterize's aspect_correct setting.",
+      "A wired thickness scalar overrides the thickness param entirely, it is not combined with it.",
+      "thickness is clamped to >= 0 (Math.max(0, t)); unlike SDF Round's radius, a negative value cannot be used to shrink anything here.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

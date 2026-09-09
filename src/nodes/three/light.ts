@@ -59,6 +59,23 @@ export const light3DNode: NodeDefinition = {
   category: "3d",
   description:
     "A scene light (directional, point, or ambient). Wire it into Scene Render alongside your objects.",
+  facts: {
+    space: {
+      "param:pos_x": "world3d",
+      "param:pos_y": "world3d",
+      "param:pos_z": "world3d",
+      "param:target_x": "world3d",
+      "param:target_y": "world3d",
+      "param:target_z": "world3d",
+      "param:distance": "world3d",
+    },
+    gotchas: [
+      "Changing type swaps the retained THREE.Light object for a fresh instance; Scene Render's clear-and-re-add reconciliation drops the old one.",
+      "type=ambient has no position; pos_x/y/z apply to the other three types, target_x/y/z only to directional and spot.",
+      "directional/spot aim from position toward target via an internal, parentless target object whose world matrix updates by hand each compute; that's the only way to redirect the beam.",
+      "intensity is not comparable across types: each light class keeps its own default scale (directional 3, point/spot 10, ambient 0.6).",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

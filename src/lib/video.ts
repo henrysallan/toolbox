@@ -1,5 +1,26 @@
 import type { VideoFileParamValue } from "@/engine/types";
 import { platform } from "./platform";
+import {
+  disposeVideoDecodeSource,
+  setScrubProxyProvider,
+} from "@/engine/video-decode-source";
+import { disposeFrameStore } from "@/engine/video-frame-store";
+
+// Desktop only: the engine asks for a decoder proxy when a source is large
+// or long-GOP (specdocs/090526_video-scrub-optimizations.md M4). The bytes
+// go to the main process the same way transcode-on-import's do; the proxy
+// lives in tmp and is read back by range. Local files only — a cloud
+// clip's bytes are not here — and nothing over 2 GB.
+const PROXY_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+if (platform.makeScrubProxy) {
+  const make = platform.makeScrubProxy;
+  setScrubProxyProvider(async (v) => {
+    if (!v.url.startsWith("blob:")) return null;
+    const blob = await (await fetch(v.url)).blob();
+    if (blob.size > PROXY_MAX_BYTES) return null;
+    return make(await blob.arrayBuffer(), v.filename ?? "video");
+  });
+}
 
 // Load a user-picked video file and wire it up so the pipeline re-evaluates
 // on every new frame.
@@ -155,6 +176,10 @@ async function loadVideoElement(
 
 export function disposeVideoFile(v: VideoFileParamValue | null | undefined) {
   if (!v) return;
+  // The WebCodecs decode source and the shared frame store (scrub frame
+  // cache) belong to the value.
+  disposeFrameStore(v);
+  disposeVideoDecodeSource(v);
   try {
     v.video.pause();
     v.video.removeAttribute("src");

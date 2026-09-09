@@ -144,6 +144,30 @@ export const filterPointsNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Keep or discard points by predicate. Bbox keeps points inside an XY window; Mask keeps points where the wired image's luminance is ≥ threshold; Index keeps 1 of every N points; Random keeps a stable random subset (hashed on index, so points don't flicker in/out — raising Amount reveals more of the same points, Seed re-rolls the selection). Invert flips which side is kept. Also accepts 3D points (from 3D Scatter Points): bbox becomes a world-space box with Z rows, index/random work identically, mask passes through.",
+  facts: {
+    space: {
+      "in:points": ["canvas01", "world3d"],
+      out: "in:points",
+      "param:x_min": "canvas01",
+      "param:x_max": "canvas01",
+      "param:y_min": "canvas01",
+      "param:y_max": "canvas01",
+      "param:wx_min": "world3d",
+      "param:wx_max": "world3d",
+      "param:wy_min": "world3d",
+      "param:wy_max": "world3d",
+      "param:wz_min": "world3d",
+      "param:wz_max": "world3d",
+    },
+    gotchas: [
+      "points is polymorphic: a points3d wire switches bbox to world-space X/Y/Z rows (wx/wy/wz, default −10..10) and hides the 2D X/Y rows and the mask threshold.",
+      "mask mode ignores a points3d input entirely (authored-space sampling has no meaning for world points) and passes it through unchanged, same as an unwired mask on 2D input.",
+      "attribute mode compares a named channel's component 0 against attr_threshold; a missing channel passes every point through unchanged instead of dropping them.",
+      "index/random key off each point's position in the incoming array, not any stored identity, so a changed upstream count changes which points survive.",
+      "random mode's hash matches Point Expression's rand(index) byte-for-byte (seed 0 == hash01(index)), so an equivalent expression selects the identical subset.",
+      "Kept points are renumbered sequentially from 0; scale/rotation/group and named attributes are carried through unchanged via gatherPoints.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "points", type: "points", required: true },

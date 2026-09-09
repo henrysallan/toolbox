@@ -28,6 +28,16 @@ export const extrudeSpline3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Turns any spline into solid 3D geometry — draw a shape (or wire Text's spline output) and give it depth, with optional rounded bevel. Chain Transform 3D to place it and Material to style it.",
+  facts: {
+    space: { "param:size": "world3d", "param:depth": "world3d", "param:bevel_size": "world3d" },
+    gotchas: [
+      "The spline's canvas01 [0,1]^2 maps to world units centered on the origin: x = (u-0.5)*size, y = (0.5-v)*size — canvas y-down flips to world y-up automatically.",
+      "Extrusion runs 0..depth along +Z, then the geometry is re-centered so it straddles Z=0 symmetrically.",
+      "bevel_size drives both bevelSize and bevelThickness with bevelOffset = -bevel_size, so the outer silhouette stays at the authored size and the bevel eats inward rather than growing the footprint.",
+      "Multi-subpath splines use winding direction for holes: a subpath wound opposite its container cuts a hole instead of adding a second solid.",
+      "Output starts with an identity transform and a single materials:[null] slot; chain Transform 3D and Material afterward since this node has no TRS or material params.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "spline", type: "spline", required: true }],

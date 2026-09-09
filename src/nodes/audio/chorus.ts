@@ -15,6 +15,13 @@ export const audioChorusNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Thickens and widens the signal by mixing in slightly delayed, LFO-detuned copies. Rate and depth set the wobble; spread pans the two LFOs apart for stereo width.",
+  facts: {
+    gotchas: [
+      "Descriptor in, descriptor out: compute() does no audio work; the audio engine builds a Tone.Chorus once the chain reaches an audio output.",
+      "The two detune LFOs start freely when the effect stage is created; an offline export forces phase 0 for determinism, so live-preview wobble timing can drift from the render (audibly equivalent).",
+      "spread pans the two LFOs apart in stereo degrees (0 = mono wobble, 180 = fully opposite channels).",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "audio", type: "audio", required: true, label: "Audio" }],

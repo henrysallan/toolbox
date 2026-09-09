@@ -626,6 +626,17 @@ export const watercolorInkNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Cellular-automaton watercolor / sumi ink simulation (Zhang et al. 1999). Wire any mask/spline/shape into `deposit` to lay down ink; water spreads through fibrous paper (nijimi), suspended ink rides and diffuses with it, and ink fixes permanently where the water dries. Wire an image into `color` and the deposited ink keeps its hues (white = clear water; with `deposit` unwired the image's alpha doubles as coverage). Low concentration = thin ink that wicks far along fibers; high = dense marks. `water map` scales the delivered water per cell (wired alone = pre-wet the sheet, wet-on-wet); `ink map` scales pigment concentration per cell (needs water to ride — dry areas deliver nothing). Sample rate 0 = continuous contact; above 0, the input (e.g. a video frame) is stamped as a full wash every 1/rate seconds and left to bloom/dry between stamps. Plays while the timeline runs; restarting the timeline clears the sheet.",
+  facts: {
+    reads: ["time"],
+    gotchas: [
+      "resolution runs the sim grid at a fraction of canvas size (0.1–1); substeps and evap/rewet rates auto-scale by simScale² so bloom and drying stay roughly resolution-independent.",
+      "Requires EXT_color_buffer_float; without it the simulation is disabled and the node just outputs a flat, blank paper-color image.",
+      "Sim state (wet ink, dried ink, paper) persists per node in float32 textures across frames; a timeline restart (scene time wrapping back near zero) clears the sheet to dry and blank.",
+      "drive_by_scene_time replaces the default timeline-playing gate with a wired `time` scalar input; the sim advances a substep only when that value increases.",
+      "Changing fiber_count or paper_seed regenerates the paper texture and resets the sheet to dry, even mid-playback.",
+      "lifetime=0 makes dried ink permanent; above 0, marks older than lifetime decay to about 1% of their value over `dissolve` seconds.",
+    ],
+  },
   backend: "webgl2",
   // Self-iterating — output depends on accumulated substeps, not just
   // current params. Time is mixed into the fingerprint below.

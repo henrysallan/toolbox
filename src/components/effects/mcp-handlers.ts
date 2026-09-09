@@ -12,17 +12,34 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { Edge } from "@xyflow/react";
 import type { BridgeHandlers } from "@/lib/mcp-bridge";
 import { getNodeDef } from "@/engine/registry";
-import { GROUP_TYPE, LAYER_TYPE } from "@/engine/groups";
+import {
+  GROUP_TYPE,
+  LAYER_TYPE,
+  isZoneShell,
+  readInputValues,
+} from "@/engine/groups";
 import { SETTABLE_PARAM_TYPES, vetParamValue } from "@/engine/node-catalog";
 import { validateGraph, type ValEdge, type ValNode } from "@/engine/graph-validation";
-import { buildRecipe, type RecipeGraph } from "@/state/recipe-builder";
+import {
+  applySyncedExpression,
+  buildRecipe,
+  type RecipeGraph,
+} from "@/state/recipe-builder";
 import {
   applyRecipeEdit,
   graphToSpec,
   type RecipeEdit,
   type RecipeEditOp,
 } from "@/state/recipe-edit";
-import { expandWithDescendants, type GraphNode } from "@/state/graph-ops";
+import { placeNewNodes } from "@/state/node-layout";
+import { applyPositions, toLayoutGraph } from "@/state/node-layout-graph";
+import {
+  expandWithDescendants,
+  listGroupShellControls,
+  resolveGroupShellControl,
+  withUpdatedParams,
+  type GraphNode,
+} from "@/state/graph-ops";
 import {
   DEFAULT_TICKS_PER_FRAME,
   EASING_PRESET_ORDER,
@@ -37,6 +54,22 @@ import { summarize } from "@/lib/perf-console";
 import { buildCatalogDsl, HARD_BUILD_CODES } from "@/lib/ai/generate-recipe-client";
 import { HARD_OP_CODES } from "@/lib/ai/edit-recipe-client";
 import { pointExpressionNode } from "@/nodes/effect/point-expression";
+import {
+  attachGlslErrorsToSpec,
+  inspectGlslExpression,
+} from "@/nodes/effect/glsl-expression";
+import {
+  channelKind,
+  findExprChannel,
+  setExprChannelValue,
+} from "@/engine/expr-channels";
+import type { EngineBackend } from "@/engine/gl";
+import type { EvalCache } from "@/engine/evaluator";
+import type { NodeOutput } from "@/engine/types";
+import {
+  inspectSocketValue,
+  pickInspectSocket,
+} from "@/engine/socket-inspect";
 
 export interface McpStatus {
   projectName: string;
@@ -48,6 +81,11 @@ export interface McpStatus {
   loopFrames: number;
   selectedNodeId: string | null;
   scope: string;
+  // "root" | "layer" | "group" — so insert_recipe can tell a drilled-in
+  // node-group (nesting trap) from a layer (the usual insert target).
+  scopeType: "root" | "layer" | "group";
+  // Parent of the current scope ("root" when there isn't one).
+  parentScope: string;
 }
 
 export interface McpHandlerDeps {
@@ -74,9 +112,26 @@ export interface McpHandlerDeps {
   setEdges: Dispatch<SetStateAction<Edge[]>>;
   commitRecipeFragment: (
     frag: { nodes: GraphNode[]; edges: Edge[] },
-    warningCount: number
-  ) => { groupId: string | null; wrapped: boolean };
+    warningCount: number,
+    opts?: { connect?: boolean; scope?: string; replaceOutput?: boolean }
+  ) => {
+    groupId: string | null;
+    wrapped: boolean;
+    parentId: string | null;
+    wired: { from: string; to: string }[];
+    skippedOccupied: { socket: string }[];
+    idMap: Record<string, string>;
+  };
   flashToast: (message: string) => void;
+  // Tidy (090626_tidy-layout.md): lay nodes out along their wires — the
+  // given ids, or every node of a scope (undefined = composition root).
+  // Animated by the NodeEditor when that scope is on screen, immediate
+  // (estimated boxes) otherwise; one undo entry either way. Returns the
+  // number of nodes moved.
+  tidyNodes: (target: { ids: string[] } | { scopeId: string | undefined }) => number;
+  backendRef: MutableRefObject<EngineBackend | null>;
+  evalCacheRef: MutableRefObject<EvalCache>;
+  lastEvalOutputsRef: MutableRefObject<Map<string, NodeOutput> | null>;
 }
 
 // Shared validate step (identical split to the generate/edit clients): hard
@@ -116,8 +171,14 @@ function invalid(kind: string, errors: string[]): Error {
   return new Error(`${kind} not applied — fix these and retry:\n- ${errors.join("\n- ")}`);
 }
 
-async function canvasToBase64(canvas: HTMLCanvasElement): Promise<string> {
-  const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/png"));
+async function canvasToBase64(
+  canvas: HTMLCanvasElement,
+  mimeType = "image/png",
+  quality?: number
+): Promise<string> {
+  const blob = await new Promise<Blob | null>((r) =>
+    canvas.toBlob(r, mimeType, quality)
+  );
   if (!blob) throw new Error("Could not encode the screenshot.");
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const fr = new FileReader();
@@ -126,6 +187,40 @@ async function canvasToBase64(canvas: HTMLCanvasElement): Promise<string> {
     fr.readAsDataURL(blob);
   });
   return dataUrl.slice(dataUrl.indexOf(",") + 1);
+}
+
+// JPEG is the default because soft-gradient PNGs at 1024px blow Claude's
+// ~1 MB tool-result cap. PNG stays available for lossless peeks, but its
+// omitted-maxSize default is lower so it still fits.
+const JPEG_QUALITY = 0.82;
+const JPEG_DEFAULT_MAX = 1024;
+const PNG_DEFAULT_MAX = 720;
+const STRIP_JPEG_DEFAULT_MAX = 1400;
+const STRIP_PNG_DEFAULT_MAX = 900;
+
+function screenshotEncode(args: {
+  maxSize?: unknown;
+  format?: unknown;
+  quality?: unknown;
+  strip?: boolean;
+}): { mimeType: string; max: number; quality: number | undefined } {
+  const png = args.format === "png";
+  const fallback = png
+    ? args.strip
+      ? STRIP_PNG_DEFAULT_MAX
+      : PNG_DEFAULT_MAX
+    : args.strip
+      ? STRIP_JPEG_DEFAULT_MAX
+      : JPEG_DEFAULT_MAX;
+  const min = args.strip ? 256 : 64;
+  const max = Math.min(2048, Math.max(min, Number(args.maxSize) || fallback));
+  if (png) return { mimeType: "image/png", max, quality: undefined };
+  const q = Number(args.quality);
+  return {
+    mimeType: "image/jpeg",
+    max,
+    quality: Number.isFinite(q) ? Math.min(1, Math.max(0.4, q)) : JPEG_QUALITY,
+  };
 }
 
 const EASING_SET = new Set<string>(EASING_PRESET_ORDER);
@@ -140,37 +235,104 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
     return node;
   };
 
+  const glslInspectFor = (
+    node: GraphNode | null,
+    backend: EngineBackend | null
+  ) => {
+    if (!node || !backend || node.data.defType !== "glsl-expression") return null;
+    const info = inspectGlslExpression(node.id, node.data.params, backend.tryShader);
+    return info.ok ? null : info;
+  };
+
   return {
     // ---- context -----------------------------------------------------------
     get_status: () => deps.status,
 
-    get_catalog: () => buildCatalogDsl(),
+    get_catalog: (args) =>
+      buildCatalogDsl({
+        mode: args.mode === "full" ? "full" : args.mode === "list" ? "list" : undefined,
+        category: args.category as string | string[] | undefined,
+        types: args.types as string | string[] | undefined,
+      }),
 
-    get_graph: ({ scope }) => {
+    get_graph: ({ scope, verbosity, params }) => {
       const nodes = deps.nodesRef.current;
       const edges = deps.edgesRef.current;
       const scopeId = !scope || scope === "root" ? undefined : String(scope);
       if (scopeId) {
         const shell = nodeOrThrow(scopeId);
-        if (shell.data.defType !== GROUP_TYPE && shell.data.defType !== LAYER_TYPE)
+        if (
+          shell.data.defType !== GROUP_TYPE &&
+          shell.data.defType !== LAYER_TYPE &&
+          !isZoneShell(shell.data.defType)
+        )
           throw new Error(
-            `"${scopeId}" is a ${shell.data.defType}, not a group/layer — get_graph scopes are group or layer ids (or "root").`
+            `"${scopeId}" is a ${shell.data.defType} — get_graph scopes are group, layer, or Repeat/For Each/Iterate zone ids (or "root").`
           );
       }
-      return graphToSpec(nodes, edges, scopeId);
+      const spec = graphToSpec(nodes, edges, scopeId, {
+        verbosity: verbosity === "ids" ? "ids" : "full",
+        params: params === "all" ? "all" : "non_default",
+        expressions: params === "all" ? "full" : "hash",
+      });
+      const backend = deps.backendRef.current;
+      if (!backend || verbosity === "ids") return spec;
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      return {
+        ...spec,
+        nodes: attachGlslErrorsToSpec(
+          spec.nodes,
+          (id) => byId.get(id)?.data.params,
+          backend.tryShader
+        ),
+      };
+    },
+
+    get_node_data: ({ nodeId, limit, socket, frame }) => {
+      const node = nodeOrThrow(nodeId);
+      const fps = deps.fpsRef.current;
+      const seek = typeof frame === "number" && Number.isFinite(frame);
+      const targetTime = seek
+        ? Math.max(0, frame as number) / fps
+        : deps.timeRef.current;
+      deps.forcedTerminalRef.current = node.id;
+      try {
+        deps.renderFrame(targetTime, fps, false);
+      } finally {
+        deps.forcedTerminalRef.current = null;
+      }
+      const output =
+        deps.evalCacheRef.current.get(node.id)?.output ??
+        deps.lastEvalOutputsRef.current?.get(node.id);
+      if (!deps.playingRef.current) {
+        deps.renderFrame(deps.timeRef.current, deps.fpsRef.current, false);
+      }
+      const picked = pickInspectSocket(output, socket);
+      if (!picked.value) {
+        throw new Error(
+          `No evaluated output on "${node.id}" (${node.data.defType}${
+            picked.socket !== "out" ? ` ${picked.socket}` : ""
+          }). The node may be disconnected, gated, or a group shell (flatten dissolves those — pass an interior computing node).`
+        );
+      }
+      return {
+        nodeId: node.id,
+        type: node.data.defType,
+        socket: picked.socket,
+        frame: Math.round(targetTime * fps),
+        ...inspectSocketValue(picked.value, limit),
+      };
     },
 
     // ---- vision ------------------------------------------------------------
-    screenshot: async ({ nodeId, frame, maxSize }) => {
+    screenshot: async ({ nodeId, frame, maxSize, format, quality }) => {
       const canvas = deps.canvasRef.current;
       if (!canvas) throw new Error("Preview canvas unavailable.");
       const fps = deps.fpsRef.current;
       const seek = typeof frame === "number" && Number.isFinite(frame);
       const targetTime = seek ? Math.max(0, frame as number) / fps : deps.timeRef.current;
-      if (nodeId != null) {
-        nodeOrThrow(nodeId);
-        deps.forcedTerminalRef.current = String(nodeId);
-      }
+      const peek = nodeId != null ? nodeOrThrow(nodeId) : null;
+      if (peek) deps.forcedTerminalRef.current = peek.id;
       try {
         // Always render explicitly so the capture is deterministic (not
         // whatever half-frame the last rAF left behind).
@@ -178,33 +340,43 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       } finally {
         deps.forcedTerminalRef.current = null;
       }
-      const max = Math.min(2048, Math.max(64, Number(maxSize) || 1024));
-      const scale = Math.min(1, max / Math.max(canvas.width, canvas.height));
+      const enc = screenshotEncode({ maxSize, format, quality });
+      const scale = Math.min(1, enc.max / Math.max(canvas.width, canvas.height));
       const w = Math.max(1, Math.round(canvas.width * scale));
       const h = Math.max(1, Math.round(canvas.height * scale));
       const tmp = document.createElement("canvas");
       tmp.width = w;
       tmp.height = h;
-      tmp.getContext("2d")!.drawImage(canvas, 0, 0, w, h);
-      const base64 = await canvasToBase64(tmp);
+      const ctx2d = tmp.getContext("2d")!;
+      if (enc.mimeType === "image/jpeg") {
+        ctx2d.fillStyle = "#000";
+        ctx2d.fillRect(0, 0, w, h);
+      }
+      ctx2d.drawImage(canvas, 0, 0, w, h);
+      const base64 = await canvasToBase64(tmp, enc.mimeType, enc.quality);
       // A paused editor should keep showing the user's playhead, not the
       // frame Claude peeked at.
-      if ((seek || nodeId != null) && !deps.playingRef.current)
+      if ((seek || peek) && !deps.playingRef.current)
         deps.renderFrame(deps.timeRef.current, deps.fpsRef.current, false);
+      const shader = glslInspectFor(peek, deps.backendRef.current);
       return {
         kind: "image",
-        mimeType: "image/png",
+        mimeType: enc.mimeType,
         base64,
         width: w,
         height: h,
         frame: Math.round(targetTime * fps),
+        ...(shader?.error
+          ? { shaderError: shader.error, shaderPreludeLines: shader.preludeLines }
+          : {}),
+        ...(shader?.problems ? { shaderProblems: shader.problems } : {}),
       };
     },
 
     // Sample several frames and tile them into ONE labelled grid image, so
     // judging motion costs a single tool call (and one image's worth of
     // context) instead of N.
-    screenshot_strip: async ({ frames, start, end, every, nodeId, maxSize }) => {
+    screenshot_strip: async ({ frames, start, end, every, nodeId, maxSize, format, quality }) => {
       const canvas = deps.canvasRef.current;
       if (!canvas) throw new Error("Preview canvas unavailable.");
       const fps = deps.fpsRef.current;
@@ -230,7 +402,8 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       if (nodeId != null) nodeOrThrow(nodeId);
 
       // Grid geometry: near-square, sized so the WHOLE strip fits the budget.
-      const budget = Math.min(2048, Math.max(256, Number(maxSize) || 1400));
+      const enc = screenshotEncode({ maxSize, format, quality, strip: true });
+      const budget = enc.max;
       const cols = list.length <= 3 ? list.length : Math.ceil(Math.sqrt(list.length));
       const rows = Math.ceil(list.length / cols);
       const aspect = canvas.width / canvas.height;
@@ -243,6 +416,10 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       grid.width = cellW * cols;
       grid.height = cellH * rows;
       const g = grid.getContext("2d")!;
+      if (enc.mimeType === "image/jpeg") {
+        g.fillStyle = "#000";
+        g.fillRect(0, 0, grid.width, grid.height);
+      }
       const label = Math.max(10, Math.round(cellH / 18));
 
       try {
@@ -273,8 +450,8 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
 
       return {
         kind: "image",
-        mimeType: "image/png",
-        base64: await canvasToBase64(grid),
+        mimeType: enc.mimeType,
+        base64: await canvasToBase64(grid, enc.mimeType, enc.quality),
         width: grid.width,
         height: grid.height,
         frames: list,
@@ -283,7 +460,7 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
     },
 
     // ---- mutation ----------------------------------------------------------
-    insert_recipe: ({ recipe }) => {
+    insert_recipe: ({ recipe, connect, scope, replace_output }) => {
       if (!recipe || typeof recipe !== "object" || Array.isArray(recipe))
         throw new Error("Pass `recipe` as a RecipeGraph object (see the tool description).");
       const rg = recipe as RecipeGraph;
@@ -295,16 +472,59 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         HARD_BUILD_CODES
       );
       if (errors.length) throw invalid("Recipe", errors);
-      const { groupId } = deps.commitRecipeFragment(
-        { nodes: built.nodes, edges: built.edges },
-        warnings.length
-      );
+      const scopeArg =
+        typeof scope === "string" && scope.trim() ? scope.trim() : undefined;
+      // Drilled into a node-group: omitting scope nests the replacement
+      // inside the thing it was meant to replace. Demand an explicit
+      // target — "parent" / the enclosing layer, or the group id to nest.
+      if (scopeArg == null && deps.status.scopeType === "group") {
+        throw new Error(
+          `Editor is inside group "${deps.status.scope}". insert_recipe without scope would nest the new group inside it. Pass scope=${deps.status.parentScope} to insert beside it, scope=parent for the same, or scope=${deps.status.scope} to nest intentionally.`
+        );
+      }
+      const hooked = connect !== false;
+      const replaceOutput = replace_output === true;
+      const { groupId, wired, parentId, wrapped, skippedOccupied, idMap } =
+        deps.commitRecipeFragment(
+          { nodes: built.nodes, edges: built.edges },
+          warnings.length,
+          { connect: hooked, scope: scopeArg, replaceOutput }
+        );
       deps.flashToast(`Claude: added "${rg.name ?? "recipe"}"`);
+      const where = wrapped
+        ? "a new layer"
+        : parentId
+          ? `scope ${parentId}`
+          : "the current scope";
+      const ids: Record<string, string> = {};
+      for (const [lid, builtId] of Object.entries(built.ids)) {
+        ids[lid] = idMap[builtId] ?? builtId;
+      }
+      const nextWarnings = [...warnings];
+      if (hooked && wired.length === 0 && skippedOccupied.length > 0) {
+        nextWarnings.push(
+          `Enclosing output already had a wire (${skippedOccupied
+            .map((s) => s.socket)
+            .join(", ")}) — group was left unwired. Pass replace_output: true to take the socket.`
+        );
+      }
+      const wireNote =
+        wired.length > 0
+          ? ` Wired to the enclosing output: ${wired.map((w) => `${w.from} → ${w.to}`).join(", ")}.`
+          : hooked && skippedOccupied.length === 0
+            ? " No matching enclosing output socket — group was left unwired."
+            : "";
       return {
         ok: true,
         groupId,
-        warnings,
-        note: "Interior node ids were minted at insert — call get_graph with scope=groupId before editing.",
+        parentId,
+        wrapped,
+        wired,
+        ids,
+        warnings: nextWarnings,
+        note:
+          `Inserted into ${where}. Use \`ids\` for interior minted ids (recipe local id → live id).` +
+          wireNote,
       };
     },
 
@@ -333,12 +553,43 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         HARD_OP_CODES
       );
       if (errors.length) throw invalid("Edit", errors);
+      // add_node mints at (0,0) — place each new node beside its first
+      // consumer on the row it feeds, sliding down past occupied slots
+      // (090626_tidy-layout.md). Existing nodes never move. Only the
+      // scope's own level (direct interior + inline zone members) counts
+      // as obstacles: the shell and any nested group's interior live in
+      // other coordinate spaces.
+      const freshIds = result.nodes.filter((n) => !fragIds.has(n.id)).map((n) => n.id);
+      let placedNodes = result.nodes;
+      if (freshIds.length) {
+        const levelIds = new Set<string>();
+        let grew = true;
+        while (grew) {
+          grew = false;
+          for (const n of result.nodes) {
+            if (levelIds.has(n.id)) continue;
+            const p = n.data.parentId;
+            if (p === groupId || (p && levelIds.has(p) && isZoneShell(result.nodes.find((x) => x.id === p)?.data.defType))) {
+              levelIds.add(n.id);
+              grew = true;
+            }
+          }
+        }
+        const level = result.nodes.filter((n) => levelIds.has(n.id));
+        const lg = toLayoutGraph(level, result.edges);
+        const moves = placeNewNodes(
+          lg.nodes,
+          lg.edges,
+          freshIds.filter((id) => levelIds.has(id))
+        );
+        placedNodes = applyPositions(result.nodes, moves);
+      }
       // Commit in place — same replacement the in-app edit flow does. No
       // staleness window here: everything above ran synchronously.
       deps.pushGraph(deps.getGraphSnapshot());
       // aiAuthored gives node-groups the "Edit with AI" star; layers keep
       // their normal chrome.
-      const committed = result.nodes.map((n) =>
+      const committed = placedNodes.map((n) =>
         n.id === groupId && shell.data.defType === GROUP_TYPE
           ? { ...n, data: { ...n.data, aiAuthored: true } }
           : n
@@ -353,7 +604,36 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         ...result.edges,
       ]);
       deps.flashToast(`Claude edit: ${edit.summary ?? `${edit.ops.length} ops`}`);
-      return { ok: true, warnings };
+      return {
+        ok: true,
+        applied: result.applied,
+        ops: result.ops,
+        warnings,
+      };
+    },
+
+    tidy: ({ nodes: nodeIds, scope }) => {
+      if (Array.isArray(nodeIds) && nodeIds.length) {
+        const ids = nodeIds.map((id) => nodeOrThrow(id).id);
+        const moved = deps.tidyNodes({ ids });
+        deps.flashToast(`Claude: tidied ${moved} node${moved === 1 ? "" : "s"}`);
+        return { ok: true, moved };
+      }
+      const scopeArg =
+        typeof scope === "string" && scope.trim() ? scope.trim() : undefined;
+      let scopeId: string | undefined;
+      if (scopeArg === "root") scopeId = undefined;
+      else if (scopeArg) {
+        const shell = nodeOrThrow(scopeArg);
+        if (shell.data.defType !== GROUP_TYPE && shell.data.defType !== LAYER_TYPE)
+          throw new Error(
+            `"${scopeArg}" is a ${shell.data.defType} — tidy's scope is a node-group or layer id, or "root".`
+          );
+        scopeId = shell.id;
+      } else scopeId = deps.status.scope === "root" ? undefined : deps.status.scope;
+      const moved = deps.tidyNodes({ scopeId });
+      deps.flashToast(`Claude: tidied ${moved} node${moved === 1 ? "" : "s"}`);
+      return { ok: true, moved, scope: scopeId ?? "root" };
     },
 
     set_param: ({ nodeId, param, value }) => {
@@ -361,14 +641,99 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       const def = getNodeDef(node.data.defType);
       if (!def) throw new Error(`Node "${nodeId}" has an unknown type.`);
       const pdef = def.params.find((p) => p.name === param);
-      if (!pdef)
+      if (!pdef) {
+        // A channel NAME — tune the row in place (Sync is add-only, so
+        // re-authoring the expression never changes an existing value).
+        const chan = findExprChannel(def, node.data.params, String(param));
+        if (chan) {
+          // Transport coercion, as for params below: some clients send
+          // "0.5" / "true" / a JSON-encoded stops or points list.
+          let cv = value;
+          const kind = channelKind(chan);
+          if (typeof value === "string") {
+            const s = value.trim();
+            if (kind === "scalar" && s !== "" && Number.isFinite(Number(s))) cv = Number(s);
+            else if (kind === "toggle" && (s === "true" || s === "false")) cv = s === "true";
+            else if ((kind === "ramp" || kind === "curve") && s.startsWith("[")) {
+              try {
+                cv = JSON.parse(s);
+              } catch {
+                /* vetting reports the shape */
+              }
+            }
+          }
+          const r = setExprChannelValue(def, node.data.params, String(param), cv);
+          if (!r.ok) throw new Error(`Bad value for channel "${param}": ${r.reason}.`);
+          deps.onParamChange(String(nodeId), r.listParam, r.params[r.listParam]);
+          deps.flashToast(
+            `Claude: set ${param} on ${node.data.name ?? node.data.defType}`
+          );
+          return { ok: true, channel: param, kind, value: r.value };
+        }
+        if (node.data.defType === GROUP_TYPE || node.data.defType === LAYER_TYPE) {
+          const nodes = deps.nodesRef.current;
+          const edges = deps.edgesRef.current;
+          const ctrl = resolveGroupShellControl(node, String(param), nodes, edges);
+          if (ctrl) {
+            let coerced = value;
+            if (typeof value === "string") {
+              if (
+                ctrl.controlDef.type === "scalar" &&
+                value.trim() !== "" &&
+                Number.isFinite(Number(value))
+              ) {
+                coerced = Number(value);
+              } else if (
+                ctrl.controlDef.type === "boolean" &&
+                (value === "true" || value === "false")
+              ) {
+                coerced = value === "true";
+              }
+            }
+            const vet = vetParamValue(ctrl.controlDef, coerced);
+            if (!vet.ok) throw new Error(`Bad value for "${param}": ${vet.reason}.`);
+            const stored = readInputValues(node.data.params);
+            deps.onParamChange(String(nodeId), "inputValues", {
+              ...stored,
+              [ctrl.socketName]: vet.value,
+            });
+            deps.flashToast(
+              `Claude: set ${ctrl.socketName} on ${node.data.name ?? node.data.defType}`
+            );
+            return { ok: true, param: ctrl.socketName, value: vet.value, group: true };
+          }
+          const names = listGroupShellControls(node, nodes, edges)
+            .map((c) => c.socketName)
+            .join(", ");
+          throw new Error(
+            `${node.data.defType} has no param "${param}". Exposed: ${names || "none"}. Params: ${def.params
+              .map((p) => p.name)
+              .join(", ") || "(none)"}.`
+          );
+        }
+        const channelNames = ((node.data.params.inputs as { name: string }[] | undefined) ?? [])
+          .map((c) => c.name)
+          .join(", ");
         throw new Error(
           `${node.data.defType} has no param "${param}". Params: ${def.params
             .map((p) => p.name)
-            .join(", ")}.`
+            .join(", ")}.${
+            def.params.some((p) => p.type === "expr_inputs" && p.channelSync)
+              ? ` Channels (set by name): ${channelNames || "none"}.`
+              : ""
+          }`
         );
-      if (!SETTABLE_PARAM_TYPES.has(pdef.type))
-        throw new Error(`"${param}" (${pdef.type}) can't be set remotely — only ${[...SETTABLE_PARAM_TYPES].join("/")} params.`);
+      }
+      if (!SETTABLE_PARAM_TYPES.has(pdef.type)) {
+        if (pdef.type === "expr_inputs") {
+          throw new Error(
+            `"${param}" is the channel list and can't be set wholesale. Declare channels in the expression — ch("k", 0.5) / toggle("on", true) / pick("mode", "a", "b") / color("tint", "#hex") / ramp("ink", …) / curve("f", …) — and set_param expression (Sync mints new rows, add-only). To change an existing channel's value, set_param with the channel NAME as param.`
+          );
+        }
+        throw new Error(
+          `"${param}" (${pdef.type}) can't be set remotely — only ${[...SETTABLE_PARAM_TYPES].join("/")} params.`
+        );
+      }
       // MCP transport coercion: some clients serialize the untyped `value`
       // argument as a string ("1", "true"), which vetParamValue rightly
       // rejects for scalar/boolean params. Coerce the unambiguous string
@@ -386,21 +751,51 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       }
       const vet = vetParamValue(pdef, coerced);
       if (!vet.ok) throw new Error(`Bad value for "${param}": ${vet.reason}.`);
-      deps.onParamChange(String(nodeId), String(param), vet.value);
-      deps.flashToast(`Claude: set ${param} on ${node.data.name ?? node.data.defType}`);
       const anim = node.data.animation as
         | Record<string, { animated?: boolean }>
         | undefined;
       const keyframed = !!anim?.[String(param)]?.animated;
-      return {
-        ok: true,
-        ...(keyframed
+      const exposed = (node.data.exposedParams ?? []).includes(String(param));
+      // Prefer the exposed warning when both apply — flatten patches
+      // inputValues, so the interior constant is shadowed at eval.
+      const note = exposed
+        ? {
+            warning:
+              "param is exposed; group value wins — set_param the group shell with the exposed label.",
+          }
+        : keyframed
           ? {
               warning:
                 "This param is keyframed — the static value is overridden by its animation.",
             }
-          : {}),
-      };
+          : {};
+      // A committed expression write runs the panel Sync scan (add-only) so
+      // new ch()/pick() refs mint uniforms in the same undo as the source.
+      // Live typing still goes through onParamChange without this — partial
+      // names would otherwise become leftover channels.
+      if (param === "expression" && typeof vet.value === "string") {
+        const { params: nextParams, minted } = applySyncedExpression(
+          def,
+          node.data.params,
+          vet.value
+        );
+        deps.pushGraph(deps.getGraphSnapshot());
+        const id = String(nodeId);
+        deps.setNodes((prev) =>
+          prev.map((n) => (n.id === id ? withUpdatedParams(n, nextParams) : n))
+        );
+        deps.flashToast(
+          `Claude: set ${param} on ${node.data.name ?? node.data.defType}`
+        );
+        return {
+          ok: true,
+          ...(minted.length ? { mintedChannels: minted } : {}),
+          ...note,
+        };
+      }
+      deps.onParamChange(String(nodeId), String(param), vet.value);
+      deps.flashToast(`Claude: set ${param} on ${node.data.name ?? node.data.defType}`);
+      return { ok: true, ...note };
     },
 
     get_keyframes: ({ nodeId, param }) => {
@@ -637,6 +1032,34 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         expression: typeof source === "string" ? source : "",
       });
       return { valid: problems.length === 0, problems };
+    },
+
+    get_shader_errors: ({ nodeId }) => {
+      const backend = deps.backendRef.current;
+      if (!backend)
+        throw new Error(
+          "GL backend unavailable — wait for the editor to finish starting."
+        );
+      const all = deps.nodesRef.current;
+      let targets: GraphNode[];
+      if (nodeId != null && String(nodeId).length > 0) {
+        const n = nodeOrThrow(nodeId);
+        if (n.data.defType !== "glsl-expression")
+          throw new Error(
+            `"${n.id}" is a ${n.data.defType} — get_shader_errors compiles GLSL Expression. Point Expression uses validate_expression.`
+          );
+        targets = [n];
+      } else {
+        targets = all.filter((n) => n.data.defType === "glsl-expression");
+      }
+      const nodes = targets.map((n) =>
+        inspectGlslExpression(n.id, n.data.params, backend.tryShader)
+      );
+      return {
+        compiled: nodes.length,
+        failed: nodes.filter((n) => !n.ok).length,
+        nodes,
+      };
     },
 
     // ---- transport ---------------------------------------------------------

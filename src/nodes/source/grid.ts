@@ -16,7 +16,24 @@ export const gridNode: NodeDefinition = {
   category: "point",
   subcategory: "generator",
   description:
-    "Emit an X×Y grid of points. Fit mode spreads the counts across a fixed width/height; Step mode uses an explicit gap between points so the grid grows with the counts.",
+    "Emit an X×Y grid of points. Fit mode spreads the counts across a fixed width/height; Step mode uses an explicit gap between points so the grid grows with the counts. Stamps ix/iy lattice coords so Points to Spline (layout = grid) can walk rows and columns after a warp, and cellW/cellH so downstream expressions can read the gap without re-deriving it from the counts.",
+  facts: {
+    space: {
+      "param:x": "canvas01",
+      "param:y": "canvas01",
+      "param:width": "canvas01",
+      "param:height": "canvas01",
+      "param:spacingX": "canvas01",
+      "param:spacingY": "canvas01",
+    },
+    writes: ["attr:ix", "attr:iy", "attr:cellW", "attr:cellH"],
+    gotchas: [
+      "spacingMode=fit derives the gap from width/height and the counts; spacingMode=step fixes the gap (spacingX/Y) and the footprint grows with the counts.",
+      "Both modes center the grid on (x, y), so switching modes does not move it; a 1-count axis collapses onto the center line.",
+      "ix/iy are integer lattice indices (0..countX-1, 0..countY-1) in row-major point order; Points to Spline layout=grid walks them even after a warp.",
+      "cellW/cellH are the actual per-axis gap used to place the points (fit: span/(count-1), step: spacingX/Y, 0 on a 1-count axis) and are constant across the cloud.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [
@@ -141,17 +158,32 @@ export const gridNode: NodeDefinition = {
     const originX = cx - (stepX * (cols - 1)) / 2;
     const originY = cy - (stepY * (rows - 1)) / 2;
 
-    const out = makePoints(cols * rows);
+    const n = cols * rows;
+    const out = makePoints(n);
     const pos = out.positions;
+    const ixData = new Float32Array(n);
+    const iyData = new Float32Array(n);
+    const cellWData = new Float32Array(n);
+    const cellHData = new Float32Array(n);
     let i = 0;
     for (let iy = 0; iy < rows; iy++) {
       const py = originY + stepY * iy;
       for (let ix = 0; ix < cols; ix++) {
         pos[i * 2] = originX + stepX * ix;
         pos[i * 2 + 1] = py;
+        ixData[i] = ix;
+        iyData[i] = iy;
+        cellWData[i] = stepX;
+        cellHData[i] = stepY;
         i++;
       }
     }
+    out.attributes = {
+      ix: { arity: 1, data: ixData },
+      iy: { arity: 1, data: iyData },
+      cellW: { arity: 1, data: cellWData },
+      cellH: { arity: 1, data: cellHData },
+    };
     return { primary: out };
   },
 };

@@ -30,6 +30,13 @@ export const groupLengthNode: NodeDefinition = {
   category: "utility",
   description:
     "Count distinct group members as a scalar. Image mode counts image_group items; spline and points modes count distinct groupIndex values carried on subpaths / points (un-grouped input reports 1).",
+  facts: {
+    reads: ["attr:group"],
+    gotchas: [
+      "Switching Type (mode) changes the accepted input socket type (image_group / spline / points), disconnecting an existing wire of a different kind.",
+      "Spline/points count distinct groupIndex values; untagged subpaths or points fall into an implicit index-0 bucket, so an un-grouped input always reports 1.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   inputs: [{ name: "group", type: "image_group", required: true }],

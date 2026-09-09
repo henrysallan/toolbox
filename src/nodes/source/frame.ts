@@ -22,6 +22,13 @@ export const frameNode: NodeDefinition = {
   subcategory: "utility",
   description:
     "Wraps an image in a fixed-size element for Auto Layout. Width and height are in layout units (1/1000 of the canvas's smaller dimension); fit controls how the image fills the rect.",
+  facts: {
+    gotchas: [
+      "width/height are layout units: 1 unit = 1/1000 of min(canvas width, canvas height) in px, isotropic on both axes (unlike canvas01's width-only scaling).",
+      "With no image wired, both the element primary and the aux image fall back to an empty zero-size element instead of erroring.",
+      "preferredSizing is hug on both axes, so a layout slot set to hug takes exactly the authored width x height; fit only matters once the slot differs from that size.",
+    ],
+  },
   backend: "webgl2",
   // Primary output is an element, which the universal mask post-pass
   // can't blend — the socket would be decorative.

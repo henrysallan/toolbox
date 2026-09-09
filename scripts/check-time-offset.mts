@@ -68,6 +68,8 @@ check("boundary: video-source (retimeable:false)", isTimeOffsetBoundary("video-s
 check("boundary: webcam (retimeable:false)", isTimeOffsetBoundary("webcam"), true);
 check(`boundary: ${simType} (simulation:true)`, isTimeOffsetBoundary(simType!), true);
 check("boundary: iterate shell", isTimeOffsetBoundary(ITERATE_TYPE), true);
+check("boundary: repeat shell", isTimeOffsetBoundary("repeat"), true);
+check("boundary: foreach shell", isTimeOffsetBoundary("foreach"), true);
 check("boundary: unknown type fails closed", isTimeOffsetBoundary("no-such-def"), true);
 check("not boundary: constant", isTimeOffsetBoundary("constant"), false);
 check("not boundary: scene-time (pure stable:false)", isTimeOffsetBoundary("scene-time"), false);

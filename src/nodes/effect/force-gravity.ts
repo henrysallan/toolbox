@@ -6,6 +6,12 @@ export const gravityForceNode: NodeDefinition = {
   category: "effect",
   description:
     "Constant directional pull. Negative gy points up in canvas-UV space.",
+  facts: {
+    gotchas: [
+      "Produces a force descriptor only; gx/gy are added straight to velocity each step (vel += g*dt) by whichever simulator consumes it.",
+      "gx/gy are accelerations in the authored canvas01 frame (Y-down, width-isotropic): positive gy pulls toward the bottom of the canvas.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

@@ -123,6 +123,15 @@ export const splineIntersectionsNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Emit a point at every crossing of the input spline's segments — the 'nodes at intersections' construction-drawing look. Feed the output into Copy to Points to stamp a marker at each crossing. By default only segments from different subpaths are tested (so a cluster of shapes + lines marks line×shape and line×line crossings); enable Self-intersections for self-crossing polylines. The original spline passes through on the aux output so one wire carries both the drawing and its nodes.",
+  facts: {
+    gotchas: [
+      "By default only segments from different subpaths are tested; self_intersections adds within-subpath tests but skips adjacent segments (they share a construction vertex, not a crossing).",
+      "Curves are flattened to polylines first (16 steps per curved cubic, 1 for a straight 2-anchor subpath), so a crossing inside a tight curve can be missed between sample steps.",
+      "density thins evenly by taking every Nth crossing (step = round(1/density)), not a random subset; max_points then caps the result in discovery order.",
+      "min_angle drops glancing crossings below that angle between the two segments' directions.",
+      "Near-duplicate crossings from shared flattened vertices are merged within 1e-4 of spline coordinate units.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "spline", type: "spline", required: true }],
   params: [

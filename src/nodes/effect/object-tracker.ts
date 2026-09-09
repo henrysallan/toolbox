@@ -250,6 +250,17 @@ export const objectTrackerNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Detect objects in an incoming image using MediaPipe. Emits bounding-box rectangles (spline) and per-detection centers (points). IDs persist across frames via IoU matching.",
+  facts: {
+    space: { out: "uv01", "aux:positions": "uv01" },
+    writes: ["attr:scale"],
+    gotchas: [
+      "Box and point coordinates are raw per-axis width/height fractions (uv01), not aspect-corrected canvas01, so geometry skews on non-square canvases.",
+      "Detection only actually runs at detect_fps; frames in between reuse the last frame's tracked boxes unchanged.",
+      "IDs persist via greedy IoU matching (threshold 0.3) within the same category only; unmatched previous boxes are dropped and new ones get fresh IDs.",
+      "Switching model reloads asynchronously: the old model keeps running until the new one is ready, and output is empty while no detector is loaded (including the first-run download).",
+      "retimeable: false — Time Offset cannot rewind this node; it always passes through the current frame's live detections unshifted.",
+    ],
+  },
   backend: "webgl2",
   // The detector runs each eval; output depends on upstream frame
   // contents, not just params. Also needs a time-bump so downstream

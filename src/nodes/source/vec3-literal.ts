@@ -7,6 +7,7 @@ export const vec3LiteralNode: NodeDefinition = {
   name: "Vec3",
   category: "utility",
   description: "Emits a single vec3 value.",
+  facts: {},
   backend: "webgl2",
   stable: true,
   inputs: [],

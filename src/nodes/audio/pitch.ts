@@ -87,6 +87,15 @@ export const audioPitchNode: NodeDefinition = {
   subcategory: "utility",
   description:
     "Detect the pitch of an audio signal and quantize it to a musical scale. Drive a parameter with melody — note as MIDI, normalized 0..1, or raw Hz, with hold + glide for smooth stepping.",
+  facts: {
+    gotchas: [
+      "retimeable:false — this reads a live AnalyserNode tap, so Time Offset treats it as a closure boundary and feeds the outer pitch value through un-shifted.",
+      "Pitch detection is McLeod's NSDF method on the time-domain buffer, bounded by min_note/max_note converted to Hz, not FFT bins.",
+      "as=normalized maps min_note..max_note to 0..1; as=midi returns the fractional MIDI note; as=hz converts back to Hz.",
+      "When unvoiced (clarity below threshold) and hold=true, the primary keeps gliding toward the last voiced note while aux hz/confidence/gate all read 0.",
+      "quantize=edo divides the octave into `divisions` equal steps from root, ignoring the scale param; quantize=scale/chromatic snap to the nearest allowed semitone.",
+    ],
+  },
   backend: "webgl2",
   stable: false,
   // Reads the LIVE AnalyserNode tap — external audio state. Time Offset

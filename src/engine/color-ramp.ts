@@ -17,6 +17,18 @@ export const COLOR_RAMP_MAX_STOPS = 16;
 
 export type ColorRampInterp = "linear" | "ease" | "constant";
 
+// Slide `t` by `offset` and wrap into [0, 1). Offset 0 keeps the legacy
+// clamp so t=1 still hits the last stop (GLSL `fract(1.0)` would snap it
+// to 0). Non-zero offsets loop: 1.2 looks like 0.2, and a sample that
+// pushes past 1 re-enters at the start of the ramp. Matches GLSL `fract`
+// for negative values (`floor`, not `%`).
+export function offsetRampT(t: number, offset = 0): number {
+  const tc = Math.max(0, Math.min(1, t));
+  if (!(Math.abs(offset) > 1e-8)) return tc;
+  const x = tc + offset;
+  return x - Math.floor(x);
+}
+
 function hexToRgb(hex: string): [number, number, number] {
   const h = (hex ?? "#000000").replace("#", "");
   const s = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
@@ -28,17 +40,19 @@ function hexToRgb(hex: string): [number, number, number] {
 // position, clamp to the ends, bracket `t`, and interpolate. `constant` holds
 // the left stop; `ease` smoothsteps the blend factor. Returns an `rgba(...)`
 // string ready for a Canvas2D fillStyle, honoring per-stop alpha. `t` is
-// clamped to [0, 1] by the caller's intent but guarded here too.
+// clamped to [0, 1]; a non-zero `offset` wraps (`offsetRampT`) so the
+// gradient loops instead of pinning at the last stop.
 export function sampleColorRamp(
   stops: ColorRampStop[],
   t: number,
-  interp: ColorRampInterp = "linear"
+  interp: ColorRampInterp = "linear",
+  offset = 0
 ): string {
   const sorted = [...stops]
     .filter((s) => typeof s.position === "number")
     .sort((a, b) => a.position - b.position)
     .slice(0, COLOR_RAMP_MAX_STOPS);
-  const tc = Math.max(0, Math.min(1, t));
+  const tc = offsetRampT(t, offset);
 
   const toRgba = (stop: ColorRampStop): string => {
     const [r, g, b] = hexToRgb(stop.color);
@@ -85,13 +99,14 @@ export function sampleColorRamp(
 export function sampleColorRampRgba01(
   stops: ColorRampStop[],
   t: number,
-  interp: ColorRampInterp = "linear"
+  interp: ColorRampInterp = "linear",
+  offset = 0
 ): [number, number, number, number] {
   const sorted = [...stops]
     .filter((s) => typeof s.position === "number")
     .sort((a, b) => a.position - b.position)
     .slice(0, COLOR_RAMP_MAX_STOPS);
-  const tc = Math.max(0, Math.min(1, t));
+  const tc = offsetRampT(t, offset);
 
   const toVec = (stop: ColorRampStop): [number, number, number, number] => {
     const [r, g, b] = hexToRgb(stop.color);

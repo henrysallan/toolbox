@@ -166,6 +166,15 @@ export const scatterPointsNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Scatter N points across the canvas, optionally weighted by a density input (brighter pixels = more points). Wire an image, or a spline directly — the spline's filled silhouette is the density, sampled without rasterizing to a texture. Deterministic — same seed, same layout.",
+  facts: {
+    gotchas: [
+      "Positions are sampled in canvas UV then written out as authored coordinates (aspectUncorrectY), so density images and wired splines are probed exactly where they draw.",
+      "Density readback (image or rasterized spline silhouette) is capped at 256px on the long edge — rejection sampling only needs relative weights, not resolution.",
+      "Density weight = R channel × source alpha, so a transparent region of the density counts as zero regardless of its RGB.",
+      "Rejection sampling caps at count×50 attempts; a mostly-black density can return fewer points than `count`.",
+      "A wired spline's filled silhouette is rasterized directly (subpaths unioned, same as Rasterize Spline's stack-subpaths default) — no intermediate texture or GPU readback.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     {

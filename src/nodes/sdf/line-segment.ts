@@ -27,6 +27,24 @@ export const sdfLineSegmentNode: NodeDefinition = {
   category: "utility",
   description:
     "SDF primitive — a thick line (capsule) between (Ax, Ay) and (Bx, By) with the given thickness. Endpoints are rounded. Wire `position` to feed a transformed coordinate space.",
+  facts: {
+    space: {
+      "in:position": "canvas01",
+      "in:a": "canvas01",
+      "in:b": "canvas01",
+      "in:thickness": "canvas01",
+      "param:ax": "canvas01",
+      "param:ay": "canvas01",
+      "param:bx": "canvas01",
+      "param:by": "canvas01",
+      "param:thickness": "canvas01",
+    },
+    gotchas: [
+      "Builds an SDF tree only; nothing is drawn until SDF Rasterize (or To Mask / To Distance Image) evaluates it per pixel.",
+      "Unwired position = canvas UV; wire a Translate/Repeat/Mirror position chain to change the space the segment is evaluated in.",
+      "thickness is width-relative only while SDF Rasterize aspect_correct is on; off, it becomes a per-axis UV fraction and the capsule squashes on non-square canvases.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

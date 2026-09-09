@@ -16,9 +16,10 @@ import { makeMaterialDesc } from "@/engine/three-geometry";
 //
 // Order-independent with Material: Bump AFTER Material perturbs the
 // styled surface; Material AFTER Bump preserves the bump channel (its
-// desc rebuild carries `bump` through). The texture crosses into three's
-// isolated context via the standard bridge (identity-cached readback) at
-// the object3d boundary — this node is pure CPU data, free per eval.
+// desc rebuild carries `bump` through unless Material has its own
+// bump map wired). The texture crosses into three's isolated context
+// via the standard bridge (identity-cached readback) at the object3d
+// boundary — this node is pure CPU data, free per eval.
 //
 // If nothing upstream authored a material, the desc seeds from the
 // default-material look (white, roughness 1) so adding Bump doesn't
@@ -30,6 +31,15 @@ export const bump3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Adds surface detail to 3D geometry from an image — bump mode reads it as a height map (brightness = relief), normal mode reads it as a tangent-space normal map. Chain with Material in either order.",
+  facts: {
+    gotchas: [
+      "Only rebuilds material slot 0 (materials[0]); other material slots on the geometry pass through untouched.",
+      "strength maps directly to bumpScale in mode=bump, or to an isotropic normalScale (x=y=strength) in mode=normal; the two modes are mutually exclusive per compute.",
+      "If the geometry has no material yet, it seeds from the default look (white, roughness 1) so adding Bump only adds detail, not a shading change.",
+      "Order with Material matters: Bump after Material perturbs the already-styled surface; Material after Bump keeps the bump channel unless Material wires its own map.",
+      "With nothing wired to map, geometry passes through unchanged.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [

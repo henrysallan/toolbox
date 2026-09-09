@@ -17,6 +17,27 @@ export const camera3DNode: NodeDefinition = {
   category: "3d",
   description:
     "A scene camera. Wire it into the 3D Scene node's camera input to choose the view the scene renders from.",
+  facts: {
+    space: {
+      "param:pos_x": "world3d",
+      "param:pos_y": "world3d",
+      "param:pos_z": "world3d",
+      "param:target_x": "world3d",
+      "param:target_y": "world3d",
+      "param:target_z": "world3d",
+      "param:near": "world3d",
+      "param:far": "world3d",
+      "param:ortho_height": "world3d",
+      "param:dof_focus": "world3d",
+    },
+    gotchas: [
+      "Pure descriptor: compute() builds no camera object, Scene Render constructs/updates its own THREE camera from this every frame.",
+      "fov only takes effect when projection=perspective, ortho_height only when projection=orthographic; the other is ignored.",
+      "ortho_height is the full vertical extent of the orthographic view volume; Scene Render halves it internally for the top/bottom frustum bounds.",
+      "dof_focus is a world-space distance measured along the view direction from the camera; aperture and maxblur are unitless BokehPass coefficients.",
+      "Depth of field only renders when dof_enabled is on; otherwise camera.dof is undefined and Scene Render skips the bokeh pass.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [
@@ -46,7 +67,7 @@ export const camera3DNode: NodeDefinition = {
   primaryOutput: "camera",
   auxOutputs: [],
 
-  compute({ params }) {
+  compute({ params, nodeId }) {
     const projection =
       ((params.projection as string) ?? "perspective") === "orthographic"
         ? "orthographic"
@@ -68,6 +89,7 @@ export const camera3DNode: NodeDefinition = {
         (params.target_y as number) ?? 0,
         (params.target_z as number) ?? 0,
       ],
+      nodeId,
       dof: params.dof_enabled
         ? {
             focus: (params.dof_focus as number) ?? 6,

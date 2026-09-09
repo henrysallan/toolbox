@@ -63,12 +63,14 @@ extrude/bevel/lathe, scatter-on-surface, instance-on-points.
 
 Its ceiling is low and you must know it up front: **no Set Position, no
 subdivision, no boolean, no topology operators, and no 3D attribute system at
-all.** `points3d` is produced by `scatter-points-3d` and, as aux outputs, by
-the 3D curve primitives (`spline-3d`, `circle-3d`, `rect-3d`, `polygon-3d`) —
-but it is consumed by only **two** nodes: `copy-to-points-3d` and
-`project-to-screen-3d`. So a 3D point cloud can be instanced onto or projected
-to screen, and nothing else: no 3D point expression, attribute math, or
-attribute filtering exists. Verify that consumer set against `get_catalog`;
+all.** `points3d` is produced by `scatter-points-3d` (surface scatter or
+`mode="grid"`), `mesh-to-points-3d` (one point per mesh vertex), and, as
+aux outputs, by the 3D curve primitives (`spline-3d`, `circle-3d`,
+`rect-3d`, `polygon-3d`) — but it is consumed by only **two** nodes:
+`copy-to-points-3d` and `project-to-screen-3d` (Filter Points also accepts
+it). So a 3D point cloud can be instanced onto or projected to screen, and
+nothing else: no 3D point expression, attribute math, or attribute
+filtering exists. Verify that consumer set against `get_catalog`;
 it is a young part of the app.
 
 **2D (`points` → point/attribute nodes → `image`)** — right when the tree's
@@ -77,7 +79,8 @@ attribute blur/transfer, density-driven scatter, delete-by-attribute.
 
 This pipeline is much richer. It has a real named-attribute system
 (`set-named-attribute`, `attribute-math`, `attribute-blur`,
-`attribute-transfer`, `map-attribute`), arbitrary per-point JS
+`attribute-transfer`, `map-attribute`, `attribute-read`, `stagger` for per-point
+timing), arbitrary per-point JS
 (`point-expression`), texture-driven scatter density, and per-point instance
 scale/rotation/tint fields on `copy-to-points`.
 
@@ -130,8 +133,9 @@ For every **linked** input socket in the Blender tree, walk this in order:
      rotation / position)
 
 3. **Is the target 2D points?** Then the field is expressible. Use
-   `point-expression` (per-point JS: reads `index`, `count`, `px`, `py`,
-   `attr("name")`; writes `x`, `y`, `rot`, `sx`, `sy`, `scale`, `keep`), or a
+   `point-expression` (per-point JS: reads `index`, `count`, `groupIndex`, `px`, `py`,
+   `attr("name")`, `fieldX()`/`fieldY()`/`fieldAt()` from a wired velocity
+   field; writes `x`, `y`, `rot`, `sx`, `sy`, `scale`, `keep`, `groupIndex`), or a
    named-attribute chain when the value must persist downstream or show up in
    the Spreadsheet. Validate the source with `validate_expression` **before**
    inserting it — assignments only, never `return`, declare temps with
@@ -142,7 +146,13 @@ For every **linked** input socket in the Blender tree, walk this in order:
    `copy-to-points.scale_field` / `rotate_field`,
    `instance-transform-3d.noise` / `image`, `adaptive-pixelate.size_map`. Wire
    `perlin-noise` (or any image) in. Toolbox's `image→uv` coercion is Blender's
-   Fac→Vector domain warp, and works on any `uv` input.
+   Fac→Vector domain warp, and works on any `uv` input. An SDF or mask that
+   should *drive motion* (attract / orbit / isolines) goes through
+   `vector-field` first, then into Advect Points / Displace / Point Expression.
+   A warped lattice is `grid` → Point Expression → `points-to-spline`
+   `layout="grid"` (uses Grid's `ix`/`iy`; or set `columns` = `countX`) →
+   Stroke. Do not Connect Points after the warp — proximity reconnects
+   pinched regions and drops stretched ones.
 
 5. **Otherwise it does not translate.** Report it. Do not silently substitute a
    constant for a field and present the result as a port — a mean value where

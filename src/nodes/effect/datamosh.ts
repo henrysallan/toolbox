@@ -427,6 +427,17 @@ export const datamoshNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Glitch-melt two clips into each other. Wire two image inputs, then in the panel Bake each clip into the node, drag the two clips on the mini-timeline so they overlap, and the overlap is moshed: the incoming clip's motion warps a frozen frame of the outgoing clip (optical-flow advection). Flow Scale sets the smear distance, Smear its length, Decay its falloff, Refresh how fast the real incoming pixels bleed back. Preview plays forward live; Mosh bakes the result for clean scrubbing and export. (Inputs are session-only — reopen → re-bake.)",
+  facts: {
+    space: { "param:flowScale": "uv01", "param:searchRadius": "pixels" },
+    reads: ["time"],
+    gotchas: [
+      "engine=codec is accepted and serialized but currently renders identically to flow; the panel disables selecting it (M2 stub).",
+      "flowScale is a uv01 fraction (max per-pixel displacement, no aspect term); searchRadius (block estimator) is a texel count that does not scale with output size.",
+      "aStart/aLen/bStart/bLen/sourceInA/B and bakeInA/OutA/bakeInB/OutB are hidden params written only by the node's custom timeline panel, not the normal param list.",
+      "Live (not-yet-output-baked) mode only accumulates forward: scrubbing before the last built frame reseeds from clip A's frozen frame at the overlap start.",
+      "If a needed strip frame isn't decoded yet, the node holds the last accumulated frame (or clears to transparent) instead of blocking, and retries next eval.",
+    ],
+  },
   backend: "webgl2",
   // Cached per-frame via fingerprintExtras (not stable:false) so a static graph
   // holds a constant and a moshed range re-fingerprints only per frame.

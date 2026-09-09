@@ -140,6 +140,15 @@ export const grainNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Procedural film grain with separate luminance and chromatic channels. Works as a stand-alone grain source (no input → grain on 50% gray) or as a one-shot composite over an input image with a choice of mix modes. Animate Seed (e.g. wire Scene Time in via a Math expression) for moving grain.",
+  facts: {
+    space: { "param:scale": "pixels" },
+    gotchas: [
+      "scale is grain-cell size in pixels at render resolution and does not scale with output size; 1 = finest, one independent sample per pixel.",
+      "No image wired: renders grain alone on neutral 50% gray and ignores mix_mode/mix entirely, doubling as a standalone grain source.",
+      "Every mix_mode treats grain as a layer centered at 0.5 + grain/2, so 0 grain is always identity regardless of which mode is chosen.",
+      "luminance grain applies one value to R/G/B (brightness only, no hue shift); chromatic grain hashes each channel independently for colored speckle.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", label: "Image", type: "image", required: false }],
   params: [

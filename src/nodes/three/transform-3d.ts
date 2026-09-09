@@ -46,6 +46,14 @@ export const transform3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Moves, rotates, and scales 3D geometry or an instance stream. Chain after Extrude Spline / Lathe / Realize Instances (whose outputs sit at the origin) to place them; the viewport gizmo drives it.",
+  facts: {
+    space: { out: "in:source" },
+    gotchas: [
+      "Composing onto an already non-uniformly scaled geometry can introduce shear that the matrix decompose step silently discards — three's standard TRS approximation.",
+      "For instances, translation goes through the full delta matrix, but orientation (quaternion premultiply) and scale (per-axis multiply) are combined separately rather than via one recomposed matrix.",
+      "An input that is neither geometry nor instances produces no primary output at all, not a passthrough.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "source", type: "geometry", required: true }],

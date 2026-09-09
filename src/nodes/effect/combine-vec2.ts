@@ -11,6 +11,11 @@ export const combineVec2Node: NodeDefinition = {
   category: "utility",
   description:
     "Build a vec2 from two scalars. Inputs default to the x/y params when unconnected, so the node also doubles as a vec2 constant.",
+  facts: {
+    gotchas: [
+      "x/y inputs fall back independently to their like-named params when unwired, so the node also works as a vec2 constant.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "x", type: "scalar", required: false },

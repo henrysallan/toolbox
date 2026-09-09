@@ -70,6 +70,19 @@ declare global {
       name: string;
     }): Promise<{ bytes: ArrayBuffer; type: string } | null>;
 
+    // ---- Scrub proxy (090526_video-scrub-optimizations.md M4) --------------
+    /** Re-encode a clip to a 1080p all-intra proxy in tmp; returns a token +
+     *  byte size. Only the WebCodecs decode source reads it. Optional so an
+     *  older shell loading a newer renderer simply lacks the capability. */
+    scrubProxyBegin?(opts: {
+      bytes: ArrayBuffer;
+      name: string;
+    }): Promise<{ token: string; size: number }>;
+    /** Byte range [start, end) of a proxy. */
+    scrubProxyRead?(token: string, start: number, end: number): Promise<ArrayBuffer>;
+    /** Unlink a proxy's temp file. */
+    scrubProxyDispose?(token: string): Promise<void>;
+
     // ---- Window controls (frameless desktop) ------------------------------
     window: {
       minimize(): void;

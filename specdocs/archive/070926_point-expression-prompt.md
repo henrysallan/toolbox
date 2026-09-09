@@ -86,20 +86,32 @@ plus helpers: `mod(a,b)` (floor-mod, returns 0 when b=0), `fract(x)`,
 - `random()` → new value per call, reseeded **every frame** — per-frame jitter
   and noise only (it will shimmer during playback).
 
-## Channels — the tunables (`ch` / `pick`)
+## Channels — the tunables (`ch` / `pick` / `toggle` / `color` / `ramp` / `curve`)
 
 - `ch("name", default)` or `ch("name", default, min, max)` reads a named
-  **slider**. `pick("name", "optA", "optB", ...)` reads a named **dropdown**
-  and returns the selected option string (first option = default).
-- The expression works immediately using the inline defaults. The user then
+  **slider** (number). `pick("name", "optA", "optB", ...)` reads a named
+  **2–3-way pill / dropdown** and returns the selected option string (first
+  option = default). `toggle("name", true)` reads an **on/off pill**
+  (boolean). `color("name", "#ff8800")` reads a **swatch** as `[r, g, b, a]`
+  in 0..1. `ramp("name", t, "#000000", "#ffffff")` samples a **gradient
+  editor** at `t` → `[r, g, b, a]` (the hex list seeds evenly spaced
+  stops). `curve("name", x, 1, 0)` samples a **float-curve editor** at `x`
+  → number (the number list seeds evenly spaced points).
+- The expression works immediately using the inline seeds. The user then
   presses **Sync** in the node panel, which scans the source and mints a real
-  slider/dropdown per channel — sliders can also be **wired** (LFO, audio
-  level, etc.).
-- Write `default`/`min`/`max` as **plain numeric literals** (`ch("speed",
-  600)`, not `ch("speed", 60*10)`) — the Sync scanner only reads literals.
+  control per channel — sliders, toggles, colors and ramps can also be
+  **wired** (LFO, audio level, a Color Ramp node, etc.). Sync is add-only:
+  it never overwrites a control that already exists, so tune an existing
+  channel with `set_param` using the channel NAME as `param`, not by
+  editing the literal.
+- Write seeds as **plain literals** (`ch("speed", 600)`, not `ch("speed",
+  60*10)`; hex strings for colors/ramps; numbers for curves) — the Sync
+  scanner only reads literals and skips the runtime `t` / `x` argument.
 - Channel names must look like identifiers (`[A-Za-z_$][A-Za-z0-9_$]*`).
 - Expose anything the user would plausibly tweak as a channel rather than a
-  magic number.
+  magic number — a hard-coded color should be `color()`, a hand-rolled
+  two-color `mix()` should be `ramp()`, an ease should be `curve()`, a
+  mode branch should be `pick()` or `toggle()`.
 
 ## Guide-path sampling (a spline wired into the node's `path` input)
 

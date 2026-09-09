@@ -314,6 +314,17 @@ export const outputNode: NodeDefinition = {
   category: "output",
   description:
     "Terminal node. Its input image is rendered to the visible canvas by the engine. Wire a spline into the optional `spline` input to unlock an SVG button alongside Image and Video — it saves that path at the current playhead as a standalone .svg, styled by the stroke/fill params that appear with it.",
+  facts: {
+    space: { "param:resWidth": "pixels", "param:resHeight": "pixels" },
+    gotchas: [
+      "Wiring a spline unlocks an SVG export button; the spline is snapshotted at the current playhead into ctx.state, but the engine never renders it — the canvas only shows `image`.",
+      "The `render` aux output carries no value; it only exists to link this Output into a Render Queue node as a queue item.",
+      "videoQuality=fast locks output fps to the live page render rate (MediaRecorder capture); sequence, gif, and high/max video instead step the clock independently at videoFps.",
+      "videoCodec=qtrle (QuickTime Animation) is forced to a .mov container and is always alpha-bearing, unlike prores which needs videoAlpha plus a 4444/4444xq profile.",
+      "resolution=custom sizes the export from resWidth/resHeight in pixels; canvas uses the project resolution and scale multiplies it by resScale.",
+      "startFrame/endFrame is a half-open range [start, end): frame count = end − start, so the 0/240 default renders 240 frames.",
+    ],
+  },
   backend: "webgl2",
   terminal: true,
   // Audio is optional — the visual pipeline doesn't depend on it, and

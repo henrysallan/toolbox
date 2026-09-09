@@ -31,6 +31,13 @@ export const numberToStringNode: NodeDefinition = {
     "Formats a number as text — decimal places, zero-padding, thousands " +
     "separators, prefix/suffix. Wire it into a Text node's text to show an " +
     "animated value (counters, scores, percentages).",
+  facts: {
+    gotchas: [
+      "Non-finite input (NaN/Infinity) formats as 0, not as literal \"NaN\"/\"Infinity\" text.",
+      "trimZeros only strips trailing fractional zeros (and the dot) when decimals>0; it never touches the integer part.",
+      "pad zero-pads the integer digits only, inside the sign (-7 -> \"-007\", not \"0-07\"); thousands grouping is applied after padding.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   noMaskInput: true,

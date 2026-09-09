@@ -19,6 +19,15 @@ export const pointNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Emit Count points at (x, y). They start stacked at the same location but each has its own index, so per-point nodes (Point Expression, Modulate Points) can spread them apart. With Count 1, combine with Copy to Points to place one instance of an image or spline at a specific location. Wire a Gizmo into Transform to share placement (TRS applies on top of x/y).",
+  facts: {
+    space: { "in:position": "canvas01", "param:x": "canvas01", "param:y": "canvas01" },
+    writes: ["attr:rotation", "attr:scale"],
+    gotchas: [
+      "rotation_deg is stored internally in radians (deg*PI/180) to match Copy-to-Points' convention.",
+      "The position input, when wired, replaces x/y outright rather than blending with them.",
+      "transform applies its TRS on top of x/y/rotation_deg/scale rather than instead of them.",
+    ],
+  },
   backend: "webgl2",
   // When `position` is connected, its vec2 value overrides the x/y
   // params so you can drive Point's location from any vec2 source

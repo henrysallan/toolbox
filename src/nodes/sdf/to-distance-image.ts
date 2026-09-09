@@ -32,6 +32,14 @@ export const sdfToDistanceImageNode: NodeDefinition = {
   category: "utility",
   description:
     "Render an SDF as a grayscale distance visualization. Range sets how much of the field spans the full ramp — smaller values reveal fine detail near the boundary. Negative / Zero / Positive colors customize the ramp.",
+  facts: {
+    space: { "param:range": "canvas01" },
+    gotchas: [
+      "range is a canvas-UV distance (same units as a shape's radius), not pixels; it does not scale with output resolution.",
+      "aspect_correct here is this node's own uniform governing how it samples the tree, independent of any aspect_correct on an upstream Rasterize.",
+      "An unwired or non-SDF input yields a fully transparent image, not the neg_color/zero_color/pos_color ramp.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "sdf", type: "sdf", required: true, label: "SDF" }],
   params: [

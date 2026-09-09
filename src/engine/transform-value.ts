@@ -126,6 +126,29 @@ export function opFromParams(params: Record<string, unknown>): TransformOp {
   };
 }
 
+// Bind the inverse-TRS uniforms used by Image / Video Source (and matching
+// TRANSFORM_FS). Scale keeps its sign so the Transform context-bar flip
+// (negative scaleX/Y) actually mirrors; only a near-zero scale is nudged.
+export function bindTrsUniforms(
+  gl: WebGL2RenderingContext,
+  prog: WebGLProgram,
+  params: Record<string, unknown>
+): void {
+  const tx = (params.translateX as number) ?? 0;
+  const ty = (params.translateY as number) ?? 0;
+  let sx = (params.scaleX as number) ?? 1;
+  let sy = (params.scaleY as number) ?? 1;
+  if (Math.abs(sx) < 1e-4) sx = 1e-4;
+  if (Math.abs(sy) < 1e-4) sy = 1e-4;
+  const angle = (((params.rotate as number) ?? 0) * Math.PI) / 180;
+  const px = (params.pivotX as number) ?? 0.5;
+  const py = (params.pivotY as number) ?? 0.5;
+  gl.uniform2f(gl.getUniformLocation(prog, "u_translate"), tx, ty);
+  gl.uniform2f(gl.getUniformLocation(prog, "u_scale"), sx, sy);
+  gl.uniform1f(gl.getUniformLocation(prog, "u_angle"), angle);
+  gl.uniform2f(gl.getUniformLocation(prog, "u_pivot"), px, py);
+}
+
 export function isIdentityOp(op: TransformOp): boolean {
   return isIdentityTransform(op);
 }

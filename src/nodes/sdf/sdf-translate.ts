@@ -26,6 +26,18 @@ export const sdfTranslateNode: NodeDefinition = {
   category: "utility",
   description:
     "SDF position-pipeline op — translate the per-pixel sample position. Feeds into a shape's `position` input. Default upstream position is canvas UV.",
+  facts: {
+    space: {
+      "in:position": "canvas01",
+      "in:offset": "canvas01",
+      "param:tx": "canvas01",
+      "param:ty": "canvas01",
+    },
+    gotchas: [
+      "Internally the sample position is shifted by -offset so the visible shape moves by +offset (tx, ty), the intuitive direction.",
+      "Emits a position value only; nothing visibly changes until a downstream shape or field consumes this position.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

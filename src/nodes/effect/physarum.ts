@@ -837,6 +837,17 @@ export const physarumNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "GPU slime-mold (Physarum) transport network. Millions of agents sense a decaying trail field ahead-left / ahead / ahead-right, turn toward the strongest, step and deposit; the field diffuses and decays, and self-optimising vein networks emerge. Uses Sage Jenson's 36 Points parameterisation — every classic parameter is `base + scale * sensed^power`, so one algorithm covers 24 wildly different regimes. Pick a `preset`, then ride the four multipliers on top of it: `sense scale` is the most expressive (it slides the whole system between regimes), `turn` and `sensor angle` reshape the branching, and `scale` sets structure size — raise `blur passes` with it, since structure size is really the ratio of agent stride to diffusion width and `scale` alone just makes agents outrun the field. `custom` opens all 15 raw numbers. `agents` is a quality knob, not a look knob (the deposit is density-normalised), and `resolution` is fidelity above ~740px of sim height and a zoom below it. Wire a mask into `inject` to draw structure the agents colonise. Turn on `two points` and wire a mask into `blend` to run two different presets in different parts of the frame with a continuous frontier — a Circle driven by the Cursor node reproduces the original's interactive pen. Plays while the timeline runs; restarting the timeline reseeds. Algorithm: Jones 2010 / mxsage 36 Points; implementation ported from Etienne Jacob's interactive-physarum (CC BY-NC-SA 3.0).",
+  facts: {
+    reads: ["time"],
+    gotchas: [
+      "Point B (preset_b and its raw params) only affects the sim where `blend` is wired; unwired, `two_points` has no visible effect and every agent uses Point A.",
+      "sensor_x offsets the sensing point along the agent's current heading; sensor_y offsets it by a fixed amount in world Y regardless of heading.",
+      "Sensor/move distances (sd/md base+scale, sensor_x/y) scale with resolution above ~740px sim height to stay frame-relative; below it, low resolution just reads as zoomed in.",
+      "respawn_rate is a per-step phase increment, not a probability: each agent teleports to a fresh random spot roughly every 1/respawn_rate steps, staggered by its seed phase.",
+      "Diffuse radius follows the same resolution scaling as the distances (1..8 texels) and floors at 1 texel below the reference sim height, capping how far structure spreads per frame.",
+      "view=trail shows the raw decayed trail channel; view=count applies the same count-to-intensity curve used by the color view and the count aux output.",
+    ],
+  },
   backend: "webgl2",
   // Self-iterating: the image depends on accumulated steps, not just the
   // current params.

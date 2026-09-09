@@ -8,7 +8,12 @@
 
 import type { Edge } from "@xyflow/react";
 import type { SocketType } from "@/engine/types";
-import { GROUP_INPUT_TYPE, GROUP_OUTPUT_TYPE, GROUP_TYPE } from "@/engine/groups";
+import {
+  GROUP_INPUT_TYPE,
+  GROUP_OUTPUT_TYPE,
+  GROUP_TYPE,
+  withInputValues,
+} from "@/engine/groups";
 import { getNodeDef } from "@/engine/registry";
 import { paramSocketType } from "@/engine/graph-helpers";
 import {
@@ -71,7 +76,14 @@ export function groupFragment(opts: {
     sockets: opts.outputs.map((o) => ({ name: o.name, type: o.type })),
   };
 
-  for (const n of opts.interior) n.data.parentId = group.id;
+  // Zone membership is parentId → the zone shell (Repeat Input, nested
+  // For Each, body nodes). Do not clobber those; only unparented interior
+  // nodes become direct children of the wrapping group.
+  const interiorIds = new Set(opts.interior.map((n) => n.id));
+  for (const n of opts.interior) {
+    if (n.data.parentId && interiorIds.has(n.data.parentId)) continue;
+    n.data.parentId = group.id;
+  }
 
   // Group Input sockets = declared data inputs + promoted-param sockets, in
   // that order. Each data input wires straight into its interior consumer;
@@ -92,6 +104,7 @@ export function groupFragment(opts: {
   }
 
   const promoteEdges: Edge[] = [];
+  const inputValues: Record<string, unknown> = {};
   for (const p of opts.promote ?? []) {
     const pdef = getNodeDef(p.node.data.defType)?.params.find((x) => x.name === p.param);
     const sockType = pdef ? paramSocketType(pdef.type) : null;
@@ -103,6 +116,8 @@ export function groupFragment(opts: {
     p.node.data.controlParams = [
       ...new Set([...(p.node.data.controlParams ?? []), p.param]),
     ];
+    const seed = p.node.data.params[p.param];
+    if (seed !== undefined) inputValues[p.label] = seed;
     promoteEdges.push({
       id: newEdgeId(),
       source: groupInput.id,
@@ -112,6 +127,9 @@ export function groupFragment(opts: {
     });
   }
   groupInput.data.params = { sockets: inSockets };
+  if (Object.keys(inputValues).length > 0) {
+    group.data.params = withInputValues(group.data.params, inputValues);
+  }
 
   const edges: Edge[] = [
     ...opts.edges,

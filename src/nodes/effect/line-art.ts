@@ -185,6 +185,15 @@ export const lineArtNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Extract stylized ink lines (XDoG): a soft-thresholded difference-of-Gaussians that sweeps from clean line art (low `Softness`) through charcoal tone (high). With `Flow` on the measurement runs across the image's flow and integrates along it (FDoG), consolidating broken contours into coherent hand-drawn strokes — visibly calmer on video than plain edge detection. Output is ink on transparency, ready to Merge over a Kuwahara / Flow Bilateral base (the painterly and toon stacks). `Size` is the line scale, `Threshold` how strong an edge must be, `Sharpen` the tone contrast. The optional `paper` mask modulates the threshold per-pixel — wire noise for hatching/charcoal texture. A wired universal mask mattes the ink.",
+  facts: {
+    space: { "param:size": "pixels", "param:flow_length": "pixels" },
+    gotchas: [
+      "size (line scale, sigma) and flow_length are pixels at render resolution and do not scale with output size; each Gaussian sums at most 24 taps per side.",
+      "flow=true runs FDoG (across-flow measurement integrated along the tangent streamline); flow=false runs isotropic XDoG via two separable Gaussian blurs.",
+      "flow_length and smooth only apply when flow is true; smooth drives the internal structure-tensor field and is ignored once field is wired.",
+      "paper perturbs the threshold epsilon per-pixel, scaled by paper_strength; unwired paper leaves the threshold unmodified.",
+    ],
+  },
   backend: "webgl2",
   noMaskBase: true,
   inputs: [

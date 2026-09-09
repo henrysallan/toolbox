@@ -75,6 +75,17 @@ export const bevel3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Rounds the sharp edges of 3D geometry — width, segments, and a profile curve (full = round, zero = flat chamfer, dips = grooves). Edges are found by the angle threshold, like 3D Extrude's faces.",
+  facts: {
+    space: { "param:width": "world3d" },
+    gotchas: [
+      "width is in the geometry's own local units and auto-clamps to 45% of the shortest feature edge that meets a corner so it can't self-intersect; edges with only two features aren't limited by this.",
+      "Feature edges are only edges shared by two distinct regions (per the angle threshold); open-mesh boundary edges with a single adjacent triangle never bevel.",
+      "profile is forced to a full round (1) at the first and last segment row regardless of the curve, so the strip is always tangent to the surrounding faces; the curve only shapes interior rows.",
+      "If no feature edges are found (one smooth region under the angle threshold) the geometry passes through unbeveled.",
+      "Strip and corner triangles get UV (0,0) when the source has UVs; run Texture Projection afterward to regenerate real UVs there.",
+      "Non-manifold corners, where the feature-edge loop around a vertex doesn't close, are left with their small hole rather than being patched.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "geometry", type: "geometry", required: true }],

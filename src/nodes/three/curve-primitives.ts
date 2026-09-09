@@ -1,9 +1,5 @@
 import * as THREE from "three";
-import type {
-  NodeDefinition,
-  ParamDef,
-  RenderContext,
-} from "@/engine/types";
+import type { NodeDefinition, NodeFacts, ParamDef, RenderContext } from "@/engine/types";
 import type { Curve3DValue } from "@/engine/three-types";
 import {
   buildCurveOutputs,
@@ -82,6 +78,7 @@ function makeCurvePrimitive(opts: {
   type: string;
   name: string;
   description: string;
+  facts?: NodeFacts;
   shapeParams: ParamDef[];
   buildShape: (p: Record<string, unknown>) => Shape2D;
 }): NodeDefinition {
@@ -91,6 +88,7 @@ function makeCurvePrimitive(opts: {
     name: opts.name,
     category: "3d",
     description: opts.description,
+    facts: opts.facts,
     backend: "webgl2",
     noMaskInput: true,
     inputs: [],
@@ -179,6 +177,22 @@ function straightShape(anchors: [number, number][]): Shape2D {
 export const rectCurve3DNode = makeCurvePrimitive({
   type: "rect-3d",
   name: "3D Rectangle",
+  facts: {
+    space: {
+      "param:width": "world3d",
+      "param:height": "world3d",
+      "param:radius": "world3d",
+      "param:pos_x": "world3d",
+      "param:pos_y": "world3d",
+      "param:pos_z": "world3d",
+    },
+    gotchas: [
+      "Authored in the local XY plane, then baked to world-space anchors/handles by the TRS at compute; curve and path_points aux already carry that transform.",
+      "radius (Tube radius) only sets the rendered tube's thickness; width/height set the rectangle's own footprint and are unaffected by it.",
+      "Edges are a bezier curve with zero-length handles at each anchor (handle == anchor), so the sides render exactly straight.",
+      "width/height are full extents (halved internally to place the four corners); closed is always true.",
+    ],
+  },
   description:
     "A rectangle as a 3D curve — tube render plus the curve value for Points on Path. Place it with the transform params or the viewport gizmo.",
   shapeParams: [
@@ -200,6 +214,21 @@ export const rectCurve3DNode = makeCurvePrimitive({
 export const circleCurve3DNode = makeCurvePrimitive({
   type: "circle-3d",
   name: "3D Circle",
+  facts: {
+    space: {
+      "param:shape_radius": "world3d",
+      "param:radius": "world3d",
+      "param:pos_x": "world3d",
+      "param:pos_y": "world3d",
+      "param:pos_z": "world3d",
+    },
+    gotchas: [
+      "Authored in the local XY plane, then baked to world-space anchors/handles by the TRS at compute; curve and path_points aux already carry that transform.",
+      "radius (Tube radius) only sets the rendered tube's thickness; shape_radius sets the circle's own size and is unaffected by it.",
+      "The circle is a 4-anchor kappa-handle bezier approximation, not a true circle; max radial error is about 0.03%, invisible at render scale.",
+      "closed is always true; this node has no way to emit an open arc.",
+    ],
+  },
   description:
     "A circle as a 3D curve — tube render plus the curve value for Points on Path. Place it with the transform params or the viewport gizmo.",
   shapeParams: [
@@ -228,6 +257,22 @@ export const circleCurve3DNode = makeCurvePrimitive({
 export const polygonCurve3DNode = makeCurvePrimitive({
   type: "polygon-3d",
   name: "3D Polygon",
+  facts: {
+    space: {
+      "param:shape_radius": "world3d",
+      "param:radius": "world3d",
+      "param:pos_x": "world3d",
+      "param:pos_y": "world3d",
+      "param:pos_z": "world3d",
+    },
+    gotchas: [
+      "Authored in the local XY plane, then baked to world-space anchors/handles by the TRS at compute; curve and path_points aux already carry that transform.",
+      "radius (Tube radius) only sets the rendered tube's thickness; shape_radius sets the polygon's circumradius and is unaffected by it.",
+      "Edges are a bezier curve with zero-length handles at each anchor (handle == anchor), so the straight sides render exactly straight.",
+      "The first vertex sits at the top and vertices wind counter-clockwise; sides is rounded to an integer and floored at 3.",
+      "closed is always true; this node has no way to emit an open shape.",
+    ],
+  },
   description:
     "A regular polygon as a 3D curve — tube render plus the curve value for Points on Path. Place it with the transform params or the viewport gizmo.",
   shapeParams: [

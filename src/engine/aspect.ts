@@ -11,6 +11,10 @@
 // `aspect` is width / height. A square canvas (aspect = 1) is the identity,
 // so square projects are completely unaffected.
 
+/** Catalog / node-doc one-liner — the convention agents keep missing. */
+export const ASPECT_SPACE_DOC =
+  "Spline/point space is [0,1]² Y-down; the rasterizer scales y about 0.5 by W/H so radii are width-relative.";
+
 // Map an authored normalized y to its on-canvas normalized y (shape → pixel).
 export function aspectCorrectY(ny: number, aspect: number): number {
   return 0.5 + (ny - 0.5) * aspect;

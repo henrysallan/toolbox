@@ -1,19 +1,95 @@
 import { Bezier } from "bezier-js";
 import type { SplineAnchor, SplineSubpath, SplineValue } from "./types";
-import { measureSpline, measureSubpath } from "./spline-math";
+import { measureSpline, measureSubpath, sampleAttrsOntoAnchors } from "./spline-math";
+import {
+  makeSubpathDriverFn,
+  type ColorRampBy,
+} from "./spline-color-source";
 
-// Trim Paths — keep only the arc-length window [start, end] of a spline,
-// measured across ALL subpaths concatenated into one length domain (After
-// Effects "Trim Paths → Trim Multiple Shapes: Simultaneously"). Animating the
-// window (keyframed scalars) draws a stroke on/off. An optional `offset`
-// slides the whole window along the domain cyclically (AE's Offset): the
-// window wraps at the ends, so a shifted window can straddle the seam — part
-// re-emerging at the start while the rest still shows at the end. Offset is
-// unbounded (taken mod 1), so keyframing 0→N loops the trim N times. Pure,
-// engine-side; the boundary cubics are split with bezier-js. See
+// Trim Paths — keep only the arc-length window [start, end] of a spline.
+// Combined mode (default) measures across ALL subpaths concatenated into one
+// length domain (After Effects "Trim Paths → Trim Multiple Shapes:
+// Simultaneously"). Per-subpath mode runs the same window on each subpath's
+// own length (AE "Individually"), with start/end/offset optionally sourced
+// per subpath from a named attribute or the shared driver keys (index /
+// random / group / position / driver). Animating the window (keyframed
+// scalars) draws a stroke on/off. An optional `offset` slides the whole
+// window along the domain cyclically (AE's Offset): the window wraps at the
+// ends, so a shifted window can straddle the seam — part re-emerging at the
+// start while the rest still shows at the end. Offset is unbounded (taken
+// mod 1), so keyframing 0→N loops the trim N times. Pure, engine-side; the
+// boundary cubics are split with bezier-js. See
 // specdocs/archive/062526_node-expansion.md.
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+
+export const TRIM_SOURCES = [
+  "value",
+  "attribute",
+  "index",
+  "random",
+  "group",
+  "position",
+  "driver",
+] as const;
+export type TrimSource = (typeof TRIM_SOURCES)[number];
+
+function isTrimSource(v: unknown): v is TrimSource {
+  return typeof v === "string" && (TRIM_SOURCES as readonly string[]).includes(v);
+}
+
+// Carry groupIndex / driver / named attrs onto a cut piece. Trim is a
+// window on the same subpath, not a new identity.
+function withSubpathMeta(dst: SplineSubpath, src: SplineSubpath): SplineSubpath {
+  if (
+    src.groupIndex === undefined &&
+    src.driver === undefined &&
+    !src.attrs
+  ) {
+    return dst;
+  }
+  const out: SplineSubpath = { ...dst };
+  if (src.groupIndex !== undefined) out.groupIndex = src.groupIndex;
+  if (src.driver !== undefined) out.driver = src.driver;
+  if (src.attrs) out.attrs = src.attrs;
+  return out;
+}
+
+// Named subpath channel → scalar. Vectors contribute component 0. Missing
+// or empty name returns undefined so the caller can fall back to the slider.
+export function readSubpathAttrScalar(
+  sub: SplineSubpath,
+  name: string
+): number | undefined {
+  const n = name.trim();
+  if (!n) return undefined;
+  const v = sub.attrs?.[n];
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (Array.isArray(v) && typeof v[0] === "number" && Number.isFinite(v[0])) {
+    return v[0];
+  }
+  return undefined;
+}
+
+export function makeTrimSourceFn(
+  subpaths: SplineSubpath[],
+  source: unknown,
+  fallback: number,
+  opts: { attrName?: string; seed?: number; angleDeg?: number } = {}
+): (i: number, sub: SplineSubpath) => number {
+  const src: TrimSource = isTrimSource(source) ? source : "value";
+  if (src === "value") return () => fallback;
+  if (src === "attribute") {
+    const name = opts.attrName ?? "";
+    return (_i, sub) => readSubpathAttrScalar(sub, name) ?? fallback;
+  }
+  const driverAt = makeSubpathDriverFn(subpaths, {
+    by: src as ColorRampBy,
+    seed: opts.seed ?? 0,
+    angleDeg: opts.angleDeg ?? 0,
+  });
+  return driverAt;
+}
 
 // Rebuild an OPEN subpath from a contiguous chain of bezier-js cubics. Each
 // cubic contributes its endpoint as an anchor; in/out handles come from the
@@ -77,7 +153,11 @@ function trimSubpathByLength(
     }
     prevCum = cum;
   }
-  return cubicsToSubpath(curves);
+  const dst = cubicsToSubpath(curves);
+  if (!dst) return null;
+  const total = m.total;
+  sampleAttrsOntoAnchors(sub, dst.anchors, lo / total, hi / total);
+  return dst;
 }
 
 // Extract one non-wrapping window [s, e] (fractions, 0 ≤ s < e ≤ 1) using a
@@ -110,7 +190,9 @@ function trimWindow(
       lo - subStart,
       hi - subStart
     );
-    if (trimmed && trimmed.anchors.length >= 2) out.push(trimmed);
+    if (trimmed && trimmed.anchors.length >= 2) {
+      out.push(withSubpathMeta(trimmed, subpaths[i]));
+    }
   }
   return out;
 }
@@ -125,10 +207,13 @@ function joinAtSeam(a: SplineSubpath, b: SplineSubpath): SplineSubpath {
   const joint: SplineAnchor = { pos: bStart.pos };
   if (aEnd.inHandle) joint.inHandle = aEnd.inHandle;
   if (bStart.outHandle) joint.outHandle = bStart.outHandle;
-  return {
-    anchors: [...a.anchors.slice(0, -1), joint, ...b.anchors.slice(1)],
-    closed: false,
-  };
+  return withSubpathMeta(
+    {
+      anchors: [...a.anchors.slice(0, -1), joint, ...b.anchors.slice(1)],
+      closed: false,
+    },
+    a
+  );
 }
 
 // Trim a spline (as subpaths) to the arc-length fraction window [start, end],
@@ -190,4 +275,28 @@ export function trimSubpaths(
     ];
   }
   return [...tail, ...head];
+}
+
+// Per-subpath trim: each subpath is its own length domain. Resolvers supply
+// that subpath's start / end / offset (uniform sliders, a named attribute,
+// or a shared driver key). Empty windows drop the subpath.
+export function trimSubpathsEach(
+  subpaths: SplineSubpath[],
+  startAt: (i: number, sub: SplineSubpath) => number,
+  endAt: (i: number, sub: SplineSubpath) => number,
+  offsetAt: (i: number, sub: SplineSubpath) => number
+): SplineSubpath[] {
+  if (!subpaths || subpaths.length === 0) return subpaths;
+  const out: SplineSubpath[] = [];
+  for (let i = 0; i < subpaths.length; i++) {
+    const sub = subpaths[i];
+    const trimmed = trimSubpaths(
+      [sub],
+      startAt(i, sub),
+      endAt(i, sub),
+      offsetAt(i, sub)
+    );
+    for (let j = 0; j < trimmed.length; j++) out.push(trimmed[j]);
+  }
+  return out;
 }

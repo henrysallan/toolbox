@@ -34,6 +34,12 @@ import {
   type SpatialHash,
 } from "@/engine/sim-kernel";
 import { makePoints } from "@/engine/points";
+import {
+  attributesFromObjectAttrs,
+  cloneObjectAttrs,
+  sampleSubpathAttrs,
+  type ObjectAttrs,
+} from "@/engine/spline-attrs";
 
 // Rope Simulator — 2D string dynamics over splines.
 // Spec: specdocs/archive/071926_rope-simulator.md (milestone 1).
@@ -73,6 +79,7 @@ interface RopeChain {
   edgeBase: number; // first edge index (chain-local edge i = edgeBase+i)
   srcIndex: number; // source subpath index (aux points groupIndex)
   srcGroup?: number; // source subpath's own groupIndex tag, if any
+  srcAttrs?: ObjectAttrs; // source subpath.attrs, baked at seed
 }
 
 interface RopeSimState {
@@ -113,6 +120,11 @@ interface RopeSimState {
   // Which chain each particle belongs to (self-collision skips pairs
   // within 2 ring-neighbors of the same chain).
   particleChain: Int32Array;
+  // Named channels baked at reseed: interpolated from the source
+  // subpath's anchor attrs (plus subpath.attrs) at each particle's
+  // rest arc-length parameter. Travel with the particle so an image
+  // sampled on the rest pose does not rebind as the rope drapes.
+  particleAttrs: Array<ObjectAttrs | undefined>;
   // Pin-to-points: which input point each captured particle tracks
   // (−1 = not point-pinned). Captured at reseed by nearest-within-
   // radius; per eval the particle snaps to the point's CURRENT
@@ -171,6 +183,8 @@ function seedState(
     closed: boolean;
     srcIndex: number;
     srcGroup?: number;
+    srcAttrs?: ObjectAttrs;
+    particleAttrs: Array<ObjectAttrs | undefined>;
   }
   const seeded: Seeded[] = [];
   let total = 0;
@@ -196,7 +210,27 @@ function seedState(
       sub.closed,
       count
     );
-    seeded.push({ pts, closed: sub.closed, srcIndex: si, srcGroup: sub.groupIndex });
+    const nPts = pts.length / 2;
+    const srcLen = measureSubpath(sub);
+    const particleAttrs: Array<ObjectAttrs | undefined> = new Array(nPts);
+    for (let i = 0; i < nPts; i++) {
+      const t = sub.closed
+        ? nPts > 0
+          ? i / nPts
+          : 0
+        : nPts > 1
+          ? i / (nPts - 1)
+          : 0;
+      particleAttrs[i] = sampleSubpathAttrs(sub, srcLen, t);
+    }
+    seeded.push({
+      pts,
+      closed: sub.closed,
+      srcIndex: si,
+      srcGroup: sub.groupIndex,
+      srcAttrs: cloneObjectAttrs(sub.attrs),
+      particleAttrs,
+    });
     total += count;
     if (total >= maxPoints) break;
   }
@@ -206,6 +240,7 @@ function seedState(
   const prev = new Float32Array(count * 2);
   const invMass = new Float32Array(count).fill(1);
   const particleChain = new Int32Array(count);
+  const particleAttrs: Array<ObjectAttrs | undefined> = new Array(count);
   const chains: RopeChain[] = [];
 
   let edgeCap = 0;
@@ -236,6 +271,7 @@ function seedState(
     pos.set(s.pts, start * 2);
     prev.set(s.pts, start * 2);
     particleChain.fill(chains.length, start, start + n);
+    for (let i = 0; i < n; i++) particleAttrs[start + i] = s.particleAttrs[i];
     chains.push({
       start,
       count: n,
@@ -243,6 +279,7 @@ function seedState(
       edgeBase: ei,
       srcIndex: s.srcIndex,
       srcGroup: s.srcGroup,
+      srcAttrs: s.srcAttrs,
     });
     // Rest lengths are the ACTUAL seeded distances (not segPx) so a
     // chain whose sampling came out slightly uneven is born at rest.
@@ -315,6 +352,7 @@ function seedState(
     attrTear: new Float32Array(count),
     attrStick: new Float32Array(count).fill(1),
     particleChain,
+    particleAttrs,
     pinPointIdx: new Int32Array(count).fill(-1),
     followSub: new Int32Array(count).fill(-1),
     followT: new Float32Array(count),
@@ -450,7 +488,25 @@ export const ropeSimulatorNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "2D rope/string dynamics: each input subpath becomes a chain of particles with distance and bending constraints, pulled by gravity and force nodes, colliding with collider nodes and the canvas bounds. Pin the ends and the rope hangs and swings; output is a live spline. Resets when scene time returns to 0.",
+    "2D rope/string dynamics: each input subpath becomes a chain of particles with distance and bending constraints, pulled by gravity and force nodes, colliding with collider nodes and the canvas bounds. Pin the ends and the rope hangs and swings; output is a live spline. Named attributes on the input spline (per-anchor and per-subpath) are sampled at rest and ride the particles, so an image-driven channel stays glued as the rope moves. Resets when scene time returns to 0.",
+  facts: {
+    space: {
+      "param:segment_px": "pixels",
+      "param:pin_radius": "pixels",
+      "param:thickness": "pixels",
+    },
+    reads: ["time"],
+    writes: ["attr:group"],
+    gotchas: [
+      "segment_px, pin_radius, and thickness are literal pixels at render resolution, not canvas01 fractions, so re-rendering at a different output size changes the sim.",
+      "stretchiness sets XPBD compliance (alpha proportional to stretchiness^2 x stretch_map), so 0 is rigid PBD and the constraint stays substep/iteration independent.",
+      "tearing breaks an edge when strain exceeds tear_threshold x (1 - tear_map weakness); tear_map is a weakness field, so white tears at a touch and unwired/black keeps the base threshold.",
+      "stickiness welds a touching particle to its collider (offset anchor for circle/line, world point for mask); drift past stickiness x stick_strength releases it, giving stick-slip sliding.",
+      "Named per-anchor/per-subpath attrs on the input spline are sampled once at each particle's rest arc-length position and ride with it, not re-sampled live as the rope drapes.",
+      "Reseeds (losing velocity/weld/tear state) on topology change, seed-param change, canvas resize, or scene-time wrap; shape-only animation of the same topology does not reseed.",
+      "pins captures the nearest unclaimed particle within pin_radius per input point at reseed, then snaps it to that point's live position every eval (puppet dragging).",
+    ],
+  },
   backend: "webgl2",
   // Output depends on persistent per-node state — advance every eval.
   stable: false,
@@ -1245,6 +1301,11 @@ export const ropeSimulatorNode: NodeDefinition = {
             ? { anchors: uvPts.map((p) => ({ pos: p })), closed: stillClosed }
             : catmullRomSubpath(uvPts, stillClosed);
         if (c.srcGroup !== undefined) sp.groupIndex = c.srcGroup;
+        if (c.srcAttrs) sp.attrs = c.srcAttrs;
+        for (let k = 0; k < run.length && k < sp.anchors.length; k++) {
+          const ga = st.particleAttrs[run[k]];
+          if (ga) sp.anchors[k].attrs = ga;
+        }
         subpaths.push(sp);
       }
     }
@@ -1265,6 +1326,7 @@ export const ropeSimulatorNode: NodeDefinition = {
           pts.groupIndices![c.start + i] = c.srcIndex;
         }
       }
+      pts.attributes = attributesFromObjectAttrs(st.particleAttrs, count);
       aux.points = pts;
     }
     if (!consumedOutputs || consumedOutputs.has("aux:tears")) {

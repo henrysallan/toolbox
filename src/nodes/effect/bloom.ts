@@ -279,6 +279,14 @@ export const bloomNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Mip-chain bloom (COD / UE5 / Unity HDRP technique). Soft-knee threshold + Karis-average downsample + 9-tap tent upsample give a crisp bright core with hundreds of pixels of soft tail at constant cost. Optional per-mip tint, anamorphic stretch, and lens dirt overlay. Quality picks where the pyramid starts: balanced/performance trade the glow's finest detail octave(s) for most of the pre-composite GPU cost, keeping the halo width unchanged.",
+  facts: {
+    gotchas: [
+      "levels is capped so the smallest mip stays a few pixels wide, and quality=balanced/performance shrink it further to hold the halo width — effective levels can undercut the param.",
+      "anamorphic only squashes the tent's cross axis down to 15% at ±1, never to 0, so a faint bleed on the off-axis remains even at the extremes.",
+      "quality=performance undersamples the threshold pass (4 taps over an 8x8 block), so isolated 1-2px highlights can shimmer in motion.",
+      "karis_average only changes the first downsample step; every later step always uses the plain COD tap weights.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", type: "image", required: true },

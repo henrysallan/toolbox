@@ -7,18 +7,28 @@
 import type { Edge } from "@xyflow/react";
 import type { ExprInput, NodeDefinition, SocketType } from "@/engine/types";
 import { getNodeDef } from "@/engine/registry";
-import { GROUP_TYPE } from "@/engine/groups";
+import { GROUP_TYPE, isZoneShell } from "@/engine/groups";
 import { SETTABLE_PARAM_TYPES, vetParamValue } from "@/engine/node-catalog";
 import { withMaskInput } from "@/engine/conventions";
-import { syncChannelInputs } from "@/nodes/effect/point-expression";
+import { tidyLayout } from "@/state/node-layout";
+import { applyPositions, toLayoutGraph } from "@/state/node-layout-graph";
+import {
+  channelSocketType,
+  findExprChannel,
+  syncChannelInputs,
+} from "@/engine/expr-channels";
 import {
   BLEND_MODE_ORDER,
+  isDefaultMergeStack,
   newLayerId,
   type BlendMode,
   type MergeLayer,
 } from "@/nodes/effect/merge";
 import {
+  makeForEachNodes,
   makeInstanceNode,
+  makeRepeatNodes,
+  mintZoneEdgeSockets,
   newEdgeId,
   refreshNodeSockets,
   type GraphNode,
@@ -37,6 +47,10 @@ export interface RecipeNode {
   id: string; // local id, unique within the recipe
   type: string; // built-in node type
   params?: Record<string, unknown>;
+  // Local id of a Repeat / For Each zone this node belongs to (the
+  // compound recipe id, i.e. the Output). Body nodes and nested zones
+  // use this so parentId lands on the zone shell instead of the group.
+  parent?: string;
 }
 export interface RecipeEdge {
   from: string; // "<lid>:out" | "<lid>:aux:<name>"
@@ -72,6 +86,10 @@ export interface BuildResult {
   nodes: GraphNode[];
   edges: Edge[];
   issues: BuildIssue[];
+  // Recipe local id → node id as minted by buildRecipe (before the editor
+  // clones the fragment into the live graph). Compound zones also map
+  // "<id>-input". Empty when nothing resolved.
+  ids: Record<string, string>;
 }
 
 // --- endpoint grammar (spec §5) — shared with recipe-edit.ts ---------------
@@ -95,8 +113,10 @@ export function toTargetHandle(rest: string): string | null {
 // expression for ch(…)/pick(…) refs and mint the matching slider/dropdown
 // inputs. The LLM can't set `expr_inputs` (not a settable type), so without
 // this an AI-authored expression's tunables would only materialize after the
-// user manually hits Sync inside the group. Add-only and id-stable (same
-// helper as the button); returns `params` untouched when nothing changed.
+// user manually hits Sync. Called from buildRecipe / applyRecipeEdit when
+// `expression` is in the authored params, and from MCP set_param when that
+// param is written. Add-only and id-stable (same helper as the button);
+// returns `params` untouched when nothing changed.
 export function syncExpressionChannels(
   def: NodeDefinition,
   params: Record<string, unknown>
@@ -113,12 +133,40 @@ export function syncExpressionChannels(
   return out;
 }
 
+// Committed expression write + channel scan in one step. MCP set_param uses
+// this so a remote patch mints uniforms without swapping the node. Does not
+// belong on the live param-panel path — keystrokes would mint partial names.
+export function applySyncedExpression(
+  def: NodeDefinition,
+  params: Record<string, unknown>,
+  expression: string
+): { params: Record<string, unknown>; minted: string[] } {
+  const next = syncExpressionChannels(def, { ...params, expression });
+  const minted: string[] = [];
+  for (const pdef of def.params) {
+    if (pdef.type !== "expr_inputs" || !pdef.channelSync) continue;
+    const before = new Set(
+      ((params[pdef.name] as ExprInput[]) ?? []).map((c) => c.name)
+    );
+    for (const c of (next[pdef.name] as ExprInput[]) ?? []) {
+      if (!before.has(c.name)) minted.push(c.name);
+    }
+  }
+  return { params: next, minted };
+}
+
+// A channel on a channelSync expr_inputs param, looked up by the authored
+// name (`ink`), not the id-based socket (`in:<id>`). Lives engine-side now;
+// re-exported for recipe-edit and the MCP handlers.
+export { findExprChannel };
+
 // Resolve a channel-by-name edge target: "in:speed" → "in:in:<exprInputId>".
 // Expression channel sockets are id-based (stable across renames), but the
 // LLM can't know ids minted at build time — so recipes address a channel by
 // its NAME as if it were a socket, and this translates to the real handle.
-// Real sockets win a name collision; unknown names pass through unchanged
-// (the validator then reports EDGE_UNKNOWN_INPUT for the repair loop).
+// Real sockets win a name collision; unknown names — and panel-only kinds
+// (pick / curve have no socket) — pass through unchanged (the validator
+// then reports EDGE_UNKNOWN_INPUT for the repair loop).
 export function resolveChannelHandle(
   def: NodeDefinition,
   params: Record<string, unknown>,
@@ -126,10 +174,6 @@ export function resolveChannelHandle(
 ): string {
   if (!targetHandle.startsWith("in:") || targetHandle.startsWith("in:param:"))
     return targetHandle;
-  const chanParam = def.params.find(
-    (p) => p.type === "expr_inputs" && p.channelSync
-  );
-  if (!chanParam) return targetHandle;
   const sock = targetHandle.slice("in:".length);
   let inputs = def.inputs;
   try {
@@ -139,9 +183,11 @@ export function resolveChannelHandle(
   }
   if (withMaskInput(inputs, def).some((i) => i.name === sock))
     return targetHandle; // a literal socket with this name exists
-  const entries = (params[chanParam.name] as ExprInput[]) ?? [];
-  const hit = entries.find((e) => e.name === sock && !e.options);
-  return hit ? `in:in:${hit.id}` : targetHandle;
+  // Name (`rows`), minted id (`ein-…`), or the socket name itself (`in:ein-…`).
+  const hit =
+    findExprChannel(def, params, sock) ??
+    (sock.startsWith("in:") ? findExprChannel(def, params, sock.slice(3)) : undefined);
+  return hit && channelSocketType(hit) ? `in:in:${hit.id}` : targetHandle;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,14 +281,95 @@ export function resolveOrdinalHandle(
   return { handle: `in:${kind}:${layers[n - 1].id}`, params };
 }
 
+export function isCompoundZoneType(type: string): type is "repeat" | "foreach" {
+  return type === "repeat" || type === "foreach";
+}
+
+export function compoundZoneInputLid(lid: string): string {
+  return `${lid}-input`;
+}
+
+const ZONE_INPUT_PLACE_TYPES = new Set([
+  "repeat-input",
+  "foreach-input",
+  "iterate-input",
+]);
+
+function applyVettedParams(
+  def: NodeDefinition,
+  base: Record<string, unknown>,
+  overrides: Record<string, unknown>,
+  lid: string,
+  issues: BuildIssue[]
+): Record<string, unknown> {
+  const next = { ...base };
+  for (const [k, v] of Object.entries(overrides)) {
+    const pdef = def.params.find((p) => p.name === k);
+    if (!pdef) {
+      issues.push({ code: "UNKNOWN_PARAM", message: `${lid}.${k}: no such param — ignored.` });
+      continue;
+    }
+    if (pdef.type === "merge_layers") {
+      // Fresh node still has the canned lyr-initial stack — a recipe
+      // `layers` list replaces it (new ids) instead of recycling slot 0
+      // and looking like N entries were appended.
+      const existing = isDefaultMergeStack(next[k] as MergeLayer[] | undefined)
+        ? undefined
+        : (next[k] as MergeLayer[] | undefined);
+      const vet = vetMergeLayers(v, existing);
+      if (!vet.ok) {
+        issues.push({
+          code: "BAD_PARAM_VALUE",
+          message: `${lid}.${k}: ${vet.reason} — left at default.`,
+        });
+        continue;
+      }
+      next[k] = vet.value;
+      continue;
+    }
+    if (!SETTABLE_PARAM_TYPES.has(pdef.type)) {
+      issues.push({
+        code: "PARAM_NOT_SETTABLE",
+        message: `${lid}.${k}: type "${pdef.type}" is not LLM-settable — left at default.`,
+      });
+      continue;
+    }
+    const vet = vetParamValue(pdef, v);
+    if (!vet.ok) {
+      issues.push({
+        code: "BAD_PARAM_VALUE",
+        message: `${lid}.${k}: ${vet.reason} — left at default.`,
+      });
+      continue;
+    }
+    next[k] = vet.value;
+  }
+  return "expression" in overrides ? syncExpressionChannels(def, next) : next;
+}
+
+function syncLidMap(realByLid: Map<string, GraphNode>, nodes: GraphNode[]) {
+  const byReal = new Map(nodes.map((n) => [n.id, n]));
+  for (const [lid, n] of realByLid) {
+    const updated = byReal.get(n.id);
+    if (updated) realByLid.set(lid, updated);
+  }
+}
+
 export function buildRecipe(rg: RecipeGraph): BuildResult {
   const issues: BuildIssue[] = [];
   const realByLid = new Map<string, GraphNode>();
-  const interior: GraphNode[] = [];
+  let interior: GraphNode[] = [];
 
   // 1. Nodes → real instances with vetted param overrides.
   let x = 0;
   for (const rn of rg.nodes ?? []) {
+    if (ZONE_INPUT_PLACE_TYPES.has(rn.type)) {
+      issues.push({
+        code: "UNKNOWN_TYPE",
+        message: `Node "${rn.id}": "${rn.type}" is minted with the compound zone — place "repeat" or "foreach" and address the Input as "${compoundZoneInputLid(rn.id)}".`,
+      });
+      continue;
+    }
     const def = getNodeDef(rn.type);
     if (!def) {
       issues.push({ code: "UNKNOWN_TYPE", message: `Node "${rn.id}": unknown type "${rn.type}" — skipped.` });
@@ -252,56 +379,80 @@ export function buildRecipe(rg: RecipeGraph): BuildResult {
       issues.push({ code: "DUP_ID", message: `Duplicate local id "${rn.id}" — later one ignored.` });
       continue;
     }
+
+    if (rn.type === "repeat") {
+      const { repeat: shell, repeatInput: input } = makeRepeatNodes({ x, y: 0 });
+      x += 520;
+      const inputDef = getNodeDef(input.data.defType);
+      if (rn.params && inputDef) {
+        input.data.params = applyVettedParams(
+          inputDef,
+          input.data.params,
+          rn.params,
+          rn.id,
+          issues
+        );
+      }
+      const shellR = refreshNodeSockets(shell);
+      const inputR = refreshNodeSockets(input);
+      realByLid.set(rn.id, shellR);
+      realByLid.set(compoundZoneInputLid(rn.id), inputR);
+      interior.push(shellR, inputR);
+      continue;
+    }
+    if (rn.type === "foreach") {
+      const { foreach: shell, foreachInput: input } = makeForEachNodes({ x, y: 0 });
+      x += 520;
+      const inputDef = getNodeDef(input.data.defType);
+      if (rn.params && inputDef) {
+        input.data.params = applyVettedParams(
+          inputDef,
+          input.data.params,
+          rn.params,
+          rn.id,
+          issues
+        );
+      }
+      const shellR = refreshNodeSockets(shell);
+      const inputR = refreshNodeSockets(input);
+      realByLid.set(rn.id, shellR);
+      realByLid.set(compoundZoneInputLid(rn.id), inputR);
+      interior.push(shellR, inputR);
+      continue;
+    }
+
     const n = makeInstanceNode(rn.type, { x, y: 0 });
     x += 260;
     if (rn.params) {
-      const next = { ...n.data.params };
-      for (const [k, v] of Object.entries(rn.params)) {
-        const pdef = def.params.find((p) => p.name === k);
-        if (!pdef) {
-          issues.push({ code: "UNKNOWN_PARAM", message: `${rn.id}.${k}: no such param — ignored.` });
-          continue;
-        }
-        if (pdef.type === "merge_layers") {
-          // Restricted authoring shape — see vetMergeLayers.
-          const vet = vetMergeLayers(v, next[k] as MergeLayer[] | undefined);
-          if (!vet.ok) {
-            issues.push({
-              code: "BAD_PARAM_VALUE",
-              message: `${rn.id}.${k}: ${vet.reason} — left at default.`,
-            });
-            continue;
-          }
-          next[k] = vet.value;
-          continue;
-        }
-        if (!SETTABLE_PARAM_TYPES.has(pdef.type)) {
-          issues.push({
-            code: "PARAM_NOT_SETTABLE",
-            message: `${rn.id}.${k}: type "${pdef.type}" is not LLM-settable — left at default.`,
-          });
-          continue;
-        }
-        const vet = vetParamValue(pdef, v);
-        if (!vet.ok) {
-          issues.push({
-            code: "BAD_PARAM_VALUE",
-            message: `${rn.id}.${k}: ${vet.reason} — left at default.`,
-          });
-          continue;
-        }
-        next[k] = vet.value;
-      }
-      // Gated on the recipe actually authoring an expression, so a node
-      // placed with the default placeholder doesn't mint junk channels
-      // from the placeholder's ch("name", default) comment.
-      n.data.params =
-        "expression" in rn.params ? syncExpressionChannels(def, next) : next;
+      n.data.params = applyVettedParams(def, n.data.params, rn.params, rn.id, issues);
     }
     const refreshed = refreshNodeSockets(n);
     realByLid.set(rn.id, refreshed);
     interior.push(refreshed);
   }
+
+  // Zone membership: `parent` is the compound recipe id (the Output).
+  for (const rn of rg.nodes ?? []) {
+    if (!rn.parent) continue;
+    const child = realByLid.get(rn.id);
+    const parent = realByLid.get(rn.parent);
+    if (!child || !parent) {
+      issues.push({
+        code: "BAD_PARENT",
+        message: `Node "${rn.id}": parent "${rn.parent}" did not resolve.`,
+      });
+      continue;
+    }
+    if (!isZoneShell(parent.data.defType)) {
+      issues.push({
+        code: "BAD_PARENT",
+        message: `Node "${rn.id}": parent "${rn.parent}" is not a Repeat or For Each zone.`,
+      });
+      continue;
+    }
+    child.data.parentId = parent.id;
+  }
+
   const real = (lid: string) => realByLid.get(lid);
 
   // Resolve the two authoring aliases against a target node: merge ordinals
@@ -338,7 +489,21 @@ export function buildRecipe(rg: RecipeGraph): BuildResult {
     }
     th = resolveTargetHandle(t.lid, tgt, th);
     tgt = real(t.lid)!; // growth may have replaced the node object
-    edges.push({ id: newEdgeId(), source: src.id, sourceHandle: sh, target: tgt.id, targetHandle: th });
+    const srcNow = real(s.lid)!;
+    const minted = mintZoneEdgeSockets(interior, srcNow, sh, tgt, th);
+    if (minted !== interior) {
+      interior = minted;
+      syncLidMap(realByLid, interior);
+    }
+    const srcFresh = real(s.lid)!;
+    tgt = real(t.lid)!;
+    edges.push({
+      id: newEdgeId(),
+      source: srcFresh.id,
+      sourceHandle: sh,
+      target: tgt.id,
+      targetHandle: th,
+    });
     if (th.startsWith("in:param:")) {
       const pname = th.slice("in:param:".length);
       tgt.data.exposedParams = [...new Set([...(tgt.data.exposedParams ?? []), pname])];
@@ -382,6 +547,21 @@ export function buildRecipe(rg: RecipeGraph): BuildResult {
   if (outputs.length === 0)
     issues.push({ code: "NO_OUTPUT", message: "Recipe produced no resolved outputs." });
 
+  // 3b. Lay the interior out along its wires (090626_tidy-layout.md). The
+  // loop above only spaced nodes along x in recipe order; the group opens
+  // to a readable graph instead of a strip. Boxes are estimates here (no
+  // React Flow yet) — a later Tidy in the editor refines with real sizes.
+  {
+    const lg = toLayoutGraph(interior, edges);
+    const moves = tidyLayout(
+      lg.nodes,
+      lg.edges,
+      interior.map((n) => n.id),
+      { anchor: "origin" }
+    );
+    interior = applyPositions(interior, moves);
+  }
+
   // 4. Wrap in a node-group fragment (same path as presets).
   const { nodes, edges: groupEdges } = groupFragment({
     name: rg.name,
@@ -395,5 +575,7 @@ export function buildRecipe(rg: RecipeGraph): BuildResult {
   for (const n of nodes) {
     if (n.data.defType === GROUP_TYPE) n.data.aiAuthored = true;
   }
-  return { nodes, edges: groupEdges, issues };
+  const ids: Record<string, string> = {};
+  for (const [lid, n] of realByLid) ids[lid] = n.id;
+  return { nodes, edges: groupEdges, issues, ids };
 }

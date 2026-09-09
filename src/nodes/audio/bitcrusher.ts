@@ -14,6 +14,12 @@ export const audioBitcrusherNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Lo-fi bit-depth reduction: crushes the signal down to as few as 1 bit for digital grit and crunch, with a wet/dry blend. Wire an audio chain through it — keyframed bits and wet changes ramp click-free.",
+  facts: {
+    gotchas: [
+      "Descriptor in, descriptor out: compute() does no audio work; the audio engine builds a Tone.BitCrusher once the chain reaches an audio output.",
+      "bits is the number of quantization levels (1 = 2 levels, extreme crush; 16 ≈ transparent), not a sample-rate/downsample control.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "audio", type: "audio", required: true, label: "Audio" }],

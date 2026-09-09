@@ -22,6 +22,15 @@ export const sdfToMaskNode: NodeDefinition = {
   category: "utility",
   description:
     "Render an SDF as a binary mask at the chosen iso-level (default 0 = the boundary). Softness feathers the edge in pixels. Invert flips inside ↔ outside. Output is an image suitable for any mask/image consumer.",
+  facts: {
+    space: { "param:threshold": "canvas01", "param:softness": "pixels" },
+    gotchas: [
+      "threshold is a canvas-UV distance (same units as a shape's radius); positive values shrink the mask inward, negative values inflate it outward, without touching the SDF tree itself.",
+      "softness is pixels at render resolution, a different unit family from threshold, and does not scale with output size.",
+      "aspect_correct here is this node's own uniform governing how it samples the tree, independent of any aspect_correct on an upstream Rasterize.",
+      "An unwired or non-SDF input yields a fully transparent image rather than a solid mask.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "sdf", type: "sdf", required: true, label: "SDF" }],
   params: [

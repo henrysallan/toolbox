@@ -105,6 +105,14 @@ export const lutNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Apply a .cube 3D LUT (color grade) to the image. The optional log2 HDR shaper applies OCIO-baked (shaper + cube) LUTs to scene-linear footage.",
+  facts: {
+    gotchas: [
+      "shaper_min_stops/shaper_max_stops only apply when shaper=log2; with shaper=none, input is clamped to the LUT's own declared domain (usually 0..1) instead.",
+      "No LUT loaded, or text that fails to parse, falls back to a straight passthrough copy that silently ignores intensity and shaper.",
+      "The 3D texture is (re)parsed and re-uploaded only when the .cube text changes, cached per node instance; a failed parse is also cached to avoid re-parsing every frame.",
+      "The volume uploads as RGBA16F with trilinear filtering, so LUT outputs above 1.0 survive unclamped for HDR-to-HDR transforms.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

@@ -29,6 +29,24 @@ export const array3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Repeats geometry as an instance stream — a line with per-step offset/rotation/scale, a circle with optional outward alignment, or a centered grid. One draw call at any count.",
+  facts: {
+    space: {
+      "param:offset_x": "world3d",
+      "param:offset_y": "world3d",
+      "param:offset_z": "world3d",
+      "param:radius": "world3d",
+      "param:spacing_x": "world3d",
+      "param:spacing_y": "world3d",
+      "param:spacing_z": "world3d",
+    },
+    gotchas: [
+      "grid mode caps the total at 10000 instances (count_x*count_y*count_z); above that, higher z/y/x cells are silently dropped rather than resampled.",
+      "linear mode's rot_step always rotates about the global Y axis regardless of the source geometry's own orientation.",
+      "linear mode's scale_step compounds geometrically (scale_step^i) per instance, not linearly, so small deviations from 1 grow fast over many steps.",
+      "radial align rotates each instance about the array axis by its own placement angle; it does not reorient by mesh normals, so the look depends on the source geometry's default facing.",
+      "A full 360 sweep spaces n instances evenly with no seam overlap; any smaller sweep instead places both endpoints, so n=1 sits at the start angle.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "geometry", type: "geometry", required: true }],

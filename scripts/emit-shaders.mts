@@ -28,13 +28,39 @@ const {
   LINE_THRESH_FS,
 } = await import("@/nodes/effect/line-art");
 const { TRANSFORM_FS, TRANSFORM_MATRIX_FS } = await import("@/nodes/effect/transform");
+const { DISPLACE_FS } = await import("@/nodes/effect/displace");
+const { VECTOR_FIELD_IMAGE_FS, buildVectorFieldSdfFS } = await import(
+  "@/nodes/effect/vector-field"
+);
 const {
   OVER_FS: TRAILS_OVER_FS,
   FADE_FS: TRAILS_FADE_FS,
   VELOCITY_FS: TRAILS_VELOCITY_FS,
 } = await import("@/nodes/effect/trails");
 
+const { glslExpressionSource } = await import("@/nodes/effect/glsl-expression");
+
 const out: Record<string, string> = { pairwise: BLEND_FS };
+// GLSL Expression's owned template with one channel of every kind minted
+// (090426_expression-channel-kinds.md) — the uniform / const / lookup
+// declarations must compile and link with a body that touches each.
+out.glslExpressionChannels = glslExpressionSource({
+  inputs: [
+    { id: "e1", name: "amount", default: 0.5, min: 0, max: 1 },
+    { id: "e2", name: "invert", kind: "toggle", default: true },
+    { id: "e3", name: "mode", kind: "enum", default: "soft", options: ["soft", "hard edge", "3"] },
+    { id: "e4", name: "tint", kind: "color", default: "#ff8800" },
+    { id: "e5", name: "ink", kind: "ramp", default: [] },
+    { id: "e6", name: "falloff", kind: "curve", default: [] },
+  ],
+  expression: `vec4 a = texture(u_a, v_uv);
+float t = invert ? 1.0 - v_uv.x : v_uv.x;
+vec4 c = ink(t) * tint;
+float f = falloff(v_uv.y);
+if (mode == mode_hard_edge) f = step(0.5, f);
+if (mode == mode_3) f = 0.0;
+fragColor = mix(a, c, amount * f);`,
+});
 // 1..8 covers every real layer count; the per-pass cap is 7 on a
 // minimum-spec 16-unit device and 15 on a 32-unit one.
 for (let n = 1; n <= 8; n++) out[`fused${n}`] = fusedMergeFs(n);
@@ -61,6 +87,9 @@ out.trailsFade = TRAILS_FADE_FS;
 out.trailsVelocity = TRAILS_VELOCITY_FS;
 out.transform = TRANSFORM_FS;
 out.transformMatrix = TRANSFORM_MATRIX_FS;
+out.displace = DISPLACE_FS;
+out.vectorFieldImage = VECTOR_FIELD_IMAGE_FS;
+out.vectorFieldSdf = buildVectorFieldSdfFS("", "length(p - vec2(0.5))");
 
 writeFileSync(process.argv[2] ?? "shaders.json", JSON.stringify(out));
 console.log(`emitted ${Object.keys(out).length} shader sources`);

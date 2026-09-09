@@ -73,6 +73,18 @@ export const loopWeaveNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Draw one continuous spline through a point set, loop-de-looping around each point in an elliptical orbit. Alternate-handed orbits weave (connectors cross between points); same-handed reads as cursive loops. Spiral, lobes and wobble reshape the loops; tension, swing and sag reshape the runs between them. Aux outputs carry the orbit ellipses and untraveled dashed-guide arcs. Progress reveals the path point by point; auto reveal draws each arriving point's loop with the timeline.",
+  facts: {
+    space: { "param:radius": "canvas01" },
+    gotchas: [
+      "radius is a canvas-width fraction (canvas01); internally floored to at least 0.5px so tiny radii do not collapse to zero.",
+      "spiral maps as a per-turn radius factor of 2^-spiral: +1 halves the radius each winding, -1 doubles it, not a linear scale.",
+      "orient_angle only applies when orient=fixed; other orient modes (travel/random/point) ignore it.",
+      "progress and reveal_mode=auto combine via min per orbit, so whichever is more restrictive caps how much is drawn.",
+      "reveal_mode=auto integrates scene time: frozen while the timeline is paused, and resets to redraw from the start on any backward jump (loop wrap, scrub back).",
+      "orbits and skipped aux outputs are always built, even unwired, since this node caches (stable) and consumption-gating would risk serving a stale empty spline.",
+      "orbits and skipped subpaths are groupIndex-tagged with the source point's index, letting per-group styling target one orbit.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "points", type: "points", required: true }],
   params: [

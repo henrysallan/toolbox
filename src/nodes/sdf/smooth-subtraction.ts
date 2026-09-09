@@ -16,6 +16,13 @@ export const sdfSmoothSubtractionNode: NodeDefinition = {
   category: "utility",
   description:
     "Smooth subtraction (A − B) with a rounded cut. Smoothness blends the boundary where B carves into A — at 0 it degenerates to plain Subtraction.",
+  facts: {
+    space: { "in:smoothness": "canvas01", "param:smoothness": "canvas01" },
+    gotchas: [
+      "smoothness is a canvas-UV distance compared directly against the signed distance (same units as a shape's radius); 0 degenerates to plain Subtraction.",
+      "An unwired A (base) is the empty sentinel, so the result is empty; an unwired B (cut) leaves A unchanged, since subtracting nothing does nothing.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

@@ -185,6 +185,16 @@ export const sceneRenderNode: NodeDefinition = {
   category: "3d",
   description:
     "Renders the wired 3D objects from the given camera into an image. The convergence point of the 3D context — whatever reaches here is the scene.",
+  facts: {
+    space: { "param:fog_near": "world3d", "param:fog_far": "world3d" },
+    gotchas: [
+      "Object slots auto-expand from 4 up to 16: wiring the last empty slot reveals a new one, unwiring the tail shrinks it back.",
+      "A fallback ambient light (intensity 0.4) is added automatically whenever none of the wired objects is a light, so a lone mesh isn't pure black under PBR materials.",
+      "Unwired camera falls back to fov 45 at position (2.4, 1.8, 2.4) looking at the origin — the same default Project to Screen uses.",
+      "Depth of field is driven entirely by the wired camera's own dof settings (focus/aperture/maxblur); this node has no DOF params of its own.",
+      "environment=room's PMREM texture lives on this node's own WebGL context, so the orbit/preview viewport (a separate renderer) renders without those reflections even though the final output has them.",
+    ],
+  },
   backend: "webgl2",
   // Caches on its inputs: re-renders only when an upstream object/camera
   // (or its params) changes. Orbit/animation in M1b will revisit this.

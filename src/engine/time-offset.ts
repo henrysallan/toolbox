@@ -30,7 +30,7 @@
 // contract, under its own key.
 
 import { getNodeDef } from "./registry";
-import { ITERATE_TYPE } from "./groups";
+import { isZoneShell } from "./groups";
 import { is3DPoints } from "./points";
 import type { GraphEdge, GraphNode } from "./evaluator";
 import type { PointsValue, SocketType, SocketValue } from "./types";
@@ -146,7 +146,7 @@ export function carriedSocketTypeOf(v: SocketValue): SocketType | null {
 // `stable:false` defs (Scene Time, Wave, noise) pass — f(ctx.time) retimes
 // exactly. Unknown types fail closed.
 export function isTimeOffsetBoundary(nodeType: string): boolean {
-  if (nodeType === ITERATE_TYPE) return true;
+  if (isZoneShell(nodeType)) return true;
   const def = getNodeDef(nodeType);
   if (!def) return true;
   return def.simulation === true || def.retimeable === false;

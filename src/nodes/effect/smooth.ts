@@ -42,6 +42,14 @@ export const smoothNode: NodeDefinition = {
   category: "utility",
   description:
     "Exponential smoothing filter on a scalar. Time is the smoothing time-constant (seconds) — larger values produce heavier damping. Useful for de-jittering tracker outputs (hand, object) or audio levels.",
+  facts: {
+    gotchas: [
+      "alpha = 1 − exp(−dt/time) where dt is the wall-clock ctx.time delta, not a frame count, so retiming or a frame-rate change doesn't change the smoothing time constant.",
+      "reset=true (or the very first evaluation) snaps the output straight to the target, skipping the filter for that evaluation.",
+      "If the scene is paused (dt=0) or time is scrubbed backward, alpha collapses to 0 and the output holds rather than extrapolating.",
+      "The `value` input, when wired, overrides the `value` param entirely as the smoothing target.",
+    ],
+  },
   backend: "webgl2",
   stable: false,
   simulation: true,

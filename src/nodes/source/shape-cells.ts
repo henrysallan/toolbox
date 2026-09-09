@@ -237,6 +237,17 @@ export const shapeCellsNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Grid of cells with nested concentric shape copies. Per-cell shape, copy count and base hue are seeded; copy scales animate over time. Pipe Scene Time into `time` to drive motion.",
+  facts: {
+    space: { "in:time": "time" },
+    reads: ["time"],
+    gotchas: [
+      "time falls back to ctx.time when the time input is unwired, so the grid keeps animating during normal playback even without Scene Time wired.",
+      "If useCircle/useSquare/useTriangle are all off, pickShape falls back to circle rather than an empty cell.",
+      "copiesMin/copiesMax pick a per-cell copy count via hashed seed, clamped to 1..8; lockBaseShape pins only the outermost ring to scaleMax.",
+      "cellSize is a 0..1 fraction of the shorter cell axis (aspect-preserving), not the full cell width or height.",
+      "hueShift advances the ramp per concentric copy: rampPos = fract(baseHue + i*hueShift), so 0.17 on the default 6-stop ramp moves one stop per ring.",
+    ],
+  },
   backend: "webgl2",
   stable: false,
   inputs: [

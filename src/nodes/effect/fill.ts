@@ -63,6 +63,13 @@ export const fillNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Fill the interior of a spline. Open subpaths close implicitly for rendering. Choose evenodd (SVG default, punches holes in nested subpaths) or nonzero winding rule.",
+  facts: {
+    gotchas: [
+      "stack_subpaths=true (default) fills each subpath independently and stacks overlaps as opaque; turn it off to union all subpaths into one path so rule can punch holes.",
+      "rule (evenodd/nonzero) is only used, and only shown, when stack_subpaths is off.",
+      "Open subpaths are always closed implicitly for the fill, regardless of the spline's own closed flag.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [

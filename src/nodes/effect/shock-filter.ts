@@ -123,6 +123,16 @@ export const shockFilterNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Painterly sharpening: smooths ALONG the image's flow while pushing pixels toward their local light/dark extreme ACROSS it, so soft gradients collapse into crisp, fluid brush edges — the operator behind most 'hand-painted' looks; stack after Kuwahara or Flow Bilateral. Steered by the `field` input (Image Flow Field or any velocity field) or an internal estimate when unwired. `Iterations` compounds the effect (deterministic — safe to scrub and export), `Radius` sets how far the sharpening reaches, `Smooth along` the per-iteration flow smoothing, `Amount` blends the shock against the smoothed base.",
+  facts: {
+    space: { "param:radius": "pixels", "param:smooth_along": "pixels", "param:smooth": "pixels" },
+    gotchas: [
+      "radius and smooth_along are pixel taps at render resolution (u_invRes-scaled loops capped at 16 taps per side), so they do not scale with output size.",
+      "Without a `field` input it estimates its own flow field once (preBlur 1, `smooth` controls its smoothing) — `smooth` is ignored the moment `field` is wired.",
+      "iterations compounds smooth+shock passes in one compute (1-8, clamped); the field is sampled from the ORIGINAL source each iteration, not re-estimated, so animation stays stable.",
+      "The shock pass picks dilation or erosion per pixel from the sign of the second luminance derivative across the flow, then blends toward the extreme sample by `amount`.",
+      "Luminance sampling is coverage-weighted (lum × alpha) and the amount blend runs in premultiplied space, so transparent surrounds never win a dilation.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", type: "image", required: true },

@@ -27,6 +27,11 @@ export const solidColorNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Fills the frame with a single color. The color square on the node opens a picker in place; the H/S/L/A row at the bottom nudges it without one.",
+  facts: {
+    gotchas: [
+      "alpha (baked into the fill's u_color.a) and the universal opacity param both scale output alpha independently, so they multiply together.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

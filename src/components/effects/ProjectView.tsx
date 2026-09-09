@@ -18,6 +18,8 @@ interface ProjectViewProps {
   activeId: string;
   assets?: AssetItem[];
   assetsFolderName?: string | null;
+  // Status line for library ops in the Assets mode (090326_asset-library.md).
+  onAssetsToast?: (message: string) => void;
   onPickAssetsFolder?: () => void;
   onRenameProject: (name: string) => void;
   onEnter: (id: string) => void;
@@ -68,6 +70,7 @@ export function ProjectView({
   activeId,
   assets,
   assetsFolderName,
+  onAssetsToast,
   onPickAssetsFolder,
   onRenameProject,
   onEnter,
@@ -137,6 +140,7 @@ export function ProjectView({
           assets={assets}
           folderName={assetsFolderName}
           onPickFolder={onPickAssetsFolder}
+          onToast={onAssetsToast}
         />
       ) : view === "grid" ? (
         <div

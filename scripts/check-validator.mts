@@ -35,7 +35,7 @@ const { registerAllNodes } = await import("@/nodes/index");
 registerAllNodes();
 const { PRESETS } = await import("@/state/presets");
 const { editorCanCoerce, validateGraph } = await import("@/engine/graph-validation");
-const { accumulatorDomainForSource, collectModeForSource } = await import(
+const { accumulatorDomainForSource, collectModeForSource, walkToCamera3DNode } = await import(
   "@/engine/graph-helpers"
 );
 const { getNodeDef } = await import("@/engine/registry");
@@ -110,6 +110,17 @@ const fixtures: Fixture[] = [
     edges: [E("a", "out:primary", "b", "in:bogus")],
   },
   {
+    name: "group :out has no primary",
+    expect: "EDGE_UNKNOWN_OUTPUT",
+    nodes: [
+      N("g", "node-group", {
+        interface: { inputs: [], outputs: [{ name: "image", type: "image" }] },
+      }),
+      N("t", "transform"),
+    ],
+    edges: [E("g", "out:primary", "t", "in:image")],
+  },
+  {
     name: "type mismatch (image → spline path)",
     expect: "EDGE_TYPE_MISMATCH",
     nodes: [N("a", "solid-color"), N("b", "spline-stroke")],
@@ -132,6 +143,25 @@ for (const f of fixtures) {
   console.log(
     `${got ? "PASS" : "FAIL"}  ${f.name.padEnd(34)} expect ${f.expect}` +
       (got ? "" : `  — got [${codes.join(", ") || "no errors"}]`)
+  );
+}
+
+{
+  const r = validateGraph(
+    [
+      N("g", "node-group", {
+        interface: { inputs: [], outputs: [{ name: "image", type: "image" }] },
+      }),
+      N("t", "transform"),
+    ],
+    [E("g", "out:primary", "t", "in:image")]
+  );
+  const msg = r.issues.find((i) => i.code === "EDGE_UNKNOWN_OUTPUT")?.message ?? "";
+  const ok = msg.includes("did you mean aux:image");
+  if (!ok) failures++;
+  console.log(
+    `${ok ? "PASS" : "FAIL"}  group :out hint                  expect aux:image` +
+      (ok ? "" : `  — got ${JSON.stringify(msg)}`)
   );
 }
 
@@ -249,6 +279,10 @@ console.log("\n=== ACCUMULATOR AUTOCOERCE ===");
     accumulatorDomainForSource("points") === "points"
   );
   ok(
+    "accumulatorDomainForSource(spline)",
+    accumulatorDomainForSource("spline") === "spline"
+  );
+  ok(
     "accumulatorDomainForSource(image)",
     accumulatorDomainForSource("image") === null
   );
@@ -261,6 +295,134 @@ console.log("\n=== ACCUMULATOR AUTOCOERCE ===");
     "validator accepts scatter → Accumulator (type still scalar)",
     r.ok,
     r.issues.map((i) => `${i.code}:${i.message}`).join(",")
+  );
+}
+
+console.log("\n=== 3D POINTS (scatter grid / mesh-to-points) ===");
+{
+  const ok = (label: string, pass: boolean, detail?: string) => {
+    if (!pass) failures++;
+    console.log(`${pass ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
+  };
+  ok(
+    "object3d → 3D Scatter source (resting geometry)",
+    editorCanCoerce("object3d", "geometry", "scatter-points-3d", "in:source")
+  );
+  ok(
+    "object3d → Mesh to Points source (resting geometry)",
+    editorCanCoerce("object3d", "geometry", "mesh-to-points-3d", "in:source")
+  );
+  const grid = validateGraph(
+    [N("s", "scatter-points-3d", { mode: "grid" })],
+    []
+  );
+  ok(
+    "scatter grid mode has no required source",
+    grid.ok && !grid.issues.some((i) => i.code === "REQUIRED_INPUT_UNWIRED"),
+    grid.issues.map((i) => i.code).join(",")
+  );
+  const surface = validateGraph([N("s", "scatter-points-3d", { mode: "surface" })], []);
+  ok(
+    "scatter surface mode still warns on unwired source",
+    surface.issues.some((i) => i.code === "REQUIRED_INPUT_UNWIRED")
+  );
+  const def = getNodeDef("mesh-to-points-3d");
+  ok("mesh-to-points-3d is registered", def?.type === "mesh-to-points-3d");
+  ok(
+    "mesh-to-points primary is points3d",
+    def?.primaryOutput === "points3d"
+  );
+}
+
+console.log("\n=== CAMERA THROUGH REROUTE / SWITCH ===");
+{
+  const ok = (label: string, pass: boolean, detail?: string) => {
+    if (!pass) failures++;
+    console.log(`${pass ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
+  };
+  const nodeOf = (ns: ValNode[]) =>
+    new Map(ns.map((n) => [n.id, { defType: n.defType, params: n.params }]));
+  const cam = N("cam", "camera-3d");
+  const rr = N("rr", "reroute");
+  const sw = N("sw", "switch", { count: 2, index: 1 });
+  ok(
+    "direct camera-3d",
+    walkToCamera3DNode("cam", nodeOf([cam]), []) === "cam"
+  );
+  ok(
+    "camera → reroute",
+    walkToCamera3DNode(
+      "rr",
+      nodeOf([cam, rr]),
+      [E("cam", "out:primary", "rr", "in:value")]
+    ) === "cam"
+  );
+  ok(
+    "camera → switch slot 1 (index 1)",
+    walkToCamera3DNode(
+      "sw",
+      nodeOf([cam, sw]),
+      [E("cam", "out:primary", "sw", "in:in1")]
+    ) === "cam"
+  );
+  ok(
+    "camera → reroute → switch",
+    walkToCamera3DNode(
+      "sw0",
+      nodeOf([cam, rr, N("sw0", "switch", { count: 2, index: 0 })]),
+      [
+        E("cam", "out:primary", "rr", "in:value"),
+        E("rr", "out:primary", "sw0", "in:in0"),
+      ]
+    ) === "cam"
+  );
+  ok(
+    "switch index 1 with camera on slot 0 → null",
+    walkToCamera3DNode(
+      "sw",
+      nodeOf([cam, sw]),
+      [E("cam", "out:primary", "sw", "in:in0")]
+    ) === null
+  );
+  ok(
+    "non-camera producer → null",
+    walkToCamera3DNode("cube", nodeOf([N("cube", "cube-3d")]), []) === null
+  );
+}
+
+console.log("\n=== VECTOR FIELD ===");
+{
+  const ok = (label: string, pass: boolean, detail?: string) => {
+    if (!pass) failures++;
+    console.log(`${pass ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
+  };
+  const def = getNodeDef("vector-field");
+  ok("vector-field is registered", def?.type === "vector-field");
+  ok(
+    "sdf → Vector Field source (resting image)",
+    editorCanCoerce("sdf", "image", "vector-field", "in:source")
+  );
+  ok(
+    "image → Vector Field source (same type)",
+    editorCanCoerce("image", "image", "vector-field", "in:source")
+  );
+  const r = validateGraph(
+    [N("c", "sdf-circle"), N("v", "vector-field")],
+    [E("c", "out:primary", "v", "in:source")]
+  );
+  ok(
+    "validator accepts SDF Circle → Vector Field",
+    r.ok,
+    r.issues.map((i) => `${i.code}:${i.message}`).join(",")
+  );
+  const { pointExpressionNode } = await import("@/nodes/effect/point-expression");
+  const exprOk = pointExpressionNode.validateParams!({
+    expression: "x = px + fieldX();\ny = py + fieldY();",
+  });
+  ok(
+    "point-expression fieldX/fieldY compile",
+    exprOk.length === 0,
+    exprOk.join(",")
   );
 }
 

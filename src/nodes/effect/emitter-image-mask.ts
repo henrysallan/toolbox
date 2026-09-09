@@ -13,6 +13,15 @@ export const imageMaskEmitterNode: NodeDefinition = {
   category: "effect",
   description:
     "Emit particles into the pixels of a mask image, weighted by alpha.",
+  facts: {
+    space: { "param:velocity": "canvas01" },
+    gotchas: [
+      "A missing or non-image mask input emits nothing (no primary output) instead of erroring.",
+      "threshold rejects alpha samples below it via up to 4 rejection-sample tries per particle per frame; a sparse/low-alpha mask can silently under-spawn.",
+      "velocity is canvas01 (authored) space: width px/sec on both axes, independent of canvas aspect ratio.",
+      "Emits a descriptor only; the Particle Simulator reads rate/threshold/vJitter/lifetime on its own spawn pass — nothing spawns until wired to one.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "mask", type: "image", required: true }],
   params: [

@@ -40,7 +40,7 @@ export const RESERVED_POINT_ATTR_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 // Well-known named channel stamped by time-integrating point sims
-// (Accumulator points mode, Advect Points accumulate mode): seconds since
+// (Accumulator points / spline mode, Advect Points accumulate mode): seconds since
 // the point joined that node's state. Not reserved — Set Named Attribute
 // can still write it — but those sims own the name on their output and
 // overwrite any incoming `age`.
@@ -575,6 +575,34 @@ export function readPointAttr(
     if (a && c >= 0 && c < a.arity) return a.data[i * a.arity + c];
   }
   return undefined;
+}
+
+// Vec2 companion to readPointAttr. Two-component built-ins (`position`,
+// `scale`) return both axes; a named channel returns its first two
+// components (arity-1 pads y = 0); a dotted / scalar name returns
+// `[value, 0]`. Missing named channels return undefined — same contract
+// as the scalar reader.
+export function readPointAttrVec2(
+  p: PointsValue,
+  name: string,
+  i: number
+): [number, number] | undefined {
+  const n = name.trim();
+  if (!n) return undefined;
+  switch (n) {
+    case "position":
+      return [p.positions[i * 2], p.positions[i * 2 + 1]];
+    case "scale":
+      return [getScaleX(p, i), getScaleY(p, i)];
+  }
+  const attr = p.attributes?.[n];
+  if (attr) {
+    const base = i * attr.arity;
+    return [attr.data[base], attr.arity > 1 ? attr.data[base + 1] : 0];
+  }
+  const s = readPointAttr(p, n, i);
+  if (s === undefined) return undefined;
+  return [s, 0];
 }
 
 // True when `name` is a built-in (always readable) or a named channel

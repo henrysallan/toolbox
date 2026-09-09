@@ -32,6 +32,25 @@ export const sdfRepeatNode: NodeDefinition = {
   category: "utility",
   description:
     "SDF position-pipeline op — tile the sample position. Infinite by default; toggle Bounded for a finite tile count. Use the Jitter params for per-cell pseudo-random rotation / position / scale (each tile varies independently — what wiring an upstream Noise scalar into SDF Rotate cannot give you).",
+  facts: {
+    space: {
+      "in:position": "canvas01",
+      "in:spacing": "canvas01",
+      "in:center": "canvas01",
+      "param:spacing_x": "canvas01",
+      "param:spacing_y": "canvas01",
+      "param:center_x": "canvas01",
+      "param:center_y": "canvas01",
+      "param:position_jitter_x": "canvas01",
+      "param:position_jitter_y": "canvas01",
+    },
+    gotchas: [
+      "Emits a position value only; nothing changes until it feeds a shape's position input or a scalar field's position downstream.",
+      "bounded=false tiles infinitely; bounded=true clamps the cell index to +/-limit_x/limit_y so tiling stops past that many cells from center.",
+      "rotation/position/scale jitter hash each cell's seeded integer ID so every tile varies independently, unlike wiring a Noise scalar into a downstream Rotate (same angle everywhere).",
+      "aux cell_id is the per-pixel integer cell ID (vec2), constant within a tile; wire it into SDF Noise's position for per-tile modulation.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

@@ -1,8 +1,11 @@
 import type {
+  ForceDescriptor,
   ImageValue,
+  InputSocketDef,
   NodeDefinition,
   PointsValue,
   RenderContext,
+  SocketValue,
   SplineAnchor,
   SplineSubpath,
   SplineValue,
@@ -13,6 +16,8 @@ import {
   gatherPoints,
   overlayAge,
 } from "@/engine/points";
+import { applyForceCpu } from "@/engine/sim-kernel";
+import { aspectUncorrectY } from "@/engine/aspect";
 
 // Advect Points — move points through a velocity field derived from an
 // image. Unlike Displace (one sample, one push), advection re-samples the
@@ -56,6 +61,7 @@ import {
 const FIELD_SIZE = 256;
 const TWO_PI = Math.PI * 2;
 const GRAD_EPS = 1e-6;
+const MAX_FORCE_SLOTS = 8;
 
 // ─── Field readback + bilinear sampling ────────────────────────────────────
 
@@ -235,6 +241,66 @@ function makeVelocityFn(
   };
 }
 
+function gatherForces(
+  inputs: Record<string, SocketValue | undefined>,
+  max: number
+): ForceDescriptor[] {
+  const out: ForceDescriptor[] = [];
+  for (let i = 0; i < max; i++) {
+    const v = inputs[`force${i + 1}`];
+    if (v && v.kind === "force") out.push(v.descriptor);
+  }
+  return out;
+}
+
+// Image-field velocity plus the particle-sim force descriptors, evaluated
+// in authored space (applyForceCpu) so a Point Force feels the same here
+// as in the Particle / Rope / Rigid Body sims. Position-based forces are
+// treated as a velocity contribution (dt = 1); drag damps the combined
+// vector per step (dt = stepSize) because Advect Points has no persistent
+// velocity in integrate mode.
+function makeComposedVelocity(
+  imageVel: VelocityFn | null,
+  forces: ForceDescriptor[],
+  time: number,
+  aspect: number,
+  stepSize: number
+): VelocityFn | null {
+  if (!imageVel && forces.length === 0) return null;
+  const scratch = new Float32Array(2);
+  const dragDt = Math.abs(stepSize);
+  return (u, v, out) => {
+    if (imageVel) imageVel(u, v, out);
+    else {
+      out[0] = 0;
+      out[1] = 0;
+    }
+    if (forces.length === 0) return;
+    const uA = u;
+    const vA = aspectUncorrectY(v, aspect);
+    scratch[0] = 0;
+    scratch[1] = 0;
+    for (const f of forces) {
+      if (f.kind === "drag") continue;
+      applyForceCpu(f, uA, vA, scratch, 1, time);
+    }
+    out[0] += scratch[0];
+    out[1] += scratch[1];
+    scratch[0] = out[0];
+    scratch[1] = out[1];
+    let anyDrag = false;
+    for (const f of forces) {
+      if (f.kind !== "drag") continue;
+      anyDrag = true;
+      applyForceCpu(f, uA, vA, scratch, dragDt, time);
+    }
+    if (anyDrag) {
+      out[0] = scratch[0];
+      out[1] = scratch[1];
+    }
+  };
+}
+
 // ─── Stepping ──────────────────────────────────────────────────────────────
 
 const B_CLAMP = 0;
@@ -348,15 +414,45 @@ export const advectPointsNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Move points through a velocity field derived from an image — the field is re-sampled at every step, so points follow its curves (unlike Displace's single push). Integrate mode traces N deterministic steps per eval and emits streamline trails (flow-field line art: noise → Advect → trails → Stroke). Accumulate mode keeps persistent positions and advances once per frame — endless drift that responds to an animating field, no Simulation Zone needed. Each slot carries an `age` channel (seconds since it joined the flow). Field modes: angle (luminance → heading), vector (signed RG map), gradient (flow toward bright), contour (orbit level sets).",
+    "Move points through a velocity field derived from an image — the field is re-sampled at every step, so points follow its curves (unlike Displace's single push). Integrate mode traces N deterministic steps per eval and emits streamline trails (flow-field line art: noise → Advect → trails → Stroke). Accumulate mode keeps persistent positions and advances once per frame — endless drift that responds to an animating field, no Simulation Zone needed. Each slot carries an `age` channel (seconds since it joined the flow). Field modes: angle (luminance → heading), vector (signed RG map), gradient (flow toward bright), contour (orbit level sets). Raise Force slots to wire the same Point / Vortex / Wind / Gravity / Turbulence / Drag nodes the Particle Simulator takes — they add to the image field (or drive advection on their own).",
+  facts: {
+    space: { "param:step_size": "canvas01" },
+    reads: ["time", "attr:group"],
+    writes: ["attr:rotation", "attr:age"],
+    gotchas: [
+      "step_size is a signed canvas-width fraction per step; the y-component is scaled by width/height so speed stays isotropic in pixels on non-square canvases.",
+      "mode=accumulate persists positions in ctx.state and advances substeps only on frames where ctx.time actually changed; paused param tweaks re-emit without stepping.",
+      "field_mode=vector reads 2*(channel − midlevel) on R/G (Displace's signed convention); gradient/contour follow the luminance gradient and stall on flat regions.",
+      "accumulate's age is seconds since a slot joined the sim; seed-count growth joins new points into the run and shrink truncates from the top, neither resets it.",
+      "align_rotation overwrites the rotation attribute with atan2 of the last velocity sample (sign-flipped by invert), replacing any incoming rotation.",
+      "boundary=kill drops points leaving [0,1]² in integrate mode along with their other attributes; boundary=wrap splits trails at the torus seam instead of drawing across the canvas.",
+      "Force sockets (force1..forceN, up to 8 via forceCount) reuse the particle-sim kernel: non-drag forces add as instantaneous velocity, drag applies last at dt=step_size.",
+      "In accumulate mode the trails aux only accumulates history once something is wired to it; connecting it later starts a fresh short trail, not backfilled.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   simulation: true,
   inputs: [
     { name: "points", type: "points", required: true },
-    { name: "field", type: "image", required: true, label: "Field" },
+    { name: "field", type: "image", required: false, label: "Field" },
     { name: "speed", type: "image", required: false, label: "Speed field" },
   ],
+  resolveInputs(params): InputSocketDef[] {
+    const fc = Math.max(
+      0,
+      Math.min(MAX_FORCE_SLOTS, Math.floor((params.forceCount as number) ?? 0))
+    );
+    const out: InputSocketDef[] = [
+      { name: "points", type: "points", required: true },
+      { name: "field", type: "image", required: false, label: "Field" },
+      { name: "speed", type: "image", required: false, label: "Speed field" },
+    ];
+    for (let i = 0; i < fc; i++) {
+      out.push({ name: `force${i + 1}`, type: "force", required: false });
+    }
+    return out;
+  },
   params: [
     {
       name: "mode",
@@ -371,6 +467,15 @@ export const advectPointsNode: NodeDefinition = {
       type: "enum",
       options: ["angle", "vector", "gradient", "contour"],
       default: "angle",
+    },
+    {
+      name: "forceCount",
+      label: "Force slots",
+      type: "scalar",
+      min: 0,
+      max: MAX_FORCE_SLOTS,
+      step: 1,
+      default: 0,
     },
     {
       name: "steps",
@@ -503,9 +608,9 @@ export const advectPointsNode: NodeDefinition = {
   // 200-step integration computes once). No `stable` flag — time in the
   // extras is equivalent and mode-scoped.
   fingerprintExtras(params, ctx) {
-    return params.mode === "accumulate"
-      ? `m:acc|t:${ctx.time.toFixed(4)}`
-      : "";
+    if (params.mode === "accumulate") return `m:acc|t:${ctx.time.toFixed(4)}`;
+    const fc = Math.floor((params.forceCount as number) ?? 0);
+    return fc > 0 ? `f:${ctx.time.toFixed(4)}` : "";
   },
 
   compute({ inputs, params, ctx, nodeId, consumedOutputs }) {
@@ -535,12 +640,13 @@ export const advectPointsNode: NodeDefinition = {
     if (!fieldBuf) {
       state.field.source = undefined;
       state.field.buf = undefined;
-      // No field: integrate passes seeds through; accumulate holds its
-      // current positions (handled below with a null velocity).
-      if (mode !== "accumulate") {
-        return { primary: src, aux: { trails: EMPTY_SPLINE } };
-      }
     }
+
+    const forceSlots = Math.max(
+      0,
+      Math.min(MAX_FORCE_SLOTS, Math.floor((params.forceCount as number) ?? 0))
+    );
+    const forces = gatherForces(inputs, forceSlots);
 
     const fieldMode = (params.field_mode as string) ?? "angle";
     const stepSize = (params.step_size as number) ?? 0.002;
@@ -557,7 +663,7 @@ export const advectPointsNode: NodeDefinition = {
     const alignRotation = !!params.align_rotation;
     const aspect = ctx.height > 0 ? ctx.width / ctx.height : 1;
 
-    const vel = fieldBuf
+    const imageVel = fieldBuf
       ? makeVelocityFn(
           fieldMode,
           fieldBuf,
@@ -566,6 +672,19 @@ export const advectPointsNode: NodeDefinition = {
           (params.midlevel as number) ?? 0.5
         )
       : null;
+    const vel = makeComposedVelocity(
+      imageVel,
+      forces,
+      ctx.time,
+      aspect,
+      stepSize
+    );
+
+    // No field and no forces: integrate passes seeds through; accumulate
+    // holds its current positions (handled below with a null velocity).
+    if (!vel && mode !== "accumulate") {
+      return { primary: src, aux: { trails: EMPTY_SPLINE } };
+    }
 
     if (mode === "accumulate") {
       return computeAccumulate(

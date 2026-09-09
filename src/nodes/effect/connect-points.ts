@@ -15,11 +15,12 @@ import {
 } from "@/engine/segment-shape";
 
 // Connect nearby points with spline segments. The user's control is a
-// max-distance threshold (UV space): every pair of input points within
-// that threshold gets a 2-anchor open subpath. A `path` mode decides
-// each segment's SHAPE — straight chords, arcs / S-curves, sag, flow,
-// network tangents, bundling, attract — via the shared segment-shape
-// machinery (engine/segment-shape.ts, also consumed by Shortest Path).
+// distance band in UV space: every pair of input points whose
+// separation is ≤ max_distance and ≥ min_distance gets a 2-anchor
+// open subpath. A `path` mode decides each segment's SHAPE — straight
+// chords, arcs / S-curves, sag, flow, network tangents, bundling,
+// attract — via the shared segment-shape machinery
+// (engine/segment-shape.ts, also consumed by Shortest Path).
 // Spec: specdocs/archive/073126_connect-points-curved-paths.md.
 // Output is the set of segments as a single SplineValue; a passthrough
 // `points` aux output lets downstream nodes consume both the new
@@ -30,9 +31,9 @@ import {
 // image) on the other side of the type boundary.
 //
 // `min_connections` is a DEGREE FILTER, not a floor: it never invents
-// edges past max_distance, it only removes ones whose endpoints were
-// too lonely. Single-pass and non-cascading — see the comment on the
-// pruning block.
+// edges outside the distance band, it only removes ones whose
+// endpoints were too lonely. Single-pass and non-cascading — see the
+// comment on the pruning block.
 //
 // groupIndex handling: a segment inherits the groupIndex only when
 // both endpoints share one. Cross-group edges (A from group 0 to B
@@ -49,7 +50,22 @@ export const connectPointsNode: NodeDefinition = {
   category: "spline",
   subcategory: "generator",
   description:
-    "Connect pairs of input points within a max-distance threshold. Path modes shape each connection: straight chords, circular arcs / S-curves (curved), hanging-wire droop (sag), noise-field tangents (flow), smooth curves flowing through shared points (network), parallel connections merging into trunks (bundle), or bowing toward/away from a center (attract). `Min connections` prunes the sparse fringe: an edge survives only when BOTH its endpoints found at least that many neighbours inside the threshold, so stringy one-off segments drop out and the dense core stays. Primary output is the segments as a spline; the passthrough `points` aux keeps the original points available on the same wire for further downstream use.",
+    "Connect pairs of input points whose separation sits between min-distance and max-distance. Path modes shape each connection: straight chords, circular arcs / S-curves (curved), hanging-wire droop (sag), noise-field tangents (flow), smooth curves flowing through shared points (network), parallel connections merging into trunks (bundle), or bowing toward/away from a center (attract). `Min connections` prunes the sparse fringe: an edge survives only when BOTH its endpoints found at least that many neighbours inside the distance band, so stringy one-off segments drop out and the dense core stays. Primary output is the segments as a spline; the passthrough `points` aux keeps the original points available on the same wire for further downstream use.",
+  facts: {
+    space: {
+      "param:max_distance": "canvas01",
+      "param:min_distance": "canvas01",
+      "param:center_x": "canvas01",
+      "param:center_y": "canvas01",
+    },
+    gotchas: [
+      "min_connections is a degree filter, not a floor — it prunes existing edges in one pass after the min/max distance band; it never adds edges and doesn't cascade.",
+      "max_distance and min_distance are compared in raw UV, not aspect-corrected, so the same threshold reaches farther in one axis than the other on a non-square canvas.",
+      "An edge inherits groupIndex only when both endpoints share one; a cross-group edge is left untagged rather than assigned to either side.",
+      "path shape modes (curved/sag/flow/network/bundle/attract) compute handles in an internal aspect-scaled space so arcs stay round, unlike the distance params' raw-UV threshold.",
+      "min_distance ≥ max_distance yields no edges; min_connections then counts degree on the remaining band, not the full max_distance disk.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "points", type: "points", required: true }],
   headerControl: { paramName: "path" },
@@ -64,6 +80,20 @@ export const connectPointsNode: NodeDefinition = {
       softMax: 0.3,
       step: 0.001,
       default: 0.1,
+    },
+    // Floor of the distance band. 0 (the default) keeps every existing
+    // project untouched — same as "no floor." Pairs closer than this
+    // never become edges, so raising it leaves only the long connections.
+    {
+      name: "min_distance",
+      label: "Min distance",
+      type: "scalar",
+      min: 0,
+      max: 1,
+      softMax: 0.3,
+      step: 0.001,
+      default: 0,
+      maxFrom: (p) => Math.max(0, (p.max_distance as number) ?? 1),
     },
     // Degree filter — see the pruning pass in compute. 0 (and 1, which
     // can only drop points that had no edges to begin with) are no-ops,
@@ -88,20 +118,24 @@ export const connectPointsNode: NodeDefinition = {
     const points: PointsValue["points"] =
       srcVal?.kind === "points" ? ensurePointArray(srcVal) : [];
     const maxD = Math.max(0, (params.max_distance as number) ?? 0.1);
+    const minD = Math.max(0, (params.min_distance as number) ?? 0);
     const d2 = maxD * maxD;
+    const minD2 = minD * minD;
     const N = points.length;
 
     // Spatial hash bucket: cell size = max_distance, so any pair
-    // within threshold lives in the same cell or in one of the 8
-    // neighbors. Reduces O(N²) pair-checks to O(N · k) where k is
-    // local density. With max_distance = 0.1 the grid is at most
+    // within the outer threshold lives in the same cell or in one of
+    // the 8 neighbors. Reduces O(N²) pair-checks to O(N · k) where k
+    // is local density. With max_distance = 0.1 the grid is at most
     // 11×11 buckets; for very small thresholds the grid grows but
-    // each bucket stays sparse, so the gain only widens.
+    // each bucket stays sparse, so the gain only widens. min_distance
+    // is a post-filter on those candidate pairs — it does not change
+    // the cell size.
     //
     // Distances stay RAW UV (not iso) on purpose — changing that
     // would silently rewire existing projects on non-square canvases.
     const edges: Edge[] = [];
-    if (N > 0 && maxD > 0) {
+    if (N > 0 && maxD > 0 && minD2 <= d2) {
       const cell = maxD;
       const grid = new Map<string, number[]>();
       const cellKey = (cx: number, cy: number) => `${cx}|${cy}`;
@@ -137,7 +171,9 @@ export const connectPointsNode: NodeDefinition = {
               const b = points[j];
               const ex = a.pos[0] - b.pos[0];
               const ey = a.pos[1] - b.pos[1];
-              if (ex * ex + ey * ey > d2) continue;
+              const dist2 = ex * ex + ey * ey;
+              if (dist2 > d2) continue;
+              if (minD2 > 0 && dist2 < minD2) continue;
               const shared =
                 a.groupIndex !== undefined && a.groupIndex === b.groupIndex
                   ? a.groupIndex
@@ -154,12 +190,13 @@ export const connectPointsNode: NodeDefinition = {
     // whose endpoints didn't BOTH reach `min_connections` prunes them
     // and leaves the dense core intact.
     //
-    // Degrees are measured ONCE, on the full threshold graph, and the
-    // pass does not cascade: removing an edge never re-tests the
-    // neighbours it just demoted. That's deliberate — an iterative
-    // version is the k-core, which collapses whole regions from a
-    // one-step parameter nudge and is miserable to art-direct. Here the
-    // result is always "the threshold graph, minus its fringe."
+    // Degrees are measured ONCE, on the distance-band graph (after
+    // min_distance has already dropped the close pairs), and the pass
+    // does not cascade: removing an edge never re-tests the neighbours
+    // it just demoted. That's deliberate — an iterative version is the
+    // k-core, which collapses whole regions from a one-step parameter
+    // nudge and is miserable to art-direct. Here the result is always
+    // "the band graph, minus its fringe."
     const minConn = Math.max(0, Math.round((params.min_connections as number) ?? 0));
     let kept = edges;
     if (minConn > 1 && edges.length > 0) {

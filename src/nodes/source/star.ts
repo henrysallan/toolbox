@@ -50,7 +50,22 @@ export const starNode: NodeDefinition = {
   category: "spline",
   subcategory: "generator",
   description:
-    "Generate an N-point star as a closed spline — set the point count, outer/inner radius, and rotation.",
+    "Generate an N-point star as a closed spline — set the point count, outer/inner radius, and rotation. Authored in [0,1]² Y-down; the rasterizer scales y about 0.5 by W/H so radii stay width-relative.",
+  facts: {
+    space: {
+      "param:centerX": "canvas01",
+      "param:centerY": "canvas01",
+      "param:outerRadius": "canvas01",
+      "param:innerRadius": "canvas01",
+      "param:stroke_thickness": "pixels",
+    },
+    gotchas: [
+      "stroke_thickness is pixels by default; stroke_units=% resolves it as a percent of canvas width instead.",
+      "outerRadius/innerRadius are each clamped to ≥0 independently with no ordering clamp — innerRadius > outerRadius makes the valleys poke out past the points.",
+      "The fill input image is only sampled when fill_enabled is on; fill_fit (window/contain/cover) likewise does nothing while fill is off.",
+      "The image aux only exists when stroke_enabled or fill_enabled is on; the element aux is always emitted regardless.",
+    ],
+  },
   backend: "webgl2",
   inputs: [SPLINE_FILL_INPUT, TRANSFORM_INPUT],
   params: [

@@ -84,6 +84,18 @@ export interface Platform {
     name: string
   ): Promise<{ bytes: ArrayBuffer; type: string } | null>;
 
+  /** Build a decoder-only scrub proxy (1080p all-intra) for a clip and hand
+   *  back a byte-range reader over it (specdocs/090526_video-scrub-
+   *  optimizations.md M4). Null when the shell can't. Native build only. */
+  makeScrubProxy?(
+    bytes: ArrayBuffer,
+    name: string
+  ): Promise<{
+    size: number;
+    read(start: number, end: number): Promise<ArrayBuffer>;
+    dispose(): void;
+  } | null>;
+
   /** Frameless-window controls (the renderer draws its own title-bar controls —
    *  macOS traffic lights or Windows caption buttons). Present only on the
    *  native desktop build. */

@@ -51,6 +51,14 @@ export const csvNode: NodeDefinition = {
     "cell at the selected row. Numeric columns emit scalars, text columns " +
     "emit strings (wire straight into a Text node's exposed text). Drive the " +
     "row to step through the data.",
+  facts: {
+    gotchas: [
+      "Output sockets are positional ids (col:0, col:1, …); the column header is only the display label, so re-parsing keeps wires attached as long as column order is unchanged.",
+      "A column emits scalar only if every one of its cells parses as numeric; otherwise the whole column emits string.",
+      "row is floored; rowMode=clamp holds at row 0 or the last row past the ends, rowMode=wrap uses row mod rowCount.",
+      "An empty or unparsed CSV yields no aux outputs at all (rowCount <= 0 short-circuits to {}).",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   // Pure CPU data node — the universal mask input is meaningless.

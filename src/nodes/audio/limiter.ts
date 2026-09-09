@@ -15,6 +15,12 @@ export const audioLimiterNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Loudness limiter: clamps the signal to the threshold ceiling with a fast, max-ratio compressor — put it last in an audio chain to stop peaks and protect the output. Threshold changes ramp click-free and are keyframable.",
+  facts: {
+    gotchas: [
+      "Descriptor in, descriptor out: compute() does no audio work; the audio engine builds a Tone.Limiter (a fast, max-ratio compressor) once the chain reaches an audio output.",
+      "Has only a threshold (dB) control — no attack/release/ratio — so it is meant last in a chain to catch peaks, not to shape dynamics.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "audio", type: "audio", required: true, label: "Audio" }],

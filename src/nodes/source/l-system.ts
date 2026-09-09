@@ -485,6 +485,22 @@ export const lSystemNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Grow botanical and fractal structures from a rewriting grammar — a short rule set expanded a few times and drawn by a turtle. Pick a preset (fern, bush, plant, tree, Koch, Hilbert, dragon, Sierpinski) and shape it with Angle, Length and Length decay, or switch to Custom and write your own productions: one per line as `F=F[+F]F[-F]F`, with `F`/`G` drawing, `f`/`g` moving without drawing, `+`/`-` turning, and `[`/`]` saving and restoring the turtle. Rules can be stochastic — `A=0.7:F[+A] | 0.3:F[-A]` — which, with Angle jitter and Tropism (a global bend, for gravity or light), is what stops L-system plants looking like clip art. Two separate animation inputs: Progress reveals the finished structure outward level by level, while Iterations is fractional and morphs between structural levels, extending the newest tips out of their parents. Branch thickness follows Da Vinci's rule on the anchor width channel and age rides the subpath driver channel, so Stroke ramps can colour by either.",
+  facts: {
+    space: {
+      "param:origin_x": "canvas01",
+      "param:origin_y": "canvas01",
+      "param:length": "canvas01",
+    },
+    writes: ["attr:scale", "attr:rotation", "attr:group"],
+    gotchas: [
+      "progress reveals the fixed expanded structure outward as a cheap slice; iterations is fractional and re-expands the grammar itself, growing the newest tips out of their parents.",
+      "The turtle grows in isotropic pixel space then normalizes as x/W, y/H per axis with no aspect correction, so shapes are undistorted only on square canvases.",
+      "Anchor width follows Da Vinci's rule (root=1, tips=tip_width) and each subpath's driver carries birth iteration 0..1 for Stroke/Rasterize age ramps; neither is a renamable attribute.",
+      "id_mode picks what the aux points' group index encodes: branch id, hop depth, seed root index, or a birth-time bucket (id_groups sets bucket count, only for id_mode=birth).",
+      "Expansion is capped at 2,000,000 symbols and 12 levels; hitting the symbol cap truncates that expansion level rather than erroring.",
+      "use_preset_shape locks angle/start_angle to the chosen preset's own values; turn it off (or pick preset=custom) to reveal the manual angle/start_angle rows.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   headerControl: { paramName: "preset" },

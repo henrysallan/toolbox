@@ -27,6 +27,25 @@ export const sdfRectangleNode: NodeDefinition = {
   category: "utility",
   description:
     "SDF primitive — a rectangle (with optional rounded corners) centered at (x, y) with the given width × height. Wire `position` to feed a transformed coordinate space.",
+  facts: {
+    space: {
+      "in:position": "canvas01",
+      "in:center": "canvas01",
+      "in:size": "canvas01",
+      "param:x": "canvas01",
+      "param:y": "canvas01",
+      "param:width": "canvas01",
+      "param:height": "canvas01",
+      "param:corner_radius": "canvas01",
+    },
+    gotchas: [
+      "Builds an SDF tree only; nothing is drawn until SDF Rasterize (or To Mask / To Distance Image) evaluates it per pixel.",
+      "Unwired position = canvas UV; wire a Translate/Repeat/Mirror position chain to change the space the rectangle is evaluated in.",
+      "width/height are full extents but halved internally (sx=width/2, sy=height/2); corner_radius is clamped to never exceed half the smaller dimension.",
+      "width/height are width-relative only while SDF Rasterize aspect_correct is on; off, they become per-axis UV fractions and the rectangle squashes on non-square canvases.",
+      "Wiring `size` overrides width and height together; there is no socket to override just one of them.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

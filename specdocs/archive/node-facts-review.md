@@ -1,0 +1,341 @@
+# Node facts — authoring pass review (2026-09-06)
+
+292 nodes authored by the bulk pass (plus 6 hand-written gold examples = 298/298 visible nodes). Nothing pending.
+`summary` is the agent's proposed one-sentence replacement for `description` (not applied). `uncertain` is what the agent could not settle from the source — review these first.
+
+## Uncertain (18 nodes)
+
+- **accretive-growth**
+  - param:margin labeled canvas01 as the closest vocabulary term, but it actually scales by min(width,height), not width alone like the other radius params.
+  - attr:width (SplineAnchor.width, Da Vinci thickness) and the subpath driver (age) are stamped by growth-emit.ts but not listed under writes: neither string appears as a literal in accretive-growth.ts itself and neither is a well-known attr name, so the validator would reject them; covered in prose in the gotchas instead.
+- **adaptive-pixelate**
+  - aux:points space tagged uv01 by formula (cx/W, cy/H per axis) though points normally default to canvas01 — not confirmed whether downstream point consumers treat this convention as intentional or as an existing quirk.
+- **attribute-read**
+  - space.out is labeled unitless as the common case (default attr_name is weight); it actually varies with whichever attribute name is chosen, per the first gotcha.
+- **audio-bands**
+  - Header comment claims a fingerprintExtras keyed on ctx.frame, but no fingerprintExtras is defined in bands.ts — likely a stale comment, not checked further.
+- **autolayout**
+  - gap/paddingX/paddingY/width/height/cornerRadius/strokeWidth are layout units (min(canvasW,canvasH)/1000 px); no vocab term (canvas01/uv01/pixels) cleanly fits this resolution-scaled unit, so left untagged in space and covered by a gotcha instead.
+- **behavioral-growth**
+  - max_force space: scaled by W*0.01, not a plain *W distance like the other radii; unclear if it is meant as a canvas01-equivalent unit.
+  - field_resolution sets an internal physarum grid resolution independent of canvas size; it does not map cleanly onto the space vocabulary.
+- **connect-points**
+  - bundle_radius unit: compared against iso-space (x scaled by aspect) inter-segment distances in segment-shape.ts, not raw UV like max_distance — scale on non-square canvases unconfirmed.
+- **hit-region**
+  - slop's unit is CSS pixels of pointer travel per CursorState.gestureMaxDistPx, not render-resolution pixels; labeled pixels for lack of a closer vocabulary match.
+- **liquid-glass**
+  - fresnelRange/glareRange units: combined with the px distance dOpt via an empirical formula (dOpt/1500 * (500/range)^2), not a plain px or canvas measurement.
+- **map-attribute**
+  - out_lo/out_hi space only applies when map_target=position x/y; left as canvas01 here since that is the spatial case, but it is really a scale multiplier or radians for the other targets.
+- **matter-simulator**
+  - gravity/damping/stiffness are internal MPM-unit dials (log-mapped for stiffness); no canonical physical unit is asserted beyond the nx-scaling note.
+- **object-tracker**
+  - Whether output coordinates should be classified as uv01 vs canvas01 was inferred from the raw originX/width divided by detect-canvas cw/ch with no aspect term; not cross-checked against how downstream nodes interpret spline/points space.
+- **physarum**
+  - sd/md base+scale and sensor_x/y are raw numbers in an internal resolution-normalized sim-pixel space (distScale = max(1, simH/736) * scale), not a clean match for canvas01/pixels/uv01 — left unlabeled rather than guessed.
+- **point-expression**
+  - attr()/setattr() channel names are arbitrary JS string literals chosen by the user's expression, so they cannot be enumerated as fixed reads/writes.
+- **points-to-string**
+  - the attribute-field channel name comes from the attr_name param at runtime, so it cannot be listed as a fixed attr: read even though 'weight' is its literal default.
+- **rgb-curves**
+  - Color working space the LUT curve operates in (linear vs. the source texture's native encoding) is not stated in this file.
+- **stipple**
+  - packed-flow's fade/flow timing reads ctx.time deltas; the code comment calls this wall-clock but ctx.time is project/timeline time elsewhere in the engine, so pause behavior is not fully confirmed.
+- **voronoi**
+  - offset_x/offset_y (lattice) unit is lattice-cell space scaled by `scale`, with no direct canvas01/uv01/pixels equivalent — not forced into the space vocabulary.
+  - edge_width (mask mode) compares against f2-f1 in the source's own metric space (cells-across-width for lattice, aspect height-units for scatter/points), not a fixed canvas distance — not forced into the space vocabulary.
+
+## Summary proposals
+
+- `accretive-growth` — Simulates a branching growth structure once from any of six algorithms, caches the trace, and lets progress slice it without resimulating.
+- `accumulator` — Accumulate a scalar over time, or pile points/spline subpaths from each playing frame into a persistent, capped set.
+- `adaptive-pixelate` — Pixelate with block size driven by a luminance map: uniform, quadtree-split, or crowding-lattice grids, plus a per-block points aux.
+- `advect-image` — Flow an image along a velocity field by back-tracing each pixel through it in steps, with the trace exposed as a reusable uv aux.
+- `advect-points` — Move points through a velocity field sampled from an image, integrating N steps or accumulating drift across frames.
+- `align-to-camera-3d` — Marks an instance stream to billboard toward a camera (spherical or Y-locked) at render time, without touching geometry.
+- `ambient-occlusion-3d` — Bakes ambient occlusion from mesh geometry into a grayscale image in the mesh's own UV space.
+- `animated-value` — Keyframable scalar whose keyframes sample at a wired clock instead of the playhead.
+- `arc` — Circular arc, pie wedge, or chord spline from center/radius/angles or optional start/end anchors.
+- `array-3d` — Repeats geometry into an instance stream along a line, a circle/arc, or a centered 3D grid.
+- `array` — Tile an image, spline, or points instance into a grid with per-copy transform and optional image-mode modulators.
+- `arrow` — Arrow outline (shaft + triangular head) as a closed spline aimed from tail to tip.
+- `ascii` — Render an image as a grid of glyphs (text palette or an image_group), colored and remapped per cell.
+- `attribute-blur` — Smooth a named point or spline-anchor channel toward its spatial or index-order neighborhood mean.
+- `attribute-math` — Componentwise math (or a clamped remap) on a named point or spline-anchor channel against a constant or second channel.
+- `attribute-read` — Sample one point's column at an index as a concrete scalar or vec2 value.
+- `attribute-transfer` — Copies a named attribute from a source points/spline set onto a target by nearest or radius-weighted proximity.
+- `audio-bands` — Splits a live audio signal into Low/Mid/High band energy plus an overall RMS level, one-pole smoothed.
+- `audio-bitcrusher` — Bit-depth-reduction distortion over an audio chain, with a wet/dry blend.
+- `audio-channel` — Gain (dB), pan, and mute utility strip over an audio chain, with audio-rate gain/pan modulation inputs.
+- `audio-chorus` — Stereo chorus: mixes in delayed, LFO-detuned copies of the signal for thickening and width.
+- `audio-compressor` — Dynamic-range compressor (threshold/ratio/attack/release/knee) over an audio chain.
+- `audio-crossfade` — Equal-power crossfade between two audio inputs, driven by a keyframable fade parameter.
+- `audio-delay` — Echo/feedback delay over an audio chain, with a ping-pong stereo-bounce mode.
+- `audio-distortion` — Waveshaping distortion over an audio chain, with a wet/dry blend.
+- `audio-eq3` — Three-band EQ (low/mid/high dB trim, adjustable crossovers) over an audio chain.
+- `audio-fm-synth` — Polyphonic two-operator FM synth voice, the notes-to-audio rasterizer for bell/metallic tones.
+- `audio-lfo` — Audio-rate LFO generator whose min/max sweep a wired mod input's own knob, summed at the audio clock domain.
+- `audio-limiter` — Hard-ceiling loudness limiter over an audio chain.
+- `audio-merge` — Sums up to 8 audio lanes with per-lane linear gain, pan, mute, and descriptor-time solo resolution.
+- `audio-noise` — Seeded, deterministic white/pink/brown noise generator for an audio chain.
+- `audio-oscillator` — Free-running audio-rate oscillator (sine/square/sawtooth/triangle) with FM/AM mod inputs.
+- `audio-phaser` — Sweeping all-pass phaser effect over an audio chain, LFO rate/range/base set by rate/octaves/base_freq.
+- `audio-pitch` — Detect an audio signal's pitch (McLeod NSDF), quantize it, and emit MIDI/normalized/Hz with hold and glide.
+- `audio-player` — Play an audio file inside the chain (rate/loop/offset), processable by downstream effects unlike Audio Source.
+- `audio-reverb` — Deterministic convolution reverb (decay, pre-delay, wet) over an audio chain.
+- `audio-sampler` — Notes-to-audio instrument: pitched one-shot playback of a loaded sample, repitched from root_pitch.
+- `audio-source` — Plays an uploaded audio file synced to scene time, or pipes a live microphone stream, into the graph.
+- `audio-spectral` — Render an audio signal as a spectrum/waveform/chroma/spectrogram scalar field image to drive other nodes.
+- `audio-step-pattern` — Text-pattern step sequencer (x/X hit, ./- rest) emitting NoteEvents timed to the project BPM.
+- `audio-synth` — Notes-to-audio polyphonic subtractive synth voice with waveform and ADSR envelope.
+- `audio-transpose` — Shift every note in a notes stream by +/- semitones, clamped to MIDI 0..127.
+- `autolayout` — Figma-style flex container: stacks wired elements with alignment, gap, and padding, sized fixed/hug/fill and nestable via its aux element output.
+- `behavioral-growth` — Move a fixed population of points via flocking, physarum, Vicsek, or run-and-tumble rules, evolving or resimulated each eval.
+- `bento-slice` — Slice an image into a recursive bento-box grid and scatter/assemble the pieces along seeded vectors driven by Fac.
+- `bevel-3d` — Rounds feature edges of 3D geometry with a width, segment count, and a profile curve between chamfer and round.
+- `bevel-emboss` — Synthesize a fake-3D bevel or emboss relief from a JFA distance field or the source's luminance, lit by two lights.
+- `bezier-handles` — Render a spline's anchors, tangent handles, and control-point dots as both an image and a matching vector spline.
+- `bg-remove` — Cut out a foreground subject via a baked RMBG or RVM matte, with live feather/threshold edge tweaks.
+- `blend-intersections` — Fuse a network of crossing or nearby stroked splines into one SDF-blended closed outline spline.
+- `bloom` — Mip-chain bloom: soft-knee threshold, Karis-averaged downsample, tent upsample, per-mip tint, and anamorphic stretch.
+- `bounding-box` — Measure an image/mask/spline/points source's bounding box as edge scalars, corner/mid points, a box spline, and optional canvas guides.
+- `bump-3d` — Adds a bump height map or tangent-space normal map to a geometry's material slot 0.
+- `camera-3d` — Camera descriptor (position, look-at target, projection, clip planes, optional depth of field) for Scene Render.
+- `capsule-3d` — 3D capsule primitive: two hemispheres of radius joined by a cylinder of length.
+- `chromatic-aberration` — Split R/B channels from G by a per-axis UV offset, radial or directional, to fake lens dispersion.
+- `circle-3d` — Circle primitive authored as a closed 3D bezier curve, output as a tube mesh plus the curve3d value.
+- `circle` — Circle or ellipse as a closed 4-anchor bezier spline, from center and per-axis radius.
+- `clamp` — Clamp a scalar into [Lo, Hi], swapping the bounds first if Lo is greater than Hi.
+- `collect` — Bundle N same-typed inputs into an image_group, a groupIndex-tagged spline/points value, or one retained 3D group.
+- `collider-circle` — Circular particle-simulator collider — a solid disc (outside) or a fish-tank bounce (inside) at a given restitution.
+- `collider-image-mask` — Image-alpha particle-simulator collider — pixels above threshold act as solid geometry to bounce off or kill on contact.
+- `collider-line` — Half-plane particle-simulator collider — an infinite wall through `point` at `angle`, blocking the side opposite its normal.
+- `color-correction` — Hue/saturation/contrast/brightness plus four-wheel lift/gamma/gain/offset color grading with RGB curves.
+- `color-literal` — Emits one or more vec4 colors, either from stored color pickers or a palette extracted from a wired image.
+- `color-ramp` — Remap image luminance through a user-defined color-stop gradient; also exposes the ramp as a reusable palette.
+- `color-space-transform` — Convert an image between color-space gamuts and transfer curves with an optional ACES/AgX/Filmic view transform.
+- `combine-vec2` — Combine two scalars (or their params) into one vec2; a vec2 constant when both inputs are unwired.
+- `compare` — Compare two scalars with a chosen operator, outputting 1 (true) or 0 (false); == and != use an epsilon tolerance.
+- `cone-3d` — 3D cone primitive with configurable sides, arc sweep, and open-ended base.
+- `connect-points` — Connect points within a max-distance threshold into 2-anchor spline segments, with degree pruning and curved path-shaping modes.
+- `constant` — Emits a single scalar constant, quantized to a step increment, in float or integer mode.
+- `copy-to-points-3d` — Places a copy of the instance geometry at every point, oriented to its normal, as an instance stream.
+- `copy-to-points` — Duplicates an image, image group, spline, points, or Text-node instance at every target point with per-copy transform, variant pick, and modulation.
+- `cross` — Crosshair/registration mark: four arms radiating from a center with an adjustable gap, length, and rotation.
+- `csv` — Parses a stored CSV and exposes each column as an output socket carrying the cell at the current row.
+- `cube-3d-test` — Proof-of-concept node rendering a lit, spinning cube on an isolated three.js context, composited into the 2D image graph.
+- `cursor-trail-points` — Drops points along the pointer's path while drawing on the preview, evenly spaced with seeded radial scatter.
+- `cursor` — Circular falloff field centered on the pointer, with a velocity aux field and a raw authored-space position output.
+- `cylinder-3d` — 3D cylinder primitive with configurable sides, arc sweep, and open-ended ends.
+- `datamosh` — Optical-flow datamosh: bakes two clips into strips, overlaps them on a node-local timeline, and warps a frozen frame by the other clip's motion.
+- `depth-anything` — Monocular depth estimation (Depth Anything V2) with grayscale depth or gradient-derived normal output and a live/baked per-frame cache.
+- `differential-growth` — Simulate a polyline that lengthens and inserts nodes faster than repulsion can relax it, buckling into coral, kelp, or ruffled forms.
+- `diffusion-curves` — Diffuse Left/Right (or a traced image's) colors outward from spline strokes across the canvas via a Poisson solve.
+- `dither` — Quantize the image to black/white or stepped color levels via error-diffusion, ordered, or threshold dithering.
+- `drag-points` — Grab the nearest point within grab_radius on press and drag it, accumulating a persistent per-point offset.
+- `draggable` — Turn a mask into a draggable handle, accumulating a canvas01 offset meant to feed a Transform translate.
+- `edge-detect` — Sobel or Prewitt 3x3 gradient magnitude over luminance, with a strength scale and hard threshold.
+- `emitter-image-mask` — Descriptor for a Particle Simulator emitter that spawns particles from mask pixels above an alpha threshold.
+- `emitter-point` — Descriptor for a Particle Simulator emitter that spawns from a jittered point with a launch velocity.
+- `expression` — Evaluate a typed JavaScript math expression over named input variables to a scalar or vector.
+- `extrude-3d` — Extrudes a detected logical face (or every face) of 3D geometry along its normal, stitching side walls.
+- `extrude-spline-3d` — Extrudes a 2D spline into solid 3D geometry with optional bevel, centered at the origin.
+- `filter-points` — Keep or discard points by bbox, mask luminance, index decimation, stable random subset, or a named attribute threshold.
+- `filter-splines` — Keep or discard whole spline subpaths by bbox, mask luminance, size, index decimation, or a stable random subset.
+- `float-curve` — Shape a scalar in [0,1] through an editable monotone-cubic curve; the value param is a fallback when unwired.
+- `flow-bilateral` — Edge-preserving separable bilateral filter run along and across the image's local flow direction.
+- `flow-blur` — Smears the image along a flow field's streamlines (line integral convolution) using an internal or wired field.
+- `flow-obstacle` — Deflects or damps a velocity field's flow around an obstacle mask's silhouette.
+- `fluid-simulator` — 2D Eulerian fluid sim (advection-reflection + vorticity confinement) driving dye, forces, colliders, and a velocity field.
+- `force-drag` — Force descriptor for linear-in-velocity drag damping, consumed by a simulator node.
+- `force-gravity` — Force descriptor for constant directional (gravity-like) acceleration, consumed by a simulator node.
+- `force-point` — Force descriptor for a radial point attractor/repeller, consumed by a simulator node.
+- `force-turbulence` — Force descriptor for curl-noise turbulence that advects through time, consumed by a simulator node.
+- `force-vortex` — Force descriptor for a tangential vortex swirl around a point, consumed by a simulator node.
+- `force-wind` — Force descriptor for a constant directional push, consumed by a simulator node.
+- `frame` — Wraps an image in a fixed authored-size element (layout units) with cover/contain/stretch fit, for Auto Layout.
+- `gizmo` — Authors a TRS+pivot transform value via an on-canvas gizmo, composable with a parent Gizmo's transform.
+- `glsl-expression` — Runs a user-written GLSL fragment-shader body as one fullscreen pass over up to four wired images plus synced tunable channels.
+- `gradient` — Two-color gradient generator (linear, radial, polar, wave, or multipoint), with optional per-pixel angle modulation and UV remapping.
+- `grain` — Procedural per-pixel film grain (luminance + chromatic) optionally composited over an image with a choice of blend modes.
+- `group-length` — Counts distinct group members: image_group items, or distinct groupIndex values on a flat spline/points input.
+- `group-pick` — Filters an image_group, spline, or points input down to the members tagged with one chosen groupIndex.
+- `hand-tracker` — Detects up to two hands via MediaPipe and outputs a bone-skeleton spline plus wrist and optional fingertip positions.
+- `hit-region` — Gate hover/press/release/click/held pointer signals and a drag delta on a wired mask region, with button grab semantics.
+- `image-flow-field` — Estimate per-pixel edge orientation and anisotropy from an image via a smoothed structure tensor, encoded as a steering field.
+- `image-generate` — Outputs the currently-selected AI-generated image (via OpenAI gpt-image-2), or transparent when nothing is selected.
+- `image-source` — Uploads an image (including multilayer EXR) as the canonical output, with pan/zoom/fit placement and an aux Auto Layout element.
+- `import-3d` — Loads a GLB/glTF/OBJ/STL file and emits one merged or per-object mesh as geometry.
+- `instance-color-3d` — Tints each copy in an instance stream: solid, seeded random, world-space gradient ramp, or image-sampled color.
+- `instance-transform-3d` — Offsets, rotates, and scales every copy in an instance stream, weighted uniformly, by index, randomly, or spatially by noise/image.
+- `keyer` — Key pixels transparent by luma, RGB color, chroma-plane distance, or nearest match to sampled colors, with spill suppression.
+- `kuwahara` — Painterly per-pixel filter that pools the least-varying of 8 neighborhood sectors, anisotropically stretched along local flow.
+- `l-system` — Grow a plant or fractal from a rewriting grammar drawn by a turtle, with fractional-iteration morphing between structural levels.
+- `lathe-3d` — Revolves a spline's first subpath around the Y axis into a lathed solid of revolution.
+- `lens-flare` — Additive lens-flare layer (ghosts, halo ring, streak) from a bright-pass threshold, to composite back with Merge.
+- `lerp` — Linear interpolation between A and B by t, polymorphic across scalar, vec2, points, and spline.
+- `lfo` — Periodic scalar oscillator (sine/triangle/sawtooth/square) driven by scene time, in Hz with a cycle-based phase.
+- `light-3d` — Scene light descriptor (directional, point, ambient, or spot) wrapping a retained THREE.Light for Scene Render.
+- `line-art` — XDoG/FDoG stylized ink-line extraction, output as ink on transparency ready to Merge over a painterly base.
+- `line` — A straight open two-anchor spline segment between two endpoints, meant to be stroked.
+- `liquid-glass` — Apple-style refractive liquid glass panel over a backdrop image, with Fresnel edge glow and angular glare.
+- `lissajous-2d` — 2D Lissajous curve generator, output as a spline with a matching aux points value.
+- `lissajous-3d` — 3D Lissajous curve, rotated and orthographically projected to a 2D spline with a matching aux points value.
+- `list` — Parse pasted or loaded text into a list wire, plus the item at an animatable index and the item count.
+- `logic` — Boolean AND/OR/XOR/NOT gate over scalar inputs, treating any non-zero as true.
+- `loop-weave` — Draws one continuous spline that loop-de-loops around each point in an elliptical orbit, weaving between consecutive points.
+- `lut` — Applies a .cube 3D LUT color grade to the image, with an optional log2 HDR shaper for scene-linear footage.
+- `map-attribute` — Drives a point's scale, rotation, or position offset from any named or built-in attribute, via a normalize/curve/remap pipeline.
+- `material-3d` — Flow-through PBR/toon/matcap material with image-map overrides, transmission, clearcoat/sheen, and optional lineart outlines.
+- `math` — Scalar math node (arithmetic/comparison/rounding/trig) that also runs as a per-pixel UV shader or a per-pixel SDF field expression.
+- `matter-simulator` — MLS-MPM matter solver (liquid/jelly/snow) on WebGPU, outputting a particles texture plus a points aux.
+- `merge` — Composites a base image with an ordered stack of layer images, each with its own blend mode, opacity, and matte.
+- `mesh-to-points-3d` — Emits one point per mesh vertex in world space, carrying per-vertex normals when present.
+- `midi-editor` — Piano-roll note source: notes authored in a viewport editor, with an optional region loop.
+- `mirror` — Duplicates a spline or points across an axis or radially around a center, with optional kaleidoscope wedges and per-copy grouping.
+- `modulate-points` — Multiplies per-point scale and adds per-point rotation from uniform sliders and/or image fields sampled at each point's position.
+- `modulate-splines` — Scales and rotates each spline subpath around its own centroid, driven by uniform sliders and/or image fields sampled at the centroid.
+- `noise` — Multi-algorithm fBm noise generator with image, single-value, 2D field, and 3D field outputs.
+- `number-to-string` — Formats a wired or manual number into text with decimals, zero-padding, thousands separators, and a prefix/suffix.
+- `object-tracker` — Runs MediaPipe object detection on an image, emitting bounding-box rectangles and per-detection center points with IoU-matched IDs across frames.
+- `optimize-path` — Refits a spline to the fewest clean cubic Bezier segments within a pixel tolerance, preserving sharp corners.
+- `output` — Terminal node: blits the image input to the visible canvas and holds the export/render settings for it.
+- `paint` — Freehand paint canvas — draw brush/eraser/fill strokes while the node is selected; compute() replays the saved bitmap.
+- `particle-simulator` — GPU particle sim (WebGL fragment-GPGPU or a partial WebGPU compute path) driven by wired Force/Emitter/Collider descriptors.
+- `particles-to-image` — Renders a particles socket as uniform soft-edged point sprites, optionally composited over a background image.
+- `physarum` — GPU slime-mold agent simulation whose sensed trail field steers turning and stepping into an emergent vein network.
+- `pixelate` — Mosaics an image into blocks by point-sampling each block's center, optionally masked to an inscribed circle.
+- `plane-3d` — A flat single-sided 3D plane primitive.
+- `point-expression` — Run a JS block once per point (or per spline anchor) to compute new position, scale, rotation, and groupIndex.
+- `point-labels` — Draw a text label formatted from each point's own data directly onto that point (points to image, self-contained).
+- `point` — Emit Count coincident points at (x, y) with shared rotation and scale, each keeping its own index.
+- `pointer` — Mouse/touch interaction signals — cursor position, press/release/click pulses, drag delta, and an accumulated drag offset.
+- `points-on-path` — Emit N evenly-spaced points along a spline, with a progress attribute and optional tangent/normal alignment.
+- `points-to-spline` — Chain, grid-walk, stride-window, or zip-pair a points value into spline subpaths.
+- `points-to-string` — Join a column of point data (or a named attribute) into one string for a Text node's text input.
+- `points-to-surface` — Build a scalar field around a points cloud (metaballs or Zhu-Bridson) and trace its iso-contour as a spline.
+- `points-to-text` — Format each point's own data into one string per point, in point order, for Copy to Points' text mode.
+- `polar-coords` — Map an image between rectangular and polar coordinates around a center, for tunnel/kaleidoscope or unroll looks.
+- `polygon-3d` — Regular polygon primitive authored as a closed 3D bezier curve, output as a tube mesh plus the curve3d value.
+- `polygon` — Regular N-sided closed polygon spline of a given radius and rotation about a center.
+- `polyhedron-3d` — Platonic solid primitive (icosahedron/octahedron/tetrahedron/dodecahedron) with a subdivision detail level.
+- `posterize` — Quantize an image to a small number of tonal levels, per-channel or brightness-only.
+- `project-to-screen-3d` — Projects world-space 3D points into authored 2D screen points through a scene camera, culling those behind it.
+- `proximity-merge` — Welds nearby spline endpoints or points within a UV distance threshold, either by stitching topology (join) or averaging to a centroid (snap).
+- `random` — Pseudo-random scalar or vec2 generator, seeded-deterministic or free-rolling, uniform or Gaussian.
+- `rasterize-spline` — Bake a spline's fill and stroke into one raster pass, with per-subpath or along-path color/width ramps and holes.
+- `reaction-diffusion` — Iteratively steps a Gray-Scott or FitzHugh-Nagumo reaction-diffusion field and outputs the V channel as grayscale.
+- `realize-instances-3d` — Bakes an instance stream into one real BufferGeometry, applying each copy's TRS to its own vertices.
+- `rect-3d` — Rectangle primitive authored as a closed 3D bezier curve, output as a tube mesh plus the curve3d value.
+- `rectangle` — Rectangle as a closed spline centered on (originX, originY), with optional round or squircle corners and rotation.
+- `relax` — Iteratively push points apart or Laplacian-smooth spline anchors, blending back toward the original with mix.
+- `remap` — Linearly remap a scalar or image from [in_min,in_max] to [out_min,out_max], with an always-on parallel scalar_field path.
+- `render-queue` — Collects Output nodes' `render` links into an ordered queue and batch-renders them in sequence.
+- `rgb-curves` — Apply a master RGB tone curve followed by independent per-channel R/G/B curves via a baked 256-entry LUT.
+- `rigid-body-simulator` — 2D rigid-body sim: each subpath shape-matches into a rigid or jelly body that falls, stacks, and collides with edge-accurate contacts.
+- `ring-3d` — Flat annular disc primitive; inner radius 0 gives a solid disc, theta_length < 360 a pie slice.
+- `rope-simulator` — 2D rope/string sim: each subpath becomes a particle chain with distance and bending constraints, colliding, sticking, and optionally tearing.
+- `round-corners` — Replace each sharp, handle-less corner of a spline with a circular fillet of a uniform radius.
+- `rounded-cube-3d` — Box primitive with filleted edges and corners (separate topology from Cube).
+- `sample-along-path` — Sample a spline's position, tangent, and orientation angle at arc-length parameter t.
+- `sample-hold` — Latch a scalar/vecN value on each trigger rising edge and hold it until the next one.
+- `sample-texture-at-points` — Sample an image channel at each point's position and write the remapped value into its scale or rotation.
+- `scatter-points-3d` — Scatters area-weighted random points on a mesh surface, or emits a centered X×Y×Z grid with no input.
+- `scatter-points` — Scatter N points across the canvas, optionally rejection-sampled against an image or spline-silhouette density.
+- `scene-render` — Renders the wired 3D objects and camera into an image; the convergence point of the 3D scene graph.
+- `scene-time` — Scene playback time as a scalar, shaped as linear, ping-pong, or eased stepped, in seconds or frames.
+- `sdf-bevel` — Terminal that rasterizes an SDF with two-light bevel/emboss shading derived from finite differences on the distance field.
+- `sdf-displace` — Perturbs an SDF's distance by an image's red channel, sampled in screen space and remapped to +/-amount.
+- `sdf-from-image` — Converts an image into a signed distance field, either via threshold + jump-flood transform or by reading an already-baked distance channel.
+- `sdf-intersection` — Boolean intersection (max) of two SDFs: inside only where both A and B are inside.
+- `sdf-line-segment` — SDF capsule (rounded thick line) between points A and B with a given thickness.
+- `sdf-material` — Paints an SDF subtree with a constant color or a color-ramp sampled from a scalar field, leaving distance unchanged.
+- `sdf-mirror` — Position-pipeline op: reflects the sample position about X, Y, or both axes through a center.
+- `sdf-morph` — Morphs between two SDFs by linearly interpolating their distance fields.
+- `sdf-onion` — Turns an SDF into a hollow shell of the given thickness (abs(d) - thickness).
+- `sdf-polar` — Position-pipeline op: folds the sample position into N rotational sectors around a center.
+- `sdf-polygon` — SDF regular N-gon of circumradius r at (x, y), with sides settable per-pixel from a wired scalar field.
+- `sdf-rasterize` — Rasterizes an SDF to an image: foreground/background fill plus an optional contour line at the zero-crossing.
+- `sdf-rectangle` — SDF axis-aligned rectangle (optionally rounded) centered at (x, y) with full width x height.
+- `sdf-repeat` — Tiles the SDF sample position on a grid, with optional bounded extent and per-cell jitter.
+- `sdf-rotate` — Rotates the SDF sample position around a pivot, with per-pixel angle via a wired scalar field.
+- `sdf-round` — Inflates or (with negative radius) shrinks the boundary of an SDF outward by radius.
+- `sdf-scale` — Scales the SDF sample position around a pivot so downstream shapes grow or shrink by the given factor.
+- `sdf-shade` — SDF terminal that composites fill, color bleed, relief lighting, glow, and contours into one image in a single pass.
+- `sdf-smooth-intersection` — Smoothly rounds the corners where two SDFs' boundaries intersect, the dual of Smooth Union.
+- `sdf-smooth-subtraction` — Subtracts B from A (A minus B) with a rounded, blended cut instead of a sharp crease.
+- `sdf-smooth-union` — Smoothly blends any number of SDFs into one, merging boundaries within Smoothness into a curved metaball-style join.
+- `sdf-spline` — SDF primitive computing the signed (closed) or unsigned (open, stroke-like) distance to a flattened spline.
+- `sdf-star` — SDF primitive: an N-pointed star of outer radius r at (x, y), with a sharpness clamped to [2, points].
+- `sdf-subtraction` — Boolean subtraction of two SDFs (A minus B): inside A but outside B.
+- `sdf-to-distance-image` — Renders an SDF as a grayscale distance visualization through a 3-stop inside/zero/outside color ramp.
+- `sdf-to-mask` — Renders an SDF as a binary or feathered mask (as an image) at a chosen distance threshold.
+- `sdf-to-spline` — Extracts an SDF's iso-line as a spline via a marching-squares readback of a rendered distance grid.
+- `sdf-translate` — Translates the SDF sample position, moving downstream shapes by (tx, ty) in canvas units.
+- `sdf-triangle` — SDF primitive: a general triangle through three corner points A, B, C.
+- `sdf-twist` — Spirals the SDF sample position around a center by strength radians per unit distance from it.
+- `sdf-union` — Boolean union of any number of SDFs (min): the result is inside if any input is inside.
+- `segment-anything` — Segment an image via SlimSAM click-prompts or an automatic model, outputting a cutout/mask or a multicolor segment map.
+- `set-named-attribute` — Write a named channel onto points, spline anchors, or subpaths from a constant, index ramp, random, or sampled image.
+- `set-position` — Translate a spline or point cluster so its centroid lands exactly at (X, Y).
+- `set-spline-type` — Rewrite every anchor's handles to linear (polyline) or smooth (catmull-rom, tension-scaled), leaving positions and tags untouched.
+- `shape-cells` — Grid of cells, each rendering hashed-seed nested shape copies that animate and cycle through a color ramp.
+- `sharpen` — Sharpen an image with a box, diamond, cross, or Gaussian-unsharp 3×3 convolution kernel.
+- `shock-filter` — Iteratively smooth along the local flow field and shock-sharpen across it, turning soft gradients into crisp painterly brush edges.
+- `shortest-path` — Route through a points or spline network (or grow a branching tree from a root) and emit the path as a spline.
+- `simulation-end` — Exit of a simulation zone: commits the `state` input as next frame's starting state for the paired Simulation Start.
+- `simulation-start` — Entry of a simulation zone: replays the paired Simulation End's last output each frame, or `initial` on reset.
+- `smooth` — Exponential smoothing filter on a scalar, with a time-constant in seconds.
+- `solid-color` — Fills the frame with a single flat color and alpha.
+- `space-fill` — Packed self-avoiding walk generator producing dense maze-like lines as one spline subpath per line.
+- `sphere-3d` — 3D UV sphere primitive with independent horizontal and vertical sweep cutoffs.
+- `spiral` — Archimedean spiral as an open Catmull-Rom spline, with a bundled stroke/fill raster preview.
+- `spline-3d` — 3D curve through viewport-authored control points, outputting a swept tube plus sampled path points and the curve value.
+- `spline-boolean` — Boolean two splines (subtract/union/intersect/exclude) on their filled regions, or cut A as a line against B's region.
+- `spline-draw` — Hand-drawn bezier path from the on-canvas pen tool, with an optional bundled stroke/fill raster.
+- `spline-fill` — Rasterize the filled interior of a spline's subpaths with a solid color.
+- `spline-flow-field` — Turns a drawn spline into a divergence-free velocity field (encoded image) that other nodes advect content along.
+- `spline-interpolate` — Interpolates a chain of 2+ input splines into one spline of inputs plus evenly spread in-between shapes, optionally distributed along a spine.
+- `spline-intersections` — Emits a point at every crossing of an input spline's flattened segments, with the source spline passed through on aux.
+- `spline-merge` — Self-merges all subpaths of one spline via boolean union/intersect/exclude, or a liquid field simulation in Flow mode.
+- `spline-morph` — Tweens a chain of 2+ splines by Amount, optionally rasterizing the result with stroke and/or fill.
+- `spline-offset` — Offsets each spline subpath perpendicular to its own tangent by a canvas-relative distance, with optional overlap resolution at sharp corners.
+- `spline-pack` — Greedy collision-pack a dense overlapping spline bundle into non-overlapping, variable-width fragments.
+- `spline-repeat` — Emit count parallel-offset copies of a path spanning a fixed-width band, each tagged with its own group index.
+- `spline-resample` — Redistribute each subpath's anchors evenly along arc length, rebuilding tangent-derived handles and resampling width/attrs.
+- `spline-stroke` — Rasterizes a spline's outline as solid/dashed/dotted, with per-subpath color/width sourcing and optional parallel-offset repeats.
+- `spline-to-points` — Emit each anchor of the input spline as a point, tagged with its subpath's groupIndex.
+- `spline-trails` — Traces each input point's recent motion as its own spline, one open subpath per surviving point identity.
+- `split-vec2` — Splits a vec2 into its x (primary) and y (aux) scalar components.
+- `stagger` — Assigns every point its own start time by rank and writes a 0-to-1 phase ramp channel.
+- `star` — N-point star as a closed spline with sharp corner anchors alternating outer/inner radius.
+- `stipple` — Re-renders an image as dots (grid, screen, packed, or persistent packed-flow) sized and packed by local darkness.
+- `string-art` — Times-table string art: connects ordered point i to (i*k+offset) mod N with straight chords, optionally in two layers.
+- `string-literal` — Emits a single literal text string from a params value.
+- `svg-export` — Snapshots a wired spline at the current playhead and saves it as a standalone styled .svg file.
+- `svg-source` — Loads an SVG file as spline data, with a built-in translate/scale/rotate and optional stroke/fill raster.
+- `switch` — N-input multiplexer that picks inputs[index], typing every slot and the output to whatever is wired (or a pinned type).
+- `taper-spline` — Scales each anchor's offset from a pivot by a curve sampled over arc-length progress, tapering or flaring the path.
+- `text` — Rasterizes styled text with a built-in transform, exposing SDF, outline spline, layout element, and live text-instance aux outputs.
+- `texture-coordinate` — Emits each pixel's own (u, v) coordinate as a UV field, for warping or offsetting downstream.
+- `texture-projection-3d` — Rewrites a mesh's UVs by projecting it through a placeable planar, box, cylindrical, or spherical volume.
+- `threshold` — Collapses an image to a binary or feathered black/white split by luminance threshold.
+- `time-offset` — Re-evaluates everything wired upstream at the playhead minus a frame offset, retiming that whole branch.
+- `torus-3d` — 3D torus (donut) primitive with independent ring radius, tube radius, and arc sweep.
+- `torus-knot-3d` — 3D (p, q) torus knot primitive; p and q set the winding integers.
+- `tracker-point` — Samples authored point-tracker data into live points and per-track vec2 sockets at the current frame.
+- `trails` — Accumulates a fading history buffer of the input as feedback trails, stepped ring echoes, or velocity-directed motion blur.
+- `transform-3d` — Moves, rotates, and scales a geometry value or an entire instance stream.
+- `transform` — Scale, rotate, and translate an image, spline, or points around a pivot, or apply a wired transform value.
+- `trigger-envelope` — Turns a rising scalar edge into a 0-1-0 attack/hold/release envelope, on a wall or timeline clock.
+- `trim-path` — Reveals an arc-length window [start, end] of a spline, combined across subpaths or per subpath.
+- `vec2-literal` — Emits a static vec2 (x, y) from two literal params.
+- `vec3-literal` — Emits a static vec3 (x, y, z) from three literal params.
+- `vector-field` — Turn an image's luminance gradient or an SDF's distance gradient into a signed-RG velocity field.
+- `video-source` — Decode and draw a video file's or image sequence's current frame, optionally synced to scene time, with its audio riding an aux output.
+- `voronoi` — Worley/Voronoi field from a lattice, scattered points, or a Points input, with matching cell/edge/vertex/center/neighbor geometry as aux outputs.
+- `watercolor-ink` — Cellular-automaton watercolor/sumi ink simulation: deposited ink rides and diffuses with water through fibrous paper, then fixes as it dries.
+- `wave` — Sine wave sampled into a smooth open spline, with a bundled stroke/fill rasterizer and Auto-Layout element aux.
+- `webcam-source` — Live webcam feed via getUserMedia, drawn through the same fit/offset/zoom pipeline as Image and Video Source, with an optional mirror flip.
+- `webgpu-particle-test` — Phase-0 WebGPU spike: mounts an overlay canvas running its own particle compute/render, outside the graph.
+- `wedge` — Emits one value per batch-render iteration (scalar list/range/random/index, color, vec2, or string), or the Preview value outside a batch.

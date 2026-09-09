@@ -140,6 +140,21 @@ export const autoLayoutNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Figma-style auto layout: stacks element children horizontally or vertically with alignment, padding, and gap. Children size as fixed (layout units), hug-contents, or fill-container; the aux element output makes layouts nestable. Plain image wires coerce to full-canvas elements — use per-slot trim or a Frame node to size them.",
+  facts: {
+    space: {
+      "param:translateX": "uv01",
+      "param:translateY": "uv01",
+      "param:pivotX": "uv01",
+      "param:pivotY": "uv01",
+    },
+    gotchas: [
+      "gap, padding, width/height, cornerRadius and strokeWidth are layout units (1 unit = min(canvasW,canvasH)/1000 px), scaling with project resolution, unlike raw pixel params.",
+      "translateX/Y and pivotX/Y are per-axis UV fractions (uv01, not aspect-corrected) applied directly to the container's own v_uv, not width-relative canvas01.",
+      "The aux element output is the nesting hook: a parent Auto Layout's fill slot re-solves this container at the granted size; hug sizes measure children instead.",
+      "The primary output is a full-canvas image with the container centered and transformed; for nesting, wire the aux element output instead of the primary.",
+      "Each item's trim crops it to its cached alpha bounding box before layout, shrinking its hug size to the non-transparent region.",
+    ],
+  },
   backend: "webgl2",
   // On-canvas manipulation is the bounds gizmo (PRIMITIVE_GIZMO_ADAPTERS
   // "autolayout" entry): dragging moves translateX/Y, resizing an edge

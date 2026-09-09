@@ -26,6 +26,13 @@ export const constantNode: NodeDefinition = {
   category: "utility",
   description:
     "Emits a single scalar value, in float or integer mode, snapped to a configurable step (2 → 2, 4, 6…; 1.2 → 1.2, 2.4, 3.6…). Use to feed exposed scalar inputs without routing through a Math node.",
+  facts: {
+    gotchas: [
+      "Quantizes value to the step increment on every compute, so a keyframed or wired-in value is snapped too, not just the UI slider.",
+      "mode=integer forces the effective step to a whole number (min 1) and rounds the final value, overriding a fractional step param.",
+      "step defaults to 0.001 to match the value param's pre-step historic default, keeping old saves' exact values through the quantize.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [],

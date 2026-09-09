@@ -31,6 +31,20 @@ export const crossNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Generate a crosshair / registration mark — four arms with an adjustable central gap (start offset), arm length, and rotation.",
+  facts: {
+    space: {
+      "param:centerX": "canvas01",
+      "param:centerY": "canvas01",
+      "param:length": "canvas01",
+      "param:startOffset": "canvas01",
+    },
+    gotchas: [
+      "startOffset is the central gap; 0 makes the four arms meet at the center (a plus), and rotation=45 turns that into an X.",
+      "Emits four open 2-anchor subpaths (one per arm), meant to be stroked; fill_enabled draws nothing since each arm has zero area.",
+      "stroke_thickness is px by default; stroke_units=% resolves it against canvas width so the stroke keeps its look at any resolution.",
+      "The image aux only appears when stroke_enabled or fill_enabled is on; the element aux is always present for Auto Layout.",
+    ],
+  },
   backend: "webgl2",
   inputs: [SPLINE_FILL_INPUT, TRANSFORM_INPUT],
   params: [

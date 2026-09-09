@@ -29,6 +29,21 @@ export const sdfCircleNode: NodeDefinition = {
   category: "utility",
   description:
     "SDF primitive — a circle of radius r at (x, y). Wire `position` to feed a transformed coordinate space (Translate / Repeat / Mirror / etc.) — unwired defaults to canvas UV.",
+  facts: {
+    space: {
+      "in:position": "canvas01",
+      "in:center": "canvas01",
+      "in:radius": "canvas01",
+      "param:x": "canvas01",
+      "param:y": "canvas01",
+      "param:radius": "canvas01",
+    },
+    gotchas: [
+      "Builds an SDF tree only; nothing is drawn until SDF Rasterize (or To Mask / To Distance Image) evaluates it per pixel.",
+      "Unwired position = canvas UV; wire a Translate/Repeat/Mirror position chain to change the space the disc is evaluated in.",
+      "radius is width-relative only while SDF Rasterize aspect_correct is on; off, it becomes a per-axis UV fraction and the disc squashes on non-square canvases.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

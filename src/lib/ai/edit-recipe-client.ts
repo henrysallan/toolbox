@@ -57,6 +57,10 @@ export const HARD_OP_CODES = new Set([
   // number) means the edit doesn't do what the model intended — worth a
   // repair turn. (PARAM_KEYFRAMED stays soft: it's a heads-up, not a break.)
   "BAD_PARAM_VALUE",
+  "BAD_PARENT",
+  "EDGE_OUT_OF_SCOPE",
+  "UNKNOWN_OP",
+  "MALFORMED_OP",
 ]);
 
 const defaultPost: EditPostFn = async (body) => {

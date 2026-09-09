@@ -24,7 +24,14 @@ import { copyPointsWith } from "@/engine/points";
 // — 0.5 for signed 8-bit maps. Offsets are in normalized [0,1] units, which is
 // the same space pixels (UV) and geometry positions both live in, so one set
 // of amount sliders works for every source type.
-const FS = `#version 300 es
+//
+// Rotate (off by default) additionally reads the map's luminance, signed
+// around the same midlevel, and applies that as a rotation: images spin
+// around the frame center, points add to per-point rotation (Copy to Points
+// then orients copies), splines rotate each anchor's handles about the
+// (already displaced) anchor. Peak angle is `rotateAmount` degrees at the
+// white/black extremes.
+export const DISPLACE_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_src;
@@ -35,6 +42,8 @@ uniform float u_midlevel;
 uniform int u_channelX; // 0=R 1=G 2=B 3=A 4=luma
 uniform int u_channelY;
 uniform int u_wrap;     // 0=transparent 1=clamp 2=mirror
+uniform int u_rotate;   // 0=off 1=spin from map luma
+uniform float u_rotateAmount; // peak radians (slider is degrees)
 out vec4 outColor;
 
 float pick(vec4 c, int ch) {
@@ -61,7 +70,19 @@ void main() {
     (vx - u_midlevel) * u_amountX,
     (vy - u_midlevel) * u_amountY
   );
-  vec2 uv = v_uv + offset;
+  vec2 uv = v_uv;
+  if (u_rotate == 1) {
+    float luma = dot(d.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float angle = (luma - u_midlevel) * 2.0 * u_rotateAmount;
+    vec2 p = v_uv - 0.5;
+    float c = cos(angle);
+    float s = sin(angle);
+    // Positive angle is clockwise on screen. v_uv is Y-UP; same
+    // inverse-sampling convention as Transform (do not negate).
+    p = vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+    uv = p + 0.5;
+  }
+  uv += offset;
   if (u_wrap == 0 && (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)) {
     outColor = vec4(0.0);
     return;
@@ -99,6 +120,26 @@ function wrapToInt(s: string): number {
     default:
       return 0;
   }
+}
+
+const DEG = Math.PI / 180;
+
+// Signed luma → radians. Midlevel is zero rotation; the peak (`amountDeg`)
+// is reached at the black/white extremes around that mid.
+function lumaToAngle(
+  luma: number,
+  midlevel: number,
+  amountDeg: number
+): number {
+  return (luma - midlevel) * 2 * amountDeg * DEG;
+}
+
+function rotateOffset(
+  h: [number, number],
+  c: number,
+  s: number
+): [number, number] {
+  return [h[0] * c - h[1] * s, h[0] * s + h[1] * c];
 }
 
 // --- CPU path (spline / points): sample the displacement field per anchor ---
@@ -153,7 +194,22 @@ export const displaceNode: NodeDefinition = {
   category: "image",
   subcategory: "modifier",
   description:
-    "Offset by a vector read from a displacement field. Wire an image and each pixel is pushed; wire a spline or points value and each anchor/point is pushed (sampled at its own UV). Channel X/Y pick the per-axis channels (RG vector field, or luminance for both); midlevel is the neutral value (0.5 for signed maps).",
+    "Offset by a vector read from a displacement field. Wire an image and each pixel is pushed; wire a spline or points value and each anchor/point is pushed (sampled at its own UV). Channel X/Y pick the per-axis channels (RG vector field, or luminance for both); midlevel is the neutral value (0.5 for signed maps). Rotate (optional) also spins from the map's luminance — images around the frame center, points via per-point rotation, splines via each anchor's handles.",
+  facts: {
+    space: {
+      "in:image": ["raster", "canvas01"],
+      "in:displacement": "raster",
+      out: "in:image",
+      "param:amountX": "uv01",
+      "param:amountY": "uv01",
+    },
+    gotchas: [
+      "amountX/Y are per-axis UV fractions ((channel − midlevel) × amount), not aspect-corrected: 0.05 pushes 5% of width in X and 5% of height in Y.",
+      "Polymorphic on the image socket: an image is pushed per pixel; a spline or points value is pushed per anchor/point, each sampling the map at its own UV.",
+      "midlevel is the neutral map value (0.5 for signed 8-bit maps, 0 for unsigned); channelX/Y pick which map channels drive each axis.",
+      "rotate spins from the map's luminance: images about the frame center, points via per-point rotation, splines via anchor handles.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", label: "image", type: "image", required: true },
@@ -218,6 +274,25 @@ export const displaceNode: NodeDefinition = {
       default: 0.5,
     },
     {
+      name: "rotate",
+      label: "Rotate",
+      type: "boolean",
+      default: false,
+      group: "rotate",
+      groupHeader: true,
+    },
+    {
+      name: "rotateAmount",
+      label: "Amount (°)",
+      type: "scalar",
+      min: -360,
+      max: 360,
+      step: 1,
+      default: 180,
+      group: "rotate",
+      visibleIf: (p) => !!p.rotate,
+    },
+    {
       name: "wrap",
       label: "Edge",
       type: "enum",
@@ -241,6 +316,8 @@ export const displaceNode: NodeDefinition = {
     const amountX = (params.amountX as number) ?? 0;
     const amountY = (params.amountY as number) ?? 0;
     const midlevel = (params.midlevel as number) ?? 0.5;
+    const rotate = (params.rotate as boolean) ?? false;
+    const rotateAmount = (params.rotateAmount as number) ?? 180;
 
     // --- Geometry path: spline / points pushed per anchor on the CPU. ---
     if (src && (src.kind === "spline" || src.kind === "points")) {
@@ -255,31 +332,61 @@ export const displaceNode: NodeDefinition = {
         const vy = sampleChannel(buf, x, y, channelY);
         return [(vx - midlevel) * amountX, (vy - midlevel) * amountY];
       };
+      const angleAt = (x: number, y: number): number => {
+        if (!buf || !rotate) return 0;
+        return lumaToAngle(sampleChannel(buf, x, y, 4), midlevel, rotateAmount);
+      };
 
       if (src.kind === "points") {
-        // Positions-only transform in SoA — every other channel carries.
+        // Positions-only transform in SoA — every other channel carries
+        // unless Rotate is on, in which case we also write rotations.
         const n = src.count;
         const positions = new Float32Array(n * 2);
+        const inRots = src.rotations;
+        const rotations = rotate ? new Float32Array(n) : undefined;
         for (let i = 0; i < n; i++) {
           const px = src.positions[i * 2];
           const py = src.positions[i * 2 + 1];
           const [dx, dy] = offsetAt(px, py);
           positions[i * 2] = px + dx;
           positions[i * 2 + 1] = py + dy;
+          if (rotations) {
+            rotations[i] = (inRots ? inRots[i] : 0) + angleAt(px, py);
+          }
         }
-        return { primary: copyPointsWith(src, { positions }) };
+        return {
+          primary: copyPointsWith(
+            src,
+            rotations ? { positions, rotations } : { positions }
+          ),
+        };
       }
       // spline
       const out: SplineValue = {
         kind: "spline",
         subpaths: src.subpaths.map((sub) => ({
           // Handles are stored relative to their anchor, so shifting the
-          // anchor carries them along. groupIndex rides on the subpath.
+          // anchor carries them along. Rotate (when on) spins those
+          // relative handles about the displaced anchor. groupIndex
+          // rides on the subpath.
           closed: sub.closed,
           groupIndex: sub.groupIndex,
           anchors: sub.anchors.map<SplineAnchor>((a) => {
             const [dx, dy] = offsetAt(a.pos[0], a.pos[1]);
-            return { ...a, pos: [a.pos[0] + dx, a.pos[1] + dy] };
+            const pos: [number, number] = [a.pos[0] + dx, a.pos[1] + dy];
+            if (!rotate) return { ...a, pos };
+            const ang = angleAt(a.pos[0], a.pos[1]);
+            if (ang === 0) return { ...a, pos };
+            const c = Math.cos(ang);
+            const s = Math.sin(ang);
+            return {
+              ...a,
+              pos,
+              inHandle: a.inHandle ? rotateOffset(a.inHandle, c, s) : undefined,
+              outHandle: a.outHandle
+                ? rotateOffset(a.outHandle, c, s)
+                : undefined,
+            };
           }),
         })),
       };
@@ -293,13 +400,16 @@ export const displaceNode: NodeDefinition = {
       return { primary: output };
     }
 
-    const prog = ctx.getShader("displace/fs", FS);
+    const prog = ctx.getShader("displace/fs-v2", DISPLACE_FS);
     // Missing displacement: degrade to a straight pass-through so the graph
     // stays visible while the user wires things up.
-    const dispTex = disp && disp.kind === "image" ? disp.texture : src.texture;
+    const dispImg = disp && disp.kind === "image" ? disp : null;
+    const dispTex = dispImg ? dispImg.texture : src.texture;
     const wrap = wrapToInt((params.wrap as string) ?? "clamp");
-    const axEff = disp && disp.kind === "image" ? amountX : 0;
-    const ayEff = disp && disp.kind === "image" ? amountY : 0;
+    const axEff = dispImg ? amountX : 0;
+    const ayEff = dispImg ? amountY : 0;
+    const rotOn = !!dispImg && rotate;
+    const rotAmt = rotateAmount * DEG;
 
     ctx.drawFullscreen(prog, output, (gl) => {
       gl.activeTexture(gl.TEXTURE0);
@@ -314,6 +424,8 @@ export const displaceNode: NodeDefinition = {
       gl.uniform1i(gl.getUniformLocation(prog, "u_channelX"), channelX);
       gl.uniform1i(gl.getUniformLocation(prog, "u_channelY"), channelY);
       gl.uniform1i(gl.getUniformLocation(prog, "u_wrap"), wrap);
+      gl.uniform1i(gl.getUniformLocation(prog, "u_rotate"), rotOn ? 1 : 0);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_rotateAmount"), rotAmt);
     });
 
     return { primary: output };

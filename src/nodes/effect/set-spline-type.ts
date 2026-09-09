@@ -1,9 +1,10 @@
 import type {
   NodeDefinition,
+  SplineAnchor,
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
-import { autoSmoothHandles } from "@/engine/spline-math";
+import { autoSmoothHandles, copyAnchorNonGeom } from "@/engine/spline-math";
 
 // Set Spline Type — rewrite every anchor's handles, leaving positions,
 // closed flags, and groupIndex tags untouched. `linear` strips handles
@@ -23,7 +24,15 @@ export const setSplineTypeNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Convert a spline's anchors between linear (handles stripped — a polyline) and smooth (catmull-rom auto handles through every anchor, scaled by tension). Positions, closed state, and groups are unchanged.",
+    "Convert a spline's anchors between linear (handles stripped — a polyline) and smooth (catmull-rom auto handles through every anchor, scaled by tension). Positions, closed state, groups, and named attributes are unchanged.",
+  facts: {
+    gotchas: [
+      "spline_type=smooth is destructive to hand-authored handles — it replaces every anchor's in/out handles with catmull-rom auto handles regardless of what was there.",
+      "tension scales the fitted handle length: 0 collapses close to linear, 1 is the true catmull-rom fit, values above 1 overshoot past the anchors.",
+      "spline_type=linear strips handles entirely, producing a straight polyline through the existing anchor positions.",
+      "Positions, closed flags, groupIndex, and named attributes are copied through unchanged in both modes.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [
@@ -60,9 +69,14 @@ export const setSplineTypeNode: NodeDefinition = {
     const subpaths: SplineSubpath[] = src.subpaths.map((sub) => {
       const anchors = smooth
         ? autoSmoothHandles(sub.anchors, !!sub.closed, tension)
-        : sub.anchors.map((a) => ({ pos: [a.pos[0], a.pos[1]] as [number, number] }));
-      const out: SplineSubpath = { anchors, closed: sub.closed };
-      if (sub.groupIndex !== undefined) out.groupIndex = sub.groupIndex;
+        : sub.anchors.map((a) => {
+            const dst: SplineAnchor = {
+              pos: [a.pos[0], a.pos[1]] as [number, number],
+            };
+            copyAnchorNonGeom(a, dst);
+            return dst;
+          });
+      const out: SplineSubpath = { ...sub, anchors, closed: sub.closed };
       return out;
     });
 

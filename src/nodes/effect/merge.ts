@@ -365,6 +365,24 @@ export function newLayerId(): string {
   return `lyr-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// Id of the single layer `makeInstanceNode` seeds. Recipe `layers: [...]`
+// replaces this stack (fresh ids) rather than keeping it as slot 0.
+export const DEFAULT_MERGE_LAYER_ID = "lyr-initial";
+
+export function isDefaultMergeStack(
+  layers: MergeLayer[] | undefined
+): boolean {
+  return (
+    !!layers &&
+    layers.length === 1 &&
+    layers[0].id === DEFAULT_MERGE_LAYER_ID &&
+    layers[0].mode === "normal" &&
+    layers[0].opacity === 1 &&
+    layers[0].enabled !== false &&
+    !layers[0].maskInvert
+  );
+}
+
 export const mergeNode: NodeDefinition = {
   type: "merge",
   name: "Merge",
@@ -374,12 +392,20 @@ export const mergeNode: NodeDefinition = {
     "Blends a base image with one or more layer images. Every image input " +
     "carries its own mask input underneath — the matte for that layer " +
     "(multiplies its per-pixel coverage, like a track matte). In AI " +
-    "recipes/edits: size the stack by setting `layers` to " +
-    "[{mode, opacity, maskInvert?}, …] (ids are minted automatically; " +
-    "maskInvert flips a wired mask's coverage), and wire inputs " +
-    "ordinally — layer1, layer2, … (mask1, mask2, … for the mattes) — " +
-    "they resolve to the real per-layer sockets, growing the stack when " +
-    "layerN points past the end.",
+    "recipes: `layers: [{mode, opacity, maskInvert?}, …]` *replaces* the " +
+    "default stack (N entries → N layers, new ids — not appended onto " +
+    "lyr-initial). Later set_param patches keep ids by index so existing " +
+    "wires never dangle. Wire inputs ordinally — layer1, layer2, … " +
+    "(mask1, mask2, … for the mattes) — they resolve to the real " +
+    "per-layer sockets, growing the stack when layerN points past the end.",
+  facts: {
+    gotchas: [
+      "mode=mix is a legacy alias identical to normal (same blend formula); it only exists so old saves keep loading.",
+      "A layer's enabled=false skips it from compositing but keeps its socket, so the wire stays connected without contributing.",
+      "maskInvert only inverts a layer that has a mask actually wired; on an unmasked layer it is a no-op, not a full blank.",
+      "Composites in straight (non-premultiplied) alpha via source-over; every RGB blend formula (multiply, screen, etc.) operates on straight color.",
+    ],
+  },
   backend: "webgl2",
   // Masks are per-image sockets here; the evaluator's universal matte would
   // be redundant (and ambiguous) stacked on top of them.
@@ -415,7 +441,7 @@ export const mergeNode: NodeDefinition = {
       name: "layers",
       label: "Layers",
       type: "merge_layers",
-      default: [{ id: "lyr-initial", mode: "normal", opacity: 1 }],
+      default: [{ id: DEFAULT_MERGE_LAYER_ID, mode: "normal", opacity: 1 }],
     },
   ],
   primaryOutput: "image",

@@ -137,6 +137,15 @@ export const cube3DTestNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "M0 render-bridge spike: a lit, spinning cube rendered by three.js on its own WebGL context and composited into the 2D graph. Proof-of-concept for the 3D context.",
+  facts: {
+    reads: ["time"],
+    gotchas: [
+      "Renders on its own isolated three.js WebGL context (a proof-of-concept render bridge), not the engine's shared 3D scene/camera graph.",
+      "Cube size, position, and camera are fixed in code; only color, speed, metalness, and roughness are exposed as params.",
+      "Spin comes from ctx.time * speed applied to both X and Y rotation, so it is deterministic per tick and safe for offline export.",
+      "If the three.js renderer fails to construct (no WebGL2 or a lost context), the output degrades to a solid magenta debug clear instead of throwing.",
+    ],
+  },
   backend: "webgl2",
   // Spins with scene time — recompute every eval.
   stable: false,

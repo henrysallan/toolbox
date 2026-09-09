@@ -21,6 +21,13 @@ export const audioNoiseNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Seeded noise source (white / pink / brown) — the same seed produces the exact same sound live and in exports. Audible while the timeline plays and the chain reaches the Output node's audio socket, a Layer Output's audio socket, or the Active node.",
+  facts: {
+    gotchas: [
+      "Descriptor only: compute() emits a generator descriptor; the audio engine builds the actual sample buffer from a seeded PRNG once the chain reaches an audio output.",
+      "seed makes playback deterministic (same seed -> identical samples live and in exports), unlike Tone.Noise's Math.random; use different seeds to decorrelate two Noise nodes.",
+      "type is white/pink/brown noise color, not a waveform.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [],

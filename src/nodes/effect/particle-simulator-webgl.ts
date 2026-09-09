@@ -747,6 +747,18 @@ export const particleSimulatorWebGLNode: NodeDefinition = {
   category: "effect",
   description:
     "GPU particle simulator. Wire forces and emitters; output is a particles socket consumed by Particles to Image. Counts up to ~65k particles run in real-time on most GPUs.",
+  facts: {
+    space: { out: "uv01" },
+    reads: ["time"],
+    gotchas: [
+      "backend=webgpu implements only gravity/drag forces and screen bounds; point/vortex/wind/turbulence forces and every emitter/collider are stubbed to zero.",
+      "backend=webgpu never returns a points aux (no PointsValue path) even though outputPoints still adds the socket, so a wire from it gets nothing.",
+      "backend=webgpu keeps stepping every compute() call regardless of ctx.playing; backend=webgl only advances while playing or on a new offline export frame.",
+      "fixedDt is a constant step taken once per compute() call rather than derived from elapsed time, so sim speed scales with output fps, not wall-clock time.",
+      "particles (primary) is raw, non-aspect-corrected canvas UV; wired Force/Emitter/Collider descriptors are authored canvas01 (engine/aspect.ts), same seam as Matter Simulator.",
+      "outputPoints (webgl only) synchronously reads back only the first 8192 particles (POINTS_READBACK_CAP) each frame and drops dead/expired ones.",
+    ],
+  },
   backend: "webgl2",
   // Output depends on persistent state (the texture pair) — must
   // re-evaluate every frame. The fingerprint extras include ctx.time

@@ -42,6 +42,16 @@ export const imageFlowFieldNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Estimate the flow of an image: per-pixel edge orientation (smoothed structure tensor) encoded as a field image — tangent direction in RG (velocity-field convention, so Advect Image/Points and Displace consume it directly) and anisotropy/coherence in B (0 = flat region, 1 = strong directed edge). The steering input for painterly nodes (Flow Blur, and the rest of the program as it lands): compute the field once, drive many consumers. `Pre-blur` gates pixel noise out of the gradient; `Smooth` sets the tensor-blur scale — larger values give longer, more coherent stroke directions. The `coherence` aux exposes B as a mask for driving anything (scatter density, thresholds…). Visualize the field by wiring it plus a noise image into Flow Blur. Don't matte or mask a field image — matte the consumer's output.",
+  facts: {
+    space: { "param:pre_blur": "pixels", "param:smooth": "pixels" },
+    gotchas: [
+      "pre_blur and smooth are Gaussian sigma in pixels at render resolution (radius = ceil(3σ), capped at 32 taps, a no-op below σ≈0.3px).",
+      "RG encodes a π-periodic unit tangent (velocity-field convention, Y-down): t and −t are the same orientation; the producer picks the tx>0 representative.",
+      "Gradients are computed on coverage-weighted luminance (lum × alpha), so a shape on transparency encodes its silhouette's orientation, not the background's.",
+      "An unwired or non-image source returns a neutral field (zero tangent, coherence 0) rather than skipping the node.",
+      "coherence is the B channel, (λ1−λ2)/(λ1+λ2) in [0,1]; any plain velocity image fed to an orientation consumer decodes coherence as 0 (flat).",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "source", type: "image", required: true }],

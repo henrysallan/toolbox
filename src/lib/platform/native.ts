@@ -113,6 +113,28 @@ async function transcodeVideoForPlayback(
   return bridge().transcodeForPlayback({ bytes, name });
 }
 
+// Optional-chained: an older shell lacks the proxy IPC → null, and the
+// decode source simply keeps reading the original.
+async function makeScrubProxy(
+  bytes: ArrayBuffer,
+  name: string
+): Promise<{
+  size: number;
+  read(start: number, end: number): Promise<ArrayBuffer>;
+  dispose(): void;
+} | null> {
+  const b = bridge();
+  if (!b.scrubProxyBegin || !b.scrubProxyRead) return null;
+  const { token, size } = await b.scrubProxyBegin({ bytes, name });
+  return {
+    size,
+    read: (start, end) => b.scrubProxyRead!(token, start, end),
+    dispose: () => {
+      void b.scrubProxyDispose?.(token);
+    },
+  };
+}
+
 const windowControls = {
   minimize: () => bridge().window.minimize(),
   toggleMaximize: () => bridge().window.toggleMaximize(),
@@ -181,6 +203,7 @@ export const nativePlatform: Platform = {
   pickOpenFiles,
   encodeVideo,
   transcodeVideoForPlayback,
+  makeScrubProxy,
   windowControls,
   updates,
   recents,

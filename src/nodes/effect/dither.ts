@@ -82,6 +82,14 @@ export const ditherNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Quantize the input image with error-diffusion or ordered dithering.",
+  facts: {
+    gotchas: [
+      "pixel_scale downsamples to width/height divided by pixel_scale before dithering, then upscales with nearest filtering for blocky pixels, not a blur.",
+      "color_mode=false quantizes to black/white using threshold (1..255); color_mode=true quantizes each RGB channel to levels steps instead and ignores threshold.",
+      "spread only scales the diffused error in the kernel algorithms (floyd-steinberg/atkinson/stucki/burkes/sierra/jarvis); ordered and threshold ignore it.",
+      "algorithm=ordered uses an 8x8 Bayer matrix against threshold or levels; it never reads spread.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

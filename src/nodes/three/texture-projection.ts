@@ -53,6 +53,15 @@ export const textureProjection3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Generates UVs by projecting the geometry through a placeable volume — planar, box (triplanar-lite), cylindrical, or spherical. Position/rotate/scale the volume with the params (or the viewport gizmo); a Material's image maps then follow the projection.",
+  facts: {
+    space: { "param:pos_x": "world3d", "param:pos_y": "world3d", "param:pos_z": "world3d" },
+    gotchas: [
+      "Box mode silently falls back to planar when the mesh has no normal attribute.",
+      "Rebuilds and fully re-clones the geometry (position/normal/uv) on every compute call, with no signature cache like the primitive nodes — it always mints a new BufferGeometry.",
+      "scale_x/y/z resize the projection volume itself (its local span is fixed at [-0.5, 0.5]), so raising scale enlarges the projected pattern in world units rather than the mesh.",
+      "UVs are never clamped or wrapped to [0,1]; vertices outside the placed volume get UVs outside that range, relying on the downstream texture's wrap mode.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "geometry", type: "geometry", required: true }],

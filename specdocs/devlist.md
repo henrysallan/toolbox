@@ -844,3 +844,41 @@ Let me know if you understand.
     solve deferred. N tracks per node with a track list; bake rewires
     consumers onto the Point nodes. Spec: specdocs/082226_motion-tracking.md
     (designed 2026-08-22, not yet built).
+
+210. DONE Asset Library — a project-agnostic per-user library of images,
+    SVGs, videos and node presets in a new "Assets" panel kind (also the
+    File → Assets and Project-view mounts). Media enters via right-click →
+    "Add to Assets" on Image / SVG / Video Source, or the panel's Assets ▸
+    Upload Asset… / OS-file drop; presets via the existing Save as
+    Preset…, which now captures a thumbnail from the node's primary output
+    (texture readback, spline stroke, points dots). Cards drag or
+    double-click into the node editor; right-click Rename / Replace
+    Thumbnail / Delete. Images/SVGs live in a new `user-assets` Supabase
+    bucket + `user_assets` table (migration: specdocs/user-assets-
+    migration.sql); videos point at their existing R2 object (entitled
+    accounts only). Spec: specdocs/090326_asset-library.md.
+
+211. DONE Stagger node — per-point timing as a channel (Cavalry stagger /
+    AE index-offset as a first-class point op). Order (index / reverse /
+    center / edges / random / by any point column, dense-ranked so ties
+    start together), Spacing or Fit-total, Duration, Jitter, Seed, Start,
+    Loop (cycle / ping-pong), Unit (frames | seconds) shared with an
+    optional wired Clock; writes `phase` (0→1) + optional `_t0` /
+    `_active`, emits the channel name as the reference-wire aux. Pure —
+    scrub/export exact, Time Offset retimes it. Consumers shape it (Map
+    Attribute's curve = easing). Spline / 3D domains deferred until those
+    domains have attribute consumers. Spec: specdocs/090426_stagger-node.md.
+
+212. DONE Expression channel kinds — Point Expression and GLSL Expression
+    tunables beyond sliders: `toggle()` on/off pills, `pick()` as a 2–3-way
+    segmented pill (dropdown past three), `color()` swatches, `ramp()`
+    gradient editors (sampled at t; a vec4 lookup function in GLSL via a
+    256×1 LUT), `curve()` float-curve editors (sampled at x). Same Sync /
+    add-only / id-stable machinery, same one-line grammar in both nodes
+    (JS call vs `//` comment); scalar/toggle/color/ramp rows are wireable
+    sockets (scalar/scalar/vec4/color_ramp). The agent + MCP address
+    channels by name: edges, expose_param, and `set_param` with the channel
+    name as `param` to tune an existing row; `get_graph` lists `channels`;
+    the catalog descriptions, RECIPE_CONTRACT, tool descriptions and the
+    agent system prompt teach the kinds. Spec:
+    specdocs/090426_expression-channel-kinds.md.

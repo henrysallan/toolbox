@@ -25,6 +25,21 @@ export const svgSourceNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Load an SVG file and emit it as spline data. Built-in translate/scale/rotate operate on the result; stroke and fill rasterize to an image.",
+  facts: {
+    space: {
+      "param:translateX": "canvas01",
+      "param:translateY": "canvas01",
+      "param:pivotX": "canvas01",
+      "param:pivotY": "canvas01",
+      "param:stroke_thickness": "pixels",
+    },
+    gotchas: [
+      "rotate/scale apply directly in raw [0,1]² space before the y-aspect correction at raster time, so shapes skew rather than rotate/scale rigidly on non-square canvases.",
+      "stroke_thickness is always literal pixels here — unlike Spiral/Star/Spline Draw, there is no stroke_units toggle for percent-of-width.",
+      "The fill input image is only sampled when fill_enabled is on (defaults true here, unlike sibling primitives); fill_fit does nothing while fill is off.",
+      "The image aux only exists when stroke_enabled or fill_enabled is on; this node has no element aux for Auto Layout, unlike Spiral/Star.",
+    ],
+  },
   backend: "webgl2",
   supportsTransformGizmo: true,
   // Optional `fill` image input — fills the shape with that image when wired.

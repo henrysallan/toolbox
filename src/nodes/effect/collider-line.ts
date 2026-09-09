@@ -16,6 +16,13 @@ export const lineColliderNode: NodeDefinition = {
   category: "effect",
   description:
     "Half-plane collider — an infinite line. Particles bounce off the side opposite the normal. Use 'angle 0, point (0.5, 0.9)' for a ground.",
+  facts: {
+    space: { "param:point": "canvas01" },
+    gotchas: [
+      "angle 0 is a horizontal wall with its normal pointing up (blocks below); angle 90 is a vertical wall with the normal pointing right.",
+      "It's an infinite half-plane, not a segment — the whole canvas on the far side of the line is blocked regardless of where `point` sits along it.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

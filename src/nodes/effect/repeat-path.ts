@@ -23,6 +23,17 @@ export const repeatPathNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Repeat a path as parallel-offset copies — count, inner/outer/both direction, band width, and a spacing curve that places each copy within the band. Closed shapes are winding-normalized (outer always expands); for open paths inner/outer mean left/right of the travel direction. Each copy is tagged with its own group index. When sharp corners make an offset copy overlap itself, the Overlap mode cuts the crossing loop — Sharp resolves it to a single point, Smooth rounds the cut.",
+  facts: {
+    space: { "param:width": "canvas01" },
+    writes: ["attr:group"],
+    gotchas: [
+      "width is a canvas-width-relative band fraction (SDF's aspect convention); count strokes pack inside that band, not stack past it — more count doesn't grow the outer radius.",
+      "direction=both mirrors every nonzero offset to both sides; count is then per side, and a zero offset still emits once, not doubled.",
+      "Closed subpaths are winding-normalized so outer always expands and inner always contracts; open subpaths have no interior, so inner/outer become left/right of travel.",
+      "overlap=sharp/smooth resolves self-crossings per ring in pixel space; smoothing is a 0..1 fraction of that ring's own offset distance used as the fillet radius.",
+      "Each ring is stamped with its own groupIndex (0..count-1), so group-aware downstream nodes (e.g. Stroke's ramp/vary by=group) can address rings individually.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [

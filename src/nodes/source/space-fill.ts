@@ -590,6 +590,24 @@ export const spaceFillNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Fill space with packed self-avoiding walk lines — a walker steps across a pixel grid always heading as straight as it can through free cells, blocking a fat neighborhood as it goes, so lines pack tightly against each other into dense maze-like structure with long parallel runs and 45°/90° kinks. Each line is one open subpath tagged with a group id (ID Mode: per-line, seeded random, spatial cluster, draw order, or length rank) — style downstream with Rasterize Spline / Stroke ramps set to 'group', and map per-line weight with Stroke's thickness 'driver' mode. Progress reveals the drawing over time (keyframe it to watch it draw); Region and Obstacles masks confine where the walk may go. Aux `tips` emits one point per line at its current drawing tip.",
+  facts: {
+    space: {
+      out: "uv01",
+      "aux:tips": "uv01",
+      "param:step_min": "pixels",
+      "param:step_max": "pixels",
+      "param:spacing": "pixels",
+    },
+    writes: ["attr:group", "attr:driver", "attr:rotation", "attr:scale"],
+    gotchas: [
+      "Primary and tips positions are raw pixel fractions (x/width, y/height) — uv01, not aspect-corrected canvas01 — so shapes skew on non-square canvases.",
+      "Region: mask value < 0.5 is blocked (white is walkable). Obstacles: value >= 0.5 is blocked (white is blocked) — opposite polarity from Region.",
+      "The full trace is built once per (seed, region/obstacles content, resolution, walk params) and cached in ctx.state; progress only slices it, never retraces.",
+      "step_min/step_max/spacing are literal pixel-grid steps on ctx.width×ctx.height; margin (0..0.25) is a fraction of min(width,height) converted to pixels.",
+      "tips aux sets scale.x and scale.y both to the per-line weight (not a size) and rotation to the heading of the line's last drawn segment.",
+      "Trace building stops early if max_lines/coverage aren't reached within 500,000 total steps or after 8 consecutive lines fail to find a start.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [

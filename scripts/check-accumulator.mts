@@ -1,8 +1,9 @@
-// check-accumulator: guards the Accumulator node's scalar integral and
-// points-pile paths (src/nodes/effect/accumulator.ts). Points append is
-// scene-time state — paused / same-timestamp re-evals must not grow the
-// set, rewind clears, index modes stamp groupIndex differently, overflow
-// caps. Autocoerce (spline/vec2 → points) is compute-side.
+// check-accumulator: guards the Accumulator node's scalar integral,
+// points-pile, and spline-pile paths (src/nodes/effect/accumulator.ts).
+// Append is scene-time state — paused / same-timestamp re-evals must not
+// grow the set, rewind clears, index modes stamp groupIndex differently,
+// overflow caps. vec2 autocoerces to points; a spline wire is its own
+// domain (subpaths pile, output stays spline).
 //
 //   npx tsx scripts/check-accumulator.mts
 
@@ -52,6 +53,13 @@ const POINTS_DEFAULTS = {
   overflow: "stop",
 };
 
+const SPLINE_DEFAULTS = {
+  type: "spline",
+  index_mode: "append",
+  max_subpaths: 1024,
+  overflow: "stop",
+};
+
 function evalNode(
   ctx: RenderContext,
   time: number,
@@ -94,6 +102,36 @@ function asPoints(v: SocketValue | undefined): PointsValue {
     return { kind: "points", count: -1, positions: new Float32Array(0), points: [] };
   }
   return v;
+}
+
+function asSpline(v: SocketValue | undefined): SplineValue {
+  if (!v || v.kind !== "spline") {
+    return { kind: "spline", subpaths: [] };
+  }
+  return v;
+}
+
+function spl(
+  anchors: Array<[number, number]>,
+  extra?: Partial<SplineValue["subpaths"][number]>
+): SplineValue {
+  return {
+    kind: "spline",
+    subpaths: [
+      {
+        anchors: anchors.map((pos) => ({ pos })),
+        closed: false,
+        ...extra,
+      },
+    ],
+  };
+}
+
+function splineAges(s: SplineValue): number[] {
+  return s.subpaths.map((sp) => {
+    const v = sp.attrs?.age;
+    return typeof v === "number" ? v : NaN;
+  });
 }
 
 function agesOf(p: PointsValue): number[] {
@@ -276,18 +314,9 @@ function agesClose(p: PointsValue, expected: number[]): boolean {
   );
 }
 
-// ---- autocoerce spline / vec2 ----
+// ---- spline domain: sockets + pile ----
 {
   const ctx = makeCtx();
-  const spline: SplineValue = {
-    kind: "spline",
-    subpaths: [
-      {
-        anchors: [{ pos: [0.1, 0.2] }, { pos: [0.3, 0.4] }],
-        closed: false,
-      },
-    ],
-  };
   const sockets = accumulatorNode.resolveInputs!(
     { type: "scalar" },
     { connectedTypes: { input: "spline" } }
@@ -297,18 +326,180 @@ function agesClose(p: PointsValue, expected: number[]): boolean {
     sockets.find((s) => s.name === "input")?.type === "spline"
   );
   check(
-    "resolvePrimaryOutput: spline wire → points",
+    "resolvePrimaryOutput: spline wire → spline",
     accumulatorNode.resolvePrimaryOutput?.(
       { type: "scalar" },
       { connectedTypes: { input: "spline" } }
-    ) === "points"
+    ) === "spline"
   );
-  let out = asPoints(evalNode(ctx, 0, spline, { ...POINTS_DEFAULTS, type: "scalar" }));
-  check("spline coerce: first frame has 2 anchors", out.count === 2, `got ${out.count}`);
-  out = asPoints(
-    evalNode(ctx, 1 / 30, spline, { ...POINTS_DEFAULTS, type: "scalar" })
+
+  const batch = (x: number): SplineValue =>
+    spl(
+      [
+        [x, 0.1],
+        [x, 0.2],
+      ],
+      { closed: true }
+    );
+  // Preserve handles / width on a richer incoming path.
+  const rich: SplineValue = {
+    kind: "spline",
+    subpaths: [
+      {
+        closed: true,
+        driver: 0.4,
+        groupIndex: 7,
+        anchors: [
+          {
+            pos: [0.1, 0.2],
+            outHandle: [0.15, 0.2],
+            width: 1.5,
+          },
+          {
+            pos: [0.3, 0.4],
+            inHandle: [0.25, 0.4],
+            width: 0.5,
+          },
+        ],
+      },
+    ],
+  };
+
+  let out = asSpline(evalNode(ctx, 0, rich, { ...SPLINE_DEFAULTS, type: "scalar" }));
+  check(
+    "spline pile: first frame keeps 1 subpath",
+    out.kind === "spline" && out.subpaths.length === 1,
+    `got ${out.subpaths.length}`
   );
-  check("spline coerce: second frame piles to 4", out.count === 4, `got ${out.count}`);
+  check(
+    "spline pile: topology / handles / width survive",
+    out.subpaths[0].closed === true &&
+      out.subpaths[0].groupIndex === 7 &&
+      close(out.subpaths[0].driver ?? -1, 0.4) &&
+      close(out.subpaths[0].anchors[0].outHandle?.[0] ?? -1, 0.15) &&
+      close(out.subpaths[0].anchors[1].inHandle?.[0] ?? -1, 0.25) &&
+      close(out.subpaths[0].anchors[0].width ?? -1, 1.5)
+  );
+  out = asSpline(evalNode(ctx, 1 / 30, batch(0.5), SPLINE_DEFAULTS));
+  check("spline pile: second frame appends a subpath", out.subpaths.length === 2);
+  check(
+    "spline pile: first subpath stays put",
+    close(out.subpaths[0].anchors[0].pos[0], 0.1)
+  );
+  const same = asSpline(evalNode(ctx, 1 / 30, batch(0.9), SPLINE_DEFAULTS));
+  check(
+    "spline pile: same-timestamp re-eval does not double-add",
+    same.subpaths.length === 2
+  );
+  const paused = asSpline(
+    evalNode(ctx, 2 / 30, batch(0.6), SPLINE_DEFAULTS, { playing: false })
+  );
+  check("spline pile: paused does not grow", paused.subpaths.length === 2);
+}
+
+{
+  const ctx = makeCtx();
+  evalNode(ctx, 0, spl([[0.1, 0.1]]), SPLINE_DEFAULTS);
+  evalNode(ctx, 1.0, spl([[0.2, 0.2]]), SPLINE_DEFAULTS);
+  const looped = asSpline(evalNode(ctx, 0, spl([[0.5, 0.5]]), SPLINE_DEFAULTS));
+  check(
+    "spline loop: time wrapping to 0 resets then adds",
+    looped.subpaths.length === 1 && close(looped.subpaths[0].anchors[0].pos[0], 0.5),
+    `count=${looped.subpaths.length}`
+  );
+}
+
+{
+  const ctx = makeCtx();
+  const params = { ...SPLINE_DEFAULTS, index_mode: "generation" };
+  let out = asSpline(
+    evalNode(ctx, 0, { kind: "spline", subpaths: [...spl([[0.1, 0.1]]).subpaths, ...spl([[0.2, 0.2]]).subpaths] }, params)
+  );
+  out = asSpline(evalNode(ctx, 1 / 30, spl([[0.3, 0.3]]), params));
+  check(
+    "spline generation: batches tagged 0,0,1",
+    out.subpaths[0].groupIndex === 0 &&
+      out.subpaths[1].groupIndex === 0 &&
+      out.subpaths[2].groupIndex === 1,
+    `got ${out.subpaths.map((s) => s.groupIndex).join(",")}`
+  );
+}
+
+{
+  const ctx = makeCtx();
+  const params = { ...SPLINE_DEFAULTS, index_mode: "unique" };
+  let out = asSpline(
+    evalNode(ctx, 0, { kind: "spline", subpaths: [...spl([[0.1, 0.1]]).subpaths, ...spl([[0.2, 0.2]]).subpaths] }, params)
+  );
+  out = asSpline(evalNode(ctx, 1 / 30, spl([[0.3, 0.3]]), params));
+  check(
+    "spline unique: sequential ids 0,1,2",
+    out.subpaths[0].groupIndex === 0 &&
+      out.subpaths[1].groupIndex === 1 &&
+      out.subpaths[2].groupIndex === 2,
+    `got ${out.subpaths.map((s) => s.groupIndex).join(",")}`
+  );
+}
+
+{
+  const ctx = makeCtx();
+  const params = { ...SPLINE_DEFAULTS, max_subpaths: 2, overflow: "stop" };
+  evalNode(ctx, 0, spl([[0.1, 0.1]]), params);
+  const out = asSpline(
+    evalNode(ctx, 1 / 30, { kind: "spline", subpaths: [...spl([[0.2, 0.2]]).subpaths, ...spl([[0.3, 0.3]]).subpaths] }, params)
+  );
+  check("spline overflow stop: caps at max", out.subpaths.length === 2);
+  check(
+    "spline overflow stop: kept the one new subpath that fit",
+    close(out.subpaths[1].anchors[0].pos[0], 0.2)
+  );
+}
+
+{
+  const ctx = makeCtx();
+  const params = { ...SPLINE_DEFAULTS, max_subpaths: 2, overflow: "ring" };
+  evalNode(ctx, 0, spl([[0.1, 0.1]]), params);
+  const out = asSpline(
+    evalNode(ctx, 1 / 30, { kind: "spline", subpaths: [...spl([[0.2, 0.2]]).subpaths, ...spl([[0.3, 0.3]]).subpaths] }, params)
+  );
+  check("spline overflow ring: stays at max", out.subpaths.length === 2);
+  check(
+    "spline overflow ring: dropped the oldest, newest on top",
+    close(out.subpaths[0].anchors[0].pos[0], 0.2) &&
+      close(out.subpaths[1].anchors[0].pos[0], 0.3)
+  );
+}
+
+{
+  const ctx = makeCtx();
+  let out = asSpline(evalNode(ctx, 0, spl([[0.1, 0.1]]), SPLINE_DEFAULTS));
+  check("spline age: first batch born at t=0", close(splineAges(out)[0], 0));
+  out = asSpline(evalNode(ctx, 1, spl([[0.2, 0.2]]), SPLINE_DEFAULTS));
+  check(
+    "spline age: older subpath aged by dt, new is 0",
+    close(splineAges(out)[0], 1) && close(splineAges(out)[1], 0),
+    `got ${splineAges(out).join(",")}`
+  );
+  const withAge: SplineValue = {
+    kind: "spline",
+    subpaths: [
+      {
+        closed: false,
+        anchors: [{ pos: [0.3, 0.3] }],
+        attrs: { age: 99, weight: 0.4 },
+      },
+    ],
+  };
+  out = asSpline(evalNode(ctx, 2, withAge, SPLINE_DEFAULTS));
+  check(
+    "spline age: incoming age is overwritten",
+    close(splineAges(out)[2], 0),
+    `got ${splineAges(out).join(",")}`
+  );
+  check(
+    "spline age: other incoming attrs survive",
+    close((out.subpaths[2].attrs?.weight as number) ?? -1, 0.4)
+  );
 }
 
 {

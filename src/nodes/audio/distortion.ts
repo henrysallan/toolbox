@@ -14,6 +14,12 @@ export const audioDistortionNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Waveshaping distortion: drive sets the amount of grit, oversample trades CPU for less aliasing, and wet blends against the dry signal. Wire an audio chain through it — keyframed drive and wet changes ramp click-free.",
+  facts: {
+    gotchas: [
+      "Descriptor in, descriptor out: compute() does no audio work; the audio engine builds a Tone.Distortion once the chain reaches an audio output.",
+      "oversample is a string enum (\"none\"/\"2x\"/\"4x\") trading CPU for less aliasing, not a numeric multiplier param.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "audio", type: "audio", required: true, label: "Audio" }],

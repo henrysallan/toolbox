@@ -22,7 +22,11 @@ import { createPortal } from "react-dom";
 import NodeEditor, { PROJECT_CRUMB_ID, type PendingWire } from "./NodeEditor";
 import { CompositionTabBar } from "./CompositionTabBar";
 import { ProjectView } from "./ProjectView";
-import { AssetsView, type AssetItem } from "./AssetsView";
+import {
+  AssetsView,
+  type AssetDragPayload,
+  type AssetItem,
+} from "./AssetsView";
 import ParamPanel from "./ParamPanel";
 import ProjectSettingsPopover from "./ProjectSettingsPopover";
 import {
@@ -146,6 +150,7 @@ import {
   isCollectSlotHandle,
   isCollectType,
   SWITCH_TYPE,
+  walkToCamera3DNode,
 } from "@/engine/graph-helpers";
 import {
   computeFrameRects,
@@ -158,9 +163,12 @@ import {
   belongsToComposition,
   cloneCompositionNodes,
   absorbIntoIterateZone,
+  applyForeachGeometryType,
   cloneSubgraph,
   collectDescendantIds,
+  combineSelection,
   connectAcrossIterateBoundary,
+  connectGroupToEmptyScopeOutput,
   connectToVirtualSocket,
   createComposition,
   createLayer,
@@ -174,23 +182,28 @@ import {
   splitLayer,
   groupSelection,
   makeInstanceNode,
+  makeForEachNodes,
   makeIterateNodes,
+  makeRepeatNodes,
   makeSplineEditable,
   newEdgeId,
   reparentNode,
   removeGroupSocket,
   renameGroupSocket,
+  reorderGroupSockets,
   ungroupNode,
   applyIncomingWireToTarget,
   connectedTypesFromEdges,
   withUpdatedParams,
+  resolveInsertParent,
 } from "@/state/graph-ops";
 import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
   GROUP_TYPE,
-  ITERATE_TYPE,
+  FOREACH_TYPE,
   LAYER_TYPE,
+  isZoneShell,
   readGroupInterface,
 } from "@/engine/groups";
 import {
@@ -323,13 +336,35 @@ import { AuthProvider, useUser } from "@/lib/auth-context";
 import { useEntitlements } from "@/lib/entitlements";
 import {
   maybeUploadCloudMedia,
+  seedCloudMediaRef,
   setCloudMediaEnabled,
 } from "@/lib/cloud-media-upload";
+import {
+  getUserAsset,
+  loadUserAssets,
+  type AddAssetResult,
+} from "@/state/user-assets";
+import { userAssetFilename, userAssetUrl } from "@/lib/supabase/user-assets";
+import { resolvePreviewProducer } from "@/engine/flatten";
+import {
+  importImageSourceValue,
+  importSvgSourceValue,
+  importVideoSourceValue,
+} from "@/lib/asset-import";
+import {
+  encodeThumbDataUrlWithinCap,
+  THUMB_SIZE,
+  thumbFromPixels,
+  thumbFromPoints,
+  thumbFromSpline,
+} from "@/lib/asset-thumbnails";
 import SaveModal from "./SaveModal";
 import AiRecipePanel from "./AiRecipePanel";
 import McpPairingDialog from "./McpPairingDialog";
 import { useMcpBridge } from "./useMcpBridge";
 import { buildMcpHandlers } from "./mcp-handlers";
+import { tidyLayout } from "@/state/node-layout";
+import { applyPositions, toLayoutGraph } from "@/state/node-layout-graph";
 import AgentPanel from "./AgentPanel";
 import AgentOverlay from "./AgentOverlay";
 import { useAgentSession } from "./useAgentSession";
@@ -452,8 +487,8 @@ import type {
 
 registerAllNodes();
 
-// Fresh-session scaffold: Output + "Layer 1" with the starter chain
-// inside (see buildStarterGraph). The editor opens inside the layer.
+// Fresh-session scaffold: Output + "Layer 1" with only in/out inside
+// (see buildStarterGraph). The editor opens inside the layer.
 const STARTER = buildStarterGraph();
 const INITIAL_NODES: Node<NodeDataPayload>[] = STARTER.nodes;
 const INITIAL_EDGES: Edge[] = STARTER.edges;
@@ -524,6 +559,25 @@ function tagUntaggedInto(
 // for extensionless files.
 function fileLabel(name: string): string {
   return name.replace(/\.[^/.]+$/, "") || name;
+}
+
+// Top-left corner of a fragment's TOP-LEVEL nodes (those whose parent is
+// not itself in the fragment). Interior nodes of a group/iterate shell
+// carry positions in the shell's own scope space, so mixing them into the
+// min would anchor the wrong thing at the pointer.
+function fragmentTopLeft(frag: Node<NodeDataPayload>[]): {
+  x: number;
+  y: number;
+} {
+  const ids = new Set(frag.map((n) => n.id));
+  const top = frag.filter(
+    (n) => !n.data.parentId || !ids.has(n.data.parentId)
+  );
+  const pool = top.length ? top : frag;
+  return {
+    x: Math.min(...pool.map((n) => n.position.x)),
+    y: Math.min(...pool.map((n) => n.position.y)),
+  };
 }
 
 // Hex → straight-alpha RGBA floats [r,g,b,a] in 0..1 — the form the keyframe
@@ -642,12 +696,13 @@ const CONNECTED_TYPE_RETYPE_NODES = new Set([
   // the unified type of whatever is wired in — a Reroute with N inputs.
   SWITCH_TYPE,
   // 3D points polymorphism (081026 spec §2.3/§4): Filter Points' input +
-  // output follow points↔points3d; 3D Scatter's source follows
-  // geometry↔object3d; 3D Copy to Points' points socket follows
+  // output follow points↔points3d; 3D Scatter / Mesh to Points source
+  // follows geometry↔object3d; 3D Copy to Points' points socket follows
   // points3d↔points (the plane bridge); Transform 3D's source + output
   // follow geometry↔instances (spec M6).
   "filter-points",
   "scatter-points-3d",
+  "mesh-to-points-3d",
   "copy-to-points-3d",
   "transform-3d",
   // Points on Path's `path` + output follow spline↔curve3d (spec M11).
@@ -662,9 +717,9 @@ const CONNECTED_TYPE_RETYPE_NODES = new Set([
   // the resting type after a connect.
   "bounding-box",
   "time-offset",
-  // Accumulator: `input` + output follow scalar↔points from the type
-  // param and the live wire (spline/vec2 stay on the input socket and
-  // coerce to a points pile inside compute).
+  // Accumulator: `input` + output follow scalar↔points↔spline from the type
+  // param and the live wire (vec2 stays on the input socket and
+  // coerces to a points pile inside compute).
   "accumulator",
 ]);
 
@@ -1099,70 +1154,90 @@ function EffectsShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Preview render scale. Decouples the GL render resolution from
-  // both the on-screen canvas size and the project export resolution
-  // — lowering it gives the user a quick way to crank up fps during
-  // live editing without touching the project. Persisted in
-  // localStorage (not in the project file) since it's a per-machine
-  // viewing preference, not project content.
-  const [previewScale, setPreviewScale] = useState<number>(() => {
-    if (typeof window === "undefined") return 1;
-    const raw = window.localStorage.getItem("viewport.previewScale");
-    const n = raw ? Number(raw) : 1;
-    return Number.isFinite(n) && n > 0 && n <= 1 ? n : 1;
-  });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem("viewport.previewScale", String(previewScale));
-  }, [previewScale]);
+  // Viewport viewing prefs — per-machine localStorage, never the project
+  // file. SSR (and the client's first paint) use the defaults below; the
+  // effect rehydrates after mount so the markup stays deterministic.
+  // Same pattern as the dock furniture below.
+  //
+  // Preview render scale decouples GL resolution from the on-screen
+  // canvas and the project export size — lowering it cranks up fps
+  // during live editing without touching the project.
+  const [previewScale, setPreviewScale] = useState(1);
   // Transparency checker behind every viewport canvas. On by default; the
   // toggle in the primary viewport's upper-right corner swaps it for a flat
-  // plate (AE's transparency grid, Cavalry's checker). Same per-machine
-  // viewing-preference rule as previewScale above — localStorage, never the
-  // project file. One switch drives all viewports: primary, split #2, and
-  // every tiled watch window, since it's a way of LOOKING at alpha rather
-  // than a property of any one panel.
-  const [showChecker, setShowChecker] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    return window.localStorage.getItem(VIEWPORT_CHECKER_KEY) !== "0";
-  });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(VIEWPORT_CHECKER_KEY, showChecker ? "1" : "0");
-  }, [showChecker]);
-  const canvasBackdrop = showChecker ? VIEWPORT_CHECKER : VIEWPORT_FLAT;
+  // plate (AE's transparency grid, Cavalry's checker). One switch drives
+  // all viewports: primary, split #2, and every tiled watch window, since
+  // it's a way of LOOKING at alpha rather than a property of any one panel.
+  const [showChecker, setShowChecker] = useState(true);
   // On-canvas GUI for the selection — transform/primitive/gradient handles,
   // the spline pen, points/segment dots, the 3D orbit viewport's grid+axes.
   // Every one of those is selection-driven, so one global switch IS "hide
   // the selected node's GUI": with it off the canvas shows the rendered
-  // frame and nothing else. Same per-machine viewing-preference rule as the
-  // checker above — localStorage, never the project file.
+  // frame and nothing else.
   //
   // Deliberately NOT gated: the Paint brush surface and the WebGPU particle
   // overlay. The first is the paint tool itself (hiding it would silently
   // make the node unpaintable), the second draws actual output rather than
   // chrome.
-  const [showGizmos, setShowGizmos] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    return window.localStorage.getItem(VIEWPORT_GIZMOS_KEY) !== "0";
-  });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(VIEWPORT_GIZMOS_KEY, showGizmos ? "1" : "0");
-  }, [showGizmos]);
+  const [showGizmos, setShowGizmos] = useState(true);
   // Snapping for the transform gizmo (canvas edges / centre) and the
   // spline editor (anchors + canvas guides). On by default; the lock
   // chip in the viewport bar turns it off. Cmd/Ctrl still suppresses
-  // a single gesture while it's on. Same per-machine viewing-preference
-  // rule as the checker / gizmos — localStorage, never the project file.
-  const [snapEnabled, setSnapEnabled] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    return window.localStorage.getItem(VIEWPORT_SNAP_KEY) !== "0";
-  });
+  // a single gesture while it's on.
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [viewportPrefsHydrated, setViewportPrefsHydrated] = useState(false);
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(VIEWPORT_SNAP_KEY, snapEnabled ? "1" : "0");
-  }, [snapEnabled]);
+    try {
+      const rawScale = window.localStorage.getItem("viewport.previewScale");
+      const n = rawScale ? Number(rawScale) : 1;
+      if (Number.isFinite(n) && n > 0 && n <= 1) setPreviewScale(n);
+      if (window.localStorage.getItem(VIEWPORT_CHECKER_KEY) === "0") {
+        setShowChecker(false);
+      }
+      if (window.localStorage.getItem(VIEWPORT_GIZMOS_KEY) === "0") {
+        setShowGizmos(false);
+      }
+      if (window.localStorage.getItem(VIEWPORT_SNAP_KEY) === "0") {
+        setSnapEnabled(false);
+      }
+    } catch {
+      /* private mode — prefs just don't persist */
+    }
+    setViewportPrefsHydrated(true);
+  }, []);
+  useEffect(() => {
+    if (!viewportPrefsHydrated) return;
+    try {
+      window.localStorage.setItem("viewport.previewScale", String(previewScale));
+    } catch {
+      /* ignore */
+    }
+  }, [previewScale, viewportPrefsHydrated]);
+  useEffect(() => {
+    if (!viewportPrefsHydrated) return;
+    try {
+      window.localStorage.setItem(VIEWPORT_CHECKER_KEY, showChecker ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [showChecker, viewportPrefsHydrated]);
+  useEffect(() => {
+    if (!viewportPrefsHydrated) return;
+    try {
+      window.localStorage.setItem(VIEWPORT_GIZMOS_KEY, showGizmos ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [showGizmos, viewportPrefsHydrated]);
+  useEffect(() => {
+    if (!viewportPrefsHydrated) return;
+    try {
+      window.localStorage.setItem(VIEWPORT_SNAP_KEY, snapEnabled ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [snapEnabled, viewportPrefsHydrated]);
+  const canvasBackdrop = showChecker ? VIEWPORT_CHECKER : VIEWPORT_FLAT;
   // Export resolution override (073126_export-resolution-and-app-slim.md).
   // While set, the engine renders at exactly this size — previewScale is
   // deliberately not applied, so exports never inherit a lowered preview
@@ -1556,6 +1631,12 @@ function EffectsShell({
   const [saveNodePresetTarget, setSaveNodePresetTarget] = useState<
     string | null
   >(null);
+  // Mirrored for renderFrame: while the modal is open its node is forced
+  // into the eval pass (peek/spreadsheet treatment) so the thumbnail
+  // capture at save time finds a fresh primary output even for a
+  // disconnected or consumption-gated node (090326_asset-library.md §3.3).
+  const saveNodePresetTargetRef = useRef<string | null>(null);
+  saveNodePresetTargetRef.current = saveNodePresetTarget;
   const userNodePresets = useUserNodePresets();
   // Export App modal — populated with the target Output node id when the
   // user hits Export App from either the node header or ParamPanel.
@@ -1895,6 +1976,11 @@ function EffectsShell({
   useEffect(() => {
     void loadUserNodePresets();
   }, [user?.id]);
+  // The asset library too (state/user-assets.ts) — cloud-only, so a
+  // sign-out empties it and a sign-in refills it.
+  useEffect(() => {
+    void loadUserAssets();
+  }, [user?.id]);
   // Window → Layouts → + New Preset…: capture the live tree under a name.
   const saveLayoutPreset = useCallback(
     (name: string) => {
@@ -1967,28 +2053,48 @@ function EffectsShell({
   // Vertical split between the two preview viewports. Lives as a
   // fraction of the canvas-area height so the divider can be dragged.
   const [viewportSplitRatio, setViewportSplitRatio] = useState(0.5);
-  // Incremented when a source needs the pipeline to re-evaluate while
-  // nothing else has changed. High-frequency bumpers (webcam ~30Hz,
-  // MediaPipe trackers, audio meters) would otherwise trigger a React
-  // re-render of this whole shell per event — at 30+Hz that tanks
-  // interactivity regardless of what the pipeline itself is doing.
+  // A source needs the pipeline to re-evaluate while nothing else has
+  // changed (a video frame or decode landed, a font loaded, a webcam
+  // frame, a tracker result, an audio meter). Two things happen, on two
+  // clocks (specdocs/090526_video-scrub-optimizations.md M6):
   //
-  // Collapse multiple bumps within one animation frame into a single
-  // state update. React re-renders at most once per rAF tick, no
-  // matter how many events fire.
-  const [pipelineBumpKey, setPipelineBumpKey] = useState(0);
+  //  1. The EVAL runs imperatively on the next animation frame through
+  //     renderFrameRef — the same path the clock store's seeks use — so a
+  //     landed media frame costs one rAF, not a render of this 15k-line
+  //     shell. Skipped while playback is active: the playback loop renders
+  //     every frame anyway. Multiple bumps within a frame collapse.
+  //  2. The shell still re-renders, because UI that reads async results
+  //     after a bump (model-cache's peekModelObjects, panels) relies on
+  //     it — but on a 250 ms trailing timer, at most four times a second
+  //     no matter how many frames land. The eval effect below does NOT
+  //     depend on this key (that would double-evaluate).
+  const [, bumpShell] = useState(0);
   useEffect(() => {
-    let scheduled = false;
+    let raf = 0;
+    let trailing: ReturnType<typeof setTimeout> | null = null;
     const onBump = () => {
-      if (scheduled) return;
-      scheduled = true;
-      requestAnimationFrame(() => {
-        scheduled = false;
-        setPipelineBumpKey((n) => n + 1);
-      });
+      if (!raf) {
+        raf = requestAnimationFrame(() => {
+          raf = 0;
+          if (offlineRenderingRef.current) return;
+          if (playbackActiveRef.current) return;
+          const clock = playbackClock.get();
+          renderFrameRef.current(clock.time, fpsRef.current, false);
+        });
+      }
+      if (!trailing) {
+        trailing = setTimeout(() => {
+          trailing = null;
+          bumpShell((n) => n + 1);
+        }, 250);
+      }
     };
     window.addEventListener("pipeline-bump", onBump);
-    return () => window.removeEventListener("pipeline-bump", onBump);
+    return () => {
+      window.removeEventListener("pipeline-bump", onBump);
+      if (raf) cancelAnimationFrame(raf);
+      if (trailing) clearTimeout(trailing);
+    };
   }, []);
 
   // Raw screen-px cursor position, tracked on every pointermove — the
@@ -2680,9 +2786,9 @@ function EffectsShell({
       const activeNodeId2 =
         currentNodes.find((n) => n.data.active2)?.id ?? null;
       // When nothing is explicitly set Active, preview the selected node's
-      // own image (primary image, or its `image` aux) on the canvas — so a
-      // freshly-added node (e.g. a spline primitive) is viewable without
-      // wiring it to an Output.
+      // own image (primary image, or its `image` aux, or a thin stroke of
+      // a spline-only output) on the canvas — so a freshly-added node
+      // (e.g. Trim Path) is viewable without wiring it to an Output.
       // A 3D selection retargets the preview to its bound Scene Render so
       // that node evaluates and publishes its scene for the orbit viewport
       // (the 2D preview it produces sits hidden under the viewport overlay).
@@ -2731,7 +2837,21 @@ function EffectsShell({
       const sheets = offlineRenderingRef.current
         ? []
         : [...spreadsheetTargetsRef.current.values()];
-      const forced = [peek, bake, ...sheets].filter(
+      // Save as Preset… modal target — its primary output feeds the
+      // preset thumbnail capture on save. A group shell / reroute
+      // dissolves at flatten, so force the INTERIOR producer its image
+      // socket is fed from (the same remap previewNodeId gets inside
+      // evaluateGraph) — a shell id in extraTargets is silently ignored.
+      const presetTarget = offlineRenderingRef.current
+        ? null
+        : saveNodePresetTargetRef.current;
+      const presetShot = presetTarget
+        ? (resolvePreviewProducer(graphNodes, graphEdges, presetTarget) ?? {
+            nodeId: presetTarget,
+            handle: "out:primary",
+          })
+        : null;
+      const forced = [peek, bake, presetShot, ...sheets].filter(
         (f): f is { nodeId: string; handle: string } => !!f
       );
       const peekOpts = forced.length
@@ -2996,7 +3116,6 @@ function EffectsShell({
     structFp,
     backendReady,
     fps,
-    pipelineBumpKey,
     cursorTick,
     scrubbing,
     // Re-render when the selection changes so the selected-node preview
@@ -3097,14 +3216,14 @@ function EffectsShell({
   }, [errors]);
 
   // Auto-grow the input sockets of Combine, Proximity Join/Merge, Spline
-  // Interpolate, Spline Morph, and SDF Smooth Union: keep each one's
-  // `slots` param equal to (connected sockets, in stable order) + exactly
-  // one trailing empty spare. Derived purely from edges, so it's undo-safe
-  // (edges are in history; slots follow them) and needs no pushGraph
-  // snapshot. Runs whenever edges change — connect fills a spare → next
-  // spare appears; disconnect prunes the emptied middle. (The `t`/`mask`/
-  // `spine`/`smoothness`/`amount` exclusions below skip each node's fixed
-  // sockets so wiring them does not mint a slot.)
+  // Interpolate, Spline Morph, SDF Union, and SDF Smooth Union: keep each
+  // one's `slots` param equal to (connected sockets, in stable order) +
+  // exactly one trailing empty spare. Derived purely from edges, so it's
+  // undo-safe (edges are in history; slots follow them) and needs no
+  // pushGraph snapshot. Runs whenever edges change — connect fills a
+  // spare → next spare appears; disconnect prunes the emptied middle.
+  // (The `t`/`mask`/`spine`/`smoothness`/`amount` exclusions below skip
+  // each node's fixed sockets so wiring them does not mint a slot.)
   //
   // Merge grows here too, but grow-only: once every layer's image socket is
   // wired, append a fresh layer so there's always an open one. No pruning —
@@ -3139,18 +3258,20 @@ function EffectsShell({
           !isCollect &&
           n.data.defType !== "proximity-merge" &&
           n.data.defType !== "spline-interpolate" &&
+          n.data.defType !== "sdf-union" &&
           n.data.defType !== "sdf-smooth-union" &&
           n.data.defType !== "spline-morph"
         )
           return n;
         // Each auto-grow node's starting slot list. Combine honors a
         // legacy `count` (sockets a, b, c…) when `slots` is absent; SDF
-        // Smooth Union and Spline Morph seed with their original a/b
-        // names so saved two-input projects keep their wires.
+        // Union / Smooth Union and Spline Morph seed with their original
+        // a/b names so saved two-input projects keep their wires.
         const current: string[] = isCollect
           ? readCollectSlots(n.data.params)
           : (() => {
               const seed =
+                n.data.defType === "sdf-union" ||
                 n.data.defType === "sdf-smooth-union" ||
                 n.data.defType === "spline-morph"
                   ? ["a", "b"]
@@ -3202,12 +3323,14 @@ function EffectsShell({
           isCollect && kept.length >= COLLECT_MAX_SLOTS
             ? kept
             : [...kept, spare];
-        // Spline Morph and Combine keep two sockets so a fresh node
-        // (and saved two-input projects with nothing yet wired) don't
-        // collapse to a single spare the way N-ary-from-the-start nodes
-        // do.
+        // Spline Morph, SDF Union, and Combine keep two sockets so a
+        // fresh node (and saved two-input projects with nothing yet
+        // wired) don't collapse to a single spare the way
+        // N-ary-from-the-start nodes do.
         if (
-          (n.data.defType === "spline-morph" || isCollect) &&
+          (n.data.defType === "spline-morph" ||
+            n.data.defType === "sdf-union" ||
+            isCollect) &&
           desired.length < 2
         ) {
           desired = ["a", "b"];
@@ -3372,7 +3495,8 @@ function EffectsShell({
         const tgt = nodesRef.current.find((n) => n.id === connection.target);
         const src = nodesRef.current.find((n) => n.id === connection.source);
         if (
-          tgt?.data.defType === ITERATE_TYPE &&
+          tgt &&
+          isZoneShell(tgt.data.defType) &&
           src &&
           src.data.parentId === tgt.data.parentId
         ) {
@@ -3520,9 +3644,9 @@ function EffectsShell({
         );
       }
 
-      // Accumulator: flip Type to points when a points/spline/vec2 wire
+      // Accumulator: flip Type to points/spline when a matching wire
       // lands on the still-scalar input (and back to scalar if a number
-      // lands on a points accumulator). Same onConnect promotion as Combine.
+      // lands). Same onConnect promotion as Combine.
       const srcForAccum = sourceOutputType(
         sourceNode,
         connection.sourceHandle ?? null
@@ -3540,6 +3664,20 @@ function EffectsShell({
               ? withUpdatedParams(n, { ...n.data.params, type: accumDomain })
               : n
           )
+        );
+      }
+
+      const srcForForeach = sourceOutputType(
+        sourceNode,
+        connection.sourceHandle ?? null
+      );
+      if (
+        targetNode?.data.defType === FOREACH_TYPE &&
+        connection.targetHandle === "in:geometry" &&
+        (srcForForeach === "points" || srcForForeach === "spline")
+      ) {
+        setNodes((prev) =>
+          applyForeachGeometryType(prev, targetNode.id, srcForForeach)
         );
       }
 
@@ -3834,7 +3972,7 @@ function EffectsShell({
       setNodes(res.nodes);
       const shell = nodesRef.current.find((n) => n.id === newParentId);
       flashToast(
-        shell?.data.defType === ITERATE_TYPE
+        shell && isZoneShell(shell.data.defType)
           ? "moved into the zone"
           : "moved out of the zone"
       );
@@ -3866,6 +4004,69 @@ function EffectsShell({
           return { ...n, data };
         })
       );
+    },
+    [pushGraph, getGraphSnapshot, setNodes]
+  );
+
+  // Tidy from the MCP bridge (090626_tidy-layout.md). A node's layout
+  // scope is its enclosing group/layer, looking THROUGH inline zone
+  // shells. When that scope is the one on screen the NodeEditor takes the
+  // request (animated; its drag-history path makes the undo entry) —
+  // otherwise nothing is measured, so lay out immediately with estimated
+  // boxes and push the snapshot here.
+  const handleTidyNodes = useCallback(
+    (target: { ids: string[] } | { scopeId: string | undefined }): number => {
+      const all = nodesRef.current;
+      const byId = new Map(all.map((n) => [n.id, n]));
+      const scopeOf = (n: Node<NodeDataPayload>): string | undefined => {
+        let p = n.data.parentId;
+        for (let hops = 0; p && hops < all.length; hops++) {
+          const pn = byId.get(p);
+          if (!pn || !isZoneShell(pn.data.defType)) return p;
+          p = pn.data.parentId;
+        }
+        return undefined;
+      };
+      let ids: string[];
+      let scopeId: string | undefined;
+      if ("ids" in target) {
+        ids = target.ids.filter((id) => byId.has(id));
+        if (ids.length === 0) return 0;
+        scopeId = scopeOf(byId.get(ids[0])!);
+        ids = ids.filter((id) => scopeOf(byId.get(id)!) === scopeId);
+      } else {
+        scopeId = target.scopeId;
+        ids = all
+          .filter(
+            (n) =>
+              n.data.parentId === scopeId &&
+              n.data.defType !== FRAME_TYPE &&
+              (scopeId !== undefined ||
+                belongsToComposition(n, activeCompositionIdRef.current))
+          )
+          .map((n) => n.id);
+      }
+      if (ids.length === 0) return 0;
+      if (scopeId === currentGroupIdRef.current) {
+        const ev = new CustomEvent("node-editor-tidy", {
+          detail: { ids },
+          cancelable: true,
+        });
+        window.dispatchEvent(ev);
+        if (ev.defaultPrevented) return ids.length;
+      }
+      const pool = all.filter(
+        (n) =>
+          scopeOf(n) === scopeId &&
+          (scopeId !== undefined ||
+            belongsToComposition(n, activeCompositionIdRef.current))
+      );
+      const lg = toLayoutGraph(pool, edgesRef.current);
+      const moves = tidyLayout(lg.nodes, lg.edges, ids);
+      if (moves.size === 0) return 0;
+      pushGraph(getGraphSnapshot());
+      setNodes((prev) => applyPositions(prev, moves));
+      return moves.size;
     },
     [pushGraph, getGraphSnapshot, setNodes]
   );
@@ -4268,6 +4469,93 @@ function EffectsShell({
     [pushGraph, getGraphSnapshot, spawnNode, placeSourceNode, flashToast]
   );
 
+  // Insert a saved user preset (081226_user-node-presets.md) at a node-
+  // editor position. Shared by the Shift+A / Add-menu path (onAddNode)
+  // and the Assets panel's drag / double-click (090326_asset-library.md
+  // §5). Mirrors the built-in preset: branch plus the compositionId re-tag
+  // from insertClonedFragment (the fragment may have been saved in another
+  // project and carry a foreign composition tag that would filter its
+  // wrap-layer out of this project's chain). deserializeGraph is async
+  // (inlined media re-fetches), so the undo snapshot is taken at commit
+  // time — pushing it earlier would misorder against any edit landing
+  // mid-flight.
+  const insertUserPresetAt = useCallback(
+    (presetId: string, upPos: { x: number; y: number }) => {
+      const preset = getUserNodePreset(presetId);
+      if (!preset) return;
+      void (async () => {
+        let frag: { nodes: Node<NodeDataPayload>[]; edges: Edge[] };
+        try {
+          frag = await deserializeGraph(preset.fragment);
+        } catch {
+          flashToast("couldn't insert preset — its stored data is invalid");
+          return;
+        }
+        if (frag.nodes.length === 0) return;
+        pushGraph(getGraphSnapshot());
+        let targetScope = currentGroupIdRef.current;
+        let baseNodes = nodesRef.current;
+        let baseEdges = edgesRef.current;
+        let wrapped: string | null = null;
+        if (!targetScope) {
+          const res = createLayer(
+            baseNodes,
+            baseEdges,
+            undefined,
+            activeCompositionIdRef.current
+          );
+          baseNodes = res.nodes;
+          baseEdges = res.edges;
+          targetScope = res.layerId;
+          wrapped = res.layerId;
+        }
+        // Anchor the fragment's TOP-LEVEL nodes at the drop point. A group
+        // preset carries its interior, whose positions live in the group's
+        // own scope space — folding them into the min would land the shell
+        // off-cursor by (shell − interior) — see fragmentTopLeft.
+        const { x: minX, y: minY } = fragmentTopLeft(frag.nodes);
+        const offset = { x: upPos.x - minX, y: upPos.y - minY };
+        const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
+          frag.nodes,
+          frag.edges,
+          offset,
+          { parentId: targetScope }
+        );
+        const active = activeCompositionIdRef.current;
+        const tagActive = (
+          n: Node<NodeDataPayload>
+        ): Node<NodeDataPayload> =>
+          n.data.compositionId === active
+            ? n
+            : { ...n, data: { ...n.data, compositionId: active } };
+        setNodes([
+          ...baseNodes.map((n) => {
+            const t = tagActive(n);
+            return t.selected ? { ...t, selected: false } : t;
+          }),
+          ...newNodes.map(tagActive),
+        ]);
+        setEdges([...baseEdges, ...newEdges]);
+        const top = newNodes.find((n) => n.data.parentId === targetScope);
+        if (wrapped) {
+          flashToast("preset added to a new layer");
+          navigateScope(wrapped);
+          // navigateScope clears selection — keep the clones selected.
+          setNodes((prev) =>
+            prev.map((n) =>
+              newNodes.some((c) => c.id === n.id)
+                ? { ...n, selected: true }
+                : n
+            )
+          );
+        }
+        if (top) setSelectedId(top.id);
+        setParamView("node");
+      })();
+    },
+    [setNodes, setEdges, pushGraph, getGraphSnapshot, navigateScope, flashToast]
+  );
+
   // Drag an asset from the Assets panel into the node editor. Folder media
   // (image/svg/video/audio) read their bytes and route through onAddFileNode
   // (→ Source node); a font becomes a Text node preset to it. See M-A4.
@@ -4277,6 +4565,77 @@ function EffectsShell({
       flowPos: { x: number; y: number }
     ) => {
       try {
+        // Library items (090326_asset-library.md §5).
+        if (payload.source === "preset") {
+          insertUserPresetAt(payload.ref, flowPos);
+          return;
+        }
+        if (payload.source === "library") {
+          const row = getUserAsset(payload.ref);
+          if (!row)
+            return void flashToast("That asset is no longer in your library.");
+          const url = userAssetUrl(row);
+          if (!url) return void flashToast("Couldn't resolve that asset.");
+          const filename = userAssetFilename(row);
+          if (row.kind === "video") {
+            if (!row.owner)
+              return void flashToast("That video asset has no cloud reference.");
+            // Seed the registry FIRST: serializeParams looks the ref up by
+            // (filename, size), so the next save carries cloud:{…} and the
+            // project never re-uploads the clip (decision 12).
+            seedCloudMediaRef(filename, row.size, {
+              hash: row.hash,
+              ext: row.ext,
+              owner: row.owner,
+            });
+            const mod = await import("@/lib/video");
+            const value = await mod.registerVideoUrl(url, {
+              filename,
+              size: row.size,
+            });
+            pushGraph(getGraphSnapshot());
+            const node = spawnNode("video-source", flowPos);
+            node.data.params = { ...node.data.params, file: value };
+            node.data.name = row.name;
+            placeSourceNode(node, row.name);
+            return;
+          }
+          const resp = await fetch(url);
+          if (!resp.ok)
+            throw new Error(`Couldn't fetch "${row.name}" (${resp.status}).`);
+          const blob = await resp.blob();
+          if (row.kind === "image" && row.mime === "image/x-exr") {
+            // EXR stills don't decode in the browser — build the same
+            // envelope the param control's picker builds (header-parsed
+            // layers, bytes kept as the canonical source).
+            const { parseExrHeader, groupExrLayers } = await import(
+              "@/engine/exr"
+            );
+            const header = parseExrHeader(await blob.arrayBuffer());
+            const value: import("@/engine/types").ExrImageParamValue = {
+              kind: "exr",
+              blob: new File([blob], filename, { type: "image/x-exr" }),
+              filename,
+              layers: groupExrLayers(header),
+              width: header.parts[0]?.width ?? 0,
+              height: header.parts[0]?.height ?? 0,
+            };
+            pushGraph(getGraphSnapshot());
+            const node = spawnNode("image-source", flowPos);
+            node.data.params = { ...node.data.params, file: value };
+            node.data.name = row.name;
+            placeSourceNode(node, row.name);
+            return;
+          }
+          // Image / SVG: the bytes ride the file-drop path — the project
+          // copies them into its own prefix on save, exactly as a freshly
+          // dropped file would.
+          await onAddFileNode(
+            new File([blob], filename, { type: row.mime }),
+            flowPos
+          );
+          return;
+        }
         if (payload.kind === "font") {
           pushGraph(getGraphSnapshot());
           const node = spawnNode("text", flowPos);
@@ -4309,7 +4668,28 @@ function EffectsShell({
         flashToast(err instanceof Error ? err.message : "Couldn't add asset");
       }
     },
-    [pushGraph, getGraphSnapshot, spawnNode, placeSourceNode, onAddFileNode, flashToast]
+    [
+      pushGraph,
+      getGraphSnapshot,
+      spawnNode,
+      placeSourceNode,
+      onAddFileNode,
+      flashToast,
+      insertUserPresetAt,
+    ]
+  );
+
+  // Assets panel double-click → insert at the last node-editor pointer
+  // position (the add-menu convention), same jitter as onAddNode.
+  const handleInsertLibraryItem = useCallback(
+    (payload: AssetDragPayload) => {
+      const base = lastPanePointerRef.current ?? { x: 200, y: 200 };
+      void onAddAssetNode(payload, {
+        x: base.x + (Math.random() - 0.5) * 24,
+        y: base.y + (Math.random() - 0.5) * 24,
+      });
+    },
+    [onAddAssetNode]
   );
 
   // Read the upstream node's primary IMAGE output as a PNG blob.
@@ -4422,16 +4802,27 @@ function EffectsShell({
   const commitRecipeFragment = useCallback(
     (
       frag: { nodes: Node<NodeDataPayload>[]; edges: Edge[] },
-      warningCount: number
-    ): { groupId: string | null; wrapped: boolean } => {
+      warningCount: number,
+      opts?: { connect?: boolean; scope?: string; replaceOutput?: boolean }
+    ): {
+      groupId: string | null;
+      wrapped: boolean;
+      parentId: string | null;
+      wired: { from: string; to: string }[];
+      skippedOccupied: { socket: string }[];
+      idMap: Record<string, string>;
+    } => {
       pushGraph(getGraphSnapshot());
       const base = lastPanePointerRef.current ?? { x: 200, y: 200 };
-      let targetScope = currentGroupIdRef.current;
+      const resolved = resolveInsertParent(
+        opts?.scope,
+        currentGroupIdRef.current,
+        nodesRef.current
+      );
+      if (!resolved.ok) throw new Error(resolved.reason);
+      let targetScope = resolved.parentId ?? undefined;
       let baseNodes = nodesRef.current;
       let baseEdges = edgesRef.current;
-      if (targetScope && !baseNodes.some((n) => n.id === targetScope)) {
-        targetScope = undefined;
-      }
       let wrapped: string | null = null;
       if (!targetScope) {
         const res = createLayer(baseNodes, baseEdges, undefined, activeCompositionIdRef.current);
@@ -4443,18 +4834,34 @@ function EffectsShell({
       const minX = Math.min(...frag.nodes.map((n) => n.position.x));
       const minY = Math.min(...frag.nodes.map((n) => n.position.y));
       const offset = { x: base.x - minX, y: base.y - minY };
-      const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
+      const { nodes: newNodes, edges: newEdges, idMap } = cloneSubgraph(
         frag.nodes,
         frag.edges,
         offset,
         { parentId: targetScope }
       );
+      const groupClone = newNodes.find((n) => n.data.defType === GROUP_TYPE);
+      const connect = opts?.connect !== false;
+      let allEdges = [...baseEdges, ...newEdges];
+      let wired: { from: string; to: string }[] = [];
+      let skippedOccupied: { socket: string }[] = [];
+      if (connect && groupClone && targetScope) {
+        const hooked = connectGroupToEmptyScopeOutput(
+          [...baseNodes, ...newNodes],
+          allEdges,
+          groupClone.id,
+          targetScope,
+          { replaceOccupied: opts?.replaceOutput === true }
+        );
+        allEdges = hooked.edges;
+        wired = hooked.wired;
+        skippedOccupied = hooked.skippedOccupied;
+      }
       setNodes([
         ...baseNodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
         ...newNodes,
       ]);
-      setEdges([...baseEdges, ...newEdges]);
-      const groupClone = newNodes.find((n) => n.data.defType === GROUP_TYPE);
+      setEdges(allEdges);
       if (wrapped) {
         navigateScope(wrapped);
         setNodes((prev) =>
@@ -4466,10 +4873,17 @@ function EffectsShell({
       if (groupClone) setSelectedId(groupClone.id);
       setParamView("node");
       const note = warningCount
-        ? ` (${warningCount} note${warningCount > 1 ? "s" : ""})`
+        ? ` (${warningCount} note${warningCount === 1 ? "" : "s"})`
         : "";
       flashToast(`recipe added${wrapped ? " to a new layer" : ""}${note}`);
-      return { groupId: groupClone?.id ?? null, wrapped: !!wrapped };
+      return {
+        groupId: groupClone?.id ?? null,
+        wrapped: !!wrapped,
+        parentId: targetScope ?? null,
+        wired,
+        skippedOccupied,
+        idMap: Object.fromEntries(idMap),
+      };
     },
     [pushGraph, getGraphSnapshot, flashToast, navigateScope]
   );
@@ -4630,88 +5044,18 @@ function EffectsShell({
       }
       // Compound: "user-preset:<id>" inserts a saved user preset — a
       // fragment captured by Save as Preset… (081226_user-node-presets.md).
-      // Mirrors the built-in preset: branch below, plus the compositionId
-      // re-tag from insertClonedFragment (the fragment may have been saved
-      // in another project and carry a foreign composition tag that would
-      // filter its wrap-layer out of this project's chain). Sits BEFORE the
-      // shared pushGraph: deserializeGraph is async (inlined media
-      // re-fetches), so the undo snapshot is taken at commit time — pushing
-      // it now would misorder against any edit landing mid-flight.
+      // Shared with the Assets panel's drag/double-click via
+      // insertUserPresetAt; the position is the add-menu convention.
       if (type.startsWith("user-preset:")) {
-        const preset = getUserNodePreset(type.slice("user-preset:".length));
-        if (!preset) return;
         const upBase = lastPanePointerRef.current ?? { x: 200, y: 200 };
         const upJitter = {
           x: (Math.random() - 0.5) * 24,
           y: (Math.random() - 0.5) * 24,
         };
-        const upPos = { x: upBase.x + upJitter.x, y: upBase.y + upJitter.y };
-        void (async () => {
-          let frag: { nodes: Node<NodeDataPayload>[]; edges: Edge[] };
-          try {
-            frag = await deserializeGraph(preset.fragment);
-          } catch {
-            flashToast("couldn't insert preset — its stored data is invalid");
-            return;
-          }
-          if (frag.nodes.length === 0) return;
-          pushGraph(getGraphSnapshot());
-          let targetScope = currentGroupIdRef.current;
-          let baseNodes = nodesRef.current;
-          let baseEdges = edgesRef.current;
-          let wrapped: string | null = null;
-          if (!targetScope) {
-            const res = createLayer(
-              baseNodes,
-              baseEdges,
-              undefined,
-              activeCompositionIdRef.current
-            );
-            baseNodes = res.nodes;
-            baseEdges = res.edges;
-            targetScope = res.layerId;
-            wrapped = res.layerId;
-          }
-          const minX = Math.min(...frag.nodes.map((n) => n.position.x));
-          const minY = Math.min(...frag.nodes.map((n) => n.position.y));
-          const offset = { x: upPos.x - minX, y: upPos.y - minY };
-          const { nodes: newNodes, edges: newEdges } = cloneSubgraph(
-            frag.nodes,
-            frag.edges,
-            offset,
-            { parentId: targetScope }
-          );
-          const active = activeCompositionIdRef.current;
-          const tagActive = (
-            n: Node<NodeDataPayload>
-          ): Node<NodeDataPayload> =>
-            n.data.compositionId === active
-              ? n
-              : { ...n, data: { ...n.data, compositionId: active } };
-          setNodes([
-            ...baseNodes.map((n) => {
-              const t = tagActive(n);
-              return t.selected ? { ...t, selected: false } : t;
-            }),
-            ...newNodes.map(tagActive),
-          ]);
-          setEdges([...baseEdges, ...newEdges]);
-          const top = newNodes.find((n) => n.data.parentId === targetScope);
-          if (wrapped) {
-            flashToast("preset added to a new layer");
-            navigateScope(wrapped);
-            // navigateScope clears selection — keep the clones selected.
-            setNodes((prev) =>
-              prev.map((n) =>
-                newNodes.some((c) => c.id === n.id)
-                  ? { ...n, selected: true }
-                  : n
-              )
-            );
-          }
-          if (top) setSelectedId(top.id);
-          setParamView("node");
-        })();
+        insertUserPresetAt(type.slice("user-preset:".length), {
+          x: upBase.x + upJitter.x,
+          y: upBase.y + upJitter.y,
+        });
         return;
       }
       pushGraph(getGraphSnapshot());
@@ -4742,6 +5086,22 @@ function EffectsShell({
         iterate.data.parentId = currentGroupIdRef.current;
         setNodes((prev) => [...prev, iterate, iterateInput]);
         setSelectedId(iterateInput.id);
+        setParamView("node");
+        return;
+      }
+      if (type === "repeat") {
+        const { repeat, repeatInput } = makeRepeatNodes(pos);
+        repeat.data.parentId = currentGroupIdRef.current;
+        setNodes((prev) => [...prev, repeat, repeatInput]);
+        setSelectedId(repeatInput.id);
+        setParamView("node");
+        return;
+      }
+      if (type === "foreach") {
+        const { foreach, foreachInput } = makeForEachNodes(pos);
+        foreach.data.parentId = currentGroupIdRef.current;
+        setNodes((prev) => [...prev, foreach, foreachInput]);
+        setSelectedId(foreachInput.id);
         setParamView("node");
         return;
       }
@@ -5129,7 +5489,7 @@ function EffectsShell({
       // grabbing a multi-node spawn isn't meaningful.
       return newNode.id;
     },
-    [setNodes, setEdges, setSelectedId, setParamView, pushGraph, getGraphSnapshot, spawnNode, navigateScope, flashToast]
+    [setNodes, setEdges, setSelectedId, setParamView, pushGraph, getGraphSnapshot, spawnNode, navigateScope, flashToast, insertUserPresetAt]
   );
 
   // "Convert Editable" (SVG Source param panel): spawn a Spline Draw node
@@ -5237,8 +5597,8 @@ function EffectsShell({
       const pointer = lastPanePointerRef.current;
       let offset: { x: number; y: number };
       if (pointer) {
-        const minX = Math.min(...fragNodes.map((n) => n.position.x));
-        const minY = Math.min(...fragNodes.map((n) => n.position.y));
+        // Top-level nodes only — interior positions are scope-relative.
+        const { x: minX, y: minY } = fragmentTopLeft(fragNodes);
         offset = { x: pointer.x - minX, y: pointer.y - minY };
       } else {
         offset = { x: 24, y: 24 };
@@ -5457,6 +5817,33 @@ function EffectsShell({
     setSelectedId,
     setParamView,
     spawnNode,
+  ]);
+
+  // Right-click → "Combine Nodes": wrap the selected nodes' primary
+  // outputs in a Combine when they all share a Collect family. graph-ops
+  // owns eligibility, slot sizing, and the wires; we just commit undo
+  // and select the new node. NodeEditor passes the visible selected ids
+  // so hidden nodes in other scopes can't sneak in. No-ops when the
+  // selection isn't combinable (the menu is gated the same way).
+  const handleCombineSelection = useCallback((nodeIds: string[]) => {
+    const res = combineSelection(
+      nodesRef.current,
+      edgesRef.current,
+      nodeIds
+    );
+    if (!res) return;
+    pushGraph(getGraphSnapshot());
+    setNodes(res.nodes);
+    setEdges(res.edges);
+    setSelectedId(res.combineId);
+    setParamView("node");
+  }, [
+    pushGraph,
+    getGraphSnapshot,
+    setNodes,
+    setEdges,
+    setSelectedId,
+    setParamView,
   ]);
 
   // Context-menu / standalone Duplicate: clone the source node at a small
@@ -7207,6 +7594,16 @@ function EffectsShell({
       loopFrames: loopFrames != null && loopFrames > 0 ? loopFrames : fps * 5,
       selectedNodeId: selectedId,
       scope: currentGroupId ?? "root",
+      scopeType: (() => {
+        if (!currentGroupId) return "root" as const;
+        const n = nodes.find((x) => x.id === currentGroupId);
+        if (n?.data.defType === LAYER_TYPE) return "layer" as const;
+        return "group" as const;
+      })(),
+      parentScope:
+        (currentGroupId
+          ? nodes.find((x) => x.id === currentGroupId)?.data.parentId
+          : undefined) ?? "root",
     },
     nodesRef,
     edgesRef,
@@ -7226,6 +7623,10 @@ function EffectsShell({
     setEdges,
     commitRecipeFragment,
     flashToast,
+    tidyNodes: handleTidyNodes,
+    backendRef,
+    evalCacheRef,
+    lastEvalOutputsRef,
   });
 
   // The live loop/fps/resolution ARE the active composition's working scene;
@@ -7672,6 +8073,23 @@ function EffectsShell({
     [pushGraph, getGraphSnapshot, setNodes, setEdges]
   );
 
+  const handleReorderGroupSockets = useCallback(
+    (nodeId: string, fromName: string, toName: string) => {
+      const res = reorderGroupSockets(
+        nodesRef.current,
+        edgesRef.current,
+        nodeId,
+        fromName,
+        toName
+      );
+      if (!res) return;
+      pushGraph(getGraphSnapshot());
+      setNodes(res.nodes);
+      setEdges(res.edges);
+    },
+    [pushGraph, getGraphSnapshot, setNodes, setEdges]
+  );
+
   // Scope-filtered view for the node editor: nodes outside the current
   // group scope get React Flow's `hidden` flag (positions persist, and
   // edges with a hidden endpoint hide automatically). Identity is
@@ -7699,7 +8117,7 @@ function EffectsShell({
         // Zone-visible: parent is an Iterate shell that is itself
         // visible.
         const p = n.data.parentId ? byId.get(n.data.parentId) : undefined;
-        v = !!p && p.data.defType === ITERATE_TYPE && isVisible(p);
+        v = !!p && isZoneShell(p.data.defType) && isVisible(p);
       }
       visibleCache.set(n.id, v);
       return v;
@@ -11204,8 +11622,8 @@ function EffectsShell({
   const resetToFreshProject = useCallback(() => {
     // Seed a new graph from scratch — don't reuse the module-level
     // STARTER directly since its node IDs were frozen at import time;
-    // building fresh gives unique IDs. Open inside Layer 1 so a new
-    // project feels exactly like the pre-layers app.
+    // building fresh gives unique IDs. Open inside Layer 1 (blank
+    // in/out).
     const fresh = buildStarterGraph();
     // Suppress the echo-selection-change paramView flip, same rule
     // as File → Load / Project Settings.
@@ -11542,7 +11960,11 @@ function EffectsShell({
     const sel = nodes.find((n) => n.id === selectedId);
     if (!sel) return null;
     if (sel.data.defType === "scene-render") return sel.id;
-    const out = getNodeDef(sel.data.defType)?.primaryOutput;
+    const def = getNodeDef(sel.data.defType);
+    // Use the node's resolved output, not the def's resting type —
+    // Reroute/Switch rest as image/scalar but retype to camera (or
+    // object3d/geometry/instances) from whatever is wired in.
+    const out = sel.data.primaryOutput ?? def?.primaryOutput;
     // `geometry` and `instances` count: both reach the scene through
     // their object3d coercions (081026 spec §1.3 / §4.4).
     if (
@@ -11578,18 +12000,23 @@ function EffectsShell({
   }, [selectedId, nodes, edges]);
   viewport3DTargetRef.current = active3DSceneRenderId;
 
-  // The Camera node wired into the bound Scene Render's camera input (if
-  // it's a camera-3d we can drive its params from the viewport). Null when
-  // nothing/an unsupported source is wired → viewport's look-through is
-  // then view-only.
+  // The Camera node feeding the bound Scene Render (possibly through a
+  // reroute or Switch). Null when nothing/an unsupported source is wired
+  // → look-through is unavailable. Live Switch index is resolved at eval
+  // via CameraValue.nodeId; this walk uses the index param.
   const active3DCameraNodeId = useMemo<string | null>(() => {
     if (!active3DSceneRenderId) return null;
     const e = edges.find(
       (e) => e.target === active3DSceneRenderId && e.targetHandle === "in:camera"
     );
     if (!e) return null;
-    const src = nodes.find((n) => n.id === e.source);
-    return src?.data.defType === "camera-3d" ? src.id : null;
+    const nodeOf = new Map(
+      nodes.map((n) => [
+        n.id,
+        { defType: n.data.defType, params: n.data.params },
+      ])
+    );
+    return walkToCamera3DNode(e.source, nodeOf, edges);
   }, [active3DSceneRenderId, edges, nodes]);
 
   // Transform-gizmo target: the selected node, when it's a 3D object with
@@ -11650,9 +12077,10 @@ function EffectsShell({
 
   // Show the pivot gizmo for any selected node whose definition opts in via
   // `supportsTransformGizmo` and exposes the expected param names. Today
-  // that's Transform and SVG Source; Text and Auto Layout use the bounds
-  // gizmo instead (PRIMITIVE_GIZMO_ADAPTERS), which resizes against an
-  // anchored opposite edge rather than scaling around a pivot.
+  // that's Transform, SVG Source, Image Source, and Video Source; Text and
+  // Auto Layout use the bounds gizmo instead (PRIMITIVE_GIZMO_ADAPTERS),
+  // which resizes against an anchored opposite edge rather than scaling
+  // around a pivot.
   //
   // Multi-select: every selected gizmo-capable node renders its handles at
   // once (spec 070826_multiselect-gizmos.md), so these derive LISTS from
@@ -11846,6 +12274,12 @@ function EffectsShell({
       suppressNextSelectionViewFlipRef.current = false;
       return;
     }
+    // SelectionListener re-fires after every nested update; a no-op
+    // setState here is enough to hit max-update-depth.
+    if (id === selectedIdRef.current) {
+      if (id && paramViewRef.current !== "node") setParamView("node");
+      return;
+    }
     setSelectedId(id);
     if (id) setParamView("node");
   }, []);
@@ -11867,6 +12301,141 @@ function EffectsShell({
       evalCacheRef.current.get(nodeId)?.output ??
       lastEvalOutputsRef.current?.get(nodeId),
     []
+  );
+  // Thumbnail for Save as Preset… / an EXR's Add to Assets
+  // (090326_asset-library.md §3.3): the node's primary output as the eval
+  // cache last saw it. Texture-backed → GPU readback at ≤256px (the peek
+  // popover's pooled path); spline → the viewport's default stroke; 2D
+  // points → dots. Anything else (3D, values, never evaluated) → null and
+  // the preset shows a type glyph until a custom thumbnail is uploaded.
+  const captureNodeThumbnail = useCallback(
+    (
+      nodeId: string
+    ): { canvas: HTMLCanvasElement; format: "jpeg" | "png" } | null => {
+      // Group shells / reroutes have no eval-cache entry of their own —
+      // flatten dissolves them — so resolve to the interior producer (and
+      // the exact handle) the shell's image socket is fed from, exactly
+      // as the viewport preview does.
+      const engineNodes: GraphNode[] = nodesRef.current.map((n) => ({
+        id: n.id,
+        type: n.data.defType,
+        parentId: n.data.parentId,
+        params: n.data.params,
+        exposedParams: n.data.exposedParams,
+      }));
+      const engineEdges: GraphEdge[] = edgesRef.current.map((e) => ({
+        id: e.id,
+        source: e.source,
+        sourceHandle: e.sourceHandle ?? "out:primary",
+        target: e.target,
+        targetHandle: e.targetHandle ?? "in:image",
+      }));
+      const src = resolvePreviewProducer(engineNodes, engineEdges, nodeId) ?? {
+        nodeId,
+        handle: "out:primary",
+      };
+      const out = readNodeOutput(src.nodeId);
+      let v =
+        src.handle === "out:primary"
+          ? out?.primary
+          : src.handle.startsWith("out:aux:")
+            ? out?.aux?.[src.handle.slice("out:aux:".length)]
+            : undefined;
+      if (v?.kind === "image_group") v = v.items[0];
+      if (!v) {
+        console.warn(
+          `[asset-thumb] ${nodeId} → ${src.nodeId} ${src.handle}: no evaluated output (${out ? "socket empty" : "not in eval cache"})`
+        );
+        return null;
+      }
+      const aspect = canvasRes[0] / canvasRes[1];
+      try {
+        if (v.kind === "image" || v.kind === "mask" || v.kind === "uv") {
+          const scale = Math.min(
+            THUMB_SIZE / v.width,
+            THUMB_SIZE / v.height,
+            1
+          );
+          const w = Math.max(1, Math.round(v.width * scale));
+          const h = Math.max(1, Math.round(v.height * scale));
+          const data = readPeekPixels(v, w, h);
+          if (!data) {
+            console.warn(`[asset-thumb] ${nodeId}: GPU readback returned null`);
+            return null;
+          }
+          return { canvas: thumbFromPixels(data, w, h, v.kind), format: "jpeg" };
+        }
+        if (v.kind === "spline")
+          return { canvas: thumbFromSpline(v.subpaths, aspect), format: "png" };
+        if (v.kind === "points" && v.z === undefined)
+          return { canvas: thumbFromPoints(v, aspect), format: "png" };
+        console.warn(`[asset-thumb] ${nodeId}: no thumbnail for kind "${v.kind}"`);
+      } catch (err) {
+        console.warn(`[asset-thumb] ${nodeId}: capture threw`, err);
+        return null;
+      }
+      return null;
+    },
+    [readNodeOutput, readPeekPixels, canvasRes]
+  );
+  // Node context menu → Add to Assets (090326_asset-library.md §3.1).
+  // NodeEditor shows the row on Image / SVG / Video Source only; this pair
+  // decides availability (a reason renders the row disabled with it as
+  // the tooltip) and runs the import.
+  const addToAssetsDisabledReason = useCallback(
+    (nodeId: string): string | undefined => {
+      const n = nodesRef.current.find((x) => x.id === nodeId);
+      if (!n) return undefined;
+      if (!user) return "Sign in to use your asset library";
+      if (n.data.params.file == null) return "Load a file first";
+      if (n.data.defType === "video-source" && !entitlements.cloudMedia)
+        return "Video assets need cloud media, which isn't enabled for this account";
+      return undefined;
+    },
+    [user, entitlements.cloudMedia]
+  );
+  const handleAddNodeToAssets = useCallback(
+    async (nodeId: string) => {
+      const n = nodesRef.current.find((x) => x.id === nodeId);
+      if (!n) return;
+      const name = n.data.displayName ?? n.data.name;
+      const v = n.data.params.file as unknown;
+      let res: AddAssetResult;
+      try {
+        if (n.data.defType === "image-source") {
+          const isExr =
+            !!v &&
+            typeof v === "object" &&
+            (v as { kind?: string }).kind === "exr";
+          if (!(v instanceof ImageBitmap) && !isExr)
+            return void flashToast("Load an image first.");
+          res = await importImageSourceValue(
+            v as ImageBitmap | import("@/engine/types").ExrImageParamValue,
+            name,
+            () => captureNodeThumbnail(nodeId)?.canvas ?? null
+          );
+        } else if (n.data.defType === "svg-source") {
+          const sv = v as import("@/engine/types").SvgFileParamValue | null;
+          if (!sv?.subpaths) return void flashToast("Load an SVG first.");
+          res = await importSvgSourceValue(sv, name);
+        } else if (n.data.defType === "video-source") {
+          const vv = v as import("@/engine/types").VideoFileParamValue | null;
+          if (!vv?.video) return void flashToast("Load a video first.");
+          res = await importVideoSourceValue(vv, name);
+        } else return;
+      } catch (err) {
+        flashToast(err instanceof Error ? err.message : "Couldn't add to assets");
+        return;
+      }
+      if (!res.ok) flashToast(res.error);
+      else
+        flashToast(
+          res.duplicate
+            ? `"${res.row.name}" is already in your assets`
+            : `added "${res.row.name}" to your assets`
+        );
+    },
+    [flashToast, captureNodeThumbnail]
   );
   // Feed the attribute-name lookup singleton (attr-name-source.ts): the
   // panel rows and on-node fields resolve a node's wired input to its
@@ -11981,6 +12550,7 @@ function EffectsShell({
                   timeline: reason,
                   perf: reason,
                   spreadsheet: reason,
+                  assets: reason,
                 }
               : undefined
         }
@@ -12059,9 +12629,12 @@ function EffectsShell({
       onDetachNode={handleDetachNode}
       onDuplicateNode={handleDuplicateNode}
       onSaveNodeAsPreset={setSaveNodePresetTarget}
+      onAddNodeToAssets={handleAddNodeToAssets}
+      addToAssetsDisabledReason={addToAssetsDisabledReason}
       onMakeEditableNode={handleMakeEditableNode}
       onDuplicateSelection={handleDuplicateSelection}
       onMergeSelection={handleMergeSelection}
+      onCombineSelection={handleCombineSelection}
       onCopyNodes={handleCopyNodes}
       onPasteNodes={handlePasteNodes}
       onPasteFragmentText={handlePasteFragmentText}
@@ -12153,6 +12726,7 @@ function EffectsShell({
       assets={projectAssets}
       assetsFolderName={assetsFolder?.name ?? null}
       onPickAssetsFolder={handlePickAssetsFolder}
+      onAssetsToast={flashToast}
       onRenameProject={handleRenameProjectName}
       onEnter={handleEnterComposition}
       onCreate={handleCreateComposition}
@@ -12255,6 +12829,20 @@ function EffectsShell({
           canvasRes={canvasRes}
           readOutput={readNodeOutput}
           onTargetChange={handleSpreadsheetTarget}
+        />
+      );
+    }
+    if (panel === "assets") {
+      // Kind chip rides inline in its header row (090326_asset-library.md
+      // §4); the same component backs File → Assets and the Project view.
+      return (
+        <AssetsView
+          kindMenu={panelKindMenuFor(leafId, "assets", false)}
+          assets={projectAssets}
+          folderName={assetsFolder?.name ?? null}
+          onPickFolder={handlePickAssetsFolder}
+          onInsert={handleInsertLibraryItem}
+          onToast={flashToast}
         />
       );
     }
@@ -12531,6 +13119,8 @@ function EffectsShell({
       assets={projectAssets}
       folderName={assetsFolder?.name ?? null}
       onPickFolder={handlePickAssetsFolder}
+      onInsert={handleInsertLibraryItem}
+      onToast={flashToast}
     />
   ) : (
     <ParamPanel
@@ -12557,6 +13147,7 @@ function EffectsShell({
       onRenameNode={handleRenameNode}
       onRenameGroupSocket={handleRenameGroupSocket}
       onRemoveGroupSocket={handleRemoveGroupSocket}
+      onReorderGroupSockets={handleReorderGroupSockets}
       signedIn={signedIn}
       currentUserId={user?.id ?? null}
       onLoadProject={handleLoadProject}
@@ -13819,8 +14410,21 @@ function EffectsShell({
               throw new Error(
                 "Preset too large — its embedded media exceeds the 4 MB cap."
               );
-            upsertUserNodePreset(name, saved);
-            flashToast(`saved preset "${name}"`);
+            // Thumbnail from the node's evaluated primary output
+            // (090326_asset-library.md §3.3) — best-effort: the encoder
+            // steps down quality/size to stay under the inline cap;
+            // nothing to capture ⇒ no thumbnail, glyph card, and the
+            // toast says so.
+            const shot = captureNodeThumbnail(live.id);
+            const thumb = shot
+              ? encodeThumbDataUrlWithinCap(shot.canvas, shot.format)
+              : null;
+            upsertUserNodePreset(name, saved, thumb);
+            flashToast(
+              thumb
+                ? `saved preset "${name}"`
+                : `saved preset "${name}" (no thumbnail — no image/spline/points output to capture)`
+            );
           }}
         />
       )}

@@ -110,6 +110,16 @@ export default function NodeBrowserDropdown({ onAdd, onClose, atRoot }: Props) {
       name: "Iterate",
       category: "utility",
     });
+    list.push({
+      type: "repeat",
+      name: "Repeat",
+      category: "utility",
+    });
+    list.push({
+      type: "foreach",
+      name: "For Each Element",
+      category: "utility",
+    });
     return list;
   }, [atRoot]);
 

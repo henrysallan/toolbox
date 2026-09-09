@@ -50,12 +50,40 @@ that pair). Offline node tests should push each input through
   round trip + the untrusted-JSON sanitize gate.
 - `check-kernel`, `check-sim-preroll` — the vector kernel and simulation
   pre-roll predicate.
+- `check-image-trace` — Image Trace SVG→spline mapping (image-pixel Y-down
+  → canvas01 via `aspectUncorrectY`, fill color + driver) and the vendored
+  VTracer WASM glue. Potrace (`esm-potrace-wasm`) is browser-only — Node
+  ESM hits `__dirname`/`require("node:fs")` — so this gate does not
+  live-import it.
 - `check-profiler` — the perf collector: ring-buffer wrap, recompute-reason
   classification, GPU results resolving into already-committed frames.
 - `check-output-gating` — `NodeDefinition.gatesOutputs`. See §5.
 - `check-tracker` — motion-tracking kernel (ZNCC + LK + homography/ESM +
   smoothing/repair) and `track_data` identity-token fingerprinting. See
   specdocs/082226_motion-tracking.md M0.
+- `check-video-frame-cache` — Video Source scrub cache, pure half: the
+  byte-budgeted frame LRU, window planner (GOP widening, sliding-job
+  accept/slide rules), sequence decode-ahead planner, and the paused /
+  playing draw planners whose decision the fingerprint stamps. The
+  WebCodecs/GL/IPC half is browser-only — drive it live
+  (specdocs/090526_video-scrub-optimizations.md §Results describes the
+  harness); `scripts/bench-video-seek.cjs` measures raw seek/decode costs.
+- `check-node-facts` — every visible node carries a well-formed `facts`
+  block (the NodeFacts mini-schema behind `description`: per-socket space,
+  attributes read/written, gotchas) and the catalog DSL renders it. It
+  cross-checks socket refs against the def and attribute names against the
+  node's source. Author with the `node-facts` skill; apply with
+  `scripts/apply-node-facts.mts`. See specdocs/090626_node-facts.md.
+- `check-node-layout` — the pure wire-aware layout behind right-click
+  Tidy / Align / Distribute, the `tidy` MCP tool and agent insertion
+  placement (specdocs/090626_tidy-layout.md): wires run forward, a lone
+  wire comes out horizontal, fan-in keeps socket order with the consumer
+  in the middle, pillars pin first/last column, zones and frames stay
+  compound, nothing overlaps, and — what the agent loop relies on — a
+  tidy graph tidies to itself. Boxes are estimates here; the live editor
+  feeds measured sizes and real handle offsets, so a layout that looks
+  off in the app but passes the gate is an adapter (node-layout-graph.ts)
+  question, not a solver one.
 
 ---
 

@@ -23,6 +23,14 @@ export const audioPlayerNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Play an audio file through the chain — unlike Audio Source, the signal is processable, so effects, rate changes, and export mixdown all apply. Audible while the timeline plays and the chain reaches the Output node's audio socket, a Layer Output's audio socket, or the Active node.",
+  facts: {
+    gotchas: [
+      "With no file picked (including right after a project reload, since file params don't serialize) compute() returns {} — the chain carries nothing rather than a dead stage.",
+      "rate changes both speed and pitch together (tape-style), unlike Audio Transpose which shifts pitch alone; range is 0.25..4.",
+      "Playback is synced to the timeline transport — scene play/pause/seek drive it, not a wall clock — and offline export decodes the same file URL deterministically.",
+      "start_offset (seconds) is where playback begins within the file, not a delay before it starts.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

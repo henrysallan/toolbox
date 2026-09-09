@@ -120,6 +120,60 @@ export interface SampleResult {
   tangent: [number, number]; // unit vector (or [0,0] if undefined)
 }
 
+// Arc-length locate: which cubic, and the in-segment t, for a subpath
+// parameter in [0,1]. Null on empty/zero-length. Shared by position
+// sampling and named-attr interpolation so the two stay on the same
+// material point (081326 spline attrs round-trip).
+export function locateSubpathAt(
+  lengths: SubpathLengths,
+  t: number
+): { segIdx: number; localT: number } | null {
+  if (!lengths || lengths.total <= 0 || lengths.segments.length === 0) {
+    return null;
+  }
+  const clamped = Math.max(0, Math.min(1, t));
+  const lenInSub = clamped * lengths.total;
+  let segIdx = 0;
+  let prevCum = 0;
+  for (let i = 0; i < lengths.segments.length; i++) {
+    if (lenInSub <= lengths.cumulative[i] + 1e-9) {
+      segIdx = i;
+      prevCum = i === 0 ? 0 : lengths.cumulative[i - 1];
+      break;
+    }
+    segIdx = i;
+    prevCum = lengths.cumulative[i];
+  }
+  const seg = lengths.segments[segIdx];
+  if (!seg) return null;
+  const local = seg.length > 0 ? (lenInSub - prevCum) / seg.length : 0;
+  return { segIdx, localT: Math.max(0, Math.min(1, local)) };
+}
+
+// Combined-domain locate: which subpath, and that subpath's own t, for a
+// global arc-length parameter in [0,1].
+export function locateSplineAt(
+  lengths: SplineLengths,
+  t: number
+): { subIdx: number; localT: number } | null {
+  if (lengths.total <= 0 || lengths.perSubpath.length === 0) return null;
+  const clamped = Math.max(0, Math.min(1, t));
+  const targetLen = clamped * lengths.total;
+  let subIdx = 0;
+  for (let i = 0; i < lengths.perSubpath.length; i++) {
+    const endOfSub = lengths.offsets[i] + lengths.perSubpath[i].total;
+    if (targetLen <= endOfSub + 1e-9) {
+      subIdx = i;
+      break;
+    }
+    subIdx = i;
+  }
+  const sub = lengths.perSubpath[subIdx];
+  const lenInSub = targetLen - lengths.offsets[subIdx];
+  const localT = sub.total > 0 ? lenInSub / sub.total : 0;
+  return { subIdx, localT };
+}
+
 // Unit tangent of a cubic at parameter t, robust to the degenerate case where
 // bezier-js's analytic derivative vanishes. A straight, handle-less segment is
 // stored as a cubic with cp1 === p0 and cp2 === p3, whose derivative is exactly
@@ -166,22 +220,9 @@ export function sampleSplineAt(
   lengths: SplineLengths,
   t: number
 ): SampleResult {
-  if (lengths.total <= 0) return { pos: [0, 0], tangent: [0, 0] };
-  const clamped = Math.max(0, Math.min(1, t));
-  const targetLen = clamped * lengths.total;
-  // Locate subpath.
-  let subIdx = 0;
-  for (let i = 0; i < lengths.perSubpath.length; i++) {
-    const endOfSub = lengths.offsets[i] + lengths.perSubpath[i].total;
-    if (targetLen <= endOfSub + 1e-9) {
-      subIdx = i;
-      break;
-    }
-    subIdx = i;
-  }
-  const sub = lengths.perSubpath[subIdx];
-  const lenInSub = targetLen - lengths.offsets[subIdx];
-  return sampleSubpathAtLength(sub, lenInSub);
+  const loc = locateSplineAt(lengths, t);
+  if (!loc) return { pos: [0, 0], tangent: [0, 0] };
+  return sampleSubpathAt(lengths.perSubpath[loc.subIdx], loc.localT);
 }
 
 // Sample one subpath at t ∈ [0,1] of *that* subpath's own arc length
@@ -191,33 +232,132 @@ export function sampleSubpathAt(
   lengths: SubpathLengths,
   t: number
 ): SampleResult {
-  if (lengths.total <= 0) return { pos: [0, 0], tangent: [0, 0] };
-  const clamped = Math.max(0, Math.min(1, t));
-  return sampleSubpathAtLength(lengths, clamped * lengths.total);
+  const loc = locateSubpathAt(lengths, t);
+  if (!loc) return { pos: [0, 0], tangent: [0, 0] };
+  const seg = lengths.segments[loc.segIdx];
+  const p = seg.curve.get(loc.localT);
+  return { pos: [p.x, p.y], tangent: curveTangent(seg.curve, loc.localT) };
 }
 
-function sampleSubpathAtLength(
-  sub: SubpathLengths | undefined,
-  lenInSub: number
-): SampleResult {
-  if (!sub || sub.total <= 0) return { pos: [0, 0], tangent: [0, 0] };
-  let segIdx = 0;
-  let prevCum = 0;
-  for (let i = 0; i < sub.segments.length; i++) {
-    if (lenInSub <= sub.cumulative[i] + 1e-9) {
-      segIdx = i;
-      prevCum = i === 0 ? 0 : sub.cumulative[i - 1];
-      break;
-    }
-    segIdx = i;
-    prevCum = sub.cumulative[i];
+// Named-channel / width carry for rebuilds. Object-attached fields live
+// on the anchor; ops that rewrite `{ pos }` (resample, offset, type,
+// fillets) must copy or interpolate them or they vanish. 1:1 identity
+// copies (autoSmoothHandles) use copyAnchorNonGeom; count-changing
+// rebuilds use sampleAttrsOntoAnchors (arc-length lerp, same locate as
+// position sampling). Kept here — not spline-attrs.ts — to avoid a
+// spline-math ↔ spline-attrs import cycle.
+function cloneAnchorAttrs(
+  src?: Record<string, number | number[]>
+): Record<string, number | number[]> | undefined {
+  if (!src) return undefined;
+  const out: Record<string, number | number[]> = {};
+  let any = false;
+  for (const k of Object.keys(src)) {
+    const v = src[k];
+    out[k] = Array.isArray(v) ? v.slice() : v;
+    any = true;
   }
-  const seg = sub.segments[segIdx];
-  if (!seg) return { pos: [0, 0], tangent: [0, 0] };
-  const local = seg.length > 0 ? (lenInSub - prevCum) / seg.length : 0;
-  const tSeg = Math.max(0, Math.min(1, local));
-  const p = seg.curve.get(tSeg);
-  return { pos: [p.x, p.y], tangent: curveTangent(seg.curve, tSeg) };
+  return any ? out : undefined;
+}
+
+export function copyAnchorNonGeom(src: SplineAnchor, dst: SplineAnchor): void {
+  if (src.width != null) dst.width = src.width;
+  if (src.cornerRadius != null) dst.cornerRadius = src.cornerRadius;
+  if (src.cornerStyle) dst.cornerStyle = src.cornerStyle;
+  if (src.broken) dst.broken = true;
+  const attrs = cloneAnchorAttrs(src.attrs);
+  if (attrs) dst.attrs = attrs;
+}
+
+function lerpAnchorAttrs(
+  a: Record<string, number | number[]> | undefined,
+  b: Record<string, number | number[]> | undefined,
+  t: number
+): Record<string, number | number[]> | undefined {
+  if (!a && !b) return undefined;
+  const u = Math.max(0, Math.min(1, t));
+  const names = new Set<string>([
+    ...(a ? Object.keys(a) : []),
+    ...(b ? Object.keys(b) : []),
+  ]);
+  const asVec = (v: number | number[] | undefined): number[] =>
+    v === undefined ? [] : typeof v === "number" ? [v] : v;
+  const out: Record<string, number | number[]> = {};
+  for (const name of names) {
+    const va = asVec(a?.[name]);
+    const vb = asVec(b?.[name]);
+    const n = Math.max(va.length, vb.length, 1);
+    const vec = new Array<number>(n);
+    for (let c = 0; c < n; c++) {
+      const x = va[c] ?? 0;
+      const y = vb[c] ?? 0;
+      vec[c] = x + (y - x) * u;
+    }
+    out[name] = vec.length <= 1 ? (vec[0] ?? 0) : vec;
+  }
+  return out;
+}
+
+function sampleAnchorAttrsAt(
+  sub: SplineSubpath,
+  lengths: SubpathLengths,
+  t: number
+): Record<string, number | number[]> | undefined {
+  const n = sub.anchors.length;
+  const loc = locateSubpathAt(lengths, t);
+  if (loc && n >= 2) {
+    const ia = loc.segIdx;
+    const ib = ia + 1 < n ? ia + 1 : sub.closed ? 0 : n - 1;
+    return lerpAnchorAttrs(
+      sub.anchors[ia]?.attrs,
+      sub.anchors[ib]?.attrs,
+      loc.localT
+    );
+  }
+  if (n === 1) return cloneAnchorAttrs(sub.anchors[0].attrs);
+  return undefined;
+}
+
+function sampleWidthAt(
+  sub: SplineSubpath,
+  lengths: SubpathLengths,
+  t: number
+): number | undefined {
+  const n = sub.anchors.length;
+  const loc = locateSubpathAt(lengths, t);
+  if (!loc || n < 2) return n === 1 ? sub.anchors[0].width : undefined;
+  const ia = loc.segIdx;
+  const ib = ia + 1 < n ? ia + 1 : sub.closed ? 0 : n - 1;
+  const wa = sub.anchors[ia]?.width;
+  const wb = sub.anchors[ib]?.width;
+  if (wa == null && wb == null) return undefined;
+  const u = loc.localT;
+  return (wa ?? 1) + ((wb ?? 1) - (wa ?? 1)) * u;
+}
+
+// Stamp interpolated source attrs (+ width profile) onto dest anchors.
+// t0/t1 are source arc-length fractions (trim maps its window here);
+// a full rebuild uses 0..1. Closed full-rebuilds sample i/n so the
+// seam isn't duplicated.
+export function sampleAttrsOntoAnchors(
+  src: SplineSubpath,
+  dst: SplineAnchor[],
+  t0 = 0,
+  t1 = 1
+): void {
+  const n = dst.length;
+  if (n === 0) return;
+  const m = measureSubpath(src);
+  const full = Math.abs(t0) < 1e-12 && Math.abs(t1 - 1) < 1e-12;
+  const closed = !!(src.closed && full);
+  for (let i = 0; i < n; i++) {
+    const u = closed ? (n > 0 ? i / n : 0) : n > 1 ? i / (n - 1) : 0;
+    const t = t0 + (t1 - t0) * u;
+    const attrs = sampleAnchorAttrsAt(src, m, t);
+    if (attrs) dst[i].attrs = attrs;
+    const w = sampleWidthAt(src, m, t);
+    if (w != null) dst[i].width = w;
+  }
 }
 
 // Resample a subpath to `count` anchors evenly spaced along arc length.
@@ -231,7 +371,7 @@ export function resampleSubpath(
   const n = Math.max(2, Math.floor(count));
   const m = measureSubpath(sub);
   if (m.total <= 0 || m.segments.length === 0) {
-    return { anchors: [...sub.anchors], closed: sub.closed };
+    return { ...sub, anchors: [...sub.anchors], closed: sub.closed };
   }
   // When closed, the last sample meets the first — don't emit a duplicate.
   const divisor = sub.closed ? n : n - 1;
@@ -286,7 +426,8 @@ export function resampleSubpath(
     }
     return a;
   });
-  return { anchors, closed: sub.closed };
+  sampleAttrsOntoAnchors(sub, anchors);
+  return { ...sub, anchors, closed: sub.closed };
 }
 
 // bezier-js's offset() needs non-degenerate control points: a handle-less
@@ -630,7 +771,8 @@ export function offsetSubpath(
       anchors.push(startAnchor);
     }
   }
-  return { anchors, closed: sub.closed };
+  sampleAttrsOntoAnchors(sub, anchors);
+  return { ...sub, anchors, closed: sub.closed };
 }
 
 // ---------------------------------------------------------------------------
@@ -944,7 +1086,13 @@ export function autoSmoothHandles(
   tension = 1
 ): SplineAnchor[] {
   const n = anchors.length;
-  if (n < 2) return anchors.map((a) => ({ pos: [a.pos[0], a.pos[1]] as V2 }));
+  if (n < 2) {
+    return anchors.map((a) => {
+      const dst: SplineAnchor = { pos: [a.pos[0], a.pos[1]] as V2 };
+      copyAnchorNonGeom(a, dst);
+      return dst;
+    });
+  }
   const at = (i: number): V2 =>
     closed
       ? anchors[((i % n) + n) % n].pos
@@ -953,6 +1101,7 @@ export function autoSmoothHandles(
   for (let i = 0; i < n; i++) {
     const p = anchors[i].pos;
     const a: SplineAnchor = { pos: [p[0], p[1]] };
+    copyAnchorNonGeom(anchors[i], a);
     if (!closed && i === 0) {
       const next = anchors[1].pos;
       a.outHandle = [
@@ -1090,7 +1239,9 @@ function roundSubpath(
   const n = anchors.length;
   // Fewer than 3 anchors → no real corner to round (a closed 2-anchor path is
   // a degenerate back-and-forth). Return a shallow clone unchanged.
-  if (n < 3) return { anchors: anchors.map((a) => ({ ...a })), closed: sub.closed };
+  if (n < 3) {
+    return { ...sub, anchors: anchors.map((a) => ({ ...a })), closed: sub.closed };
+  }
   const out: SplineAnchor[] = [];
   for (let i = 0; i < n; i++) {
     const cur = anchors[i];
@@ -1169,8 +1320,19 @@ function roundSubpath(
       out.push({ pos: p1, outHandle: vScale(uPrev, -h) });
       out.push({ pos: p2, inHandle: vScale(uNext, -h) });
     }
+    const a1 = out[out.length - 2];
+    const a2 = out[out.length - 1];
+    if (cur.width != null) {
+      a1.width = cur.width;
+      a2.width = cur.width;
+    }
+    const filletAttrs = cloneAnchorAttrs(cur.attrs);
+    if (filletAttrs) {
+      a1.attrs = filletAttrs;
+      a2.attrs = cloneAnchorAttrs(cur.attrs);
+    }
   }
-  return { anchors: out, closed: sub.closed };
+  return { ...sub, anchors: out, closed: sub.closed };
 }
 
 export function roundCorners(

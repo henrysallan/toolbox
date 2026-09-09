@@ -1,5 +1,6 @@
 import type {
   ExprInput,
+  ImageValue,
   InputSocketDef,
   NodeDefinition,
   PointAttribute,
@@ -33,6 +34,9 @@ import {
 //   READ per point:  index, count, groupIndex, px, py, rot0, sx0, sy0
 //   WRITE per point:  x(=px) y(=py) rot(=rot0) sx(=sx0) sy(=sy0)
 //                     scale(=1, uniform mult) keep(=true, cull when falsy)
+//                     groupIndex(=incoming tag; partition via
+//                     `groupIndex = floor(index/2)` → Points to Spline chain;
+//                     or Points to Spline layout=stride, stride=2)
 //   CLOCK/MATH:       t, time, frame, fps, PI, TAU, trig, clamp, lerp,
 //                     smoothstep, fract, mod, ... (same whitelist)
 //   RANDOM:           rand(seed) — deterministic, frame-INDEPENDENT (index
@@ -40,25 +44,56 @@ import {
 //   PATH (optional `path` spline input):
 //                     pathCount(), pathLen(sub?), pathPos(factor, sub?),
 //                     pathX/pathY/pathAngle(factor, sub?)
-//   CHANNELS:         Houdini-style tunables. ch("name", default[, min, max])
-//                     returns a slider value (wireable); pick("name", "optA",
-//                     "optB", …) returns a dropdown selection string. Both
-//                     return the inline default until the control exists. The
-//                     panel "Sync" button scans the source for ch(…)/pick(…)
-//                     and mints the matching slider / dropdown (rendered via
-//                     the standard param control). Because channel names are
-//                     STRINGS (never JS identifiers in scope) they can't
-//                     collide with built-ins — ch("x") is fine.
+//   FIELD (optional `field` image input — signed-RG velocity encoding):
+//                     fieldX() / fieldY() sample at the current element
+//                     (px, py); fieldX(u, v) / fieldY(u, v) sample at UV.
+//                     fieldAt() / fieldAt(u, v) returns [vx, vy].
+//                     Unwired → 0. Same decode as Advect Points vector mode.
+//   CHANNELS:         Houdini-style tunables (engine/expr-channels.ts, spec
+//                     090426_expression-channel-kinds.md). Each returns the
+//                     control's value if the row exists (a wire wins), else
+//                     the inline seed — so code is valid before Sync:
+//                       ch("name", default[, min, max])  → number (slider)
+//                       pick("name", "a", "b", …)        → option string
+//                       toggle("name", true|false)       → boolean (pill)
+//                       color("name", "#hex")            → [r,g,b,a] 0..1
+//                       ramp("name", t[, "#hex", …])     → [r,g,b,a] at t
+//                       curve("name", x[, y0, y1, …])    → number at x
+//                     The panel "Sync" button scans the source and mints the
+//                     matching row (slider / pill / swatch / ramp / curve
+//                     editor via the standard param controls); scalar,
+//                     toggle, color and ramp rows are also input sockets.
+//                     Because channel names are STRINGS (never JS
+//                     identifiers in scope) they can't collide with
+//                     built-ins — ch("x") is fine.
 //
 // The block uses assignments (not `return`). Final scale = sx*scale, sy*scale.
 // Points with a falsy `keep` are dropped — count shrinks, matching Blender's
 // Delete Geometry (Copy to Points then instances fewer copies).
 
 // Reused from the scalar Expression node: newExprInput (panel "+") is
-// re-exported for EffectsApp; newExprInputId mints stable socket keys for
-// channels the Sync button discovers.
+// re-exported for EffectsApp. The channel scanner / Sync / value rules live
+// engine-side (expr-channels.ts) and are re-exported here for existing
+// importers.
 export { newExprInput } from "./expression";
-import { newExprInputId } from "./expression";
+export {
+  scanChannelRefs,
+  syncChannelInputs,
+  type ChannelRef,
+} from "@/engine/expr-channels";
+import {
+  channelSocketType,
+  curvePointsFromYs,
+  hexToRgba01Channel,
+  makeCurveSampler,
+  makeRampSampler,
+  rampStopsFromHexes,
+  readChannelValues,
+  type ExprChannelValue,
+  type Rgba01,
+} from "@/engine/expr-channels";
+import type { ColorRampStop } from "@/engine/color-ramp";
+import type { CurvePoint } from "@/engine/float-curve";
 import {
   copyPointsWith,
   EMPTY_POINTS,
@@ -66,6 +101,10 @@ import {
   gatherPoints,
   RESERVED_POINT_ATTR_NAMES,
 } from "@/engine/points";
+import {
+  sampleEncodedVelocity,
+  type EncodedVelocityBuf,
+} from "@/engine/velocity-field";
 
 // Recompute the cache every frame only when the source is time-dependent —
 // same predicate as expression.ts. `rand` is deliberately NOT here (it's
@@ -73,9 +112,12 @@ import {
 const TIME_RE = /\b(t|time|frame|random)\b/;
 
 const DEFAULT_EXPRESSION = `// read:  index, count, groupIndex, px, py, rot0, sx0, sy0
-// write: x, y, rot, sx, sy, scale, keep   (declare temps with let/const)
+// write: x, y, rot, sx, sy, scale, keep, groupIndex   (declare temps with let/const)
 // channels: attr("name") reads, setattr("name", v) writes — see Spreadsheet
-// tunables: ch("name", default) — then hit Sync to make sliders
+// tunables: ch("name", default) · toggle("name", true) · pick("name", "a", "b")
+//           color("name", "#hex") · ramp("name", t, "#hex", …) · curve("name", x, 1, 0)
+//           — then hit Sync to mint the controls (also wireable inputs)
+// field:    fieldX() / fieldY() / fieldAt() sample a wired velocity field
 x = px;
 y = py;`;
 
@@ -180,6 +222,80 @@ function makePathEnv(
 }
 
 // ---------------------------------------------------------------------------
+// Velocity-field sampling — bound over a CPU readback of the wired `field`
+// image (signed-RG, midlevel 0.5). Cursor tracks the current element's
+// (px, py) so fieldX() / fieldY() / fieldAt() with no args sample in place.
+// ---------------------------------------------------------------------------
+
+const FIELD_SIZE = 256;
+
+interface FieldEnv {
+  cursor: { u: number; v: number };
+  fieldX: (u?: number, v?: number) => number;
+  fieldY: (u?: number, v?: number) => number;
+  fieldAt: (u?: number, v?: number) => [number, number];
+}
+
+const NO_FIELD: FieldEnv = {
+  cursor: { u: 0.5, v: 0.5 },
+  fieldX: () => 0,
+  fieldY: () => 0,
+  fieldAt: () => [0, 0],
+};
+
+function makeFieldEnv(buf: EncodedVelocityBuf | null): FieldEnv {
+  if (!buf) return NO_FIELD;
+  const cursor = { u: 0.5, v: 0.5 };
+  const tmp: [number, number] = [0, 0];
+  const sample = (u: number, v: number): [number, number] => {
+    sampleEncodedVelocity(buf, u, v, tmp);
+    return tmp;
+  };
+  const uv = (u?: number, v?: number): [number, number] =>
+    u === undefined || v === undefined ? [cursor.u, cursor.v] : [+u, +v];
+  return {
+    cursor,
+    fieldX: (u, v) => {
+      const p = uv(u, v);
+      return sample(p[0], p[1])[0];
+    },
+    fieldY: (u, v) => {
+      const p = uv(u, v);
+      return sample(p[0], p[1])[1];
+    },
+    fieldAt: (u, v) => {
+      const p = uv(u, v);
+      const s = sample(p[0], p[1]);
+      return [s[0], s[1]];
+    },
+  };
+}
+
+function readFieldBuf(
+  ctx: RenderContext,
+  state: ExprState,
+  img: ImageValue | undefined
+): EncodedVelocityBuf | null {
+  if (!img || img.kind !== "image" || img.width <= 0 || img.height <= 0) {
+    state.fieldSource = undefined;
+    state.fieldBuf = undefined;
+    return null;
+  }
+  if (state.fieldSource === img && state.fieldBuf) return state.fieldBuf;
+  const w = Math.min(FIELD_SIZE, img.width);
+  const h = Math.min(FIELD_SIZE, img.height);
+  const data = ctx.readImagePixels(img, w, h);
+  if (!data) {
+    state.fieldSource = undefined;
+    state.fieldBuf = undefined;
+    return null;
+  }
+  state.fieldSource = img;
+  state.fieldBuf = { data, w, h };
+  return state.fieldBuf;
+}
+
+// ---------------------------------------------------------------------------
 // Env (built once per frame; constant across points).
 // ---------------------------------------------------------------------------
 
@@ -199,11 +315,15 @@ function makeEnv(
   ctx: RenderContext,
   nodeId: string,
   path: PathEnv,
-  channels: Record<string, number | string>,
-  attrs: AttrEnv
+  channels: Record<string, ExprChannelValue>,
+  attrs: AttrEnv,
+  field: FieldEnv = NO_FIELD
 ): Record<string, unknown> {
   const M = Math;
   const rng = mulberry32(hashString(nodeId) ^ ((ctx.frame >>> 0) + 0x9e3779b9));
+  // Lazily built per eval (the env is rebuilt every compute) — see ramp/curve.
+  const rampSamplers: Record<string, (t: number) => Rgba01> = {};
+  const curveSamplers: Record<string, (x: number) => number> = {};
   return {
     // Houdini-style channels: the named control's value if it exists (wired or
     // its slider/dropdown value), else the inline fallback — so the expression
@@ -217,6 +337,49 @@ function makeEnv(
     pick: (name: string, def = "") => {
       const v = channels[name];
       return typeof v === "string" ? v : def;
+    },
+    // Boolean channel (a pill; wired scalar ≠ 0 reads true).
+    toggle: (name: string, def: unknown = false) => {
+      const v = channels[name];
+      if (typeof v === "boolean") return v;
+      return def === true || (typeof def === "number" && def !== 0);
+    },
+    // Color channel → [r, g, b, a] in 0..1 (straight alpha).
+    color: (name: string, def: unknown = "#ffffff") => {
+      const v = channels[name];
+      if (Array.isArray(v) && v.length === 4 && typeof v[0] === "number")
+        return [v[0], v[1], v[2], v[3]] as Rgba01;
+      return hexToRgba01Channel(typeof def === "string" ? def : "#ffffff");
+    },
+    // Ramp channel sampled at t → [r, g, b, a]. Trailing "#hex" literals are
+    // the seed (evenly spaced stops) the Sync scanner reads; at eval they
+    // only matter while the row doesn't exist yet. Samplers are built once
+    // per eval per name (sorted stops), then it's a bracket + mix per point.
+    ramp: (name: string, t: number, ...seeds: unknown[]) => {
+      let s = rampSamplers[name];
+      if (!s) {
+        const v = channels[name];
+        const stops =
+          Array.isArray(v) && (v.length === 0 || (typeof v[0] === "object" && v[0] !== null && "position" in v[0]))
+            ? (v as ColorRampStop[])
+            : rampStopsFromHexes(seeds.filter((x): x is string => typeof x === "string"));
+        s = rampSamplers[name] = makeRampSampler(stops);
+      }
+      return s(t);
+    },
+    // Float-curve channel sampled at x → number (monotone cubic through the
+    // editor's points). Trailing numeric literals seed evenly spaced y's.
+    curve: (name: string, x: number, ...seeds: unknown[]) => {
+      let s = curveSamplers[name];
+      if (!s) {
+        const v = channels[name];
+        const pts =
+          Array.isArray(v) && v.length > 0 && typeof v[0] === "object" && v[0] !== null && "x" in v[0]
+            ? (v as CurvePoint[])
+            : curvePointsFromYs(seeds.filter((n): n is number => typeof n === "number"));
+        s = curveSamplers[name] = makeCurveSampler(pts);
+      }
+      return s(x);
     },
     t: ctx.time,
     time: ctx.time,
@@ -268,6 +431,9 @@ function makeEnv(
     pathX: path.pathX,
     pathY: path.pathY,
     pathAngle: path.pathAngle,
+    fieldX: field.fieldX,
+    fieldY: field.fieldY,
+    fieldAt: field.fieldAt,
     attr: attrs.attr,
     setattr: attrs.setattr,
   };
@@ -301,18 +467,43 @@ interface PointCtx {
 // 0/1). The block runs against writable locals initialised from the element;
 // we read them back after. Channel inputs are read via ch() from __env, never
 // injected as parameters — so nothing user-named lands in the kernel's scope.
+//
+// Two scopes: the source compiles to a FACTORY that destructures the env
+// once and returns the per-element kernel. The user's block therefore sits
+// one function level below the env names, so `let color = …` / `let step =
+// …` SHADOW the built-in instead of throwing a redeclaration SyntaxError
+// (which, before the channel kinds added `color`/`ramp`/`curve`/`toggle`
+// to the env, silently broke any expression reusing a built-in's name as a
+// temp). bindKernel keeps the (__env, __pt) call shape: the env is built
+// once per eval, so the factory runs once per eval and per-point calls are
+// an identity check + the kernel — still zero per-point allocation.
 type CompiledFn = (env: unknown, pt: unknown) => unknown;
+type KernelFactory = (env: unknown) => (pt: unknown) => unknown;
+
+function bindKernel(factory: KernelFactory): CompiledFn {
+  let lastEnv: unknown = null;
+  let kernel: ((pt: unknown) => unknown) | null = null;
+  return (env, pt) => {
+    if (env !== lastEnv || !kernel) {
+      kernel = factory(env);
+      lastEnv = env;
+    }
+    return kernel(pt);
+  };
+}
 
 // The kernel's element domain (the Houdini wrangle-context idea): same
 // language + env, different per-element contract. Points read/write
-// position+scale+rotation; spline anchors read/write position, handle
+// position+scale+rotation+groupIndex; spline anchors read/write position, handle
 // offsets, and the width profile.
 type ExprTarget = "points" | "spline anchors";
 
 // Packed-tuple length per domain — the call sites check it so a stray user
 // `return` keeps the element unchanged instead of smuggling a wrong shape.
-function tupleLenFor(target: ExprTarget): number {
-  return target === "spline anchors" ? 8 : 7;
+function tupleLenFor(_target: ExprTarget): number {
+  // points: [x,y,sx,sy,scale,rot,keep,groupIndex]
+  // spline anchors: [x,y,inx,iny,outx,outy,width,keep]
+  return 8;
 }
 
 interface Compiled {
@@ -326,6 +517,8 @@ interface ExprState {
   compiled?: Compiled;
   error: string | null;
   lastWarned?: string | null;
+  fieldSource?: ImageValue;
+  fieldBuf?: EncodedVelocityBuf;
 }
 
 function getState(ctx: RenderContext, nodeId: string): ExprState {
@@ -380,24 +573,25 @@ function compile(source: string, target: ExprTarget): Compiled {
     target === "spline anchors"
       ? `let index=__pt.index,count=__pt.count,subpath=__pt.subpath,groupIndex=__pt.groupIndex,px=__pt.px,py=__pt.py,inx0=__pt.inx0,iny0=__pt.iny0,outx0=__pt.outx0,outy0=__pt.outy0,width0=__pt.width0;
 let x=px,y=py,inx=inx0,iny=iny0,outx=outx0,outy=outy0,width=width0,keep=true;`
-      : `let index=__pt.index,count=__pt.count,groupIndex=__pt.groupIndex,px=__pt.px,py=__pt.py,rot0=__pt.rot0,sx0=__pt.sx0,sy0=__pt.sy0;
-let x=px,y=py,rot=rot0,sx=sx0,sy=sy0,scale=1,keep=true;`;
+      : `let index=__pt.index,count=__pt.count,px=__pt.px,py=__pt.py,rot0=__pt.rot0,sx0=__pt.sx0,sy0=__pt.sy0;
+let x=px,y=py,rot=rot0,sx=sx0,sy=sy0,scale=1,keep=true,groupIndex=__pt.groupIndex;`;
   const epilogue =
     target === "spline anchors"
       ? `return [x,y,inx,iny,outx,outy,width,keep?1:0];`
-      : `return [x,y,sx,sy,scale,rot,keep?1:0];`;
+      : `return [x,y,sx,sy,scale,rot,keep?1:0,groupIndex];`;
   try {
-    const fn = new Function(
+    const factory = new Function(
       "__env",
-      "__pt",
       `"use strict";
 ${GLOBAL_SHADOW_PRELUDE}
 const{${ENV_KEYS}}=__env;
+return function(__pt){
 ${prologue}
 ${body}
-${epilogue}`
-    ) as CompiledFn;
-    return { source, target, fn, error: null };
+${epilogue}
+};`
+    ) as KernelFactory;
+    return { source, target, fn: bindKernel(factory), error: null };
   } catch (e) {
     return {
       source,
@@ -408,103 +602,9 @@ ${epilogue}`
   }
 }
 
-// Scan an expression for channel references so the Sync button can mint the
-// matching controls (string-literal names → zero false positives):
-//   ch("name", default, min, max)   → scalar slider  (min/max optional)
-//   pick("name", "optA", "optB", …) → dropdown (first option is the default)
-export interface ChannelRef {
-  name: string;
-  kind: "scalar" | "enum";
-  default?: number | string;
-  min?: number;
-  max?: number;
-  options?: string[];
-}
-
-const CH_RE =
-  /\bch\s*\(\s*(['"])([A-Za-z_$][\w$]*)\1\s*(?:,\s*(-?\d*\.?\d+(?:[eE][-+]?\d+)?))?\s*(?:,\s*(-?\d*\.?\d+(?:[eE][-+]?\d+)?))?\s*(?:,\s*(-?\d*\.?\d+(?:[eE][-+]?\d+)?))?/g;
-const PICK_RE =
-  /\bpick\s*\(\s*(['"])([A-Za-z_$][\w$]*)\1\s*((?:,\s*(['"])[^'"]*\4)+)/g;
-const STR_LIT_RE = /(['"])([^'"]*)\1/g;
-
-function numOrUndef(s: string | undefined): number | undefined {
-  if (s === undefined) return undefined;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-export function scanChannelRefs(source: string): ChannelRef[] {
-  const out: ChannelRef[] = [];
-  const seen = new Set<string>();
-  let m: RegExpExecArray | null;
-
-  CH_RE.lastIndex = 0;
-  while ((m = CH_RE.exec(source)) !== null) {
-    const name = m[2];
-    if (seen.has(name)) continue;
-    seen.add(name);
-    out.push({
-      name,
-      kind: "scalar",
-      default: numOrUndef(m[3]),
-      min: numOrUndef(m[4]),
-      max: numOrUndef(m[5]),
-    });
-  }
-
-  PICK_RE.lastIndex = 0;
-  while ((m = PICK_RE.exec(source)) !== null) {
-    const name = m[2];
-    if (seen.has(name)) continue;
-    seen.add(name);
-    const options: string[] = [];
-    let s: RegExpExecArray | null;
-    STR_LIT_RE.lastIndex = 0;
-    while ((s = STR_LIT_RE.exec(m[3])) !== null) options.push(s[2]);
-    out.push({
-      name,
-      kind: "enum",
-      options,
-      default: options[0] ?? "",
-    });
-  }
-
-  return out;
-}
-
-// Merge channel references from `source` into an existing input list. Add-only
-// (Houdini's "create from channel references"): new channels are appended with
-// their inline default + control metadata; existing ones keep their id, wires,
-// and user-tuned value. Callers prune with the row × button. Returns the SAME
-// array (referentially) when nothing changed, so the panel skips a no-op write.
-export function syncChannelInputs(
-  existing: ExprInput[],
-  source: string
-): ExprInput[] {
-  const have = new Set(existing.map((e) => e.name));
-  const additions: ExprInput[] = [];
-  for (const ref of scanChannelRefs(source)) {
-    if (have.has(ref.name)) continue;
-    have.add(ref.name);
-    if (ref.kind === "enum") {
-      additions.push({
-        id: newExprInputId(),
-        name: ref.name,
-        default: (ref.default as string) ?? "",
-        options: ref.options ?? [],
-      });
-    } else {
-      additions.push({
-        id: newExprInputId(),
-        name: ref.name,
-        default: (ref.default as number) ?? 1,
-        ...(ref.min !== undefined ? { min: ref.min } : {}),
-        ...(ref.max !== undefined ? { max: ref.max } : {}),
-      });
-    }
-  }
-  return additions.length === 0 ? existing : [...existing, ...additions];
-}
+// The channel scanner (scanChannelRefs) and Sync merge (syncChannelInputs)
+// moved to engine/expr-channels.ts with the channel kinds — re-exported at
+// the top of this file.
 
 function toNum(v: unknown, fallback = 0): number {
   const n = typeof v === "number" ? v : Number(v);
@@ -541,9 +641,10 @@ function runAnchorExpression(
   ctx: RenderContext,
   nodeId: string,
   pathEnv: PathEnv,
-  channels: Record<string, number | string>,
+  channels: Record<string, ExprChannelValue>,
   onErrorZero: boolean,
-  state: ExprState
+  state: ExprState,
+  fieldEnv: FieldEnv
 ): { primary: SplineValue } {
   let total = 0;
   for (const sub of spline.subpaths) total += sub.anchors.length;
@@ -582,7 +683,7 @@ function runAnchorExpression(
       const v = +value;
       arr[row] = Number.isFinite(v) ? v : 0;
     },
-  });
+  }, fieldEnv);
 
   const pt: AnchorCtx = {
     index: 0,
@@ -624,6 +725,8 @@ function runAnchorExpression(
       pt.width0 = a.width ?? 1;
       cursor.a = a;
       cursor.sub = sub;
+      fieldEnv.cursor.u = pt.px;
+      fieldEnv.cursor.v = pt.py;
 
       let x = pt.px;
       let y = pt.py;
@@ -711,10 +814,17 @@ export const pointExpressionNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Run a JavaScript expression once per point to compute its new position, " +
-    "scale, and rotation from its own `index` (and `count`, `groupIndex`, " +
-    "current px/py/rot0/sx0/sy0, the `frame`/`t` clock, and wired uniforms). " +
+    "scale, rotation, and groupIndex from its own `index` (and `count`, " +
+    "incoming `groupIndex`, current px/py/rot0/sx0/sy0 (px/py are authored " +
+    "[0,1]² Y-down; the rasterizer scales y about 0.5 by W/H so distances " +
+    "are width-relative), the `frame`/`t` clock, " +
+    "and wired uniforms). Assign `groupIndex = floor(index/2)` (or any rule) " +
+    "to partition points into subpaths — Points to Spline splits on the tag. " +
     "Set `keep=false` to cull a point. Wire a spline into `path` to sample " +
     "guide curves with pathPos(factor, sub) / pathLen(sub) / pathAngle(...). " +
+    "Wire a velocity field (Perlin curl, Spline Flow Field, Vector Field) " +
+    "into `field` and sample it with fieldX() / fieldY() / fieldAt() at the " +
+    "current point, or fieldX(u, v) at any UV. " +
     "Deterministic rand(seed) hashes on index for stable per-point randomness; " +
     "random() varies per frame. attr(\"name\") reads a named point channel " +
     "(attr(\"name\", c) for a component) and setattr(\"name\", v) writes a " +
@@ -723,14 +833,37 @@ export const pointExpressionNode: NodeDefinition = {
     "once per anchor instead (read px/py, handle offsets inx0/iny0/" +
     "outx0/outy0, width0, subpath; write x, y, inx, iny, outx, outy, " +
     "width, keep). " +
-    "Mark tunables with ch(\"name\", default) " +
-    "(sliders) or pick(\"name\", \"optA\", \"optB\") (dropdowns) and hit Sync to " +
-    "turn them into standard controls you can drive. Every ch() channel is " +
-    "also a wireable scalar input socket addressed by its channel name — " +
-    "e.g. with ch(\"speed\", 600) in the expression, wire an LFO or audio " +
-    "level into the `speed` input to drive it. This is the per-element " +
+    "Mark tunables as CHANNELS and hit Sync to mint standard controls you can " +
+    "drive: ch(\"name\", default, min, max) → slider (number); " +
+    "toggle(\"name\", true) → on/off pill (boolean); " +
+    "pick(\"name\", \"a\", \"b\") → 2–3-way segmented pill or dropdown (option string); " +
+    "color(\"name\", \"#ff8800\") → swatch ([r,g,b,a] 0..1); " +
+    "ramp(\"name\", t, \"#000000\", \"#ffffff\") → gradient editor sampled at t ([r,g,b,a]); " +
+    "curve(\"name\", x, 1, 0) → float-curve editor sampled at x (number). " +
+    "Seeds are literals after the name (ch positional; hex/number lists seed " +
+    "ramp stops / curve points evenly). Sync is add-only: existing rows keep " +
+    "their value — tune a channel with set_param using its NAME. Scalar, " +
+    "toggle, color and ramp channels are also wireable input sockets " +
+    "addressed by name (scalar / scalar / vec4 / color_ramp) — e.g. with " +
+    "ch(\"speed\", 600) in the expression, wire an LFO or audio level into " +
+    "the `speed` input to drive it. This is the per-element " +
     "field primitive — the per-point counterpart to the once-per-frame " +
     "Expression node.",
+  facts: {
+    space: { out: "canvas01" },
+    reads: ["attr:rotation", "attr:scale", "attr:group"],
+    writes: ["attr:position", "attr:rotation", "attr:scale", "attr:group"],
+    gotchas: [
+      "target=points writes x,y,rot,sx,sy,scale,keep,groupIndex; sx/sy are absolute (seeded from sx0/sy0); only scale multiplies — sx=2 is size 2, not 2× incoming.",
+      "target=spline anchors runs once per anchor instead, reading/writing x,y,inx,iny,outx,outy,width,keep — a different tuple than the points domain.",
+      "keep=false culls the point/anchor; a stray `return` in the block replaces the whole packed result and is caught by validateParams, not silently at runtime.",
+      "rand(seed) is frame-independent (hashes only the seed); random() is a per-frame RNG seeded from nodeId+frame — use rand(index) for stable per-point noise.",
+      "attr(name) reads only the INCOMING value's channels; same-pass setattr writes are not readable, so results never depend on point iteration order.",
+      "fieldX/fieldY/fieldAt sample a wired velocity image at the current point's (px,py) by default, decoded as signed-RG like Advect Points' vector mode.",
+      "ch/pick/toggle/color/ramp/curve read a channel row by name if it exists, else the inline default; Sync only adds missing rows, never overwrites one.",
+      "on_error=passthrough keeps the element unchanged on a runtime exception (only the first error per eval is logged); zero drives its writable outputs to 0.",
+    ],
+  },
   backend: "webgl2",
   // Pure CPU eval. fingerprintExtras folds ctx.time in only when the source is
   // time-dependent, so static per-point expressions cache as constants.
@@ -739,6 +872,7 @@ export const pointExpressionNode: NodeDefinition = {
   inputs: [
     { name: "points", type: "points", required: true },
     { name: "path", type: "spline", required: false },
+    { name: "field", type: "image", required: false, label: "Field" },
   ],
   resolveInputs(params): InputSocketDef[] {
     const entries = (params.inputs as ExprInput[]) ?? [];
@@ -752,14 +886,15 @@ export const pointExpressionNode: NodeDefinition = {
         label: target === "spline anchors" ? "Spline" : "Points",
       },
       { name: "path", type: "spline", required: false, label: "Path" },
-      // Scalar (ch) channels get a wireable socket; enum (pick) channels are
-      // panel-only dropdowns.
+      { name: "field", type: "image", required: false, label: "Field" },
+      // Socketed kinds (scalar / toggle → scalar, color → vec4, ramp →
+      // color_ramp) get a wireable input; pick / curve are panel-only.
       ...entries
-        .filter((e) => !e.options)
+        .filter((e) => channelSocketType(e) !== null)
         .map<InputSocketDef>((e) => ({
           name: `in:${e.id}`,
           label: e.name,
-          type: "scalar",
+          type: channelSocketType(e)!,
           required: false,
         })),
     ];
@@ -826,24 +961,10 @@ export const pointExpressionNode: NodeDefinition = {
     }
     const fn = state.compiled.fn;
 
-    // Channel values by name. Enum (pick) channels carry a selected string and
-    // have no socket; scalar (ch) channels take the wired scalar if present,
-    // else the slider default. Read in the expression via ch()/pick().
-    const channels: Record<string, number | string> = {};
-    for (const e of entries) {
-      if (e.options) {
-        channels[e.name] =
-          typeof e.default === "string" ? e.default : (e.options[0] ?? "");
-      } else {
-        const sock = inputs[`in:${e.id}`];
-        channels[e.name] =
-          sock && sock.kind === "scalar"
-            ? sock.value
-            : typeof e.default === "number"
-              ? e.default
-              : 0;
-      }
-    }
+    // Channel values by name (a wired socket wins over the row; see
+    // readChannelValue for the per-kind rule). Read in the expression via
+    // ch() / pick() / toggle() / color() / ramp() / curve().
+    const channels = readChannelValues(entries, inputs);
 
     // Path env (measured once per frame).
     const pathSrc =
@@ -851,6 +972,13 @@ export const pointExpressionNode: NodeDefinition = {
     const pathEnv = makePathEnv(
       pathSrc,
       pathSrc ? measureSpline(pathSrc) : null
+    );
+    const fieldEnv = makeFieldEnv(
+      readFieldBuf(
+        ctx,
+        state,
+        inputs.field && inputs.field.kind === "image" ? inputs.field : undefined
+      )
     );
 
     if (target === "spline anchors") {
@@ -867,7 +995,8 @@ export const pointExpressionNode: NodeDefinition = {
         pathEnv,
         channels,
         onErrorZero,
-        state
+        state,
+        fieldEnv
       );
     }
 
@@ -907,7 +1036,7 @@ export const pointExpressionNode: NodeDefinition = {
         const v = +value;
         arr[cursor.i] = Number.isFinite(v) ? v : 0;
       },
-    });
+    }, fieldEnv);
     const inPos = src.positions;
     const inScales = src.scales;
     const inRots = src.rotations;
@@ -916,7 +1045,9 @@ export const pointExpressionNode: NodeDefinition = {
     const outPos = new Float32Array(n * 2);
     const outScales = new Float32Array(n * 2);
     const outRots = new Float32Array(n);
-    const outGroups = inGroups ? new Int32Array(n) : undefined;
+    // Always emit groupIndices so `groupIndex = …` works on untagged
+    // input (a Grid, Scatter, …) — same materialize-on-write as scales/rots.
+    const outGroups = new Int32Array(n);
     // Source index of each kept row — the gather map for channels the
     // kernel doesn't compute (z/normals, future attributes).
     const keptMap = new Int32Array(n);
@@ -948,20 +1079,23 @@ export const pointExpressionNode: NodeDefinition = {
       pt.rot0 = rot0;
       pt.sx0 = sx0;
       pt.sy0 = sy0;
+      fieldEnv.cursor.u = px;
+      fieldEnv.cursor.v = py;
 
       let x = px;
       let y = py;
       let sxOut = sx0;
       let syOut = sy0;
       let rotOut = rot0;
+      let groupOut = pt.groupIndex;
       let keep = true;
       try {
         const raw = fn(env, pt);
-        // Only the compiled epilogue's packed 7-tuple counts as a result. A
+        // Only the compiled epilogue's packed 8-tuple counts as a result. A
         // user `return` replaces it — and a returned shorter array (e.g.
-        // `return [x, y]`) would leave raw[6] undefined and cull EVERY point
+        // `return [x, y]`) would leave keep undefined and cull EVERY point
         // — so anything else keeps the point as-is.
-        if (Array.isArray(raw) && raw.length === 7) {
+        if (Array.isArray(raw) && raw.length === 8) {
           x = toNum(raw[0], px);
           y = toNum(raw[1], py);
           const sx = toNum(raw[2], sx0);
@@ -971,6 +1105,7 @@ export const pointExpressionNode: NodeDefinition = {
           syOut = sy * scale;
           rotOut = toNum(raw[5], rot0);
           keep = !!raw[6];
+          groupOut = toNum(raw[7], pt.groupIndex) | 0;
         }
       } catch (e) {
         if (!runtimeErr) {
@@ -984,8 +1119,9 @@ export const pointExpressionNode: NodeDefinition = {
           sxOut = 0;
           syOut = 0;
           rotOut = 0;
+          groupOut = 0;
         }
-        // passthrough (default): leave x/y/scale/rot at the point's originals.
+        // passthrough (default): leave x/y/scale/rot/group at the originals.
       }
 
       if (!keep) continue;
@@ -994,7 +1130,7 @@ export const pointExpressionNode: NodeDefinition = {
       outScales[kept * 2] = sxOut;
       outScales[kept * 2 + 1] = syOut;
       outRots[kept] = rotOut;
-      if (outGroups) outGroups[kept] = pt.groupIndex;
+      outGroups[kept] = groupOut;
       keptMap[kept] = i;
       kept++;
     }
@@ -1038,7 +1174,7 @@ export const pointExpressionNode: NodeDefinition = {
         positions: outPos.slice(0, kept * 2),
         scales: outScales.slice(0, kept * 2),
         rotations: outRots.slice(0, kept),
-        groupIndices: outGroups ? outGroups.slice(0, kept) : undefined,
+        groupIndices: outGroups.slice(0, kept),
         ...(compactWritten
           ? { attributes: { ...base.attributes, ...compactWritten } }
           : {}),
@@ -1094,7 +1230,7 @@ export const pointExpressionNode: NodeDefinition = {
     const writables =
       target === "spline anchors"
         ? "x, y, inx, iny, outx, outy, width, keep"
-        : "x, y, rot, sx, sy, scale, keep";
+        : "x, y, rot, sx, sy, scale, keep, groupIndex";
     try {
       const env = makeEnv(
         { time: 0, frame: 0, fps: 60 } as RenderContext,

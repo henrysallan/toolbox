@@ -120,6 +120,16 @@ export const cursorNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Circular falloff field centered on the pointer, plus an aux velocity field encoded as RG (direction × magnitude, modulated by the same falloff). Radius and softness are in fractions of canvas width — circular on any aspect.",
+  facts: {
+    space: { "param:radius": "canvas01", "aux:position": "canvas01" },
+    gotchas: [
+      "radius is a fraction of canvas width (aspect-corrected), so the falloff disc stays circular on any aspect ratio.",
+      "Velocity is timed against wall-clock performance.now(), not scene time, so it keeps responding while playback is paused and does not replay identically across two exports of the same timeline.",
+      "velocity_vec and the aux velocity image's R/G are canvas-UV units per second scaled by velocity_scale, distinct from aux position which is authored canvas coordinates (y-down, aspect-uncorrected).",
+      "velocity_smoothing 0 is instant/unsmoothed, 1 freezes the value entirely (EMA alpha = 1 − smoothing); default 0.3 is light smoothing.",
+      "min/max remap the falloff output (default 0 outside, 1 at the cursor) and are not clamped, so max < min inverts the field.",
+    ],
+  },
   backend: "webgl2",
   // Cursor changes every frame (externally tracked) — want compute to
   // re-run even when params are identical.

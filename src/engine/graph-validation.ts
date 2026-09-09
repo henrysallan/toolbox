@@ -32,6 +32,7 @@ import {
   TIME_OFFSET_CARRIED_TYPES,
   TIME_OFFSET_TYPE,
 } from "./time-offset";
+import { FOREACH_TYPE } from "./groups";
 import { withMaskInput } from "./conventions";
 
 // Minimal structural node shape — both the engine GraphNode ({id, type, params})
@@ -138,6 +139,14 @@ export function editorCanCoerce(
       src === "text_instance")
   )
     return true;
+  // For Each Element's Geometry socket accepts a spline (subpath domain)
+  // or points; onConnect flips the Input's domain to match.
+  if (
+    targetDefType === FOREACH_TYPE &&
+    targetHandle === "in:geometry" &&
+    (src === "spline" || src === "points")
+  )
+    return true;
   // Combine's slots rest as whatever `mode` last said (image by default)
   // but accept any family the node can hold — onConnect flips `mode` so
   // the sockets retype. The mask socket stays a real mask (plain table).
@@ -148,8 +157,8 @@ export function editorCanCoerce(
   )
     return true;
   // Accumulator's `input` rests as scalar but accepts points / spline /
-  // vec2 — onConnect flips `type` to points and the node coerces those
-  // families into a persistent point set.
+  // vec2 — onConnect flips `type` to the matching domain. vec2 coerces
+  // to a point; a spline stays a spline (subpaths pile).
   if (
     targetDefType === "accumulator" &&
     isAccumulatorInputHandle(targetHandle) &&
@@ -174,6 +183,15 @@ export function editorCanCoerce(
     targetDefType === "bounding-box" &&
     targetHandle === "in:source" &&
     (src === "spline" || src === "points")
+  )
+    return true;
+  // Vector Field's `source` socket rests as image but accepts an SDF —
+  // resolveInputs retypes from connectedTypes so the gradient is taken
+  // of the analytic distance rather than a rasterized luma map.
+  if (
+    targetDefType === "vector-field" &&
+    targetHandle === "in:source" &&
+    src === "sdf"
   )
     return true;
   // Mirror's `source` socket rests as spline but accepts points — it
@@ -206,12 +224,13 @@ export function editorCanCoerce(
     (src === "points" || src === "points3d")
   )
     return true;
-  // 3D Scatter Points' `source` rests as geometry but accepts a placed
-  // object3d (imported GLB, group) — it traverses the meshes inside.
-  // (geometry always lands via the geometry→object3d table entry when the
-  // socket reads object3d.)
+  // 3D Scatter / Mesh to Points `source` rests as geometry but accepts a
+  // placed object3d (imported GLB, group) — they traverse the meshes
+  // inside. (geometry always lands via the geometry→object3d table entry
+  // when the socket reads object3d.)
   if (
-    targetDefType === "scatter-points-3d" &&
+    (targetDefType === "scatter-points-3d" ||
+      targetDefType === "mesh-to-points-3d") &&
     targetHandle === "in:source" &&
     src === "object3d"
   )
@@ -432,9 +451,28 @@ export function validateGraph(nodes: ValNode[], edges: ValEdge[]): ValResult {
   for (const e of goodEdges) {
     const srcT = outputTypeOf(e.source, e.sourceHandle, resolvedOut);
     if (srcT == null) {
-      err("EDGE_UNKNOWN_OUTPUT", `Source ${e.source} has no output "${e.sourceHandle}".`, {
-        edgeId: e.id,
-      });
+      const r = resolvedOut.get(e.source);
+      let hint = "";
+      if (
+        e.sourceHandle === "out:primary" &&
+        r &&
+        r.primary == null &&
+        r.aux.size > 0
+      ) {
+        const names = [...r.aux.entries()]
+          .sort((a, b) => {
+            const rank = (t: string) => (t === "image" ? 0 : 1);
+            return rank(a[1]) - rank(b[1]) || a[0].localeCompare(b[0]);
+          })
+          .map(([n]) => n)
+          .slice(0, 4);
+        hint = ` (this node has no primary; did you mean ${names.map((n) => `aux:${n}`).join(" or ")})`;
+      }
+      err(
+        "EDGE_UNKNOWN_OUTPUT",
+        `Source ${e.source} has no output "${e.sourceHandle}".${hint}`,
+        { edgeId: e.id }
+      );
       continue;
     }
     const parsed = parseTargetHandleKind(e.targetHandle);

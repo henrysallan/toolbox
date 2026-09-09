@@ -44,6 +44,7 @@ import { splineDrawNode } from "./source/spline-draw";
 import { svgSourceNode } from "./source/svg-source";
 import { circleNode } from "./source/circle";
 import { rectangleNode } from "./source/rectangle";
+import { lineNode } from "./source/line";
 import { spiralNode } from "./source/spiral";
 import { crossNode } from "./source/cross";
 import { polygonNode } from "./source/polygon";
@@ -62,6 +63,11 @@ import {
   cylinder3DNode,
   cone3DNode,
   torus3DNode,
+  capsule3DNode,
+  roundedCube3DNode,
+  torusKnot3DNode,
+  polyhedron3DNode,
+  ring3DNode,
 } from "./three/primitives";
 import { light3DNode } from "./three/light";
 import { camera3DNode } from "./three/camera";
@@ -69,10 +75,12 @@ import { import3DNode } from "./three/import-3d";
 import { sceneMergeNode } from "./three/scene-merge";
 import { sceneRenderNode } from "./three/scene-render";
 import { scatterPoints3DNode } from "./three/scatter-points-3d";
+import { meshToPoints3DNode } from "./three/mesh-to-points";
 import { copyToPoints3DNode } from "./three/copy-to-points-3d";
 import { extrudeFaces3DNode } from "./three/extrude-faces";
 import { material3DNode } from "./three/material";
 import { bump3DNode } from "./three/bump";
+import { ambientOcclusion3DNode } from "./three/ambient-occlusion";
 import { textureProjection3DNode } from "./three/texture-projection";
 import { realizeInstances3DNode } from "./three/realize-instances";
 import { instanceColor3DNode } from "./three/instance-color";
@@ -95,6 +103,7 @@ import { autoLayoutNode } from "./effect/autolayout";
 import { sampleAlongPathNode } from "./effect/sample-along-path";
 import { resampleNode } from "./effect/resample";
 import { optimizePathNode } from "./effect/optimize-path";
+import { imageTraceNode } from "./effect/image-trace";
 import { pointsOnPathNode } from "./effect/points-on-path";
 import { offsetPathNode } from "./effect/offset-path";
 import { repeatPathNode } from "./effect/repeat-path";
@@ -106,6 +115,7 @@ import { fillNode } from "./effect/fill";
 import { rasterizeSplineNode } from "./effect/rasterize-spline";
 import { splineBooleanNode } from "./effect/spline-boolean";
 import { splineMergeNode } from "./effect/spline-merge";
+import { splinePackNode } from "./effect/spline-pack";
 import { blendIntersectionsNode } from "./effect/blend-intersections";
 import { splineMorphNode } from "./effect/spline-morph";
 import { splineInterpolateNode } from "./effect/spline-interpolate";
@@ -127,6 +137,7 @@ import { advectPointsNode } from "./effect/advect-points";
 import { advectImageNode } from "./effect/advect-image";
 import { splineFlowFieldNode } from "./effect/spline-flow-field";
 import { flowObstacleNode } from "./effect/flow-obstacle";
+import { vectorFieldNode } from "./effect/vector-field";
 import { imageFlowFieldNode } from "./effect/image-flow-field";
 import { flowBlurNode } from "./effect/flow-blur";
 import { kuwaharaNode } from "./effect/kuwahara";
@@ -134,6 +145,7 @@ import { flowBilateralNode } from "./effect/flow-bilateral";
 import { shockFilterNode } from "./effect/shock-filter";
 import { lineArtNode } from "./effect/line-art";
 import { modulateSplinesNode } from "./effect/modulate-splines";
+import { taperSplineNode } from "./effect/taper-spline";
 import { pointExpressionNode } from "./effect/point-expression";
 import { pointsToTextNode } from "./effect/points-to-text";
 import { pointsToStringNode } from "./effect/points-to-string";
@@ -184,6 +196,10 @@ import { layerNode } from "./group/layer";
 import { iterateNode } from "./group/iterate";
 import { iterateInputNode } from "./group/iterate-input";
 import { iterateFeedNode } from "./group/iterate-feed";
+import { repeatNode } from "./group/repeat";
+import { repeatInputNode } from "./group/repeat-input";
+import { foreachNode } from "./group/foreach";
+import { foreachInputNode } from "./group/foreach-input";
 import { groupPickNode } from "./effect/group-pick";
 import { groupLengthNode } from "./effect/group-length";
 import { asciiNode } from "./effect/ascii";
@@ -248,6 +264,8 @@ import { attributeBlurNode } from "./effect/attribute-blur";
 import { attributeTransferNode } from "./effect/attribute-transfer";
 import { glslExpressionNode } from "./effect/glsl-expression";
 import { mapAttributeNode } from "./effect/map-attribute";
+import { staggerNode } from "./effect/stagger";
+import { attributeReadNode } from "./effect/attribute-read";
 import { filterPointsNode } from "./effect/filter-points";
 import { filterSplinesNode } from "./effect/filter-splines";
 import { lerpNode } from "./effect/lerp";
@@ -335,6 +353,12 @@ export function registerAllNodes() {
   registerNode(cylinder3DNode);
   registerNode(cone3DNode);
   registerNode(torus3DNode);
+  // 081926 M1: expanded mesh vocabulary + factory-level flat_shade / sweep.
+  registerNode(capsule3DNode);
+  registerNode(roundedCube3DNode);
+  registerNode(torusKnot3DNode);
+  registerNode(polyhedron3DNode);
+  registerNode(ring3DNode);
   registerNode(light3DNode);
   registerNode(camera3DNode);
   registerNode(import3DNode);
@@ -343,10 +367,12 @@ export function registerAllNodes() {
   // Wave 2 (081026_3d-geometry-points-materials.md M2–M4): 3D instancing,
   // modeling, materials.
   registerNode(scatterPoints3DNode);
+  registerNode(meshToPoints3DNode);
   registerNode(copyToPoints3DNode);
   registerNode(extrudeFaces3DNode);
   registerNode(material3DNode);
   registerNode(bump3DNode);
+  registerNode(ambientOcclusion3DNode);
   registerNode(textureProjection3DNode);
   // M4.5: the instance domain (spec §4.4).
   registerNode(realizeInstances3DNode);
@@ -402,6 +428,7 @@ export function registerAllNodes() {
   registerNode(svgSourceNode);
   registerNode(circleNode);
   registerNode(rectangleNode);
+  registerNode(lineNode);
   registerNode(spiralNode);
   registerNode(crossNode);
   registerNode(polygonNode);
@@ -416,6 +443,7 @@ export function registerAllNodes() {
   registerNode(sampleAlongPathNode);
   registerNode(resampleNode);
   registerNode(optimizePathNode);
+  registerNode(imageTraceNode);
   registerNode(pointsOnPathNode);
   registerNode(offsetPathNode);
   registerNode(repeatPathNode);
@@ -427,6 +455,7 @@ export function registerAllNodes() {
   registerNode(rasterizeSplineNode);
   registerNode(splineBooleanNode);
   registerNode(splineMergeNode);
+  registerNode(splinePackNode);
   registerNode(blendIntersectionsNode);
   registerNode(splineMorphNode);
   registerNode(splineInterpolateNode);
@@ -448,6 +477,7 @@ export function registerAllNodes() {
   registerNode(advectImageNode);
   registerNode(splineFlowFieldNode);
   registerNode(flowObstacleNode);
+  registerNode(vectorFieldNode);
   registerNode(imageFlowFieldNode);
   registerNode(flowBlurNode);
   registerNode(kuwaharaNode);
@@ -455,6 +485,7 @@ export function registerAllNodes() {
   registerNode(shockFilterNode);
   registerNode(lineArtNode);
   registerNode(modulateSplinesNode);
+  registerNode(taperSplineNode);
   registerNode(pointExpressionNode);
   registerNode(pointsToTextNode);
   registerNode(pointsToStringNode);
@@ -517,6 +548,10 @@ export function registerAllNodes() {
   registerNode(iterateNode);
   registerNode(iterateInputNode);
   registerNode(iterateFeedNode);
+  registerNode(repeatNode);
+  registerNode(repeatInputNode);
+  registerNode(foreachNode);
+  registerNode(foreachInputNode);
   registerNode(groupPickNode);
   registerNode(groupLengthNode);
   registerNode(asciiNode);
@@ -585,6 +620,8 @@ export function registerAllNodes() {
   registerNode(attributeTransferNode);
   registerNode(glslExpressionNode);
   registerNode(mapAttributeNode);
+  registerNode(staggerNode);
+  registerNode(attributeReadNode);
   registerNode(filterPointsNode);
   registerNode(filterSplinesNode);
   registerNode(lerpNode);

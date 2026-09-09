@@ -33,6 +33,16 @@ export const splineDrawNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Author a bezier path with the pen tool over the preview canvas. Outputs the spline as data and, when stroke or fill is enabled, as a rasterized image.",
+  facts: {
+    space: { "param:stroke_thickness": "pixels" },
+    gotchas: [
+      "fill_enabled closes only the raster fill via a bezier curve from the last anchor's handles to the first; the spline output's closed flag stays as authored.",
+      "Live Corners (per-anchor cornerRadius) are resolved into fillets before trim_start/trim_end, so trim measures arc length after filleting.",
+      "spline (the anchor data) is hidden from the params panel — authored via the on-canvas pen tool — but is a normal, keyframable param under 'Path Animation'.",
+      "stroke_thickness is pixels by default; stroke_units=% resolves it as a percent of canvas width instead.",
+      "The image aux only exists when stroke_enabled or fill_enabled is on; unlike other spline primitives, this node has no element aux for Auto Layout.",
+    ],
+  },
   backend: "webgl2",
   // Optional `fill` image input — when wired (and fill is on) the shape is
   // filled with that image instead of the flat fill color.

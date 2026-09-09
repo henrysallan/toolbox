@@ -192,6 +192,17 @@ export const setNamedAttributeNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Writes a named channel (a Blender-style attribute) onto points, spline anchors, or spline subpaths: pick a name, a type, and a source — a constant, a 0→1 ramp over element order, a stable per-element random, or an image sampled at each element's position. Channels flow through downstream nodes, show as columns in the Spreadsheet panel, and point channels read back in Point Expression via attr(\"name\"). Reserved names (the built-in x/y/index/rotation/scale/group columns) pass through unchanged.",
+  facts: {
+    space: { "in:points": "canvas01", out: "in:points" },
+    gotchas: [
+      "The written channel's name comes from `attr_name`; an empty name or a reserved one (position/x/y/index/rotation/scale/group/z/nx/ny/nz) passes the input through unchanged.",
+      "target=points writes a PointsValue.attributes channel; target=spline anchors/subpaths write to each anchor's or subpath's object-attached `attrs` instead.",
+      "source=image samples nearest-texel at each element's own position (point, anchor, or subpath centroid) — float kind uses luminance, vec/color kinds use RGBA.",
+      "source=index and source=random remap through lo/hi only when kind=float; other kinds ignore lo/hi and use the raw [0,1) value per component.",
+      "source=random is a deterministic hash keyed on seed and element index, not Math.random, so it's stable across frames and re-evaluations.",
+      "The `name` aux output is the channel's name as a string, meant to be wired into another node's attribute-name param so a rename here ripples downstream.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "points", type: "points", required: true },

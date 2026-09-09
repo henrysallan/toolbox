@@ -58,6 +58,15 @@ export const sdfSmoothUnionNode: NodeDefinition = {
   category: "utility",
   description:
     "Smooth (blob) union of any number of SDFs. Smoothness sets the blend width — when boundaries come within Smoothness of each other they merge into a curved metaball-style join. Inputs auto-grow: wire the empty socket and another appears.",
+  facts: {
+    space: { "in:smoothness": "canvas01", "param:smoothness": "canvas01" },
+    gotchas: [
+      "smoothness is a canvas-UV distance compared directly against the signed distance (same units as a shape's radius); 0 degenerates to a plain min union.",
+      "N-ary via auto-growing sockets (a, b, ... always one spare); the fold is left-to-right in socket order since smin is not associative.",
+      "Unwired slots are dropped rather than treated as the empty sentinel, so extra unused sockets add nothing to the emitted tree.",
+      "When shapes carry SDF Material colours, each smin fold blends colour by the same factor it blends distance, so the colour boundary tracks the geometric blend.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

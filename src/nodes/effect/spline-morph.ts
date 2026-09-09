@@ -115,6 +115,16 @@ export const splineMorphNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Morph (tween) between two or more splines by Amount (0 = first, 1 = last). Extra spline sockets auto-grow; Amount is split evenly across the chain (3 shapes → 0 / 0.5 / 1). Shapes are auto-aligned by orientation and start vertex; surplus subpaths grow/shrink from a point. Outputs a spline, plus an image when stroke or fill is on.",
+  facts: {
+    space: { "param:stroke_thickness": "pixels" },
+    gotchas: [
+      "Amount is split evenly across the whole wired chain (3 shapes → 0/0.5/1, not 0..1 per adjacent pair); a wired amount scalar input overrides the Amount param.",
+      "Correspondence (resample to resolution + orientation/start-vertex alignment) rebuilds only when the shape set or resolution changes, not when Amount sweeps.",
+      "The image aux output only exists when stroke_enabled or fill_enabled is on; with both off only the spline output is produced.",
+      "stroke_thickness is pixels at render resolution, unlike the canvas01 spline geometry it strokes.",
+      "With zero or one wired shape the result passes through unchanged (or is empty) and Amount has no effect.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "a", type: "spline", required: false, label: "A" },

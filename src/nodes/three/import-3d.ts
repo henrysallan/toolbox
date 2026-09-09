@@ -63,6 +63,17 @@ export const import3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Loads a 3D model (GLB / glTF / OBJ / STL) as geometry — bevel it, apply a Material, scatter points on it, or wire it straight into the 3D Scene. The Object picker emits one scene object; \"All\" merges the file. Drop a file onto the node editor to create this node pre-loaded.",
+  facts: {
+    space: { "param:pos_x": "world3d", "param:pos_y": "world3d", "param:pos_z": "world3d" },
+    gotchas: [
+      "object=\"\" merges the whole scene with world transforms baked in; \"top:<i>\" emits one top-level object in its LOCAL frame, with the file's TRS baked into pos_/rot_/scale_ so it stays movable.",
+      "The object picker only appears for glb/gltf files; STL/OBJ have no scene objects to choose from.",
+      "A merged selection has one material slot from the first standard material's base color/roughness/metalness; embedded textures don't cross in. STL/OBJ without an MTL get the default look.",
+      "Loading is async: the first eval kicks off the load and the geometry appears once the shared model cache signals it landed.",
+      "The parsed file is shared and refcounted across every node pointing at the same URL, so N nodes on one file parse it once.",
+      "DRACO-compressed GLBs are not supported — there is no decoder wired.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

@@ -145,6 +145,26 @@ export const arrayNode: NodeDefinition = {
   category: "utility",
   description:
     "Tile an image, spline, or points into a grid. Image mode supports modulator inputs for per-cell scale/position/rotation variation; spline / point modes emit transformed CPU geometry — feed Displace or Transform downstream for noise / uniform tweaks.",
+  facts: {
+    space: {
+      out: "in:instance",
+      "param:sizeW": ["uv01", "canvas01"],
+      "param:sizeH": ["uv01", "canvas01"],
+      "param:patternOffsetX": ["uv01", "canvas01"],
+      "param:patternOffsetY": ["uv01", "canvas01"],
+      "param:localX": ["uv01", "canvas01"],
+      "param:localY": ["uv01", "canvas01"],
+    },
+    reads: ["attr:rotation", "attr:scale.x", "attr:scale.y"],
+    writes: ["attr:rotation", "attr:scale.x", "attr:scale.y"],
+    gotchas: [
+      "sizeW/H, patternOffsetX/Y, and localX/Y are width-relative canvas01 fractions in spline/point mode but per-axis raster uv01 fractions in image mode.",
+      "The index aux only exists in image mode (resolveAuxOutputs drops it otherwise); spline/point copies carry no new per-tile index and just repeat the source item's own attributes.",
+      "Copy Scale (localScaleX/Y) both spreads each source point away from its own (0.5,0.5) anchor and multiplies its scale channel, so it is not a pure per-tile resize.",
+      "Point/spline copies are placed relative to a (0.5, 0.5) natural anchor per cell (Copy to Points convention); off-center source geometry will not land on the cell center.",
+      "sizeMode=fit derives the cell step from countX/Y (1/count); sizeMode=step fixes the step via sizeW/H instead, so the two modes can disagree once the counts are large.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "instance", type: "image", required: true }],
   resolveInputs(params): InputSocketDef[] {

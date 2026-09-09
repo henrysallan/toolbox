@@ -93,6 +93,17 @@ export const splineInterpolateNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Interpolate between 2 or more splines. Feed shapes into the auto-growing sockets (there's always one spare) and get a single spline containing the inputs plus a set number of interpolated in-betweens, spread evenly across the whole sequence. Shapes are auto-aligned by orientation and start vertex; each output subpath is groupIndex-tagged in order for Select by Index / Copy-to-Points. Wire a spline into the Spine socket to distribute the whole family along it (the Illustrator Blend-along-a-path move), optionally rotated to the spine's tangent.",
+  facts: {
+    writes: ["attr:group"],
+    gotchas: [
+      "count is the total number of in-betweens spread across the whole chain (not per gap), placed strictly between knots so none coincides with an input shape.",
+      "Per-pair morph correspondence (resample to resolution + orientation/start-vertex alignment) is cached by input identity and resolution; sweeping count alone is cheap.",
+      "attr:group tags every output subpath in chain order (input, its in-betweens, next input, ...) for Select by Index / Count Indices / Copy-to-Points.",
+      "Wiring Spine moves the whole family to even arc-length stations along it and, if spine_align is on, rotates each member to the spine's tangent there.",
+      "With exactly one input shape it passes through untouched as group 0 and count has no effect.",
+      "spine is a fixed socket excluded from the auto-growing numbered slots, unlike the spline inputs which always keep one trailing empty spare.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [

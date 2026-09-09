@@ -291,6 +291,69 @@ export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
       return out;
     },
   },
+  // Endpoint handles, not a box: a segment is defined by where its two
+  // ends are. Same control as SDF Line Segment, in canvas UV (Y-DOWN).
+  line: {
+    hideWhenWired: ["transform"],
+    points: {
+      connect: "open",
+      read: (g) => [
+        { x: g("startX", 0.25), y: g("startY", 0.5), label: "A" },
+        { x: g("endX", 0.75), y: g("endY", 0.5), label: "B" },
+      ],
+      write: (i, x, y) =>
+        i === 0
+          ? [
+              ["startX", x],
+              ["startY", y],
+            ]
+          : [
+              ["endX", x],
+              ["endY", y],
+            ],
+    },
+  },
+  // Start / center / end dots. Polar params (radius + angles) still store
+  // the shape; dragging a handle writes those. Wired `start`/`end`/`center`
+  // sockets override compute, so the handles would lie — hide the gizmo
+  // when any of those (or transform) is wired.
+  arc: {
+    hideWhenWired: ["transform", "center", "start", "end"],
+    points: {
+      connect: "open",
+      read: (g) => {
+        const cx = g("centerX", 0.5);
+        const cy = g("centerY", 0.5);
+        const r = g("radius", 0.3);
+        const a0 = (g("startAngle", 0) * Math.PI) / 180;
+        const a1 = (g("endAngle", 270) * Math.PI) / 180;
+        return [
+          { x: cx + r * Math.cos(a0), y: cy + r * Math.sin(a0), label: "Start" },
+          { x: cx, y: cy, label: "Center" },
+          { x: cx + r * Math.cos(a1), y: cy + r * Math.sin(a1), label: "End" },
+        ];
+      },
+      write: (i, x, y, env) => {
+        const raw = (name: string, fb: number) => {
+          const v = env.getRaw(name);
+          return typeof v === "number" && Number.isFinite(v) ? v : fb;
+        };
+        const cx = raw("centerX", 0.5);
+        const cy = raw("centerY", 0.5);
+        if (i === 1) return [["centerX", x], ["centerY", y]];
+        const dx = x - cx;
+        const dy = y - cy;
+        const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+        if (i === 0) {
+          return [
+            ["startAngle", angle],
+            ["radius", Math.hypot(dx, dy)],
+          ];
+        }
+        return [["endAngle", angle]];
+      },
+    },
+  },
   // Liquid Glass panel (Shape A): center is posX/posY (normalized, Y-down),
   // size is width/height fractions. Box-style resize like Text/Auto Layout.
   // Shape B (the liquid-merge partner) stays panel-driven for now.
@@ -423,6 +486,28 @@ const CENTER_R = 4;
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
+// Shift-drag axis lock: freeze the weaker axis of a move delta. Sticky
+// once decided so the lock doesn't flicker if the pointer overshoots;
+// releasing Shift resets it and a re-press re-decides.
+function lockAxisDelta(
+  dx: number,
+  dy: number,
+  shift: boolean,
+  locked: { current: "x" | "y" | null }
+): { dx: number; dy: number } {
+  if (!shift) {
+    locked.current = null;
+    return { dx, dy };
+  }
+  if (!locked.current) {
+    if (Math.abs(dx) > Math.abs(dy)) locked.current = "x";
+    else if (Math.abs(dy) > 1e-4) locked.current = "y";
+  }
+  if (locked.current === "x") return { dx, dy: 0 };
+  if (locked.current === "y") return { dx: 0, dy };
+  return { dx, dy };
+}
+
 export default function PrimitiveGizmo({
   canvas,
   cx,
@@ -436,6 +521,11 @@ export default function PrimitiveGizmo({
   onChangeRef.current = onChange;
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
+  // Shift-drag axis lock for move. Ref (not state) so pointermove can
+  // read it every frame without a re-render. Sticky once decided —
+  // releasing Shift resets it; re-pressing re-decides from the
+  // remaining pointer delta since drag start.
+  const lockedAxisRef = useRef<"x" | "y" | null>(null);
 
   // Track the rendered canvas box (resize / splitter / scroll).
   useEffect(() => {
@@ -468,8 +558,9 @@ export default function PrimitiveGizmo({
       const shift = e.shiftKey;
 
       if (drag.kind === "move") {
-        const dx = ux - drag.startPointer.x;
-        const dy = uy - drag.startPointer.y;
+        let dx = ux - drag.startPointer.x;
+        let dy = uy - drag.startPointer.y;
+        ({ dx, dy } = lockAxisDelta(dx, dy, shift, lockedAxisRef));
         onChangeRef.current({
           cx: clamp01(s.cx + dx),
           cy: clamp01(s.cy + dy),
@@ -549,7 +640,10 @@ export default function PrimitiveGizmo({
       if (movesY) patch.hy = nhy;
       onChangeRef.current(patch);
     };
-    const onUp = () => setDrag(null);
+    const onUp = () => {
+      setDrag(null);
+      lockedAxisRef.current = null;
+    };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     return () => {
@@ -585,6 +679,7 @@ export default function PrimitiveGizmo({
       e.preventDefault();
       // Gizmo gesture — keep it out of the graph's cursor press facts.
       claimPointerGesture(e.pointerId);
+      lockedAxisRef.current = null;
       setDrag({
         kind,
         startPointer: {
@@ -737,7 +832,14 @@ export function PrimitivePointHandles({
   onChange: (index: number, x: number, y: number) => void;
 }) {
   const [rect, setRect] = useState<DOMRect | null>(null);
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [drag, setDrag] = useState<{
+    index: number;
+    startPointer: { x: number; y: number };
+    startPoint: { x: number; y: number };
+  } | null>(null);
+  // Shift-drag axis lock — same sticky-dominant-axis rule as the box
+  // gizmo's move handle.
+  const lockedAxisRef = useRef<"x" | "y" | null>(null);
   // Latest-callback ref, assigned in an effect rather than during render
   // so the drag listeners can stay subscribed across re-renders without
   // reading a ref mid-render.
@@ -766,24 +868,30 @@ export function PrimitivePointHandles({
   }, [canvas]);
 
   useEffect(() => {
-    if (dragIndex === null || !rect) return;
+    if (!drag || !rect) return;
     const onMove = (e: PointerEvent) => {
       // Unclamped on purpose: these points legitimately live outside
       // [0,1] (a segment can run off-canvas), unlike a box centre.
+      let dx = (e.clientX - rect.left) / rect.width - drag.startPointer.x;
+      let dy = (e.clientY - rect.top) / rect.height - drag.startPointer.y;
+      ({ dx, dy } = lockAxisDelta(dx, dy, e.shiftKey, lockedAxisRef));
       onChangeRef.current(
-        dragIndex,
-        (e.clientX - rect.left) / rect.width,
-        (e.clientY - rect.top) / rect.height
+        drag.index,
+        drag.startPoint.x + dx,
+        drag.startPoint.y + dy
       );
     };
-    const onUp = () => setDragIndex(null);
+    const onUp = () => {
+      setDrag(null);
+      lockedAxisRef.current = null;
+    };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [dragIndex, rect]);
+  }, [drag, rect]);
 
   if (!canvas || !rect || points.length === 0) return null;
 
@@ -827,7 +935,7 @@ export function PrimitivePointHandles({
               cx={p.x}
               cy={p.y}
               r={CENTER_R + 1}
-              fill={dragIndex === i ? "#ef4444" : "#22c55e"}
+              fill={drag?.index === i ? "#ef4444" : "#22c55e"}
               stroke="#fef2f2"
               strokeWidth="0.75"
               style={{ cursor: "move", pointerEvents: "auto" }}
@@ -835,7 +943,17 @@ export function PrimitivePointHandles({
                 e.stopPropagation();
                 e.preventDefault();
                 claimPointerGesture(e.pointerId);
-                setDragIndex(i);
+                lockedAxisRef.current = null;
+                const pt = points[i];
+                if (!pt) return;
+                setDrag({
+                  index: i,
+                  startPointer: {
+                    x: (e.clientX - rect.left) / rect.width,
+                    y: (e.clientY - rect.top) / rect.height,
+                  },
+                  startPoint: { x: pt.x, y: pt.y },
+                });
               }}
             />
             {p.label && (

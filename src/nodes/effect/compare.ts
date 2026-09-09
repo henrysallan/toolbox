@@ -13,6 +13,12 @@ export const compareNode: NodeDefinition = {
   category: "utility",
   description:
     "Compare two scalars with one of >, <, ≥, ≤, ==, !=. Output is 1 (true) or 0 (false). Equality variants use an epsilon window so floating-point fuzz doesn't flip results.",
+  facts: {
+    gotchas: [
+      "a/b wired inputs override their like-named params independently — wiring only one leaves the other on its param value.",
+      "epsilon only applies to == and !=; the four inequality ops compare exactly with no tolerance.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

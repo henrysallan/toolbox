@@ -189,6 +189,16 @@ export const lerpNode: NodeDefinition = {
   // This is the Mix node of other packages (Blender's Mix, GLSL mix()
   // with its fac) — alias so searching those names lands here.
   searchAliases: ["mix", "fac", "interpolate"],
+  facts: {
+    space: { out: "in:a" },
+    gotchas: [
+      "Point (points) and spline lerp require matching counts (point count; subpath count and anchors-per-subpath) - a mismatch returns A unchanged.",
+      "Only attributes present on both A and B at the same arity are lerped; B-only attributes are dropped, A-only ones pass through unlerped.",
+      "Spline closed flag and point groupIndices are always taken from A, never interpolated.",
+      "Normals lerp per-component then renormalize; a plain lerp would shorten the vector.",
+      "t input, when wired, overrides the t param; clamp then clips to [0,1], but the param itself ranges -2..2 for extrapolation.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "type" },
   inputs: [

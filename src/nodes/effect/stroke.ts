@@ -30,6 +30,8 @@ import {
   type ColorRampBy,
   type SubpathColorConfig,
 } from "@/engine/spline-color-source";
+import { paintStrokeAlongProgress } from "@/engine/spline-stroke-progress";
+import { sampleSubpathAttrScalar } from "@/engine/spline-attrs";
 import { resolveStrokePx, strokeUnitsParam } from "@/engine/stroke-units";
 
 // Rasterize a spline's outline. Output is transparent everywhere except
@@ -110,7 +112,25 @@ export const strokeNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Render a spline as a stroked outline. Three styles: solid (continuous), dashed (alternating dashes and gaps), dotted (round dots at a fixed spacing). Color source can be a flat color or a per-subpath ramp keyed by index, seeded random, group, or centroid position — the same sourcing the fill has. Thickness source varies each subpath's width the same way (a lo→hi multiplier on the base thickness) — with Copy to Points' 'Tag copies: copy index', every copy gets its own stroke weight. Repeats draws N parallel-offset rings — inner/outer/both, a band width, and a spacing curve placing each ring within the band (closed shapes always expand outward regardless of draw direction; for open paths inner/outer mean left/right of travel). Per-ring styling: thickness and opacity falloff curves, plus an optional color ramp across the rings (which takes precedence over the per-subpath color source).",
+    "Render a spline as a stroked outline. Three styles: solid (continuous), dashed (alternating dashes and gaps), dotted (round dots at a fixed spacing). Color source can be a flat color or a ramp keyed by index, seeded random, group, centroid position, a per-subpath driver, along-path progress, or an interpolated named anchor channel — the same sourcing Rasterize Spline's stroke has. Thickness source varies each subpath's width the same way (a lo→hi multiplier on the base thickness) — with Copy to Points' 'Tag copies: copy index', every copy gets its own stroke weight. Repeats draws N parallel-offset rings — inner/outer/both, a band width, and a spacing curve placing each ring within the band (closed shapes always expand outward regardless of draw direction; for open paths inner/outer mean left/right of travel). Per-ring styling: thickness and opacity falloff curves, plus an optional color ramp across the rings (which takes precedence over the per-subpath color source).",
+  facts: {
+    space: {
+      "param:thickness": "pixels",
+      "param:dash_length": "pixels",
+      "param:dash_gap": "pixels",
+      "param:dot_spacing": "pixels",
+      "param:repeat_width": "canvas01",
+    },
+    reads: ["attr:group"],
+    gotchas: [
+      "thickness/dash_length/dash_gap/dot_spacing default to raw pixels; units=% resolves them as a percent of canvas width instead, so the look holds across resolutions.",
+      "repeat_width is a canvas-width-relative band fraction regardless of the units toggle; repeat_spacing places each ring within that band (0 = on the source path).",
+      "With repeats>1, repeat_color_mode=ramp overrides the per-subpath color_source ramp; ramp_by (index/random/group/position/driver/progress/attribute) drives both.",
+      "A per-anchor width profile (e.g. from Taper Spline) renders as a filled variable-width envelope instead of a stroked line, but only when repeats=1; repeats>1 strokes it at uniform ring width.",
+      "thickness_source=vary forces per-subpath stroking even with a flat color, since Canvas lineWidth is one value per stroke() call.",
+      "ramp_by=group or thickness_by=group reads each subpath's stamped groupIndex (attr:group), e.g. from String Art's layers or Copy to Points' copy tagging.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [
@@ -154,7 +174,24 @@ export const strokeNode: NodeDefinition = {
       name: "ramp_by",
       label: "Ramp by",
       type: "enum",
-      options: ["index", "random", "group", "position", "driver"],
+      options: [
+        "index",
+        "random",
+        "group",
+        "position",
+        "driver",
+        "progress",
+        "attribute",
+      ],
+      optionLabels: {
+        index: "Index",
+        random: "Random",
+        group: "Group",
+        position: "Position",
+        driver: "Driver",
+        progress: "Progress",
+        attribute: "Attribute",
+      },
       default: "index",
       visibleIf: (p) => p.color_source === "ramp",
     },
@@ -177,6 +214,18 @@ export const strokeNode: NodeDefinition = {
       step: 1,
       default: 0,
       visibleIf: (p) => p.color_source === "ramp" && p.ramp_by === "position",
+    },
+    {
+      name: "driver_attr",
+      label: "Driver attribute",
+      type: "string",
+      default: "",
+      placeholder: "attribute name",
+      suggestAttrsFrom: "path",
+      suggestAttrsRequire: true,
+      visibleIf: (p) =>
+        p.color_source === "ramp" &&
+        (p.ramp_by === "driver" || p.ramp_by === "attribute"),
     },
     {
       name: "ramp_interp",
@@ -243,6 +292,17 @@ export const strokeNode: NodeDefinition = {
       default: 0,
       visibleIf: (p) =>
         p.thickness_source === "vary" && p.thickness_by === "position",
+    },
+    {
+      name: "thickness_driver_attr",
+      label: "Driver attribute",
+      type: "string",
+      default: "",
+      placeholder: "attribute name",
+      suggestAttrsFrom: "path",
+      suggestAttrsRequire: true,
+      visibleIf: (p) =>
+        p.thickness_source === "vary" && p.thickness_by === "driver",
     },
     // Multipliers on the base thickness at driver t = 0 / 1. The 0.5–1.5
     // default is the house "shrink half / grow half" range (same as Copy
@@ -497,6 +557,11 @@ export const strokeNode: NodeDefinition = {
       cby: colorRamp ? params.ramp_by : 0,
       cseed: colorRamp && params.ramp_by === "random" ? params.ramp_seed : 0,
       cang: colorRamp && params.ramp_by === "position" ? params.ramp_angle : 0,
+      cdattr:
+        colorRamp &&
+        (params.ramp_by === "driver" || params.ramp_by === "attribute")
+          ? params.driver_attr
+          : 0,
       cint: colorRamp ? params.ramp_interp : 0,
       t: params.thickness,
       // Per-subpath thickness source (uniform / vary by index|random|
@@ -510,6 +575,10 @@ export const strokeNode: NodeDefinition = {
       tang:
         thicknessVary && params.thickness_by === "position"
           ? params.thickness_angle
+          : 0,
+      tdattr:
+        thicknessVary && params.thickness_by === "driver"
+          ? params.thickness_driver_attr
           : 0,
       tlo: thicknessVary ? params.thickness_lo : 0,
       thi: thicknessVary ? params.thickness_hi : 0,
@@ -648,6 +717,9 @@ export const strokeNode: NodeDefinition = {
               ? ((params.repeat_colors as ColorRampStop[]) ?? [])
               : null;
           const perSubpath = params.color_source === "ramp" && !repeatStops;
+          const alongPath =
+            perSubpath &&
+            (params.ramp_by === "progress" || params.ramp_by === "attribute");
           const colorCfg: SubpathColorConfig = {
             source: perSubpath ? "ramp" : "flat",
             flatColor: (params.color as string) ?? "#ffffff",
@@ -658,6 +730,7 @@ export const strokeNode: NodeDefinition = {
             seed: Math.floor((params.ramp_seed as number) ?? 0),
             angleDeg: (params.ramp_angle as number) ?? 0,
             interp: ((params.ramp_interp as string) ?? "linear") as ColorRampInterp,
+            attr: (params.driver_attr as string) ?? "",
           };
           const solid = hexToRgba((params.color as string) ?? "#ffffff");
           // Per-subpath thickness (`thickness_source: vary`): driver t →
@@ -671,6 +744,7 @@ export const strokeNode: NodeDefinition = {
                 by: (params.thickness_by as ColorRampBy) ?? "random",
                 seed: Math.floor((params.thickness_seed as number) ?? 0),
                 angleDeg: (params.thickness_angle as number) ?? 0,
+                attr: (params.thickness_driver_attr as string) ?? "",
               }
             : null;
 
@@ -702,21 +776,38 @@ export const strokeNode: NodeDefinition = {
             if (perSubpath || widthCfg || anyProfile) {
               // Per-subpath stroking: own ramp color and/or own width.
               const subs = ring.subPaths.map((sp) => sp.sub);
-              const colorAt = perSubpath
-                ? makeSubpathColorFn(subs, colorCfg)
-                : null;
+              const colorAt =
+                perSubpath && !alongPath
+                  ? makeSubpathColorFn(subs, colorCfg)
+                  : null;
               const widthAt = widthCfg
                 ? makeSubpathDriverFn(subs, widthCfg)
                 : null;
               const ringColor = repeatStops
                 ? sampleColorRamp(repeatStops, ring.t)
                 : solid;
+              const attrName = (params.driver_attr as string) ?? "";
               ring.subPaths.forEach((sp, i) => {
                 let ww = w;
                 if (widthAt) {
                   ww = w * (widthLo + (widthHi - widthLo) * widthAt(i, sp.sub));
                   if (ww <= 0) return;
                   c2d.lineWidth = ww;
+                }
+                if (alongPath) {
+                  paintStrokeAlongProgress(c2d, [sp.sub], {
+                    W,
+                    H,
+                    thicknessPx: ww,
+                    stops: colorCfg.stops,
+                    interp: colorCfg.interp,
+                    closeOpen,
+                    tAt:
+                      params.ramp_by === "attribute"
+                        ? (sub, t) => sampleSubpathAttrScalar(sub, t, attrName)
+                        : undefined,
+                  });
+                  return;
                 }
                 const color = colorAt ? colorAt(i, sp.sub) : ringColor;
                 if (repeats <= 1 && subpathHasWidthProfile(sp.sub)) {

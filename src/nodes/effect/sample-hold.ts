@@ -77,6 +77,15 @@ export const sampleHoldNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Latch a value on each rising edge of the trigger and hold it until the next one. Latch the Pointer's position on click, an audio level on a beat, a Random per press. Type retypes the value socket (scalar / vec2 / vec3 / vec4). Follow mode passes the input through until the first trigger; zero rests at 0.",
+  facts: {
+    space: { out: "in:value" },
+    gotchas: [
+      "Rising edge is trigger crossing 0.5 (lastTrigger<=0.5 && trig>0.5), a fixed threshold; an unwired trigger stays at 0 and never latches.",
+      "Changing type mid-session pads or truncates the existing latch to the new arity instead of clearing it.",
+      "initial=follow passes the wired value straight through until the first rising edge; initial=zero holds 0 until then.",
+      "The latch is session-only node state that does not reset when the playhead loops back to time 0; only deleting the node clears it.",
+    ],
+  },
   backend: "webgl2",
   // Edge + latch state — recompute every eval.
   stable: false,

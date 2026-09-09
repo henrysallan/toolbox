@@ -6,6 +6,12 @@ export const imageMaskColliderNode: NodeDefinition = {
   category: "effect",
   description:
     "Image-based collider — pixels with alpha above the threshold act as solid geometry. Particles bounce off (gradient as surface normal) or die on contact.",
+  facts: {
+    gotchas: [
+      "kill=true drops particles on contact and hides restitution — bounce and kill are mutually exclusive.",
+      "In Matter Simulator this collider bakes into a CPU obstacle SDF instead of being sampled directly, since image masks can't be read on the WebGPU compute path.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "mask", type: "image", required: true }],
   params: [

@@ -24,7 +24,9 @@ type GizmoMode = "translate" | "rotate" | "scale";
 //   • Camera view — looks through the wired Camera node AND drives it:
 //     orbit/pan/zoom write the camera node's pos/target params (Blender's
 //     "lock camera to view"). All param writes for one gesture share an
-//     undo-coalesce key, so a drag is a single history entry.
+//     undo-coalesce key, so a drag is a single history entry. Requires a
+//     Camera wired into 3D Scene; if that wire drops, we fall back to
+//     free orbit (look-through with no camera used to freeze navigation).
 //
 // Input uses native listeners (pointerdown on the canvas, move/up on
 // window) for reliable capture during drags.
@@ -40,7 +42,8 @@ interface Props {
   canvas: HTMLCanvasElement | null;
   sceneRenderId: string;
   // The camera-3d node feeding the Scene Render, drivable in look-through
-  // mode. Null ⇒ look-through is view-only.
+  // mode. May be behind a reroute or Switch. Null ⇒ look-through is
+  // unavailable (falls back to free orbit).
   cameraNodeId: string | null;
   // The selected 3D object node the transform gizmo edits (writes pos/rot
   // params). Null ⇒ no gizmo. canRotate gates the rotate mode (lights have
@@ -89,6 +92,30 @@ function orbitToPosition(o: {
     o.target.y + o.radius * Math.cos(o.polar),
     o.target.z + o.radius * sinP * Math.cos(o.azimuth)
   );
+}
+
+// Inverse of orbitToPosition — seed free-orbit / camera-drive state from a
+// scene camera descriptor so dropping out of look-through doesn't jump.
+function applyCameraDescToOrbit(
+  o: OrbitState,
+  d: { position: [number, number, number]; target: [number, number, number] }
+): void {
+  o.target.set(d.target[0], d.target[1], d.target[2]);
+  const ox = d.position[0] - d.target[0];
+  const oy = d.position[1] - d.target[1];
+  const oz = d.position[2] - d.target[2];
+  o.radius = Math.max(0.01, Math.hypot(ox, oy, oz));
+  o.azimuth = Math.atan2(ox, oz);
+  o.polar = Math.acos(Math.max(-1, Math.min(1, oy / o.radius)));
+}
+
+// Look-through drive target: the producing camera-3d, even when the
+// Scene Render camera socket is fed through a reroute or Switch.
+function driveCameraId(
+  sceneRenderId: string,
+  fallback: string | null
+): string | null {
+  return getSceneRender(sceneRenderId)?.cameraDesc.nodeId ?? fallback;
 }
 
 // Remembered across viewport remounts (so the camera/orbit choice survives
@@ -147,6 +174,23 @@ export default function Scene3DViewport({
   useEffect(() => {
     lastLookThrough = lookThrough;
   }, [lookThrough]);
+
+  // Look-through with no wired camera used to freeze navigation: drags
+  // wrote the unused editor orbit while the loop kept showing the
+  // default/stale cameraDesc. Deleting the scene camera (or adding a
+  // replacement then deleting it, which drops the wire) hits this.
+  // Drop to free orbit, seeded from the last published view so the
+  // frame doesn't jump. Don't treat a reroute/Switch as "no camera" —
+  // the producing camera-3d is on cameraDesc.nodeId after eval.
+  useEffect(() => {
+    if (!lookThrough) return;
+    const live = driveCameraId(sceneRenderId, cameraNodeId);
+    if (live) return;
+    const handle = getSceneRender(sceneRenderId);
+    if (!handle) return;
+    applyCameraDescToOrbit(orbitRef.current, handle.cameraDesc);
+    setLookThrough(false);
+  }, [lookThrough, cameraNodeId, sceneRenderId]);
 
   const [locked, setLocked] = useState(lastLocked);
   const lockedRef = useRef(locked);
@@ -699,14 +743,21 @@ export default function Scene3DViewport({
         if (cur && cur.userData.__splineDot) controls?.detach();
       }
 
-      if (lookThroughRef.current && driveRef.current.active) {
+      // Look-through is only meaningful while a Camera node is driving
+      // the scene — possibly through a reroute/Switch (nodeId on the
+      // published desc). Without one, use free orbit even if the toggle
+      // hasn't flipped yet.
+      const thru =
+        lookThroughRef.current &&
+        !!driveCameraId(sceneRenderId, cameraNodeIdRef.current);
+      if (thru && driveRef.current.active) {
         // Mid-gesture: render from the drive state directly (no eval lag).
         // Keep the camera's own FOV — don't snap to the editor default.
         const o = driveRef.current;
         cam.fov = o.fov;
         cam.position.copy(orbitToPosition(o));
         cam.lookAt(o.target);
-      } else if (lookThroughRef.current && handle) {
+      } else if (thru && handle) {
         const d = handle.cameraDesc;
         cam.fov = d.projection === "orthographic" ? 45 : d.fov;
         cam.position.set(d.position[0], d.position[1], d.position[2]);
@@ -729,7 +780,9 @@ export default function Scene3DViewport({
       // behind), and the geometry is rendered DEPTH-ONLY so it occludes the
       // grid without drawing color that would double the composite. Free
       // orbit = opaque dark clear with the geometry drawn normally.
-      const overlay = lookThroughRef.current;
+      const overlay =
+        lookThroughRef.current &&
+        !!driveCameraId(sceneRenderId, cameraNodeIdRef.current);
       r.setClearColor(overlay ? 0x000000 : 0x14141a, overlay ? 0 : 1);
       r.autoClear = false;
       r.clear();
@@ -796,22 +849,18 @@ export default function Scene3DViewport({
       const handle = getSceneRender(sceneRenderIdRef.current);
       if (!handle) return false;
       const d = handle.cameraDesc;
-      const o = driveRef.current;
-      o.target.set(d.target[0], d.target[1], d.target[2]);
-      const ox = d.position[0] - d.target[0];
-      const oy = d.position[1] - d.target[1];
-      const oz = d.position[2] - d.target[2];
-      o.radius = Math.max(0.01, Math.hypot(ox, oy, oz));
-      o.azimuth = Math.atan2(ox, oz);
-      o.polar = Math.acos(Math.max(-1, Math.min(1, oy / o.radius)));
-      o.fov = d.projection === "orthographic" ? 45 : d.fov;
+      applyCameraDescToOrbit(driveRef.current, d);
+      driveRef.current.fov = d.projection === "orthographic" ? 45 : d.fov;
       return true;
     };
 
     // Write the drive state back to the camera node's params. All params in
     // one gesture share a coalesce key ⇒ a single undo entry.
     const writeCamera = (includeTarget: boolean) => {
-      const camId = cameraNodeIdRef.current;
+      const camId = driveCameraId(
+        sceneRenderIdRef.current,
+        cameraNodeIdRef.current
+      );
       const opc = onParamChangeRef.current;
       if (!camId) return;
       const o = driveRef.current;
@@ -879,10 +928,12 @@ export default function Scene3DViewport({
       mode = e.button === 1 || e.button === 2 || e.shiftKey ? "pan" : "orbit";
       lastX = e.clientX;
       lastY = e.clientY;
-      gestureKey = `cam-drive:${cameraNodeIdRef.current}:${++gesture}`;
+      gestureKey = `cam-drive:${driveCameraId(sceneRenderIdRef.current, cameraNodeIdRef.current)}:${++gesture}`;
       // In look-through mode, drive the wired camera (if any).
       driveRef.current.active =
-        lookThroughRef.current && !!cameraNodeIdRef.current && seedDrive();
+        lookThroughRef.current &&
+        !!driveCameraId(sceneRenderIdRef.current, cameraNodeIdRef.current) &&
+        seedDrive();
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     };
@@ -916,12 +967,15 @@ export default function Scene3DViewport({
       e.stopPropagation();
       const kind = e.metaKey || e.ctrlKey ? "zoom" : e.shiftKey ? "pan" : "orbit";
 
-      if (lookThroughRef.current && cameraNodeIdRef.current) {
+      if (
+        lookThroughRef.current &&
+        driveCameraId(sceneRenderIdRef.current, cameraNodeIdRef.current)
+      ) {
         // Drive the wired scene camera. Seed once per gesture; the debounce
         // keeps `active` true (zero-lag render) until scrolling stops.
         if (!driveRef.current.active) {
           if (!seedDrive()) return;
-          gestureKey = `cam-drive:${cameraNodeIdRef.current}:${++gesture}`;
+          gestureKey = `cam-drive:${driveCameraId(sceneRenderIdRef.current, cameraNodeIdRef.current)}:${++gesture}`;
           driveRef.current.active = true;
         }
         applyScrollDelta(driveRef.current, e, kind);
@@ -970,9 +1024,7 @@ export default function Scene3DViewport({
     };
   }, []);
 
-  const canDrive = lookThrough && !!cameraNodeId;
-
-  // Dock the toolbars to the outer viewport module (not the letterboxed
+  // Dock the toolbars to the outer viewport module (not the letterboxed)
   // canvas), so they sit in the panel's corners.
   const base = hostRect ?? rect;
 
@@ -1082,15 +1134,25 @@ export default function Scene3DViewport({
             </IconBtn>
             <IconBtn
               label={
-                lookThrough
-                  ? canDrive
+                !cameraNodeId
+                  ? "Wire a Camera into 3D Scene to look through it"
+                  : lookThrough
                     ? "Looking through the wired camera — drag/zoom moves it"
-                    : "Looking through the default view (no camera wired to drive)"
-                  : "Free editor orbit (does not affect the scene camera)"
+                    : "Free editor orbit (does not affect the scene camera)"
               }
               active={lookThrough}
+              disabled={!cameraNodeId}
               accent={CAMERA_ACCENT}
-              onClick={() => setLookThrough((v) => !v)}
+              onClick={() => {
+                if (lookThrough) {
+                  const handle = getSceneRender(sceneRenderId);
+                  if (handle)
+                    applyCameraDescToOrbit(orbitRef.current, handle.cameraDesc);
+                  setLookThrough(false);
+                } else {
+                  setLookThrough(true);
+                }
+              }}
             >
               <CameraIcon />
             </IconBtn>

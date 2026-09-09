@@ -74,6 +74,21 @@ export function collectModeForSource(
   if (src === "image" || src === "mask" || src === "element") return "image";
   return null;
 }
+// Shared Collect family of N primary outputs, or null if they can't be
+// bundled (fewer than two, any non-combinable type, or mixed families).
+export function combineSelectionMode(
+  primaryOutputs: Array<string | null | undefined>
+): CollectMode | null {
+  if (primaryOutputs.length < 2) return null;
+  let mode: CollectMode | null = null;
+  for (const out of primaryOutputs) {
+    const m = collectModeForSource(out);
+    if (!m) return null;
+    if (mode == null) mode = m;
+    else if (m !== mode) return null;
+  }
+  return mode;
+}
 export function isCollectSlotHandle(
   handle: string | undefined | null
 ): boolean {
@@ -82,21 +97,21 @@ export function isCollectSlotHandle(
   return parsed?.kind === "input" && parsed.name !== "mask";
 }
 
-// Accumulator (scalar integrator, or a persistent points pile). onConnect
-// flips `type` to match the wire; editorCanCoerce lets points / spline /
-// vec2 land while the socket still reads scalar. Spline anchors and a
-// vec2 become points inside the node — the output is always `points`
-// once the domain is points.
+// Accumulator (scalar integrator, a persistent points pile, or a
+// persistent spline pile). onConnect flips `type` to match the wire;
+// editorCanCoerce lets points / spline / vec2 land while the socket
+// still reads scalar. A vec2 becomes one point inside the node. A
+// spline stays a spline — each playing frame appends its subpaths.
 export const ACCUMULATOR_TYPE = "accumulator";
-export type AccumulatorDomain = "scalar" | "points";
+export type AccumulatorDomain = "scalar" | "points" | "spline";
 export const ACCUMULATOR_POINTS_SOURCES: ReadonlySet<string> = new Set([
   "points",
-  "spline",
   "vec2",
 ]);
 export function accumulatorDomainForSource(
   src: string | null | undefined
 ): AccumulatorDomain | null {
+  if (src === "spline") return "spline";
   if (src && ACCUMULATOR_POINTS_SOURCES.has(src)) return "points";
   if (src === "scalar") return "scalar";
   return null;
@@ -112,13 +127,19 @@ export function accumulatorDomain(
   params: Record<string, unknown>,
   wired?: SocketType
 ): AccumulatorDomain {
-  if (wired && ACCUMULATOR_POINTS_SOURCES.has(wired)) return "points";
-  if (wired === "scalar") return "scalar";
-  return params.type === "points" ? "points" : "scalar";
+  const fromWire = accumulatorDomainForSource(wired);
+  if (fromWire) return fromWire;
+  if (params.type === "points" || params.type === "spline") return params.type;
+  return "scalar";
 }
-export function accumulatorInputType(wired?: SocketType): SocketType {
-  if (wired && ACCUMULATOR_POINTS_SOURCES.has(wired)) return wired;
-  return "points";
+export function accumulatorInputType(
+  wired?: SocketType,
+  domain: AccumulatorDomain = "points"
+): SocketType {
+  if (wired && accumulatorDomainForSource(wired) != null && wired !== "scalar") {
+    return wired;
+  }
+  return domain === "spline" ? "spline" : "points";
 }
 
 // ---------------------------------------------------------------------------
@@ -246,4 +267,55 @@ export function paramSocketType(type: ParamType): SocketType | null {
     default:
       return null;
   }
+}
+
+// Walk reroute / Switch passthroughs to the producing `camera-3d` node.
+// Scene Render's camera socket is often fed through a waypoint or a mux;
+// look-through drive has to write THAT node's pos/target params, not the
+// passthrough's. Switch uses the current `index` param (live wired index
+// is resolved at eval time via CameraValue.nodeId on the published desc).
+export function walkToCamera3DNode(
+  startId: string,
+  nodeOf: ReadonlyMap<string, { defType: string; params: Record<string, unknown> }>,
+  edges: ReadonlyArray<{
+    source: string;
+    target: string;
+    targetHandle?: string | null;
+  }>
+): string | null {
+  const incoming = (nodeId: string, inputName: string): string | undefined => {
+    const want = `in:${inputName}`;
+    for (const e of edges) {
+      if (e.target === nodeId && e.targetHandle === want) return e.source;
+    }
+    return undefined;
+  };
+  const seen = new Set<string>();
+  let id: string | undefined = startId;
+  while (id && !seen.has(id)) {
+    seen.add(id);
+    const n = nodeOf.get(id);
+    if (!n) return null;
+    if (n.defType === "camera-3d") return id;
+    if (n.defType === REROUTE_TYPE) {
+      id = incoming(id, "value");
+      continue;
+    }
+    if (n.defType === SWITCH_TYPE) {
+      const rawCount = n.params.count;
+      const count = Math.max(
+        2,
+        Math.min(8, Math.round(typeof rawCount === "number" ? rawCount : 2))
+      );
+      const rawIdx = n.params.index;
+      let idx = Math.round(typeof rawIdx === "number" ? rawIdx : 0);
+      if (!Number.isFinite(idx)) idx = 0;
+      if (idx < 0) idx = 0;
+      if (idx > count - 1) idx = count - 1;
+      id = incoming(id, `in${idx}`);
+      continue;
+    }
+    return null;
+  }
+  return null;
 }

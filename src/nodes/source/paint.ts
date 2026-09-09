@@ -41,6 +41,15 @@ export const paintNode: NodeDefinition = {
   description:
     "Draw on the main canvas while this node is selected — brush, eraser, " +
     "blur, fill, and eyedropper tools with editable brushes.",
+  facts: {
+    space: { "param:size": "pixels" },
+    gotchas: [
+      "compute() only blits the already-drawn snapshot bitmap; color, size, brush, and fill_tolerance shape the NEXT stroke in the Paint tool overlay and do nothing to strokes already painted.",
+      "bg_mode=transparent passes straight-alpha strokes through untouched (composites over other layers, mattes cleanly to a mask); bg_mode=color composites them over `background` and is always opaque.",
+      "An empty canvas (no strokes drawn yet) always outputs fully transparent, even in bg_mode=color; the background color only shows once a stroke exists.",
+      "size is the brush diameter in canvas pixels at render resolution, so it does not scale automatically with output size.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

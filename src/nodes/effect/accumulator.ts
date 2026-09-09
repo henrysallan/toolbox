@@ -7,6 +7,8 @@ import type {
   ScalarValue,
   SocketType,
   SocketValue,
+  SplineAnchor,
+  SplineSubpath,
   SplineValue,
 } from "@/engine/types";
 import {
@@ -28,9 +30,10 @@ import {
 // Polymorphic accumulator. Scalar mode integrates a number over time
 // (the original node). Points mode appends each playing frame's input
 // onto a persistent set — Scatter with seed driven by time piles up
-// instead of replacing. The input autocoerces: wiring points, a spline
-// (anchors become points), or a vec2 (one point) flips the node to
-// points and the output follows.
+// instead of replacing. Spline mode does the same for subpaths, so a
+// time-varying path piles into a growing spline you can Stroke. A
+// vec2 autocoerces to one point; a spline wire flips the node to the
+// spline domain (output stays spline).
 //
 // Scalar modes:
 //   - integrate: output += input × dt (frame-rate independent; an input
@@ -40,21 +43,23 @@ import {
 //
 // Range (scalar): free / clamp / wrap.
 //
-// Points index modes:
+// Points / spline index modes:
 //   - append ("add on top"): concatenate; incoming groupIndex tags
 //     survive, untagged stay untagged. Array indices just continue.
 //   - generation: each batch is stamped with an incrementing groupIndex
 //     (0, 1, 2…) so downstream can style/filter by when it appeared.
-//   - unique: every point gets a monotonic groupIndex id.
+//   - unique: every point / subpath gets a monotonic groupIndex id.
 //
 // Age: each piled point gets a well-known `age` channel (seconds since
-// it joined this node). Birth times live in state; age is derived on
+// it joined this node). Spline mode stamps the same name on each
+// subpath's `attrs`. Birth times live in state; age is derived on
 // emit so pause/scrub stay honest. Incoming `age` is overwritten.
 //
 // Reset: auto-reset on scene time 0 (matches RD and Sim Zones);
-// `reset` > 0.5 clears and holds while high. Points grow only when
-// scene time actually advances (paused / re-eval at the same timestamp
-// does not double-add). Rewind freezes rather than running in reverse.
+// `reset` > 0.5 clears and holds while high. Points and splines grow
+// only when scene time actually advances (paused / re-eval at the
+// same timestamp does not double-add). Rewind freezes rather than
+// running in reverse.
 
 type IndexMode = "append" | "generation" | "unique";
 
@@ -78,7 +83,21 @@ interface PointsAccumState {
   initialized: boolean;
 }
 
-type AccumState = ScalarAccumState | PointsAccumState;
+interface SplineAccumState {
+  kind: "spline";
+  acc: SplineSubpath[];
+  // Scene-time join stamp per piled subpath, parallel to acc.
+  births: Float32Array;
+  lastTime: number;
+  lastAccumTime: number;
+  generation: number;
+  nextId: number;
+  initialized: boolean;
+}
+
+type AccumState = ScalarAccumState | PointsAccumState | SplineAccumState;
+
+const EMPTY_SPLINE: SplineValue = { kind: "spline", subpaths: [] };
 
 function applyRange(
   v: number,
@@ -136,6 +155,116 @@ function valueToPoints(value: SocketValue | undefined): PointsValue | null {
   }
   if (value.kind === "spline") return splineToPoints(value);
   return null;
+}
+
+function cloneAttrs(
+  attrs?: Record<string, number | number[]>
+): Record<string, number | number[]> | undefined {
+  if (!attrs) return undefined;
+  const out: Record<string, number | number[]> = {};
+  for (const k of Object.keys(attrs)) {
+    const v = attrs[k];
+    out[k] = Array.isArray(v) ? v.slice() : v;
+  }
+  return out;
+}
+
+function cloneAnchor(a: SplineAnchor): SplineAnchor {
+  const out: SplineAnchor = { pos: [a.pos[0], a.pos[1]] };
+  if (a.inHandle) out.inHandle = [a.inHandle[0], a.inHandle[1]];
+  if (a.outHandle) out.outHandle = [a.outHandle[0], a.outHandle[1]];
+  if (a.broken) out.broken = true;
+  if (a.cornerRadius != null) out.cornerRadius = a.cornerRadius;
+  if (a.cornerStyle) out.cornerStyle = a.cornerStyle;
+  if (a.width != null) out.width = a.width;
+  const attrs = cloneAttrs(a.attrs);
+  if (attrs) out.attrs = attrs;
+  return out;
+}
+
+function cloneSubpath(sp: SplineSubpath): SplineSubpath {
+  const out: SplineSubpath = {
+    closed: sp.closed,
+    anchors: sp.anchors.map(cloneAnchor),
+  };
+  if (sp.groupIndex != null) out.groupIndex = sp.groupIndex;
+  if (sp.driver != null) out.driver = sp.driver;
+  const attrs = cloneAttrs(sp.attrs);
+  if (attrs) out.attrs = attrs;
+  return out;
+}
+
+function tagIncomingSplines(
+  src: SplineSubpath[],
+  mode: IndexMode,
+  generation: number,
+  nextId: number
+): { subs: SplineSubpath[]; generation: number; nextId: number } {
+  const n = src.length;
+  if (n === 0 || mode === "append") {
+    return { subs: src, generation, nextId };
+  }
+  if (mode === "generation") {
+    const subs = src.map((sp) => ({ ...sp, groupIndex: generation }));
+    return { subs, generation: generation + 1, nextId };
+  }
+  const subs = src.map((sp, i) => ({ ...sp, groupIndex: nextId + i }));
+  return { subs, generation, nextId: nextId + n };
+}
+
+function capSubpaths(
+  current: SplineSubpath[],
+  incoming: SplineSubpath[],
+  max: number,
+  overflow: string
+): SplineSubpath[] {
+  if (incoming.length === 0) return current;
+  if (current.length + incoming.length <= max) {
+    return current.concat(incoming);
+  }
+  if (overflow === "ring") {
+    const combined = current.concat(incoming);
+    return combined.slice(combined.length - max);
+  }
+  const room = max - current.length;
+  if (room <= 0) return current;
+  return current.concat(incoming.slice(0, room));
+}
+
+function stripSplineAge(src: SplineSubpath[]): SplineSubpath[] {
+  let dirty = false;
+  for (const sp of src) {
+    if (sp.attrs && POINT_AGE_ATTR in sp.attrs) {
+      dirty = true;
+      break;
+    }
+  }
+  if (!dirty) return src;
+  return src.map((sp) => {
+    if (!sp.attrs || !(POINT_AGE_ATTR in sp.attrs)) return sp;
+    const rest = { ...sp.attrs };
+    delete rest[POINT_AGE_ATTR];
+    const attrs = Object.keys(rest).length > 0 ? rest : undefined;
+    return { ...sp, attrs };
+  });
+}
+
+function overlaySplineAge(
+  subs: SplineSubpath[],
+  births: Float32Array,
+  time: number
+): SplineValue {
+  if (subs.length === 0) return EMPTY_SPLINE;
+  return {
+    kind: "spline",
+    subpaths: subs.map((sp, i) => {
+      const age = Math.max(0, time - births[i]);
+      const attrs = sp.attrs
+        ? { ...sp.attrs, [POINT_AGE_ATTR]: age }
+        : { [POINT_AGE_ATTR]: age };
+      return { ...sp, attrs };
+    }),
+  };
 }
 
 function tagIncoming(
@@ -236,8 +365,21 @@ export const accumulatorNode: NodeDefinition = {
   name: "Accumulator",
   category: "utility",
   description:
-    "Accumulate over time. Wire a scalar to integrate or sum a growing number. Wire points (or a spline / vec2 — autocoerced to points) and each playing frame appends onto a persistent set: Scatter with a time-driven seed piles up instead of replacing. Each piled point carries an `age` channel (seconds since it joined). Index mode defaults to add-on-top (append); generation tags each batch, unique assigns a stable id per point. Auto-resets on scene time 0; an optional reset input clears while held.",
+    "Accumulate over time. Wire a scalar to integrate or sum a growing number. Wire points (or a vec2 — autocoerced to one point) and each playing frame appends onto a persistent set: Scatter with a time-driven seed piles up instead of replacing. Wire a spline and each frame appends its subpaths onto a persistent spline you can Stroke. Each piled point or subpath carries an `age` channel (seconds since it joined). Index mode defaults to add-on-top (append); generation tags each batch, unique assigns a stable id per item. Auto-resets on scene time 0; an optional reset input clears while held.",
   searchAliases: ["accumulate", "append", "pile"],
+  facts: {
+    space: { "in:input": ["canvas01", "unitless"], out: "in:input" },
+    writes: ["attr:age", "attr:group"],
+    gotchas: [
+      "The wired input's socket type wins over the type param — type only picks the domain when nothing is wired to input.",
+      "Points/spline growth happens once per advancing scene-time sample; re-evaluating at the same timestamp does not re-add, and scrubbing backward freezes rather than reversing.",
+      "Scalar mode=integrate multiplies input by dt (frame-rate independent, reads as units/second); mode=sum adds the raw input every evaluation.",
+      "index_mode=append passes any incoming group tags through untouched; generation stamps a whole incoming batch with one incrementing id; unique gives every item its own incrementing id.",
+      "overflow=ring drops the oldest points/subpaths once max_points/max_subpaths is exceeded; overflow=stop keeps the current set and discards the rest of the incoming batch.",
+      "A wired vec2 autocoerces to a single point at that (x, y); a wired spline flips the node into spline output even if type=scalar is still selected.",
+      "Any incoming age attribute is stripped and replaced: age is owned by this node and derived live from each item's join time, so pause/scrub read it correctly.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "type" },
   // State lives between frames; fingerprintExtras mixes in ctx.time so
@@ -251,9 +393,9 @@ export const accumulatorNode: NodeDefinition = {
   resolveInputs(params, ctx?: ResolveCtx): InputSocketDef[] {
     const domain = accumulatorDomain(params, ctx?.connectedTypes?.input);
     const inputType: SocketType =
-      domain === "points"
-        ? accumulatorInputType(ctx?.connectedTypes?.input)
-        : "scalar";
+      domain === "scalar"
+        ? "scalar"
+        : accumulatorInputType(ctx?.connectedTypes?.input, domain);
     return [
       { name: "input", type: inputType, required: true },
       { name: "reset", type: "scalar", required: false },
@@ -264,7 +406,7 @@ export const accumulatorNode: NodeDefinition = {
       name: "type",
       label: "Type",
       type: "enum",
-      options: ["scalar", "points"],
+      options: ["scalar", "points", "spline"],
       default: "scalar",
     },
     {
@@ -273,7 +415,7 @@ export const accumulatorNode: NodeDefinition = {
       type: "enum",
       options: ["integrate", "sum"],
       default: "integrate",
-      visibleIf: (p) => p.type !== "points",
+      visibleIf: (p) => p.type !== "points" && p.type !== "spline",
     },
     {
       name: "initial",
@@ -284,7 +426,7 @@ export const accumulatorNode: NodeDefinition = {
       softMax: 10,
       step: 0.01,
       default: 0,
-      visibleIf: (p) => p.type !== "points",
+      visibleIf: (p) => p.type !== "points" && p.type !== "spline",
     },
     {
       name: "range",
@@ -292,7 +434,7 @@ export const accumulatorNode: NodeDefinition = {
       type: "enum",
       options: ["free", "clamp", "wrap"],
       default: "free",
-      visibleIf: (p) => p.type !== "points",
+      visibleIf: (p) => p.type !== "points" && p.type !== "spline",
     },
     {
       name: "min",
@@ -303,7 +445,8 @@ export const accumulatorNode: NodeDefinition = {
       softMax: 10,
       step: 0.01,
       default: 0,
-      visibleIf: (p) => p.type !== "points" && p.range !== "free",
+      visibleIf: (p) =>
+        p.type !== "points" && p.type !== "spline" && p.range !== "free",
     },
     {
       name: "max",
@@ -314,7 +457,8 @@ export const accumulatorNode: NodeDefinition = {
       softMax: 10,
       step: 0.01,
       default: 1,
-      visibleIf: (p) => p.type !== "points" && p.range !== "free",
+      visibleIf: (p) =>
+        p.type !== "points" && p.type !== "spline" && p.range !== "free",
     },
     {
       name: "index_mode",
@@ -322,7 +466,7 @@ export const accumulatorNode: NodeDefinition = {
       type: "enum",
       options: ["add on top", "generation", "unique"],
       default: "add on top",
-      visibleIf: (p) => p.type === "points",
+      visibleIf: (p) => p.type === "points" || p.type === "spline",
     },
     {
       name: "max_points",
@@ -336,19 +480,31 @@ export const accumulatorNode: NodeDefinition = {
       visibleIf: (p) => p.type === "points",
     },
     {
+      name: "max_subpaths",
+      label: "Max subpaths",
+      type: "scalar",
+      min: 1,
+      max: 16384,
+      softMax: 4096,
+      step: 1,
+      default: 1024,
+      visibleIf: (p) => p.type === "spline",
+    },
+    {
       name: "overflow",
       label: "Overflow",
       type: "enum",
       options: ["stop", "ring"],
       default: "stop",
-      visibleIf: (p) => p.type === "points",
+      visibleIf: (p) => p.type === "points" || p.type === "spline",
     },
   ],
   primaryOutput: "scalar",
   resolvePrimaryOutput(params, ctx?: ResolveCtx): SocketType {
-    return accumulatorDomain(params, ctx?.connectedTypes?.input) === "points"
-      ? "points"
-      : "scalar";
+    const domain = accumulatorDomain(params, ctx?.connectedTypes?.input);
+    if (domain === "points") return "points";
+    if (domain === "spline") return "spline";
+    return "scalar";
   },
   auxOutputs: [],
 
@@ -357,18 +513,19 @@ export const accumulatorNode: NodeDefinition = {
   },
 
   compute({ inputs, params, ctx, nodeId }) {
-    const domain = accumulatorDomain(
-      params,
-      accumulatorDomainForSource(inputs.input?.kind) === "points"
-        ? (inputs.input!.kind as SocketType)
-        : undefined
-    );
+    const wired = accumulatorDomainForSource(inputs.input?.kind)
+      ? (inputs.input!.kind as SocketType)
+      : undefined;
+    const domain = accumulatorDomain(params, wired);
 
     const key = stateKey(nodeId);
     const existing = ctx.state[key] as AccumState | undefined;
 
     if (domain === "points") {
       return computePoints(inputs, params, ctx, nodeId, existing);
+    }
+    if (domain === "spline") {
+      return computeSpline(inputs, params, ctx, nodeId, existing);
     }
     return computeScalar(inputs, params, ctx, nodeId, existing);
   },
@@ -518,4 +675,86 @@ function computePoints(
 
   if (state.acc.count === 0) return { primary: EMPTY_POINTS };
   return { primary: overlayAge(state.acc, state.births, ctx.time) };
+}
+
+function computeSpline(
+  inputs: Record<string, SocketValue | undefined>,
+  params: Record<string, unknown>,
+  ctx: RenderContext,
+  nodeId: string,
+  existing: AccumState | undefined
+) {
+  const indexMode = readIndexMode(params.index_mode);
+  const maxSubpaths = Math.max(
+    1,
+    Math.floor((params.max_subpaths as number) ?? 1024)
+  );
+  const overflow = (params.overflow as string) ?? "stop";
+
+  let state: SplineAccumState;
+  if (existing?.kind === "spline") {
+    state = existing;
+    if (
+      !(state.births instanceof Float32Array) ||
+      state.births.length !== state.acc.length
+    ) {
+      state.births = new Float32Array(state.acc.length).fill(ctx.time);
+    }
+  } else {
+    state = {
+      kind: "spline",
+      acc: [],
+      births: new Float32Array(0),
+      lastTime: ctx.time,
+      lastAccumTime: -1,
+      generation: 0,
+      nextId: 0,
+      initialized: false,
+    };
+    ctx.state[stateKey(nodeId)] = state;
+  }
+
+  const explicitReset =
+    inputs.reset?.kind === "scalar" ? inputs.reset.value > 0.5 : false;
+
+  if (shouldReset(state, ctx.time) || explicitReset) {
+    state.acc = [];
+    state.births = new Float32Array(0);
+    state.generation = 0;
+    state.nextId = 0;
+    state.lastAccumTime = -1;
+    state.initialized = true;
+  }
+
+  if (ctx.playing && !explicitReset && ctx.time > state.lastAccumTime) {
+    const src = inputs.input;
+    if (src && src.kind === "spline" && src.subpaths.length > 0) {
+      const cloned = src.subpaths.map(cloneSubpath);
+      const tagged = tagIncomingSplines(
+        cloned,
+        indexMode,
+        state.generation,
+        state.nextId
+      );
+      state.generation = tagged.generation;
+      state.nextId = tagged.nextId;
+      const stripped = stripSplineAge(tagged.subs);
+      const incomingBirths = new Float32Array(stripped.length).fill(ctx.time);
+      const prevCount = state.acc.length;
+      state.acc = capSubpaths(state.acc, stripped, maxSubpaths, overflow);
+      state.births = capScalarChannel(
+        state.births,
+        prevCount,
+        incomingBirths,
+        stripped.length,
+        maxSubpaths,
+        overflow
+      );
+    }
+    state.lastAccumTime = ctx.time;
+  }
+  state.lastTime = ctx.time;
+
+  if (state.acc.length === 0) return { primary: EMPTY_SPLINE };
+  return { primary: overlaySplineAge(state.acc, state.births, ctx.time) };
 }

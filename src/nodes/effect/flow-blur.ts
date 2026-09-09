@@ -92,6 +92,15 @@ export const flowBlurNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Smear the image along a flow field's streamlines (line integral convolution) — the painterly Van Gogh blur, and the standard way to SEE a field (wire noise into the image input). With `field` unwired the node derives flow from the image itself (structure tensor at `Internal smooth`); wire an Image Flow Field, Perlin curl, Spline Flow Field, or a sim's velocity aux to steer it. `Length` is the total ± smear distance (canvas-width fraction), `Samples` the quality per side. `Tangent` mode follows edge orientation regardless of direction; `Velocity` mode follows a directed field, smearing further where it's faster.",
+  facts: {
+    space: { "param:length": "canvas01" },
+    gotchas: [
+      "length is the total canvas-width-fraction smear distance split across both walk directions; step per sample = length/samples.",
+      "field unwired: derives an internal structure-tensor field from the image itself (1px pre-blur, smooth param); wiring field ignores smooth entirely.",
+      "mode=tangent walks the sign-coherent, direction-agnostic tangent; mode=velocity treats the field RG as a directed velocity, so smear length scales with local speed.",
+      "Averages samples in premultiplied color and un-premultiplies on write, avoiding the darkened-fringe bug of straight-alpha averaging at soft edges.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", type: "image", required: true },

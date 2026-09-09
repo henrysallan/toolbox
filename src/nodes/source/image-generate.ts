@@ -170,6 +170,15 @@ export const imageGenerateNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Generate images via OpenAI's gpt-image-2 with a chat interface in the param panel. Bring-your-own OpenAI key (Toolbox → User Preferences). Three optional reference image inputs feed the model as context. Outputs the currently-selected generation, or transparent when none is selected.",
+  facts: {
+    gotchas: [
+      "compute() never reads the ref_a/ref_b/ref_c sockets; they only feed the generation request from the panel's chat interface, not the render graph.",
+      "Output is driven entirely by selectedImagePath (a public bucket URL); empty means transparent output and immediately disposes any cached texture.",
+      "On a URL change it first tries a synchronous panel-stashed ImageBitmap.",
+      "On a cache miss it falls back to an async image fetch that emits transparent for that frame and fires pipeline-bump on completion.",
+      "Requires the active user's own OpenAI API key (Toolbox -> User Preferences); generations are billed to and stored under that user's account.",
+    ],
+  },
   backend: "webgl2",
   // Async external service + per-node session store — live external
   // state. Time Offset boundary-feeds the selected image through

@@ -92,6 +92,14 @@ export const sharpenNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Sharpen an image with one of four kernel shapes. Box/diamond/cross are Laplacian-style (crisp); unsharp uses a Gaussian reference for softer falloff.",
+  facts: {
+    gotchas: [
+      "All four algorithms are single-pass 3×3 taps at the native pixel grid (u_invRes = 1/width, 1/height) — they do not scale with a wired kernel or radius param.",
+      "algorithm=box/diamond/cross are Laplacian sharpens (amount scales neighbor subtraction); unsharp uses Gaussian-weighted 3×3 weights instead, for softer falloff and less ringing.",
+      "algorithm=cross taps only the four diagonal neighbors, so it sharpens diagonal edges while leaving axis-aligned edges untouched.",
+      "Output RGB is not clamped and can overshoot [0,1] on high-contrast edges; alpha always passes through untouched.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

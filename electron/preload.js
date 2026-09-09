@@ -62,6 +62,12 @@ contextBridge.exposeInMainWorld("toolboxNative", {
   // ---- Transcode-on-import ----
   transcodeForPlayback: (opts) => ipcRenderer.invoke("toolbox:transcodeForPlayback", opts),
 
+  // ---- Scrub proxy (decoder-only 1080p all-intra re-encode, read by range) ----
+  scrubProxyBegin: (opts) => ipcRenderer.invoke("toolbox:scrubProxyBegin", opts),
+  scrubProxyRead: (token, start, end) =>
+    ipcRenderer.invoke("toolbox:scrubProxyRead", token, start, end),
+  scrubProxyDispose: (token) => ipcRenderer.invoke("toolbox:scrubProxyDispose", token),
+
   // ---- Window controls (frameless desktop) ----
   window: {
     minimize: () => ipcRenderer.send("toolbox:win:minimize"),

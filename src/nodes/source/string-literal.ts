@@ -12,6 +12,7 @@ export const stringLiteralNode: NodeDefinition = {
   category: "utility",
   description:
     "Emits a single text value. Wire it into an exposed string param (e.g. a Text node's text) to drive that text, or share one string across several nodes.",
+  facts: {},
   backend: "webgl2",
   stable: true,
   noMaskInput: true,

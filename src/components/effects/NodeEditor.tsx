@@ -38,13 +38,19 @@ import IterateZoneUnderlay, {
 import { useEffectiveDevice } from "./input-device";
 import { getNodeDef } from "@/engine/registry";
 import {
-  appendPathPoint,
   defaultBezierCps,
   handleCenter,
   sampleCubic,
   type Pt,
 } from "@/engine/wire-geometry";
 import { paramSocketType, parseTargetHandleKind } from "@/state/graph";
+import {
+  alignLayout,
+  distributeLayout,
+  tidyLayout,
+  type AlignMode,
+} from "@/state/node-layout";
+import { toLayoutGraph, type HandleOffsets } from "@/state/node-layout-graph";
 import {
   parseRampParamKey,
   rampFieldSocketType,
@@ -53,14 +59,19 @@ import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
   GROUP_TYPE,
-  ITERATE_INPUT_TYPE,
-  ITERATE_TYPE,
   LAYER_TYPE,
   VIRTUAL_SOCKET,
+  isZoneInput,
+  isZoneShell,
+  zoneCollectsGrouped,
 } from "@/engine/groups";
 import { editorCanCoerce } from "@/engine/graph-validation";
 import type { SocketType } from "@/engine/types";
-import { FRAME_TYPE, REROUTE_TYPE } from "@/engine/graph-helpers";
+import {
+  combineSelectionMode,
+  FRAME_TYPE,
+  REROUTE_TYPE,
+} from "@/engine/graph-helpers";
 
 // Node types you can dive into with Tab / double-click. Iterate is
 // deliberately absent — its body always renders inline as a zone
@@ -148,11 +159,23 @@ interface Props {
   // hidden for structural chrome (reroutes, frames, layer shells,
   // group/iterate boundary nodes).
   onSaveNodeAsPreset?: (nodeId: string) => void;
+  // Right-click → "Add to Assets": copies an Image / SVG / Video Source's
+  // media into the user's project-agnostic asset library
+  // (090326_asset-library.md §3.1). NodeEditor gates by defType; the
+  // parent decides availability (empty param, un-entitled video) via the
+  // reason callback, which renders the row disabled with that hint.
+  onAddNodeToAssets?: (nodeId: string) => void;
+  addToAssetsDisabledReason?: (nodeId: string) => string | undefined;
   onDuplicateSelection?: () => void;
   // Shift+M: wrap the currently selected image/mask-output nodes in a
   // new Merge node, wiring them in as base + layers. Parent owns the
   // eligibility filter and edge surgery; NodeEditor just owns the key.
   onMergeSelection?: () => void;
+  // Right-click → "Combine Nodes": wrap a multi-selection whose primary
+  // outputs share a Collect family in a Combine node. NodeEditor gates
+  // the row (clicked node is selected, ≥2 visible selected nodes, same
+  // family) and passes those ids; the parent owns the graph surgery.
+  onCombineSelection?: (nodeIds: string[]) => void;
   onCopyNodes?: () => void;
   onPasteNodes?: () => void;
   // OS-clipboard text looked like a Toolbox fragment (copied from another tab /
@@ -296,8 +319,11 @@ function NodeEditor({
   onMakeEditableNode,
   onDuplicateNode,
   onSaveNodeAsPreset,
+  onAddNodeToAssets,
+  addToAssetsDisabledReason,
   onDuplicateSelection,
   onMergeSelection,
+  onCombineSelection,
   onCopyNodes,
   onPasteNodes,
   onPasteFragmentText,
@@ -354,6 +380,7 @@ function NodeEditor({
     getViewport,
     setViewport,
     fitView,
+    getInternalNode,
   } = useReactFlow();
   const flowWrapperRef = useRef<HTMLDivElement | null>(null);
 
@@ -484,6 +511,186 @@ function NodeEditor({
     return () => el.removeEventListener("pointerdown", onDown);
   }, [touchActive]);
 
+  // -------- Tidy / align / distribute (090626_tidy-layout.md) ------------
+  // Targets come from the pure layout over the VISIBLE nodes (this scope
+  // plus inline zone members) using React Flow's real handle offsets, so
+  // wires come out straight against the actual socket rows. The move is
+  // animated through onNodesChange with dragging flags — the parent's
+  // drag-history path turns it into ONE undo entry — and frames / zone
+  // rects follow because they derive from member positions.
+  const handleOffsetsFor = useCallback(
+    (id: string): HandleOffsets | null => {
+      const hb = getInternalNode(id)?.internals.handleBounds;
+      if (!hb) return null;
+      const centres = (
+        list: { id?: string | null; y: number; height: number }[] | null
+      ) =>
+        (list ?? [])
+          .filter((h) => !!h.id)
+          .map((h) => ({ id: h.id as string, y: h.y + h.height / 2 }));
+      return { inputs: centres(hb.target), outputs: centres(hb.source) };
+    },
+    [getInternalNode]
+  );
+  const layoutGraph = useCallback(() => {
+    const visible = (rfGetNodes() as Node<NodeDataPayload>[]).filter(
+      (n) => !n.hidden
+    );
+    return toLayoutGraph(visible, rfGetEdges(), handleOffsetsFor);
+  }, [rfGetNodes, rfGetEdges, handleOffsetsFor]);
+  const tidyAnimRef = useRef<{ raf: number; ids: string[] } | null>(null);
+  // A user drag or a new request cancels an in-flight move where it is;
+  // the dragging:false flush lands the pending history snapshot.
+  const cancelTidyAnim = useCallback(() => {
+    const a = tidyAnimRef.current;
+    if (!a) return;
+    cancelAnimationFrame(a.raf);
+    tidyAnimRef.current = null;
+    onNodesChange(
+      a.ids.map((id) => ({ type: "position" as const, id, dragging: false }))
+    );
+  }, [onNodesChange]);
+  const animateNodesTo = useCallback(
+    (targets: Map<string, { x: number; y: number }>) => {
+      if (targets.size === 0) return;
+      cancelTidyAnim();
+      const start = new Map<string, { x: number; y: number }>();
+      for (const n of rfGetNodes()) {
+        const t = targets.get(n.id);
+        if (t && (t.x !== n.position.x || t.y !== n.position.y)) {
+          start.set(n.id, { x: n.position.x, y: n.position.y });
+        }
+      }
+      if (start.size === 0) return;
+      const ids = [...start.keys()];
+      // The final batch always sends dragging:true THEN dragging:false per
+      // node, so even a single-frame move (reduced motion, a background
+      // tab that skipped straight to the end) records its undo entry.
+      const finish = () => {
+        onNodesChange([
+          ...ids.map((id) => ({
+            type: "position" as const,
+            id,
+            position: targets.get(id)!,
+            dragging: true,
+          })),
+          ...ids.map((id) => ({ type: "position" as const, id, dragging: false })),
+        ]);
+        tidyAnimRef.current = null;
+      };
+      const reduce =
+        typeof window !== "undefined" &&
+        !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      if (reduce) {
+        finish();
+        return;
+      }
+      const DURATION_MS = 320;
+      const t0 = performance.now();
+      const step = () => {
+        const t = Math.min(1, (performance.now() - t0) / DURATION_MS);
+        if (t >= 1) {
+          finish();
+          return;
+        }
+        const k = 1 - Math.pow(1 - t, 3); // ease-out cubic
+        const changes: NodeChange<Node<NodeDataPayload>>[] = ids.map((id) => {
+          const a = start.get(id)!;
+          const b = targets.get(id)!;
+          return {
+            type: "position",
+            id,
+            position: { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k },
+            dragging: true,
+          };
+        });
+        onNodesChange(changes);
+        tidyAnimRef.current = { raf: requestAnimationFrame(step), ids };
+      };
+      tidyAnimRef.current = { raf: requestAnimationFrame(step), ids };
+    },
+    [cancelTidyAnim, onNodesChange, rfGetNodes]
+  );
+  const tidyIds = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      const lg = layoutGraph();
+      animateNodesTo(tidyLayout(lg.nodes, lg.edges, ids));
+    },
+    [layoutGraph, animateNodesTo]
+  );
+  const alignIds = useCallback(
+    (ids: string[], mode: AlignMode) => {
+      const lg = layoutGraph();
+      animateNodesTo(alignLayout(lg.nodes, ids, mode));
+    },
+    [layoutGraph, animateNodesTo]
+  );
+  const distributeIds = useCallback(
+    (ids: string[], axis: "x" | "y") => {
+      const lg = layoutGraph();
+      animateNodesTo(distributeLayout(lg.nodes, ids, axis));
+    },
+    [layoutGraph, animateNodesTo]
+  );
+  // Wire-connected component of a visible node — what "Tidy" acts on when
+  // the right-clicked node isn't part of a multi-selection.
+  const connectedIds = useCallback(
+    (startId: string): string[] => {
+      const visible = new Set(nodes.filter((n) => !n.hidden).map((n) => n.id));
+      const adj = new Map<string, string[]>();
+      for (const e of edges) {
+        if (!visible.has(e.source) || !visible.has(e.target)) continue;
+        (adj.get(e.source) ?? adj.set(e.source, []).get(e.source)!).push(e.target);
+        (adj.get(e.target) ?? adj.set(e.target, []).get(e.target)!).push(e.source);
+      }
+      const seen = new Set([startId]);
+      const stack = [startId];
+      while (stack.length) {
+        const id = stack.pop()!;
+        for (const nb of adj.get(id) ?? []) {
+          if (!seen.has(nb)) {
+            seen.add(nb);
+            stack.push(nb);
+          }
+        }
+      }
+      return [...seen];
+    },
+    [nodes, edges]
+  );
+  const selectedVisibleIds = useMemo(
+    () => nodes.filter((n) => n.selected && !n.hidden).map((n) => n.id),
+    [nodes]
+  );
+  const menuTidy = useCallback(
+    (nodeId: string) => {
+      const clicked = nodes.find((n) => n.id === nodeId);
+      if (!clicked) return;
+      const useSelection = clicked.selected && selectedVisibleIds.length > 1;
+      tidyIds(useSelection ? selectedVisibleIds : connectedIds(nodeId));
+    },
+    [nodes, selectedVisibleIds, tidyIds, connectedIds]
+  );
+  // The MCP `tidy` tool reaches the on-screen scope through this event
+  // (EffectsApp dispatches it cancelable; unhandled ⇒ it lays out
+  // immediately itself). Only the pane owning the scope answers.
+  useEffect(() => {
+    const onTidy = (ev: Event) => {
+      if (!ownsNodesPaneScope(paneId)) return;
+      const detail = (ev as CustomEvent<{ ids?: string[] }>).detail;
+      const visible = new Set(rfGetNodes().filter((n) => !n.hidden).map((n) => n.id));
+      const ids = (detail?.ids ?? []).filter((id) => visible.has(id));
+      if (ids.length === 0) return;
+      ev.preventDefault();
+      tidyIds(ids);
+    };
+    window.addEventListener("node-editor-tidy", onTidy);
+    return () => window.removeEventListener("node-editor-tidy", onTidy);
+  }, [paneId, rfGetNodes, tidyIds]);
+  // Pane right-click menu (Paste / Tidy All).
+  const [paneMenu, setPaneMenu] = useState<{ x: number; y: number } | null>(null);
+
   // Window-level Delete / Backspace handler. React Flow's built-in
   // deleteKeyCode requires the pane to have keyboard focus, which it
   // loses the moment the user clicks anything outside the canvas
@@ -611,6 +818,25 @@ function NodeEditor({
         return;
       }
 
+      // L = tidy (090626_tidy-layout.md): the selection, or the whole
+      // visible scope when nothing is selected. Houdini's layout key.
+      if (
+        !e.repeat &&
+        !e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        (e.key === "l" || e.key === "L")
+      ) {
+        const visible = rfGetNodes().filter((n) => !n.hidden);
+        const selected = visible.filter((n) => n.selected);
+        const pool = selected.length ? selected : visible;
+        if (pool.length === 0) return;
+        e.preventDefault();
+        tidyIds(pool.map((n) => n.id));
+        return;
+      }
+
       // Skip when modifier keys repurpose the key (Cmd+X = cut,
       // Cmd+Backspace = delete-line in some browsers).
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -653,6 +879,7 @@ function NodeEditor({
     onGroupSelection,
     onUngroupSelection,
     onFrameSelection,
+    tidyIds,
     paneId,
   ]);
 
@@ -799,8 +1026,10 @@ function NodeEditor({
   // Render-refreshed bodies + stable shells for the ReactFlow per-node
   // handlers (assigned just before the JSX return; see the comment there).
   type RfNode = Node<NodeDataPayload>;
-  // Active shell-drag snapshot: the Iterate shell being dragged plus
-  // every member's start position (071926_iterate-zone-view.md).
+  // Active frame-drag snapshot: the frame being dragged plus every
+  // member's start position. Zone shells (Iterate / Repeat / For Each
+  // Output) do not use this — they move like ordinary nodes and the
+  // underlay re-unions around them.
   const zoneDragRef = useRef<{
     shellId: string;
     start: { x: number; y: number };
@@ -849,6 +1078,27 @@ function NodeEditor({
     []
   );
 
+  // Stable: xyflow re-runs SelectionListener whenever this identity
+  // changes, which nested setSelectedId until max-update-depth. Unfocused
+  // duplicate panes are ignored so an empty report can't fight the owner;
+  // lastSelectNotifyRef keeps a still-selected id across z-order reshuffles.
+  const lastSelectNotifyRef = useRef<string | null>(null);
+  const handleSelectionChange = useCallback(
+    (sel: { nodes: Node[]; edges: Edge[] }) => {
+      if (paneId && !ownsNodesPaneScope(paneId)) return;
+      const visible = sel.nodes.filter((n) => !n.hidden);
+      const last = lastSelectNotifyRef.current;
+      const next =
+        last != null && visible.some((n) => n.id === last)
+          ? last
+          : (visible[0]?.id ?? null);
+      if (next === lastSelectNotifyRef.current) return;
+      lastSelectNotifyRef.current = next;
+      onSelectNode(next);
+    },
+    [onSelectNode, paneId]
+  );
+
   // Set by onReconnect when a drag-detach actually lands on a new
   // handle. onReconnectEnd consults this to decide whether to drop
   // the edge (drop on pane = detach) or leave the rewire alone.
@@ -880,18 +1130,15 @@ function NodeEditor({
     handleType: "source" | "target";
   } | null>(null);
   const shiftDownRef = useRef(false);
-  const connectPathRef = useRef<Pt[]>([]);
   const [connectRing, setConnectRing] = useState<{
     x: number;
     y: number;
     overNode: boolean;
-    path: Pt[];
   } | null>(null);
   // Mirror of "is the ring currently shown" so the imperative handlers can
   // skip redundant setState calls without reading React state.
   const connectRingShownRef = useRef(false);
   const hideConnectRing = useCallback(() => {
-    connectPathRef.current = [];
     if (connectRingShownRef.current) {
       connectRingShownRef.current = false;
       setConnectRing(null);
@@ -913,7 +1160,6 @@ function NodeEditor({
     x: number;
     y: number;
     overNode: boolean;
-    path: Pt[];
   } | null>(null);
   const processNodeDropRef = useRef<
     (originId: string, clientX: number, clientY: number) => void
@@ -1469,14 +1715,8 @@ function NodeEditor({
       const nodeEl = el?.closest(".react-flow__node") as HTMLElement | null;
       const id = nodeEl?.getAttribute("data-id");
       const overNode = !!id && id !== drag.fromNodeId;
-      appendPathPoint(connectPathRef.current, [clientX, clientY]);
       connectRingShownRef.current = true;
-      setConnectRing({
-        x: clientX,
-        y: clientY,
-        overNode,
-        path: connectPathRef.current,
-      });
+      setConnectRing({ x: clientX, y: clientY, overNode });
     };
     const onPointerMove = (e: PointerEvent) => {
       if (!connectDragRef.current) return;
@@ -1571,7 +1811,6 @@ function NodeEditor({
       const startY = e.clientY;
       let dragging = false;
       const THRESHOLD = 4;
-      const path: Pt[] = [anchor];
 
       const onMove = (ev: PointerEvent) => {
         if (
@@ -1581,8 +1820,6 @@ function NodeEditor({
           return;
         }
         dragging = true;
-        const pt: Pt = [ev.clientX, ev.clientY];
-        appendPathPoint(path, pt);
         const under = ownerDocument(flowWrapperRef.current).elementFromPoint(
           ev.clientX,
           ev.clientY
@@ -1596,7 +1833,6 @@ function NodeEditor({
           x: ev.clientX,
           y: ev.clientY,
           overNode: !!overId && overId !== originId,
-          path,
         });
       };
       const onUp = (ev: PointerEvent) => {
@@ -1848,27 +2084,21 @@ function NodeEditor({
     // loop params and passthroughs take exterior values only (driving
     // the loop's configuration from inside the loop is circular).
     if (
-      targetNode.data.defType === ITERATE_INPUT_TYPE &&
+      isZoneInput(targetNode.data.defType) &&
       sourceNode.data.parentId === targetNode.data.parentId
     ) {
       return false;
     }
 
-    // Iterate zones render multiple scopes at once
-    // (071926_iterate-zone-view.md rev 3), so scope legality is no
-    // longer guaranteed by visibility. A cross-scope wire is valid only
-    // for the zone's legal crossings:
+    // Zone shells (Iterate / Repeat / For Each) render multiple scopes
+    // at once, so scope legality is no longer guaranteed by visibility.
+    // A cross-scope wire is valid only for the zone's legal crossings:
     //   (1) member → its OWN shell (the collect tap / virtual mint);
-    //   (2) exterior → the zone's Iteration Input exterior face;
-    //   (3) exterior → member — the wire stays exactly as drawn; flatten
-    //       mirrors it per-edge onto the shell and the compute feeds the
-    //       value into each iteration ("stay as wired");
+    //   (2) exterior → the zone's Input exterior face;
+    //   (3) exterior → member — the wire stays exactly as drawn;
     //   (4) member → exterior — onConnect auto-mints the collect socket
-    //       on the shell; only while the shell has none, and only when
-    //       the exterior target accepts the GROUPED type (an image
-    //       comes out as image_group).
-    // Programmatic cross-scope edges (promoted params) don't pass
-    // through here.
+    //       (Iterate / For Each promote image → image_group; Repeat
+    //       keeps the collect type).
     if (sourceNode.data.parentId !== targetNode.data.parentId) {
       const parentOf = (n: RfNode) =>
         n.data.parentId
@@ -1878,46 +2108,38 @@ function NodeEditor({
         t === GROUP_INPUT_TYPE || t === GROUP_OUTPUT_TYPE;
       const sShell = parentOf(sourceNode);
       const sourceIsMember =
-        sShell?.data.defType === ITERATE_TYPE &&
+        !!sShell &&
+        isZoneShell(sShell.data.defType) &&
         !isGroupBoundary(sourceNode.data.defType);
-      // (1) collect tap.
       const memberToOwnShell =
         sourceIsMember &&
         targetNode.id === sShell!.id &&
-        sourceNode.data.defType !== ITERATE_INPUT_TYPE;
-      // (2) exterior → Iteration Input's exterior face.
-      const inputShell =
-        targetNode.data.defType === ITERATE_INPUT_TYPE
-          ? parentOf(targetNode)
-          : undefined;
+        !isZoneInput(sourceNode.data.defType);
+      const inputShell = isZoneInput(targetNode.data.defType)
+        ? parentOf(targetNode)
+        : undefined;
       const exteriorToInput =
-        inputShell?.data.defType === ITERATE_TYPE &&
+        !!inputShell &&
+        isZoneShell(inputShell.data.defType) &&
         sourceNode.data.parentId === inputShell.data.parentId &&
         !isGroupBoundary(sourceNode.data.defType);
-      // (3) exterior → member (auto-mint passthrough).
       const tShell = parentOf(targetNode);
       const intoZone =
-        tShell?.data.defType === ITERATE_TYPE &&
+        !!tShell &&
+        isZoneShell(tShell.data.defType) &&
         sourceNode.data.parentId === tShell.data.parentId &&
-        targetNode.data.defType !== ITERATE_INPUT_TYPE &&
+        !isZoneInput(targetNode.data.defType) &&
         !isGroupBoundary(targetNode.data.defType) &&
         !isGroupBoundary(sourceNode.data.defType);
-      // (5) iteration values → exterior: the Iteration Input's aux
-      // outputs (index / t / random / passthroughs) may wire to any
-      // same-scope-as-the-shell consumer. The wire stays PENDING (the
-      // consumer sees nothing) until the chain is piped into the
-      // Iteration Output, which absorbs it into the zone
-      // (absorbIntoIterateZone). The virtual port is excluded — minting
-      // a passthrough toward the outside is meaningless.
-      const sInputShell =
-        sourceNode.data.defType === ITERATE_INPUT_TYPE
-          ? parentOf(sourceNode)
-          : undefined;
+      const sInputShell = isZoneInput(sourceNode.data.defType)
+        ? parentOf(sourceNode)
+        : undefined;
       const iterValuesOut =
-        sInputShell?.data.defType === ITERATE_TYPE &&
+        !!sInputShell &&
+        isZoneShell(sInputShell.data.defType) &&
         targetNode.data.parentId === sInputShell.data.parentId &&
         c.sourceHandle !== `out:aux:${VIRTUAL_SOCKET}` &&
-        targetNode.data.defType !== ITERATE_INPUT_TYPE &&
+        !isZoneInput(targetNode.data.defType) &&
         !isGroupBoundary(targetNode.data.defType);
       // (4) member → exterior (auto-mint a collect socket on the shell —
       // every collect socket gets its own grouped output, so this is
@@ -1926,14 +2148,17 @@ function NodeEditor({
       let outOfZone = false;
       if (
         sourceIsMember &&
-        sourceNode.data.defType !== ITERATE_INPUT_TYPE &&
+        !isZoneInput(sourceNode.data.defType) &&
         targetNode.id !== sShell!.id &&
         targetNode.data.parentId === sShell!.data.parentId &&
         !isGroupBoundary(targetNode.data.defType)
       ) {
         const raw = resolveSourceSocketType(sourceNode, c.sourceHandle);
         const tgt = resolveTargetSocketType(targetNode, c.targetHandle);
-        const grouped = raw === "image" ? "image_group" : raw;
+        const grouped =
+          raw === "image" && zoneCollectsGrouped(sShell!.data.defType)
+            ? "image_group"
+            : raw;
         outOfZone =
           !!grouped &&
           !!tgt &&
@@ -1962,12 +2187,12 @@ function NodeEditor({
     const srcVirtual =
       c.sourceHandle === `out:aux:${VIRTUAL_SOCKET}` &&
       (sourceNode.data.defType === GROUP_INPUT_TYPE ||
-        sourceNode.data.defType === ITERATE_INPUT_TYPE);
+        isZoneInput(sourceNode.data.defType));
     const tgtVirtual =
       c.targetHandle === `in:${VIRTUAL_SOCKET}` &&
       (targetNode.data.defType === GROUP_OUTPUT_TYPE ||
-        targetNode.data.defType === ITERATE_TYPE ||
-        targetNode.data.defType === ITERATE_INPUT_TYPE);
+        isZoneShell(targetNode.data.defType) ||
+        isZoneInput(targetNode.data.defType));
     if (srcVirtual || tgtVirtual) return !(srcVirtual && tgtVirtual);
 
     if (c.sourceHandle.startsWith("out:aux:")) {
@@ -2122,6 +2347,7 @@ function NodeEditor({
   // No dep array — refreshes every commit by design.)
   useEffect(() => {
   nodeDragStartRef.current = (e, node) => {
+    cancelTidyAnim();
     // Alt = duplicate-on-drag (the clone takes the node's edges; React Flow
     // keeps dragging the original as a fresh disconnected copy).
     // Cmd/Ctrl = detach — strip every edge from this node. Combinable.
@@ -2132,38 +2358,11 @@ function NodeEditor({
       onDetachNode(node.id, findDetachBridge(node.id));
     }
     cmdDragRef.current = e.metaKey || e.ctrlKey;
-    // Dragging an Iterate shell drags its whole zone
-    // (071926_iterate-zone-view.md): snapshot the shell's start plus
-    // every member's start; the drag handler re-derives each member as
-    // start + delta (absolute, no per-tick drift).
-    if ((node.data as NodeDataPayload).defType === ITERATE_TYPE) {
-      const members = new Map<string, { x: number; y: number }>();
-      const memberOf = (id: string | undefined): boolean => {
-        for (let cur = id, hops = 0; cur && hops < nodes.length; hops++) {
-          if (cur === node.id) return true;
-          cur = (
-            nodes.find((n) => n.id === cur)?.data as
-              | NodeDataPayload
-              | undefined
-          )?.parentId;
-        }
-        return false;
-      };
-      for (const n of nodes) {
-        if (n.id !== node.id && memberOf((n.data as NodeDataPayload).parentId)) {
-          members.set(n.id, { x: n.position.x, y: n.position.y });
-        }
-      }
-      zoneDragRef.current = {
-        shellId: node.id,
-        start: { x: node.position.x, y: node.position.y },
-        members,
-      };
-    } else if ((node.data as NodeDataPayload).defType === FRAME_TYPE) {
+    if ((node.data as NodeDataPayload).defType === FRAME_TYPE) {
       // Dragging a frame (edge bands / label — its only drag handles)
-      // moves everything inside: same snapshot-and-replay as the Iterate
-      // shell above, with membership from data.frameId instead of
-      // parentId (073026_node-cosmetics-and-frames.md).
+      // moves everything inside: snapshot start positions, replay as
+      // start + delta (absolute, no per-tick drift). Membership is
+      // data.frameId (073026_node-cosmetics-and-frames.md).
       const members = new Map<string, { x: number; y: number }>();
       for (const mid of collectFrameMemberIds(
         nodes as Node<NodeDataPayload>[],
@@ -2183,8 +2382,8 @@ function NodeEditor({
     setSpliceCandidate(null);
   };
   nodeDragRef.current = (_e, node, dragged) => {
-    // Shell drag → move the members with it. Members that are part of
-    // the drag selection already move under React Flow — skip those.
+    // Frame drag → move the members with it. Members already in the
+    // drag selection move under React Flow — skip those.
     const zone = zoneDragRef.current;
     if (zone && node.id === zone.shellId) {
       const dx = node.position.x - zone.start.x;
@@ -2200,7 +2399,12 @@ function NodeEditor({
         });
       }
       if (changes.length > 0) onNodesChange(changes);
-      // A shell drag is a zone move, never a splice.
+      if (spliceRef.current) setSpliceCandidate(null);
+      return;
+    }
+    // Zone Output is an ordinary node; the underlay hugs it. Skip splice
+    // (dropping a collector onto a wire isn't a splice).
+    if (isZoneShell((node.data as NodeDataPayload).defType)) {
       if (spliceRef.current) setSpliceCandidate(null);
       return;
     }
@@ -2227,41 +2431,35 @@ function NodeEditor({
   };
   nodeDragStopRef.current = (_e, node, dragged) => {
     zoneDragRef.current = null;
-    // A shell never reparents by dragging (a zone inside a zone would be
-    // a nested Iterate, which doesn't evaluate) — the zone just moves.
-    // Frames likewise: dragging one moves it and its members, nothing else.
-    if (
-      (node.data as NodeDataPayload).defType === ITERATE_TYPE ||
-      (node.data as NodeDataPayload).defType === FRAME_TYPE
-    ) {
+    const defType = (node.data as NodeDataPayload).defType;
+    // Frames never reparent or splice. Zone shells skip splice but MAY
+    // reparent into another zone so Repeat can wrap For Each by drop.
+    if (defType === FRAME_TYPE) {
       setSpliceCandidate(null);
       return;
     }
-    const candidate = spliceRef.current;
-    setSpliceCandidate(null);
-    if (candidate && dragged.length === 1) {
-      onSpliceNode?.({
-        nodeId: node.id,
-        edgeId: candidate.edgeId,
-        inputName: candidate.inputName,
-        outputHandle: candidate.outputHandle,
-      });
-      return;
+    const isShell = isZoneShell(defType);
+    if (!isShell) {
+      const candidate = spliceRef.current;
+      setSpliceCandidate(null);
+      if (candidate && dragged.length === 1) {
+        onSpliceNode?.({
+          nodeId: node.id,
+          edgeId: candidate.edgeId,
+          inputName: candidate.inputName,
+          outputHandle: candidate.outputHandle,
+        });
+        return;
+      }
+    } else {
+      setSpliceCandidate(null);
     }
-    // Zone drop-to-reparent (071926_iterate-zone-view.md): landing a
-    // single node's center inside an Iterate zone absorbs it into that
-    // scope. Leaving is DELIBERATE: only a Cmd/Ctrl-drag that ends
-    // outside the zone (rect computed WITHOUT the dragged node — the
-    // union bbox would otherwise follow it, making exit impossible)
-    // moves the node up to the shell's scope; a plain drag just
-    // stretches the zone. Boundary nodes never move; multi-select drags
-    // don't reparent.
     if (dragged.length !== 1) return;
     const data = node.data as NodeDataPayload;
     const isBoundary =
       data.defType === GROUP_INPUT_TYPE ||
       data.defType === GROUP_OUTPUT_TYPE ||
-      data.defType === ITERATE_INPUT_TYPE;
+      isZoneInput(data.defType);
     const cx = node.position.x + (node.measured?.width ?? 220) / 2;
     const cy = node.position.y + (node.measured?.height ?? 100) / 2;
     let reparented = false;
@@ -2290,10 +2488,7 @@ function NodeEditor({
         // out (detach at drag start already stripped the wires that would
         // block this).
         const shell = nodes.find((n) => n.id === data.parentId);
-        if (
-          (shell?.data as NodeDataPayload | undefined)?.defType ===
-          ITERATE_TYPE
-        ) {
+        if (isZoneShell((shell?.data as NodeDataPayload | undefined)?.defType)) {
           onReparentNode(
             node.id,
             (shell!.data as NodeDataPayload).parentId
@@ -2360,14 +2555,16 @@ function NodeEditor({
       data-shortcut-scope="node"
       style={{ width: "100%", height: "100%", position: "relative" }}
       onDragOver={(e) => {
-        // Opt in for both OS file drags AND our custom thumbnail
-        // drag from the Image Generate panel. Anything else (like
-        // React Flow's internal node drags) keeps its default
-        // behaviour.
+        // Opt in for OS file drags, the Image Generate panel's thumbnail
+        // drag, and Assets-panel cards (library media / presets / fonts /
+        // folder files). Without preventDefault here the browser never
+        // fires `drop` for that payload. Anything else (like React Flow's
+        // internal node drags) keeps its default behaviour.
         const types = e.dataTransfer.types;
         if (
           types.includes("Files") ||
-          types.includes("application/x-toolbox-image-gen")
+          types.includes("application/x-toolbox-image-gen") ||
+          types.includes("application/x-toolbox-asset")
         ) {
           e.preventDefault();
           e.dataTransfer.dropEffect = "copy";
@@ -2490,9 +2687,8 @@ function NodeEditor({
           if (shift) {
             const x = typeof me.clientX === "number" ? me.clientX : lastCursorRef.current.x;
             const y = typeof me.clientY === "number" ? me.clientY : lastCursorRef.current.y;
-            connectPathRef.current = [[x, y]];
             connectRingShownRef.current = true;
-            setConnectRing({ x, y, overNode: false, path: connectPathRef.current });
+            setConnectRing({ x, y, overNode: false });
           }
         }}
         onReconnectStart={(_event, edge) => {
@@ -2627,22 +2823,34 @@ function NodeEditor({
         // a fingertip; 28 is comfortable without preempting clicks
         // on adjacent handles.
         reconnectRadius={touchActive ? 28 : 10}
-        onSelectionChange={(sel) => {
-          const first = sel.nodes[0];
-          onSelectNode(first?.id ?? null);
-        }}
+        onSelectionChange={handleSelectionChange}
         onNodeDragStart={stableNodeDragStart}
         onNodeDrag={stableNodeDrag}
         onNodeDragStop={stableNodeDragStop}
         onNodeContextMenu={stableNodeContextMenu}
+        // A marquee (box) selection leaves React Flow's selection overlay
+        // on top of the selected nodes, so a right-click there never
+        // reaches a node — it arrives here instead. Open the same node
+        // menu anchored on the first selected node: it is selected, so
+        // Tidy / tint / bold act on the whole selection.
+        onSelectionContextMenu={(e, selectedNodes) => {
+          e.preventDefault();
+          setPaneMenu(null);
+          const first =
+            selectedNodes.find((n) => !n.hidden) ?? selectedNodes[0];
+          if (!first) return;
+          setContextMenu({ x: e.clientX, y: e.clientY, nodeId: first.id });
+        }}
         onNodeDoubleClick={stableNodeDoubleClick}
         onPaneContextMenu={(e) => {
           // Right-click on empty pane — close any open node menu so it
-          // doesn't linger past its node.
-          if (contextMenu) {
-            (e as unknown as Event).preventDefault?.();
-            closeContextMenu();
-          }
+          // doesn't linger past its node, then open the pane menu
+          // (Paste / Tidy All). Not during G-move: right-click cancels
+          // that gesture.
+          (e as unknown as Event).preventDefault?.();
+          closeContextMenu();
+          if (gMoveRef.current) return;
+          setPaneMenu({ x: e.clientX, y: e.clientY });
         }}
         onPaneMouseMove={(e) => reportPane(e.clientX, e.clientY)}
         onPaneClick={(e) => {
@@ -2729,29 +2937,16 @@ function NodeEditor({
           node. Purely visual (pointer-events: none) — the actual landing is
           done in onConnectEnd. */}
       {connectRing && (
-        <>
-          <DragPathOverlay
-            path={connectRing.path}
-            x={connectRing.x}
-            y={connectRing.y}
-            stroke={
-              connectRing.overNode
-                ? "var(--tb-a-blue-300)"
-                : "color-mix(in srgb, var(--tb-a-blue-400) 85%, transparent)"
-            }
-            wrapper={flowWrapperRef.current}
-          />
-          <ConnectDropRing
-            x={connectRing.x}
-            y={connectRing.y}
-            over={connectRing.overNode}
-            wrapper={flowWrapperRef.current}
-          />
-        </>
+        <ConnectDropRing
+          x={connectRing.x}
+          y={connectRing.y}
+          over={connectRing.overNode}
+          wrapper={flowWrapperRef.current}
+        />
       )}
 
-      {/* Shift-drag-from-node line + ring. The line follows the cursor
-          path from the origin node's first output (React Flow draws no
+      {/* Shift-drag-from-node line + ring. The straight line runs from the
+          origin node's first output to the cursor (React Flow draws no
           connection line here since this gesture bypasses its connection
           system), and the same ring brightens over a droppable node. */}
       {nodeConnect && (
@@ -2761,7 +2956,6 @@ function NodeEditor({
             y1={nodeConnect.originY}
             x2={nodeConnect.x}
             y2={nodeConnect.y}
-            path={nodeConnect.path}
             over={nodeConnect.overNode}
             wrapper={flowWrapperRef.current}
           />
@@ -2938,11 +3132,43 @@ function NodeEditor({
         flowEl={flowWrapperRef.current}
       />
 
+      {paneMenu && (
+        <NodeContextMenu
+          x={paneMenu.x}
+          y={paneMenu.y}
+          onClose={() => setPaneMenu(null)}
+          paneMode
+          onPaste={onPasteNodes ? () => onPasteNodes() : undefined}
+          tidyLabel="Tidy All"
+          onTidy={() => tidyIds(nodes.filter((n) => !n.hidden).map((n) => n.id))}
+        />
+      )}
       {contextMenu && (
         <NodeContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={closeContextMenu}
+          // Tidy (090626_tidy-layout.md): a multi-selection that includes
+          // the clicked node tidies the selection; otherwise the clicked
+          // node's wire-connected neighbourhood. Align / distribute need
+          // two or more selected nodes.
+          tidyLabel={
+            selectedVisibleIds.length > 1 &&
+            nodes.find((n) => n.id === contextMenu.nodeId)?.selected
+              ? "Tidy Selection"
+              : "Tidy Connected"
+          }
+          onTidy={() => menuTidy(contextMenu.nodeId)}
+          onAlign={
+            selectedVisibleIds.length >= 2
+              ? (mode: AlignMode) => alignIds(selectedVisibleIds, mode)
+              : undefined
+          }
+          onDistribute={
+            selectedVisibleIds.length >= 2
+              ? (axis: "x" | "y") => distributeIds(selectedVisibleIds, axis)
+              : undefined
+          }
           {...(() => {
             // Tint / bold (073026): Blender's rule — right-clicking a node
             // that's part of the selection styles the whole selection,
@@ -2984,6 +3210,18 @@ function NodeEditor({
                 }
               : undefined
           }
+          onCombine={(() => {
+            if (!onCombineSelection) return undefined;
+            const clicked = nodes.find((n) => n.id === contextMenu.nodeId);
+            // Blender's rule: the action applies to the selection only
+            // when the right-clicked node is in it. Otherwise this is a
+            // single-node menu and Combine doesn't apply.
+            if (!clicked?.selected) return undefined;
+            const selected = nodes.filter((n) => n.selected && !n.hidden);
+            if (!combineSelectionMode(selected.map((n) => n.data.primaryOutput)))
+              return undefined;
+            return () => onCombineSelection(selected.map((n) => n.id));
+          })()}
           onSaveAsPreset={(() => {
             if (!onSaveNodeAsPreset) return undefined;
             const d = nodes.find((n) => n.id === contextMenu.nodeId)?.data;
@@ -2999,10 +3237,24 @@ function NodeEditor({
               d.defType === LAYER_TYPE ||
               d.defType === GROUP_INPUT_TYPE ||
               d.defType === GROUP_OUTPUT_TYPE ||
-              d.defType === ITERATE_INPUT_TYPE
+              isZoneInput(d.defType)
             )
               return undefined;
             return () => onSaveNodeAsPreset(contextMenu.nodeId);
+          })()}
+          {...(() => {
+            if (!onAddNodeToAssets) return {};
+            const d = nodes.find((n) => n.id === contextMenu.nodeId)?.data;
+            if (
+              d?.defType !== "image-source" &&
+              d?.defType !== "svg-source" &&
+              d?.defType !== "video-source"
+            )
+              return {};
+            const reason = addToAssetsDisabledReason?.(contextMenu.nodeId);
+            return reason
+              ? { addToAssetsDisabled: reason }
+              : { onAddToAssets: () => onAddNodeToAssets(contextMenu.nodeId) };
           })()}
           onDetach={
             onDetachNode
@@ -3054,7 +3306,10 @@ function NodeContextMenu({
   onCopy,
   onPaste,
   onDuplicate,
+  onCombine,
   onSaveAsPreset,
+  onAddToAssets,
+  addToAssetsDisabled,
   onDetach,
   onEditWithAI,
   onMakeEditable,
@@ -3062,14 +3317,31 @@ function NodeContextMenu({
   bold,
   onSetTint,
   onToggleBold,
+  onTidy,
+  tidyLabel,
+  onAlign,
+  onDistribute,
+  paneMode,
 }: {
   x: number;
   y: number;
   onClose: () => void;
+  // Tidy / align / distribute (090626_tidy-layout.md). `paneMode` renders
+  // the empty-pane variant (Paste + Tidy All only).
+  onTidy?: () => void;
+  tidyLabel?: string;
+  onAlign?: (mode: AlignMode) => void;
+  onDistribute?: (axis: "x" | "y") => void;
+  paneMode?: boolean;
   onCopy?: () => void;
   onPaste?: () => void;
   onDuplicate?: () => void;
+  onCombine?: () => void;
   onSaveAsPreset?: () => void;
+  // Media source nodes only (gating at the call site). Either the handler
+  // (enabled) or a reason (rendered disabled, reason as tooltip).
+  onAddToAssets?: () => void;
+  addToAssetsDisabled?: string;
   onDetach?: () => void;
   onEditWithAI?: () => void;
   onMakeEditable?: () => void;
@@ -3111,6 +3383,8 @@ function NodeContextMenu({
     label: string;
     shortcut?: string;
     onClick?: () => void;
+    // Tooltip — carries the disabled reason for Add to Assets.
+    title?: string;
   }> = [
     ...(onEditWithAI ? [{ label: "✦ Edit with AI", onClick: onEditWithAI }] : []),
     // Only offered on nodes with a spline-typed output (gating at the call
@@ -3118,15 +3392,42 @@ function NodeContextMenu({
     ...(onMakeEditable
       ? [{ label: "Make Editable", onClick: onMakeEditable }]
       : []),
-    { label: "Copy", shortcut: "⌘C", onClick: onCopy },
-    { label: "Paste", shortcut: "⌘V", onClick: onPaste },
-    { label: "Duplicate", onClick: onDuplicate },
+    ...(paneMode
+      ? [
+          { label: "Paste", shortcut: "⌘V", onClick: onPaste },
+          { label: tidyLabel ?? "Tidy All", shortcut: "L", onClick: onTidy },
+        ]
+      : [
+          { label: "Copy", shortcut: "⌘C", onClick: onCopy },
+          { label: "Paste", shortcut: "⌘V", onClick: onPaste },
+          { label: "Duplicate", onClick: onDuplicate },
+          // Wire-aware layout of the selection / connected nodes.
+          ...(onTidy
+            ? [{ label: tidyLabel ?? "Tidy", shortcut: "L", onClick: onTidy }]
+            : []),
+        ]),
+    // Multi-selection whose primary outputs share a Collect family —
+    // gating at the call site.
+    ...(onCombine ? [{ label: "Combine Nodes", onClick: onCombine }] : []),
     // Only offered on nodes that make sense standalone (gating at the
     // call site) — saves the node as-is into the user's preset list.
     ...(onSaveAsPreset
       ? [{ label: "Save as Preset…", onClick: onSaveAsPreset }]
       : []),
-    { label: "Detach", shortcut: "⌘-drag", onClick: onDetach },
+    // Media source nodes: copy the media into the asset library. A
+    // reason without a handler renders the row disabled with the hint.
+    ...(onAddToAssets || addToAssetsDisabled
+      ? [
+          {
+            label: "Add to Assets",
+            onClick: onAddToAssets,
+            title: addToAssetsDisabled,
+          },
+        ]
+      : []),
+    ...(paneMode
+      ? []
+      : [{ label: "Detach", shortcut: "⌘-drag", onClick: onDetach }]),
     // Bold outline toggle — check shows the clicked node's current state.
     ...(onToggleBold
       ? [{ label: "Bold", shortcut: bold ? "✓" : undefined, onClick: onToggleBold }]
@@ -3224,12 +3525,83 @@ function NodeContextMenu({
           </button>
         </div>
       )}
+      {onAlign && onDistribute && (
+        <div
+          style={{
+            display: "flex",
+            gap: 2,
+            alignItems: "center",
+            padding: "4px 8px",
+            borderBottom: "1px solid var(--tb-n-7)",
+            marginBottom: 4,
+          }}
+        >
+          {(
+            [
+              ["left", "Align left", onAlign],
+              ["centerX", "Align horizontal centres", onAlign],
+              ["right", "Align right", onAlign],
+              ["top", "Align top", onAlign],
+              ["centerY", "Align vertical centres", onAlign],
+              ["bottom", "Align bottom", onAlign],
+              ["x", "Distribute horizontally", onDistribute],
+              ["y", "Distribute vertically", onDistribute],
+            ] as const
+          ).map(([kind, title, fn], i) => (
+            <Fragment key={kind}>
+              {(i === 3 || i === 6) && (
+                <span
+                  style={{
+                    width: 1,
+                    height: 14,
+                    background: "var(--tb-n-7)",
+                    margin: "0 3px",
+                  }}
+                />
+              )}
+              <button
+                title={title}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  (fn as (k: string) => void)(kind);
+                  onClose();
+                }}
+                style={{
+                  width: 22,
+                  height: 20,
+                  padding: 0,
+                  border: "none",
+                  borderRadius: 3,
+                  background: "transparent",
+                  color: "var(--tb-n-14)",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLButtonElement).style.background =
+                    "var(--tb-a-blue-900)";
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLButtonElement).style.background =
+                    "transparent";
+                }}
+              >
+                <AlignGlyph kind={kind} />
+              </button>
+            </Fragment>
+          ))}
+        </div>
+      )}
       {items.map((it, i) => {
         const disabled = !it.onClick;
         return (
           <button
             key={i}
             disabled={disabled}
+            title={it.title}
             onMouseDown={(e) => {
               e.stopPropagation();
             }}
@@ -3279,6 +3651,53 @@ function NodeContextMenu({
         );
       })}
     </div>
+  );
+}
+
+// 14×14 glyphs for the align / distribute strip: a guide line plus two
+// bars (align) or three bars (distribute), Figma-style.
+function AlignGlyph({
+  kind,
+}: {
+  kind: AlignMode | "x" | "y";
+}) {
+  const bar = (x: number, y: number, w: number, h: number, k: string) => (
+    <rect key={k} x={x} y={y} width={w} height={h} rx={1} fill="currentColor" />
+  );
+  const line = (x: number, y: number, w: number, h: number) => (
+    <rect key="line" x={x} y={y} width={w} height={h} fill="currentColor" opacity={0.55} />
+  );
+  let body: React.ReactNode;
+  switch (kind) {
+    case "left":
+      body = [line(1, 1, 1.5, 12), bar(3.5, 3, 8, 3, "a"), bar(3.5, 8, 5, 3, "b")];
+      break;
+    case "centerX":
+      body = [line(6.25, 1, 1.5, 12), bar(2, 3, 10, 3, "a"), bar(4, 8, 6, 3, "b")];
+      break;
+    case "right":
+      body = [line(11.5, 1, 1.5, 12), bar(2.5, 3, 8, 3, "a"), bar(5.5, 8, 5, 3, "b")];
+      break;
+    case "top":
+      body = [line(1, 1, 12, 1.5), bar(3, 3.5, 3, 8, "a"), bar(8, 3.5, 3, 5, "b")];
+      break;
+    case "centerY":
+      body = [line(1, 6.25, 12, 1.5), bar(3, 2, 3, 10, "a"), bar(8, 4, 3, 6, "b")];
+      break;
+    case "bottom":
+      body = [line(1, 11.5, 12, 1.5), bar(3, 2.5, 3, 8, "a"), bar(8, 5.5, 3, 5, "b")];
+      break;
+    case "x":
+      body = [bar(1, 3, 2, 8, "a"), bar(6, 3, 2, 8, "b"), bar(11, 3, 2, 8, "c")];
+      break;
+    case "y":
+      body = [bar(3, 1, 8, 2, "a"), bar(3, 6, 8, 2, "b"), bar(3, 11, 8, 2, "c")];
+      break;
+  }
+  return (
+    <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden="true">
+      {body}
+    </svg>
   );
 }
 
@@ -3518,17 +3937,15 @@ function ConnectDropRing({
   );
 }
 
-// Wire preview for the Shift-drag-from-node gesture. Follows the cursor
-// path from the origin output so the drag trail stays visible. Full-
-// wrapper SVG (pointer-events: none so it never blocks the
-// elementFromPoint node probe); coordinates are wrapper-local. Brightens
+// Straight wire preview for the Shift-drag-from-node gesture: origin output →
+// cursor. A full-wrapper SVG overlay (pointer-events: none so it never blocks
+// the elementFromPoint node probe); coordinates are wrapper-local. Brightens
 // to match the ring while the cursor is over a droppable node.
 function NodeConnectLine({
   x1,
   y1,
   x2,
   y2,
-  path,
   over,
   wrapper,
 }: {
@@ -3536,16 +3953,11 @@ function NodeConnectLine({
   y1: number;
   x2: number;
   y2: number;
-  path: Pt[];
   over: boolean;
   wrapper: HTMLDivElement | null;
 }) {
   if (!wrapper) return null;
   const rect = wrapper.getBoundingClientRect();
-  const stroke = over
-    ? "var(--tb-a-blue-300)"
-    : "color-mix(in srgb, var(--tb-a-blue-400) 85%, transparent)";
-  const trail = path.length > 0 ? path : ([[x1, y1], [x2, y2]] as Pt[]);
   return (
     <svg
       style={{
@@ -3559,102 +3971,16 @@ function NodeConnectLine({
         overflow: "visible",
       }}
     >
-      <DragPathPolylines
-        path={trail}
-        x={x2}
-        y={y2}
-        ox={rect.left}
-        oy={rect.top}
-        stroke={stroke}
-      />
-    </svg>
-  );
-}
-
-// Cursor-path trail for Shift-drag wire gestures. Wrapper-local SVG so it
-// sits in the editor overlay stack; pointer-events none so it never steals
-// the elementFromPoint probe the drop ring uses.
-function DragPathOverlay({
-  path,
-  x,
-  y,
-  stroke,
-  wrapper,
-}: {
-  path: Pt[];
-  x: number;
-  y: number;
-  stroke: string;
-  wrapper: HTMLDivElement | null;
-}) {
-  if (!wrapper) return null;
-  const rect = wrapper.getBoundingClientRect();
-  return (
-    <svg
-      style={{
-        position: "absolute",
-        left: 0,
-        top: 0,
-        width: "100%",
-        height: "100%",
-        pointerEvents: "none",
-        zIndex: 54,
-        overflow: "visible",
-      }}
-    >
-      <DragPathPolylines
-        path={path}
-        x={x}
-        y={y}
-        ox={rect.left}
-        oy={rect.top}
-        stroke={stroke}
-      />
-    </svg>
-  );
-}
-
-function DragPathPolylines({
-  path,
-  x,
-  y,
-  ox,
-  oy,
-  stroke,
-}: {
-  path: Pt[];
-  x: number;
-  y: number;
-  ox: number;
-  oy: number;
-  stroke: string;
-}) {
-  const last = path[path.length - 1];
-  const pts = path.map((p) => `${p[0] - ox},${p[1] - oy}`);
-  if (!last || last[0] !== x || last[1] !== y) {
-    pts.push(`${x - ox},${y - oy}`);
-  }
-  if (pts.length < 2) return null;
-  const points = pts.join(" ");
-  return (
-    <>
-      <polyline
-        points={points}
-        fill="none"
-        stroke="rgba(0,0,0,0.45)"
-        strokeWidth={3.5}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <polyline
-        points={points}
-        fill="none"
-        stroke={stroke}
+      <line
+        x1={x1 - rect.left}
+        y1={y1 - rect.top}
+        x2={x2 - rect.left}
+        y2={y2 - rect.top}
+        stroke={over ? "var(--tb-a-blue-300)" : "color-mix(in srgb, var(--tb-a-blue-400) 85%, transparent)"}
         strokeWidth={2}
         strokeLinecap="round"
-        strokeLinejoin="round"
       />
-    </>
+    </svg>
   );
 }
 

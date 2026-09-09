@@ -17,6 +17,7 @@
 
 import { useSyncExternalStore } from "react";
 import type { SavedProject } from "@/lib/project";
+import { isThumbDataUrl } from "@/lib/asset-thumbnails";
 import {
   loadCloudNodePresets,
   saveCloudNodePresets,
@@ -27,6 +28,13 @@ export interface UserNodePreset {
   name: string;
   /** Fragment envelope (serializeGraph output) — schema-migrated on load. */
   fragment: SavedProject;
+  /**
+   * Small `data:image/…` thumbnail (≤ MAX_THUMB_DATA_URL_CHARS), captured
+   * from the node's primary output at save time or uploaded by the user
+   * (090326_asset-library.md §1.3). Absent = the Assets panel shows a
+   * type glyph. Additive — pre-thumbnail rows load unchanged.
+   */
+  thumbnail?: string;
 }
 
 const LS_KEY = "toolbox:node-presets";
@@ -89,7 +97,12 @@ function sanitize(raw: unknown): UserNodePreset[] {
   for (const item of raw) {
     if (out.length >= MAX_NODE_PRESETS) break;
     if (!item || typeof item !== "object") continue;
-    const p = item as { id?: unknown; name?: unknown; fragment?: unknown };
+    const p = item as {
+      id?: unknown;
+      name?: unknown;
+      fragment?: unknown;
+      thumbnail?: unknown;
+    };
     if (typeof p.name !== "string" || !p.name.trim()) continue;
     const frag = p.fragment;
     if (!frag || typeof frag !== "object") continue;
@@ -98,6 +111,9 @@ function sanitize(raw: unknown): UserNodePreset[] {
       id: typeof p.id === "string" && p.id ? p.id : mintNodePresetId(),
       name: p.name.trim().slice(0, MAX_NAME),
       fragment: frag as SavedProject,
+      // A malformed/oversized thumbnail drops silently — the preset itself
+      // still loads (the thumbnail is cosmetic).
+      ...(isThumbDataUrl(p.thumbnail) ? { thumbnail: p.thumbnail } : {}),
     });
   }
   return out;
@@ -143,25 +159,79 @@ function persist(list: UserNodePreset[]) {
 /**
  * Append (or replace by name — case-insensitive, so saving "Glow" twice
  * overwrites rather than piling up) a preset holding `fragment`.
- * Publishes and persists.
+ * Publishes and persists. A replace without a new thumbnail keeps the
+ * old one (a custom upload is user effort; a failed auto-capture
+ * shouldn't erase it).
  */
-export function upsertUserNodePreset(name: string, fragment: SavedProject) {
+export function upsertUserNodePreset(
+  name: string,
+  fragment: SavedProject,
+  thumbnail?: string | null
+) {
   const trimmed = name.trim().slice(0, MAX_NAME);
+  const thumb = isThumbDataUrl(thumbnail) ? thumbnail : undefined;
   const at = presets.findIndex(
     (p) => p.name.toLowerCase() === trimmed.toLowerCase()
   );
   if (at >= 0) {
     const next = presets.slice();
-    next[at] = { ...next[at], name: trimmed, fragment };
+    const prev = next[at];
+    next[at] = {
+      ...prev,
+      name: trimmed,
+      fragment,
+      ...(thumb ? { thumbnail: thumb } : {}),
+    };
     persist(next);
     return;
   }
   persist(
-    [...presets, { id: mintNodePresetId(), name: trimmed, fragment }].slice(
-      0,
-      MAX_NODE_PRESETS
-    )
+    [
+      ...presets,
+      {
+        id: mintNodePresetId(),
+        name: trimmed,
+        fragment,
+        ...(thumb ? { thumbnail: thumb } : {}),
+      },
+    ].slice(0, MAX_NODE_PRESETS)
   );
+}
+
+/**
+ * Rename in place. Refuses an empty name or one another preset already
+ * uses (case-insensitive) — returns false so the caller can toast.
+ */
+export function renameUserNodePreset(id: string, name: string): boolean {
+  const trimmed = name.trim().slice(0, MAX_NAME);
+  if (!trimmed) return false;
+  const at = presets.findIndex((p) => p.id === id);
+  if (at < 0) return false;
+  const clash = presets.some(
+    (p) => p.id !== id && p.name.toLowerCase() === trimmed.toLowerCase()
+  );
+  if (clash) return false;
+  if (presets[at].name === trimmed) return true;
+  const next = presets.slice();
+  next[at] = { ...next[at], name: trimmed };
+  persist(next);
+  return true;
+}
+
+/** Set (or clear, with null) a preset's thumbnail. Publishes and persists. */
+export function setUserNodePresetThumbnail(
+  id: string,
+  thumbnail: string | null
+): boolean {
+  const at = presets.findIndex((p) => p.id === id);
+  if (at < 0) return false;
+  if (thumbnail !== null && !isThumbDataUrl(thumbnail)) return false;
+  const next = presets.slice();
+  const { thumbnail: _old, ...rest } = next[at];
+  void _old;
+  next[at] = thumbnail ? { ...rest, thumbnail } : rest;
+  persist(next);
+  return true;
 }
 
 /** Delete by id. Publishes and persists. */

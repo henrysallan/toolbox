@@ -1,13 +1,15 @@
 "use client";
 
-import { useMemo } from "react";
+import { Fragment, useMemo } from "react";
 import { allNodeDefs } from "@/engine/registry";
+import { catalogFlags, formatFactsLines } from "@/engine/node-catalog";
 import { registerAllNodes } from "@/nodes";
 import type {
   NodeCategory,
   NodeDefinition,
   NodeSubcategory,
   ParamDef,
+  NodeFacts,
 } from "@/engine/types";
 import { H1, H2, H3, Lede, P, Code, Note } from "./DocPage";
 import type { TocItem } from "@/lib/docs/manifest";
@@ -153,6 +155,7 @@ function NodeCard({ def }: { def: NodeDefinition }) {
   // under default scalar-mode), and users reading docs aren't in
   // the editor context that hides them anyway.
   const visibleParams = def.params.filter((p) => !p.hidden);
+  const flags = catalogFlags(def);
 
   return (
     <article
@@ -186,6 +189,7 @@ function NodeCard({ def }: { def: NodeDefinition }) {
         )}
       </div>
       {def.description && <P>{def.description}</P>}
+      <FactsBlock facts={def.facts} flags={flags} />
 
       {visibleParams.length > 0 && (
         <>
@@ -209,6 +213,54 @@ function NodeCard({ def }: { def: NodeDefinition }) {
         }))}
       />
     </article>
+  );
+}
+
+// The NodeFacts mini-schema (space / reads / writes / flags / gotchas),
+// rendered through the same formatter the MCP catalog DSL uses so the docs
+// page and the model read identical lines.
+function FactsBlock({ facts, flags }: { facts?: NodeFacts; flags: string[] }) {
+  const lines = formatFactsLines(facts, flags);
+  if (lines.length === 0) return null;
+  return (
+    <dl
+      style={{
+        display: "grid",
+        gridTemplateColumns: "max-content 1fr",
+        gap: "2px 10px",
+        margin: "-4px 0 12px",
+        fontSize: 11.5,
+        lineHeight: 1.5,
+      }}
+    >
+      {lines.map((l, i) => {
+        const gotcha = l.startsWith("! ");
+        const idx = l.indexOf(": ");
+        const label = gotcha ? "gotcha" : l.slice(0, idx);
+        const text = gotcha ? l.slice(2) : l.slice(idx + 2);
+        return (
+          <Fragment key={i}>
+            <dt
+              style={{
+                color: "var(--tb-n-11)",
+                fontFamily: "ui-monospace, monospace",
+              }}
+            >
+              {label}
+            </dt>
+            <dd
+              style={{
+                margin: 0,
+                fontFamily: gotcha ? undefined : "ui-monospace, monospace",
+                color: "var(--tb-n-12)",
+              }}
+            >
+              {text}
+            </dd>
+          </Fragment>
+        );
+      })}
+    </dl>
   );
 }
 

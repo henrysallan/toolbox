@@ -631,6 +631,22 @@ export const differentialGrowthNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Grow a curve faster than the space around it can hold, so it has no choice but to buckle — brain coral, kelp, ruffled leaf margins, intestines. Every node pushes its neighbours apart while the chain pulls itself together, and any edge stretched past Split length inserts a new node, so the curve keeps lengthening in place. Closed input loops become inflating blobs (raise Pressure), open ones become tendrils. The mode sets WHERE new length appears: Uniform ruffles evenly, Curvature grows convex regions faster so bulges sharpen and sub-divide into cauliflower lobes, Field takes a wired mask so you can paint exactly where it crinkles, and Noise breaks it up patchily. Region confines the curve and Obstacles carve holes it must ruffle around. This is a live simulation, not a cached one — it evolves while the timeline plays and resets when the scene loops, so there is no Progress slider. Bend stiffness trades a smooth ruffle for a jagged one; Collapse length keeps the anchor count from running away.",
+  facts: {
+    space: {
+      "param:split_length": "canvas01",
+      "param:collapse_length": "canvas01",
+      "param:repulsion_radius": "canvas01",
+    },
+    reads: ["time"],
+    gotchas: [
+      "split_length, collapse_length, and repulsion_radius are canvas-width-relative fractions (×W to pixels), like spline positions, so repulsion reads as a circle on any aspect ratio.",
+      "Insertion is probabilistic below split_length (growth_rate×0.04×edge weight per frame), forced above it; repulsion_radius clamps to 0.35–0.9×split_length, collapse_length to ≤0.25×repulsion_radius.",
+      "mode=field samples growth_field at each edge midpoint (defaults to 1, i.e. uniform, if unwired); mode=noise hashes the quantized edge midpoint instead of reading any input.",
+      "No progress control: a per-frame sim that only advances when ctx.time changes, and reseeds from the input spline when its topology signature changes or time wraps back near 0 (scene loop).",
+      "Each output subpath's driver field is 1 − 1/max(1, currentLength/seedLength), asymptotic toward 1 as the curve outgrows its seed; read via Rasterize/Stroke's driver ramp, not an attrs map entry.",
+      "aux:points stamps rotation from local tangent angle and scale.x/scale.y from half the local edge length (a growth-crowding proxy), not from any styling param.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   stable: false,

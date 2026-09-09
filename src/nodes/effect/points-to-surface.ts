@@ -179,6 +179,18 @@ export const pointsToSurfaceNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Mesh a surface around particle clumps: builds a field from a points cloud and traces its outline as a spline (marching squares). `zhu-bridson` is the classic liquid surfacing — flat resting surfaces, calm concave regions; `metaballs` is the blobby lava-lamp merge look. Wire the Matter/Particle Simulator's points output in and liquid gets a skin — the spline coerces straight into any mask/image socket as a filled silhouette, or style it via Rasterize Spline / Stroke (each blob carries a groupIndex for per-blob ramp colors). `radius` sets how far particles reach before merging; `threshold` tightens or fattens the surface; `min blob` culls specks.",
+  facts: {
+    space: { "param:radius": "canvas01" },
+    writes: ["attr:group"],
+    gotchas: [
+      "radius is a canvas01 width-relative fraction like every other radius; particles within it (per algorithm's falloff) merge into one blob.",
+      "zhu-bridson thresholds the signed distance to the kernel-weighted mean particle position (surface radius = threshold × radius); metaballs thresholds a summed (1−q²)³ field.",
+      "min_blob culls output subpaths by shoelace area in canvas-area fraction ([0,1]² units), not a linear size.",
+      "smoothing runs round(smoothing × 6) neighbor-average passes on the traced anchors.",
+      "each traced blob gets a fresh sequential groupIndex (attr:group), independent of any groupIndex on the input points — Rasterize's ramp fill / Group Pick key off it.",
+      "detail sets samples across the width only; sample-grid height is derived from canvas aspect, so the field stays isotropic regardless of canvas shape.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "points", type: "points", required: true }],
   params: [

@@ -15,6 +15,12 @@ export const audioChannelNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "The utility strip: gain (dB), stereo pan, and a mute switch for any point in an audio chain. Wire audio through it to trim levels or place a part in the stereo field — gain and pan changes ramp click-free and are keyframable.",
+  facts: {
+    gotchas: [
+      "Descriptor in, descriptor out: compute() does no audio work; the audio engine builds a Tone.Channel once the chain reaches an audio output.",
+      "gain_mod sums on a LINEAR unity stage AFTER the dB gain knob (an Audio LFO at min -0.5/max 0.5 makes a tremolo); pan_mod sums directly with the pan knob (-1..1) for autopan.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [

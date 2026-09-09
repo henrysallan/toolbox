@@ -1103,6 +1103,104 @@ function migrateLoadedParams(
     params.startFrame = 0;
     params.endFrame = params.videoFrames;
   }
+  if (
+    defType === "instance-transform-3d" &&
+    params.scale_x === undefined
+  ) {
+    // Uniform Scale split into X/Y/Z. Copy the old value onto every
+    // axis so existing graphs keep their look; delete `scale` so the
+    // panel doesn't keep a ghost param around.
+    const s = typeof params.scale === "number" ? params.scale : 1;
+    params.scale_x = s;
+    params.scale_y = s;
+    params.scale_z = s;
+    delete params.scale;
+  }
+  if (defType === "image-source" || defType === "video-source") {
+    // Offset X/Y / Zoom became the standard TRS block so the on-canvas
+    // transform gizmo can drive these sources. Inverse-sample identity:
+    // offset → translate, zoom → uniform scaleX/Y. Pivot/rotate default.
+    if (params.translateX === undefined && typeof params.offsetX === "number") {
+      params.translateX = params.offsetX;
+    }
+    if (params.translateY === undefined && typeof params.offsetY === "number") {
+      params.translateY = params.offsetY;
+    }
+    if (params.scaleX === undefined && typeof params.zoom === "number") {
+      params.scaleX = params.zoom;
+      if (params.scaleY === undefined) params.scaleY = params.zoom;
+    }
+    delete params.offsetX;
+    delete params.offsetY;
+    delete params.zoom;
+  }
+}
+
+function remapUniformScaleList(list?: string[]): string[] | undefined {
+  if (!list?.includes("scale")) return list;
+  const next = list.filter((p) => p !== "scale");
+  for (const k of ["scale_x", "scale_y", "scale_z"]) {
+    if (!next.includes(k)) next.push(k);
+  }
+  return next;
+}
+
+function remapUniformScaleRecord<T>(
+  rec: Record<string, T> | undefined
+): Record<string, T> | undefined {
+  if (!rec || rec.scale === undefined || rec.scale_x !== undefined) return rec;
+  const { scale, ...rest } = rec;
+  return { ...rest, scale_x: scale, scale_y: scale, scale_z: scale };
+}
+
+function isSourcePlacementType(defType: string): boolean {
+  return defType === "image-source" || defType === "video-source";
+}
+
+function remapSourcePlacementList(list?: string[]): string[] | undefined {
+  if (!list?.some((p) => p === "offsetX" || p === "offsetY" || p === "zoom")) {
+    return list;
+  }
+  const next: string[] = [];
+  for (const p of list) {
+    if (p === "offsetX") {
+      if (!next.includes("translateX")) next.push("translateX");
+    } else if (p === "offsetY") {
+      if (!next.includes("translateY")) next.push("translateY");
+    } else if (p === "zoom") {
+      if (!next.includes("scaleX")) next.push("scaleX");
+      if (!next.includes("scaleY")) next.push("scaleY");
+    } else {
+      next.push(p);
+    }
+  }
+  return next;
+}
+
+function remapSourcePlacementRecord<T>(
+  rec: Record<string, T> | undefined
+): Record<string, T> | undefined {
+  if (!rec) return rec;
+  if (
+    rec.offsetX === undefined &&
+    rec.offsetY === undefined &&
+    rec.zoom === undefined
+  ) {
+    return rec;
+  }
+  const { offsetX, offsetY, zoom, ...rest } = rec;
+  const out: Record<string, T> = { ...rest };
+  if (offsetX !== undefined && out.translateX === undefined) {
+    out.translateX = offsetX;
+  }
+  if (offsetY !== undefined && out.translateY === undefined) {
+    out.translateY = offsetY;
+  }
+  if (zoom !== undefined) {
+    if (out.scaleX === undefined) out.scaleX = zoom;
+    if (out.scaleY === undefined) out.scaleY = zoom;
+  }
+  return out;
 }
 
 export async function deserializeGraph(
@@ -1198,6 +1296,8 @@ export async function deserializeGraph(
     const auxDefs = def
       ? def.resolveAuxOutputs?.(params) ?? def.auxOutputs
       : [];
+    const isInstXform = sn.defType === "instance-transform-3d";
+    const isSrcPlace = isSourcePlacementType(sn.defType);
     nodes.push({
       id: sn.id,
       // Reroutes render as a dot (RerouteNode), frame zones as a shaded
@@ -1217,10 +1317,26 @@ export async function deserializeGraph(
         parentId: sn.parentId,
         compositionId: sn.compositionId ?? activeCompositionId,
         params,
-        exposedParams: sn.exposedParams ?? [],
-        controlParams: sn.controlParams ?? [],
-        paramOverrides: sn.paramOverrides,
-        animation: sn.animation,
+        exposedParams: isInstXform
+          ? (remapUniformScaleList(sn.exposedParams) ?? [])
+          : isSrcPlace
+            ? (remapSourcePlacementList(sn.exposedParams) ?? [])
+            : (sn.exposedParams ?? []),
+        controlParams: isInstXform
+          ? (remapUniformScaleList(sn.controlParams) ?? [])
+          : isSrcPlace
+            ? (remapSourcePlacementList(sn.controlParams) ?? [])
+            : (sn.controlParams ?? []),
+        paramOverrides: isInstXform
+          ? remapUniformScaleRecord(sn.paramOverrides)
+          : isSrcPlace
+            ? remapSourcePlacementRecord(sn.paramOverrides)
+            : sn.paramOverrides,
+        animation: isInstXform
+          ? remapUniformScaleRecord(sn.animation)
+          : isSrcPlace
+            ? remapSourcePlacementRecord(sn.animation)
+            : sn.animation,
         clips: sn.clips,
         name:
           sn.name ??

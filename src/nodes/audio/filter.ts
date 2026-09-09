@@ -15,6 +15,13 @@ export const audioFilterNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Filter an audio signal (low-pass / high-pass / band-pass / notch) with cutoff and resonance. Keyframe the cutoff — or drive it from Audio Bands — for sweeps.",
+  facts: {
+    gotchas: [
+      "Descriptor in, descriptor out: compute() does no audio work; the audio engine builds the Tone.Filter once the chain reaches an audio output.",
+      "cutoff is Hz (20..20000) and keyframed or driven changes ramp click-free; wire an audio signal to cutoff_mod to modulate it at audio rate.",
+      "rolloff is a string enum (\"-12\" / \"-24\" / \"-48\" dB per octave), not a number.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [

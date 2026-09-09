@@ -191,6 +191,14 @@ export const optimizePathNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Refit messy spline data — traces, scribbles, simulation output — to the fewest clean Bézier segments within a pixel tolerance. Corners sharper than the corner angle are preserved exactly; smooth spans are refit with far fewer anchors. Smoothing denoises jittery input before fitting (handle-less anchors only — authored geometry never moves); Cull specks drops subpaths shorter than the given length, the dust tracing leaves behind. Optimal mode searches for the true minimum segment count (slower — use for finals, not per-frame animation). Debug skeleton overlays the source path with the optimized result's anchors and handles (select the node to see it in the viewport) and mints it as an image output.",
+  facts: {
+    space: { "param:tolerance": "pixels", "param:cull_length": "pixels" },
+    gotchas: [
+      "tolerance and cull_length are pixels at render resolution and do not scale with output size, so changing canvas resolution changes how aggressively paths simplify.",
+      "corner_angle is in degrees, not radians, unlike most angle params elsewhere in the engine.",
+      "Until the WASM vector kernel finishes loading (async ~77KB fetch), the node passes the input spline through unchanged, then re-evaluates via a pipeline-bump event once ready.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [

@@ -58,6 +58,16 @@ export const simulationEndNode: NodeDefinition = {
   category: "effect",
   description:
     "Exit point of a simulation zone. Commits the `state` input as next frame's starting state; pass `skip` high to pause advancement without losing state. Set `kind` to match the paired Simulation Start.",
+  facts: {
+    space: { out: "in:state" },
+    gotchas: [
+      "skip=true only pauses committing: it still emits the current stored state so downstream sees a frozen frame, nothing is lost.",
+      "kind must match the paired Simulation Start's kind; a mismatch tears down the zone's stored state and starts it over from scratch.",
+      "kind=image: the output texture is the zone's persistent ping-pong buffer (ownsTextures:false) — a canvas resize reallocates and clears both textures.",
+      "kind=points: the `state` input is retained by reference, not copied, since it is already a fresh immutable value produced this frame.",
+      "An empty zone_id (an unpaired node) emits an empty/blank value of the current kind and never touches shared per-zone state.",
+    ],
+  },
   backend: "webgl2",
   stable: false,
   simulation: true,

@@ -25,7 +25,9 @@ import {
   subscribeShortcutFreeze,
 } from "@/lib/shortcut-freeze";
 
-type MenuItem =
+// Exported for panels that host a small menu of their own (the Assets
+// panel's "Assets ▾" — 090326_asset-library.md §4).
+export type MenuItem =
   | {
       kind: "item";
       label: string;
@@ -819,7 +821,7 @@ export default function MenuBar({
   );
 }
 
-function MenuDropdown({
+export function MenuDropdown({
   items,
   onClose,
   flyout,

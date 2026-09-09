@@ -53,6 +53,15 @@ export const chromaticAberrationNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Split the red and blue channels away from green to fake lens dispersion or a glitchy RGB shift. Radial (grows from a center) or directional (uniform angled shift).",
+  facts: {
+    space: { "param:amount": "uv01", "param:center": "uv01" },
+    gotchas: [
+      "amount/center are UV fractions added straight to v_uv with no aspect term, so the same amount shifts a different fraction of width vs height.",
+      "mode=directional ignores center and falloff entirely — only angle drives the shift.",
+      "falloff only reshapes the radial ramp (0 = uniform amount everywhere, >1 = edge-heavy) and has no effect in directional mode.",
+      "Out-of-range taps sample transparent black; output alpha is the max of the three channel taps to avoid dark edge fringing.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

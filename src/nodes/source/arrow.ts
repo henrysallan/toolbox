@@ -69,6 +69,25 @@ export const arrowNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Generate an arrow outline as a closed spline — aim it tail→tip and set the shaft thickness and head size.",
+  facts: {
+    space: {
+      "param:tailX": "canvas01",
+      "param:tailY": "canvas01",
+      "param:tipX": "canvas01",
+      "param:tipY": "canvas01",
+      "param:shaftThickness": "canvas01",
+      "param:headLength": "canvas01",
+      "param:headWidth": "canvas01",
+      "param:stroke_thickness": "pixels",
+    },
+    gotchas: [
+      "tailX/Y, tipX/Y, shaftThickness, headLength and headWidth are all canvas01: width-relative fractions, not absolute pixels.",
+      "shaftThickness and headWidth are full widths; the outline offsets each side of the centerline by half that amount.",
+      "headLength is clamped to the tail-to-tip distance, so the head can't outgrow the shaft on a short arrow.",
+      "If tail and tip coincide, the arrow degenerates to a single open anchor (a dot) instead of a closed 7-point outline.",
+      "stroke_thickness is pixels by default; switching stroke_units to % makes it a fraction of canvas width instead.",
+    ],
+  },
   backend: "webgl2",
   inputs: [SPLINE_FILL_INPUT, TRANSFORM_INPUT],
   params: [

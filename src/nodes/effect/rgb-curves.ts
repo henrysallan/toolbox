@@ -84,6 +84,13 @@ export const rgbCurvesNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Tone curves — a combined RGB curve plus individual R / G / B curves.",
+  facts: {
+    gotchas: [
+      "The master (combined RGB) curve applies to all three channels first, then each per-channel R/G/B curve is applied on top of that result.",
+      "Alpha passes through unmodified; only RGB is curved.",
+      "Each channel's curve bakes to a 256-entry monotone-cubic LUT that is then linearly interpolated per lookup, not evaluated exactly per input value.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

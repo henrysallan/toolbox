@@ -133,6 +133,15 @@ export const sdfFromImageNode: NodeDefinition = {
   category: "utility",
   description:
     "Convert an image into a signed distance field. Distance mode thresholds a channel and runs a jump-flooding distance transform (inside negative); Raw mode treats the image as an already-baked distance field (0.5 = edge). Output composes with Union / Morph / Round / Rasterize.",
+  facts: {
+    space: { "param:spread": "pixels", "param:range": "canvas01" },
+    gotchas: [
+      "mode=distance thresholds the chosen channel then runs a jump-flooding transform (inside negative); spread is the half-range in pixels, at render resolution, the field ramps over before clamping.",
+      "mode=raw skips the transform and reads the channel directly as an already-baked field (0.5 = boundary), scaled by range in canvas-UV distance units.",
+      "The computed field is cached per node instance, recomputing only when the source image's identity or the mode/channel/threshold/spread params change; other slider drags hit the cache.",
+      "The unwired `position` input defaults to canvas UV, like other SDF primitives' Position socket; wire a Translate/Scale/Rotate chain to sample the field somewhere else.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", type: "image", required: true, label: "Image" },

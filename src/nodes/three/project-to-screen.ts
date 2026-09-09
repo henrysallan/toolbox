@@ -48,6 +48,13 @@ export const projectToScreen3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Projects 3D points into 2D screen-space points through a scene camera — wire the same Camera into this and Scene Render, and the 2D point toolkit (labels, connect lines, trails…) tracks the 3D render exactly. Points behind the camera are dropped.",
+  facts: {
+    gotchas: [
+      "Unwired camera falls back to the same default view as Scene Render's own default; wire the identical Camera node into both, or the two projections diverge once either uses a non-default camera.",
+      "Culling behind the camera's near plane compacts the array (count can shrink) rather than zeroing entries; groupIndices carry over so per-index pairing with other 2D nodes still works on the remainder.",
+      "Output y is pre-inverted (aspectUncorrectY) so the dot lands on the same pixel after standard canvas01 aspect correction; on-screen points outside [0,1] are kept, not clamped.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [

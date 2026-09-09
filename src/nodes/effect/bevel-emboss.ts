@@ -319,6 +319,16 @@ export const bevelEmbossNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Bevel & Emboss — fake-3D raised edge from a height source. Outer / Inner / Emboss / Pillow Emboss styles. Two lights (each with angle, elevation, opacity) shade the height field with shared highlight + shadow colors and blend modes. Outer/Inner/Pillow use a JFA-derived signed-distance height (cached per input image); Emboss uses the input's luminance directly.",
+  facts: {
+    space: { "param:depth": "pixels", "param:soften": "pixels", "param:feather": "pixels" },
+    gotchas: [
+      "depth (px) sets bevel reach; the height gradient is rescaled by depth so relief strength (face angle) stays consistent as depth changes, in every style including emboss.",
+      "style=emboss skips the JFA distance field entirely and reads the source's alpha-weighted luminance as height directly; depth still scales relief strength but not falloff reach.",
+      "Wiring the optional height input JFAs its OWN alpha instead of the main image's, decoupling the relief shape from the visible image.",
+      "outer-bevel and pillow-emboss extend output alpha outward past the source shape, up to a depth-sized band, so the raised rim is not clipped by the original alpha.",
+      "The JFA distance field is cached by the height source's object identity; an animated source (video, generative) recomputes the full JFA pass every frame.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", type: "image", required: true },

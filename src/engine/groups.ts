@@ -3,13 +3,25 @@
 // (which copies src/engine + src/nodes) is self-contained.
 //
 // A group is a regular node (type "node-group") whose external socket
-// interface lives in its params under `interface`. The interior
-// Group Input / Group Output nodes (parentId = the group's id) carry
-// the same socket lists in their params under `sockets`; they are the
-// source of truth, and graph-ops keeps the group node's params in
-// sync. See specdocs/archive/layers-groups-attributes.md.
+// interface lives in its params under `interface`. Promoted-input
+// defaults live beside it under `inputValues` (keyed by socket name);
+// flatten copies those onto interior consumers when the shell input is
+// unwired: `in:param:` patches the consumer's params, and promoted
+// scalar/vec/color/string/ramp `in:` sockets land as `inputOverrides`
+// the evaluator injects (so a GLSL/Point Expression channel doesn't
+// need a Constant shim). The interior Group Input / Group Output
+// nodes (parentId = the group's id) carry the same socket lists in
+// their params under `sockets`; they are the source of truth, and
+// graph-ops keeps the group node's params in sync. See
+// specdocs/archive/layers-groups-attributes.md.
 
-import type { SocketType } from "./types";
+import type { ColorRampStop } from "./color-ramp";
+import type {
+  ParamDef,
+  ParamType,
+  SocketType,
+  SocketValue,
+} from "./types";
 
 export const GROUP_TYPE = "node-group";
 export const GROUP_INPUT_TYPE = "group-input";
@@ -84,6 +96,86 @@ export const ITERATE_LOOP_PARAMS = [
   "random_max",
 ] as const;
 export const ITERATE_PARAM_PREFIX = "zi__param__";
+
+// Repeat and For Each Element are the same two-node zone shape as Iterate
+// (shell + input member, parentId membership, flatten extraction, nested
+// eval). They share the zi__ / zi__e_ / zi__param__ plumbing and the
+// iterate-feed node. Differences are in what the shell loops over and
+// how it emits:
+//
+//   Repeat  — K from count; each pass's collect becomes the next pass's
+//             matching passthrough (feedback by socket name); output is
+//             the LAST iteration, same type (no image_group promotion).
+//   For Each — K from a geometry input on the shell (subpaths or points);
+//             each pass sees one element; output is grouped like Iterate.
+export const REPEAT_TYPE = "repeat";
+export const REPEAT_INPUT_TYPE = "repeat-input";
+export const FOREACH_TYPE = "foreach";
+export const FOREACH_INPUT_TYPE = "foreach-input";
+
+export const ZONE_SHELL_TYPES = [
+  ITERATE_TYPE,
+  REPEAT_TYPE,
+  FOREACH_TYPE,
+] as const;
+export const ZONE_INPUT_TYPES = [
+  ITERATE_INPUT_TYPE,
+  REPEAT_INPUT_TYPE,
+  FOREACH_INPUT_TYPE,
+] as const;
+
+export function isZoneShell(type: string | undefined | null): boolean {
+  return (
+    type === ITERATE_TYPE || type === REPEAT_TYPE || type === FOREACH_TYPE
+  );
+}
+
+export function isZoneInput(type: string | undefined | null): boolean {
+  return (
+    type === ITERATE_INPUT_TYPE ||
+    type === REPEAT_INPUT_TYPE ||
+    type === FOREACH_INPUT_TYPE
+  );
+}
+
+export function zoneInputTypeForShell(
+  shellType: string
+): string | undefined {
+  if (shellType === ITERATE_TYPE) return ITERATE_INPUT_TYPE;
+  if (shellType === REPEAT_TYPE) return REPEAT_INPUT_TYPE;
+  if (shellType === FOREACH_TYPE) return FOREACH_INPUT_TYPE;
+  return undefined;
+}
+
+/** Iterate / For Each promote image → image_group. Repeat does not. */
+export function zoneCollectsGrouped(shellType: string): boolean {
+  return shellType === ITERATE_TYPE || shellType === FOREACH_TYPE;
+}
+
+export const REPEAT_INPUT_SOCKETS = [
+  { name: "index", type: "scalar" },
+  { name: "t", type: "scalar" },
+  { name: "random", type: "scalar" },
+] as const;
+
+export const FOREACH_INPUT_SOCKETS = [
+  { name: "element", type: "spline" },
+  { name: "index", type: "scalar" },
+  { name: "count", type: "scalar" },
+  { name: "t", type: "scalar" },
+  { name: "random", type: "scalar" },
+] as const;
+
+// Hidden loop-param inputs every zone shell declares. Iterate / Repeat
+// use count + seed + random range; For Each uses seed + random range +
+// max_elements. Unused names simply never get a wire.
+export const ZONE_LOOP_PARAMS = [
+  "count",
+  "seed",
+  "random_min",
+  "random_max",
+  "max_elements",
+] as const;
 
 // Fixed socket lists for a layer's interior boundary nodes. Stored in
 // the boundary nodes' `sockets` param like any group, but with
@@ -169,6 +261,253 @@ export function readBoundarySockets(
   params: Record<string, unknown>
 ): GroupSocketSpec[] {
   return specList(params.sockets);
+}
+
+// Socket types that can show a shell widget and take an unwired
+// `inputValues` default. Image/spline/points/… stay bare ports.
+export const GROUP_INPUT_WIDGET_TYPES: ReadonlySet<SocketType> = new Set([
+  "scalar",
+  "vec2",
+  "vec3",
+  "vec4",
+  "string",
+  "color_ramp",
+]);
+
+export function isGroupInputWidgetType(
+  type: string | undefined | null
+): type is SocketType {
+  return !!type && GROUP_INPUT_WIDGET_TYPES.has(type as SocketType);
+}
+
+function hexToRgba01(hex: string): [number, number, number, number] {
+  const h = hex.replace(/^#/, "");
+  const read = (i: number, n: number) =>
+    parseInt(h.slice(i, i + n).repeat(n === 1 ? 2 : 1), 16) / 255;
+  if (h.length === 3 || h.length === 4) {
+    const r = read(0, 1);
+    const g = read(1, 1);
+    const b = read(2, 1);
+    const a = h.length === 4 ? read(3, 1) : 1;
+    if ([r, g, b, a].every((v) => Number.isFinite(v))) return [r, g, b, a];
+  } else if (h.length >= 6) {
+    const r = parseInt(h.slice(0, 2), 16) / 255;
+    const g = parseInt(h.slice(2, 4), 16) / 255;
+    const b = parseInt(h.slice(4, 6), 16) / 255;
+    const a = h.length >= 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1;
+    if ([r, g, b, a].every((v) => Number.isFinite(v))) return [r, g, b, a];
+  }
+  return [1, 1, 1, 1];
+}
+
+function finiteNums(v: unknown, n: number): number[] | null {
+  if (!Array.isArray(v) || v.length < n) return null;
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (typeof v[i] !== "number" || !Number.isFinite(v[i])) return null;
+    out.push(v[i]);
+  }
+  return out;
+}
+
+// Wrap a shell `inputValues` entry as the SocketValue the evaluator would
+// see on a wired producer of `socketType`. Null when the stored shape
+// can't feed that socket (image defaults never land here).
+export function socketValueFromGroupDefault(
+  raw: unknown,
+  socketType: SocketType
+): SocketValue | undefined {
+  switch (socketType) {
+    case "scalar":
+      if (typeof raw === "number" && Number.isFinite(raw))
+        return { kind: "scalar", value: raw };
+      if (typeof raw === "boolean")
+        return { kind: "scalar", value: raw ? 1 : 0 };
+      return undefined;
+    case "vec2": {
+      const n = finiteNums(raw, 2);
+      return n ? { kind: "vec2", value: [n[0], n[1]] } : undefined;
+    }
+    case "vec3": {
+      const n = finiteNums(raw, 3);
+      return n ? { kind: "vec3", value: [n[0], n[1], n[2]] } : undefined;
+    }
+    case "vec4": {
+      const n = finiteNums(raw, 4);
+      if (n) return { kind: "vec4", value: [n[0], n[1], n[2], n[3]] };
+      if (typeof raw === "string")
+        return { kind: "vec4", value: hexToRgba01(raw) };
+      return undefined;
+    }
+    case "string":
+      return typeof raw === "string" ? { kind: "string", value: raw } : undefined;
+    case "color_ramp":
+      return Array.isArray(raw)
+        ? { kind: "color_ramp", stops: raw as ColorRampStop[], interp: "linear" }
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
+// Group-level defaults for promoted inputs, stored on the shell
+// (`params.inputValues[socketName]`). Flatten copies each entry onto the
+// interior consumer when the shell's matching input is unwired — params
+// for `in:param:`, `inputOverrides` for widget-typed `in:` sockets — so
+// the interior node's own default stays the authored value.
+export function readInputValues(
+  params: Record<string, unknown> | undefined | null
+): Record<string, unknown> {
+  const raw = params?.inputValues;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return { ...(raw as Record<string, unknown>) };
+}
+
+export function withInputValues(
+  params: Record<string, unknown>,
+  inputValues: Record<string, unknown>
+): Record<string, unknown> {
+  if (Object.keys(inputValues).length === 0) {
+    if (!("inputValues" in params)) return params;
+    const next = { ...params };
+    delete next.inputValues;
+    return next;
+  }
+  return { ...params, inputValues };
+}
+
+// Drop keys that don't match a current input socket. Values are keyed by
+// socket *name*, never by list position — leftover keys after unexpose
+// would otherwise be easy to zip against the remaining sockets by index.
+export function pruneInputValues(
+  params: Record<string, unknown>,
+  socketNames: Iterable<string>
+): Record<string, unknown> {
+  const keep = new Set(socketNames);
+  const iv = readInputValues(params);
+  const next: Record<string, unknown> = {};
+  let dropped = false;
+  for (const [k, v] of Object.entries(iv)) {
+    if (keep.has(k)) next[k] = v;
+    else dropped = true;
+  }
+  if (!dropped) return params;
+  return withInputValues(params, next);
+}
+
+// Synthetic ParamDef when a promoted input has no interior param (a
+// GLSL/Point Expression channel, a Math `a` data socket, …). Range is a
+// generic 0–1 slider; the caller overlays an explicit ch() range.
+export function groupInputControlFromType(
+  socketName: string,
+  socketType: SocketType
+): ParamDef | null {
+  if (!isGroupInputWidgetType(socketType)) return null;
+  let type: ParamType;
+  let deflt: unknown;
+  switch (socketType) {
+    case "scalar":
+      type = "scalar";
+      deflt = 0;
+      break;
+    case "vec4":
+      type = "color";
+      deflt = "#ffffff";
+      break;
+    case "string":
+      type = "string";
+      deflt = "";
+      break;
+    case "vec2":
+      type = "vec2";
+      deflt = [0, 0];
+      break;
+    case "vec3":
+      type = "vec3";
+      deflt = [0, 0, 0];
+      break;
+    case "color_ramp":
+      type = "color_ramp";
+      deflt = [];
+      break;
+    default:
+      return null;
+  }
+  return groupInputControlDef(socketName, socketType, {
+    name: socketName,
+    type,
+    default: deflt,
+    ...(socketType === "scalar" ? { min: 0, max: 1, step: 0.001 } : {}),
+    ...(socketType === "vec4" ? { alpha: true } : {}),
+  });
+}
+
+// ParamDef shown on a group/layer shell for a promoted input. Range /
+// options come from the interior target; the widget itself is picked
+// from the group input's socket type (scalar → slider, vec4 → color,
+// string → text). Enum and boolean keep their native controls.
+// Returns null when the socket has no param-shaped control (image,
+// spline, …) — those stay a bare port.
+export function groupInputControlDef(
+  socketName: string,
+  socketType: SocketType,
+  target: ParamDef
+): ParamDef | null {
+  if (target.type === "enum") {
+    return {
+      name: socketName,
+      label: socketName,
+      type: "enum",
+      options: target.options,
+      optionLabels: target.optionLabels,
+      default: target.default,
+    };
+  }
+  if (target.type === "boolean") {
+    return {
+      name: socketName,
+      label: socketName,
+      type: "boolean",
+      default: target.default,
+    };
+  }
+  let type: ParamType | null = null;
+  switch (socketType) {
+    case "scalar":
+      type = "scalar";
+      break;
+    case "vec4":
+      type = "color";
+      break;
+    case "string":
+      type = "string";
+      break;
+    case "vec2":
+    case "vec3":
+    case "color_ramp":
+      type = target.type;
+      break;
+    default:
+      return null;
+  }
+  if (!type) return null;
+  return {
+    name: socketName,
+    label: socketName,
+    type,
+    min: target.min,
+    max: target.max,
+    softMax: target.softMax,
+    step: target.step,
+    stepFrom: target.stepFrom,
+    maxFrom: target.maxFrom,
+    options: target.options,
+    optionLabels: target.optionLabels,
+    default: target.default,
+    alpha: target.alpha,
+    placeholder: target.placeholder,
+    multiline: target.multiline,
+  };
 }
 
 // A Group **Output**'s socket list, with a fixed (layer) boundary's

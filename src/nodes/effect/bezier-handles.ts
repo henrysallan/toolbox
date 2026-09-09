@@ -196,6 +196,31 @@ export const bezierHandlesNode: NodeDefinition = {
   subcategory: "utility",
   description:
     "Visualize a spline's bezier control structure like a pen-tool editor view: the path (optional), the tangent handle lines, anchor dots, and handle-end dots — each independently styled (color/thickness/dashed·dotted for lines; radius/fill/stroke for dots). Outputs both an image (primary) and a spline (aux: the handle lines + dots as vectors, group-tagged 0=lines, 1=anchors, 2=handles).",
+  facts: {
+    space: {
+      "param:path_width": "pixels",
+      "param:handle_width": "pixels",
+      "param:handle_dash": "pixels",
+      "param:handle_gap": "pixels",
+      "param:handle_dot_gap": "pixels",
+      "param:anchor_radius": "pixels",
+      "param:anchor_stroke_width": "pixels",
+      "param:anchor_stroke_dash": "pixels",
+      "param:anchor_stroke_gap": "pixels",
+      "param:anchor_stroke_dot_gap": "pixels",
+      "param:cp_radius": "pixels",
+      "param:cp_stroke_width": "pixels",
+      "param:cp_stroke_dash": "pixels",
+      "param:cp_stroke_gap": "pixels",
+      "param:cp_stroke_dot_gap": "pixels",
+    },
+    gotchas: [
+      "Every px-labeled param (widths, radii, dash/gap lengths) is a raster pixel at render resolution and does not scale with output size.",
+      "A handle offset counts as present only when nonzero; zero-length handles (corner points, straight segments) draw no line and no handle dot.",
+      "The aux spline's dots use radius = px_radius / W, so a downstream rasterizer's aspect correction reproduces the same round pixel radius drawn here.",
+      "Dashed style is [dash, gap] with round caps; dotted is [0, dot_gap] with round caps so the zero-length dash renders as a dot, same as Rasterize Spline.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [

@@ -17,7 +17,7 @@ import InPageToc from "../InPageToc";
 
 export const TOC = [
   { id: "the-starting-graph", title: "The starting graph" },
-  { id: "swap-the-source", title: "Swap the source" },
+  { id: "swap-the-source", title: "Add a source" },
   { id: "add-an-effect", title: "Add an effect" },
   { id: "expose-a-parameter", title: "Expose a parameter" },
   { id: "save-it", title: "Save it" },
@@ -37,34 +37,36 @@ export default function YourFirstGraphPage() {
 
       <H2 id="the-starting-graph">The starting graph</H2>
       <P>
-        A fresh project opens with three nodes already wired together:
-        <Code>Image Source</Code> → <Code>Bloom</Code> → <Code>Output</Code>.
-        The preview on the left shows whatever the <Code>Output</Code>{" "}
-        node receives. It starts black because no image is loaded yet.
+        A fresh project opens inside a layer with just{" "}
+        <Code>Group Input</Code> and <Code>Group Output</Code>. The
+        preview on the left shows whatever the composition{" "}
+        <Code>Output</Code> receives — empty until you wire something
+        in.
       </P>
 
-      <H2 id="swap-the-source">Swap the source</H2>
+      <H2 id="swap-the-source">Add a source</H2>
       <OL>
         <LI>
-          Click the <Code>Image Source</Code> node. The parameters
-          panel on the lower right reveals an upload slot.
+          Press <Kbd>Shift</Kbd>+<Kbd>A</Kbd>. The add-node search
+          opens. Type <Code>image source</Code> and hit{" "}
+          <Kbd>Enter</Kbd>.
         </LI>
         <LI>
-          Click it and pick an image file. The preview updates as
-          soon as the image decodes.
+          Click the new node. The parameters panel on the lower
+          right reveals an upload slot — pick an image file. The
+          preview updates as soon as the image decodes.
         </LI>
         <LI>
-          Alternatively, drag any image file directly onto the graph
-          pane — it turns into a new Image Source node at the drop
-          point.
+          Drag from the Image Source output into Group Output. Or
+          drag any image file directly onto the graph pane — it
+          turns into a new Image Source node at the drop point.
         </LI>
       </OL>
 
       <H2 id="add-an-effect">Add an effect</H2>
       <P>
-        Our graph already has <Code>Bloom</Code>, but let&rsquo;s
-        layer another effect in. We&rsquo;ll add a gaussian blur
-        between the image and the bloom.
+        Let&rsquo;s put a gaussian blur between the image and the
+        output.
       </P>
       <OL>
         <LI>
@@ -78,8 +80,8 @@ export default function YourFirstGraphPage() {
         </LI>
         <LI>
           Drag the new node over the wire between Image Source and
-          Bloom. The wire highlights yellow — release to splice the
-          blur in. Both connections rewire automatically.
+          Group Output. The wire highlights yellow — release to
+          splice the blur in. Both connections rewire automatically.
         </LI>
       </OL>
 

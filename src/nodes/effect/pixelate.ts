@@ -36,6 +36,14 @@ export const pixelateNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Mosaic the image into blocks, sampling each block's center. Square or circular cells; aspect stretches the grid for non-square mosaics.",
+  facts: {
+    space: { "param:size": "pixels" },
+    gotchas: [
+      "size is in pixels of the source texture (u_res), not canvas-relative; the same value looks larger on a lower-resolution render target.",
+      "aspect stretches only the cell width (u_cell.x = size*aspect); cell height stays size, so aspect only widens/narrows tiles, it does not scale them uniformly.",
+      "shape=circle sets RGBA to 0 (not just alpha) outside the inscribed disc, so the corners become true transparent-black holes rather than a softened edge.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

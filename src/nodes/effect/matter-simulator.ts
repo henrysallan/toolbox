@@ -1260,6 +1260,24 @@ export const matterSimulatorNode: NodeDefinition = {
   category: "effect",
   description:
     "MLS-MPM deformable matter on WebGPU — liquid, jelly, and snow are one solver with per-material dials (liquid: stiffness + viscosity; jelly: stiffness; snow: stiffness + crumble + hardening). Wire points into `seed` (or a mask into `region`) to place the material; `particle_radius` packs the seeding at a rest spacing so the material keeps that separation. Obstacles three ways: any spline into `obstacle`, Image Mask Colliders, or Circle/Line colliders — all free-slip, inflated by `collider_radius` so sprites rest ON surfaces. Takes the same force nodes as the Particle Simulator. Output is a `particles` socket for Particles to Image plus a `points` aux for the whole points ecosystem — Copy to Points on goo, Points to Spline surfaces. Runs one frame behind (WebGPU readback); needs a WebGPU-capable browser. Restarting the timeline reseeds.",
+  facts: {
+    space: {
+      out: "uv01",
+      "param:particle_radius": "canvas01",
+      "param:collider_radius": "canvas01",
+    },
+    reads: ["time"],
+    gotchas: [
+      "particles (primary) is raw per-axis grid-index/(nx,ny) UV for Particles to Image; the points aux is converted back to authored canvas01 (aspectUncorrectY) for the points ecosystem.",
+      "Force/collider descriptor coordinates are authored canvas01, the same convention the Particle Simulator uses, so one Force node feels identical wired into either.",
+      "gravity is a canvas-width-relative acceleration internally scaled by grid nx (not ny), matching a wired Gravity force node's magnitude on non-square canvases.",
+      "particle_radius sets seed spacing only when no seed points are wired; wired seed points use their own spacing and particle_radius is ignored.",
+      "Reseeds on a fresh graph, a timeline wrap back near t=0, or any change to seed_jitter/material/particle_radius/the wired seed points or region identity.",
+      "drive_by_scene_time steps only while the wired time input strictly increases past its last value; without it, stepping instead requires ctx.playing (or offline export advancing).",
+      "Image Mask Colliders can't be sampled live on WebGPU; they're baked once into the same CPU obstacle SDF as the obstacle spline, alongside Circle/Line colliders.",
+      "Runs one frame behind because the WebGPU readback is async; the very first frame after (re)seeding has no output image yet.",
+    ],
+  },
   backend: "webgpu",
   stable: false,
   simulation: true,

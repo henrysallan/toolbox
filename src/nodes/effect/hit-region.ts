@@ -155,6 +155,17 @@ export const hitRegionNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Turn any shape into a button: gates pointer signals on a mask region (wire a Circle, Text, SVG, or any spline — the silhouette becomes the hit area). Outputs hover, and press / click / release / held for gestures that STARTED inside, with real button grab semantics (leaving mid-drag doesn't drop the gesture). drag_delta tracks the owned gesture — Hit Region → Trigger Envelope is an interactive button; drag_delta → Transform is a crude handle.",
+  facts: {
+    space: { "param:slop": "pixels", "aux:drag_delta": "canvas01" },
+    gotchas: [
+      "The hit test is a live 1×1 GPU sample-and-readback at the cursor, uncached, run once for hover plus once per press edge — no memoization to go stale.",
+      "GRAB semantics: press hit-tests once at the PRESS position; once owned, held/click stay true even if the cursor leaves the region mid-drag, until release.",
+      "click requires the owned gesture to release within slop of its start; slop is CSS pixels of on-screen pointer travel, not render-resolution pixels.",
+      "drag_delta is nonzero only while held, in canvas01 (authored, aspect-corrected) units — the same convention Transform's x/y offsets use.",
+      "No region wired means every signal (hover/press/click/held) reads false; the sampler returns null and null never clears the threshold.",
+      "retimeable:false — hit-testing always reads the live wall-clock cursor state, not the position at whatever timeline frame is being evaluated.",
+    ],
+  },
   backend: "webgl2",
   // Live pointer + readback state — recompute every eval.
   stable: false,

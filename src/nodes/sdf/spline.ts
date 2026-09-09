@@ -115,6 +115,14 @@ export const sdfSplineNode: NodeDefinition = {
   category: "utility",
   description:
     "SDF primitive — signed distance to a spline (flattened to line segments on CPU, looped per-pixel in the SDF shader). Closed splines compose like polygons (use Round / Smooth Union / etc.); open splines act as strokes (unsigned distance — wrap with Round to expand into a fill). Cap is 1024 segments; lower Subdivisions if you have many anchors.",
+  facts: {
+    space: { "in:position": "canvas01" },
+    gotchas: [
+      "Unwired position defaults to canvas UV, as on other SDF primitives; wire a Translate/Rotate/Repeat chain to route it.",
+      "force_open forces the unsigned stroke distance path even when the input spline is geometrically closed.",
+      "The flattened segment texture is cached per node and re-uploaded only when the spline's geometry hash or subdivisions changes; other param/input changes reuse it.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "spline", type: "spline", required: true, label: "Spline" },

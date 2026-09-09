@@ -10,6 +10,7 @@ export const vec2LiteralNode: NodeDefinition = {
   category: "utility",
   description:
     "Emits a single vec2 value. Use to feed exposed vec2 inputs without routing through Combine Vec2.",
+  facts: {},
   backend: "webgl2",
   stable: true,
   inputs: [],

@@ -212,6 +212,28 @@ export const gradientNode: NodeDefinition = {
   category: "image",
   subcategory: "generator",
   description: "Two-color gradient in linear, radial, polar or wave modes.",
+  facts: {
+    space: {
+      "param:start_x": "uv01",
+      "param:start_y": "uv01",
+      "param:end_x": "uv01",
+      "param:end_y": "uv01",
+      "param:center_x": "uv01",
+      "param:center_y": "uv01",
+      "param:radius": "uv01",
+      "param:points": "uv01",
+    },
+    reads: ["time"],
+    gotchas: [
+      "radial mode's distance-to-center is not aspect-corrected, so it reads as an ellipse on non-square canvases; only the wave ring sub-mode aspect-corrects its radius to stay round.",
+      "angle_mod (and uv_in) are only exposed via resolveInputs in modes where they apply: linear and the directional (non-ring) wave sub-mode.",
+      "angle_mod_amount converts the modulator's sampled red channel into a per-pixel radian offset that rotates the gradient axis (linear) or wave direction, added to the base angle.",
+      "softness reshapes t through two nested pow() curves toward the endpoints; multipoint mode ignores softness entirely and blends colors directly by inverse-distance weighting.",
+      "phase_animate drives phase from scene time (ctx.tick) via a [phase_start, phase_end]-frame loop window times phase_rate cycles; it loops seamlessly only when phase_rate is a whole number.",
+      "multipoint supports at most 16 points (MAX_POINTS); any beyond that are silently dropped from the uniform arrays.",
+      "uv_in, when wired, replaces the per-pixel v_uv sample every mode evaluates against; wiring a scalar broadcasts that single value to both UV components.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   // The angle modulator socket is only exposed in modes where `angle` is

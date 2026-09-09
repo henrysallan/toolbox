@@ -20,6 +20,13 @@ export const sdfMorphNode: NodeDefinition = {
   category: "utility",
   description:
     "Morph between two SDFs by interpolating their distance fields (mix). Amount 0 = A, 1 = B; topology can change mid-morph. Keyframe or wire Amount to animate.",
+  facts: {
+    gotchas: [
+      "amount is clamped to [0,1]; a scalar wired to the socket overrides the amount param entirely rather than combining with it.",
+      "Leaving one side unwired degrades to a straight passthrough of the other shape rather than blending toward the empty sentinel's huge distance.",
+      "Topology can change mid-morph (a disc splitting in two, a square sprouting points) since it interpolates the distance FIELD, not the boundary geometry.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

@@ -314,6 +314,81 @@ app.whenReady().then(async () => {
     log: matte.differs ? "" : "u_hasBaseMatte had no effect — the matte is being ignored",
   });
 
+  // Failed compile → fix source → first successful compile must draw.
+  const stale = await run(`
+    (() => {
+      const gl = window.T.gl;
+      const VS = ${JSON.stringify(VS)};
+      function compile(type, src) {
+        const s = gl.createShader(type);
+        gl.shaderSource(s, src);
+        gl.compileShader(s);
+        if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+          const log = gl.getShaderInfoLog(s);
+          gl.deleteShader(s);
+          throw new Error(log);
+        }
+        return s;
+      }
+      function link(fs) {
+        const p = gl.createProgram();
+        gl.attachShader(p, vs);
+        gl.attachShader(p, fs);
+        gl.linkProgram(p);
+        if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+          const log = gl.getProgramInfoLog(p);
+          gl.deleteProgram(p);
+          throw new Error(log);
+        }
+        return p;
+      }
+      const vs = compile(gl.VERTEX_SHADER, VS);
+      const cache = { src: null, program: null };
+      function tryShader(src) {
+        if (cache.src === src) return cache.program;
+        if (cache.program) { gl.useProgram(null); gl.deleteProgram(cache.program); }
+        while (gl.getError() !== gl.NO_ERROR) {}
+        try {
+          const fs = compile(gl.FRAGMENT_SHADER, src);
+          const prog = link(fs);
+          gl.deleteShader(fs);
+          cache.src = src;
+          cache.program = prog;
+          return prog;
+        } catch (e) {
+          while (gl.getError() !== gl.NO_ERROR) {}
+          cache.src = src;
+          cache.program = null;
+          return null;
+        }
+      }
+      const BAD = "#version 300 es\\nprecision highp float;\\nout vec4 fragColor;\\nin vec2 v_uv;\\nvoid main() { fragColor = undeclared; }";
+      const GOOD = "#version 300 es\\nprecision highp float;\\nout vec4 fragColor;\\nin vec2 v_uv;\\nvoid main() { fragColor = vec4(1.0, 0.0, 0.0, 1.0); }";
+      const fail = tryShader(BAD);
+      const ok = tryShader(GOOD);
+      if (!ok || fail) return { ok: false, log: "compile sequence" };
+      const fbo = gl.createFramebuffer();
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 4, 4, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      gl.viewport(0, 0, 4, 4);
+      gl.useProgram(ok);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      const pix = new Uint8Array(4);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pix);
+      return { ok: pix[0] > 200 && pix[1] < 20, log: Array.from(pix).join(",") };
+    })()
+  `);
+  report({
+    name: "tryShader fail→fix draws on the first successful compile",
+    ok: stale.ok,
+    log: stale.log,
+  });
+
   console.log(
     failures === 0 ? "\nall shader checks passed" : `\n${failures} shader check(s) FAILED`
   );

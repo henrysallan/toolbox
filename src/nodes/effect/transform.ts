@@ -184,7 +184,26 @@ export const transformNode: NodeDefinition = {
   name: "Transform",
   category: "utility",
   description:
-    "Scale, rotate, and translate the input around a pivot. Works on images, splines, or points. Wire a Gizmo into Transform to drive the same placement from a shared on-canvas control (that replaces this node's own TRS). Spline/points Pivot from Source (the default) follows the incoming shape's bounds so scale/rotate stay about the shape when you move it; Canvas pins the pivot to a fixed frame point. Image mode can Tile the source past its edges (AE RepeTile) with per-side extent and Unfold. For SDFs use the Position-pipeline operators (Position Translate / Scale / Rotate) — they compose with Position Repeat / Mirror / Polar for tile-local transforms.",
+    "Scale, rotate, and translate the input around a pivot. Works on images, splines, or points. Wire a Gizmo into Transform to drive the same placement from a shared on-canvas control (that replaces this node's own TRS). `space=local` (Source, the default) is a fraction of the incoming shape's bounds so scale/rotate stay about the shape when you move it; `space=global` (Canvas) pins the pivot to a fixed frame point. Image mode can Tile the source past its edges (AE RepeTile) with per-side extent and Unfold. For SDFs use the Position-pipeline operators (Position Translate / Scale / Rotate) — they compose with Position Repeat / Mirror / Polar for tile-local transforms.",
+  facts: {
+    space: {
+      "in:image": ["raster", "canvas01"],
+      out: "in:image",
+      "param:translateX": "canvas01",
+      "param:translateY": "canvas01",
+      "param:pivotX": "canvas01",
+      "param:pivotY": "canvas01",
+    },
+    reads: ["attr:rotation", "attr:scale.x", "attr:scale.y"],
+    writes: ["attr:rotation", "attr:scale.x", "attr:scale.y"],
+    gotchas: [
+      "Behavior follows the connected input's type (image/spline/points), not a mode param; the legacy `mode` param is hidden and no longer read.",
+      "Wiring a `transform` socket (e.g. from a Gizmo) replaces this node's own TRS params entirely, using inverse-affine math on images or direct math on spline/points.",
+      "space=local (default) makes pivotX/Y a fraction of the incoming shape's bbox so scale/rotate track it; space=global pins the pivot to a fixed canvas point; images always act as global.",
+      "tile (image-only) wraps sampling past the edges by tileLeft/Right/Up/Down source-widths, with tileUnfold mirroring odd copies edge-to-edge.",
+      "On points, rotation and scale compose with the point's existing rotation (additive) and scale (multiplicative) rather than replacing them.",
+    ],
+  },
   backend: "webgl2",
   supportsTransformGizmo: true,
   // Input socket is named "image" for back-compat with saved projects; its

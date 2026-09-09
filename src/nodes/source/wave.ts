@@ -29,7 +29,21 @@ export const waveNode: NodeDefinition = {
   category: "spline",
   subcategory: "generator",
   description:
-    "Generate a sine wave as an open spline — set amplitude, cycles, phase, and the horizontal span.",
+    "Generate a sine wave as an open spline — set amplitude, cycles, phase, and the horizontal span. Phase is in ×π units (0.5 = π/2, 1 = π; range −2..2), not cycles or radians. Authored in [0,1]² Y-down; the rasterizer scales y about 0.5 by W/H so amplitude stays width-relative.",
+  facts: {
+    space: {
+      "param:centerX": "canvas01",
+      "param:centerY": "canvas01",
+      "param:width": "canvas01",
+      "param:amplitude": "canvas01",
+      "param:stroke_thickness": ["pixels", "canvas01"],
+    },
+    gotchas: [
+      "stroke_thickness is absolute pixels when stroke_units=px (default); stroke_units=% resolves it as a fraction of canvas width instead, so it scales with output size.",
+      "resolution sets sample points per cycle threaded through a Catmull-Rom spline; too low visibly facets the curve at high cycles or amplitude.",
+      "The fill aux only samples a wired `fill` image when fill_enabled is on and something is connected; otherwise it flat-fills with fill_color.",
+    ],
+  },
   backend: "webgl2",
   inputs: [SPLINE_FILL_INPUT, TRANSFORM_INPUT],
   params: [

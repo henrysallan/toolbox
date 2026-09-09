@@ -62,7 +62,22 @@ export const circleNode: NodeDefinition = {
   category: "spline",
   subcategory: "generator",
   description:
-    "Generate a circle (or ellipse, via non-uniform radii) as a closed spline.",
+    "Generate a circle (or ellipse, via non-uniform radii) as a closed spline. Authored in [0,1]² Y-down; the rasterizer scales y about 0.5 by W/H so radii stay width-relative.",
+  facts: {
+    space: {
+      "param:centerX": "canvas01",
+      "param:centerY": "canvas01",
+      "param:radiusX": "canvas01",
+      "param:radiusY": "canvas01",
+      "param:stroke_thickness": "pixels",
+    },
+    gotchas: [
+      "radiusX and radiusY are linked by default (dragging one moves the other in lockstep); unlink them in the param panel to author an independent ellipse.",
+      "Equal radiusX/radiusY only renders as a true circle on a square canvas, since y is scaled by W/H at raster time like every canvas01 distance.",
+      "stroke_thickness is pixels by default; switching stroke_units to % makes it a fraction of canvas width instead.",
+      "trim_offset is unbounded mod 1, so keyframing it past ±1 keeps orbiting the outline rather than clamping.",
+    ],
+  },
   backend: "webgl2",
   inputs: [SPLINE_FILL_INPUT, TRANSFORM_INPUT],
   params: [

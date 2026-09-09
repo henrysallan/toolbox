@@ -27,6 +27,14 @@ export const audioSamplerNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Pitched sample playback — the notes→audio rasterizer for one-shots. Load an audio file, set the MIDI root pitch it was recorded at, and every incoming note replays it repitched. Wire a notes source (Step Pattern) into it, route the audio into a Layer Output audio socket or the Output node, and press Play.",
+  facts: {
+    gotchas: [
+      "With no notes wired, an empty notes array, or no file loaded, compute() returns {} — nothing plays.",
+      "root_pitch is the MIDI note the recording was made at; every incoming note is repitched relative to it, so a wrong root_pitch transposes every note.",
+      "release (seconds) is the tail after note-off, independent of the sample's own natural decay.",
+      "The notes array is passed through by reference (never copied) for the reconciler's identity diff, so an upstream node must hand back a new array, not mutate in place, for a change to register.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "notes", type: "notes", required: true, label: "Notes" }],

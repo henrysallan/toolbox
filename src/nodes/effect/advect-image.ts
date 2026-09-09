@@ -125,6 +125,19 @@ export const advectImageNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Flow an image along a velocity field: each pixel back-traces `steps` samples through the field (re-sampled every step, so content follows the field's curves — unlike Displace's single push). Deterministic and scrub-safe: `distance` is the total flow, keyframe it 0→N to animate content streaming along the field. Field modes match Advect Points (`vector` = signed-RG velocity from Perlin curl / Spline Flow Field, `angle` = luminance heading, `gradient` / `contour` = flow toward / around brightness). Optional speed image multiplies flow by its luminance. The `uv` aux carries the final warp for reuse in any uv consumer.",
+  facts: {
+    space: { "param:distance": "canvas01" },
+    gotchas: [
+      "With no field wired, steps collapses to 0, the trace becomes an identity uv map, and pass 2 is a straight copy of the source image.",
+      "distance is the TOTAL flow across all steps in aspect-corrected canvas-width units, not a per-step amount; keyframe it 0->N to stream content along the field without touching steps.",
+      "steps controls curve fidelity: each step re-samples the field, so steps=1 degenerates to a single Displace-style push instead of following the field's curves.",
+      "speed multiplies flow by the speed image's luminance (dot with Rec.709 weights) each step, ignoring its color and alpha.",
+      "gradient/contour modes derive direction from a finite-difference of field luminance (GRAD_EPS = 0.004 of canvas width), so a noisy or low-res field image causes visible jitter.",
+      "edge=transparent drops samples that land outside [0,1] to alpha 0; clamp/wrap/mirror instead remap them back inside range.",
+      "angle_turns/angle_offset only affect field_mode=angle; midlevel only affects field_mode=vector.",
+      "aux:uv is built every evaluation regardless of whether it's wired, since this node is cacheable and a cache hit would otherwise serve a stale empty uv once something gets wired to it.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", type: "image", required: true },

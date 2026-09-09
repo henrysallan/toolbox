@@ -59,6 +59,16 @@ export const splineBooleanNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Boolean of two splines. Subtract (A − B) cuts B out of A's filled region; also union, intersect, and exclude (XOR). For subtract/intersect, 'Treat A as line' cuts A's curves instead — gaps where B covers them (subtract) or only the covered arcs (intersect), keeping true bezier geometry. Outputs a spline, plus an image when stroke or fill is on.",
+  facts: {
+    space: { "param:stroke_thickness": "pixels" },
+    gotchas: [
+      "treat_a=line (subtract/intersect only) cuts A's curves instead of its fill: subtract leaves gaps where B covers A, intersect keeps only the covered arcs, as true bezier geometry.",
+      "The default shape-mode boolean polygonalizes both curves first; `resolution` sets line segments per curve for that flattening (higher = smoother, heavier).",
+      "With B unwired, A passes through completely unchanged (treated as an empty region/line).",
+      "stroke_thickness is always literal pixels at render width — unlike the spline-primitive raster nodes, this node has no stroke_units %-toggle.",
+      "The image aux only appears when stroke or fill is enabled, and shares the spline primitives' rasterizer, including even-odd fill so boolean holes render correctly.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "a", type: "spline", required: true, label: "A (base)" },

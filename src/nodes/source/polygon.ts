@@ -47,7 +47,21 @@ export const polygonNode: NodeDefinition = {
   category: "spline",
   subcategory: "generator",
   description:
-    "Generate a regular polygon as a closed spline — set the number of sides, radius, and rotation.",
+    "Generate a regular polygon as a closed spline — set the number of sides, radius, and rotation. Authored in [0,1]² Y-down; the rasterizer scales y about 0.5 by W/H so radii stay width-relative.",
+  facts: {
+    space: {
+      "param:centerX": "canvas01",
+      "param:centerY": "canvas01",
+      "param:radius": "canvas01",
+      "param:stroke_thickness": "pixels",
+    },
+    gotchas: [
+      "sides is floored and clamped to a minimum of 3, so fractional or sub-3 values just draw a triangle.",
+      "The first vertex sits at 12 o'clock (-90°) plus rotation; rotation is entered in degrees and converted to radians internally.",
+      "stroke_thickness is absolute pixels by default; set stroke_units=% to make it a percentage of canvas width instead.",
+      "The image aux exists only while stroke_enabled or fill_enabled is on.",
+    ],
+  },
   backend: "webgl2",
   inputs: [SPLINE_FILL_INPUT, TRANSFORM_INPUT],
   params: [

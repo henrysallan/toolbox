@@ -54,6 +54,16 @@ export const groupPickNode: NodeDefinition = {
   category: "utility",
   description:
     "Filter to one index of a group. For images, indexes into an image_group's array. For splines and points, keeps only subpaths / points whose groupIndex matches the chosen index — Group's output uses socket-order tags (a=0, b=1, c=2…). Index clamps to valid range.",
+  facts: {
+    space: { out: "in:group" },
+    reads: ["attr:group"],
+    gotchas: [
+      "index clamps against the count of DISTINCT sorted groupIndex values, not the raw index range — e.g. groups [0,5,9] with index=1 picks group 5.",
+      "Untagged subpaths/points are treated as groupIndex 0, so index=0 on an un-grouped input returns everything unchanged.",
+      "groupIndex is stripped from the output — the picked subset is a plain single-group value downstream, no longer group-tagged.",
+      "Switching Type (mode) changes the accepted input socket type and the output type (image_group/image, spline, or points), disconnecting mismatched wires.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   inputs: [

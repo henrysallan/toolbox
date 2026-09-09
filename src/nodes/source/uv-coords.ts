@@ -18,6 +18,11 @@ export const uvCoordsNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Emits the default per-pixel (u, v) as a UV field. Feed it into UV-aware generators (Image Source, Gradient, Perlin) — with Math in UV mode sitting in between to warp, offset, or animate the coordinates.",
+  facts: {
+    gotchas: [
+      "Only R and G carry u and v; B is always 0 and A is always 1, so anything reading the blue or alpha channel gets a flat constant.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [],

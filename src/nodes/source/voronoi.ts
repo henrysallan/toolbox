@@ -937,6 +937,19 @@ export const voronoiNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Worley/Voronoi cells from one of three point sources — an infinite procedural lattice, a CPU-scattered set (image-density placement + Lloyd relaxation, the former Fracture node), or an external Points input. Renders F1 / F2-F1 / F2 / cell-id / mask / position modes with selectable distance metric, and emits the true cell geometry as aux outputs: cell polygons (grouped, with per-cell driver), deduped edges, vertices, centers (area-scaled points), and the Delaunay neighbor graph. Geometry is the euclidean diagram and ignores the lattice warp/UV inputs; the Cell Bow param bulges cell edges outward (bubbles) or inward (pebbles).",
+  facts: {
+    reads: ["time"],
+    writes: ["attr:group", "attr:driver"],
+    gotchas: [
+      "offset_x/offset_y (lattice) pan in cell-sized units set by scale, not canvas-normalized distance; the same offset covers less canvas as scale increases.",
+      "Aux geometry (cells/edges/vertices/centers/neighbors) is always the euclidean diagram; under metric=manhattan/chebyshev/minkowski it no longer overlays the rendered image.",
+      "edge_bow only bulges the cells' spline edges outward (>0) or inward (<0); the rendered image and other aux outputs are unaffected.",
+      "The warp input (lattice) distorts the rendered image per pixel but the geometry aux ignores it entirely; use scatter's density input for geometry-matched variable density.",
+      "animated=true drives w from the scene tick along a seamless forward-only loop over anim_start..anim_end at anim_rate, overriding the manual w slider.",
+      "cells stamp attr:group (stable per-cell id) and attr:driver (per-cell random, feeds Stroke/Rasterize ramp_by=driver); centers stamp the same group id plus area-relative scale.",
+      "source=points truncates an incoming points value to the first 1024 points (MAX_POINTS) and logs a one-time console warning past that.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "uv_in", label: "UV", type: "uv", required: false },

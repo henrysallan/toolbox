@@ -17,6 +17,9 @@ export interface PresetNameModalProps {
   // Pre-filled name (e.g. the clicked node's display name). The field is
   // selected on focus so typing replaces it in one gesture.
   initialName?: string;
+  // Primary button label when there's no name conflict (default "Save
+  // Preset"). The Assets panel's rename flow passes "Rename".
+  saveLabel?: string;
 }
 
 // Shared name-capture modal behind NewLayoutPresetModal (Window →
@@ -31,6 +34,7 @@ export default function PresetNameModal({
   onSave,
   existingNames,
   initialName = "",
+  saveLabel,
 }: PresetNameModalProps) {
   const [name, setName] = useState(initialName);
   const [saving, setSaving] = useState(false);
@@ -172,7 +176,7 @@ export default function PresetNameModal({
               opacity: saving || !trimmed ? 0.5 : 1,
             }}
           >
-            {saving ? "Saving…" : conflict ? "Replace" : "Save Preset"}
+            {saving ? "Saving…" : conflict ? "Replace" : (saveLabel ?? "Save Preset")}
           </button>
         </div>
       </div>

@@ -34,6 +34,15 @@ export const sdfRasterizeNode: NodeDefinition = {
   category: "utility",
   description:
     "Sample an SDF at every pixel and produce an image. Foreground / Background colors fill inside / outside; Contour adds an outline at the zero-crossing. One shader compile + one draw call total per topology.",
+  facts: {
+    space: { "param:contour_width": "pixels", "param:softness": "pixels" },
+    gotchas: [
+      "softness and contour_width are pixel counts at render resolution, not canvas01 — both scale by 1/max(width, height) internally.",
+      "aspect_correct rescales the SDF's own sample coordinate (not the output raster) so a circle stays circular on non-square canvases; upstream primitives' radii rely on this same correction.",
+      "The shader is cached by the tree's structural hash: changing any param (radius, position, colors) only rebinds uniforms, while changing the graph topology triggers a recompile.",
+      "contour_alpha defaults to 0, so setting contour_width alone draws nothing until contour_alpha is raised above 0.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "sdf", type: "sdf", required: true, label: "SDF" }],
   params: [

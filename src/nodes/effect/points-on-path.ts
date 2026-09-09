@@ -7,6 +7,7 @@ import type {
   RenderContext,
   SocketType,
   SocketValue,
+  SplineValue,
   StringValue,
   UvValue,
 } from "@/engine/types";
@@ -18,14 +19,22 @@ import {
   sampleSubpathAt,
 } from "@/engine/spline-math";
 import { makePoints, pointsFromArray } from "@/engine/points";
+import {
+  attributesFromObjectAttrs,
+  sampleSplineAttrs,
+  sampleSubpathAttrs,
+  type ObjectAttrs,
+} from "@/engine/spline-attrs";
 import { curveFromValue } from "@/nodes/three/curve-tube";
 
 // Emit N evenly-spaced positions along a spline.
 //
 // Domain Combined (default): one arc-length domain across every subpath —
-// points can slide off one onto the next. Domain Per subpath: Count
-// points on each subpath as its own loop (progress wraps per subpath;
-// points inherit that subpath's groupIndex).
+// points can slide off one onto the next. Domain Per subpath: sample each
+// subpath as its own loop (progress wraps per subpath; points inherit that
+// subpath's groupIndex). Amount Equal (default) puts Count points on every
+// subpath; Amount By length scales Count so the longest subpath gets that
+// many and shorter ones get proportionally fewer (uniform spacing).
 //
 // Primary output: a canvas-sized IMAGE visualization (dots at each sample
 // position) so you can see what the node is doing. Useful on its own as a
@@ -103,6 +112,130 @@ const PROGRESS_NAME: StringValue = {
   value: PROGRESS_CHANNEL,
 };
 
+// How many points each subpath emits in Per-subpath domain.
+// Equal: Count on every positive-length subpath (the original behavior).
+// By length: Count is the longest subpath's allotment; others scale by
+// arc-length ratio so spacing stays roughly uniform. Zero-length subpaths
+// get 0. Caps the total at `maxPoints` the same way Equal pre-caps
+// Count by nSubs.
+export function perSubpathCounts(
+  lengths: readonly number[],
+  count: number,
+  byLength: boolean,
+  maxPoints: number
+): number[] {
+  const n = lengths.length;
+  if (n === 0) return [];
+  const c = Math.max(1, Math.floor(count));
+  const cap = Math.max(1, Math.floor(maxPoints));
+  if (!byLength) {
+    const per = Math.max(1, Math.min(c, Math.floor(cap / Math.max(1, n))));
+    return lengths.map((L) => (L > 0 ? per : 0));
+  }
+  let maxL = 0;
+  for (let i = 0; i < n; i++) {
+    if (lengths[i] > maxL) maxL = lengths[i];
+  }
+  if (maxL <= 0) return lengths.map(() => 0);
+  const out = new Array<number>(n);
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const L = lengths[i];
+    const k = L <= 0 ? 0 : Math.max(1, Math.round((c * L) / maxL));
+    out[i] = k;
+    total += k;
+  }
+  if (total > cap && total > 0) {
+    const scale = cap / total;
+    for (let i = 0; i < n; i++) {
+      if (out[i] > 0) out[i] = Math.max(1, Math.floor(out[i] * scale));
+    }
+  }
+  return out;
+}
+
+export interface PathSampleOpts {
+  count: number;
+  domain: string;
+  countMode: string;
+  animate: boolean;
+  offset: number;
+  align: string;
+  alignOffsetDeg: number;
+}
+
+export interface PathSamples {
+  positions: Array<[number, number]>;
+  rotations: number[];
+  factors: number[];
+  groups: number[];
+  attrRows: Array<ObjectAttrs | undefined>;
+}
+
+// CPU half of Points on Path: even-arc-length samples plus interpolated
+// named spline channels. Compute renders the viz/UV auxes from this;
+// tests call it directly (no GL).
+export function samplePathPoints(
+  src: SplineValue,
+  opts: PathSampleOpts
+): PathSamples {
+  const positions: Array<[number, number]> = [];
+  const rotations: number[] = [];
+  const factors: number[] = [];
+  const groups: number[] = [];
+  const attrRows: Array<ObjectAttrs | undefined> = [];
+  const align = opts.align;
+  const alignOffsetRad = (opts.alignOffsetDeg * Math.PI) / 180;
+  const angleFor = (tangent: [number, number]): number => {
+    if (align === "off") return 0;
+    const base = Math.atan2(tangent[1], tangent[0]);
+    const normal = align === "normal" ? Math.PI / 2 : 0;
+    return base + normal + alignOffsetRad;
+  };
+  const count = Math.max(1, Math.min(MAX_POINTS, Math.floor(opts.count)));
+  const perSubpath = opts.domain === "per subpath";
+  if (perSubpath) {
+    const nSubs = src.subpaths.length;
+    const measured = src.subpaths.map((sub) => measureSubpath(sub));
+    const counts = perSubpathCounts(
+      measured.map((m) => m.total),
+      count,
+      opts.countMode === "by length",
+      MAX_POINTS
+    );
+    for (let s = 0; s < nSubs; s++) {
+      const sub = src.subpaths[s];
+      const lengths = measured[s];
+      const per = counts[s];
+      if (per <= 0 || lengths.total <= 0) continue;
+      const g = sub.groupIndex ?? s;
+      for (let i = 0; i < per; i++) {
+        const t = pathSampleT(i, per, opts.animate, opts.offset, sub.closed);
+        const sample = sampleSubpathAt(lengths, t);
+        positions.push(sample.pos);
+        rotations.push(angleFor(sample.tangent));
+        factors.push(t);
+        groups.push(g);
+        attrRows.push(sampleSubpathAttrs(sub, lengths, t));
+      }
+    }
+  } else {
+    const lengths = measureSpline(src);
+    if (lengths.total > 0) {
+      const hasClosed = src.subpaths.some((s) => s.closed);
+      for (let i = 0; i < count; i++) {
+        const t = pathSampleT(i, count, opts.animate, opts.offset, hasClosed);
+        const s = sampleSplineAt(src, lengths, t);
+        positions.push(s.pos);
+        rotations.push(angleFor(s.tangent));
+        factors.push(t);
+        attrRows.push(sampleSplineAttrs(src, lengths, t));
+      }
+    }
+  }
+  return { positions, rotations, factors, groups, attrRows };
+}
+
 function pathSampleT(
   i: number,
   count: number,
@@ -167,7 +300,20 @@ export const pointsOnPathNode: NodeDefinition = {
   category: "point",
   subcategory: "generator",
   description:
-    "Emit N evenly-spaced positions along a spline. Each point carries a `progress` attribute (0 at the start of the path, 1 at the end; Animate wraps) that Copy to Points can read by name — pick variants, tint, or fade copies by how far along the spline they are. Domain Combined treats every subpath as one concatenated length (points can slide from one onto the next); Per subpath emits Count points on each subpath as its own loop, tagged with that subpath's group. Optionally aligns each point's rotation to the path tangent or normal. Turn on Animate to slide the points along the path with the Offset slider — points that reach the end wrap back to the start (a continuous stream; keyframe Offset or wire a Scene Time / LFO ramp to drive it). Primary output is a `points` value for direct wiring into Copy-to-Points / Set Position / etc. Aux outputs: a UV texture of positions (one pixel per point), a dot visualization image, and a `progress` string (the channel name, for wiring into attribute-name params).",
+    "Emit N evenly-spaced positions along a spline. Each point carries a `progress` attribute (0 at the start of the path, 1 at the end; Animate wraps) that Copy to Points can read by name — pick variants, tint, or fade copies by how far along the spline they are. Named channels on the path (per-anchor, interpolated along the curve; per-subpath, copied onto every sample from that subpath) land on the points too, so an image sampled onto the rest pose survives a later rope sim. Domain Combined treats every subpath as one concatenated length (points can slide from one onto the next); Per subpath samples each subpath as its own loop, tagged with that subpath's group. In Per subpath, Amount Equal puts Count points on every subpath; By length scales Count so the longest subpath gets that many and shorter ones get proportionally fewer. Optionally aligns each point's rotation to the path tangent or normal. Turn on Animate to slide the points along the path with the Offset slider — points that reach the end wrap back to the start (a continuous stream; keyframe Offset or wire a Scene Time / LFO ramp to drive it). Primary output is a `points` value for direct wiring into Copy-to-Points / Set Position / etc. Aux outputs: a UV texture of positions (one pixel per point), a dot visualization image, and a `progress` string (the channel name, for wiring into attribute-name params).",
+  facts: {
+    space: { out: "in:path", "param:dot_radius": "pixels" },
+    writes: ["attr:progress", "attr:rotation", "attr:group", "attr:nx", "attr:ny", "attr:nz"],
+    gotchas: [
+      "progress is a named 0..1 attribute (0 at path start, 1 at end); wire the progress aux (its name string) into Copy to Points pick/tint/opacity, Map Attribute, or Filter Points.",
+      "domain=per subpath samples each subpath as its own loop and stamps its groupIndex onto attr:group; domain=combined treats every subpath as one concatenated arc length.",
+      "count_mode=by length only applies in domain=per subpath: the longest subpath gets count points, shorter ones scale down by arc-length ratio.",
+      "On a curve3d input, align writes the tangent into nx/ny/nz (normals) instead of attr:rotation, and the 2D-only positions/viz auxes stay blank.",
+      "animate distributes points as a uniform loop (count divisions) so the wrap seam stays evenly spaced; offset wraps at 1 and runs backward if negative.",
+      "dot_radius is in pixels at render resolution (canvas W×H), not width-relative; the viz image is only painted when show_viz is on and something consumes aux:viz.",
+      "the positions aux is an N×1 UV texture (RG = x,y in canvas01, N=count), not a full-canvas raster; any unsampled tail from a missing input stays zero.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   // Polymorphic path (M11): a 3D curve (`curve3d` — 3D Spline's curve aux,
@@ -196,15 +342,28 @@ export const pointsOnPathNode: NodeDefinition = {
     },
     {
       // Combined = today's concatenation (one arc-length domain, points
-      // can slide off one subpath onto the next). Per subpath = Count
-      // points on each subpath as its own loop; progress wraps per
-      // subpath; points inherit the subpath's groupIndex (or its index).
+      // can slide off one subpath onto the next). Per subpath = each
+      // subpath is its own loop; progress wraps per subpath; points
+      // inherit the subpath's groupIndex (or its index). Count is then
+      // applied per the Amount control.
       name: "domain",
       label: "Domain",
       type: "enum",
       options: ["combined", "per subpath"],
       control: "segmented",
       default: "combined",
+    },
+    {
+      // Only meaningful in Per subpath. Equal = Count on every subpath
+      // (back-compat). By length = Count on the longest, others scaled
+      // by arc length so spacing stays roughly uniform.
+      name: "count_mode",
+      label: "Amount",
+      type: "enum",
+      options: ["equal", "by length"],
+      control: "segmented",
+      default: "equal",
+      visibleIf: (p) => p.domain === "per subpath",
     },
     {
       // Slide points along the path (see `offset`). Off = the original
@@ -309,31 +468,12 @@ export const pointsOnPathNode: NodeDefinition = {
       1,
       Math.min(MAX_POINTS, Math.floor((params.count as number) ?? 24))
     );
-    const positions: Array<[number, number]> = [];
-    // Per-point orientation (radians), baked from the path tangent when
-    // `align` is on. Parallel to `positions` for the sampled prefix.
-    const rotations: number[] = [];
-    // Arc-length factor per sample (0 at start, 1 at end) — baked onto
-    // the points value as the `progress` channel.
-    const factors: number[] = [];
-    // Per-point group tags, filled only in per-subpath domain so
-    // Select by Index / Copy to Points' target-group pick still work.
-    const groups: number[] = [];
-    // Resolve the alignment mode once. tangent is a unit vec2 in the same
-    // normalized Y-DOWN space as positions, so atan2(ty, tx) is the angle
-    // that orients a shape's +X axis along the direction of travel.
+    let positions: Array<[number, number]> = [];
+    let rotations: number[] = [];
+    let factors: number[] = [];
+    let groups: number[] = [];
+    let attrRows: Array<ObjectAttrs | undefined> = [];
     const align = (params.align as string) ?? "off";
-    const alignOffsetRad = (((params.align_offset as number) ?? 0) * Math.PI) / 180;
-    const angleFor = (tangent: [number, number]): number => {
-      if (align === "off") return 0;
-      const base = Math.atan2(tangent[1], tangent[0]);
-      const normal = align === "normal" ? Math.PI / 2 : 0;
-      return base + normal + alignOffsetRad;
-    };
-    // Track how many of those positions are actual samples vs. the
-    // zero padding below — the points aux output needs to know so it
-    // doesn't emit `count` phantom points at (0,0) when the input is
-    // missing.
     let sampledCount = 0;
     const animate = !!params.animate;
     const offset = (params.offset as number) ?? 0;
@@ -383,53 +523,21 @@ export const pointsOnPathNode: NodeDefinition = {
     }
 
     if (src && src.kind === "spline") {
-      const perSubpath = (params.domain as string) === "per subpath";
-      if (perSubpath) {
-        const nSubs = src.subpaths.length;
-        const per =
-          nSubs <= 0
-            ? 0
-            : Math.max(
-                1,
-                Math.min(count, Math.floor(MAX_POINTS / Math.max(1, nSubs)))
-              );
-        for (let s = 0; s < nSubs; s++) {
-          const sub = src.subpaths[s];
-          const lengths = measureSubpath(sub);
-          if (lengths.total <= 0) continue;
-          const g = sub.groupIndex ?? s;
-          for (let i = 0; i < per; i++) {
-            const t = pathSampleT(i, per, animate, offset, sub.closed);
-            const sample = sampleSubpathAt(lengths, t);
-            positions.push(sample.pos);
-            rotations.push(angleFor(sample.tangent));
-            factors.push(t);
-            groups.push(g);
-          }
-        }
-        sampledCount = positions.length;
-      } else {
-        const lengths = measureSpline(src);
-        if (lengths.total > 0) {
-          // Static distribution: for open paths, include both endpoints; for a
-          // closed spline the last sample would coincide with the first, so stop
-          // just before that to avoid a duplicate.
-          const hasClosed = src.subpaths.some((s) => s.closed);
-          for (let i = 0; i < count; i++) {
-            // Uniform loop when Animate is on (divisor = count) so points stay
-            // evenly spaced across the wrap seam; slide by `offset` and wrap
-            // into [0,1). A point crossing t=1 re-enters at t=0 — the "kill at
-            // the end, respawn at the start" behavior (a seam-free circulation
-            // on a closed path; a visible teleport on an open one, as intended).
-            const t = pathSampleT(i, count, animate, offset, hasClosed);
-            const s = sampleSplineAt(src, lengths, t);
-            positions.push(s.pos);
-            rotations.push(angleFor(s.tangent));
-            factors.push(t);
-          }
-          sampledCount = count;
-        }
-      }
+      const sampled = samplePathPoints(src, {
+        count,
+        domain: (params.domain as string) ?? "combined",
+        countMode: (params.count_mode as string) ?? "equal",
+        animate,
+        offset,
+        align,
+        alignOffsetDeg: (params.align_offset as number) ?? 0,
+      });
+      positions = sampled.positions;
+      rotations = sampled.rotations;
+      factors = sampled.factors;
+      groups = sampled.groups;
+      attrRows = sampled.attrRows;
+      sampledCount = positions.length;
     }
 
     // ---- Aux: dot-visualization image ----
@@ -545,6 +653,8 @@ export const pointsOnPathNode: NodeDefinition = {
       }))
     );
     if (sampledCount > 0) {
+      const sampledAttrs = attributesFromObjectAttrs(attrRows, sampledCount);
+      if (sampledAttrs) pointsValue.attributes = sampledAttrs;
       attachProgress(pointsValue, Float32Array.from(factors));
     }
 

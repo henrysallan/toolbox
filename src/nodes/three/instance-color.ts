@@ -83,6 +83,16 @@ export const instanceColor3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Tints each copy in an instance stream — solid, seeded random between two colors, a world-space gradient through a color ramp along a steerable axis, or an image sampled at each copy's position. Free on the GPU (three's instanceColor); chain between 3D Copy to Points and the scene.",
+  facts: {
+    space: { "param:plane_size": "world3d" },
+    gotchas: [
+      "gradient mode auto-normalizes over the instance cloud's own extent along the axis (a min/max prepass each eval), so ramp position 0..1 is relative to the cloud, not a fixed world distance.",
+      "gradient axis is world +Y rotated by rot_x/y/z; default is bottom-to-top, e.g. rot_z=90 tips it onto -X for a horizontal sweep.",
+      "image mode reads back the wired image (cached per identity, capped at 256px) via the XZ/XY planar mapping over plane_size world units as Copy to Points; unwired, colors pass through untinted.",
+      "random mode hashes color per point index and seed, not per-frame, so tint stays stable while other params change and only reshuffles when seed changes.",
+      "Writes only the instances stream's colors array; positions, quaternions, and scales are shared through untouched.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [

@@ -39,6 +39,15 @@ export const blendIntersectionsNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Fuse a network of splines into one closed outline shape: thin stroke bodies that swell into webbed ink-pools wherever strokes cross or come within the Blend radius — including a stroke crossing itself. Width sets the stroke body thickness, Blend the webbing size (0 = plain union of the stroked bodies). Outputs a spline — wire into Rasterize Spline to fill it, or stroke its outline. Combine multiple splines upstream with Collect.",
+  facts: {
+    space: { "param:width": "pixels", "param:blend": "pixels" },
+    gotchas: [
+      "width/blend are absolute pixels by default (do not scale with output size); switching units to \"%\" resolves them against canvas width instead.",
+      "blend=0 reduces the effect to a plain union of the stroked bodies, with no webbing between crossings.",
+      "The SDF field samples only the network's bounding box at `resolution` taps per side, not the whole canvas.",
+      "Geometry only — nothing rasterizes until the output spline reaches Rasterize Spline or a stroke node.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [

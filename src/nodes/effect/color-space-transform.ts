@@ -240,6 +240,13 @@ export const colorSpaceTransformNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Convert between color spaces (sRGB, linear, ACEScg, ACES2065-1, Rec.709, Display P3) with an optional view transform (ACES / AgX / Filmic tone mapping) — the display step for scene-linear EXR renders.",
+  facts: {
+    gotchas: [
+      "view=None performs a pure gamut+transfer conversion with no clamping, so scene-linear HDR passes through unclamped when both ends are linear; ACES/AgX/Filmic all clamp to [0,1].",
+      "\"Rec.709\" shares its gamut primaries with Linear sRGB/sRGB — choosing it only swaps the transfer curve to BT.1886 (gamma 2.4).",
+      "The view transform runs in linear sRGB between the two gamut conversions, so it tone-maps before the `to` gamut/transfer is applied.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

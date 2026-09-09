@@ -190,6 +190,15 @@ export const simulationStartNode: NodeDefinition = {
   category: "effect",
   description:
     "Entry point of a simulation zone. Emits last frame's End output; feeds the `initial` input on frame 0 or after a scene-time reset. Supports image, points, and spline data — set the matching kind on both the Start and End sides.",
+  facts: {
+    space: { out: "in:initial" },
+    gotchas: [
+      "Resets from `initial` whenever ctx.time wraps from >0.05 back under 0.05 (loop restart or scrub to the start) or on first eval — otherwise it re-emits last frame's End output.",
+      "kind=points seeds via clonePoints(initial) so the zone evolves its own copy; the upstream `initial` producer's own (possibly cached) value is left untouched.",
+      "kind=image output is the zone's persistent read texture (ownsTextures:false); a canvas resize tears down and reallocates both ping-pong textures, clearing state.",
+      "zone_id is a hidden, auto-generated param shared with the paired Simulation End — editing or duplicating it breaks the pairing between the two nodes.",
+    ],
+  },
   backend: "webgl2",
   // Unstable — output depends on the persistent zone state, not just
   // params + inputs. We force re-eval each tick via ctx.time in the

@@ -48,6 +48,13 @@ export const thresholdNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Binary luminance threshold — pixels brighter than the threshold become white, darker become black. Softness widens the transition into a feathered smoothstep edge; Invert swaps the two sides. Uses Rec. 709 luma weighting.",
+  facts: {
+    gotchas: [
+      "softness is the full width of the smoothstep transition window, centered on threshold (threshold ± softness/2), not a multiplier on it.",
+      "Output alpha is passed through unchanged from the source; only RGB is replaced by the grayscale threshold result (t,t,t).",
+      "Luminance is Rec. 709 luma of the source RGB, ignoring source alpha.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

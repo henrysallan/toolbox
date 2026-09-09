@@ -74,6 +74,16 @@ export const mirrorNode: NodeDefinition = {
   category: "utility",
   description:
     "Mirror a spline or points across the X / Y axis (or both), or repeat them radially around a center with a count slider — with an optional kaleidoscope reflection per wedge. Copies can tag groupIndex per copy for ramp-by-group fills or Group Pick downstream.",
+  facts: {
+    space: { out: "in:source", "param:centerX": "canvas01", "param:centerY": "canvas01" },
+    writes: ["attr:rotation", "attr:scale.x", "attr:scale.y", "attr:group"],
+    gotchas: [
+      "Radial copies rotate in pixel-isotropic space (dy/aspect) so they stay rigid on non-square canvases; axis flips and the 180 degree copy are aspect-free.",
+      "On points, a single flip mirrors the point's frame: rotation negates and the flipped axis's scale.x/scale.y negates; two flips compose to a plain 180 degree rotation.",
+      "tagGroups stamps group as the copy index (0..copies-1) on every emitted point/subpath; off, the incoming group passes through unchanged.",
+      "kaleidoscope (mode=radial only) adds one Y-flipped mirror copy per wedge, doubling the copy count to build dihedral symmetry.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   // Resting type is spline; retypes to points from the connected wire.

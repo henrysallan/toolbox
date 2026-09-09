@@ -14,6 +14,7 @@ export type PanelKind =
   | "timeline"
   | "perf"
   | "spreadsheet"
+  | "assets"
   | "assistant";
 
 /**
@@ -31,6 +32,7 @@ export const PANEL_KINDS: readonly PanelKind[] = [
   "timeline",
   "perf",
   "spreadsheet",
+  "assets",
   "assistant",
 ];
 
@@ -46,6 +48,7 @@ export const PANEL_LABELS: Record<PanelKind, string> = {
   timeline: "Timeline",
   perf: "Performance",
   spreadsheet: "Spreadsheet",
+  assets: "Assets",
   assistant: "Assistant",
 };
 

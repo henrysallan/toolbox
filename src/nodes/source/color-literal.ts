@@ -335,6 +335,14 @@ export const colorLiteralNode: NodeDefinition = {
   category: "utility",
   description:
     "Emits one or more colors as vec4 values (not images). The + on the node header adds another color output; each color square on the node opens a picker in place, and the H/S/L/A row at the bottom edits whichever square is selected. Wire an image into the palette input and the outputs switch to a palette extracted from it (color 1 = most dominant). Use to drive color-math nodes or any exposed color param.",
+  facts: {
+    gotchas: [
+      "Wiring an image into the palette input overrides every stored color entirely; outputs become a k-means palette (color 1 = most dominant).",
+      "count (1..8) unlocks color2..color8 as declared color params, each minting a matching vec4 aux output; alpha applies to every output.",
+      "Palette extraction is deterministic (maximin-seeded k-means, no RNG) so it is stable across evals; a video image re-extracts every frame.",
+      "Primary output is always color 1 (or the dominant palette color), kept for back-compat with saves that predate the count param.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

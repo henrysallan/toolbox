@@ -11,6 +11,12 @@ export const clampNode: NodeDefinition = {
   category: "utility",
   description:
     "Clamp a scalar into [Lo, Hi]. Lo and Hi can be wired or set in the panel; if Lo > Hi they are swapped before clamping.",
+  facts: {
+    gotchas: [
+      "value/lo/hi each fall back independently to their like-named param when unwired — wiring only one leaves the others on their param values.",
+      "lo/hi are swapped automatically when lo > hi, so an inverted range just flips which bound is which instead of erroring.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

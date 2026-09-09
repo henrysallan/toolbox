@@ -7,6 +7,7 @@ import type {
 } from "./three-types";
 import type { TextStyle } from "./text-raster";
 import type { ColorRampInterp, ColorRampStop } from "./color-ramp";
+import type { CurvePoint } from "./float-curve";
 
 export type SocketType =
   | "image"
@@ -1304,13 +1305,26 @@ export type ParamType =
 // (e.g. "x"); `default` is the value used when the socket is unwired
 // (defaults to 1). `id` is the stable socket key (`in:<id>`) — never reused
 // across renames so wires survive a name change.
+// Channel kinds on Point Expression / GLSL Expression rows
+// (specdocs/090426_expression-channel-kinds.md; engine/expr-channels.ts owns
+// the scanner, socket typing and value rules). Absent on a row ⇒ derived:
+// `options` present → enum, else scalar — every pre-kind save reads as-is.
+export type ExprChannelKind =
+  | "scalar" // ch("k", default, min, max) → slider, scalar socket
+  | "enum" // pick("mode", "a", "b") → segmented (≤3) / dropdown, no socket
+  | "toggle" // toggle("on", true) → pill, scalar socket (≠ 0)
+  | "color" // color("tint", "#hex") → swatch (alpha), vec4 socket
+  | "ramp" // ramp("ink", t, "#hex", …) → ramp editor, color_ramp socket
+  | "curve"; // curve("f", x, y0, y1, …) → curve editor, no socket
+
 export interface ExprInput {
   id: string;
   name: string;
-  // Current/default value. Number for the scalar Expression node and for
-  // Point Expression's ch() channels; a string for Point Expression's pick()
-  // (enum) channels.
-  default?: number | string;
+  // Current/default value, by kind: number (scalar Expression inputs and
+  // ch() channels), option string (pick), boolean (toggle), hex string
+  // (color), ColorRampStop[] (ramp), CurvePoint[] (curve).
+  default?: number | string | boolean | ColorRampStop[] | CurvePoint[];
+  kind?: ExprChannelKind;
   // Point Expression channels only (auto-populated by the Sync button from
   // ch(…, min, max) / pick(…, ...options)) so each row renders as the standard
   // scalar slider or enum dropdown instead of a bare number field. Absent for
@@ -1642,9 +1656,10 @@ export interface ParamDef {
   suggestAttrsRequire?: boolean;
   // With `suggestAttrsFrom`: also offer (and accept) the built-in point
   // columns — index, x, y, scale.x, rotation, group, … — not just named
-  // channels. Map Attribute is the consumer that remaps any of those onto
-  // scale / rotation / position. Writers must omit this: reserved names
-  // stay illegal to write. UI-only hint; the engine ignores it.
+  // channels. Map Attribute remaps any of those onto scale / rotation /
+  // position; Attribute Read samples one at an index. Writers must omit
+  // this: reserved names stay illegal to write. UI-only hint; the engine
+  // ignores it.
   suggestAttrsIncludeBuiltins?: boolean;
   // For "expr_inputs" params: show a "Sync" button that scans the node's
   // sibling `expression` param for ch("name", default) channel references and
@@ -1757,6 +1772,44 @@ export type NodeSubcategory = "generator" | "modifier" | "utility";
 // of whatever's wired into that input socket, or undefined if nothing
 // is wired. The evaluator computes this in topological order, so the
 // source's type is already finalized by the time this is queried.
+// Coordinate / measurement space a socket or param lives in. The catalog
+// header states the per-socket-type default (spline/points → canvas01,
+// image/mask → raster, points3d/render → world3d, audio/notes → time,
+// scalar/vecN/color/string → unitless); NodeFacts.space lists only what that
+// table cannot say — position/size params, polymorphic sockets, deviations.
+// Spec: specdocs/090626_node-facts.md.
+export type CoordSpace =
+  | "canvas01" // authored 2D: [0,1]² Y-down in width units; y is scaled about 0.5 by W/H
+  | "uv01" // per-axis [0,1] fraction of a raster's own width/height; not aspect-corrected
+  | "raster" // per-pixel image domain, sampled at each pixel's own UV
+  | "pixels" // absolute pixel units at the current render resolution
+  | "world3d" // 3D scene units, Y-up
+  | "time" // seconds / frames / ticks (clocks, audio, notes)
+  | "unitless"; // factors, ratios, angles, Hz, counts, colors, strings
+
+// Socket/param address used by NodeFacts:
+//   "in:<socket>" | "out" | "aux:<name>" | "param:<name>"
+export type SocketRef = string;
+
+// The scannable mini-schema behind `description`: fixed slots for the
+// operational facts an LLM (or a human skimming the catalog) needs and that
+// prose tends to bury. Rendered as fixed-order `# space/reads/writes/!`
+// lines under each node in the catalog DSL and as a table on the docs page.
+export interface NodeFacts {
+  // Space per socket/param, keyed by SocketRef. A value is a CoordSpace, a
+  // list of CoordSpaces (polymorphic input: one per accepted wire type), or
+  // a SocketRef meaning "same space as that socket" — how a polymorphic node
+  // says its output follows whatever was wired in ({ out: "in:image" }).
+  space?: Record<SocketRef, CoordSpace | CoordSpace[] | SocketRef>;
+  // Point/spline attributes the node consumes ("attr:<name>"), plus "time"
+  // when it reads the clock.
+  reads?: string[];
+  // Attributes the node stamps or overwrites on its output ("attr:<name>").
+  writes?: string[];
+  // One operational sentence each: units, modes, ordering, what breaks.
+  gotchas?: string[];
+}
+
 export interface ResolveCtx {
   connectedTypes: Record<string, SocketType | undefined>;
 }
@@ -1778,6 +1831,12 @@ export interface NodeDefinition {
   // the node is called in other packages ("mix" finds Lerp). Never
   // displayed anywhere; search fodder only.
   searchAliases?: string[];
+  // Operational facts behind `description` — space per socket/param,
+  // attributes read/written, gotchas. Required on every visible def:
+  // scripts/check-node-facts.mts fails the check chain without it and
+  // cross-checks attribute names against the def's source. Author with
+  // the `node-facts` skill; apply with scripts/apply-node-facts.mts.
+  facts?: NodeFacts;
   // Which GPU API this node uses. Today almost every node is "webgl2";
   // "webgpu" is reserved for compute-heavy nodes that own their own
   // WebGPU pipeline (Phase 0: WebGPU Particle Test). The evaluator

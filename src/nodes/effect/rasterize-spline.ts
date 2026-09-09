@@ -13,11 +13,18 @@ import {
   makeZeroTex,
   type SplineFillFit,
 } from "@/engine/spline-fill";
-import { type ColorRampStop } from "@/engine/color-ramp";
+import {
+  sampleColorRamp,
+  type ColorRampInterp,
+  type ColorRampStop,
+} from "@/engine/color-ramp";
 import {
   makeSubpathColorFn,
+  makeSubpathDriverFn,
   type ColorRampBy,
 } from "@/engine/spline-color-source";
+import { paintStrokeAlongProgress } from "@/engine/spline-stroke-progress";
+import { sampleSubpathAttrScalar } from "@/engine/spline-attrs";
 import { resolveStrokePx, strokeUnitsParam } from "@/engine/stroke-units";
 import { aspectCorrectY } from "@/engine/aspect";
 import { subpathToCurves, curveTangent } from "@/engine/spline-math";
@@ -363,7 +370,8 @@ function drawArrowheads(
   params: Record<string, unknown>,
   W: number,
   H: number,
-  colorStyle?: string
+  colorStyle?: string,
+  endColor?: string
 ) {
   if (!arrowheadsWanted(params)) return;
   const atStart = params.arrow_start === true;
@@ -379,10 +387,9 @@ function drawArrowheads(
     Math.min(80, (params.arrow_angle as number) ?? 25)
   );
   const filled = (params.arrow_style as string) !== "stroke";
-  const color = colorStyle ?? (c2d.strokeStyle as string);
-  if (filled) c2d.fillStyle = color;
-  else {
-    c2d.strokeStyle = color;
+  const startCol = colorStyle ?? (c2d.strokeStyle as string);
+  const endCol = endColor ?? startCol;
+  if (!filled) {
     c2d.setLineDash([]);
     c2d.lineJoin = "miter";
     c2d.miterLimit = 24;
@@ -411,6 +418,8 @@ function drawArrowheads(
       const [tx, ty] = curveTangent(c, 0);
       const [dx, dy] = tanPx(-tx, -ty);
       if (dx !== 0 || dy !== 0) {
+        if (filled) c2d.fillStyle = startCol;
+        else c2d.strokeStyle = startCol;
         const [x, y] = toPx(p.x, p.y);
         paintArrowHead(c2d, x, y, dx, dy, length, angleDeg, filled);
       }
@@ -421,6 +430,8 @@ function drawArrowheads(
       const [tx, ty] = curveTangent(c, 1);
       const [dx, dy] = tanPx(tx, ty);
       if (dx !== 0 || dy !== 0) {
+        if (filled) c2d.fillStyle = endCol;
+        else c2d.strokeStyle = endCol;
         const [x, y] = toPx(p.x, p.y);
         paintArrowHead(c2d, x, y, dx, dy, length, angleDeg, filled);
       }
@@ -432,13 +443,15 @@ function applyStrokeStyle(
   c2d: CanvasRenderingContext2D,
   params: Record<string, unknown>,
   W: number,
-  colorStyle?: string
+  colorStyle?: string,
+  thicknessPx?: number
 ) {
   const style = (params.style as string) ?? "solid";
   const units = params.units;
   c2d.lineWidth = Math.max(
     0,
-    resolveStrokePx((params.thickness as number) ?? 4, units, W)
+    thicknessPx ??
+      resolveStrokePx((params.thickness as number) ?? 4, units, W)
   );
   c2d.strokeStyle =
     colorStyle ?? hexToRgba((params.stroke_color as string) ?? "#000000");
@@ -484,10 +497,11 @@ function paintStroke(
   params: Record<string, unknown>,
   W: number,
   H: number,
-  colorStyle?: string
+  colorStyle?: string,
+  thicknessPxOverride?: number
 ) {
   if (subs.length === 0) return;
-  applyStrokeStyle(c2d, params, W, colorStyle);
+  applyStrokeStyle(c2d, params, W, colorStyle, thicknessPxOverride);
   const thicknessPx = c2d.lineWidth;
   const close = !!params.close_open_paths;
 
@@ -525,11 +539,111 @@ function paintStroke(
   drawArrowheads(c2d, subs, params, W, H, colorStyle);
 }
 
-// Stroke the spline. Flat color strokes all unprofiled subpaths in ONE
-// pass (a single stroke() composites once, so translucent stroke colors
-// don't double-blend where subpaths overlap — the legacy behavior). A
-// stroke ramp needs a distinct color per subpath, so it strokes each one
-// individually. Profiled subpaths always go through paintStroke's envelope.
+function strokeRampAlongPath(params: Record<string, unknown>): boolean {
+  const by = params.stroke_ramp_by as string;
+  return (
+    (params.stroke_source as string) === "ramp" &&
+    (by === "progress" || by === "attribute")
+  );
+}
+
+function strokeRampTAt(
+  params: Record<string, unknown>
+): ((sub: SplineSubpath, arcT: number) => number) | undefined {
+  if ((params.stroke_ramp_by as string) !== "attribute") return undefined;
+  const name = (params.stroke_driver_attr as string) ?? "";
+  return (sub, arcT) => sampleSubpathAttrScalar(sub, arcT, name);
+}
+
+function strokeRampOffset(params: Record<string, unknown>): number {
+  const n = params.stroke_ramp_offset;
+  return typeof n === "number" && Number.isFinite(n) ? n : 0;
+}
+
+function strokeProgressInterp(params: Record<string, unknown>): ColorRampInterp {
+  const v = (params.stroke_ramp_interp as string) ?? "linear";
+  return v === "ease" || v === "constant" ? v : "linear";
+}
+
+function strokeProgressStops(params: Record<string, unknown>): ColorRampStop[] {
+  return Array.isArray(params.stroke_ramp)
+    ? (params.stroke_ramp as ColorRampStop[])
+    : [];
+}
+
+// Progress ramps color along each subpath's arc length (start → end), not
+// a single per-subpath swatch. Arrowheads pick up the endpoint colors.
+function paintStrokeProgress(
+  c2d: CanvasRenderingContext2D,
+  subs: SplineSubpath[],
+  params: Record<string, unknown>,
+  W: number,
+  H: number,
+  thicknessPxOverride?: number
+) {
+  if (subs.length === 0) return;
+  applyStrokeStyle(c2d, params, W, undefined, thicknessPxOverride);
+  paintStrokeAlongProgress(c2d, subs, {
+    W,
+    H,
+    thicknessPx: c2d.lineWidth,
+    stops: strokeProgressStops(params),
+    interp: strokeProgressInterp(params),
+    closeOpen: !!params.close_open_paths,
+    offset: strokeRampOffset(params),
+    tAt: strokeRampTAt(params),
+  });
+  if (!arrowheadsWanted(params)) return;
+  const stops = strokeProgressStops(params);
+  const interp = strokeProgressInterp(params);
+  const off = strokeRampOffset(params);
+  const tAt = strokeRampTAt(params);
+  for (const sub of subs) {
+    if (sub.closed) continue;
+    const startCol = sampleColorRamp(
+      stops,
+      tAt ? tAt(sub, 0) : 0,
+      interp,
+      off
+    );
+    const endCol = sampleColorRamp(
+      stops,
+      tAt ? tAt(sub, 1) : 1,
+      interp,
+      off
+    );
+    drawArrowheads(c2d, [sub], params, W, H, startCol, endCol);
+  }
+}
+
+// Stroke the spline. Flat color + uniform thickness strokes all
+// unprofiled subpaths in ONE pass (a single stroke() composites once, so
+// translucent stroke colors don't double-blend where subpaths overlap —
+// the legacy behavior). A stroke ramp or per-subpath thickness needs a
+// distinct color/width per subpath, so it strokes each one individually
+// — except along-path modes (`progress`, `attribute`), which ramp along
+  // each path's length.
+function makeThicknessAt(
+  subpaths: SplineSubpath[],
+  params: Record<string, unknown>,
+  W: number
+): ((i: number, sub: SplineSubpath) => number) | null {
+  if (params.thickness_source !== "vary") return null;
+  const base = Math.max(
+    0,
+    resolveStrokePx((params.thickness as number) ?? 4, params.units, W)
+  );
+  const lo = (params.thickness_lo as number) ?? 0.5;
+  const hi = (params.thickness_hi as number) ?? 1.5;
+  const at = makeSubpathDriverFn(subpaths, {
+    by: ((params.thickness_by as ColorRampBy) ?? "random"),
+    seed: Math.floor((params.thickness_seed as number) ?? 0),
+    angleDeg: (params.thickness_angle as number) ?? 0,
+    attr: (params.thickness_driver_attr as string) ?? "",
+  });
+  return (i, sub) => Math.max(0, base * (lo + (hi - lo) * at(i, sub)));
+}
+
 function drawSplineStroke(
   c2d: CanvasRenderingContext2D,
   subpaths: SplineSubpath[],
@@ -537,10 +651,39 @@ function drawSplineStroke(
   W: number,
   H: number
 ) {
-  if ((params.stroke_source as string) === "ramp") {
-    const colorAt = makeStrokeColorFn(subpaths, params);
+  const widthAt = makeThicknessAt(subpaths, params, W);
+  if (strokeRampAlongPath(params)) {
+    if (widthAt) {
+      for (let i = 0; i < subpaths.length; i++) {
+        paintStrokeProgress(
+          c2d,
+          [subpaths[i]],
+          params,
+          W,
+          H,
+          widthAt(i, subpaths[i])
+        );
+      }
+      return;
+    }
+    paintStrokeProgress(c2d, subpaths, params, W, H);
+    return;
+  }
+  if ((params.stroke_source as string) === "ramp" || widthAt) {
+    const colorAt =
+      (params.stroke_source as string) === "ramp"
+        ? makeStrokeColorFn(subpaths, params)
+        : null;
     for (let i = 0; i < subpaths.length; i++) {
-      paintStroke(c2d, [subpaths[i]], params, W, H, colorAt(i, subpaths[i]));
+      paintStroke(
+        c2d,
+        [subpaths[i]],
+        params,
+        W,
+        H,
+        colorAt ? colorAt(i, subpaths[i]) : undefined,
+        widthAt ? widthAt(i, subpaths[i]) : undefined
+      );
     }
     return;
   }
@@ -569,6 +712,7 @@ function makeFillColorFn(
       | "linear"
       | "ease"
       | "constant",
+    attr: (params.driver_attr as string) ?? "",
   });
 }
 
@@ -592,6 +736,8 @@ function makeStrokeColorFn(
       | "linear"
       | "ease"
       | "constant",
+    offset: strokeRampOffset(params),
+    attr: (params.stroke_driver_attr as string) ?? "",
   });
 }
 
@@ -617,6 +763,7 @@ function drawSplineFlat(
   const useRamp = (params.fill_source as string) === "ramp";
   const strokeRamp = (params.stroke_source as string) === "ramp";
   const layered = (params.overlap as string) === "layered";
+  const widthAt = enableStroke ? makeThicknessAt(subpaths, params, W) : null;
   // Hole islands: nested contours punch out of their container while
   // per-island colors and stacking order survive (see groupHoleIslands).
   const islands =
@@ -639,8 +786,23 @@ function drawSplineFlat(
           }
         }
         if (enableStroke) {
-          if (strokeRamp) {
-            // Each member strokes in its own ramp color (holes included).
+          if (strokeRampAlongPath(params)) {
+            if (widthAt) {
+              for (const idx of [isl.root, ...isl.holes]) {
+                paintStrokeProgress(
+                  c2d,
+                  [subpaths[idx]],
+                  params,
+                  W,
+                  H,
+                  widthAt(idx, subpaths[idx])
+                );
+              }
+            } else {
+              paintStrokeProgress(c2d, members, params, W, H);
+            }
+          } else if (strokeRamp || widthAt) {
+            // Each member strokes in its own ramp color / thickness.
             for (const idx of [isl.root, ...isl.holes]) {
               paintStroke(
                 c2d,
@@ -648,7 +810,10 @@ function drawSplineFlat(
                 params,
                 W,
                 H,
-                strokeColorAt(idx, subpaths[idx])
+                strokeRamp
+                  ? strokeColorAt(idx, subpaths[idx])
+                  : undefined,
+                widthAt ? widthAt(idx, subpaths[idx]) : undefined
               );
             }
           } else {
@@ -668,7 +833,26 @@ function drawSplineFlat(
         }
       }
       if (enableStroke) {
-        paintStroke(c2d, [sub], params, W, H, strokeColorAt(i, sub));
+        if (strokeRampAlongPath(params)) {
+          paintStrokeProgress(
+            c2d,
+            [sub],
+            params,
+            W,
+            H,
+            widthAt ? widthAt(i, sub) : undefined
+          );
+        } else {
+          paintStroke(
+            c2d,
+            [sub],
+            params,
+            W,
+            H,
+            strokeColorAt(i, sub),
+            widthAt ? widthAt(i, sub) : undefined
+          );
+        }
       }
     }
     return;
@@ -717,7 +901,25 @@ export const rasterizeSplineNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Rasterize a spline as fill, stroke, or both in a single pass. Fill draws underneath the stroke. Toggle each independently. Fill and stroke colors can each be a flat color or a per-subpath ramp keyed by index, seeded random, group, centroid position, or driver — sourced independently, so e.g. fill by index and stroke by random. A wired fill image can drive the fill, the stroke, or both via the Image → fill / Image → stroke toggles. Per-anchor width (Spline Draw's Width tool) rides the spline: Thickness is the base, each anchor's width is a multiplier on it.",
+    "Rasterize a spline as fill, stroke, or both in a single pass. Fill draws underneath the stroke. Toggle each independently. Fill and stroke colors can each be a flat color or a ramp — fill keys per subpath (index, random, group, position, driver); stroke can do the same, or ramp by progress along each path's length (color A at the start, color B at the end, independent of canvas direction). Ramp offset slides the stroke gradient and wraps past 1 so it loops. Driver attribute (visible when Ramp by is Driver) reads a named subpath channel — Set Named Attribute authors it, Copy to Points gathers point attrs onto copies. Thickness source can vary per subpath the same way Stroke does (index / random / group / position / driver × lo→hi), so a graph can stay at one raster node. A wired fill image can drive the fill, the stroke, or both via the Image → fill / Image → stroke toggles. Per-anchor width (Spline Draw's Width tool) rides the spline: Thickness is the base, each anchor's width is a multiplier on it.",
+  facts: {
+    space: {
+      "param:thickness": "pixels",
+      "param:dash_length": "pixels",
+      "param:dash_gap": "pixels",
+      "param:dot_spacing": "pixels",
+      "param:arrow_length": "pixels",
+    },
+    reads: ["attr:group"],
+    gotchas: [
+      "thickness/dash_length/dash_gap/dot_spacing/arrow_length default to raw pixels; units=% resolves them as a percent of canvas width instead.",
+      "overlap=flatten draws all fills then all strokes on top; overlap=layered fills+strokes each subpath in order so later opaque fills occlude earlier strokes.",
+      "holes groups subpaths into containment islands and fills each as one even-odd path so nested contours punch instead of filling solid; fill only, capped at 2048 subpaths.",
+      "A per-anchor width profile (Spline Draw's Width tool) fills a variable-width envelope multiplying Thickness by each anchor's width, and ignores dash/dot style.",
+      "stroke_ramp_by=progress or attribute ramps color along each subpath's own arc length (start→end) instead of one color per subpath; attribute reads stroke_driver_attr.",
+      "ramp_by/stroke_ramp_by/thickness_by=group key off each subpath's stamped groupIndex (attr:group), e.g. from Copy to Points or String Art layers.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "path", type: "spline", required: true },
@@ -842,6 +1044,19 @@ export const rasterizeSplineNode: NodeDefinition = {
         p.ramp_by === "position",
     },
     {
+      name: "driver_attr",
+      label: "Driver attribute",
+      type: "string",
+      default: "",
+      placeholder: "attribute name",
+      suggestAttrsFrom: "path",
+      suggestAttrsRequire: true,
+      visibleIf: (p) =>
+        p.enable_fill !== false &&
+        p.fill_source === "ramp" &&
+        p.ramp_by === "driver",
+    },
+    {
       name: "ramp_interp",
       label: "Ramp interpolation",
       type: "enum",
@@ -901,10 +1116,10 @@ export const rasterizeSplineNode: NodeDefinition = {
       type: "boolean",
       default: true,
     },
-    // Flat color vs. a per-subpath color ramp — the same sourcing the fill
-    // has (see fill_source), with its own independent by/seed/angle/interp
-    // so fill and stroke can key differently. A wired image with
-    // Image → stroke on still overrides both.
+    // Flat color vs. a color ramp. The ramp can key per subpath (index /
+    // random / group / position / driver — same sourcing as fill) or by
+    // progress along each path's length. A wired image with Image → stroke
+    // on still overrides both.
     {
       name: "stroke_source",
       label: "Stroke source",
@@ -935,13 +1150,56 @@ export const rasterizeSplineNode: NodeDefinition = {
       visibleIf: (p) =>
         p.enable_stroke !== false && p.stroke_source === "ramp",
     },
-    // Which value drives each subpath's position along the stroke ramp —
-    // same modes as the fill's ramp_by (see that comment for semantics).
+    {
+      // Phase-shift the stroke ramp. Wraps so 1.2 ≡ 0.2 — keyframe past 1
+      // (or wire a time ramp) to loop the gradient along the path without
+      // a seam at the slider end. 0 is a no-op (legacy clamp).
+      name: "stroke_ramp_offset",
+      label: "Ramp offset",
+      type: "scalar",
+      min: 0,
+      max: 8,
+      softMax: 1,
+      step: 0.001,
+      default: 0,
+      visibleIf: (p) =>
+        p.enable_stroke !== false && p.stroke_source === "ramp",
+    },
+    // Which value drives the stroke ramp.
+    //   index    — ordinal 0→N-1 (one color per subpath)
+    //   random   — seeded per-subpath hash
+    //   group    — the subpath's groupIndex
+    //   position — centroid projected on stroke_ramp_angle (spatial /
+    //              directional — a canvas-axis gradient, not along the path)
+    //   driver   — producer-authored scalar on the subpath
+    //   progress — along each subpath's own arc length (start → end). A
+    //              curve that snakes around still ramps A→B along itself,
+    //              unlike position which keys on where it sits.
+    //   attribute — along-path like progress, but t comes from an
+    //              interpolated named anchor channel (component 0;
+    //              a subpath-only channel is a constant). Missing → 0.
     {
       name: "stroke_ramp_by",
       label: "Ramp by",
       type: "enum",
-      options: ["index", "random", "group", "position", "driver"],
+      options: [
+        "index",
+        "random",
+        "group",
+        "position",
+        "driver",
+        "progress",
+        "attribute",
+      ],
+      optionLabels: {
+        index: "Index",
+        random: "Random",
+        group: "Group",
+        position: "Position",
+        driver: "Driver",
+        progress: "Progress",
+        attribute: "Attribute",
+      },
       default: "index",
       visibleIf: (p) =>
         p.enable_stroke !== false && p.stroke_source === "ramp",
@@ -971,6 +1229,19 @@ export const rasterizeSplineNode: NodeDefinition = {
         p.enable_stroke !== false &&
         p.stroke_source === "ramp" &&
         p.stroke_ramp_by === "position",
+    },
+    {
+      name: "stroke_driver_attr",
+      label: "Driver attribute",
+      type: "string",
+      default: "",
+      placeholder: "attribute name",
+      suggestAttrsFrom: "path",
+      suggestAttrsRequire: true,
+      visibleIf: (p) =>
+        p.enable_stroke !== false &&
+        p.stroke_source === "ramp" &&
+        (p.stroke_ramp_by === "driver" || p.stroke_ramp_by === "attribute"),
     },
     {
       name: "stroke_ramp_interp",
@@ -1008,6 +1279,90 @@ export const rasterizeSplineNode: NodeDefinition = {
     // stroke keeps its look at any resolution (#174). Applies to thickness
     // and the dash/dot metrics below.
     strokeUnitsParam("units", (p) => p.enable_stroke !== false),
+    // Per-subpath thickness, ported from Stroke: `vary` maps each
+    // subpath's driver t (same index/random/group/position/driver
+    // resolver) linearly into a lo→hi multiplier on the base thickness.
+    {
+      name: "thickness_source",
+      label: "Thickness source",
+      type: "enum",
+      options: ["uniform", "vary"],
+      default: "uniform",
+      control: "segmented",
+      visibleIf: (p) => p.enable_stroke !== false,
+    },
+    {
+      name: "thickness_by",
+      label: "Vary by",
+      type: "enum",
+      options: ["index", "random", "group", "position", "driver"],
+      default: "random",
+      visibleIf: (p) =>
+        p.enable_stroke !== false && p.thickness_source === "vary",
+    },
+    {
+      name: "thickness_seed",
+      label: "Seed",
+      type: "scalar",
+      min: 0,
+      max: 9999,
+      step: 1,
+      default: 0,
+      visibleIf: (p) =>
+        p.enable_stroke !== false &&
+        p.thickness_source === "vary" &&
+        p.thickness_by === "random",
+    },
+    {
+      name: "thickness_angle",
+      label: "Gradient angle",
+      type: "scalar",
+      min: -180,
+      max: 180,
+      step: 1,
+      default: 0,
+      visibleIf: (p) =>
+        p.enable_stroke !== false &&
+        p.thickness_source === "vary" &&
+        p.thickness_by === "position",
+    },
+    {
+      name: "thickness_driver_attr",
+      label: "Driver attribute",
+      type: "string",
+      default: "",
+      placeholder: "attribute name",
+      suggestAttrsFrom: "path",
+      suggestAttrsRequire: true,
+      visibleIf: (p) =>
+        p.enable_stroke !== false &&
+        p.thickness_source === "vary" &&
+        p.thickness_by === "driver",
+    },
+    {
+      name: "thickness_lo",
+      label: "Thickness — low ×",
+      type: "scalar",
+      min: 0,
+      max: 4,
+      softMax: 2,
+      step: 0.01,
+      default: 0.5,
+      visibleIf: (p) =>
+        p.enable_stroke !== false && p.thickness_source === "vary",
+    },
+    {
+      name: "thickness_hi",
+      label: "Thickness — high ×",
+      type: "scalar",
+      min: 0,
+      max: 4,
+      softMax: 2,
+      step: 0.01,
+      default: 1.5,
+      visibleIf: (p) =>
+        p.enable_stroke !== false && p.thickness_source === "vary",
+    },
     {
       name: "style",
       label: "Style",
@@ -1187,6 +1542,7 @@ export const rasterizeSplineNode: NodeDefinition = {
         rseed: params.ramp_seed,
         rangle: params.ramp_by === "position" ? params.ramp_angle : null,
         rint: params.ramp_interp,
+        dattr: params.ramp_by === "driver" ? params.driver_attr : null,
         stack: params.stack_subpaths,
         fr: params.fill_rule,
         es: enableStroke,
@@ -1199,8 +1555,31 @@ export const rasterizeSplineNode: NodeDefinition = {
           params.stroke_ramp_by === "position"
             ? params.stroke_ramp_angle
             : null,
+        sdattr:
+          params.stroke_ramp_by === "driver" ||
+          params.stroke_ramp_by === "attribute"
+            ? params.stroke_driver_attr
+            : null,
         sint: params.stroke_ramp_interp,
+        soff: params.stroke_source === "ramp" ? params.stroke_ramp_offset : 0,
         t: params.thickness,
+        tsrc: params.thickness_source,
+        tby: params.thickness_source === "vary" ? params.thickness_by : 0,
+        tseed:
+          params.thickness_source === "vary" && params.thickness_by === "random"
+            ? params.thickness_seed
+            : 0,
+        tang:
+          params.thickness_source === "vary" &&
+          params.thickness_by === "position"
+            ? params.thickness_angle
+            : 0,
+        tdattr:
+          params.thickness_source === "vary" && params.thickness_by === "driver"
+            ? params.thickness_driver_attr
+            : 0,
+        tlo: params.thickness_source === "vary" ? params.thickness_lo : 0,
+        thi: params.thickness_source === "vary" ? params.thickness_hi : 0,
         u: params.units,
         st: params.style,
         dl: params.dash_length,
@@ -1283,6 +1662,7 @@ export const rasterizeSplineNode: NodeDefinition = {
       rseed: params.ramp_seed,
       rangle: params.ramp_by === "position" ? params.ramp_angle : null,
       rint: params.ramp_interp,
+      dattr: params.ramp_by === "driver" ? params.driver_attr : null,
       stack: params.stack_subpaths,
       fr: params.fill_rule,
       es: enableStroke,
@@ -1293,8 +1673,30 @@ export const rasterizeSplineNode: NodeDefinition = {
       sseed: params.stroke_ramp_seed,
       sangle:
         params.stroke_ramp_by === "position" ? params.stroke_ramp_angle : null,
+      sdattr:
+        params.stroke_ramp_by === "driver" ||
+        params.stroke_ramp_by === "attribute"
+          ? params.stroke_driver_attr
+          : null,
       sint: params.stroke_ramp_interp,
+      soff: params.stroke_source === "ramp" ? params.stroke_ramp_offset : 0,
       t: params.thickness,
+      tsrc: params.thickness_source,
+      tby: params.thickness_source === "vary" ? params.thickness_by : 0,
+      tseed:
+        params.thickness_source === "vary" && params.thickness_by === "random"
+          ? params.thickness_seed
+          : 0,
+      tang:
+        params.thickness_source === "vary" && params.thickness_by === "position"
+          ? params.thickness_angle
+          : 0,
+      tdattr:
+        params.thickness_source === "vary" && params.thickness_by === "driver"
+          ? params.thickness_driver_attr
+          : 0,
+      tlo: params.thickness_source === "vary" ? params.thickness_lo : 0,
+      thi: params.thickness_source === "vary" ? params.thickness_hi : 0,
       u: params.units,
       st: params.style,
       dl: params.dash_length,

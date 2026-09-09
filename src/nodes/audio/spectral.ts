@@ -316,6 +316,17 @@ export const audioSpectralNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Turn audio into a spectrum image — a scalar field (frequency × magnitude) to drive Displace, Copy-to-Points, gradients, SDF fields, and more. Linear / log / mel / waveform / chroma / 2D spectrogram.",
+  facts: {
+    gotchas: [
+      "retimeable:false — reads a live AnalyserNode tap, so Time Offset treats this as a closure boundary and feeds the outer field through un-shifted.",
+      "algorithm=spectrogram always renders as log-frequency columns regardless of the algorithm dropdown; it accumulates one column per scene frame live.",
+      "Offline, the spectrogram's row history is reconstructed deterministically with one FFT per row at each row's preceding frame time, not resampled from live state.",
+      "smoothing is a temporal one-pole filter applied only to the 1D field (linear/log/mel/waveform/chroma), reset whenever bins changes; it does not affect the spectrogram.",
+      "chroma folds all bins into 12 octave-independent pitch classes rather than mapping bins to frequency, so its column order is C..B, not low..high Hz.",
+      "orientation=vertical swaps frequency onto the Y axis; mirror folds both halves of the axis around the center instead of running low-to-high across it.",
+      "With no audio wired or no live frame yet, the output image is cleared to opaque black rather than left unset.",
+    ],
+  },
   backend: "webgl2",
   stable: false,
   // Reads the LIVE AnalyserNode tap — external audio state. Time Offset

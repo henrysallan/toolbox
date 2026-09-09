@@ -108,7 +108,19 @@ export const pointLabelsNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Draw a text label on every point, formatted from the point's own data — position (x, y), index, rotation, scale, or group. Pick a field or write a custom token template ({x} {y} {i} {n} {rot} {rad} {sx} {sy} {g}); coordinates read normalized [0,1] or in pixels, with adjustable precision. Self-contained (points → image): each label lands on its point, placed on / above / below / left / right of it with an offset and scale. Style comes from a wired Text node, or the local font/size/color params.",
+    "Draw a text label on every point, formatted from the point's own data — position (x, y), index, rotation, scale, or group. Pick a field or write a custom token template ({x} {y} {i} {n} {rot} {rad} {sx} {sy} {g}); coordinates read authored [0,1]² Y-down (raster y is scaled about 0.5 by W/H) or in pixels, with adjustable precision. Self-contained (points → image): each label lands on its point, placed on / above / below / left / right of it with an offset and scale. Style comes from a wired Text node, or the local font/size/color params.",
+  facts: {
+    space: { "param:offset_x": "uv01", "param:offset_y": "uv01", "param:size": "pixels" },
+    reads: ["attr:rotation", "attr:scale", "attr:group"],
+    gotchas: [
+      "field=position/x/y/custom respect units=normalized (canvas01) or pixels (x times canvas width, y times canvas height independently); other fields ignore units.",
+      "offset_x/offset_y are per-axis UV fractions of the canvas's own width/height, added after the point's Y-down/aspect placement — not aspect-corrected to each other.",
+      "placement picks which point of the label box sits at the (offset) target: 'on' centers it, 'above' puts the box's bottom edge there, etc.",
+      "label_scale is baked into the rasterized font size (stays crisp) rather than stretching the box; any style/color/font/scale change clears the whole raster cache.",
+      "style input (a wired Text node's text_instance) overrides font_family/size/color/alignment entirely; the local params are only the no-wire fallback.",
+      "stable:false — re-checks font readiness every eval; an unready font paints nothing that frame and re-triggers once the async load completes.",
+    ],
+  },
   backend: "webgl2",
   // stable:false so font-readiness and canvas size are re-checked every eval,
   // like the Text node. Per-string raster caching keeps steady-state cheap.

@@ -106,6 +106,16 @@ export const timeOffsetNode: NodeDefinition = {
   description:
     "Shifts everything upstream in time: the branch wired into it re-evaluates at the playhead minus Offset (in frames), so its keyframes, clips, and procedural animation play later — or earlier with a negative offset. Wire or keyframe Offset for time-warping. Live and simulated nodes upstream (video, webcam, audio, cursor, sims) can't time-travel and pass through un-shifted.",
   searchAliases: ["delay", "retime", "shift", "timeshift", "echo"],
+  facts: {
+    space: { out: "in:in" },
+    gotchas: [
+      "offset is in frames, not seconds; positive samples the past (After Effects convention), negative looks ahead and pure upstream keyframes clamp at their ends.",
+      "Chaining a Time Offset through another Time Offset throws at compute; sum both offsets into one node instead.",
+      "Carries only scalar/vec2/vec3/vec4/string/spline/points/points3d/image/mask/uv/notes/color_ramp/transform; audio, particles, sdf, 3D geometry, and lists cannot be wired through it.",
+      "Upstream simulation, live (video/webcam/audio/cursor/trackers), Iterate, or another Time Offset closure can't be retimed and passes through un-shifted instead.",
+      "The offset param itself is sampled on the outer (un-shifted) clock, so keyframing or wiring it drives time-warping rather than being retimed itself.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "in", type: RESTING_TYPE, required: false, label: "In" }],

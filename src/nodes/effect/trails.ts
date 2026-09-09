@@ -289,6 +289,19 @@ export const trailsNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Temporal trails — each echo is a faded copy of an earlier frame (opacity only, no color mix). Primary is the current frame over the echoes; the trail aux is echoes only. Feedback: continuous motion trail. Ring: stepped stop-motion echoes. Velocity: directional motion blur along a vector or UV field. History advances only while the timeline plays.",
+  facts: {
+    space: { "param:velocity_x": "uv01", "param:velocity_y": "uv01" },
+    reads: ["time"],
+    gotchas: [
+      "History only advances while the timeline is playing or exporting; paused param tweaks or repeated same-time evals freeze it instead of decaying further.",
+      "mode=ring captures a new echo only every step_frames active frames; between captures the primary output freezes on the last captured composite.",
+      "mode=velocity always re-captures the raw current input as history (not the blurred output), so the directional blur doesn't compound frame over frame.",
+      "velocity_x/y are the full backward-sweep UV offset at the last tap, not a per-tap or per-frame step; wiring vel_uv overrides them entirely.",
+      "vel_uv decodes its RG channels from [0,1] into a [-1,1] per-pixel UV vector, used as the local velocity in place of velocity_x/y.",
+      "decay compounds per captured frame in feedback/ring (echo alpha keeps fading each capture) but falls off per tap within one eval in velocity mode.",
+      "The trail aux is echoes only, with no current frame composited on top, and is only rendered when actually wired downstream.",
+    ],
+  },
   backend: "webgl2",
   // Time-dependent by nature — each eval reads last frame's output.
   stable: false,

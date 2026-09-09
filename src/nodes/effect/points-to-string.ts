@@ -65,6 +65,15 @@ export const pointsToStringNode: NodeDefinition = {
   ],
   description:
     "Join a column of point data into one string — Y, X, index, rotation, scale, group, a named attribute, or a custom token template ({x} {y} {i} {attr:name}). Layout is comma-separated, one value per line, or a grid (N columns). Wire the string into a Text node's text. Coordinates read normalized [0,1] or in pixels, with adjustable precision. For a label sitting on each point, use Point Labels; for per-point strings into Copy to Points, use Points to Text.",
+  facts: {
+    reads: ["attr:rotation", "attr:scale", "attr:group"],
+    gotchas: [
+      "field=attribute reads a named point channel by attr_name (component 0 only); an invalid identifier or missing channel formats as 0.",
+      "field=custom and field=attribute both compile through the same {token} template language as Point Labels/Points to Text.",
+      "layout=grid arranges the per-point strings into an N-column grid of TEXT (columns, column_sep) — it is still one joined string, not a spatial layout.",
+      "units=pixels multiplies x by canvas width and y by canvas height independently (anisotropic), matching every other engine value.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "points", type: "points", required: true }],

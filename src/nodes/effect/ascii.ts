@@ -675,6 +675,16 @@ export const asciiNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Render the input image as a grid of glyphs — text characters from a palette string (any font), or each image in a connected image_group. Glyph and per-cell background colors source from flat / the cell's own color / a color ramp driven by index, seeded hash, position, brightness, or a wired image. Brightness remapping, per-cell modulators, and aux index/brightness outputs match the Array node's conventions.",
+  facts: {
+    gotchas: [
+      "Ascii's index aux always uses column-first cell ordering; it only matches Array's aux index when Array's direction is set to flow-columns, not Array's default flow-rows.",
+      "brightness aux is the in_min/in_max remap only — it ignores out_min/out_max and the blank threshold, so it can be nonzero for cells the main output renders fully transparent.",
+      "threshold gates the whole cell (glyph and background) to fully transparent below it, not just the glyph; 0 (default) disables the gate.",
+      "In image_set mode fg_source/fg_color/fg_ramp have no effect: the atlas item's own RGBA replaces the glyph outright, only the background layer still composites.",
+      "bg_transform makes the background fill only the glyph's scaled/rotated tile instead of the whole cell rect, so glyph_scale < 1 opens transparent gutters between cells.",
+      "ramp_by=position projects the cell center on a steerable axis Y-DOWN (angle 0 = left-to-right, 90 = top-to-bottom), matching the per-subpath ColorRampBy position mode.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   inputs: [

@@ -421,7 +421,7 @@ export function ColorPickerPopover({
             position: "relative",
             height: 12,
             borderRadius: 3,
-            background: `linear-gradient(to right, ${rgbCur}00, ${rgbCur}), ${CHECKER}`,
+            backgroundImage: `linear-gradient(to right, ${rgbCur}00, ${rgbCur}), ${CHECKER}`,
             backgroundSize: "auto, 8px 8px",
             cursor: "ew-resize",
             touchAction: "none",
@@ -456,7 +456,7 @@ export function ColorPickerPopover({
                   // Composed from committed state (hexDraft may be
                   // mid-typing garbage); layered over the checkerboard
                   // so translucency reads at a glance.
-                  background: `linear-gradient(${previewHex}, ${previewHex}), ${CHECKER}`,
+                  backgroundImage: `linear-gradient(${previewHex}, ${previewHex}), ${CHECKER}`,
                   backgroundSize: "auto, 6px 6px",
                   border: "1px solid var(--tb-n-9)",
                 }
@@ -635,11 +635,14 @@ export function ColorSwatchPicker({
           border: "1px solid var(--tb-n-7)",
           borderRadius: 3,
           // Alpha-enabled swatches layer the (possibly translucent) color
-          // over a checkerboard; 8-digit hex is valid CSS.
-          background: alpha
+          // over a checkerboard; 8-digit hex is valid CSS. Longhands only —
+          // mixing `background` with `backgroundSize` trips React's
+          // shorthand/non-shorthand warning on rerender.
+          backgroundImage: alpha
             ? `linear-gradient(${hex}, ${hex}), ${CHECKER}`
-            : hex,
-          backgroundSize: alpha ? "auto, 6px 6px" : undefined,
+            : "none",
+          backgroundColor: alpha ? "transparent" : hex,
+          backgroundSize: alpha ? "auto, 6px 6px" : "auto",
           flexShrink: 0,
           cursor: "pointer",
           ...swatchStyle,

@@ -144,6 +144,14 @@ export const keyerNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Keys pixels transparent by luminance (luma key), RGB similarity to a key color (color key), chroma-plane similarity (chroma key — the green-screen mode, brightness-independent), or similarity to a drawn color selection (sample mode — select the node and scrub across the canvas to sample the colors to remove). Softness feathers the matte edge, Spill Suppression desaturates key-color bleed on kept pixels, and Invert swaps keep/key. The matte is also available as a mask aux output.",
+  facts: {
+    gotchas: [
+      "threshold only applies in mode=luma; key_color, tolerance, and spill apply only in color/chroma/sample modes.",
+      "softness feathers symmetrically around threshold in mode=luma, but only outward past tolerance in the other modes.",
+      "In mode=sample, the despill reference (used for spill) is the mean of the sampled colors, not key_color.",
+      "sample_colors is a hidden list scrubbed from the canvas via the node's overlay; empty list keys nothing, capped at 64 colors.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

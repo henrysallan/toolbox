@@ -26,6 +26,15 @@ export const sdfDisplaceNode: NodeDefinition = {
   category: "utility",
   description:
     "Modifier — perturb the distance field by sampling an image's red channel. Sampled value [0..1] remaps to [-Amount..+Amount] and adds to the distance. Wire a Noise output for wobbly edges; wire a mask for a hard cutout.",
+  facts: {
+    space: { "param:amount": "canvas01" },
+    gotchas: [
+      "Sampled at the canvas-UV position, not the shape's own (possibly transformed) position — displacement is a fixed screen-space perturbation regardless of upstream Position ops.",
+      "Only the image's red channel is read; the [0..1] value remaps to [-amount..+amount] and adds straight onto the signed distance.",
+      "With no field image wired, the SDF passes through unchanged rather than being blanked.",
+      "A scalar wired to the `amount` socket overrides the amount param entirely, it is not added to it.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

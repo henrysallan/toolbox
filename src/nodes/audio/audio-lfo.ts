@@ -21,6 +21,15 @@ export const audioLfoNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Audio-rate modulator. Wire into a mod input (Filter cutoff, Oscillator freq/level, Channel gain/pan) — the wave sweeps that knob between min and max, in the knob's own units, smoothly at audio rate. For frame-rate modulation of any other param, use the regular LFO node instead.",
+  facts: {
+    gotchas: [
+      "Descriptor in, descriptor out: compute() does no audio work; the audio engine builds a Tone.LFO once the chain reaches a mod input.",
+      "min/max are read in the destination param's own units (e.g. ±500 on a cutoff mod = ±500 Hz around the knob), not normalized — mod inputs need no separate depth knob.",
+      "The wave sums with the destination knob's value inside the audio clock domain; wire it into a mod input (Filter cutoff_mod, Oscillator freq_mod/level_mod, Channel gain_mod/pan_mod).",
+      "Wiring it into a regular audio input works technically (it's a signal) but is heard as a raw DC-ish ramp, not a tone.",
+      "phase is in degrees (0..360), not radians.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [],

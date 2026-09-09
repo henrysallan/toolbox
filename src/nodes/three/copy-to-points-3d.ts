@@ -66,6 +66,16 @@ export const copyToPoints3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Places a copy of the instance geometry at every 3D point, emitting an instance stream (one InstancedMesh draw call at the scene). Points from 3D Scatter carry normals for align-to-normal; wiring 2D points instead maps them onto a ground or billboard plane. Chain Instance Color to tint copies, or Realize Instances to bake real geometry.",
+  facts: {
+    space: { "in:points": ["world3d", "canvas01"], "param:plane_size": "world3d" },
+    gotchas: [
+      "Wiring 2D points instead of points3d maps the authored [0,1]^2 (centered on 0.5) onto a plane_size world-unit plane: xz treats v as +z (ground), xy flips v to world-up y (billboard).",
+      "align_to_normal orients the copy's local +Y to the point normal; with 2D points it uses +Z for plane=xy or world up for plane=xz, since there are no real normals.",
+      "rotation_jitter and scale_jitter are hashed from the point index and seed, not per-frame random, so copies stay put when other params change but reshuffle if seed changes.",
+      "plane and plane_size only appear when a 2D points wire is connected; they have no effect wired to points3d.",
+      "Emits an instances stream, not baked geometry; chain Instance Color before the scene resolves it, or Realize Instances to bake real geometry.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [

@@ -20,7 +20,7 @@ import {
   flattenGraph,
   resolvePreviewProducer,
 } from "./flatten";
-import { ITERATE_EDGE_PREFIX, ITERATE_TYPE, LAYER_TYPE } from "./groups";
+import { ITERATE_EDGE_PREFIX, LAYER_TYPE, isZoneShell, socketValueFromGroupDefault } from "./groups";
 import { paramSocketType, parseTargetHandleKind } from "./graph-helpers";
 import { trackDataFingerprintToken } from "./tracking/track-data";
 import * as prof from "./profiler";
@@ -45,6 +45,10 @@ import {
   TIME_OFFSET_TYPE,
   type TimeOffsetStash,
 } from "./time-offset";
+import {
+  findSplineForPreview,
+  rasterizeSplinePreview,
+} from "./spline-preview";
 import type {
   AudioChainNode,
   ImageValue,
@@ -139,6 +143,10 @@ export interface GraphNode {
   // boundaries before this graph reaches evaluateGraph.
   parentId?: string;
   params: Record<string, unknown>;
+  // Flatten-injected unwired group-input defaults for widget-typed `in:`
+  // sockets (scalar/vec4/color/…). Evaluator treats these as the socket
+  // value when no edge lands. Not persisted — flatten stamps them each eval.
+  inputOverrides?: Record<string, unknown>;
   // Names of params exposed as input sockets on this node. An exposed param
   // with a connected edge has its value overridden by the incoming signal at
   // compute time.
@@ -319,6 +327,29 @@ function pickHandleImage(
         ? result.aux?.[handle.slice("out:aux:".length)]
         : undefined;
   return v && v.kind === "image" ? v : undefined;
+}
+
+// Image the viewport should blit for an Active / selected node. Image
+// primary, a remapped handle, a first-input image (Output), or `image`
+// aux all win; a spline-only node falls through to a thin preview stroke
+// so you can see Trim Path / Offset Path / etc. without a Rasterize.
+function pickDisplayImage(
+  ctx: RenderContext,
+  result: NodeOutput,
+  handle: string | undefined,
+  transients: WebGLTexture[],
+  fallbackInput?: SocketValue
+): ImageValue | undefined {
+  const handled = pickHandleImage(result, handle);
+  if (handled?.kind === "image") return handled;
+  if (result.primary?.kind === "image") return result.primary;
+  if (fallbackInput?.kind === "image") return fallbackInput;
+  if (result.aux?.image?.kind === "image") return result.aux.image;
+  const spline = findSplineForPreview(result, handle);
+  if (!spline) return undefined;
+  const preview = rasterizeSplinePreview(ctx, spline);
+  if (preview) transients.push(preview.texture);
+  return preview ?? undefined;
 }
 
 export function computeNeededSet(
@@ -757,8 +788,9 @@ export function evaluateGraph(
   // rather than re-reading the module's level. False whenever capture is off
   // — or when a playingOnly capture gates out this paused eval.
   const capturing = prof.beginEval(nested, ctx.playing);
-  // Iterate rejects nesting inside a nested pass, so interior samples are
-  // always exactly one level down.
+  // Nested zone eval (Repeat wrapping For Each, etc.) still bills as
+  // depth 1 — GPU timers cannot nest, and interior CPU time is charged
+  // to the enclosing shell.
   const evalDepthTag = nested ? 1 : 0;
   // GPU timer queries can't nest (one TIME_ELAPSED at a time in WebGL2), so
   // only the root pass issues them; an Iterate interior's GPU time bills to
@@ -1296,8 +1328,17 @@ export function evaluateGraph(
       });
       auxIn[inputDef.name] = {};
       if (!incoming) {
-        inputs[inputDef.name] = inputDef.defaultValue;
-        inputFpParts.push(`${inputDef.name}=_`);
+        const override = node.inputOverrides?.[inputDef.name];
+        if (override !== undefined) {
+          const wrapped = socketValueFromGroupDefault(override, inputDef.type);
+          inputs[inputDef.name] = wrapped ?? inputDef.defaultValue;
+          inputFpParts.push(
+            `${inputDef.name}=iv:${stableStringify(override)}`
+          );
+        } else {
+          inputs[inputDef.name] = inputDef.defaultValue;
+          inputFpParts.push(`${inputDef.name}=_`);
+        }
         continue;
       }
       const srcOut = outputs.get(incoming.source);
@@ -1322,12 +1363,12 @@ export function evaluateGraph(
       inputFpParts.push(`${inputDef.name}=${srcFp}/${handleTag}`);
     }
 
-    // Iterate shells: undeclared per-edge `zi__e_<edgeId>` inputs carry
-    // direct crossing-wire values (flatten mirrors exterior→member edges
-    // here — 071926_iterate-zone-view.md, "stay as wired"). Raw and
-    // UNCOERCED: the member's socket does its own coercion when the
-    // nested feed node re-emits the value.
-    if (node.type === ITERATE_TYPE) {
+    // Zone shells (Iterate / Repeat / For Each): undeclared per-edge
+    // `zi__e_<edgeId>` inputs carry direct crossing-wire values (flatten
+    // mirrors exterior→member edges here — 071926_iterate-zone-view.md,
+    // "stay as wired"). Raw and UNCOERCED: the member's socket does its
+    // own coercion when the nested feed node re-emits the value.
+    if (isZoneShell(node.type)) {
       for (const e of edges) {
         if (e.target !== id) continue;
         const parsed = parseTargetHandleKind(e.targetHandle);
@@ -2012,17 +2053,22 @@ export function evaluateGraph(
     // Terminal preview selection. Active override wins; otherwise the first
     // terminal node's first-input image is shown. When the chosen node's
     // primary isn't an image but it exposes an `image` aux (e.g. a spline
-    // primitive's bundled rasterizer), fall back to that.
+    // primitive's bundled rasterizer), fall back to that. Spline-only
+    // nodes get a thin viewport stroke so selecting them is enough to see
+    // the path.
     if (activeNodeId && id === activeNodeId) {
       // When the Active target was remapped from a group, prefer the exact
       // output handle that fed the group's image socket; otherwise fall
-      // back to primary / first-input / image aux as before.
-      let img = pickHandleImage(result, activeHandle);
-      if (!img) img = result.primary ?? inputs[defInputs[0]?.name ?? ""];
-      if (img && img.kind === "image") {
+      // back to primary / first-input / image aux / spline preview.
+      const img = pickDisplayImage(
+        ctx,
+        result,
+        activeHandle,
+        evalTransients,
+        inputs[defInputs[0]?.name ?? ""]
+      );
+      if (img) {
         terminalImage = { nodeId: id, image: img };
-      } else if (result.aux?.image?.kind === "image") {
-        terminalImage = { nodeId: id, image: result.aux.image };
       }
     } else if (!activeNodeId && def.terminal) {
       const firstInput = defInputs[0]?.name;
@@ -2044,18 +2090,15 @@ export function evaluateGraph(
 
   // Preview fallback: if nothing claimed the canvas (no active node, no
   // connected terminal image), show the selected node's own image — its
-  // primary if it's an image, otherwise its `image` aux. Lets you drop in a
-  // node (e.g. a spline primitive) and see it without wiring an Output.
+  // primary if it's an image, otherwise its `image` aux, otherwise a thin
+  // stroke of its spline. Lets you drop in a node (e.g. Trim Path) and see
+  // it without wiring an Output or Rasterize Spline.
   if (!terminalImage && previewNodeId) {
     const out = outputs.get(previewNodeId);
     if (out) {
-      const handleImg = pickHandleImage(out, previewHandle);
-      if (handleImg) {
-        terminalImage = { nodeId: previewNodeId, image: handleImg };
-      } else if (out.primary?.kind === "image") {
-        terminalImage = { nodeId: previewNodeId, image: out.primary };
-      } else if (out.aux?.image?.kind === "image") {
-        terminalImage = { nodeId: previewNodeId, image: out.aux.image };
+      const img = pickDisplayImage(ctx, out, previewHandle, evalTransients);
+      if (img) {
+        terminalImage = { nodeId: previewNodeId, image: img };
       }
     }
   }

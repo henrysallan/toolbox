@@ -114,6 +114,15 @@ export const sdfMaterialNode: NodeDefinition = {
   category: "utility",
   description:
     "Paint an SDF subtree. Sets the color every shape below it renders with, unless a shape (or a nearer Material) paints itself. Distance is untouched. Constant mode takes a color (or a wired Color node); Ramp mode samples a gradient at a scalar field — wire SDF Repeat's Cell ID through a noise node to give every tile its own color.",
+  facts: {
+    gotchas: [
+      "Materials inherit CSS-fill style: this paints every unpainted shape below it; a nearer Material node or a primitive's own Paint toggle wins for its own subtree.",
+      "Distance is untouched, so inserting or removing this node anywhere in a chain never changes the shape, only color.",
+      "color_mode=ramp with no field wired to `t` holds the ramp at a fixed midpoint (0.5) rather than falling back to the color param.",
+      "Wiring a vec3/vec4 into the `color` socket overrides the color param entirely; a wired vec4's alpha is dropped since the material carries color only.",
+      "Color blending across shapes only happens inside SDF Smooth Union, driven by that node's Smoothness; this node does not blend colors itself.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

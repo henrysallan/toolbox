@@ -26,6 +26,14 @@ export const sdfPolarNode: NodeDefinition = {
   category: "utility",
   description:
     "SDF position-pipeline op — fold the sample position into N rotational sectors around the center. Compose with Mirror for kaleidoscope symmetry.",
+  facts: {
+    space: { "in:center": "canvas01", "param:center_x": "canvas01", "param:center_y": "canvas01" },
+    gotchas: [
+      "Folds the sample position into `segments` sectors of 2*pi/segments around center, so downstream shapes are replicated radially rather than duplicated as separate graph copies.",
+      "rotation is in radians, not degrees, and spins where the sector boundaries fall (effectively rotating the whole kaleidoscope pattern).",
+      "Output type is `position`, meant to feed a shape's Position socket or chain into another position op (e.g. Mirror) — wiring it directly as an SDF or mask does nothing.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

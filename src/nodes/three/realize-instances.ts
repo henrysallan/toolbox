@@ -37,6 +37,14 @@ export const realizeInstances3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Bakes an instance stream into one real geometry so modeling nodes (Extrude, Texture Projection, Scatter…) can operate on the copies. Costs count × vertices — that's the point of it being an explicit node.",
+  facts: {
+    gotchas: [
+      "Per-instance colors do not survive realization: the output is one geometry with the source's single material list, so tinting instances upstream has no visible effect after this node.",
+      "Vertex budget is capped at 2,000,000 (instance count × source-mesh vertex count); over the cap it silently realizes only the first N instances and logs a console warning.",
+      "Output carries an identity TRS (position/rotation/scale) because the bake already places every vertex in world space.",
+      "Normal and UV attributes are only baked when the source geometry carries them; a normal-less source yields a realized mesh with no normal attribute.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "instances", type: "instances", required: true }],

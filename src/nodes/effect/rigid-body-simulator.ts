@@ -907,6 +907,25 @@ export const rigidBodySimulatorNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "2D rigid body dynamics: each input subpath becomes a rigid body that falls, tumbles, and stacks — colliding with collider nodes, the canvas bounds, and other bodies (edge-accurate contacts). Glue makes touching bodies bond and snap apart under stress. Rigidity below 1 turns bodies to jelly. At full rigidity the output is your original curves under each body's rotation + translation. Resets when scene time returns to 0.",
+  facts: {
+    space: {
+      "param:segment_px": "pixels",
+      "param:pin_radius": "pixels",
+      "param:thickness": "pixels",
+      "param:glue_break": "pixels",
+    },
+    reads: ["time"],
+    writes: ["attr:group", "attr:rotation"],
+    gotchas: [
+      "segment_px, pin_radius, thickness, and glue_break are literal pixels at render resolution, not canvas01 fractions, so re-rendering at a different output size changes the sim.",
+      "At rigidity=1 the output is the exact original beziers under each body's fitted rotation+translation; output_mode (smooth/polyline) only exists and matters below rigidity=1.",
+      "glue>0 mints particle-particle bonds at body contacts (rest = contact distance); a bond overstretched past glue_break x its strength snaps, emitting a point on snaps that frame.",
+      "Reseeds (loses velocity/bond state) when subpath/anchor topology or seed params change, or when scene time wraps back near 0; shape-only animation of the same topology does not reseed.",
+      "The bodies aux point per body stamps attr:rotation from the fitted angle and attr:group from the subpath's array index, not any groupIndex tag carried on the input spline.",
+      "follow_input re-samples the live input spline at each free particle's recorded arc-length fraction every eval, layering secondary motion on top of keyframed spline animation.",
+      "pins captures the nearest unclaimed particle within pin_radius per input point at reseed, then snaps it to that point's live position every eval (puppet dragging).",
+    ],
+  },
   backend: "webgl2",
   // Output depends on persistent per-node state — advance every eval.
   stable: false,

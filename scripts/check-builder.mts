@@ -28,7 +28,8 @@ g.requestAnimationFrame ??= () => 0;
 
 const { registerAllNodes } = await import("@/nodes/index");
 registerAllNodes();
-const { buildRecipe } = await import("@/state/recipe-builder");
+const { applySyncedExpression, buildRecipe } = await import("@/state/recipe-builder");
+const { getNodeDef } = await import("@/engine/registry");
 const { validateGraph } = await import("@/engine/graph-validation");
 
 const adapt = (built: { nodes: any[]; edges: any[] }) => ({
@@ -70,6 +71,7 @@ const good: RecipeGraph = {
   // exposed param recorded?
   const t2 = built.nodes.find((n) => n.data.defType === "transform" && (n.data.params as any).rotate === 45);
   check("exposed param added to exposedParams", !!t2 && (t2.data.exposedParams ?? []).includes("rotate"));
+  check("buildRecipe returns local→minted ids", built.ids.t1 === (built.nodes.find((n) => n.data.defType === "transform" && (n.data.params as any).scaleX === 1.5)?.id) && built.ids.t2 === t2?.id, JSON.stringify(built.ids));
 }
 
 // --- 2. Bad-wiring recipe: gradient image → spline-stroke path (mismatch).
@@ -145,6 +147,257 @@ const badValues: RecipeGraph = {
   check("out-of-range scalar clamps to hard max", (t2?.data.params as any)?.rotate === 360, `rotate=${(t2?.data.params as any)?.rotate}`);
   const r = validateGraph(adapt(built).nodes, adapt(built).edges);
   check("vetted graph still validates", r.ok, r.issues.filter((i) => i.severity === "error").map((e) => e.code).join(","));
+}
+
+// --- 5. Compound zones: Repeat / For Each mint Input+Output, named
+// collect/passthrough sockets, and parent nesting.
+{
+  const zone: RecipeGraph = {
+    name: "Repeat Identity",
+    nodes: [
+      { id: "rect", type: "rectangle" },
+      { id: "rpt", type: "repeat", params: { count: 3 } },
+    ],
+    edges: [
+      { from: "rect:out", to: "rpt-input:in:spline" },
+      { from: "rpt-input:aux:spline", to: "rpt:in:spline" },
+    ],
+    outputs: [{ name: "spline", from: "rpt:aux:spline", type: "spline" }],
+  };
+  const built = buildRecipe(zone);
+  const types = built.nodes.map((n) => n.data.defType);
+  const rpt = built.nodes.find((n) => n.data.defType === "repeat");
+  const rptIn = built.nodes.find((n) => n.data.defType === "repeat-input");
+  const grp = built.nodes.find((n) => n.data.defType === "node-group");
+  console.log(`\n[repeat-zone]  build issues: ${built.issues.length}, types: ${types.join(",")}`);
+  check("repeat recipe builds clean", built.issues.length === 0, JSON.stringify(built.issues));
+  check("repeat mints Output + Input", types.includes("repeat") && types.includes("repeat-input"));
+  check("repeat count landed on Input", (rptIn?.data.params as any)?.count === 3);
+  check(
+    "repeat Input stays a zone member (not the wrapping group)",
+    !!rpt && !!rptIn && rptIn.data.parentId === rpt.id
+  );
+  check(
+    "repeat Output is a child of the wrapping group",
+    !!rpt && !!grp && rpt.data.parentId === grp.id
+  );
+  const collect = built.edges.find(
+    (e) => e.target === rpt?.id && e.targetHandle === "in:spline"
+  );
+  check("repeat collect socket minted", !!collect);
+  const v = validateGraph(adapt(built).nodes, adapt(built).edges);
+  const errs = v.issues.filter((i) => i.severity === "error");
+  check(
+    "repeat recipe validates",
+    v.ok && errs.length === 0,
+    errs.map((e) => `${e.code}:${e.message}`).join(" | ")
+  );
+}
+{
+  const nested: RecipeGraph = {
+    name: "Repeat ForEach",
+    nodes: [
+      { id: "rect", type: "rectangle" },
+      { id: "rpt", type: "repeat", params: { count: 2 } },
+      { id: "fe", type: "foreach", parent: "rpt" },
+    ],
+    edges: [
+      { from: "rect:out", to: "rpt-input:in:spline" },
+      { from: "rpt-input:aux:spline", to: "fe:in:geometry" },
+      { from: "fe-input:aux:element", to: "fe:in:spline" },
+      { from: "fe:aux:spline", to: "rpt:in:spline" },
+    ],
+    outputs: [{ name: "spline", from: "rpt:aux:spline", type: "spline" }],
+  };
+  const built = buildRecipe(nested);
+  const rpt = built.nodes.find((n) => n.data.defType === "repeat");
+  const fe = built.nodes.find((n) => n.data.defType === "foreach");
+  const feIn = built.nodes.find((n) => n.data.defType === "foreach-input");
+  console.log(`\n[foreach-nested]  build issues: ${built.issues.length}`);
+  check("nested zone recipe builds clean", built.issues.length === 0, JSON.stringify(built.issues));
+  check("For Each nests inside Repeat", !!fe && !!rpt && fe.data.parentId === rpt.id);
+  check("For Each Input stays a member of For Each", !!fe && !!feIn && feIn.data.parentId === fe.id);
+  const v = validateGraph(adapt(built).nodes, adapt(built).edges);
+  const errs = v.issues.filter((i) => i.severity === "error");
+  check(
+    "nested zone recipe validates",
+    v.ok && errs.length === 0,
+    errs.map((e) => `${e.code}:${e.message}`).join(" | ")
+  );
+}
+{
+  const bareInput: RecipeGraph = {
+    name: "Bare Input",
+    nodes: [{ id: "x", type: "repeat-input" }],
+    outputs: [{ name: "image", from: "x:out", type: "image" }],
+  };
+  const built = buildRecipe(bareInput);
+  check(
+    "bare repeat-input is rejected",
+    built.issues.some((i) => i.code === "UNKNOWN_TYPE"),
+    JSON.stringify(built.issues)
+  );
+}
+
+// --- expression channel sync (the MCP set_param expression path) ---
+{
+  const pex = getNodeDef("point-expression")!;
+  const glsl = getNodeDef("glsl-expression")!;
+  const cpu = getNodeDef("expression")!;
+  const first = applySyncedExpression(
+    pex,
+    { expression: "x = px;", inputs: [] },
+    'ch("k", 0.1, 0, 1);\nx = px + ch("k");'
+  );
+  const k = (first.params.inputs as { name: string; id: string; default: number }[]).find(
+    (i) => i.name === "k"
+  );
+  check(
+    "committed expression write mints ch() channel",
+    first.minted.includes("k") && !!k && k.default === 0.1
+  );
+
+  const second = applySyncedExpression(
+    pex,
+    first.params,
+    'ch("k", 0.9);\nch("n", 2);\nx = px;'
+  );
+  const k2 = (second.params.inputs as { name: string; id: string; default: number }[]).find(
+    (i) => i.name === "k"
+  );
+  check(
+    "sync is add-only and id-stable",
+    second.minted.includes("n") &&
+      !second.minted.includes("k") &&
+      k2?.id === k?.id &&
+      k2?.default === 0.1
+  );
+
+  const g = applySyncedExpression(
+    glsl,
+    { expression: "fragColor = vec4(1.0);", inputs: [] },
+    '// ch("amount", 0.5, 0, 1)\nfragColor = vec4(amount);'
+  );
+  check("GLSL comment ch() mints a uniform channel", g.minted.includes("amount"));
+
+  {
+    const {
+      glslExpressionSource,
+      glslExpressionPreludeLines,
+      trimShaderInfoLog,
+      inspectGlslExpression,
+      attachGlslErrorsToSpec,
+    } = await import("@/nodes/effect/glsl-expression");
+    const empty = { expression: "fragColor = vec4(1.0);", inputs: [] };
+    const withCh = {
+      expression: "fragColor = vec4(amount);",
+      inputs: [{ id: "c1", name: "amount", default: 0.5 }],
+    };
+    const withTwo = {
+      expression: "fragColor = vec4(a * b);",
+      inputs: [
+        { id: "c1", name: "a", default: 1 },
+        { id: "c2", name: "b", default: 1 },
+      ],
+    };
+    const prelude0 = glslExpressionPreludeLines(empty);
+    const prelude1 = glslExpressionPreludeLines(withCh);
+    const prelude2 = glslExpressionPreludeLines(withTwo);
+    const src = glslExpressionSource(empty);
+    const bodyAt = src.slice(0, src.indexOf("fragColor = vec4(1.0);")).split("\n").length - 1;
+    check(
+      "GLSL prelude counts lines before the user body",
+      prelude0 >= 13 && bodyAt === prelude0 && prelude1 === prelude0 && prelude2 === prelude0 + 1,
+      `empty=${prelude0} ch1=${prelude1} ch2=${prelude2} bodyAt=${bodyAt}`
+    );
+    check(
+      "trimShaderInfoLog drops the source echo",
+      trimShaderInfoLog("Shader compile failed: ERROR: 0:15: foo\n--\n#version 300 es\n...") ===
+        "Shader compile failed: ERROR: 0:15: foo"
+    );
+    const ok = inspectGlslExpression("n1", empty, () => ({ error: null }));
+    check("inspect reports ok when tryShader succeeds", ok.ok && !ok.error);
+    const badSrc = inspectGlslExpression("n1", empty, () => ({
+      error: "Shader compile failed: ERROR: 0:15: 'z' : undeclared identifier\n--\n#version 300 es",
+    }));
+    check(
+      "inspect surfaces the trimmed info log + prelude",
+      !badSrc.ok &&
+        badSrc.error === "Shader compile failed: ERROR: 0:15: 'z' : undeclared identifier" &&
+        badSrc.preludeLines === prelude0,
+      JSON.stringify(badSrc)
+    );
+    const textBad = inspectGlslExpression(
+      "n1",
+      { expression: "#version 300 es\nvoid main() {}", inputs: [] },
+      () => ({ error: null })
+    );
+    check(
+      "inspect still reports text-level problems when GL is fine",
+      !textBad.ok &&
+        (textBad.problems?.some((p) => p.includes("#version")) ?? false) &&
+        (textBad.problems?.some((p) => p.includes("main()")) ?? false),
+      JSON.stringify(textBad.problems)
+    );
+    const spec = attachGlslErrorsToSpec(
+      [
+        { id: "ok", type: "glsl-expression" },
+        { id: "bad", type: "glsl-expression" },
+        { id: "circ", type: "circle" },
+      ],
+      (id) => (id === "circ" ? undefined : empty),
+      (key) =>
+        key.includes("bad")
+          ? { error: "Shader compile failed: boom\n--\nsrc" }
+          : { error: null }
+    );
+    check(
+      "get_graph enrichment attaches shaderError only on failures",
+      !("shaderError" in spec[0]) &&
+        spec[1].shaderError === "Shader compile failed: boom" &&
+        spec[1].shaderPreludeLines === prelude0 &&
+        !("shaderError" in spec[2]),
+      JSON.stringify(spec)
+    );
+  }
+
+  const c = applySyncedExpression(
+    cpu,
+    { expression: "out = in;", inputs: [] },
+    'ch("k", 1);\nout = in;'
+  );
+  check("CPU Expression (no channelSync) does not mint", c.minted.length === 0);
+}
+
+{
+  const built = buildRecipe({
+    name: "Merge stack",
+    nodes: [
+      {
+        id: "mg",
+        type: "merge",
+        params: {
+          layers: [
+            { mode: "normal", opacity: 1 },
+            { mode: "add", opacity: 0.5 },
+            { mode: "multiply", opacity: 1 },
+            { mode: "screen", opacity: 1 },
+            { mode: "overlay", opacity: 1 },
+            { mode: "darken", opacity: 1 },
+            { mode: "lighten", opacity: 1 },
+          ],
+        },
+      },
+    ],
+    outputs: [{ name: "image", from: "mg:out", type: "image" }],
+  });
+  const merge = built.nodes.find((n) => n.data.defType === "merge");
+  const layers = (merge?.data.params.layers ?? []) as { id: string }[];
+  check(
+    "recipe layers replaces the default lyr-initial stack (7 in → 7, no leftover empty)",
+    layers.length === 7 && layers.every((l) => l.id !== "lyr-initial"),
+    JSON.stringify(layers.map((l) => l.id))
+  );
 }
 
 console.log(`\n${failures === 0 ? "ALL GREEN ✅" : `${failures} FAILURE(S) ❌`}`);

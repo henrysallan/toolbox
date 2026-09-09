@@ -6,6 +6,13 @@ export const circleColliderNode: NodeDefinition = {
   category: "effect",
   description:
     "Circular collider for the Particle Simulator. Outside-mode treats the disc as solid; inside-mode bounces particles off the inside (fish-tank).",
+  facts: {
+    space: { "param:position": "canvas01", "param:radius": "canvas01" },
+    gotchas: [
+      "position/radius are authored (canvas01) coordinates like splines/points — the solver converts around the canvas aspect internally so the disc stays round.",
+      "mode=inside flips the collider so particles bounce off the inside of the disc instead of being blocked from entering it.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

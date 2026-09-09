@@ -30,10 +30,12 @@ import {
   LAYER_TYPE,
   isFixedBoundary,
   readBoundarySockets,
+  readInputValues,
   readReservedSockets,
   resolveOutputBoundarySockets,
   type GroupSocketSpec,
 } from "@/engine/groups";
+import { listGroupShellControls } from "@/state/graph-ops";
 import { fuzzyScoreFields } from "@/lib/fuzzy-search";
 import { evalNumExpr } from "@/lib/num-expr";
 import { EXPORT_PARAMS } from "@/nodes/output/output";
@@ -327,6 +329,14 @@ interface Props {
     newName: string
   ) => void;
   onRemoveGroupSocket?: (nodeId: string, name: string) => void;
+  // Move a group boundary socket to another socket's position. Names,
+  // not indices: the shell's input list filters reserved sockets so
+  // display order isn't the stored array.
+  onReorderGroupSockets?: (
+    nodeId: string,
+    fromName: string,
+    toName: string
+  ) => void;
   signedIn?: boolean;
   // Current user id (or null when signed out). Lets the load grid
   // flag public projects authored by the viewer as "you".
@@ -506,6 +516,7 @@ function ParamPanel({
   onRenameNode,
   onRenameGroupSocket,
   onRemoveGroupSocket,
+  onReorderGroupSockets,
   signedIn,
   currentUserId,
   onLoadProject,
@@ -834,6 +845,11 @@ function ParamPanel({
                 ? (n) => onRemoveGroupSocket(selected.id, n)
                 : undefined
             }
+            onReorder={
+              onReorderGroupSockets && !isFixedBoundary(selected.data.params)
+                ? (from, to) => onReorderGroupSockets(selected.id, from, to)
+                : undefined
+            }
           />
           {selected.data.defType === GROUP_OUTPUT_TYPE &&
             isFixedBoundary(selected.data.params) && (
@@ -862,18 +878,18 @@ function ParamPanel({
               // The group/layer's interface, viewed from the shell — a
               // clean parameters list. Editing the interface (rename /
               // remove / add) happens on the interior Group/Layer Input /
-              // Output nodes; here a socket renders as its param's
-              // real widget (slider / dropdown / color …) when it feeds
-              // an interior node's exposed param, or as a minimal
-              // dot + name row otherwise. Widget edits write through to
-              // the interior node — a remote control, not a second copy
-              // of the value. When the shell socket is wired from
-              // outside, the wire wins and the widget reads as driven —
-              // same rule as exposed params. For layers, the reserved
-              // fixed-interface sockets (stack / content / backdrop /
-              // audio) are filtered out so only user-minted inputs show,
-              // and the output-socket editor is hidden (the layer's
-              // output interface is a fixed contract, not user-editable).
+              // Output nodes; here a socket renders as a widget when it
+              // feeds an interior `in:param:` OR a widget-typed `in:`
+              // (scalar/vec4/color — GLSL channels included). Widget
+              // values live on the shell (`params.inputValues[name]`);
+              // flatten substitutes them as the unwired default. When the
+              // shell socket is wired from outside, the wire wins and the
+              // widget reads as driven — same rule as exposed params. For
+              // layers, the reserved fixed-interface sockets (stack /
+              // content / backdrop / audio) are filtered out so only
+              // user-minted inputs show, and the output-socket editor is
+              // hidden (the layer's output interface is a fixed contract,
+              // not user-editable).
               const groupInput = nodes.find(
                 (n) =>
                   n.data.parentId === selected.id &&
@@ -898,6 +914,14 @@ function ParamPanel({
                     (s) => !reserved.has(s.name)
                   )
                 : [];
+              const shellControls = listGroupShellControls(
+                selected,
+                nodes,
+                allEdges
+              );
+              const controlByName = new Map(
+                shellControls.map((c) => [c.socketName, c])
+              );
               return (
                 <>
                   {groupInput && (
@@ -907,79 +931,118 @@ function ParamPanel({
                       {inputSockets.length === 0 ? (
                         <div style={{ color: "var(--tb-n-10)" }}>(no sockets yet)</div>
                       ) : (
-                        inputSockets.map((s) => {
-                          // Interior exposed-param consumers of this
-                          // socket. The first one supplies the widget
-                          // (ParamDef + current value); edits write to
-                          // all of them.
-                          const consumers = allEdges.filter(
-                            (e) =>
-                              e.source === groupInput.id &&
-                              e.sourceHandle === `out:aux:${s.name}` &&
-                              e.targetHandle?.startsWith("in:param:")
-                          );
-                          const first = consumers[0];
-                          const consumerNode = first
-                            ? nodes.find((n) => n.id === first.target)
-                            : undefined;
-                          const consumerParam = first
-                            ? first.targetHandle!.slice("in:param:".length)
-                            : null;
-                          const pdef =
-                            consumerNode && consumerParam
-                              ? getNodeDef(
-                                  consumerNode.data.defType
-                                )?.params.find((p) => p.name === consumerParam)
-                              : undefined;
-                          const wired = allEdges.some(
-                            (e) =>
-                              e.target === selected.id &&
-                              e.targetHandle === `in:${s.name}`
-                          );
-                          // Widget-backed sockets show only the widget
-                          // (its label is the socket name); the rest
-                          // show a minimal dot + name row.
-                          if (pdef && consumerNode && consumerParam) {
-                            return (
-                              <ParamRow
-                                key={s.name}
-                                param={{ ...pdef, label: s.name }}
-                                value={consumerNode.data.params[consumerParam]}
-                                allParams={consumerNode.data.params}
-                                onChange={(v) => {
-                                  for (const c of consumers) {
-                                    onParamChange(
-                                      c.target,
-                                      c.targetHandle!.slice(
-                                        "in:param:".length
-                                      ),
-                                      v
-                                    );
-                                  }
-                                }}
-                                driven={wired}
-                                keyframable={isKeyframable(pdef.type)}
-                                animation={getAnimation?.(
-                                  consumerNode.id,
-                                  consumerParam
-                                )}
-                                currentTick={currentTick}
-                                onSeekTick={onSeekTick}
-                                onAnimationChange={
-                                  onAnimationChange
-                                    ? (next) =>
-                                        onAnimationChange(
-                                          consumerNode.id,
-                                          consumerParam,
-                                          next
-                                        )
-                                    : undefined
-                                }
-                              />
-                            );
+                        <ReorderableSocketRows
+                          sockets={inputSockets}
+                          reserved={reserved}
+                          onReorder={
+                            onReorderGroupSockets &&
+                            groupInput &&
+                            !isFixedBoundary(groupInput.data.params)
+                              ? (from, to) =>
+                                  onReorderGroupSockets(groupInput.id, from, to)
+                              : undefined
                           }
-                          return <GroupSocketRow key={s.name} spec={s} />;
-                        })
+                          renderRow={(s) => {
+                            const ctrl = controlByName.get(s.name);
+                            const wired = allEdges.some(
+                              (e) =>
+                                e.target === selected.id &&
+                                e.targetHandle === `in:${s.name}`
+                            );
+                            if (ctrl) {
+                              const consumerNode = nodes.find(
+                                (n) => n.id === ctrl.consumerNodeId
+                              );
+                              const stored = readInputValues(
+                                selected.data.params
+                              );
+                              const paramConsumers = allEdges.filter(
+                                (e) =>
+                                  e.source === groupInput.id &&
+                                  e.sourceHandle === `out:aux:${s.name}` &&
+                                  e.targetHandle?.startsWith("in:param:")
+                              );
+                              const consumerParamName = (handle: string) =>
+                                handle.slice("in:param:".length);
+                              return (
+                                <ParamRow
+                                  param={ctrl.controlDef}
+                                  value={ctrl.value}
+                                  allParams={consumerNode?.data.params ?? {}}
+                                  onChange={(v) => {
+                                    onParamChange(
+                                      selected.id,
+                                      "inputValues",
+                                      { ...stored, [s.name]: v },
+                                      `param:${selected.id}:inputValues:${s.name}`
+                                    );
+                                    for (const c of paramConsumers) {
+                                      const pname = consumerParamName(
+                                        c.targetHandle!
+                                      );
+                                      const deep = nodes.find(
+                                        (n) => n.id === c.target
+                                      );
+                                      const anim = deep?.data.animation?.[pname];
+                                      if (anim?.animated) {
+                                        onParamChange(c.target, pname, v);
+                                      }
+                                    }
+                                  }}
+                                  driven={wired}
+                                  rangeOverride={
+                                    ctrl.rangeOverride ??
+                                    (ctrl.consumerParam
+                                      ? consumerNode?.data.paramOverrides?.[
+                                          ctrl.consumerParam
+                                        ]
+                                      : undefined)
+                                  }
+                                  onRangeChange={
+                                    onParamRangeChange && ctrl.consumerParam
+                                      ? (next) => {
+                                          for (const c of paramConsumers) {
+                                            onParamRangeChange(
+                                              c.target,
+                                              consumerParamName(
+                                                c.targetHandle!
+                                              ),
+                                              next
+                                            );
+                                          }
+                                        }
+                                      : undefined
+                                  }
+                                  keyframable={
+                                    !!ctrl.consumerParam &&
+                                    isKeyframable(ctrl.controlDef.type)
+                                  }
+                                  animation={
+                                    ctrl.consumerParam
+                                      ? getAnimation?.(
+                                          ctrl.consumerNodeId,
+                                          ctrl.consumerParam
+                                        )
+                                      : undefined
+                                  }
+                                  currentTick={currentTick}
+                                  onSeekTick={onSeekTick}
+                                  onAnimationChange={
+                                    onAnimationChange && ctrl.consumerParam
+                                      ? (next) =>
+                                          onAnimationChange(
+                                            ctrl.consumerNodeId,
+                                            ctrl.consumerParam!,
+                                            next
+                                          )
+                                      : undefined
+                                  }
+                                />
+                              );
+                            }
+                            return <GroupSocketRow spec={s} />;
+                          }}
+                        />
                       )}
                       <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
                         Wire into the dashed “new socket” port on{" "}
@@ -993,6 +1056,13 @@ function ParamPanel({
                       key={groupOutput.id}
                       node={groupOutput}
                       isInput={false}
+                      onReorder={
+                        onReorderGroupSockets &&
+                        !isFixedBoundary(groupOutput.data.params)
+                          ? (from, to) =>
+                              onReorderGroupSockets(groupOutput.id, from, to)
+                          : undefined
+                      }
                     />
                   )}
                 </>
@@ -1996,20 +2066,129 @@ function GroupSocketRow({
   );
 }
 
+// Six-dot grip for group-socket reorder, matching the merge-layer /
+// auto-layout handle.
+function SocketGripIcon() {
+  return (
+    <svg width={10} height={14} viewBox="0 0 10 14" fill="currentColor">
+      {[3, 7].map((cx) =>
+        [3, 7, 11].map((cy) => (
+          <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r={1.1} />
+        ))
+      )}
+    </svg>
+  );
+}
+
+// Drag-to-reorder wrapper for a list of group sockets. The grip is the
+// only draggable target so name inputs and param widgets stay usable.
+// `onReorder` is by socket name so a filtered list (the group shell
+// hides reserved sockets) still maps onto the stored array.
+function ReorderableSocketRows({
+  sockets,
+  reserved,
+  onReorder,
+  renderRow,
+}: {
+  sockets: GroupSocketSpec[];
+  reserved: Set<string>;
+  onReorder?: (fromName: string, toName: string) => void;
+  renderRow: (spec: GroupSocketSpec) => ReactNode;
+}) {
+  const [dragName, setDragName] = useState<string | null>(null);
+  const [overName, setOverName] = useState<string | null>(null);
+  const showHandles = !!onReorder && sockets.length > 1;
+
+  if (!showHandles) {
+    return (
+      <>
+        {sockets.map((s) => (
+          <div key={s.name}>{renderRow(s)}</div>
+        ))}
+      </>
+    );
+  }
+
+  return (
+    <>
+      {sockets.map((s) => {
+        const canDrag = !reserved.has(s.name);
+        const dropping = overName === s.name && dragName !== null && dragName !== s.name;
+        return (
+          <div
+            key={s.name}
+            onDragOver={(e) => {
+              if (!dragName) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              if (overName !== s.name) setOverName(s.name);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (dragName && dragName !== s.name) onReorder?.(dragName, s.name);
+              setDragName(null);
+              setOverName(null);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              borderRadius: 4,
+              outline: dropping ? "1px solid var(--tb-n-10)" : undefined,
+              opacity: dragName === s.name ? 0.45 : 1,
+            }}
+          >
+            {canDrag ? (
+              <span
+                title="Drag to reorder"
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData("text/plain", s.name);
+                  setDragName(s.name);
+                }}
+                onDragEnd={() => {
+                  setDragName(null);
+                  setOverName(null);
+                }}
+                style={{
+                  cursor: dragName === s.name ? "grabbing" : "grab",
+                  color: "var(--tb-n-10)",
+                  flexShrink: 0,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  touchAction: "none",
+                }}
+              >
+                <SocketGripIcon />
+              </span>
+            ) : (
+              <span style={{ width: 10, flexShrink: 0 }} />
+            )}
+            <div style={{ flex: 1, minWidth: 0 }}>{renderRow(s)}</div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 // Param-panel body for a selected Group Input / Group Output node.
-// Lists the group's interface sockets on that side for rename / remove;
-// adding happens on the canvas by wiring into the node's dashed
+// Lists the group's interface sockets on that side for rename / remove /
+// reorder; adding happens on the canvas by wiring into the node's dashed
 // virtual port.
 function GroupSocketsPanel({
   node,
   isInput,
   onRename,
   onRemove,
+  onReorder,
 }: {
   node: Node<NodeDataPayload>;
   isInput: boolean;
   onRename?: (oldName: string, newName: string) => void;
   onRemove?: (name: string) => void;
+  onReorder?: (fromName: string, toName: string) => void;
 }) {
   // Outputs go through the resolver so a fixed (layer) boundary's
   // back-filled sockets are listed too — this panel must agree with the
@@ -2018,23 +2197,25 @@ function GroupSocketsPanel({
     ? readBoundarySockets(node.data.params)
     : resolveOutputBoundarySockets(node.data.params);
   // Reserved sockets (a layer's `backdrop`) are part of the fixed
-  // interface — shown read-only, no rename/remove.
+  // interface — shown read-only, no rename/remove/reorder-as-source.
   const reserved = new Set(readReservedSockets(node.data.params));
   return (
     <Section label={isInput ? "group inputs" : "group outputs"}>
       {sockets.length === 0 ? (
         <div style={{ color: "var(--tb-n-10)" }}>(no sockets yet)</div>
       ) : (
-        sockets.map((s) => (
-          <GroupSocketRow
-            // Keyed by name: a rename commits upstream and the row
-            // remounts with the (possibly deduped) final name.
-            key={s.name}
-            spec={s}
-            onRename={reserved.has(s.name) ? undefined : onRename}
-            onRemove={reserved.has(s.name) ? undefined : onRemove}
-          />
-        ))
+        <ReorderableSocketRows
+          sockets={sockets}
+          reserved={reserved}
+          onReorder={onReorder}
+          renderRow={(s) => (
+            <GroupSocketRow
+              spec={s}
+              onRename={reserved.has(s.name) ? undefined : onRename}
+              onRemove={reserved.has(s.name) ? undefined : onRemove}
+            />
+          )}
+        />
       )}
       <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
         Wire into the dashed “new socket” port on the node to add one.

@@ -15,6 +15,11 @@ export const splitVec2Node: NodeDefinition = {
   category: "utility",
   description:
     "Pull the x and y components out of a vec2 as scalars. Primary = x, aux = y.",
+  facts: {
+    gotchas: [
+      "An unwired input, or one wired to a non-vec2 value, outputs 0 for both x and y rather than erroring.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "in", type: "vec2", required: true }],
   params: [],

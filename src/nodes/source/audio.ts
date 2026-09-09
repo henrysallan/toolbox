@@ -109,6 +109,17 @@ export const audioSourceNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Play an audio file or pipe microphone input into the graph. Connect the output to the Output node's audio socket to hear it during playback.",
+  facts: {
+    space: { "param:start_offset": "time" },
+    reads: ["time"],
+    gotchas: [
+      "Audible only when this source's output reaches the Output node's audio socket (ctx.audioRoutedToOutput); otherwise it keeps advancing for downstream amplitude data but plays muted.",
+      "mode=microphone requests getUserMedia once on first compute and reuses the stream after; volume is the only param it honors, loop/sync_to_scene_time/start_offset are file-only.",
+      "sync_to_scene_time seeks the element to ctx.time + start_offset only when drift exceeds 100ms, wrapping modulo duration if loop is on, else clamping to the end.",
+      "Layer pre-roll (ctx.preroll) holds the element paused in both sync and free-run modes, so audio never leads the cut.",
+      "stable:false forces re-evaluation every frame to track ctx.playing; disconnecting the node mid-playback lets the element keep playing until the next param change or delete.",
+    ],
+  },
   backend: "webgl2",
   // stable:false — the element's currentTime / mic stream changes out-
   // of-band with params. Always re-evaluate so play/pause tracks

@@ -779,3 +779,11 @@ export function parseSvgPasteText(
   }
   return subpaths;
 }
+
+// Path data alone (a `d` attribute), untransformed — the counterpart of
+// lib/svg-write.ts's pathDataFromSubpath, and the DOM-free seam the
+// offline check-svg-write.mts round-trips through (parseSvg needs a
+// DOMParser).
+export function parsePathData(d: string): SplineSubpath[] {
+  return parsePathD(d, IDENTITY);
+}

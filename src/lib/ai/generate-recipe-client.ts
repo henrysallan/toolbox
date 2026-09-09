@@ -7,7 +7,12 @@
 
 import type { Edge } from "@xyflow/react";
 import { allNodeDefs } from "@/engine/registry";
-import { buildNodeCatalog, formatCatalogDsl } from "@/engine/node-catalog";
+import {
+  buildNodeCatalog,
+  formatCatalogDsl,
+  queryCatalog,
+  type CatalogQuery,
+} from "@/engine/node-catalog";
 import { validateGraph, type ValNode, type ValEdge } from "@/engine/graph-validation";
 import { buildRecipe, type RecipeGraph } from "@/state/recipe-builder";
 import type { GraphNode } from "@/state/graph-ops";
@@ -49,6 +54,9 @@ export const HARD_BUILD_CODES = new Set([
   // number) means the recipe doesn't do what the model intended — worth a
   // repair turn, unlike the dropped-param soft issues.
   "BAD_PARAM_VALUE",
+  // Zone membership (Repeat / For Each parent) failed to resolve — the
+  // interior would eval outside the loop.
+  "BAD_PARENT",
 ]);
 
 const defaultPost: PostFn = async (body) => {
@@ -62,8 +70,12 @@ const defaultPost: PostFn = async (body) => {
   return { recipe: data.recipe as RecipeGraph, thinking: data.thinking as string | undefined };
 };
 
-export function buildCatalogDsl(): string {
-  return formatCatalogDsl(buildNodeCatalog(allNodeDefs()));
+export function buildCatalogDsl(query?: CatalogQuery): string {
+  const nodes = buildNodeCatalog(allNodeDefs());
+  // No query → full DSL (in-app generate/edit still send the whole catalog).
+  // MCP get_catalog always passes a query; omit mode to get the compact index.
+  if (query == null) return formatCatalogDsl(nodes);
+  return queryCatalog(nodes, query);
 }
 
 export async function generateRecipe(

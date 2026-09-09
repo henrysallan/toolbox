@@ -251,6 +251,16 @@ export const modulatePointsNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Modulate per-point scale and rotation on a points value. Uniform inputs apply to every point; image fields are sampled at each point's UV and mapped through the configured ranges. Stack to layer modulations; feed the result into Copy to Points (or any consumer that respects per-point attributes).",
+  facts: {
+    reads: ["attr:scale", "attr:rotation"],
+    writes: ["attr:scale", "attr:rotation"],
+    gotchas: [
+      "scale_field/rotate_field images are downsampled to a fixed 128x128 working buffer, so fine texture detail in the field is lost.",
+      "Field sampling uses an async GPU readback (PBO + fence), so field-driven modulation lags the live image by about one frame.",
+      "New scale multiplies the existing per-point scale and new rotation adds to the existing rotation, so stacked nodes compound rather than replace.",
+      "With scale_mul=1, rotate_add=0 and no fields wired, the node is a no-op and returns the input points object unchanged.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "points", type: "points", required: true },

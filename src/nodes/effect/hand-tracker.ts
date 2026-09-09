@@ -260,6 +260,17 @@ export const handTrackerNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Detect up to two hands in an incoming image using MediaPipe HandLandmarker. Primary output is the hand skeleton as a spline (21 landmarks wired into 21 bones per hand). Aux outputs expose left/right wrist positions as vec2; toggling Show fingers adds per-finger tip vec2s (thumb / index / middle / ring / pinky on each side). Detection is throttled via `detect_fps` and the output is exponentially smoothed so downstream motion stays fluid between detect calls.",
+  facts: {
+    space: { out: "uv01", "aux:left": "uv01", "aux:right": "uv01" },
+    gotchas: [
+      "aux/out landmark positions are per-axis image-normalized (uv01), not width-isotropic canvas01, so a non-square input image skews the skeleton and finger positions.",
+      "Detection throttles to detect_fps; between detect calls the node re-smooths the last-known landmarks every eval, keeping motion fluid at low detect_fps.",
+      "A hand that exits frame keeps emitting its last smoothed skeleton (latched) instead of vanishing; a side never yet seen defaults vec2/points aux to (0.5,0.5).",
+      "enabled=false freezes detection but keeps re-emitting the last latched, smoothed output, so the composed scene holds while paused.",
+      "finger_output_mode swaps the aux socket set: vec2/point add ten per-side-finger sockets each; points adds one combined fingers points socket instead.",
+      "flip_handedness (default true) swaps MediaPipe's person-perspective left/right label, since a mirrored front-facing webcam reports it backwards.",
+    ],
+  },
   backend: "webgl2",
   // Output depends on upstream frame contents, not just params.
   stable: false,

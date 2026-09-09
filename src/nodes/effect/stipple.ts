@@ -1114,6 +1114,19 @@ export const stippleNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Re-renders the input as a field of dots whose size and density follow input darkness. Grid (jittered halftone-ish), Screen (stochastic), Packed (organic relaxed-Poisson), and Packed-Flow (persistent dots with fade-in/out + position lerp for animated inputs) modes share the same edge-noise and colorization layer. Dots are either a flat color or sample the image's color at each dot center (pointillism color transfer); the optional `color` input substitutes a different image for that sampling.",
+  facts: {
+    space: { "param:maxMatchDistance": "uv01" },
+    gotchas: [
+      "dotMinSize/dotMaxSize scale radius as a fraction of the grid cell's pixel size (mix(min,max,density) × cellPx × 0.5), not absolute pixels.",
+      "mode=grid rejects a cell below `threshold` density; mode=screen instead accepts each cell stochastically with probability density^densityCurve.",
+      "Packed relax only runs on the GPU (WebGPU compute) when pointCount ≥ 6000 and relaxIterations > 0; otherwise, or on WebGPU failure, it runs on the CPU.",
+      "relaxIterations=0 skips relaxation entirely: packed/packed-flow show the raw density-weighted scatter with no Poisson-like spacing.",
+      "Only packed-flow keeps dot identity across rebakes, matching new targets to old dots within maxMatchDistance; unmatched dots fade out, new ones fade in.",
+      "colorSource=image samples the `color` input at each dot's center when wired, else falls back to sampling the main image input.",
+      "GPU relax is asynchronous: the first frame after a change shows an unrelaxed seed set; offline export waits for the settled result before capturing.",
+      "samplerResolution sets the density field's downsample size as a multiple of the grid cell count, trading bake speed for input detail.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", type: "image", required: true },

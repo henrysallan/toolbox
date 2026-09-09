@@ -131,6 +131,24 @@ export type MaterialDesc = {
   transmission: number;
   ior: number;
   alpha: number | ImageValue;
+  // Volume thickness under transmission (MeshPhysicalMaterial). 0 = thin-walled.
+  thickness?: number;
+  attenuationColor?: string;
+  // Emissive: hex tint (default black = off) and/or a map. Intensity scales
+  // both. Supported on standard / physical / toon.
+  emissive?: string | ImageValue;
+  emissiveIntensity?: number;
+  // Ambient occlusion map (linear, R channel) + intensity. three's aoMap
+  // historically samples uv2; the resolver copies uv → uv1/uv2 and pins
+  // the bridged texture to channel 0 so the bake's UVs match every other map.
+  ao?: { map: ImageValue; intensity: number };
+  // Clearcoat / sheen upgrade the class to MeshPhysicalMaterial even when
+  // transmission is 0 (car paint, wet surfaces, cloth).
+  clearcoat?: number;
+  clearcoatRoughness?: number;
+  sheen?: number;
+  sheenColor?: string;
+  sheenRoughness?: number;
   // Shading model (Tier 2): absent/"standard" = PBR (physical when
   // transmission > 0); "toon" = MeshToonMaterial with its band structure
   // baked from `toonRamp` (a full color ramp — multi-stop band colors at
@@ -176,6 +194,10 @@ export type CameraValue = {
   orthoHeight?: number; // world-units of vertical extent (orthographic)
   position: [number, number, number];
   target: [number, number, number];
+  // Producing `camera-3d` node. Survives reroute flatten and Switch
+  // passthrough so look-through can drive the real camera even when
+  // Scene Render's camera socket isn't wired directly.
+  nodeId?: string;
   // Depth-of-field (bokeh). Present ⇒ Scene Render post-processes with a
   // BokehPass. `focus` is the in-focus distance (world units) along the view
   // direction; `aperture` controls how fast things blur away from focus;

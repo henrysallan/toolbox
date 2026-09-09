@@ -55,6 +55,15 @@ export const stringArtNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Times-table string art: connect ordered point i to point (i·k + offset) mod N with a straight chord. Connecting i → 2i around a circle draws a cardioid, 3i a nephroid, etc. — the line envelopes are the curve. Feed evenly-spaced points (e.g. Points on Path around a circle or rectangle). Optional second layer with its own multiplier. Pairs with Spline Intersections to mark the chord crossings.",
+  facts: {
+    writes: ["attr:group"],
+    gotchas: [
+      "Connects ordered point i to point (i*k+offset) mod N; k, offset, and k2 are floored to integers and k clamps up to 1 even below the param's UI min of 2.",
+      "A chord whose target equals its source index (i === j) is skipped, so the input point order/spacing decides which indices land on themselves.",
+      "layer2 adds a second chord set stamped groupIndex 1 (attr:group) alongside the first layer's 0, so a later node can separate the two layers.",
+      "The points aux output passes the input points through unchanged, letting a downstream node consume both the chords and the source ring.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "points", type: "points", required: true }],
   params: [

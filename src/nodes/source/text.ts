@@ -660,6 +660,28 @@ export const textNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Renders text with a built-in transform. Wire a spline into the Path input to lay the text along it (Text on Path). Primary is the rasterized image; aux exposes an SDF (jump-flood) and the glyph outline as a spline.",
+  facts: {
+    space: {
+      "param:boxWidth": "uv01",
+      "param:boxHeight": "uv01",
+      "param:translateX": "uv01",
+      "param:translateY": "uv01",
+      "param:pivotX": "uv01",
+      "param:pivotY": "uv01",
+      "param:font_size": "pixels",
+      "param:strokeWidth": "pixels",
+      "param:letter_spacing": "pixels",
+    },
+    gotchas: [
+      "boxWidth/boxHeight are per-axis uv01 fractions of the working canvas (width/height respectively), not aspect-corrected canvas01; 1×1 is the full canvas.",
+      "translateX/Y, pivotX/Y, and rotate operate as raw per-axis UV offsets on the rasterized image (uv01), so rotate skews text on a non-square canvas.",
+      "font_size, strokeWidth, and letter_spacing are literal canvas pixels at the working render resolution; they don't scale with boxWidth/Height or output size.",
+      "sdf and spline aux build lazily only when consumed; dragging text while only primary/element are wired skips the JFA SDF and marching-squares contour work.",
+      "A wired path or a maskDriven morph_mask axis forces a full re-rasterize every frame, bypassing the normal per-param signature cache.",
+      "morph_mask (variable-font axis morph) only modulates the primary raster; element and instances aux always use the unmodulated base style.",
+      "aux:spline is a simplified polyline (marching squares + ~0.4px RDP tolerance), not smooth beziers, so sharp zoom-ins show facets.",
+    ],
+  },
   backend: "webgl2",
   // Unstable so font-load pipeline bumps re-enter compute; a local signature
   // cache inside the compute skips re-rasterization when nothing changed.

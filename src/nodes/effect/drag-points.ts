@@ -81,6 +81,15 @@ export const dragPointsNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Grab individual points with the mouse (or touch) and drag them — offsets persist inside the node, so any points-driven scene becomes hand-arrangeable, in the editor and in exported apps. Grabs the nearest point within the grab radius at press; the gesture owns it until release. Offsets are index-keyed: best on stable point sets (a count change resets them). Reset input clears all offsets.",
+  facts: {
+    space: { "param:grab_radius": "pixels" },
+    gotchas: [
+      "grab_radius is render pixels, scaled by canvas width on BOTH axes to avoid an elliptical grab zone on non-square canvases.",
+      "Offsets are keyed by point index, not identity: a count change on the points input resets all offsets, and a reorder silently moves offsets onto the wrong points.",
+      "reset only clears offsets on a value crossing above 0.5; clear_on_loop clears instead when ctx.time jumps backward (a loop restart), not on any other reset.",
+      "Only mints new point positions once an offset is live; with nothing ever grabbed the output is the same points reference passed straight through.",
+    ],
+  },
   backend: "webgl2",
   // Live pointer + accumulated offsets — recompute every eval.
   stable: false,

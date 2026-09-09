@@ -18,6 +18,8 @@ const eslintConfig = defineConfig([
     "public/export-template/**",
     "electron/vendor/**",
     "dist-electron/**",
+    // Vendored WASM glue (wasm-bindgen output).
+    "src/wasm/vtracer/**",
   ]),
   // Electron main-process files are CommonJS by design (they run unbundled
   // in Electron's Node; ESM would need a build step for no benefit).

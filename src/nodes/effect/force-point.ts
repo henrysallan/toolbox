@@ -6,6 +6,13 @@ export const pointForceNode: NodeDefinition = {
   category: "effect",
   description:
     "Radial attractor or repeller around a point in canvas-UV space.",
+  facts: {
+    space: { "param:position": "canvas01", "param:radius": "canvas01" },
+    gotchas: [
+      "Produces a force descriptor only; the consuming simulator evaluates it against particle positions in the same canvas01 frame as position.",
+      "Force magnitude is strength*(1-r/radius)^falloff for r<radius, zero beyond; mode=attract flips the sign to pull toward position, mode=repel pushes away.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

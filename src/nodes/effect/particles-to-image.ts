@@ -126,6 +126,15 @@ export const particlesToImageNode: NodeDefinition = {
   category: "effect",
   description:
     "Render a particles socket as point sprites onto an image. Each particle becomes a soft-edged dot; size, color, and blend mode are uniform.",
+  facts: {
+    space: { "in:particles": "uv01", "param:pointSize": "pixels" },
+    gotchas: [
+      "particles positions are read as raw canvas UV (Y-down, not aspect-corrected) and mapped straight to clip space; a particles source using a different convention renders offset/skewed.",
+      "pointSize is a literal gl_PointSize in device pixels at render resolution, not canvas-relative; it does not scale with output resolution.",
+      "blendMode=alpha blends an already-premultiplied fragment (rgb*a, a) via gl.blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA), so soft edges and fadeOut render dimmer than a true straight-alpha over.",
+      "color, size, and opacity are uniform across every particle; there is no per-particle variation from velocity or age besides the fadeOut toggle.",
+    ],
+  },
   backend: "webgl2",
   // The particles input is unstable (the simulator advances every
   // frame); this node has no internal state of its own but its output

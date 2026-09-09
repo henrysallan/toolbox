@@ -91,6 +91,17 @@ export const splineFlowFieldNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Turn a drawn spline into a divergence-free velocity field (encoded as a signed-RG image, midlevel 0.5): content wired through Advect Image / Advect Points (field mode `vector`) / Displace streams along the curve. `along` mode flows down the path's direction inside a ribbon of `width`; `orbit` circulates around the whole stroke like a vortex filament. Negative strength reverses the flow. Chain fields through the optional `field` input (e.g. Perlin Noise curl for ambient turbulence + this for direction) — contributions sum into one flow. The field has no sources or sinks by construction, so advected content swirls instead of piling up.",
+  facts: {
+    space: { "param:width": "canvas01" },
+    gotchas: [
+      "Output is a velocity field encoded as a signed-RG image (midlevel 0.5); wire it into Advect Image / Advect Points (field mode vector) / Displace, not viewed directly.",
+      "width is the dipole half-separation in canvas-width units either side of the curve normal; softness scales the regularization epsilon (eps = max(0.001, softness*width)), not the width itself.",
+      "strength is normalized so a long straight run advects at ≈ strength regardless of sample count or mode (gain = strength/2π for along, strength/π for orbit).",
+      "mode=orbit drops the dipole pairing for single same-sign vortices, circulating around the whole stroke instead of flowing along it.",
+      "field input is decoded, summed with this curve's contribution, then re-encoded, so chaining fields composes additively rather than overwriting.",
+      "samples (arc-length-uniform along the concatenated subpaths) is clamped to 8..96; with no spline and no field input the output is cleared to the neutral (zero-velocity) encoding.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "spline", type: "spline", required: true },

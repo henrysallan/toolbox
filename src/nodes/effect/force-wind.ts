@@ -6,6 +6,12 @@ export const windForceNode: NodeDefinition = {
   category: "effect",
   description:
     "Constant directional push. The simulator normalizes the direction vector.",
+  facts: {
+    gotchas: [
+      "Produces a force descriptor only; the consuming simulator normalizes (dx,dy) to a unit direction before scaling by strength each step.",
+      "A zero direction vector [0,0] is coerced to [1,0] in this node before the descriptor is built.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

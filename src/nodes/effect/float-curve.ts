@@ -19,6 +19,13 @@ export const floatCurveNode: NodeDefinition = {
   description:
     "Remap a scalar through an editable curve: the input is x in [0..1], the output is the curve's y there. Inputs outside 0..1 hold the endpoint values. Use Remap to bring other ranges into 0..1 first.",
   searchAliases: ["curve", "ease", "shaper"],
+  facts: {
+    gotchas: [
+      "The value input, when wired, overrides the value param entirely; the param only applies unwired.",
+      "Curve points are clamped to [0,1] on both axes and re-sorted by x, so dragging a point past its neighbor changes evaluation order.",
+      "Interpolation is monotone cubic Hermite, so the curve never overshoots past a control point's y even between widely-spaced points.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

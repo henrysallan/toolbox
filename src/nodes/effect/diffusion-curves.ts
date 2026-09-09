@@ -388,6 +388,17 @@ export const diffusionCurvesNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Paint with gradients by drawing their boundaries (Orzan et al. 2008). Every subpath of the wired spline becomes a diffusion curve: the Left/Right color ramps run along the curve's length and diffuse outward from its two sides, filling the whole canvas with smooth shading while staying sharp across the curve itself. Per-stop ramp alpha diffuses too, so a drawing can fade to transparent for Merge compositing. Wire an image into `Trace` (color source: image) to sample its colors along your strokes instead — a few curves over a photo reconstruct a painterly version, live when the trace input animates. Blur softens the transition across the curve, shaped along its length by the blur curve. Crossing curves compete and blend — split curves or add stops to control junctions. Quality raises solver iterations; Resolution trades edge sharpness for speed on animated curves.",
+  facts: {
+    space: { "param:blur_max": "pixels", "param:source_distance": "pixels" },
+    gotchas: [
+      "blur_max is canvas pixels; the blur pass runs at canvas resolution after upsampling so radii stay exact regardless of the resolution param.",
+      "source_distance is canvas pixels, rescaled internally to the solve grid by resolution before use as the color-source/gradient band offset.",
+      "ramp_span=whole spline positions ramp stops by t along the entire spline; per curve (default) positions them by t within each subpath.",
+      "color_source=image samples the wired trace image directly for both source color and the cross-curve jump, ignoring left_colors/right_colors.",
+      "view=sources/blur map return diagnostic buffers (the color-source texture, the normalized blur map) instead of the diffused result.",
+      "Blur is skipped entirely when blur_max is 0 or every sampled blur-curve sigma rounds to ~0, even if blur_max itself is nonzero.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "spline", type: "spline", required: true },

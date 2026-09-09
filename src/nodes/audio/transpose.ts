@@ -19,6 +19,13 @@ export const audioTransposeNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Shifts every note in a notes stream by ± semitones (clamped to the MIDI 0–127 range). Keyframe it for key changes; fractional values detune.",
+  facts: {
+    gotchas: [
+      "semitones === 0 passes the input notes value through by identity (===), so a no-op Transpose costs nothing on the reconciler's fast path.",
+      "Result pitch is clamped to MIDI 0..127, so large shifts near the range edges silently flatten instead of wrapping.",
+      "semitones is float-legal (not just integer steps), so a keyframed fractional value reads as continuous detune rather than a key change.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "notes", type: "notes", required: true, label: "Notes" }],

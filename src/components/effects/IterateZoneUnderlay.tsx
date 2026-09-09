@@ -3,21 +3,17 @@
 import { useMemo } from "react";
 import { ViewportPortal, type Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
-import { ITERATE_INPUT_TYPE, ITERATE_TYPE } from "@/engine/groups";
+import {
+  FOREACH_TYPE,
+  REPEAT_TYPE,
+  isZoneInput,
+  isZoneShell,
+} from "@/engine/groups";
 
-// Tinted region behind each Iterate shell's inline body — an Iterate is
-// simply a zone, always rendered inline (071926_iterate-zone-view.md).
-// Unlike SimulationZoneUnderlay this does NOT grow to overlapping nodes
-// — Iterate membership is structural (parentId), and an unrelated node
-// dragged across the zone must not look captured. bbox = shell ∪
-// visible members, padded.
-//
-// `computeIterateZoneRects` is shared with NodeEditor's drag-stop
-// reparent hit-test so "visually inside the zone" and "reparents into
-// the zone" are the same rectangle by construction.
-//
-// Rendered via <ViewportPortal> so the rect lives in the nodes'
-// pan/zoom transform; pointer-events off so it never swallows clicks.
+// Tinted region behind each zone shell's inline body — Iterate, Repeat,
+// and For Each Element all render as zones (071926_iterate-zone-view.md).
+// bbox = shell ∪ visible members, padded. Not grown to overlapping
+// unrelated nodes — membership is structural (parentId).
 
 interface NodeBox {
   x: number;
@@ -47,13 +43,20 @@ function unionBox(a: NodeBox, b: NodeBox): NodeBox {
 export interface IterateZoneRect {
   shellId: string;
   label: string;
+  tint: string;
   bbox: NodeBox;
 }
 
-// `excludeMemberId` drops one member from every bbox — the drag-stop
-// hit-test uses it so a member being dragged can actually LEAVE its
-// zone (otherwise the rect follows the node, since bbox = members'
-// union). Rendering passes nothing.
+function zoneChrome(defType: string): { label: string; tint: string } {
+  if (defType === REPEAT_TYPE) {
+    return { label: "Repeat", tint: "var(--tb-a-cyan-400)" };
+  }
+  if (defType === FOREACH_TYPE) {
+    return { label: "For Each", tint: "var(--tb-a-amber-400)" };
+  }
+  return { label: "Iterate", tint: "var(--tb-a-violet-400)" };
+}
+
 export function computeIterateZoneRects(
   nodes: Node<NodeDataPayload>[],
   excludeMemberId?: string
@@ -61,12 +64,10 @@ export function computeIterateZoneRects(
   const zones: IterateZoneRect[] = [];
   for (const shell of nodes) {
     if (shell.hidden) continue;
-    if (shell.data.defType !== ITERATE_TYPE) continue;
+    if (!isZoneShell(shell.data.defType)) continue;
     let bbox = nodeBox(shell);
     for (const n of nodes) {
       if (n.hidden || n.id === shell.id || n.id === excludeMemberId) continue;
-      // Direct members plus nested-expanded descendants (their parent
-      // chain reaches this shell through visible nodes).
       let cur = n.data.parentId;
       let member = false;
       for (let hops = 0; cur && hops < nodes.length; hops++) {
@@ -80,16 +81,22 @@ export function computeIterateZoneRects(
       }
       if (member) bbox = unionBox(bbox, nodeBox(n));
     }
-    // The loop count lives on the zone's Iteration Input member.
     const input = nodes.find(
       (n) =>
-        n.data.defType === ITERATE_INPUT_TYPE &&
-        n.data.parentId === shell.id
+        n.data.parentId === shell.id && isZoneInput(n.data.defType)
     );
+    const chrome = zoneChrome(shell.data.defType);
     const count = Number(input?.data.params?.count ?? 0);
+    const countLabel =
+      shell.data.defType === FOREACH_TYPE
+        ? ""
+        : count > 0
+          ? ` ×${count}`
+          : "";
     zones.push({
       shellId: shell.id,
-      label: `Iterate${count > 0 ? ` ×${count}` : ""}`,
+      label: `${chrome.label}${countLabel}`,
+      tint: chrome.tint,
       bbox: {
         x: bbox.x - PADDING,
         y: bbox.y - PADDING,
@@ -119,8 +126,8 @@ export default function IterateZoneUnderlay({
             top: z.bbox.y,
             width: z.bbox.width,
             height: z.bbox.height,
-            background: "color-mix(in srgb, var(--tb-a-violet-400) 5%, transparent)",
-            border: "1px dashed color-mix(in srgb, var(--tb-a-violet-400) 35%, transparent)",
+            background: `color-mix(in srgb, ${z.tint} 5%, transparent)`,
+            border: `1px dashed color-mix(in srgb, ${z.tint} 35%, transparent)`,
             borderRadius: 10,
             pointerEvents: "none",
             zIndex: -1,
@@ -133,7 +140,8 @@ export default function IterateZoneUnderlay({
               left: 8,
               fontSize: 10,
               letterSpacing: 0.4,
-              color: "rgba(196, 181, 253, 0.8)",
+              color: z.tint,
+              opacity: 0.8,
               userSelect: "none",
             }}
           >

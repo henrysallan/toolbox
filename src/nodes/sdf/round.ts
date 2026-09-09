@@ -17,6 +17,14 @@ export const sdfRoundNode: NodeDefinition = {
   category: "utility",
   description:
     "Inflate the boundary of an SDF by `radius`. Sharp corners become rounded; the entire shape grows by radius. Negative radius shrinks it.",
+  facts: {
+    space: { "in:radius": "canvas01", "param:radius": "canvas01" },
+    gotchas: [
+      "radius is a canvas-UV distance, like the underlying SDF; whether it reads as width-relative pixels depends on SDF Rasterize's aspect_correct setting.",
+      "A wired radius scalar overrides the radius param entirely, it is not combined with it.",
+      "radius is unclamped (can go negative to shrink); unlike SDF Onion's thickness, there is no floor at zero.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

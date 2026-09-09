@@ -16,6 +16,12 @@ export const sdfIntersectionNode: NodeDefinition = {
   category: "utility",
   description:
     "Boolean intersection of two SDFs (max). Result is inside only where both A and B are inside.",
+  facts: {
+    gotchas: [
+      "Fixed two-input (a, b) — unlike SDF Union this does not auto-grow additional sockets.",
+      "Leaving either input unwired treats it as the empty sentinel (distance ~1e10 everywhere), which blanks the whole intersection rather than passing the other input through.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

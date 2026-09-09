@@ -91,6 +91,15 @@ export const svgExportNode: NodeDefinition = {
   subcategory: "utility",
   description:
     "Save the wired spline as a standalone .svg file, snapshotted at the current playhead. Styling (stroke width/color, fill color and rule) is set here — the exported path carries it. The spline passes through unchanged, so the node can sit inline in a chain.",
+  facts: {
+    space: { "param:stroke_width": "pixels" },
+    gotchas: [
+      "Passthrough: outputs the wired spline unchanged, so the node can sit inline in a chain while capturing an export snapshot as a side effect.",
+      "The snapshot is taken at the current playhead and at ctx.width/height, so scrubbing or resizing the canvas before hitting Export SVG changes what gets saved.",
+      "stroke_width is in pixels at the export's raster resolution (SVG viewBox 0 0 W H), not canvas01 or UV fractions.",
+      "All subpaths are joined into one <path> element so fill_rule=evenodd holes work across subpaths, matching the app's own fill rasterization.",
+    ],
+  },
   backend: "webgl2",
   terminal: true,
   inputs: [{ name: "path", type: "spline", required: true }],

@@ -93,6 +93,19 @@ export const lissajous2DNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Generate a 2D Lissajous curve as a spline. x(t) = Ax·sin(fx·t + φx), y(t) = Ay·sin(fy·t + φy) over t ∈ [0, 2π]. Integer frequency ratios produce closed curves. Aux `points` output carries the same samples as a points value.",
+  facts: {
+    space: {
+      "param:ax": "canvas01",
+      "param:ay": "canvas01",
+      "param:center_x": "canvas01",
+      "param:center_y": "canvas01",
+    },
+    gotchas: [
+      "phase_x/phase_y are in units of pi (0.5 = pi/2, 1 = pi); rotation is plain radians, not the pi-scaled convention.",
+      "Integer fx:fy frequency ratios trace a closed curve; non-integer ratios wander ergodically and never close.",
+      "samples clamps internally to 2..8192, wider than the panel's 16..4096 slider range, so a driven value can exceed the slider bounds.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [
@@ -238,6 +251,21 @@ export const lissajous3DNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Generate a 3D Lissajous curve, rotate it (extrinsic XYZ), and orthographically project to UV space. Three frequencies, three phases (in turns — each whole 0→1 span is one full cycle, so a keyframed phase loops seamlessly), three rotations (rad), and per-axis amplitudes give classic 3D Lissajous knots and harmonograph-style figures. Aux `points` output carries the projected samples as a points value.",
+  facts: {
+    space: {
+      "param:ax": "canvas01",
+      "param:ay": "canvas01",
+      "param:az": "canvas01",
+      "param:center_x": "canvas01",
+      "param:center_y": "canvas01",
+    },
+    gotchas: [
+      "phase_x/y/z are in turns (1 = one full 2pi cycle), unlike the 2D node's units-of-pi convention; rx/ry/rz stay in plain radians.",
+      "Rotation order is extrinsic X then Y then Z; Z is then dropped (orthographic projection) and the result translated to center_x/y.",
+      "samples clamps internally to 2..8192, wider than the panel's 16..4096 slider range, so a driven value can exceed the slider bounds.",
+      "az still shapes the projected 2D curve via rotation before Z is dropped; it is not simply discarded even though the output is 2D.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

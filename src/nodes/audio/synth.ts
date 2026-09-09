@@ -20,6 +20,14 @@ export const audioSynthNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Polyphonic synth voice — the notes→audio rasterizer. Wire a notes source (Step Pattern) into it, route the audio into a Layer Output audio socket or the Output node, and press Play. Waveform picks the tone; the ADSR envelope shapes each note.",
+  facts: {
+    gotchas: [
+      "With no notes wired or an empty notes array, compute() returns {} — the chain carries nothing and no voices are scheduled.",
+      "Polyphonic (Tone.PolySynth): overlapping note events in the wired notes stack as separate voices rather than stealing/retriggering one voice.",
+      "attack/decay/release are seconds; sustain is a level fraction (0..1), not a time.",
+      "The notes array is passed through by reference (never copied) for the reconciler's identity diff, so an upstream node must hand back a new array, not mutate in place, for a change to register.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "notes", type: "notes", required: true, label: "Notes" }],

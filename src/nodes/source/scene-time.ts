@@ -53,6 +53,16 @@ export const sceneTimeNode: NodeDefinition = {
   category: "utility",
   description:
     "Emits the current playback time as a scalar in seconds or frames. Modes: linear, ping-pong (period in frames + amplitude + min/max, with an easing curve on each ramp), or stepped with easing. Connect to an exposed scalar input to drive animation.",
+  facts: {
+    reads: ["time"],
+    gotchas: [
+      "mode=pingpong ignores unit, scale, and offset entirely; period_frames is always frame-based and min/max/amplitude alone own the output range.",
+      "unit=frames and pingpong both use the tick-derived fractional frame (tick/ticksPerFrame), not integer frame count, so motion stays smooth when the render loop outruns project fps.",
+      "Integer frame count is used only as a fallback when ticksPerFrame<=0.",
+      "mode=stepped floors base/step_size to an index and eases only the fractional remainder between steps: easing=step is a hard staircase, smoothstep glides mid-step and holds near boundaries.",
+      "ease_intensity blends the eased curve against the raw linear ramp: 0=linear, 1=the exact named curve, >1 exaggerates it (overshoot/snap); shared by pingpong and stepped.",
+    ],
+  },
   backend: "webgl2",
   stable: false,
   inputs: [],

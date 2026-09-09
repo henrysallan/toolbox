@@ -12,22 +12,47 @@ import {
   GROUP_INPUT_TYPE,
   GROUP_OUTPUT_TYPE,
   GROUP_TYPE,
+  FOREACH_INPUT_SOCKETS,
+  FOREACH_INPUT_TYPE,
+  FOREACH_TYPE,
   ITERATE_INPUT_SOCKETS,
   ITERATE_INPUT_TYPE,
   ITERATE_TYPE,
   LAYER_INPUT_SOCKETS,
   LAYER_OUTPUT_SOCKETS,
   LAYER_TYPE,
+  REPEAT_INPUT_SOCKETS,
+  REPEAT_INPUT_TYPE,
+  REPEAT_TYPE,
   VIRTUAL_SOCKET,
   isFixedBoundary,
+  isGroupInputWidgetType,
+  isZoneInput,
+  isZoneShell,
   readBoundarySockets,
+  readGroupInterface,
+  readInputValues,
+  groupInputControlDef,
+  groupInputControlFromType,
+  pruneInputValues,
   readReservedSockets,
+  resolveOutputBoundarySockets,
+  withInputValues,
+  zoneInputTypeForShell,
   type GroupInterface,
   type GroupSocketSpec,
 } from "@/engine/groups";
 import {
+  channelParamDef,
+  channelRangeOverride,
+  findExprChannel,
+  setExprChannelValue,
+} from "@/engine/expr-channels";
+import {
   accumulatorDomainForSource,
+  COLLECT_TYPE,
   collectModeForSource,
+  combineSelectionMode,
   FRAME_TYPE,
   isAccumulatorInputHandle,
   isCollectSlotHandle,
@@ -37,7 +62,12 @@ import {
   REROUTE_TYPE,
 } from "@/engine/graph-helpers";
 import { EXPORT_PARAMS } from "@/nodes/output/output";
+import {
+  COLLECT_MAX_SLOTS,
+  nextCollectSlot,
+} from "@/nodes/effect/collect";
 import type {
+  ParamDef,
   ParamType,
   ResolveCtx,
   SocketType,
@@ -92,6 +122,196 @@ export function resolvePromotedParams(
     out.push({ nodeId: deep.id, paramName, label: sock.name, type: pdef.type });
   }
   return out;
+}
+
+// Widget-backed group/layer input, looked up by the exposed socket label
+// (or the interior param name when that uniquely matches). Flatten copies
+// `inputValues[socketName]` onto the interior consumer, so this is the
+// value that actually wins at eval — the same knob the param panel shows
+// on the shell.
+export interface GroupShellControl {
+  socketName: string;
+  controlDef: ParamDef;
+  value: unknown;
+  consumerNodeId: string;
+  // Interior param name when the socket feeds `in:param:`; null for a
+  // data socket (GLSL channel, Math `a`, …).
+  consumerParam: string | null;
+  // Interior input socket name when the socket feeds `in:` (not param).
+  consumerInput?: string;
+  rangeOverride?: { min?: number; max?: number; softMax?: number };
+}
+
+function groupInputOf(shellId: string, nodes: GraphNode[]): GraphNode | undefined {
+  return nodes.find(
+    (n) => n.data.parentId === shellId && n.data.defType === GROUP_INPUT_TYPE
+  );
+}
+
+function channelRowForSocket(
+  node: GraphNode,
+  socketName: string
+) {
+  const def = getNodeDef(node.data.defType);
+  if (!def) return undefined;
+  return (
+    findExprChannel(def, node.data.params, socketName) ??
+    (socketName.startsWith("in:")
+      ? findExprChannel(def, node.data.params, socketName.slice(3))
+      : undefined)
+  );
+}
+
+function seedFromConsumerSocket(
+  target: GraphNode,
+  parsed: { kind: string; name: string }
+): unknown {
+  if (parsed.kind === "param") return target.data.params[parsed.name];
+  if (parsed.kind !== "input") return undefined;
+  const row = channelRowForSocket(target, parsed.name);
+  return row?.default;
+}
+
+function controlForGroupSocket(
+  sock: { name: string; type: string },
+  groupInput: GraphNode,
+  nodes: GraphNode[],
+  edges: Edge[]
+): Omit<GroupShellControl, "value"> | null {
+  const fromGi = edges.filter(
+    (e) =>
+      e.source === groupInput.id && e.sourceHandle === `out:aux:${sock.name}`
+  );
+  const paramEdge = fromGi.find((e) => e.targetHandle?.startsWith("in:param:"));
+  if (paramEdge) {
+    const deep = nodes.find((n) => n.id === paramEdge.target);
+    const paramName = paramEdge.targetHandle!.slice("in:param:".length);
+    const pdef = deep
+      ? getNodeDef(deep.data.defType)?.params.find((p) => p.name === paramName)
+      : undefined;
+    if (!deep || !pdef) return null;
+    const controlDef = groupInputControlDef(
+      sock.name,
+      sock.type as SocketType,
+      pdef
+    );
+    if (!controlDef) return null;
+    return {
+      socketName: sock.name,
+      controlDef,
+      consumerNodeId: deep.id,
+      consumerParam: paramName,
+    };
+  }
+  if (!isGroupInputWidgetType(sock.type)) return null;
+  const dataEdge = fromGi.find((e) => {
+    const parsed = parseTargetHandleKind(e.targetHandle ?? "");
+    return parsed?.kind === "input";
+  });
+  if (!dataEdge) return null;
+  const deep = nodes.find((n) => n.id === dataEdge.target);
+  if (!deep) return null;
+  const parsed = parseTargetHandleKind(dataEdge.targetHandle ?? "");
+  const row = parsed ? channelRowForSocket(deep, parsed.name) : undefined;
+  if (row) {
+    const pdef = channelParamDef(row);
+    const range = channelRangeOverride(row);
+    if (range?.min !== undefined) pdef.min = range.min;
+    if (range?.max !== undefined) pdef.max = range.max;
+    if (range?.softMax !== undefined) pdef.softMax = range.softMax;
+    const controlDef = groupInputControlDef(
+      sock.name,
+      sock.type as SocketType,
+      pdef
+    );
+    if (!controlDef) return null;
+    return {
+      socketName: sock.name,
+      controlDef,
+      consumerNodeId: deep.id,
+      consumerParam: null,
+      consumerInput: parsed?.name,
+      rangeOverride: range,
+    };
+  }
+  const controlDef = groupInputControlFromType(
+    sock.name,
+    sock.type as SocketType
+  );
+  if (!controlDef) return null;
+  return {
+    socketName: sock.name,
+    controlDef,
+    consumerNodeId: deep.id,
+    consumerParam: null,
+    consumerInput: parsed?.name,
+  };
+}
+
+function effectiveShellValue(
+  shell: GraphNode,
+  socketName: string,
+  consumerNodeId: string,
+  consumerParam: string | null,
+  consumerInput: string | undefined,
+  nodes: GraphNode[],
+  fallback: unknown
+): unknown {
+  const stored = readInputValues(shell.data.params);
+  if (socketName in stored) return stored[socketName];
+  const consumer = nodes.find((n) => n.id === consumerNodeId);
+  if (consumer && consumerParam && consumer.data.params[consumerParam] !== undefined) {
+    return consumer.data.params[consumerParam];
+  }
+  if (consumer && consumerInput) {
+    const row = channelRowForSocket(consumer, consumerInput);
+    if (row && row.default !== undefined) return row.default;
+  }
+  return fallback;
+}
+
+/** Every widget-backed promoted input on a group/layer shell, with the value the panel would show. */
+export function listGroupShellControls(
+  shell: GraphNode,
+  nodes: GraphNode[],
+  edges: Edge[]
+): GroupShellControl[] {
+  const groupInput = groupInputOf(shell.id, nodes);
+  if (!groupInput) return [];
+  const reserved = new Set(readReservedSockets(groupInput.data.params));
+  const out: GroupShellControl[] = [];
+  for (const sock of readBoundarySockets(groupInput.data.params)) {
+    if (reserved.has(sock.name)) continue;
+    const ctrl = controlForGroupSocket(sock, groupInput, nodes, edges);
+    if (!ctrl) continue;
+    out.push({
+      ...ctrl,
+      value: effectiveShellValue(
+        shell,
+        ctrl.socketName,
+        ctrl.consumerNodeId,
+        ctrl.consumerParam,
+        ctrl.consumerInput,
+        nodes,
+        ctrl.controlDef.default
+      ),
+    });
+  }
+  return out;
+}
+
+/** Resolve one promoted input by exposed label, then by unique interior param name. */
+export function resolveGroupShellControl(
+  shell: GraphNode,
+  param: string,
+  nodes: GraphNode[],
+  edges: Edge[]
+): GroupShellControl | null {
+  const listed = listGroupShellControls(shell, nodes, edges);
+  const byLabel = listed.find((c) => c.socketName === param);
+  if (byLabel) return byLabel;
+  const byParam = listed.filter((c) => c.consumerParam === param);
+  return byParam.length === 1 ? byParam[0] : null;
 }
 
 export type GraphNode = Node<NodeDataPayload>;
@@ -311,6 +531,77 @@ export function makeSplineEditable(
   });
   outNodes.push(draw);
   return { nodes: outNodes, edges: outEdges, newNodeId: draw.id };
+}
+
+// Right-click → "Combine Nodes" on a multi-selection whose primary outputs
+// share a Collect family (image/mask/element, spline, points, or
+// object3d/geometry/instances). Spawns a Combine node to the right of the
+// selection, sizes its slots to the sources plus one spare, and wires each
+// source's primary output in left-to-right (then top-to-bottom) order.
+// Existing downstream wires are left alone. Returns null when the selection
+// isn't combinable.
+export function combineSelection(
+  nodes: GraphNode[],
+  edges: Edge[],
+  selectedIds: Iterable<string>
+): { nodes: GraphNode[]; edges: Edge[]; combineId: string } | null {
+  const wanted = new Set(selectedIds);
+  const sources = nodes
+    .filter((n) => wanted.has(n.id))
+    .sort(
+      (a, b) => a.position.x - b.position.x || a.position.y - b.position.y
+    );
+  const mode = combineSelectionMode(sources.map((n) => n.data.primaryOutput));
+  if (!mode) return null;
+
+  const wired = sources.slice(0, COLLECT_MAX_SLOTS);
+  const taken = new Set<string>();
+  const slotNames: string[] = [];
+  for (let i = 0; i < wired.length; i++) {
+    const name = nextCollectSlot(taken);
+    slotNames.push(name);
+    taken.add(name);
+  }
+  const slots =
+    wired.length >= COLLECT_MAX_SLOTS
+      ? slotNames
+      : [...slotNames, nextCollectSlot(taken)];
+
+  const rightEdge = Math.max(...wired.map((n) => n.position.x));
+  const avgY =
+    wired.reduce((s, n) => s + n.position.y, 0) / wired.length;
+  const combine = makeInstanceNode(COLLECT_TYPE, {
+    x: rightEdge + 360,
+    y: avgY,
+  });
+  combine.data.params = {
+    ...combine.data.params,
+    mode,
+    slots,
+    count: wired.length,
+  };
+  const refreshed = refreshNodeSockets(combine);
+  refreshed.data.parentId = wired[0].data.parentId;
+  refreshed.data.compositionId = wired[0].data.compositionId;
+  refreshed.selected = true;
+
+  const newEdges: Edge[] = wired.map((src, i) => ({
+    id: newEdgeId(),
+    source: src.id,
+    sourceHandle: "out:primary",
+    target: refreshed.id,
+    targetHandle: `in:${slotNames[i]}`,
+  }));
+
+  const outNodes = nodes.map((n) =>
+    n.selected ? { ...n, selected: false } : n
+  );
+  outNodes.push(refreshed);
+  return {
+    nodes: outNodes,
+    edges: [...edges, ...newEdges],
+    combineId: refreshed.id,
+  };
 }
 
 // Insert reroute nodes onto existing edges — the Shift-drag / double-click-a-
@@ -558,14 +849,18 @@ export function syncGroupInterface(
   // (index/t/random) are interior-provided and stay OUT of the
   // interface (only passthroughs surface, as the shell's hidden zi__
   // inputs).
-  const isIterate =
-    nodes.find((n) => n.id === groupId)?.data.defType === ITERATE_TYPE;
+  const isZone = isZoneShell(
+    nodes.find((n) => n.id === groupId)?.data.defType
+  );
+  const inputType = zoneInputTypeForShell(
+    nodes.find((n) => n.id === groupId)?.data.defType ?? ""
+  );
   const groupInput = nodes.find(
     (n) =>
       n.data.parentId === groupId &&
-      n.data.defType === (isIterate ? ITERATE_INPUT_TYPE : GROUP_INPUT_TYPE)
+      n.data.defType === (isZone ? inputType : GROUP_INPUT_TYPE)
   );
-  const groupOutput = isIterate
+  const groupOutput = isZone
     ? undefined
     : nodes.find(
         (n) =>
@@ -578,16 +873,21 @@ export function syncGroupInterface(
   const iface: GroupInterface = {
     inputs: groupInput
       ? readBoundarySockets(groupInput.data.params).filter(
-          (s) => !isIterate || !reserved.has(s.name)
+          (s) => !isZone || !reserved.has(s.name)
         )
       : [],
     outputs: groupOutput ? readBoundarySockets(groupOutput.data.params) : [],
   };
+  const liveNames = new Set(iface.inputs.map((s) => s.name));
   return nodes.map((n) => {
     if (n.id !== groupId) return n;
+    const params = pruneInputValues(
+      { ...n.data.params, interface: iface },
+      liveNames
+    );
     return refreshNodeSockets({
       ...n,
-      data: { ...n.data, params: { ...n.data.params, interface: iface } },
+      data: { ...n.data, params },
     });
   });
 }
@@ -780,6 +1080,7 @@ export function groupSelection(
   // One input socket per distinct exterior producer endpoint, shared by
   // every selected consumer it feeds (mirrors Blender).
   const inByProducer = new Map<string, GroupSocketSpec>();
+  const inputValues: Record<string, unknown> = {};
   for (const e of incoming) {
     const producerKey = `${e.source} ${e.sourceHandle ?? ""}`;
     let spec = inByProducer.get(producerKey);
@@ -794,6 +1095,12 @@ export function groupSelection(
       spec = { name: uniqueSocketName(base, usedInNames), type };
       inByProducer.set(producerKey, spec);
       inSockets.push(spec);
+      if (parsed && target) {
+        const seed = seedFromConsumerSocket(target, parsed);
+        if (seed !== undefined && !(spec.name in inputValues)) {
+          inputValues[spec.name] = seed;
+        }
+      }
       // Exterior producer → group shell.
       newEdges.push({
         id: newEdgeId(),
@@ -851,6 +1158,9 @@ export function groupSelection(
 
   groupInput.data.params = { sockets: inSockets };
   groupOutput.data.params = { sockets: outSockets };
+  if (Object.keys(inputValues).length > 0) {
+    group.data.params = withInputValues(group.data.params, inputValues);
+  }
 
   const outNodes: GraphNode[] = [
     ...nodes.map((n) =>
@@ -1005,6 +1315,75 @@ function applyBoundarySockets(
     : next;
 }
 
+function writeShellValueToConsumers(
+  nodes: GraphNode[],
+  edges: Edge[],
+  boundaryId: string,
+  socketName: string,
+  value: unknown
+): GraphNode[] {
+  const paramsByNode = new Map<string, string[]>();
+  const channelByNode = new Map<string, string[]>();
+  for (const e of edges) {
+    if (
+      e.source !== boundaryId ||
+      e.sourceHandle !== `out:aux:${socketName}`
+    ) {
+      continue;
+    }
+    const parsed = parseTargetHandleKind(e.targetHandle ?? "");
+    if (!parsed) continue;
+    if (parsed.kind === "param") {
+      const list = paramsByNode.get(e.target);
+      if (list) list.push(parsed.name);
+      else paramsByNode.set(e.target, [parsed.name]);
+    } else if (parsed.kind === "input") {
+      const list = channelByNode.get(e.target);
+      if (list) list.push(parsed.name);
+      else channelByNode.set(e.target, [parsed.name]);
+    }
+  }
+  if (paramsByNode.size === 0 && channelByNode.size === 0) return nodes;
+  return nodes.map((n) => {
+    const names = paramsByNode.get(n.id);
+    const channels = channelByNode.get(n.id);
+    if (!names && !channels) return n;
+    let params = { ...n.data.params };
+    if (names) {
+      for (const p of names) params[p] = value;
+    }
+    if (channels) {
+      const def = getNodeDef(n.data.defType);
+      if (def) {
+        for (const sock of channels) {
+          const row = channelRowForSocket(n, sock);
+          if (!row) continue;
+          const next = setExprChannelValue(def, params, row.name, value);
+          if (next.ok) params = next.params;
+        }
+      }
+    }
+    return { ...n, data: { ...n.data, params } };
+  });
+}
+
+function patchShellInputValues(
+  nodes: GraphNode[],
+  groupId: string | undefined,
+  mut: (iv: Record<string, unknown>) => Record<string, unknown>
+): GraphNode[] {
+  if (!groupId) return nodes;
+  return nodes.map((n) => {
+    if (n.id !== groupId) return n;
+    const prev = readInputValues(n.data.params);
+    const next = mut(prev);
+    if (next === prev) return n;
+    const params = withInputValues(n.data.params, next);
+    if (params === n.data.params) return n;
+    return { ...n, data: { ...n.data, params } };
+  });
+}
+
 export interface VirtualConnection {
   source: string;
   sourceHandle: string | null;
@@ -1034,7 +1413,7 @@ export function connectToVirtualSocket(
   // via resolveAuxOutputs. Single-collect for now — the virtual port
   // only renders while no socket exists.
   if (
-    target.data.defType === ITERATE_TYPE &&
+    isZoneShell(target.data.defType) &&
     conn.targetHandle === `in:${VIRTUAL_SOCKET}`
   ) {
     const type = (sourceSocketType(source, conn.sourceHandle ?? "") ??
@@ -1070,7 +1449,7 @@ export function connectToVirtualSocket(
   // passthrough socket (paired exterior `in:` face + interior aux
   // output) and lands the exterior wire on it.
   if (
-    target.data.defType === ITERATE_INPUT_TYPE &&
+    isZoneInput(target.data.defType) &&
     conn.targetHandle === `in:${VIRTUAL_SOCKET}`
   ) {
     const type = (sourceSocketType(source, conn.sourceHandle ?? "") ??
@@ -1140,23 +1519,47 @@ export function connectToVirtualSocket(
   // input: new group input / passthrough socket minted from the inside.
   if (
     (source.data.defType === GROUP_INPUT_TYPE ||
-      source.data.defType === ITERATE_INPUT_TYPE) &&
+      isZoneInput(source.data.defType)) &&
     conn.sourceHandle === `out:aux:${VIRTUAL_SOCKET}`
   ) {
     const parsed = parseTargetHandleKind(conn.targetHandle ?? "");
     if (!parsed) return null;
-    const type = (targetSocketType(target, conn.targetHandle ?? "") ??
-      "image") as SocketType;
+    const type = targetSocketType(target, conn.targetHandle ?? "");
+    // Don't invent an `image` socket when the far end isn't a real input —
+    // that used to let recipe add_edge store a dead `__virtual__` edge.
+    if (type == null && parsed.kind !== "param") return null;
+    const sockType = (type ?? "image") as SocketType;
     const used = new Set(
       readBoundarySockets(source.data.params).map((s) => s.name)
     );
-    const name = uniqueSocketName(parsed.name, used);
+    // Channel sockets are named `in:<id>` with label = the ch() name;
+    // mint the group input after the label so the interface reads `ink`.
+    const base =
+      parsed.kind === "input"
+        ? target.data.inputs.find((i) => i.name === parsed.name)?.label ||
+          parsed.name
+        : parsed.name;
+    const name = uniqueSocketName(base, used);
     const sockets = [
       ...readBoundarySockets(source.data.params),
-      { name, type },
+      { name, type: sockType },
     ];
+    let nextNodes = applyBoundarySockets(nodes, source, sockets);
+    // Promoted params and widget-typed data sockets (channels): seed the
+    // shell's inputValues from the interior node's current value so flatten
+    // can substitute it as the unwired default without mutating the interior.
+    if (source.data.parentId) {
+      const seed = seedFromConsumerSocket(target, parsed);
+      if (seed !== undefined) {
+        nextNodes = patchShellInputValues(
+          nextNodes,
+          source.data.parentId,
+          (iv) => (name in iv ? iv : { ...iv, [name]: seed })
+        );
+      }
+    }
     return {
-      nodes: applyBoundarySockets(nodes, source, sockets),
+      nodes: nextNodes,
       edges: [
         ...edges,
         {
@@ -1231,7 +1634,16 @@ export function renameGroupSocket(
     return e;
   });
   return {
-    nodes: applyBoundarySockets(nodes, boundary, nextSockets),
+    nodes: applyBoundarySockets(
+      patchShellInputValues(nodes, groupId, (iv) => {
+        if (!(oldName in iv)) return iv;
+        const next = { ...iv, [newName]: iv[oldName] };
+        delete next[oldName];
+        return next;
+      }),
+      boundary,
+      nextSockets
+    ),
     edges: nextEdges,
   };
 }
@@ -1255,6 +1667,25 @@ export function removeGroupSocket(
   if (!sockets.some((s) => s.name === name)) return null;
 
   const isInput = kind === GROUP_INPUT_TYPE;
+  // Write the group knob back onto interior param consumers before
+  // dropping it. Unexpose used to delete only the named key and leave
+  // the interior at its authored default — re-expose then seeded that
+  // default, and any leftover keys were easy to re-bind by position.
+  let nextNodes = nodes;
+  if (isInput && groupId) {
+    const stored = readInputValues(
+      nodes.find((n) => n.id === groupId)?.data.params ?? {}
+    );
+    if (name in stored) {
+      nextNodes = writeShellValueToConsumers(
+        nextNodes,
+        edges,
+        boundaryId,
+        name,
+        stored[name]
+      );
+    }
+  }
   const nextEdges = edges.filter((e) => {
     if (isInput) {
       if (e.source === boundaryId && e.sourceHandle === `out:aux:${name}`) {
@@ -1278,12 +1709,53 @@ export function removeGroupSocket(
     return true;
   });
   return {
-    nodes: applyBoundarySockets(
-      nodes,
-      boundary,
-      sockets.filter((s) => s.name !== name)
+    nodes: patchShellInputValues(
+      applyBoundarySockets(
+        nextNodes,
+        boundary,
+        sockets.filter((s) => s.name !== name)
+      ),
+      groupId,
+      (iv) => {
+        if (!(name in iv)) return iv;
+        const next = { ...iv };
+        delete next[name];
+        return next;
+      }
     ),
     edges: nextEdges,
+  };
+}
+
+// Reorder a socket on a Group Input / Group Output node. Handles are
+// name-addressed, so edges on both faces of the boundary follow the
+// socket without rewriting. Reserved sockets (a layer's `backdrop`)
+// can't be the item being moved; they can still be the drop target,
+// which lets a user socket slide past them. Fixed boundaries refuse.
+export function reorderGroupSockets(
+  nodes: GraphNode[],
+  edges: Edge[],
+  boundaryId: string,
+  fromName: string,
+  toName: string
+): { nodes: GraphNode[]; edges: Edge[] } | null {
+  if (fromName === toName) return null;
+  const boundary = nodes.find((n) => n.id === boundaryId);
+  if (!boundary) return null;
+  const kind = boundary.data.defType;
+  if (kind !== GROUP_INPUT_TYPE && kind !== GROUP_OUTPUT_TYPE) return null;
+  if (isFixedBoundary(boundary.data.params)) return null;
+  if (readReservedSockets(boundary.data.params).includes(fromName)) return null;
+  const sockets = readBoundarySockets(boundary.data.params);
+  const fromIndex = sockets.findIndex((s) => s.name === fromName);
+  const toIndex = sockets.findIndex((s) => s.name === toName);
+  if (fromIndex < 0 || toIndex < 0) return null;
+  const nextSockets = [...sockets];
+  const [moved] = nextSockets.splice(fromIndex, 1);
+  nextSockets.splice(toIndex, 0, moved);
+  return {
+    nodes: applyBoundarySockets(nodes, boundary, nextSockets),
+    edges,
   };
 }
 
@@ -1332,10 +1804,11 @@ export function connectAcrossIterateBoundary(
     ? byId.get(source.data.parentId)
     : undefined;
   if (
-    sShell?.data.defType === ITERATE_TYPE &&
+    sShell &&
+    isZoneShell(sShell.data.defType) &&
     target.id !== sShell.id &&
     target.data.parentId === sShell.data.parentId &&
-    source.data.defType !== ITERATE_INPUT_TYPE
+    !isZoneInput(source.data.defType)
   ) {
     const existingTap = edges.find(
       (e) =>
@@ -1426,7 +1899,7 @@ export function absorbIntoIterateZone(
 ): { nodes: GraphNode[]; edges: Edge[] } | null {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const shell = byId.get(shellId);
-  if (!shell || shell.data.defType !== ITERATE_TYPE) return null;
+  if (!shell || !isZoneShell(shell.data.defType)) return null;
   const scope = shell.data.parentId;
   const root = byId.get(rootId);
   if (!root || root.data.parentId !== scope) return null;
@@ -1435,6 +1908,10 @@ export function absorbIntoIterateZone(
     LAYER_TYPE,
     ITERATE_TYPE,
     ITERATE_INPUT_TYPE,
+    REPEAT_TYPE,
+    REPEAT_INPUT_TYPE,
+    FOREACH_TYPE,
+    FOREACH_INPUT_TYPE,
     GROUP_INPUT_TYPE,
     GROUP_OUTPUT_TYPE,
     "output",
@@ -1604,7 +2081,7 @@ export function reparentNode(
   if (
     t === GROUP_INPUT_TYPE ||
     t === GROUP_OUTPUT_TYPE ||
-    t === ITERATE_INPUT_TYPE
+    isZoneInput(t)
   ) {
     return null;
   }
@@ -1661,6 +2138,196 @@ export function makeIterateNodes(position: { x: number; y: number }): {
     iterate: refreshNodeSockets(iterate),
     iterateInput: refreshNodeSockets(iterateInput),
   };
+}
+
+export function makeRepeatNodes(position: { x: number; y: number }): {
+  repeat: GraphNode;
+  repeatInput: GraphNode;
+} {
+  const repeat = makeInstanceNode(REPEAT_TYPE, {
+    x: position.x + 840,
+    y: position.y,
+  });
+  const repeatInput = makeInstanceNode(REPEAT_INPUT_TYPE, position);
+  repeatInput.data.parentId = repeat.id;
+  repeatInput.data.params = {
+    ...repeatInput.data.params,
+    sockets: [...REPEAT_INPUT_SOCKETS],
+    reserved: REPEAT_INPUT_SOCKETS.map((s) => s.name),
+  };
+  repeat.data.params = {
+    ...repeat.data.params,
+    sockets: [],
+    interface: { inputs: [], outputs: [] } satisfies GroupInterface,
+  };
+  return {
+    repeat: refreshNodeSockets(repeat),
+    repeatInput: refreshNodeSockets(repeatInput),
+  };
+}
+
+export function makeForEachNodes(position: { x: number; y: number }): {
+  foreach: GraphNode;
+  foreachInput: GraphNode;
+} {
+  const foreach = makeInstanceNode(FOREACH_TYPE, {
+    x: position.x + 840,
+    y: position.y,
+  });
+  const foreachInput = makeInstanceNode(FOREACH_INPUT_TYPE, position);
+  foreachInput.data.parentId = foreach.id;
+  foreachInput.data.params = {
+    ...foreachInput.data.params,
+    sockets: [...FOREACH_INPUT_SOCKETS],
+    reserved: FOREACH_INPUT_SOCKETS.map((s) => s.name),
+  };
+  foreach.data.params = {
+    ...foreach.data.params,
+    sockets: [],
+    interface: { inputs: [], outputs: [] } satisfies GroupInterface,
+  };
+  return {
+    foreach: refreshNodeSockets(foreach),
+    foreachInput: refreshNodeSockets(foreachInput),
+  };
+}
+
+// Recipe / edit-group edges name collect, passthrough, and group-boundary
+// sockets that the live editor would mint by wiring the virtual port.
+// Create the named socket if it is missing so a RecipeGraph can use
+// "<id>:in:spline" / "<gi>:aux:ink" without a prior UI gesture. No-op
+// when the handle is already present (or is `__virtual__` — that path
+// goes through connectToVirtualSocket so no edge ever lands on the
+// virtual name).
+export function mintZoneEdgeSockets(
+  nodes: GraphNode[],
+  source: GraphNode,
+  sourceHandle: string,
+  target: GraphNode,
+  targetHandle: string
+): GraphNode[] {
+  if (
+    target.data.defType === FOREACH_TYPE &&
+    targetHandle === "in:geometry"
+  ) {
+    const t = sourceSocketType(source, sourceHandle);
+    if (t === "points" || t === "spline") {
+      return applyForeachGeometryType(nodes, target.id, t);
+    }
+    return nodes;
+  }
+
+  const srcType = (sourceSocketType(source, sourceHandle) ??
+    "image") as SocketType;
+  let next = nodes;
+
+  const mintOn = (
+    nodeId: string,
+    name: string,
+    type: SocketType,
+    skipReserved: boolean
+  ) => {
+    const boundary = next.find((n) => n.id === nodeId);
+    if (!boundary) return;
+    if (skipReserved) {
+      const reserved = new Set(readReservedSockets(boundary.data.params));
+      if (reserved.has(name)) return;
+    }
+    if (isFixedBoundary(boundary.data.params)) return;
+    const sockets = readBoundarySockets(boundary.data.params);
+    if (sockets.some((s) => s.name === name)) return;
+    next = applyBoundarySockets(next, boundary, [...sockets, { name, type }]);
+  };
+
+  if (
+    isZoneShell(target.data.defType) &&
+    targetHandle.startsWith("in:") &&
+    !targetHandle.startsWith("in:param:")
+  ) {
+    const name = targetHandle.slice("in:".length);
+    if (name && name !== VIRTUAL_SOCKET) mintOn(target.id, name, srcType, false);
+  }
+
+  if (
+    isZoneInput(target.data.defType) &&
+    targetHandle.startsWith("in:") &&
+    !targetHandle.startsWith("in:param:")
+  ) {
+    const name = targetHandle.slice("in:".length);
+    if (name && name !== VIRTUAL_SOCKET) mintOn(target.id, name, srcType, true);
+  }
+
+  if (
+    isZoneInput(source.data.defType) &&
+    sourceHandle.startsWith("out:aux:")
+  ) {
+    const name = sourceHandle.slice("out:aux:".length);
+    const tgtType = (targetSocketType(target, targetHandle) ??
+      srcType) as SocketType;
+    if (name && name !== VIRTUAL_SOCKET) {
+      mintOn(source.id, name, tgtType, true);
+    }
+  }
+
+  // Group Input / Group Output: the same named-socket mint the editor
+  // does when wiring the virtual port. Recipe add_edge can then say
+  // `gi:aux:ink → pex:in:ink` without a prior UI gesture (and without
+  // leaving a dead edge on `__virtual__`).
+  if (
+    source.data.defType === GROUP_INPUT_TYPE &&
+    sourceHandle.startsWith("out:aux:")
+  ) {
+    const name = sourceHandle.slice("out:aux:".length);
+    const tgtType = (targetSocketType(target, targetHandle) ??
+      srcType) as SocketType;
+    if (name && name !== VIRTUAL_SOCKET) {
+      mintOn(source.id, name, tgtType, true);
+    }
+  }
+
+  if (
+    target.data.defType === GROUP_OUTPUT_TYPE &&
+    targetHandle.startsWith("in:") &&
+    !targetHandle.startsWith("in:param:")
+  ) {
+    const name = targetHandle.slice("in:".length);
+    if (name && name !== VIRTUAL_SOCKET) mintOn(target.id, name, srcType, false);
+  }
+
+  return next;
+}
+
+export function applyForeachGeometryType(
+  nodes: GraphNode[],
+  shellId: string,
+  srcType: string
+): GraphNode[] {
+  const domain = srcType === "points" ? "points" : "subpaths";
+  const elementType = domain === "points" ? "points" : "spline";
+  return nodes.map((n) => {
+    if (n.id === shellId) {
+      return refreshNodeSockets({
+        ...n,
+        data: { ...n.data, params: { ...n.data.params, domain } },
+      });
+    }
+    if (
+      n.data.defType === FOREACH_INPUT_TYPE &&
+      n.data.parentId === shellId
+    ) {
+      const sockets = readBoundarySockets(n.data.params).map((s) =>
+        s.name === "element" ? { ...s, type: elementType } : s
+      );
+      return refreshNodeSockets({
+        ...n,
+        data: {
+          ...n.data,
+          params: { ...n.data.params, domain, sockets },
+        },
+      });
+    }
+    return n;
+  });
 }
 
 // --- layers -----------------------------------------------------------------
@@ -1828,70 +2495,135 @@ export function createLayer(
   };
 }
 
-// Fresh-project scaffold: Output + "Layer 1" with the familiar starter
-// chain (Image Source → Bloom) inside, wired to the layer's Group
-// Output. The editor opens inside the layer so a new project feels
-// exactly like the pre-layers app.
+// Where insert_recipe / commitRecipeFragment should parent the new group.
+// `requested` is the tool's `scope` argument:
+//   omit     → current editor scope (or a new layer if there isn't one)
+//   "root"   → wrap in a fresh composition layer
+//   "parent" → the current scope's parent (sibling of the group you're in)
+//   an id    → that layer / node-group / Repeat / For Each
+// `parentId: null` means "wrap in a new layer".
+export function resolveInsertParent(
+  requested: string | undefined,
+  currentScopeId: string | undefined,
+  nodes: GraphNode[]
+): { ok: true; parentId: string | null } | { ok: false; reason: string } {
+  const req = requested?.trim() || undefined;
+  const current = currentScopeId
+    ? nodes.find((n) => n.id === currentScopeId)
+    : undefined;
+
+  const asParent = (
+    id: string | undefined
+  ): { ok: true; parentId: string | null } | { ok: false; reason: string } => {
+    if (!id) return { ok: true, parentId: null };
+    const node = nodes.find((n) => n.id === id);
+    if (!node) {
+      return { ok: false, reason: `scope "${id}" is not a node in the graph.` };
+    }
+    const t = node.data.defType;
+    if (t !== GROUP_TYPE && t !== LAYER_TYPE && !isZoneShell(t)) {
+      return {
+        ok: false,
+        reason: `scope "${id}" is a ${t} — pass a layer, node-group, Repeat/For Each id, "parent", or "root".`,
+      };
+    }
+    return { ok: true, parentId: id };
+  };
+
+  if (req === "root") return { ok: true, parentId: null };
+  if (req === "parent") return asParent(current?.data.parentId);
+  if (req) return asParent(req);
+  if (current) return { ok: true, parentId: current.id };
+  return { ok: true, parentId: null };
+}
+
+// Wire a node-group's aux outputs into the enclosing layer/group's Output
+// boundary. Used by insert_recipe so a group dropped into an empty layer
+// actually renders (groups have no primary — the image lives on aux:<name>).
+// Occupied sockets are left alone unless `replaceOccupied` is set, in which
+// case the existing wire is dropped and the new group takes the socket.
+export function connectGroupToEmptyScopeOutput(
+  nodes: GraphNode[],
+  edges: Edge[],
+  groupId: string,
+  scopeId: string,
+  opts?: { replaceOccupied?: boolean }
+): {
+  edges: Edge[];
+  wired: { from: string; to: string }[];
+  skippedOccupied: { socket: string }[];
+} {
+  const group = nodes.find((n) => n.id === groupId);
+  const output = nodes.find(
+    (n) =>
+      n.data.parentId === scopeId && n.data.defType === GROUP_OUTPUT_TYPE
+  );
+  if (!group || group.data.defType !== GROUP_TYPE || !output) {
+    return { edges, wired: [], skippedOccupied: [] };
+  }
+  const groupOuts = readGroupInterface(group.data.params).outputs;
+  if (groupOuts.length === 0) return { edges, wired: [], skippedOccupied: [] };
+  const scopeSocks = resolveOutputBoundarySockets(output.data.params).filter(
+    (s) => s.name !== VIRTUAL_SOCKET
+  );
+  let next = [...edges];
+  const wired: { from: string; to: string }[] = [];
+  const skippedOccupied: { socket: string }[] = [];
+  const replace = opts?.replaceOccupied === true;
+  for (const sock of scopeSocks) {
+    const occupied = next.some(
+      (e) => e.target === output.id && e.targetHandle === `in:${sock.name}`
+    );
+    const named = groupOuts.find(
+      (o) => o.name === sock.name && o.type === sock.type
+    );
+    const pick = named ?? groupOuts.find((o) => o.type === sock.type);
+    if (!pick) continue;
+    if (occupied) {
+      if (!replace) {
+        skippedOccupied.push({ socket: sock.name });
+        continue;
+      }
+      next = next.filter(
+        (e) => !(e.target === output.id && e.targetHandle === `in:${sock.name}`)
+      );
+    }
+    next.push({
+      id: newEdgeId(),
+      source: groupId,
+      sourceHandle: `out:aux:${pick.name}`,
+      target: output.id,
+      targetHandle: `in:${sock.name}`,
+    });
+    wired.push({
+      from: `${groupId}:aux:${pick.name}`,
+      to: `${output.id}:in:${sock.name}`,
+    });
+  }
+  return { edges: next, wired, skippedOccupied };
+}
+
+// Fresh-project scaffold: Output + "Layer 1" with only Group Input /
+// Group Output inside. The editor opens inside the layer so a new
+// project is a blank in→out graph.
 export function buildStarterGraph(): {
   nodes: GraphNode[];
   edges: Edge[];
   layerId: string;
   compositionId: string;
 } {
-  const output = makeInstanceNode("output", { x: 640, y: 120 });
-  const { layer, groupInput, groupOutput } = makeLayerNodes("Layer 1", {
-    x: 340,
-    y: 120,
-  });
-  const imageSrc = makeInstanceNode("image-source", { x: 40, y: 80 });
-  const bloom = makeInstanceNode("bloom", { x: 340, y: 80 });
-  imageSrc.data.parentId = layer.id;
-  bloom.data.parentId = layer.id;
-  groupInput.position = { x: -260, y: 80 };
-  groupOutput.position = { x: 640, y: 80 };
-
-  const edges: Edge[] = [
-    {
-      id: newEdgeId(),
-      source: imageSrc.id,
-      sourceHandle: "out:primary",
-      target: bloom.id,
-      targetHandle: "in:image",
-    },
-    {
-      id: newEdgeId(),
-      source: bloom.id,
-      sourceHandle: "out:primary",
-      target: groupOutput.id,
-      targetHandle: "in:image",
-    },
-    {
-      id: newEdgeId(),
-      source: layer.id,
-      sourceHandle: "out:primary",
-      target: output.id,
-      targetHandle: "in:image",
-    },
-  ];
-  // Tag the whole starter graph into one fresh composition so a brand-new
+  // Tag the empty graph into one fresh composition so a brand-new
   // project carries stable composition ids before its first save (v5).
   const compositionId = newCompositionId();
-  const nodes = [output, layer, groupInput, groupOutput, imageSrc, bloom];
-  for (const n of nodes) n.data.compositionId = compositionId;
-  return {
-    nodes,
-    edges,
-    layerId: layer.id,
-    compositionId,
-  };
+  const empty = buildEmptyComposition(compositionId);
+  return { ...empty, compositionId };
 }
 
 // --- compositions (v5) ------------------------------------------------------
 
-// Build the graph for a brand-new (user-created) composition: an Output fed
-// by one empty "Layer 1". Unlike buildStarterGraph it carries no demo
-// content — a fresh comp is a clean slate. All nodes are tagged into the
-// given composition id.
+// Build the graph for a brand-new composition: an Output fed by one
+// empty "Layer 1" (Group Input / Group Output only). Same shape as
+// buildStarterGraph. All nodes are tagged into the given composition id.
 export function buildEmptyComposition(compositionId: string): {
   nodes: GraphNode[];
   edges: Edge[];

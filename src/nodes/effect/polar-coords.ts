@@ -88,6 +88,15 @@ export const polarCoordsNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Map an image between rectangular and polar coordinates. Rect ⇒ Polar wraps the source around the center (kaleidoscope / tunnel looks); Polar ⇒ Rect unrolls a circular source into a strip. Center, rotation, and radial scale set the pivot and orientation.",
+  facts: {
+    space: { "param:center_x": "uv01", "param:center_y": "uv01" },
+    gotchas: [
+      "center_x/center_y are per-axis UV fractions (not aspect-corrected); radius = length(v_uv − center) mixes both axes with no aspect term, so circles skew into ellipses on non-square canvases.",
+      "mode=rect-to-polar reads the source as (angle=x·2π, radius=y) and paints the resulting disc; mode=polar-to-rect is the inverse unroll, not a simple parameter swap.",
+      "wrap=transparent leaves out-of-range samples as alpha 0; clamp clamps UV to [0,1]; mirror reflects with abs(fract(uv*0.5)*2−1), a full mirror-tile rather than one flip.",
+      "rotation is in radians and offsets the angle axis directly, independent of scale_radius.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

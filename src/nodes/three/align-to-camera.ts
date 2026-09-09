@@ -43,6 +43,13 @@ export const alignToCamera3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Turns every copy in an instance stream to face the camera (billboarding), applied live at render time. Leave the camera input empty to face whichever camera is looking — including the orbit viewport — or wire a specific Camera to lock to it. Y-locked mode only spins around the vertical (trees/characters).",
+  facts: {
+    gotchas: [
+      "Sets only an instances billboard marker; positions/scales/colors pass through untouched and Realize Instances ignores it - orientation is applied purely at render time.",
+      "baseQuats snapshots quaternions at this node; an Instance Transform placed after still composes its rotation delta on top of the billboard (Z-spin spins the card in-view-plane).",
+      "face=z points a copy's local +Z at the camera (a Plane's front side); face=y points +Y instead (Copy to Points' align-to-normal axis).",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [

@@ -338,6 +338,15 @@ export const mathNode: NodeDefinition = {
   category: "utility",
   description:
     "Scalar math: arithmetic, comparison, rounding, trig, and conversion. Each input can be a connected scalar or a value typed in the panel.",
+  facts: {
+    space: { out: ["unitless", "raster", "canvas01"] },
+    gotchas: [
+      "Output type follows priority: any scalar_field wired into a/b/c compiles the op into a downstream SDF field expression, else mode=uv runs a per-pixel shader, else it's a plain scalar.",
+      "In mode=uv, Logarithm, Smooth Minimum/Maximum, Wrap, and Arctan2 are not implemented in the shader and silently pass through input A unchanged.",
+      "clamp clamps the result to [0,1] in scalar, uv, and field modes (the field AST wraps the expression in its own clamp node).",
+      "Which of B/C sockets appear depends on the operation (INPUT_COUNT): e.g. Wrap needs Value/Min/Max, Snap needs Value/Increment.",
+    ],
+  },
   backend: "webgl2",
   // Scalar math has no GL work and no per-frame state — cache-safe.
   stable: true,

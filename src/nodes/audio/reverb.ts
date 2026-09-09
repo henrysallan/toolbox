@@ -17,6 +17,13 @@ export const audioReverbNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Adds room or hall ambience with a deterministic convolution reverb. Decay sets how long the tail rings out; pre-delay separates the dry sound from the onset of the reverb.",
+  facts: {
+    gotchas: [
+      "Impulse response is generated from seeded noise, never Tone.Reverb's unseeded randomness, so exports render byte-identically run to run; IRs are cached per (decay, pre_delay, sample rate).",
+      "Element taps downstream (audio-to-scalar, Audio Bands) read the pre-reverb element signal, not the wet output, until true post-stage taps land.",
+      "decay is the tail length in seconds (0.1..20); pre_delay (0..0.5s) gaps the dry onset from the reverb start, it does not shorten the tail.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "audio", type: "audio", required: true, label: "Audio" }],

@@ -38,6 +38,14 @@ export const lfoNode: NodeDefinition = {
   category: "utility",
   description:
     "Periodic scalar oscillator — sine, triangle, sawtooth, or square. Frequency is in Hz, phase is in cycles. Output rides in [-amplitude, +amplitude] + offset.",
+  facts: {
+    reads: ["time"],
+    gotchas: [
+      "frequency, phase, amplitude, and offset each take the wired scalar input over their same-named param when connected.",
+      "phase wraps via ((time*frequency+phase)%1+1)%1, so negative frequency or phase still produce a valid, non-jumping phase.",
+      "square is a hard step: +1 for phase<0.5, -1 otherwise, with no smoothing at the transition.",
+    ],
+  },
   backend: "webgl2",
   stable: false,
   inputs: [

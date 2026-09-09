@@ -209,6 +209,16 @@ export const bgRemoveNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Remove the background from an image or video. RMBG (still) runs BRIA's model locally via Transformers.js — Bake captures the upstream frame + alpha once. RVM (video) runs PeterLin's Robust Video Matting ONNX in the browser; Bake walks an in/out range and recycles the model's recurrent states so the matte stays temporally consistent. Live `feather` / `threshold` tweak the edge without a re-bake. RVM bakes are session-only (reopen → re-bake). Outputs the cutout (primary) plus the mask as both a typed mask aux and a grayscale image aux.",
+  facts: {
+    space: { "param:feather": "uv01" },
+    reads: ["time"],
+    gotchas: [
+      "compute() never runs ML inference; RMBG/RVM only run via the Bake button in the custom param panel. feather/threshold are the only per-frame live params.",
+      "feather is a 9-tap blur offset scaled by the mask's OWN resolution (u_invMask), not canvas resolution, so a downsampled RVM mask blurs more per canvas pixel than a full-res one.",
+      "Passthrough (no bake yet, or a missing bitmap) fills the mask and mask_image aux to opaque white, meaning everything reads as foreground.",
+      "threshold's edge sharpness is not linear: the smoothing knee is WIDEST (softest edge) at threshold=0.5 and narrows toward a hard cutoff near 0.1 or 0.9.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

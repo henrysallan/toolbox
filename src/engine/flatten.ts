@@ -30,7 +30,14 @@
 // Resolution iterates, so chains across nested groups, stacked layers,
 // and pure passthroughs collapse to their endpoints. An unwired
 // boundary socket simply drops the edge — the consumer falls back to
-// its socket default, same as being unwired.
+// its socket default, same as being unwired. Exception: a group input
+// wired to an interior `in:param:` whose shell holds
+// `params.inputValues[name]` patches that value onto the consumer: an
+// interior `in:param:` writes the consumer's params; a widget-typed
+// `in:` (scalar/vec4/color/…) lands as `inputOverrides` the evaluator
+// injects as the unwired socket value. Lookup is by socket *name*,
+// never by list position — unexpose/reorder must not slide a sibling's
+// value onto a different knob.
 //
 // Node objects pass through by reference (no copies), so param
 // identity — which the eval cache fingerprints depend on — is
@@ -48,13 +55,15 @@ import {
   GROUP_OUTPUT_TYPE,
   GROUP_TYPE,
   ITERATE_EDGE_PREFIX,
-  ITERATE_INPUT_TYPE,
   ITERATE_PARAM_PREFIX,
   ITERATE_PASSTHROUGH_PREFIX,
-  ITERATE_TYPE,
   LAYER_TYPE,
+  isZoneInput,
+  isGroupInputWidgetType,
+  isZoneShell,
   readBoundarySockets,
   readGroupInterface,
+  readInputValues,
 } from "./groups";
 import { parseTargetHandleKind, REROUTE_TYPE } from "./graph-helpers";
 
@@ -179,23 +188,22 @@ export interface FlattenResult {
   // Surviving node id → nearest enclosing layer node id. Only nodes
   // inside a layer have entries.
   layerOf: Map<string, string>;
-  // Iterate shell id → its interior subgraph (boundary nodes included),
-  // removed wholesale from the flat graph. The evaluator stashes these
-  // on ctx for the shells' computes (nested evaluation) and folds an
-  // interior hash into each shell's fingerprint. Absent when the graph
-  // has no Iterate nodes. See specdocs/archive/071826_iterate-node.md.
+  // Zone shell id (Iterate / Repeat / For Each) → its interior subgraph
+  // (boundary nodes included), removed wholesale from the flat graph.
+  // Nearest shell wins, so a For Each nested inside a Repeat keeps its
+  // own members; the For Each shell itself lives in the Repeat interior.
+  // The evaluator stashes these on ctx for the shells' computes.
   iterateInteriors?: Map<string, { nodes: GraphNode[]; edges: GraphEdge[] }>;
 }
 
 const EMPTY_LAYER_OF: Map<string, string> = new Map();
 
-// Remove every Iterate interior from the graph, returning the reduced
-// arrays plus the per-shell interior subgraphs. Interiors are identified
-// by parentId chain: any node whose chain reaches an ITERATE_TYPE shell
-// PRESENT in `nodes` belongs to that (nearest) shell. A nested Iterate's
-// shell is itself interior to the outer one — its own interior lands in
-// the outer shell's subgraph too (the shell's compute rejects nested
-// runs; see the iterate def).
+// Remove every zone interior (Iterate / Repeat / For Each) from the
+// graph, returning the reduced arrays plus the per-shell interior
+// subgraphs. Interiors are identified by parentId chain: any node whose
+// chain reaches a zone shell PRESENT in `nodes` belongs to that
+// (nearest) shell. A nested zone's shell is itself interior to the
+// outer one; the inner members stay on the inner shell.
 function extractIterateInteriors(
   nodes: GraphNode[],
   edges: GraphEdge[]
@@ -206,7 +214,7 @@ function extractIterateInteriors(
 } | null {
   let hasIterate = false;
   for (const n of nodes) {
-    if (n.type === ITERATE_TYPE) {
+    if (isZoneShell(n.type)) {
       hasIterate = true;
       break;
     }
@@ -221,7 +229,7 @@ function extractIterateInteriors(
     for (let hops = 0; cur && hops < nodes.length; hops++) {
       const p = byId.get(cur);
       if (!p) break;
-      if (p.type === ITERATE_TYPE) {
+      if (isZoneShell(p.type)) {
         shellOf.set(n.id, p.id);
         break;
       }
@@ -256,10 +264,13 @@ function extractIterateInteriors(
       outEdges.push(e);
     } else if (s && s === t) {
       interior(s).edges.push(e);
-    } else if (s && !t && e.target === s) {
+    } else if (s && e.target === s) {
       // Collect tap: member → its own shell's minted input. Lives in
       // the interior record — the shell's compute resolves the producer
       // from it; the outer graph never sees it (its source is gone).
+      // `!t` is deliberately not required: a nested shell (For Each
+      // inside Repeat) is itself a member of the outer zone, so `t` is
+      // the outer shell id — still a tap for `s`.
       interior(s).edges.push(e);
     } else if (!s && t) {
       // Exterior → member. Legal only onto the Iteration Input's
@@ -272,7 +283,7 @@ function extractIterateInteriors(
       // shell's compute. Anything else is mangled data — dropped.
       const target = byId.get(e.target);
       const parsed = parseTargetHandleKind(e.targetHandle);
-      if (target?.type === ITERATE_INPUT_TYPE && target.parentId === t) {
+      if (target && isZoneInput(target.type) && target.parentId === t) {
         if (parsed?.kind === "input") {
           outEdges.push({
             ...e,
@@ -298,6 +309,39 @@ function extractIterateInteriors(
           targetHandle: `in:${ITERATE_EDGE_PREFIX}${e.id}`,
         });
         interior(t).edges.push(e);
+      }
+    } else if (s && t && s !== t) {
+      // Nested zones: a member of the outer zone wires into a member of
+      // an inner zone whose shell lives in the outer interior. Same
+      // reroute as exterior→member, except the mirrored edge lands in
+      // the outer interior (both endpoints live there) rather than the
+      // true outer graph.
+      const innerShell = byId.get(t);
+      if (innerShell?.parentId === s) {
+        const target = byId.get(e.target);
+        const parsed = parseTargetHandleKind(e.targetHandle);
+        if (target && isZoneInput(target.type) && target.parentId === t) {
+          if (parsed?.kind === "input") {
+            interior(s).edges.push({
+              ...e,
+              target: t,
+              targetHandle: `in:${ITERATE_PASSTHROUGH_PREFIX}${parsed.name}`,
+            });
+          } else if (parsed?.kind === "param") {
+            interior(s).edges.push({
+              ...e,
+              target: t,
+              targetHandle: `in:${ITERATE_PARAM_PREFIX}${parsed.name}`,
+            });
+          }
+        } else if (parsed) {
+          interior(s).edges.push({
+            ...e,
+            target: t,
+            targetHandle: `in:${ITERATE_EDGE_PREFIX}${e.id}`,
+          });
+          interior(t).edges.push(e);
+        }
       }
     }
     // Remaining case (member → exterior, not a tap): a PENDING iteration
@@ -445,6 +489,37 @@ export function flattenGraph(
 
   const outNodes = nodes.filter((n) => !isDissolvedType(n.type));
   const outEdges: GraphEdge[] = [];
+  // Consumer id → param / inputOverrides patches from unwired group defaults.
+  const inputValuePatches = new Map<string, Record<string, unknown>>();
+  const inputOverridePatches = new Map<string, Record<string, unknown>>();
+  const applyUnwiredInputDefault = (e: GraphEdge) => {
+    const src = byId.get(e.source);
+    if (src?.type !== GROUP_INPUT_TYPE || !src.parentId) return;
+    const parsed = parseTargetHandleKind(e.targetHandle);
+    if (!parsed) return;
+    const sock = auxName(e.sourceHandle);
+    if (!sock) return;
+    const shell = byId.get(src.parentId);
+    if (!shell) return;
+    const values = readInputValues(shell.params);
+    if (!(sock in values)) return;
+    if (parsed.kind === "param") {
+      const prev = inputValuePatches.get(e.target);
+      inputValuePatches.set(e.target, {
+        ...(prev ?? {}),
+        [parsed.name]: values[sock],
+      });
+      return;
+    }
+    if (parsed.kind !== "input") return;
+    const spec = readBoundarySockets(src.params).find((s) => s.name === sock);
+    if (!isGroupInputWidgetType(spec?.type)) return;
+    const prev = inputOverridePatches.get(e.target);
+    inputOverridePatches.set(e.target, {
+      ...(prev ?? {}),
+      [parsed.name]: values[sock],
+    });
+  };
   for (const e of edges) {
     const target = byId.get(e.target);
     if (target && isDissolvedType(target.type)) {
@@ -484,7 +559,10 @@ export function flattenGraph(
       continue;
     }
     const resolved = resolveSource(e.source, e.sourceHandle);
-    if (!resolved) continue;
+    if (!resolved) {
+      applyUnwiredInputDefault(e);
+      continue;
+    }
     // Keep the consumer edge's id — each consumer edge maps to at most
     // one flattened edge, so ids stay unique.
     outEdges.push({
@@ -494,11 +572,25 @@ export function flattenGraph(
     });
   }
 
+  const patchedNodes =
+    inputValuePatches.size === 0 && inputOverridePatches.size === 0
+      ? outNodes
+      : outNodes.map((n) => {
+          const paramPatch = inputValuePatches.get(n.id);
+          const inputPatch = inputOverridePatches.get(n.id);
+          if (!paramPatch && !inputPatch) return n;
+          return {
+            ...n,
+            ...(paramPatch ? { params: { ...n.params, ...paramPatch } } : {}),
+            ...(inputPatch ? { inputOverrides: inputPatch } : {}),
+          };
+        });
+
   // Nearest enclosing layer per surviving node, via the original
   // parentId chains (group shells in the chain are dissolved but still
   // looked up in the original byId).
   const layerOf = new Map<string, string>();
-  for (const n of outNodes) {
+  for (const n of patchedNodes) {
     let cur = n.parentId;
     for (let hops = 0; cur && hops < nodes.length; hops++) {
       const p = byId.get(cur);
@@ -511,7 +603,7 @@ export function flattenGraph(
     }
   }
 
-  return { nodes: outNodes, edges: outEdges, layerOf, iterateInteriors };
+  return { nodes: patchedNodes, edges: outEdges, layerOf, iterateInteriors };
 }
 
 // Pick which output socket of a group to preview: the first image/mask-typed

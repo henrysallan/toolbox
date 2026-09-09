@@ -22,9 +22,10 @@ import type {
 // Input-variable helpers (also imported by the editor's `+`-button handler).
 // ---------------------------------------------------------------------------
 
-export function newExprInputId(): string {
-  return `ein-${Math.random().toString(36).slice(2, 8)}`;
-}
+// Id minting lives engine-side now (expr-channels.ts) so the recipe builder
+// and panel don't reach into nodes/ for it; re-exported for existing importers.
+export { newExprInputId } from "@/engine/expr-channels";
+import { newExprInputId } from "@/engine/expr-channels";
 
 // Variable-name auto-fill order. After these we fall back to in1, in2, …
 const NAME_ORDER = ["x", "y", "z", "w", "a", "b", "c", "d", "e", "f"];
@@ -256,6 +257,18 @@ export const expressionNode: NodeDefinition = {
     "nodes. Each input socket is a named variable (x, y, z…); the + adds " +
     "more. Outputs a scalar or vector. Globals: t, frame, PI, TAU, sin, " +
     "cos, clamp, lerp, smoothstep, random, and the rest of Math.",
+  facts: {
+    space: { out: "unitless" },
+    reads: ["time"],
+    gotchas: [
+      "Recompute is gated on the source text: only expressions mentioning t, time, frame, or random (word-boundary) bust the cache every frame; others evaluate once and cache as a constant.",
+      "random() is deterministic per node and frame (mulberry32 seeded from hash(nodeId) XOR frame), so re-evaluating the same frame gives the same sequence.",
+      "Every input socket is scalar; connecting image/mask/audio relies on the engine's universal coercion to a representative scalar, not on any per-socket logic here.",
+      "An unconnected input falls back to that variable's own `default` field (from the Inputs list, itself defaulting to 1), not to 0.",
+      "A compile error or an empty expression outputs a zero shaped by out_type; the error text only surfaces via a one-time console.warn, not in the graph UI.",
+      "out_type picks scalar vs vec2/3/4; a scalar result broadcasts to every vector component, an array result fills components in order and pads missing ones with 0.",
+    ],
+  },
   backend: "webgl2",
   // Pure CPU eval with no GL work. fingerprintExtras folds in ctx.time only
   // when the source is time-dependent, so static expressions cache as

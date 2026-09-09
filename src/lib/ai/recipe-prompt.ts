@@ -168,11 +168,12 @@ export const EDIT_RECIPE_TOOL: Anthropic.Tool = {
         items: {
           type: "object",
           description:
-            "One op. Include only the fields for its kind: " +
-            "set_param{node,param,value} · add_node{id,type,params?} · " +
-            "remove_node{node} · add_edge{from,to} · remove_edge{from,to} · " +
-            "expose_param{node,param,label?} · unexpose_param{node,param} · " +
-            "rename_node{node,name}.",
+            "One op. Flat JSON with \"op\" plus fields, e.g. " +
+            '{"op": "set_param", "node": "<id>", "param": "count", "value": 12}. ' +
+            "Kinds: set_param (node, param, value) · add_node (id, type, params?) · " +
+            "remove_node (node) · add_edge (from, to) · remove_edge (from, to) · " +
+            "expose_param (node, param, label?) · unexpose_param (node, param) · " +
+            "rename_node (node, name). Nested {set_param: {...}} is rejected.",
           required: ["op"],
           properties: {
             op: {
@@ -217,8 +218,8 @@ Rules:
 - Reference existing nodes by their \`id\` exactly as given. Only \`add_node\` introduces a new node (give it a fresh local id you then wire with edges).
 - Use only node \`type\` strings from the catalog. Wire compatible socket types (coercions: mask↔image, spline→mask, scalar→vec2/3/4/uv, image→uv (R/G read as per-pixel coordinates — noise into a UV input = domain warp), image/mask→scalar, audio→scalar, image↔element; otherwise exact).
 - Only set params marked settable; respect ranges/enum options. A param listed under \`keyframed\` is animated — changing its static value won't take effect, so don't. Exception: a Merge node's \`layers\` accepts [{mode, opacity}, …] (ids are preserved by index — existing wires survive). Merge inputs are also addressable ordinally ("<id>:in:layer2" grows the stack); dynamic nodes list their REAL resolved sockets under \`inputs\`.
-- The group's boundary (its inputs/outputs) is reachable for wiring via \`interface.inputNodeId\` / \`interface.outputNodeId\`, but you may not retune or delete boundary/structural nodes.
-- To surface a param as a knob on the group, use \`expose_param\` (give a short \`label\`); \`unexpose_param\` removes it. Only params with a socket type (scalar/vec/color/boolean) can be exposed.
+- The group's Input/Output boundary is reachable for wiring via \`interface.inputNodeId\` / \`interface.outputNodeId\`, but you may not retune or delete those boundary nodes. Nested node-groups inside the scope ARE removable (\`remove_node\`); the interior goes with the shell. The group/layer being edited cannot delete itself — to replace it, \`edit_group\` its parent (the layer) and remove_node it there.
+- To surface a param as a knob on the group, use \`expose_param\` (give a short \`label\`); \`unexpose_param\` removes it. Only params with a socket type (scalar/vec/color/boolean) can be exposed. Expression \`ch()\` channels are exposable the same way (\`expose_param\` with the channel name), or by \`add_edge\` from \`interface.inputNodeId:aux:<name>\` to \`<node>:in:<channel>\` — that mints the group input. Do not leave an edge on \`aux:__virtual__\`.
 - Keep the change minimal and the graph acyclic. Respond by calling edit_recipe exactly once.`;
 
 export function buildEditSystem(catalogDsl: string) {

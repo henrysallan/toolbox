@@ -56,6 +56,14 @@ export const posterizeNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Quantize the image to a small number of tonal levels for a flat, screen-print / cel-shaded look. Per-channel (rgb) or brightness-only (luma, preserves hue).",
+  facts: {
+    gotchas: [
+      "quant() snaps to L evenly spaced values inclusive of both endpoints, in de-gamma'd space (pow(x, 1/gamma)) then re-gamma'd back on output.",
+      "channels=luma quantizes brightness only and rescales rgb by ql/l to preserve hue; near-black pixels (l<1e-4) rescale to pure black instead of dividing by ~0.",
+      "levels is floored to at least 2 and gamma to at least 0.001 even if a wired value goes lower.",
+      "alpha passes through unchanged; channels=rgb quantizes r/g/b independently, which can shift hue near band edges unlike luma mode.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

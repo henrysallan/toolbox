@@ -59,6 +59,17 @@ function KindIcon({ kind }: { kind: PanelKind }) {
       </svg>
     );
   }
+  if (kind === "assets") {
+    // Four asset cards in a grid (090326_asset-library.md).
+    return (
+      <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden>
+        <rect x={1} y={1} width={4.2} height={4.2} rx={0.8} {...common} />
+        <rect x={6.8} y={1} width={4.2} height={4.2} rx={0.8} {...common} />
+        <rect x={1} y={6.8} width={4.2} height={4.2} rx={0.8} {...common} />
+        <rect x={6.8} y={6.8} width={4.2} height={4.2} rx={0.8} {...common} />
+      </svg>
+    );
+  }
   if (kind === "assistant") {
     // The four-point sparkle used everywhere else the assistant appears.
     return (

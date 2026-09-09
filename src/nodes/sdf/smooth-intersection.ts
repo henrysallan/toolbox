@@ -17,6 +17,13 @@ export const sdfSmoothIntersectionNode: NodeDefinition = {
   category: "utility",
   description:
     "Smooth intersection of two SDFs. Smoothness rounds the corners where boundaries meet — same as Smooth Union, but for intersection (max).",
+  facts: {
+    space: { "in:smoothness": "canvas01", "param:smoothness": "canvas01" },
+    gotchas: [
+      "smoothness is a canvas-UV distance compared directly against the signed distance (same units as a shape's radius); 0 degenerates to a plain max intersection.",
+      "An unwired A or B is treated as the empty sentinel (distance 1e10), so the smooth max collapses to 1e10 too: the result is empty, not a passthrough of the wired side.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

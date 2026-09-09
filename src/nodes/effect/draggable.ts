@@ -122,6 +122,15 @@ export const draggableNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Make a shape grabbable: wire the shape's mask into handle, its offset output into a Transform translate on the same shape, and the shape drags by hand — editor and exported apps alike. The hit test follows the moved shape with no feedback cycle (it samples the un-translated mask at cursor − offset). Aux: held / hover / press / click. Reset input snaps back to rest.",
+  facts: {
+    space: { out: "canvas01", "param:slop": "pixels" },
+    gotchas: [
+      "The vec2 offset output is canvas01 authored units, exactly what Transform's translate param expects; it is not raw canvas UV or a pixel offset.",
+      "handle unwired means the region sampler always returns null, so press/hover never registers and the shape can never be grabbed.",
+      "slop is pixels of on-screen travel; a release within slop of the press fires click, otherwise it's a drag release with no click pulse.",
+      "The hit test samples the UN-translated handle mask offset by the PREVIOUS eval's total offset, so hover tracking during a live drag lags one eval behind.",
+    ],
+  },
   backend: "webgl2",
   // Live pointer + accumulated offset + readback — recompute every eval.
   stable: false,

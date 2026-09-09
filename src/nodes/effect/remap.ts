@@ -53,6 +53,15 @@ export const remapNode: NodeDefinition = {
   category: "utility",
   description:
     "Remap an input from [in_min, in_max] to [out_min, out_max]. Mode chooses between Scalar (CPU value) and Image (per-pixel shader) for the primary path. The Input Field socket + Field output are always available — wire a scalar_field in to get a remapped scalar_field out, inlined into the SDF shader.",
+  facts: {
+    space: { out: "in:input" },
+    gotchas: [
+      "mode=scalar and mode=image are mutually exclusive on the primary socket; the Input Field input and Field aux output stay active regardless of mode.",
+      "With nothing wired to Input Field, the field output falls back to wrapping the scalar input as a constant field (or 0 if neither is wired), never left empty.",
+      "clamp only clamps the normalized t to 0..1 before scaling; off, values outside in_min..in_max extrapolate past out_min/out_max instead of holding.",
+      "in_max minus in_min is floored at 1e-6, so equal in_min/in_max doesn't divide by zero but pins the result near out_max instead of erroring.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "input", type: "scalar", required: true },

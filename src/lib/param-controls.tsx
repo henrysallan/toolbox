@@ -36,7 +36,12 @@ import {
 import { evalNumExpr } from "@/lib/num-expr";
 import { newExprInput } from "@/nodes/effect/expression";
 import { newWedgeValueId, WEDGE_TYPE_DEFAULTS } from "@/nodes/source/wedge";
-import { syncChannelInputs } from "@/nodes/effect/point-expression";
+import {
+  channelKind,
+  channelParamDef,
+  channelRangeOverride,
+  syncChannelInputs,
+} from "@/engine/expr-channels";
 import {
   animatedValueAt,
   gpointCKey,
@@ -2477,7 +2482,9 @@ export function ParamControl({
     return (
       <Dropdown
         value={current}
-        options={options}
+        options={options.map((o) =>
+          param.optionLabels?.[o] ? { value: o, label: param.optionLabels[o] } : o
+        )}
         onChange={(v) => onChange(v)}
       />
     );
@@ -2529,46 +2536,19 @@ export function ParamControl({
       fontFamily: "inherit",
       flexShrink: 0,
     };
-    // Point Expression channels render as the standard scalar slider / enum
-    // dropdown. `channelDef` is the INFERRED base range (the "reset" fallback,
-    // derived from the default); an explicit range from ch(…, min, max) or the
-    // right-click editor rides on top as a `rangeOverride` (see channelRange),
-    // so the standard SliderRangeEditor's diff-vs-default logic works unchanged.
-    const channelDef = (e: ExprInput): ParamDef => {
-      if (e.options && e.options.length) {
-        return {
-          name: e.name,
-          type: "enum",
-          options: e.options,
-          default: e.options[0] ?? "",
-        };
-      }
-      const d = typeof e.default === "number" ? e.default : 0;
-      const inferMin = d < 0 ? d * 2 : 0;
-      const inferMax = d === 0 ? 1 : Math.abs(d) * 2;
-      const step =
-        e.step ??
-        (inferMax >= 100 ? 1 : inferMax >= 10 ? 0.1 : inferMax >= 1 ? 0.01 : 0.001);
-      return {
-        name: e.name,
-        type: "scalar",
-        default: d,
-        min: inferMin,
-        max: inferMax,
-        step,
-      };
-    };
-    // The channel's explicit range (from ch args or the right-click editor),
-    // as a rangeOverride. Undefined when nothing's set ⇒ slider uses the
-    // inferred base. Right-clicking the slider edits these via onRangeChange.
-    const channelRange = (
-      e: ExprInput
-    ): { min?: number; max?: number; softMax?: number } | undefined => {
-      const r: { min?: number; max?: number; softMax?: number } = {};
-      if (e.min !== undefined) r.min = e.min;
-      if (e.max !== undefined) r.max = e.max;
-      if (e.softMax !== undefined) r.softMax = e.softMax;
-      return Object.keys(r).length ? r : undefined;
+    // Expression channels render as the standard control for their kind
+    // (slider / segmented pill / toggle / swatch / ramp / curve editor) via
+    // the ParamDef engine/expr-channels.ts synthesizes per row. For scalars
+    // that def carries the INFERRED base range (the "reset" fallback derived
+    // from the default); an explicit range from ch(…, min, max) or the
+    // right-click editor rides on top as a `rangeOverride`, so the standard
+    // SliderRangeEditor's diff-vs-default logic works unchanged.
+    const channelDef = (e: ExprInput): ParamDef => channelParamDef(e);
+    const channelRange = channelRangeOverride;
+    // Ramp / curve editors are wide — they get their own line under the name.
+    const isTall = (e: ExprInput) => {
+      const k = channelKind(e);
+      return k === "ramp" || k === "curve";
     };
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -2620,42 +2600,60 @@ export function ParamControl({
             </button>
           );
           if (isChannel) {
+            const control = (
+              <ParamControl
+                param={channelDef(e)}
+                value={e.default}
+                rangeOverride={channelRange(e)}
+                onChange={(v) =>
+                  update(
+                    list.map((x) =>
+                      x.id === e.id
+                        ? { ...x, default: v as ExprInput["default"] }
+                        : x
+                    )
+                  )
+                }
+                onRangeChange={(next) =>
+                  update(
+                    list.map((x) =>
+                      x.id === e.id
+                        ? {
+                            ...x,
+                            min: next?.min,
+                            max: next?.max,
+                            softMax: next?.softMax,
+                          }
+                        : x
+                    )
+                  )
+                }
+              />
+            );
+            if (isTall(e)) {
+              return (
+                <div
+                  key={e.id}
+                  style={{ display: "flex", flexDirection: "column", gap: 4 }}
+                >
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    {nameField}
+                    <span style={{ flex: 1, color: "var(--tb-n-10)", fontSize: 10 }}>
+                      {channelKind(e)}
+                    </span>
+                    {removeButton}
+                  </div>
+                  {control}
+                </div>
+              );
+            }
             return (
               <div
                 key={e.id}
                 style={{ display: "flex", gap: 6, alignItems: "center" }}
               >
                 {nameField}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <ParamControl
-                    param={channelDef(e)}
-                    value={e.default}
-                    rangeOverride={channelRange(e)}
-                    onChange={(v) =>
-                      update(
-                        list.map((x) =>
-                          x.id === e.id
-                            ? { ...x, default: v as number | string }
-                            : x
-                        )
-                      )
-                    }
-                    onRangeChange={(next) =>
-                      update(
-                        list.map((x) =>
-                          x.id === e.id
-                            ? {
-                                ...x,
-                                min: next?.min,
-                                max: next?.max,
-                                softMax: next?.softMax,
-                              }
-                            : x
-                        )
-                      )
-                    }
-                  />
-                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>{control}</div>
                 {removeButton}
               </div>
             );
@@ -2713,7 +2711,7 @@ export function ParamControl({
                 );
                 if (next !== list) update(next);
               }}
-              title='Add controls for ch(…) sliders and pick(…) dropdowns in the expression'
+              title='Add controls for the ch() / toggle() / pick() / color() / ramp() / curve() channels in the expression'
               style={{
                 background: "transparent",
                 border: "1px solid var(--tb-n-9)",

@@ -466,6 +466,24 @@ export const adaptivePixelateNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Pixelate with a non-constant grid: block size is driven by a luminance map (the Size Map input, or the image's own luminance). Quadtree mode splits blocks 4-ways where the map calls for detail; lattice mode crowds full-span rows/columns; uniform mode is a plain grid. Emits one point per block (center, scale, level) for building systems downstream.",
+  facts: {
+    space: {
+      "param:size": "pixels",
+      "param:block_min": "pixels",
+      "param:block_max": "pixels",
+      "aux:points": "uv01",
+    },
+    writes: ["attr:scale", "attr:group"],
+    gotchas: [
+      "size/block_min/block_max are absolute pixels at render resolution and do not scale with output size.",
+      "Brighter size_map (or source luminance) drives smaller blocks (more detail) by default; invert flips that mapping, gamma reshapes the response curve.",
+      "lattice_axes=columns/rows locks the other axis to a single full-span block instead of a grid; only 'both' crowds rows and columns independently.",
+      "sample=average filters through a private mip chain at each cell's geometric-mean LOD, avoiding aliasing on large blocks; sample=center is a single texel tap at the cell center.",
+      "aux:points is built every evaluation even when unwired, since the cell grid is already CPU-side for the image pass — it is not gated behind whether anything consumes it.",
+      "aux:points positions are cx/canvasWidth, cy/canvasHeight (a per-axis fraction), not the aspect-corrected canvas01 convention other point sources use.",
+      "On a driver readback failure (e.g. context loss) this silently falls back to a plain uniform grid at block_max instead of erroring.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", type: "image", required: true },

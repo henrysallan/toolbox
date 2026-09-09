@@ -277,6 +277,14 @@ export const colorCorrectionNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Hue, saturation, brightness, contrast, and per-channel RGB curves.",
+  facts: {
+    gotchas: [
+      "Order: white balance, lift/gamma/gain/offset wheels, per-zone exposure and saturation, brightness/contrast (pivoted), midtone detail, hue/saturation, RGB curves last.",
+      "Each wheel's balance (X,Y) reads as a clockwise angle from \"up\" (red at top, matching the panel's hue disc), with radius as push strength.",
+      "Per-wheel Sat/Exp are blended by luma zone weight (dark/mid/light) — a wheel barely touches pixels outside its own zone.",
+      "The saturation param is a separate legacy HSV control, independent of the four wheels' own per-zone Sat fields.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

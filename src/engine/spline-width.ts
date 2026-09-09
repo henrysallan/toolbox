@@ -84,6 +84,10 @@ export interface WidthEnvelopePoints {
   // form two rings; for open ones the caller joins them with the caps.
   left: Array<[number, number]>;
   right: Array<[number, number]>;
+  // Arc-length fraction 0..1 of this subpath, same length as left/right.
+  // Used by along-path stroke ramps (Rasterize Spline `stroke_ramp_by:
+  // progress`) so envelope quads pick up the same t as a plain polyline.
+  t: number[];
   closed: boolean;
   // Endpoint data for the open-path round caps.
   startPos: [number, number];
@@ -111,12 +115,14 @@ export function buildWidthEnvelopePoints(
 
   const left: Array<[number, number]> = [];
   const right: Array<[number, number]> = [];
+  const tAlong: number[] = [];
   let startTan: [number, number] = [1, 0];
   let endTan: [number, number] = [1, 0];
   let startPos: [number, number] = [0, 0];
   let endPos: [number, number] = [0, 0];
   let startHalf = 0;
   let endHalf = 0;
+  let prefix = 0;
 
   segs.forEach((s, si) => {
     const wa = widths[s.ia];
@@ -136,6 +142,7 @@ export function buildWidthEnvelopePoints(
       const ny = tan[0];
       left.push([p.x + nx * half, p.y + ny * half]);
       right.push([p.x - nx * half, p.y - ny * half]);
+      tAlong.push(total > 0 ? (prefix + t * s.length) / total : 0);
       if (si === 0 && k === k0) {
         startPos = [p.x, p.y];
         startTan = tan;
@@ -147,11 +154,13 @@ export function buildWidthEnvelopePoints(
         endHalf = half;
       }
     }
+    prefix += s.length;
   });
   if (left.length < 2) return null;
   return {
     left,
     right,
+    t: tAlong,
     closed: sub.closed,
     startPos,
     startTan,
@@ -160,6 +169,44 @@ export function buildWidthEnvelopePoints(
     endTan,
     endHalf,
   };
+}
+
+// Centerline polyline in client-px space, with arc-length t in [0, 1] of
+// this subpath. Same sampling density as the width envelope. Used by the
+// along-path stroke ramp so a plain (unprofiled) stroke and a profiled
+// envelope share one notion of "progress."
+export interface PolylineSamplePx {
+  x: number;
+  y: number;
+  t: number;
+}
+
+export function sampleSubpathPolylinePx(
+  sub: SplineSubpath,
+  W: number,
+  H: number
+): PolylineSamplePx[] {
+  const segs = subpathToPxSegments(sub, W, H);
+  if (segs.length === 0) return [];
+  const total = segs.reduce((s, x) => s + x.length, 0);
+  if (total < 1e-6) return [];
+  const out: PolylineSamplePx[] = [];
+  let prefix = 0;
+  segs.forEach((s, si) => {
+    const K = Math.max(2, Math.min(64, Math.ceil(s.length / 4)));
+    const k0 = si === 0 ? 0 : 1;
+    for (let k = k0; k <= K; k++) {
+      const u = k / K;
+      const p = s.curve.get(u);
+      out.push({
+        x: p.x,
+        y: p.y,
+        t: (prefix + u * s.length) / total,
+      });
+    }
+    prefix += s.length;
+  });
+  return out;
 }
 
 // Append a semicircular cap around `pos`: sweep from +normal to −normal

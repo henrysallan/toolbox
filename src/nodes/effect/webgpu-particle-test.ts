@@ -49,6 +49,15 @@ export const webgpuParticleTestNode: NodeDefinition = {
   category: "effect",
   description:
     "Phase 0 spike for the WebGPU particle migration. Renders an isolated WebGPU particle system on an overlay canvas. Validates device boot, kernel compile, dual-canvas compositing, and 100k particles @ 60fps before the real simulator is ported. Not a graph node — produces no output.",
+  facts: {
+    space: { "param:pointSize": "pixels" },
+    gotchas: [
+      "compute() is an intentional no-op; WebGPUParticleOverlay.tsx reads this node's params directly off the graph and drives a separate WebGPU canvas overlaid on the WebGL2 preview.",
+      "pointSize is pixels at the overlay's own framebuffer resolution (pointClip = pointSize / fbWidth), independent of the main canvas or output size.",
+      "seed only re-seeds the particle buffers when it changes (treated as a nonce); gravity/damping apply live without a rebuild.",
+      "count changing rebuilds the WebGPU buffers/pipeline from scratch since it resizes the particle buffer allocation.",
+    ],
+  },
   backend: "webgpu",
   // No inputs and no outputs; the node is a scene-level "tag" that the
   // overlay component reacts to. Marking terminal so the evaluator

@@ -302,6 +302,63 @@ const imageParam = (g2: SavedProject) => (g2.nodes[0].params as any).image;
   );
 }
 
+// --- image/video source offset/zoom → TRS (transform gizmo contract) ---
+{
+  const zoomBlock = { animated: true, keyframes: [{ tick: 0, value: 2 }] };
+  const saved = {
+    schemaVersion: CURRENT_SCHEMA,
+    nodes: [
+      {
+        id: "img",
+        defType: "image-source",
+        position: { x: 0, y: 0 },
+        params: { offsetX: 0.25, offsetY: -0.1, zoom: 2 },
+        animation: { offsetX: { animated: true }, zoom: zoomBlock },
+        exposedParams: ["zoom", "fit"],
+      },
+      {
+        id: "vid",
+        defType: "video-source",
+        position: { x: 0, y: 0 },
+        params: { offsetX: 0.1, zoom: 0.5 },
+      },
+    ],
+    edges: [],
+  } as unknown as SavedProject;
+  const res = await deserializeGraph(saved);
+  const img = res.nodes.find((n) => n.id === "img")!.data;
+  const vid = res.nodes.find((n) => n.id === "vid")!.data;
+  check(
+    "image-source offset/zoom migrates to translate/scale",
+    img.params.translateX === 0.25 &&
+      img.params.translateY === -0.1 &&
+      img.params.scaleX === 2 &&
+      img.params.scaleY === 2 &&
+      img.params.offsetX === undefined &&
+      img.params.zoom === undefined,
+    JSON.stringify(img.params)
+  );
+  check(
+    "image-source zoom animation remaps onto scaleX and scaleY",
+    (img.animation as any)?.scaleX === zoomBlock &&
+      (img.animation as any)?.scaleY === zoomBlock &&
+      (img.animation as any)?.offsetX === undefined &&
+      (img.animation as any)?.zoom === undefined,
+    JSON.stringify(img.animation)
+  );
+  check(
+    "image-source exposed zoom remaps to scaleX/Y",
+    JSON.stringify(img.exposedParams) === JSON.stringify(["scaleX", "scaleY", "fit"])
+  );
+  check(
+    "video-source offset/zoom migrates to translate/scale",
+    vid.params.translateX === 0.1 &&
+      vid.params.scaleX === 0.5 &&
+      vid.params.scaleY === 0.5 &&
+      vid.params.offsetX === undefined
+  );
+}
+
 // --- 5. forward-version guard: a newer-schema project is refused, not silently downgraded ---
 {
   let threw: unknown = null;

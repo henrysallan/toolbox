@@ -57,7 +57,10 @@ function transformAnchor(
     return [cos * dx - sin * dy, sin * dx + cos * dy];
   };
 
-  const out: SplineAnchor = { pos: transformPos(a.pos) };
+  // Spread first so width / cornerRadius / attrs / broken survive; then
+  // overwrite the geometric slots. Copy to Points instances used to lose
+  // their width profiles here.
+  const out: SplineAnchor = { ...a, pos: transformPos(a.pos) };
   if (a.inHandle) out.inHandle = transformOffset(a.inHandle);
   if (a.outHandle) out.outHandle = transformOffset(a.outHandle);
   return out;
@@ -69,7 +72,7 @@ export function transformSubpath(
 ): SplineSubpath {
   if (isIdentityTransform(t)) return sub;
   return {
-    closed: sub.closed,
+    ...sub,
     anchors: sub.anchors.map((a) => transformAnchor(a, t)),
   };
 }

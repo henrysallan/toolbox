@@ -82,7 +82,9 @@ function linkProgram(
   gl.attachShader(p, fs);
   gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
-    throw new Error("Program link failed: " + gl.getProgramInfoLog(p));
+    const log = gl.getProgramInfoLog(p);
+    gl.deleteProgram(p);
+    throw new Error("Program link failed: " + log);
   }
   return p;
 }
@@ -106,6 +108,12 @@ export interface EngineBackend {
     offline?: boolean,
     wedgeIndex?: number
   ): RenderContext;
+  // Same function RenderContext.tryShader uses — exposed so MCP can
+  // compile a GLSL Expression without a full eval pass.
+  tryShader(
+    key: string,
+    fragSrc: string
+  ): { program: WebGLProgram | null; error: string | null };
   destroy(): void;
 }
 
@@ -284,14 +292,29 @@ export function createEngineBackend(
     if (cached && cached.src === fragSrc) {
       return { program: cached.program, error: cached.error };
     }
-    if (cached?.program) gl!.deleteProgram(cached.program);
+    if (cached?.program) {
+      gl!.useProgram(null);
+      gl!.deleteProgram(cached.program);
+    }
+    // Drain leftover errors from a previous failed compile/link so the
+    // next source isn't painted with a stale GL error flag (failed
+    // compile → fix source → first draw staying black).
+    while (gl!.getError() !== gl!.NO_ERROR) {
+      /* drain */
+    }
     let entry: { src: string; program: WebGLProgram | null; error: string | null };
+    let fs: WebGLShader | null = null;
     try {
-      const fs = compileShader(gl!, gl!.FRAGMENT_SHADER, fragSrc);
+      fs = compileShader(gl!, gl!.FRAGMENT_SHADER, fragSrc);
       const prog = linkProgram(gl!, sharedVs, fs);
       gl!.deleteShader(fs);
+      fs = null;
       entry = { src: fragSrc, program: prog, error: null };
     } catch (e) {
+      if (fs) gl!.deleteShader(fs);
+      while (gl!.getError() !== gl!.NO_ERROR) {
+        /* drain */
+      }
       entry = {
         src: fragSrc,
         program: null,
@@ -803,10 +826,15 @@ export function createEngineBackend(
       flushPool();
     },
     makeContext,
+    tryShader,
     destroy() {
       flushPool();
       shaderCache.forEach((p) => gl!.deleteProgram(p));
       shaderCache.clear();
+      tryShaderCache.forEach((e) => {
+        if (e.program) gl!.deleteProgram(e.program);
+      });
+      tryShaderCache.clear();
       readbackTargets.forEach((t) => gl!.deleteTexture(t));
       readbackTargets.clear();
       gl!.deleteFramebuffer(readbackFbo);

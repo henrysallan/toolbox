@@ -68,6 +68,21 @@ export const setPositionNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Translate so the input's geometric center lands at (X, Y). Absolute placement — unlike Transform's offset translate, the result is always centered at the target regardless of where the input started.",
+  facts: {
+    space: {
+      "in:in": "canvas01",
+      "in:position": "canvas01",
+      out: "in:in",
+      "param:x": "canvas01",
+      "param:y": "canvas01",
+    },
+    gotchas: [
+      "Translates by (target − centroid): the centroid is the mean of anchor positions (spline) or point positions (points), so the result always lands centered at (x, y).",
+      "The `position` vec2 input overrides x/y params entirely when connected.",
+      "Spline handles are not touched directly — they're stored relative to their anchor, so the uniform shift carries them along unchanged.",
+      "mode=points on an empty points input (count 0) passes it through with no shift, since there is no centroid to compute.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   inputs: [

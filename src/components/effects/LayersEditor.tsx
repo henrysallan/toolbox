@@ -27,6 +27,7 @@ import {
 } from "@/engine/keyframes";
 import type { ParamType } from "@/engine/types";
 import { resolvePromotedParams } from "@/state/graph-ops";
+import { readInputValues } from "@/engine/groups";
 import type { ClipBlock } from "@/engine/clips";
 import {
   clipSlipsOnInTrim,
@@ -320,9 +321,15 @@ export function LayersEditor({
       if (block?.animated && block.keyframes.length > 0) {
         return evaluateKeyframesAt(block, track.type, tickNow);
       }
-      return nodes.find((n) => n.id === track.nodeId)?.data.params[
-        track.paramName
-      ];
+      const node = nodes.find((n) => n.id === track.nodeId);
+      const shell = node?.data.parentId
+        ? nodes.find((n) => n.id === node.data.parentId)
+        : undefined;
+      if (shell) {
+        const iv = readInputValues(shell.data.params);
+        if (track.label in iv) return iv[track.label];
+      }
+      return node?.data.params[track.paramName];
     },
     [getAnimation, nodes]
   );

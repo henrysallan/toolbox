@@ -59,6 +59,16 @@ export const extrudeFaces3DNode: NodeDefinition = {
   category: "3d",
   description:
     "Extrudes a logical face of the input geometry along its normal, stitching side walls at the boundary. Face index −1 extrudes every face independently; the index wraps around the face count (see the face_count output). Angle sets how far normals may differ and still count as one face — lower it for per-facet extrusion (spiky sphere).",
+  facts: {
+    space: { "param:depth": "world3d" },
+    gotchas: [
+      "faces wraps by floor-mod into the region count (not clamped); pushing it past the count cycles through faces again rather than stopping. -1 extrudes every region independently.",
+      "depth near zero (|depth| < 1e-6) passes the input geometry through unchanged by reference — no walls, no rebuild.",
+      "Wall UVs are raw edge-length x |depth| values in world units, not normalized to 0..1, so wall texturing differs in scale from the source's UVs.",
+      "Output is always a non-indexed triangle soup; unchanged and cap triangles keep the source's normals/UVs, walls always get flat per-triangle normals.",
+      "Region ids come from a BFS seeded in triangle-index order, so a keyframed face index stays stable across frames instead of flickering.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "geometry", type: "geometry", required: true }],

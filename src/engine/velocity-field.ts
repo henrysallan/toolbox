@@ -32,9 +32,11 @@
 //     matte field images; matte the consumer's OUTPUT instead.
 //
 // Producers today: Perlin Noise (type "curl"), Spline Flow Field,
-// Flow Obstacle (modifier), Image Flow Field (orientation). Consumers:
+// Flow Obstacle (modifier), Image Flow Field (orientation), Vector Field
+// (SDF / image → attract / repel / orbit / isoline). Consumers:
 // Advect Image, Advect Points (field_mode "vector"), Displace (channels
-// R/G, midlevel 0.5), Flow Blur (+ the painterly program as it lands).
+// R/G, midlevel 0.5), Point Expression (`fieldX` / `fieldY` / `fieldAt`),
+// Flow Blur (+ the painterly program as it lands).
 
 // GLSL 300 es snippets — inline into a fragment shader's declarations.
 export const VELOCITY_DECODE_GLSL = `
@@ -51,3 +53,46 @@ vec4 encodeVelocity(vec2 v) {
 export const VELOCITY_NEUTRAL: [number, number, number, number] = [
   0.5, 0.5, 0.0, 1.0,
 ];
+
+// CPU bilinear sample of an encoded field. `data` is canvas ImageData
+// order (row 0 = visual top = Y-DOWN), matching `readImagePixels` and
+// point UVs. Writes decoded velocity (Y-DOWN, isotropic canvas-width
+// units) into `out`. Used by Point Expression; Advect Points has its
+// own copy in the integration loop (same math, different call shape).
+export interface EncodedVelocityBuf {
+  data: Uint8ClampedArray;
+  w: number;
+  h: number;
+}
+
+export function sampleEncodedVelocity(
+  buf: EncodedVelocityBuf,
+  u: number,
+  v: number,
+  out: [number, number],
+  midlevel = 0.5
+): void {
+  const { data, w, h } = buf;
+  let fx = u * w - 0.5;
+  let fy = v * h - 0.5;
+  if (fx < 0) fx = 0;
+  else if (fx > w - 1) fx = w - 1;
+  if (fy < 0) fy = 0;
+  else if (fy > h - 1) fy = h - 1;
+  const x0 = fx | 0;
+  const y0 = fy | 0;
+  const x1 = x0 < w - 1 ? x0 + 1 : x0;
+  const y1 = y0 < h - 1 ? y0 + 1 : y0;
+  const tx = fx - x0;
+  const ty = fy - y0;
+  const i00 = (y0 * w + x0) * 4;
+  const i10 = (y0 * w + x1) * 4;
+  const i01 = (y1 * w + x0) * 4;
+  const i11 = (y1 * w + x1) * 4;
+  const rA = data[i00] + (data[i10] - data[i00]) * tx;
+  const rB = data[i01] + (data[i11] - data[i01]) * tx;
+  const gA = data[i00 + 1] + (data[i10 + 1] - data[i00 + 1]) * tx;
+  const gB = data[i01 + 1] + (data[i11 + 1] - data[i01 + 1]) * tx;
+  out[0] = 2 * ((rA + (rB - rA) * ty) / 255 - midlevel);
+  out[1] = 2 * ((gA + (gB - gA) * ty) / 255 - midlevel);
+}

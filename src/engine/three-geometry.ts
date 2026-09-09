@@ -65,6 +65,18 @@ export function makeMaterialDesc(
     fields.transmission,
     fields.ior,
     chanSig(fields.alpha),
+    fields.thickness ?? 0,
+    fields.attenuationColor ?? "#ffffff",
+    fields.emissive ? chanSig(fields.emissive) : "e:0",
+    fields.emissiveIntensity ?? 1,
+    fields.ao
+      ? `ao:${chanSig(fields.ao.map)}:${fields.ao.intensity}`
+      : "ao:0",
+    fields.clearcoat ?? 0,
+    fields.clearcoatRoughness ?? 0,
+    fields.sheen ?? 0,
+    fields.sheenColor ?? "#ffffff",
+    fields.sheenRoughness ?? 1,
     fields.shading ?? "standard",
     fields.toonRamp ? `t:${toonRampKey(fields.toonRamp)}` : "t:0",
     fields.bump
@@ -167,13 +179,32 @@ function scalarChan(c: number | ImageValue, fallback: number): number {
 // matcap). Class identity drives rebuild-vs-update in the wrap and the
 // instances resolver.
 export type MaterialClass = "standard" | "physical" | "toon" | "matcap";
+function needsPhysical(desc: MaterialDesc): boolean {
+  return (
+    desc.transmission > 0 ||
+    (desc.clearcoat ?? 0) > 0 ||
+    (desc.sheen ?? 0) > 0 ||
+    (desc.thickness ?? 0) > 0
+  );
+}
+
 export function materialClassFor(
   desc: MaterialDesc | null | undefined
 ): MaterialClass {
   if (!desc) return "standard";
   if (desc.shading === "toon") return "toon";
   if (desc.shading === "matcap") return "matcap";
-  return desc.transmission > 0 ? "physical" : "standard";
+  return needsPhysical(desc) ? "physical" : "standard";
+}
+
+// three's aoMap historically samples the second UV set. Bake nodes write
+// into the same atlas as every other map, so copy uv → uv1/uv2 (same
+// BufferAttribute, no extra data) whenever an AO map is on the desc.
+export function ensureAoUvChannel(geom: THREE.BufferGeometry): void {
+  const uv = geom.getAttribute("uv");
+  if (!uv) return;
+  if (!geom.getAttribute("uv1")) geom.setAttribute("uv1", uv);
+  if (!geom.getAttribute("uv2")) geom.setAttribute("uv2", uv);
 }
 type AnyMat =
   | THREE.MeshStandardMaterial
@@ -391,16 +422,58 @@ function applyDesc(mat: AnyMat, desc: MaterialDesc, ctx?: RenderContext): void {
     alphaScalar < 1 ||
     mat.alphaMap !== null ||
     (cls === "physical" && desc.transmission > 0);
+
+  // Emissive — standard / physical / toon expose it; matcap does not.
+  if (cls !== "matcap") {
+    const em = mat as THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+    const e = desc.emissive;
+    const intensity = desc.emissiveIntensity ?? 1;
+    if (typeof e === "string") {
+      em.emissive.set(e);
+      em.emissiveMap = null;
+    } else if (e && ctx) {
+      em.emissive.set("#ffffff");
+      em.emissiveMap = bridgeTexture(em, "emissiveMap", e, true, ctx);
+    } else {
+      em.emissive.set("#000000");
+      em.emissiveMap = null;
+    }
+    em.emissiveIntensity = intensity;
+  }
+
+  // AO map — standard / physical / toon. Channel 0 = the same UVs as
+  // every other map (ensureAoUvChannel also copies onto uv1/uv2).
+  if (cls !== "matcap") {
+    const std = mat as THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+    if (desc.ao && ctx) {
+      const tex = bridgeTexture(std, "aoMap", desc.ao.map, false, ctx);
+      if (tex && "channel" in tex) (tex as THREE.Texture & { channel: number }).channel = 0;
+      std.aoMap = tex;
+      std.aoMapIntensity = desc.ao.intensity;
+    } else {
+      std.aoMap = null;
+      std.aoMapIntensity = 1;
+    }
+  }
+
   if (mat instanceof THREE.MeshPhysicalMaterial) {
     mat.transmission = desc.transmission;
     mat.ior = desc.ior;
+    mat.thickness = desc.thickness ?? 0;
+    mat.attenuationColor.set(desc.attenuationColor ?? "#ffffff");
+    mat.clearcoat = desc.clearcoat ?? 0;
+    mat.clearcoatRoughness = desc.clearcoatRoughness ?? 0;
+    mat.sheen = desc.sheen ?? 0;
+    mat.sheenColor.set(desc.sheenColor ?? "#ffffff");
+    mat.sheenRoughness = desc.sheenRoughness ?? 1;
   }
   mat.needsUpdate = true;
 }
 
 // Shared resolver — the coercion wrap here and the instances resolver
 // both use it so "what a MaterialDesc means" has one home. The desc's
-// shading (+ transmission) picks the class (materialClassFor). Bridged
+// shading (+ transmission / clearcoat / sheen) picks the class
+// (materialClassFor). Bridged
 // channel textures and the toon gradient die with the material
 // (dispose event).
 export function buildMaterial(
@@ -613,6 +686,7 @@ export function resolveInstancesAsObject(
 ): Object3DValue {
   const n = value.count;
   const desc = value.source.materials[0] ?? null;
+  if (desc?.ao) ensureAoUvChannel(value.source.geometry);
   const sig = desc ? desc.sig : DEFAULT_SIG;
 
   let st = instCache.get(value.retainKey);
@@ -865,8 +939,10 @@ export function wrapGeometryAsObject(
   m.position.set(t.position[0], t.position[1], t.position[2]);
   m.rotation.set(t.rotationEuler[0], t.rotationEuler[1], t.rotationEuler[2]);
   m.scale.set(t.scale[0], t.scale[1], t.scale[2]);
-  ensureMaterial(st, value.materials[0] ?? null, ctx);
-  ensureLineart(st, value.materials[0] ?? null);
+  const wrapDesc = value.materials[0] ?? null;
+  if (wrapDesc?.ao) ensureAoUvChannel(value.geometry);
+  ensureMaterial(st, wrapDesc, ctx);
+  ensureLineart(st, wrapDesc);
   if (value.nodeId) m.userData.nodeId = value.nodeId;
   return { kind: "object3d", object: m, variant: "mesh" };
 }

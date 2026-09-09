@@ -87,6 +87,14 @@ export const modulateSplinesNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Per-subpath scale and rotation around each subpath's centroid. Uniform inputs apply to every subpath; image fields are sampled at the centroid UV. Drop after Copy to Points (spline mode) for per-instance Transform — each copy is its own subpath. Stack to layer modulations.",
+  facts: {
+    gotchas: [
+      "Transform is destructive: anchor positions and handles are actually scaled/rotated around each subpath's own centroid, unlike Modulate Points which only tags metadata.",
+      "Field images are read back synchronously at full resolution every eval (ctx.readImagePixels), with no downsampling or async caching like Modulate Points uses.",
+      "Centroid UV sampling has no aspect correction, so on non-square canvases the sample point can drift from the subpath's visual location.",
+      "Empty subpaths sample the field at a hardcoded (0.5, 0.5) fallback centroid since there are no anchors to average.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "splines", type: "spline", required: true },

@@ -530,6 +530,19 @@ export const perlinNoiseNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Multi-algorithm fBm noise. Three outputs: `image` (rasterized canvas-wide), `value` (CPU scalar sampled at the `position` input — single number per frame), and `field` (per-pixel scalar shader expression sampled at `field_position` — wire into SDF Rotate.angle_field / SDF Twist.strength_field for true per-pixel/per-tile modulation; pair with SDF Repeat.cell_id for per-tile variation). The `field` output uses simplex regardless of the `type` param; image and value paths respect type. The `UV` input re-evaluates the noise at coordinates read from the wired value's R/G — wire another Noise (or any image) in for Blender-style domain warping/marbling.",
+  facts: {
+    space: { "in:position": "uv01" },
+    reads: ["time"],
+    gotchas: [
+      "field always samples simplex regardless of the type param (the SDF compiler only ports simplex); image, value, and field3d all respect type.",
+      "animated=true drives evolution from scene time on a closed loop between anim_start/anim_end frames, overriding the manual w slider.",
+      "For type=flow, animated instead sweeps flow_time through one full 2*pi rotation over that loop; animated forces a recompute every tick.",
+      "value is CPU-sampled at `position` (default 0.5,0.5 = canvas center) through the exact same scale/offset/aspect transform the image shader applies, so it matches the rendered pixel at that UV.",
+      "The y sample is compressed by canvas aspect (width/height) before evaluating so noise cells stay square, so `scale` reads as cells-across-the-width regardless of aspect ratio.",
+      "field3d is true 3D world-space noise (a different space from image/value/field): one world unit spans `scale` noise units, with w as evolution.",
+      "Wiring an image into `UV` re-reads the sample position from its R/G channels instead of the canvas UV, for domain warping; a wired scalar broadcasts that one value to both axes.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "uv_in", label: "UV", type: "uv", required: false },

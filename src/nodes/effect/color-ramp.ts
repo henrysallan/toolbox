@@ -25,6 +25,7 @@ uniform int u_stopCount;
 uniform float u_positions[${COLOR_RAMP_MAX_STOPS}];
 uniform vec4  u_colors[${COLOR_RAMP_MAX_STOPS}];
 uniform int u_interp; // 0: linear, 1: ease, 2: constant
+uniform float u_offset;
 out vec4 outColor;
 
 vec4 sampleRamp(float t) {
@@ -49,8 +50,12 @@ vec4 sampleRamp(float t) {
 
 void main() {
   vec4 c = texture(u_src, v_uv);
-  float lum = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
-  vec4 ramp = sampleRamp(clamp(lum, 0.0, 1.0));
+  float lum = clamp(dot(c.rgb, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+  // Offset 0 keeps lum as-is so 1.0 still hits the last stop.
+  // Any other offset wraps (fract) so the gradient loops past 1.
+  float t = lum;
+  if (abs(u_offset) > 1e-8) t = fract(lum + u_offset);
+  vec4 ramp = sampleRamp(t);
   // Preserve the source's alpha — the ramp decides color, not coverage.
   outColor = vec4(ramp.rgb, ramp.a * c.a);
 }`;
@@ -81,7 +86,15 @@ export const colorRampNode: NodeDefinition = {
   category: "image",
   subcategory: "modifier",
   description:
-    "Remaps the input's luminance through a gradient of user-defined color stops.",
+    "Remaps the input's luminance through a gradient of user-defined color stops. Offset slides the ramp; values past 1 wrap so the gradient loops.",
+  facts: {
+    gotchas: [
+      "Remaps by luminance (Rec.709 weighted), not per channel; the source's own alpha is preserved and multiplied by the ramp stop's alpha.",
+      "offset=0 pins t=1 exactly to the last stop; any nonzero offset wraps the whole 0..1 domain via fract(), shifting what shows at the extremes.",
+      "Up to 16 stops — extras are silently dropped after sorting by position.",
+      "The ramp aux always emits the sorted stop list, even with nothing wired into image — it works as a pure palette source into Stroke/Rasterize Spline.",
+    ],
+  },
   backend: "webgl2",
   // NOT required: since the node gained a `ramp` aux output
   // (080526_on-node-color-ramp.md) a Color Ramp used purely as a palette
@@ -102,6 +115,16 @@ export const colorRampNode: NodeDefinition = {
         { id: "stop-a", position: 0, color: "#000000" },
         { id: "stop-b", position: 1, color: "#ffffff" },
       ] as ColorRampStop[],
+    },
+    {
+      name: "offset",
+      label: "Offset",
+      type: "scalar",
+      min: 0,
+      max: 8,
+      softMax: 1,
+      step: 0.001,
+      default: 0,
     },
     {
       name: "interpolation",
@@ -155,8 +178,11 @@ export const colorRampNode: NodeDefinition = {
     }
 
     const interp = interpToInt((params.interpolation as string) ?? "linear");
+    const offset = Number.isFinite(params.offset as number)
+      ? (params.offset as number)
+      : 0;
 
-    const prog = ctx.getShader("color-ramp/fs", FS);
+    const prog = ctx.getShader("color-ramp/fs-off", FS);
     ctx.drawFullscreen(prog, output, (gl) => {
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, src.texture);
@@ -171,6 +197,7 @@ export const colorRampNode: NodeDefinition = {
       );
       gl.uniform4fv(gl.getUniformLocation(prog, "u_colors[0]"), colors);
       gl.uniform1i(gl.getUniformLocation(prog, "u_interp"), interp);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_offset"), offset);
     });
 
     return { primary: output, aux: { ramp: rampAux } };

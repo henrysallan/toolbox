@@ -108,6 +108,15 @@ export const switchNode: NodeDefinition = {
   category: "utility",
   description:
     "Picks one of N inputs by index. Accepts any socket type: leave Type on \"auto\" and the node adopts whatever you wire in — mixed inputs coerce to the one type they share (a scalar beside a vec4 becomes vec4; a mask beside an image becomes image). Count sets how many slots render. Wire a scalar to Index for live switching.",
+  facts: {
+    space: { out: "in:*" },
+    gotchas: [
+      "type=auto adopts whatever is wired into in0..in(count-1); only those numbered slots vote (index and mask never retype the node), topmost wire wins ties.",
+      "The picked value passes through untouched and borrowed (ownsTextures: false) — the node never releases the upstream texture itself.",
+      "index is rounded and clamped into [0, count-1]; an unwired index slot falls back to the index param, and an empty slot at the picked index outputs nothing.",
+      "render and vector socket types are excluded from the switchable type list.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "type" },
   inputs: [

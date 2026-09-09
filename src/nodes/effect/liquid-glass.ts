@@ -343,6 +343,32 @@ export const liquidGlassNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Apple-style refractive liquid glass over a backdrop. Wire the image behind the glass into the backdrop input; a built-in rounded-rect/superellipse panel (optionally smooth-merged with a second shape) refracts, disperses, and glares over it. Wire an SDF into `shape` for any analytic shape — circles, booleans, smooth-union blobs, or splines via SDF Spline.",
+  facts: {
+    space: {
+      "param:posX": "uv01",
+      "param:posY": "uv01",
+      "param:width": "uv01",
+      "param:height": "uv01",
+      "param:bPosX": "uv01",
+      "param:bPosY": "uv01",
+      "param:bWidth": "uv01",
+      "param:bHeight": "uv01",
+      "param:thickness": "pixels",
+      "param:strength": "pixels",
+      "param:blur": "pixels",
+      "param:mergeRadius": "pixels",
+      "param:shapeSmooth": "pixels",
+    },
+    gotchas: [
+      "posX/posY/width/height and bPosX/bPosY/bWidth/bHeight are per-axis UV fractions (uv01): X scales by canvas width, Y independently by height, not aspect-corrected.",
+      "cornerRadius and bCornerRadius are 0..1 fractions of the shape's own min(halfWidth, halfHeight) in px, not an absolute distance.",
+      "thickness, strength, blur, mergeRadius, and shapeSmooth are raw pixels at render resolution and do not scale with output size.",
+      "shapeMode=replace makes a wired shape SDF fully replace the built-in shape(s); shapeMode=merge smooth-unions it in via mergeRadius.",
+      "Texture-backed SDFs (e.g. SDF From Image) auto-smooth their normal at 3px to avoid a moire/faceted look, unless shapeSmooth overrides it.",
+      "blurEdge (Frost) blends the whole glass toward the blurred backdrop; off, it blends sharp-to-blurred only from center to edge across thickness.",
+      "The shader recompiles whenever the wired shape SDF's structural topology changes; animating existing SDF params only rebinds uniforms.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "image", label: "backdrop", type: "image", required: true },

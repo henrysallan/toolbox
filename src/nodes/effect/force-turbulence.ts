@@ -6,6 +6,12 @@ export const turbulenceForceNode: NodeDefinition = {
   category: "effect",
   description:
     "Curl-noise turbulence field that advects through time at the given speed.",
+  facts: {
+    gotchas: [
+      "Produces a force descriptor only; the consuming simulator advances curl noise through time (time*speed) and adds the curl to velocity each step.",
+      "scale multiplies the canvas01 position before sampling curl noise, so it behaves as a spatial frequency (more cells across the canvas), not a canvas distance.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

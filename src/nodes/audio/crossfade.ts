@@ -24,6 +24,14 @@ export const audioCrossfadeNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Equal-power blend between two audio inputs. fade 0 = all A, 1 = all B; keyframe it — or drive it from Audio Bands — for smooth source transitions.",
+  facts: {
+    gotchas: [
+      "Composes directly into a 2-lane 'mix' chain descriptor (audio-adapters-routing.ts) rather than using a dedicated crossfade adapter.",
+      "fade uses an equal-power curve (A = cos(fade·π/2), B = sin(fade·π/2)), so summed power stays constant — unlike a linear fade's -3dB dip at center.",
+      "A one-sided wire (only A or only B) still plays, at that side's equal-power gain for the current fade — it is never fully muted.",
+      "Audio→scalar taps (Audio Bands, etc.) read whichever side has a chain (A preferred over B), that side's raw pre-fade signal.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [

@@ -20,6 +20,8 @@ export const TOC = [
   { id: "built-in-data", title: "Built-in point data" },
   { id: "named-attributes", title: "Named attributes" },
   { id: "set-named-attribute", title: "Writing: Set Named Attribute" },
+  { id: "stagger", title: "Writing: Stagger" },
+  { id: "attribute-read", title: "Reading: Attribute Read" },
   { id: "point-expression", title: "Writing: Point Expression" },
   { id: "attribute-ops", title: "Math, Blur, Transfer" },
   { id: "spline-attributes", title: "Attributes on splines" },
@@ -147,7 +149,11 @@ export default function PointAttributesPage() {
         name, a type (float, vec2–vec4, or color), and one value per point.
         Once written, it travels down the wire through every point node —
         transforms, filters, merges, simulations — and shows up as an extra
-        column in the Spreadsheet.
+        column in the Spreadsheet. Grid stamps <Code>ix</Code> /{" "}
+        <Code>iy</Code> (column and row); Points to Spline&rsquo;s{" "}
+        <strong>grid</strong> layout uses those to walk rows and columns
+        instead of chaining in index order, so a warped lattice stays a
+        lattice.
       </P>
       <UL>
         <LI>Float channels show as a numeric column.</LI>
@@ -167,9 +173,11 @@ export default function PointAttributesPage() {
       <Note>
         Accumulator (points mode) and Advect Points (accumulate mode) stamp
         a well-known <Code>age</Code> channel: seconds since each point
-        joined that node&rsquo;s state. Map Attribute can drive scale from
-        it; Filter Points can drop old points. The node owns the name
-        — an incoming <Code>age</Code> is overwritten.
+        joined that node&rsquo;s state. Accumulator in spline mode stamps
+        the same name on each piled subpath&rsquo;s <Code>attrs</Code>. Map
+        Attribute can drive scale from it; Filter Points can drop old
+        points. The node owns the name — an incoming <Code>age</Code> is
+        overwritten.
       </Note>
 
       <H2 id="set-named-attribute">Writing: Set Named Attribute</H2>
@@ -201,8 +209,11 @@ export default function PointAttributesPage() {
         </LI>
       </UL>
       <P>
-        Stack several Set Named Attribute nodes to build up multiple
-        channels; same-name writes replace the previous channel.
+        <strong>Sample Texture at Points</strong> can write the sampled
+        value onto a named channel instead of scale or rotation: set Target
+        to Named attribute and Name to e.g. <Code>lum</Code>, then read it
+        with <Code>attr(&quot;lum&quot;)</Code> or Copy to Points. That
+        keeps luminance data off the geometry channels.
       </P>
       <Note>
         Set Named Attribute (and Attribute Math) also output the
@@ -212,6 +223,83 @@ export default function PointAttributesPage() {
         channel at the source updates every consumer at once. The wire
         carries the <em>reference</em>; the data itself always rides the
         points wire.
+      </Note>
+
+      <H2 id="stagger">Writing: Stagger</H2>
+      <P>
+        <strong>Stagger</strong> (point category) is per-point timing as a
+        channel &mdash; Cavalry&rsquo;s stagger or an After Effects
+        index-offset expression, without the code. Every point gets its own
+        start time from its place in an order, and the node writes a 0&rarr;1{" "}
+        <Code>phase</Code> channel: 0 before the point starts, a linear ramp
+        over Duration, 1 after.
+      </P>
+      <UL>
+        <LI>
+          <strong>Order</strong> &mdash; index, reverse, center out, edges
+          in, a seeded random, or ascending by any point column (a named
+          channel or a built-in like <Code>x</Code>, <Code>y</Code>,{" "}
+          <Code>group</Code>). Equal values start together, so ordering a
+          grid by <Code>y</Code> starts a whole row at once.
+        </LI>
+        <LI>
+          <strong>Spacing / Fit total</strong> &mdash; step each start by
+          Spacing, or spread the starts so the whole sequence ends at Total.
+        </LI>
+        <LI>
+          <strong>Duration, Jitter, Start, Loop</strong> &mdash; how long
+          each point&rsquo;s ramp takes, a stable per-point random delay,
+          when the sequence begins, and whether it repeats (cycle or
+          ping-pong). Unit switches all of them between frames and seconds.
+        </LI>
+        <LI>
+          <strong>Clock</strong> &mdash; unwired, the playhead. Wire any
+          scalar (Scene Time, an LFO, audio) to retime the whole cascade.
+        </LI>
+      </UL>
+      <P>
+        Then read <Code>phase</Code> downstream: Map Attribute drives scale,
+        rotation, or position from it (its curve is the per-point easing),
+        Filter Points can hide points that haven&rsquo;t started, and Copy
+        to Points can use it as an opacity or variant pick. Turn on{" "}
+        <strong>Write t0 &amp; active</strong> for two more channels:{" "}
+        <Code>phase_t0</Code> (each point&rsquo;s start) and{" "}
+        <Code>phase_active</Code> (1 only while a point is mid-ramp).
+      </P>
+      <Note>
+        Stagger is stateless &mdash; a pure function of the clock &mdash; so
+        it scrubs and exports exactly and can sit behind a Time Offset.
+        Nothing else in the graph needs to know about time: the timing rides
+        the points wire as data.
+      </Note>
+
+      <H2 id="attribute-read">Reading: Attribute Read</H2>
+      <P>
+        <strong>Attribute Read</strong> pulls one point&rsquo;s column off
+        the wire as a number you can drive anything with — a Transform, a
+        Math input, a Copy-to-Points scale. Wire points in, type the name
+        (a named channel, a dotted component like <Code>color.y</Code>, or
+        a built-in: <Code>index</Code>, <Code>x</Code>, <Code>y</Code>,{" "}
+        <Code>position</Code>, <Code>scale</Code>, <Code>rotation</Code>,{" "}
+        <Code>group</Code>), pick Type (scalar or vec2), and Index selects
+        the point. A missing channel reads as 0; Index clamps to the live
+        count.
+      </P>
+      <UL>
+        <LI>
+          Scalar reads component 0 of a vector channel (or the dotted
+          component you named).
+        </LI>
+        <LI>
+          Vec2 reads the first two components. <Code>position</Code> and{" "}
+          <Code>scale</Code> are the two-axis built-ins; a float channel
+          pads as <Code>[value, 0]</Code>.
+        </LI>
+      </UL>
+      <Note>
+        This samples <em>one</em> point. Per-point reads that stay on the
+        points wire still go through Point Expression&rsquo;s{" "}
+        <Code>attr(&quot;name&quot;)</Code> or Map Attribute.
       </Note>
 
       <H2 id="point-expression">Writing: Point Expression</H2>
@@ -233,8 +321,13 @@ export default function PointAttributesPage() {
       </UL>
       <P>
         For example, cull by a channel written upstream:{" "}
-        <Code>keep = attr(&quot;weight&quot;) &gt; 0.5</Code>. Or bake a
-        computed value for downstream inspection:{" "}
+        <Code>keep = attr(&quot;weight&quot;) &gt; 0.5</Code>. Partition
+        points into subpaths with{" "}
+        <Code>groupIndex = floor(index / k)</Code> — Points to Spline
+        chain, Select by Index, and Copy to Points all key off that tag.
+        For a uniform window (pairs, triples, …) Points to Spline&rsquo;s{" "}
+        <strong>stride</strong> layout does the same split without the
+        expression. Or bake a computed value for downstream inspection:{" "}
         <Code>setattr(&quot;dist&quot;, hypot(px - 0.5, py - 0.5))</Code>.
       </P>
       <Note>
@@ -243,6 +336,38 @@ export default function PointAttributesPage() {
         <Code>attr</Code>, so results never depend on the order points are
         processed in.
       </Note>
+      <P>
+        Wire a velocity field (Perlin Noise curl, Spline Flow Field, Vector
+        Field) into the <Code>field</Code> input and sample it from the
+        expression: <Code>fieldX()</Code> / <Code>fieldY()</Code> read the
+        encoded vector at the current point, <Code>fieldAt()</Code> returns{" "}
+        <Code>[vx, vy]</Code>, and <Code>fieldX(u, v)</Code> samples at any
+        UV. Unwired, they read 0. A one-shot warp is{" "}
+        <Code>x = px + fieldX() * ch(&quot;amount&quot;, 0.05); y = py +
+        fieldY() * ch(&quot;amount&quot;, 0.05)</Code>.
+      </P>
+      <P>
+        <Code>ch()</Code> is one of six <strong>channel</strong> kinds —
+        tunables declared in the code that <strong>Sync</strong> turns into
+        real controls on the node (and, for the wireable kinds, input
+        sockets). <Code>ch(&quot;k&quot;, 0.5, 0, 1)</Code> is a slider,{" "}
+        <Code>toggle(&quot;on&quot;, true)</Code> an on/off pill,{" "}
+        <Code>pick(&quot;mode&quot;, &quot;a&quot;, &quot;b&quot;)</Code> a
+        two- or three-way pill (a dropdown past three options),{" "}
+        <Code>color(&quot;tint&quot;, &quot;#ff8800&quot;)</Code> a swatch
+        returning <Code>[r, g, b, a]</Code>,{" "}
+        <Code>ramp(&quot;ink&quot;, t, &quot;#000000&quot;,
+        &quot;#ffffff&quot;)</Code> a gradient editor sampled at{" "}
+        <Code>t</Code>, and <Code>curve(&quot;falloff&quot;, x, 1, 0)</Code>{" "}
+        a float-curve editor sampled at <Code>x</Code>. The literals after
+        the name are the seed (hex lists space ramp stops evenly, number
+        lists space curve points); the code runs with those seeds until you
+        Sync, and Sync never overwrites a control you have already tuned.
+        GLSL Expression declares the same channels as one-line{" "}
+        <Code>{"//"}</Code> comments and reads them as uniforms — a ramp becomes{" "}
+        <Code>vec4 ink(float t)</Code>, a curve{" "}
+        <Code>float falloff(float x)</Code>.
+      </P>
       <P>
         Point Expression also runs on <strong>spline anchors</strong>: set
         its Target to &ldquo;spline anchors&rdquo; and the same code runs
@@ -256,10 +381,10 @@ export default function PointAttributesPage() {
 
       <H2 id="attribute-ops">Math, Blur, Transfer</H2>
       <P>
-        Three companion nodes operate on channels directly. Everywhere a
-        node asks for an attribute name, the field offers a dropdown of the
-        channels actually present on the wired input — pick one, or type a
-        new name freely.
+        Three companion nodes operate on channels directly — on points, or
+        on spline anchors when Target is set. Everywhere a node asks for an
+        attribute name, the field offers a dropdown of the channels actually
+        present on the wired input — pick one, or type a new name freely.
       </P>
       <UL>
         <LI>
@@ -267,23 +392,25 @@ export default function PointAttributesPage() {
           add/subtract/multiply/divide/min/max/power against a constant{" "}
           <em>or a second channel</em>, plus a Remap operation that fits a
           range onto another. Writes in place, or to a new name via the
-          Output field.
+          Output field. Target can be points or spline anchors.
         </LI>
         <LI>
           <strong>Attribute Blur</strong> — smooths a channel: each
-          iteration moves every point&rsquo;s value toward its
+          iteration moves every element&rsquo;s value toward its
           neighborhood&rsquo;s mean. Spatial domain averages within a
-          radius; Index domain averages adjacent points in order — the
+          radius; Index domain averages adjacent elements in order — the
           right choice for path-ordered points (Points from Spline, Points
-          on Path).
+          on Path) and for spline anchors (per subpath, wrapping when
+          closed).
         </LI>
         <LI>
           <strong>Attribute Transfer</strong> — copies a channel from a
-          second point set by proximity: nearest source point, or a
-          distance-weighted average within a radius (falling back to
-          nearest, so every point gets a value). Scatter over a photo, Set
-          Named Attribute its colors, then transfer them onto any other
-          point set.
+          second set by proximity: nearest source, or a distance-weighted
+          average within a radius (falling back to nearest, so every
+          element gets a value). Source and target can each be points or
+          spline anchors. Scatter over a photo, Set Named Attribute its
+          colors, then transfer them onto any other point set or onto a
+          spline&rsquo;s anchors.
         </LI>
         <LI>
           <strong>Map Attribute</strong> — the bridge to visible motion:
@@ -292,6 +419,11 @@ export default function PointAttributesPage() {
           <Code>scale.x</Code>, <Code>rotation</Code>, <Code>group</Code>)
           through In/Out ranges, shape it with a 0–1 curve, and apply it
           as a scale multiplier, rotation offset, or position offset.
+        </LI>
+        <LI>
+          <strong>Attribute Read</strong> — sample one point&rsquo;s column
+          as a scalar or vec2 (see above). The way to drive a non-points
+          node from a channel.
         </LI>
       </UL>
       <P>
@@ -320,13 +452,29 @@ export default function PointAttributesPage() {
         editing operations that copy anchors — trims, joins, transforms —
         and show in the Spreadsheet&rsquo;s spline table (subpath channels
         repeat across their anchors, labeled &ldquo;(subpath)&rdquo;).
+        Points to Spline writes each point&rsquo;s channels onto the
+        matching anchors; Spline to Points (and Points on Path, which
+        interpolates along the curve) bring them back onto points. Rope
+        Simulator bakes them onto particles at reset so they stay glued as
+        the string moves. Rebuilds that rewrite anchors — Resample, Offset,
+        Set Spline Type, Trim Path, Round Corners — interpolate or copy
+        those channels so they survive the new topology.
       </P>
-      <Note>
-        Math, Blur, and Transfer operate on point channels today; spline
-        channels are authored and inspected, and ride along until you
-        convert (Points from Spline keeps its anchors&rsquo; order, so an
-        anchor-domain workflow usually converts to points first).
-      </Note>
+      <P>
+        Attribute Math, Blur, and Transfer take the same Target switch as
+        Set Named Attribute (points or spline anchors). On a spline, Blur
+        in Index domain runs per subpath; Transfer flattens anchors to
+        authored xy and rebinds by proximity.
+      </P>
+      <P>
+        Stroke and Rasterize Spline can color along a path two ways:{" "}
+        <strong>Driver</strong> is one value per subpath (a named subpath
+        channel, or the producer-authored driver scalar);{" "}
+        <strong>Attribute</strong> ramps along the curve from an
+        interpolated named anchor channel (component 0 — a subpath-only
+        channel acts as a constant). Missing samples read as 0, not as
+        progress. Fill ramps stay per-subpath.
+      </P>
 
       <H2 id="how-attributes-flow">How attributes flow</H2>
       <P>
@@ -360,10 +508,31 @@ export default function PointAttributesPage() {
           there.
         </LI>
         <LI>
+          <strong>Points to Spline / Spline to Points</strong> convert
+          between point channels and per-anchor spline attrs (a 1:1 chain
+          round-trip keeps values). Subpath channels become a fallback on
+          every point of that subpath.
+        </LI>
+        <LI>
+          <strong>Resample / Offset / Set Spline Type / Trim / Round
+          Corners</strong> interpolate or copy per-anchor channels onto the
+          rebuilt anchors (trim maps its window; fillets copy the source
+          corner).
+        </LI>
+        <LI>
+          <strong>Points on Path</strong> interpolates per-anchor channels
+          along the curve and copies per-subpath channels onto every sample
+          from that subpath.
+        </LI>
+        <LI>
           <strong>Simulators</strong> re-read channels from their seed input
           each frame, so animated upstream values keep flowing while
           positions simulate. Accumulator and Advect Points (accumulate)
-          overlay their own <Code>age</Code> after that.
+          overlay their own <Code>age</Code> after that (points on the
+          channel, piled spline subpaths on <Code>attrs.age</Code>). Rope
+          Simulator is the exception: it resamples the input, so named
+          channels are baked onto particles at reset (the same rest-pose
+          sample as its material maps) and travel with the string.
         </LI>
       </UL>
 

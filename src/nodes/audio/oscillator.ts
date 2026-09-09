@@ -23,6 +23,14 @@ export const audioOscillatorNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Free-running audio tone (sine / square / sawtooth / triangle). Wire it through audio effects into the Output node's audio socket — it sounds while the timeline plays. Keyframe or wire the frequency for sweeps.",
+  facts: {
+    gotchas: [
+      "No note input by design: this is a free-running drone, not an instrument; notes-to-audio crossing happens in the instrument nodes instead.",
+      "freq_mod and level_mod sum into freq/level inside the audio clock domain: audio-rate freq_mod is FM, level_mod is tremolo/AM.",
+      "detune is in cents (-1200..1200), separate from freq which is Hz.",
+      "Descriptor only: compute() emits a generator descriptor; the audio engine builds the live Tone.Oscillator when the chain reaches an output.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   // Audio-rate modulation (080926 M-C): wired signals SUM with the

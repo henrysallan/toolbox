@@ -16,6 +16,7 @@ import {
   gatherAttributes,
   pointsFromArray,
 } from "@/engine/points";
+import { namedAttrsAt } from "@/engine/spline-attrs";
 import { renderStyledTextToImage } from "@/engine/text-raster";
 
 // Duplicate an "instance" at every target point.
@@ -210,11 +211,11 @@ void main() {
 }`;
 
 // CPU-side luminance samplers built from image inputs (pick / scale
-// field / rotate field). Cached per slot, keyed on the source
-// ImageValue's identity — the evaluator hands back the same value
-// object while an upstream is cached, so identity ⇒ same pixels.
+// field / rotate field / driver field). Cached per slot, keyed on the
+// source ImageValue's identity — the evaluator hands back the same
+// value object while an upstream is cached, so identity ⇒ same pixels.
 type LumaSampler = (u: number, v: number) => number;
-type SamplerSlot = "pick" | "scale" | "rotate";
+type SamplerSlot = "pick" | "scale" | "rotate" | "driver";
 interface LumaSamplerEntry {
   src: ImageValue;
   sample: LumaSampler;
@@ -708,13 +709,41 @@ function luminanceToIndexPick(
   return distinct[clamped];
 }
 
+// One target-point row of the SoA named-channel map, as the object-attached
+// Record spline subpaths carry. Target wins on name collision with any
+// attrs already on the instance. The points→splines handoff: Attribute
+// Transfer / Sample Texture at Points / Point Expression then drive
+// Rasterize/Stroke for free via `by: "driver"` + `driver_attr`.
+// Packing lives in spline-attrs.ts so Points to Spline / Spline to Points
+// use the same number vs number[] convention.
+
+function clamp01(n: number): number {
+  return Math.min(1, Math.max(0, n));
+}
+
 export const copyToPointsNode: NodeDefinition = {
   type: "copy-to-points",
   name: "Copy to Points",
   category: "point",
   subcategory: "modifier",
   description:
-    "Duplicate an image (or image group), spline, or point at every target point. Each copy respects per-point rotation and scale, anchored at the instance's content center (or canvas center / custom). Per-instance modulation works in every mode: scalar inputs drive every copy uniformly (e.g. audio amplitude on `scale_mul` makes everything pulse), and image inputs are sampled at each copy's position (e.g. noise on `scale_field` gives every copy a different size). Variants — grouped splines / points, or image-group items — land per point via the pick mode: all, image-driven (`pick` input), seeded random, cycle, by the target point's own group, or by a named attribute on the target points. In image mode, named attributes can also tint each copy (Tint attribute, rgb) and fade it (Opacity attribute, alpha). Draw order controls stacking (painter's by-y, shuffled). In spline/point modes, Tag copies chooses the groupIndex the copies carry out: the instance's own tags, the copy's index (so downstream per-group styling — Stroke color/thickness sources, Select by Index — varies per copy), or the target point's group.",
+    "Duplicate an image (or image group), spline, or point at every target point. Each copy respects per-point rotation and scale, anchored at the instance's content center (or canvas center / custom). Per-instance modulation works in every mode: scalar inputs drive every copy uniformly (e.g. audio amplitude on `scale_mul` makes everything pulse), and image inputs are sampled at each copy's position (e.g. noise on `scale_field` gives every copy a different size). In spline/point modes, `driver_field` (sampled at the target) and Driver attribute write a per-copy `driver` scalar — Rasterize/Stroke ramps and thickness can key off it — and the target point's named attributes are gathered onto each copied subpath so Attribute Transfer / Sample Texture at Points / Point Expression work as drivers for free. Variants — grouped splines / points, or image-group items — land per point via the pick mode: all, image-driven (`pick` input), seeded random, cycle, by the target point's own group, or by a named attribute on the target points. In image mode, named attributes can also tint each copy (Tint attribute, rgb) and fade it (Opacity attribute, alpha). Draw order controls stacking (painter's by-y, shuffled). In spline/point modes, Tag copies chooses the groupIndex the copies carry out: the instance's own tags, the copy's index (so downstream per-group styling — Stroke color/thickness sources, Select by Index — varies per copy), or the target point's group.",
+  facts: {
+    space: {
+      out: ["canvas01", "raster"],
+      "param:anchor_x": ["canvas01", "uv01"],
+      "param:anchor_y": ["canvas01", "uv01"],
+    },
+    writes: ["attr:driver"],
+    gotchas: [
+      "anchor=custom differs by mode: anchor_x/y are absolute canvas01 canvas coordinates for spline/point, but a uv01 fraction of the instance's own bounds for image/text.",
+      "Nodes saved before pick_mode/anchor existed resolve to pick_mode=\"image\" and anchor=\"canvas center\", not today's defaults \"all\"/\"content center\".",
+      "scale_mul, scale_field, and their derived multiplier are unclamped, so a negative value point-mirrors copies through their anchor instead of erroring.",
+      "rotate_add_default and rotate_field_amount are radians (-π..π / 0..π), not degrees.",
+      "Point mode outputs the full Cartesian product of target x instance points (not 1:1); pick_mode narrows which instance points apply per target point.",
+      "In point mode only the target points' own named attributes survive onto the output; the instance points' own channels are dropped.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "points", type: "points", required: true },
@@ -724,6 +753,7 @@ export const copyToPointsNode: NodeDefinition = {
     { name: "rotate_add", type: "scalar", required: false },
     { name: "scale_field", type: "image", required: false },
     { name: "rotate_field", type: "image", required: false },
+    { name: "driver_field", type: "image", required: false },
   ],
   resolveInputs(params, ctx): InputSocketDef[] {
     const mode = modeOf(params);
@@ -762,6 +792,7 @@ export const copyToPointsNode: NodeDefinition = {
       { name: "rotate_add", type: "scalar", required: false, label: "Rotate + (uniform)" },
       { name: "scale_field", type: "image", required: false, label: "Scale field" },
       { name: "rotate_field", type: "image", required: false, label: "Rotate field" },
+      { name: "driver_field", type: "image", required: false, label: "Driver field" },
     );
     return base;
   },
@@ -884,6 +915,22 @@ export const copyToPointsNode: NodeDefinition = {
       default: "instance groups",
       visibleIf: (p) => p.mode === "spline" || p.mode === "point",
     },
+    // Per-copy driver scalar for spline/point modes: sample `driver_field`
+    // at the target (same as scale_field) and/or read a named channel on
+    // the target points. Written to each emitted subpath's `driver` (and
+    // as a `driver` channel in point mode) so Rasterize/Stroke `by:
+    // "driver"` picks it up. Target named attrs are also gathered onto
+    // copied subpaths so any channel can drive without this write.
+    {
+      name: "driver_attr",
+      label: "Driver attribute",
+      type: "string",
+      default: "",
+      placeholder: "attribute name",
+      suggestAttrsFrom: "points",
+      suggestAttrsRequire: true,
+      visibleIf: (p) => p.mode === "spline" || p.mode === "point",
+    },
     // Modulation params — honored in every mode (shader in image mode,
     // CPU math in spline / point modes). These give the user knobs to
     // set even before they wire any modulation input; once a
@@ -1002,9 +1049,22 @@ export const copyToPointsNode: NodeDefinition = {
       inputs.scale_field?.kind === "image" ? inputs.scale_field : null;
     const rotateFieldImg =
       inputs.rotate_field?.kind === "image" ? inputs.rotate_field : null;
+    const driverFieldImg =
+      inputs.driver_field?.kind === "image" ? inputs.driver_field : null;
     const fieldLo = (params.scale_field_lo as number) ?? 0.5;
     const fieldHi = (params.scale_field_hi as number) ?? 1.5;
     const rotFieldAmt = (params.rotate_field_amount as number) ?? Math.PI;
+    // Named channel on the TARGET points → per-copy driver (component 0).
+    // Empty / missing falls through to the driver_field sample.
+    const driverAttrName = ((params.driver_attr as string) ?? "").trim();
+    const driverAttr =
+      driverAttrName && ptsValue
+        ? ptsValue.attributes?.[driverAttrName]
+        : undefined;
+    const driverAttrAt = (i: number): number | undefined =>
+      driverAttr
+        ? clamp01(driverAttr.data[i * driverAttr.arity])
+        : undefined;
 
     // Variant pick mode. Nodes saved before the enum existed behaved
     // image-driven whenever a pick was wired — a missing param maps to
@@ -1060,6 +1120,7 @@ export const copyToPointsNode: NodeDefinition = {
     const makeModAt = (): ((u: number, v: number) => {
       mul: number;
       rot: number;
+      driver: number | undefined;
     }) => {
       const scaleSampler = scaleFieldImg
         ? getLumaSampler(ctx, state, "scale", scaleFieldImg)
@@ -1067,10 +1128,13 @@ export const copyToPointsNode: NodeDefinition = {
       const rotateSampler = rotateFieldImg
         ? getLumaSampler(ctx, state, "rotate", rotateFieldImg)
         : null;
+      const driverSampler = driverFieldImg
+        ? getLumaSampler(ctx, state, "driver", driverFieldImg)
+        : null;
       // Unclamped — negative point-mirrors through the anchor (matches
       // the GPU path).
-      if (!scaleSampler && !rotateSampler) {
-        return () => ({ mul: scaleMul, rot: rotateAdd });
+      if (!scaleSampler && !rotateSampler && !driverSampler) {
+        return () => ({ mul: scaleMul, rot: rotateAdd, driver: undefined });
       }
       return (u, v) => {
         let mul = scaleMul;
@@ -1081,7 +1145,8 @@ export const copyToPointsNode: NodeDefinition = {
         if (rotateSampler) {
           rot += (rotateSampler(u, v) - 0.5) * 2 * rotFieldAmt;
         }
-        return { mul, rot };
+        const driver = driverSampler ? driverSampler(u, v) : undefined;
+        return { mul, rot, driver };
       };
     };
 
@@ -1134,6 +1199,8 @@ export const copyToPointsNode: NodeDefinition = {
         const sx = (pt.scale?.[0] ?? 1) * m.mul;
         const sy = (pt.scale?.[1] ?? 1) * m.mul;
         const rotDeg = (((pt.rotation ?? 0) + m.rot) * 180) / Math.PI;
+        const drv = driverAttrAt(i) ?? m.driver;
+        const pointAttrs = namedAttrsAt(ptsValue!.attributes, i);
         for (const sub of subpathsForPt) {
           const transformed = transformSubpath(sub, {
             translateX: pt.pos[0] - anchor[0],
@@ -1145,11 +1212,17 @@ export const copyToPointsNode: NodeDefinition = {
             scaleY: sy,
           });
           // Tag per output_tag: instance identity (legacy), copy
-          // identity, or the target point's group.
-          outSubpaths.push({
+          // identity, or the target point's group. Driver + gathered
+          // target attrs ride along (instance attrs survive underneath).
+          const emitted: SplineSubpath = {
             ...transformed,
             groupIndex: tagFor(sub.groupIndex, i, pt.groupIndex),
-          });
+          };
+          if (drv !== undefined) emitted.driver = drv;
+          if (pointAttrs) {
+            emitted.attrs = { ...transformed.attrs, ...pointAttrs };
+          }
+          outSubpaths.push(emitted);
         }
       }
       const out: SplineValue = { kind: "spline", subpaths: outSubpaths };
@@ -1187,6 +1260,8 @@ export const copyToPointsNode: NodeDefinition = {
       // carries the TARGET's named channels onto the product
       // (081326_point-attributes.md: the instance side's channels drop).
       const targetMap: number[] = [];
+      const wantDriver = !!driverAttr || !!driverFieldImg;
+      const driverOut = wantDriver ? ([] as number[]) : null;
       for (let oi = 0; oi < points.length; oi++) {
         const i = order ? order[oi] : oi;
         const target = points[i];
@@ -1228,6 +1303,9 @@ export const copyToPointsNode: NodeDefinition = {
             groupIndex: tagFor(src.groupIndex, i, target.groupIndex),
           });
           targetMap.push(i);
+          if (driverOut) {
+            driverOut.push(driverAttrAt(i) ?? m.driver ?? 0.5);
+          }
         }
       }
       const out: PointsValue = pointsFromArray(outPoints);
@@ -1238,6 +1316,12 @@ export const copyToPointsNode: NodeDefinition = {
         targetMap,
         out.count
       );
+      if (driverOut && driverOut.length === out.count) {
+        out.attributes = {
+          ...out.attributes,
+          driver: { arity: 1, data: Float32Array.from(driverOut) },
+        };
+      }
       return { primary: out };
     }
 

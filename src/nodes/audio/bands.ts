@@ -63,6 +63,15 @@ export const audioBandsNode: NodeDefinition = {
   subcategory: "utility",
   description:
     "Split audio into Low / Mid / High energy (3 scalar outputs) plus an overall level. Drive parameters from a frequency band — bass on scale, highs on a flicker, etc.",
+  facts: {
+    gotchas: [
+      "Reads the live AnalyserNode tap every frame (stable:false); retimeable:false, so Time Offset feeds the current band energies through un-shifted instead of resampling at a shifted time.",
+      "crossover_hi is clamped to be ≥ crossover_lo; both are in Hz.",
+      "scale=db remaps each band's dB level within [db_floor, db_ceil] to [0,1] then multiplies by gain; scale=linear multiplies the raw magnitude by gain directly.",
+      "All four outputs (primary level, aux low/mid/high) are one-pole smoothed by `smoothing` — 0 tracks instantly, near 1 barely moves.",
+      "primary level is the overall RMS of the time-domain signal, computed independently of the low/mid/high split — it is not their sum or average.",
+    ],
+  },
   backend: "webgl2",
   // Reads the live signal each frame; the actual data changes out of band
   // with params (same as Audio Source / LFO).

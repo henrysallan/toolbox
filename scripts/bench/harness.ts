@@ -59,7 +59,8 @@ const EXCLUDE = new Set([
   "depth-anything", "bg-remove", "hand-tracker", "object-tracker",
   "image-generate", "datamosh", "segment",
   // Boundary/structural shells: meaningless without an interior graph.
-  "group", "layer", "iterate", "group-output", "group-input",
+  "group", "layer", "iterate", "repeat", "foreach",
+  "group-output", "group-input", "iterate-input", "repeat-input", "foreach-input",
   "simulation-start", "simulation-end", "iterate-source",
   "output", "render-queue", "reroute",
 ]);

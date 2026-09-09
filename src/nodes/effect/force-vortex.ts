@@ -6,6 +6,13 @@ export const vortexForceNode: NodeDefinition = {
   category: "effect",
   description:
     "Tangential swirl around a point. Strength sign flips rotation direction.",
+  facts: {
+    space: { "param:position": "canvas01", "param:radius": "canvas01" },
+    gotchas: [
+      "Produces a force descriptor only; the consuming simulator evaluates the tangential swirl against particle positions in the same canvas01 frame.",
+      "Force magnitude is strength*(1-r/radius)^falloff for r<radius, zero beyond radius; strength's sign flips which way the swirl rotates.",
+    ],
+  },
   backend: "webgl2",
   inputs: [],
   params: [

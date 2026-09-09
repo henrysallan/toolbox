@@ -11,6 +11,7 @@ import {
   sampleCubic,
   type Pt,
 } from "@/engine/wire-geometry";
+import { ownerWindow } from "./layout/panel-window";
 
 // Captures two drag gestures over the node editor:
 //
@@ -80,6 +81,8 @@ export default function WireActionOverlay({
       return false;
     };
 
+    const win = ownerWindow(flowEl);
+
     const onDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
       if (!e.shiftKey && !e.altKey) return;
@@ -91,21 +94,26 @@ export default function WireActionOverlay({
       e.stopPropagation();
       e.stopImmediatePropagation();
       const start: Pt = [e.clientX, e.clientY];
-      setDrag({
+      const next = {
         mode,
         start,
         current: start,
-        path: [start],
-      });
+        path: [start] as Pt[],
+      };
+      dragRef.current = next;
+      setDrag(next);
     };
 
     const onMove = (e: PointerEvent) => {
       const d = dragRef.current;
       if (!d) return;
       e.preventDefault();
-      const next: Pt = [e.clientX, e.clientY];
-      appendPathPoint(d.path, next);
-      setDrag({ ...d, current: next, path: d.path });
+      const current: Pt = [e.clientX, e.clientY];
+      const path = d.path.slice();
+      appendPathPoint(path, current);
+      const next = { mode: d.mode, start: d.start, current, path };
+      dragRef.current = next;
+      setDrag(next);
     };
 
     const onUp = (e: PointerEvent) => {
@@ -114,8 +122,10 @@ export default function WireActionOverlay({
       e.preventDefault();
       e.stopPropagation();
       const end: Pt = [e.clientX, e.clientY];
-      const last = d.path[d.path.length - 1];
-      if (!last || last[0] !== end[0] || last[1] !== end[1]) d.path.push(end);
+      const path = d.path.slice();
+      const last = path[path.length - 1];
+      if (!last || last[0] !== end[0] || last[1] !== end[1]) path.push(end);
+      dragRef.current = null;
       // Reject tiny gestures — probably a mis-click.
       const dx = end[0] - d.start[0];
       const dy = end[1] - d.start[1];
@@ -124,7 +134,7 @@ export default function WireActionOverlay({
         return;
       }
 
-      const crossed = findCrossedEdges(edgesRef.current, d.path);
+      const crossed = findCrossedEdges(edgesRef.current, path);
       if (d.mode === "cut") {
         if (crossed.length > 0) onCut(crossed.map((c) => c.id));
       } else if (crossed.length > 0) {
@@ -134,7 +144,7 @@ export default function WireActionOverlay({
         // requirement anymore. Anchor in FLOW coords so it zooms with the
         // viewport. Place it at the path's midpoint so a curved drag
         // doesn't drop the reroute on the start→end chord.
-        const midScreen = pathMidpoint(d.path);
+        const midScreen = pathMidpoint(path);
         const midFlow = screenToFlowPosition({
           x: midScreen[0],
           y: midScreen[1],
@@ -149,14 +159,20 @@ export default function WireActionOverlay({
 
     // System took the gesture — abandon without cutting/combining anything.
     const onCancel = () => {
-      if (dragRef.current) setDrag(null);
+      if (dragRef.current) {
+        dragRef.current = null;
+        setDrag(null);
+      }
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
       // Dropping the modifier mid-drag aborts the gesture — matches how
       // Photoshop tools abandon when you release the modifier key.
       if (e.key === "Shift" || e.key === "Alt") {
-        if (dragRef.current) setDrag(null);
+        if (dragRef.current) {
+          dragRef.current = null;
+          setDrag(null);
+        }
       }
     };
 
@@ -165,21 +181,21 @@ export default function WireActionOverlay({
     // rather than mouse: React Flow's own pan/marquee is pointer-driven, so
     // a mousedown intercept was racing it even with a mouse, and did nothing
     // at all under a Pencil.
-    window.addEventListener("pointerdown", onDown, true);
-    window.addEventListener("pointermove", onMove, true);
-    window.addEventListener("pointerup", onUp, true);
-    window.addEventListener("pointercancel", onCancel, true);
-    window.addEventListener("keyup", onKeyUp);
+    win.addEventListener("pointerdown", onDown, true);
+    win.addEventListener("pointermove", onMove, true);
+    win.addEventListener("pointerup", onUp, true);
+    win.addEventListener("pointercancel", onCancel, true);
+    win.addEventListener("keyup", onKeyUp);
     return () => {
-      window.removeEventListener("pointerdown", onDown, true);
-      window.removeEventListener("pointermove", onMove, true);
-      window.removeEventListener("pointerup", onUp, true);
-      window.removeEventListener("pointercancel", onCancel, true);
-      window.removeEventListener("keyup", onKeyUp);
+      win.removeEventListener("pointerdown", onDown, true);
+      win.removeEventListener("pointermove", onMove, true);
+      win.removeEventListener("pointerup", onUp, true);
+      win.removeEventListener("pointercancel", onCancel, true);
+      win.removeEventListener("keyup", onKeyUp);
     };
   }, [flowEl, onCombine, onCut, screenToFlowPosition]);
 
-  if (!drag) return null;
+  if (!drag || !flowEl) return null;
   const stroke = drag.mode === "combine" ? "var(--tb-a-cyan-400)" : "var(--tb-a-red-500)";
   const last = drag.path[drag.path.length - 1];
   const tip =
@@ -187,38 +203,42 @@ export default function WireActionOverlay({
       ? []
       : [drag.current];
   const verts = [...drag.path, ...tip];
-  const points = verts.map((p) => `${p[0]},${p[1]}`).join(" ");
+  if (verts.length < 2) return null;
+  const rect = flowEl.getBoundingClientRect();
+  const points = verts
+    .map((p) => `${p[0] - rect.left},${p[1] - rect.top}`)
+    .join(" ");
 
   return (
     <svg
       style={{
-        position: "fixed",
-        inset: 0,
+        position: "absolute",
+        left: 0,
+        top: 0,
+        width: "100%",
+        height: "100%",
         pointerEvents: "none",
         zIndex: 100,
+        overflow: "visible",
       }}
     >
-      {verts.length >= 2 && (
-        <>
-          <polyline
-            points={points}
-            fill="none"
-            stroke="rgba(0,0,0,0.45)"
-            strokeWidth={3.5}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <polyline
-            points={points}
-            fill="none"
-            stroke={stroke}
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeDasharray="6 4"
-          />
-        </>
-      )}
+      <polyline
+        points={points}
+        fill="none"
+        stroke="rgba(0,0,0,0.5)"
+        strokeWidth={3.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <polyline
+        points={points}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeDasharray="6 4"
+      />
     </svg>
   );
 }

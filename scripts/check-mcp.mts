@@ -19,6 +19,68 @@ function check(label: string, ok: boolean, detail?: string) {
   if (!ok) failures++;
 }
 
+{
+  const full = buildCatalogDsl();
+  const list = buildCatalogDsl({ mode: "list" });
+  check(
+    "list catalog is much smaller than full",
+    list.length < full.length / 8 && list.length < 20_000,
+    `list ${list.length} vs full ${full.length}`
+  );
+  check(
+    "list catalog has no param DSL",
+    !list.includes(" -> ") && list.includes("point-expression (Point Expression)")
+  );
+  check(
+    "catalog index documents y-stretch",
+    list.includes("scales y about 0.5 by W/H")
+  );
+  check(
+    "full catalog carries NodeFacts slots (Grid writes ix/iy/cellW/cellH)",
+    full.includes("# writes: attr:ix, attr:iy, attr:cellW, attr:cellH") && full.includes("# space: ") && full.includes("# ! "),
+  );
+  const xf = buildCatalogDsl({ types: ["transform"] });
+  check(
+    "transform space enum includes Canvas/Source labels",
+    xf.includes("global=Canvas") && xf.includes("local=Source"),
+    xf.slice(0, 500)
+  );
+  check(
+    "types= omits the repeating space/flags preamble",
+    !xf.includes("Socket spaces by type") && !xf.startsWith("# "),
+    xf.slice(0, 200)
+  );
+  const spline = buildCatalogDsl({ category: "spline" });
+  check(
+    "category=spline is full DSL for that category",
+    spline.includes("circle (Circle)") &&
+      spline.includes(" -> ") &&
+      !spline.includes("point-expression (Point Expression)")
+  );
+  check(
+    "spline catalog includes Taper Spline",
+    spline.includes("taper-spline (Taper Spline)")
+  );
+  const few = buildCatalogDsl({ types: ["circle", "repeat"] });
+  check(
+    "types= fetches full DSL for just those nodes",
+    few.includes("circle (Circle)") &&
+      few.includes("repeat (Repeat)") &&
+      few.includes(" -> ") &&
+      !few.includes("point-expression")
+  );
+  try {
+    buildCatalogDsl({ category: "widgets" });
+    check("unknown category throws", false);
+  } catch (e) {
+    check(
+      "unknown category throws",
+      /Unknown categor/.test((e as Error).message) &&
+        (e as Error).message.includes("spline")
+    );
+  }
+}
+
 function textOf(r: unknown): string {
   const c = (r as { content?: { type: string; text?: string }[] }).content;
   return c?.find((b) => b.type === "text")?.text ?? "";
@@ -60,9 +122,11 @@ const EXPECTED_TOOLS = [
   "get_catalog",
   "get_graph",
   "get_keyframes",
+  "get_node_data",
   "get_node_source",
   "get_perf",
   "get_perf_frame",
+  "get_shader_errors",
   "get_status",
   "insert_recipe",
   "read_source",
@@ -72,6 +136,7 @@ const EXPECTED_TOOLS = [
   "set_keyframes",
   "set_param",
   "set_perf_capture",
+  "tidy",
   "transport",
   "validate_expression",
 ];
@@ -81,6 +146,21 @@ check(
   tools.tools.map((t) => t.name).sort().join(",") === EXPECTED_TOOLS.join(","),
   tools.tools.map((t) => t.name).join(",")
 );
+{
+  const insert = tools.tools.find((t) => t.name === "insert_recipe");
+  const schema = insert?.inputSchema as { properties?: Record<string, unknown> } | undefined;
+  check(
+    "insert_recipe schema lists replace_output",
+    !!schema?.properties?.replace_output,
+    JSON.stringify(schema?.properties ? Object.keys(schema.properties) : schema)
+  );
+  const edit = tools.tools.find((t) => t.name === "edit_group");
+  check(
+    "edit_group docstring shows a literal JSON op",
+    !!edit?.description?.includes('"op": "set_param"'),
+    (edit?.description ?? "").slice(0, 400)
+  );
+}
 
 // --- 0. source tools work with NO editor connected (they read the checkout,
 //        not the bridge) ---
@@ -171,8 +251,19 @@ const bridge: BridgeClient = connectBridge({
   onStatus: (s) => statuses.push(s),
   getHandlers: () => ({
     get_status: () => ({ projectName: "E2E Test", fps: 60, frame: 12, playing: false }),
-    get_catalog: () => buildCatalogDsl(),
-    get_graph: ({ scope }) => ({ name: scope ?? "root", nodes: [], edges: [] }),
+    get_catalog: (args) =>
+      buildCatalogDsl({
+        mode: args.mode === "full" ? "full" : args.mode === "list" ? "list" : undefined,
+        category: args.category as string | string[] | undefined,
+        types: args.types as string | string[] | undefined,
+      }),
+    get_graph: ({ scope, verbosity, params }) => ({
+      name: scope ?? "root",
+      nodes: [],
+      edges: [],
+      verbosity,
+      params,
+    }),
     screenshot: ({ maxSize }) => ({
       kind: "image",
       mimeType: "image/png",
@@ -181,10 +272,14 @@ const bridge: BridgeClient = connectBridge({
       height: 1,
       frame: 7,
     }),
-    insert_recipe: () => {
+    insert_recipe: ({ recipe, connect, scope, replace_output }) => {
+      if ((recipe as { name?: string }).name === "echo") {
+        return { ok: true, connect, scope, replace_output, ids: { a: "n-1" } };
+      }
       throw new Error("Recipe not applied — fix these and retry:\n- UNKNOWN_TYPE example");
     },
     transport: ({ action }) => ({ ok: true, action, playing: action === "play" }),
+    tidy: ({ nodes, scope }) => ({ ok: true, moved: Array.isArray(nodes) ? nodes.length : 0, scope: scope ?? "current" }),
     screenshot_strip: ({ frames }) => ({
       kind: "image",
       mimeType: "image/png",
@@ -212,6 +307,26 @@ const bridge: BridgeClient = connectBridge({
       poisonRoots: [{ id: "text-1", type: "text", downstreamMsPerFrame: 14.2 }],
     }),
     get_perf_frame: ({ seq }) => ({ seq, nodes: [{ id: "n1", ms: 1.5, depth: 0 }] }),
+    get_shader_errors: ({ nodeId }) => ({
+      compiled: 1,
+      failed: 1,
+      nodes: [
+        {
+          nodeId: nodeId ?? "glsl-1",
+          type: "glsl-expression",
+          ok: false,
+          error: "Shader compile failed: ERROR: 0:14: 'foo' : undeclared identifier",
+          preludeLines: 13,
+        },
+      ],
+    }),
+    get_node_data: ({ nodeId, limit, socket }) => ({
+      nodeId,
+      limit,
+      socket,
+      kind: "points",
+      count: 0,
+    }),
   }),
   isCodeTrusted: () => false,
   appVersion: "e2e",
@@ -249,14 +364,67 @@ check("get_status round-trips", !isError(r3) && status.projectName === "E2E Test
 
 const r4 = await client.callTool({ name: "get_catalog", arguments: {} });
 check(
-  "get_catalog returns the DSL",
-  !isError(r4) && textOf(r4).includes("point-expression (Point Expression)"),
+  "get_catalog default is a compact index",
+  !isError(r4) &&
+    textOf(r4).includes("point-expression (Point Expression)") &&
+    !textOf(r4).includes(" -> "),
   `${textOf(r4).length} chars`
+);
+{
+  const dsl = textOf(r4);
+  check(
+    "get_catalog lists Repeat compound zone",
+    dsl.includes("repeat (Repeat)"),
+    dsl.includes("repeat") ? "present" : "missing"
+  );
+  check(
+    "get_catalog lists For Each compound zone",
+    dsl.includes("foreach (For Each Element)"),
+    dsl.includes("foreach") ? "present" : "missing"
+  );
+  check(
+    "get_catalog index documents y-stretch",
+    dsl.includes("scales y about 0.5 by W/H"),
+    dsl.split("\n").slice(0, 3).join(" | ")
+  );
+}
+const r4b = await client.callTool({
+  name: "get_catalog",
+  arguments: { types: ["repeat"] },
+});
+check(
+  "get_catalog types= returns full DSL",
+  !isError(r4b) && textOf(r4b).includes("repeat (Repeat)") && textOf(r4b).includes(" -> "),
+  `${textOf(r4b).length} chars`
+);
+
+const r4c = await client.callTool({
+  name: "get_catalog",
+  arguments: { types: ["transform"] },
+});
+check(
+  "get_catalog transform space enum includes Canvas/Source labels",
+  !isError(r4c) &&
+    textOf(r4c).includes("global=Canvas") &&
+    textOf(r4c).includes("local=Source"),
+  textOf(r4c).slice(0, 400)
 );
 
 // --- 3b. milestone 2-4 tools marshal correctly ---
 const rg = await client.callTool({ name: "get_graph", arguments: { scope: "layer-x" } });
 check("get_graph forwards scope", !isError(rg) && JSON.parse(textOf(rg)).name === "layer-x");
+const rgIds = await client.callTool({
+  name: "get_graph",
+  arguments: { scope: "layer-x", verbosity: "ids", params: "non_default" },
+});
+{
+  const j = isError(rgIds) ? {} : JSON.parse(textOf(rgIds));
+  check(
+    "get_graph forwards verbosity + params",
+    !isError(rgIds) && j.verbosity === "ids" && j.params === "non_default",
+    textOf(rgIds)
+  );
+}
 
 const rs = await client.callTool({ name: "screenshot", arguments: { maxSize: 512 } });
 const imgBlock = (rs as { content: { type: string; data?: string; mimeType?: string }[] }).content.find(
@@ -321,6 +489,17 @@ check(
   !isError(rpf) && JSON.parse(textOf(rpf)).seq === 42,
   textOf(rpf)
 );
+const rse = await client.callTool({
+  name: "get_shader_errors",
+  arguments: { nodeId: "glsl-1" },
+});
+check(
+  "get_shader_errors forwards nodeId",
+  !isError(rse) &&
+    JSON.parse(textOf(rse)).nodes?.[0]?.nodeId === "glsl-1" &&
+    JSON.parse(textOf(rse)).failed === 1,
+  textOf(rse)
+);
 // `seq` is required by the schema — a missing one must fail at the server,
 // never reach the editor as NaN.
 const rpfBad = await client.callTool({ name: "get_perf_frame", arguments: {} });
@@ -365,6 +544,35 @@ check(
   isError(ri) && textOf(ri).includes("UNKNOWN_TYPE example"),
   textOf(ri).slice(0, 60)
 );
+const riEcho = await client.callTool({
+  name: "insert_recipe",
+  arguments: {
+    recipe: { name: "echo" },
+    connect: true,
+    replace_output: true,
+    scope: "parent",
+  },
+});
+{
+  const j = isError(riEcho) ? {} : JSON.parse(textOf(riEcho));
+  check(
+    "insert_recipe forwards replace_output and returns ids",
+    !isError(riEcho) && j.replace_output === true && j.ids?.a === "n-1",
+    textOf(riEcho)
+  );
+}
+const rnd = await client.callTool({
+  name: "get_node_data",
+  arguments: { nodeId: "circ-1", limit: 8, socket: "out" },
+});
+{
+  const j = isError(rnd) ? {} : JSON.parse(textOf(rnd));
+  check(
+    "get_node_data forwards nodeId/limit/socket",
+    !isError(rnd) && j.nodeId === "circ-1" && j.limit === 8 && j.socket === "out",
+    textOf(rnd)
+  );
+}
 
 // --- 4. editor disconnects → back to friendly error ---
 bridge.close();

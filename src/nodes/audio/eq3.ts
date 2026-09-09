@@ -15,6 +15,12 @@ export const audioEq3Node: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Three-band equalizer: boost or cut low / mid / high in dB, with adjustable band crossover frequencies. Wire an audio chain through it and keyframe the band gains — changes ramp click-free.",
+  facts: {
+    gotchas: [
+      "Descriptor in, descriptor out: compute() does no audio work; the audio engine builds a Tone.EQ3 once the chain reaches an audio output.",
+      "low_freq/high_freq (Hz) are the crossover boundaries between bands, not band centers; low/mid/high are independent dB trims applied on either side of those boundaries.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "audio", type: "audio", required: true, label: "Audio" }],

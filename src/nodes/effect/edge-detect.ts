@@ -69,6 +69,13 @@ export const edgeDetectNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Extract edges via Sobel or Prewitt 3×3 gradient convolution. Output is grayscale gradient magnitude — brighter = stronger edge. Threshold clamps weak responses to zero for binary edge maps.",
+  facts: {
+    gotchas: [
+      "threshold clips the strength-scaled magnitude, not the raw gradient, so raising strength also lowers the effective threshold.",
+      "Samples at a fixed 1-pixel offset (1/src.width, 1/src.height), so edge width is always one source pixel and does not scale with output resolution.",
+      "Output is fully opaque (alpha forced to 1) and grayscale (R=G=B=magnitude); the source's own alpha channel is discarded.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

@@ -83,6 +83,13 @@ export const listNode: NodeDefinition = {
     "shorthand (1..10, a..e, 0..20 step 2). Outputs the whole list for the " +
     "list transform nodes, plus the item at an animatable index (a scalar " +
     "for numeric lists, a string otherwise) and the item count.",
+  facts: {
+    gotchas: [
+      "itemType=auto infers scalar vs string from whether every cell is numeric; forcing number/text re-types the WHOLE list, not just the indexed item.",
+      "Because the item socket's type is inferred from the currently stored text param, driving text from an upstream wire can leave item typed one step behind a change in the incoming data's numeric-ness.",
+      "index is floored; indexMode=clamp holds at 0/length-1, indexMode=wrap uses ((i%length)+length)%length; an empty list returns 0 (scalar) or \"\" (string) instead of leaving item disconnected.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   // Pure CPU data node — the universal mask input is meaningless.

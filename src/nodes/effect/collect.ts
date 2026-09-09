@@ -110,6 +110,15 @@ export const collectNode: NodeDefinition = {
   category: "utility",
   description:
     "Bundle N homogeneous inputs. Type follows the first wire (image, spline, points, or 3D object) and can still be set from the header. Inputs auto-grow — there's always one spare empty socket. For images, produces an image_group. For splines and points, concatenates into a single value with per-subpath / per-point groupIndex metadata matching the socket order (a=0, b=1, c=2…). Nodes that don't understand groupIndex just treat the output as a normal spline/points value; Select by Index and Count Indices key off the tags. For 3D objects, groups the inputs into one object3d for the 3D Scene node — primitives wire straight in.",
+  facts: {
+    space: { out: "in:a" },
+    gotchas: [
+      "Disconnected sockets are dropped, not stubbed — the group's effective size is the count of connected sockets, independent of count/slots.",
+      "Spline/points 'groups' aren't containers — they're flattened into one value tagged with per-item groupIndex (a=0, b=1, c=2...), compacted over connected sockets only.",
+      "mode=object clears and re-adds children into one retained THREE.Group every eval; geometry wires land here via the geometry-to-object3d auto-wrap.",
+      "Switching mode changes the output socket type (image_group / spline / points / object3d), so downstream wires must accept the new type.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   inputs: [

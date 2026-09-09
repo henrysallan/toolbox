@@ -109,6 +109,16 @@ export const spline3DNode: NodeDefinition = {
   category: "3d",
   description:
     "A 3D curve drawn through control points, edited in the viewport with per-point transform controls (+/− in the viewport toolbar add and remove points). Smooth mode curves through the anchors; Bezier mode adds per-anchor handles (mirrored or free) — switching modes keeps the shape. Outputs a tube along the curve, plus path points whose normals follow the curve's direction.",
+  facts: {
+    space: { "param:points": "world3d", "param:handles": "world3d", "param:radius": "world3d" },
+    gotchas: [
+      "handle_mode is enforced by the viewport rig on handle drags only; compute() never reads it, so it has no effect on the built geometry.",
+      "tension only affects the smooth (Catmull-Rom) reading; bezier mode ignores it even though it is still read into the curve value.",
+      "mode=bezier synthesizes handles from the smooth tangents ((next−prev)/6) whenever stored handles don't match 2× the anchor count, preserving shape across mode switches.",
+      "No material params (unlike the 3D primitives): the tube's material slot is null, so it renders with the default until a Material node overrides it downstream.",
+      "resolution multiplies by the anchor segment count (points.length, or −1 when open) to set the tube's tubular segments, so smoothness scales with anchor count.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   headerControl: { paramName: "mode" },

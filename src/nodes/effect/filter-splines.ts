@@ -208,6 +208,24 @@ export const filterSplinesNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Keep or discard whole subpaths of a spline by predicate — the spline sibling of Filter Points. Bbox tests each subpath's bounds against an XY window (by center, fully inside, or overlapping); Mask keeps subpaths where the wired image's luminance is ≥ threshold, sampled at the center or averaged along the path; Size keeps subpaths whose length or area falls in a range (raise Min to cull speck fragments after a boolean or trace); Index keeps 1 of every N subpaths; Random keeps a stable random subset (hashed on index, so shapes don't flicker in/out — raising Amount reveals more of the same subpaths, Seed re-rolls the selection). Invert flips which side is kept. Anchors are never touched, so surviving subpaths keep their exact geometry, group tags, and drivers.",
+  facts: {
+    space: {
+      "param:x_min": "canvas01",
+      "param:x_max": "canvas01",
+      "param:y_min": "canvas01",
+      "param:y_max": "canvas01",
+      "param:size_min": "canvas01",
+      "param:size_max": "canvas01",
+    },
+    gotchas: [
+      "bbox test picks what \"inside\" means: center (bbox center in window, like Filter Points), inside (whole bbox inside), or overlap; an empty subpath always fails the test.",
+      "size_metric=length measures the flattened polyline's arc length (~1 spans canvas width); area is the |shoelace| of that polyline, implicitly closed even for open subpaths.",
+      "mask_sample=average samples every flattened polyline vertex (up to 16 per curve) and averages luminance; center samples only the bbox center, which can miss long open strokes.",
+      "index/random key off subpath order in the input array, using the same triple32 hash as Filter Points and Point Expression's rand() (seed 0 == hash01(index)), so a cull agrees across nodes.",
+      "Anchors, closed, groupIndex, and driver are never rewritten — surviving subpaths pass through by reference, and group tags are not renumbered (identity, like Filter Points).",
+      "An unwired mask input passes every subpath through unchanged instead of dropping them.",
+    ],
+  },
   backend: "webgl2",
   inputs: [
     { name: "path", type: "spline", required: true },

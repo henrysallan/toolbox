@@ -22,6 +22,13 @@ export const audioFmSynthNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Polyphonic FM synth voice — the notes→audio rasterizer for bells, keys, and metallic tones. Wire a notes source (Step Pattern) into it, route the audio into a Layer Output audio socket or the Output node, and press Play. Harmonicity sets the modulator ratio, modulation index the brightness.",
+  facts: {
+    gotchas: [
+      "compute() does no audio work: it builds an instrument descriptor the audio engine turns into a Tone.PolySynth(FMSynth); notes pass through by reference for reschedule diffing.",
+      "No notes wired, or an empty notes array, emits nothing — route the audio into a Layer Output or the Output node and press Play to hear it.",
+      "harmonicity is the carrier:modulator frequency ratio; mod_index sets FM depth/brightness — together they cover bells, electric pianos, and metallic percussion.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [{ name: "notes", type: "notes", required: true, label: "Notes" }],

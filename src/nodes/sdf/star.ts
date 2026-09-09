@@ -26,6 +26,22 @@ export const sdfStarNode: NodeDefinition = {
   category: "utility",
   description:
     "SDF primitive — an N-pointed star. Sharpness 2 = sharpest spike, equal-to-points = regular polygon. 3 ≤ Points ≤ 24. Wire `position` to feed a transformed coordinate space.",
+  facts: {
+    space: {
+      "in:position": "canvas01",
+      "in:center": "canvas01",
+      "in:radius": "canvas01",
+      "param:x": "canvas01",
+      "param:y": "canvas01",
+      "param:radius": "canvas01",
+    },
+    gotchas: [
+      "Builds an SDF tree only; nothing is drawn until a terminal (Rasterize / Shade / To Mask / To Distance Image) evaluates it per pixel.",
+      "Unwired position = canvas UV; wire a Translate/Repeat/Mirror position chain to change the space the star is evaluated in.",
+      "radius is width-relative only while the consuming terminal's aspect_correct is on; off, it becomes a per-axis UV fraction and the star squashes on non-square canvases.",
+      "sharpness is clamped to [2, points] at compute time, so raising it past points has no further effect beyond a regular polygon.",
+    ],
+  },
   backend: "webgl2",
   stable: true,
   inputs: [

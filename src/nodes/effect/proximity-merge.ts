@@ -64,6 +64,16 @@ export const proximityMergeNode: NodeDefinition = {
   category: "utility",
   description:
     "Combine multiple splines (or point sets) and weld the parts that fall within a distance threshold in UV space. Join stitches open subpath endpoints into continuous / closed paths (a real topology change); Snap clusters nearby anchors/points to their shared centroid. Inputs auto-grow — there's always one spare empty socket — and a single socket also accepts a spline group from the Combine node. Animate exposes a `t` scalar (0..1) that slides parts together, committing the join/collapse at t=1 with no pop.",
+  facts: {
+    space: { "param:distance": "uv01", out: "in:in" },
+    gotchas: [
+      "distance measures raw per-axis UV deltas, not aspect-corrected canvas distance: on a non-square canvas the same value reaches further in x than in y or vice versa.",
+      "mode=points also blends rotation and scale.x/y (and any named point attribute) toward the cluster mean at the same t as position, not just position.",
+      "dedupe only fires once t reaches 1 (the commit); with animate on and t<1 the checkbox has no visible effect yet.",
+      "join's weld anchor is marked broken whenever both welded ends carried real handles, so the seam reads as a sharp corner, not a smoothed curve.",
+      "A joined chain only self-closes into a closed subpath when it has 3+ anchors and its two free ends also land within distance; shorter chains stay open.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   inputs: [{ name: "in", type: "spline", required: false }],
@@ -540,59 +550,177 @@ function joinSpline(
     };
   }
 
-  // Commit: greedily concatenate open subpaths whose free endpoints fall
-  // within the threshold, reversing orientation as needed.
-  let chains: SplineAnchor[][] = open.map((s) => s.anchors.map(cloneAnchor));
-  for (;;) {
-    let best: { i: number; j: number; ei: number; ej: number; dd: number } | null =
-      null;
-    for (let i = 0; i < chains.length; i++) {
-      const ci = chains[i];
-      const iEnds: [number, number][] = [ci[0].pos, ci[ci.length - 1].pos];
-      for (let j = i + 1; j < chains.length; j++) {
-        const cj = chains[j];
-        const jEnds: [number, number][] = [cj[0].pos, cj[cj.length - 1].pos];
-        for (let ei = 0; ei < 2; ei++) {
-          for (let ej = 0; ej < 2; ej++) {
-            const dd = dist2(iEnds[ei], jEnds[ej]);
-            if (dd <= d2 && (!best || dd < best.dd)) {
-              best = { i, j, ei, ej, dd };
-            }
-          }
-        }
-      }
-    }
-    if (!best) break;
-    // Orient so i's matched end is its tail (ei===1) and j's matched end
-    // is its head (ej===0), then weld the joint and concatenate.
-    let li = chains[best.i];
-    let rj = chains[best.j];
-    if (best.ei === 0) li = reverseAnchors(li);
-    if (best.ej === 1) rj = reverseAnchors(rj);
-    const joint = weldJoint(li[li.length - 1], rj[0]);
-    const merged = [...li.slice(0, li.length - 1), joint, ...rj.slice(1)];
-    chains = chains.filter((_, k) => k !== best!.i && k !== best!.j);
-    chains.push(merged);
+  // Commit: greedy matching on original endpoints (Kruskal). Candidate
+  // pairs within `distance` are gathered via a uniform grid, sorted by
+  // distance, then accepted when both endpoints are still free and the
+  // join wouldn't cycle a chain (self-close is a later pass). Flatten
+  // each chain in one walk — same matching as repeatedly welding the
+  // closest remaining pair, without an O(N³) rescan or per-merge copies.
+  const m = open.length;
+  type EP = { sub: number; end: 0 | 1; pos: [number, number] };
+  const eps: EP[] = new Array(m * 2);
+  for (let i = 0; i < m; i++) {
+    const a = open[i].anchors;
+    eps[i * 2] = { sub: i, end: 0, pos: a[0].pos };
+    eps[i * 2 + 1] = { sub: i, end: 1, pos: a[a.length - 1].pos };
   }
 
-  // Self-close any chain whose two free ends now coincide. Require ≥3
-  // anchors so the closed result still has ≥2 (a 2-anchor chain that's
-  // just a short segment stays open rather than collapsing to a point).
-  const joined: SplineSubpath[] = chains.map((anchors) => {
+  type Pair = { i: number; j: number; dd: number };
+  const pairs: Pair[] = [];
+  forProximityPairs(eps, d2, (i, j, dd) => {
+    pairs.push({ i, j, dd });
+  });
+  pairs.sort((a, b) => a.dd - b.dd || a.i - b.i || a.j - b.j);
+
+  type Link = { other: number; otherEnd: 0 | 1 };
+  const headLink: (Link | null)[] = new Array(m).fill(null);
+  const tailLink: (Link | null)[] = new Array(m).fill(null);
+  const setLink = (sub: number, end: 0 | 1, link: Link) => {
+    if (end === 0) headLink[sub] = link;
+    else tailLink[sub] = link;
+  };
+  const used = new Uint8Array(eps.length);
+  const { find, union } = unionFind(m);
+  for (let p = 0; p < pairs.length; p++) {
+    const a = pairs[p].i;
+    const b = pairs[p].j;
+    if (used[a] || used[b]) continue;
+    const sa = eps[a].sub;
+    const sb = eps[b].sub;
+    if (find(sa) === find(sb)) continue;
+    used[a] = 1;
+    used[b] = 1;
+    union(sa, sb);
+    setLink(sa, eps[a].end, { other: sb, otherEnd: eps[b].end });
+    setLink(sb, eps[b].end, { other: sa, otherEnd: eps[a].end });
+  }
+
+  const members = new Map<number, number[]>();
+  for (let i = 0; i < m; i++) {
+    const r = find(i);
+    let arr = members.get(r);
+    if (!arr) {
+      arr = [];
+      members.set(r, arr);
+    }
+    arr.push(i);
+  }
+
+  const joined: SplineSubpath[] = [];
+  for (const group of members.values()) {
+    let startSub = group[0];
+    let startEnd: 0 | 1 = 0;
+    for (let g = 0; g < group.length; g++) {
+      const s = group[g];
+      if (!headLink[s]) {
+        startSub = s;
+        startEnd = 0;
+        break;
+      }
+      if (!tailLink[s]) {
+        startSub = s;
+        startEnd = 1;
+        break;
+      }
+    }
+    const anchors = flattenChain(open, startSub, startEnd, headLink, tailLink);
     if (anchors.length >= 3 && dist2(anchors[0].pos, anchors[anchors.length - 1].pos) <= d2) {
       const joint = weldJoint(anchors[anchors.length - 1], anchors[0]);
-      return {
+      joined.push({
         closed: true,
         anchors: [joint, ...anchors.slice(1, anchors.length - 1)],
-      };
+      });
+    } else {
+      joined.push({ closed: false, anchors });
     }
-    return { closed: false, anchors };
-  });
+  }
 
   return {
     kind: "spline",
     subpaths: [...joined, ...closed.map(passThroughSub)],
   };
+}
+
+// Walk a chain from a free endpoint, welding joints as we concatenate.
+function flattenChain(
+  open: SplineSubpath[],
+  startSub: number,
+  startEnd: 0 | 1,
+  headLink: ({ other: number; otherEnd: 0 | 1 } | null)[],
+  tailLink: ({ other: number; otherEnd: 0 | 1 } | null)[]
+): SplineAnchor[] {
+  const out: SplineAnchor[] = [];
+  let sub = startSub;
+  let enterEnd: 0 | 1 = startEnd;
+  const m = open.length;
+  for (let guard = 0; guard < m; guard++) {
+    const src = open[sub].anchors;
+    const reversed = enterEnd === 1;
+    const oriented = reversed
+      ? reverseAnchors(src.map(cloneAnchor))
+      : src.map(cloneAnchor);
+    if (out.length === 0) {
+      for (let i = 0; i < oriented.length; i++) out.push(oriented[i]);
+    } else {
+      const joint = weldJoint(out[out.length - 1], oriented[0]);
+      out[out.length - 1] = joint;
+      for (let i = 1; i < oriented.length; i++) out.push(oriented[i]);
+    }
+    const exitEnd: 0 | 1 = enterEnd === 0 ? 1 : 0;
+    const link = exitEnd === 0 ? headLink[sub] : tailLink[sub];
+    if (!link) break;
+    sub = link.other;
+    enterEnd = link.otherEnd;
+  }
+  return out;
+}
+
+// Visit every pair of endpoints from different subpaths whose squared
+// distance is ≤ d2. Uniform grid so a typical sparse join is O(N + K)
+// instead of O(N²); a distance that covers everyone degrades to the
+// all-pairs scan (same as before, just once).
+function forProximityPairs(
+  eps: readonly { sub: number; pos: [number, number] }[],
+  d2: number,
+  visit: (i: number, j: number, dd: number) => void
+): void {
+  const n = eps.length;
+  if (n < 2) return;
+  const cell = Math.sqrt(d2) || 1e-12;
+  const grid = new Map<string, number[]>();
+  for (let i = 0; i < n; i++) {
+    const cx = Math.floor(eps[i].pos[0] / cell);
+    const cy = Math.floor(eps[i].pos[1] / cell);
+    const key = `${cx}|${cy}`;
+    let bucket = grid.get(key);
+    if (!bucket) {
+      bucket = [];
+      grid.set(key, bucket);
+    }
+    bucket.push(i);
+  }
+  for (let i = 0; i < n; i++) {
+    const ax = eps[i].pos[0];
+    const ay = eps[i].pos[1];
+    const si = eps[i].sub;
+    const cx = Math.floor(ax / cell);
+    const cy = Math.floor(ay / cell);
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const bucket = grid.get(`${cx + dx}|${cy + dy}`);
+        if (!bucket) continue;
+        for (let b = 0; b < bucket.length; b++) {
+          const j = bucket[b];
+          if (j <= i) continue;
+          if (eps[j].sub === si) continue;
+          const ex = ax - eps[j].pos[0];
+          const ey = ay - eps[j].pos[1];
+          const dd = ex * ex + ey * ey;
+          if (dd <= d2) visit(i, j, dd);
+        }
+      }
+    }
+  }
 }
 
 function passThroughSub(sub: SplineSubpath): SplineSubpath {
@@ -627,14 +755,7 @@ function previewSlideEndpoints(
   });
   const n = eps.length;
   const { find, union } = unionFind(n);
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      // Don't cluster a subpath's own two ends together in the preview —
-      // that would visually collapse it before any real self-close.
-      if (eps[i].sub === eps[j].sub) continue;
-      if (dist2(eps[i].pos, eps[j].pos) <= d2) union(i, j);
-    }
-  }
+  forProximityPairs(eps, d2, (i, j) => union(i, j));
   const acc = new Map<number, { x: number; y: number; c: number }>();
   for (let i = 0; i < n; i++) {
     const r = find(i);

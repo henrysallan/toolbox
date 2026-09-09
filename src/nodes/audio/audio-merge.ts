@@ -85,6 +85,15 @@ export const audioMergeNode: NodeDefinition = {
   subcategory: "utility",
   description:
     "Mixes up to 8 audio inputs into one signal with per-lane gain, pan, mute, and solo. Set `lanes` to grow the input sockets; gains and pans are keyframable — or drive them from any scalar — for automated mixes.",
+  facts: {
+    gotchas: [
+      "Descriptor in, descriptor out: compute() does no audio work, only builds a 'mix' descriptor from per-lane gain/pan/mute strips.",
+      "gain is a linear multiplier (0..2, default 1), not dB — unlike Channel's gain, which is in dB.",
+      "Any soloed lane forces mute on, at descriptor-build time, for every other visible lane; a soloed lane still honors its own mute.",
+      "Unwired lanes are skipped entirely — no strip and no silent lane is created for them.",
+      "Audio→scalar taps (Audio Bands, etc.) read the first wired lane's raw pre-mix signal, not the summed mix output.",
+    ],
+  },
   backend: "webgl2",
   noMaskInput: true,
   inputs: [

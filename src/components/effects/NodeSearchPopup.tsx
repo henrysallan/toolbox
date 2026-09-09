@@ -252,6 +252,20 @@ export default function NodeSearchPopup({
         description:
           "A zone that evaluates the nodes inside it K times, collecting the results as variants (an image group or grouped spline/points). Wire its index / t / random into exposed params to vary each iteration.",
       } as unknown as (typeof real)[number],
+      {
+        type: "repeat",
+        name: "Repeat",
+        category: "utility",
+        description:
+          "A feedback zone: the interior runs N times, each pass feeding its output back into the matching Repeat Input passthrough. Nest a For Each Element inside to recurse over spline subpaths.",
+      } as unknown as (typeof real)[number],
+      {
+        type: "foreach",
+        name: "For Each Element",
+        category: "utility",
+        description:
+          "A zone that runs once per subpath (or point) of a wired spline/points value. Wire Geometry on the For Each Output; the current element comes off For Each Input. Nest inside Repeat for recursive subdivision.",
+      } as unknown as (typeof real)[number],
       aiRecipe,
       ...(assistant ? [assistant] : []),
       ...(presetDefs() as unknown as (typeof real)[number][]),

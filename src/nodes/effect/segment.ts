@@ -220,6 +220,16 @@ export const segmentAnythingNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Segment images locally via Transformers.js. Dots mode: select the node and click the canvas to drop dots on what you want — each dot adds another object (SlimSAM); outputs a cutout + selection mask. Auto modes need no points and output an evolving multicolor segment map: Semantic (SegFormer classes, inherently stable colors), Panoptic (DETR instances, overlap-matched across frames), Auto Grid (SAM point grid, slow but class-agnostic) — set Levels for the segment count, and use the grayscale id-map aux with a Color Ramp for custom palettes. For animated inputs, Bake runs the model over an in/out frame range and caches a mask per frame; Free Bake clears it.",
+  facts: {
+    gotchas: [
+      "ML inference never runs in compute(): dots run SlimSAM on click, Bake runs it over inFrame..outFrame — compute only picks the cached mask for ctx.frame and uploads it.",
+      "mode=dots outputs a cutout + selection mask; mode=semantic/panoptic/grid colorize per-slot IDs instead, with `levels` normalizing the id map for Color Ramp.",
+      "Baked masks are session-only: dots/inFrame/outFrame/feather/threshold save with the project, the decoded bitmaps do not — reopening a project needs one re-bake.",
+      "Before any dot is placed (or before the first baked frame decodes), the node passes the source through with an all-white mask so downstream wiring isn't blocked.",
+      "In offline export, an undecoded baked frame blocks via pushMediaSettle for frame accuracy; realtime playback instead shows the previous mask texture for a frame.",
+      "Index masks upload with NEAREST filtering and no color-space conversion — slot IDs are exact integers, not colors to interpolate.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "image", type: "image", required: true }],
   params: [

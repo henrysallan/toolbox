@@ -26,6 +26,15 @@ export const animatedValueNode: NodeDefinition = {
   description:
     "A keyframable value with a wired clock: keyframe Value as usual, then wire a scalar into Time and the curve is sampled at that time instead of the playhead — offset it, stretch it, ping-pong it, or drive it from audio. Unwired, it behaves like a keyframed Constant. Unit sets whether Time is read as frames or seconds.",
   searchAliases: ["retime", "keyframes", "channel", "curve sample", "clock"],
+  facts: {
+    space: { "in:time": "time" },
+    gotchas: [
+      "Wired time is read as frames or seconds per unit and converted to ticks for keyframe sampling; unwired, it behaves like a keyframed Constant.",
+      "Out-of-range times clamp to the end keyframes; there is no extrapolation, looping, or ping-pong built in.",
+      "compute() just returns params.value; resampling keyframes at the wired clock happens in the evaluator via clockInput, not in this node's compute.",
+      "Wiring time only changes WHEN keyframes are sampled — a wire into value still overrides keyframes as usual, same precedence as any node.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "time", type: "scalar", required: false, label: "Time" }],
   params: [

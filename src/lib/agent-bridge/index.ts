@@ -82,6 +82,7 @@ export const MUTATING_COMMANDS = new Set([
   "edit_group",
   "set_param",
   "set_keyframes",
+  "tidy",
 ]);
 
 /** Commands that end an iteration — the "look" in build → look → adjust. */

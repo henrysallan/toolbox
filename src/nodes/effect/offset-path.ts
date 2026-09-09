@@ -28,6 +28,15 @@ export const offsetPathNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Offset each subpath perpendicular to its tangent. Useful for variable-width strokes and outline variants without rasterizing. When sharp corners make the offset overlap itself, the Overlap mode cuts the crossing loop — Sharp resolves it to a single point, Smooth rounds the cut.",
+  facts: {
+    space: { "param:distance": "canvas01" },
+    gotchas: [
+      "distance=0 short-circuits and returns the input spline unchanged, skipping offsetSubpath entirely.",
+      "overlap=keep leaves self-intersections from sharp corners in place; sharp/smooth only cut/fillet the crossing loop when set to one of those modes.",
+      "The fillet radius for overlap=smooth is smoothing x |distance| x canvas width, computed in pixel space even though distance itself is canvas01.",
+      "Each subpath is offset independently, so compound paths (e.g. letter holes) keep separate offset loops rather than merging.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [

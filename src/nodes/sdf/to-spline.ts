@@ -215,6 +215,14 @@ export const sdfToSplineNode: NodeDefinition = {
   category: "utility",
   description:
     "Extract the iso-line of an SDF as a spline (closed where loops form, open where chains run off the grid). Resolution sets the marching-squares grid size — 256 is a good default; raise it for smoother curves at the cost of a bigger CPU readback. Async Readback trades a one-frame contour lag during playback for eliminating the sync GPU readback stall (the whole cost of this node in GPU-heavy graphs); exports are frame-exact either way.",
+  facts: {
+    space: { "param:iso": "canvas01" },
+    gotchas: [
+      "aspect_correct has no visible effect here: the readback target is always resolution x resolution (square), so its aspect ratio is always 1 regardless of the toggle.",
+      "iso direction: negative values trace concentric loops inside the shape, positive values trace a puffed-out boundary outside it; 0 (default) is the exact SDF zero-crossing.",
+      "async_readback lags the output spline by one frame during playback (paused steady state is exact); exports and the first eval after a cold start always take the exact sync path.",
+    ],
+  },
   backend: "webgl2",
   // CPU readback every frame — not cacheable.
   stable: false,

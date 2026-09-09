@@ -557,6 +557,26 @@ export const behavioralGrowthNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Give points rules and let them move — flocking, schooling, crowds, slime networks. Steering stacks the classic behaviours as weights you can mix: separation, alignment and cohesion for a flock, Seek toward wired Targets (negative values flee), Wander for restlessness, Flow to follow a wired field as an angle map, and Avoid to steer around Obstacles; tag agents with different group indices and turn on Predator/prey to watch a flock split around a chaser. Physarum is the slime-mould network — each agent sniffs the trail ahead and to each side, turns toward the strongest, and deposits its own trail, which diffuses and decays; the Deposit image aux is usually what you actually render. Vicsek is alignment plus angular noise alone, and the noise slider alone takes it from ordered swirls to chaos. Chemotaxis runs and tumbles up a wired field, searching rather than sliding. Integrate re-runs from the seed points every frame (deterministic and scrub-safe, and the Trails aux gives streamline art); Accumulate keeps the agents moving frame to frame as a living system.",
+  facts: {
+    space: {
+      "param:speed": "canvas01",
+      "param:r_separation": "canvas01",
+      "param:r_neighbor": "canvas01",
+      "param:arrive_radius": "canvas01",
+      "param:sensor_distance": "canvas01",
+    },
+    reads: ["attr:group", "time"],
+    writes: ["attr:rotation"],
+    gotchas: [
+      "Positions convert canvas-authored coords as x=u*W, y=v*W+(H-W)/2 (authoredToPxY), not v*H, so radii and speeds stay circular on non-square canvases.",
+      "timeline=accumulate persists position/velocity across frames in state; timeline=integrate resimulates `steps` ticks from the seed points every eval, deterministic.",
+      "mode=physarum always runs as accumulate since its trail field is path-dependent, so the timeline and steps params are hidden and irrelevant.",
+      "predator_prey splits agents by attr:group: group 0 is prey, any nonzero group is a predator that chases/repels within r_neighbor.",
+      "max_neighbors caps interaction count per agent (topological, not just radius), so denser flocks do not blow up the per-frame cost.",
+      "diffuse_radius (physarum) is a box-blur radius in the trail field's OWN grid cells (sized by field_resolution), not render pixels.",
+      "aux:deposit renders at the physarum field's own grid resolution (field_resolution), not the canvas render size.",
+    ],
+  },
   backend: "webgl2",
   headerControl: { paramName: "mode" },
   simulation: true,

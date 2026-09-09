@@ -70,6 +70,19 @@ export const cursorTrailPointsNode: NodeDefinition = {
   subcategory: "generator",
   description:
     "Drop points along the pointer's path while drawing on the preview — evenly spaced with seeded radial scatter. Feed Loop Weave for the live loop-de-loop demo, or any points consumer. Press mode draws while the mouse button is held; hover drops wherever the pointer moves.",
+  facts: {
+    space: { "param:spacing": "canvas01", "param:scatter": "canvas01", "param:lifetime": "time" },
+    reads: ["time"],
+    writes: ["attr:group"],
+    gotchas: [
+      "emit=press needs CursorState.pressed, tracked only by the editor and the live viewer; a context without it never reads as pressed, so use emit=hover there.",
+      "lifetime (seconds) expires drops against wall-clock performance.now(), not scene time, so a decaying trail does not replay identically across renders of the same timeline.",
+      "clear_on_loop (default on) wipes the whole trail when ctx.time jumps backward past the last eval, i.e. on a timeline loop.",
+      "overflow=stop halts new drops once max_points is reached; overflow=ring instead evicts the oldest drop to keep accepting new ones.",
+      "The group attribute holds each drop's monotonic id (its stable scatter-seed identity), not a semantic grouping value.",
+      "Radial scatter is hashed on each drop's id, so re-evaluating never reshuffles an already-placed point's jitter.",
+    ],
+  },
   backend: "webgl2",
   // External cursor + wall-clock state — recompute every eval.
   stable: false,

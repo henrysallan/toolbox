@@ -42,6 +42,15 @@ export const sampleAlongPathNode: NodeDefinition = {
   subcategory: "modifier",
   description:
     "Output the position, tangent, and orientation angle at a given arc-length t ∈ [0,1] along a spline. Expose `t` as a socket to animate along the path; set Past ends to loop/ping-pong so `t` past 1 repeats. Wire `angle` (radians, tangent direction) or `normalAngle` (perpendicular) into a rotation input to orient an object along the path.",
+  facts: {
+    space: { out: "canvas01" },
+    gotchas: [
+      "wrap folds t outside [0,1]: clamp (default) holds the nearest endpoint, loop is fract() so t=1 snaps to 0, ping-pong bounces 0-1-0; both handle negative t too.",
+      "Arc length is measured across ALL subpaths concatenated in order, so a multi-subpath spline animates evenly by total painted distance, not per-subpath.",
+      "angle/normalAngle are atan2 of the unit tangent in canvas01's Y-down frame, in radians; normalAngle = angle + 90 degrees. Transform's rotate param is degrees, not radians.",
+      "position and both angle outputs come from the same arc-length sample, so they stay in sync as t animates.",
+    ],
+  },
   backend: "webgl2",
   inputs: [{ name: "path", type: "spline", required: true }],
   params: [
