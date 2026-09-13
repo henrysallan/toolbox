@@ -109,7 +109,7 @@ export function stepTracksOnImage(input: StepFrameInput): StepFrameResult {
 
     const result = classicalBackend.step(rt.handle, img, { x: predX, y: predY });
     let conf = result.conf;
-    let sharpness = result.sharpness;
+    const sharpness = result.sharpness;
     if (settings.verify && input.prevImg && rt.lastFrame != null) {
       const fb = forwardBackwardError(
         classicalBackend,

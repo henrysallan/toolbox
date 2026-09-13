@@ -44,7 +44,9 @@ export default function ProjectLoadOverlay({
   onFaded: () => void;
 }) {
   const onFadedRef = useRef(onFaded);
-  onFadedRef.current = onFaded;
+  useEffect(() => {
+    onFadedRef.current = onFaded;
+  });
 
   // Same capture-phase gate the landing uses: the editor stays mounted
   // (and would otherwise take hotkeys / wheel-pan) under this veil.

@@ -245,8 +245,8 @@ export function TransformGizmoAtTick({
     boundsMin = [GIZMO_REST_AABB.minX, GIZMO_REST_AABB.minY];
     boundsMax = [GIZMO_REST_AABB.maxX, GIZMO_REST_AABB.maxY];
   } else if (boundsSourceId) {
-    // eslint-disable-next-line react-hooks/refs -- engine-owned eval cache, mutated outside React with no change notifications; sampled at render exactly like the pre-detach shell did (the tick subscription that caused this render also caused the eval)
     const bbox = geometryAABBFromOutput(
+      // eslint-disable-next-line react-hooks/refs -- engine-owned eval cache, mutated outside React with no change notifications; sampled at render exactly like the pre-detach shell did (the tick subscription that caused this render also caused the eval)
       evalCacheRef.current.get(boundsSourceId)?.output,
       boundsSourceHandle
     );

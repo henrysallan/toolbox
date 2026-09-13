@@ -108,9 +108,12 @@ export default function TransformGizmo({
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
   // Live so flipping the viewport-bar lock mid-drag takes effect on
-  // the next pointermove without rebinding the listener.
+  // the next pointermove without rebinding the listener. Synced in an
+  // effect — assigning during render trips react-hooks/refs.
   const snapEnabledRef = useRef(snapEnabled);
-  snapEnabledRef.current = snapEnabled;
+  useEffect(() => {
+    snapEnabledRef.current = snapEnabled;
+  });
 
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);

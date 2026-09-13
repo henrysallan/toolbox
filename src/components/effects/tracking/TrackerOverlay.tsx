@@ -100,11 +100,13 @@ function TrackerOverlay({
   const [loupeZoom, setLoupeZoom] = useState(4);
   const [drag, setDrag] = useState<Drag | null>(null);
   const dragRef = useRef<Drag | null>(null);
-  dragRef.current = drag;
   const onChangeRef = useRef(onParamChange);
-  onChangeRef.current = onParamChange;
   const paramsRef = useRef(params);
-  paramsRef.current = params;
+  useEffect(() => {
+    dragRef.current = drag;
+    onChangeRef.current = onParamChange;
+    paramsRef.current = params;
+  });
   const selectedIds = useTrackerSelection(nodeId);
   const placeMode = !!params.place_mode;
   const data = asPointTrackerData(params.tracks);

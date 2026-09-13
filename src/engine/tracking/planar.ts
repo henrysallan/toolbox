@@ -105,7 +105,7 @@ export function stepPlanar(
   const ransac = ransacHomography(src, dst, { threshold: handle.inlierPx });
 
   let H = ransac?.H ?? handle.H;
-  let conf = ransac?.inlierRatio ?? 0;
+  const conf = ransac?.inlierRatio ?? 0;
 
   if (refine === "esm") {
     H = refineEsm(handle.refImg, img, H, handle.refCorners);

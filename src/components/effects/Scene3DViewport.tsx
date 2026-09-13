@@ -200,18 +200,21 @@ export default function Scene3DViewport({
   }, [locked]);
 
   // Latest props for the native handlers (which close over mount values).
+  // Synced in an effect so we don't assign refs during render.
   const sceneRenderIdRef = useRef(sceneRenderId);
-  sceneRenderIdRef.current = sceneRenderId;
   const cameraNodeIdRef = useRef(cameraNodeId);
-  cameraNodeIdRef.current = cameraNodeId;
   const onParamChangeRef = useRef(onParamChange);
-  onParamChangeRef.current = onParamChange;
   const gizmoNodeIdRef = useRef(gizmoNodeId);
-  gizmoNodeIdRef.current = gizmoNodeId;
   const gizmoCanRotateRef = useRef(gizmoCanRotate);
-  gizmoCanRotateRef.current = gizmoCanRotate;
   const gizmoCanScaleRef = useRef(gizmoCanScale);
-  gizmoCanScaleRef.current = gizmoCanScale;
+  useEffect(() => {
+    sceneRenderIdRef.current = sceneRenderId;
+    cameraNodeIdRef.current = cameraNodeId;
+    onParamChangeRef.current = onParamChange;
+    gizmoNodeIdRef.current = gizmoNodeId;
+    gizmoCanRotateRef.current = gizmoCanRotate;
+    gizmoCanScaleRef.current = gizmoCanScale;
+  });
   const controlsRef = useRef<TransformControls | null>(null);
   // True while a gizmo handle is being dragged — suppresses camera orbit.
   const gizmoDraggingRef = useRef(false);

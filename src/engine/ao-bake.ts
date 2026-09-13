@@ -295,9 +295,9 @@ function cosineDir(
   const x = r * Math.cos(phi);
   const y = r * Math.sin(phi);
   const z = Math.sqrt(Math.max(0, 1 - u1));
-  let dx = tx * x + bx * y + nx * z;
-  let dy = ty * x + by * y + ny * z;
-  let dz = tz * x + bz * y + nz * z;
+  const dx = tx * x + bx * y + nx * z;
+  const dy = ty * x + by * y + ny * z;
+  const dz = tz * x + bz * y + nz * z;
   const len = Math.hypot(dx, dy, dz) || 1;
   return [dx / len, dy / len, dz / len];
 }
@@ -340,9 +340,9 @@ function faceNormal(
   const bx = positions[ic * 3]! - positions[ia * 3]!;
   const by = positions[ic * 3 + 1]! - positions[ia * 3 + 1]!;
   const bz = positions[ic * 3 + 2]! - positions[ia * 3 + 2]!;
-  let nx = ay * bz - az * by;
-  let ny = az * bx - ax * bz;
-  let nz = ax * by - ay * bx;
+  const nx = ay * bz - az * by;
+  const ny = az * bx - ax * bz;
+  const nz = ax * by - ay * bx;
   const len = Math.hypot(nx, ny, nz) || 1;
   return [nx / len, ny / len, nz / len];
 }
@@ -529,9 +529,9 @@ export function bakeAmbientOcclusion(input: AoBakeInput): AoBakeResult {
       const ox = px[i * 3]!;
       const oy = px[i * 3 + 1]!;
       const oz = px[i * 3 + 2]!;
-      let nx = pn[i * 3]!;
-      let ny = pn[i * 3 + 1]!;
-      let nz = pn[i * 3 + 2]!;
+      const nx = pn[i * 3]!;
+      const ny = pn[i * 3 + 1]!;
+      const nz = pn[i * 3 + 2]!;
       const originX = ox + nx * BIAS;
       const originY = oy + ny * BIAS;
       const originZ = oz + nz * BIAS;

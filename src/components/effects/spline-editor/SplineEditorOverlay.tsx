@@ -343,7 +343,9 @@ export default function SplineEditorOverlay({
   // Live so flipping the viewport-bar lock mid-drag takes effect on the
   // next pointermove (env is captured at gesture start).
   const snapEnabledRef = useRef(snapEnabled);
-  snapEnabledRef.current = snapEnabled;
+  useEffect(() => {
+    snapEnabledRef.current = snapEnabled;
+  });
   // Shape Builder (spec 071926 M3): the planar-face geometry cache the tools
   // read at event time (synced from the memo by an effect below), and the
   // face currently under the cursor.

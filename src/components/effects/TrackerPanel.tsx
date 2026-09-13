@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, type CSSProperties } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import type { Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
 import type { PointTrack, PointTrackerData } from "@/engine/types";
@@ -70,21 +70,19 @@ export default function TrackerPanel({
       ? `${selected.length} selected`
       : `${targets.length} enabled`;
 
-  const stats = useMemo(() => summarize(data, selected), [data, selected]);
-  const spikeCount = useMemo(() => {
-    let n = 0;
-    let tracksHit = 0;
-    for (const id of targets) {
-      const t = data.tracks.find((tr) => tr.id === id);
-      if (!t) continue;
-      const hits = detectSpikes(trackToArrays(t), spikeThresh);
-      if (hits.length) {
-        n += hits.length;
-        tracksHit++;
-      }
+  const stats = summarize(data, selected);
+  let spikeN = 0;
+  let spikeTracksHit = 0;
+  for (const id of targets) {
+    const t = data.tracks.find((tr) => tr.id === id);
+    if (!t) continue;
+    const hits = detectSpikes(trackToArrays(t), spikeThresh);
+    if (hits.length) {
+      spikeN += hits.length;
+      spikeTracksHit++;
     }
-    return { n, tracksHit };
-  }, [data, targets, spikeThresh]);
+  }
+  const spikeCount = { n: spikeN, tracksHit: spikeTracksHit };
 
   const write = (next: PointTrackerData, key?: string) =>
     onParamChange(node.id, "tracks", next, key);
