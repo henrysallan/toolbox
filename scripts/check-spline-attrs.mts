@@ -242,6 +242,99 @@ function scalarAt(sub: SplineSubpath, i: number, name: string): number {
     kind: "spline",
     subpaths: [
       {
+        closed: false,
+        anchors: [
+          { pos: [0, 0], attrs: { w: -2 } },
+          { pos: [1, 0], attrs: { w: 0.5 } },
+        ],
+      },
+    ],
+  };
+  const absOut = attributeMathNode.compute({
+    inputs: { points: coerceValue(spline, "spline", ctx) },
+    auxIn: {},
+    params: {
+      target: "spline anchors",
+      attr_name: "w",
+      op: "abs",
+    },
+    ctx,
+    nodeId: "am-abs",
+  }) as NodeOutput;
+  const absCh =
+    absOut.primary?.kind === "spline"
+      ? readSplineAnchorChannel(absOut.primary, "w")
+      : undefined;
+  check(
+    "attribute-math abs on spline anchors",
+    !!absCh && close(absCh.data[0], 2) && close(absCh.data[1], 0.5)
+  );
+
+  const gtOut = attributeMathNode.compute({
+    inputs: { points: coerceValue(spline, "spline", ctx) },
+    auxIn: {},
+    params: {
+      target: "spline anchors",
+      attr_name: "w",
+      op: "greater than",
+      operand: "constant",
+      value: 0,
+      output_name: "flag",
+    },
+    ctx,
+    nodeId: "am-gt",
+  }) as NodeOutput;
+  const gtCh =
+    gtOut.primary?.kind === "spline"
+      ? readSplineAnchorChannel(gtOut.primary, "flag")
+      : undefined;
+  check(
+    "attribute-math greater than is strict",
+    !!gtCh && close(gtCh.data[0], 0) && close(gtCh.data[1], 1)
+  );
+
+  const eqSpline: SplineValue = {
+    kind: "spline",
+    subpaths: [
+      {
+        closed: false,
+        anchors: [
+          { pos: [0, 0], attrs: { w: 0 } },
+          { pos: [1, 0], attrs: { w: 0.5 } },
+        ],
+      },
+    ],
+  };
+  const stepOut = attributeMathNode.compute({
+    inputs: { points: coerceValue(eqSpline, "spline", ctx) },
+    auxIn: {},
+    params: {
+      target: "spline anchors",
+      attr_name: "w",
+      op: "step",
+      operand: "constant",
+      value: 0,
+      output_name: "flag",
+    },
+    ctx,
+    nodeId: "am-step",
+  }) as NodeOutput;
+  const stepCh =
+    stepOut.primary?.kind === "spline"
+      ? readSplineAnchorChannel(stepOut.primary, "flag")
+      : undefined;
+  check(
+    "attribute-math step is inclusive on the edge",
+    !!stepCh && close(stepCh.data[0], 1) && close(stepCh.data[1], 1)
+  );
+}
+
+{
+  const ctx = makeCtx();
+  const spline: SplineValue = {
+    kind: "spline",
+    subpaths: [
+      {
         closed: true,
         anchors: [
           { pos: [0, 0], attrs: { w: 0 } },
@@ -327,6 +420,80 @@ function scalarAt(sub: SplineSubpath, i: number, name: string): number {
     "attribute-transfer points → spline anchors (nearest)",
     !!ch && close(ch.data[0], 1) && close(ch.data[1], 0),
     ch ? `data=${Array.from(ch.data).join(",")}` : "no ch"
+  );
+}
+
+{
+  const ctx = makeCtx();
+  const src: PointsValue = copyPointsWith(makePoints(1), {
+    attributes: {
+      weight: { arity: 1, data: new Float32Array([1]) },
+    },
+  });
+  src.positions.set([0, 0]);
+  const tgt: PointsValue = makePoints(2);
+  tgt.positions.set([0, 0, 1, 0]);
+  const run = (params: Record<string, unknown>) => {
+    const out = attributeTransferNode.compute({
+      inputs: {
+        points: coerceValue(tgt, "points", ctx),
+        source: coerceValue(src, "points", ctx),
+      },
+      auxIn: {},
+      params: { attr_name: "weight", radius: 0.1, ...params },
+      ctx,
+      nodeId: "at-fb",
+    }) as NodeOutput;
+    return out.primary?.kind === "points"
+      ? out.primary.attributes?.weight?.data
+      : undefined;
+  };
+  const weightedZero = run({ mode: "weighted", fallback: "zero" });
+  check(
+    "attribute-transfer weighted fallback=zero writes 0 outside radius",
+    !!weightedZero &&
+      close(weightedZero[0], 1) &&
+      close(weightedZero[1], 0),
+    weightedZero ? `data=${Array.from(weightedZero).join(",")}` : "no data"
+  );
+  const weightedNearest = run({ mode: "weighted", fallback: "nearest" });
+  check(
+    "attribute-transfer weighted fallback=nearest copies outside radius",
+    !!weightedNearest &&
+      close(weightedNearest[0], 1) &&
+      close(weightedNearest[1], 1),
+    weightedNearest
+      ? `data=${Array.from(weightedNearest).join(",")}`
+      : "no data"
+  );
+  const nearestZero = run({ mode: "nearest", fallback: "zero" });
+  check(
+    "attribute-transfer nearest fallback=zero writes 0 outside radius",
+    !!nearestZero && close(nearestZero[0], 1) && close(nearestZero[1], 0),
+    nearestZero ? `data=${Array.from(nearestZero).join(",")}` : "no data"
+  );
+  const fallbackParam = attributeTransferNode.params.find(
+    (p) => p.name === "fallback"
+  );
+  const radiusParam = attributeTransferNode.params.find(
+    (p) => p.name === "radius"
+  );
+  check(
+    "attribute-transfer fallback options are nearest and zero",
+    !!fallbackParam &&
+      Array.isArray(fallbackParam.options) &&
+      fallbackParam.options.includes("nearest") &&
+      fallbackParam.options.includes("zero")
+  );
+  check(
+    "attribute-transfer radius visible for weighted or fallback=zero",
+    !!radiusParam?.visibleIf &&
+      radiusParam.visibleIf({ mode: "weighted", fallback: "nearest" }) ===
+        true &&
+      radiusParam.visibleIf({ mode: "nearest", fallback: "zero" }) ===
+        true &&
+      radiusParam.visibleIf({ mode: "nearest", fallback: "nearest" }) ===
+        false
   );
 }
 

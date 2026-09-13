@@ -1,13 +1,14 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { loadPublicProjectBySlug } from "@/lib/supabase/projects";
+import { loadEditorProjectBySlug } from "@/lib/supabase/projects";
 import EditorClient from "./EditorClient";
+import PrivateProjectGate from "./PrivateProjectGate";
 import type { Metadata } from "next";
 
-// `/p/<slug>` opens a public project in the FULL editor UI (in
-// contrast to `/live/<slug>`, which renders the minimal client view).
-// The graph itself is loaded server-side from the slug; the client
-// component bootstraps EffectsApp with that payload.
+// `/p/<slug>` opens a project in the FULL editor UI (in contrast to
+// `/live/<slug>`, which renders the minimal client view and stays
+// public-only). Owner and collaborator can open a private slug; anyone
+// else sees a login gate — the graph never reaches the client.
 //
 // The slug → row resolve is dynamic (force-dynamic) so private flips
 // or renames propagate immediately, same as /live/<slug>.
@@ -22,33 +23,49 @@ export async function generateMetadata({
 }: PageProps): Promise<Metadata> {
   const { slug } = await params;
   const supabase = await createClient();
-  const project = await loadPublicProjectBySlug(supabase, slug);
-  if (!project) {
+  const project = await loadEditorProjectBySlug(supabase, slug);
+  if (project.status === "missing") {
     return { title: "Project · not found" };
   }
-  return {
+  if (project.status === "private") {
+    return {
+      title: "Private project · Toolbox",
+      robots: { index: false, follow: false },
+    };
+  }
+  const meta: Metadata = {
     title: `${project.name} · Toolbox`,
     description: project.author?.display_name
       ? `A patch by ${project.author.display_name} on Toolbox`
       : "A patch on Toolbox",
   };
+  if (!project.is_public) {
+    meta.robots = { index: false, follow: false };
+  }
+  return meta;
 }
 
 export default async function ProjectPage({ params }: PageProps) {
   const { slug } = await params;
   const supabase = await createClient();
-  const project = await loadPublicProjectBySlug(supabase, slug);
-  if (!project) notFound();
+  const project = await loadEditorProjectBySlug(supabase, slug);
+  if (project.status === "missing") notFound();
+  if (project.status === "private") {
+    return <PrivateProjectGate slug={slug} />;
+  }
 
   return (
     <EditorClient
       id={project.id}
       name={project.name}
-      isPublic={true}
+      isPublic={project.is_public}
       publicSlug={project.public_slug}
       ownerId={project.user_id}
       authorName={project.author?.display_name ?? null}
       graph={project.graph}
+      updatedAt={project.updated_at}
+      sharedWithMe={project.shared_with_me}
+      hasCollaborators={project.has_collaborators}
     />
   );
 }

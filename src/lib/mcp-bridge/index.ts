@@ -8,10 +8,15 @@
 //
 // Protocol frames:
 //   server → page: {type:"hello", code, serverVersion, client?}
-//                  {type:"client_info", client}  (identity resolved post-hello)
+//                  {type:"client_info", client}  (identity resolved post-hello,
+//                    and re-sent whenever a proxy joins or leaves the bridge)
 //                  {type:"cmd", id, cmd, args} · {type:"replaced"}
 //   page → server: {type:"pair", ok:true, code, appVersion}  (code echoes hello)
 //                  {type:"result", id, ok, result?, error?}
+//
+// One server per Claude lane, one bridge port: the first server to bind it is
+// the hub this page talks to; the others proxy their tool calls through it
+// (spec 091126_mcp-proxy.md). The page only ever holds one socket.
 
 export const MCP_BRIDGE_URL = "ws://127.0.0.1:38275";
 
@@ -20,13 +25,16 @@ export const MCP_BRIDGE_URL = "ws://127.0.0.1:38275";
 // from the MCP initialize handshake (e.g. "claude-code"); `host` classifies
 // the process that spawned the server (VS Code / Claude Desktop / a terminal
 // binary); `pid` is that process; `cwd` is the checkout the server runs in.
-// Every field is best-effort null.
+// Every field is best-effort null. `peers` (hub servers only) lists the other
+// Claude lanes proxying through this one — a tool call can come from any of
+// them, so the menu tooltip names them all.
 export interface BridgeClientInfo {
   app: string | null;
   appVersion: string | null;
   host: string | null;
   pid: number | null;
   cwd: string | null;
+  peers?: BridgeClientInfo[];
 }
 
 // A command handler returns the JSON-serializable result (or a promise of

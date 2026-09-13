@@ -101,9 +101,9 @@ export interface MenuBarProps {
   projectId: string | null;
   saveState: SaveState;
   isPublic: boolean;
-  // Public URL slug for the current project. When non-null and
-  // isPublic is true, the file-name pill exposes a "Copy editor
-  // link" button that hands out /p/<slug>.
+  // Public URL slug for the current project. When non-null the
+  // file-name pill exposes a "Copy editor link" button (/p/<slug>).
+  // Live-link copy still requires isPublic.
   publicSlug: string | null;
   // False when viewing someone else's public project — disables
   // rename + visibility toggle. Save still works (forks a copy).
@@ -354,6 +354,13 @@ export default function MenuBar({
             mcpClient.host &&
               `via ${mcpClient.host}${mcpClient.pid ? ` · pid ${mcpClient.pid}` : ""}`,
             mcpClient.cwd && `in ${mcpClient.cwd}`,
+            // Other Claude lanes proxying through this server (Desktop's
+            // second lane, a Claude Code session…) — any of them may be the
+            // one issuing commands.
+            ...(mcpClient.peers ?? []).map(
+              (p) =>
+                `also serving ${p.app ?? "unknown client"}${p.host ? ` via ${p.host}` : ""}${p.pid ? ` · pid ${p.pid}` : ""}`
+            ),
           ]
             .filter(Boolean)
             .join("\n")

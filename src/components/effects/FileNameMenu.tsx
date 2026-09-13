@@ -35,10 +35,10 @@ export interface FileNameMenuProps {
   onCanvasResChange: (res: [number, number]) => void;
   saveState: SaveState;
   isPublic: boolean;
-  // Public URL slug. Non-null when the project is currently public —
-  // unlocks the "Copy editor link" button (/p/<slug>) below the
-  // visibility toggle. Mirrors the /live/<slug> button on the project
-  // grid's right-click popover.
+  // URL slug. Non-null once the cloud row has one — unlocks the
+  // "Copy editor link" button (/p/<slug>) below the visibility
+  // toggle. "Copy live link" still requires isPublic; the live
+  // viewer is public-only.
   publicSlug: string | null;
   // null when there's no project row yet — in that case Save from the
   // dropdown falls through to the Save As flow (modal).
@@ -158,15 +158,14 @@ export default function FileNameMenu({
   // (res-controls), shared with Project Settings.
   const aspect = useAspectLock(canvasRes, onCanvasResChange);
 
-  // Build the public URLs only when we have a slug and the project
-  // is currently public. Hidden otherwise so the user doesn't see
-  // dead controls — matches the pattern in RateProjectPopover.
-  const editorUrl =
-    isPublic && publicSlug
-      ? typeof window === "undefined"
-        ? `/p/${publicSlug}`
-        : `${window.location.origin}/p/${publicSlug}`
-      : null;
+  // Build the editor URL whenever we have a slug (private projects keep
+  // theirs). Live URLs stay public-only so a copied live link can't
+  // 404 on a private row.
+  const editorUrl = publicSlug
+    ? typeof window === "undefined"
+      ? `/p/${publicSlug}`
+      : `${window.location.origin}/p/${publicSlug}`
+    : null;
   const liveUrl =
     isPublic && publicSlug
       ? typeof window === "undefined"
@@ -376,7 +375,7 @@ export default function FileNameMenu({
             onChange={(next) => onRequestToggleVisibility(next)}
           />
 
-          {editorUrl && liveUrl && (
+          {editorUrl && (
             <div
               style={{
                 display: "flex",
@@ -385,7 +384,11 @@ export default function FileNameMenu({
             >
               <button
                 onClick={() => copyToClipboard(editorUrl, setEditorLinkCopied)}
-                title="Copy a link that opens this project in the full editor (read-only for non-owners; signed-in viewers can save their own forked copy)."
+                title={
+                  isPublic
+                    ? "Copy a link that opens this project in the full editor (read-only for non-owners; signed-in viewers can save their own forked copy)."
+                    : "Copy a link that opens this project. Anyone without access will see a private-project login gate."
+                }
                 style={{
                   ...btnStyle(),
                   flex: 1,
@@ -396,19 +399,21 @@ export default function FileNameMenu({
               >
                 {editorLinkCopied ? "Copied" : "Copy editor link"}
               </button>
-              <button
-                onClick={() => copyToClipboard(liveUrl, setLiveLinkCopied)}
-                title="Copy the minimal client view link — full-screen output only, no editor chrome. Same project graph; different audience."
-                style={{
-                  ...btnStyle(),
-                  flex: 1,
-                  background: liveLinkCopied ? "var(--tb-a-green-800)" : "transparent",
-                  color: liveLinkCopied ? "var(--tb-a-green-100)" : "var(--tb-n-16)",
-                  border: `1px solid ${liveLinkCopied ? "var(--tb-a-green-800)" : "var(--tb-n-9)"}`,
-                }}
-              >
-                {liveLinkCopied ? "Copied" : "Copy live link"}
-              </button>
+              {liveUrl && (
+                <button
+                  onClick={() => copyToClipboard(liveUrl, setLiveLinkCopied)}
+                  title="Copy the minimal client view link — full-screen output only, no editor chrome. Same project graph; different audience."
+                  style={{
+                    ...btnStyle(),
+                    flex: 1,
+                    background: liveLinkCopied ? "var(--tb-a-green-800)" : "transparent",
+                    color: liveLinkCopied ? "var(--tb-a-green-100)" : "var(--tb-n-16)",
+                    border: `1px solid ${liveLinkCopied ? "var(--tb-a-green-800)" : "var(--tb-n-9)"}`,
+                  }}
+                >
+                  {liveLinkCopied ? "Copied" : "Copy live link"}
+                </button>
+              )}
             </div>
           )}
 

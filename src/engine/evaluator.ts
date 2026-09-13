@@ -342,6 +342,15 @@ function pickDisplayImage(
 ): ImageValue | undefined {
   const handled = pickHandleImage(result, handle);
   if (handled?.kind === "image") return handled;
+  if (handle) {
+    // Explicit output (screenshot nodeId:aux:image / :out): don't steal
+    // the first input — Circle's fill image is a gradient, not the disc.
+    const spline = findSplineForPreview(result, handle);
+    if (!spline) return undefined;
+    const preview = rasterizeSplinePreview(ctx, spline);
+    if (preview) transients.push(preview.texture);
+    return preview ?? undefined;
+  }
   if (result.primary?.kind === "image") return result.primary;
   if (fallbackInput?.kind === "image") return fallbackInput;
   if (result.aux?.image?.kind === "image") return result.aux.image;
@@ -622,6 +631,42 @@ export interface FpParts {
   extras: string;
 }
 
+// Canonical number for a scalar fingerprint part. JSON.stringify(NaN) is
+// `null` and JSON.stringify(-0) is `0`, so those two would collide with
+// real values; String() keeps Inf/-Inf distinct as well.
+export function fpNumber(n: number): string {
+  if (Number.isNaN(n)) return "NaN";
+  if (Object.is(n, -0)) return "-0";
+  return String(n);
+}
+
+// Wired-input fingerprint part. Scalar outputs key on the NUMBER sitting
+// on the wire, not the producer node's identity string.
+//
+// Producer fingerprints embed their ancestors recursively, so a Floor
+// whose output is the integer 7 for 90 frames still has a different
+// fingerprint every frame (its input, Scene Time, moved). Downstream
+// nodes that keyed on that identity recomputed — two 2048² readbacks
+// per frame in the graph that motivated this. The producer has already
+// computed by the time the consumer builds inputFpParts (topo order),
+// so looking at the value is free. The producer itself still misses
+// when its inputs change; that's cheap, and required to learn the
+// floor is still 7.
+//
+// Non-scalars keep source-identity (`name=srcFp/handle`). `handleTag`
+// omitted (Iterate / Time Offset hidden edges) preserves the historical
+// `name=srcFp` form.
+export function wiredInputFp(
+  name: string,
+  value: SocketValue | undefined,
+  srcFp: string,
+  handleTag?: string
+): string {
+  if (value?.kind === "scalar") return `${name}=s:${fpNumber(value.value)}`;
+  if (handleTag === undefined) return `${name}=${srcFp}`;
+  return `${name}=${srcFp}/${handleTag}`;
+}
+
 // Exported for scripts/check-profiler.mts — the classification is the part of
 // the profiler most likely to rot silently, and it's pure.
 export function classifyMiss(
@@ -781,6 +826,10 @@ export function evaluateGraph(
     nested?: boolean;
     extraTargets?: string[];
     extraConsumed?: ReadonlyMap<string, readonly string[]>;
+    // Explicit output handle ("out:primary" / "out:aux:<name>") for the
+    // active/preview node — screenshot nodeId:aux:image. Skips the
+    // first-input fallback that would show Circle's fill image.
+    forceHandle?: string;
   }
 ): EvalResult {
   const nested = opts?.nested === true;
@@ -848,6 +897,8 @@ export function evaluateGraph(
     if (remap) {
       activeNodeId = remap.nodeId;
       activeHandle = remap.handle;
+    } else if (opts?.forceHandle) {
+      activeHandle = opts.forceHandle;
     }
   }
   if (previewNodeId) {
@@ -855,6 +906,8 @@ export function evaluateGraph(
     if (remap) {
       previewNodeId = remap.nodeId;
       previewHandle = remap.handle;
+    } else if (opts?.forceHandle) {
+      previewHandle = opts.forceHandle;
     }
   }
 
@@ -1148,6 +1201,11 @@ export function evaluateGraph(
     markConsumed(id, "primary");
     markConsumed(id, "aux:image");
   }
+  if (opts?.forceHandle && activeNodeId) {
+    const h = opts.forceHandle;
+    if (h === "out:primary") markConsumed(activeNodeId, "primary");
+    else if (h.startsWith("out:aux:")) markConsumed(activeNodeId, h.slice("out:".length));
+  }
   if (opts?.extraConsumed) {
     for (const [nodeId, keys] of opts.extraConsumed) {
       for (const k of keys) markConsumed(nodeId, k);
@@ -1360,7 +1418,13 @@ export function evaluateGraph(
       }
       inputs[inputDef.name] = coerceValue(raw, inputDef.type, ctx);
       if (srcOut.aux) auxIn[inputDef.name] = srcOut.aux;
-      inputFpParts.push(`${inputDef.name}=${srcFp}/${handleTag}`);
+      // Value of the PRODUCER output (pre-coerce): a scalar stays a
+      // scalar across broadcast-to-vec2 / UV passthrough, and that's
+      // the "scalar outputs" short-circuit. Coercion of images→scalar
+      // is a different class and still keys on source identity.
+      inputFpParts.push(
+        wiredInputFp(inputDef.name, raw, srcFp, handleTag)
+      );
     }
 
     // Zone shells (Iterate / Repeat / For Each): undeclared per-edge
@@ -1388,7 +1452,11 @@ export function evaluateGraph(
               : undefined;
         inputs[parsed.name] = raw;
         inputFpParts.push(
-          `${parsed.name}=${fingerprints.get(e.source) ?? "_"}`
+          wiredInputFp(
+            parsed.name,
+            raw,
+            fingerprints.get(e.source) ?? "_"
+          )
         );
       }
     }
@@ -1418,7 +1486,11 @@ export function evaluateGraph(
               : undefined;
         inputs[parsed.name] = raw;
         inputFpParts.push(
-          `${parsed.name}=${fingerprints.get(e.source) ?? "_"}`
+          wiredInputFp(
+            parsed.name,
+            raw,
+            fingerprints.get(e.source) ?? "_"
+          )
         );
       }
     }
@@ -1477,7 +1549,9 @@ export function evaluateGraph(
         raw = srcOut.aux?.[parsed.name];
         handleTag = "a:" + parsed.name;
       }
-      inputFpParts.push(`param:${pname}=${srcFp}/${handleTag}`);
+      inputFpParts.push(
+        wiredInputFp(`param:${pname}`, raw, srcFp, handleTag)
+      );
       const coerced = coerceValue(raw, socketType, ctx);
       if (coerced) {
         if (rampKey) {

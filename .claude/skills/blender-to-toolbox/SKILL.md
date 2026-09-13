@@ -210,8 +210,9 @@ full contract is in the tool description; the parts that bite:
 - `type` strings must come from `get_catalog`.
 - Edges: `from` is `"<id>:out"` or `"<id>:aux:<name>"`; `to` is
   `"<id>:in:<socket>"` or `"<id>:param:<name>"`.
-- Local node ids are yours; **real ids are minted at insert**. To refine, call
-  `get_graph` with `scope=<groupId>` and then `edit_group` against the real ids.
+- Local node ids are yours; **real ids are minted at insert**. `insert_recipe`
+  returns `ids` (local → live). `edit_group` `add_node` does the same, so a
+  follow-up patch can use the minted id without a `get_graph` round-trip.
 - Declare the group's boundary with `inputs`/`outputs` in the recipe envelope —
   Blender's Group Input / Group Output nodes become these, not node types.
 - The group must be acyclic. Blender trees are too, so a cycle means you
@@ -222,7 +223,8 @@ scatter → instance → (`scene-render` for 3D) — and screenshot it. Then pat
 detail on with `edit_group`, which is explicitly a change-by-exception tool.
 A 40-node recipe that fails validation in one shot is far harder to debug than
 four small ones, and validation errors come back as tool errors you must fix
-and retry.
+and retry. Near-copies of an existing group belong in `edit_group
+duplicate_node` (param/`patch` overrides), not N × `insert_recipe`.
 
 For a 3D chain the terminal is `scene-render` (takes `object3d` inputs —
 `geometry` coerces in one-way — plus an optional `camera`; outputs `image`).

@@ -24,6 +24,12 @@ import {
   type ColorRampBy,
 } from "@/engine/spline-color-source";
 import { paintStrokeAlongProgress } from "@/engine/spline-stroke-progress";
+import {
+  makeSubpathGradientFn,
+  type GradientFrame,
+  type GradientKind,
+  type GradientVary,
+} from "@/engine/spline-gradient-fill";
 import { sampleSubpathAttrScalar } from "@/engine/spline-attrs";
 import { resolveStrokePx, strokeUnitsParam } from "@/engine/stroke-units";
 import { aspectCorrectY } from "@/engine/aspect";
@@ -741,14 +747,62 @@ function makeStrokeColorFn(
   });
 }
 
+// Ramp and gradient both need a distinct style per subpath (flat is the
+// only source that can collapse to one even-odd fill).
+function fillSourceIsPerSubpath(params: Record<string, unknown>): boolean {
+  const s = params.fill_source as string;
+  return s === "ramp" || s === "gradient";
+}
+
+// One resolver for every fill source: flat / ramp give an rgba string,
+// `fill_source: "gradient"` gives a CanvasGradient laid out in each
+// subpath's own frame (engine-side spline-gradient-fill.ts — spec
+// 091026_local-gradient-fill.md). Both are valid Canvas2D fillStyles.
+function makeFillStyleFn(
+  c2d: CanvasRenderingContext2D,
+  subpaths: SplineSubpath[],
+  params: Record<string, unknown>,
+  W: number,
+  H: number
+): (i: number, sub: SplineSubpath) => string | CanvasGradient {
+  if ((params.fill_source as string) !== "gradient") {
+    return makeFillColorFn(subpaths, params);
+  }
+  const interp = (params.ramp_interp as string) ?? "linear";
+  return makeSubpathGradientFn(
+    c2d,
+    subpaths,
+    {
+      kind: ((params.gradient_kind as GradientKind) ?? "linear"),
+      frame: ((params.gradient_frame as GradientFrame) ?? "shape"),
+      angleDeg: (params.gradient_angle as number) ?? 0,
+      scale: (params.gradient_scale as number) ?? 1,
+      offset: (params.gradient_offset as number) ?? 0,
+      stops: Array.isArray(params.fill_ramp)
+        ? (params.fill_ramp as ColorRampStop[])
+        : [],
+      interp: (interp === "ease" || interp === "constant"
+        ? interp
+        : "linear") as ColorRampInterp,
+      vary: ((params.gradient_vary as GradientVary) ?? "none"),
+      varyAmount: (params.gradient_vary_amount as number) ?? 0.5,
+      seed: Math.floor((params.ramp_seed as number) ?? 0),
+      varyAngleDeg: (params.ramp_angle as number) ?? 0,
+      attr: (params.driver_attr as string) ?? "",
+    },
+    W,
+    H
+  );
+}
+
 // Draw the flat (non-image) fill + stroke composite into the 2D context,
 // honoring the overlap mode:
 //   flatten — all fills, then all strokes on top (subpath strokes always
 //             visible — the classic "x-ray" over the union fill).
 //   layered — each subpath filled then stroked in order, so a later shape's
 //             opaque fill occludes earlier shapes' strokes (solid stacking).
-// Per-subpath fill/stroke colors come from makeFillColorFn /
-// makeStrokeColorFn (each independently flat or ramp).
+// Per-subpath fill/stroke styles come from makeFillStyleFn (flat / ramp /
+// per-subpath gradient) and makeStrokeColorFn (flat or ramp).
 function drawSplineFlat(
   c2d: CanvasRenderingContext2D,
   subpaths: SplineSubpath[],
@@ -758,9 +812,9 @@ function drawSplineFlat(
   enableFill: boolean,
   enableStroke: boolean
 ) {
-  const fillColorAt = makeFillColorFn(subpaths, params);
+  const fillStyleAt = makeFillStyleFn(c2d, subpaths, params, W, H);
   const strokeColorAt = makeStrokeColorFn(subpaths, params);
-  const useRamp = (params.fill_source as string) === "ramp";
+  const perSubpathFill = fillSourceIsPerSubpath(params);
   const strokeRamp = (params.stroke_source as string) === "ramp";
   const layered = (params.overlap as string) === "layered";
   const widthAt = enableStroke ? makeThicknessAt(subpaths, params, W) : null;
@@ -781,7 +835,7 @@ function drawSplineFlat(
         if (enableFill) {
           const p = buildPath2D(members, W, H, true);
           if (p) {
-            c2d.fillStyle = fillColorAt(isl.root, subpaths[isl.root]);
+            c2d.fillStyle = fillStyleAt(isl.root, subpaths[isl.root]);
             c2d.fill(p, "evenodd");
           }
         }
@@ -828,7 +882,7 @@ function drawSplineFlat(
       if (enableFill) {
         const p = buildPath2D([sub], W, H, true);
         if (p) {
-          c2d.fillStyle = fillColorAt(i, sub);
+          c2d.fillStyle = fillStyleAt(i, sub);
           c2d.fill(p);
         }
       }
@@ -868,26 +922,26 @@ function drawSplineFlat(
         ];
         const p = buildPath2D(members, W, H, true);
         if (p) {
-          c2d.fillStyle = fillColorAt(isl.root, subpaths[isl.root]);
+          c2d.fillStyle = fillStyleAt(isl.root, subpaths[isl.root]);
           c2d.fill(p, "evenodd");
         }
       }
-    } else if (useRamp || params.stack_subpaths !== false) {
-      // Ramp needs distinct per-subpath colors, and stacked subpaths union;
+    } else if (perSubpathFill || params.stack_subpaths !== false) {
+      // Ramp/gradient need distinct per-subpath styles, and stacked subpaths union;
       // both draw per subpath. Only flat-color + stack-off collapses to one
       // even-odd fill (nested subpaths punch holes).
       for (let i = 0; i < subpaths.length; i++) {
         const sub = subpaths[i];
         const p = buildPath2D([sub], W, H, true);
         if (p) {
-          c2d.fillStyle = fillColorAt(i, sub);
+          c2d.fillStyle = fillStyleAt(i, sub);
           c2d.fill(p);
         }
       }
     } else {
       const p = buildPath2D(subpaths, W, H, true);
       if (p) {
-        c2d.fillStyle = fillColorAt(0, subpaths[0]);
+        c2d.fillStyle = fillStyleAt(0, subpaths[0]);
         c2d.fill(p, (params.fill_rule as CanvasFillRule) ?? "evenodd");
       }
     }
@@ -901,7 +955,7 @@ export const rasterizeSplineNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Rasterize a spline as fill, stroke, or both in a single pass. Fill draws underneath the stroke. Toggle each independently. Fill and stroke colors can each be a flat color or a ramp — fill keys per subpath (index, random, group, position, driver); stroke can do the same, or ramp by progress along each path's length (color A at the start, color B at the end, independent of canvas direction). Ramp offset slides the stroke gradient and wraps past 1 so it loops. Driver attribute (visible when Ramp by is Driver) reads a named subpath channel — Set Named Attribute authors it, Copy to Points gathers point attrs onto copies. Thickness source can vary per subpath the same way Stroke does (index / random / group / position / driver × lo→hi), so a graph can stay at one raster node. A wired fill image can drive the fill, the stroke, or both via the Image → fill / Image → stroke toggles. Per-anchor width (Spline Draw's Width tool) rides the spline: Thickness is the base, each anchor's width is a multiplier on it.",
+    "Rasterize a spline as fill, stroke, or both in a single pass. Fill draws underneath the stroke. Toggle each independently. Fill and stroke colors can each be a flat color or a ramp — fill keys per subpath (index, random, group, position, driver) or lays the ramp out as a gradient inside each subpath's own frame (linear / radial / conic; the shape frame rotates with each Copy to Points copy); stroke can do the same, or ramp by progress along each path's length (color A at the start, color B at the end, independent of canvas direction). Ramp offset slides the stroke gradient and wraps past 1 so it loops. Driver attribute (visible when Ramp by is Driver) reads a named subpath channel — Set Named Attribute authors it, Copy to Points gathers point attrs onto copies. Thickness source can vary per subpath the same way Stroke does (index / random / group / position / driver × lo→hi), so a graph can stay at one raster node. A wired fill image can drive the fill, the stroke, or both via the Image → fill / Image → stroke toggles. Per-anchor width (Spline Draw's Width tool) rides the spline: Thickness is the base, each anchor's width is a multiplier on it.",
   facts: {
     space: {
       "param:thickness": "pixels",
@@ -918,6 +972,8 @@ export const rasterizeSplineNode: NodeDefinition = {
       "A per-anchor width profile (Spline Draw's Width tool) fills a variable-width envelope multiplying Thickness by each anchor's width, and ignores dash/dot style.",
       "stroke_ramp_by=progress or attribute ramps color along each subpath's own arc length (start→end) instead of one color per subpath; attribute reads stroke_driver_attr.",
       "ramp_by/stroke_ramp_by/thickness_by=group key off each subpath's stamped groupIndex (attr:group), e.g. from Copy to Points or String Art layers.",
+      "fill_source=gradient lays fill_ramp out inside each subpath's own frame (gradient_kind linear/radial/conic), spanning its outline; gradient_offset/gradient_vary shift the phase and wrap.",
+      "gradient_frame=shape takes up as center→first anchor (handedness from winding) so the gradient rotates/mirrors with each copy, angle 0 = left→right on an unrotated Circle; canvas fixes the angle.",
     ],
   },
   backend: "webgl2",
@@ -962,14 +1018,16 @@ export const rasterizeSplineNode: NodeDefinition = {
       type: "boolean",
       default: true,
     },
-    // Flat color vs. a per-subpath color ramp. Ramp colors each subpath by
-    // its ordinal index / a seeded hash / its groupIndex (see ramp_by). A
-    // wired `fill` image still overrides both.
+    // Flat color vs. a per-subpath color ramp vs. a per-subpath gradient.
+    // Ramp colors each subpath by its ordinal index / a seeded hash / its
+    // groupIndex (see ramp_by); gradient lays the same ramp out INSIDE each
+    // subpath's own frame (see gradient_kind / gradient_frame). A wired
+    // `fill` image still overrides all three.
     {
       name: "fill_source",
       label: "Fill source",
       type: "enum",
-      options: ["flat", "ramp"],
+      options: ["flat", "ramp", "gradient"],
       default: "flat",
       visibleIf: (p) => p.enable_fill !== false,
     },
@@ -994,7 +1052,101 @@ export const rasterizeSplineNode: NodeDefinition = {
         { id: "stop-b", position: 1, color: "#000000" },
       ] as ColorRampStop[],
       visibleIf: (p) =>
-        p.enable_fill !== false && p.fill_source === "ramp",
+        p.enable_fill !== false &&
+        (p.fill_source === "ramp" || p.fill_source === "gradient"),
+    },
+    // ---- Gradient (fill_source = gradient) ----
+    // The ramp laid out as a Canvas2D gradient inside EACH subpath's own
+    // frame (spec 091026_local-gradient-fill.md): a Copy-to-Points chain
+    // gets a gradient per copy without baking one before the copy.
+    {
+      name: "gradient_kind",
+      label: "Gradient",
+      type: "enum",
+      options: ["linear", "radial", "conic"],
+      default: "linear",
+      visibleIf: (p) =>
+        p.enable_fill !== false && p.fill_source === "gradient",
+    },
+    // shape — "up" is the subpath's center → first anchor (handedness
+    //         from its winding), so the gradient rotates and mirrors with
+    //         every Copy to Points copy. Angle 0 = left→right on an
+    //         unrotated Circle (its first anchor is the top).
+    // canvas — the angle is in canvas space; every copy lit alike.
+    {
+      name: "gradient_frame",
+      label: "Frame",
+      type: "enum",
+      options: ["shape", "canvas"],
+      default: "shape",
+      visibleIf: (p) =>
+        p.enable_fill !== false && p.fill_source === "gradient",
+    },
+    {
+      name: "gradient_angle",
+      label: "Angle",
+      type: "scalar",
+      min: -180,
+      max: 180,
+      step: 1,
+      default: 0,
+      visibleIf: (p) =>
+        p.enable_fill !== false &&
+        p.fill_source === "gradient" &&
+        p.gradient_kind !== "radial",
+    },
+    // Span multiplier about the shape's middle: 1 = the ramp's ends land on
+    // the outline, <1 compresses (canvas pads the end colors), >1 stretches.
+    {
+      name: "gradient_scale",
+      label: "Scale",
+      type: "scalar",
+      min: 0.1,
+      max: 4,
+      step: 0.01,
+      default: 1,
+      visibleIf: (p) =>
+        p.enable_fill !== false &&
+        p.fill_source === "gradient" &&
+        p.gradient_kind !== "conic",
+    },
+    // Ramp phase; non-zero wraps like stroke_ramp_offset (a ramp whose
+    // ends differ shows the seam inside the shape).
+    {
+      name: "gradient_offset",
+      label: "Offset",
+      type: "scalar",
+      min: -1,
+      max: 1,
+      step: 0.01,
+      default: 0,
+      visibleIf: (p) =>
+        p.enable_fill !== false && p.fill_source === "gradient",
+    },
+    // Per-subpath phase shift = gradient_vary_amount × the shared subpath
+    // driver t (same index/random/group/position/driver sourcing as
+    // ramp_by; reuses ramp_seed / ramp_angle / driver_attr).
+    {
+      name: "gradient_vary",
+      label: "Vary by",
+      type: "enum",
+      options: ["none", "index", "random", "group", "position", "driver"],
+      default: "none",
+      visibleIf: (p) =>
+        p.enable_fill !== false && p.fill_source === "gradient",
+    },
+    {
+      name: "gradient_vary_amount",
+      label: "Vary amount",
+      type: "scalar",
+      min: 0,
+      max: 1,
+      step: 0.01,
+      default: 0.5,
+      visibleIf: (p) =>
+        p.enable_fill !== false &&
+        p.fill_source === "gradient" &&
+        (p.gradient_vary ?? "none") !== "none",
     },
     // Which value drives each subpath's position along the ramp.
     //   index    — ordinal 0→N-1 mapped left→right (gradient across copies)
@@ -1025,14 +1177,14 @@ export const rasterizeSplineNode: NodeDefinition = {
       default: 0,
       visibleIf: (p) =>
         p.enable_fill !== false &&
-        p.fill_source === "ramp" &&
-        p.ramp_by === "random",
+        ((p.fill_source === "ramp" && p.ramp_by === "random") ||
+          (p.fill_source === "gradient" && p.gradient_vary === "random")),
     },
     {
       // Gradient axis for `position` mode, in degrees. 0 = left→right (color
       // by centroid x), 90 = top→bottom (by y), any angle in between.
       name: "ramp_angle",
-      label: "Gradient angle",
+      label: "Position axis",
       type: "scalar",
       min: -180,
       max: 180,
@@ -1040,8 +1192,8 @@ export const rasterizeSplineNode: NodeDefinition = {
       default: 0,
       visibleIf: (p) =>
         p.enable_fill !== false &&
-        p.fill_source === "ramp" &&
-        p.ramp_by === "position",
+        ((p.fill_source === "ramp" && p.ramp_by === "position") ||
+          (p.fill_source === "gradient" && p.gradient_vary === "position")),
     },
     {
       name: "driver_attr",
@@ -1053,8 +1205,8 @@ export const rasterizeSplineNode: NodeDefinition = {
       suggestAttrsRequire: true,
       visibleIf: (p) =>
         p.enable_fill !== false &&
-        p.fill_source === "ramp" &&
-        p.ramp_by === "driver",
+        ((p.fill_source === "ramp" && p.ramp_by === "driver") ||
+          (p.fill_source === "gradient" && p.gradient_vary === "driver")),
     },
     {
       name: "ramp_interp",
@@ -1063,7 +1215,8 @@ export const rasterizeSplineNode: NodeDefinition = {
       options: ["linear", "ease", "constant"],
       default: "linear",
       visibleIf: (p) =>
-        p.enable_fill !== false && p.fill_source === "ramp",
+        p.enable_fill !== false &&
+        (p.fill_source === "ramp" || p.fill_source === "gradient"),
     },
     {
       name: "fill_fit",
@@ -1085,7 +1238,7 @@ export const rasterizeSplineNode: NodeDefinition = {
       visibleIf: (p) => p.enable_fill !== false,
     },
     // Stack/fill-rule only matter for the flatten mode with a flat color —
-    // layered and ramp both draw per subpath.
+    // layered, ramp and gradient all draw per subpath.
     {
       name: "stack_subpaths",
       label: "Stack subpaths",
@@ -1094,7 +1247,7 @@ export const rasterizeSplineNode: NodeDefinition = {
       visibleIf: (p) =>
         p.enable_fill !== false &&
         p.overlap !== "layered" &&
-        p.fill_source !== "ramp",
+        (p.fill_source ?? "flat") === "flat",
     },
     {
       name: "fill_rule",
@@ -1106,7 +1259,7 @@ export const rasterizeSplineNode: NodeDefinition = {
         p.enable_fill !== false &&
         p.stack_subpaths === false &&
         p.overlap !== "layered" &&
-        p.fill_source !== "ramp",
+        (p.fill_source ?? "flat") === "flat",
     },
 
     // ---- Stroke ----
@@ -1537,12 +1690,33 @@ export const rasterizeSplineNode: NodeDefinition = {
         ef: enableFill,
         fsrc: params.fill_source,
         fc: params.fill_color,
-        ramp: params.fill_source === "ramp" ? params.fill_ramp : null,
+        ramp:
+          params.fill_source === "ramp" || params.fill_source === "gradient"
+            ? params.fill_ramp
+            : null,
         rby: params.ramp_by,
         rseed: params.ramp_seed,
-        rangle: params.ramp_by === "position" ? params.ramp_angle : null,
+        rangle:
+          params.ramp_by === "position" || params.gradient_vary === "position"
+            ? params.ramp_angle
+            : null,
         rint: params.ramp_interp,
-        dattr: params.ramp_by === "driver" ? params.driver_attr : null,
+        dattr:
+          params.ramp_by === "driver" || params.gradient_vary === "driver"
+            ? params.driver_attr
+            : null,
+        grad:
+          params.fill_source === "gradient"
+            ? [
+                params.gradient_kind,
+                params.gradient_frame,
+                params.gradient_angle,
+                params.gradient_scale,
+                params.gradient_offset,
+                params.gradient_vary,
+                params.gradient_vary_amount,
+              ]
+            : null,
         stack: params.stack_subpaths,
         fr: params.fill_rule,
         es: enableStroke,
@@ -1657,12 +1831,33 @@ export const rasterizeSplineNode: NodeDefinition = {
       hol: params.holes,
       fsrc: params.fill_source,
       fc: params.fill_color,
-      ramp: params.fill_source === "ramp" ? params.fill_ramp : null,
+      ramp:
+        params.fill_source === "ramp" || params.fill_source === "gradient"
+          ? params.fill_ramp
+          : null,
       rby: params.ramp_by,
       rseed: params.ramp_seed,
-      rangle: params.ramp_by === "position" ? params.ramp_angle : null,
+      rangle:
+        params.ramp_by === "position" || params.gradient_vary === "position"
+          ? params.ramp_angle
+          : null,
       rint: params.ramp_interp,
-      dattr: params.ramp_by === "driver" ? params.driver_attr : null,
+      dattr:
+        params.ramp_by === "driver" || params.gradient_vary === "driver"
+          ? params.driver_attr
+          : null,
+      grad:
+        params.fill_source === "gradient"
+          ? [
+              params.gradient_kind,
+              params.gradient_frame,
+              params.gradient_angle,
+              params.gradient_scale,
+              params.gradient_offset,
+              params.gradient_vary,
+              params.gradient_vary_amount,
+            ]
+          : null,
       stack: params.stack_subpaths,
       fr: params.fill_rule,
       es: enableStroke,

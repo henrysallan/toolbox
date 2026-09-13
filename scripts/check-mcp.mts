@@ -1,6 +1,9 @@
 // check-mcp: end-to-end check of the Claude MCP bridge (spec
 // 070926_claude-mcp-bridge.md, milestone 1) — real MCP client ⇄ scripts/mcp-server.mjs ⇄
-// real src/lib/mcp-bridge client acting as the editor tab.
+// real src/lib/mcp-bridge client acting as the editor tab. Also covers the
+// multi-instance hub/proxy handoff (spec 091126_mcp-proxy.md): a second
+// server on the same port must proxy through the first and take over when
+// the first one's Claude quits.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { WebSocket as RawWS } from "ws";
@@ -34,6 +37,20 @@ function check(label: string, ok: boolean, detail?: string) {
   check(
     "catalog index documents y-stretch",
     list.includes("scales y about 0.5 by W/H")
+  );
+  check(
+    "catalog index documents canvas01 Y-down vs uv01 Y-up",
+    list.includes("uv01 (Gradient") && list.includes("Y-up")
+  );
+  const ramp = buildCatalogDsl({ types: ["color-ramp", "map-attribute"] });
+  check(
+    "color-ramp stops are listed as settable color_ramp",
+    ramp.includes("stops:color_ramp") && !ramp.includes("stops:color_ramp~(not remotely settable)"),
+    ramp.slice(0, 400)
+  );
+  check(
+    "map-attribute curve is listed as not remotely settable",
+    ramp.includes("curve:float_curve~(not remotely settable)")
   );
   check(
     "full catalog carries NodeFacts slots (Grid writes ix/iy/cellW/cellH)",
@@ -105,16 +122,16 @@ const transport = new StdioClientTransport({
   env: { ...process.env, TOOLBOX_MCP_PORT: PORT } as Record<string, string>,
 });
 const client = new Client({ name: "e2e-test", version: "0.0.0" });
-// However this script dies, take the spawned server with it — an orphaned
+// The second server (3d below) — declared here so the bail-out can reach it.
+let client2: Client | null = null;
+// However this script dies, take the spawned servers with it — an orphaned
 // server squats the port and poisons the next run.
-process.on("uncaughtException", (e) => {
+const bail = (e: unknown) => {
   console.error("FAIL", e);
-  void client.close().finally(() => process.exit(1));
-});
-process.on("unhandledRejection", (e) => {
-  console.error("FAIL", e);
-  void client.close().finally(() => process.exit(1));
-});
+  void Promise.allSettled([client.close(), client2?.close()]).finally(() => process.exit(1));
+};
+process.on("uncaughtException", bail);
+process.on("unhandledRejection", bail);
 await client.connect(transport);
 
 const EXPECTED_TOOLS = [
@@ -126,6 +143,7 @@ const EXPECTED_TOOLS = [
   "get_node_source",
   "get_perf",
   "get_perf_frame",
+  "get_recent_edits",
   "get_shader_errors",
   "get_status",
   "insert_recipe",
@@ -150,8 +168,8 @@ check(
   const insert = tools.tools.find((t) => t.name === "insert_recipe");
   const schema = insert?.inputSchema as { properties?: Record<string, unknown> } | undefined;
   check(
-    "insert_recipe schema lists replace_output",
-    !!schema?.properties?.replace_output,
+    "insert_recipe schema lists replace_output and recipes",
+    !!schema?.properties?.replace_output && !!schema?.properties?.recipes,
     JSON.stringify(schema?.properties ? Object.keys(schema.properties) : schema)
   );
   const edit = tools.tools.find((t) => t.name === "edit_group");
@@ -159,6 +177,35 @@ check(
     "edit_group docstring shows a literal JSON op",
     !!edit?.description?.includes('"op": "set_param"'),
     (edit?.description ?? "").slice(0, 400)
+  );
+  check(
+    "edit_group docstring returns add_node ids",
+    !!edit?.description?.includes("add_node / duplicate_node local id"),
+    (edit?.description ?? "").slice(0, 500)
+  );
+  const shot = tools.tools.find((t) => t.name === "screenshot");
+  check(
+    "screenshot docstring accepts nodeId:aux:image",
+    !!shot?.description?.includes("aux:<name>") && !!shot?.description?.includes("aux:image"),
+    (shot?.description ?? "").slice(0, 400)
+  );
+  check(
+    "every tool is tagged [toolbox] for one-search loading",
+    tools.tools.every((t) => (t.description ?? "").includes("[toolbox]")),
+    tools.tools.filter((t) => !(t.description ?? "").includes("[toolbox]")).map((t) => t.name).join(",")
+  );
+  const editSchema = edit?.inputSchema as { properties?: Record<string, unknown> } | undefined;
+  check(
+    "edit_group schema lists verbosity",
+    !!editSchema?.properties?.verbosity,
+    JSON.stringify(editSchema?.properties ? Object.keys(editSchema.properties) : editSchema)
+  );
+  const gg = tools.tools.find((t) => t.name === "get_graph");
+  const ggSchema = gg?.inputSchema as { properties?: Record<string, unknown> } | undefined;
+  check(
+    "get_graph schema lists since",
+    !!ggSchema?.properties?.since,
+    JSON.stringify(ggSchema?.properties ? Object.keys(ggSchema.properties) : ggSchema)
   );
 }
 
@@ -216,6 +263,28 @@ check("no-editor error", isError(r1) && textOf(r1).includes("No Toolbox editor")
     /* already refused */
   }
 
+  // (a2) The peer path is for other toolbox-mcp processes only. A browser
+  //      page — even a loopback one that the editor path would admit — always
+  //      carries an Origin, so it must be refused there.
+  const roguePeer = new RawWS(`ws://127.0.0.1:${PORT}/peer`, {
+    headers: { origin: "http://localhost:3000" },
+  });
+  let peerOpened = false;
+  roguePeer.on("open", () => {
+    peerOpened = true;
+  });
+  await new Promise((resolve) => {
+    roguePeer.on("error", () => resolve(null));
+    roguePeer.on("unexpected-response", () => resolve(null));
+    setTimeout(resolve, 400);
+  });
+  check("peer path rejects a browser Origin", !peerOpened);
+  try {
+    roguePeer.close();
+  } catch {
+    /* already refused */
+  }
+
   // (b) A same-origin-absent client (allowed to connect) that echoes the WRONG
   //     pairing code must NOT become paired — get_status still errors.
   const noecho = new RawWS(`ws://127.0.0.1:${PORT}`);
@@ -263,6 +332,10 @@ const bridge: BridgeClient = connectBridge({
       edges: [],
       verbosity,
       params,
+    }),
+    get_recent_edits: ({ summary }) => ({
+      rev: 0,
+      edits: summary ? [{ rev: 0, cmd: "edit_group", summary, status: "ok" }] : [],
     }),
     screenshot: ({ maxSize }) => ({
       kind: "image",
@@ -361,6 +434,19 @@ await waitFor(() => statuses.some((s) => s.state === "connected"));
 const r3 = await client.callTool({ name: "get_status", arguments: {} });
 const status = JSON.parse(textOf(r3));
 check("get_status round-trips", !isError(r3) && status.projectName === "E2E Test" && status.frame === 12);
+
+{
+  const rec = await client.callTool({
+    name: "get_recent_edits",
+    arguments: { summary: "add pixels" },
+  });
+  const j = isError(rec) ? {} : JSON.parse(textOf(rec));
+  check(
+    "get_recent_edits round-trips summary filter",
+    !isError(rec) && j.edits?.[0]?.summary === "add pixels",
+    textOf(rec).slice(0, 120)
+  );
+}
 
 const r4 = await client.callTool({ name: "get_catalog", arguments: {} });
 check(
@@ -574,11 +660,106 @@ const rnd = await client.callTool({
   );
 }
 
+// --- 3d. a SECOND server on the same port proxies through the first (spec
+//         091126_mcp-proxy.md). Claude Desktop spawns two lanes and a Claude
+//         Code session adds a third — every one of them must keep working
+//         through the one editor socket. ---
+const transport2 = new StdioClientTransport({
+  command: "node",
+  args: ["scripts/mcp-server.mjs"],
+  cwd: REPO,
+  env: { ...process.env, TOOLBOX_MCP_PORT: PORT } as Record<string, string>,
+});
+client2 = new Client({ name: "e2e-test-2", version: "0.0.0" });
+await client2.connect(transport2);
+type Connected = Extract<BridgeStatus, { state: "connected" }>;
+{
+  const tools2 = await client2.listTools();
+  check(
+    "proxy instance lists the same tools",
+    tools2.tools.map((t) => t.name).sort().join(",") === EXPECTED_TOOLS.join(","),
+    tools2.tools.map((t) => t.name).join(",")
+  );
+  // The hub tells the editor who else is riding the bridge (menu tooltip),
+  // and the proxy's identity fills in once its own initialize handshake lands.
+  await waitFor(() =>
+    statuses.some(
+      (s) => s.state === "connected" && !!s.client?.peers?.some((p) => p.app === "e2e-test-2")
+    )
+  );
+  const withPeer = [...statuses].reverse().find((s) => s.state === "connected") as Connected;
+  check(
+    "editor status lists the proxy as a peer",
+    withPeer.client?.peers?.length === 1 && withPeer.client.peers[0].pid === process.pid,
+    JSON.stringify(withPeer.client?.peers)
+  );
+  const viaProxy = await client2.callTool({ name: "get_status", arguments: {} });
+  check(
+    "tool call via the proxy reaches the editor",
+    !isError(viaProxy) && JSON.parse(textOf(viaProxy)).projectName === "E2E Test",
+    textOf(viaProxy).slice(0, 80)
+  );
+  const viaProxyImg = await client2.callTool({ name: "screenshot", arguments: { maxSize: 256 } });
+  const img2 = (viaProxyImg as { content: { type: string; data?: string }[] }).content.find(
+    (b) => b.type === "image"
+  );
+  check(
+    "image content survives the proxy hop",
+    !isError(viaProxyImg) && img2?.data === TINY_PNG,
+    textOf(viaProxyImg)
+  );
+  const viaProxyErr = await client2.callTool({
+    name: "insert_recipe",
+    arguments: { recipe: { name: "x", nodes: [], outputs: [] } },
+  });
+  check(
+    "editor errors survive the proxy hop",
+    isError(viaProxyErr) && textOf(viaProxyErr).includes("UNKNOWN_TYPE example"),
+    textOf(viaProxyErr).slice(0, 60)
+  );
+  const srcViaProxy = await client2.callTool({ name: "get_node_source", arguments: { type: "spline-merge" } });
+  check(
+    "source tools stay local on a proxy",
+    !isError(srcViaProxy) && textOf(srcViaProxy).includes("splineSelfMerge"),
+    textOf(srcViaProxy).split("\n")[0]
+  );
+}
+
+// --- 3e. the hub's Claude quits → the proxy is promoted to hub and the
+//         editor re-pairs with it (a new boot means a new code, so the
+//         prompt comes back — same as a server restart today). ---
+{
+  const before = statuses.length;
+  await client.close(); // ends server 1's stdin → it exits → the port frees
+  await waitFor(() => statuses.slice(before).some((s) => s.state === "pairing"), 10_000);
+  const repair = statuses.slice(before).find((s) => s.state === "pairing") as Extract<
+    BridgeStatus,
+    { state: "pairing" }
+  >;
+  check("editor re-pairs with the promoted server", /^\d{4}$/.test(repair.code));
+  bridge.confirmPairing();
+  await waitFor(() =>
+    statuses.slice(before).some((s) => s.state === "connected" && s.client?.app === "e2e-test-2")
+  );
+  const promoted = [...statuses].reverse().find((s) => s.state === "connected") as Connected;
+  check(
+    "promoted server reports its own client and no peers",
+    promoted.client?.app === "e2e-test-2" && (promoted.client.peers?.length ?? 0) === 0,
+    JSON.stringify(promoted.client)
+  );
+  const afterPromotion = await client2.callTool({ name: "get_status", arguments: {} });
+  check(
+    "tool call works after promotion",
+    !isError(afterPromotion) && JSON.parse(textOf(afterPromotion)).frame === 12,
+    textOf(afterPromotion).slice(0, 80)
+  );
+}
+
 // --- 4. editor disconnects → back to friendly error ---
 bridge.close();
 await new Promise((r) => setTimeout(r, 200));
-const r5 = await client.callTool({ name: "get_status", arguments: {} });
+const r5 = await client2.callTool({ name: "get_status", arguments: {} });
 check("post-disconnect error", isError(r5) && textOf(r5).includes("No Toolbox editor"));
 
-await client.close();
+await client2.close();
 process.exit(failures ? 1 : 0);

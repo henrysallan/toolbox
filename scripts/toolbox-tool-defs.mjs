@@ -21,17 +21,23 @@ import { z } from "zod";
 
 export const CMD_TIMEOUT_MS = 10_000;
 export const SCREENSHOT_TIMEOUT_MS = 30_000;
+export const MUTATION_TIMEOUT_MS = 60_000;
 
 // Shared prose appended to insert_recipe. Kept as its own export because it is
 // long, load-bearing, and referenced by edit_group's description by name.
 export const RECIPE_CONTRACT =
   "RecipeGraph shape: {name, description?, nodes:[{id, type, params?, parent?}], " +
   "edges?:[{from, to}], inputs?:[{name, from, type}], outputs:[{name, from, " +
-  "type}] (at least one), exposed?:[{name, node, param}]}. Node ids are " +
+  "type}] (at least one), exposed?:[{name, node, param}]}. `exposed` that " +
+  "don't resolve (missing node/param, or a type that can't be a knob) fail " +
+  "the insert — they are not dropped silently. Node ids are " +
   "local strings you choose. `type` strings MUST come from get_catalog. " +
   'Edge grammar — from: "<id>:out" | "<id>:aux:<name>"; to: ' +
   '"<id>:in:<socket>" | "<id>:param:<name>". Set only params the ' +
-  "catalog lists (respect ranges/options). Allowed cross-type wires: " +
+  "catalog lists without the ~(not remotely settable) tag (respect " +
+  "ranges/options). color_ramp is settable: [{position, color, alpha?}] " +
+  "— same shape as GLSL ramp() channels (Color Ramp stops, Rasterize " +
+  "fill/stroke ramps). Allowed cross-type wires: " +
   "mask↔image, spline→mask, scalar→vec2/vec3/vec4/uv, image|mask→scalar, " +
   "audio→scalar, image↔element; anything else must match exactly. The " +
   "graph must be acyclic. Expression/Point Expression `expression` params " +
@@ -46,6 +52,11 @@ export const RECIPE_CONTRACT =
   '("<id>:in:<channelName>": scalar/scalar/vec4/color_ramp). In GLSL they ' +
   "read as float/bool/int(+const int mode_a)/vec4 uniforms and vec4 ink(float t) / " +
   "float falloff(float x) functions; names can't start with u_. " +
+  "The scalar Expression node (type \"expression\") is different: sockets " +
+  "are the named variables in params.inputs (default x). Wire by variable " +
+  'name ("<id>:in:x", "<id>:in:p") — never the minted ein-… id. Declare extra ' +
+  "variables with params.inputs = [{name, default?}, …] (ids preserved by " +
+  "index) or by add_edge to a new name (the list grows). " +
   "Merge nodes: size the stack with params.layers = [{mode, opacity}, …] " +
   'and wire ordinally — "<id>:in:layer1", "<id>:in:layer2", … ' +
   '("<id>:in:mask1", … for per-layer mattes); wiring layerN past the end ' +
@@ -106,7 +117,8 @@ export const BRIDGED_TOOLS = [
       "tool; never guess. Under each node the DSL prints fixed-slot facts — " +
       "`# space:` (coordinate space per socket/param; out=in:x means the output " +
       "follows that input), `# reads:` / `# writes:` (point attributes), " +
-      "`# flags:`, and `# !` gotchas — read them before wiring. The space/" +
+      "`# flags:`, and `# !` gotchas — read them before wiring. canvas01 is " +
+      "Y-down; uv01 (Gradient, v_uv in GLSL) is Y-up. The space/" +
       "flags preamble is on the index and on unfiltered/category dumps; " +
       "`types=` returns just those nodes (no repeated tables).",
     inputSchema: {
@@ -160,7 +172,14 @@ export const BRIDGED_TOOLS = [
       "root composition (the layer chain); pass a group or layer id to see " +
       "its interior. Repeat / For Each / Iterate members are listed in the " +
       "enclosing scope (each has `parent` = the zone shell id); you can " +
-      "also pass a zone shell id as `scope`. GLSL Expression nodes that " +
+      "also pass a zone shell id as `scope`. Every result includes `rev` " +
+      "(monotone mutation counter). Pass `since: <rev>` to get a diff " +
+      "against that snapshot (added/removed/changed nodes + edges) instead " +
+      "of the full graph — or `{unchanged: true}` when nothing moved. If " +
+      "the snapshot expired you get the full graph plus a note. After a " +
+      "timed-out edit, get_recent_edits or get_graph({since}) tells you " +
+      "whether it landed without re-reading a 200-node group. " +
+      "GLSL Expression nodes that " +
       "fail to compile include `shaderError` (the WebGL info log) and " +
       "`shaderPreludeLines` (subtract from log line numbers to get a line " +
       "in the body you wrote) — a broken shader still renders " +
@@ -186,6 +205,35 @@ export const BRIDGED_TOOLS = [
         .describe(
           'Default omits catalog defaults and hashes long expressions. "all" = every settable param and full expression sources. "non_default" / "changed_only" = same as the default. Ignored when verbosity=ids.'
         ),
+      since: z
+        .number()
+        .optional()
+        .describe(
+          "Previous get_graph/edit `rev`. Returns a diff (or unchanged) instead of the full graph."
+        ),
+    },
+  },
+  {
+    name: "get_recent_edits",
+    mutates: false,
+    resultKind: "text",
+    timeoutMs: CMD_TIMEOUT_MS,
+    description:
+      "Recent graph mutations from this editor session (insert_recipe, " +
+      "edit_group) with the `rev` get_graph uses. Key by the `summary` " +
+      "you sent on edit_group — after a timeout, this is how you learn " +
+      "whether the edit landed (status ok + matching summary) without " +
+      "re-reading the group. Newest last. `rev` is the current mutation " +
+      "counter (same field on get_status / get_graph).",
+    inputSchema: {
+      summary: z
+        .string()
+        .optional()
+        .describe("Match this edit_group summary (exact or substring)."),
+      limit: z
+        .number()
+        .optional()
+        .describe("Max entries to return (default 10, max 40)."),
     },
   },
   {
@@ -230,12 +278,20 @@ export const BRIDGED_TOOLS = [
       "frame (the paused editor is restored to the user's playhead " +
       "afterwards); `nodeId` previews a specific node's output instead of " +
       "the terminal; `maxSize` caps the long edge (JPEG default 1024px, " +
-      "PNG default 720px). Previewing a GLSL Expression that failed to " +
+      "PNG default 720px). `nodeId` may be a bare id or `<id>:out` / " +
+      "`<id>:aux:<name>` — a node with aux outputs is otherwise ambiguous " +
+      "(Circle's fill image is not the disc; pass `:aux:image` for the " +
+      "raster). Previewing a GLSL Expression that failed to " +
       "compile appends the WebGL info log to the text sidecar — the " +
       "image itself is passthrough or transparent, not the shader. For " +
       "motion, take 2–3 screenshots at representative frames rather than many.",
     inputSchema: {
-      nodeId: z.string().optional().describe("Preview this node's output."),
+      nodeId: z
+        .string()
+        .optional()
+        .describe(
+          'Preview this node. Bare id, or "<id>:out" / "<id>:aux:<name>" (e.g. circle-abc:aux:image).'
+        ),
       frame: z.number().optional().describe("Render this frame (integer)."),
       maxSize: z
         .number()
@@ -255,9 +311,13 @@ export const BRIDGED_TOOLS = [
     name: "insert_recipe",
     mutates: true,
     resultKind: "text",
-    timeoutMs: CMD_TIMEOUT_MS,
+    timeoutMs: MUTATION_TIMEOUT_MS,
     description:
-      "Build and insert a new node-group from a RecipeGraph. `scope` " +
+      "Build and insert a new node-group from a RecipeGraph. Pass `recipes` " +
+      "(array) to insert several sibling groups in ONE call / one undo — " +
+      "prefer that over N insert_recipe round-trips when the designs share " +
+      "a skeleton; or insert one group and edit_group duplicate_node with " +
+      "param overrides. `scope` " +
       "chooses the parent: omit to use the current editor layer; pass a " +
       "layer/group/zone id to insert there; \"parent\" = sibling of the " +
       "current group; \"root\" = a new composition layer. If the editor is " +
@@ -270,15 +330,24 @@ export const BRIDGED_TOOLS = [
       "replace_output come back as a warning, not a silent note. Group " +
       "shells have no primary — address them as aux:<name> (usually " +
       "aux:image), not :out. Validation errors come back as the tool " +
-      "error. On success returns groupId, parentId, and `ids` (recipe " +
+      "error. On success returns groupId, parentId, `rev`, and `ids` (recipe " +
       "local id → minted live id, including \"<zone>-input\" for compound " +
       "zones) so you do not need a follow-up get_graph just to patch. " +
+      "A `recipes` batch returns `groups: [{name, groupId, ids, wired}]`; " +
+      "`connect` applies to the last group only. " +
       "The user sees a toast and can undo. " +
       RECIPE_CONTRACT,
     inputSchema: {
       recipe: z
         .record(z.string(), z.unknown())
+        .optional()
         .describe("The RecipeGraph object."),
+      recipes: z
+        .array(z.record(z.string(), z.unknown()))
+        .optional()
+        .describe(
+          "Insert several RecipeGraphs as sibling groups in one call. Prefer duplicate_node when they differ by a couple of params."
+        ),
       connect: z
         .boolean()
         .optional()
@@ -303,27 +372,40 @@ export const BRIDGED_TOOLS = [
     name: "edit_group",
     mutates: true,
     resultKind: "text",
-    timeoutMs: CMD_TIMEOUT_MS,
+    timeoutMs: MUTATION_TIMEOUT_MS,
     description:
       "Apply a minimal patch to an existing node-group OR layer's interior " +
       "(layers are the root-level building blocks — their content is edited " +
       "the same way; a layer shell's own params like blendMode are also " +
       "settable). Call get_graph with scope=groupId first. Local ids from " +
-      "add_node in this same batch resolve everywhere (set_param, add_edge, " +
-      "rename_node, …). Each op is a flat JSON object with \"op\" plus " +
-      "fields — example: {\"op\": \"set_param\", \"node\": \"<id>\", " +
+      "add_node / duplicate_node in this same batch resolve everywhere " +
+      "(set_param, add_edge, rename_node, …). Each op is a flat JSON object " +
+      "with \"op\" plus fields — example: {\"op\": \"set_param\", \"node\": \"<id>\", " +
       "\"param\": \"count\", \"value\": 12}. Nested {\"set_param\": {...}} " +
-      "and unknown ops are tool errors, not silent no-ops. Success returns " +
-      "`applied` plus an `ops` echo (resolved ids). " +
+      "and unknown ops are tool errors, not silent no-ops. Default result is " +
+      "compact: `applied`, `failed[]`, `duplicated[]` (counts + errors only), " +
+      "and `ids` (add_node / duplicate_node local id → minted live id, " +
+      'including "<zone>-input" — same map insert_recipe returns). ' +
+      "Pass `verbosity: \"full\"` for the per-op echo. `rev` is the mutation " +
+      "counter — after a timeout, get_recent_edits({summary}) or " +
+      "get_graph({since: rev}) tells you whether this landed. " +
       "Ops (ordered): set_param (node, param, value) · add_node (id, type, " +
       "params?, parent?) (fresh local id you then wire; parent is a Repeat/" +
-      "For Each zone id) · remove_node (node) (a nested node-group is " +
+      "For Each zone id) · duplicate_node (node, id, params?, name?, patch?) " +
+      "clones a node or nested group (interior included) as a sibling; " +
+      "`params` apply to the clone shell (exposed knobs on a group); " +
+      "`patch` is [{node, param, value}] using ORIGINAL interior ids, remapped " +
+      "onto the clone — use this instead of 100 insert_recipe calls that " +
+      "differ by two params. Returns `ids` original→clone. · " +
+      "remove_node (node) (a nested node-group is " +
       "removable — interior goes with it; Group Input/Output and the " +
-      "scope itself are not) · " +
+      "scope itself are not; exposed knobs whose only consumer was the " +
+      "deleted node are dropped from the interface) · " +
       "add_edge (from, to) (both ends must be in this scope — a node inside " +
       "a nested group is a different edit_group target; missing ends are " +
       "errors, not silent no-ops) · remove_edge (from, to) · expose_param (node, param, " +
-      "label?) · unexpose_param (node, param) · rename_node (node, name). Edge " +
+      "label?) (shell inputValues seed from the interior value so 0.3 " +
+      "does not become 0) · unexpose_param (node, param) · rename_node (node, name). Edge " +
       "grammar and param rules are the same as insert_recipe. A param " +
       "listed under `keyframed` is animated — setting its static value " +
       "does nothing. To put an interior socket (including a socketed " +
@@ -350,7 +432,13 @@ export const BRIDGED_TOOLS = [
       summary: z
         .string()
         .optional()
-        .describe("One short sentence shown to the user."),
+        .describe("One short sentence shown to the user and stored in get_recent_edits."),
+      verbosity: z
+        .enum(["counts", "full"])
+        .optional()
+        .describe(
+          'counts (default) = applied + failed[] only. full = per-op echo (expensive on large patches).'
+        ),
     },
   },
   {
@@ -362,7 +450,9 @@ export const BRIDGED_TOOLS = [
       "Set one settable param on any node in the project (get ids from " +
       "get_graph). Values are vetted against the param's type/range/options. " +
       "Prefer this over edit_group for single tweaks — it's the same path " +
-      "the UI sliders use (undo + auto-keyframing included). Setting " +
+      "the UI sliders use (undo + auto-keyframing included). color_ramp " +
+      "params take [{position, color, alpha?}] (same as GLSL ramp() channels). " +
+      "Setting " +
       "`expression` on Point Expression / GLSL Expression also Syncs new " +
       "channels (ch/toggle/pick/color/ramp/curve; add-only, ids preserved) — " +
       "patch in place; do not replace the node to grow uniforms. Sync never " +
@@ -401,7 +491,12 @@ export const BRIDGED_TOOLS = [
       start: z.number().optional().describe("Range start frame (default 0)."),
       end: z.number().optional().describe("Range end frame (default loop end)."),
       every: z.number().optional().describe("Sample every N frames."),
-      nodeId: z.string().optional().describe("Preview this node's output."),
+      nodeId: z
+        .string()
+        .optional()
+        .describe(
+          'Preview this node. Bare id, or "<id>:out" / "<id>:aux:<name>" (e.g. circle-abc:aux:image).'
+        ),
       maxSize: z
         .number()
         .optional()

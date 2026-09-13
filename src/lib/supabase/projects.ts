@@ -42,9 +42,9 @@ export interface ProjectRow {
   // means the project has no ratings yet.
   ratings_avg: number | null;
   ratings_count: number;
-  // Stable random slug minted when a project goes public; cleared when
-  // it goes private (by a DB trigger as a safety net + the client). The
-  // /live/<slug> route resolves rows by this column.
+  // Stable random slug minted on insert (and backfilled for older
+  // rows). The /p/<slug> editor route resolves by this column for
+  // every project; /live/<slug> still requires is_public = true.
   public_slug: string | null;
   // Populated for rows returned by listPublicProjects; null elsewhere.
   author: ProjectAuthor | null;
@@ -61,8 +61,10 @@ const BASE_COLS =
 
 // Random URL-safe slug. 12 chars × base36 ≈ 62 bits of entropy — well
 // under astronomical collision risk at any realistic project count, and
-// short enough to fit comfortably in a URL pill.
-function mintPublicSlug(): string {
+// short enough to fit comfortably in a URL. Every project gets one
+// (public and private); the unique partial index on public_slug is the
+// collision backstop — callers retry on 23505.
+function mintProjectSlug(): string {
   const out: string[] = [];
   const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
@@ -246,7 +248,7 @@ export async function saveProject(
   graph: SavedProject,
   thumbnail: string | null,
   isPublic = false
-): Promise<{ id: string } | null> {
+): Promise<{ id: string; slug: string } | null> {
   const supabase = createClient();
   const { data: userResp } = await supabase.auth.getUser();
   if (!userResp.user) return null;
@@ -269,16 +271,31 @@ export async function saveProject(
   if (thumbnail) {
     thumbnailUrl = await uploadThumbnail(userId, projectId, thumbnail);
   }
-  const { error } = await supabase
-    .from("projects")
-    .insert({
+  let slug = mintProjectSlug();
+  let { error } = await supabase.from("projects").insert({
+    id: projectId,
+    user_id: userId,
+    name,
+    graph: rowGraph,
+    thumbnail: thumbnailUrl,
+    is_public: isPublic,
+    public_slug: slug,
+  });
+  // Unique-index collision on public_slug (23505) — retry a few times
+  // with a fresh slug. The project id is already uploaded-to, so we
+  // keep it and only rotate the slug.
+  for (let attempt = 0; error?.code === "23505" && attempt < 4; attempt++) {
+    slug = mintProjectSlug();
+    ({ error } = await supabase.from("projects").insert({
       id: projectId,
       user_id: userId,
       name,
       graph: rowGraph,
       thumbnail: thumbnailUrl,
       is_public: isPublic,
-    });
+      public_slug: slug,
+    }));
+  }
   if (error) {
     logProjectWriteError("saveProject", error, rowGraph);
     // Row insert failed — drop the orphan blob we just uploaded.
@@ -286,7 +303,7 @@ export async function saveProject(
     return null;
   }
   invalidateProjectCaches();
-  return { id: projectId };
+  return { id: projectId, slug };
 }
 
 // Overwrites graph + thumbnail on an existing project row. Name and
@@ -434,30 +451,26 @@ export async function setProjectVisibility(
   | { ok: false; conflict?: boolean }
 > {
   const supabase = createClient();
-  // Going public mints a slug if one doesn't already exist; going private
-  // explicitly clears it (the DB trigger does the same as a safety net).
-  // We pass the slug through the same UPDATE so visibility + slug stay
-  // atomically consistent — no half-published rows.
+  // Visibility flips no longer mint or clear the slug — every project
+  // keeps a stable /p/<slug>. We still mint here if an older row is
+  // missing one, so the file-name menu's copy-link buttons light up
+  // immediately either direction.
   const updatedAt = new Date().toISOString();
   const payload: Record<string, unknown> = {
     is_public: isPublic,
     updated_at: updatedAt,
   };
   let resolvedSlug: string | null = null;
-  if (isPublic) {
-    const { data: existing } = await supabase
-      .from("projects")
-      .select("public_slug")
-      .eq("id", id)
-      .maybeSingle();
-    if (existing?.public_slug) {
-      resolvedSlug = existing.public_slug as string;
-    } else {
-      resolvedSlug = mintPublicSlug();
-      payload.public_slug = resolvedSlug;
-    }
+  const { data: existing } = await supabase
+    .from("projects")
+    .select("public_slug")
+    .eq("id", id)
+    .maybeSingle();
+  if (existing?.public_slug) {
+    resolvedSlug = existing.public_slug as string;
   } else {
-    payload.public_slug = null;
+    resolvedSlug = mintProjectSlug();
+    payload.public_slug = resolvedSlug;
   }
   let query = supabase.from("projects").update(payload).eq("id", id);
   if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
@@ -470,7 +483,51 @@ export async function setProjectVisibility(
     return { ok: false, conflict: true };
   }
   invalidateProjectCaches();
-  return { ok: true, slug: isPublic ? resolvedSlug : null, updatedAt };
+  return { ok: true, slug: resolvedSlug, updatedAt };
+}
+
+// Mint a slug on an owned row that's missing one (pre-backfill private
+// projects). Does NOT bump updated_at — a silent metadata fill must
+// not trip the editor's save CAS. Returns the existing slug if present.
+export async function ensureProjectSlug(id: string): Promise<string | null> {
+  const supabase = createClient();
+  const { data: existing, error: readErr } = await supabase
+    .from("projects")
+    .select("public_slug")
+    .eq("id", id)
+    .maybeSingle();
+  if (readErr || !existing) {
+    if (readErr) console.error("ensureProjectSlug read failed:", readErr);
+    return null;
+  }
+  if (existing.public_slug) return existing.public_slug as string;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const slug = mintProjectSlug();
+    const { data, error } = await supabase
+      .from("projects")
+      .update({ public_slug: slug })
+      .eq("id", id)
+      .is("public_slug", null)
+      .select("public_slug")
+      .maybeSingle();
+    if (error) {
+      if (error.code === "23505") continue;
+      console.error("ensureProjectSlug failed:", error);
+      return null;
+    }
+    if (data?.public_slug) {
+      invalidateProjectCaches();
+      return data.public_slug as string;
+    }
+    // Lost the race — someone else minted. Re-read.
+    const { data: again } = await supabase
+      .from("projects")
+      .select("public_slug")
+      .eq("id", id)
+      .maybeSingle();
+    if (again?.public_slug) return again.public_slug as string;
+  }
+  return null;
 }
 
 export async function deleteProject(id: string): Promise<boolean> {
@@ -781,8 +838,9 @@ export interface LoadedProject {
   is_public: boolean;
   user_id: string;
   author: ProjectAuthor | null;
-  // The /p/<slug> editor link and /live/<slug> client view both
-  // need this. Null when the project isn't currently public.
+  // The /p/<slug> editor link needs this for every project. /live/<slug>
+  // still requires is_public. Null only on rows that predate the
+  // all-project-slugs backfill and haven't been opened/saved since.
   public_slug: string | null;
   // Row version as of this load — feed to updateProject's
   // expectedUpdatedAt so a save from a stale window is detected
@@ -848,6 +906,110 @@ export async function loadPublicProjectBySlug(
     user_id: data.user_id as string,
     author,
     public_slug: slug,
+  };
+}
+
+// /p/<slug> editor resolve. Unlike loadPublicProjectBySlug this admits
+// private rows the caller is allowed to read (owner or collaborator via
+// RLS). When RLS hides the row, project_slug_exists() distinguishes a
+// private project (show the login gate) from a missing slug (404).
+export type EditorProjectBySlug =
+  | {
+      status: "ok";
+      id: string;
+      name: string;
+      graph: SavedProject;
+      user_id: string;
+      is_public: boolean;
+      author: ProjectAuthor | null;
+      public_slug: string;
+      updated_at: string | null;
+      shared_with_me: boolean;
+      has_collaborators: boolean;
+    }
+  | { status: "private" }
+  | { status: "missing" };
+
+export async function loadEditorProjectBySlug(
+  client: ReturnType<typeof createClient>,
+  slug: string
+): Promise<EditorProjectBySlug> {
+  const { data, error } = await client
+    .from("projects")
+    .select("id, name, graph, user_id, is_public, updated_at")
+    .eq("public_slug", slug)
+    .maybeSingle();
+  if (error) {
+    console.error("loadEditorProjectBySlug failed:", error);
+    return { status: "missing" };
+  }
+  if (!data) {
+    // RLS hid it, or it doesn't exist. The existence RPC never returns
+    // the graph — only a boolean. 42883 = migration not applied yet,
+    // treat as missing (same as today).
+    const { data: exists, error: existsErr } = await client.rpc(
+      "project_slug_exists",
+      { p_slug: slug }
+    );
+    if (existsErr) {
+      if (existsErr.code !== "42883") {
+        console.error("project_slug_exists failed:", existsErr);
+      }
+      return { status: "missing" };
+    }
+    return exists ? { status: "private" } : { status: "missing" };
+  }
+
+  const { data: sess } = await client.auth.getUser();
+  const uid = sess.user?.id ?? null;
+  const isMine = !!uid && (data.user_id as string) === uid;
+
+  let author: ProjectAuthor | null = null;
+  if (!isMine) {
+    const { data: prof } = await client
+      .from("profiles")
+      .select("id, display_name, avatar_url")
+      .eq("id", data.user_id)
+      .maybeSingle();
+    if (prof) author = prof as ProjectAuthor;
+  }
+
+  let sharedWithMe = false;
+  if (!isMine && uid) {
+    const { data: collab } = await client
+      .from("project_collaborators")
+      .select("user_id")
+      .eq("project_id", data.id)
+      .eq("user_id", uid)
+      .maybeSingle();
+    sharedWithMe = !!collab;
+  }
+
+  let hasCollaborators = false;
+  if (isMine) {
+    const { data: anyCollab } = await client
+      .from("project_collaborators")
+      .select("user_id")
+      .eq("project_id", data.id)
+      .limit(1);
+    hasCollaborators = !!anyCollab && anyCollab.length > 0;
+  }
+
+  return {
+    status: "ok",
+    id: data.id as string,
+    name: data.name as string,
+    graph: resolveAssetRefs(client, data.graph as SavedProject, {
+      userId: data.user_id as string,
+      projectId: data.id as string,
+    }),
+    user_id: data.user_id as string,
+    is_public: !!data.is_public,
+    author,
+    public_slug: slug,
+    updated_at: (data.updated_at as string | null) ?? null,
+    shared_with_me: sharedWithMe,
+    has_collaborators: hasCollaborators,
   };
 }
 

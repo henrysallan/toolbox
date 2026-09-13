@@ -5,7 +5,12 @@ import type {
   RenderContext,
   SocketType,
 } from "@/engine/types";
-import { gatherPoints, makePoints } from "@/engine/points";
+import {
+  copyPointsWith,
+  gatherPoints,
+  makePoints,
+  RESERVED_POINT_ATTR_NAMES,
+} from "@/engine/points";
 
 // Keep or discard points by predicate. Four modes:
 //
@@ -16,8 +21,10 @@ import { gatherPoints, makePoints } from "@/engine/points";
 //           points where the value is ≥ threshold. Invert flips the
 //           comparison so the mask's dark areas keep instead.
 //
-//   index:  keep 1 of every N points (Every) at a phase (Offset) — a
-//           deterministic decimation / thinning. Invert drops that set.
+//   index:  keep points by their position in the incoming array. Select
+//           picks the predicate: every Nth (Every + Offset — the original
+//           decimation), a single Equal index, an inclusive Range, First,
+//           Last, or First and last. Invert drops that set.
 //
 //   random: keep a random SUBSET, but stably. Each point's keep/drop is a
 //           frame-independent hash of its index, so points don't flicker in
@@ -32,10 +39,17 @@ import { gatherPoints, makePoints } from "@/engine/points";
 //           (081326_point-attributes.md M4). Space-blind; a missing
 //           channel passes through unchanged.
 //
-// Output count is unbounded by the input — empty result is valid.
+// Result compact (default) drops unmatched points — output count is
+// unbounded by the input, empty is valid. Result flag writes a 0/1
+// float channel (default `keep`) and leaves every point in place, so
+// downstream Map Attribute / Copy to Points / Filter attribute-mode can
+// consume the selection without a topology change. Invert flips the
+// predicate before either compacting or writing the flag.
+//
 // Per-point attributes (scale / rotation / groupIndex) are preserved
-// for the kept points; their indices in the output are sequential
-// starting at 0 (i.e. the input order is kept, gaps closed up).
+// for the kept points; in compact mode their indices in the output are
+// sequential starting at 0 (i.e. the input order is kept, gaps closed
+// up). Flag mode does not renumber.
 //
 // Stability note (index/random): both key off the point's INDEX, so a
 // fixed upstream point set stays put frame-to-frame. If the incoming count
@@ -106,6 +120,50 @@ function hash01(seed: number): number {
 const MODES = ["bbox", "mask", "index", "random", "attribute"] as const;
 type Mode = (typeof MODES)[number];
 
+const INDEX_BY = [
+  "every",
+  "equal",
+  "range",
+  "first",
+  "last",
+  "first and last",
+] as const;
+type IndexBy = (typeof INDEX_BY)[number];
+
+const RESULTS = ["compact", "flag"] as const;
+type Result = (typeof RESULTS)[number];
+
+function indexHit(
+  i: number,
+  n: number,
+  by: IndexBy,
+  every: number,
+  offset: number,
+  equal: number,
+  rangeMin: number,
+  rangeMax: number
+): boolean {
+  switch (by) {
+    case "equal":
+      return i === equal;
+    case "range": {
+      const lo = Math.min(rangeMin, rangeMax);
+      const hi = Math.max(rangeMin, rangeMax);
+      return i >= lo && i <= hi;
+    }
+    case "first":
+      return i === 0;
+    case "last":
+      return n > 0 && i === n - 1;
+    case "first and last":
+      return n > 0 && (i === 0 || i === n - 1);
+    default: {
+      // every — floor-mod so negative offsets still land on a residue.
+      return (((i + offset) % every) + every) % every === 0;
+    }
+  }
+}
+
 function emptyPoints(is3d: boolean): PointsValue {
   // Mirror the input's dimensionality so downstream consumers see a
   // consistent shape (a 3D-empty keeps its z array ⇒ is3DPoints holds).
@@ -143,7 +201,7 @@ export const filterPointsNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Keep or discard points by predicate. Bbox keeps points inside an XY window; Mask keeps points where the wired image's luminance is ≥ threshold; Index keeps 1 of every N points; Random keeps a stable random subset (hashed on index, so points don't flicker in/out — raising Amount reveals more of the same points, Seed re-rolls the selection). Invert flips which side is kept. Also accepts 3D points (from 3D Scatter Points): bbox becomes a world-space box with Z rows, index/random work identically, mask passes through.",
+    "Keep or discard points by predicate, or write the predicate as a 0/1 flag and leave every point in place. Bbox keeps points inside an XY window; Mask keeps points where the wired image's luminance is ≥ threshold; Index selects by array position (every Nth, a single index, a range, first, last, or first and last); Random keeps a stable random subset (hashed on index, so points don't flicker in/out — raising Amount reveals more of the same points, Seed re-rolls the selection). Invert flips which side is kept. Result compact drops the rest; flag writes a named 0/1 channel (default keep). Also accepts 3D points (from 3D Scatter Points): bbox becomes a world-space box with Z rows, index/random work identically, mask passes through.",
   facts: {
     space: {
       "in:points": ["canvas01", "world3d"],
@@ -159,13 +217,16 @@ export const filterPointsNode: NodeDefinition = {
       "param:wz_min": "world3d",
       "param:wz_max": "world3d",
     },
+    writes: ["attr:keep"],
     gotchas: [
       "points is polymorphic: a points3d wire switches bbox to world-space X/Y/Z rows (wx/wy/wz, default −10..10) and hides the 2D X/Y rows and the mask threshold.",
       "mask mode ignores a points3d input entirely (authored-space sampling has no meaning for world points) and passes it through unchanged, same as an unwired mask on 2D input.",
       "attribute mode compares a named channel's component 0 against attr_threshold; a missing channel passes every point through unchanged instead of dropping them.",
+      "index_by (index mode) selects every-Nth, a single index, an inclusive range, first, last, or first and last; invert flips the predicate before compacting or writing the flag.",
+      "result=flag writes a 0/1 float channel named flag_name (default keep) and leaves count unchanged; result=compact drops unmatched points and renumbers survivors from 0.",
       "index/random key off each point's position in the incoming array, not any stored identity, so a changed upstream count changes which points survive.",
       "random mode's hash matches Point Expression's rand(index) byte-for-byte (seed 0 == hash01(index)), so an equivalent expression selects the identical subset.",
-      "Kept points are renumbered sequentially from 0; scale/rotation/group and named attributes are carried through unchanged via gatherPoints.",
+      "Compact mode carries scale/rotation/group and named attributes through gatherPoints; flag mode overlays flag_name on the existing cloud without gathering.",
     ],
   },
   backend: "webgl2",
@@ -282,6 +343,14 @@ export const filterPointsNode: NodeDefinition = {
         p.mode === "mask" && meta?.inputTypes?.points !== "points3d",
     },
     {
+      name: "index_by",
+      label: "Select",
+      type: "enum",
+      options: INDEX_BY as unknown as string[],
+      default: "every",
+      visibleIf: (p) => p.mode === "index",
+    },
+    {
       // index mode: keep 1 of every N points.
       name: "every",
       label: "Keep 1 of every",
@@ -291,7 +360,8 @@ export const filterPointsNode: NodeDefinition = {
       softMax: 10,
       step: 1,
       default: 2,
-      visibleIf: (p) => p.mode === "index",
+      visibleIf: (p) =>
+        p.mode === "index" && ((p.index_by as string) ?? "every") === "every",
     },
     {
       // index mode: phase — which residue class survives.
@@ -303,7 +373,41 @@ export const filterPointsNode: NodeDefinition = {
       softMax: 10,
       step: 1,
       default: 0,
-      visibleIf: (p) => p.mode === "index",
+      visibleIf: (p) =>
+        p.mode === "index" && ((p.index_by as string) ?? "every") === "every",
+    },
+    {
+      name: "index_value",
+      label: "Index",
+      type: "scalar",
+      min: 0,
+      max: 100000,
+      softMax: 64,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.mode === "index" && p.index_by === "equal",
+    },
+    {
+      name: "index_min",
+      label: "From",
+      type: "scalar",
+      min: 0,
+      max: 100000,
+      softMax: 64,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.mode === "index" && p.index_by === "range",
+    },
+    {
+      name: "index_max",
+      label: "To",
+      type: "scalar",
+      min: 0,
+      max: 100000,
+      softMax: 64,
+      step: 1,
+      default: 0,
+      visibleIf: (p) => p.mode === "index" && p.index_by === "range",
     },
     {
       // random mode: fraction kept. Monotonic — raising this only ever adds
@@ -334,6 +438,22 @@ export const filterPointsNode: NodeDefinition = {
       type: "boolean",
       default: false,
     },
+    {
+      name: "result",
+      label: "Result",
+      type: "enum",
+      options: RESULTS as unknown as string[],
+      default: "compact",
+    },
+    {
+      name: "flag_name",
+      label: "Flag",
+      type: "string",
+      default: "keep",
+      placeholder: "attribute name",
+      suggestAttrsFrom: "points",
+      visibleIf: (p) => p.result === "flag",
+    },
   ],
   primaryOutput: "points",
   // Filtered stream re-advertises whatever came in.
@@ -351,11 +471,19 @@ export const filterPointsNode: NodeDefinition = {
     const is3d = src.z !== undefined;
     const mode = ((params.mode as string) ?? "bbox") as Mode;
     const invert = !!params.invert;
+    const result = ((params.result as string) ?? "compact") as Result;
     const n = src.count;
 
-    // Build a per-point keep mask, then compact into output buffers.
+    // Build a per-point keep mask, then either compact or stamp a flag.
     const keep = new Uint8Array(n);
     let keepCount = 0;
+    const mark = (i: number, pred: boolean) => {
+      const k = invert ? !pred : pred;
+      if (k) {
+        keep[i] = 1;
+        keepCount++;
+      }
+    };
 
     if (mode === "bbox" && is3d) {
       // World-space box. Guaranteed-present z (is3d) read from src.z.
@@ -380,15 +508,12 @@ export const filterPointsNode: NodeDefinition = {
       for (let i = 0; i < n; i++) {
         const x = src.positions[i * 2];
         const y = src.positions[i * 2 + 1];
-        const inside =
+        mark(
+          i,
           x >= lo[0] && x <= hi[0] &&
-          y >= lo[1] && y <= hi[1] &&
-          z[i] >= lo[2] && z[i] <= hi[2];
-        const k = invert ? !inside : inside;
-        if (k) {
-          keep[i] = 1;
-          keepCount++;
-        }
+            y >= lo[1] && y <= hi[1] &&
+            z[i] >= lo[2] && z[i] <= hi[2]
+        );
       }
     } else if (mode === "bbox") {
       const xMin = (params.x_min as number) ?? 0;
@@ -402,24 +527,17 @@ export const filterPointsNode: NodeDefinition = {
       for (let i = 0; i < n; i++) {
         const x = src.positions[i * 2];
         const y = src.positions[i * 2 + 1];
-        const inside = x >= lo && x <= hi && y >= tlo && y <= thi;
-        const k = invert ? !inside : inside;
-        if (k) {
-          keep[i] = 1;
-          keepCount++;
-        }
+        mark(i, x >= lo && x <= hi && y >= tlo && y <= thi);
       }
     } else if (mode === "index") {
+      const by = ((params.index_by as string) ?? "every") as IndexBy;
       const every = Math.max(1, Math.round((params.every as number) ?? 2));
       const offset = Math.round((params.offset as number) ?? 0);
+      const equal = Math.round((params.index_value as number) ?? 0);
+      const rangeMin = Math.round((params.index_min as number) ?? 0);
+      const rangeMax = Math.round((params.index_max as number) ?? 0);
       for (let i = 0; i < n; i++) {
-        // Floor-mod so negative offsets still land on a stable residue.
-        const hit = (((i + offset) % every) + every) % every === 0;
-        const k = invert ? !hit : hit;
-        if (k) {
-          keep[i] = 1;
-          keepCount++;
-        }
+        mark(i, indexHit(i, n, by, every, offset, equal, rangeMin, rangeMax));
       }
     } else if (mode === "random") {
       const amount = Math.max(0, Math.min(1, (params.amount as number) ?? 0.5));
@@ -429,12 +547,7 @@ export const filterPointsNode: NodeDefinition = {
       const seedMix = Math.imul(seed, 0x9e3779b1);
       for (let i = 0; i < n; i++) {
         // Strict `<`: amount 0 keeps nothing, amount 1 keeps everything.
-        const pass = hash01(i ^ seedMix) < amount;
-        const k = invert ? !pass : pass;
-        if (k) {
-          keep[i] = 1;
-          keepCount++;
-        }
+        mark(i, hash01(i ^ seedMix) < amount);
       }
     } else if (mode === "attribute") {
       const name = ((params.attr_name as string) ?? "").trim();
@@ -445,12 +558,7 @@ export const filterPointsNode: NodeDefinition = {
       const threshold = (params.attr_threshold as number) ?? 0.5;
       const k = attr.arity;
       for (let i = 0; i < n; i++) {
-        const passes = attr.data[i * k] >= threshold;
-        const kk = invert ? !passes : passes;
-        if (kk) {
-          keep[i] = 1;
-          keepCount++;
-        }
+        mark(i, attr.data[i * k] >= threshold);
       }
     } else {
       // mask mode
@@ -470,14 +578,22 @@ export const filterPointsNode: NodeDefinition = {
       for (let i = 0; i < n; i++) {
         const x = src.positions[i * 2];
         const y = src.positions[i * 2 + 1];
-        const luma = sampleLuma(buf, x, y);
-        const passes = luma >= threshold;
-        const k = invert ? !passes : passes;
-        if (k) {
-          keep[i] = 1;
-          keepCount++;
-        }
+        mark(i, sampleLuma(buf, x, y) >= threshold);
       }
+    }
+
+    if (result === "flag") {
+      const flagName = ((params.flag_name as string) ?? "keep").trim();
+      if (!flagName || RESERVED_POINT_ATTR_NAMES.has(flagName)) {
+        return { primary: src };
+      }
+      const data = new Float32Array(n);
+      for (let i = 0; i < n; i++) data[i] = keep[i] ? 1 : 0;
+      return {
+        primary: copyPointsWith(src, {
+          attributes: { ...src.attributes, [flagName]: { arity: 1, data } },
+        }),
+      };
     }
 
     if (keepCount === n) return { primary: src };

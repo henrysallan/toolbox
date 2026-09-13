@@ -265,6 +265,7 @@ export const expressionNode: NodeDefinition = {
       "random() is deterministic per node and frame (mulberry32 seeded from hash(nodeId) XOR frame), so re-evaluating the same frame gives the same sequence.",
       "Every input socket is scalar; connecting image/mask/audio relies on the engine's universal coercion to a representative scalar, not on any per-socket logic here.",
       "An unconnected input falls back to that variable's own `default` field (from the Inputs list, itself defaulting to 1), not to 0.",
+      "MCP/recipes wire by variable name (`<id>:in:x`), not the minted ein- id. Grow vars with params.inputs = [{name, default?}] or add_edge to a new name; ids stay by index across renames.",
       "A compile error or an empty expression outputs a zero shaped by out_type; the error text only surfaces via a one-time console.warn, not in the graph UI.",
       "out_type picks scalar vs vec2/3/4; a scalar result broadcasts to every vector component, an array result fills components in order and pads missing ones with 0.",
     ],
@@ -276,7 +277,7 @@ export const expressionNode: NodeDefinition = {
   stable: true,
   // Scalar/vector node — the universal mask input would be meaningless.
   noMaskInput: true,
-  inputs: [{ name: "in:ein-x0", label: "x", type: "scalar", required: false }],
+  inputs: [{ name: "x", label: "x", type: "scalar", required: false }],
   resolveInputs(params) {
     const entries = (params.inputs as ExprInput[]) ?? DEFAULT_INPUTS;
     // Every socket is declared `scalar`: the engine's universal coercions

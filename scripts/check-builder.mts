@@ -400,5 +400,118 @@ const badValues: RecipeGraph = {
   );
 }
 
+// --- Expression sockets are addressable by variable name (not ein-x0) ---
+{
+  const built = buildRecipe({
+    name: "Expr",
+    nodes: [
+      { id: "c", type: "constant", params: { value: 0.5 } },
+      {
+        id: "e",
+        type: "expression",
+        params: {
+          expression: "sin(p) * x",
+          inputs: [{ name: "x" }, { name: "p" }],
+        },
+      },
+    ],
+    edges: [
+      { from: "c:out", to: "e:in:x" },
+      { from: "c:out", to: "e:in:p" },
+    ],
+    outputs: [{ name: "v", from: "e:out", type: "scalar" }],
+  });
+  const expr = built.nodes.find((n) => n.data.defType === "expression")!;
+  const r = validateGraph(adapt(built).nodes, adapt(built).edges);
+  const errs = r.issues.filter((i) => i.severity === "error");
+  check(
+    "Expression recipe with named vars builds + validates",
+    built.issues.length === 0 && r.ok && errs.length === 0,
+    JSON.stringify(built.issues) + JSON.stringify(errs)
+  );
+  const ins = (expr.data.params.inputs as { name: string; id: string }[]) ?? [];
+  check(
+    "Expression inputs param kept x and p",
+    ins.some((e) => e.name === "x") && ins.some((e) => e.name === "p"),
+    JSON.stringify(ins)
+  );
+  const grown = buildRecipe({
+    name: "Expr grow",
+    nodes: [
+      { id: "c", type: "constant", params: { value: 1 } },
+      { id: "e", type: "expression", params: { expression: "p + x" } },
+    ],
+    edges: [
+      { from: "c:out", to: "e:in:x" },
+      { from: "c:out", to: "e:in:p" },
+    ],
+    outputs: [{ name: "v", from: "e:out", type: "scalar" }],
+  });
+  const gExpr = grown.nodes.find((n) => n.data.defType === "expression")!;
+  const gIns = (gExpr.data.params.inputs as { name: string }[]) ?? [];
+  const gVal = validateGraph(adapt(grown).nodes, adapt(grown).edges);
+  check(
+    "add_edge to a new Expression var grows inputs",
+    grown.issues.length === 0 &&
+      gVal.ok &&
+      gIns.some((e) => e.name === "x") &&
+      gIns.some((e) => e.name === "p"),
+    JSON.stringify({ issues: grown.issues, ins: gIns, val: gVal.issues })
+  );
+}
+
+{
+  const ramp: RecipeGraph = {
+    name: "Painted Ramp",
+    nodes: [
+      {
+        id: "r",
+        type: "color-ramp",
+        params: {
+          stops: [
+            { position: 0, color: "#ff0000" },
+            { position: 1, color: "#0000ff" },
+          ],
+        },
+      },
+    ],
+    outputs: [{ name: "image", from: "r:out", type: "image" }],
+  };
+  const built = buildRecipe(ramp);
+  const node = built.nodes.find((n) => n.data.defType === "color-ramp");
+  const stops = (node?.data.params.stops ?? []) as { color: string; position: number }[];
+  check(
+    "color_ramp stops are recipe-settable",
+    built.issues.length === 0 && stops.length === 2 && stops[0].color === "#ff0000" && stops[1].color === "#0000ff",
+    JSON.stringify({ issues: built.issues, stops })
+  );
+}
+
+{
+  const bad = buildRecipe({
+    name: "Bad Expose",
+    nodes: [{ id: "g", type: "gradient" }],
+    outputs: [{ name: "image", from: "g:out", type: "image" }],
+    exposed: [
+      { name: "Mode", node: "g", param: "mode" },
+      { name: "Ghost", node: "missing", param: "x" },
+      { name: "NoParam", node: "g", param: "not_a_param" },
+    ],
+  });
+  check(
+    "exposed enum is BAD_EXPOSED, not a silent drop",
+    bad.issues.some((i) => i.code === "BAD_EXPOSED" && i.message.includes("mode")),
+    JSON.stringify(bad.issues)
+  );
+  check(
+    "exposed missing node is BAD_EXPOSED",
+    bad.issues.some((i) => i.code === "BAD_EXPOSED" && i.message.includes("missing"))
+  );
+  check(
+    "exposed unknown param is BAD_EXPOSED",
+    bad.issues.some((i) => i.code === "BAD_EXPOSED" && i.message.includes("not_a_param"))
+  );
+}
+
 console.log(`\n${failures === 0 ? "ALL GREEN ✅" : `${failures} FAILURE(S) ❌`}`);
 if (failures) process.exit(1);

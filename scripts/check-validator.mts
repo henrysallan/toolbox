@@ -35,7 +35,7 @@ const { registerAllNodes } = await import("@/nodes/index");
 registerAllNodes();
 const { PRESETS } = await import("@/state/presets");
 const { editorCanCoerce, validateGraph } = await import("@/engine/graph-validation");
-const { accumulatorDomainForSource, collectModeForSource, walkToCamera3DNode } = await import(
+const { accumulatorDomainForSource, collectModeForSource, nextSwitchSlot, readSwitchSlots, walkToCamera3DNode } = await import(
   "@/engine/graph-helpers"
 );
 const { getNodeDef } = await import("@/engine/registry");
@@ -388,6 +388,70 @@ console.log("\n=== CAMERA THROUGH REROUTE / SWITCH ===");
     "non-camera producer → null",
     walkToCamera3DNode("cube", nodeOf([N("cube", "cube-3d")]), []) === null
   );
+
+  ok(
+    "readSwitchSlots default (count=2)",
+    readSwitchSlots({ count: 2 }).join(",") === "in0,in1"
+  );
+  ok(
+    "readSwitchSlots from count=12 (past the old 8 cap)",
+    readSwitchSlots({ count: 12 }).join(",") ===
+      "in0,in1,in2,in3,in4,in5,in6,in7,in8,in9,in10,in11"
+  );
+  ok(
+    "readSwitchSlots prefers slots over count",
+    readSwitchSlots({ count: 4, slots: ["in0", "in3"] }).join(",") === "in0,in3"
+  );
+  ok(
+    "nextSwitchSlot skips taken numbered sockets",
+    nextSwitchSlot(new Set(["in0", "in1"])) === "in2"
+  );
+
+  const swDef = getNodeDef("switch");
+  const swInputs = swDef?.resolveInputs?.({ count: 12, type: "auto" });
+  ok(
+    "resolveInputs honors count=12",
+    !!swInputs &&
+      swInputs.filter((i) => /^in\d+$/.test(i.name)).length === 12 &&
+      swInputs.some((i) => i.name === "in11") &&
+      swInputs.some((i) => i.name === "index")
+  );
+  const swPicked = swDef?.compute({
+    inputs: {
+      in0: { kind: "scalar", value: 10 },
+      in9: { kind: "scalar", value: 99 },
+    },
+    auxIn: {},
+    params: { slots: ["in0", "in9"], index: 1 },
+    ctx: {} as never,
+    nodeId: "sw",
+  });
+  ok(
+    "compute picks by slots order, not inN name",
+    !!swPicked &&
+      swPicked.primary?.kind === "scalar" &&
+      swPicked.primary.value === 99 &&
+      swPicked.ownsTextures === false
+  );
+  ok(
+    "camera → switch slot 1 of a 12-input node (index 9)",
+    walkToCamera3DNode(
+      "sw12",
+      nodeOf([cam, N("sw12", "switch", { count: 12, index: 9 })]),
+      [E("cam", "out:primary", "sw12", "in:in9")]
+    ) === "cam"
+  );
+  ok(
+    "camera → switch via non-sequential slots array",
+    walkToCamera3DNode(
+      "sws",
+      nodeOf([
+        cam,
+        N("sws", "switch", { slots: ["in0", "in9"], index: 1 }),
+      ]),
+      [E("cam", "out:primary", "sws", "in:in9")]
+    ) === "cam"
+  );
 }
 
 console.log("\n=== VECTOR FIELD ===");
@@ -423,6 +487,35 @@ console.log("\n=== VECTOR FIELD ===");
     "point-expression fieldX/fieldY compile",
     exprOk.length === 0,
     exprOk.join(",")
+  );
+}
+
+console.log("\n=== MIRROR ===");
+{
+  const ok = (label: string, pass: boolean, detail?: string) => {
+    if (!pass) failures++;
+    console.log(`${pass ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
+  };
+  ok(
+    "image → image-resting Mirror source (plain table)",
+    editorCanCoerce("image", "image", "mirror", "in:source")
+  );
+  ok(
+    "spline → image-resting Mirror source",
+    editorCanCoerce("spline", "image", "mirror", "in:source")
+  );
+  ok(
+    "image → spline-typed stored Mirror source",
+    editorCanCoerce("image", "spline", "mirror", "in:source")
+  );
+  const r = validateGraph(
+    [N("img", "image-source"), N("m", "mirror")],
+    [E("img", "out:primary", "m", "in:source")]
+  );
+  ok(
+    "validator accepts Image Source → Mirror",
+    r.ok,
+    r.issues.map((i) => `${i.code}:${i.message}`).join(",")
   );
 }
 

@@ -17,7 +17,8 @@ import {
 // stays the escape hatch for arbitrary formulas. The operand is a
 // constant or a SECOND channel (arity-1 operands broadcast across
 // components; mismatched arities read as 0). Remap fits
-// [In Lo..In Hi] → [Out Lo..Out Hi], clamped.
+// [In Lo..In Hi] → [Out Lo..Out Hi], clamped. Comparisons (greater /
+// less / step) write 1 or 0 per component; abs is unary.
 //
 // A missing source channel passes the input through unchanged — math on
 // nothing is a wiring mistake, not a request to invent zeros.
@@ -32,9 +33,19 @@ const OP_OPTIONS = [
   "min",
   "max",
   "power",
+  "abs",
+  "greater than",
+  "less than",
+  "step",
   "remap",
 ] as const;
 type Op = (typeof OP_OPTIONS)[number];
+
+// Remap has its own lo/hi rows; abs is unary. Everything else reads the
+// operand (constant or a second channel).
+function usesOperand(op: unknown): boolean {
+  return op !== "remap" && op !== "abs";
+}
 
 const OPERAND_OPTIONS = ["constant", "attribute"] as const;
 
@@ -67,6 +78,15 @@ function applyOp(
       return Math.max(x, o);
     case "power":
       return Math.pow(x, o);
+    case "abs":
+      return Math.abs(x);
+    case "greater than":
+      return x > o ? 1 : 0;
+    case "less than":
+      return x < o ? 1 : 0;
+    case "step":
+      // GLSL step(edge, x): 0 when x < edge, else 1. Operand is the edge.
+      return x < o ? 0 : 1;
     default:
       return x;
   }
@@ -98,6 +118,8 @@ function runMath(
           1
         );
         y = outLo + t * (outHi - outLo);
+      } else if (op === "abs") {
+        y = Math.abs(x);
       } else {
         const o = !useAttr
           ? constant
@@ -120,12 +142,14 @@ export const attributeMathNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Componentwise math on a named channel (points or spline anchors): add/subtract/multiply/divide/min/max/power against a constant or a second channel, or remap a range. Writes back in place, or to a new name via Output. A missing channel passes through unchanged.",
+    "Componentwise math on a named channel (points or spline anchors): add/subtract/multiply/divide/min/max/power/abs against a constant or a second channel, greater than / less than / step (0/1 comparisons), or remap a range. Writes back in place, or to a new name via Output. A missing channel passes through unchanged.",
   facts: {
     space: { out: "in:points" },
     gotchas: [
       "An arity-1 operand attribute broadcasts across every component of a higher-arity target; any other arity mismatch reads as 0 for every component.",
       "divide returns 0 when the operand is exactly 0, not Infinity/NaN.",
+      "greater than and less than write 1 or 0 per component using a strict inequality against the operand (constant or second channel).",
+      "step writes 1 when the channel ≥ the operand and 0 otherwise (GLSL step(operand, x)); equality sits on the 1 side.",
       "remap clamps t to [0,1] before lerping, so inputs outside In Lo..In Hi saturate at Out Lo/Hi instead of extrapolating.",
       "aux name emits the resolved output name (output_name or else attr_name) as a string even when the source channel is missing and nothing was written.",
       "Spline-anchor reads fall back to the subpath's own attrs when an anchor lacks the named value, but writing always stamps a per-anchor value, flattening that fallback.",
@@ -174,7 +198,7 @@ export const attributeMathNode: NodeDefinition = {
       type: "enum",
       options: OPERAND_OPTIONS as unknown as string[],
       default: "constant",
-      visibleIf: (p) => p.op !== "remap",
+      visibleIf: (p) => usesOperand(p.op),
     },
     {
       name: "value",
@@ -185,7 +209,7 @@ export const attributeMathNode: NodeDefinition = {
       softMax: 2,
       step: 0.001,
       default: 1,
-      visibleIf: (p) => p.op !== "remap" && p.operand !== "attribute",
+      visibleIf: (p) => usesOperand(p.op) && p.operand !== "attribute",
     },
     {
       name: "operand_attr",
@@ -195,7 +219,7 @@ export const attributeMathNode: NodeDefinition = {
       placeholder: "second attribute",
       suggestAttrsFrom: "points",
       suggestAttrsRequire: true,
-      visibleIf: (p) => p.op !== "remap" && p.operand === "attribute",
+      visibleIf: (p) => usesOperand(p.op) && p.operand === "attribute",
     },
     {
       name: "in_lo",
@@ -266,7 +290,7 @@ export const attributeMathNode: NodeDefinition = {
     const aux = { name: { kind: "string", value: outName } as const };
     const op = ((params.op as string) ?? "multiply") as Op;
     const useAttr =
-      op !== "remap" && (params.operand as string) === "attribute";
+      usesOperand(op) && (params.operand as string) === "attribute";
     const operandName = ((params.operand_attr as string) ?? "").trim();
     const constant = (params.value as number) ?? 1;
     const inLo = (params.in_lo as number) ?? 0;

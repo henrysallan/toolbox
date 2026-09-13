@@ -8,12 +8,15 @@
 
 import type { NodeDefinition, NodeFacts, ParamDef, ParamType } from "./types";
 import { ASPECT_SPACE_DOC } from "./aspect";
+import { vetColorRampStops } from "./color-ramp";
 
 // Param types the LLM may SET. These are the plain-JSON, generically
 // rendered types (ParamPanel renders them without a bespoke editor and they
 // serialize as `out[key] = val`). Everything else — media handles and
 // authoring-heavy structured editors — is placeable but not settable.
-// See spec §7.
+// See spec §7. `color_ramp` is the structured exception: same
+// [{position,color,alpha?}] shape as GLSL ramp() channels, so palette
+// authoring (Color Ramp stops, Rasterize fill/stroke ramps) is writable.
 export const SETTABLE_PARAM_TYPES: ReadonlySet<ParamType> = new Set([
   "scalar",
   "vec2",
@@ -23,6 +26,7 @@ export const SETTABLE_PARAM_TYPES: ReadonlySet<ParamType> = new Set([
   "boolean",
   "enum",
   "string",
+  "color_ramp",
 ]);
 
 // Vet an LLM-supplied VALUE against its ParamDef. The builder/edit paths
@@ -104,6 +108,8 @@ export function vetParamValue(
       return finiteVec(value, 4)
         ? { ok: true, value }
         : { ok: false, reason: "expected [x, y, z, w] finite numbers" };
+    case "color_ramp":
+      return vetColorRampStops(value);
     default:
       // Not an LLM-settable type — callers gate on SETTABLE_PARAM_TYPES
       // before vetting, so this is unreachable in practice.
@@ -163,6 +169,10 @@ export const SPACE_TABLE_DOC =
   "points3d/geometry/render=world3d (Y-up units) · audio/notes=time · " +
   "scalar/vecN/color/string=unitless. Per-node `space:` lines list only exceptions, position/size " +
   "params, and polymorphic follow-rules (out=in:x → out takes x's space; a|b → accepts either).";
+export const Y_ORIENT_DOC =
+  "canvas01 is Y-down (y=0 at the top); uv01 (Gradient, v_uv in GLSL) is Y-up (v=0 at the bottom).";
+export const UNSETTABLE_PARAM_DOC =
+  "Params tagged ~(not remotely settable) exist on the node but set_param / recipe params cannot write them.";
 export const FLAGS_DOC =
   "Flags: simulation=state accumulates across frames (step from frame 0) · unstable=never cached " +
   "(reads external state) · terminal=graph sink · no-mask=no universal mask input · " +
@@ -209,8 +219,18 @@ export interface CatalogOptions {
   omitParams?: boolean;
 }
 
+// True when a recipe / set_param write is accepted. Broader than
+// SETTABLE_PARAM_TYPES: merge `layers` and Expression `inputs` have
+// dedicated vetting (not generic JSON).
+function paramIsSettable(p: ParamDef): boolean {
+  if (SETTABLE_PARAM_TYPES.has(p.type)) return true;
+  if (p.type === "merge_layers") return true;
+  if (p.type === "expr_inputs" && !p.channelSync) return true;
+  return false;
+}
+
 function paramToCatalog(p: ParamDef): CatalogParam {
-  const settable = SETTABLE_PARAM_TYPES.has(p.type);
+  const settable = paramIsSettable(p);
   const out: CatalogParam = { name: p.name, type: p.type, settable };
   if (settable) {
     // The LLM only needs defaults/ranges/options for params it can set.
@@ -241,7 +261,7 @@ function defToCatalog(def: NodeDefinition, opts: CatalogOptions): CatalogNode {
     })),
     primaryOutput: def.primaryOutput,
     aux: def.auxOutputs.map((a) => ({ name: a.name, type: a.type })),
-    params: opts.omitParams ? [] : def.params.map(paramToCatalog),
+    params: opts.omitParams ? [] : def.params.filter((p) => !p.hidden).map(paramToCatalog),
   };
   if (def.subcategory) node.subcategory = def.subcategory;
   if (dynamic) node.dynamic = true;
@@ -314,7 +334,7 @@ function compoundZoneToCatalog(
     inputs: spec.inputs,
     primaryOutput: null,
     aux: [],
-    params: opts.omitParams ? [] : input.params.map(paramToCatalog),
+    params: opts.omitParams ? [] : input.params.filter((p) => !p.hidden).map(paramToCatalog),
   };
   if (!opts.omitDescriptions) {
     node.description = spec.description;
@@ -340,7 +360,8 @@ export function buildNodeCatalog(
 // Compact one-line-per-node DSL — the cached prompt format (~3.4× denser than
 // JSON; see spec §4). One line: `type (Name) [cat/sub] ~dyn: in a:scalar!,b:scalar
 // -> primary aux=x:image | param:type=default(min..max)[opts]`. `~dyn` flags
-// polymorphic nodes; `!` marks required inputs; only settable params are listed.
+// polymorphic nodes; `!` marks required inputs; unsettable params still list
+// as `name:type~(not remotely settable)` so the model can see they exist.
 // Under each node: `# <description>` then the NodeFacts slots in fixed order
 // (`# space:` `# reads:` `# writes:` `# flags:` `# ! gotcha`) — see formatFactsLines.
 export function formatCatalogDsl(
@@ -352,8 +373,8 @@ export function formatCatalogDsl(
       const ins = n.inputs.map((i) => `${i.name}:${i.type}${i.required ? "!" : ""}`).join(",");
       const aux = n.aux.length ? ` aux=${n.aux.map((a) => `${a.name}:${a.type}`).join(",")}` : "";
       const ps = n.params
-        .filter((p) => p.settable)
         .map((p) => {
+          if (!p.settable) return `${p.name}:${p.type}~(not remotely settable)`;
           let s = `${p.name}:${p.type}`;
           if (p.default !== undefined) s += `=${JSON.stringify(p.default)}`;
           if (p.options) {
@@ -379,7 +400,7 @@ export function formatCatalogDsl(
     })
     .join("\n");
   if (opts?.preamble === false) return body;
-  const header = `# ${ASPECT_SPACE_DOC}\n# ${SPACE_TABLE_DOC}\n# ${FLAGS_DOC}`;
+  const header = `# ${ASPECT_SPACE_DOC}\n# ${Y_ORIENT_DOC}\n# ${SPACE_TABLE_DOC}\n# ${UNSETTABLE_PARAM_DOC}\n# ${FLAGS_DOC}`;
   return `${header}\n${body}`;
 }
 
@@ -419,6 +440,7 @@ export function formatCatalogIndex(nodes: CatalogNode[]): string {
   const lines = [
     `# ${nodes.length} types (${catSummary}).`,
     `# ${ASPECT_SPACE_DOC}`,
+    `# ${Y_ORIENT_DOC}`,
     `# Sockets + params: get_catalog category="<name>" or types=["type"]. mode="full" for everything.`,
   ];
   for (const n of nodes) {

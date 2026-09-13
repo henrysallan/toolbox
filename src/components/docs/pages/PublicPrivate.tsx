@@ -44,13 +44,17 @@ export default function PublicPrivatePage() {
       <UL>
         <LI>
           <strong>Private projects</strong> appear only in your own
-          Private tab under File → Load. Nobody else can see or open
-          them.
+          Private tab under File → Load. Every project still has a{" "}
+          <Code>/p/&lt;slug&gt;</Code> editor URL; visitors who
+          aren&rsquo;t signed in as you (or invited as a collaborator)
+          see a login gate instead of the graph.
         </LI>
         <LI>
           <strong>Public projects</strong> appear in the Public tab
           for everyone, including visitors who aren&rsquo;t signed
-          in. Authorship is displayed next to the title.
+          in. Authorship is displayed next to the title. The same
+          slug also unlocks a <Code>/live/&lt;slug&gt;</Code> client
+          view.
         </LI>
         <LI>
           Your own public projects also show up in your Private tab

@@ -121,6 +121,9 @@ interface TrailsState {
   // Last ctx.time we considered for the play-gate. -1 so the first playing
   // eval after a reset always counts as a time change.
   lastTime: number;
+  // Previous eval's ctx.playing, for the play-rising-edge wipe. False so
+  // the first live Play after a pause (or a cold start) counts as a start.
+  lastPlaying: boolean;
 }
 
 function stateKey(nodeId: string): string {
@@ -147,6 +150,7 @@ function ensureState(
 
   if (!shouldReset) {
     if (typeof existing.lastTime !== "number") existing.lastTime = -1;
+    if (typeof existing.lastPlaying !== "boolean") existing.lastPlaying = false;
     return existing;
   }
 
@@ -168,6 +172,7 @@ function ensureState(
     frameCounter: 0,
     lastResetCounter: resetCounter,
     lastTime: -1,
+    lastPlaying: false,
   };
   ctx.state[key] = state;
   return state;
@@ -204,6 +209,13 @@ function fadeImage(
     gl.uniform1i(gl.getUniformLocation(prog, "u_src"), 0);
     gl.uniform1f(gl.getUniformLocation(prog, "u_decay"), decay);
   });
+}
+
+function wipeHistory(ctx: RenderContext, state: TrailsState): void {
+  ctx.clearTarget(state.prev, [0, 0, 0, 0]);
+  ctx.clearTarget(state.scratch, [0, 0, 0, 0]);
+  state.frameCounter = 0;
+  state.lastTime = -1;
 }
 
 function captureInto(
@@ -288,12 +300,13 @@ export const trailsNode: NodeDefinition = {
   category: "image",
   subcategory: "modifier",
   description:
-    "Temporal trails — each echo is a faded copy of an earlier frame (opacity only, no color mix). Primary is the current frame over the echoes; the trail aux is echoes only. Feedback: continuous motion trail. Ring: stepped stop-motion echoes. Velocity: directional motion blur along a vector or UV field. History advances only while the timeline plays.",
+    "Temporal trails — each echo is a faded copy of an earlier frame (opacity only, no color mix). Primary is the current frame over the echoes; the trail aux is echoes only. Feedback: continuous motion trail. Ring: stepped stop-motion echoes. Velocity: directional motion blur along a vector or UV field. History advances only while the timeline plays, and wipes on skip-to-start, loop wrap, or hitting Play.",
   facts: {
     space: { "param:velocity_x": "uv01", "param:velocity_y": "uv01" },
     reads: ["time"],
     gotchas: [
       "History only advances while the timeline is playing or exporting; paused param tweaks or repeated same-time evals freeze it instead of decaying further.",
+      "The history buffer wipes on skip-to-start / scene-time wrap back near 0, and on every Play (resume from pause); pause itself does not wipe.",
       "mode=ring captures a new echo only every step_frames active frames; between captures the primary output freezes on the last captured composite.",
       "mode=velocity always re-captures the raw current input as history (not the blurred output), so the directional blur doesn't compound frame over frame.",
       "velocity_x/y are the full backward-sweep UV offset at the last tap, not a per-tap or per-frame step; wiring vel_uv overrides them entirely.",
@@ -423,12 +436,20 @@ export const trailsNode: NodeDefinition = {
     const resetCounter = (params._reset_counter as number) ?? 0;
     const state = ensureState(ctx, nodeId, mode, resetCounter);
 
-    // House sim contract: history only advances while the timeline is
-    // playing (or an offline export is stepping). Same-time re-evals —
-    // paused param tweaks, cursor, split-view second pass, export settle
-    // re-render — freeze the buffer so trails don't keep decaying or
-    // picking up extra echoes. Time going backward (loop wrap) still
-    // counts as a change so the next loop doesn't freeze.
+    // Wipe on skip-to-start / scene-time wrap (house sim contract used by
+    // particles, fluid, sim-zone) and on every live Play — resume from
+    // pause starts a fresh trail, pause itself does not. Offline export
+    // frames pass playing=true too, so they are excluded from the Play
+    // edge; wrap-to-0 still clears at the start of a pre-roll.
+    const timeWrapped = state.lastTime > 0.05 && ctx.time < 0.05;
+    const playStarted = !!ctx.playing && !state.lastPlaying && !ctx.offline;
+    if (timeWrapped || playStarted) wipeHistory(ctx, state);
+    state.lastPlaying = !!ctx.playing;
+
+    // History only advances while the timeline is playing (or an offline
+    // export is stepping). Same-time re-evals — paused param tweaks,
+    // cursor, split-view second pass, export settle re-render — freeze
+    // the buffer so trails don't keep decaying or picking up extra echoes.
     const timeChanged = Math.abs(ctx.time - state.lastTime) > 1e-6;
     const active = (ctx.playing || ctx.offline) && timeChanged;
     state.lastTime = ctx.time;

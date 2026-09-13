@@ -2102,7 +2102,7 @@ export function ParamControl({
     // others stay at their def defaults.
     const effMin = rangeOverride?.min ?? param.min ?? 0;
     // Param-driven upper bound (maxFrom — e.g. Switch's `index` follows its
-    // `count`). An explicit per-node range override still wins over it.
+    // live slot list). An explicit per-node range override still wins over it.
     const dynMax = allParams ? param.maxFrom?.(allParams) : undefined;
     const effMax = rangeOverride?.max ?? dynMax ?? param.max ?? 1;
     const effSoftMax = rangeOverride?.softMax ?? param.softMax;

@@ -1,6 +1,9 @@
 import {
   SWITCH_AUTO,
+  SWITCH_COUNT_CAP,
+  SWITCH_MIN_COUNT,
   SWITCH_TYPE,
+  readSwitchSlots,
   switchTypeIsAuto,
   unifySocketTypes,
 } from "@/engine/graph-helpers";
@@ -11,7 +14,7 @@ import type {
   SocketType,
 } from "@/engine/types";
 
-// N-input multiplexer. Picks `inputs[i]` where `i` is the value coming
+// N-input multiplexer. Picks `slots[i]` where `i` is the value coming
 // in on the `index` socket (or, if unconnected, the index param).
 //
 // UNIVERSAL: the slots carry ANY socket type, not a fixed shortlist. By
@@ -25,9 +28,16 @@ import type {
 // explicitly to pin the node to one family (the slots are then honestly
 // typed and only genuinely coercible wires land).
 //
-// Index is rounded and clamped into [0, count-1]; an empty slot outputs
+// Inputs auto-grow (EffectsApp `slots` reconciler, same as Combine / SDF
+// Union): there is always one spare empty socket. Wiring it mints the next.
+// Pre-auto-grow saves used `count` (2–8) with sockets in0, in1, … — honor
+// that when `slots` is absent so old projects and AI recipes that set count
+// still resolve the same handles.
+//
+// Index is rounded and clamped into [0, slotCount-1]; an empty slot outputs
 // nothing. `index` also renders as a bar on the node body (EffectNode's
-// SCALAR_INPUT_PARAMS) whose range follows `count` via ParamDef.maxFrom.
+// SCALAR_INPUT_PARAMS) whose range follows the live slot list via
+// ParamDef.maxFrom.
 //
 // Spec: specdocs/archive/080526_universal-switch.md.
 //
@@ -71,13 +81,12 @@ const TYPE_OPTIONS: string[] = [SWITCH_AUTO, ...TYPES];
 // the node's original default, so a fresh Switch looks unchanged.
 const RESTING_TYPE: SocketType = "scalar";
 
-const MIN_COUNT = 2;
-const MAX_COUNT = 8;
+function slotNames(params: Record<string, unknown>): string[] {
+  return readSwitchSlots(params);
+}
 
-function activeCount(params: Record<string, unknown>): number {
-  const raw = (params.count as number) ?? MIN_COUNT;
-  if (!Number.isFinite(raw)) return MIN_COUNT;
-  return Math.max(MIN_COUNT, Math.min(MAX_COUNT, Math.round(raw)));
+function slotCount(params: Record<string, unknown>): number {
+  return slotNames(params).length;
 }
 
 // The type every slot (and the output) takes this resolve. Explicit `type`
@@ -93,12 +102,10 @@ function activeType(
   const connected = ctx?.connectedTypes;
   if (!connected) return RESTING_TYPE;
   // Only the numbered value slots vote — `index` (always scalar) and the
-  // universal `mask` input must not retype the node — and only slots within
-  // the current count (a wire can outlive a lowered Count). Walked in socket
+  // universal `mask` input must not retype the node. Walked in socket
   // order so unify's tie-break is deterministic: the topmost wire wins.
-  const n = activeCount(params);
   const wired: (SocketType | undefined)[] = [];
-  for (let i = 0; i < n; i++) wired.push(connected[`in${i}`]);
+  for (const name of slotNames(params)) wired.push(connected[name]);
   return unifySocketTypes(wired) ?? RESTING_TYPE;
 }
 
@@ -107,13 +114,14 @@ export const switchNode: NodeDefinition = {
   name: "Switch",
   category: "utility",
   description:
-    "Picks one of N inputs by index. Accepts any socket type: leave Type on \"auto\" and the node adopts whatever you wire in — mixed inputs coerce to the one type they share (a scalar beside a vec4 becomes vec4; a mask beside an image becomes image). Count sets how many slots render. Wire a scalar to Index for live switching.",
+    "Picks one of N inputs by index. Accepts any socket type: leave Type on \"auto\" and the node adopts whatever you wire in — mixed inputs coerce to the one type they share (a scalar beside a vec4 becomes vec4; a mask beside an image becomes image). Inputs auto-grow — there's always one spare empty socket. Wire a scalar to Index for live switching.",
   facts: {
     space: { out: "in:*" },
     gotchas: [
-      "type=auto adopts whatever is wired into in0..in(count-1); only those numbered slots vote (index and mask never retype the node), topmost wire wins ties.",
+      "type=auto adopts whatever is wired into the numbered in0, in1, … slots; only those vote (index and mask never retype the node), topmost wire wins ties.",
+      "Inputs auto-grow: connected numbered slots stay in order plus one trailing spare; disconnecting a middle slot drops it and later indices shift.",
       "The picked value passes through untouched and borrowed (ownsTextures: false) — the node never releases the upstream texture itself.",
-      "index is rounded and clamped into [0, count-1]; an unwired index slot falls back to the index param, and an empty slot at the picked index outputs nothing.",
+      "index is rounded and clamped into [0, slotCount-1]; an unwired index slot falls back to the index param, and an empty slot at the picked index outputs nothing.",
       "render and vector socket types are excluded from the switchable type list.",
     ],
   },
@@ -126,13 +134,13 @@ export const switchNode: NodeDefinition = {
   ],
   resolveInputs(params, ctx): InputSocketDef[] {
     const t = activeType(params, ctx);
-    const n = activeCount(params);
+    const slots = slotNames(params);
     const sockets: InputSocketDef[] = [
       { name: "index", type: "scalar", required: false, label: "Index" },
     ];
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < slots.length; i++) {
       sockets.push({
-        name: `in${i}`,
+        name: slots[i],
         type: t,
         required: false,
         label: `Input ${i}`,
@@ -149,13 +157,17 @@ export const switchNode: NodeDefinition = {
       default: SWITCH_AUTO,
     },
     {
+      // Hidden: the editor auto-grows `slots`. Kept so old saves and
+      // recipes that set `count` still size the socket list when `slots`
+      // is absent (readSwitchSlots).
       name: "count",
-      label: "Count",
+      label: "Inputs",
       type: "scalar",
-      min: MIN_COUNT,
-      max: MAX_COUNT,
+      min: SWITCH_MIN_COUNT,
+      max: SWITCH_COUNT_CAP,
       step: 1,
       default: 2,
+      hidden: true,
     },
     {
       name: "index",
@@ -165,8 +177,8 @@ export const switchNode: NodeDefinition = {
       // The slider spans exactly the slots that exist — the static `max` is
       // only the fallback for contexts without sibling params in reach
       // (exported-app controls). compute clamps regardless.
-      max: MAX_COUNT - 1,
-      maxFrom: (p) => activeCount(p) - 1,
+      max: SWITCH_COUNT_CAP - 1,
+      maxFrom: (p) => Math.max(0, slotCount(p) - 1),
       step: 1,
       default: 0,
     },
@@ -178,7 +190,8 @@ export const switchNode: NodeDefinition = {
   auxOutputs: [],
 
   compute({ inputs, params }) {
-    const n = activeCount(params);
+    const slots = slotNames(params);
+    const n = slots.length;
     const idxRaw =
       inputs.index?.kind === "scalar"
         ? inputs.index.value
@@ -187,7 +200,7 @@ export const switchNode: NodeDefinition = {
     if (!Number.isFinite(i)) i = 0;
     if (i < 0) i = 0;
     if (i > n - 1) i = n - 1;
-    const picked = inputs[`in${i}`];
+    const picked = inputs[slots[i]];
     if (!picked) return {};
     // Borrowed, not produced — the upstream node owns these textures.
     return { primary: picked, ownsTextures: false };

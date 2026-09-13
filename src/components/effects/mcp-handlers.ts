@@ -27,7 +27,10 @@ import {
 } from "@/state/recipe-builder";
 import {
   applyRecipeEdit,
+  diffGroupSpec,
   graphToSpec,
+  type GraphSpecDiff,
+  type GroupSpec,
   type RecipeEdit,
   type RecipeEditOp,
 } from "@/state/recipe-edit";
@@ -71,6 +74,52 @@ import {
   pickInspectSocket,
 } from "@/engine/socket-inspect";
 
+// Mutation log + graph snapshots so a timed-out tool call isn't a black
+// box: get_recent_edits (keyed by the summary the agent already sent) and
+// get_graph({ since }) answer "did that 234-op edit land?" without a
+// 700-line re-read.
+const EDIT_LOG_MAX = 40;
+const SPEC_SNAP_MAX = 6;
+type EditLogEntry = {
+  rev: number;
+  at: number;
+  cmd: string;
+  summary?: string;
+  status: "ok" | "error";
+  error?: string;
+  groupId?: string;
+  applied?: number;
+  failed?: number;
+};
+const editLog: EditLogEntry[] = [];
+const specSnaps = new Map<string, { rev: number; spec: GroupSpec }[]>();
+let graphRev = 0;
+
+function scopeKey(scopeId?: string | null): string {
+  return scopeId && scopeId !== "root" ? scopeId : "root";
+}
+
+function rememberSpec(scopeId: string | undefined, spec: GroupSpec) {
+  const k = scopeKey(scopeId);
+  const arr = specSnaps.get(k) ?? [];
+  arr.push({ rev: graphRev, spec });
+  specSnaps.set(k, arr.slice(-SPEC_SNAP_MAX));
+}
+
+function bumpGraphRev() {
+  graphRev += 1;
+}
+
+function logMutation(entry: Omit<EditLogEntry, "rev" | "at">) {
+  editLog.push({ ...entry, rev: graphRev, at: Date.now() });
+  if (editLog.length > EDIT_LOG_MAX) editLog.shift();
+}
+
+function specAt(scopeId: string | undefined, rev: number): GroupSpec | undefined {
+  const arr = specSnaps.get(scopeKey(scopeId)) ?? [];
+  return [...arr].reverse().find((s) => s.rev === rev)?.spec;
+}
+
 export interface McpStatus {
   projectName: string;
   canvasWidth: number;
@@ -97,6 +146,7 @@ export interface McpHandlerDeps {
   fpsRef: MutableRefObject<number>;
   playingRef: MutableRefObject<boolean>;
   forcedTerminalRef: MutableRefObject<string | null>;
+  forcedTerminalHandleRef: MutableRefObject<string | null>;
   renderFrame: (time: number, fps: number, playingHint: boolean) => void;
   setPlaying: (p: boolean) => void;
   setTime: (t: number) => void;
@@ -111,7 +161,7 @@ export interface McpHandlerDeps {
   setNodes: Dispatch<SetStateAction<GraphNode[]>>;
   setEdges: Dispatch<SetStateAction<Edge[]>>;
   commitRecipeFragment: (
-    frag: { nodes: GraphNode[]; edges: Edge[] },
+    frag: { nodes: GraphNode[]; edges: Edge[] } | { nodes: GraphNode[]; edges: Edge[] }[],
     warningCount: number,
     opts?: { connect?: boolean; scope?: string; replaceOutput?: boolean }
   ) => {
@@ -121,6 +171,11 @@ export interface McpHandlerDeps {
     wired: { from: string; to: string }[];
     skippedOccupied: { socket: string }[];
     idMap: Record<string, string>;
+    groups: {
+      groupId: string | null;
+      idMap: Record<string, string>;
+      wired: { from: string; to: string }[];
+    }[];
   };
   flashToast: (message: string) => void;
   // Tidy (090626_tidy-layout.md): lay nodes out along their wires — the
@@ -227,6 +282,32 @@ const EASING_SET = new Set<string>(EASING_PRESET_ORDER);
 const tickOf = (frame: number) => Math.round(frame * DEFAULT_TICKS_PER_FRAME);
 const frameOf = (tick: number) => tick / DEFAULT_TICKS_PER_FRAME;
 
+// screenshot / screenshot_strip nodeId: exact id, or "<id>:out" /
+// "<id>:aux:<name>" to pick which output to blit (Circle's fill image is
+// not the disc — pass :aux:image for the raster).
+function parseNodePeek(
+  raw: unknown,
+  nodes: GraphNode[]
+): { node: GraphNode; handle?: string } {
+  const s = String(raw ?? "").trim();
+  if (!s) throw new Error("Pass a node id from get_graph.");
+  const exact = nodes.find((n) => n.id === s);
+  if (exact) return { node: exact };
+  const aux = s.match(/^(.*):aux:([A-Za-z0-9_-]+)$/);
+  if (aux) {
+    const node = nodes.find((n) => n.id === aux[1]);
+    if (node) return { node, handle: `out:aux:${aux[2]}` };
+  }
+  if (s.endsWith(":out")) {
+    const id = s.slice(0, -":out".length);
+    const node = nodes.find((n) => n.id === id);
+    if (node) return { node, handle: "out:primary" };
+  }
+  throw new Error(
+    `No node with id "${s}" — call get_graph for current ids. On a node with aux outputs pass nodeId:aux:<name> (e.g. ${s.split(":")[0]}:aux:image).`
+  );
+}
+
 export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
   const nodeOrThrow = (nodeId: unknown): GraphNode => {
     const node = deps.nodesRef.current.find((n) => n.id === nodeId);
@@ -246,7 +327,7 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
 
   return {
     // ---- context -----------------------------------------------------------
-    get_status: () => deps.status,
+    get_status: () => ({ ...deps.status, rev: graphRev }),
 
     get_catalog: (args) =>
       buildCatalogDsl({
@@ -255,7 +336,7 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         types: args.types as string | string[] | undefined,
       }),
 
-    get_graph: ({ scope, verbosity, params }) => {
+    get_graph: ({ scope, verbosity, params, since }) => {
       const nodes = deps.nodesRef.current;
       const edges = deps.edgesRef.current;
       const scopeId = !scope || scope === "root" ? undefined : String(scope);
@@ -276,16 +357,59 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         expressions: params === "all" ? "full" : "hash",
       });
       const backend = deps.backendRef.current;
-      if (!backend || verbosity === "ids") return spec;
-      const byId = new Map(nodes.map((n) => [n.id, n]));
-      return {
-        ...spec,
-        nodes: attachGlslErrorsToSpec(
-          spec.nodes,
-          (id) => byId.get(id)?.data.params,
-          backend.tryShader
-        ),
-      };
+      const full =
+        !backend || verbosity === "ids"
+          ? spec
+          : {
+              ...spec,
+              nodes: attachGlslErrorsToSpec(
+                spec.nodes,
+                (id) => nodes.find((n) => n.id === id)?.data.params,
+                backend.tryShader
+              ),
+            };
+      rememberSpec(scopeId, full);
+      const sinceRev =
+        typeof since === "number" && Number.isFinite(since) ? since : undefined;
+      if (sinceRev === graphRev) {
+        return { rev: graphRev, unchanged: true, name: full.name };
+      }
+      if (sinceRev != null) {
+        const prev = specAt(scopeId, sinceRev);
+        if (prev) {
+          const diff: GraphSpecDiff = diffGroupSpec(prev, full);
+          return {
+            rev: graphRev,
+            since: sinceRev,
+            name: full.name,
+            added: diff.added,
+            removed: diff.removed,
+            changed: diff.changed,
+            edgesAdded: diff.edgesAdded,
+            edgesRemoved: diff.edgesRemoved,
+            ...(diff.interface ? { interface: diff.interface } : {}),
+          };
+        }
+        return {
+          rev: graphRev,
+          since: sinceRev,
+          note: "no snapshot at that rev — full graph",
+          ...full,
+        };
+      }
+      return { rev: graphRev, ...full };
+    },
+
+    get_recent_edits: ({ summary, limit }) => {
+      const cap = Math.min(40, Math.max(1, Number(limit) || 10));
+      const needle =
+        typeof summary === "string" && summary.trim() ? summary.trim() : "";
+      const rows = needle
+        ? editLog.filter(
+            (e) => e.summary === needle || (e.summary ?? "").includes(needle)
+          )
+        : editLog;
+      return { rev: graphRev, edits: rows.slice(-cap) };
     },
 
     get_node_data: ({ nodeId, limit, socket, frame }) => {
@@ -331,14 +455,18 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       const fps = deps.fpsRef.current;
       const seek = typeof frame === "number" && Number.isFinite(frame);
       const targetTime = seek ? Math.max(0, frame as number) / fps : deps.timeRef.current;
-      const peek = nodeId != null ? nodeOrThrow(nodeId) : null;
-      if (peek) deps.forcedTerminalRef.current = peek.id;
+      const peek = nodeId != null ? parseNodePeek(nodeId, deps.nodesRef.current) : null;
+      if (peek) {
+        deps.forcedTerminalRef.current = peek.node.id;
+        deps.forcedTerminalHandleRef.current = peek.handle ?? null;
+      }
       try {
         // Always render explicitly so the capture is deterministic (not
         // whatever half-frame the last rAF left behind).
         deps.renderFrame(targetTime, fps, false);
       } finally {
         deps.forcedTerminalRef.current = null;
+        deps.forcedTerminalHandleRef.current = null;
       }
       const enc = screenshotEncode({ maxSize, format, quality });
       const scale = Math.min(1, enc.max / Math.max(canvas.width, canvas.height));
@@ -358,7 +486,7 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       // frame Claude peeked at.
       if ((seek || peek) && !deps.playingRef.current)
         deps.renderFrame(deps.timeRef.current, deps.fpsRef.current, false);
-      const shader = glslInspectFor(peek, deps.backendRef.current);
+      const shader = glslInspectFor(peek?.node ?? null, deps.backendRef.current);
       return {
         kind: "image",
         mimeType: enc.mimeType,
@@ -399,7 +527,7 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
           `A strip wants 2–12 frames (got ${list.length}) — tune \`every\` or pass \`frames\` explicitly.`
         );
 
-      if (nodeId != null) nodeOrThrow(nodeId);
+      const peek = nodeId != null ? parseNodePeek(nodeId, deps.nodesRef.current) : null;
 
       // Grid geometry: near-square, sized so the WHOLE strip fits the budget.
       const enc = screenshotEncode({ maxSize, format, quality, strip: true });
@@ -424,11 +552,15 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
 
       try {
         for (let i = 0; i < list.length; i++) {
-          if (nodeId != null) deps.forcedTerminalRef.current = String(nodeId);
+          if (peek) {
+            deps.forcedTerminalRef.current = peek.node.id;
+            deps.forcedTerminalHandleRef.current = peek.handle ?? null;
+          }
           try {
             deps.renderFrame(list[i] / fps, fps, false);
           } finally {
             deps.forcedTerminalRef.current = null;
+            deps.forcedTerminalHandleRef.current = null;
           }
           const x = (i % cols) * cellW;
           const y = Math.floor(i / cols) * cellH;
@@ -460,23 +592,46 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
     },
 
     // ---- mutation ----------------------------------------------------------
-    insert_recipe: ({ recipe, connect, scope, replace_output }) => {
-      if (!recipe || typeof recipe !== "object" || Array.isArray(recipe))
-        throw new Error("Pass `recipe` as a RecipeGraph object (see the tool description).");
-      const rg = recipe as RecipeGraph;
-      const built = buildRecipe(rg);
-      const { errors, warnings } = validateFragment(
-        built.nodes,
-        built.edges,
-        built.issues,
-        HARD_BUILD_CODES
-      );
-      if (errors.length) throw invalid("Recipe", errors);
+    insert_recipe: ({ recipe, recipes, connect, scope, replace_output }) => {
+      const list: RecipeGraph[] = [];
+      if (Array.isArray(recipes)) {
+        for (const r of recipes) {
+          if (!r || typeof r !== "object" || Array.isArray(r))
+            throw new Error("Each `recipes[]` entry must be a RecipeGraph object.");
+          list.push(r as RecipeGraph);
+        }
+      }
+      if (recipe && typeof recipe === "object" && !Array.isArray(recipe)) {
+        list.unshift(recipe as RecipeGraph);
+      }
+      if (list.length === 0)
+        throw new Error(
+          "Pass `recipe` as a RecipeGraph, or `recipes` as an array of them."
+        );
+      const builtList: { rg: RecipeGraph; built: ReturnType<typeof buildRecipe> }[] = [];
+      const allWarnings: string[] = [];
+      for (const rg of list) {
+        const built = buildRecipe(rg);
+        const { errors, warnings } = validateFragment(
+          built.nodes,
+          built.edges,
+          built.issues,
+          HARD_BUILD_CODES
+        );
+        if (errors.length) {
+          logMutation({
+            cmd: "insert_recipe",
+            summary: rg.name,
+            status: "error",
+            error: errors[0],
+          });
+          throw invalid("Recipe", errors);
+        }
+        allWarnings.push(...warnings);
+        builtList.push({ rg, built });
+      }
       const scopeArg =
         typeof scope === "string" && scope.trim() ? scope.trim() : undefined;
-      // Drilled into a node-group: omitting scope nests the replacement
-      // inside the thing it was meant to replace. Demand an explicit
-      // target — "parent" / the enclosing layer, or the group id to nest.
       if (scopeArg == null && deps.status.scopeType === "group") {
         throw new Error(
           `Editor is inside group "${deps.status.scope}". insert_recipe without scope would nest the new group inside it. Pass scope=${deps.status.parentScope} to insert beside it, scope=parent for the same, or scope=${deps.status.scope} to nest intentionally.`
@@ -484,51 +639,101 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       }
       const hooked = connect !== false;
       const replaceOutput = replace_output === true;
-      const { groupId, wired, parentId, wrapped, skippedOccupied, idMap } =
-        deps.commitRecipeFragment(
-          { nodes: built.nodes, edges: built.edges },
-          warnings.length,
-          { connect: hooked, scope: scopeArg, replaceOutput }
-        );
-      deps.flashToast(`Claude: added "${rg.name ?? "recipe"}"`);
-      const where = wrapped
+      rememberSpec(
+        scopeArg === "parent" ? deps.status.parentScope : scopeArg,
+        graphToSpec(
+          deps.nodesRef.current,
+          deps.edgesRef.current,
+          scopeArg && scopeArg !== "root" && scopeArg !== "parent"
+            ? scopeArg
+            : undefined
+        )
+      );
+      const committed = deps.commitRecipeFragment(
+        builtList.map((b) => ({ nodes: b.built.nodes, edges: b.built.edges })),
+        allWarnings.length,
+        { connect: hooked, scope: scopeArg, replaceOutput }
+      );
+      bumpGraphRev();
+      const names = list.map((r) => r.name ?? "recipe");
+      deps.flashToast(
+        list.length === 1
+          ? `Claude: added "${names[0]}"`
+          : `Claude: added ${list.length} recipes`
+      );
+      logMutation({
+        cmd: "insert_recipe",
+        summary: names.join(", "),
+        status: "ok",
+        groupId: committed.groupId ?? undefined,
+      });
+      const remapIds = (
+        builtIds: Record<string, string>,
+        idMap: Record<string, string>
+      ) => {
+        const ids: Record<string, string> = {};
+        for (const [lid, builtId] of Object.entries(builtIds)) {
+          ids[lid] = idMap[builtId] ?? builtId;
+        }
+        return ids;
+      };
+      const where = committed.wrapped
         ? "a new layer"
-        : parentId
-          ? `scope ${parentId}`
+        : committed.parentId
+          ? `scope ${committed.parentId}`
           : "the current scope";
-      const ids: Record<string, string> = {};
-      for (const [lid, builtId] of Object.entries(built.ids)) {
-        ids[lid] = idMap[builtId] ?? builtId;
-      }
-      const nextWarnings = [...warnings];
-      if (hooked && wired.length === 0 && skippedOccupied.length > 0) {
+      const nextWarnings = [...allWarnings];
+      if (
+        hooked &&
+        committed.wired.length === 0 &&
+        committed.skippedOccupied.length > 0
+      ) {
         nextWarnings.push(
-          `Enclosing output already had a wire (${skippedOccupied
+          `Enclosing output already had a wire (${committed.skippedOccupied
             .map((s) => s.socket)
-            .join(", ")}) — group was left unwired. Pass replace_output: true to take the socket.`
+            .join(", ")}) — last group was left unwired. Pass replace_output: true to take the socket.`
         );
       }
       const wireNote =
-        wired.length > 0
-          ? ` Wired to the enclosing output: ${wired.map((w) => `${w.from} → ${w.to}`).join(", ")}.`
-          : hooked && skippedOccupied.length === 0
+        committed.wired.length > 0
+          ? ` Wired to the enclosing output: ${committed.wired.map((w) => `${w.from} → ${w.to}`).join(", ")}.`
+          : hooked && committed.skippedOccupied.length === 0
             ? " No matching enclosing output socket — group was left unwired."
             : "";
+      if (list.length === 1) {
+        return {
+          ok: true,
+          rev: graphRev,
+          groupId: committed.groupId,
+          parentId: committed.parentId,
+          wrapped: committed.wrapped,
+          wired: committed.wired,
+          ids: remapIds(builtList[0].built.ids, committed.idMap),
+          warnings: nextWarnings,
+          note:
+            `Inserted into ${where}. Use \`ids\` for interior minted ids (recipe local id → live id).` +
+            wireNote,
+        };
+      }
       return {
         ok: true,
-        groupId,
-        parentId,
-        wrapped,
-        wired,
-        ids,
+        rev: graphRev,
+        parentId: committed.parentId,
+        wrapped: committed.wrapped,
+        groups: builtList.map((b, i) => ({
+          name: b.rg.name,
+          groupId: committed.groups[i]?.groupId ?? null,
+          ids: remapIds(b.built.ids, committed.groups[i]?.idMap ?? {}),
+          wired: committed.groups[i]?.wired ?? [],
+        })),
         warnings: nextWarnings,
         note:
-          `Inserted into ${where}. Use \`ids\` for interior minted ids (recipe local id → live id).` +
+          `Inserted ${list.length} groups into ${where}. connect applies to the last group only.` +
           wireNote,
       };
     },
 
-    edit_group: ({ groupId, ops, summary }) => {
+    edit_group: ({ groupId, ops, summary, verbosity }) => {
       const shell = nodeOrThrow(groupId);
       if (shell.data.defType !== GROUP_TYPE && shell.data.defType !== LAYER_TYPE)
         throw new Error(
@@ -538,6 +743,10 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         throw new Error("Pass `ops` as a non-empty array of edit operations.");
       const nodes = deps.nodesRef.current;
       const edges = deps.edgesRef.current;
+      rememberSpec(
+        String(groupId),
+        graphToSpec(nodes, edges, String(groupId))
+      );
       const fragIds = expandWithDescendants(nodes, [String(groupId)]);
       const fragNodes = nodes.filter((n) => fragIds.has(n.id));
       const fragEdges = edges.filter((e) => fragIds.has(e.source) && fragIds.has(e.target));
@@ -552,7 +761,18 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         result.issues,
         HARD_OP_CODES
       );
-      if (errors.length) throw invalid("Edit", errors);
+      if (errors.length) {
+        logMutation({
+          cmd: "edit_group",
+          summary: edit.summary,
+          status: "error",
+          error: errors[0],
+          groupId: String(groupId),
+          applied: result.applied,
+          failed: result.ops.filter((o) => !o.ok).length,
+        });
+        throw invalid("Edit", errors);
+      }
       // add_node mints at (0,0) — place each new node beside its first
       // consumer on the row it feeds, sliding down past occupied slots
       // (090626_tidy-layout.md). Existing nodes never move. Only the
@@ -604,10 +824,61 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         ...result.edges,
       ]);
       deps.flashToast(`Claude edit: ${edit.summary ?? `${edit.ops.length} ops`}`);
+      bumpGraphRev();
+      rememberSpec(
+        String(groupId),
+        graphToSpec(
+          deps.nodesRef.current.filter((n) => !fragIds.has(n.id)).concat(committed),
+          [
+            ...deps.edgesRef.current.filter(
+              (e) => !(fragIds.has(e.source) && fragIds.has(e.target))
+            ),
+            ...result.edges,
+          ],
+          String(groupId)
+        )
+      );
+      const failed = result.ops.filter((o) => !o.ok);
+      logMutation({
+        cmd: "edit_group",
+        summary: edit.summary,
+        status: "ok",
+        groupId: String(groupId),
+        applied: result.applied,
+        failed: failed.length,
+      });
+      const wantFull = verbosity === "full";
+      const addedIds = result.ids;
+      if (wantFull) {
+        return {
+          ok: true,
+          rev: graphRev,
+          applied: result.applied,
+          ops: result.ops,
+          ...(Object.keys(addedIds).length ? { ids: addedIds } : {}),
+          warnings,
+        };
+      }
+      const duplicated = result.ops
+        .filter((o) => o.ok && o.op === "duplicate_node")
+        .map((o) => ({
+          id: o.id,
+          node: o.node,
+          ...(o.ids ? { ids: o.ids } : {}),
+        }));
       return {
         ok: true,
+        rev: graphRev,
         applied: result.applied,
-        ops: result.ops,
+        failed: failed.map((o) => ({
+          i: o.i,
+          op: o.op,
+          error: o.error,
+          ...(o.node ? { node: o.node } : {}),
+          ...(o.id ? { id: o.id } : {}),
+        })),
+        ...(duplicated.length ? { duplicated } : {}),
+        ...(Object.keys(addedIds).length ? { ids: addedIds } : {}),
         warnings,
       };
     },
@@ -747,6 +1018,12 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
           coerced = Number(value);
         } else if (pdef.type === "boolean" && (value === "true" || value === "false")) {
           coerced = value === "true";
+        } else if (pdef.type === "color_ramp" && value.trim().startsWith("[")) {
+          try {
+            coerced = JSON.parse(value);
+          } catch {
+            /* vetting reports the shape */
+          }
         }
       }
       const vet = vetParamValue(pdef, coerced);

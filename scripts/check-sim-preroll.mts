@@ -70,6 +70,7 @@ const MUST_BE_SIMS = [
   "rope-simulator",
   "physarum",
   "reaction-diffusion",
+  "swift-hohenberg",
   "watercolor-ink",
   "differential-growth",
   "behavioral-growth",

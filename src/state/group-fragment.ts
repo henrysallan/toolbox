@@ -15,11 +15,12 @@ import {
   withInputValues,
 } from "@/engine/groups";
 import { getNodeDef } from "@/engine/registry";
-import { paramSocketType } from "@/engine/graph-helpers";
+import { paramSocketType, parseTargetHandleKind } from "@/engine/graph-helpers";
 import {
   makeInstanceNode,
   newEdgeId,
   refreshNodeSockets,
+  seedMissingGroupInputValues,
   syncGroupInterface,
   type GraphNode,
 } from "@/state/graph-ops";
@@ -126,6 +127,24 @@ export function groupFragment(opts: {
       targetHandle: `in:param:${p.param}`,
     });
   }
+  // RecipeGraph `inputs` that land on a param socket are expose-by-another-
+  // name: seed the shell from the interior so flatten doesn't substitute 0.
+  for (const inp of opts.inputs ?? []) {
+    if (inp.name in inputValues) continue;
+    const tgts = Array.isArray(inp.to) ? inp.to : [inp.to];
+    for (const tgt of tgts) {
+      const parsed = parseTargetHandleKind(tgt.handle);
+      const target = opts.interior.find((n) => n.id === tgt.nodeId);
+      if (!parsed || !target) continue;
+      if (parsed.kind === "param") {
+        const seed = target.data.params[parsed.name];
+        if (seed !== undefined) {
+          inputValues[inp.name] = seed;
+          break;
+        }
+      }
+    }
+  }
   groupInput.data.params = { sockets: inSockets };
   if (Object.keys(inputValues).length > 0) {
     group.data.params = withInputValues(group.data.params, inputValues);
@@ -144,13 +163,17 @@ export function groupFragment(opts: {
     })),
   ];
 
-  const nodes = syncGroupInterface(
-    [
-      group,
-      refreshNodeSockets(groupInput),
-      refreshNodeSockets(groupOutput),
-      ...opts.interior,
-    ],
+  const nodes = seedMissingGroupInputValues(
+    syncGroupInterface(
+      [
+        group,
+        refreshNodeSockets(groupInput),
+        refreshNodeSockets(groupOutput),
+        ...opts.interior,
+      ],
+      group.id
+    ),
+    edges,
     group.id
   );
   return { nodes, edges };

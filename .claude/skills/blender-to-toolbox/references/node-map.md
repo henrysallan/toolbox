@@ -179,18 +179,19 @@ set against `get_catalog` before concluding — it is a young part of the app.
 | `GeometryNodeSampleIndex` | `attribute-read` | Points + name + index → scalar or vec2. Built-ins (`position`, `scale`, `index`, …) work too. |
 | `ShaderNodeMath` (per-element) | `point-expression` | One line of JS. |
 | `ShaderNodeMath` (uniform) | `math` | `operation` enum; also has a `uv` mode. |
-| `GeometryNodeAttributeMath`-style chains | `attribute-math` | `add/subtract/multiply/divide/min/max/power/remap`, operand = constant or another attribute. |
+| `GeometryNodeAttributeMath`-style chains | `attribute-math` | `add/subtract/multiply/divide/min/max/power/abs/greater than/less than/step/remap`, operand = constant or another attribute. Comparisons write 0/1; `step` is GLSL `step(operand, x)`. |
 | `ShaderNodeMapRange` | `map-attribute` or `attribute-math` `op="remap"` | `map-attribute` writes straight to scale / rotation / position x / position y. |
 | `GeometryNodeBlurAttribute` | `attribute-blur` | `domain`: spatial or index. |
-| `GeometryNodeSampleNearest`, `…Transfer` | `attribute-transfer` | `nearest` or `weighted` within `radius`. |
+| `GeometryNodeSampleNearest`, `…Transfer` | `attribute-transfer` | `nearest` or `weighted` within `radius`; `fallback=zero` writes 0 when nothing is in range. |
 | `GeometryNodeInputPosition` | `px`, `py` in `point-expression` | |
 | `GeometryNodeInputIndex`, `…ID` | `index`, `count` | |
 | Index-offset timing chains (`Index` × spacing − `Scene Time` → clamped `Map Range`) | `stagger` | Writes a 0→1 `phase` channel per point: `order` (index / reverse / center / edges / random / attribute), `mode` spacing or fit, `duration`, `jitter`, `start`, `loop`, `unit`; optional `clock` scalar input. Read it with `map-attribute` (curve = easing), `filter-points` attribute mode, or `copy-to-points` `opacity_attr` / `pick_attr`. |
 | `GeometryNodeInputNormal` | ✗ (2D) | 3D normals exist only inside `scatter-points-3d` → `align_to_normal`. |
 | `FunctionNodeRandomValue` | `set-named-attribute` `source="random"` | Or a hash in `point-expression`. |
-| `GeometryNodeSeparateGeometry`, `GeometryNodeDeleteGeometry` | `filter-points` | Modes: bbox / mask / index / random / attribute. Also `keep = …` in `point-expression`. |
+| `GeometryNodeSeparateGeometry`, `GeometryNodeDeleteGeometry` | `filter-points` | Modes: bbox / mask / index / random / attribute. Index Select: every / equal / range / first / last / first and last. Result `compact` drops; `flag` writes a 0/1 channel (default `keep`) and keeps every point. Also `keep = …` in `point-expression`. |
 | `GeometryNodeSwitch` | `switch` | `type="auto"` unifies wired types. |
 | `ShaderNodeTexNoise` | `perlin-noise` | Three outputs: `image`, `value` (CPU scalar at a sampled position), `field` (per-pixel expression). |
+| `ShaderNodeTexGabor` | `noise` `type=phasor` | `phasor_frequency` / `phasor_orientation` / `phasor_isotropy` match Blender's frequency, orientation, and isotropy. Image is cos(arg) of the phasor sum (Blender's Phase, sine-profiled); no separate Intensity socket. |
 | `ShaderNodeMix` / `MixRGB` | `lerp` | `type`: scalar / vec2 / points / spline. |
 | `ShaderNodeClamp` | `clamp` | |
 | `ShaderNodeFloatCurve` | `float-curve` | |

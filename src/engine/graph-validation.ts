@@ -194,12 +194,14 @@ export function editorCanCoerce(
     src === "sdf"
   )
     return true;
-  // Mirror's `source` socket rests as spline but accepts points — it
-  // retypes itself (and its output) from connectedTypes like Transform.
+  // Mirror's `source` socket rests as image (like Transform) but accepts
+  // spline / points and retypes from connectedTypes. image / mask also
+  // listed so a wire can replace a spline-typed stored socket (saves from
+  // before the image rest, or after a spline retype).
   if (
     targetDefType === "mirror" &&
     targetHandle === "in:source" &&
-    src === "points"
+    (src === "spline" || src === "points" || src === "image" || src === "mask")
   )
     return true;
   // Scatter Points' density socket accepts a spline directly — its filled

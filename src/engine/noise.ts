@@ -9,8 +9,8 @@
 //
 // The other algorithms in the GLSL (opensimplex / opensimplex2 / os2s /
 // super-simplex / perlin-deriv / flow / curl) are not ported here; the
-// value path falls back to simplex when one of those is selected. The
-// noise node documents this on its description so users aren't surprised.
+// value path falls back to simplex when one of those is selected. Phasor
+// IS ported (below) so the value aux matches the image at the same UV.
 
 function mod289(x: number): number {
   return x - Math.floor(x * (1 / 289)) * 289;
@@ -191,6 +191,70 @@ export function vnoise(Px: number, Py: number): number {
 
 export type NoiseFn = (px: number, py: number) => number;
 
+function fract(x: number): number {
+  return x - Math.floor(x);
+}
+
+function phasorHash22(px: number, py: number): [number, number] {
+  const hx = px * 127.1 + py * 311.7;
+  const hy = px * 269.5 + py * 183.3;
+  return [fract(Math.sin(hx) * 43758.5453123), fract(Math.sin(hy) * 43758.5453123)];
+}
+
+function phasorHash22b(px: number, py: number): [number, number] {
+  const hx = px * 419.2 + py * 371.9;
+  const hy = px * 183.3 + py * 251.7;
+  return [fract(Math.sin(hx) * 43758.5453123), fract(Math.sin(hy) * 43758.5453123)];
+}
+
+// Tricard et al. phasor noise — line-by-line port of the GLSL `phasorNoise`.
+// `orientation` is radians; `frequency` is cycles per lattice cell;
+// `isotropy` 0 = all kernels share orientation, 1 = ±π random offset.
+export function phasorNoise(
+  px: number,
+  py: number,
+  frequency: number,
+  orientation: number,
+  isotropy: number
+): number {
+  const PI = 3.141592653589793;
+  const TAU = 6.283185307179586;
+  const ipx = Math.floor(px);
+  const ipy = Math.floor(py);
+  const fpx = px - ipx;
+  const fpy = py - ipy;
+  let accX = 0;
+  let accY = 0;
+  for (let j = -1; j <= 1; j++) {
+    for (let i = -1; i <= 1; i++) {
+      const cellX = ipx + i;
+      const cellY = ipy + j;
+      const [h0x, h0y] = phasorHash22(cellX, cellY);
+      const [h1x, h1y] = phasorHash22b(cellX, cellY);
+      const rx = i + h0x - fpx;
+      const ry = j + h0y - fpy;
+      const d2 = rx * rx + ry * ry;
+      if (d2 >= 1) continue;
+      const w = (0.5 + 0.5 * Math.cos(PI * d2)) * Math.exp(-PI * d2);
+      const ori = orientation + PI * isotropy * (h1x * 2 - 1);
+      const dirX = Math.cos(ori);
+      const dirY = Math.sin(ori);
+      const ang = TAU * (frequency * (rx * dirX + ry * dirY) + h1y);
+      accX += w * Math.cos(ang);
+      accY += w * Math.sin(ang);
+    }
+  }
+  const mag = Math.hypot(accX, accY);
+  if (mag < 1e-5) return 0;
+  return accX / mag;
+}
+
+export type PhasorParams = {
+  frequency: number;
+  orientation: number;
+  isotropy: number;
+};
+
 // fBm wrapper — same semantics as the GLSL `fbmAt`.
 function fbmAt(
   fn: NoiseFn,
@@ -282,7 +346,7 @@ export function loopEvolutionOffset(
   return [rate * Math.cos(theta), rate * Math.sin(theta)];
 }
 
-export function noiseFnFor(type: string): NoiseFn {
+export function noiseFnFor(type: string, phasor?: PhasorParams): NoiseFn {
   switch (type) {
     case "perlin":
       return cnoise;
@@ -290,6 +354,12 @@ export function noiseFnFor(type: string): NoiseFn {
       return vnoise;
     case "simplex":
       return snoise;
+    case "phasor": {
+      const frequency = phasor?.frequency ?? 2;
+      const orientation = phasor?.orientation ?? 0;
+      const isotropy = phasor?.isotropy ?? 0.2;
+      return (x, y) => phasorNoise(x, y, frequency, orientation, isotropy);
+    }
     // OS family / perlin-deriv / flow / curl — fall back to simplex on the
     // value path (the GLSL implementations of those aren't ported to JS yet).
     default:
@@ -455,7 +525,7 @@ export function noiseFn3For(type: string): NoiseFn3 {
       return cnoise3;
     case "value":
       return vnoise3;
-    // simplex + the OS family + flow/curl all read as simplex in 3D.
+    // simplex + the OS family + flow/curl/phasor all read as simplex in 3D.
     default:
       return snoise3;
   }

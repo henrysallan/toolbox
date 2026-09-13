@@ -32,7 +32,7 @@ export interface InvitePreview {
 }
 
 // 16 chars base36 ≈ 82 bits — same recipe as projects.ts's
-// mintPublicSlug but longer, because an invite token GRANTS membership
+// mintProjectSlug but longer, because an invite token GRANTS membership
 // rather than just naming a public row.
 function mintInviteToken(): string {
   const out: string[] = [];

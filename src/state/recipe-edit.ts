@@ -29,11 +29,14 @@ import {
   channelSocketType,
   describeChannels,
   setExprChannelValue,
+  vetExprInputList,
 } from "@/engine/expr-channels";
 import type { ExprInput } from "@/engine/types";
 import {
   collectDescendantIds,
+  cloneSubgraph,
   connectToVirtualSocket,
+  expandWithDescendants,
   listGroupShellControls,
   makeForEachNodes,
   makeInstanceNode,
@@ -42,12 +45,14 @@ import {
   newEdgeId,
   refreshNodeSockets,
   resolveGroupShellControl,
+  seedMissingGroupInputValues,
   syncGroupInterface,
   type GraphNode,
 } from "@/state/graph-ops";
 import {
   compoundZoneInputLid,
   findExprChannel,
+  growExprVarHandle,
   resolveChannelHandle,
   resolveOrdinalHandle,
   splitEndpoint,
@@ -402,6 +407,49 @@ export function graphToSpec(
   };
 }
 
+export interface GraphSpecDiff {
+  added: GroupSpecNode[];
+  removed: string[];
+  changed: GroupSpecNode[];
+  edgesAdded: { from: string; to: string }[];
+  edgesRemoved: { from: string; to: string }[];
+  interface?: GroupSpec["interface"];
+}
+
+function edgeKey(e: { from: string; to: string }): string {
+  return `${e.from}\0${e.to}`;
+}
+
+export function diffGroupSpec(prev: GroupSpec, next: GroupSpec): GraphSpecDiff {
+  const prevNodes = new Map(prev.nodes.map((n) => [n.id, n]));
+  const nextNodes = new Map(next.nodes.map((n) => [n.id, n]));
+  const added: GroupSpecNode[] = [];
+  const removed: string[] = [];
+  const changed: GroupSpecNode[] = [];
+  for (const n of next.nodes) {
+    const p = prevNodes.get(n.id);
+    if (!p) added.push(n);
+    else if (JSON.stringify(p) !== JSON.stringify(n)) changed.push(n);
+  }
+  for (const n of prev.nodes) {
+    if (!nextNodes.has(n.id)) removed.push(n.id);
+  }
+  const prevEdges = new Set(prev.edges.map(edgeKey));
+  const nextEdges = new Set(next.edges.map(edgeKey));
+  const edgesAdded = next.edges.filter((e) => !prevEdges.has(edgeKey(e)));
+  const edgesRemoved = prev.edges.filter((e) => !nextEdges.has(edgeKey(e)));
+  const ifaceChanged =
+    JSON.stringify(prev.interface) !== JSON.stringify(next.interface);
+  return {
+    added,
+    removed,
+    changed,
+    edgesAdded,
+    edgesRemoved,
+    ...(ifaceChanged ? { interface: next.interface } : {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // applyRecipeEdit — apply a patch to a group fragment.
 // ---------------------------------------------------------------------------
@@ -413,7 +461,15 @@ export type RecipeEditOp =
   | { op: "remove_edge"; from: string; to: string }
   | { op: "expose_param"; node: string; param: string; label?: string }
   | { op: "unexpose_param"; node: string; param: string }
-  | { op: "rename_node"; node: string; name: string };
+  | { op: "rename_node"; node: string; name: string }
+  | {
+      op: "duplicate_node";
+      node: string;
+      id: string;
+      params?: Record<string, unknown>;
+      name?: string;
+      patch?: { node: string; param: string; value: unknown }[];
+    };
 
 export interface RecipeEdit {
   summary?: string;
@@ -429,6 +485,7 @@ export const RECIPE_EDIT_OPS = [
   "expose_param",
   "unexpose_param",
   "rename_node",
+  "duplicate_node",
 ] as const;
 
 const OP_SET = new Set<string>(RECIPE_EDIT_OPS);
@@ -449,6 +506,7 @@ export interface RecipeEditOpEcho {
   from?: string;
   to?: string;
   name?: string;
+  ids?: Record<string, string>;
 }
 
 export interface RecipeEditResult {
@@ -457,6 +515,9 @@ export interface RecipeEditResult {
   issues: BuildIssue[];
   applied: number;
   ops: RecipeEditOpEcho[];
+  // add_node / duplicate_node local id → minted live id, including
+  // "<zone>-input" for compound zones. Same shape as insert_recipe `ids`.
+  ids: Record<string, string>;
 }
 
 function asNonEmptyString(v: unknown): string | undefined {
@@ -580,6 +641,40 @@ function parseRecipeEditOp(
       if (!node || !name) return malformed("node, name");
       return { ok: true, op: { op: "rename_node", node, name } };
     }
+    case "duplicate_node": {
+      const node = asNonEmptyString(o.node);
+      const id = asNonEmptyString(o.id);
+      if (!node || !id) return malformed("node, id");
+      const params =
+        o.params && typeof o.params === "object" && !Array.isArray(o.params)
+          ? (o.params as Record<string, unknown>)
+          : undefined;
+      const name = asNonEmptyString(o.name);
+      let patch: { node: string; param: string; value: unknown }[] | undefined;
+      if (Array.isArray(o.patch)) {
+        patch = [];
+        for (const raw of o.patch) {
+          if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+          const p = raw as Record<string, unknown>;
+          const pn = asNonEmptyString(p.node);
+          const pp = asNonEmptyString(p.param);
+          if (!pn || !pp || !("value" in p)) continue;
+          patch.push({ node: pn, param: pp, value: p.value });
+        }
+        if (patch.length === 0) patch = undefined;
+      }
+      return {
+        ok: true,
+        op: {
+          op: "duplicate_node",
+          node,
+          id,
+          ...(params ? { params } : {}),
+          ...(name ? { name } : {}),
+          ...(patch ? { patch } : {}),
+        },
+      };
+    }
     default:
       return malformed("a valid op");
   }
@@ -605,6 +700,7 @@ export function applyRecipeEdit(
   let edges = [...inEdges];
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const localToReal = new Map<string, string>(); // add_node local id → real id
+  const dupIds = new Map<string, Record<string, string>>(); // local id → original→clone
   const realId = (lid: string) => localToReal.get(lid) ?? lid;
   const rewriteEp = (ep: string) => {
     const s = splitEndpoint(ep);
@@ -626,7 +722,7 @@ export function applyRecipeEdit(
     }
   }
   if (parseFailed) {
-    return { nodes, edges, issues, applied: 0, ops: echoes };
+    return { nodes, edges, issues, applied: 0, ops: echoes, ids: {} };
   }
 
   const echoOp = (i: number, op: RecipeEditOp, ok: boolean, error?: string) => {
@@ -651,6 +747,14 @@ export function applyRecipeEdit(
         break;
       case "rename_node":
         echoes.push({ ...base, node: realId(op.node), name: op.name });
+        break;
+      case "duplicate_node":
+        echoes.push({
+          ...base,
+          id: op.id,
+          node: localToReal.get(op.id),
+          ...(dupIds.get(op.id) ? { ids: dupIds.get(op.id) } : {}),
+        });
         break;
     }
   };
@@ -693,6 +797,15 @@ export function applyRecipeEdit(
           continue;
         }
         next[k] = mvet.value;
+        continue;
+      }
+      if (pdef.type === "expr_inputs" && !pdef.channelSync) {
+        const evet = vetExprInputList(v, next[k] as ExprInput[] | undefined);
+        if (!evet.ok) {
+          err("BAD_PARAM_VALUE", `${label}.${k}: ${evet.reason}.`);
+          continue;
+        }
+        next[k] = evet.value;
         continue;
       }
       if (!SETTABLE_PARAM_TYPES.has(pdef.type)) {
@@ -867,6 +980,27 @@ export function applyRecipeEdit(
         nodes = nodes.filter((x) => !dead.has(x.id));
         for (const id of dead) byId.delete(id);
         edges = edges.filter((e) => !dead.has(e.source) && !dead.has(e.target));
+        // Promote edges to the deleted node die with it; drop the Group
+        // Input sockets that now have no interior consumer (the dead
+        // "index" knob after removing an exposed constant).
+        const gi = groupInput();
+        if (gi) {
+          const stillUsed = new Set<string>();
+          for (const e of edges) {
+            if (e.source !== gi.id) continue;
+            const name = (e.sourceHandle ?? "").startsWith("out:aux:")
+              ? e.sourceHandle!.slice("out:aux:".length)
+              : "";
+            if (name) stillUsed.add(name);
+          }
+          const sockets = readBoundarySockets(gi.data.params);
+          const kept = sockets.filter((s) => stillUsed.has(s.name));
+          if (kept.length !== sockets.length) {
+            gi.data.params = { ...gi.data.params, sockets: kept };
+            replaceInPlace(refreshNodeSockets(gi));
+            needsSync = true;
+          }
+        }
         break;
       }
       case "add_edge": {
@@ -921,6 +1055,12 @@ export function applyRecipeEdit(
             replaceInPlace(refreshNodeSockets(tgtNode));
           }
           th = resolveChannelHandle(tdef, ord.params, ord.handle);
+          const grownVar = growExprVarHandle(tdef, byId.get(tgtId)!.data.params, th);
+          if (grownVar.params !== byId.get(tgtId)!.data.params) {
+            tgtNode.data.params = grownVar.params;
+            replaceInPlace(refreshNodeSockets(tgtNode));
+          }
+          th = grownVar.handle;
         }
         const srcNode = byId.get(srcId)!;
         tgtNode = byId.get(tgtId)!;
@@ -1124,6 +1264,118 @@ export function applyRecipeEdit(
         n.data.name = op.name;
         break;
       }
+      case "duplicate_node": {
+        const srcId = realId(op.node);
+        const src = byId.get(srcId);
+        if (!src) { err("UNKNOWN_NODE", `duplicate_node: no node "${op.node}".`); break; }
+        if (BOUNDARY_TYPES.has(src.data.defType)) {
+          err("PROTECTED_NODE", `duplicate_node: "${op.node}" is a group boundary.`);
+          break;
+        }
+        if (srcId === groupId) {
+          err("PROTECTED_NODE", `duplicate_node: "${op.node}" is the scope being edited.`);
+          break;
+        }
+        if (localToReal.has(op.id)) {
+          err("DUP_ID", `duplicate_node: duplicate local id "${op.id}".`);
+          break;
+        }
+        const selIds = expandWithDescendants(nodes, [srcId]);
+        const selection = nodes.filter((n) => selIds.has(n.id));
+        const dupIndex = echoes.filter((e) => e.op === "duplicate_node" && e.ok).length;
+        const { nodes: clones, edges: clonedEdges, idMap } = cloneSubgraph(
+          selection,
+          edges,
+          { x: 80 * (dupIndex + 1), y: 40 * (dupIndex + 1) }
+        );
+        const cloneRoot = clones.find((n) => n.id === idMap.get(srcId));
+        if (!cloneRoot) {
+          err("UNKNOWN_NODE", `duplicate_node: clone of "${op.node}" failed.`);
+          break;
+        }
+        cloneRoot.selected = false;
+        if (op.name) cloneRoot.data.name = op.name;
+        for (const c of clones) {
+          nodes.push(c);
+          byId.set(c.id, c);
+        }
+        edges.push(...clonedEdges);
+        localToReal.set(op.id, cloneRoot.id);
+        const ids: Record<string, string> = {};
+        for (const [from, to] of idMap) ids[from] = to;
+        dupIds.set(op.id, ids);
+        if (op.params) {
+          const cdef = getNodeDef(cloneRoot.data.defType);
+          if (cdef) {
+            if (cloneRoot.data.defType === GROUP_TYPE || cloneRoot.data.defType === LAYER_TYPE) {
+              for (const [k, v] of Object.entries(op.params)) {
+                const pdef = cdef.params.find((p) => p.name === k);
+                if (pdef) {
+                  applyParams(cloneRoot, cdef, { [k]: v }, op.id);
+                  continue;
+                }
+                const ctrl = resolveGroupShellControl(cloneRoot, k, nodes, edges);
+                if (!ctrl) {
+                  err(
+                    "UNKNOWN_PARAM",
+                    `duplicate_node "${op.id}": no exposed param "${k}".`
+                  );
+                  continue;
+                }
+                const vet = vetParamValue(ctrl.controlDef, v);
+                if (!vet.ok) {
+                  err("BAD_PARAM_VALUE", `duplicate_node "${op.id}".${k}: ${vet.reason}.`);
+                  continue;
+                }
+                const iv = readInputValues(cloneRoot.data.params);
+                cloneRoot.data.params = withInputValues(cloneRoot.data.params, {
+                  ...iv,
+                  [ctrl.socketName]: vet.value,
+                });
+              }
+              replaceInPlace(refreshNodeSockets(cloneRoot));
+            } else {
+              applyParams(cloneRoot, cdef, op.params, op.id);
+              replaceInPlace(refreshNodeSockets(cloneRoot));
+            }
+          }
+        }
+        for (const p of op.patch ?? []) {
+          const nid = idMap.get(p.node) ?? p.node;
+          const n = byId.get(nid);
+          if (!n) {
+            err("UNKNOWN_NODE", `duplicate_node "${op.id}" patch: no node "${p.node}".`);
+            continue;
+          }
+          const def = getNodeDef(n.data.defType);
+          if (!def) {
+            err("UNKNOWN_TYPE", `duplicate_node "${op.id}" patch: unknown type on "${p.node}".`);
+            continue;
+          }
+          applyParams(n, def, { [p.param]: p.value }, p.node);
+          replaceInPlace(refreshNodeSockets(n));
+          if ((n.data.exposedParams ?? []).includes(p.param)) {
+            const promote = edges.find(
+              (e) =>
+                e.target === n.id && e.targetHandle === `in:param:${p.param}`
+            );
+            const label = (promote?.sourceHandle ?? "").startsWith("out:aux:")
+              ? promote!.sourceHandle!.slice("out:aux:".length)
+              : "";
+            const gi = label ? byId.get(promote!.source) : undefined;
+            const shell = gi?.data.parentId ? byId.get(gi.data.parentId) : undefined;
+            if (shell && label) {
+              const iv = readInputValues(shell.data.params);
+              shell.data.params = withInputValues(shell.data.params, {
+                ...iv,
+                [label]: n.data.params[p.param],
+              });
+              replaceInPlace(shell);
+            }
+          }
+        }
+        break;
+      }
     }
     const newIssues = issues.slice(issuesBefore);
     const blocked = newIssues.some((x) => !SOFT_OP_CODES.has(x.code));
@@ -1132,12 +1384,14 @@ export function applyRecipeEdit(
 
   // Re-sync the shell's interface from the boundary sockets if expose/unexpose
   // touched it. syncGroupInterface returns an updated nodes array.
-  const finalNodes = needsSync ? syncGroupInterface(nodes, groupId) : nodes;
+  const synced = needsSync ? syncGroupInterface(nodes, groupId) : nodes;
+  const finalNodes = seedMissingGroupInputValues(synced, edges, groupId);
   return {
     nodes: finalNodes,
     edges,
     issues,
     applied: echoes.filter((e) => e.ok).length,
     ops: echoes,
+    ids: Object.fromEntries(localToReal),
   };
 }

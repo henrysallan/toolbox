@@ -666,6 +666,14 @@ src/
                           registry (React side: useMcpBridge + McpPairingDialog;
                           server: scripts/mcp-server.mjs via `npm run mcp`; e2e:
                           `npm run check:mcp`). Spec: archive/070926_claude-mcp-bridge.md.
+                          Every Claude lane spawns its own server (Desktop alone
+                          spawns two) but there is one bridge port: the first to
+                          bind it is the hub, later ones proxy tool calls through
+                          it over /peer and get promoted when the hub's Claude
+                          quits (091126_mcp-proxy.md). The editor still holds one
+                          socket; `client.peers` in hello/client_info lists the
+                          proxies for the menu tooltip. Desktop's server stderr
+                          lands in ~/Library/Logs/Claude/mcp-server-toolbox.log.
                           scripts/mcp-source.mjs adds server-side, bridge-free
                           source-reading tools (get_node_source / read_source /
                           search_source over src/nodes + src/engine, local
@@ -908,7 +916,8 @@ itself: spline→mask is styling-independent).
    - Param precedence: **wire (exposed param) > keyframes > stored value**.
      Overrides are merged into `effectiveParams` before compute.
    - Fingerprint = type + bypass + stableStringify(params) + input
-     fingerprints + animation block + (`stable:false` ⇒ ctx.time) +
+     fingerprints (scalar wires key on the number, not producer identity —
+     `wiredInputFp`) + animation block + (`stable:false` ⇒ ctx.time) +
      `fingerprintExtras`. Cache hit ⇒ reuse previous `NodeOutput`
      verbatim, skip compute.
    - Post-passes the evaluator owns: universal mask (the appended `mask`
@@ -2170,6 +2179,25 @@ baseline. Spec: archive/070826_riskfix-plan.md §2.
   punches while ramp colors and stacking order survive, in both overlap modes
   and the image-fill coverage path. Toggling re-rasters via the `hol` key in
   both raster signatures.
+  (5) Rasterize Spline's **`fill_source: gradient`** (spec
+  091026_local-gradient-fill.md): the fill ramp laid out as a Canvas2D
+  gradient (linear / radial / conic) inside EACH subpath's own frame, so a
+  Copy-to-Points→Rasterize chain gets a gradient per copy without baking one
+  before the copy. The frame is geometry-derived in engine-side
+  [spline-gradient-fill.ts](../src/engine/spline-gradient-fill.ts): origin =
+  anchor mean; `gradient_frame: shape` takes "up" from origin→first anchor
+  with handedness from the outline winding, so it rotates AND mirrors with
+  each copy (angle 0 = left→right on an unrotated Circle); `canvas` fixes the
+  angle; extent = the sampled outline projected on the axis so the ramp's
+  ends land on the edge (radial: max outline distance). `rampToGradientStops`
+  turns the ramp into Canvas stops honoring `ramp_interp` (constant doubles
+  stops, ease subdivides) and the shared wrap of `gradient_offset` /
+  `gradient_vary` (index/random/group/position/driver × amount, reusing
+  `ramp_seed` / `ramp_angle` — relabelled "Position axis" — / `driver_attr`).
+  Draws per subpath like ramp (stack/fill-rule hide); islands take the outer
+  contour's frame; joins both raster signatures under `grad`. Gate:
+  `scripts/check-gradient-fill.mts`. Follow-up left open: a local-UV layer
+  so `fill_fit` can fit any wired image per copy (same frame helper).
 - **Contextual Delete** uses [shortcut-scope.ts](../src/components/effects/shortcut-scope.ts)
   (the last-clicked scoped region wins). It tracks BOTH `pointerdown` and
   `mousedown` in capture phase: overlay handlers that `preventDefault()` their

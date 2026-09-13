@@ -43,7 +43,9 @@ that pair). Offline node tests should push each input through
 ### Which check guards what
 
 - `check-validator/builder/edit/*-loop`, `check-mcp` — the AI-recipe and MCP
-  trust boundary.
+  trust boundary. `check-mcp` also covers the multi-instance hub/proxy
+  handoff (091126_mcp-proxy.md): a second server on the same port must
+  proxy tool calls through the first and take over when it exits.
 - `check-persistence`, `check-graph-ops`, `check-fragment-roundtrip` — save
   format and structural graph edits.
 - `check-node-presets` — user node presets ("Save as Preset"): fragment
@@ -58,6 +60,7 @@ that pair). Offline node tests should push each input through
 - `check-profiler` — the perf collector: ring-buffer wrap, recompute-reason
   classification, GPU results resolving into already-committed frames.
 - `check-output-gating` — `NodeDefinition.gatesOutputs`. See §5.
+- `check-scalar-fp` — wired scalar inputs fingerprint by value, not producer identity (`wiredInputFp` in evaluator.ts). Floor/step/gate hold still across frames while an animated ancestor moves; non-scalars stay identity-keyed.
 - `check-tracker` — motion-tracking kernel (ZNCC + LK + homography/ESM +
   smoothing/repair) and `track_data` identity-token fingerprinting. See
   specdocs/082226_motion-tracking.md M0.

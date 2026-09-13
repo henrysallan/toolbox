@@ -389,10 +389,12 @@ export default function PointAttributesPage() {
       <UL>
         <LI>
           <strong>Attribute Math</strong> — componentwise
-          add/subtract/multiply/divide/min/max/power against a constant{" "}
-          <em>or a second channel</em>, plus a Remap operation that fits a
-          range onto another. Writes in place, or to a new name via the
-          Output field. Target can be points or spline anchors.
+          add/subtract/multiply/divide/min/max/power/abs against a constant{" "}
+          <em>or a second channel</em>, plus Greater than / Less than / Step
+          (0 or 1 per component; Step is GLSL <Code>step(edge, x)</Code>,
+          inclusive on the edge) and a Remap that fits a range onto another.
+          Writes in place, or to a new name via the Output field. Target can
+          be points or spline anchors.
         </LI>
         <LI>
           <strong>Attribute Blur</strong> — smooths a channel: each
@@ -406,11 +408,11 @@ export default function PointAttributesPage() {
         <LI>
           <strong>Attribute Transfer</strong> — copies a channel from a
           second set by proximity: nearest source, or a distance-weighted
-          average within a radius (falling back to nearest, so every
-          element gets a value). Source and target can each be points or
-          spline anchors. Scatter over a photo, Set Named Attribute its
-          colors, then transfer them onto any other point set or onto a
-          spline&rsquo;s anchors.
+          average within a radius. Fallback is nearest (every element
+          gets a value) or zero (nothing in range writes 0). Source and
+          target can each be points or spline anchors. Scatter over a
+          photo, Set Named Attribute its colors, then transfer them onto
+          any other point set or onto a spline&rsquo;s anchors.
         </LI>
         <LI>
           <strong>Map Attribute</strong> — the bridge to visible motion:
@@ -428,8 +430,10 @@ export default function PointAttributesPage() {
       </UL>
       <P>
         Channels also drive three existing nodes: <strong>Filter
-        Points</strong> gained an attribute mode (keep points whose channel
-        clears a threshold); <strong>Copy to Points</strong> reads channels
+        Points</strong> has an attribute mode (keep points whose channel
+        clears a threshold) and can write the predicate as a 0/1 flag
+        instead of dropping points — Index mode also selects first, last,
+        first and last, a single index, or a range; <strong>Copy to Points</strong> reads channels
         three ways — a Tint attribute (each copy&rsquo;s color, image
         mode), an Opacity attribute (each copy&rsquo;s alpha, image mode),
         and an &ldquo;attribute&rdquo; variant pick (which variant lands on

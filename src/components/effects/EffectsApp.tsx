@@ -83,6 +83,10 @@ import PlaybackBar, { TransportButtons } from "./PlaybackBar";
 import MenuBar from "./MenuBar";
 import { type ConsoleEntry } from "./MessageConsole";
 import Landing from "./Landing";
+import ProjectLoadOverlay, {
+  PROJECT_LOAD_MIN_MS,
+  waitAnimationFrames,
+} from "./ProjectLoadOverlay";
 import ViewportMenuBar from "./ViewportMenuBar";
 import TransformContextBar from "./TransformContextBar";
 import PieMenu, { type PieMenuItem } from "./PieMenu";
@@ -150,6 +154,9 @@ import {
   isCollectSlotHandle,
   isCollectType,
   SWITCH_TYPE,
+  isSwitchSlot,
+  nextSwitchSlot,
+  readSwitchSlots,
   walkToCamera3DNode,
 } from "@/engine/graph-helpers";
 import {
@@ -296,6 +303,7 @@ import {
   type SavedProject,
   type SavedComposition,
 } from "@/lib/project";
+import { syncProjectUrl } from "@/lib/project-url";
 import {
   matchFilesToMissing,
   pickMediaFiles,
@@ -312,6 +320,7 @@ import MediaRelinkModal, {
 } from "./MediaRelinkModal";
 import {
   deleteProject as deleteProjectRow,
+  ensureProjectSlug,
   getProjectSaveStamp,
   invalidateProjectCaches,
   listPrivateProjects,
@@ -650,6 +659,31 @@ export interface InitialProjectPayload {
   ownerId: string;
   authorName: string | null;
   graph: SavedProject;
+  updatedAt?: string | null;
+  sharedWithMe?: boolean;
+  hasCollaborators?: boolean;
+}
+
+function layoutFromSavedGraph(graph: { layout?: unknown } | undefined): LayoutTree {
+  return fromSavedLayout(graph?.layout) ?? makeDefaultTree();
+}
+
+function canvasResFromSavedGraph(
+  graph: SavedProject | undefined
+): [number, number] | null {
+  if (!graph) return null;
+  const scene =
+    graph.compositions?.find((c) => c.id === graph.activeCompositionId)
+      ?.scene ?? graph.scene;
+  if (
+    typeof scene?.width === "number" &&
+    typeof scene?.height === "number" &&
+    scene.width > 0 &&
+    scene.height > 0
+  ) {
+    return [scene.width, scene.height];
+  }
+  return null;
 }
 
 // Resolve an Output node's animated-export frame range. Half-open
@@ -686,8 +720,8 @@ const CONNECTED_TYPE_RETYPE_NODES = new Set([
   "transform",
   "displace",
   "scatter-points",
-  // Mirror: spline-resting `source` retypes to points (and its output
-  // follows). See specdocs/archive/072026_mirror-node.md.
+  // Mirror: image-resting `source` retypes to spline or points (and its
+  // output follows). See specdocs/archive/072026_mirror-node.md.
   "mirror",
   // Reroute: a wildcard passthrough whose `value` input + output adopt the
   // type wired in. See specdocs/archive/071326_reroute-node.md.
@@ -885,10 +919,59 @@ function EffectsShell({
   // When `initialProject` is supplied (the /p/<slug> editor route),
   // its metadata seeds `currentProject` synchronously so the menu
   // bar pill shows the right name from the first paint. The graph
-  // itself is deserialized asynchronously in an effect below — the
-  // initial nodes/edges briefly show the empty default before the
-  // load resolves.
+  // itself is deserialized asynchronously in an effect below; a
+  // black overlay covers the tiled region until that resolves so
+  // the empty default graph never flashes.
   const rehydrate = initialProject ? null : readEditorSession();
+  const backendReadyRef = useRef(false);
+  const projectLoadGenRef = useRef(0);
+  const projectLoadStartedAtRef = useRef(
+    initialProject ? performance.now() : 0
+  );
+  const [projectLoad, setProjectLoad] = useState<{
+    name: string;
+    progress: number;
+    fading: boolean;
+  } | null>(() =>
+    initialProject
+      ? { name: initialProject.name, progress: 0.08, fading: false }
+      : null
+  );
+  const beginProjectLoad = useCallback((name: string) => {
+    projectLoadGenRef.current += 1;
+    projectLoadStartedAtRef.current = performance.now();
+    setProjectLoad({ name, progress: 0.08, fading: false });
+  }, []);
+  const setProjectLoadProgress = useCallback((progress: number) => {
+    setProjectLoad((prev) =>
+      prev && !prev.fading
+        ? { ...prev, progress: Math.max(prev.progress, Math.min(1, progress)) }
+        : prev
+    );
+  }, []);
+  const abortProjectLoad = useCallback(() => {
+    projectLoadGenRef.current += 1;
+    setProjectLoad(null);
+  }, []);
+  const revealProjectLoad = useCallback(async () => {
+    const gen = projectLoadGenRef.current;
+    setProjectLoad((prev) => (prev ? { ...prev, progress: 1 } : prev));
+    await waitAnimationFrames(2);
+    if (gen !== projectLoadGenRef.current) return;
+    const deadline = performance.now() + 4000;
+    while (!backendReadyRef.current && performance.now() < deadline) {
+      await new Promise((r) => window.setTimeout(r, 16));
+      if (gen !== projectLoadGenRef.current) return;
+    }
+    await waitAnimationFrames(2);
+    if (gen !== projectLoadGenRef.current) return;
+    const elapsed = performance.now() - projectLoadStartedAtRef.current;
+    if (elapsed < PROJECT_LOAD_MIN_MS) {
+      await new Promise((r) => setTimeout(r, PROJECT_LOAD_MIN_MS - elapsed));
+    }
+    if (gen !== projectLoadGenRef.current) return;
+    setProjectLoad((prev) => (prev ? { ...prev, fading: true } : prev));
+  }, []);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NodeDataPayload>>(
     rehydrate?.nodes ?? INITIAL_NODES
   );
@@ -905,7 +988,8 @@ function EffectsShell({
   // Empty-space deselect keeps it open.
   const [midiEditNodeId, setMidiEditNodeId] = useState<string | null>(null);
   const [canvasRes, setCanvasRes] = useState<[number, number]>(
-    rehydrate?.canvasRes ?? [1024, 1024]
+    rehydrate?.canvasRes ??
+      canvasResFromSavedGraph(initialProject?.graph) ?? [1024, 1024]
   );
   // Per-project user-saved easing curves (Graph Editor "Save" button).
   // Persisted on SavedProject.savedEasings; replaced wholesale by every
@@ -1086,12 +1170,15 @@ function EffectsShell({
   // supplied; deserializes the saved graph and seeds the editor.
   // The graph payload was loaded server-side and passed in, so we
   // don't need to await any DB call here — the hop is purely from
-  // SavedProject (JSON) to the live ReactFlow shape.
+  // SavedProject (JSON) to the live ReactFlow shape. Layout and
+  // canvas resolution were already seeded on first paint so the
+  // overlay doesn't fade onto a default-preset snap.
   useEffect(() => {
     if (!initialProject) return;
     let cancelled = false;
     (async () => {
       try {
+        setProjectLoadProgress(0.12);
         const {
           nodes: nextNodes,
           edges: nextEdges,
@@ -1100,9 +1187,11 @@ function EffectsShell({
           activeCompositionId: nextActiveComp,
           missingMedia,
           pendingMedia,
-        } = await deserializeGraph(initialProject.graph, undefined, {
-          deferRemoteMedia: true,
-        });
+        } = await deserializeGraph(
+          initialProject.graph,
+          (f) => setProjectLoadProgress(0.12 + f * 0.8),
+          { deferRemoteMedia: true }
+        );
         if (cancelled) return;
         setNodes(nextNodes);
         setEdges(nextEdges);
@@ -1119,14 +1208,17 @@ function EffectsShell({
           if ("loopFrames" in scene) setLoopFrames(scene.loopFrames ?? null);
           if (scene.fps !== undefined) setFps(scene.fps);
           if (scene.bpm !== undefined) setBpm(scene.bpm);
-          if (scene.width !== undefined && scene.height !== undefined)
-            setCanvasRes([scene.width, scene.height]);
+          if (scene.width !== undefined && scene.height !== undefined) {
+            const w = scene.width;
+            const h = scene.height;
+            setCanvasRes((prev) =>
+              prev[0] === w && prev[1] === h ? prev : [w, h]
+            );
+          }
         }
-        // Per-project tiled layout (M4) — public /p/ loads apply the
-        // author's layout too (owner decision, spec §6).
-        applyLoadedLayout(
-          (initialProject.graph as { layout?: unknown }).layout
-        );
+        // Layout was seeded from the saved graph on first paint — don't
+        // re-apply here (fromSavedLayout mints new leaf ids and would
+        // remount every panel under the overlay).
         setSavedEasings(
           sanitizeSavedEasings(
             (initialProject.graph as { savedEasings?: unknown }).savedEasings
@@ -1140,9 +1232,12 @@ function EffectsShell({
         setLiveDesign(
           rawLiveDesign == null ? null : fromSavedLiveDesign(rawLiveDesign)
         );
+        if (cancelled) return;
+        await revealProjectLoad();
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[EffectsApp] /p/<slug> bootstrap failed:", err);
+        abortProjectLoad();
       }
     })();
     return () => {
@@ -1305,7 +1400,11 @@ function EffectsShell({
   // (SavedProject.layout, M4) and across the docs round-trip (session
   // stash); a fresh session starts on the default preset.
   const [layoutTree, setLayoutTree] = useState<LayoutTree>(
-    () => rehydrate?.layoutTree ?? makeDefaultTree()
+    () =>
+      rehydrate?.layoutTree ??
+      (initialProject
+        ? layoutFromSavedGraph(initialProject.graph)
+        : makeDefaultTree())
   );
   const layoutComputed = useMemo(() => computeRects(layoutTree), [layoutTree]);
   // Panels popped out into their own OS windows (M1 — viewport only;
@@ -1847,7 +1946,7 @@ function EffectsShell({
         isPublic: boolean;
         // Mirrors projects.public_slug. Carried so the file-name menu
         // can build the /p/<slug> editor link without a separate fetch.
-        // null when the project isn't currently public.
+        // Present for private and public cloud rows.
         publicSlug: string | null;
         // user_id of whoever authored this row. Used to gate Save /
         // rename / visibility-toggle: when the viewer isn't the owner,
@@ -1882,6 +1981,8 @@ function EffectsShell({
           publicSlug: initialProject.publicSlug,
           ownerId: initialProject.ownerId,
           authorName: initialProject.authorName,
+          updatedAt: initialProject.updatedAt,
+          sharedWithMe: initialProject.sharedWithMe,
         }
       : (rehydrate?.currentProject ?? null)
   );
@@ -1959,6 +2060,46 @@ function EffectsShell({
     enabled: signedIn,
     currentProjectId: currentProject?.id ?? null,
   });
+  // /p/<slug> bootstrap: collaborative rows acquire the advisory lease
+  // the same way handleLoadProject does, now that the slug route is
+  // the canonical open path for every cloud project.
+  useEffect(() => {
+    if (!initialProject) return;
+    if (initialProject.sharedWithMe || initialProject.hasCollaborators) {
+      void lease.acquireFor(initialProject.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Keep the address bar on /p/<slug> while a cloud project is open.
+  // Owned rows that predate all-project slugs get one minted here
+  // (does not bump updated_at). File → New and .toolbox opens clear
+  // currentProject and rewrite back to `/`.
+  const projectId = currentProject?.id ?? null;
+  const projectSlug = currentProject?.publicSlug ?? null;
+  const projectOwnerId = currentProject?.ownerId ?? null;
+  useEffect(() => {
+    if (!projectId) {
+      syncProjectUrl(null);
+      return;
+    }
+    if (projectSlug) {
+      syncProjectUrl(projectSlug);
+      return;
+    }
+    if (!user || projectOwnerId !== user.id) return;
+    let cancelled = false;
+    ensureProjectSlug(projectId).then((slug) => {
+      if (cancelled || !slug) return;
+      setCurrentProject((prev) =>
+        prev && prev.id === projectId && !prev.publicSlug
+          ? { ...prev, publicSlug: slug }
+          : prev
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, projectSlug, projectOwnerId, user]);
   // Layout presets follow the user, so (re)load whenever the signed-in
   // identity changes — signing in mid-session pulls the cloud copy over
   // the local-only one.
@@ -2013,6 +2154,7 @@ function EffectsShell({
   // to the primary canvas to keep their pointer math simple.
   const canvas2Ref = useRef<HTMLCanvasElement | null>(null);
   const [backendReady, setBackendReady] = useState(false);
+  backendReadyRef.current = backendReady;
   // Per-viewport pan/zoom. Two viewports each carry independent state so
   // the user can frame each preview separately when split. The
   // underlying canvas resolution doesn't change — only the on-screen
@@ -2741,6 +2883,7 @@ function EffectsShell({
   // exported, not whatever the user happens to have set Active. Cleared back
   // to null when the export finishes.
   const forcedTerminalRef = useRef<string | null>(null);
+  const forcedTerminalHandleRef = useRef<string | null>(null);
 
   // Preview dots for any selected node whose primary output is a points
   // value. Refreshed by renderFrame after each interactive render pass.
@@ -2854,19 +2997,22 @@ function EffectsShell({
       const forced = [peek, bake, presetShot, ...sheets].filter(
         (f): f is { nodeId: string; handle: string } => !!f
       );
-      const peekOpts = forced.length
-        ? {
-            extraTargets: forced.map((f) => f.nodeId),
-            extraConsumed: forced.reduce((m, f) => {
-              const key =
-                f.handle === "out:primary"
-                  ? "primary"
-                  : f.handle.replace(/^out:/, "");
-              m.set(f.nodeId, [...(m.get(f.nodeId) ?? []), key]);
-              return m;
-            }, new Map<string, string[]>()),
-          }
-        : undefined;
+      const forceHandle = forcedTerminalHandleRef.current ?? undefined;
+      const peekOpts =
+        forced.length || forceHandle
+          ? {
+              extraTargets: forced.map((f) => f.nodeId),
+              extraConsumed: forced.reduce((m, f) => {
+                const key =
+                  f.handle === "out:primary"
+                    ? "primary"
+                    : f.handle.replace(/^out:/, "");
+                m.set(f.nodeId, [...(m.get(f.nodeId) ?? []), key]);
+                return m;
+              }, new Map<string, string[]>()),
+              ...(forceHandle ? { forceHandle } : {}),
+            }
+          : undefined;
       // Coarse trigger for the perf trace (specdocs/080726_perf-profiler.md).
       // A call site that knows better — a scrub, an async pipeline bump —
       // calls prof.markTrigger first and wins over this default.
@@ -3216,14 +3362,14 @@ function EffectsShell({
   }, [errors]);
 
   // Auto-grow the input sockets of Combine, Proximity Join/Merge, Spline
-  // Interpolate, Spline Morph, SDF Union, and SDF Smooth Union: keep each
-  // one's `slots` param equal to (connected sockets, in stable order) +
-  // exactly one trailing empty spare. Derived purely from edges, so it's
-  // undo-safe (edges are in history; slots follow them) and needs no
-  // pushGraph snapshot. Runs whenever edges change — connect fills a
+  // Interpolate, Spline Morph, SDF Union, SDF Smooth Union, and Switch:
+  // keep each one's `slots` param equal to (connected sockets, in stable
+  // order) + exactly one trailing empty spare. Derived purely from edges,
+  // so it's undo-safe (edges are in history; slots follow them) and needs
+  // no pushGraph snapshot. Runs whenever edges change — connect fills a
   // spare → next spare appears; disconnect prunes the emptied middle.
-  // (The `t`/`mask`/`spine`/`smoothness`/`amount` exclusions below skip
-  // each node's fixed sockets so wiring them does not mint a slot.)
+  // (The `t`/`mask`/`spine`/`smoothness`/`amount`/`index` exclusions below
+  // skip each node's fixed sockets so wiring them does not mint a slot.)
   //
   // Merge grows here too, but grow-only: once every layer's image socket is
   // wired, append a fresh layer so there's always an open one. No pruning —
@@ -3254,8 +3400,10 @@ function EffectsShell({
           });
         }
         const isCollect = isCollectType(n.data.defType);
+        const isSwitch = n.data.defType === SWITCH_TYPE;
         if (
           !isCollect &&
+          !isSwitch &&
           n.data.defType !== "proximity-merge" &&
           n.data.defType !== "spline-interpolate" &&
           n.data.defType !== "sdf-union" &&
@@ -3264,25 +3412,28 @@ function EffectsShell({
         )
           return n;
         // Each auto-grow node's starting slot list. Combine honors a
-        // legacy `count` (sockets a, b, c…) when `slots` is absent; SDF
-        // Union / Smooth Union and Spline Morph seed with their original
-        // a/b names so saved two-input projects keep their wires.
+        // legacy `count` (sockets a, b, c…) when `slots` is absent; Switch
+        // honors its own `count` as in0, in1, …; SDF Union / Smooth Union
+        // and Spline Morph seed with their original a/b names so saved
+        // two-input projects keep their wires.
         const current: string[] = isCollect
           ? readCollectSlots(n.data.params)
-          : (() => {
-              const seed =
-                n.data.defType === "sdf-union" ||
-                n.data.defType === "sdf-smooth-union" ||
-                n.data.defType === "spline-morph"
-                  ? ["a", "b"]
-                  : ["in"];
-              const raw = n.data.params.slots;
-              return Array.isArray(raw) &&
-                raw.every((x) => typeof x === "string") &&
-                raw.length
-                ? (raw as string[])
-                : seed;
-            })();
+          : isSwitch
+            ? readSwitchSlots(n.data.params)
+            : (() => {
+                const seed =
+                  n.data.defType === "sdf-union" ||
+                  n.data.defType === "sdf-smooth-union" ||
+                  n.data.defType === "spline-morph"
+                    ? ["a", "b"]
+                    : ["in"];
+                const raw = n.data.params.slots;
+                return Array.isArray(raw) &&
+                  raw.every((x) => typeof x === "string") &&
+                  raw.length
+                  ? (raw as string[])
+                  : seed;
+              })();
         // Socket names wired into this node (exclude the t + mask inputs).
         const connected = new Set<string>();
         for (const e of edges) {
@@ -3292,15 +3443,19 @@ function EffectsShell({
           // Fixed (non-slot) sockets these nodes declare alongside the
           // auto-grow list: t/mask, Spline Interpolate's blend spine
           // (spec 072726 M4), SDF Smooth Union's Smoothness, Spline
-          // Morph's Amount — wiring them must not mint a slot.
-          if (
+          // Morph's Amount, Switch's Index — wiring them must not mint
+          // a slot. Switch also only counts numbered `inN` handles.
+          if (isSwitch) {
+            if (!isSwitchSlot(parsed.name)) continue;
+          } else if (
             parsed.name === "t" ||
             parsed.name === "mask" ||
             parsed.name === "spine" ||
             parsed.name === "smoothness" ||
             parsed.name === "amount"
-          )
+          ) {
             continue;
+          }
           connected.add(parsed.name);
         }
         // Keep connected slots in their current order, append any newly
@@ -3313,27 +3468,30 @@ function EffectsShell({
           const taken = new Set(kept);
           spare = isCollect
             ? nextCollectSlot(taken)
-            : (() => {
-                let k = 0;
-                while (taken.has(`s${k}`)) k++;
-                return `s${k}`;
-              })();
+            : isSwitch
+              ? nextSwitchSlot(taken)
+              : (() => {
+                  let k = 0;
+                  while (taken.has(`s${k}`)) k++;
+                  return `s${k}`;
+                })();
         }
         let desired =
           isCollect && kept.length >= COLLECT_MAX_SLOTS
             ? kept
             : [...kept, spare];
-        // Spline Morph, SDF Union, and Combine keep two sockets so a
-        // fresh node (and saved two-input projects with nothing yet
+        // Spline Morph, SDF Union, Combine, and Switch keep two sockets so
+        // a fresh node (and saved two-input projects with nothing yet
         // wired) don't collapse to a single spare the way
         // N-ary-from-the-start nodes do.
         if (
           (n.data.defType === "spline-morph" ||
             n.data.defType === "sdf-union" ||
-            isCollect) &&
+            isCollect ||
+            isSwitch) &&
           desired.length < 2
         ) {
-          desired = ["a", "b"];
+          desired = isSwitch ? ["in0", "in1"] : ["a", "b"];
         }
         if (
           desired.length === current.length &&
@@ -3366,12 +3524,13 @@ function EffectsShell({
   // change what a Transform/Displace sees without touching edges. Positions /
   // most param edits don't alter this string, so drags don't re-run it; the
   // effect's changed-guard makes the extra run a no-op once converged.
-  // A retype node's own params also feed its resolvers (Switch's Count mints
-  // slots, its Type pins the family), and the param-edit path deliberately
-  // leaves these nodes' sockets alone — so their params belong in the
-  // signature too, or a Count bump wouldn't grow the node until the next edge
-  // change. Only for the retype set: the other nodes' params churn constantly
-  // and re-running this for them would be pure waste.
+  // A retype node's own params also feed its resolvers (Switch's `slots`
+  // list mints sockets, its Type pins the family), and the param-edit path
+  // deliberately leaves these nodes' sockets alone — so their params belong
+  // in the signature too, or an auto-grow `slots` write wouldn't restyle
+  // the node until the next edge change. Only for the retype set: the other
+  // nodes' params churn constantly and re-running this for them would be
+  // pure waste.
   const polyOutTypeSig = useMemo(
     () =>
       nodes
@@ -4801,7 +4960,9 @@ function EffectsShell({
   // parentId). Fall back to root, which wraps into a fresh layer.
   const commitRecipeFragment = useCallback(
     (
-      frag: { nodes: Node<NodeDataPayload>[]; edges: Edge[] },
+      frag:
+        | { nodes: Node<NodeDataPayload>[]; edges: Edge[] }
+        | { nodes: Node<NodeDataPayload>[]; edges: Edge[] }[],
       warningCount: number,
       opts?: { connect?: boolean; scope?: string; replaceOutput?: boolean }
     ): {
@@ -4811,6 +4972,11 @@ function EffectsShell({
       wired: { from: string; to: string }[];
       skippedOccupied: { socket: string }[];
       idMap: Record<string, string>;
+      groups: {
+        groupId: string | null;
+        idMap: Record<string, string>;
+        wired: { from: string; to: string }[];
+      }[];
     } => {
       pushGraph(getGraphSnapshot());
       const base = lastPanePointerRef.current ?? { x: 200, y: 200 };
@@ -4831,58 +4997,93 @@ function EffectsShell({
         targetScope = res.layerId;
         wrapped = res.layerId;
       }
-      const minX = Math.min(...frag.nodes.map((n) => n.position.x));
-      const minY = Math.min(...frag.nodes.map((n) => n.position.y));
-      const offset = { x: base.x - minX, y: base.y - minY };
-      const { nodes: newNodes, edges: newEdges, idMap } = cloneSubgraph(
-        frag.nodes,
-        frag.edges,
-        offset,
-        { parentId: targetScope }
-      );
-      const groupClone = newNodes.find((n) => n.data.defType === GROUP_TYPE);
+      const frags = Array.isArray(frag) ? frag : [frag];
       const connect = opts?.connect !== false;
-      let allEdges = [...baseEdges, ...newEdges];
-      let wired: { from: string; to: string }[] = [];
-      let skippedOccupied: { socket: string }[] = [];
-      if (connect && groupClone && targetScope) {
-        const hooked = connectGroupToEmptyScopeOutput(
-          [...baseNodes, ...newNodes],
-          allEdges,
-          groupClone.id,
-          targetScope,
-          { replaceOccupied: opts?.replaceOutput === true }
+      const groups: {
+        groupId: string | null;
+        idMap: Record<string, string>;
+        wired: { from: string; to: string }[];
+      }[] = [];
+      let allNewNodes: Node<NodeDataPayload>[] = [];
+      let allEdges = baseEdges;
+      let lastGroup: Node<NodeDataPayload> | undefined;
+      let lastWired: { from: string; to: string }[] = [];
+      let lastSkipped: { socket: string }[] = [];
+      let lastIdMap: Record<string, string> = {};
+      for (let i = 0; i < frags.length; i++) {
+        const f = frags[i];
+        if (!f.nodes.length) continue;
+        const minX = Math.min(...f.nodes.map((n) => n.position.x));
+        const minY = Math.min(...f.nodes.map((n) => n.position.y));
+        const offset = { x: base.x - minX + i * 280, y: base.y - minY };
+        const { nodes: newNodes, edges: newEdges, idMap } = cloneSubgraph(
+          f.nodes,
+          f.edges,
+          offset,
+          { parentId: targetScope }
         );
-        allEdges = hooked.edges;
-        wired = hooked.wired;
-        skippedOccupied = hooked.skippedOccupied;
+        const groupClone = newNodes.find((n) => n.data.defType === GROUP_TYPE);
+        allEdges = [...allEdges, ...newEdges];
+        allNewNodes = [...allNewNodes, ...newNodes];
+        let wired: { from: string; to: string }[] = [];
+        let skippedOccupied: { socket: string }[] = [];
+        // Wire only the last group when inserting many — 100 siblings
+        // shouldn't all fight for the enclosing Output.
+        const hookThis = connect && groupClone && targetScope && i === frags.length - 1;
+        if (hookThis) {
+          const hooked = connectGroupToEmptyScopeOutput(
+            [...baseNodes, ...allNewNodes],
+            allEdges,
+            groupClone.id,
+            targetScope,
+            { replaceOccupied: opts?.replaceOutput === true }
+          );
+          allEdges = hooked.edges;
+          wired = hooked.wired;
+          skippedOccupied = hooked.skippedOccupied;
+        }
+        const mapped = Object.fromEntries(idMap);
+        groups.push({
+          groupId: groupClone?.id ?? null,
+          idMap: mapped,
+          wired,
+        });
+        lastGroup = groupClone;
+        lastWired = wired;
+        lastSkipped = skippedOccupied;
+        lastIdMap = mapped;
       }
       setNodes([
         ...baseNodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
-        ...newNodes,
+        ...allNewNodes,
       ]);
       setEdges(allEdges);
       if (wrapped) {
         navigateScope(wrapped);
         setNodes((prev) =>
           prev.map((n) =>
-            newNodes.some((c) => c.id === n.id) ? { ...n, selected: true } : n
+            allNewNodes.some((c) => c.id === n.id) ? { ...n, selected: true } : n
           )
         );
       }
-      if (groupClone) setSelectedId(groupClone.id);
+      if (lastGroup) setSelectedId(lastGroup.id);
       setParamView("node");
       const note = warningCount
         ? ` (${warningCount} note${warningCount === 1 ? "" : "s"})`
         : "";
-      flashToast(`recipe added${wrapped ? " to a new layer" : ""}${note}`);
+      flashToast(
+        frags.length > 1
+          ? `recipes added (${frags.length})${wrapped ? " to a new layer" : ""}${note}`
+          : `recipe added${wrapped ? " to a new layer" : ""}${note}`
+      );
       return {
-        groupId: groupClone?.id ?? null,
+        groupId: lastGroup?.id ?? null,
         wrapped: !!wrapped,
         parentId: targetScope ?? null,
-        wired,
-        skippedOccupied,
-        idMap: Object.fromEntries(idMap),
+        wired: lastWired,
+        skippedOccupied: lastSkipped,
+        idMap: lastIdMap,
+        groups,
       };
     },
     [pushGraph, getGraphSnapshot, flashToast, navigateScope]
@@ -7612,6 +7813,7 @@ function EffectsShell({
     fpsRef,
     playingRef,
     forcedTerminalRef,
+    forcedTerminalHandleRef,
     renderFrame,
     setPlaying,
     setTime,
@@ -10399,7 +10601,7 @@ function EffectsShell({
     // forces last-writer-wins (stamp unavailable — pre-migration DB).
     // undefined = normal behavior (CAS against currentProject.updatedAt).
     expectedOverride?: string | null
-  ): Promise<{ id: string } | null> {
+  ): Promise<{ id: string; slug?: string | null } | null> {
     // Wait out any in-flight streamed images so serialize never captures a
     // not-yet-loaded image as null. Failed streams settle to their envelope,
     // which round-trips — so this resolves even if a fetch errored.
@@ -10577,7 +10779,7 @@ function EffectsShell({
           id: result.id,
           name,
           isPublic: false,
-          publicSlug: null,
+          publicSlug: result.slug ?? null,
           ownerId: user.id,
           authorName: null,
         });
@@ -10631,7 +10833,7 @@ function EffectsShell({
           id: result.id,
           name: copyName,
           isPublic: false,
-          publicSlug: null,
+          publicSlug: result.slug ?? null,
           ownerId: user.id,
           authorName: null,
         });
@@ -10706,7 +10908,7 @@ function EffectsShell({
         id: result.id,
         name: newName,
         isPublic: false,
-        publicSlug: null,
+        publicSlug: result.slug ?? null,
         ownerId: user.id,
         authorName: null,
       });
@@ -10724,16 +10926,25 @@ function EffectsShell({
   }, [signedIn, user, currentProject, flashToast]);
 
   const handleLoadProject = useCallback(
-    async (id: string) => {
+    async (id: string, nameHint?: string) => {
+      beginProjectLoad(nameHint ?? "project");
       try {
         setProgressStatus({ label: "loading", progress: 0.05, tone: "load" });
+        setProjectLoadProgress(0.12);
         const saved = await loadProjectRow(id);
-        if (!saved) return;
+        if (!saved) {
+          abortProjectLoad();
+          return;
+        }
+        setProjectLoad((prev) =>
+          prev && !prev.fading ? { ...prev, name: saved.name } : prev
+        );
         setProgressStatus({
           label: "loading",
           progress: 1 - SERIALIZE_SHARE,
           tone: "load",
         });
+        setProjectLoadProgress(1 - SERIALIZE_SHARE);
         const {
           nodes: nextNodes,
           edges: nextEdges,
@@ -10744,12 +10955,15 @@ function EffectsShell({
           pendingMedia,
         } = await deserializeGraph(
           saved.graph,
-          (f) =>
+          (f) => {
+            const p = 1 - SERIALIZE_SHARE + f * SERIALIZE_SHARE;
             setProgressStatus({
               label: "loading",
-              progress: 1 - SERIALIZE_SHARE + f * SERIALIZE_SHARE,
+              progress: p,
               tone: "load",
-            }),
+            });
+            setProjectLoadProgress(p);
+          },
           { deferRemoteMedia: true }
         );
         // Only snapshot the outgoing graph once the incoming one has
@@ -10824,14 +11038,16 @@ function EffectsShell({
         // flipped to "dirty". Explicitly mark clean.
         setSaveState("saved");
         setProgressStatus({ label: "loading", progress: 1, tone: "load" });
+        await revealProjectLoad();
       } catch (e) {
         console.error("[load] cloud project load failed:", e);
         flashToast(e instanceof Error ? e.message : "Could not load project");
+        abortProjectLoad();
       } finally {
         setProgressStatus(null);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia, streamPendingMedia, frameGraph, flashToast, applyLoadedLayout, lease.acquireFor]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, user, setMissingMedia, streamPendingMedia, frameGraph, flashToast, applyLoadedLayout, lease.acquireFor, beginProjectLoad, setProjectLoadProgress, abortProjectLoad, revealProjectLoad]
   );
 
   // --- Save-conflict resolution (shared projects M1) ------------------------
@@ -10854,7 +11070,7 @@ function EffectsShell({
         id: result.id,
         name: copyName,
         isPublic: false,
-        publicSlug: null,
+        publicSlug: result.slug ?? null,
         ownerId: user.id,
         authorName: null,
       });
@@ -10918,7 +11134,7 @@ function EffectsShell({
       // so this client's caches never saw it.
       invalidateProjectCaches();
       setSaveConflict(null);
-      await handleLoadProject(saveConflict.id);
+      await handleLoadProject(saveConflict.id, saveConflict.name);
     } finally {
       setSaveConflictBusy(false);
     }
@@ -11100,10 +11316,17 @@ function EffectsShell({
   // input and by the desktop "Local" recents tab.
   const loadToolboxFile = useCallback(
     async (file: File) => {
+      const fileLabel =
+        file.name.replace(/\.toolbox$/i, "") || "project";
+      beginProjectLoad(fileLabel);
       try {
         setProgressStatus({ label: "loading", progress: 0.1, tone: "load" });
+        setProjectLoadProgress(0.12);
         const { readProjectFile } = await import("@/lib/project-file");
         const { name, graph } = await readProjectFile(file);
+        setProjectLoad((prev) =>
+          prev && !prev.fading ? { ...prev, name: name || fileLabel } : prev
+        );
         const {
           nodes: nextNodes,
           edges: nextEdges,
@@ -11111,13 +11334,15 @@ function EffectsShell({
           compositions: nextComps,
           activeCompositionId: nextActiveComp,
           missingMedia,
-        } = await deserializeGraph(graph, (f) =>
+        } = await deserializeGraph(graph, (f) => {
+          const p = 0.12 + f * 0.8;
           setProgressStatus({
             label: "loading",
-            progress: 0.1 + f * 0.9,
+            progress: p,
             tone: "load",
-          })
-        );
+          });
+          setProjectLoadProgress(p);
+        });
         // Snapshot the outgoing graph only after a successful deserialize —
         // a failed open must not insert an undo entry or dirty the pill.
         pushGraph(getGraphSnapshot());
@@ -11171,14 +11396,16 @@ function EffectsShell({
         } catch {
           setAssetsFolder(null);
         }
+        await revealProjectLoad();
       } catch (e) {
         console.error("Open project file failed:", e);
         flashToast(e instanceof Error ? e.message : "Could not open project file");
+        abortProjectLoad();
       } finally {
         setProgressStatus(null);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia, frameGraph, applyLoadedLayout]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia, frameGraph, applyLoadedLayout, beginProjectLoad, setProjectLoadProgress, abortProjectLoad, revealProjectLoad]
   );
 
   // --- Local recovery autosave (shared projects M4, first slice) -----------
@@ -11260,11 +11487,14 @@ function EffectsShell({
   const handleRestoreRecovery = useCallback(
     async (snapshot: RecoverySnapshotMeta) => {
       setRecoveryOpen(false);
+      beginProjectLoad(snapshot.name || "project");
       try {
         setProgressStatus({ label: "loading", progress: 0.1, tone: "load" });
+        setProjectLoadProgress(0.12);
         const graph = await getRecoverySnapshotGraph(snapshot.id);
         if (!graph) {
           flashToast("Could not read that autosave");
+          abortProjectLoad();
           return;
         }
         const {
@@ -11277,12 +11507,15 @@ function EffectsShell({
           pendingMedia,
         } = await deserializeGraph(
           graph as SavedProject,
-          (f) =>
+          (f) => {
+            const p = 0.12 + f * 0.8;
             setProgressStatus({
               label: "loading",
-              progress: 0.1 + f * 0.9,
+              progress: p,
               tone: "load",
-            }),
+            });
+            setProjectLoadProgress(p);
+          },
           { deferRemoteMedia: true }
         );
         pushGraph(getGraphSnapshot());
@@ -11322,16 +11555,18 @@ function EffectsShell({
         setSaveState("dirty");
         setProgressStatus({ label: "loading", progress: 1, tone: "load" });
         flashToast("autosave restored — not saved yet");
+        await revealProjectLoad();
       } catch (e) {
         console.error("[recovery] restore failed:", e);
         flashToast(
           e instanceof Error ? e.message : "Could not restore the autosave"
         );
+        abortProjectLoad();
       } finally {
         setProgressStatus(null);
       }
     },
-    [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia, streamPendingMedia, frameGraph, applyLoadedLayout]
+    [pushGraph, getGraphSnapshot, setNodes, setEdges, flashToast, setMissingMedia, streamPendingMedia, frameGraph, applyLoadedLayout, beginProjectLoad, setProjectLoadProgress, abortProjectLoad, revealProjectLoad]
   );
 
   const handleOpenProjectFile = useCallback(() => {
@@ -11407,7 +11642,7 @@ function EffectsShell({
           // loadProject can't distinguish deleted-row from network failure,
           // so a failed open only toasts (inside handleLoadProject) — it
           // never prunes the entry.
-          void handleLoadProject(entry.id);
+          void handleLoadProject(entry.id, entry.name);
           return;
         case "local-native":
           void handleOpenLocalRecent(entry.path);
@@ -11573,9 +11808,9 @@ function EffectsShell({
     setCurrentProject({
       ...currentProject,
       isPublic: next,
-      // The toggle return surfaces the slug (minted on first
-      // public-flip, cleared on private-flip) so the file-name menu's
-      // "Copy editor link" button lights up immediately, no reload.
+      // The toggle keeps the existing slug (or mints one on older
+      // rows) so the file-name menu's copy-link buttons stay lit
+      // either direction, no reload.
       publicSlug: result.slug,
       // The toggle bumps updated_at — mirror it so the next save's
       // compare-and-swap doesn't false-conflict.
@@ -13544,7 +13779,18 @@ function EffectsShell({
           has. Every other leaf (nodes / params / watch viewports)
           routes through renderLayoutPanel. Full-canvas mode solos the
           primary viewport leaf edge-to-edge (all other panels stay
-          mounted, display:none). */}
+          mounted, display:none). A project-load overlay covers this
+          region (menubar + playback bar stay visible) until the saved
+          graph and layout have painted. */}
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          minWidth: 0,
+          position: "relative",
+          display: "flex",
+        }}
+      >
       <LayoutRegion
         tree={layoutTree}
         soloLeafId={fullCanvas ? primaryViewportLeafId : null}
@@ -13987,6 +14233,15 @@ function EffectsShell({
           );
         }}
       />
+      {projectLoad && (
+        <ProjectLoadOverlay
+          name={projectLoad.name}
+          progress={projectLoad.progress}
+          fading={projectLoad.fading}
+          onFaded={() => setProjectLoad(null)}
+        />
+      )}
+      </div>
       {/* Panels detached into their own OS windows (M1 — viewport only;
           080226_panel-popout-windows.md). Each renders the SAME
           renderLayoutPanel body the tiled grid would, portalled into a

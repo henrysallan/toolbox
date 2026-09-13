@@ -9,13 +9,17 @@ import type { ExprInput, NodeDefinition, SocketType } from "@/engine/types";
 import { getNodeDef } from "@/engine/registry";
 import { GROUP_TYPE, isZoneShell } from "@/engine/groups";
 import { SETTABLE_PARAM_TYPES, vetParamValue } from "@/engine/node-catalog";
+import { paramSocketType } from "@/engine/graph-helpers";
 import { withMaskInput } from "@/engine/conventions";
 import { tidyLayout } from "@/state/node-layout";
 import { applyPositions, toLayoutGraph } from "@/state/node-layout-graph";
 import {
   channelSocketType,
+  EXPR_VAR_NAME_RE,
   findExprChannel,
+  newExprInputId,
   syncChannelInputs,
+  vetExprInputList,
 } from "@/engine/expr-channels";
 import {
   BLEND_MODE_ORDER,
@@ -183,11 +187,51 @@ export function resolveChannelHandle(
   }
   if (withMaskInput(inputs, def).some((i) => i.name === sock))
     return targetHandle; // a literal socket with this name exists
-  // Name (`rows`), minted id (`ein-…`), or the socket name itself (`in:ein-…`).
+  // Expression sockets are stored as `in:<ein-id>`; a recipe that targets
+  // `in:ein-x0` must pick up the extra `in:` prefix or the validator looks
+  // for a socket named `ein-x0` and rejects the default input.
+  if (withMaskInput(inputs, def).some((i) => i.name === `in:${sock}`))
+    return `in:in:${sock}`;
+  // Name (`rows` / `x`), minted id (`ein-…`), or the socket name itself (`in:ein-…`).
   const hit =
     findExprChannel(def, params, sock) ??
     (sock.startsWith("in:") ? findExprChannel(def, params, sock.slice(3)) : undefined);
   return hit && channelSocketType(hit) ? `in:in:${hit.id}` : targetHandle;
+}
+
+// Grow the scalar Expression node's `inputs` list when an edge targets a
+// new variable name (`<id>:in:p`). ChannelSync nodes (Point / GLSL
+// Expression) are not grown — their rows come from the source. Guessed
+// `ein-…` ids are left alone so a stale id stays an EDGE_UNKNOWN_INPUT
+// instead of minting a variable named "ein-p".
+export function growExprVarHandle(
+  def: NodeDefinition,
+  params: Record<string, unknown>,
+  targetHandle: string
+): { params: Record<string, unknown>; handle: string } {
+  const pdef = def.params.find((p) => p.type === "expr_inputs" && !p.channelSync);
+  if (
+    !pdef ||
+    !targetHandle.startsWith("in:") ||
+    targetHandle.startsWith("in:param:")
+  ) {
+    return { params, handle: targetHandle };
+  }
+  const resolved = resolveChannelHandle(def, params, targetHandle);
+  if (resolved !== targetHandle) return { params, handle: resolved };
+  const sock = targetHandle.slice("in:".length);
+  if (/^ein-[a-z0-9]+$/i.test(sock) || sock.startsWith("in:ein-")) {
+    return { params, handle: targetHandle };
+  }
+  if (!EXPR_VAR_NAME_RE.test(sock)) return { params, handle: targetHandle };
+  const list = ([...((params[pdef.name] as ExprInput[]) ?? [])]);
+  const existing = list.find((e) => e.name === sock);
+  if (existing) return { params, handle: `in:in:${existing.id}` };
+  const row: ExprInput = { id: newExprInputId(), name: sock, default: 1 };
+  return {
+    params: { ...params, [pdef.name]: [...list, row] },
+    handle: `in:in:${row.id}`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +361,18 @@ function applyVettedParams(
         ? undefined
         : (next[k] as MergeLayer[] | undefined);
       const vet = vetMergeLayers(v, existing);
+      if (!vet.ok) {
+        issues.push({
+          code: "BAD_PARAM_VALUE",
+          message: `${lid}.${k}: ${vet.reason} — left at default.`,
+        });
+        continue;
+      }
+      next[k] = vet.value;
+      continue;
+    }
+    if (pdef.type === "expr_inputs" && !pdef.channelSync) {
+      const vet = vetExprInputList(v, next[k] as ExprInput[] | undefined);
       if (!vet.ok) {
         issues.push({
           code: "BAD_PARAM_VALUE",
@@ -471,7 +527,18 @@ export function buildRecipe(rg: RecipeGraph): BuildResult {
       const ix = interior.findIndex((x) => x.id === tgt.id);
       if (ix >= 0) interior[ix] = grown;
     }
-    return resolveChannelHandle(tdef, ord.params, ord.handle);
+    const live = realByLid.get(lid) ?? tgt;
+    const grownVar = growExprVarHandle(tdef, live.data.params, ord.handle);
+    if (grownVar.params !== live.data.params) {
+      const grown = refreshNodeSockets({
+        ...live,
+        data: { ...live.data, params: grownVar.params },
+      });
+      realByLid.set(lid, grown);
+      const ix = interior.findIndex((x) => x.id === tgt.id);
+      if (ix >= 0) interior[ix] = grown;
+    }
+    return grownVar.handle;
   };
 
   // 2. Interior edges → real handle ids; param targets get exposed.
@@ -537,12 +604,47 @@ export function buildRecipe(rg: RecipeGraph): BuildResult {
   }
   const promote: PromoteSpec[] = [];
   for (const ex of rg.exposed ?? []) {
+    const label = typeof ex.name === "string" ? ex.name.trim() : "";
+    const param = typeof ex.param === "string" ? ex.param.trim() : "";
     const node = real(ex.node);
     if (!node) {
-      issues.push({ code: "BAD_EXPOSED", message: `Exposed "${ex.name}": node "${ex.node}" missing — dropped.` });
+      issues.push({
+        code: "BAD_EXPOSED",
+        message: `Exposed "${label || param || "?"}": node "${ex.node}" missing — dropped.`,
+      });
       continue;
     }
-    promote.push({ node, param: ex.param, label: ex.name });
+    if (!param) {
+      issues.push({
+        code: "BAD_EXPOSED",
+        message: `Exposed "${label || "(unnamed)"}": missing param name — dropped.`,
+      });
+      continue;
+    }
+    if (!label) {
+      issues.push({
+        code: "BAD_EXPOSED",
+        message: `Exposed ${ex.node}.${param}: missing name (group knob label) — dropped.`,
+      });
+      continue;
+    }
+    const pdef = getNodeDef(node.data.defType)?.params.find((x) => x.name === param);
+    if (!pdef) {
+      issues.push({
+        code: "BAD_EXPOSED",
+        message: `Exposed "${label}": ${ex.node} has no param "${param}" — dropped.`,
+      });
+      continue;
+    }
+    const sockType = paramSocketType(pdef.type);
+    if (!sockType) {
+      issues.push({
+        code: "BAD_EXPOSED",
+        message: `Exposed "${label}": ${ex.node}.${param} (${pdef.type}) can't be a group knob — dropped.`,
+      });
+      continue;
+    }
+    promote.push({ node, param, label });
   }
   if (outputs.length === 0)
     issues.push({ code: "NO_OUTPUT", message: "Recipe produced no resolved outputs." });
@@ -560,6 +662,12 @@ export function buildRecipe(rg: RecipeGraph): BuildResult {
       { anchor: "origin" }
     );
     interior = applyPositions(interior, moves);
+    syncLidMap(realByLid, interior);
+  }
+  const liveById = new Map(interior.map((n) => [n.id, n]));
+  for (const p of promote) {
+    const live = liveById.get(p.node.id);
+    if (live) p.node = live;
   }
 
   // 4. Wrap in a node-group fragment (same path as presets).

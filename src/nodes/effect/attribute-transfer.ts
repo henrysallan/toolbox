@@ -24,16 +24,18 @@ import {
 //
 //   nearest  — each target takes the closest source's value (ring-
 //              expanding search over the spatial hash, so it always
-//              resolves — no radius cliff).
+//              resolves — no radius cliff). With fallback=zero, a
+//              source outside Radius is rejected and the target gets 0.
 //   weighted — distance-weighted average of sources within Radius
-//              (linear falloff); targets with no source in range fall
-//              back to nearest, so the result is always defined.
+//              (linear falloff). Misses (nothing in range) use Fallback:
+//              nearest (always defined) or zero.
 //
 // Distances are authored units (Proximity Merge's convention). The
 // channel lands on the target under the same name; the target's other
 // channels carry through untouched.
 
 const MODE_OPTIONS = ["nearest", "weighted"] as const;
+const FALLBACK_OPTIONS = ["nearest", "zero"] as const;
 
 const TARGET_OPTIONS = ["points", "spline anchors"] as const;
 type Target = (typeof TARGET_OPTIONS)[number];
@@ -97,7 +99,8 @@ function transferChannel(
   tpos: Float32Array,
   n: number,
   mode: "nearest" | "weighted",
-  radius: number
+  radius: number,
+  fallback: "nearest" | "zero"
 ): Float32Array {
   const data = new Float32Array(n * k);
   const hash = buildSpatialHash(spos, sn, radius, 1, 1);
@@ -135,9 +138,17 @@ function transferChannel(
         done = true;
       }
     }
-    if (!done) {
+    // Miss: leave the zero-initialized slot (fallback=zero) or copy the
+    // unbounded nearest source. In nearest mode, fallback=zero still
+    // finds the closest source, then rejects it when it's outside radius.
+    if (!done && !(fallback === "zero" && mode === "weighted")) {
       const j = nearestIndex(hash, spos, x, y);
       if (j >= 0) {
+        if (fallback === "zero") {
+          const dx = spos[j * 2] - x;
+          const dy = spos[j * 2 + 1] - y;
+          if (dx * dx + dy * dy > r2) continue;
+        }
         for (let c = 0; c < k; c++) data[i * k + c] = srcData[j * k + c];
       }
     }
@@ -151,12 +162,12 @@ export const attributeTransferNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Copies a named channel from a source (points or spline anchors) onto a target by proximity: nearest source, or a distance-weighted average within a radius (falling back to nearest outside it). The channel lands under the same name; a missing source channel passes the target through unchanged.",
+    "Copies a named channel from a source (points or spline anchors) onto a target by proximity: nearest source, or a distance-weighted average within a radius. When nothing is in range, Fallback copies the nearest source or writes zero. The channel lands under the same name; a missing source channel passes the target through unchanged.",
   facts: {
     space: { "param:radius": "canvas01", out: "in:points" },
     gotchas: [
-      "mode=nearest ignores the radius param entirely: it ring-searches outward until it finds a source, so it always resolves regardless of distance.",
-      "mode=weighted averages sources within radius using linear falloff (weight = 1 − d/radius) over a 3×3 hash-cell neighborhood, falling back to nearest when none are in range.",
+      "mode=nearest ring-searches outward until it finds a source (ignores radius) unless fallback=zero, which keeps only a source within radius and writes 0 otherwise.",
+      "mode=weighted averages sources within radius with linear falloff (weight = 1 − d/radius) over a 3×3 hash neighborhood; fallback=nearest copies the closest source on a miss, fallback=zero writes 0.",
       "radius is compared against authored point/spline-anchor positions (canvas01-scale distances, matching Proximity Merge), not pixels or UV.",
       "The transferred attribute keeps the source's arity and color flag, so a vec3 color channel arrives flagged as color rather than three scalars.",
       "If the named channel is absent on source (missing attribute, empty spline channel, or zero-count source), the target passes through unchanged.",
@@ -217,6 +228,13 @@ export const attributeTransferNode: NodeDefinition = {
       default: "nearest",
     },
     {
+      name: "fallback",
+      label: "Fallback",
+      type: "enum",
+      options: FALLBACK_OPTIONS as unknown as string[],
+      default: "nearest",
+    },
+    {
       name: "radius",
       label: "Radius",
       type: "scalar",
@@ -225,7 +243,7 @@ export const attributeTransferNode: NodeDefinition = {
       softMax: 0.25,
       step: 0.001,
       default: 0.1,
-      visibleIf: (p) => p.mode === "weighted",
+      visibleIf: (p) => p.mode === "weighted" || p.fallback === "zero",
     },
   ],
   primaryOutput: "points",
@@ -241,6 +259,9 @@ export const attributeTransferNode: NodeDefinition = {
     const mode = ((params.mode as string) ?? "nearest") as
       | "nearest"
       | "weighted";
+    const fallback = ((params.fallback as string) ?? "nearest") as
+      | "nearest"
+      | "zero";
     const radius = Math.max(0.001, (params.radius as number) ?? 0.1);
     const target = inputs.points;
     const source = inputs.source;
@@ -296,7 +317,8 @@ export const attributeTransferNode: NodeDefinition = {
         flat.positions,
         flat.count,
         mode,
-        radius
+        radius,
+        fallback
       );
       return {
         primary: writeSplineAnchorChannel(target, name, data, k),
@@ -313,7 +335,8 @@ export const attributeTransferNode: NodeDefinition = {
       target.positions,
       n,
       mode,
-      radius
+      radius,
+      fallback
     );
     const result: PointAttribute = { arity: k, color: srcColor, data };
     return {

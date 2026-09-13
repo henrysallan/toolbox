@@ -35,8 +35,8 @@ function rootOfPosition(v: unknown): PositionNode {
 
 // Unified multi-algorithm noise source. `type` selects a lattice/gradient
 // scheme; fBm + shaping params wrap all of them so visual tuning carries
-// between types. The "perlin-deriv" / "flow" / "curl" types expose extra
-// contextual controls via visibleIf.
+// between types. The "perlin-deriv" / "flow" / "curl" / "phasor" types
+// expose extra contextual controls via visibleIf.
 //
 // Implementations ordered by fidelity to their canonical references:
 //   perlin         — Ashima cnoise (improved Perlin, quintic fade)
@@ -49,11 +49,12 @@ function rootOfPosition(v: unknown): PositionNode {
 //   perlin-deriv   — Perlin returning (value, ∂/∂x, ∂/∂y); output visualizes value
 //   flow           — Perlin with gradients rotated by u_flowTime per cell
 //   curl           — 2D curl of stream-function Perlin (outputs vec2 as RG)
+//   phasor         — Tricard et al. Gabor phasors; output is cos(arg(sum))
 //
 // NOTE: opensimplex / os2 / os2s / super-simplex in this pipeline are
 // pragmatic GLSL adaptations — they produce visually distinct results
 // but aren't byte-exact ports of KdotJPG's reference Java.
-const FS = `#version 300 es
+export const NOISE_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform int   u_type;
@@ -68,6 +69,9 @@ uniform vec3  u_colorA;
 uniform vec3  u_colorB;
 uniform float u_alpha;
 uniform float u_flowTime;
+uniform float u_phasorFreq;
+uniform float u_phasorOrient;
+uniform float u_phasorIsotropy;
 uniform float u_w;
 uniform vec2  u_animOffset;
 uniform int u_hasUvIn;
@@ -352,6 +356,51 @@ float flowNoise(vec2 p, float t) {
   return mix(mix(va, vb, u.x), mix(vc, vd, u.x), u.y);
 }
 
+// ── Phasor noise (Tricard et al. 2019) ─────────────────────────────────
+// Sparse Gabor convolution accumulated as complex phasors. Each lattice
+// cell contributes one Hann-windowed Gaussian kernel (truncated at
+// dist²=1, so a 3×3 neighborhood is enough) oscillating at
+// u_phasorFreq cycles per cell along a heading. Isotropy 0 = every
+// kernel shares u_phasorOrient; 1 = ±π random offset. Output is
+// cos(arg(sum)) = Re/|z| so contrast stays high regardless of overlap
+// (that's the phasor reformulation vs raw Gabor).
+vec2 phasorHash22(vec2 p) {
+  vec2 h = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+  return fract(sin(h) * 43758.5453123);
+}
+vec2 phasorHash22b(vec2 p) {
+  vec2 h = vec2(dot(p, vec2(419.2, 371.9)), dot(p, vec2(183.3, 251.7)));
+  return fract(sin(h) * 43758.5453123);
+}
+
+float phasorNoise(vec2 p) {
+  vec2 ip = floor(p);
+  vec2 fp = fract(p);
+  vec2 acc = vec2(0.0);
+  const float PI = 3.141592653589793;
+  const float TAU = 6.283185307179586;
+  for (int j = -1; j <= 1; j++) {
+    for (int i = -1; i <= 1; i++) {
+      vec2 g = vec2(float(i), float(j));
+      vec2 cell = ip + g;
+      vec2 h0 = phasorHash22(cell);
+      vec2 h1 = phasorHash22b(cell);
+      vec2 r = g + h0 - fp;
+      float d2 = dot(r, r);
+      if (d2 < 1.0) {
+        float w = (0.5 + 0.5 * cos(PI * d2)) * exp(-PI * d2);
+        float ori = u_phasorOrient + PI * u_phasorIsotropy * (h1.x * 2.0 - 1.0);
+        vec2 dir = vec2(cos(ori), sin(ori));
+        float ang = TAU * (u_phasorFreq * dot(r, dir) + h1.y);
+        acc += w * vec2(cos(ang), sin(ang));
+      }
+    }
+  }
+  float mag = length(acc);
+  if (mag < 1e-5) return 0.0;
+  return acc.x / mag;
+}
+
 // ── dispatch for scalar-output types ───────────────────────────────────
 float sampleNoise(vec2 p) {
   if (u_type == 0) return cnoise(p);
@@ -363,6 +412,7 @@ float sampleNoise(vec2 p) {
   if (u_type == 6) return ssNoise(p);
   if (u_type == 7) return perlinDeriv(p).x;
   if (u_type == 8) return flowNoise(p, u_flowTime);
+  if (u_type == 10) return phasorNoise(p);
   return 0.0;
 }
 
@@ -372,7 +422,7 @@ float sampleNoise(vec2 p) {
 // far-away XY offset per integer slice and smoothstep-blend between
 // consecutive slices. Visually indistinguishable from real 4D noise
 // for the morphing-evolution use case, and works uniformly across all
-// modes (perlin / simplex / OS family / flow / curl).
+// modes (perlin / simplex / OS family / flow / curl / phasor).
 //
 // The hashOffset(0) == 0 special-case preserves backwards compatibility:
 // a project saved before this change loads with W=0 and renders pixel-
@@ -494,6 +544,7 @@ const NOISE_TYPES = [
   "perlin-deriv",
   "flow",
   "curl",
+  "phasor",
 ] as const;
 
 function noiseTypeToInt(t: string): number {
@@ -518,6 +569,8 @@ function noiseTypeToInt(t: string): number {
       return 8;
     case "curl":
       return 9;
+    case "phasor":
+      return 10;
     default:
       return 1;
   }
@@ -534,13 +587,14 @@ export const perlinNoiseNode: NodeDefinition = {
     space: { "in:position": "uv01" },
     reads: ["time"],
     gotchas: [
-      "field always samples simplex regardless of the type param (the SDF compiler only ports simplex); image, value, and field3d all respect type.",
+      "field always samples simplex (SDF compiler only ports it); image and value respect type; field3d keeps perlin/value/simplex (perlin-deriv as perlin) and maps the rest to simplex.",
       "animated=true drives evolution from scene time on a closed loop between anim_start/anim_end frames, overriding the manual w slider.",
       "For type=flow, animated instead sweeps flow_time through one full 2*pi rotation over that loop; animated forces a recompute every tick.",
       "value is CPU-sampled at `position` (default 0.5,0.5 = canvas center) through the exact same scale/offset/aspect transform the image shader applies, so it matches the rendered pixel at that UV.",
       "The y sample is compressed by canvas aspect (width/height) before evaluating so noise cells stay square, so `scale` reads as cells-across-the-width regardless of aspect ratio.",
       "field3d is true 3D world-space noise (a different space from image/value/field): one world unit spans `scale` noise units, with w as evolution.",
       "Wiring an image into `UV` re-reads the sample position from its R/G channels instead of the canvas UV, for domain warping; a wired scalar broadcasts that one value to both axes.",
+      "type=phasor: phasor_frequency is cycles per lattice cell, phasor_orientation is degrees (0=+X), phasor_isotropy 0=aligned to that heading and 1=±180° random.",
     ],
   },
   backend: "webgl2",
@@ -707,6 +761,41 @@ export const perlinNoiseNode: NodeDefinition = {
       default: 0,
       visibleIf: (p) => p.type === "flow" && !p.animated,
     },
+    // Phasor noise — Tricard Gabor phasors. Frequency is cycles per
+    // lattice cell (scale still sets cell density). Orientation is
+    // degrees, 0 = +X. Isotropy 0 = every kernel shares that heading;
+    // 1 = ±180° random.
+    {
+      name: "phasor_frequency",
+      label: "Frequency",
+      type: "scalar",
+      min: 0.1,
+      max: 20,
+      softMax: 8,
+      step: 0.01,
+      default: 2,
+      visibleIf: (p) => p.type === "phasor",
+    },
+    {
+      name: "phasor_orientation",
+      label: "Orientation (°)",
+      type: "scalar",
+      min: -180,
+      max: 180,
+      step: 0.1,
+      default: 0,
+      visibleIf: (p) => p.type === "phasor",
+    },
+    {
+      name: "phasor_isotropy",
+      label: "Isotropy",
+      type: "scalar",
+      min: 0,
+      max: 1,
+      step: 0.01,
+      default: 0.2,
+      visibleIf: (p) => p.type === "phasor",
+    },
     {
       name: "color_a",
       label: "Color A (low)",
@@ -792,6 +881,10 @@ export const perlinNoiseNode: NodeDefinition = {
     const seed = (params.seed as number) ?? 0;
     const contrast = (params.contrast as number) ?? 1;
     const flowTime = (params.flow_time as number) ?? 0;
+    const phasorFreq = (params.phasor_frequency as number) ?? 2;
+    const phasorOrient =
+      (((params.phasor_orientation as number) ?? 0) * Math.PI) / 180;
+    const phasorIsotropy = (params.phasor_isotropy as number) ?? 0.2;
     const w = (params.w as number) ?? 0;
     const [ar, ag, ab] = hexToRgb((params.color_a as string) ?? "#000000");
     const [br, bg, bb] = hexToRgb((params.color_b as string) ?? "#ffffff");
@@ -860,7 +953,11 @@ export const perlinNoiseNode: NodeDefinition = {
     const aspect = ctx.width / ctx.height;
     const sx = (px - 0.5) * scale + offX + seedOffX;
     const sy = ((py - 0.5) * scale) / aspect + offY + seedOffY;
-    const noiseFn = noiseFnFor((params.type as string) ?? "simplex");
+    const noiseFn = noiseFnFor((params.type as string) ?? "simplex", {
+      frequency: phasorFreq,
+      orientation: phasorOrient,
+      isotropy: phasorIsotropy,
+    });
     const valueScalar = fbmWithW(
       noiseFn,
       sx + animOffX,
@@ -871,7 +968,7 @@ export const perlinNoiseNode: NodeDefinition = {
       lacunarity
     );
 
-    const prog = ctx.getShader("noise/fs", FS);
+    const prog = ctx.getShader("noise/fs", NOISE_FS);
     ctx.drawFullscreen(prog, output, (gl) => {
       gl.uniform1i(gl.getUniformLocation(prog, "u_type"), typeInt);
       gl.uniform1f(gl.getUniformLocation(prog, "u_scale"), scale);
@@ -885,6 +982,12 @@ export const perlinNoiseNode: NodeDefinition = {
       gl.uniform1f(gl.getUniformLocation(prog, "u_seed"), seed);
       gl.uniform1f(gl.getUniformLocation(prog, "u_contrast"), contrast);
       gl.uniform1f(gl.getUniformLocation(prog, "u_flowTime"), effFlow);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_phasorFreq"), phasorFreq);
+      gl.uniform1f(gl.getUniformLocation(prog, "u_phasorOrient"), phasorOrient);
+      gl.uniform1f(
+        gl.getUniformLocation(prog, "u_phasorIsotropy"),
+        phasorIsotropy
+      );
       gl.uniform1f(gl.getUniformLocation(prog, "u_w"), effW);
       gl.uniform2f(
         gl.getUniformLocation(prog, "u_animOffset"),

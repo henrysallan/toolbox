@@ -892,6 +892,45 @@ export function syncGroupInterface(
   });
 }
 
+// Fill `inputValues` keys that a promote/mint path forgot, using the
+// interior consumer's current value — never the widget type-default (0
+// for a bare scalar socket). Flatten copies these onto the consumer, so
+// a missing key that later gets written as 0 silently shadows a 0.3
+// constant. Call after any mutation that adds a group input.
+export function seedMissingGroupInputValues(
+  nodes: GraphNode[],
+  edges: Edge[],
+  groupId: string
+): GraphNode[] {
+  const shell = nodes.find((n) => n.id === groupId);
+  const gi = groupInputOf(groupId, nodes);
+  if (!shell || !gi) return nodes;
+  const stored = readInputValues(shell.data.params);
+  const next = { ...stored };
+  let added = false;
+  for (const sock of readBoundarySockets(gi.data.params)) {
+    if (sock.name in next) continue;
+    const promote = edges.find(
+      (e) =>
+        e.source === gi.id && e.sourceHandle === `out:aux:${sock.name}`
+    );
+    if (!promote) continue;
+    const parsed = parseTargetHandleKind(promote.targetHandle ?? "");
+    const target = nodes.find((n) => n.id === promote.target);
+    if (!parsed || !target) continue;
+    const seed = seedFromConsumerSocket(target, parsed);
+    if (seed === undefined) continue;
+    next[sock.name] = seed;
+    added = true;
+  }
+  if (!added) return nodes;
+  return nodes.map((n) =>
+    n.id === groupId
+      ? { ...n, data: { ...n.data, params: withInputValues(n.data.params, next) } }
+      : n
+  );
+}
+
 // --- group / ungroup -------------------------------------------------------
 
 // Resolved socket type of a source endpoint, from the node's cached

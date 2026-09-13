@@ -4,6 +4,7 @@ import { paintNode } from "./source/paint";
 import { solidColorNode } from "./source/solid-color";
 import { gradientNode } from "./source/gradient";
 import { perlinNoiseNode } from "./source/perlin-noise";
+import { lyapunovNode } from "./source/lyapunov";
 import { voronoiNode, fractureLegacyNode } from "./source/voronoi";
 import { sceneTimeNode } from "./source/scene-time";
 import { uvCoordsNode } from "./source/uv-coords";
@@ -167,6 +168,7 @@ import { circleColliderNode } from "./effect/collider-circle";
 import { lineColliderNode } from "./effect/collider-line";
 import { imageMaskColliderNode } from "./effect/collider-image-mask";
 import { reactionDiffusionNode } from "./effect/reaction-diffusion";
+import { swiftHohenbergNode } from "./effect/swift-hohenberg";
 import { watercolorInkNode } from "./effect/watercolor-ink";
 import { physarumNode } from "./effect/physarum";
 import { fluidSimulatorNode } from "./effect/fluid-simulator";
@@ -331,6 +333,7 @@ export function registerAllNodes() {
   // Back-compat: projects saved before the rename from "perlin-noise" to
   // "noise" keep loading via the old type string.
   registerNode({ ...perlinNoiseNode, type: "perlin-noise", hidden: true });
+  registerNode(lyapunovNode);
   registerNode(voronoiNode);
   // Fracture merged into Voronoi as its "scatter" source (073026) — the
   // legacy type stays registered (hidden) so old saves load unchanged.
@@ -507,6 +510,7 @@ export function registerAllNodes() {
   registerNode(particlesToImageNode);
   registerNode(webgpuParticleTestNode);
   registerNode(reactionDiffusionNode);
+  registerNode(swiftHohenbergNode);
   registerNode(watercolorInkNode);
   registerNode(physarumNode);
   registerNode(fluidSimulatorNode);

@@ -2113,7 +2113,19 @@
       {
         "name": "fg_ramp",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "stop-a",
+            "position": 0,
+            "color": "#ffffff"
+          },
+          {
+            "id": "stop-b",
+            "position": 1,
+            "color": "#000000"
+          }
+        ]
       },
       {
         "name": "fg_ramp_by",
@@ -2181,7 +2193,19 @@
       {
         "name": "bg_ramp",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "stop-a",
+            "position": 0,
+            "color": "#000000"
+          },
+          {
+            "id": "stop-b",
+            "position": 1,
+            "color": "#ffffff"
+          }
+        ]
       },
       {
         "name": "bg_ramp_by",
@@ -2374,6 +2398,10 @@
           "min",
           "max",
           "power",
+          "abs",
+          "greater than",
+          "less than",
+          "step",
           "remap"
         ]
       },
@@ -2442,7 +2470,7 @@
     ],
     "subcategory": "modifier",
     "dynamic": true,
-    "description": "Componentwise math on a named channel (points or spline anchors): add/subtract/multiply/divide/min/max/power against a constant or a second channel, or remap a range. Writes back in place, or to a new name via Output. A missing channel passes through unchanged.",
+    "description": "Componentwise math on a named channel (points or spline anchors): add/subtract/multiply/divide/min/max/power/abs against a constant or a second channel, greater than / less than / step (0/1 comparisons), or remap a range. Writes back in place, or to a new name via Output. A missing channel passes through unchanged.",
     "facts": {
       "space": {
         "out": "in:points"
@@ -2450,6 +2478,8 @@
       "gotchas": [
         "An arity-1 operand attribute broadcasts across every component of a higher-arity target; any other arity mismatch reads as 0 for every component.",
         "divide returns 0 when the operand is exactly 0, not Infinity/NaN.",
+        "greater than and less than write 1 or 0 per component using a strict inequality against the operand (constant or second channel).",
+        "step writes 1 when the channel ≥ the operand and 0 otherwise (GLSL step(operand, x)); equality sits on the 1 side.",
         "remap clamps t to [0,1] before lerping, so inputs outside In Lo..In Hi saturate at Out Lo/Hi instead of extrapolating.",
         "aux name emits the resolved output name (output_name or else attr_name) as a string even when the source channel is missing and nothing was written.",
         "Spline-anchor reads fall back to the subpath's own attrs when an anchor lacks the named value, but writing always stamps a per-anchor value, flattening that fallback."
@@ -2568,6 +2598,16 @@
         ]
       },
       {
+        "name": "fallback",
+        "type": "enum",
+        "settable": true,
+        "default": "nearest",
+        "options": [
+          "nearest",
+          "zero"
+        ]
+      },
+      {
         "name": "radius",
         "type": "scalar",
         "settable": true,
@@ -2578,15 +2618,15 @@
     ],
     "subcategory": "modifier",
     "dynamic": true,
-    "description": "Copies a named channel from a source (points or spline anchors) onto a target by proximity: nearest source, or a distance-weighted average within a radius (falling back to nearest outside it). The channel lands under the same name; a missing source channel passes the target through unchanged.",
+    "description": "Copies a named channel from a source (points or spline anchors) onto a target by proximity: nearest source, or a distance-weighted average within a radius. When nothing is in range, Fallback copies the nearest source or writes zero. The channel lands under the same name; a missing source channel passes the target through unchanged.",
     "facts": {
       "space": {
         "param:radius": "canvas01",
         "out": "in:points"
       },
       "gotchas": [
-        "mode=nearest ignores the radius param entirely: it ring-searches outward until it finds a source, so it always resolves regardless of distance.",
-        "mode=weighted averages sources within radius using linear falloff (weight = 1 − d/radius) over a 3×3 hash-cell neighborhood, falling back to nearest when none are in range.",
+        "mode=nearest ring-searches outward until it finds a source (ignores radius) unless fallback=zero, which keeps only a source within radius and writes 0 otherwise.",
+        "mode=weighted averages sources within radius with linear falloff (weight = 1 − d/radius) over a 3×3 hash neighborhood; fallback=nearest copies the closest source on a miss, fallback=zero writes 0.",
         "radius is compared against authored point/spline-anchor positions (canvas01-scale distances, matching Proximity Merge), not pixels or UV.",
         "The transferred attribute keeps the source's arity and color flag, so a vec3 color channel arrives flagged as color rather than three scalars.",
         "If the named channel is absent on source (missing attribute, empty spline channel, or zero-count source), the target passes through unchanged."
@@ -5906,20 +5946,6 @@
           "0.5",
           "1"
         ]
-      },
-      {
-        "name": "inFrame",
-        "type": "scalar",
-        "settable": true,
-        "default": 0,
-        "min": 0
-      },
-      {
-        "name": "outFrame",
-        "type": "scalar",
-        "settable": true,
-        "default": 120,
-        "min": 0
       }
     ],
     "subcategory": "modifier",
@@ -7164,14 +7190,6 @@
           "points",
           "object"
         ]
-      },
-      {
-        "name": "count",
-        "type": "scalar",
-        "settable": true,
-        "default": 2,
-        "min": 1,
-        "max": 26
       }
     ],
     "dynamic": true,
@@ -7707,7 +7725,19 @@
       {
         "name": "stops",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "stop-a",
+            "position": 0,
+            "color": "#000000"
+          },
+          {
+            "id": "stop-b",
+            "position": 1,
+            "color": "#ffffff"
+          }
+        ]
       },
       {
         "name": "offset",
@@ -8584,7 +8614,8 @@
         "scale_mul, scale_field, and their derived multiplier are unclamped, so a negative value point-mirrors copies through their anchor instead of erroring.",
         "rotate_add_default and rotate_field_amount are radians (-π..π / 0..π), not degrees.",
         "Point mode outputs the full Cartesian product of target x instance points (not 1:1); pick_mode narrows which instance points apply per target point.",
-        "In point mode only the target points' own named attributes survive onto the output; the instance points' own channels are dropped."
+        "In point mode only the target points' own named attributes survive onto the output; the instance points' own channels are dropped.",
+        "pick_mode=attribute clamps pick_attr component 0 to [0,1] then floors value×N onto the sorted variant indices (1.0 → last; same as pick_mode=image luminance); a missing channel emits every variant."
       ]
     }
   },
@@ -9576,76 +9607,6 @@
         "default": 0,
         "min": 0,
         "max": 8
-      },
-      {
-        "name": "aStart",
-        "type": "scalar",
-        "settable": true,
-        "default": 0,
-        "min": 0
-      },
-      {
-        "name": "aLen",
-        "type": "scalar",
-        "settable": true,
-        "default": 0,
-        "min": 0
-      },
-      {
-        "name": "bStart",
-        "type": "scalar",
-        "settable": true,
-        "default": 0,
-        "min": 0
-      },
-      {
-        "name": "bLen",
-        "type": "scalar",
-        "settable": true,
-        "default": 0,
-        "min": 0
-      },
-      {
-        "name": "sourceInA",
-        "type": "scalar",
-        "settable": true,
-        "default": 0,
-        "min": 0
-      },
-      {
-        "name": "sourceInB",
-        "type": "scalar",
-        "settable": true,
-        "default": 0,
-        "min": 0
-      },
-      {
-        "name": "bakeInA",
-        "type": "scalar",
-        "settable": true,
-        "default": 0,
-        "min": 0
-      },
-      {
-        "name": "bakeOutA",
-        "type": "scalar",
-        "settable": true,
-        "default": 60,
-        "min": 0
-      },
-      {
-        "name": "bakeInB",
-        "type": "scalar",
-        "settable": true,
-        "default": 0,
-        "min": 0
-      },
-      {
-        "name": "bakeOutB",
-        "type": "scalar",
-        "settable": true,
-        "default": 60,
-        "min": 0
       }
     ],
     "subcategory": "modifier",
@@ -9750,20 +9711,6 @@
         "default": 1,
         "min": 0,
         "max": 8
-      },
-      {
-        "name": "inFrame",
-        "type": "scalar",
-        "settable": true,
-        "default": 0,
-        "min": 0
-      },
-      {
-        "name": "outFrame",
-        "type": "scalar",
-        "settable": true,
-        "default": 120,
-        "min": 0
       }
     ],
     "subcategory": "modifier",
@@ -9996,12 +9943,36 @@
       {
         "name": "left_colors",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "dl0",
+            "position": 0,
+            "color": "#ff6b35"
+          },
+          {
+            "id": "dl1",
+            "position": 1,
+            "color": "#ffd23f"
+          }
+        ]
       },
       {
         "name": "right_colors",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "dr0",
+            "position": 0,
+            "color": "#0a2463"
+          },
+          {
+            "id": "dr1",
+            "position": 1,
+            "color": "#3e92cc"
+          }
+        ]
       },
       {
         "name": "ramp_interp",
@@ -10648,7 +10619,7 @@
     "category": "utility",
     "inputs": [
       {
-        "name": "in:ein-x0",
+        "name": "x",
         "type": "scalar"
       }
     ],
@@ -10658,7 +10629,14 @@
       {
         "name": "inputs",
         "type": "expr_inputs",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "ein-x0",
+            "name": "x",
+            "default": 1
+          }
+        ]
       },
       {
         "name": "expression",
@@ -10693,6 +10671,7 @@
         "random() is deterministic per node and frame (mulberry32 seeded from hash(nodeId) XOR frame), so re-evaluating the same frame gives the same sequence.",
         "Every input socket is scalar; connecting image/mask/audio relies on the engine's universal coercion to a representative scalar, not on any per-socket logic here.",
         "An unconnected input falls back to that variable's own `default` field (from the Inputs list, itself defaulting to 1), not to 0.",
+        "MCP/recipes wire by variable name (`<id>:in:x`), not the minted ein- id. Grow vars with params.inputs = [{name, default?}] or add_edge to a new name; ids stay by index across renames.",
         "A compile error or an empty expression outputs a zero shaped by out_type; the error text only surfaces via a one-time console.warn, not in the graph UI.",
         "out_type picks scalar vs vec2/3/4; a scalar result broadcasts to every vector component, an array result fills components in order and pads missing ones with 0."
       ]
@@ -10976,6 +10955,20 @@
         "max": 1
       },
       {
+        "name": "index_by",
+        "type": "enum",
+        "settable": true,
+        "default": "every",
+        "options": [
+          "every",
+          "equal",
+          "range",
+          "first",
+          "last",
+          "first and last"
+        ]
+      },
+      {
         "name": "every",
         "type": "scalar",
         "settable": true,
@@ -10990,6 +10983,30 @@
         "default": 0,
         "min": 0,
         "max": 32
+      },
+      {
+        "name": "index_value",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 100000
+      },
+      {
+        "name": "index_min",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 100000
+      },
+      {
+        "name": "index_max",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 100000
       },
       {
         "name": "amount",
@@ -11012,11 +11029,27 @@
         "type": "boolean",
         "settable": true,
         "default": false
+      },
+      {
+        "name": "result",
+        "type": "enum",
+        "settable": true,
+        "default": "compact",
+        "options": [
+          "compact",
+          "flag"
+        ]
+      },
+      {
+        "name": "flag_name",
+        "type": "string",
+        "settable": true,
+        "default": "keep"
       }
     ],
     "subcategory": "modifier",
     "dynamic": true,
-    "description": "Keep or discard points by predicate. Bbox keeps points inside an XY window; Mask keeps points where the wired image's luminance is ≥ threshold; Index keeps 1 of every N points; Random keeps a stable random subset (hashed on index, so points don't flicker in/out — raising Amount reveals more of the same points, Seed re-rolls the selection). Invert flips which side is kept. Also accepts 3D points (from 3D Scatter Points): bbox becomes a world-space box with Z rows, index/random work identically, mask passes through.",
+    "description": "Keep or discard points by predicate, or write the predicate as a 0/1 flag and leave every point in place. Bbox keeps points inside an XY window; Mask keeps points where the wired image's luminance is ≥ threshold; Index selects by array position (every Nth, a single index, a range, first, last, or first and last); Random keeps a stable random subset (hashed on index, so points don't flicker in/out — raising Amount reveals more of the same points, Seed re-rolls the selection). Invert flips which side is kept. Result compact drops the rest; flag writes a named 0/1 channel (default keep). Also accepts 3D points (from 3D Scatter Points): bbox becomes a world-space box with Z rows, index/random work identically, mask passes through.",
     "facts": {
       "space": {
         "in:points": [
@@ -11035,13 +11068,18 @@
         "param:wz_min": "world3d",
         "param:wz_max": "world3d"
       },
+      "writes": [
+        "attr:keep"
+      ],
       "gotchas": [
         "points is polymorphic: a points3d wire switches bbox to world-space X/Y/Z rows (wx/wy/wz, default −10..10) and hides the 2D X/Y rows and the mask threshold.",
         "mask mode ignores a points3d input entirely (authored-space sampling has no meaning for world points) and passes it through unchanged, same as an unwired mask on 2D input.",
         "attribute mode compares a named channel's component 0 against attr_threshold; a missing channel passes every point through unchanged instead of dropping them.",
+        "index_by (index mode) selects every-Nth, a single index, an inclusive range, first, last, or first and last; invert flips the predicate before compacting or writing the flag.",
+        "result=flag writes a 0/1 float channel named flag_name (default keep) and leaves count unchanged; result=compact drops unmatched points and renumbers survivors from 0.",
         "index/random key off each point's position in the incoming array, not any stored identity, so a changed upstream count changes which points survive.",
         "random mode's hash matches Point Expression's rand(index) byte-for-byte (seed 0 == hash01(index)), so an equivalent expression selects the identical subset.",
-        "Kept points are renumbered sequentially from 0; scale/rotation/group and named attributes are carried through unchanged via gatherPoints."
+        "Compact mode carries scale/rotation/group and named attributes through gatherPoints; flag mode overlays flag_name on the existing cloud without gathering."
       ]
     }
   },
@@ -13549,7 +13587,19 @@
       {
         "name": "ramp",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "stop-a",
+            "position": 0,
+            "color": "#ffffff"
+          },
+          {
+            "id": "stop-b",
+            "position": 1,
+            "color": "#3366ff"
+          }
+        ]
       },
       {
         "name": "ramp_interp",
@@ -13855,12 +13905,6 @@
         "type": "boolean",
         "settable": true,
         "default": false
-      },
-      {
-        "name": "sample_colors",
-        "type": "string",
-        "settable": true,
-        "default": []
       }
     ],
     "subcategory": "modifier",
@@ -16029,6 +16073,187 @@
     }
   },
   {
+    "type": "lyapunov",
+    "name": "Lyapunov Fractal",
+    "category": "image",
+    "inputs": [
+      {
+        "name": "uv_in",
+        "type": "uv"
+      }
+    ],
+    "primaryOutput": "image",
+    "aux": [],
+    "params": [
+      {
+        "name": "opacity",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "preset",
+        "type": "enum",
+        "settable": true,
+        "default": "AABAB",
+        "options": [
+          "AABAB",
+          "AB",
+          "BBBBBAAAAA",
+          "BBABABA",
+          "custom"
+        ],
+        "optionLabels": {
+          "AABAB": "AABAB",
+          "AB": "AB",
+          "BBBBBAAAAA": "BBBBBAAAAA",
+          "BBABABA": "BBABABA",
+          "custom": "Custom"
+        }
+      },
+      {
+        "name": "sequence",
+        "type": "string",
+        "settable": true,
+        "default": "AABAB"
+      },
+      {
+        "name": "a_min",
+        "type": "scalar",
+        "settable": true,
+        "default": 2,
+        "min": 0,
+        "max": 4
+      },
+      {
+        "name": "a_max",
+        "type": "scalar",
+        "settable": true,
+        "default": 4,
+        "min": 0,
+        "max": 4
+      },
+      {
+        "name": "b_min",
+        "type": "scalar",
+        "settable": true,
+        "default": 2,
+        "min": 0,
+        "max": 4
+      },
+      {
+        "name": "b_max",
+        "type": "scalar",
+        "settable": true,
+        "default": 4,
+        "min": 0,
+        "max": 4
+      },
+      {
+        "name": "warmup",
+        "type": "scalar",
+        "settable": true,
+        "default": 200,
+        "min": 0,
+        "max": 800
+      },
+      {
+        "name": "iterations",
+        "type": "scalar",
+        "settable": true,
+        "default": 200,
+        "min": 1,
+        "max": 800
+      },
+      {
+        "name": "x0",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.5,
+        "min": 0.001,
+        "max": 0.999
+      },
+      {
+        "name": "color_mode",
+        "type": "enum",
+        "settable": true,
+        "default": "signed",
+        "options": [
+          "signed",
+          "exponent"
+        ],
+        "optionLabels": {
+          "signed": "Signed",
+          "exponent": "Exponent"
+        }
+      },
+      {
+        "name": "color_stable",
+        "type": "color",
+        "settable": true,
+        "default": "#f2d14b"
+      },
+      {
+        "name": "color_chaos",
+        "type": "color",
+        "settable": true,
+        "default": "#1e3a8a"
+      },
+      {
+        "name": "color_div",
+        "type": "color",
+        "settable": true,
+        "default": "#0a0612"
+      },
+      {
+        "name": "lambda_neg",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.6,
+        "min": 0.01,
+        "max": 4
+      },
+      {
+        "name": "lambda_pos",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.5,
+        "min": 0.01,
+        "max": 4
+      },
+      {
+        "name": "lambda_lo",
+        "type": "scalar",
+        "settable": true,
+        "default": -1,
+        "min": -4,
+        "max": 2
+      },
+      {
+        "name": "lambda_hi",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.5,
+        "min": -4,
+        "max": 2
+      }
+    ],
+    "subcategory": "generator",
+    "description": "Iterate the logistic map with a two-letter A/B sequence of r values and color each pixel by its Lyapunov exponent.",
+    "facts": {
+      "gotchas": [
+        "uv.x maps to A in [a_min, a_max] and uv.y (Y-up) maps to B in [b_min, b_max]; the parameter rectangle fills the frame with no aspect correction.",
+        "Sequence letters are A and B only (case-insensitive); other characters are dropped, an empty string falls back to AB, and more than 32 letters are truncated.",
+        "warmup iterates without accumulating; iterations is the count in λ = mean(ln|r(1-2x)|); warmup+iterations is capped at 1024.",
+        "color_mode=signed paints λ≈0 with color_stable, negative toward color_div, positive toward color_chaos; color_mode=exponent emits λ remapped through [lambda_lo, lambda_hi] as grayscale.",
+        "x0=0.5 is the logistic-map critical point; a sequence that drives x to 0 or 1 (the r=4 edge with x0=0.5) is colored with color_div.",
+        "uv_in replaces v_uv when wired (image R/G, or a scalar broadcast to both axes), so the sample is taken at that parameter-space coordinate."
+      ]
+    }
+  },
+  {
     "type": "map-attribute",
     "name": "Map Attribute",
     "category": "point",
@@ -16291,7 +16516,24 @@
       {
         "name": "toon_ramp",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "toon-a",
+            "position": 0,
+            "color": "#000000"
+          },
+          {
+            "id": "toon-b",
+            "position": 0.3333,
+            "color": "#bcbcbc"
+          },
+          {
+            "id": "toon-c",
+            "position": 0.6667,
+            "color": "#ffffff"
+          }
+        ]
       },
       {
         "name": "toon_interp",
@@ -16753,7 +16995,14 @@
       {
         "name": "layers",
         "type": "merge_layers",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "lyr-initial",
+            "mode": "normal",
+            "opacity": 1
+          }
+        ]
       }
     ],
     "subcategory": "modifier",
@@ -16809,11 +17058,6 @@
     "aux": [],
     "params": [
       {
-        "name": "notes",
-        "type": "notes_clip",
-        "settable": false
-      },
-      {
         "name": "default_velocity",
         "type": "scalar",
         "settable": true,
@@ -16865,11 +17109,11 @@
     "inputs": [
       {
         "name": "source",
-        "type": "spline",
+        "type": "image",
         "required": true
       }
     ],
-    "primaryOutput": "spline",
+    "primaryOutput": "image",
     "aux": [],
     "params": [
       {
@@ -16881,8 +17125,34 @@
           "x",
           "y",
           "both",
-          "radial"
-        ]
+          "radial",
+          "bisect"
+        ],
+        "optionLabels": {
+          "x": "X",
+          "y": "Y",
+          "both": "Both",
+          "radial": "Radial",
+          "bisect": "Bisect"
+        }
+      },
+      {
+        "name": "keep",
+        "type": "enum",
+        "settable": true,
+        "default": "x",
+        "options": [
+          "x",
+          "-x",
+          "y",
+          "-y"
+        ],
+        "optionLabels": {
+          "x": "X",
+          "-x": "−X",
+          "y": "Y",
+          "-y": "−Y"
+        }
       },
       {
         "name": "centerX",
@@ -16928,9 +17198,13 @@
       }
     ],
     "dynamic": true,
-    "description": "Mirror a spline or points across the X / Y axis (or both), or repeat them radially around a center with a count slider — with an optional kaleidoscope reflection per wedge. Copies can tag groupIndex per copy for ramp-by-group fills or Group Pick downstream.",
+    "description": "Mirror an image, spline, or points across the X / Y axis (or both), or repeat them radially around a center with a count slider — with an optional kaleidoscope reflection per wedge. Bisect cuts the input to one half-plane (X / −X / Y / −Y) before mirroring, so only the kept side is reflected. Copies can tag groupIndex per copy for ramp-by-group fills or Group Pick downstream.",
     "facts": {
       "space": {
+        "in:source": [
+          "canvas01",
+          "raster"
+        ],
         "out": "in:source",
         "param:centerX": "canvas01",
         "param:centerY": "canvas01"
@@ -16944,13 +17218,13 @@
       "gotchas": [
         "Radial copies rotate in pixel-isotropic space (dy/aspect) so they stay rigid on non-square canvases; axis flips and the 180 degree copy are aspect-free.",
         "On points, a single flip mirrors the point's frame: rotation negates and the flipped axis's scale.x/scale.y negates; two flips compose to a plain 180 degree rotation.",
-        "tagGroups stamps group as the copy index (0..copies-1) on every emitted point/subpath; off, the incoming group passes through unchanged.",
-        "kaleidoscope (mode=radial only) adds one Y-flipped mirror copy per wedge, doubling the copy count to build dihedral symmetry."
+        "tagGroups stamps group as the copy index (0..copies-1) on every emitted point/subpath; off, the incoming group passes through unchanged. Hidden when an image is wired.",
+        "kaleidoscope (mode=radial only) adds one Y-flipped mirror copy per wedge, doubling the copy count to build dihedral symmetry.",
+        "mode=bisect clips to the keep half-plane then mirrors. keep=x is x≥centerX (right), -x is x≤centerX (left), y is y≥centerY (down), -y is y≤centerY (up).",
+        "In mode=bisect, points on the mirror plane are kept once (not doubled by the reflected copy); closed curves that cross the plane become open arcs with endpoints on the plane.",
+        "An image is inverse-sampled per copy and source-overed (later copies win where they overlap); opaque full-frame plates should use mode=bisect so each pixel has one contributor."
       ]
-    },
-    "flags": [
-      "no-mask"
-    ]
+    }
   },
   {
     "type": "modulate-points",
@@ -17183,7 +17457,8 @@
           "super-simplex",
           "perlin-deriv",
           "flow",
-          "curl"
+          "curl",
+          "phasor"
         ]
       },
       {
@@ -17297,6 +17572,30 @@
         "max": 100
       },
       {
+        "name": "phasor_frequency",
+        "type": "scalar",
+        "settable": true,
+        "default": 2,
+        "min": 0.1,
+        "max": 20
+      },
+      {
+        "name": "phasor_orientation",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": -180,
+        "max": 180
+      },
+      {
+        "name": "phasor_isotropy",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.2,
+        "min": 0,
+        "max": 1
+      },
+      {
         "name": "color_a",
         "type": "color",
         "settable": true,
@@ -17343,13 +17642,14 @@
         "time"
       ],
       "gotchas": [
-        "field always samples simplex regardless of the type param (the SDF compiler only ports simplex); image, value, and field3d all respect type.",
+        "field always samples simplex (SDF compiler only ports it); image and value respect type; field3d keeps perlin/value/simplex (perlin-deriv as perlin) and maps the rest to simplex.",
         "animated=true drives evolution from scene time on a closed loop between anim_start/anim_end frames, overriding the manual w slider.",
         "For type=flow, animated instead sweeps flow_time through one full 2*pi rotation over that loop; animated forces a recompute every tick.",
         "value is CPU-sampled at `position` (default 0.5,0.5 = canvas center) through the exact same scale/offset/aspect transform the image shader applies, so it matches the rendered pixel at that UV.",
         "The y sample is compressed by canvas aspect (width/height) before evaluating so noise cells stay square, so `scale` reads as cells-across-the-width regardless of aspect ratio.",
         "field3d is true 3D world-space noise (a different space from image/value/field): one world unit spans `scale` noise units, with w as evolution.",
-        "Wiring an image into `UV` re-reads the sample position from its R/G channels instead of the canvas UV, for domain warping; a wired scalar broadcasts that one value to both axes."
+        "Wiring an image into `UV` re-reads the sample position from its R/G channels instead of the canvas UV, for domain warping; a wired scalar broadcasts that one value to both axes.",
+        "type=phasor: phasor_frequency is cycles per lattice cell, phasor_orientation is degrees (0=+X), phasor_isotropy 0=aligned to that heading and 1=±180° random."
       ]
     }
   },
@@ -17908,16 +18208,6 @@
         "default": 1,
         "min": 0,
         "max": 1
-      },
-      {
-        "name": "paint",
-        "type": "paint",
-        "settable": false
-      },
-      {
-        "name": "brush",
-        "type": "brush_settings",
-        "settable": false
       },
       {
         "name": "color",
@@ -20773,7 +21063,8 @@
         "default": "flat",
         "options": [
           "flat",
-          "ramp"
+          "ramp",
+          "gradient"
         ]
       },
       {
@@ -20785,7 +21076,86 @@
       {
         "name": "fill_ramp",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "stop-a",
+            "position": 0,
+            "color": "#ffffff"
+          },
+          {
+            "id": "stop-b",
+            "position": 1,
+            "color": "#000000"
+          }
+        ]
+      },
+      {
+        "name": "gradient_kind",
+        "type": "enum",
+        "settable": true,
+        "default": "linear",
+        "options": [
+          "linear",
+          "radial",
+          "conic"
+        ]
+      },
+      {
+        "name": "gradient_frame",
+        "type": "enum",
+        "settable": true,
+        "default": "shape",
+        "options": [
+          "shape",
+          "canvas"
+        ]
+      },
+      {
+        "name": "gradient_angle",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": -180,
+        "max": 180
+      },
+      {
+        "name": "gradient_scale",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0.1,
+        "max": 4
+      },
+      {
+        "name": "gradient_offset",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": -1,
+        "max": 1
+      },
+      {
+        "name": "gradient_vary",
+        "type": "enum",
+        "settable": true,
+        "default": "none",
+        "options": [
+          "none",
+          "index",
+          "random",
+          "group",
+          "position",
+          "driver"
+        ]
+      },
+      {
+        "name": "gradient_vary_amount",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.5,
+        "min": 0,
+        "max": 1
       },
       {
         "name": "ramp_by",
@@ -20891,7 +21261,19 @@
       {
         "name": "stroke_ramp",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "stop-a",
+            "position": 0,
+            "color": "#ffffff"
+          },
+          {
+            "id": "stop-b",
+            "position": 1,
+            "color": "#000000"
+          }
+        ]
       },
       {
         "name": "stroke_ramp_offset",
@@ -21155,7 +21537,7 @@
       }
     ],
     "subcategory": "modifier",
-    "description": "Rasterize a spline as fill, stroke, or both in a single pass. Fill draws underneath the stroke. Toggle each independently. Fill and stroke colors can each be a flat color or a ramp — fill keys per subpath (index, random, group, position, driver); stroke can do the same, or ramp by progress along each path's length (color A at the start, color B at the end, independent of canvas direction). Ramp offset slides the stroke gradient and wraps past 1 so it loops. Driver attribute (visible when Ramp by is Driver) reads a named subpath channel — Set Named Attribute authors it, Copy to Points gathers point attrs onto copies. Thickness source can vary per subpath the same way Stroke does (index / random / group / position / driver × lo→hi), so a graph can stay at one raster node. A wired fill image can drive the fill, the stroke, or both via the Image → fill / Image → stroke toggles. Per-anchor width (Spline Draw's Width tool) rides the spline: Thickness is the base, each anchor's width is a multiplier on it.",
+    "description": "Rasterize a spline as fill, stroke, or both in a single pass. Fill draws underneath the stroke. Toggle each independently. Fill and stroke colors can each be a flat color or a ramp — fill keys per subpath (index, random, group, position, driver) or lays the ramp out as a gradient inside each subpath's own frame (linear / radial / conic; the shape frame rotates with each Copy to Points copy); stroke can do the same, or ramp by progress along each path's length (color A at the start, color B at the end, independent of canvas direction). Ramp offset slides the stroke gradient and wraps past 1 so it loops. Driver attribute (visible when Ramp by is Driver) reads a named subpath channel — Set Named Attribute authors it, Copy to Points gathers point attrs onto copies. Thickness source can vary per subpath the same way Stroke does (index / random / group / position / driver × lo→hi), so a graph can stay at one raster node. A wired fill image can drive the fill, the stroke, or both via the Image → fill / Image → stroke toggles. Per-anchor width (Spline Draw's Width tool) rides the spline: Thickness is the base, each anchor's width is a multiplier on it.",
     "facts": {
       "space": {
         "param:thickness": "pixels",
@@ -21173,7 +21555,9 @@
         "holes groups subpaths into containment islands and fills each as one even-odd path so nested contours punch instead of filling solid; fill only, capped at 2048 subpaths.",
         "A per-anchor width profile (Spline Draw's Width tool) fills a variable-width envelope multiplying Thickness by each anchor's width, and ignores dash/dot style.",
         "stroke_ramp_by=progress or attribute ramps color along each subpath's own arc length (start→end) instead of one color per subpath; attribute reads stroke_driver_attr.",
-        "ramp_by/stroke_ramp_by/thickness_by=group key off each subpath's stamped groupIndex (attr:group), e.g. from Copy to Points or String Art layers."
+        "ramp_by/stroke_ramp_by/thickness_by=group key off each subpath's stamped groupIndex (attr:group), e.g. from Copy to Points or String Art layers.",
+        "fill_source=gradient lays fill_ramp out inside each subpath's own frame (gradient_kind linear/radial/conic), spanning its outline; gradient_offset/gradient_vary shift the phase and wrap.",
+        "gradient_frame=shape takes up as center→first anchor (handedness from winding) so the gradient rotates/mirrors with each copy, angle 0 = left→right on an unrotated Circle; canvas fixes the angle."
       ]
     }
   },
@@ -21857,17 +22241,6 @@
         "name": "items",
         "type": "render_queue",
         "settable": false
-      },
-      {
-        "name": "delivery",
-        "type": "enum",
-        "settable": true,
-        "default": "sequential",
-        "options": [
-          "sequential",
-          "zip",
-          "folder"
-        ]
       }
     ],
     "dynamic": true,
@@ -24183,7 +24556,24 @@
       {
         "name": "stops",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "stop-a",
+            "position": 0,
+            "color": "#ff3b30"
+          },
+          {
+            "id": "stop-b",
+            "position": 0.5,
+            "color": "#ffcc00"
+          },
+          {
+            "id": "stop-c",
+            "position": 1,
+            "color": "#0a84ff"
+          }
+        ]
       },
       {
         "name": "interpolation",
@@ -26129,12 +26519,6 @@
         "max": 32
       },
       {
-        "name": "dots",
-        "type": "string",
-        "settable": true,
-        "default": []
-      },
-      {
         "name": "feather",
         "type": "scalar",
         "settable": true,
@@ -26149,20 +26533,6 @@
         "default": 0.5,
         "min": 0.1,
         "max": 0.9
-      },
-      {
-        "name": "inFrame",
-        "type": "scalar",
-        "settable": true,
-        "default": 0,
-        "min": 0
-      },
-      {
-        "name": "outFrame",
-        "type": "scalar",
-        "settable": true,
-        "default": 120,
-        "min": 0
       }
     ],
     "subcategory": "modifier",
@@ -26523,7 +26893,44 @@
       {
         "name": "ramp",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "sc-stop-0",
+            "position": 0,
+            "color": "#e9479f"
+          },
+          {
+            "id": "sc-stop-1",
+            "position": 0.17,
+            "color": "#e32826"
+          },
+          {
+            "id": "sc-stop-2",
+            "position": 0.34,
+            "color": "#dba232"
+          },
+          {
+            "id": "sc-stop-3",
+            "position": 0.51,
+            "color": "#243e8a"
+          },
+          {
+            "id": "sc-stop-4",
+            "position": 0.68,
+            "color": "#f4ecd5"
+          },
+          {
+            "id": "sc-stop-5",
+            "position": 0.85,
+            "color": "#a8a8b0"
+          },
+          {
+            "id": "sc-stop-6",
+            "position": 1,
+            "color": "#e9479f"
+          }
+        ]
       },
       {
         "name": "interpolation",
@@ -27154,12 +27561,6 @@
           "points",
           "spline"
         ]
-      },
-      {
-        "name": "zone_id",
-        "type": "string",
-        "settable": true,
-        "default": ""
       }
     ],
     "dynamic": true,
@@ -27204,12 +27605,6 @@
           "points",
           "spline"
         ]
-      },
-      {
-        "name": "zone_id",
-        "type": "string",
-        "settable": true,
-        "default": ""
       }
     ],
     "dynamic": true,
@@ -27941,16 +28336,6 @@
         ]
       },
       {
-        "name": "points",
-        "type": "vec3_list",
-        "settable": false
-      },
-      {
-        "name": "handles",
-        "type": "vec3_list",
-        "settable": false
-      },
-      {
         "name": "closed",
         "type": "boolean",
         "settable": true,
@@ -28166,11 +28551,6 @@
         "default": 1,
         "min": 0,
         "max": 1
-      },
-      {
-        "name": "spline",
-        "type": "spline_anchors",
-        "settable": false
       },
       {
         "name": "trim_start",
@@ -29024,7 +29404,19 @@
       {
         "name": "color_ramp",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "stop-a",
+            "position": 0,
+            "color": "#ffffff"
+          },
+          {
+            "id": "stop-b",
+            "position": 1,
+            "color": "#000000"
+          }
+        ]
       },
       {
         "name": "ramp_by",
@@ -29307,7 +29699,19 @@
       {
         "name": "repeat_colors",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "stop-a",
+            "position": 0,
+            "color": "#ffffff"
+          },
+          {
+            "id": "stop-b",
+            "position": 1,
+            "color": "#000000"
+          }
+        ]
       }
     ],
     "subcategory": "modifier",
@@ -30368,6 +30772,149 @@
     }
   },
   {
+    "type": "swift-hohenberg",
+    "name": "Swift-Hohenberg",
+    "category": "image",
+    "inputs": [
+      {
+        "name": "seed",
+        "type": "image"
+      }
+    ],
+    "primaryOutput": "image",
+    "aux": [],
+    "params": [
+      {
+        "name": "preset",
+        "type": "enum",
+        "settable": true,
+        "default": "hexagons",
+        "options": [
+          "labyrinth",
+          "hexagons",
+          "spots",
+          "custom"
+        ]
+      },
+      {
+        "name": "epsilon",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.3,
+        "min": 0,
+        "max": 1.5
+      },
+      {
+        "name": "quadratic",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.35,
+        "min": -2,
+        "max": 2
+      },
+      {
+        "name": "cubic",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 4
+      },
+      {
+        "name": "dt",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.03,
+        "min": 0.001,
+        "max": 0.2
+      },
+      {
+        "name": "wavelength",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.05,
+        "min": 0.01,
+        "max": 0.25
+      },
+      {
+        "name": "steps_per_frame",
+        "type": "scalar",
+        "settable": true,
+        "default": 16,
+        "min": 1,
+        "max": 80
+      },
+      {
+        "name": "resolution",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.5,
+        "min": 0.1,
+        "max": 1
+      },
+      {
+        "name": "seed_intensity",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.15,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "init_seed",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1000
+      },
+      {
+        "name": "contrast",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0.05,
+        "max": 2
+      },
+      {
+        "name": "periodic",
+        "type": "boolean",
+        "settable": true,
+        "default": true
+      },
+      {
+        "name": "drive_by_scene_time",
+        "type": "boolean",
+        "settable": true,
+        "default": false
+      }
+    ],
+    "subcategory": "modifier",
+    "dynamic": true,
+    "description": "Swift–Hohenberg pattern formation (labyrinthine stripes, hexagons, spots). Pick a preset, tune wavelength; optional seed image sets the initial signed field.",
+    "facts": {
+      "space": {
+        "param:wavelength": "canvas01"
+      },
+      "reads": [
+        "time"
+      ],
+      "gotchas": [
+        "wavelength is the pattern period as a canvas-width fraction; the sim grid is sized so one period is ~8 texels at resolution=0.5 (resolution scales texels-per-wave, not canvas size).",
+        "Steps run while ctx.playing or (ctx.offline and time advanced); pause/scrub freezes unless drive_by_scene_time, which steps when the wired time input increases.",
+        "Resets the field (seed image or hash noise) on first eval or when scene time wraps back near 0.",
+        "preset != custom ignores epsilon/quadratic/cubic/dt.",
+        "Seed image stores (luma-0.5)*2*seed_intensity as the signed field; unwired, init is hash noise in ±seed_intensity.",
+        "Output is 0.5+0.5*tanh(u*contrast) of the signed field; quadratic=0 gives stripes/rolls, nonzero quadratic breaks ±u symmetry into hexagons/spots.",
+        "periodic=true (default) sets REPEAT wrap so patterns tile; periodic=false clamps and tends to pin rolls to the frame edges."
+      ]
+    },
+    "flags": [
+      "simulation",
+      "unstable"
+    ]
+  },
+  {
     "type": "switch",
     "name": "Switch",
     "category": "utility",
@@ -30422,32 +30969,25 @@
         ]
       },
       {
-        "name": "count",
-        "type": "scalar",
-        "settable": true,
-        "default": 2,
-        "min": 2,
-        "max": 8
-      },
-      {
         "name": "index",
         "type": "scalar",
         "settable": true,
         "default": 0,
         "min": 0,
-        "max": 7
+        "max": 255
       }
     ],
     "dynamic": true,
-    "description": "Picks one of N inputs by index. Accepts any socket type: leave Type on \"auto\" and the node adopts whatever you wire in — mixed inputs coerce to the one type they share (a scalar beside a vec4 becomes vec4; a mask beside an image becomes image). Count sets how many slots render. Wire a scalar to Index for live switching.",
+    "description": "Picks one of N inputs by index. Accepts any socket type: leave Type on \"auto\" and the node adopts whatever you wire in — mixed inputs coerce to the one type they share (a scalar beside a vec4 becomes vec4; a mask beside an image becomes image). Inputs auto-grow — there's always one spare empty socket. Wire a scalar to Index for live switching.",
     "facts": {
       "space": {
         "out": "in:*"
       },
       "gotchas": [
-        "type=auto adopts whatever is wired into in0..in(count-1); only those numbered slots vote (index and mask never retype the node), topmost wire wins ties.",
+        "type=auto adopts whatever is wired into the numbered in0, in1, … slots; only those vote (index and mask never retype the node), topmost wire wins ties.",
+        "Inputs auto-grow: connected numbered slots stay in order plus one trailing spare; disconnecting a middle slot drops it and later indices shift.",
         "The picked value passes through untouched and borrowed (ownsTextures: false) — the node never releases the upstream texture itself.",
-        "index is rounded and clamped into [0, count-1]; an unwired index slot falls back to the index param, and an empty slot at the picked index outputs nothing.",
+        "index is rounded and clamped into [0, slotCount-1]; an unwired index slot falls back to the index param, and an empty slot at the picked index outputs nothing.",
         "render and vector socket types are excluded from the switchable type list."
       ]
     }
@@ -30689,7 +31229,19 @@
       {
         "name": "fillStops",
         "type": "color_ramp",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "id": "stop-a",
+            "position": 0,
+            "color": "#ffffff"
+          },
+          {
+            "id": "stop-b",
+            "position": 1,
+            "color": "#3b82f6"
+          }
+        ]
       },
       {
         "name": "gradientAngle",
@@ -32516,17 +33068,6 @@
         "type": "boolean",
         "settable": true,
         "default": false
-      },
-      {
-        "name": "tracks",
-        "type": "track_data",
-        "settable": false
-      },
-      {
-        "name": "place_mode",
-        "type": "boolean",
-        "settable": true,
-        "default": false
       }
     ],
     "subcategory": "generator",
@@ -32620,12 +33161,6 @@
         "default": 8,
         "min": 1,
         "max": 64
-      },
-      {
-        "name": "_reset_counter",
-        "type": "scalar",
-        "settable": true,
-        "default": 0
       }
     ],
     "subcategory": "modifier",
@@ -32672,17 +33207,6 @@
     "primaryOutput": "image",
     "aux": [],
     "params": [
-      {
-        "name": "mode",
-        "type": "enum",
-        "settable": true,
-        "default": "image",
-        "options": [
-          "image",
-          "spline",
-          "point"
-        ]
-      },
       {
         "name": "translateX",
         "type": "scalar",

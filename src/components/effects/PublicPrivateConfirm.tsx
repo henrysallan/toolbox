@@ -35,7 +35,7 @@ export default function PublicPrivateConfirm({
   const title = toPublic ? "Make project public?" : "Make project private?";
   const body = toPublic
     ? "Anyone with the link will be able to view this project. You can flip it back to private at any time."
-    : "Only you will be able to view this project. Existing links will stop working until you make it public again.";
+    : "Only you and people you've invited will be able to open this project. The live link will stop working until you make it public again.";
 
   return (
     <div

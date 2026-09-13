@@ -32,7 +32,7 @@ import type {
   SocketValue,
 } from "./types";
 import { vetParamValue } from "./node-catalog";
-import { COLOR_RAMP_MAX_STOPS, type ColorRampStop } from "./color-ramp";
+import { COLOR_RAMP_MAX_STOPS, vetColorRampStops, newColorRampStopId, type ColorRampStop } from "./color-ramp";
 import {
   computeMonotoneTangents,
   evalMonotoneCubic,
@@ -49,10 +49,6 @@ import {
 // wires survive a name change. Shared with the scalar Expression node.
 export function newExprInputId(): string {
   return `ein-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function newRampStopId(): string {
-  return `rs-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 // Rows saved before `kind` existed carry only `options` (enum) or nothing
@@ -102,7 +98,7 @@ export function rampStopsFromHexes(hexes: string[]): ColorRampStop[] {
     const norm = normalizeChannelHex(hex) ?? "#000000";
     const alpha = norm.length === 9 ? parseInt(norm.slice(7, 9), 16) / 255 : 1;
     return {
-      id: newRampStopId(),
+      id: newColorRampStopId(),
       position: n === 1 ? 0 : i / (n - 1),
       color: norm.slice(0, 7),
       ...(alpha < 1 ? { alpha } : {}),
@@ -422,35 +418,7 @@ export function vetChannelValue(
   value: unknown
 ): { ok: true; value: unknown } | { ok: false; reason: string } {
   const kind = channelKind(e);
-  if (kind === "ramp") {
-    if (!Array.isArray(value) || value.length === 0 || value.length > COLOR_RAMP_MAX_STOPS)
-      return {
-        ok: false,
-        reason: `expected 1–${COLOR_RAMP_MAX_STOPS} stops as [{position, color, alpha?}]`,
-      };
-    const stops: ColorRampStop[] = [];
-    for (const raw of value) {
-      if (!isRecord(raw)) return { ok: false, reason: "each stop must be an object" };
-      const pos = raw.position;
-      const hex = typeof raw.color === "string" ? normalizeChannelHex(raw.color) : null;
-      if (typeof pos !== "number" || !Number.isFinite(pos) || pos < 0 || pos > 1)
-        return { ok: false, reason: "stop.position must be a number in 0..1" };
-      if (!hex) return { ok: false, reason: 'stop.color must be "#rrggbb"' };
-      const alpha =
-        typeof raw.alpha === "number" && Number.isFinite(raw.alpha)
-          ? Math.max(0, Math.min(1, raw.alpha))
-          : hex.length === 9
-            ? parseInt(hex.slice(7, 9), 16) / 255
-            : undefined;
-      stops.push({
-        id: typeof raw.id === "string" && raw.id ? raw.id : newRampStopId(),
-        position: pos,
-        color: hex.slice(0, 7),
-        ...(alpha !== undefined && alpha < 1 ? { alpha } : {}),
-      });
-    }
-    return { ok: true, value: stops };
-  }
+  if (kind === "ramp") return vetColorRampStops(value);
   if (kind === "curve") {
     if (!Array.isArray(value) || value.length < 2)
       return { ok: false, reason: "expected at least 2 points as [{x, y}] with x, y in 0..1" };
@@ -487,22 +455,91 @@ export function vetChannelValue(
   return { ok: true, value: kind === "color" ? normalizeChannelHex(String(vet.value)) ?? "#ffffff" : vet.value };
 }
 
+// Valid JS identifier — Expression variable names and grow-on-wire.
+export const EXPR_VAR_NAME_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
 // The channelSync expr_inputs param on a def, if any.
 export function channelListParam(def: NodeDefinition): ParamDef | undefined {
   return def.params.find((p) => p.type === "expr_inputs" && p.channelSync);
 }
 
-// A channel looked up by authored name (`ink`) or minted id (`ein-…`).
-// Name wins a collision so recipes that address by name stay stable.
+// Any expr_inputs param. Prefers the channelSync list (Point / GLSL
+// Expression) so a node that also had a non-sync list wouldn't steal
+// lookups; the scalar Expression node has only the non-sync one.
+export function exprInputsParam(def: NodeDefinition): ParamDef | undefined {
+  return channelListParam(def) ?? def.params.find((p) => p.type === "expr_inputs");
+}
+
+// A channel / Expression variable looked up by authored name (`ink`, `x`)
+// or minted id (`ein-…`). Name wins a collision so recipes that address
+// by name stay stable. Looks at channelSync rows first, then the scalar
+// Expression `inputs` list — without this, Expression sockets were
+// invisible to recipe/MCP wiring (the validator rejected even `ein-x0`).
 export function findExprChannel(
   def: NodeDefinition,
   params: Record<string, unknown>,
   name: string
 ): ExprInput | undefined {
-  const p = channelListParam(def);
+  const p = exprInputsParam(def);
   if (!p) return undefined;
   const list = (params[p.name] as ExprInput[]) ?? [];
   return list.find((e) => e.name === name) ?? list.find((e) => e.id === name);
+}
+
+// Restricted authoring shape for the scalar Expression node's `inputs`
+// param (not channelSync — those rows are declared in the source). Same
+// spirit as vetMergeLayers: [{name, default?}, …], ids preserved BY INDEX
+// so existing wires never dangle.
+export function vetExprInputList(
+  value: unknown,
+  existing?: ExprInput[]
+): { ok: true; value: ExprInput[] } | { ok: false; reason: string } {
+  if (!Array.isArray(value) || value.length === 0) {
+    return { ok: false, reason: "expected a non-empty [{name, default?}, …] list" };
+  }
+  if (value.length > 16) {
+    return { ok: false, reason: "at most 16 Expression inputs" };
+  }
+  const out: ExprInput[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < value.length; i++) {
+    const raw = value[i];
+    const rec =
+      typeof raw === "string"
+        ? { name: raw }
+        : raw && typeof raw === "object" && !Array.isArray(raw)
+          ? (raw as Record<string, unknown>)
+          : null;
+    const name = typeof rec?.name === "string" ? rec.name.trim() : "";
+    if (!EXPR_VAR_NAME_RE.test(name)) {
+      return {
+        ok: false,
+        reason: `inputs[${i}]: name must be a JS identifier (got ${JSON.stringify(rec?.name)})`,
+      };
+    }
+    if (seen.has(name)) {
+      return { ok: false, reason: `inputs[${i}]: duplicate name "${name}"` };
+    }
+    seen.add(name);
+    const prev = existing?.[i];
+    const id =
+      prev && typeof prev.id === "string" && prev.id
+        ? prev.id
+        : newExprInputId();
+    let deflt: number | undefined;
+    if (rec && "default" in rec) {
+      if (typeof rec.default !== "number" || !Number.isFinite(rec.default)) {
+        return { ok: false, reason: `inputs[${i}].default must be a finite number` };
+      }
+      deflt = rec.default;
+    } else if (typeof prev?.default === "number") {
+      deflt = prev.default;
+    } else {
+      deflt = 1;
+    }
+    out.push({ id, name, default: deflt });
+  }
+  return { ok: true, value: out };
 }
 
 // set_param by channel name: returns the params with that row's value
@@ -515,7 +552,7 @@ export function setExprChannelValue(
 ):
   | { ok: true; params: Record<string, unknown>; listParam: string; value: unknown }
   | { ok: false; reason: string } {
-  const p = channelListParam(def);
+  const p = exprInputsParam(def);
   if (!p) return { ok: false, reason: "node has no channels" };
   const list = (params[p.name] as ExprInput[]) ?? [];
   const row = list.find((e) => e.name === name);

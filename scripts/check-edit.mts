@@ -99,6 +99,7 @@ const strokeId = id("spline-stroke");
   check("inserted node + rewired the output chain", oldEdgeGone && newWired);
   // The original interior nodes keep their identity (preservation).
   check("untouched interior node ids preserved", r.nodes.some((n) => n.id === strokeId));
+  check("add_node returns local→live ids", r.ids.t1 === transform?.id, JSON.stringify(r.ids));
 }
 
 // --- bad patches ---
@@ -795,6 +796,145 @@ const strokeId = id("spline-stroke");
     undefined
   );
   check("pickInspectSocket prefers spline aux when primary is empty", picked.socket === "aux:path");
+}
+
+// --- Expression edit_group: named sockets + grow + expose seed + dead socket prune + duplicate ---
+{
+  const built = buildRecipe({
+    name: "Pixel",
+    nodes: [
+      { id: "u", type: "constant", params: { value: 0.3 } },
+      { id: "n", type: "constant", params: { value: 1 } },
+      { id: "grid", type: "grid", params: { countX: 4 } },
+    ],
+    edges: [{ from: "u:out", to: "n:param:value" }],
+    exposed: [
+      { name: "u", node: "u", param: "value" },
+      { name: "index", node: "n", param: "value" },
+    ],
+    outputs: [{ name: "pts", from: "grid:out", type: "points" }],
+  });
+  const gid = built.nodes.find((n) => n.data.defType === "node-group")!.id;
+  const iv = readInputValues(built.nodes.find((n) => n.id === gid)!.data.params);
+  check(
+    "expose/recipe seeds shell from interior 0.3 and 1 (not 0)",
+    iv.u === 0.3 && iv.index === 1,
+    JSON.stringify(iv)
+  );
+
+  const uNode = built.nodes.find(
+    (n) => n.data.defType === "constant" && n.data.params.value === 0.3
+  )!;
+  const nNode = built.nodes.find(
+    (n) => n.data.defType === "constant" && n.data.params.value === 1
+  )!;
+  const grid = built.nodes.find((n) => n.data.defType === "grid")!;
+
+  const viaEdit = applyRecipeEdit(gid, built.nodes, built.edges, {
+    ops: [
+      { op: "add_node", id: "c2", type: "constant", params: { value: 0.7 } },
+      { op: "expose_param", node: "c2", param: "value", label: "amt" },
+    ],
+  });
+  const iv2 = readInputValues(viaEdit.nodes.find((n) => n.id === gid)!.data.params);
+  check(
+    "expose_param in the same batch seeds 0.7 from the new constant",
+    viaEdit.issues.filter((i) => i.code !== "PARAM_EXPOSED").length === 0 && iv2.amt === 0.7,
+    JSON.stringify({ issues: viaEdit.issues, iv: iv2 })
+  );
+
+  const exprEdit = applyRecipeEdit(gid, built.nodes, built.edges, {
+    ops: [
+      { op: "add_node", id: "e", type: "expression", params: { expression: "sin(p)*x" } },
+      { op: "add_edge", from: `${uNode.id}:out`, to: "e:in:x" },
+      { op: "add_edge", from: `${nNode.id}:out`, to: "e:in:p" },
+    ],
+  });
+  const exprNode = exprEdit.nodes.find((n) => n.data.defType === "expression")!;
+  const exprIns = (exprNode?.data.params.inputs as { name: string; id: string }[]) ?? [];
+  const exprVal = validate(exprEdit);
+  check(
+    "edit_group can wire Expression by variable name (default x + grown p)",
+    exprEdit.issues.length === 0 &&
+      exprVal.ok &&
+      exprIns.some((e) => e.name === "x") &&
+      exprIns.some((e) => e.name === "p") &&
+      exprEdit.edges.some((e) => e.target === exprNode.id && e.targetHandle === `in:in:${exprIns.find((i) => i.name === "x")!.id}`),
+    JSON.stringify({ issues: exprEdit.issues, ins: exprIns, val: exprVal.issues.filter((i) => i.severity === "error") })
+  );
+
+  const einDefault = applyRecipeEdit(gid, built.nodes, built.edges, {
+    ops: [
+      { op: "add_node", id: "e0", type: "expression" },
+      { op: "add_edge", from: `${uNode.id}:out`, to: "e0:in:ein-x0" },
+    ],
+  });
+  const e0 = einDefault.nodes.find((n) => n.data.defType === "expression")!;
+  const e0ins = (e0?.data.params.inputs as { id: string }[]) ?? [];
+  const e0val = validate(einDefault);
+  check(
+    "edit_group add_edge to default ein-x0 is accepted",
+    einDefault.issues.length === 0 &&
+      e0val.ok &&
+      einDefault.edges.some(
+        (e) => e.target === e0.id && e.targetHandle === `in:in:${e0ins[0]?.id ?? "ein-x0"}`
+      ),
+    JSON.stringify({ issues: einDefault.issues, val: e0val.issues.filter((i) => i.severity === "error") })
+  );
+
+  const removed = applyRecipeEdit(gid, built.nodes, built.edges, {
+    ops: [{ op: "remove_node", node: nNode.id }],
+  });
+  const ivR = readInputValues(removed.nodes.find((n) => n.id === gid)!.data.params);
+  const giR = removed.nodes.find((n) => n.data.defType === "group-input")!;
+  check(
+    "remove_node of an exposed constant drops the dead interface socket",
+    !("index" in ivR) &&
+      !readBoundarySockets(giR.data.params).some((s) => s.name === "index") &&
+      ivR.u === 0.3,
+    JSON.stringify({ iv: ivR, socks: readBoundarySockets(giR.data.params) })
+  );
+
+  const dup = applyRecipeEdit(gid, built.nodes, built.edges, {
+    ops: [
+      {
+        op: "duplicate_node",
+        node: gid,
+        id: "pixel2",
+      },
+    ],
+  });
+  check(
+    "duplicate_node cannot clone the scope being edited",
+    dup.issues.some((i) => i.code === "PROTECTED_NODE"),
+    JSON.stringify(dup.issues)
+  );
+
+  const layerish = applyRecipeEdit(gid, built.nodes, built.edges, {
+    ops: [
+      {
+        op: "duplicate_node",
+        node: grid.id,
+        id: "g2",
+        params: { countX: 8 },
+      },
+    ],
+  });
+  const cloneId = dupIds(layerish, "g2");
+  const clone = layerish.nodes.find((n) => n.id === cloneId);
+  check(
+    "duplicate_node clones a node with param overrides",
+    layerish.issues.length === 0 &&
+      !!clone &&
+      clone.data.params.countX === 8 &&
+      clone.id !== grid.id &&
+      grid.data.params.countX === 4,
+    JSON.stringify({ issues: layerish.issues, clone: clone?.id, count: clone?.data.params.countX })
+  );
+}
+
+function dupIds(r: { ops: { id?: string; node?: string }[] }, local: string): string | undefined {
+  return r.ops.find((o) => o.id === local)?.node;
 }
 
 console.log(`\n${failures === 0 ? "ALL GREEN ✅" : `${failures} FAILURE(S) ❌`}`);

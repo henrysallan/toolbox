@@ -17,6 +17,58 @@ export const COLOR_RAMP_MAX_STOPS = 16;
 
 export type ColorRampInterp = "linear" | "ease" | "constant";
 
+const STOP_HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+function normalizeStopHex(raw: string): string | null {
+  const s = raw.trim();
+  if (!STOP_HEX.test(s)) return null;
+  let h = s.slice(1).toLowerCase();
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  if (h.length === 8 && h.endsWith("ff")) h = h.slice(0, 6);
+  return `#${h}`;
+}
+
+export function newColorRampStopId(): string {
+  return `stop-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Remote / recipe write of a `color_ramp` param (or a GLSL ramp() channel).
+// Same [{position, color, alpha?}] shape both paths accept; ids are minted
+// when the caller omits them.
+export function vetColorRampStops(
+  value: unknown
+): { ok: true; value: ColorRampStop[] } | { ok: false; reason: string } {
+  if (!Array.isArray(value) || value.length === 0 || value.length > COLOR_RAMP_MAX_STOPS)
+    return {
+      ok: false,
+      reason: `expected 1–${COLOR_RAMP_MAX_STOPS} stops as [{position, color, alpha?}]`,
+    };
+  const stops: ColorRampStop[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      return { ok: false, reason: "each stop must be an object" };
+    const rec = raw as Record<string, unknown>;
+    const pos = rec.position;
+    const hex = typeof rec.color === "string" ? normalizeStopHex(rec.color) : null;
+    if (typeof pos !== "number" || !Number.isFinite(pos) || pos < 0 || pos > 1)
+      return { ok: false, reason: "stop.position must be a number in 0..1" };
+    if (!hex) return { ok: false, reason: 'stop.color must be "#rrggbb"' };
+    const alpha =
+      typeof rec.alpha === "number" && Number.isFinite(rec.alpha)
+        ? Math.max(0, Math.min(1, rec.alpha))
+        : hex.length === 9
+          ? parseInt(hex.slice(7, 9), 16) / 255
+          : undefined;
+    stops.push({
+      id: typeof rec.id === "string" && rec.id ? rec.id : newColorRampStopId(),
+      position: pos,
+      color: hex.slice(0, 7),
+      ...(alpha !== undefined && alpha < 1 ? { alpha } : {}),
+    });
+  }
+  return { ok: true, value: stops };
+}
+
 // Slide `t` by `offset` and wrap into [0, 1). Offset 0 keeps the legacy
 // clamp so t=1 still hits the last stop (GLSL `fract(1.0)` would snap it
 // to 0). Non-zero offsets loop: 1.2 looks like 0.2, and a sample that

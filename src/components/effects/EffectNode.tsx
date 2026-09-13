@@ -105,7 +105,7 @@ const SCALAR_INPUT_PARAMS: Record<string, string> = {
   constant: "value",
   // Switch's `index` — which slot is live is the one thing you flip while
   // looking at the graph, so it gets a bar on the node. Its range follows
-  // `count` via ParamDef.maxFrom.
+  // the live slot list via ParamDef.maxFrom.
   switch: "index",
 };
 
@@ -502,7 +502,7 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
     const ov = data.paramOverrides?.[scalarInputParam];
     const min = ov?.min ?? p.min ?? 0;
     // Param-driven upper bound (maxFrom — Switch's `index` spans exactly the
-    // slots `count` mints). Override wins, `max` is the fallback.
+    // live auto-grow slots). Override wins, `max` is the fallback.
     const max = ov?.max ?? p.maxFrom?.(data.params) ?? p.max ?? 1;
     // Param-driven increment (stepFrom — e.g. Constant's value follows its
     // `step`/`mode` params). When active, edits snap to k·step (see

@@ -39,6 +39,15 @@ const {
 } = await import("@/nodes/effect/trails");
 
 const { glslExpressionSource } = await import("@/nodes/effect/glsl-expression");
+const { LYAPUNOV_FS } = await import("@/nodes/source/lyapunov");
+const { NOISE_FS } = await import("@/nodes/source/perlin-noise");
+const {
+  SH_INIT_FS,
+  SH_SEED_FS,
+  SH_LAP_FS,
+  SH_STEP_FS,
+  SH_OUTPUT_FS,
+} = await import("@/nodes/effect/swift-hohenberg");
 
 const out: Record<string, string> = { pairwise: BLEND_FS };
 // GLSL Expression's owned template with one channel of every kind minted
@@ -82,6 +91,11 @@ out.lineCombine = LINE_COMBINE_FS;
 out.fdogAcross = FDOG_ACROSS_FS;
 out.fdogAlong = FDOG_ALONG_FS;
 out.lineThresh = LINE_THRESH_FS;
+out.shInit = SH_INIT_FS;
+out.shSeed = SH_SEED_FS;
+out.shLap = SH_LAP_FS;
+out.shStep = SH_STEP_FS;
+out.shOutput = SH_OUTPUT_FS;
 out.trailsOver = TRAILS_OVER_FS;
 out.trailsFade = TRAILS_FADE_FS;
 out.trailsVelocity = TRAILS_VELOCITY_FS;
@@ -90,6 +104,8 @@ out.transformMatrix = TRANSFORM_MATRIX_FS;
 out.displace = DISPLACE_FS;
 out.vectorFieldImage = VECTOR_FIELD_IMAGE_FS;
 out.vectorFieldSdf = buildVectorFieldSdfFS("", "length(p - vec2(0.5))");
+out.lyapunov = LYAPUNOV_FS;
+out.noise = NOISE_FS;
 
 writeFileSync(process.argv[2] ?? "shaders.json", JSON.stringify(out));
 console.log(`emitted ${Object.keys(out).length} shader sources`);

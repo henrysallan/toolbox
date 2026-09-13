@@ -31,7 +31,7 @@ function canon(v: unknown): string {
 // (tsx's ESM/CJS split) that sees zero registered nodes.
 registerAllNodes();
 const { allNodeDefs } = await import("@/engine/registry");
-const { buildNodeCatalog, formatCatalogDsl, FLAGS_DOC, SPACE_TABLE_DOC } = await import(
+const { buildNodeCatalog, formatCatalogDsl, FLAGS_DOC, SPACE_TABLE_DOC, Y_ORIENT_DOC } = await import(
   "@/engine/node-catalog"
 );
 
@@ -80,6 +80,7 @@ check("every facts block is well-formed", invalid === 0, invalid ? `${invalid} i
 
 const dsl = formatCatalogDsl(buildNodeCatalog(defs));
 check("catalog DSL header carries the space table", dsl.includes(SPACE_TABLE_DOC));
+check("catalog DSL header carries Y orientation", dsl.includes(Y_ORIENT_DOC));
 check("catalog DSL header carries the flags doc", dsl.includes(FLAGS_DOC));
 const withSpace = visible.filter((d) => d.facts?.space && Object.keys(d.facts.space).length).length;
 const rendered = (dsl.match(/^    # space: /gm) ?? []).length;

@@ -11,6 +11,19 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.5.4",
+    date: "2026-09-13",
+    added: [
+      "Lyapunov Fractal source and Swift–Hohenberg pattern sim, plus per-copy gradient fill on Rasterize Spline.",
+      "Private project URLs with a sign-in gate, and an MCP hub/proxy so every Claude lane shares one editor instead of fighting over the bridge port.",
+      "Filter Points index/flag modes, Mirror half-plane clip, and a project-load overlay on the editor.",
+    ],
+    changed: [
+      "Trails wipe on skip-to-start and every Play (pause still freezes, it does not clear).",
+      "Wired scalars fingerprint by value so floor/step/gate hold still while an animated ancestor moves.",
+    ],
+  },
+  {
     version: "0.5.3",
     date: "2026-08-26",
     added: [

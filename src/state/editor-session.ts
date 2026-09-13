@@ -31,6 +31,7 @@ export interface EditorSessionSnapshot {
     isPublic: boolean;
     // Mirror of projects.public_slug. Carried so the file-name menu's
     // "Copy editor link" button has the slug without a separate fetch.
+    // Present for private and public cloud rows.
     publicSlug: string | null;
     ownerId: string;
     authorName: string | null;

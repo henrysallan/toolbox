@@ -38,6 +38,10 @@ export function parseTargetHandleKind(
 // without importing from src/nodes (invariant #1).
 export const SWITCH_TYPE = "switch";
 export const SWITCH_SLOT_PREFIX = "in";
+export const SWITCH_MIN_COUNT = 2;
+export const SWITCH_DEFAULT_SLOTS: readonly string[] = ["in0", "in1"];
+/** Safety cap when minting slots from the legacy `count` param. Auto-grow itself is uncapped. */
+export const SWITCH_COUNT_CAP = 256;
 /** `true` for the switch's value slots (`in0`, `in1`, …) — not `index`/`mask`. */
 export function isSwitchSlot(name: string): boolean {
   return /^in\d+$/.test(name);
@@ -52,6 +56,37 @@ export function isSwitchSlotHandle(handle: string | undefined | null): boolean {
 export const SWITCH_AUTO = "auto";
 export function switchTypeIsAuto(t: unknown): boolean {
   return t == null || t === SWITCH_AUTO;
+}
+
+// Auto-grow input list. EffectsApp keeps `slots` equal to (connected
+// numbered sockets) + one trailing spare. Pre-auto-grow saves used `count`
+// with sockets in0, in1, … — honor that when `slots` is absent so old
+// projects and AI recipes that set count still resolve the same handles.
+export function readSwitchSlots(params: Record<string, unknown>): string[] {
+  const raw = params.slots;
+  if (
+    Array.isArray(raw) &&
+    raw.length > 0 &&
+    raw.every((x) => typeof x === "string" && isSwitchSlot(x))
+  ) {
+    return raw as string[];
+  }
+  if (typeof params.count === "number" && Number.isFinite(params.count)) {
+    const n = Math.max(
+      SWITCH_MIN_COUNT,
+      Math.min(SWITCH_COUNT_CAP, Math.round(params.count))
+    );
+    const out: string[] = [];
+    for (let i = 0; i < n; i++) out.push(`${SWITCH_SLOT_PREFIX}${i}`);
+    return out;
+  }
+  return [...SWITCH_DEFAULT_SLOTS];
+}
+
+export function nextSwitchSlot(taken: Set<string>): string {
+  let k = 0;
+  while (taken.has(`${SWITCH_SLOT_PREFIX}${k}`)) k++;
+  return `${SWITCH_SLOT_PREFIX}${k}`;
 }
 
 // Combine (internal type `collect`; load alias `group`). onConnect flips
@@ -302,17 +337,13 @@ export function walkToCamera3DNode(
       continue;
     }
     if (n.defType === SWITCH_TYPE) {
-      const rawCount = n.params.count;
-      const count = Math.max(
-        2,
-        Math.min(8, Math.round(typeof rawCount === "number" ? rawCount : 2))
-      );
+      const slots = readSwitchSlots(n.params);
       const rawIdx = n.params.index;
       let idx = Math.round(typeof rawIdx === "number" ? rawIdx : 0);
       if (!Number.isFinite(idx)) idx = 0;
       if (idx < 0) idx = 0;
-      if (idx > count - 1) idx = count - 1;
-      id = incoming(id, `in${idx}`);
+      if (idx > slots.length - 1) idx = slots.length - 1;
+      id = incoming(id, slots[idx]);
       continue;
     }
     return null;

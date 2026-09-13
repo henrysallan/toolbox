@@ -13,6 +13,11 @@ function liveLinkFor(slug: string): string {
   return `${window.location.origin}/live/${slug}`;
 }
 
+function editorLinkFor(slug: string): string {
+  if (typeof window === "undefined") return `/p/${slug}`;
+  return `${window.location.origin}/p/${slug}`;
+}
+
 // Floating popover anchored to client (screen) coords — opened from
 // LoadGrid's right-click handler on a project tile. Loads the user's
 // existing rating async so the stars seed correctly; submitting
@@ -66,22 +71,24 @@ export default function RateProjectPopover({
   const [hovered, setHovered] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedEditor, setCopiedEditor] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
+  const editorSlug = row.public_slug;
+  const editorUrl = editorSlug ? editorLinkFor(editorSlug) : null;
   const liveSlug = row.is_public ? row.public_slug : null;
   const liveUrl = liveSlug ? liveLinkFor(liveSlug) : null;
 
-  const copyLive = async () => {
-    if (!liveUrl) return;
+  const copyText = async (url: string, setFlag: (v: boolean) => void) => {
     try {
-      await navigator.clipboard.writeText(liveUrl);
+      await navigator.clipboard.writeText(url);
     } catch {
       // Fall back to a transient textarea selection — clipboard API
       // can be unavailable on insecure origins or during automated
       // tests. The visual confirmation still fires.
       const ta = document.createElement("textarea");
-      ta.value = liveUrl;
+      ta.value = url;
       ta.style.position = "fixed";
       ta.style.opacity = "0";
       document.body.appendChild(ta);
@@ -93,8 +100,18 @@ export default function RateProjectPopover({
       }
       document.body.removeChild(ta);
     }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1200);
+    setFlag(true);
+    setTimeout(() => setFlag(false), 1200);
+  };
+
+  const copyLive = async () => {
+    if (!liveUrl) return;
+    await copyText(liveUrl, setCopied);
+  };
+
+  const copyEditor = async () => {
+    if (!editorUrl) return;
+    await copyText(editorUrl, setCopiedEditor);
   };
 
   // Load existing rating on open. While it's pending we show the
@@ -277,6 +294,57 @@ export default function RateProjectPopover({
             )}
           </div>
         </>
+      )}
+      {editorUrl && (
+        <div
+          style={{
+            marginTop: 10,
+            paddingTop: 10,
+            borderTop: "1px solid var(--tb-n-7)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
+          <div
+            style={{
+              color: "var(--tb-n-13)",
+              fontSize: 9,
+              textTransform: "uppercase",
+              letterSpacing: 0.5,
+            }}
+          >
+            Editor link
+          </div>
+          <div
+            style={{
+              fontSize: 10,
+              color: "var(--tb-n-13)",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+            title={editorUrl}
+          >
+            {editorUrl.replace(/^https?:\/\//, "")}
+          </div>
+          <button
+            onClick={copyEditor}
+            style={{
+              alignSelf: "flex-start",
+              background: copiedEditor ? "var(--tb-a-blue-900)" : "transparent",
+              border: `1px solid ${copiedEditor ? "var(--tb-a-blue-900)" : "var(--tb-n-9)"}`,
+              color: copiedEditor ? "var(--tb-a-blue-100)" : "var(--tb-n-16)",
+              fontSize: 10,
+              padding: "2px 8px",
+              borderRadius: 3,
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            {copiedEditor ? "Copied" : "Copy editor link"}
+          </button>
+        </div>
       )}
       {liveUrl && (
         <div

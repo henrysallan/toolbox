@@ -129,6 +129,9 @@ interface DragState extends DragPayload {
 
 // List/detail checkbox column width.
 const LIST_CHECK = 28;
+// Hierarchy pane (Private tab) — wide enough for a folder name, narrow
+// enough that the grid beside it still fits in the landing card.
+const HIERARCHY_WIDTH = 176;
 
 // Edge auto-scroll while dragging: zone depth inside the scroll
 // container's top/bottom edges, and the max px/frame at the very edge
@@ -163,9 +166,10 @@ interface DragSession {
 function useTileDrag(opts: {
   canDrop: (p: DragPayload, into: string | null) => boolean;
   onDrop: (p: DragPayload, into: string | null) => void;
-  // The grid's scroll container — dragging near its top/bottom edge
-  // auto-scrolls it so long lists are reachable mid-drag.
-  scrollRef?: React.RefObject<HTMLDivElement | null>;
+  // Scroll containers that auto-scroll when the ghost hovers near their
+  // top/bottom edge (grid body + hierarchy pane). The pointer's host
+  // container is the one that moves — hovering the toolbar must not.
+  scrollRefs?: React.RefObject<HTMLDivElement | null>[];
 }) {
   const [drag, setDrag] = useState<DragState | null>(null);
   const [hoverKey, setHoverKeyState] = useState<string | null>(null);
@@ -219,33 +223,38 @@ function useTileDrag(opts: {
         s.curY += (s.targetY - s.curY) * k;
         node.style.transform = `translate3d(${s.curX}px, ${s.curY}px, 0)`;
       }
-      // Edge auto-scroll: pointer parked in the zone inside the scroll
-      // container's top/bottom edge scrolls it each frame, faster the
-      // closer to the edge. Only while the pointer is INSIDE the
+      // Edge auto-scroll: pointer parked in the zone inside a registered
+      // scroll container's top/bottom edge scrolls it each frame, faster
+      // the closer to the edge. Only while the pointer is INSIDE that
       // container — hovering the toolbar (breadcrumbs) must not scroll.
       // Content slides under a stationary pointer, so re-run the hit
       // test after any actual scroll.
-      const scrollEl = optsRef.current.scrollRef?.current;
-      if (scrollEl && !s.releasing && s.active) {
-        const rect = scrollEl.getBoundingClientRect();
-        let dy = 0;
-        if (
-          s.pointerX >= rect.left &&
-          s.pointerX <= rect.right &&
-          s.pointerY >= rect.top &&
-          s.pointerY <= rect.bottom
-        ) {
+      if (!s.releasing && s.active) {
+        for (const ref of optsRef.current.scrollRefs ?? []) {
+          const scrollEl = ref.current;
+          if (!scrollEl) continue;
+          const rect = scrollEl.getBoundingClientRect();
+          if (
+            s.pointerX < rect.left ||
+            s.pointerX > rect.right ||
+            s.pointerY < rect.top ||
+            s.pointerY > rect.bottom
+          ) {
+            continue;
+          }
+          let dy = 0;
           const topT = (s.pointerY - rect.top) / SCROLL_ZONE;
           const botT = (rect.bottom - s.pointerY) / SCROLL_ZONE;
           if (topT < 1) dy = -SCROLL_MAX * (1 - topT);
           else if (botT < 1) dy = SCROLL_MAX * (1 - botT);
-        }
-        if (dy !== 0) {
-          const before = scrollEl.scrollTop;
-          scrollEl.scrollTop = before + dy;
-          if (scrollEl.scrollTop !== before) {
-            hitTest(s.pointerX, s.pointerY);
+          if (dy !== 0) {
+            const before = scrollEl.scrollTop;
+            scrollEl.scrollTop = before + dy;
+            if (scrollEl.scrollTop !== before) {
+              hitTest(s.pointerX, s.pointerY);
+            }
           }
+          break;
         }
       }
       if (s.releasing === "cancel") {
@@ -531,6 +540,10 @@ export default function LoadGrid({
   // refetch so the breadcrumb doesn't flicker.
   const [folders, setFolders] = useState<FolderRow[] | null>(null);
   const [folderId, setFolderId] = useState<string | null>(null);
+  // Hierarchy-pane expansion (folder ids currently unfurled). Independent
+  // of `folderId` — a chevron toggles without navigating; entering a
+  // folder also expands it (and its ancestors) so the location is visible.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [folderMenu, setFolderMenu] = useState<{
     folder: FolderRow;
     x: number;
@@ -605,6 +618,7 @@ export default function LoadGrid({
   if (seenTab !== tab) {
     setSeenTab(tab);
     setFolderId(null);
+    setExpandedIds(new Set());
     setRenameId(null);
     setFolderMenu(null);
     setSelectedProjectIds(new Set());
@@ -692,6 +706,62 @@ export default function LoadGrid({
     for (const f of folders ?? []) m.set(f.id, f);
     return m;
   }, [folders]);
+
+  // Enter a folder (or root) AND unfurl it in the hierarchy so the
+  // current location is visible. Chevron-only toggles skip this.
+  const navigateToFolder = (id: string | null) => {
+    setFolderId(id);
+    if (!id) return;
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      let cur = folderById.get(id);
+      let guard = 0;
+      while (cur && guard++ < 100) {
+        next.add(cur.id);
+        cur = cur.parent_id ? folderById.get(cur.parent_id) : undefined;
+      }
+      return next;
+    });
+  };
+
+  const toggleExpanded = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // Direct children keyed by parent_id (null = root), name-sorted. The
+  // hierarchy pane walks these; grid/list still use visibleFolders.
+  const foldersByParent = useMemo(() => {
+    const m = new Map<string | null, FolderRow[]>();
+    for (const f of folders ?? []) {
+      const p = f.parent_id ?? null;
+      const list = m.get(p);
+      if (list) list.push(f);
+      else m.set(p, [f]);
+    }
+    for (const list of m.values()) {
+      list.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return m;
+  }, [folders]);
+
+  const projectsByFolder = useMemo(() => {
+    const m = new Map<string | null, ProjectRow[]>();
+    for (const r of rows ?? []) {
+      const p = r.folder_id ?? null;
+      const list = m.get(p);
+      if (list) list.push(r);
+      else m.set(p, [r]);
+    }
+    for (const list of m.values()) {
+      list.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return m;
+  }, [rows]);
 
   // Ancestor chain of the current folder, root-first — the breadcrumb.
   const crumbs = useMemo(() => {
@@ -789,7 +859,7 @@ export default function LoadGrid({
           )
         : cur
     );
-    if (folderId === f.id) setFolderId(parent);
+    if (folderId === f.id) navigateToFolder(parent);
     void deleteFolder(f.id, parent).then((ok) => {
       if (!ok) resyncFolders();
     });
@@ -881,9 +951,10 @@ export default function LoadGrid({
     });
   };
 
-  // The body's scroll container — the drag manager auto-scrolls it when
-  // the ghost hovers near its top/bottom edge.
+  // The body's scroll containers — the drag manager auto-scrolls whichever
+  // the pointer is inside when the ghost hovers near a top/bottom edge.
   const gridScrollRef = useRef<HTMLDivElement | null>(null);
+  const hierScrollRef = useRef<HTMLDivElement | null>(null);
 
   const { drag, hoverKey, beginDrag, ghostRef } = useTileDrag({
     canDrop: canDropPayload,
@@ -895,8 +966,24 @@ export default function LoadGrid({
         handleDropFolder(p.id, into);
       }
     },
-    scrollRef: gridScrollRef,
+    scrollRefs: [gridScrollRef, hierScrollRef],
   });
+
+  // Hovering a collapsed folder during a drag unfurls it after a short
+  // hold, so nested drop targets become reachable without a click.
+  useEffect(() => {
+    if (!hoverKey || !hoverKey.startsWith("f:")) return;
+    const id = hoverKey.slice(2);
+    const t = window.setTimeout(() => {
+      setExpandedIds((prev) => {
+        if (prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+    }, 500);
+    return () => window.clearTimeout(t);
+  }, [hoverKey]);
 
   const dragProjectIds =
     drag?.kind === "project" ? (drag.projectIds ?? [drag.id]) : null;
@@ -907,7 +994,7 @@ export default function LoadGrid({
         counts,
         inFolder: folderId !== null,
         renameId,
-        onOpen: setFolderId,
+        onOpen: navigateToFolder,
         onMenu: (f, x, y) => setFolderMenu({ folder: f, x, y }),
         onRenameCommit: handleRenameCommit,
         onRenameCancel: () => setRenameId(null),
@@ -945,10 +1032,13 @@ export default function LoadGrid({
       style={{
         display: "flex",
         flexDirection: "column",
-        height: "100%",
+        flex: 1,
         minHeight: 0,
-        // Negate the 12px padding the parent panel applies so the tab
-        // bar spans the full width like a real menu bar.
+        // Parent panels pad 12px; margin pulls the chrome flush to the
+        // card edges. height 100% would leave that 12px as a dead bar
+        // at the bottom — grow by the cancelled padding so the split
+        // (hierarchy + grid) fills the card.
+        height: "calc(100% + 24px)",
         margin: -12,
       }}
     >
@@ -978,7 +1068,7 @@ export default function LoadGrid({
             folderCtx
               ? {
                   crumbs,
-                  onNavigate: setFolderId,
+                  onNavigate: navigateToFolder,
                   onNewFolder: () => void handleCreateFolder(),
                   dropHoverKey: hoverKey,
                 }
@@ -987,43 +1077,96 @@ export default function LoadGrid({
         />
       </div>
       <div
-        ref={gridScrollRef}
-        className="thin-scrollbar"
         style={{
           flex: 1,
           minHeight: 0,
-          overflowY: "auto",
-          padding: 12,
+          minWidth: 0,
+          display: "flex",
         }}
       >
-        {tab === "local" ? (
-          <LocalBody
-            recents={recents}
-            onOpen={(p) => onLoadLocal?.(p)}
-            onRemove={async (p) => {
-              await platform.recents?.remove(p);
-              setManualRefresh((n) => n + 1);
+        {folderCtx && (
+          <HierarchyPane
+            foldersByParent={foldersByParent}
+            projectsByFolder={projectsByFolder}
+            folderId={folderId}
+            expandedIds={expandedIds}
+            onToggle={toggleExpanded}
+            onEnterFolder={navigateToFolder}
+            onLoadProject={onLoad}
+            onRateProject={(row, x, y) => setRatePopover({ row, x, y })}
+            onFolderMenu={(f, x, y) => setFolderMenu({ folder: f, x, y })}
+            renameId={renameId}
+            onRenameCommit={handleRenameCommit}
+            onRenameCancel={() => setRenameId(null)}
+            counts={counts}
+            dropHoverKey={hoverKey}
+            dragId={drag?.id ?? null}
+            dragProjectIds={dragProjectIds}
+            beginDragProject={(e, row) => {
+              const ids =
+                selectedProjectIds.has(row.id) && selectedProjectIds.size > 0
+                  ? Array.from(selectedProjectIds)
+                  : [row.id];
+              beginDrag(e, {
+                kind: "project",
+                id: row.id,
+                row,
+                view: "list",
+                projectIds: ids,
+              });
             }}
-            staggerReady={chromeIn}
-          />
-        ) : (
-          <Body
-            tab={tab}
-            view={view}
-            rows={filteredRows}
-            sort={sort}
-            onSort={toggleSort}
-            signedIn={signedIn}
-            currentUserId={currentUserId ?? null}
-            onLoad={onLoad}
-            onRate={(row, x, y) => setRatePopover({ row, x, y })}
-            staggerReady={chromeIn}
-            onNewProject={onNewProject}
-            folderCtx={folderCtx}
-            leases={leases}
-            selectionCtx={selectionCtx}
+            beginDragFolder={(e, folder, count) =>
+              beginDrag(e, {
+                kind: "folder",
+                id: folder.id,
+                folder,
+                count,
+                view: "list",
+              })
+            }
+            scrollRef={hierScrollRef}
           />
         )}
+        <div
+          ref={gridScrollRef}
+          className="thin-scrollbar"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            minWidth: 0,
+            overflowY: "auto",
+            padding: 12,
+          }}
+        >
+          {tab === "local" ? (
+            <LocalBody
+              recents={recents}
+              onOpen={(p) => onLoadLocal?.(p)}
+              onRemove={async (p) => {
+                await platform.recents?.remove(p);
+                setManualRefresh((n) => n + 1);
+              }}
+              staggerReady={chromeIn}
+            />
+          ) : (
+            <Body
+              tab={tab}
+              view={view}
+              rows={filteredRows}
+              sort={sort}
+              onSort={toggleSort}
+              signedIn={signedIn}
+              currentUserId={currentUserId ?? null}
+              onLoad={onLoad}
+              onRate={(row, x, y) => setRatePopover({ row, x, y })}
+              staggerReady={chromeIn}
+              onNewProject={onNewProject}
+              folderCtx={folderCtx}
+              leases={leases}
+              selectionCtx={selectionCtx}
+            />
+          )}
+        </div>
       </div>
       {ratePopover && (
         <RateProjectPopover
@@ -2409,6 +2552,459 @@ function NewFolderIcon() {
     </svg>
   );
 }
+
+// ========================================================================
+// hierarchy pane (Private tab): always-visible folder tree
+//
+// Root folders sit at the top under an "All" row. A chevron unfurls a
+// folder in place (subfolders + projects). Clicking the row enters that
+// folder in the grid AND unfurls it. Drop targets and pointer-drag match
+// the tiles so the tree is a first-class move destination.
+// ========================================================================
+
+const TREE_ROW_H = 22;
+const TREE_INDENT = 12;
+const TREE_CHEVRON = 16;
+
+function HierarchyPane({
+  foldersByParent,
+  projectsByFolder,
+  folderId,
+  expandedIds,
+  onToggle,
+  onEnterFolder,
+  onLoadProject,
+  onRateProject,
+  onFolderMenu,
+  renameId,
+  onRenameCommit,
+  onRenameCancel,
+  counts,
+  dropHoverKey,
+  dragId,
+  dragProjectIds,
+  beginDragProject,
+  beginDragFolder,
+  scrollRef,
+}: {
+  foldersByParent: Map<string | null, FolderRow[]>;
+  projectsByFolder: Map<string | null, ProjectRow[]>;
+  folderId: string | null;
+  expandedIds: Set<string>;
+  onToggle: (id: string) => void;
+  onEnterFolder: (id: string | null) => void;
+  onLoadProject: (id: string) => void;
+  onRateProject: (row: ProjectRow, x: number, y: number) => void;
+  onFolderMenu: (f: FolderRow, x: number, y: number) => void;
+  renameId: string | null;
+  onRenameCommit: (id: string, name: string) => void;
+  onRenameCancel: () => void;
+  counts: Map<string, number>;
+  dropHoverKey: string | null;
+  dragId: string | null;
+  dragProjectIds: string[] | null;
+  beginDragProject: (e: React.PointerEvent, row: ProjectRow) => void;
+  beginDragFolder: (e: React.PointerEvent, folder: FolderRow, count: number) => void;
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const rootFolders = foldersByParent.get(null) ?? [];
+  return (
+    <div
+      ref={scrollRef}
+      className="thin-scrollbar"
+      style={{
+        width: HIERARCHY_WIDTH,
+        flexShrink: 0,
+        minHeight: 0,
+        overflowY: "auto",
+        overflowX: "hidden",
+        background: "var(--tb-n-1)",
+        borderRight: "1px solid var(--tb-n-7)",
+        padding: "6px 4px",
+        userSelect: "none",
+      }}
+    >
+      <HierarchyAllRow
+        selected={folderId === null}
+        dropHot={dropHoverKey === "root"}
+        onEnter={() => onEnterFolder(null)}
+      />
+      {rootFolders.map((f) => (
+        <HierarchyFolderNode
+          key={f.id}
+          folder={f}
+          depth={0}
+          foldersByParent={foldersByParent}
+          projectsByFolder={projectsByFolder}
+          folderId={folderId}
+          expandedIds={expandedIds}
+          onToggle={onToggle}
+          onEnterFolder={onEnterFolder}
+          onLoadProject={onLoadProject}
+          onRateProject={onRateProject}
+          onFolderMenu={onFolderMenu}
+          renameId={renameId}
+          onRenameCommit={onRenameCommit}
+          onRenameCancel={onRenameCancel}
+          counts={counts}
+          dropHoverKey={dropHoverKey}
+          dragId={dragId}
+          dragProjectIds={dragProjectIds}
+          beginDragProject={beginDragProject}
+          beginDragFolder={beginDragFolder}
+        />
+      ))}
+    </div>
+  );
+}
+
+function HierarchyAllRow({
+  selected,
+  dropHot,
+  onEnter,
+}: {
+  selected: boolean;
+  dropHot: boolean;
+  onEnter: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onMouseDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        onEnter();
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      data-drop-target="root"
+      title="All projects"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+        width: "100%",
+        height: TREE_ROW_H,
+        padding: "0 6px",
+        border: "none",
+        borderRadius: 3,
+        background: dropHot
+          ? "var(--tb-a-navy-deep)"
+          : selected
+            ? "var(--tb-a-navy-deep)"
+            : hover
+              ? "var(--tb-n-3)"
+              : "transparent",
+        color: dropHot || selected ? "var(--tb-a-blue-200)" : "var(--tb-n-16)",
+        fontFamily: "inherit",
+        fontSize: 11,
+        textAlign: "left",
+        cursor: "pointer",
+        boxShadow: dropHot ? "0 0 0 1px var(--tb-a-navy-tint) inset" : "none",
+      }}
+    >
+      <span style={{ width: TREE_CHEVRON, flexShrink: 0 }} />
+      All
+    </button>
+  );
+}
+
+function HierarchyFolderNode({
+  folder,
+  depth,
+  foldersByParent,
+  projectsByFolder,
+  folderId,
+  expandedIds,
+  onToggle,
+  onEnterFolder,
+  onLoadProject,
+  onRateProject,
+  onFolderMenu,
+  renameId,
+  onRenameCommit,
+  onRenameCancel,
+  counts,
+  dropHoverKey,
+  dragId,
+  dragProjectIds,
+  beginDragProject,
+  beginDragFolder,
+}: {
+  folder: FolderRow;
+  depth: number;
+  foldersByParent: Map<string | null, FolderRow[]>;
+  projectsByFolder: Map<string | null, ProjectRow[]>;
+  folderId: string | null;
+  expandedIds: Set<string>;
+  onToggle: (id: string) => void;
+  onEnterFolder: (id: string | null) => void;
+  onLoadProject: (id: string) => void;
+  onRateProject: (row: ProjectRow, x: number, y: number) => void;
+  onFolderMenu: (f: FolderRow, x: number, y: number) => void;
+  renameId: string | null;
+  onRenameCommit: (id: string, name: string) => void;
+  onRenameCancel: () => void;
+  counts: Map<string, number>;
+  dropHoverKey: string | null;
+  dragId: string | null;
+  dragProjectIds: string[] | null;
+  beginDragProject: (e: React.PointerEvent, row: ProjectRow) => void;
+  beginDragFolder: (e: React.PointerEvent, folder: FolderRow, count: number) => void;
+}) {
+  const [hover, setHover] = useState(false);
+  const expanded = expandedIds.has(folder.id);
+  const selected = folderId === folder.id;
+  const renaming = renameId === folder.id;
+  const dropHot = dropHoverKey === `f:${folder.id}`;
+  const dimmed = dragId === folder.id;
+  const childFolders = foldersByParent.get(folder.id) ?? [];
+  const childProjects = projectsByFolder.get(folder.id) ?? [];
+  const hasChildren = childFolders.length + childProjects.length > 0;
+  const count = counts.get(folder.id) ?? 0;
+  return (
+    <>
+      <div
+        onClick={() => {
+          if (renaming || suppressClick) return;
+          onEnterFolder(folder.id);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onFolderMenu(folder, e.clientX, e.clientY);
+        }}
+        onPointerDown={(e) => {
+          if (!renaming) beginDragFolder(e, folder, count);
+        }}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        data-drop-target={`f:${folder.id}`}
+        title={`${folder.name} · ${count} item${count === 1 ? "" : "s"}`}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          height: TREE_ROW_H,
+          paddingLeft: 6 + depth * TREE_INDENT,
+          paddingRight: 6,
+          borderRadius: 3,
+          background: dropHot
+            ? "var(--tb-a-navy-deep)"
+            : selected
+              ? "var(--tb-a-navy-deep)"
+              : hover
+                ? "var(--tb-n-3)"
+                : "transparent",
+          color: dropHot || selected ? "var(--tb-a-blue-200)" : "var(--tb-n-16)",
+          cursor: "pointer",
+          opacity: dimmed ? 0.3 : 1,
+          boxShadow: dropHot ? "0 0 0 1px var(--tb-a-navy-tint) inset" : "none",
+        }}
+      >
+        <HierarchyChevron
+          expanded={expanded}
+          visible={hasChildren}
+          onToggle={() => onToggle(folder.id)}
+        />
+        <span style={{ flexShrink: 0, display: "inline-flex" }}>
+          <FolderGlyph
+            size={12}
+            color={
+              dropHot || selected
+                ? "var(--tb-a-blue-200)"
+                : hover
+                  ? "var(--tb-n-13)"
+                  : "var(--tb-n-10)"
+            }
+          />
+        </span>
+        {renaming ? (
+          <FolderNameInput
+            initial={folder.name}
+            onCommit={(name) => onRenameCommit(folder.id, name)}
+            onCancel={onRenameCancel}
+          />
+        ) : (
+          <span
+            style={{
+              minWidth: 0,
+              flex: 1,
+              fontSize: 11,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {folder.name}
+          </span>
+        )}
+      </div>
+      {expanded &&
+        childFolders.map((f) => (
+          <HierarchyFolderNode
+            key={f.id}
+            folder={f}
+            depth={depth + 1}
+            foldersByParent={foldersByParent}
+            projectsByFolder={projectsByFolder}
+            folderId={folderId}
+            expandedIds={expandedIds}
+            onToggle={onToggle}
+            onEnterFolder={onEnterFolder}
+            onLoadProject={onLoadProject}
+            onRateProject={onRateProject}
+            onFolderMenu={onFolderMenu}
+            renameId={renameId}
+            onRenameCommit={onRenameCommit}
+            onRenameCancel={onRenameCancel}
+            counts={counts}
+            dropHoverKey={dropHoverKey}
+            dragId={dragId}
+            dragProjectIds={dragProjectIds}
+            beginDragProject={beginDragProject}
+            beginDragFolder={beginDragFolder}
+          />
+        ))}
+      {expanded &&
+        childProjects.map((r) => (
+          <HierarchyProjectRow
+            key={r.id}
+            row={r}
+            depth={depth + 1}
+            dimmed={!!dragProjectIds?.includes(r.id)}
+            onLoad={onLoadProject}
+            onRate={onRateProject}
+            beginDrag={(e) => beginDragProject(e, r)}
+          />
+        ))}
+    </>
+  );
+}
+
+function HierarchyProjectRow({
+  row,
+  depth,
+  dimmed,
+  onLoad,
+  onRate,
+  beginDrag,
+}: {
+  row: ProjectRow;
+  depth: number;
+  dimmed: boolean;
+  onLoad: (id: string) => void;
+  onRate: (row: ProjectRow, x: number, y: number) => void;
+  beginDrag: (e: React.PointerEvent) => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      onClick={() => {
+        if (suppressClick) return;
+        onLoad(row.id);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onRate(row, e.clientX, e.clientY);
+      }}
+      onPointerDown={beginDrag}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={row.name}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+        height: TREE_ROW_H,
+        paddingLeft: 6 + depth * TREE_INDENT,
+        paddingRight: 6,
+        borderRadius: 3,
+        background: hover ? "var(--tb-n-3)" : "transparent",
+        color: "var(--tb-n-13)",
+        cursor: "pointer",
+        opacity: dimmed ? 0.3 : 1,
+      }}
+    >
+      <span style={{ width: TREE_CHEVRON, flexShrink: 0 }} />
+      <span style={{ width: 12, flexShrink: 0 }} />
+      <span
+        style={{
+          minWidth: 0,
+          flex: 1,
+          fontSize: 11,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {row.name}
+      </span>
+    </div>
+  );
+}
+
+function HierarchyChevron({
+  expanded,
+  visible,
+  onToggle,
+}: {
+  expanded: boolean;
+  visible: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={expanded ? "Collapse folder" : "Expand folder"}
+      aria-expanded={expanded}
+      onMouseDown={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (visible) onToggle();
+      }}
+      style={{
+        width: TREE_CHEVRON,
+        height: TREE_CHEVRON,
+        flexShrink: 0,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "transparent",
+        border: "none",
+        padding: 0,
+        cursor: visible ? "pointer" : "default",
+        color: "var(--tb-n-11)",
+        opacity: visible ? 1 : 0,
+        pointerEvents: visible ? "auto" : "none",
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          display: "inline-flex",
+          transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+          transition: "transform 120ms",
+        }}
+      >
+        <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+          <path
+            d="M2.5 1.5 L5.5 4 L2.5 6.5"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </span>
+    </button>
+  );
+}
+
+// Grid-view folder: mirrors the ProjectTile footprint (square area +
 
 // Grid-view folder: mirrors the ProjectTile footprint (square area +
 // label strip) with a big glyph instead of a thumbnail. Click enters,

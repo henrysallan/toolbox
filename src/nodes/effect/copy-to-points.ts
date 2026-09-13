@@ -742,6 +742,7 @@ export const copyToPointsNode: NodeDefinition = {
       "rotate_add_default and rotate_field_amount are radians (-π..π / 0..π), not degrees.",
       "Point mode outputs the full Cartesian product of target x instance points (not 1:1); pick_mode narrows which instance points apply per target point.",
       "In point mode only the target points' own named attributes survive onto the output; the instance points' own channels are dropped.",
+      "pick_mode=attribute clamps pick_attr component 0 to [0,1] then floors value×N onto the sorted variant indices (1.0 → last; same as pick_mode=image luminance); a missing channel emits every variant.",
     ],
   },
   backend: "webgl2",
