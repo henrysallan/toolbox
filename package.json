@@ -1,6 +1,6 @@
 {
   "name": "toolbox",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "private": true,
   "description": "Node-graph motion design tool",
   "author": "Isthishenry",
@@ -103,6 +103,7 @@
       "src/lib/export-ffmpeg-args.js",
       "package.json",
       "!node_modules/**/*",
+      ".next/standalone/node_modules/**/*",
       ".next/standalone/**/*",
       ".next/standalone/.next/**/*",
       "!.next/standalone/.next/node_modules/@huggingface/**",

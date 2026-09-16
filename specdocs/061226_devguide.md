@@ -1800,6 +1800,14 @@ native window controls: archive/070626_windows-desktop-build.md.
   dev. The standalone is bundled via **`files` +
   `asarUnpack`** (not `extraResources`, which silently strips top-level
   `node_modules`); server path → `Resources/app.asar.unpacked/.next/standalone`.
+  **`files` ORDER IS LOAD-BEARING**: app-builder-lib splices `!**/node_modules/**`
+  (any depth!) immediately before the FIRST positive pattern containing
+  `node_modules/`, and later patterns win. So a positive `node_modules` pattern
+  must stay ABOVE the `.next/standalone/**` entries —
+  `.next/standalone/node_modules/**/*` is that anchor. Move or delete it and the
+  standalone's traced `node_modules` is silently dropped from the asar; the app
+  builds, signs and notarizes fine, then dies at launch with "couldn't start its
+  local server" (shipped that way in v0.5.5, fixed in v0.5.6).
   The ffmpeg binary, by contrast, DOES ship as `extraResources` (a single file,
   no `node_modules` to strip) → `Resources/ffmpeg`, listed in `mac.binaries` so
   it is signed under the hardened runtime.

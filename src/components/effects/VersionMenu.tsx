@@ -102,6 +102,8 @@ export default function ChangelogPopover({
 }
 
 function Section({ title, items }: { title: string; items: string[] }) {
+  // A release can be fixes-only (or additions-only) — don't render a bare header.
+  if (items.length === 0) return null;
   return (
     <div style={{ marginTop: 4 }}>
       <div

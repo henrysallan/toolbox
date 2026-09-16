@@ -11,6 +11,14 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.5.6",
+    date: "2026-09-15",
+    added: [],
+    changed: [
+      "Fixes the 0.5.5 desktop build, which failed at launch with \"Toolbox couldn't start its local server\" — a packaging-order change dropped the embedded server's dependencies from the app bundle.",
+    ],
+  },
+  {
     version: "0.5.5",
     date: "2026-09-15",
     added: [
