@@ -11,6 +11,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.5.5",
+    date: "2026-09-15",
+    added: [
+      "Spline editor tools — pen, corner, subpath, and tunni handles — plus Transform aux emit and Rasterize Spline fill-holes, from the recent editor land.",
+    ],
+    changed: [
+      "Desktop ProRes 4444 exports keep their transparency in Premiere, After Effects, Final Cut and QuickTime. The bundled ffmpeg wrote an alpha channel Apple's decoder silently dropped, so those apps showed a solid frame (Resolve, with its own decoder, was always fine). Desktop now ships ffmpeg 9.0; browser exports are unchanged.",
+    ],
+  },
+  {
     version: "0.5.4",
     date: "2026-09-13",
     added: [
