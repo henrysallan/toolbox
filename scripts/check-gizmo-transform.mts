@@ -1,6 +1,7 @@
 // Guards the Gizmo node + `transform` socket: identity, compose order,
-// apply-to-spline/points, Gizmo emit, Transform replace when wired, Circle
-// compose-after-generate. Spec: specdocs/082826_gizmo-node.md.
+// apply-to-spline/points, Gizmo emit, Transform replace when wired, Transform
+// aux emit (own TRS / wired passthrough / local-pivot bake / drive a second
+// Transform), Circle compose-after-generate. Spec: specdocs/082826_gizmo-node.md.
 //
 //   npx tsx scripts/check-gizmo-transform.mts
 
@@ -311,6 +312,149 @@ check(
     "Transform wired transform replaces own translate",
     close(c.x, 0.65) && close(c.y, 0.5),
     `got (${c.x}, ${c.y}) — own translateX 0.9 must not apply`
+  );
+}
+
+// ── Transform aux emit ─────────────────────────────────────────────────
+{
+  check(
+    "Transform declares transform aux",
+    transformNode.auxOutputs.some(
+      (s) => s.name === "transform" && s.type === "transform"
+    )
+  );
+}
+
+{
+  const src = squareAt(0.5, 0.5, 0.1);
+  const sockets = transformNode.resolveInputs!({}, {
+    connectedTypes: { image: "spline" },
+  });
+  const sock = sockets.find((s) => s.name === "image");
+  const coerced = coerceValue(src, sock?.type ?? "spline", dummyCtx);
+  const out = transformNode.compute({
+    inputs: { image: coerced },
+    auxIn: {},
+    params: { translateX: 0.12, scaleX: 2, scaleY: 2 },
+    ctx: dummyCtx,
+    nodeId: "xf",
+  }) as NodeOutput;
+  const t = out.aux?.transform as TransformValue | undefined;
+  check(
+    "Transform aux emits own TRS as one op",
+    t?.kind === "transform" &&
+      t.ops.length === 1 &&
+      close(t.ops[0].translateX, 0.12) &&
+      close(t.ops[0].scaleX, 2) &&
+      close(t.ops[0].scaleY, 2),
+    t ? `ops=${t.ops.length} tx=${t.ops[0]?.translateX}` : "missing aux"
+  );
+}
+
+{
+  const src = squareAt(0.5, 0.5, 0.1);
+  const sockets = transformNode.resolveInputs!({}, {
+    connectedTypes: { image: "spline" },
+  });
+  const sock = sockets.find((s) => s.name === "image");
+  const coerced = coerceValue(src, sock?.type ?? "spline", dummyCtx);
+  const out = transformNode.compute({
+    inputs: { image: coerced },
+    auxIn: {},
+    params: {},
+    ctx: dummyCtx,
+    nodeId: "xf",
+  }) as NodeOutput;
+  const t = out.aux?.transform as TransformValue | undefined;
+  check(
+    "identity Transform aux drops the op",
+    t?.kind === "transform" && t.ops.length === 0,
+    t ? `ops=${t.ops.length}` : "missing aux"
+  );
+}
+
+{
+  const src = squareAt(0.5, 0.5, 0.1);
+  const sockets = transformNode.resolveInputs!({}, {
+    connectedTypes: { image: "spline", transform: "transform" },
+  });
+  const sock = sockets.find((s) => s.name === "image");
+  const coerced = coerceValue(src, sock?.type ?? "spline", dummyCtx);
+  const wired: TransformValue = { kind: "transform", ops: [translateOp(0.15)] };
+  const out = transformNode.compute({
+    inputs: { image: coerced, transform: wired },
+    auxIn: {},
+    params: { translateX: 0.9 },
+    ctx: dummyCtx,
+    nodeId: "xf",
+  }) as NodeOutput;
+  const t = out.aux?.transform as TransformValue | undefined;
+  check(
+    "wired Transform aux passes the incoming value through",
+    t?.kind === "transform" &&
+      t.ops.length === 1 &&
+      close(t.ops[0].translateX, 0.15),
+    t ? `ops=${t.ops.length} tx=${t.ops[0]?.translateX}` : "missing aux"
+  );
+}
+
+{
+  // Square at (0.3,0.4) r=0.1 → bbox (0.2,0.3)–(0.4,0.5). Source pivot
+  // (0.5,0.5) bakes to the shape center (0.3,0.4).
+  const src = squareAt(0.3, 0.4, 0.1);
+  const sockets = transformNode.resolveInputs!(
+    { space: "local" },
+    { connectedTypes: { image: "spline" } }
+  );
+  const sock = sockets.find((s) => s.name === "image");
+  const coerced = coerceValue(src, sock?.type ?? "spline", dummyCtx);
+  const out = transformNode.compute({
+    inputs: { image: coerced },
+    auxIn: {},
+    params: { space: "local", scaleX: 2, scaleY: 2, pivotX: 0.5, pivotY: 0.5 },
+    ctx: dummyCtx,
+    nodeId: "xf",
+  }) as NodeOutput;
+  const t = out.aux?.transform as TransformValue | undefined;
+  check(
+    "local-space Transform aux bakes pivot to canvas coords",
+    t?.kind === "transform" &&
+      t.ops.length === 1 &&
+      close(t.ops[0].pivotX, 0.3) &&
+      close(t.ops[0].pivotY, 0.4) &&
+      close(t.ops[0].scaleX, 2),
+    t
+      ? `pivot=(${t.ops[0]?.pivotX}, ${t.ops[0]?.pivotY})`
+      : "missing aux"
+  );
+}
+
+{
+  const src = squareAt(0.5, 0.5, 0.1);
+  const sockets = transformNode.resolveInputs!({}, {
+    connectedTypes: { image: "spline" },
+  });
+  const sock = sockets.find((s) => s.name === "image");
+  const coerced = coerceValue(src, sock?.type ?? "spline", dummyCtx);
+  const driver = transformNode.compute({
+    inputs: { image: coerced },
+    auxIn: {},
+    params: { translateX: 0.2 },
+    ctx: dummyCtx,
+    nodeId: "a",
+  }) as NodeOutput;
+  const driven = transformNode.compute({
+    inputs: { image: coerced, transform: driver.aux?.transform },
+    auxIn: {},
+    params: { translateX: 0.9 },
+    ctx: dummyCtx,
+    nodeId: "b",
+  }) as NodeOutput;
+  const c = centerOf(driven.primary as SplineValue);
+  check(
+    "Transform aux can drive a second Transform (replace own TRS)",
+    close(c.x, 0.7) && close(c.y, 0.5),
+    `got (${c.x}, ${c.y}) — driven node must ignore its own translateX 0.9`
   );
 }
 

@@ -1,8 +1,11 @@
 import type {
   InputSocketDef,
   NodeDefinition,
+  NodeOutput,
   SocketType,
+  SocketValue,
   SplineValue,
+  TransformValue,
 } from "@/engine/types";
 import { transformSpline } from "@/engine/spline-transform";
 import {
@@ -22,7 +25,9 @@ import {
   applyTransformToSpline,
   asTransform,
   composeOpsToAffine,
+  composeTransform,
   invertAffine,
+  opFromParams,
   transformTrsVisible,
 } from "@/engine/transform-value";
 
@@ -37,7 +42,9 @@ import {
 // so the same gizmo drives every kind of data. The input socket retypes itself
 // (and the output) via `resolveInputs`/`resolvePrimaryOutput` + `connectedTypes`
 // — same pattern as the Displace node. The legacy `mode` param is kept hidden
-// for save back-compat but no longer read.
+// for save back-compat but no longer read. A `transform` aux emits the
+// effective placement (wired value, or own TRS with Source-space pivot baked
+// to canvas coords) so another Transform or primitive can share it.
 //
 // Image Tile (AE RepeTile): wrap the inverse-sampled UV instead of clipping
 // it, so extra copies fall out of scale/translate for free. Cost is one
@@ -179,12 +186,38 @@ function isGeometryInput(
   return t === "spline" || t === "points";
 }
 
+// Effective placement this node applied: a wired `transform` replaces own
+// TRS (same as the geometry path). Unwired, own TRS — and when Pivot-from
+// is Source, the pivot is baked from a 0..1 bbox fraction into canvas
+// coords so a downstream Transform / primitive sees the same affine.
+function effectiveTransform(
+  wired: TransformValue | undefined,
+  params: Record<string, unknown>,
+  src: SocketValue | undefined
+): TransformValue {
+  if (wired) return wired;
+  const op = opFromParams(params);
+  if (
+    isLocalPivotSpace(params.space) &&
+    (src?.kind === "spline" || src?.kind === "points")
+  ) {
+    const bbox =
+      src.kind === "spline"
+        ? splineAABB(src)
+        : pointsPositionsAABB(src.positions, src.count);
+    const p = localPivot(bbox, op.pivotX, op.pivotY);
+    op.pivotX = p.x;
+    op.pivotY = p.y;
+  }
+  return composeTransform(undefined, op);
+}
+
 export const transformNode: NodeDefinition = {
   type: "transform",
   name: "Transform",
   category: "utility",
   description:
-    "Scale, rotate, and translate the input around a pivot. Works on images, splines, or points. Wire a Gizmo into Transform to drive the same placement from a shared on-canvas control (that replaces this node's own TRS). `space=local` (Source, the default) is a fraction of the incoming shape's bounds so scale/rotate stay about the shape when you move it; `space=global` (Canvas) pins the pivot to a fixed frame point. Image mode can Tile the source past its edges (AE RepeTile) with per-side extent and Unfold. For SDFs use the Position-pipeline operators (Position Translate / Scale / Rotate) — they compose with Position Repeat / Mirror / Polar for tile-local transforms.",
+    "Scale, rotate, and translate the input around a pivot. Works on images, splines, or points. Wire a Gizmo into Transform to drive the same placement from a shared on-canvas control (that replaces this node's own TRS). The Transform aux emits that effective placement so another Transform or primitive can share it. `space=local` (Source, the default) is a fraction of the incoming shape's bounds so scale/rotate stay about the shape when you move it; `space=global` (Canvas) pins the pivot to a fixed frame point. Image mode can Tile the source past its edges (AE RepeTile) with per-side extent and Unfold. For SDFs use the Position-pipeline operators (Position Translate / Scale / Rotate) — they compose with Position Repeat / Mirror / Polar for tile-local transforms.",
   facts: {
     space: {
       "in:image": ["raster", "canvas01"],
@@ -199,6 +232,7 @@ export const transformNode: NodeDefinition = {
     gotchas: [
       "Behavior follows the connected input's type (image/spline/points), not a mode param; the legacy `mode` param is hidden and no longer read.",
       "Wiring a `transform` socket (e.g. from a Gizmo) replaces this node's own TRS params entirely, using inverse-affine math on images or direct math on spline/points.",
+      "The transform aux emits the placement this node applied: the wired value if connected, else own TRS with space=local pivot baked to canvas coords.",
       "space=local (default) makes pivotX/Y a fraction of the incoming shape's bbox so scale/rotate track it; space=global pins the pivot to a fixed canvas point; images always act as global.",
       "tile (image-only) wraps sampling past the edges by tileLeft/Right/Up/Down source-widths, with tileUnfold mirroring odd copies edge-to-edge.",
       "On points, rotation and scale compose with the point's existing rotation (additive) and scale (multiplicative) rather than replacing them.",
@@ -411,7 +445,9 @@ export const transformNode: NodeDefinition = {
     if (m === "point") return "points";
     return "image";
   },
-  auxOutputs: [],
+  auxOutputs: [
+    { name: "transform", type: "transform", label: "Transform" },
+  ],
   linkedPairs: [{ a: "scaleX", b: "scaleY" }],
 
   compute({ inputs, params, ctx }) {
@@ -419,18 +455,23 @@ export const transformNode: NodeDefinition = {
     // already coerced it to the socket type resolveInputs picked).
     const src = inputs["image"];
     const wired = asTransform(inputs.transform);
+    const xformOut = effectiveTransform(wired, params, src);
+    const pack = (primary: SocketValue): NodeOutput => ({
+      primary,
+      aux: { transform: xformOut },
+    });
 
     if (wired) {
       if (src?.kind === "spline") {
-        return { primary: applyTransformToSpline(src, wired) };
+        return pack(applyTransformToSpline(src, wired));
       }
       if (src?.kind === "points") {
-        return { primary: applyTransformToPoints(src, wired) };
+        return pack(applyTransformToPoints(src, wired));
       }
       const output = ctx.allocImage();
       if (!src || src.kind !== "image") {
         ctx.clearTarget(output, [0, 0, 0, 0]);
-        return { primary: output };
+        return pack(output);
       }
       const affine = composeOpsToAffine(wired.ops);
       const inv = invertAffine(affine) ?? {
@@ -469,7 +510,7 @@ export const transformNode: NodeDefinition = {
         );
         gl.uniform1i(gl.getUniformLocation(prog, "u_tileMode"), tileMode);
       });
-      return { primary: output };
+      return pack(output);
     }
 
     const translateX = (params.translateX as number) ?? 0;
@@ -498,7 +539,7 @@ export const transformNode: NodeDefinition = {
         pivotX: p.x,
         pivotY: p.y,
       });
-      return { primary: out };
+      return pack(out);
     }
 
     if (src?.kind === "points") {
@@ -538,19 +579,19 @@ export const transformNode: NodeDefinition = {
         outScales[i * 2] = getScaleX(src, i) * Math.abs(scaleX);
         outScales[i * 2 + 1] = getScaleY(src, i) * Math.abs(scaleY);
       }
-      return {
-        primary: copyPointsWith(src, {
+      return pack(
+        copyPointsWith(src, {
           positions,
           rotations,
           scales: outScales,
-        }),
-      };
+        })
+      );
     }
 
     const output = ctx.allocImage();
     if (!src || src.kind !== "image") {
       ctx.clearTarget(output, [0, 0, 0, 0]);
-      return { primary: output };
+      return pack(output);
     }
 
     const prog = ctx.getShader("transform/tile", TRANSFORM_FS);
@@ -588,6 +629,6 @@ export const transformNode: NodeDefinition = {
       gl.uniform1i(gl.getUniformLocation(prog, "u_tileMode"), tileMode);
     });
 
-    return { primary: output };
+    return pack(output);
   },
 };

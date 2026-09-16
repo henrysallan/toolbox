@@ -107,15 +107,16 @@ function uploadCanvas(
   gl.bindTexture(gl.TEXTURE_2D, null);
 }
 
-// ---- Hole islands (the `holes` param) -----------------------------------
+// ---- Hole islands (`holes` / `fill_holes`) ------------------------------
 //
 // Per-subpath fills (stacking, ramp colors, layered mode) paint nested
 // contours SOLID — a donut's inner ring, a letter's counter, a liquid
-// surface's air pocket all fill over. With `holes` on, subpaths are
-// grouped into containment ISLANDS — an even-nesting-depth outer plus
-// the odd-depth contours directly inside it — and each island fills as
-// ONE even-odd path (color from its outer), so negative space punches
-// while per-island colors and stacking order survive.
+// surface's air pocket all fill over. With `holes` or `fill_holes` on,
+// subpaths are grouped into containment ISLANDS — an even-nesting-depth
+// outer plus the odd-depth contours directly inside it. Punch fills each
+// island as ONE even-odd path (color from its outer) so negative space
+// cuts out. Fill holes paints those inner contours instead, leaving the
+// outer empty. Per-island colors and stacking order survive either way.
 
 interface HoleIsland {
   root: number;
@@ -221,7 +222,7 @@ function polyBounds(poly: number[]): [number, number, number, number] {
 // diagnostic, and 218 subpaths — an ordinary case — sat just under the cliff.
 const MAX_HOLE_ISLAND_SUBPATHS = 2048;
 
-function groupHoleIslands(subpaths: SplineSubpath[]): HoleIsland[] | null {
+export function groupHoleIslands(subpaths: SplineSubpath[]): HoleIsland[] | null {
   const n = subpaths.length;
   if (n < 2 || n > MAX_HOLE_ISLAND_SUBPATHS) return null;
   const polys = subpaths.map(flattenForContainment);
@@ -279,9 +280,36 @@ function groupHoleIslands(subpaths: SplineSubpath[]): HoleIsland[] | null {
   return [...islands.values()].sort((a, b) => a.root - b.root);
 }
 
+function paintIslandFill(
+  c2d: CanvasRenderingContext2D,
+  subpaths: SplineSubpath[],
+  isl: HoleIsland,
+  W: number,
+  H: number,
+  fillHoles: boolean,
+  styleAt: (i: number, sub: SplineSubpath) => string | CanvasGradient
+) {
+  if (fillHoles) {
+    for (const h of isl.holes) {
+      const path = buildPath2D([subpaths[h]], W, H, true);
+      if (path) {
+        c2d.fillStyle = styleAt(h, subpaths[h]);
+        c2d.fill(path);
+      }
+    }
+    return;
+  }
+  const members = [subpaths[isl.root], ...isl.holes.map((h) => subpaths[h])];
+  const path = buildPath2D(members, W, H, true);
+  if (path) {
+    c2d.fillStyle = styleAt(isl.root, subpaths[isl.root]);
+    c2d.fill(path, "evenodd");
+  }
+}
+
 // Fill the spline into the 2D context with `colorStyle` (a real color for the
 // baked path; "#ffffff" for the image-fill coverage mask). Honors the
-// stack-subpaths / fill-rule / holes params.
+// stack-subpaths / fill-rule / holes / fill_holes params.
 function drawSplineFill(
   c2d: CanvasRenderingContext2D,
   subpaths: SplineSubpath[],
@@ -291,12 +319,15 @@ function drawSplineFill(
   colorStyle: string
 ) {
   c2d.fillStyle = colorStyle;
-  const islands = params.holes === true ? groupHoleIslands(subpaths) : null;
-  if (islands) {
-    for (const isl of islands) {
-      const members = [subpaths[isl.root], ...isl.holes.map((h) => subpaths[h])];
-      const path = buildPath2D(members, W, H, true);
-      if (path) c2d.fill(path, "evenodd");
+  const fillHoles = params.fill_holes === true;
+  const islands =
+    fillHoles || params.holes === true ? groupHoleIslands(subpaths) : null;
+  if (fillHoles || islands) {
+    if (islands) {
+      const styleAt = () => colorStyle;
+      for (const isl of islands) {
+        paintIslandFill(c2d, subpaths, isl, W, H, fillHoles, styleAt);
+      }
     }
     return;
   }
@@ -818,26 +849,35 @@ function drawSplineFlat(
   const strokeRamp = (params.stroke_source as string) === "ramp";
   const layered = (params.overlap as string) === "layered";
   const widthAt = enableStroke ? makeThicknessAt(subpaths, params, W) : null;
-  // Hole islands: nested contours punch out of their container while
-  // per-island colors and stacking order survive (see groupHoleIslands).
+  // Hole islands: nested contours punch out of their container, or fill
+  // as the holes themselves, while per-island colors and stacking order
+  // survive (see groupHoleIslands).
+  const fillHoles = enableFill && params.fill_holes === true;
   const islands =
-    enableFill && params.holes === true ? groupHoleIslands(subpaths) : null;
+    enableFill && (fillHoles || params.holes === true)
+      ? groupHoleIslands(subpaths)
+      : null;
 
   if (layered) {
     if (islands) {
-      // Fill each island even-odd, then stroke its members — a later
-      // island's fill still occludes earlier strokes (layered promise).
+      // Fill each island (punch even-odd, or holes-only), then stroke its
+      // members — a later island's fill still occludes earlier strokes
+      // (layered promise).
       for (const isl of islands) {
         const members = [
           subpaths[isl.root],
           ...isl.holes.map((h) => subpaths[h]),
         ];
         if (enableFill) {
-          const p = buildPath2D(members, W, H, true);
-          if (p) {
-            c2d.fillStyle = fillStyleAt(isl.root, subpaths[isl.root]);
-            c2d.fill(p, "evenodd");
-          }
+          paintIslandFill(
+            c2d,
+            subpaths,
+            isl,
+            W,
+            H,
+            fillHoles,
+            fillStyleAt
+          );
         }
         if (enableStroke) {
           if (strokeRampAlongPath(params)) {
@@ -879,7 +919,7 @@ function drawSplineFlat(
     }
     for (let i = 0; i < subpaths.length; i++) {
       const sub = subpaths[i];
-      if (enableFill) {
+      if (enableFill && !fillHoles) {
         const p = buildPath2D([sub], W, H, true);
         if (p) {
           c2d.fillStyle = fillStyleAt(i, sub);
@@ -914,16 +954,18 @@ function drawSplineFlat(
 
   // flatten: all fills first, then all strokes on top.
   if (enableFill) {
-    if (islands) {
-      for (const isl of islands) {
-        const members = [
-          subpaths[isl.root],
-          ...isl.holes.map((h) => subpaths[h]),
-        ];
-        const p = buildPath2D(members, W, H, true);
-        if (p) {
-          c2d.fillStyle = fillStyleAt(isl.root, subpaths[isl.root]);
-          c2d.fill(p, "evenodd");
+    if (islands || fillHoles) {
+      if (islands) {
+        for (const isl of islands) {
+          paintIslandFill(
+            c2d,
+            subpaths,
+            isl,
+            W,
+            H,
+            fillHoles,
+            fillStyleAt
+          );
         }
       }
     } else if (perSubpathFill || params.stack_subpaths !== false) {
@@ -968,7 +1010,7 @@ export const rasterizeSplineNode: NodeDefinition = {
     gotchas: [
       "thickness/dash_length/dash_gap/dot_spacing/arrow_length default to raw pixels; units=% resolves them as a percent of canvas width instead.",
       "overlap=flatten draws all fills then all strokes on top; overlap=layered fills+strokes each subpath in order so later opaque fills occlude earlier strokes.",
-      "holes groups subpaths into containment islands and fills each as one even-odd path so nested contours punch instead of filling solid; fill only, capped at 2048 subpaths.",
+      "holes groups nested contours into islands and even-odd punches them; fill_holes fills those hole contours instead of the outer (outers with no hole stay empty); fill only, capped at 2048 subpaths.",
       "A per-anchor width profile (Spline Draw's Width tool) fills a variable-width envelope multiplying Thickness by each anchor's width, and ignores dash/dot style.",
       "stroke_ramp_by=progress or attribute ramps color along each subpath's own arc length (start→end) instead of one color per subpath; attribute reads stroke_driver_attr.",
       "ramp_by/stroke_ramp_by/thickness_by=group key off each subpath's stamped groupIndex (attr:group), e.g. from Copy to Points or String Art layers.",
@@ -1006,6 +1048,17 @@ export const rasterizeSplineNode: NodeDefinition = {
     {
       name: "holes",
       label: "Punch holes",
+      type: "boolean",
+      default: false,
+      visibleIf: (p) => p.enable_fill !== false && p.fill_holes !== true,
+    },
+    // Inverse of punch: paint only the nested counters / inner disks,
+    // leave the outer empty. Uses the same containment islands; each
+    // hole takes its own ramp/gradient color. Hidden punch stays on
+    // disk but fill_holes wins when both are true.
+    {
+      name: "fill_holes",
+      label: "Fill holes",
       type: "boolean",
       default: false,
       visibleIf: (p) => p.enable_fill !== false,
@@ -1686,7 +1739,7 @@ export const rasterizeSplineNode: NodeDefinition = {
         mode: "flat2",
         subRef: src.subpaths,
         ov: params.overlap,
-        hol: params.holes,
+        hol: params.fill_holes ? "fill" : params.holes,
         ef: enableFill,
         fsrc: params.fill_source,
         fc: params.fill_color,
@@ -1828,7 +1881,7 @@ export const rasterizeSplineNode: NodeDefinition = {
       ims: imgToStroke,
       ef: enableFill,
       ov: params.overlap,
-      hol: params.holes,
+      hol: params.fill_holes ? "fill" : params.holes,
       fsrc: params.fill_source,
       fc: params.fill_color,
       ramp:

@@ -35,6 +35,10 @@ export function ToolDock({
   showGhosts,
   ghostsOn,
   onToggleGhosts,
+  onCenterHorizontal,
+  onCenterVertical,
+  onMirrorHorizontal,
+  onMirrorVertical,
 }: {
   left: number;
   top: number;
@@ -54,13 +58,18 @@ export function ToolDock({
   showGhosts?: boolean;
   ghostsOn?: boolean;
   onToggleGhosts?: () => void;
+  onCenterHorizontal: () => void;
+  onCenterVertical: () => void;
+  onMirrorHorizontal: () => void;
+  onMirrorVertical: () => void;
 }) {
   const items: { id: ToolMode; label: string; icon: ReactElement }[] = [
     { id: "pen", label: "Pen (P)", icon: <PenIcon /> },
     { id: "pencil", label: "Pencil — freehand (N)", icon: <PencilIcon /> },
     {
       id: "rect",
-      label: "Rectangle (M) — Shift 1:1, Alt from centre",
+      label:
+        "Rectangle (M) — Shift 1:1, Alt from centre; 2+ selected: Merge",
       icon: <RectIcon />,
     },
     {
@@ -120,6 +129,38 @@ export function ToolDock({
           <GhostsIcon />
         </IconToggle>
       )}
+      {/* Canvas-center + mirror — one-shot actions on the current target
+          set (selection, else the active subpath; Path Select = whole
+          path). Divider keeps them off the tool-mode pill. */}
+      <DockDivider />
+      <IconToggle
+        active={false}
+        label="Center horizontally"
+        onClick={onCenterHorizontal}
+      >
+        <CenterHIcon />
+      </IconToggle>
+      <IconToggle
+        active={false}
+        label="Center vertically"
+        onClick={onCenterVertical}
+      >
+        <CenterVIcon />
+      </IconToggle>
+      <IconToggle
+        active={false}
+        label="Mirror horizontally"
+        onClick={onMirrorHorizontal}
+      >
+        <MirrorHIcon />
+      </IconToggle>
+      <IconToggle
+        active={false}
+        label="Mirror vertically"
+        onClick={onMirrorVertical}
+      >
+        <MirrorVIcon />
+      </IconToggle>
     </DockShell>
   );
 }
@@ -454,6 +495,89 @@ function TrashIcon() {
         strokeWidth="1.3"
         strokeLinecap="round"
         strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// Canvas-center X — a vertical midline with two bars of different widths
+// centered on it (Figma "align horizontal centres").
+function CenterHIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M8 2.5v11"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeDasharray="1.6 1.6"
+      />
+      <rect x="3" y="4" width="10" height="2.6" rx="0.6" fill="currentColor" />
+      <rect x="5" y="9.4" width="6" height="2.6" rx="0.6" fill="currentColor" />
+    </svg>
+  );
+}
+
+// Canvas-center Y — a horizontal midline with two bars of different
+// heights centered on it.
+function CenterVIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M2.5 8h11"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeDasharray="1.6 1.6"
+      />
+      <rect x="4" y="3" width="2.6" height="10" rx="0.6" fill="currentColor" />
+      <rect x="9.4" y="5" width="2.6" height="6" rx="0.6" fill="currentColor" />
+    </svg>
+  );
+}
+
+// Mirror across a vertical axis — two triangles pointing at a dashed
+// center line.
+function MirrorHIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M8 2.5v11"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeDasharray="1.6 1.6"
+      />
+      <path
+        d="M2.5 4.5 L6.2 8 L2.5 11.5 Z"
+        fill="currentColor"
+      />
+      <path
+        d="M13.5 4.5 L9.8 8 L13.5 11.5 Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+// Mirror across a horizontal axis.
+function MirrorVIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M2.5 8h11"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeDasharray="1.6 1.6"
+      />
+      <path
+        d="M4.5 2.5 L8 6.2 L11.5 2.5 Z"
+        fill="currentColor"
+      />
+      <path
+        d="M4.5 13.5 L8 9.8 L11.5 13.5 Z"
+        fill="currentColor"
       />
     </svg>
   );

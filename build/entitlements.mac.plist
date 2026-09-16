@@ -7,7 +7,7 @@
   <true/>
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
   <true/>
-  <!-- Load the bundled ffmpeg-static Mach-O (not signed by us). -->
+  <!-- Load the bundled ffmpeg Mach-O from Contents/Resources. -->
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
   <!-- We spawn the Next standalone server via ELECTRON_RUN_AS_NODE. -->

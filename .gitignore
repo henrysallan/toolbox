@@ -21,6 +21,8 @@
 /build/*
 # desktop updater vendor bundle (built by desktop:prepare via esbuild)
 /electron/vendor/
+# bundled ffmpeg binaries (fetched + SHA256-verified by scripts/fetch-ffmpeg.mjs)
+/vendor/ffmpeg/
 
 # …but keep the electron-builder app icons (buildResources convention)
 !/build/icon.icns

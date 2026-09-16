@@ -9,16 +9,24 @@ import { applyShapeBuilderOp, type FaceRef } from "@/engine/spline-planar";
 import type { SplineAnchor, SplineSubpath } from "@/engine/types";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
 import type { BBoxHandle, DragState, SplineEditorEnv } from "./types";
+import { MERGE_DISTANCE_R } from "./constants";
 import {
   autoSmoothHandles,
   bezierAt,
+  clusterKeysByDistance,
   cutSubpathAt,
+  groupSelKeys,
   harmonizeAnchor,
+  mergeAnchorsAt,
+  mergeByClusters,
   mintAnchorId,
   nearestTOnCubic,
+  parseSelKey,
   reverseSubpathAnchors,
+  selKey,
   splitSegmentAnchors,
   subpathsOf,
+  type SelKey,
 } from "./geometry";
 
 export type SplineOps = ReturnType<typeof makeSplineOps>;
@@ -30,8 +38,12 @@ export function makeSplineOps(env: SplineEditorEnv) {
   const readAnchors = (v: SplineParamValue): SplineAnchor[] =>
     subpathsOf(v)[env.activeSubpathRef.current]?.anchors ?? [];
 
-  const withSubpathPatch = (
+  const anchorsOf = (sub: number): SplineAnchor[] =>
+    subpathsOf(env.valueRef.current)[sub]?.anchors ?? [];
+
+  const withSubpathPatchAt = (
     cur: SplineParamValue,
+    idx: number,
     patch: Partial<SplineSubpath>
   ): SplineParamValue => {
     const subpaths = subpathsOf(cur);
@@ -39,18 +51,22 @@ export function makeSplineOps(env: SplineEditorEnv) {
       subpaths.length > 0 ? subpaths : [{ anchors: [], closed: false }];
     return {
       ...cur,
-      subpaths: base.map((s, i) =>
-        i === env.activeSubpathRef.current ? { ...s, ...patch } : s
-      ),
+      subpaths: base.map((s, i) => (i === idx ? { ...s, ...patch } : s)),
     };
   };
 
-  // Switch the active subpath, clearing the anchor selection (indices are
-  // per-subpath, so they don't carry across).
+  const withSubpathPatch = (
+    cur: SplineParamValue,
+    patch: Partial<SplineSubpath>
+  ): SplineParamValue =>
+    withSubpathPatchAt(cur, env.activeSubpathRef.current, patch);
+
+  // Switch the active subpath. Selection is global (`sub:index` keys) so
+  // it survives the switch — clicking a point on another subpath no longer
+  // throws away the rest of the selection.
   const selectSubpath = (i: number) => {
+    env.activeSubpathRef.current = i;
     env.setActiveSubpath(i);
-    env.setSelected(new Set());
-    // Re-selecting a subpath means you may want to extend it again.
     env.setPenSealed(false);
   };
 
@@ -62,7 +78,7 @@ export function makeSplineOps(env: SplineEditorEnv) {
   const selectAllAnchors = (subpathIndex?: number) => {
     const idx = subpathIndex ?? env.activeSubpathRef.current;
     const anchors = subpathsOf(env.valueRef.current)[idx]?.anchors ?? [];
-    env.setSelected(new Set(anchors.map((_, i) => i)));
+    env.setSelected(new Set(anchors.map((_, i) => selKey(idx, i))));
   };
 
   const addAnchorAt = (nx: number, ny: number) => {
@@ -120,11 +136,19 @@ export function makeSplineOps(env: SplineEditorEnv) {
 
   // Insert a new anchor on the segment between anchors i and j at parameter t
   // (de Casteljau split — geometry.ts owns the math).
-  const insertAnchorOnSegment = (i: number, j: number, t: number) => {
+  const insertAnchorOnSegment = (
+    i: number,
+    j: number,
+    t: number,
+    subpathIndex?: number
+  ) => {
+    const idx = subpathIndex ?? env.activeSubpathRef.current;
     const cur = env.valueRef.current;
-    const res = splitSegmentAnchors(readAnchors(cur), i, j, t);
+    const res = splitSegmentAnchors(anchorsOf(idx), i, j, t);
     if (!res) return;
-    env.onChangeRef.current(withSubpathPatch(cur, { anchors: res.anchors }));
+    env.onChangeRef.current(
+      withSubpathPatchAt(cur, idx, { anchors: res.anchors })
+    );
     env.lastAnchorRef.current = res.inserted;
   };
 
@@ -142,16 +166,27 @@ export function makeSplineOps(env: SplineEditorEnv) {
 
   // Scissors (spec 071926 M4): cut the active subpath at an anchor, or at a
   // point on a segment (split first, then cut at the minted anchor).
-  const cutAtAnchor = (idx: number) => {
-    const sub = subpathsOf(env.valueRef.current)[env.activeSubpathRef.current];
+  const cutAtAnchor = (idx: number, subpathIndex?: number) => {
+    const si = subpathIndex ?? env.activeSubpathRef.current;
+    const sub = subpathsOf(env.valueRef.current)[si];
     if (!sub) return;
+    env.activeSubpathRef.current = si;
+    env.setActiveSubpath(si);
     applyCutPieces(cutSubpathAt(sub, idx));
   };
-  const cutAtSegmentPoint = (i: number, j: number, t: number) => {
-    const sub = subpathsOf(env.valueRef.current)[env.activeSubpathRef.current];
+  const cutAtSegmentPoint = (
+    i: number,
+    j: number,
+    t: number,
+    subpathIndex?: number
+  ) => {
+    const si = subpathIndex ?? env.activeSubpathRef.current;
+    const sub = subpathsOf(env.valueRef.current)[si];
     if (!sub) return;
     const res = splitSegmentAnchors(sub.anchors, i, j, t);
     if (!res) return;
+    env.activeSubpathRef.current = si;
+    env.setActiveSubpath(si);
     applyCutPieces(cutSubpathAt({ ...sub, anchors: res.anchors }, res.inserted));
   };
 
@@ -171,7 +206,11 @@ export function makeSplineOps(env: SplineEditorEnv) {
     if (!active || active.closed || active.anchors.length < 2) return;
     const n = active.anchors.length;
     const sel = env.selectedRef.current;
-    if (endpointIndex === undefined && sel.has(0) && sel.has(n - 1)) {
+    if (
+      endpointIndex === undefined &&
+      sel.has(selKey(ai, 0)) &&
+      sel.has(selKey(ai, n - 1))
+    ) {
       toggleClosed();
       return;
     }
@@ -179,8 +218,8 @@ export function makeSplineOps(env: SplineEditorEnv) {
     if (endpointIndex !== undefined) {
       if (endpointIndex === 0 || endpointIndex === n - 1) e = endpointIndex;
     } else if (sel.size === 1) {
-      const s = [...sel][0];
-      if (s === 0 || s === n - 1) e = s;
+      const { sub, index } = parseSelKey([...sel][0]);
+      if (sub === ai && (index === 0 || index === n - 1)) e = index;
     }
     if (e === null) return;
     const ep = active.anchors[e].pos;
@@ -251,79 +290,256 @@ export function makeSplineOps(env: SplineEditorEnv) {
   // between the selection's extremes along that axis. Handles ride along
   // (offsets). One patchAnchors each.
   const alignSelected = (axis: 0 | 1) => {
-    const anchors = readAnchors(env.valueRef.current);
-    const sel = [...env.selectedRef.current].filter((i) => anchors[i]);
-    if (sel.length < 2) return;
-    const avg = sel.reduce((s, i) => s + anchors[i].pos[axis], 0) / sel.length;
-    const patches = new Map<number, Partial<SplineAnchor>>();
-    for (const i of sel) {
-      const pos: [number, number] = [anchors[i].pos[0], anchors[i].pos[1]];
-      pos[axis] = avg;
-      patches.set(i, { pos });
+    const subs = subpathsOf(env.valueRef.current);
+    const items: Array<{ k: SelKey; pos: [number, number] }> = [];
+    for (const k of env.selectedRef.current) {
+      const { sub, index } = parseSelKey(k);
+      const a = subs[sub]?.anchors[index];
+      if (a) items.push({ k, pos: a.pos });
     }
-    patchAnchors(patches);
+    if (items.length < 2) return;
+    const avg = items.reduce((s, it) => s + it.pos[axis], 0) / items.length;
+    const patches = new Map<SelKey, Partial<SplineAnchor>>();
+    for (const it of items) {
+      const pos: [number, number] = [it.pos[0], it.pos[1]];
+      pos[axis] = avg;
+      patches.set(it.k, { pos });
+    }
+    patchBySelKey(patches);
   };
   const distributeSelected = (axis: 0 | 1) => {
-    const anchors = readAnchors(env.valueRef.current);
-    const sel = [...env.selectedRef.current].filter((i) => anchors[i]);
-    if (sel.length < 3) return;
-    const sorted = sel
+    const subs = subpathsOf(env.valueRef.current);
+    const items: Array<{ k: SelKey; pos: [number, number] }> = [];
+    for (const k of env.selectedRef.current) {
+      const { sub, index } = parseSelKey(k);
+      const a = subs[sub]?.anchors[index];
+      if (a) items.push({ k, pos: a.pos });
+    }
+    if (items.length < 3) return;
+    const sorted = items
       .slice()
-      .sort((a, b) => anchors[a].pos[axis] - anchors[b].pos[axis]);
-    const lo = anchors[sorted[0]].pos[axis];
-    const hi = anchors[sorted[sorted.length - 1]].pos[axis];
-    const patches = new Map<number, Partial<SplineAnchor>>();
-    sorted.forEach((idx, k) => {
-      const pos: [number, number] = [anchors[idx].pos[0], anchors[idx].pos[1]];
+      .sort((a, b) => a.pos[axis] - b.pos[axis]);
+    const lo = sorted[0].pos[axis];
+    const hi = sorted[sorted.length - 1].pos[axis];
+    const patches = new Map<SelKey, Partial<SplineAnchor>>();
+    sorted.forEach((it, k) => {
+      const pos: [number, number] = [it.pos[0], it.pos[1]];
       pos[axis] = lo + ((hi - lo) * k) / (sorted.length - 1);
-      patches.set(idx, { pos });
+      patches.set(it.k, { pos });
     });
-    patchAnchors(patches);
+    patchBySelKey(patches);
   };
 
-  const updateAnchor = (i: number, patch: Partial<SplineAnchor>) => {
-    const cur = env.valueRef.current;
-    const anchors = readAnchors(cur);
-    const next = withSubpathPatch(cur, {
-      anchors: anchors.map((a, idx) => (idx === i ? { ...a, ...patch } : a)),
-    });
-    env.onChangeRef.current(next);
+  // Same target set as modal G/S/R: Path Select → every anchor; otherwise
+  // the selection, or the whole active subpath when nothing is selected.
+  const editTargets = (): Array<{ k: SelKey; a: SplineAnchor }> => {
+    const subs = subpathsOf(env.valueRef.current);
+    const out: Array<{ k: SelKey; a: SplineAnchor }> = [];
+    const add = (sub: number, index: number) => {
+      const a = subs[sub]?.anchors[index];
+      if (a) out.push({ k: selKey(sub, index), a });
+    };
+    if (env.tool === "path") {
+      for (let s = 0; s < subs.length; s++) {
+        const n = subs[s]?.anchors.length ?? 0;
+        for (let i = 0; i < n; i++) add(s, i);
+      }
+      return out;
+    }
+    const sel = env.selectedRef.current;
+    if (sel.size > 0) {
+      for (const k of sel) {
+        const p = parseSelKey(k);
+        add(p.sub, p.index);
+      }
+      if (out.length > 0) return out;
+    }
+    const ai = env.activeSubpathRef.current;
+    const n = subs[ai]?.anchors.length ?? 0;
+    for (let i = 0; i < n; i++) add(ai, i);
+    return out;
   };
 
-  // Patch several anchors in one onChange. Needed when a single gesture
-  // (segment drag, align/even on a multi-selection) must touch more than one
-  // anchor: calling updateAnchor twice in a row would have the second read a
-  // stale value (React hasn't re-rendered yet) and clobber the first.
-  const patchAnchors = (patches: Map<number, Partial<SplineAnchor>>) => {
+  // Slide the target set so its bounding-box center sits on the canvas
+  // midline (0.5) of `axis` — 0 = horizontal (center X), 1 = vertical
+  // (center Y). Handles ride along as offsets.
+  const centerSelected = (axis: 0 | 1) => {
+    const items = editTargets();
+    if (items.length === 0) return;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const it of items) {
+      const v = it.a.pos[axis];
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    const delta = 0.5 - (lo + hi) / 2;
+    if (!Number.isFinite(delta) || Math.abs(delta) < 1e-12) return;
+    const patches = new Map<SelKey, Partial<SplineAnchor>>();
+    for (const it of items) {
+      const pos: [number, number] = [it.a.pos[0], it.a.pos[1]];
+      pos[axis] += delta;
+      patches.set(it.k, { pos });
+    }
+    patchBySelKey(patches);
+  };
+
+  // Flip the target set across its bounding-box center on `axis` —
+  // 0 = mirror horizontally (across a vertical line), 1 = mirror
+  // vertically (across a horizontal line). Handle offsets flip on the
+  // same axis so the curve reflects with the anchors.
+  const mirrorSelected = (axis: 0 | 1) => {
+    const items = editTargets();
+    if (items.length === 0) return;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const it of items) {
+      const v = it.a.pos[axis];
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    const pivot = (lo + hi) / 2;
+    if (!Number.isFinite(pivot)) return;
+    const sx = axis === 0 ? -1 : 1;
+    const sy = axis === 1 ? -1 : 1;
+    const flipH = (
+      v: [number, number] | undefined
+    ): [number, number] | undefined =>
+      v ? ([v[0] * sx, v[1] * sy] as [number, number]) : v;
+    const patches = new Map<SelKey, Partial<SplineAnchor>>();
+    for (const it of items) {
+      const a = it.a;
+      const patch: Partial<SplineAnchor> = {
+        pos: [
+          axis === 0 ? 2 * pivot - a.pos[0] : a.pos[0],
+          axis === 1 ? 2 * pivot - a.pos[1] : a.pos[1],
+        ],
+      };
+      const inn = flipH(a.inHandle);
+      const out = flipH(a.outHandle);
+      if (inn) patch.inHandle = inn;
+      if (out) patch.outHandle = out;
+      patches.set(it.k, patch);
+    }
+    patchBySelKey(patches);
+  };
+
+  const commitMerge = (
+    result: {
+      subpaths: SplineSubpath[];
+      active: number;
+      mergedKey: SelKey;
+    } | null
+  ) => {
+    if (!result) return;
     const cur = env.valueRef.current;
-    const anchors = readAnchors(cur);
-    const next = withSubpathPatch(cur, {
-      anchors: anchors.map((a, idx) => {
-        const p = patches.get(idx);
-        return p ? { ...a, ...p } : a;
+    env.onChangeRef.current({ ...cur, subpaths: result.subpaths });
+    env.setActiveSubpath(result.active);
+    env.setSelected(new Set([result.mergedKey]));
+    env.lastAnchorRef.current = parseSelKey(result.mergedKey).index;
+  };
+
+  // Merge At Center: collapse the current selection onto its centroid, then
+  // stitch every involved subpath into one chain at that point.
+  const mergeSelectedAtCenter = () => {
+    const sel = env.selectedRef.current;
+    if (sel.size < 2) return;
+    const subs = subpathsOf(env.valueRef.current);
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (const k of sel) {
+      const { sub, index } = parseSelKey(k);
+      const a = subs[sub]?.anchors[index];
+      if (!a) continue;
+      sx += a.pos[0];
+      sy += a.pos[1];
+      n++;
+    }
+    if (n < 2) return;
+    commitMerge(mergeAnchorsAt(subs, sel, [sx / n, sy / n]));
+  };
+
+  // Merge By Distance: cluster selected anchors that sit within
+  // MERGE_DISTANCE_R pixels, then collapse+stitch each cluster. No close
+  // pairs → no-op (use At Center).
+  const mergeSelectedByDistance = () => {
+    const sel = env.selectedRef.current;
+    if (sel.size < 2) return;
+    const subs = subpathsOf(env.valueRef.current);
+    const items: Array<{
+      key: SelKey;
+      pos: [number, number];
+      px: { x: number; y: number };
+    }> = [];
+    for (const k of sel) {
+      const { sub, index } = parseSelKey(k);
+      const a = subs[sub]?.anchors[index];
+      if (!a) continue;
+      items.push({ key: k, pos: a.pos, px: env.normToPx(a.pos) });
+    }
+    const clusters = clusterKeysByDistance(items, MERGE_DISTANCE_R);
+    if (clusters.length === 0) return;
+    commitMerge(mergeByClusters(subs, clusters));
+  };
+
+  const patchBySelKey = (patches: Map<SelKey, Partial<SplineAnchor>>) => {
+    if (patches.size === 0) return;
+    const cur = env.valueRef.current;
+    const grouped = groupSelKeys(patches.keys());
+    env.onChangeRef.current({
+      ...cur,
+      subpaths: subpathsOf(cur).map((s, si) => {
+        const idxs = grouped.get(si);
+        if (!idxs) return s;
+        return {
+          ...s,
+          anchors: s.anchors.map((a, ai) => {
+            const p = patches.get(selKey(si, ai));
+            return p ? { ...a, ...p } : a;
+          }),
+        };
       }),
     });
-    env.onChangeRef.current(next);
   };
 
-  // Apply a position delta to many anchors at once. Used for group drags
-  // when the user moves a multi-selection in select mode. Handle offsets
-  // are stored relative to pos, so they ride along automatically.
+  const updateAnchor = (
+    i: number,
+    patch: Partial<SplineAnchor>,
+    subpathIndex?: number
+  ) => {
+    const idx = subpathIndex ?? env.activeSubpathRef.current;
+    patchBySelKey(new Map([[selKey(idx, i), patch]]));
+  };
+
+  // Patch several anchors of one subpath in one onChange. Needed when a
+  // single gesture (segment drag, align/even on a multi-selection) must
+  // touch more than one anchor: calling updateAnchor twice in a row would
+  // have the second read a stale value (React hasn't re-rendered yet) and
+  // clobber the first.
+  const patchAnchors = (
+    patches: Map<number, Partial<SplineAnchor>>,
+    subpathIndex?: number
+  ) => {
+    const idx = subpathIndex ?? env.activeSubpathRef.current;
+    const mapped = new Map<SelKey, Partial<SplineAnchor>>();
+    for (const [i, p] of patches) mapped.set(selKey(idx, i), p);
+    patchBySelKey(mapped);
+  };
+
+  // Apply a position delta to many anchors at once (any subpath). Used for
+  // group drags when the user moves a multi-selection. Handle offsets are
+  // stored relative to pos, so they ride along automatically.
   const moveAnchors = (
-    starts: Map<number, [number, number]>,
+    starts: Map<SelKey, [number, number]>,
     dx: number,
     dy: number
   ) => {
-    const cur = env.valueRef.current;
-    const anchors = readAnchors(cur);
-    const next = withSubpathPatch(cur, {
-      anchors: anchors.map((a, idx) => {
-        const start = starts.get(idx);
-        if (!start) return a;
-        return { ...a, pos: [start[0] + dx, start[1] + dy] };
-      }),
-    });
-    env.onChangeRef.current(next);
+    const patches = new Map<SelKey, Partial<SplineAnchor>>();
+    for (const [k, start] of starts) {
+      patches.set(k, { pos: [start[0] + dx, start[1] + dy] });
+    }
+    patchBySelKey(patches);
   };
 
   // Path Select move: translate every anchor of every subpath by (dx, dy) in
@@ -409,31 +625,41 @@ export function makeSplineOps(env: SplineEditorEnv) {
     return { sx, sy }; // applied scale, for the drag HUD readout
   };
 
-  const deleteAnchorIndices = (indices: Set<number>) => {
+  const deleteAnchorIndices = (indices: Set<SelKey>) => {
     if (indices.size === 0) return;
     const cur = env.valueRef.current;
-    const anchors = readAnchors(cur);
-    const next = withSubpathPatch(cur, {
-      anchors: anchors.filter((_, idx) => !indices.has(idx)),
+    const grouped = groupSelKeys(indices);
+    env.onChangeRef.current({
+      ...cur,
+      subpaths: subpathsOf(cur).map((s, si) => {
+        const idxs = grouped.get(si);
+        if (!idxs) return s;
+        const drop = new Set(idxs);
+        return { ...s, anchors: s.anchors.filter((_, i) => !drop.has(i)) };
+      }),
     });
-    env.onChangeRef.current(next);
   };
 
   const deleteAnchor = (i: number) => {
     const cur = env.valueRef.current;
+    const ai = env.activeSubpathRef.current;
     const anchors = readAnchors(cur);
     const next = withSubpathPatch(cur, {
       anchors: anchors.filter((_, idx) => idx !== i),
     });
     env.onChangeRef.current(next);
-    // Reindex the selection: anchors after `i` shift down by one, the
-    // deleted index drops out. Without this the selection points at
-    // stale slots after a delete.
+    // Reindex the selection: anchors after `i` on this subpath shift down
+    // by one; other subpaths' keys are unchanged.
     if (env.selectedRef.current.size > 0) {
-      const nextSel = new Set<number>();
-      for (const s of env.selectedRef.current) {
-        if (s === i) continue;
-        nextSel.add(s > i ? s - 1 : s);
+      const nextSel = new Set<SelKey>();
+      for (const k of env.selectedRef.current) {
+        const p = parseSelKey(k);
+        if (p.sub !== ai) {
+          nextSel.add(k);
+          continue;
+        }
+        if (p.index === i) continue;
+        nextSel.add(selKey(p.sub, p.index > i ? p.index - 1 : p.index));
       }
       env.setSelected(nextSel);
     }
@@ -538,10 +764,12 @@ export function makeSplineOps(env: SplineEditorEnv) {
   // Resolve which anchors a context-menu action applies to: the whole
   // selection if the right-clicked anchor is part of a multi-selection,
   // otherwise just the clicked anchor.
-  const targetsFor = (index: number): number[] => {
+  const targetsFor = (index: number, subpathIndex?: number): SelKey[] => {
+    const sub = subpathIndex ?? env.activeSubpathRef.current;
+    const k = selKey(sub, index);
     const sel = env.selectedRef.current;
-    if (sel.has(index) && sel.size > 1) return [...sel];
-    return [index];
+    if (sel.has(k) && sel.size > 1) return [...sel];
+    return [k];
   };
 
   // Resolve one Shape Builder gesture (spec 071926 M3): one onChange — so
@@ -566,20 +794,14 @@ export function makeSplineOps(env: SplineEditorEnv) {
   // pen click excludes the whole active subpath so a new point never lands
   // exactly on a neighbor and mints a degenerate segment).
   const anchorSnapTargets = (
-    excludeActive: Set<number> | null
+    exclude: Set<SelKey> | null
   ): Array<{ x: number; y: number }> => {
     const subs = subpathsOf(env.valueRef.current);
     const out: Array<{ x: number; y: number }> = [];
     for (let s = 0; s < subs.length; s++) {
       const anchors = subs[s]?.anchors ?? [];
       for (let i = 0; i < anchors.length; i++) {
-        if (
-          excludeActive &&
-          s === env.activeSubpathRef.current &&
-          excludeActive.has(i)
-        ) {
-          continue;
-        }
+        if (exclude && exclude.has(selKey(s, i))) continue;
         out.push(env.normToPx(anchors[i].pos));
       }
     }
@@ -591,41 +813,45 @@ export function makeSplineOps(env: SplineEditorEnv) {
 
   const applyHandleOp = (
     index: number,
-    op: (a: SplineAnchor) => SplineAnchor
+    op: (a: SplineAnchor) => SplineAnchor,
+    subpathIndex?: number
   ) => {
-    const anchors = readAnchors(env.valueRef.current);
-    const patches = new Map<number, Partial<SplineAnchor>>();
-    for (const idx of targetsFor(index)) {
-      const a = anchors[idx];
+    const subI = subpathIndex ?? env.activeSubpathRef.current;
+    const patches = new Map<SelKey, Partial<SplineAnchor>>();
+    for (const k of targetsFor(index, subI)) {
+      const { sub, index: idx } = parseSelKey(k);
+      const a = anchorsOf(sub)[idx];
       if (!a) continue;
       const r = op(a);
-      patches.set(idx, {
+      patches.set(k, {
         inHandle: r.inHandle,
         outHandle: r.outHandle,
         broken: r.broken,
       });
     }
-    if (patches.size) patchAnchors(patches);
+    if (patches.size) patchBySelKey(patches);
   };
 
   // Harmonize (spec 080226 M2): slide each qualifying target anchor along
   // its handle axis to G2 curvature continuity (geometry.ts owns the math).
   // Non-qualifying anchors (broken, endpoints, straight sides) skip
   // silently; one patchAnchors for the lot.
-  const harmonizeAnchors = (index: number) => {
-    const cur = env.valueRef.current;
-    const sub = subpathsOf(cur)[env.activeSubpathRef.current];
-    if (!sub) return;
-    const patches = new Map<number, Partial<SplineAnchor>>();
-    for (const idx of targetsFor(index)) {
-      const patch = harmonizeAnchor(sub.anchors, sub.closed, idx);
-      if (patch) patches.set(idx, patch);
+  const harmonizeAnchors = (index: number, subpathIndex?: number) => {
+    const subI = subpathIndex ?? env.activeSubpathRef.current;
+    const patches = new Map<SelKey, Partial<SplineAnchor>>();
+    for (const k of targetsFor(index, subI)) {
+      const { sub, index: idx } = parseSelKey(k);
+      const sp = subpathsOf(env.valueRef.current)[sub];
+      if (!sp) continue;
+      const patch = harmonizeAnchor(sp.anchors, sp.closed, idx);
+      if (patch) patches.set(k, patch);
     }
-    if (patches.size) patchAnchors(patches);
+    if (patches.size) patchBySelKey(patches);
   };
 
   return {
     readAnchors,
+    anchorsOf,
     withSubpathPatch,
     selectSubpath,
     selectAllAnchors,
@@ -634,6 +860,7 @@ export function makeSplineOps(env: SplineEditorEnv) {
     insertAnchorOnSegment,
     updateAnchor,
     patchAnchors,
+    patchBySelKey,
     moveAnchors,
     translateWholePath,
     scaleWholePath,
@@ -656,5 +883,9 @@ export function makeSplineOps(env: SplineEditorEnv) {
     reverseActiveSubpath,
     alignSelected,
     distributeSelected,
+    centerSelected,
+    mirrorSelected,
+    mergeSelectedAtCenter,
+    mergeSelectedByDistance,
   };
 }

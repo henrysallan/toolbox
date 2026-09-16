@@ -50,6 +50,10 @@ export const COL_INACTIVE = "rgba(148, 163, 184, 0.55)"; // slate-400 @ 55%
 // Snapping (snapping.ts, spec 071926 M2): px radius within which a dragged /
 // placed point locks onto an anchor or canvas guide. Cmd/Ctrl suppresses.
 export const SNAP_R = 8;
+// Merge by Distance (M menu): cluster selected anchors whose on-screen
+// positions sit within this many pixels. Wider than snap so a multi-select
+// of nearly-coincident points welds without having to stack them first.
+export const MERGE_DISTANCE_R = SNAP_R * 2;
 export const COL_GUIDE = "var(--tb-a-green-400)"; // smart-guide green — distinct from all editor chrome
 // Hovered (not selected) anchor/handle outline — one step lighter than the
 // resting blue so hover reads without competing with amber selection.

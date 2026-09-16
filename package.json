@@ -6,6 +6,9 @@
   "author": "Isthishenry",
   "main": "electron/main.js",
   "scripts": {
+    "postinstall": "node scripts/fetch-ffmpeg.mjs",
+    "fetch:ffmpeg": "node scripts/fetch-ffmpeg.mjs",
+    "check:prores-alpha": "node scripts/check-prores-alpha.mjs",
     "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
@@ -14,7 +17,7 @@
     "typecheck": "tsc --noEmit",
     "gen:theme-css": "tsx scripts/gen-theme-css.mts",
     "check:theme-css": "tsx scripts/gen-theme-css.mts --check",
-    "check": "tsx scripts/check-no-nul.mts && tsx scripts/check-validator.mts && tsx scripts/check-builder.mts && tsx scripts/check-edit.mts && tsx scripts/check-fragment-roundtrip.mts && tsx scripts/check-recipe-loop.mts && tsx scripts/check-edit-loop.mts && tsx scripts/check-persistence.mts && tsx scripts/check-graph-ops.mts && tsx scripts/check-kernel.mts && tsx scripts/check-sim-preroll.mts && tsx scripts/check-profiler.mts && tsx scripts/check-output-gating.mts && tsx scripts/check-scalar-fp.mts && tsx scripts/check-offset.mts && tsx scripts/check-spline-morph.mts && tsx scripts/check-marching-squares.mts && tsx scripts/check-audio-chain.mts && tsx scripts/check-note-ops.mts && tsx scripts/check-node-presets.mts && tsx scripts/check-svg-write.mts && tsx scripts/check-image-trace.mts && tsx scripts/check-time-offset.mts && tsx scripts/check-model-group.mts && tsx scripts/check-cursor-capture.mts && tsx scripts/check-tracker.mts && tsx scripts/check-accumulator.mts && tsx scripts/check-advect-points.mts && tsx scripts/check-point-labels.mts && tsx scripts/check-transform-pivot.mts && tsx scripts/check-map-attribute.mts && tsx scripts/check-attribute-read.mts && tsx scripts/check-gizmo-transform.mts && tsx scripts/check-points-3d.mts && tsx scripts/check-proximity-merge.mts && tsx scripts/check-connect-points.mts && tsx scripts/check-points-to-spline.mts && tsx scripts/check-taper-spline.mts && tsx scripts/check-point-expression.mts && tsx scripts/check-spline-preview.mts && tsx scripts/check-spline-pack.mts && tsx scripts/check-zones.mts && tsx scripts/check-primitives-3d.mts && tsx scripts/check-material-3d.mts && tsx scripts/check-arc.mts && tsx scripts/check-points-on-path.mts && tsx scripts/check-rope-simulator.mts && tsx scripts/check-color-ramp.mts && tsx scripts/check-trim-path.mts && tsx scripts/check-mirror.mts && tsx scripts/check-stagger.mts && tsx scripts/check-lyapunov.mts && tsx scripts/check-subpath-driver.mts && tsx scripts/check-expression-channels.mts && tsx scripts/check-spline-attrs.mts && tsx scripts/check-filter-points.mts && tsx scripts/check-video-frame-cache.mts && tsx scripts/check-gradient-fill.mts && tsx scripts/check-node-facts.mts && tsx scripts/check-node-layout.mts",
+    "check": "tsx scripts/check-no-nul.mts && tsx scripts/check-validator.mts && tsx scripts/check-builder.mts && tsx scripts/check-edit.mts && tsx scripts/check-fragment-roundtrip.mts && tsx scripts/check-recipe-loop.mts && tsx scripts/check-edit-loop.mts && tsx scripts/check-persistence.mts && tsx scripts/check-graph-ops.mts && tsx scripts/check-kernel.mts && tsx scripts/check-sim-preroll.mts && tsx scripts/check-profiler.mts && tsx scripts/check-output-gating.mts && tsx scripts/check-scalar-fp.mts && tsx scripts/check-offset.mts && tsx scripts/check-spline-morph.mts && tsx scripts/check-marching-squares.mts && tsx scripts/check-audio-chain.mts && tsx scripts/check-note-ops.mts && tsx scripts/check-node-presets.mts && tsx scripts/check-svg-write.mts && tsx scripts/check-image-trace.mts && tsx scripts/check-time-offset.mts && tsx scripts/check-model-group.mts && tsx scripts/check-cursor-capture.mts && tsx scripts/check-tracker.mts && tsx scripts/check-accumulator.mts && tsx scripts/check-advect-points.mts && tsx scripts/check-point-labels.mts && tsx scripts/check-transform-pivot.mts && tsx scripts/check-map-attribute.mts && tsx scripts/check-attribute-read.mts && tsx scripts/check-gizmo-transform.mts && tsx scripts/check-points-3d.mts && tsx scripts/check-proximity-merge.mts && tsx scripts/check-connect-points.mts && tsx scripts/check-points-to-spline.mts && tsx scripts/check-taper-spline.mts && tsx scripts/check-point-expression.mts && tsx scripts/check-spline-preview.mts && tsx scripts/check-spline-pack.mts && tsx scripts/check-zones.mts && tsx scripts/check-primitives-3d.mts && tsx scripts/check-material-3d.mts && tsx scripts/check-arc.mts && tsx scripts/check-points-on-path.mts && tsx scripts/check-rope-simulator.mts && tsx scripts/check-color-ramp.mts && tsx scripts/check-trim-path.mts && tsx scripts/check-mirror.mts && tsx scripts/check-stagger.mts && tsx scripts/check-lyapunov.mts && tsx scripts/check-subpath-driver.mts && tsx scripts/check-expression-channels.mts && tsx scripts/check-spline-attrs.mts && tsx scripts/check-spline-anchor-keys.mts && tsx scripts/check-spline-merge.mts && tsx scripts/check-filter-points.mts && tsx scripts/check-video-frame-cache.mts && tsx scripts/check-gradient-fill.mts && tsx scripts/check-rasterize-holes.mts && tsx scripts/check-node-facts.mts && tsx scripts/check-node-layout.mts",
     "check:accumulator": "tsx scripts/check-accumulator.mts",
     "check:advect-points": "tsx scripts/check-advect-points.mts",
     "check:point-labels": "tsx scripts/check-point-labels.mts",
@@ -43,6 +46,8 @@
     "check:lyapunov": "tsx scripts/check-lyapunov.mts",
     "check:subpath-driver": "tsx scripts/check-subpath-driver.mts",
     "check:spline-attrs": "tsx scripts/check-spline-attrs.mts",
+    "check:spline-anchor-keys": "tsx scripts/check-spline-anchor-keys.mts",
+    "check:spline-merge": "tsx scripts/check-spline-merge.mts",
     "check:filter-points": "tsx scripts/check-filter-points.mts",
     "check:video-frame-cache": "tsx scripts/check-video-frame-cache.mts",
     "check:node-facts": "tsx scripts/check-node-facts.mts",
@@ -98,7 +103,6 @@
       "src/lib/export-ffmpeg-args.js",
       "package.json",
       "!node_modules/**/*",
-      "node_modules/ffmpeg-static/**/*",
       ".next/standalone/**/*",
       ".next/standalone/.next/**/*",
       "!.next/standalone/.next/node_modules/@huggingface/**",
@@ -110,7 +114,6 @@
       "!node_modules/@anthropic-ai/claude-agent-sdk-*/**"
     ],
     "asarUnpack": [
-      "node_modules/ffmpeg-static/**/*",
       ".next/standalone/**/*",
       ".next/standalone/.next/**/*",
       "scripts/agent-host.mjs",
@@ -121,6 +124,15 @@
     ],
     "mac": {
       "icon": "build/icon.icns",
+      "extraResources": [
+        {
+          "from": "vendor/ffmpeg/darwin-arm64/ffmpeg",
+          "to": "ffmpeg"
+        }
+      ],
+      "binaries": [
+        "Contents/Resources/ffmpeg"
+      ],
       "artifactName": "${productName}-${arch}.${ext}",
       "target": [
         {
@@ -145,6 +157,12 @@
     },
     "win": {
       "icon": "build/icon.ico",
+      "extraResources": [
+        {
+          "from": "vendor/ffmpeg/win32-x64/ffmpeg.exe",
+          "to": "ffmpeg.exe"
+        }
+      ],
       "artifactName": "${productName}-Setup.${ext}",
       "target": [
         {
@@ -177,7 +195,6 @@
     "bezier-js": "^6.1.4",
     "d3-delaunay": "^6.0.4",
     "esm-potrace-wasm": "^0.5.1",
-    "ffmpeg-static": "^5.3.0",
     "gifsicle-wasm-browser": "^1.5.19",
     "hash-wasm": "^4.12.0",
     "jszip": "^3.10.1",
@@ -191,6 +208,7 @@
     "tone": "^15.1.22"
   },
   "devDependencies": {
+    "ffmpeg-static": "^5.3.0",
     "@anthropic-ai/claude-agent-sdk": "^0.3.229",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@tailwindcss/postcss": "^4",

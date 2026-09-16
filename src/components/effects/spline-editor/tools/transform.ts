@@ -28,7 +28,7 @@
 
 import type { SplineAnchor } from "@/engine/types";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
-import { mintAnchorId, subpathsOf } from "../geometry";
+import { mintAnchorId, parseSelKey, selKey, subpathsOf } from "../geometry";
 import type { ModalTransform, SplineEditorEnv } from "../types";
 
 // Which anchors a modal transform acts on. Empty ⇒ nothing to transform.
@@ -41,13 +41,16 @@ function modalTargets(env: SplineEditorEnv): Array<[number, number]> {
     }
     return out;
   }
-  const ai = env.activeSubpathRef.current;
-  const anchors = subs[ai]?.anchors ?? [];
   const sel = env.selectedRef.current;
   if (sel.size > 0) {
-    for (const i of sel) if (anchors[i]) out.push([ai, i]);
+    for (const k of sel) {
+      const { sub, index } = parseSelKey(k);
+      if (subs[sub]?.anchors[index]) out.push([sub, index]);
+    }
     if (out.length > 0) return out;
   }
+  const ai = env.activeSubpathRef.current;
+  const anchors = subs[ai]?.anchors ?? [];
   for (let a = 0; a < anchors.length; a++) out.push([ai, a]);
   return out;
 }
@@ -106,8 +109,8 @@ export function beginExtrude(
   const sel = env.selectedRef.current;
   let from = n - 1;
   if (sel.size === 1) {
-    const s = [...sel][0];
-    if (s === 0 || s === n - 1) from = s;
+    const { sub: s, index } = parseSelKey([...sel][0]);
+    if (s === si && (index === 0 || index === n - 1)) from = index;
   }
   // A lone anchor is both ends; appending keeps index order intuitive.
   const atStart = from === 0 && n > 1;
@@ -127,14 +130,14 @@ export function beginExtrude(
   env.onChangeRef.current(next);
   // Leave the new anchor selected: after the confirming click it's still an
   // endpoint, so pressing E again extrudes from it and the tool chains.
-  env.setSelected(new Set([newIndex]));
+  env.setSelected(new Set([selKey(si, newIndex)]));
   env.lastAnchorRef.current = newIndex;
   return {
     mode: "move",
     targets: [[si, newIndex]],
     startValue: next,
     cancelValue: cur,
-    cancelSelection: new Set([from]),
+    cancelSelection: new Set([selKey(si, from)]),
     pivot: [minted.pos[0], minted.pos[1]],
     startNorm: env.clientToNorm(pointer.x, pointer.y),
     axis: null,

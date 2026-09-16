@@ -19,7 +19,7 @@ jobs:
           node-version: 24
           cache: npm
       # --ignore-scripts: typecheck + the check scripts need no postinstall
-      # binaries (electron, ffmpeg-static) — skipping them is faster and
+      # binaries (electron, the vendored ffmpeg) — skipping them is faster and
       # keeps CI off arbitrary install scripts.
       - run: npm ci --ignore-scripts
       - run: npm run typecheck

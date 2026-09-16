@@ -22,6 +22,7 @@ import {
   anchorTrackId,
   gpointXKey,
   gpointYKey,
+  insertableAnchorIdsAtTick,
   resolveAnchorTracks,
 } from "@/engine/conventions";
 import type { EvalCache } from "@/engine/evaluator";
@@ -106,6 +107,7 @@ export function SplineEditorOverlayAtTick({
   onParamChange,
   onSelectNode,
   onAnchorAnimate,
+  onAnchorInsertKey,
 }: {
   node: EffectsNode;
   // Full node list — the overlay ghosts every OTHER Spline Draw node's
@@ -118,13 +120,16 @@ export function SplineEditorOverlayAtTick({
   onParamChange: ParamChange;
   onSelectNode?: (nodeId: string) => void;
   // Per-anchor keyframing (spec 072726 M6): create/remove the anchor
-  // tracks for a set of anchors of one subpath. EffectsApp owns the
+  // tracks for selected anchors (any subpaths). EffectsApp owns the
   // animation-map mutation (+ lazy id minting + undo snapshot).
   onAnchorAnimate?: (
     nodeId: string,
-    subpathIndex: number,
-    anchorIndexes: number[],
+    targets: Array<{ sub: number; indexes: number[] }>,
     enable: boolean
+  ) => void;
+  onAnchorInsertKey?: (
+    nodeId: string,
+    targets: Array<{ sub: number; indexes: number[] }>
   ) => void;
 }) {
   const currentTick = useClock((s) => s.tick);
@@ -162,6 +167,10 @@ export function SplineEditorOverlayAtTick({
     const id = anchorTrackId(k);
     if (id) animatedAnchorIds.add(id);
   }
+  const insertableAnchorIds = insertableAnchorIdsAtTick(
+    node.data.animation,
+    currentTick
+  );
   const pathAnimated = !!(
     block &&
     block.animated &&
@@ -181,11 +190,16 @@ export function SplineEditorOverlayAtTick({
       others={others}
       onSelectNode={onSelectNode}
       animatedAnchorIds={animatedAnchorIds}
+      insertableAnchorIds={insertableAnchorIds}
       pathAnimated={pathAnimated}
       onAnchorAnimate={
         onAnchorAnimate
-          ? (subpathIndex, anchorIndexes, enable) =>
-              onAnchorAnimate(node.id, subpathIndex, anchorIndexes, enable)
+          ? (targets, enable) => onAnchorAnimate(node.id, targets, enable)
+          : undefined
+      }
+      onAnchorInsertKey={
+        onAnchorInsertKey
+          ? (targets) => onAnchorInsertKey(node.id, targets)
           : undefined
       }
       // Guidelines (spec 080226 M5): stored in the hidden `spline_guides`

@@ -71,9 +71,12 @@ function buildEncoderArgs(codec, crf, proresProfile, alpha) {
     }
     case "qtrle":
       // QuickTime Animation (RLE): lossless 8-bit RGBA with a STRAIGHT alpha
-      // channel that After Effects AND DaVinci Resolve both read reliably —
-      // unlike ffmpeg's ProRes 4444 alpha, whose signaling neither app fully
-      // honors (Resolve ignores the channel, AE decodes it opaque). RLE
+      // channel that After Effects and Premiere read via their own RLE decoder.
+      // NOTE: macOS itself no longer ships an Animation decoder, so these files
+      // do NOT open in FCP/QuickTime — prefer ProRes 4444 for an Apple pipeline.
+      // (This option predates the ffmpeg 9.0 bump: ProRes 4444 alpha was broken
+      // for Apple decoders under the old bundled ffmpeg 6.0, but Resolve always
+      // read it fine. See specdocs/091526_prores-alpha.md.) RLE
       // compresses flat/transparent runs extremely well (great for cutout
       // motion graphics — often smaller than ProRes) but can balloon on busy
       // full-frame content. Always alpha-bearing; `alpha`/`crf` don't apply.

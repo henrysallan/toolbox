@@ -7,6 +7,9 @@ import type {
 } from "./types";
 import {
   evaluateKeyframesAt,
+  findKeyframeAt,
+  upsertKeyframe,
+  type AnimationMap,
   type KeyframeAnimationBlock,
 } from "./keyframes";
 
@@ -273,6 +276,61 @@ export function resolveAnchorTracks<T extends { subpaths: SplineSubpath[] }>(
     }
   }
   return touched && out ? { ...spline, subpaths: out } : null;
+}
+
+// Anchors that can take a new key at `tick`: at least one of their
+// pos/in/out tracks is animated and has no keyframe there. Empty while
+// whole-shape Path Animation is on (the either/or).
+export function insertableAnchorIdsAtTick(
+  animation: AnimationMap | undefined,
+  tick: number
+): Set<string> {
+  const out = new Set<string>();
+  if (!animation) return out;
+  if (animation.spline?.animated && animation.spline.keyframes.length > 0) {
+    return out;
+  }
+  for (const [key, block] of Object.entries(animation)) {
+    if (!block.animated) continue;
+    const id = anchorTrackId(key);
+    if (!id) continue;
+    if (!findKeyframeAt(block, tick)) out.add(id);
+  }
+  return out;
+}
+
+// Pin the evaluated pose of `anchorIndexes` onto their existing per-anchor
+// tracks at `tick`. Skips un-animated anchors and Path Animation. Returns
+// null when nothing changed so the caller can skip the undo/write.
+export function insertAnchorKeysAtTick(
+  animation: AnimationMap,
+  spline: { subpaths: SplineSubpath[] },
+  subpathIndex: number,
+  anchorIndexes: number[],
+  tick: number
+): AnimationMap | null {
+  if (animation.spline?.animated && animation.spline.keyframes.length > 0) {
+    return null;
+  }
+  const evaluated = resolveAnchorTracks(spline, animation, tick) ?? spline;
+  const sub = evaluated.subpaths[subpathIndex];
+  if (!sub) return null;
+  let next: AnimationMap = animation;
+  let changed = false;
+  const pin = (key: string, value: [number, number]) => {
+    const blk = next[key];
+    if (!blk?.animated) return;
+    next = { ...next, [key]: upsertKeyframe(blk, tick, value, "easeInOut") };
+    changed = true;
+  };
+  for (const ai of anchorIndexes) {
+    const a = sub.anchors[ai];
+    if (!a?.id) continue;
+    pin(anchorPosKey(a.id), [a.pos[0], a.pos[1]]);
+    pin(anchorInKey(a.id), [a.inHandle?.[0] ?? 0, a.inHandle?.[1] ?? 0]);
+    pin(anchorOutKey(a.id), [a.outHandle?.[0] ?? 0, a.outHandle?.[1] ?? 0]);
+  }
+  return changed ? next : null;
 }
 
 export const MASK_INPUT_NAME = "mask";

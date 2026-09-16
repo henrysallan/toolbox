@@ -1,6 +1,7 @@
-// Sub-path Select (direct selection) tool — click a subpath to make it
-// active, then edit its anchors: select/shift-extend, marquee on empty
-// background, group-drag a selection, or work a curve segment.
+// Sub-path Select (direct selection) tool — every subpath's anchors are
+// selectable (marquee / shift-click span them). The last-clicked subpath
+// becomes active for pen-extend / handles / width. Group-drag a selection,
+// or work a curve segment.
 //
 // Segment grammar (revised 2026-08-02): a PLAIN press on a segment selects
 // its two adjacent anchors and drags them together (the segment translates
@@ -12,9 +13,10 @@
 // specdocs/archive/071926_spline-draw-authoring-upgrade.md.
 
 import { DRAG_THRESHOLD } from "../constants";
-import { nearestTOnCubic } from "../geometry";
+import { nearestTOnCubic, parseSelKey, selKey, subpathsOf } from "../geometry";
 import type { DragState, PointerLike, SplineEditorEnv } from "../types";
 import type { SplineOps } from "../ops";
+import type { SelKey } from "../geometry";
 
 // Background drag in sub-path mode → marquee. Plain click without movement
 // clears the selection (resolved in resolveMarquee on pointerup).
@@ -42,14 +44,17 @@ export function resolveMarquee(
   const y1 = Math.max(drag.startClient.y, drag.currentClient.y);
   const moved = Math.hypot(x1 - x0, y1 - y0) >= DRAG_THRESHOLD;
   if (moved) {
-    const anchors = ops.readAnchors(env.valueRef.current);
+    const subs = subpathsOf(env.valueRef.current);
     const next = drag.additive
       ? new Set(drag.baseSelection)
-      : new Set<number>();
-    for (let i = 0; i < anchors.length; i++) {
-      const p = env.normToPx(anchors[i].pos);
-      if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) {
-        next.add(i);
+      : new Set<SelKey>();
+    for (let s = 0; s < subs.length; s++) {
+      const anchors = subs[s]?.anchors ?? [];
+      for (let i = 0; i < anchors.length; i++) {
+        const p = env.normToPx(anchors[i].pos);
+        if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) {
+          next.add(selKey(s, i));
+        }
       }
     }
     env.setSelected(next);
@@ -66,23 +71,26 @@ export function resolveMarquee(
 export function subpathAnchorSelection(
   ops: SplineOps,
   env: SplineEditorEnv,
+  sub: number,
   index: number,
   e: PointerLike
-): Map<number, [number, number]> {
+): Map<SelKey, [number, number]> {
+  const k = selKey(sub, index);
   const cur = new Set(env.selectedRef.current);
   if (e.shiftKey) {
-    if (cur.has(index)) cur.delete(index);
-    else cur.add(index);
-  } else if (!cur.has(index)) {
+    if (cur.has(k)) cur.delete(k);
+    else cur.add(k);
+  } else if (!cur.has(k)) {
     cur.clear();
-    cur.add(index);
+    cur.add(k);
   }
   env.setSelected(cur);
-  const anchors = ops.readAnchors(env.valueRef.current);
-  const groupStarts = new Map<number, [number, number]>();
-  for (const i of cur) {
-    const ai = anchors[i];
-    if (ai) groupStarts.set(i, [ai.pos[0], ai.pos[1]]);
+  const subs = subpathsOf(env.valueRef.current);
+  const groupStarts = new Map<SelKey, [number, number]>();
+  for (const key of cur) {
+    const p = parseSelKey(key);
+    const ai = subs[p.sub]?.anchors[p.index];
+    if (ai) groupStarts.set(key, [ai.pos[0], ai.pos[1]]);
   }
   return groupStarts;
 }
@@ -93,11 +101,13 @@ export function subpathAnchorSelection(
 export function segmentParamAtClient(
   ops: SplineOps,
   env: SplineEditorEnv,
-  seg: { i: number; j: number },
+  seg: { sub?: number; i: number; j: number },
   cx: number,
   cy: number
 ): number | null {
-  const anchors = ops.readAnchors(env.valueRef.current);
+  const anchors = ops.anchorsOf(
+    seg.sub ?? env.activeSubpathRef.current
+  );
   const A = anchors[seg.i];
   const B = anchors[seg.j];
   if (!A || !B) return null;
@@ -126,31 +136,35 @@ export function segmentParamAtClient(
 export function beginSegmentSelect(
   ops: SplineOps,
   env: SplineEditorEnv,
-  seg: { seg: number; i: number; j: number },
+  seg: { seg: number; sub: number; i: number; j: number },
   e: PointerLike
 ) {
-  const anchors = ops.readAnchors(env.valueRef.current);
+  const anchors = ops.anchorsOf(seg.sub);
   const A = anchors[seg.i];
   if (!A) return;
+  const ki = selKey(seg.sub, seg.i);
+  const kj = selKey(seg.sub, seg.j);
   const next = e.shiftKey
     ? new Set(env.selectedRef.current)
-    : new Set<number>();
-  next.add(seg.i);
-  next.add(seg.j);
+    : new Set<SelKey>();
+  next.add(ki);
+  next.add(kj);
   env.setSelected(next);
-  // No setHoverSeg here — the pointer is over the segment, so hover already
-  // highlighted it (and forcing it on would outlive a drag that ends
-  // elsewhere, since the enter/leave handlers stand down mid-gesture).
+  env.activeSubpathRef.current = seg.sub;
+  env.setActiveSubpath(seg.sub);
   env.lastAnchorRef.current = seg.i;
-  const groupStarts = new Map<number, [number, number]>();
-  for (const i of next) {
-    const ai = anchors[i];
-    if (ai) groupStarts.set(i, [ai.pos[0], ai.pos[1]]);
+  const subs = subpathsOf(env.valueRef.current);
+  const groupStarts = new Map<SelKey, [number, number]>();
+  for (const key of next) {
+    const p = parseSelKey(key);
+    const ai = subs[p.sub]?.anchors[p.index];
+    if (ai) groupStarts.set(key, [ai.pos[0], ai.pos[1]]);
   }
   const [nx, ny] = env.clientToNorm(e.clientX, e.clientY);
   env.setDrag({
     kind: "anchor",
     index: seg.i,
+    sub: seg.sub,
     grabOffset: { x: A.pos[0] - nx, y: A.pos[1] - ny },
     startClient: { x: e.clientX, y: e.clientY },
     moved: false,
@@ -163,14 +177,17 @@ export function beginSegmentSelect(
 export function beginSegmentDrag(
   ops: SplineOps,
   env: SplineEditorEnv,
-  seg: { seg: number; i: number; j: number },
+  seg: { seg: number; sub: number; i: number; j: number },
   e: PointerLike
 ) {
   const t = segmentParamAtClient(ops, env, seg, e.clientX, e.clientY);
   if (t === null) return;
-  env.setHoverSeg(seg.seg);
+  env.setHoverSeg({ sub: seg.sub, seg: seg.seg });
+  env.activeSubpathRef.current = seg.sub;
+  env.setActiveSubpath(seg.sub);
   env.setDrag({
     kind: "segment",
+    sub: seg.sub,
     seg: seg.seg,
     i: seg.i,
     j: seg.j,

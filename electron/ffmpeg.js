@@ -1,23 +1,37 @@
 // Native ffmpeg streaming encode (main process). The renderer drives the frame
-// loop and pushes RGBA8 frames; we pipe them to a bundled ffmpeg-static process
+// loop and pushes RGBA8 frames; we pipe them to a bundled ffmpeg process
 // reading rawvideo from stdin, and write the encoded file straight to a path
 // the USER picked via a native Save dialog. No wasm heap, real threads, no
 // whole-export buffering. See specdocs/archive/062626_electron-native-export.md.
 "use strict";
 
-const { ipcMain, dialog, BrowserWindow } = require("electron");
+const { app, ipcMain, dialog, BrowserWindow } = require("electron");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const fsp = require("fs/promises");
 const os = require("os");
 const path = require("path");
-// In a packaged app the binary is unpacked from the asar (see asarUnpack in
-// package.json build config), so the path ffmpeg-static reports inside
-// app.asar must be redirected to app.asar.unpacked.
-let ffmpegPath = require("ffmpeg-static");
-if (ffmpegPath && ffmpegPath.includes("app.asar")) {
-  ffmpegPath = ffmpegPath.replace("app.asar", "app.asar.unpacked");
+// ffmpeg 9.0, vendored by scripts/fetch-ffmpeg.mjs (NOT the ffmpeg-static npm
+// package, which is stuck on 6.0 and writes ProRes 4444 alpha that Apple's
+// decoder silently renders opaque — see specdocs/091526_prores-alpha.md).
+// Packaged: electron-builder copies it to Contents/Resources (extraResources),
+// outside the asar, so it needs no unpacking dance. Dev: straight from vendor/.
+const FFMPEG_BIN = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+function resolveDevFfmpeg() {
+  const vendor = path.join(__dirname, "..", "vendor", "ffmpeg");
+  // process.arch is the ELECTRON binary's arch, which on this studio's Mac is
+  // x64 under Rosetta even though the hardware (and the vendored build) is
+  // arm64 — so fall back to the other arch rather than losing native export.
+  const candidates = [process.arch, "arm64", "x64"];
+  for (const arch of candidates) {
+    const p = path.join(vendor, `${process.platform}-${arch}`, FFMPEG_BIN);
+    if (fs.existsSync(p)) return p;
+  }
+  return path.join(vendor, `${process.platform}-${process.arch}`, FFMPEG_BIN);
 }
+const ffmpegPath = app.isPackaged
+  ? path.join(process.resourcesPath, FFMPEG_BIN)
+  : resolveDevFfmpeg();
 // Shared, validated arg builder — identical codec/ProRes/alpha behavior as the
 // web ffmpeg.wasm path.
 const { buildAudioArgs, buildEncoderArgs } = require("../src/lib/export-ffmpeg-args.js");

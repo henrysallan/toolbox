@@ -9,7 +9,7 @@
 
 import type { SplineAnchor } from "@/engine/types";
 import { CORNER_WIDGET_OFFSET } from "../constants";
-import { subpathsOf } from "../geometry";
+import { parseSelKey, selKey, subpathsOf } from "../geometry";
 import type { DragState, PointerLike, SplineEditorEnv } from "../types";
 import type { SplineOps } from "../ops";
 
@@ -103,9 +103,16 @@ function cornerTargets(
   const sub = subpathsOf(env.valueRef.current)[env.activeSubpathRef.current];
   const closed = sub?.closed ?? false;
   const sel = env.selectedRef.current;
-  return sel.has(index) && sel.size > 1
-    ? [...sel].filter((i) => cornerEligible(anchors, closed, i))
-    : [index];
+  const ai = env.activeSubpathRef.current;
+  const k = selKey(ai, index);
+  if (!(sel.has(k) && sel.size > 1)) return [index];
+  const out: number[] = [];
+  for (const key of sel) {
+    const p = parseSelKey(key);
+    if (p.sub !== ai) continue;
+    if (cornerEligible(anchors, closed, p.index)) out.push(p.index);
+  }
+  return out.length > 0 ? out : [index];
 }
 
 // Alt-click on a Live Corners widget cycles the corner STYLE (spec 080226

@@ -44,8 +44,8 @@ jobs:
 
   build-mac:
     needs: ensure-release
-    # Apple Silicon runner — matches the arm64 dmg target and arm64
-    # ffmpeg-static install.
+    # Apple Silicon runner — matches the arm64 dmg target and the arm64
+    # ffmpeg fetched by postinstall.
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -112,8 +112,8 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        # npm ci also runs ffmpeg-static's install.js, which fetches the
-        # win32-x64 ffmpeg.exe bundled into the app.
+        # npm ci also runs our postinstall (scripts/fetch-ffmpeg.mjs), which
+        # fetches + SHA256-verifies the win32-x64 ffmpeg.exe bundled into the app.
         run: npm ci
 
       - name: Build export template

@@ -1727,11 +1727,19 @@ native window controls: archive/070626_windows-desktop-build.md.
   native dialogs in main, never supplied by the page; bytes cross as ArrayBuffer.
 - **Native export** (`electron/ffmpeg.js`): the renderer keeps the frame loop
   (engine settle), reads RGBA8 per frame and streams it to a bundled
-  `ffmpeg-static` process via **rawvideo on stdin** (`await`-per-frame
+  **ffmpeg 9.0** process via **rawvideo on stdin** (`await`-per-frame
   backpressure), written straight to the chosen path. Encoder/ProRes/alpha args
   are the **single source of truth** in `src/lib/export-ffmpeg-args.js`, shared
   by this and the wasm path (export-ffmpeg.ts). Only the standalone Export's
   heavy tier routes native; Render Queue still uses wasm.
+  The binary is vendored by `scripts/fetch-ffmpeg.mjs` (SHA256-pinned, fetched
+  on `postinstall` into gitignored `vendor/ffmpeg/<platform>-<arch>/`), NOT the
+  `ffmpeg-static` package — that is pinned to ffmpeg 6.0, whose `prores_ks`
+  writes ProRes 4444 alpha that Apple's decoder silently renders opaque
+  (Premiere/AE/FCP), while Resolve shows it fine. `ffmpeg-static` is now
+  dev-only (`scripts/bench-video-seek.cjs`). After changing the pin, run
+  `npm run check:prores-alpha` — ffprobe cannot catch this, only Apple's
+  decoder can. See `specdocs/091526_prores-alpha.md`.
 - **Transcode-on-import**: Electron's Chromium decodes fewer codecs than a
   system browser, so undecodable videos (10-bit/4:2:2 H.264, HEVC, ProRes) fail
   with `MediaError code 4`. `registerVideoFile` (lib/video.ts) falls back to
@@ -1785,12 +1793,16 @@ native window controls: archive/070626_windows-desktop-build.md.
   env-prefix is mac-only).
 - **Packaging gotchas** (electron-builder, package.json `build`): pin
   `mac.target` arch to **arm64** (it targets the build host's node arch, and the
-  studio node is x64-under-Rosetta → wrong-arch app runs slow). `ffmpeg-static`
-  installs per node arch too — force arm64 if node is x64
-  (`npm_config_arch=arm64 node node_modules/ffmpeg-static/install.js`); the real
-  fix is a native arm64 node. The standalone is bundled via **`files` +
+  studio node is x64-under-Rosetta → wrong-arch app runs slow). The vendored
+  ffmpeg hits the same trap from the other side: `fetch-ffmpeg.mjs` asks
+  `sysctl hw.optional.arm64` instead of trusting `process.arch` (override with
+  `--platform=win32-x64`), and `electron/ffmpeg.js` falls back across arches in
+  dev. The standalone is bundled via **`files` +
   `asarUnpack`** (not `extraResources`, which silently strips top-level
   `node_modules`); server path → `Resources/app.asar.unpacked/.next/standalone`.
+  The ffmpeg binary, by contrast, DOES ship as `extraResources` (a single file,
+  no `node_modules` to strip) → `Resources/ffmpeg`, listed in `mac.binaries` so
+  it is signed under the hardened runtime.
   Builds are unsigned (`identity:null`) → Gatekeeper warns; notarization is TODO.
   OAuth on desktop needs `http://127.0.0.1:38274/auth/callback` allowlisted in
   Supabase.

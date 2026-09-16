@@ -7,7 +7,7 @@
 
 import type { SplineAnchor } from "@/engine/types";
 import { DRAG_THRESHOLD, PENCIL_MIN_SAMPLE } from "./constants";
-import { bezierAt } from "./geometry";
+import { bezierAt, selKey } from "./geometry";
 import type { DragState, SplineEditorEnv } from "./types";
 import type { SplineOps } from "./ops";
 import { angleLockPx, guideSnapLines, snapPoint } from "./snapping";
@@ -30,9 +30,9 @@ export function dragMove(
   e: PointerEvent
 ) {
   const [nx, ny] = env.clientToNorm(e.clientX, e.clientY);
-  const anchors = ops.readAnchors(env.valueRef.current);
   switch (drag.kind) {
     case "new": {
+      const anchors = ops.readAnchors(env.valueRef.current);
       const dx = e.clientX - drag.startClient.x;
       const dy = e.clientY - drag.startClient.y;
       if (!drag.moved) {
@@ -86,9 +86,9 @@ export function dragMove(
           !env.snapEnabledRef.current || e.metaKey || e.ctrlKey;
         if (!suppress && env.rect) {
           const exclude =
-            drag.groupStarts && drag.groupStarts.size > 1
+            drag.groupStarts && drag.groupStarts.size > 0
               ? new Set(drag.groupStarts.keys())
-              : new Set([drag.index]);
+              : new Set([selKey(drag.sub, drag.index)]);
           const p = env.normToPx([tx, ty]);
           const res = snapPoint(
             env.rect,
@@ -106,18 +106,15 @@ export function dragMove(
         } else {
           env.setSnapGuides([]);
         }
-        // Group drags use the snapshot to keep relative offsets exact;
-        // single drags fall back to the original grab-offset path.
+        const draggedKey = selKey(drag.sub, drag.index);
         if (drag.groupStarts && drag.groupStarts.size > 1) {
-          const start = drag.groupStarts.get(drag.index);
+          const start = drag.groupStarts.get(draggedKey);
           if (!start) break;
           ops.moveAnchors(drag.groupStarts, tx - start[0], ty - start[1]);
         } else {
-          ops.updateAnchor(drag.index, {
-            pos: [tx, ty],
-          });
+          ops.updateAnchor(drag.index, { pos: [tx, ty] }, drag.sub);
         }
-        const start = drag.groupStarts?.get(drag.index);
+        const start = drag.groupStarts?.get(draggedKey);
         const delta = start
           ? `  Δ ${f3(tx - start[0])}, ${f3(ty - start[1])}`
           : "";
@@ -130,7 +127,7 @@ export function dragMove(
       break;
     }
     case "handle": {
-      const a = anchors[drag.index];
+      const a = ops.anchorsOf(drag.sub)[drag.index];
       if (!a) break;
       // Shift locks the handle to 45° increments about its anchor
       // (snapping.ts) — Shift is free during handle drags.
@@ -167,7 +164,7 @@ export function dragMove(
         patch.inHandle = [hx, hy];
         if (opposed) patch.outHandle = opposed;
       }
-      ops.updateAnchor(drag.index, patch);
+      ops.updateAnchor(drag.index, patch, drag.sub);
       const o = env.normToPx(a.pos);
       const ang = (Math.atan2(py - o.y, px - o.x) * 180) / Math.PI;
       env.setHud({
@@ -185,6 +182,7 @@ export function dragMove(
       // the minimum-norm least-squares solution — each handle shifts in
       // proportion to its influence at t. t is cached from drag-start so
       // the curve doesn't slide under the cursor.
+      const anchors = ops.anchorsOf(drag.sub);
       const A = anchors[drag.i];
       const B = anchors[drag.j];
       if (!A || !B) break;
@@ -220,7 +218,8 @@ export function dragMove(
               broken: true,
             },
           ],
-        ])
+        ]),
+        drag.sub
       );
       break;
     }

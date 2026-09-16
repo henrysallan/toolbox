@@ -6,6 +6,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { MultiPolygon } from "polygon-clipping";
 import type { FaceRef, PlanarShape } from "@/engine/spline-planar";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
+import type { SelKey } from "./geometry";
 import type { SnapGuide } from "./snapping";
 
 export type ToolMode =
@@ -74,18 +75,18 @@ export type DragState =
   | {
       kind: "anchor";
       index: number;
+      sub: number;
       grabOffset: { x: number; y: number }; // stored-coord offset (anchor - pointer)
       startClient: { x: number; y: number };
       moved: boolean;
-      // Snapshot of every anchor's pos at gesture start, keyed by index.
-      // For multi-select drags the whole group moves by the same delta;
-      // for single-anchor drags this still contains just the dragged
-      // anchor's start so endpoint math is uniform.
-      groupStarts?: Map<number, [number, number]>;
+      // Snapshot of every selected anchor's pos at gesture start, keyed by
+      // selKey(sub, index) so a multi-select can span subpaths.
+      groupStarts?: Map<SelKey, [number, number]>;
     }
   | {
       kind: "handle";
       index: number;
+      sub: number;
       side: "in" | "out";
       // Smooth (un-broken) anchor: the partner handle stays collinear with
       // the dragged one but keeps its own length. False (Alt or broken) —
@@ -98,6 +99,7 @@ export type DragState =
       // moving its two interior controls. t (the grabbed parameter) is
       // cached at drag-start so the curve doesn't slide under the cursor.
       kind: "segment";
+      sub: number;
       seg: number;
       i: number;
       j: number;
@@ -112,7 +114,7 @@ export type DragState =
       // Selection that was already active when the marquee started —
       // shift-marquee unions with this; plain marquee replaces it.
       additive: boolean;
-      baseSelection: Set<number>;
+      baseSelection: Set<SelKey>;
     }
   | {
       // Path Select drag: translate every anchor of every subpath by the
@@ -181,6 +183,7 @@ export type DragState =
       // handle-ray intersection re-aims BOTH of the segment's handles at
       // the new point, each preserving its captured tension fraction.
       kind: "tunni";
+      sub: number;
       seg: number;
       i: number;
       j: number;
@@ -223,7 +226,7 @@ export interface ModalTransform {
   // than leaving a duplicate anchor behind the way Blender does) and puts
   // the selection back on the anchor it grew from.
   cancelValue: SplineParamValue;
-  cancelSelection: Set<number> | null;
+  cancelSelection: Set<SelKey> | null;
   // Median of the targets + the pointer, both in normalized space. Note the
   // overlay's normalized space is aspect-corrected, so a normalized offset
   // maps to px by a UNIFORM scale (rect.width) on both axes — scale and
@@ -251,10 +254,20 @@ export interface HudState {
 // or for a point on a segment (right-clicked at parameter t between anchors
 // i and j; spec 071926 M4 scissors/insert).
 export type MenuState =
-  | { kind: "anchor"; x: number; y: number; index: number }
-  | { kind: "segment"; x: number; y: number; i: number; j: number; t: number }
+  | { kind: "anchor"; x: number; y: number; sub: number; index: number }
+  | {
+      kind: "segment";
+      x: number;
+      y: number;
+      sub: number;
+      i: number;
+      j: number;
+      t: number;
+    }
   // Canvas background (spec 080226 M5): add guides at the click point.
-  | { kind: "background"; x: number; y: number };
+  | { kind: "background"; x: number; y: number }
+  // M with a multi-anchor selection: Merge at Center / Merge by Distance.
+  | { kind: "merge"; x: number; y: number };
 
 // Minimal structural ref type — matches React's useRef return shape without
 // tying these modules to a specific React version's ref typings.
@@ -272,7 +285,7 @@ export interface SplineEditorEnv {
   valueRef: Ref<SplineParamValue>;
   onChangeRef: Ref<(next: SplineParamValue) => void>;
   activeSubpathRef: Ref<number>;
-  selectedRef: Ref<Set<number>>;
+  selectedRef: Ref<Set<SelKey>>;
   lastAnchorRef: Ref<number | null>;
   penSealedRef: Ref<boolean>;
   pencilPtsRef: Ref<Array<[number, number]>>;
@@ -284,12 +297,12 @@ export interface SplineEditorEnv {
   rect: DOMRect | null;
   tool: ToolMode;
   // State setters (stable across renders).
-  setSelected: Dispatch<SetStateAction<Set<number>>>;
+  setSelected: Dispatch<SetStateAction<Set<SelKey>>>;
   setActiveSubpath: Dispatch<SetStateAction<number>>;
   setPenSealed: Dispatch<SetStateAction<boolean>>;
   setDrag: Dispatch<SetStateAction<DragState | null>>;
   setPencilVersion: Dispatch<SetStateAction<number>>;
-  setHoverSeg: Dispatch<SetStateAction<number | null>>;
+  setHoverSeg: Dispatch<SetStateAction<{ sub: number; seg: number } | null>>;
   setMenu: Dispatch<SetStateAction<MenuState | null>>;
   // Other Spline Draw nodes' anchor positions in client px (spec 072726
   // M5) — joined into the snap targets while ghosts are shown. A plain

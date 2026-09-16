@@ -33,6 +33,7 @@ function raySolve(
 }
 
 export interface TunniPoint {
+  sub: number;
   seg: number;
   i: number;
   j: number;
@@ -53,7 +54,7 @@ export interface TunniPoint {
 export function tunniForSegment(
   view: CornerView,
   anchors: SplineAnchor[],
-  seg: { seg: number; i: number; j: number }
+  seg: { sub: number; seg: number; i: number; j: number }
 ): TunniPoint | null {
   if (!view.rect) return null;
   const A = anchors[seg.i];
@@ -77,6 +78,7 @@ export function tunniForSegment(
   // length: 1 = at the handle tip). Below ~5% the geometry is degenerate.
   if (sol.s < 0.05 || sol.t < 0.05) return null;
   return {
+    sub: seg.sub,
     seg: seg.seg,
     i: seg.i,
     j: seg.j,
@@ -99,6 +101,7 @@ export function beginTunniDrag(
   env.lastAnchorRef.current = tp.i;
   env.setDrag({
     kind: "tunni",
+    sub: tp.sub,
     seg: tp.seg,
     i: tp.i,
     j: tp.j,
@@ -119,7 +122,7 @@ export function tunniDragMove(
   drag: Extract<DragState, { kind: "tunni" }>,
   e: PointerEvent
 ): { f1: number; f2: number } | null {
-  const anchors = ops.readAnchors(env.valueRef.current);
+  const anchors = ops.anchorsOf(drag.sub);
   const A = anchors[drag.i];
   const B = anchors[drag.j];
   if (!A || !B) return null;
@@ -136,7 +139,7 @@ export function tunniDragMove(
     inHandle: [(tx - B.pos[0]) * drag.f2, (ty - B.pos[1]) * drag.f2],
     broken: true,
   });
-  ops.patchAnchors(patch);
+  ops.patchAnchors(patch, drag.sub);
   return { f1: drag.f1, f2: drag.f2 };
 }
 
@@ -145,9 +148,9 @@ export function tunniDragMove(
 export function tunniBalance(
   ops: SplineOps,
   env: SplineEditorEnv,
-  seg: { seg: number; i: number; j: number }
+  seg: { sub: number; seg: number; i: number; j: number }
 ) {
-  const anchors = ops.readAnchors(env.valueRef.current);
+  const anchors = ops.anchorsOf(seg.sub);
   const A = anchors[seg.i];
   const B = anchors[seg.j];
   if (!A?.outHandle || !B?.inHandle) return;
@@ -171,5 +174,5 @@ export function tunniBalance(
   patch.set(seg.j, {
     inHandle: [(T[0] - B.pos[0]) * f, (T[1] - B.pos[1]) * f],
   });
-  ops.patchAnchors(patch);
+  ops.patchAnchors(patch, seg.sub);
 }

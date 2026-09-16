@@ -4,7 +4,7 @@
 // corner ↔ smooth or closes the loop. Split out of the monolith in M0 of
 // specdocs/archive/071926_spline-draw-authoring-upgrade.md.
 
-import { subpathsOf } from "../geometry";
+import { selKey, subpathsOf } from "../geometry";
 import { guideSnapLines, snapPoint } from "../snapping";
 import type { PointerLike, SplineEditorEnv } from "../types";
 import type { SplineOps } from "../ops";
@@ -41,10 +41,12 @@ export function penBackgroundDown(
     !e.metaKey &&
     !e.ctrlKey
   ) {
+    const activeIdx = env.activeSubpathRef.current;
     const activeAnchors =
-      subpathsOf(env.valueRef.current)[env.activeSubpathRef.current]
-        ?.anchors ?? [];
-    const excludeAll = new Set(activeAnchors.map((_, i) => i));
+      subpathsOf(env.valueRef.current)[activeIdx]?.anchors ?? [];
+    const excludeAll = new Set(
+      activeAnchors.map((_, i) => selKey(activeIdx, i))
+    );
     const res = snapPoint(
       env.rect,
       ops.anchorSnapTargets(excludeAll),

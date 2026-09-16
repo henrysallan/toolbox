@@ -134,6 +134,7 @@ import {
   gpointCKey,
   gpointXKey,
   gpointYKey,
+  insertAnchorKeysAtTick,
   isAnchorTrackKey,
   layerOpacityKey,
   rampAlphaKey,
@@ -13228,16 +13229,15 @@ function EffectsShell({
   }, []);
 
   // Per-anchor keyframing (Spline Draw, spec 072726 M6): create or remove
-  // the three vec2 tracks (anchor_p/in/out:<id>) for a set of anchors of
-  // one subpath. Anchors without an id get one minted here (written into
-  // the stored spline in the same pass — lazy ids, no migration). Enabling
-  // seeds each track with a keyframe at the playhead pinning the current
-  // pose; disabling deletes the tracks. One undo entry.
+  // the three vec2 tracks (anchor_p/in/out:<id>) for selected anchors, which
+  // may span subpaths. Anchors without an id get one minted here (written
+  // into the stored spline in the same pass — lazy ids, no migration).
+  // Enabling seeds each track with a keyframe at the playhead pinning the
+  // current pose; disabling deletes the tracks. One undo entry.
   const onAnchorAnimate = useCallback(
     (
       nodeId: string,
-      subpathIndex: number,
-      anchorIndexes: number[],
+      targets: Array<{ sub: number; indexes: number[] }>,
       enable: boolean
     ) => {
       pushGraph(getGraphSnapshot());
@@ -13254,44 +13254,49 @@ function EffectsShell({
             ...s,
             anchors: s.anchors.map((a) => ({ ...a })),
           }));
-          const sub = subs[subpathIndex];
-          if (!sub) return n;
           let animation = { ...(n.data.animation ?? {}) };
-          for (const ai of anchorIndexes) {
-            const a = sub.anchors[ai];
-            if (!a) continue;
-            if (!a.id) a.id = mintId();
-            const id = a.id;
-            if (enable) {
-              const mk = (value: [number, number]) => ({
-                animated: true,
-                trackVisible: true,
-                keyframes: [
-                  { tick: tickNow, value, easingOut: "easeInOut" as const },
-                ],
-              });
-              if (!animation[anchorPosKey(id)]?.animated) {
-                animation[anchorPosKey(id)] = mk([a.pos[0], a.pos[1]]);
+          let touched = false;
+          for (const { sub: subpathIndex, indexes: anchorIndexes } of targets) {
+            const sub = subs[subpathIndex];
+            if (!sub) continue;
+            for (const ai of anchorIndexes) {
+              const a = sub.anchors[ai];
+              if (!a) continue;
+              if (!a.id) a.id = mintId();
+              const id = a.id;
+              touched = true;
+              if (enable) {
+                const mk = (value: [number, number]) => ({
+                  animated: true,
+                  trackVisible: true,
+                  keyframes: [
+                    { tick: tickNow, value, easingOut: "easeInOut" as const },
+                  ],
+                });
+                if (!animation[anchorPosKey(id)]?.animated) {
+                  animation[anchorPosKey(id)] = mk([a.pos[0], a.pos[1]]);
+                }
+                if (!animation[anchorInKey(id)]?.animated) {
+                  animation[anchorInKey(id)] = mk([
+                    a.inHandle?.[0] ?? 0,
+                    a.inHandle?.[1] ?? 0,
+                  ]);
+                }
+                if (!animation[anchorOutKey(id)]?.animated) {
+                  animation[anchorOutKey(id)] = mk([
+                    a.outHandle?.[0] ?? 0,
+                    a.outHandle?.[1] ?? 0,
+                  ]);
+                }
+              } else {
+                animation = { ...animation };
+                delete animation[anchorPosKey(id)];
+                delete animation[anchorInKey(id)];
+                delete animation[anchorOutKey(id)];
               }
-              if (!animation[anchorInKey(id)]?.animated) {
-                animation[anchorInKey(id)] = mk([
-                  a.inHandle?.[0] ?? 0,
-                  a.inHandle?.[1] ?? 0,
-                ]);
-              }
-              if (!animation[anchorOutKey(id)]?.animated) {
-                animation[anchorOutKey(id)] = mk([
-                  a.outHandle?.[0] ?? 0,
-                  a.outHandle?.[1] ?? 0,
-                ]);
-              }
-            } else {
-              animation = { ...animation };
-              delete animation[anchorPosKey(id)];
-              delete animation[anchorInKey(id)];
-              delete animation[anchorOutKey(id)];
             }
           }
+          if (!touched) return n;
           return {
             ...n,
             data: {
@@ -13307,6 +13312,49 @@ function EffectsShell({
       );
       // eslint-disable-next-line react-hooks/exhaustive-deps
     },
+    []
+  );
+  // Insert a key at the playhead on already-animated anchors (right-click
+  // → Insert key). Pins the evaluated pose, same contract as the param
+  // diamond. One undo entry. Targets may span subpaths.
+  const onAnchorInsertKey = useCallback(
+    (
+      nodeId: string,
+      targets: Array<{ sub: number; indexes: number[] }>
+    ) => {
+      pushGraph(getGraphSnapshot());
+      const tickNow = playbackClock.get().tick;
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id !== nodeId) return n;
+          const spline = n.data.params.spline as
+            | { subpaths?: SplineSubpath[] }
+            | undefined;
+          if (!spline || !Array.isArray(spline.subpaths)) return n;
+          let nextAnimation = n.data.animation ?? {};
+          let changed = false;
+          for (const { sub, indexes } of targets) {
+            const step = insertAnchorKeysAtTick(
+              nextAnimation,
+              { subpaths: spline.subpaths },
+              sub,
+              indexes,
+              tickNow
+            );
+            if (step) {
+              nextAnimation = step;
+              changed = true;
+            }
+          }
+          if (!changed) return n;
+          return {
+            ...n,
+            data: { ...n.data, animation: nextAnimation },
+          };
+        })
+      );
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
   const queueRenderInfo = useMemo(
@@ -14074,6 +14122,7 @@ function EffectsShell({
               onParamChange={onParamChange}
               onSelectNode={handlePanelSelectNode}
               onAnchorAnimate={onAnchorAnimate}
+              onAnchorInsertKey={onAnchorInsertKey}
             />
           )}
           {showGizmos && activeSegmentNode && backendReady && (
