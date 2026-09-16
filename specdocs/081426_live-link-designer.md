@@ -2,7 +2,9 @@
 
 Status: designed with owner (Q&A 2026-08-14). M0–M3 implemented
 2026-08-14 → 2026-08-17 (gates green; in-browser verification pending).
-M4 (real preset packs) blocked on owner references. Implementation
+M4 landed 2026-09-15: three packs per control class plus three font
+stacks, see "Control style presets — how packs work" below; webfont
+loading still deferred. Implementation
 deltas from this spec: no export-gif.ts core refactor was needed — its
 `renderFrame` callback shape already fit the viewer, so the viewer GIF
 is frame-stepped (deterministic, better than the planned live capture)
@@ -113,6 +115,7 @@ export interface LiveDesign {
     slider: string;   // preset ids into the registries in design.ts;
     dropdown: string; // unknown id → "classic" (forward compat when a
     numeric: string;  // pack is removed)
+    transport: string; // play / skip-to-start buttons (added 2026-09-15)
     font: string;
   };
   controls: {
@@ -232,6 +235,39 @@ deferred until the owner's references arrive, but keep an optional
 v1 registries ship **one "classic" preset per class** (pixel-identical
 to today) — machinery proven end-to-end, packs added by appending
 registry entries + CSS blocks.
+
+**Control style presets — how packs work (M4, 2026-09-15).** The plan
+above assumed native `input[type=range]` chrome; by M4 the live panel
+renders the editor's own DOM bar slider, NumberField and custom Dropdown
+(all inline-styled), so a pack can't be a `::-webkit-slider-*` block. The
+mechanism that landed instead: every visual of those shared components
+reads a `--ps-*` custom property with its stock value as the fallback
+(`--ps-slider-*`, `--ps-num-*`, `--ps-dd-*`) and carries a class
+(`tb-bar…`, `tb-num…`, `tb-dd…`). The editor never defines the vars, so
+it is unchanged; a pack is a `.live-root[data-<class>="<id>"]` block in
+design-presets.css that sets the WHOLE set for its class (contract:
+never a subset; tokens only, no literals — guarded by
+`scripts/check-live-presets.mts`, which also pairs every registry entry
+with a block). Dropdown / FontPicker lists portal INTO the `.live-root`
+element (live-root-context.ts) instead of `<body>`, so they inherit the
+token sheet and the preset attributes — this also fixed the exported
+app's unstyled list. ControlPanel stamps `data-type="<paramType>"` on
+each row so a pack can re-lay-out one kind of row (the "inline" dropdown
+pack makes enum rows label-left / value-right cards). `.param-slider-bare`
+moved from globals.css into form-controls.css so the exported app stops
+painting the native dot-on-line chrome over the DOM bar. Packs shipped:
+sliders Pill / Dot / Ruler, dropdowns Pill / Outline / Inline, numbers
+Split stepper / Stacked stepper / Plain, transport Pill / Round / Ghost
+(a fourth class, `presets.transport` / `data-transport` / `--ps-tr-*`,
+whose classic look is a copy of the editor's PlaybackBar buttons — same
+icons, order, 28×20 box, emerald playing state), fonts Rounded / Serif /
+Geometric (system stacks). The transport's scrub and resolution rows
+host the shared bar slider, so the slider pack styles them too, and the
+export-row buttons (Image / Video / GIF, cancel) take the transport
+pack's radius / fill / border so the toolbar section reads as one set.
+Spacebar toggles play / pause in the viewer (LiveViewer keydown; skipped
+while a field, select or button has focus). The designer's pickers show each pack's
+one-line description; swatch pickers are still deferred.
 
 ### Order + rename
 

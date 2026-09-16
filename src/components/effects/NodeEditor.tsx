@@ -28,6 +28,7 @@ import RerouteNode from "./RerouteNode";
 import FrameNode, { computeFrameRects, collectFrameMemberIds } from "./FrameNode";
 import { NODE_TINTS } from "./node-tints";
 import JunctionEdge from "./JunctionEdge";
+import { WireLabelContext, type WireLabelApi } from "./wire-label-context";
 // (waypoint-context retired with the junction waypoint — reroute is a node now)
 import WireActionOverlay from "./WireActionOverlay";
 import NodeSearchPopup from "./NodeSearchPopup";
@@ -262,6 +263,13 @@ interface Props {
   // whose center lands in a same-scope frame joins it; a Cmd-drag ending
   // outside every frame leaves. undefined = clear membership.
   onSetNodeFrame?: (nodeId: string, frameId: string | undefined) => void;
+  // Wire labels (091526): right-click a wire → "Label Wire" parks a text
+  // bubble on it; the bubble edits in place and drags along the wire.
+  // `label: null` removes it. Parent owns undo (one pushGraph per call).
+  onSetWireLabel?: (
+    edgeId: string,
+    patch: { label?: string | null; labelT?: number }
+  ) => void;
   // Scope trail for the breadcrumb row: the Project crumb
   // (PROJECT_CRUMB_ID) first, then the composition (id null), then the
   // group chain to the current scope. The row hides at the comp root.
@@ -344,6 +352,7 @@ function NodeEditor({
   onStyleNodes,
   onFrameSelection,
   onSetNodeFrame,
+  onSetWireLabel,
   breadcrumbs,
   onNavigateScope,
   onOpenProject,
@@ -1010,6 +1019,62 @@ function NodeEditor({
     nodeId: string;
   } | null>(null);
   const closeContextMenu = () => setContextMenu(null);
+
+  // Wire right-click menu (091526): Label Wire / Edit Label / Remove
+  // Label. Opening it selects the wire (like a click would) so the
+  // highlighted wire is the one the menu acts on. `focusWireLabel` asks
+  // the wire's bubble to take keyboard focus once it exists.
+  const [wireMenu, setWireMenu] = useState<{
+    x: number;
+    y: number;
+    edgeId: string;
+  } | null>(null);
+  const [focusWireLabel, setFocusWireLabel] = useState<string | null>(null);
+  const openWireMenu = useCallback(
+    (edgeId: string, x: number, y: number) => {
+      rfSetEdges((eds) =>
+        eds.map((ed) =>
+          ed.id === edgeId
+            ? ed.selected
+              ? ed
+              : { ...ed, selected: true }
+            : ed.selected
+              ? { ...ed, selected: false }
+              : ed
+        )
+      );
+      rfSetNodes((ns) =>
+        ns.map((n) => (n.selected ? { ...n, selected: false } : n))
+      );
+      onSelectNode(null);
+      setContextMenu(null);
+      setPaneMenu(null);
+      setWireMenu({ x, y, edgeId });
+    },
+    [rfSetEdges, rfSetNodes, onSelectNode]
+  );
+  const setWireLabel = useCallback(
+    (edgeId: string, patch: { label?: string | null; labelT?: number }) => {
+      onSetWireLabel?.(edgeId, patch);
+    },
+    [onSetWireLabel]
+  );
+  const consumeWireLabelFocus = useCallback((edgeId: string) => {
+    setFocusWireLabel((cur) => (cur === edgeId ? null : cur));
+  }, []);
+  const wireLabelApi = useMemo<WireLabelApi>(
+    () => ({
+      setLabel: setWireLabel,
+      focusEdgeId: focusWireLabel,
+      consumeFocus: consumeWireLabelFocus,
+      openMenu: openWireMenu,
+    }),
+    [setWireLabel, focusWireLabel, consumeWireLabelFocus, openWireMenu]
+  );
+  const wireMenuEdge = wireMenu
+    ? edges.find((e) => e.id === wireMenu.edgeId)
+    : undefined;
+  const wireMenuLabeled = typeof wireMenuEdge?.data?.label === "string";
 
   // Splice candidate — the edge id a compatible dragged node is
   // currently hovering over. Set during drag, cleared on drop. Ref
@@ -2528,6 +2593,7 @@ function NodeEditor({
   };
   nodeContextMenuRef.current = (e, node) => {
     e.preventDefault();
+    setWireMenu(null);
     setContextMenu({ x: e.clientX, y: e.clientY, nodeId: node.id });
   };
   nodeDoubleClickRef.current = (_e, node) => {
@@ -2626,298 +2692,309 @@ function NodeEditor({
         }
       }}
     >
-      <ReactFlow
-        nodes={nodes}
-        edges={displayEdges}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        // Owned by the window-level keydown listener above so delete
-        // works regardless of which DOM element has focus. Setting
-        // null here disables React Flow's internal handler — the
-        // window listener calls deleteElements (the same path React
-        // Flow's handler uses), so no double-delete and no behavior
-        // change beyond the focus fix.
-        deleteKeyCode={null}
-        onNodesChange={onNodesChange as (c: NodeChange[]) => void}
-        onEdgesChange={onEdgesChange as (c: EdgeChange[]) => void}
-        onConnect={onConnect}
-        onEdgeDoubleClick={(event, edge) => {
-          // Double-click a wire → drop a reroute node on it at the click
-          // point (source → reroute → target). Reuses the same insertion
-          // path as the Shift-drag gesture.
-          if (!onCombineWires) return;
-          event.stopPropagation();
-          const pos = screenToFlowPosition({
-            x: event.clientX,
-            y: event.clientY,
-          });
-          onCombineWires([edge.id], [pos.x, pos.y]);
-        }}
-        onReconnect={(oldEdge, newConnection) => {
-          // User dragged the edge end onto a different handle. Drop
-          // the original edge and let onConnect produce the new one
-          // — that path runs the same isValidConnection / type-
-          // promotion logic we'd want for a fresh connection.
-          reconnectSucceededRef.current = true;
-          onEdgesChange([{ type: "remove", id: oldEdge.id }]);
-          onConnect(newConnection);
-        }}
-        onConnectStart={(event, { nodeId, handleId, handleType }) => {
-          // Record the source handle so onConnectEnd knows what to wire and
-          // the ring effect knows a connection is live. Arm the ring right
-          // away if Shift is already held ("hold Shift before you drag").
-          // This fires for reconnects too — those carry the wire's anchored
-          // end, which is exactly what we want to pull from. A fresh drag
-          // (not a reconnect) drops any stale reconnect-edge reference.
-          const isReconnect = reconnectOneShotRef.current;
-          reconnectOneShotRef.current = false;
-          if (!isReconnect) reconnectingEdgeRef.current = null;
-          if (!nodeId || !handleId || !handleType) {
-            connectDragRef.current = null;
-            return;
-          }
-          connectDragRef.current = {
-            fromNodeId: nodeId,
-            fromHandle: handleId,
-            handleType: handleType as "source" | "target",
-          };
-          const me = event as MouseEvent;
-          const shift = !!me.shiftKey;
-          shiftDownRef.current = shift;
-          if (shift) {
-            const x = typeof me.clientX === "number" ? me.clientX : lastCursorRef.current.x;
-            const y = typeof me.clientY === "number" ? me.clientY : lastCursorRef.current.y;
-            connectRingShownRef.current = true;
-            setConnectRing({ x, y, overNode: false });
-          }
-        }}
-        onReconnectStart={(_event, edge) => {
-          reconnectSucceededRef.current = false;
-          // Marks the onConnectStart that fires next as a reconnect and
-          // remembers which wire is being re-routed (so a Shift-drop onto a
-          // different node can remove it — see onConnectEnd).
-          reconnectOneShotRef.current = true;
-          reconnectingEdgeRef.current = edge;
-        }}
-        onReconnectEnd={(_event, oldEdge) => {
-          // Drop on empty pane = detach. onReconnect didn't fire (precise
-          // handle) and onConnectEnd's Shift-drop didn't claim it either, so
-          // the success flag is still false — remove the edge.
-          if (!reconnectSucceededRef.current) {
+      {/* Context for the wire-label bubbles JunctionEdge renders inside
+          React Flow's edge tree (091526). */}
+      <WireLabelContext.Provider value={wireLabelApi}>
+        <ReactFlow
+          nodes={nodes}
+          edges={displayEdges}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          // Owned by the window-level keydown listener above so delete
+          // works regardless of which DOM element has focus. Setting
+          // null here disables React Flow's internal handler — the
+          // window listener calls deleteElements (the same path React
+          // Flow's handler uses), so no double-delete and no behavior
+          // change beyond the focus fix.
+          deleteKeyCode={null}
+          onNodesChange={onNodesChange as (c: NodeChange[]) => void}
+          onEdgesChange={onEdgesChange as (c: EdgeChange[]) => void}
+          onConnect={onConnect}
+          onEdgeDoubleClick={(event, edge) => {
+            // Double-click a wire → drop a reroute node on it at the click
+            // point (source → reroute → target). Reuses the same insertion
+            // path as the Shift-drag gesture.
+            if (!onCombineWires) return;
+            event.stopPropagation();
+            const pos = screenToFlowPosition({
+              x: event.clientX,
+              y: event.clientY,
+            });
+            onCombineWires([edge.id], [pos.x, pos.y]);
+          }}
+          onReconnect={(oldEdge, newConnection) => {
+            // User dragged the edge end onto a different handle. Drop
+            // the original edge and let onConnect produce the new one
+            // — that path runs the same isValidConnection / type-
+            // promotion logic we'd want for a fresh connection.
+            reconnectSucceededRef.current = true;
             onEdgesChange([{ type: "remove", id: oldEdge.id }]);
-          }
-          reconnectSucceededRef.current = false;
-          reconnectingEdgeRef.current = null;
-        }}
-        onConnectEnd={(event, conn) => {
-          // The gesture is over — tear down the ring and grab the source
-          // handle we stashed at connect-start (whether this was a Shift-drag
-          // is decided by the live Shift state at release).
-          const drag = connectDragRef.current;
-          connectDragRef.current = null;
-          const shiftDrag = !!drag && shiftDownRef.current;
-          hideConnectRing();
-
-          // A precise handle drop already produced the edge via onConnect.
-          if (conn?.toHandle) return;
-
-          const ce = event as MouseEvent;
-          const x = typeof ce.clientX === "number" ? ce.clientX : 0;
-          const y = typeof ce.clientY === "number" ? ce.clientY : 0;
-
-          // Shift-drop over a node body → land on its first accepting socket
-          // (no need to hit the exact handle). Works both for a fresh wire
-          // and for re-routing an existing one (reconnect drag). Only falls
-          // through to the node-search popup when released on empty pane.
-          if (shiftDrag && drag) {
-            const targetNode = nodeAtClientPoint(x, y, drag.fromNodeId);
-            if (targetNode) {
-              const built = buildShiftDropConnection(drag, targetNode);
-              if (built) {
-                // Re-routing an existing wire: drop its old edge as we add
-                // the new one, and flag the reconnect as handled so
-                // onReconnectEnd doesn't also detach it. Mirrors the
-                // precise-reconnect path (onReconnect above).
-                const reEdge = reconnectingEdgeRef.current;
-                if (reEdge) {
-                  reconnectSucceededRef.current = true;
-                  onEdgesChange([{ type: "remove", id: reEdge.id }]);
-                }
-                onConnect(built);
-              }
-              // Over a node (compatible or not) — the gesture is consumed;
-              // don't open the search popup. If nothing accepted a reconnect
-              // drag, onReconnectEnd still detaches the old wire.
+            onConnect(newConnection);
+          }}
+          onConnectStart={(event, { nodeId, handleId, handleType }) => {
+            // Record the source handle so onConnectEnd knows what to wire and
+            // the ring effect knows a connection is live. Arm the ring right
+            // away if Shift is already held ("hold Shift before you drag").
+            // This fires for reconnects too — those carry the wire's anchored
+            // end, which is exactly what we want to pull from. A fresh drag
+            // (not a reconnect) drops any stale reconnect-edge reference.
+            const isReconnect = reconnectOneShotRef.current;
+            reconnectOneShotRef.current = false;
+            if (!isReconnect) reconnectingEdgeRef.current = null;
+            if (!nodeId || !handleId || !handleType) {
+              connectDragRef.current = null;
               return;
             }
-          }
+            connectDragRef.current = {
+              fromNodeId: nodeId,
+              fromHandle: handleId,
+              handleType: handleType as "source" | "target",
+            };
+            const me = event as MouseEvent;
+            const shift = !!me.shiftKey;
+            shiftDownRef.current = shift;
+            if (shift) {
+              const x = typeof me.clientX === "number" ? me.clientX : lastCursorRef.current.x;
+              const y = typeof me.clientY === "number" ? me.clientY : lastCursorRef.current.y;
+              connectRingShownRef.current = true;
+              setConnectRing({ x, y, overNode: false });
+            }
+          }}
+          onReconnectStart={(_event, edge) => {
+            reconnectSucceededRef.current = false;
+            // Marks the onConnectStart that fires next as a reconnect and
+            // remembers which wire is being re-routed (so a Shift-drop onto a
+            // different node can remove it — see onConnectEnd).
+            reconnectOneShotRef.current = true;
+            reconnectingEdgeRef.current = edge;
+          }}
+          onReconnectEnd={(_event, oldEdge) => {
+            // Drop on empty pane = detach. onReconnect didn't fire (precise
+            // handle) and onConnectEnd's Shift-drop didn't claim it either, so
+            // the success flag is still false — remove the edge.
+            if (!reconnectSucceededRef.current) {
+              onEdgesChange([{ type: "remove", id: oldEdge.id }]);
+            }
+            reconnectSucceededRef.current = false;
+            reconnectingEdgeRef.current = null;
+          }}
+          onConnectEnd={(event, conn) => {
+            // The gesture is over — tear down the ring and grab the source
+            // handle we stashed at connect-start (whether this was a Shift-drag
+            // is decided by the live Shift state at release).
+            const drag = connectDragRef.current;
+            connectDragRef.current = null;
+            const shiftDrag = !!drag && shiftDownRef.current;
+            hideConnectRing();
 
-          // If the wire was dropped on empty pane (toHandle is null on
-          // the FinalConnectionState), pop the search so the user can
-          // immediately browse a node to land the wire on. We also
-          // stash the origin handle details so the picked node gets
-          // auto-wired to it — from an output socket the new node
-          // becomes the consumer; from an input socket it becomes the
-          // producer.
-          const flowPos = screenToFlowPosition({ x, y });
-          onPanePointer?.(flowPos);
-          let pendingWire: PendingWire | undefined;
-          const fromHandle = conn?.fromHandle;
-          const fromNode = conn?.fromNode as
-            | { id: string }
-            | null
-            | undefined;
-          if (fromHandle?.id && fromNode?.id) {
-            const originNode = nodes.find((n) => n.id === fromNode.id);
-            if (originNode && fromHandle.type === "target") {
-              const tgtType = resolveTargetSocketType(originNode, fromHandle.id);
-              if (tgtType) {
-                pendingWire = {
-                  kind: "into-target",
-                  targetNodeId: fromNode.id,
-                  targetHandle: fromHandle.id,
-                  targetType: tgtType,
-                };
-              }
-            } else if (originNode) {
-              const srcType = resolveSourceSocketType(originNode, fromHandle.id);
-              if (srcType) {
-                pendingWire = {
-                  kind: "from-source",
-                  sourceNodeId: fromNode.id,
-                  sourceHandle: fromHandle.id,
-                  sourceType: srcType,
-                };
+            // A precise handle drop already produced the edge via onConnect.
+            if (conn?.toHandle) return;
+
+            const ce = event as MouseEvent;
+            const x = typeof ce.clientX === "number" ? ce.clientX : 0;
+            const y = typeof ce.clientY === "number" ? ce.clientY : 0;
+
+            // Shift-drop over a node body → land on its first accepting socket
+            // (no need to hit the exact handle). Works both for a fresh wire
+            // and for re-routing an existing one (reconnect drag). Only falls
+            // through to the node-search popup when released on empty pane.
+            if (shiftDrag && drag) {
+              const targetNode = nodeAtClientPoint(x, y, drag.fromNodeId);
+              if (targetNode) {
+                const built = buildShiftDropConnection(drag, targetNode);
+                if (built) {
+                  // Re-routing an existing wire: drop its old edge as we add
+                  // the new one, and flag the reconnect as handled so
+                  // onReconnectEnd doesn't also detach it. Mirrors the
+                  // precise-reconnect path (onReconnect above).
+                  const reEdge = reconnectingEdgeRef.current;
+                  if (reEdge) {
+                    reconnectSucceededRef.current = true;
+                    onEdgesChange([{ type: "remove", id: reEdge.id }]);
+                  }
+                  onConnect(built);
+                }
+                // Over a node (compatible or not) — the gesture is consumed;
+                // don't open the search popup. If nothing accepted a reconnect
+                // drag, onReconnectEnd still detaches the old wire.
+                return;
               }
             }
-          }
-          setNodePopup({ x: x + 4, y: y + 4, pendingWire });
-        }}
-        isValidConnection={isValidConnection}
-        // On touch, React Flow's default click-to-select on edges
-        // sometimes loses to its own pan-on-drag handling — the
-        // pointer-down is consumed before a select fires. Explicit
-        // edge-click handler clears any other selection and selects
-        // the tapped edge so the corner Delete button has something
-        // to act on.
-        onEdgeClick={(_e, edge) => {
-          rfSetEdges((edges) =>
-            edges.map((ed) =>
-              ed.id === edge.id
-                ? ed.selected
-                  ? ed
-                  : { ...ed, selected: true }
-                : ed.selected
-                  ? { ...ed, selected: false }
-                  : ed
-            )
-          );
-          rfSetNodes((nodes) =>
-            nodes.map((n) => (n.selected ? { ...n, selected: false } : n))
-          );
-          onSelectNode(null);
-        }}
-        // Generous reconnect grab radius on touch so the user can
-        // grab the end of a wire with a finger or pen tip and drag
-        // it off the socket. Default is 10px which is too small for
-        // a fingertip; 28 is comfortable without preempting clicks
-        // on adjacent handles.
-        reconnectRadius={touchActive ? 28 : 10}
-        onSelectionChange={handleSelectionChange}
-        onNodeDragStart={stableNodeDragStart}
-        onNodeDrag={stableNodeDrag}
-        onNodeDragStop={stableNodeDragStop}
-        onNodeContextMenu={stableNodeContextMenu}
-        // A marquee (box) selection leaves React Flow's selection overlay
-        // on top of the selected nodes, so a right-click there never
-        // reaches a node — it arrives here instead. Open the same node
-        // menu anchored on the first selected node: it is selected, so
-        // Tidy / tint / bold act on the whole selection.
-        onSelectionContextMenu={(e, selectedNodes) => {
-          e.preventDefault();
-          setPaneMenu(null);
-          const first =
-            selectedNodes.find((n) => !n.hidden) ?? selectedNodes[0];
-          if (!first) return;
-          setContextMenu({ x: e.clientX, y: e.clientY, nodeId: first.id });
-        }}
-        onNodeDoubleClick={stableNodeDoubleClick}
-        onPaneContextMenu={(e) => {
-          // Right-click on empty pane — close any open node menu so it
-          // doesn't linger past its node, then open the pane menu
-          // (Paste / Tidy All). Not during G-move: right-click cancels
-          // that gesture.
-          (e as unknown as Event).preventDefault?.();
-          closeContextMenu();
-          if (gMoveRef.current) return;
-          setPaneMenu({ x: e.clientX, y: e.clientY });
-        }}
-        onPaneMouseMove={(e) => reportPane(e.clientX, e.clientY)}
-        onPaneClick={(e) => {
-          reportPane(e.clientX, e.clientY);
-          closeContextMenu();
-        }}
-        // Figma-style viewport: two-finger trackpad scroll pans, pinch zooms,
-        // drag on empty canvas draws a marquee selection. Cmd-scroll still
-        // zooms via the default zoomActivationKeyCode. With a mouse, the wheel
-        // zooms instead (panOnScroll off, zoomOnScroll on).
-        panOnScroll={!mouseScroll}
-        zoomOnScroll={mouseScroll}
-        // Mouse: middle button pans, left button draws marquee
-        //        (selectionOnDrag).
-        // Touch / pen: single-finger drag pans the canvas — marquee
-        //        is unreachable without a hover modifier and would
-        //        otherwise hijack the most natural touch gesture.
-        panOnDrag={touchActive ? [0, 1] : [1]}
-        selectionOnDrag={!touchActive}
-        selectionMode={SelectionMode.Partial}
-        // Shift adds to selection alongside the platform default
-        // (Meta on Mac, Control on Windows). React Flow accepts an
-        // array — listing all three covers every keyboard combo
-        // users reach for. We also null out `selectionKeyCode`
-        // (default "Shift", used to start a marquee drag) so Shift
-        // is unambiguously the multi-select modifier — marquee
-        // already works on plain drag via `selectionOnDrag`.
-        multiSelectionKeyCode={["Shift", "Meta", "Control"]}
-        selectionKeyCode={null}
-        // A pane remounting with a parked camera (kind round-trip /
-        // docs nav — paneCameraStash) restores it and skips the fit.
-        fitView={!stashedCamera}
-        defaultViewport={stashedCamera}
-        // Cap the initial fit so a project with a single small node (a fresh
-        // "Layer 1", or an opened project whose graph is tiny) doesn't get
-        // blown up toward maxZoom to fill the viewport — that reads as "opened
-        // way too zoomed in". maxZoom 1 keeps nodes at natural size or smaller;
-        // fitView still zooms *out* freely to frame large graphs. Padding
-        // leaves a little breathing room around the framed content.
-        fitViewOptions={{ maxZoom: 1, padding: 0.25 }}
-        // Open up the zoom + pan envelope. Defaults are minZoom 0.5
-        // and a tight translateExtent that walls off the empty area
-        // around the graph; both feel cramped for the kind of large
-        // multi-stage graphs this editor encourages. minZoom 0.05
-        // lets the user zoom out far enough to see a sprawling graph
-        // at a glance, and a ±100k translate extent is effectively
-        // "infinite" canvas without disabling bounds entirely (which
-        // would let fitView misbehave on empty graphs).
-        minZoom={0.05}
-        maxZoom={4}
-        translateExtent={[
-          [-100000, -100000],
-          [100000, 100000],
-        ]}
-        proOptions={{ hideAttribution: true }}
-        // Follows the editor theme rather than being pinned to "dark".
-        // React Flow keys its own palette off this (.react-flow.dark), and
-        // leaving it hardcoded left the whole pane on xyflow's #141414 while
-        // every panel around it went light. The pane fill and dot colour are
-        // pinned to our ramp in globals.css regardless.
-        colorMode={themeMode}
-      >
-        <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
-        <SimulationZoneUnderlay nodes={nodes} />
-        <IterateZoneUnderlay nodes={nodes} />
-        {viewportOverlay && <ViewportPortal>{viewportOverlay}</ViewportPortal>}
-      </ReactFlow>
+
+            // If the wire was dropped on empty pane (toHandle is null on
+            // the FinalConnectionState), pop the search so the user can
+            // immediately browse a node to land the wire on. We also
+            // stash the origin handle details so the picked node gets
+            // auto-wired to it — from an output socket the new node
+            // becomes the consumer; from an input socket it becomes the
+            // producer.
+            const flowPos = screenToFlowPosition({ x, y });
+            onPanePointer?.(flowPos);
+            let pendingWire: PendingWire | undefined;
+            const fromHandle = conn?.fromHandle;
+            const fromNode = conn?.fromNode as
+              | { id: string }
+              | null
+              | undefined;
+            if (fromHandle?.id && fromNode?.id) {
+              const originNode = nodes.find((n) => n.id === fromNode.id);
+              if (originNode && fromHandle.type === "target") {
+                const tgtType = resolveTargetSocketType(originNode, fromHandle.id);
+                if (tgtType) {
+                  pendingWire = {
+                    kind: "into-target",
+                    targetNodeId: fromNode.id,
+                    targetHandle: fromHandle.id,
+                    targetType: tgtType,
+                  };
+                }
+              } else if (originNode) {
+                const srcType = resolveSourceSocketType(originNode, fromHandle.id);
+                if (srcType) {
+                  pendingWire = {
+                    kind: "from-source",
+                    sourceNodeId: fromNode.id,
+                    sourceHandle: fromHandle.id,
+                    sourceType: srcType,
+                  };
+                }
+              }
+            }
+            setNodePopup({ x: x + 4, y: y + 4, pendingWire });
+          }}
+          isValidConnection={isValidConnection}
+          // On touch, React Flow's default click-to-select on edges
+          // sometimes loses to its own pan-on-drag handling — the
+          // pointer-down is consumed before a select fires. Explicit
+          // edge-click handler clears any other selection and selects
+          // the tapped edge so the corner Delete button has something
+          // to act on.
+          onEdgeContextMenu={(e, edge) => {
+            e.preventDefault();
+            openWireMenu(edge.id, e.clientX, e.clientY);
+          }}
+          onEdgeClick={(_e, edge) => {
+            rfSetEdges((edges) =>
+              edges.map((ed) =>
+                ed.id === edge.id
+                  ? ed.selected
+                    ? ed
+                    : { ...ed, selected: true }
+                  : ed.selected
+                    ? { ...ed, selected: false }
+                    : ed
+              )
+            );
+            rfSetNodes((nodes) =>
+              nodes.map((n) => (n.selected ? { ...n, selected: false } : n))
+            );
+            onSelectNode(null);
+          }}
+          // Generous reconnect grab radius on touch so the user can
+          // grab the end of a wire with a finger or pen tip and drag
+          // it off the socket. Default is 10px which is too small for
+          // a fingertip; 28 is comfortable without preempting clicks
+          // on adjacent handles.
+          reconnectRadius={touchActive ? 28 : 10}
+          onSelectionChange={handleSelectionChange}
+          onNodeDragStart={stableNodeDragStart}
+          onNodeDrag={stableNodeDrag}
+          onNodeDragStop={stableNodeDragStop}
+          onNodeContextMenu={stableNodeContextMenu}
+          // A marquee (box) selection leaves React Flow's selection overlay
+          // on top of the selected nodes, so a right-click there never
+          // reaches a node — it arrives here instead. Open the same node
+          // menu anchored on the first selected node: it is selected, so
+          // Tidy / tint / bold act on the whole selection.
+          onSelectionContextMenu={(e, selectedNodes) => {
+            e.preventDefault();
+            setPaneMenu(null);
+            setWireMenu(null);
+            const first =
+              selectedNodes.find((n) => !n.hidden) ?? selectedNodes[0];
+            if (!first) return;
+            setContextMenu({ x: e.clientX, y: e.clientY, nodeId: first.id });
+          }}
+          onNodeDoubleClick={stableNodeDoubleClick}
+          onPaneContextMenu={(e) => {
+            // Right-click on empty pane — close any open node menu so it
+            // doesn't linger past its node, then open the pane menu
+            // (Paste / Tidy All). Not during G-move: right-click cancels
+            // that gesture.
+            (e as unknown as Event).preventDefault?.();
+            closeContextMenu();
+            setWireMenu(null);
+            if (gMoveRef.current) return;
+            setPaneMenu({ x: e.clientX, y: e.clientY });
+          }}
+          onPaneMouseMove={(e) => reportPane(e.clientX, e.clientY)}
+          onPaneClick={(e) => {
+            reportPane(e.clientX, e.clientY);
+            closeContextMenu();
+            setWireMenu(null);
+          }}
+          // Figma-style viewport: two-finger trackpad scroll pans, pinch zooms,
+          // drag on empty canvas draws a marquee selection. Cmd-scroll still
+          // zooms via the default zoomActivationKeyCode. With a mouse, the wheel
+          // zooms instead (panOnScroll off, zoomOnScroll on).
+          panOnScroll={!mouseScroll}
+          zoomOnScroll={mouseScroll}
+          // Mouse: middle button pans, left button draws marquee
+          //        (selectionOnDrag).
+          // Touch / pen: single-finger drag pans the canvas — marquee
+          //        is unreachable without a hover modifier and would
+          //        otherwise hijack the most natural touch gesture.
+          panOnDrag={touchActive ? [0, 1] : [1]}
+          selectionOnDrag={!touchActive}
+          selectionMode={SelectionMode.Partial}
+          // Shift adds to selection alongside the platform default
+          // (Meta on Mac, Control on Windows). React Flow accepts an
+          // array — listing all three covers every keyboard combo
+          // users reach for. We also null out `selectionKeyCode`
+          // (default "Shift", used to start a marquee drag) so Shift
+          // is unambiguously the multi-select modifier — marquee
+          // already works on plain drag via `selectionOnDrag`.
+          multiSelectionKeyCode={["Shift", "Meta", "Control"]}
+          selectionKeyCode={null}
+          // A pane remounting with a parked camera (kind round-trip /
+          // docs nav — paneCameraStash) restores it and skips the fit.
+          fitView={!stashedCamera}
+          defaultViewport={stashedCamera}
+          // Cap the initial fit so a project with a single small node (a fresh
+          // "Layer 1", or an opened project whose graph is tiny) doesn't get
+          // blown up toward maxZoom to fill the viewport — that reads as "opened
+          // way too zoomed in". maxZoom 1 keeps nodes at natural size or smaller;
+          // fitView still zooms *out* freely to frame large graphs. Padding
+          // leaves a little breathing room around the framed content.
+          fitViewOptions={{ maxZoom: 1, padding: 0.25 }}
+          // Open up the zoom + pan envelope. Defaults are minZoom 0.5
+          // and a tight translateExtent that walls off the empty area
+          // around the graph; both feel cramped for the kind of large
+          // multi-stage graphs this editor encourages. minZoom 0.05
+          // lets the user zoom out far enough to see a sprawling graph
+          // at a glance, and a ±100k translate extent is effectively
+          // "infinite" canvas without disabling bounds entirely (which
+          // would let fitView misbehave on empty graphs).
+          minZoom={0.05}
+          maxZoom={4}
+          translateExtent={[
+            [-100000, -100000],
+            [100000, 100000],
+          ]}
+          proOptions={{ hideAttribution: true }}
+          // Follows the editor theme rather than being pinned to "dark".
+          // React Flow keys its own palette off this (.react-flow.dark), and
+          // leaving it hardcoded left the whole pane on xyflow's #141414 while
+          // every panel around it went light. The pane fill and dot colour are
+          // pinned to our ramp in globals.css regardless.
+          colorMode={themeMode}
+        >
+          <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
+          <SimulationZoneUnderlay nodes={nodes} />
+          <IterateZoneUnderlay nodes={nodes} />
+          {viewportOverlay && <ViewportPortal>{viewportOverlay}</ViewportPortal>}
+        </ReactFlow>
+      </WireLabelContext.Provider>
 
       {/* Apple Pencil hover ring. Tracks the pen tip so the user
           gets a familiar Procreate-style hover affordance. Purely
@@ -3143,6 +3220,30 @@ function NodeEditor({
           onTidy={() => tidyIds(nodes.filter((n) => !n.hidden).map((n) => n.id))}
         />
       )}
+      {wireMenu && (
+        <NodeContextMenu
+          x={wireMenu.x}
+          y={wireMenu.y}
+          onClose={() => setWireMenu(null)}
+          wireMode
+          wireLabeled={wireMenuLabeled}
+          onLabelWire={
+            onSetWireLabel
+              ? () => {
+                  const id = wireMenu.edgeId;
+                  if (!wireMenuLabeled)
+                    onSetWireLabel(id, { label: "label", labelT: 0.5 });
+                  setFocusWireLabel(id);
+                }
+              : undefined
+          }
+          onRemoveWireLabel={
+            onSetWireLabel && wireMenuLabeled
+              ? () => onSetWireLabel(wireMenu.edgeId, { label: null })
+              : undefined
+          }
+        />
+      )}
       {contextMenu && (
         <NodeContextMenu
           x={contextMenu.x}
@@ -3322,6 +3423,10 @@ function NodeContextMenu({
   onAlign,
   onDistribute,
   paneMode,
+  wireMode,
+  wireLabeled,
+  onLabelWire,
+  onRemoveWireLabel,
 }: {
   x: number;
   y: number;
@@ -3333,6 +3438,12 @@ function NodeContextMenu({
   onAlign?: (mode: AlignMode) => void;
   onDistribute?: (axis: "x" | "y") => void;
   paneMode?: boolean;
+  // Wire variant (091526): Label Wire (or Edit Label + Remove Label once
+  // the wire carries one). Every node/pane row is absent in this mode.
+  wireMode?: boolean;
+  wireLabeled?: boolean;
+  onLabelWire?: () => void;
+  onRemoveWireLabel?: () => void;
   onCopy?: () => void;
   onPaste?: () => void;
   onDuplicate?: () => void;
@@ -3392,7 +3503,14 @@ function NodeContextMenu({
     ...(onMakeEditable
       ? [{ label: "Make Editable", onClick: onMakeEditable }]
       : []),
-    ...(paneMode
+    ...(wireMode
+      ? [
+          { label: wireLabeled ? "Edit Label" : "Label Wire", onClick: onLabelWire },
+          ...(wireLabeled
+            ? [{ label: "Remove Label", onClick: onRemoveWireLabel }]
+            : []),
+        ]
+      : paneMode
       ? [
           { label: "Paste", shortcut: "⌘V", onClick: onPaste },
           { label: tidyLabel ?? "Tidy All", shortcut: "L", onClick: onTidy },
@@ -3425,7 +3543,7 @@ function NodeContextMenu({
           },
         ]
       : []),
-    ...(paneMode
+    ...(paneMode || wireMode
       ? []
       : [{ label: "Detach", shortcut: "⌘-drag", onClick: onDetach }]),
     // Bold outline toggle — check shows the clicked node's current state.

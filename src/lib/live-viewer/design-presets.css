@@ -1,28 +1,365 @@
 /* Control-style preset packs for the live viewer / exported apps
-   (081426_live-link-designer.md). Imported by styles.css, so both
-   surfaces (and the designer's preview iframe) load it.
+   (081426_live-link-designer.md, M4 landed 2026-09-15). Imported by
+   styles.css, so both surfaces (and the designer's preview iframe) load it.
 
-   THE CONTRACT: every non-classic preset must FULLY re-specify its
-   control's chrome — track, thumb, appearance, borders, the lot —
-   scoped under the matching data attribute on .live-root:
+   HOW A PRESET WORKS: the shared controls (lib/param-controls ScalarSliderRow
+   + MiniBarSlider, lib/number-field NumberField, lib/param-controls Dropdown)
+   are inline-styled, and every visual of theirs reads a `--ps-*` custom
+   property with the stock value as its fallback:
 
-     .live-root[data-slider="<id>"]   input[type="range"]::…
-     .live-root[data-dropdown="<id>"] select, .select-input …
-     .live-root[data-numeric="<id>"]  input[type="number"]…
+     bar slider    --ps-slider-*   (.tb-bar / -track / -fill / -ring / -handle;
+                                    also the scrub + resolution rows)
+     number field  --ps-num-*      (.tb-num / -input / -steps / -step-up|down)
+     dropdown      --ps-dd-*       (.tb-dd trigger, .tb-dd-opt list items —
+                                    the list portals INTO .live-root, see
+                                    live-root-context.ts, so it's in scope)
+     transport     --ps-tr-*       (.transport .tr-btn, .is-on while playing,
+                                    plus the export-row / cancel buttons;
+                                    base rules live in styles.css)
 
-   Never style a preset by patching individual properties on top of the
-   base chrome — a preset that half-inherits form-controls.css will
-   render differently wherever the base changes, which is exactly the
-   accuracy trap the design system exists to close. Color values come
-   from the design token sheet (var(--…), see design.ts designTokens),
-   never literals, so every preset works in both theme modes and under
-   tint.
+   The editor never defines these, so it renders exactly as before. A preset
+   is a block scoped on the matching data attribute LiveRoot stamps:
 
-   A new pack = a registry entry in design.ts (SLIDER_PRESETS /
-   DROPDOWN_PRESETS / NUMERIC_PRESETS) + a rule block here.
+     .live-root[data-slider="<id>"]   { --ps-slider-…: …; }
+     .live-root[data-dropdown="<id>"] { --ps-dd-…: …; }
+     .live-root[data-numeric="<id>"]  { --ps-num-…: …; }
+     .live-root[data-transport="<id>"] { --ps-tr-…: …; }
 
-   "classic" (the default for all three classes) deliberately has NO
-   rules in this file: the base chrome — form-controls.css driven by the
-   pinned `--tb-*` tokens from the design sheet — IS the classic look,
-   and stating it once keeps it pixel-identical to the editor's
-   controls. */
+   THE CONTRACT: every non-classic preset sets EVERY variable of its class —
+   never a subset — so a preset can't half-inherit whatever the component's
+   fallbacks happen to be. Colors come from the design token sheet (var(--…),
+   design.ts designTokens), never literals, so every preset works in both
+   theme modes and under tint. Registry entry in design.ts + block here; the
+   pairing is checked by scripts/check-live-presets.mts.
+
+   "classic" (the default for all three classes) deliberately has NO rules
+   here: the components' fallbacks ARE the classic look, and stating it once
+   keeps it pixel-identical to the editor's controls.
+
+   ControlPanel stamps `data-type="<paramType>"` on every row, so a pack can
+   also re-lay-out one KIND of row (the inline dropdown pack does). */
+
+/* =====================================================================
+   Sliders
+   ===================================================================== */
+
+/* Pill — a tall fully-rounded bar. Soft fill, hairline marker riding inside
+   it, no outline ring. */
+.live-root[data-slider="pill"] {
+  --ps-slider-h: 26px;
+  --ps-slider-track-inset: 0px;
+  --ps-slider-radius: 999px;
+  --ps-slider-track-bg: var(--bg-3);
+  --ps-slider-fill-bg: color-mix(in srgb, var(--text) 16%, var(--bg-3));
+  --ps-slider-ring: transparent;
+  --ps-slider-handle-w: 2px;
+  --ps-slider-handle-top: 8px;
+  --ps-slider-handle-bottom: 8px;
+  --ps-slider-handle-radius: 999px;
+  --ps-slider-handle-bg: var(--text-dim);
+  --ps-slider-handle-shadow: none;
+  --ps-slider-handle-inset: 10px;
+  --ps-slider-handle-back: 12px;
+}
+
+/* Dot — a thin line with an accent fill and a round thumb, haloed in the
+   panel color so it lifts off the track. */
+.live-root[data-slider="dot"] {
+  --ps-slider-h: 20px;
+  --ps-slider-track-inset: 8px;
+  --ps-slider-radius: 2px;
+  --ps-slider-track-bg: var(--border-strong);
+  --ps-slider-fill-bg: var(--accent);
+  --ps-slider-ring: transparent;
+  --ps-slider-handle-w: 14px;
+  --ps-slider-handle-top: 3px;
+  --ps-slider-handle-bottom: 3px;
+  --ps-slider-handle-radius: 50%;
+  --ps-slider-handle-bg: var(--accent);
+  --ps-slider-handle-shadow: 0 0 0 2px var(--bg-2), 0 1px 3px rgba(0, 0, 0, 0.35);
+  --ps-slider-handle-inset: 0px;
+  --ps-slider-handle-back: 7px;
+}
+
+/* Ruler — tick marks every 10% along a slim track, a translucent accent fill
+   the ticks show through, and a tall bar marker centered on the value. */
+.live-root[data-slider="ruler"] {
+  --ps-slider-h: 22px;
+  --ps-slider-track-inset: 8px;
+  --ps-slider-radius: 1px;
+  --ps-slider-track-bg: repeating-linear-gradient(
+    to right,
+    var(--border-strong) 0 1px,
+    var(--bg-3) 1px 10%
+  );
+  --ps-slider-fill-bg: color-mix(in srgb, var(--accent) 40%, transparent);
+  --ps-slider-ring: transparent;
+  --ps-slider-handle-w: 3px;
+  --ps-slider-handle-top: 4px;
+  --ps-slider-handle-bottom: 4px;
+  --ps-slider-handle-radius: 1px;
+  --ps-slider-handle-bg: var(--text);
+  --ps-slider-handle-shadow: none;
+  --ps-slider-handle-inset: 0px;
+  --ps-slider-handle-back: 1.5px;
+}
+
+/* =====================================================================
+   Dropdowns
+   ===================================================================== */
+
+/* Pill — fully rounded filled trigger; the list is a soft rounded card with
+   pill-shaped items. */
+.live-root[data-dropdown="pill"] {
+  --ps-dd-h: 26px;
+  --ps-dd-bg: var(--bg-3);
+  --ps-dd-border: transparent;
+  --ps-dd-border-open: var(--border-strong);
+  --ps-dd-radius: 999px;
+  --ps-dd-color: var(--text);
+  --ps-dd-pad: 0 12px;
+  --ps-dd-size: 11px;
+  --ps-dd-justify: space-between;
+  --ps-dd-align: left;
+  --ps-dd-chevron: var(--text-dim);
+  --ps-dd-pop-bg: var(--bg-2);
+  --ps-dd-pop-border: var(--border);
+  --ps-dd-pop-radius: 14px;
+  --ps-dd-pop-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --ps-dd-pop-pad: 4px;
+  --ps-dd-opt-color: var(--text);
+  --ps-dd-opt-radius: 999px;
+  --ps-dd-opt-pad: 5px 10px;
+  --ps-dd-hover-bg: var(--bg-hover);
+  --ps-dd-sel-bg: var(--bg-3);
+  --ps-dd-sel-color: var(--accent);
+}
+
+/* Outline — transparent trigger with a border that turns accent on open;
+   flat bordered list, no shadow. */
+.live-root[data-dropdown="outline"] {
+  --ps-dd-h: 24px;
+  --ps-dd-bg: transparent;
+  --ps-dd-border: var(--border-strong);
+  --ps-dd-border-open: var(--accent);
+  --ps-dd-radius: 6px;
+  --ps-dd-color: var(--text);
+  --ps-dd-pad: 0 8px;
+  --ps-dd-size: 11px;
+  --ps-dd-justify: space-between;
+  --ps-dd-align: left;
+  --ps-dd-chevron: var(--text-dim);
+  --ps-dd-pop-bg: var(--bg-2);
+  --ps-dd-pop-border: var(--border-strong);
+  --ps-dd-pop-radius: 6px;
+  --ps-dd-pop-shadow: none;
+  --ps-dd-pop-pad: 3px;
+  --ps-dd-opt-color: var(--text);
+  --ps-dd-opt-radius: 4px;
+  --ps-dd-opt-pad: 4px 8px;
+  --ps-dd-hover-bg: var(--bg-3);
+  --ps-dd-sel-bg: transparent;
+  --ps-dd-sel-color: var(--accent);
+}
+
+/* Inline — the whole enum row becomes one rounded card: label on the left,
+   value + chevron on the right. Only enum rows change layout (data-type). */
+.live-root[data-dropdown="inline"] {
+  --ps-dd-h: 24px;
+  --ps-dd-bg: transparent;
+  --ps-dd-border: transparent;
+  --ps-dd-border-open: transparent;
+  --ps-dd-radius: 6px;
+  --ps-dd-color: var(--text);
+  --ps-dd-pad: 0 4px;
+  --ps-dd-size: 11px;
+  --ps-dd-justify: flex-end;
+  --ps-dd-align: right;
+  --ps-dd-chevron: var(--text-faint);
+  --ps-dd-pop-bg: var(--bg-2);
+  --ps-dd-pop-border: var(--border);
+  --ps-dd-pop-radius: 10px;
+  --ps-dd-pop-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --ps-dd-pop-pad: 4px;
+  --ps-dd-opt-color: var(--text);
+  --ps-dd-opt-radius: 6px;
+  --ps-dd-opt-pad: 5px 8px;
+  --ps-dd-hover-bg: var(--bg-hover);
+  --ps-dd-sel-bg: var(--bg-3);
+  --ps-dd-sel-color: var(--accent);
+}
+.live-root[data-dropdown="inline"] .sidebar .row[data-type="enum"] {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-3);
+  border-radius: 8px;
+  padding: 3px 4px 3px 10px;
+}
+.live-root[data-dropdown="inline"] .sidebar .row[data-type="enum"] .label {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+}
+.live-root[data-dropdown="inline"] .sidebar .row[data-type="enum"] .control-host {
+  flex: 0 0 52%;
+  min-width: 0;
+}
+
+/* =====================================================================
+   Number inputs
+   ===================================================================== */
+
+/* Compact hosts — the H/S/L cells of a color control (lib/number-field
+   HslField) sit three to a row, so the LAYOUT hooks are reset to their
+   fallbacks here (`initial` = guaranteed-invalid → the component's own
+   default wins); fill / border / radius / glyphs still follow the pack. */
+.live-root .tb-num-compact {
+  --ps-num-w: initial;
+  --ps-num-align: initial;
+  --ps-num-pad: initial;
+  --ps-num-size: initial;
+  --ps-num-steps-display: initial;
+  --ps-num-step-flex: initial;
+  --ps-num-step-down-shadow: initial;
+  --ps-num-step-up-shadow: initial;
+}
+.live-root[data-numeric="split"] .tb-num-compact .tb-num-step-down,
+.live-root[data-numeric="split"] .tb-num-compact .tb-num-step-up {
+  order: 0;
+}
+
+/* Split stepper — "− 02 +": the two step buttons leave their column
+   (display: contents) and flank a centered value. */
+.live-root[data-numeric="split"] {
+  --ps-num-h: 22px;
+  --ps-num-w: 84px;
+  --ps-num-bg: var(--bg-3);
+  --ps-num-border: transparent;
+  --ps-num-radius: 6px;
+  --ps-num-color: var(--text);
+  --ps-num-size: 11px;
+  --ps-num-align: center;
+  --ps-num-pad: 0 2px;
+  --ps-num-steps-display: contents;
+  --ps-num-steps-w: 0px;
+  --ps-num-steps-border: transparent;
+  --ps-num-step-flex: 0 0 22px;
+  --ps-num-step-color: var(--text-dim);
+  --ps-num-step-bg: transparent;
+  --ps-num-step-down-shadow: inset -1px 0 0 var(--border);
+  --ps-num-step-up-shadow: inset 1px 0 0 var(--border);
+  --ps-num-chevron: none;
+  --ps-num-plusminus: block;
+}
+.live-root[data-numeric="split"] .tb-num-step-down {
+  order: -1;
+}
+.live-root[data-numeric="split"] .tb-num-step-up {
+  order: 1;
+}
+
+/* Stacked stepper — the value with a bordered + / − column on the right. */
+.live-root[data-numeric="stacked"] {
+  --ps-num-h: 22px;
+  --ps-num-w: 64px;
+  --ps-num-bg: var(--bg);
+  --ps-num-border: var(--border-strong);
+  --ps-num-radius: 6px;
+  --ps-num-color: var(--text);
+  --ps-num-size: 11px;
+  --ps-num-align: left;
+  --ps-num-pad: 0 6px;
+  --ps-num-steps-display: flex;
+  --ps-num-steps-w: 16px;
+  --ps-num-steps-border: var(--border-strong);
+  --ps-num-step-flex: 1;
+  --ps-num-step-color: var(--text-dim);
+  --ps-num-step-bg: var(--bg-3);
+  --ps-num-step-down-shadow: inset 0 1px 0 var(--border-strong);
+  --ps-num-step-up-shadow: none;
+  --ps-num-chevron: none;
+  --ps-num-plusminus: block;
+}
+
+/* Plain — a borderless right-aligned numeral, no stepper; drag to scrub or
+   click to type. */
+.live-root[data-numeric="plain"] {
+  --ps-num-h: 22px;
+  --ps-num-w: 56px;
+  --ps-num-bg: transparent;
+  --ps-num-border: transparent;
+  --ps-num-radius: 0px;
+  --ps-num-color: var(--text);
+  --ps-num-size: 13px;
+  --ps-num-align: right;
+  --ps-num-pad: 0 2px;
+  --ps-num-steps-display: none;
+  --ps-num-steps-w: 0px;
+  --ps-num-steps-border: transparent;
+  --ps-num-step-flex: 1;
+  --ps-num-step-color: var(--text-dim);
+  --ps-num-step-bg: transparent;
+  --ps-num-step-down-shadow: none;
+  --ps-num-step-up-shadow: none;
+  --ps-num-chevron: none;
+  --ps-num-plusminus: none;
+}
+
+/* =====================================================================
+   Transport (reset + play)
+   ===================================================================== */
+
+/* Pill — filled fully-rounded buttons; play goes accent while playing. */
+.live-root[data-transport="pill"] {
+  --ps-tr-gap: 6px;
+  --ps-tr-w: 34px;
+  --ps-tr-h: 24px;
+  --ps-tr-radius: 999px;
+  --ps-tr-bg: var(--bg-3);
+  --ps-tr-border: transparent;
+  --ps-tr-color: var(--text-dim);
+  --ps-tr-hover-bg: var(--bg-hover);
+  --ps-tr-hover-border: transparent;
+  --ps-tr-hover-color: var(--text);
+  --ps-tr-on-bg: var(--accent);
+  --ps-tr-on-border: var(--accent);
+  --ps-tr-on-color: var(--bg);
+  --ps-tr-icon-scale: 1;
+}
+
+/* Round — outlined circles, accent-filled while playing. */
+.live-root[data-transport="round"] {
+  --ps-tr-gap: 8px;
+  --ps-tr-w: 28px;
+  --ps-tr-h: 28px;
+  --ps-tr-radius: 50%;
+  --ps-tr-bg: transparent;
+  --ps-tr-border: var(--border-strong);
+  --ps-tr-color: var(--text-dim);
+  --ps-tr-hover-bg: var(--bg-3);
+  --ps-tr-hover-border: var(--border-strong);
+  --ps-tr-hover-color: var(--text);
+  --ps-tr-on-bg: var(--accent);
+  --ps-tr-on-border: var(--accent);
+  --ps-tr-on-color: var(--bg);
+  --ps-tr-icon-scale: 1.1;
+}
+
+/* Ghost — bare icons, no box; a soft hover wash, accent while playing. */
+.live-root[data-transport="ghost"] {
+  --ps-tr-gap: 4px;
+  --ps-tr-w: 24px;
+  --ps-tr-h: 24px;
+  --ps-tr-radius: 4px;
+  --ps-tr-bg: transparent;
+  --ps-tr-border: transparent;
+  --ps-tr-color: var(--text-dim);
+  --ps-tr-hover-bg: var(--bg-3);
+  --ps-tr-hover-border: transparent;
+  --ps-tr-hover-color: var(--text);
+  --ps-tr-on-bg: transparent;
+  --ps-tr-on-border: transparent;
+  --ps-tr-on-color: var(--accent);
+  --ps-tr-icon-scale: 1.3;
+}

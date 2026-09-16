@@ -195,6 +195,12 @@ export interface SavedEdge {
   sourceHandle: string | null;
   target: string;
   targetHandle: string | null;
+  // Wire label (091526): free text shown in a bubble on the wire, parked
+  // at `labelT` ∈ [0,1] of the wire's length (0.5 = midpoint). Additive
+  // and optional like tint/bold — editor-only, engine-blind, absent on
+  // unlabeled wires; an older build's re-save just drops it.
+  label?: string;
+  labelT?: number;
 }
 
 // Scene-level (non-graph) project state. Optional so v1 projects
@@ -968,13 +974,23 @@ export async function serializeGraph(
       onProgress?.((i + 1) / total);
     }
   }
-  const savedEdges: SavedEdge[] = edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    sourceHandle: e.sourceHandle ?? null,
-    target: e.target,
-    targetHandle: e.targetHandle ?? null,
-  }));
+  const savedEdges: SavedEdge[] = edges.map((e) => {
+    const se: SavedEdge = {
+      id: e.id,
+      source: e.source,
+      sourceHandle: e.sourceHandle ?? null,
+      target: e.target,
+      targetHandle: e.targetHandle ?? null,
+    };
+    const label = e.data?.label;
+    if (typeof label === "string" && label.length > 0) {
+      se.label = label;
+      const t = e.data?.labelT;
+      if (typeof t === "number" && Number.isFinite(t) && t !== 0.5)
+        se.labelT = Math.min(1, Math.max(0, t));
+    }
+    return se;
+  });
   return {
     schemaVersion: CURRENT_SCHEMA,
     compositions,
@@ -1372,13 +1388,26 @@ export async function deserializeGraph(
       onProgress?.((i + 1) / total);
     }
   }
-  const edges: Edge[] = saved.edges.map((se) => ({
-    id: se.id,
-    source: se.source,
-    sourceHandle: se.sourceHandle ?? undefined,
-    target: se.target,
-    targetHandle: se.targetHandle ?? undefined,
-  }));
+  const edges: Edge[] = saved.edges.map((se) => {
+    const e: Edge = {
+      id: se.id,
+      source: se.source,
+      sourceHandle: se.sourceHandle ?? undefined,
+      target: se.target,
+      targetHandle: se.targetHandle ?? undefined,
+    };
+    if (typeof se.label === "string" && se.label.length > 0) {
+      const t = se.labelT;
+      e.data = {
+        label: se.label,
+        labelT:
+          typeof t === "number" && Number.isFinite(t)
+            ? Math.min(1, Math.max(0, t))
+            : 0.5,
+      };
+    }
+    return e;
+  });
   // v6 migration: Text's `mask` input (font-morph driver) became
   // `morph_mask` so the name `mask` is now the universal matte. A ≤v5 save's
   // `in:mask` edges into a Text node were morph wiring — rewrite them to

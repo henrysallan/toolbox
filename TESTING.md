@@ -87,6 +87,27 @@ that pair). Offline node tests should push each input through
   feeds measured sizes and real handle offsets, so a layout that looks
   off in the app but passes the gate is an adapter (node-layout-graph.ts)
   question, not a solver one.
+- `check-export-manifest` — `buildExportManifest`'s reachability seed
+  (the live link / exported-app control panel). The viewport-active
+  terminal can be a STRUCTURAL node — a Layer's Group Output when the
+  author saved while previewing inside the layer — and flatten dissolves
+  those, so seeding the walk with that id used to reach nothing: every
+  control vanished from `/live` while the canvas still rendered (the
+  evaluator remaps before its own flatten; the builder didn't). The gate
+  builds a Layer whose Group Output is active and asserts the interior
+  controls survive; `manifest.outputNodeId` must stay the original id.
+  It also asserts per-node slider range overrides (`paramOverrides`
+  min / max / softMax, the right-click "Slider range" editor) land on the
+  scalar control's def — full and partial overrides, stock def untouched —
+  because the live panel renders `ParamControl` from `control.def` alone.
+- `check-live-presets` — the live-link style packs (081426 M4): every
+  non-classic entry in design.ts's SLIDER/DROPDOWN/NUMERIC/TRANSPORT registries has
+  a `.live-root[data-<class>="<id>"]` block in design-presets.css, every
+  block sets the full `--ps-*` set for its class (no half-inherited
+  fallbacks) with tokens only, and `fromSavedLiveDesign` keeps known ids /
+  degrades unknown ones to classic. Visual correctness is NOT covered —
+  audition packs in File → Live Link… (the preview iframe is the real
+  `.live-root`).
 
 ---
 

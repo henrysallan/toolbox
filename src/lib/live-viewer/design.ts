@@ -13,7 +13,10 @@
 // src/export-template/vite.config.ts like KeyframeDiamond.
 
 import { hexToOklch, oklchToHex } from "@/components/effects/theme/oklch";
-import { NEUTRAL_RAMP } from "@/components/effects/theme/tokens";
+import {
+  ACCENTS as EDITOR_ACCENTS,
+  NEUTRAL_RAMP,
+} from "@/components/effects/theme/tokens";
 
 export const LIVE_DESIGN_VERSION = 1;
 
@@ -61,6 +64,8 @@ export interface LiveDesign {
     slider: string;
     dropdown: string;
     numeric: string;
+    /** Play / skip-to-start buttons (added 2026-09-15). */
+    transport: string;
     font: string;
   };
   controls: {
@@ -111,6 +116,7 @@ export const DEFAULT_LIVE_DESIGN: LiveDesign = {
     slider: "classic",
     dropdown: "classic",
     numeric: "classic",
+    transport: "classic",
     font: "system",
   },
   controls: { order: [], labels: {} },
@@ -119,13 +125,18 @@ export const DEFAULT_LIVE_DESIGN: LiveDesign = {
 
 // --- preset registries ---------------------------------------------------
 //
-// v1 ships the machinery with one pixel-identical "classic" entry per
-// control class; real packs land as registry entries + scoped CSS blocks in
-// design-presets.css when the owner supplies references (spec M4).
+// The first entry of each registry is the fallback for unknown ids AND the
+// editor-identical look ("classic" — no CSS of its own). Every other entry
+// is a rule block in design-presets.css scoped on the matching
+// `.live-root[data-<class>="<id>"]`, setting the `--ps-*` custom properties
+// the shared controls read (spec M4, landed 2026-09-15; guarded by
+// scripts/check-live-presets.mts). `description` is the one-line hint the
+// designer's picker shows under the select.
 
 export interface ControlStylePreset {
   id: string;
   label: string;
+  description?: string;
 }
 
 export interface FontPreset {
@@ -133,20 +144,101 @@ export interface FontPreset {
   label: string;
   /** CSS font-family stack applied to .live-root. */
   stack: string;
-  /** Reserved for future packs; v1 entries are system stacks only. */
+  description?: string;
+  /** Reserved for future packs; entries are system stacks only. */
   webfontUrl?: string;
 }
 
 export const SLIDER_PRESETS: ControlStylePreset[] = [
-  { id: "classic", label: "Classic" },
+  {
+    id: "classic",
+    label: "Classic",
+    description: "The editor's bar slider — filled track, hairline handle.",
+  },
+  {
+    id: "pill",
+    label: "Pill",
+    description: "Tall fully-rounded bar with a soft fill and a thin marker.",
+  },
+  {
+    id: "dot",
+    label: "Dot",
+    description: "Thin line, accent-colored fill, round thumb with a halo.",
+  },
+  {
+    id: "ruler",
+    label: "Ruler",
+    description: "Tick marks along a slim track with a bar marker.",
+  },
 ];
 
 export const DROPDOWN_PRESETS: ControlStylePreset[] = [
-  { id: "classic", label: "Classic" },
+  {
+    id: "classic",
+    label: "Classic",
+    description: "The editor's compact dark dropdown.",
+  },
+  {
+    id: "pill",
+    label: "Pill",
+    description: "Fully rounded filled trigger and a soft rounded list.",
+  },
+  {
+    id: "outline",
+    label: "Outline",
+    description: "Transparent trigger with a border that lights up on open.",
+  },
+  {
+    id: "inline",
+    label: "Inline",
+    description: "Label on the left, value on the right, in one rounded card.",
+  },
 ];
 
 export const NUMERIC_PRESETS: ControlStylePreset[] = [
-  { id: "classic", label: "Classic" },
+  {
+    id: "classic",
+    label: "Classic",
+    description: "The editor's number field with stacked arrows.",
+  },
+  {
+    id: "split",
+    label: "Split stepper",
+    description: "− and + buttons flanking a centered value.",
+  },
+  {
+    id: "stacked",
+    label: "Stacked stepper",
+    description: "Value with a bordered + / − column on the right.",
+  },
+  {
+    id: "plain",
+    label: "Plain",
+    description: "Borderless numeral, no stepper — drag or type.",
+  },
+];
+
+export const TRANSPORT_PRESETS: ControlStylePreset[] = [
+  {
+    id: "classic",
+    label: "Classic",
+    description: "The editor's playback bar — small boxed icons, green while playing.",
+  },
+  {
+    id: "pill",
+    label: "Pill",
+    description: "Filled rounded buttons; the play button turns accent while playing.",
+  },
+  {
+    id: "round",
+    label: "Round",
+    description: "Outlined circles, accent-filled while playing.",
+  },
+  {
+    id: "ghost",
+    label: "Ghost",
+    description: "Bare icons, no box — accent-colored while playing.",
+  },
 ];
 
 export const FONT_PRESETS: FontPreset[] = [
@@ -155,12 +247,35 @@ export const FONT_PRESETS: FontPreset[] = [
     label: "System Sans",
     stack:
       'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+    description: "The platform's default interface face.",
   },
   {
     id: "mono",
     label: "System Mono",
     stack:
       'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+    description: "Fixed-width — numbers line up.",
+  },
+  {
+    id: "rounded",
+    label: "Rounded",
+    stack:
+      'ui-rounded, "SF Pro Rounded", "Nunito", "Varela Round", "Quicksand", ui-sans-serif, system-ui, sans-serif',
+    description: "Soft rounded terminals where the platform has them.",
+  },
+  {
+    id: "serif",
+    label: "Serif",
+    stack:
+      'ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif',
+    description: "An editorial, bookish panel.",
+  },
+  {
+    id: "geometric",
+    label: "Geometric",
+    stack:
+      '"Avenir Next", Avenir, Futura, "Century Gothic", "Gill Sans", "Trebuchet MS", ui-sans-serif, system-ui, sans-serif',
+    description: "Even, circular letterforms.",
   },
 ];
 
@@ -270,6 +385,7 @@ export function fromSavedLiveDesign(saved: unknown): LiveDesign {
       slider: presetId(presets.slider, SLIDER_PRESETS),
       dropdown: presetId(presets.dropdown, DROPDOWN_PRESETS),
       numeric: presetId(presets.numeric, NUMERIC_PRESETS),
+      transport: presetId(presets.transport, TRANSPORT_PRESETS),
       font: presetId(presets.font, FONT_PRESETS),
     },
     controls: { order, labels },
@@ -424,7 +540,22 @@ export function designTokens(design: LiveDesign): Record<string, string> {
   NEUTRAL_RAMP.forEach((pair, i) => {
     out[`--tb-n-${i}`] = grey(pair[mode]);
   });
+  // The editor's accent tokens too (`--tb-a-*`): the shared controls read
+  // them for meaning-bearing states — TogglePill's ON fill (blue-500), the
+  // dropdown's selected item (yellow-400), validity tints (red/green). Not
+  // tinted, exactly like the editor. Without these the exported app (no
+  // host tokens at all) rendered those states transparent, and /live
+  // half-followed the editor's :root. Per-mode hand-picked pairs, so light
+  // mode gets legible counterparts.
+  for (const [name, pair] of Object.entries(EDITOR_ACCENTS)) {
+    out[`--tb-a-${name}`] = pair[mode];
+  }
   out["--accent"] = ACCENTS[mode];
+  // The "playing" state of the classic transport buttons — the editor's
+  // PlaybackBar uses a literal emerald fill with a pale mint glyph in both
+  // modes, so the live default does too (packs swap in --accent).
+  out["--play-bg"] = "#047857";
+  out["--play-fg"] = "#d1fae5";
   // Control-panel surface: bg-2 with the author's alpha; backdrop blur
   // only when set (the CSS fallback is `none`, so an absent var costs
   // nothing — a permanent blur(0px) would still create a backdrop root).

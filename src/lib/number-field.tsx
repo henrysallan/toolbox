@@ -69,9 +69,13 @@ export function StepButton({
       timers.current.iv = window.setInterval(() => onStepRef.current(), 55);
     }, 300);
   };
+  // `--ps-num-*` are the live-link style-preset hooks (lib/live-viewer/
+  // design-presets.css); every fallback IS the editor look. Both glyphs are
+  // rendered — the chevron shows by default, a preset can swap to "+"/"−".
   return (
     <button
       type="button"
+      className={`tb-num-step tb-num-step-${dir}`}
       title={title}
       onPointerDown={start}
       onPointerUp={stop}
@@ -79,20 +83,28 @@ export function StepButton({
       onPointerCancel={stop}
       tabIndex={-1}
       style={{
-        flex: 1,
+        flex: "var(--ps-num-step-flex, 1)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: "transparent",
+        background: "var(--ps-num-step-bg, transparent)",
         border: "none",
         padding: 0,
         margin: 0,
         cursor: "pointer",
-        color: "var(--tb-n-13)",
+        color: "var(--ps-num-step-color, var(--tb-n-13))",
+        boxShadow: `var(--ps-num-step-${dir}-shadow, none)`,
         lineHeight: 0,
       }}
     >
-      <svg width={7} height={4} viewBox="0 0 8 5" aria-hidden>
+      <svg
+        className="tb-num-chevron"
+        width={7}
+        height={4}
+        viewBox="0 0 8 5"
+        aria-hidden
+        style={{ display: "var(--ps-num-chevron, block)" }}
+      >
         <polyline
           points={dir === "up" ? "1.5,3.5 4,1.5 6.5,3.5" : "1.5,1.5 4,3.5 6.5,1.5"}
           fill="none"
@@ -102,6 +114,18 @@ export function StepButton({
           strokeLinejoin="round"
         />
       </svg>
+      <span
+        className="tb-num-plusminus"
+        aria-hidden
+        style={{
+          display: "var(--ps-num-plusminus, none)",
+          fontSize: 12,
+          lineHeight: 1,
+          fontWeight: 500,
+        }}
+      >
+        {dir === "up" ? "+" : "−"}
+      </span>
     </button>
   );
 }
@@ -244,16 +268,21 @@ export function NumberField({
     if (s && !s.moved) beginEdit(); // clean click → edit
   };
 
+  // `--ps-num-*` = live-link style-preset hooks (design-presets.css); the
+  // fallbacks are the editor look, which never defines them. Width is the
+  // HOST's call (a scalar row opts into `--ps-num-w`; H/S/L cells and vec
+  // fields keep theirs) — a pack can't know how many fields share a row.
   return (
     <div
+      className="tb-num"
       style={{
         display: "inline-flex",
         alignItems: "stretch",
         width,
-        height: 18,
-        background: "var(--tb-n-0)",
-        border: `1px solid ${borderColor}`,
-        borderRadius: 3,
+        height: "var(--ps-num-h, 18px)",
+        background: "var(--ps-num-bg, var(--tb-n-0))",
+        border: `1px solid var(--ps-num-border, ${borderColor})`,
+        borderRadius: "var(--ps-num-radius, 3px)",
         boxSizing: "border-box",
         overflow: "hidden",
       }}
@@ -291,26 +320,30 @@ export function NumberField({
             stepBy(-1);
           }
         }}
+        className="tb-num-input"
         style={{
           flex: 1,
           minWidth: 0,
           background: "transparent",
           border: "none",
           outline: "none",
-          color: "var(--tb-n-12)",
+          color: "var(--ps-num-color, var(--tb-n-12))",
           fontFamily: "inherit",
-          fontSize: 10,
-          padding: "1px 3px",
+          fontSize: "var(--ps-num-size, 10px)",
+          padding: "var(--ps-num-pad, 1px 3px)",
+          textAlign: "var(--ps-num-align, left)" as React.CSSProperties["textAlign"],
           cursor: editing ? "text" : "ew-resize",
         }}
       />
       <div
+        className="tb-num-steps"
         style={{
-          display: "flex",
+          display: "var(--ps-num-steps-display, flex)",
           flexDirection: "column",
-          width: 11,
+          width: "var(--ps-num-steps-w, 11px)",
           flexShrink: 0,
-          borderLeft: "1px solid color-mix(in srgb, var(--tb-lift) 18%, transparent)",
+          borderLeft:
+            "1px solid var(--ps-num-steps-border, color-mix(in srgb, var(--tb-lift) 18%, transparent))",
         }}
       >
         <StepButton dir="up" title="Increase" onStep={() => stepBy(1)} />
@@ -341,8 +374,13 @@ export function HslField({
   grow?: boolean;
   title?: string;
 }) {
+  // tb-num-compact: several of these share one row, so the live-link number
+  // packs' LAYOUT hooks (flanking buttons, widths, centered numerals) are
+  // reset on this wrapper in design-presets.css; the look (fill, border,
+  // radius, glyphs) still follows the pack.
   return (
     <div
+      className="tb-num-compact"
       style={{
         display: "flex",
         alignItems: "center",

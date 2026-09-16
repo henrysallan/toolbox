@@ -4,6 +4,7 @@ import type { Edge, Node } from "@xyflow/react";
 import {
   createContext,
   memo,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -488,20 +489,187 @@ function ParamPanelShell({ children }: { children: ReactNode }) {
   );
 }
 
-// Memoized (export at the bottom). The clock-store subscription inside
-// still re-renders it per frame while PLAYING (keyframe diamonds track the
-// playhead — the leaf-subscription follow-up fixes that); the memo removes
-// the paused-interaction storms (canvas pointermove bumps, shell state).
-function ParamPanel({
+// Selection order for the multi-select stack: ids of the nodes React Flow
+// flags `selected` in the current scope (hidden nodes belong to other
+// scopes), earliest-selected first. Nodes still selected keep their slot;
+// newly selected ones append in graph order, so a marquee lands in array
+// order. Returns `prev` itself when nothing changed so the caller's state
+// write is a no-op.
+function reconcileSelectionOrder(
+  prev: readonly string[],
+  nodes: readonly Node<NodeDataPayload>[]
+): readonly string[] {
+  const now = new Set<string>();
+  for (const n of nodes) if (n.selected && !n.hidden) now.add(n.id);
+  const next = prev.filter((id) => now.has(id));
+  const kept = new Set(next);
+  for (const id of now) if (!kept.has(id)) next.push(id);
+  if (next.length === prev.length && next.every((id, i) => id === prev[i])) {
+    return prev;
+  }
+  return next;
+}
+
+// Memoized (export at the bottom); the memo removes the paused-interaction
+// storms (canvas pointermove bumps, shell state). The clock-store
+// subscription lives in NodeParamsBlock, so while PLAYING only the node
+// blocks re-render per frame (keyframe diamonds track the playhead — the
+// leaf-subscription follow-up fixes that).
+//
+// Multi-select: every node React Flow flags `selected` in the current scope
+// gets its own NodeParamsBlock, stacked in the order the user selected them
+// (reconcileSelectionOrder). `selectedId` — EffectsApp's primary selection —
+// always leads, and is the whole stack for the programmatic selects (perf
+// panel, render-queue jump) that set it without flagging the node.
+function ParamPanel(props: Props) {
+  const {
+    nodes,
+    selectedId,
+    mode,
+    canvasRes,
+    onCanvasResChange,
+    fps,
+    onFpsChange,
+    bpm,
+    onBpmChange,
+    signedIn,
+    currentUserId,
+    onLoadProject,
+    onLoadLocal,
+    loadRefreshKey,
+  } = props;
+
+  // Selection order, adjusted during render (the same setState-in-render
+  // pattern React documents for derived state): reconcile returns the
+  // previous array itself when membership and order are unchanged, so the
+  // write is a no-op except on a real selection change.
+  const [selectionOrder, setSelectionOrder] = useState<readonly string[]>(
+    []
+  );
+  const order = reconcileSelectionOrder(selectionOrder, nodes);
+  if (order !== selectionOrder) setSelectionOrder(order);
+
+  // Collapsed state for ParamDef groups (e.g. the Text node's per-character
+  // animators), keyed `${nodeId}:${groupId}`. Default expanded; the header
+  // caret toggles it. Purely UI — never touches stored params.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+    () => new Set()
+  );
+  const toggleGroup = useCallback(
+    (key: string) =>
+      setCollapsedGroups((prev) => {
+        const next = new Set(prev);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      }),
+    []
+  );
+
+  const stack: Node<NodeDataPayload>[] = [];
+  if (selectedId) {
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const ids = order.includes(selectedId) ? order : [selectedId, ...order];
+    for (const id of ids) {
+      const n = byId.get(id);
+      if (n) stack.push(n);
+    }
+  }
+  const stacked = stack.length > 1;
+
+  return (
+    <ParamPanelShell>
+      {mode === "project" ? (
+        <ProjectSettings
+          canvasRes={canvasRes}
+          onCanvasResChange={onCanvasResChange}
+          fps={fps}
+          onFpsChange={onFpsChange}
+          bpm={bpm}
+          onBpmChange={onBpmChange}
+        />
+      ) : mode === "load" ? (
+        <LoadGrid
+          signedIn={!!signedIn}
+          currentUserId={currentUserId ?? null}
+          onLoad={(id) => onLoadProject?.(id)}
+          onLoadLocal={onLoadLocal}
+          refreshKey={loadRefreshKey}
+        />
+      ) : stack.length === 0 ? (
+        <div style={{ color: "var(--tb-n-10)" }}>Select a node to edit parameters.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          {stack.map((node, i) => (
+            <div key={node.id} style={i > 0 ? STACK_DIVIDER_STYLE : undefined}>
+              <NodeParamsBlock
+                {...props}
+                node={node}
+                stacked={stacked}
+                collapsedGroups={collapsedGroups}
+                toggleGroup={toggleGroup}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </ParamPanelShell>
+  );
+}
+
+// Rule between stacked node blocks (multi-select).
+const STACK_DIVIDER_STYLE: React.CSSProperties = {
+  borderTop: "1px solid var(--tb-n-7)",
+  marginTop: 14,
+  paddingTop: 12,
+};
+
+// Node types whose block is a bespoke panel rather than the generic
+// name-field + param-rows section. In a multi-select stack they get a
+// caption with the node's name, since nothing else in the block says which
+// node it belongs to (the generic section's header IS the name).
+const CUSTOM_PANEL_TYPES = new Set<string>([
+  "image-generate",
+  "bg-remove",
+  "segment-anything",
+  "depth-anything",
+  "datamosh",
+  "color-correction",
+  "rgb-curves",
+  "autolayout",
+  "render-queue",
+  GROUP_INPUT_TYPE,
+  GROUP_OUTPUT_TYPE,
+]);
+// Panels laid out as `height: 100%` of the shell (a flex column that fills
+// the scroll box). In a stack there is no definite height to fill, so they
+// get a fixed-height box; alone they own the shell as before.
+const FULL_HEIGHT_PANEL_TYPES = new Set<string>(["image-generate", "rgb-curves"]);
+const STACKED_FULL_HEIGHT_PX = 420;
+
+type NodeParamsBlockProps = Props & {
+  node: Node<NodeDataPayload>;
+  // True when the block is one of several (multi-select) — adds the
+  // caption / fixed-height treatment above.
+  stacked: boolean;
+  // Group collapse state lives on the panel (keyed `${nodeId}:${groupId}`)
+  // so it survives re-selecting a node; blocks are keyed by node id and
+  // would lose it on remount.
+  collapsedGroups: Set<string>;
+  toggleGroup: (key: string) => void;
+};
+
+// One node's parameters — everything the panel shows for a single selected
+// node. Keyed by node id at the call site, so per-node UI state (the search
+// box) starts fresh on every node switch.
+const NodeParamsBlock = memo(function NodeParamsBlock({
+  node,
+  stacked,
+  collapsedGroups,
+  toggleGroup,
   nodes,
-  selectedId,
-  mode,
   canvasRes,
-  onCanvasResChange,
   fps,
-  onFpsChange,
-  bpm,
-  onBpmChange,
   onParamChange,
   onConvertToEditable,
   onToggleParamExposed,
@@ -518,10 +686,6 @@ function ParamPanel({
   onRemoveGroupSocket,
   onReorderGroupSockets,
   signedIn,
-  currentUserId,
-  onLoadProject,
-  onLoadLocal,
-  loadRefreshKey,
   projectId,
   edges,
   getRefImageBlob,
@@ -532,16 +696,17 @@ function ParamPanel({
   sceneFrames,
   queueRender,
   onSelectNode,
-}: Props) {
+}: NodeParamsBlockProps) {
+
   // Clock read from the playback store (clock-store spec, step 3): drives
   // keyframe diamonds + animated readouts. Still a whole-panel re-render
   // per frame while playing — pushing this into the diamond/readout
   // leaves is the follow-up optimization.
   const currentTick = useClock((s) => s.tick);
-  const selected = selectedId
-    ? nodes.find((n) => n.id === selectedId)
-    : undefined;
-  const def = selected ? getNodeDef(selected.data.defType) : undefined;
+  // `selected` keeps the body's original name: this block was the panel's
+  // single-node render path before multi-select stacked it per node.
+  const selected = node;
+  const def = getNodeDef(selected.data.defType);
 
   // Is anything wired into the Output node's optional `spline` tap? Wired ⇒
   // the panel reveals the SVG styling rows and the "Export SVG →" action;
@@ -549,36 +714,14 @@ function ParamPanel({
   // long enough already. Same gate as the on-node SVG button in
   // EffectNode.tsx.
   const outputSplineWired =
-    !!selected &&
     def?.type === "output" &&
     (edges ?? []).some(
       (e) => e.target === selected.id && e.targetHandle === "in:spline"
     );
 
-  // Collapsed state for ParamDef groups (e.g. the Text node's per-character
-  // animators), keyed `${nodeId}:${groupId}`. Default expanded; the header
-  // caret toggles it. Purely UI — never touches stored params.
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
-    () => new Set()
-  );
-  const toggleGroup = (key: string) =>
-    setCollapsedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-
   // Params search box (right half of the title bar). Purely a view filter —
   // it never touches stored params, and a hidden param keeps its value.
   const [paramQuery, setParamQuery] = useState("");
-  // Selecting a different node starts a fresh search: a filter left over from
-  // the previous node reads as "this node has two params".
-  const [queryNodeId, setQueryNodeId] = useState(selectedId);
-  if (selectedId !== queryNodeId) {
-    setQueryNodeId(selectedId);
-    setParamQuery("");
-  }
 
   // Which params the panel would show with no search active. Hoisted out of
   // the render block below so the title bar can decide whether the node has
@@ -586,7 +729,7 @@ function ParamPanel({
   const exposedSet = new Set(selected?.data.exposedParams ?? []);
   const controlSet = new Set(selected?.data.controlParams ?? []);
   const visibleParams =
-    selected && def
+    def
       ? def.params.filter((p) => {
           if (p.hidden) return false;
           // Always show exposed/controlled params so the user can reach
@@ -644,26 +787,8 @@ function ParamPanel({
     ? filterParamsByQuery(visibleParams, searchQuery)
     : visibleParams;
 
-  return (
-    <ParamPanelShell>
-      {mode === "project" ? (
-        <ProjectSettings
-          canvasRes={canvasRes}
-          onCanvasResChange={onCanvasResChange}
-          fps={fps}
-          onFpsChange={onFpsChange}
-          bpm={bpm}
-          onBpmChange={onBpmChange}
-        />
-      ) : mode === "load" ? (
-        <LoadGrid
-          signedIn={!!signedIn}
-          currentUserId={currentUserId ?? null}
-          onLoad={(id) => onLoadProject?.(id)}
-          onLoadLocal={onLoadLocal}
-          refreshKey={loadRefreshKey}
-        />
-      ) : selected && selected.data.defType === "image-generate" ? (
+  const body = (
+      selected.data.defType === "image-generate" ? (
         // Custom split-view UI for the AI Image Generate node. This
         // node owns the entire param panel — the standard property
         // list is bypassed in favour of the chat / thumbnails layout.
@@ -686,7 +811,7 @@ function ParamPanel({
           onParamChange={onParamChange}
           getRefImageBlob={getRefImageBlob}
         />
-      ) : selected && selected.data.defType === "bg-remove" ? (
+      ) : selected.data.defType === "bg-remove" ? (
         // Custom BG-remove panel: Bake button + status + live edge
         // params (feather, threshold). RVM models also get an in/out
         // range driven by the same captureNodeFrames stepper as
@@ -701,7 +826,7 @@ function ParamPanel({
           sceneFrames={sceneFrames}
           onParamChange={onParamChange}
         />
-      ) : selected && selected.data.defType === "segment-anything" ? (
+      ) : selected.data.defType === "segment-anything" ? (
         // Segment Anything: dots status + bake range + Bake / Free Bake.
         // Dots themselves are placed on the canvas (SegmentDotsOverlay).
         <SegmentPanel
@@ -714,7 +839,7 @@ function ParamPanel({
           sceneFrames={sceneFrames}
           onParamChange={onParamChange}
         />
-      ) : selected && selected.data.defType === "depth-anything" ? (
+      ) : selected.data.defType === "depth-anything" ? (
         // Depth Anything: model picker + output toggle + Preview / bake
         // range + Bake / Free Bake. Same offline frame-stepper as Segment.
         <DepthAnythingPanel
@@ -726,7 +851,7 @@ function ParamPanel({
           sceneFrames={sceneFrames}
           onParamChange={onParamChange}
         />
-      ) : selected && selected.data.defType === "datamosh" ? (
+      ) : selected.data.defType === "datamosh" ? (
         // Datamosh: bake two input clips into the node, drag them to overlap on
         // a mini-timeline, tune the flow params, then Mosh-bake the result.
         // Same offline frame-stepper as Depth/Segment, driven on both the input
@@ -739,7 +864,7 @@ function ParamPanel({
           sceneFrames={sceneFrames}
           onParamChange={onParamChange}
         />
-      ) : selected && selected.data.defType === "color-correction" ? (
+      ) : selected.data.defType === "color-correction" ? (
         // DaVinci-style primaries panel (4 color wheels), then the grade bar
         // fields as standard param rows — same slider / keyframe-diamond /
         // expose chrome as every other node, wired to the same plumbing the
@@ -787,7 +912,7 @@ function ParamPanel({
             })}
           </Section>
         </div>
-      ) : selected && selected.data.defType === "rgb-curves" ? (
+      ) : selected.data.defType === "rgb-curves" ? (
         // Full-panel resize-aware tone-curve editor. `key` resets the
         // editor's local UI state (active channel, selection) per node.
         <RgbCurvesPanel
@@ -795,7 +920,7 @@ function ParamPanel({
           node={selected}
           onParamChange={onParamChange}
         />
-      ) : selected && selected.data.defType === "autolayout" ? (
+      ) : selected.data.defType === "autolayout" ? (
         // Figma-style auto-layout panel: direction icons, 3×3 alignment
         // grid, inline W/H sizing, gap/padding, fill, the per-item list,
         // and a collapsible canvas-placement block. Keyframable scalars
@@ -809,7 +934,7 @@ function ParamPanel({
           onAnimationChange={onAnimationChange}
           onSeekTick={onSeekTick}
         />
-      ) : selected && selected.data.defType === "render-queue" ? (
+      ) : selected.data.defType === "render-queue" ? (
         // Batch-render organizer: a reorderable list of the wired Output
         // nodes with inline filename / frame editing and a delivery picker.
         <RenderQueuePanel
@@ -821,9 +946,8 @@ function ParamPanel({
           queueRender={queueRender ?? null}
           onSelectNode={onSelectNode}
         />
-      ) : selected &&
-        (selected.data.defType === GROUP_INPUT_TYPE ||
-          selected.data.defType === GROUP_OUTPUT_TYPE) ? (
+      ) : selected.data.defType === GROUP_INPUT_TYPE ||
+        selected.data.defType === GROUP_OUTPUT_TYPE ? (
         // Boundary-node socket editor: rename / remove the group's
         // interface sockets. New sockets are added by wiring into the
         // dashed virtual port on the node itself.
@@ -860,7 +984,7 @@ function ParamPanel({
               />
             )}
         </div>
-      ) : selected && def ? (
+      ) : def ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {(def.type === GROUP_TYPE || def.type === LAYER_TYPE) &&
             onRenameNode && (
@@ -1540,12 +1664,36 @@ function ParamPanel({
           </Section>
           )}
         </div>
-      ) : (
-        <div style={{ color: "var(--tb-n-10)" }}>Select a node to edit parameters.</div>
-      )}
-    </ParamPanelShell>
+      ) : null
   );
-}
+  if (!stacked) return body;
+  return (
+    <div>
+      {CUSTOM_PANEL_TYPES.has(selected.data.defType) && (
+        <div
+          style={{
+            color: "var(--tb-n-11)",
+            textTransform: "uppercase",
+            letterSpacing: 1,
+            fontSize: 10,
+            marginBottom: 10,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {selected.data.name}
+        </div>
+      )}
+      {FULL_HEIGHT_PANEL_TYPES.has(selected.data.defType) ? (
+        <div style={{ height: STACKED_FULL_HEIGHT_PX }}>{body}</div>
+      ) : (
+        body
+      )}
+    </div>
+  );
+});
+
 
 // Keyer sample-mode selection row: the sampled color set as removable
 // swatches. Sampling itself happens on the canvas (KeyerSampleOverlay) —

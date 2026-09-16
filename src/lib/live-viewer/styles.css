@@ -136,6 +136,14 @@
   box-shadow: none;
 }
 
+/* The shared number-input spinner glyph (form-controls.css) is a data URI
+   with a white stroke — invisible on a light field, and a data URI can't
+   take a var(). Same one-line inversion the editor applies for its light
+   theme; data-mode comes from LiveRoot. */
+.live-root[data-mode="light"] input[type="number"]::-webkit-inner-spin-button {
+  filter: invert(1);
+}
+
 .live-root .sidebar .section {
   padding: 12px;
   border-bottom: 1px solid var(--border);
@@ -187,32 +195,78 @@
   pointer-events: none;
 }
 
+/* Transport (reset + play). Classic = the editor's PlaybackBar buttons:
+   28×20, radius 3, sunken fill, muted glyph, brighter on hover, emerald
+   while playing. Every value reads a `--ps-tr-*` hook with that look as
+   the fallback; the transport packs in design-presets.css set them. */
 .live-root .transport {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--ps-tr-gap, 8px);
 }
 
-.live-root .transport button,
-.live-root .export-row button,
-.live-root .export-status button {
-  background: var(--bg-3);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 4px 10px;
-  font-size: 12px;
-  border-radius: 3px;
+.live-root .transport .tr-btn {
+  width: var(--ps-tr-w, 28px);
+  height: var(--ps-tr-h, 20px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--ps-tr-bg, var(--bg));
+  border: 1px solid var(--ps-tr-border, var(--border));
+  color: var(--ps-tr-color, var(--text-faint));
+  border-radius: var(--ps-tr-radius, 3px);
   cursor: pointer;
   font-family: inherit;
+  line-height: 1;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 
-.live-root .transport button:hover,
+.live-root .transport .tr-btn svg {
+  display: block;
+  transform: scale(var(--ps-tr-icon-scale, 1));
+}
+
+.live-root .transport .tr-btn:hover {
+  background: var(--ps-tr-hover-bg, var(--bg-hover));
+  border-color: var(--ps-tr-hover-border, var(--border-strong));
+  color: var(--ps-tr-hover-color, var(--text));
+}
+
+.live-root .transport .tr-btn.is-on,
+.live-root .transport .tr-btn.is-on:hover {
+  background: var(--ps-tr-on-bg, var(--play-bg));
+  border-color: var(--ps-tr-on-border, var(--tb-a-emerald-800));
+  color: var(--ps-tr-on-color, var(--play-fg));
+}
+
+/* Export (Image / Video / GIF) + cancel buttons sit in the same toolbar
+   section as the transport, so they take the transport pack's shape —
+   radius, fill, border, glyph color, hover — from the same `--ps-tr-*`
+   hooks (2026-09-15; they used to be a fixed 3px box whatever the pack). */
+.live-root .export-row button,
+.live-root .export-status button {
+  background: var(--ps-tr-bg, var(--bg));
+  border: 1px solid var(--ps-tr-border, var(--border));
+  color: var(--ps-tr-color, var(--text-faint));
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: var(--ps-tr-radius, 3px);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
 .live-root .export-row button:hover:not(:disabled),
 .live-root .export-status button:hover {
-  background: var(--bg-hover, #232328);
+  background: var(--ps-tr-hover-bg, var(--bg-hover));
+  border-color: var(--ps-tr-hover-border, var(--border-strong));
+  color: var(--ps-tr-hover-color, var(--text));
 }
 
-/* Default transport extras (2026-08-17): scrub + resolution. */
+/* Default transport extras (2026-08-17): scrub + resolution. Both host the
+   shared bar slider (MiniBarSlider) since 2026-09-15, so the slider pack
+   styles them like the param rows. */
 .live-root .scrub {
   width: 100%;
   margin-top: 8px;
@@ -229,11 +283,6 @@
   color: var(--text-dim);
   font-size: 10px;
   flex-shrink: 0;
-}
-
-.live-root .res-row input[type="range"] {
-  flex: 1;
-  min-width: 0;
 }
 
 .live-root .res-row .res-value {

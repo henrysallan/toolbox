@@ -72,6 +72,11 @@ export default function LiveClient({ slug, name, authorName, graph }: Props) {
         params: n.params,
         exposedParams: n.exposedParams,
         controlParams: n.controlParams,
+        // Custom slider ranges (right-click "Slider range" on a scalar) —
+        // the manifest builder bakes these into each control's def so the
+        // live panel's sliders span the same min / max / soft max as the
+        // editor's. Dropping them here is what made /live ignore them.
+        paramOverrides: n.paramOverrides,
         active: n.active,
         bypassed: n.bypassed,
         // The manifest builder doesn't inspect these; keep the type

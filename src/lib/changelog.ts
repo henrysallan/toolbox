@@ -11,6 +11,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.5.7",
+    date: "2026-09-15",
+    added: [
+      "Wire labels — right-click a wire → Label Wire drops a text bubble on it. Click the bubble to edit, drag it to slide it along the wire; labels save with the project.",
+      "Live Link style packs — three looks each for sliders, dropdowns, number fields and the transport buttons, plus three font stacks, chosen in File → Live Link….",
+      "Multi-select parameter panel — every selected node gets its own stacked block, in the order you selected them.",
+    ],
+    changed: [
+      "Live links and exported apps keep their controls when the project was saved while previewing inside a layer, and their sliders honor per-node slider range overrides.",
+    ],
+  },
+  {
     version: "0.5.6",
     date: "2026-09-15",
     added: [],

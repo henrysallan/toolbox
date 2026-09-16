@@ -4144,6 +4144,37 @@ function EffectsShell({
   // (073026_node-cosmetics-and-frames.md). One pushGraph + one setNodes =
   // one undo step; clearing deletes the field so untouched nodes stay
   // envelope-free in saves.
+  // Wire labels (091526): a free-text bubble on a wire, parked at
+  // `labelT` of its length. `label: null` removes it. One undo entry per
+  // commit (menu action, text edit, or drag). Editor-only edge data —
+  // the engine never reads it; project.ts persists it as SavedEdge.label.
+  const handleSetWireLabel = useCallback(
+    (edgeId: string, patch: { label?: string | null; labelT?: number }) => {
+      if (!edgesRef.current.some((e) => e.id === edgeId)) return;
+      pushGraph(getGraphSnapshot());
+      setEdges((prev) =>
+        prev.map((e) => {
+          if (e.id !== edgeId) return e;
+          const data: Record<string, unknown> = { ...(e.data ?? {}) };
+          if (patch.label === null) {
+            delete data.label;
+            delete data.labelT;
+          } else {
+            if (patch.label !== undefined) data.label = patch.label;
+            if (patch.labelT !== undefined)
+              data.labelT = Math.min(1, Math.max(0, patch.labelT));
+            if (data.label !== undefined && data.labelT === undefined)
+              data.labelT = 0.5;
+          }
+          return Object.keys(data).length
+            ? { ...e, data }
+            : { ...e, data: undefined };
+        })
+      );
+    },
+    [pushGraph, getGraphSnapshot, setEdges]
+  );
+
   const handleStyleNodes = useCallback(
     (ids: string[], patch: { tint?: string | null; bold?: boolean }) => {
       if (ids.length === 0) return;
@@ -12888,6 +12919,7 @@ function EffectsShell({
       onOpenMidiEditor={setMidiEditNodeId}
       onReparentNode={handleReparentNode}
       onStyleNodes={handleStyleNodes}
+      onSetWireLabel={handleSetWireLabel}
       onFrameSelection={handleFrameSelection}
       onSetNodeFrame={handleSetNodeFrame}
       onScopeUp={handleScopeUp}

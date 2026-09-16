@@ -358,7 +358,41 @@ src/
                           pendingBakeRef in EffectsApp). Hidden for Spline
                           Draw itself, group/layer shells, and reroutes.
                           Covered by check-graph-ops.mts.
+                          Wire labels (091526): right-click a wire →
+                          "Label Wire" (Edit Label / Remove Label once it
+                          has one) parks a text bubble on it — JunctionEdge
+                          renders it through xyflow's EdgeLabelRenderer at
+                          `data.labelT` (0..1 along the wire, 0.5 default)
+                          using xyflow's exact bezier control points (NOT
+                          wire-geometry.ts's approximation). Click the
+                          bubble to edit in place (Enter/blur commits,
+                          Escape reverts, empty text removes), drag it to
+                          slide along the wire (nearest-t projection),
+                          right-click it for the same menu. Commits flow
+                          JunctionEdge → WireLabelContext (wire-label-
+                          context.ts, provided around <ReactFlow>) →
+                          onSetWireLabel → EffectsApp.handleSetWireLabel
+                          (one pushGraph per commit). Editor-only edge
+                          data; persisted as SavedEdge.label / labelT
+                          (additive, no schema bump — check-persistence
+                          covers the round trip). cloneSubgraph and
+                          reroute insertion spread edge data so
+                          duplicate / paste / reroute keep the label;
+                          splice and reconnect replace the wire and drop it.
     ParamPanel.tsx        Renders ParamDef[] → controls; all custom param-type UIs.
+                          Multi-select: every node React Flow flags
+                          `selected` in the current scope gets its own
+                          NodeParamsBlock (memo'd, keyed by node id),
+                          stacked earliest-selected first —
+                          reconcileSelectionOrder derives the order from
+                          the `selected` flags (kept slots + appends in
+                          graph order), adjusted during render. EffectsApp's
+                          `selectedId` always leads the stack. Bespoke
+                          panels (Image Generate, curves, …) get a name
+                          caption when stacked; `height: 100%` panels get
+                          a fixed-height box since a stack has no height
+                          to fill. Group-collapse state stays on the panel
+                          (survives re-select); the search box is per block.
     EffectNode.tsx        The node chrome on the graph canvas (sockets, header, +).
                           Also hosts ON-NODE param controls (first: the Color
                           node's per-output swatches → ColorPickerPopover, a
@@ -658,7 +692,19 @@ src/
                           Link…, full-screen designer w/ iframe-isolated
                           preview). viewer-export.ts = viewer-facing
                           image/video/gif capture, gated per-link by
-                          design.export.
+                          design.export. design-presets.css = the style
+                          packs (spec M4, 2026-09-15): the shared controls
+                          (bar slider, NumberField, Dropdown) read `--ps-*`
+                          custom properties with their stock values as
+                          fallbacks and carry tb-bar / tb-num / tb-dd
+                          classes, so a `.live-root[data-slider|dropdown|
+                          numeric|transport="<id>"]` block restyles the SAME component
+                          and the editor (which never defines the vars) is
+                          untouched. Dropdown/FontPicker lists portal into
+                          the .live-root element (live-root-context.ts) so
+                          they inherit the token sheet. Gate:
+                          scripts/check-live-presets.mts (registry ↔ CSS
+                          pairing, full-var-set contract, tokens only).
     fonts.ts font-*.ts    Curated + custom font loading, variable-font axis parsing.
     local-fonts.ts        OS-installed fonts via queryLocalFonts (Chromium/desktop);
                           enumerate for the Text picker + read bytes for save-bundling.
@@ -1650,6 +1696,22 @@ To add a node:
   template (public/export-template/v1) with project.json + assets. The
   same manifest powers `/live/[slug]` via lib/live-viewer/LiveViewer.tsx.
   **This is why src/engine + src/nodes must stay self-contained.**
+  The manifest's reachability walk is seeded from the viewport-ACTIVE
+  terminal (LiveClient / LiveLinkDesigner `pickOutputNodeId`), which can
+  be a structural node — a Layer's Group Output if the author saved while
+  previewing inside the layer. Flatten dissolves those, so the builder
+  remaps through `resolvePreviewProducer` first (the evaluator's own
+  pre-flatten remap); before 2026-09-15 it didn't, and every control
+  silently vanished from the live link while the canvas rendered fine.
+  `manifest.outputNodeId` stays the ORIGINAL id — the viewer hands it to
+  evaluateGraph, which remaps again. Gate: scripts/check-export-manifest.mts.
+  Per-node slider range overrides (`paramOverrides` — right-click "Slider
+  range" on a scalar: min / max / soft max) are baked into each scalar
+  control's `def.min/max/softMax` by the builder, because the viewer's
+  ControlPanel renders ParamControl from the def alone (no `rangeOverride`
+  prop); LiveClient's dummy nodes must copy `paramOverrides` through too.
+  Before 2026-09-15 both were missing, so /live and exported-app sliders
+  kept the stock range whatever the editor showed. Same gate.
   The per-project **LiveDesign** block (081426_live-link-designer.md)
   rides `SavedProject.liveDesign` (additive, layout-block pattern —
   EffectsApp attaches/applies around serialize) and reaches the viewers

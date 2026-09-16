@@ -98,6 +98,7 @@ import {
   NumberField,
   HslField,
 } from "@/lib/number-field";
+import { useLiveRootEl } from "@/lib/live-viewer/live-root-context";
 
 export function DampenedRangeInput(
   props: Omit<
@@ -1529,6 +1530,9 @@ export function Dropdown({
 }) {
   const [open, setOpen] = useState(false);
   const panelWin = usePanelWindow();
+  // Inside a live surface the list portals into .live-root (token sheet +
+  // preset attributes); null elsewhere → the panel's own <body>.
+  const liveRootEl = useLiveRootEl();
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
   const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(
@@ -1582,26 +1586,33 @@ export function Dropdown({
     <>
       <button
         ref={btnRef}
+        className="tb-dd"
         type="button"
         title={title}
         onClick={() => setOpen((v) => !v)}
+        // `--ps-dd-*` are the live-link style-preset hooks (design-
+        // presets.css); their fallbacks ARE the editor look.
         style={{
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
+          justifyContent: "var(--ps-dd-justify, space-between)",
           gap: 4,
           width: "100%",
-          height: 20,
-          background: "var(--tb-n-0)",
-          border: `1px solid ${open ? "var(--tb-n-9)" : "var(--tb-n-7)"}`,
-          borderRadius: 4,
-          color: "var(--tb-n-12)",
+          height: "var(--ps-dd-h, 20px)",
+          background: "var(--ps-dd-bg, var(--tb-n-0))",
+          border: `1px solid ${
+            open
+              ? "var(--ps-dd-border-open, var(--tb-n-9))"
+              : "var(--ps-dd-border, var(--tb-n-7))"
+          }`,
+          borderRadius: "var(--ps-dd-radius, 4px)",
+          color: "var(--ps-dd-color, var(--tb-n-12))",
           fontFamily: "inherit",
-          fontSize: 11,
-          padding: "0 6px",
+          fontSize: "var(--ps-dd-size, 11px)",
+          padding: "var(--ps-dd-pad, 0 6px)",
           cursor: "pointer",
           boxSizing: "border-box",
-          textAlign: "left",
+          textAlign: "var(--ps-dd-align, left)" as React.CSSProperties["textAlign"],
           ...style,
         }}
       >
@@ -1618,7 +1629,7 @@ export function Dropdown({
           width={8}
           height={5}
           viewBox="0 0 8 5"
-          style={{ flexShrink: 0, color: "var(--tb-n-11)" }}
+          style={{ flexShrink: 0, color: "var(--ps-dd-chevron, var(--tb-n-11))" }}
           aria-hidden
         >
           <polyline
@@ -1649,12 +1660,12 @@ export function Dropdown({
               width: rect.width,
               maxHeight: 260,
               overflowY: "auto",
-              background: "var(--tb-n-1)",
-              border: "1px solid var(--tb-n-7)",
-              borderRadius: 4,
-              boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+              background: "var(--ps-dd-pop-bg, var(--tb-n-1))",
+              border: "1px solid var(--ps-dd-pop-border, var(--tb-n-7))",
+              borderRadius: "var(--ps-dd-pop-radius, 4px)",
+              boxShadow: "var(--ps-dd-pop-shadow, 0 6px 20px rgba(0,0,0,0.5))",
               zIndex: 10000,
-              padding: 3,
+              padding: "var(--ps-dd-pop-pad, 3px)",
             }}
           >
             {norm.map((o) => {
@@ -1667,8 +1678,11 @@ export function Dropdown({
                     onChange(o.value);
                     setOpen(false);
                   }}
+                  className={sel ? "tb-dd-opt is-selected" : "tb-dd-opt"}
                   onMouseEnter={(e) => {
-                    if (!sel) e.currentTarget.style.background = "var(--tb-n-3)";
+                    if (!sel)
+                      e.currentTarget.style.background =
+                        "var(--ps-dd-hover-bg, var(--tb-n-3))";
                   }}
                   onMouseLeave={(e) => {
                     if (!sel) e.currentTarget.style.background = "transparent";
@@ -1676,14 +1690,18 @@ export function Dropdown({
                   style={{
                     display: "block",
                     width: "100%",
-                    textAlign: "left",
-                    background: sel ? "var(--tb-n-5)" : "transparent",
+                    textAlign: "var(--ps-dd-align, left)" as React.CSSProperties["textAlign"],
+                    background: sel
+                      ? "var(--ps-dd-sel-bg, var(--tb-n-5))"
+                      : "transparent",
                     border: "none",
-                    color: sel ? "var(--tb-a-yellow-400)" : "var(--tb-n-12)",
+                    color: sel
+                      ? "var(--ps-dd-sel-color, var(--tb-a-yellow-400))"
+                      : "var(--ps-dd-opt-color, var(--tb-n-12))",
                     fontFamily: "inherit",
-                    fontSize: 11,
-                    padding: "4px 7px",
-                    borderRadius: 3,
+                    fontSize: "var(--ps-dd-size, 11px)",
+                    padding: "var(--ps-dd-opt-pad, 4px 7px)",
+                    borderRadius: "var(--ps-dd-opt-radius, 3px)",
                     cursor: "pointer",
                     whiteSpace: "nowrap",
                     overflow: "hidden",
@@ -1698,8 +1716,9 @@ export function Dropdown({
           // The panel's OWN document — a popped-out panel portalling to
           // the main <body> would open its list in the wrong window.
           // Read from context, not the ref: portal targets are computed
-          // during render, where refs are off-limits.
-          (panelWin ?? window).document.body
+          // during render, where refs are off-limits. Inside a live
+          // surface, the .live-root element itself (live-root-context).
+          liveRootEl ?? (panelWin ?? window).document.body
         )}
     </>
   );
@@ -1721,6 +1740,7 @@ export function FontPicker({
 }) {
   const [open, setOpen] = useState(false);
   const panelWin = usePanelWindow();
+  const liveRootEl = useLiveRootEl();
   const [search, setSearch] = useState("");
   // null = not yet enumerated; [] = unsupported / denied.
   const [local, setLocal] = useState<{ family: string }[] | null>(null);
@@ -1856,7 +1876,7 @@ export function FontPicker({
           width={8}
           height={5}
           viewBox="0 0 8 5"
-          style={{ flexShrink: 0, color: "var(--tb-n-11)" }}
+          style={{ flexShrink: 0, color: "var(--ps-dd-chevron, var(--tb-n-11))" }}
           aria-hidden
         >
           <polyline
@@ -1989,8 +2009,9 @@ export function FontPicker({
           // The panel's OWN document — a popped-out panel portalling to
           // the main <body> would open its list in the wrong window.
           // Read from context, not the ref: portal targets are computed
-          // during render, where refs are off-limits.
-          (panelWin ?? window).document.body
+          // during render, where refs are off-limits. Inside a live
+          // surface, the .live-root element itself (live-root-context).
+          liveRootEl ?? (panelWin ?? window).document.body
         )}
     </>
   );
@@ -5343,11 +5364,32 @@ const BAR_HANDLE_INSET = 3;
 function barHandleLeft(fillPct: number): string {
   const p = Math.max(0, Math.min(100, fillPct));
   return (
-    `clamp(${BAR_HANDLE_INSET}px,` +
-    ` calc(${p}% - ${BAR_HANDLE_W + BAR_HANDLE_GAP}px),` +
-    ` calc(100% - ${BAR_HANDLE_INSET + BAR_HANDLE_W}px))`
+    `clamp(${PS.handleInset},` +
+    ` calc(${p}% - ${PS.handleBack}),` +
+    ` calc(100% - ${PS.handleInset} - ${PS.handleW}))`
   );
 }
+
+// Live-link style-preset hooks (lib/live-viewer/design-presets.css). Every
+// visual of the bar slider reads a `--ps-slider-*` custom property with the
+// stock value as its fallback. The EDITOR never defines them, so it renders
+// exactly as before; a `.live-root[data-slider="<id>"]` block in the live
+// link / exported app sets them to restyle this same component — no forked
+// markup, so behavior (scrub, shift-fine, range override) stays identical.
+const PS = {
+  height: "var(--ps-slider-h, 20px)",
+  radius: `var(--ps-slider-radius, ${BAR_SLIDER_RADIUS}px)`,
+  trackInset: "var(--ps-slider-track-inset, 0px)",
+  trackBg: "var(--ps-slider-track-bg, var(--tb-n-1))",
+  ring: "inset 0 0 0 1px var(--ps-slider-ring, var(--tb-n-6))",
+  handleW: `var(--ps-slider-handle-w, ${BAR_HANDLE_W}px)`,
+  handleTop: "var(--ps-slider-handle-top, 21%)",
+  handleBottom: "var(--ps-slider-handle-bottom, 21%)",
+  handleRadius: "var(--ps-slider-handle-radius, 999px)",
+  handleShadow: "var(--ps-slider-handle-shadow, none)",
+  handleInset: `var(--ps-slider-handle-inset, ${BAR_HANDLE_INSET}px)`,
+  handleBack: `var(--ps-slider-handle-back, ${BAR_HANDLE_W + BAR_HANDLE_GAP}px)`,
+};
 
 // Scalar slider row with right-click → "Edit range" popover. Slider /
 // number-input behavior is unchanged from the inline version it
@@ -5395,32 +5437,38 @@ export function MiniBarSlider({
     max > min ? ((clamped - min) / (max - min)) * 100 : 0;
   return (
     <div
+      className="tb-bar"
       style={{
         position: "relative",
         flex: 1,
-        height: height ?? 20,
+        height: `var(--ps-slider-h, ${height ?? 20}px)`,
         minWidth: minWidth ?? 40,
       }}
     >
       <div
+        className="tb-bar-track"
         style={{
           position: "absolute",
-          inset: 0,
-          borderRadius: BAR_SLIDER_RADIUS,
-          background: "var(--tb-n-1)",
+          left: 0,
+          right: 0,
+          top: PS.trackInset,
+          bottom: PS.trackInset,
+          borderRadius: PS.radius,
+          background: PS.trackBg,
           overflow: "hidden",
           pointerEvents: "none",
         }}
       >
         <div
+          className="tb-bar-fill"
           style={{
             position: "absolute",
             left: 0,
             top: 0,
             bottom: 0,
             width: `${fillPct}%`,
-            background: "var(--tb-n-5)",
-            borderRadius: BAR_SLIDER_RADIUS,
+            background: "var(--ps-slider-fill-bg, var(--tb-n-5))",
+            borderRadius: PS.radius,
           }}
         />
       </div>
@@ -5428,23 +5476,29 @@ export function MiniBarSlider({
           under its children, so the fill swallowed the left corners of the
           ring and the rounding read as broken. */}
       <div
+        className="tb-bar-ring"
         style={{
           position: "absolute",
-          inset: 0,
-          borderRadius: BAR_SLIDER_RADIUS,
-          boxShadow: "inset 0 0 0 1px var(--tb-n-6)",
+          left: 0,
+          right: 0,
+          top: PS.trackInset,
+          bottom: PS.trackInset,
+          borderRadius: PS.radius,
+          boxShadow: PS.ring,
           pointerEvents: "none",
         }}
       />
       <div
+        className="tb-bar-handle"
         style={{
           position: "absolute",
           left: barHandleLeft(fillPct),
-          top: "21%",
-          bottom: "21%",
-          width: BAR_HANDLE_W,
-          borderRadius: 999,
-          background: "var(--tb-n-12)",
+          top: PS.handleTop,
+          bottom: PS.handleBottom,
+          width: PS.handleW,
+          borderRadius: PS.handleRadius,
+          background: "var(--ps-slider-handle-bg, var(--tb-n-12))",
+          boxShadow: PS.handleShadow,
           pointerEvents: "none",
         }}
       />
@@ -5540,7 +5594,7 @@ export function ScalarSliderRow({
         backgroundImage: grad,
         backgroundSize: `${fillPct > 0 ? 10000 / fillPct : 100}% 100%`,
       }
-    : { background: barColor };
+    : { background: `var(--ps-slider-fill-bg, ${barColor})` };
   return (
     <div
       style={{ display: "flex", gap: 4, alignItems: "center", position: "relative" }}
@@ -5551,16 +5605,23 @@ export function ScalarSliderRow({
         setEditorOpen(true);
       }}
     >
-      <div style={{ position: "relative", flex: 1, height: 20 }}>
+      <div
+        className="tb-bar"
+        style={{ position: "relative", flex: 1, height: PS.height }}
+      >
         {/* Track — clips the fill so its rounded left corners follow the
             track radius; the fill's rounded RIGHT corner is the leading-edge
             cap a native gradient track can't produce. */}
         <div
+          className="tb-bar-track"
           style={{
             position: "absolute",
-            inset: 0,
-            borderRadius: BAR_SLIDER_RADIUS,
-            background: "var(--tb-n-1)",
+            left: 0,
+            right: 0,
+            top: PS.trackInset,
+            bottom: PS.trackInset,
+            borderRadius: PS.radius,
+            background: PS.trackBg,
             overflow: "hidden",
             pointerEvents: "none",
           }}
@@ -5576,6 +5637,7 @@ export function ScalarSliderRow({
             />
           )}
           <div
+            className="tb-bar-fill"
             style={{
               position: "absolute",
               left: 0,
@@ -5583,31 +5645,37 @@ export function ScalarSliderRow({
               bottom: 0,
               width: `${fillPct}%`,
               ...fillStyle,
-              borderRadius: BAR_SLIDER_RADIUS,
+              borderRadius: PS.radius,
             }}
           />
         </div>
         {/* Outline, above the fill so the ring wraps the rounded corners
             unbroken (an inset shadow on the track paints under its fill). */}
         <div
+          className="tb-bar-ring"
           style={{
             position: "absolute",
-            inset: 0,
-            borderRadius: BAR_SLIDER_RADIUS,
-            boxShadow: "inset 0 0 0 1px var(--tb-n-6)",
+            left: 0,
+            right: 0,
+            top: PS.trackInset,
+            bottom: PS.trackInset,
+            borderRadius: PS.radius,
+            boxShadow: PS.ring,
             pointerEvents: "none",
           }}
         />
         {/* Leading-edge handle at the value, inset vertically. */}
         <div
+          className="tb-bar-handle"
           style={{
             position: "absolute",
             left: barHandleLeft(fillPct),
-            top: "21%",
-            bottom: "21%",
-            width: BAR_HANDLE_W,
-            borderRadius: 999,
-            background: lineColor,
+            top: PS.handleTop,
+            bottom: PS.handleBottom,
+            width: PS.handleW,
+            borderRadius: PS.handleRadius,
+            background: `var(--ps-slider-handle-bg, ${lineColor})`,
+            boxShadow: PS.handleShadow,
             pointerEvents: "none",
           }}
         />
@@ -5639,7 +5707,9 @@ export function ScalarSliderRow({
         min={effMin}
         max={effMax}
         step={step}
-        width={44}
+        // The one NumberField host that opts into the live-link number
+        // packs' width hook (it has the row to itself, beside the bar).
+        width="var(--ps-num-w, 44px)"
         borderColor={hasOverride ? "var(--tb-a-blue-900)" : "var(--tb-n-7)"}
       />
       {editorOpen && onRangeChange && (

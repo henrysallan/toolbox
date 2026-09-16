@@ -108,3 +108,48 @@ input[type="range"]::-moz-range-thumb {
 input[type="range"]::-moz-focus-outer {
   border: 0;
 }
+
+/* Interaction-only range input for the bar-style param slider (lib/param-
+   controls ScalarSliderRow / MiniBarSlider). Fully transparent — the visible
+   track / fill / handle are real DOM rendered behind it (DOM gives a rounded
+   fill cap a native track gradient can't). The native thumb stays as the
+   invisible grab target. Lives HERE, not in the editor's globals.css, because
+   the live viewer and the exported app render the same DOM bar — with the
+   rule missing there, the shared dot-on-line chrome above painted on top of
+   the bar in the exported app (moved 2026-09-15). */
+input.param-slider-bare[type="range"] {
+  height: 20px;
+  background: transparent;
+}
+input.param-slider-bare[type="range"]::-webkit-slider-runnable-track {
+  height: 20px;
+  background: transparent;
+  /* Drop the shared chrome's 1px / 2px-radius track border. It paints ON
+     TOP of the DOM bar, so it drew a hard square ring that ignored the
+     track's own radius — invisible in dark mode (it happens to match
+     --tb-n-6), near-black in light mode. The visible outline is the track
+     div's ring. */
+  border: none;
+}
+input.param-slider-bare[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 20px;
+  margin-top: 0;
+  border: none;
+  background: transparent;
+  cursor: ew-resize;
+}
+input.param-slider-bare[type="range"]::-moz-range-track {
+  height: 20px;
+  background: transparent;
+  border: none;
+}
+input.param-slider-bare[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  cursor: ew-resize;
+}

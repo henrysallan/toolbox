@@ -322,6 +322,35 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
     });
   }, []);
 
+  // Spacebar = play / pause (2026-09-15), the transport convention every
+  // player shares. Skipped while a text field, select or button has focus:
+  // typing needs the space, and a focused button already fires its own
+  // click on space (toggling twice would cancel out). preventDefault keeps
+  // the page from scrolling.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space" && e.key !== " ") return;
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t) {
+        const tag = t.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          tag === "SELECT" ||
+          tag === "BUTTON" ||
+          t.isContentEditable
+        ) {
+          return;
+        }
+      }
+      e.preventDefault();
+      onTogglePlay();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onTogglePlay]);
+
   const onReset = useCallback(() => {
     timeRef.current = 0;
     setTime(0);

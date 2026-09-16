@@ -7,7 +7,7 @@ import type {
   ExportManifestFileInput,
 } from "./manifest-types";
 import { orderControlRefs } from "./design";
-import { ParamControl } from "@/lib/param-controls";
+import { MiniBarSlider, ParamControl } from "@/lib/param-controls";
 import { registerAudioFile, disposeAudioFile } from "@/lib/audio";
 import { registerCustomFont } from "@/lib/fonts";
 import { parseSvg } from "@/lib/svg-parse";
@@ -113,40 +113,53 @@ export function ControlPanel(props: ControlPanelProps) {
   return (
     <aside className="sidebar">
       <div className="section">
+        {/* Same order, icons and geometry as the editor's PlaybackBar
+            TransportButtons (reset, then play); `tr-btn` / `is-on` are
+            what styles.css and the transport packs (design-presets.css,
+            data-transport) style. */}
         <div className="transport">
           <button
+            className="tr-btn"
+            onClick={onReset}
+            aria-label="Reset"
+            title="Reset to start"
+          >
+            <ResetIcon />
+          </button>
+          <button
+            className={playing ? "tr-btn is-on" : "tr-btn"}
             onClick={onTogglePlay}
             aria-label={playing ? "Pause" : "Play"}
+            title={playing ? "Pause" : "Play"}
           >
-            {playing ? "⏸" : "▶"}
-          </button>
-          <button onClick={onReset} aria-label="Reset">
-            ⏮
+            {playing ? <PauseIcon /> : <PlayIcon />}
           </button>
           <span className="time">{time.toFixed(2)}s</span>
         </div>
+        {/* Scrub + resolution ride the SAME bar slider the param rows use,
+            so the slider pack (data-slider) styles them too — a native
+            range here kept the stock dot-on-line chrome whatever the pack. */}
         {loopSecs != null && loopSecs > 0 && (
-          <input
-            className="scrub"
-            type="range"
-            min={0}
-            max={loopSecs}
-            step={0.01}
-            value={Math.min(time, loopSecs)}
-            onChange={(e) => onSeek?.(Number(e.target.value))}
-            aria-label="Seek"
-          />
+          <div className="scrub">
+            <MiniBarSlider
+              value={Math.min(time, loopSecs)}
+              min={0}
+              max={loopSecs}
+              step={0.01}
+              onChange={(v) => onSeek?.(v)}
+              title="Seek"
+            />
+          </div>
         )}
         <div className="res-row">
           <span className="res-label">Resolution</span>
-          <input
-            type="range"
+          <MiniBarSlider
+            value={renderScale ?? 1}
             min={0.25}
             max={1}
             step={0.05}
-            value={renderScale ?? 1}
-            onChange={(e) => onRenderScale?.(Number(e.target.value))}
-            aria-label="Render resolution"
+            onChange={(v) => onRenderScale?.(v)}
+            title="Render resolution"
           />
           <span className="res-value">
             {Math.round((renderScale ?? 1) * 100)}%
@@ -246,7 +259,7 @@ function FileInputRow({
 }) {
   const label = labelOverride ?? `${entry.nodeName} — ${entry.label}`;
   return (
-    <div className="row">
+    <div className="row" data-type={entry.paramType}>
       <div className="label">{label}</div>
       {entry.paramType === "file" && (
         <ImageFileRow value={value} onChange={onChange} />
@@ -516,8 +529,14 @@ function ControlRow({
   onChange: (v: unknown) => void;
 }) {
   const label = labelOverride ?? `${entry.nodeName} — ${entry.label}`;
+  // data-type lets a style preset re-lay-out ONE kind of row (the
+  // "inline" dropdown pack turns enum rows into label-left / value-right
+  // cards) without touching the others — see design-presets.css.
   return (
-    <div className={`row${driven ? " driven" : ""}`}>
+    <div
+      className={`row${driven ? " driven" : ""}`}
+      data-type={entry.paramType}
+    >
       <div className="label">
         <span>{label}</span>
         {driven && <span className="driven-badge">DRIVEN</span>}
@@ -536,5 +555,72 @@ function ControlRow({
         <ParamControl param={entry.def} value={value} onChange={onChange} />
       </div>
     </div>
+  );
+}
+
+// Transport glyphs — verbatim copies of the editor's PlaybackBar icons
+// (components/effects/PlaybackBar.tsx PlayIcon / PauseIcon / ResetIcon;
+// keep in sync). Copied rather than imported: the export template has no
+// alias for the editor component tree. currentColor so the button's
+// hover / playing color flows through.
+function PlayIcon() {
+  return (
+    <svg width="10" height="12" viewBox="0 0 10 12" fill="none" aria-hidden>
+      <path
+        d="M1.5 1 L8.5 6 L1.5 11 Z"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function PauseIcon() {
+  return (
+    <svg width="10" height="12" viewBox="0 0 10 12" fill="none" aria-hidden>
+      <line
+        x1="3"
+        y1="1.5"
+        x2="3"
+        y2="10.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <line
+        x1="7"
+        y1="1.5"
+        x2="7"
+        y2="10.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function ResetIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
+      <line
+        x1="2"
+        y1="1.5"
+        x2="2"
+        y2="10.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <path
+        d="M10 1.5 L4 6 L10 10.5 Z"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }

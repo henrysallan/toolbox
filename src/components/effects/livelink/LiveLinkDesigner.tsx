@@ -42,6 +42,7 @@ import {
   FONT_PRESETS,
   NUMERIC_PRESETS,
   SLIDER_PRESETS,
+  TRANSPORT_PRESETS,
   orderControlRefs,
   type LiveCanvasMode,
   type LiveCornerRadius,
@@ -633,6 +634,17 @@ export default function LiveLinkDesigner({
             }
           />
           <PresetPicker
+            label="Transport buttons"
+            registry={TRANSPORT_PRESETS}
+            value={working.presets.transport}
+            onChange={(v) =>
+              update((d) => ({
+                ...d,
+                presets: { ...d.presets, transport: v },
+              }))
+            }
+          />
+          <PresetPicker
             label="Font"
             registry={FONT_PRESETS}
             value={working.presets.font}
@@ -640,9 +652,6 @@ export default function LiveLinkDesigner({
               update((d) => ({ ...d, presets: { ...d.presets, font: v } }))
             }
           />
-          <div style={{ color: "var(--tb-n-9)", fontSize: 10 }}>
-            More preset packs coming — the pickers grow as packs land.
-          </div>
         </Section>
 
         <Section title="Controls">
@@ -971,10 +980,11 @@ function PresetPicker({
   onChange,
 }: {
   label: string;
-  registry: { id: string; label: string }[];
+  registry: { id: string; label: string; description?: string }[];
   value: string;
   onChange: (v: string) => void;
 }) {
+  const hint = registry.find((p) => p.id === value)?.description;
   return (
     <Field label={label}>
       <select
@@ -996,6 +1006,11 @@ function PresetPicker({
           </option>
         ))}
       </select>
+      {hint && (
+        <div style={{ color: "var(--tb-n-9)", fontSize: 10, lineHeight: 1.35 }}>
+          {hint}
+        </div>
+      )}
     </Field>
   );
 }

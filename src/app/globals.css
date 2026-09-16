@@ -138,48 +138,9 @@ body {
   height: 0;
 }
 
-/* Interaction-only range input for the bar-style param slider. Fully
-   transparent — the visible track / fill / leading-edge line are real DOM
-   rendered behind it in ScalarSliderRow (DOM gives a rounded fill cap a
-   native track gradient can't). The native thumb stays as the invisible
-   grab target. The live-viewer / exported apps keep the shared dot-on-line
-   slider from form-controls.css; this class only applies in the editor. */
-input.param-slider-bare[type="range"] {
-  height: 20px;
-  background: transparent;
-}
-input.param-slider-bare[type="range"]::-webkit-slider-runnable-track {
-  height: 20px;
-  background: transparent;
-  /* Drop the shared chrome's 1px #27272a / 2px-radius track border. It paints
-     ON TOP of the DOM bar, so it drew a hard square ring that ignored the
-     track's own radius — invisible in dark mode (it happens to match
-     --tb-n-6), near-black in light mode. The visible outline is the track
-     div's ring. */
-  border: none;
-}
-input.param-slider-bare[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 14px;
-  height: 20px;
-  margin-top: 0;
-  border: none;
-  background: transparent;
-  cursor: ew-resize;
-}
-input.param-slider-bare[type="range"]::-moz-range-track {
-  height: 20px;
-  background: transparent;
-  border: none;
-}
-input.param-slider-bare[type="range"]::-moz-range-thumb {
-  width: 14px;
-  height: 20px;
-  border: none;
-  background: transparent;
-  cursor: ew-resize;
-}
+/* `.param-slider-bare` (the transparent interaction layer of the bar-style
+   param slider) lives in lib/live-viewer/form-controls.css since 2026-09-15 —
+   the live viewer and exported app render the same DOM bar and need it too. */
 
 /* Thin, unfilled scrollbar for compact panels (node search popup, etc.).
    Just a hairline track outline with a muted thumb — no heavy chrome. */

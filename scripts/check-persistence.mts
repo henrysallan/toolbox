@@ -370,5 +370,73 @@ const imageParam = (g2: SavedProject) => (g2.nodes[0].params as any).image;
   check("newer schema throws NewerSchemaError", threw instanceof NewerSchemaError, threw ? String((threw as Error).name) : "no throw");
 }
 
+// --- 6. wire labels (091526): SavedEdge.label / labelT round-trip; unlabeled
+//        wires stay free of the keys (additive field, older builds just drop it) ---
+{
+  const { serializeGraph } = await import("@/lib/project");
+  const node = (id: string) => ({
+    id,
+    defType: "image-source",
+    position: { x: 0, y: 0 },
+    params: {},
+  });
+  const wire = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    source: "a",
+    sourceHandle: "out:primary",
+    target: "b",
+    targetHandle: "in:image",
+    ...extra,
+  });
+  const saved = {
+    schemaVersion: CURRENT_SCHEMA,
+    nodes: [node("a"), node("b")],
+    edges: [
+      wire("e-plain"),
+      wire("e-mid", { label: "mask feed" }),
+      wire("e-t", { label: "alpha", labelT: 0.25 }),
+      wire("e-clamp", { label: "far", labelT: 7 }),
+    ],
+  } as unknown as SavedProject;
+  const res = await deserializeGraph(saved);
+  const byId = new Map(res.edges.map((e) => [e.id, e]));
+  check("unlabeled wire loads without data", byId.get("e-plain")?.data === undefined);
+  check(
+    "label without labelT loads at the midpoint",
+    byId.get("e-mid")?.data?.label === "mask feed" && byId.get("e-mid")?.data?.labelT === 0.5,
+    JSON.stringify(byId.get("e-mid")?.data ?? null)
+  );
+  check(
+    "label keeps its labelT",
+    byId.get("e-t")?.data?.label === "alpha" && byId.get("e-t")?.data?.labelT === 0.25
+  );
+  check("out-of-range labelT clamps on load", byId.get("e-clamp")?.data?.labelT === 1);
+
+  const reser = await serializeGraph(res.nodes, res.edges);
+  const sby = new Map(reser.edges.map((e) => [e.id, e]));
+  check(
+    "re-save keeps label + labelT",
+    sby.get("e-t")?.label === "alpha" && sby.get("e-t")?.labelT === 0.25,
+    JSON.stringify(sby.get("e-t") ?? null)
+  );
+  check(
+    "re-save omits the default labelT",
+    sby.get("e-mid")?.label === "mask feed" && !("labelT" in (sby.get("e-mid") ?? {}))
+  );
+  check(
+    "re-save writes no label keys on an unlabeled wire",
+    !("label" in (sby.get("e-plain") ?? {})) && !("labelT" in (sby.get("e-plain") ?? {}))
+  );
+  // An emptied label (data.label === "") must not be written as a label.
+  const emptied = res.edges.map((e) =>
+    e.id === "e-t" ? { ...e, data: { label: "", labelT: 0.25 } } : e
+  );
+  const reser2 = await serializeGraph(res.nodes, emptied);
+  check(
+    "empty label text serializes as no label",
+    !("label" in (reser2.edges.find((e) => e.id === "e-t") ?? {}))
+  );
+}
+
 if (failures === 0) console.log("\nALL GREEN ✅");
 process.exit(failures ? 1 : 0);

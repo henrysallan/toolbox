@@ -1,6 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 import { computeNeededSet, type GraphEdge, type GraphNode } from "@/engine/evaluator";
-import { flattenGraph } from "@/engine/flatten";
+import { flattenGraph, resolvePreviewProducer } from "@/engine/flatten";
 import { getNodeDef } from "@/engine/registry";
 import type { ParamDef, ParamType } from "@/engine/types";
 import { parseRampParamKey } from "@/engine/conventions";
@@ -92,11 +92,23 @@ export function buildExportManifest(
     targetHandle: e.targetHandle ?? "",
   }));
 
+  // The live link / export renders whatever terminal is viewport-active,
+  // and that can be a STRUCTURAL node — a Layer's Group Output (previewing
+  // inside a layer), a group shell, a reroute. Flatten dissolves those, so
+  // seeding the reachability walk with their id finds nothing: the manifest
+  // came back with zero controls while the canvas rendered fine (the
+  // evaluator remaps the same way before ITS flatten). Mirror that remap
+  // here so the panel always matches what's on screen. `manifest.
+  // outputNodeId` keeps the ORIGINAL id — the viewer hands it to
+  // evaluateGraph, which does its own remap.
+  const remapped = resolvePreviewProducer(graphNodes, graphEdges, outputNodeId);
+  const reachFrom = remapped ? remapped.nodeId : outputNodeId;
+
   // Reachability must be computed on the flattened graph — group
   // shells don't carry data edges, so interior nodes of a group are
   // only reachable once boundaries are spliced through.
   const flat = flattenGraph(graphNodes, graphEdges);
-  const needed = computeNeededSet(flat.nodes, flat.edges, outputNodeId);
+  const needed = computeNeededSet(flat.nodes, flat.edges, reachFrom);
 
   const fileInputs: ExportManifestFileInput[] = [];
   const controls: ExportManifestControl[] = [];
@@ -247,6 +259,25 @@ export function buildExportManifest(
       const { visibleIf: _omit, ...rest } = paramDef;
       void _omit;
       const cloned = JSON.parse(JSON.stringify(rest)) as ParamDef;
+
+      // Per-node slider range overrides (right-click a scalar slider →
+      // "Slider range" min / max / soft max, stored as
+      // `node.data.paramOverrides`). In the editor ParamControl reads them
+      // through a `rangeOverride` prop; the live viewer's ControlPanel
+      // renders the same ParamControl from `control.def` ALONE, so bake
+      // them into the cloned def here or the live link / exported app
+      // silently falls back to the node def's stock range. Scalar-only,
+      // matching the one ParamControl branch that honors `rangeOverride`.
+      const rangeOverride =
+        paramDef.type === "scalar"
+          ? node.data.paramOverrides?.[paramName]
+          : undefined;
+      if (rangeOverride) {
+        if (rangeOverride.min !== undefined) cloned.min = rangeOverride.min;
+        if (rangeOverride.max !== undefined) cloned.max = rangeOverride.max;
+        if (rangeOverride.softMax !== undefined)
+          cloned.softMax = rangeOverride.softMax;
+      }
 
       controls.push({
         nodeId: node.id,
