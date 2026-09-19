@@ -83,6 +83,7 @@ export const RECIPE_CONTRACT =
  * resultKind   "text"   → JSON/string result, stringify into one text block
  *              "image"  → {base64, mimeType, frame, width, height}
  *              "strip"  → image + {frames[], grid:{cols,rows}, width, height}
+ *              "compare" → image + {summary, frames[], grid, metrics[]} (091626)
  * mutates      true if it changes the document. Drives session-scoped
  *              authorization and the checkpoint boundary (spec §The loop).
  */
@@ -636,6 +637,112 @@ export const BRIDGED_TOOLS = [
         ),
     },
   },
+  // --- graph → GLSL (spec 091626_graph-to-glsl.md) ---------------------------
+  {
+    name: "plan_glsl_translation",
+    mutates: false,
+    resultKind: "text",
+    timeoutMs: CMD_TIMEOUT_MS,
+    description:
+      "Plan fusing the node chain that produces an image into ONE GLSL " +
+      "Expression node. Call this FIRST when asked to convert / fuse / bake " +
+      "a graph or node to GLSL. Walks upstream from `target` (a node id, " +
+      "`<id>:out` or `<id>:aux:<name>`; default = the selected node), " +
+      "classifies every node (pure / gather / multipass / compiled fuse; " +
+      "stateful / opaque do not), and returns: `region` (ids to fuse, " +
+      "producers first), `nodes[]` (class, doc slug, non-default params, " +
+      "`paramDefs` with CURRENT values + ranges for channel seeds, " +
+      "keyframed params, per-pixel `evaluations`), `frontier[]` (wires " +
+      "crossing into the region — kind image → sampler `slot` a..d, kind " +
+      "channel → a channel socket, kind manual → fold a constant), " +
+      "`excluded[]` with reasons (stateful, opaque, sampler cap, zone), " +
+      "`time.frames` to screenshot (keyframes + even spacing, or one frame " +
+      "for a static graph), `cost.warnings` (multipass approximations, " +
+      "gather-of-gather blowups), `targetMask` / `targetOpacity`, `docs` " +
+      "(slugs to pass to get_glsl_docs) + `sourceHints` (types with no doc " +
+      "yet — get_node_source them), and `skeleton` (an edit_group batch: " +
+      "add_node glsl-expression with on_error transparent, rename, and the " +
+      "add_edge ops wiring the frontier into a..d and the target's mask; " +
+      "`channelEdges` to add once your expression declares those channels). " +
+      "The new node is NOT wired into Output — it lands beside the " +
+      "originals. `refusal` is set when the target itself cannot be fused; " +
+      "relay it, do not improvise.",
+    inputSchema: {
+      target: z
+        .string()
+        .optional()
+        .describe(
+          'Node whose output to reproduce: bare id, "<id>:out" or "<id>:aux:<name>". Default: the selected node.'
+        ),
+      maxInputs: z
+        .number()
+        .optional()
+        .describe("Sampler budget 1–4 (default 4). Lower to force a smaller region."),
+    },
+  },
+  {
+    name: "get_glsl_docs",
+    mutates: false,
+    resultKind: "text",
+    timeoutMs: CMD_TIMEOUT_MS,
+    description:
+      "Translation guidance for writing a fused GLSL Expression — the engine " +
+      "conventions an agent that knows GLSL still gets wrong (v_uv is Y-UP " +
+      "while spline/point space is Y-DOWN canvas01 with width-relative y; " +
+      "straight alpha; RGBA16F range; mask/opacity are evaluator passes; " +
+      "channel grammar; the 4-sampler cap), the fusion pattern (one hoisted " +
+      "helper per node, gathers re-evaluate upstream at offset uvs, cost), " +
+      "how to read parity diffs, and one doc per node type where authored. " +
+      "With no args returns the three core docs (conventions, fusion, " +
+      "parity). Pass `slugs` from plan_glsl_translation's `docs`, or " +
+      "`types` (node type strings) to resolve through the class table. " +
+      "Missing docs are named in the trailer, never silently skipped; over " +
+      "~40k chars the result is cut and says which slugs to fetch next.",
+    inputSchema: {
+      slugs: z
+        .union([z.string(), z.array(z.string())])
+        .optional()
+        .describe('Doc slugs, e.g. ["conventions", "nodes/displace"]. Omit for the core three.'),
+      types: z
+        .union([z.string(), z.array(z.string())])
+        .optional()
+        .describe("Node type strings whose docs to include (resolved through the class table)."),
+    },
+  },
+  {
+    name: "compare_renders",
+    mutates: false,
+    resultKind: "compare",
+    timeoutMs: SCREENSHOT_TIMEOUT_MS,
+    description:
+      "Render two nodes at the same frames and return ONE image — a row per " +
+      "frame, columns A | B | |A−B| heat — plus numeric parity metrics per " +
+      "frame from a small RGBA8 readback: meanAbs (RGB where both alphas " +
+      "are above a floor), p95Abs, alphaMeanAbs, overThreshold, the uv " +
+      "bounding box of the worst region, and a verdict match / close / off " +
+      "(bands are provisional). This is the parity oracle for the graph → " +
+      "GLSL loop: read the numbers first, the heat second, the renders " +
+      "last, and fix the cause the parity doc ranks for that diff shape. " +
+      "`a` is the original, `b` the fused node (nodeRef grammar as " +
+      "screenshot: bare id, <id>:out, <id>:aux:<name>); `frames` 1–8 " +
+      "(use the plan's time.frames and keep them fixed across iterations; " +
+      "default = the current frame). If B is a GLSL Expression that " +
+      "failed to compile the text says so — a broken shader is transparent, " +
+      "not wrong.",
+    inputSchema: {
+      a: z.string().describe("Reference node (the original)."),
+      b: z.string().describe("Candidate node (the fused GLSL Expression)."),
+      frames: z.array(z.number()).optional().describe("Frames to compare (1–8). Default: current frame."),
+      maxSize: z
+        .number()
+        .optional()
+        .describe("Long-edge cap for the WHOLE grid (default 1400)."),
+      threshold: z
+        .number()
+        .optional()
+        .describe("Per-pixel max-channel error (0–1) counted as 'over' (default 0.02 ≈ 5/255)."),
+    },
+  },
 ];
 
 /** Tool names that mutate the document — the session-scoped grant set. */
@@ -686,6 +793,21 @@ export function marshalResult(def, result) {
           text:
             `frames [${result.frames.join(", ")}] in a ` +
             `${result.grid.cols}×${result.grid.rows} grid, ` +
+            `${result.width}×${result.height}`,
+        },
+      ],
+    };
+  }
+  if (def.resultKind === "compare") {
+    // The metrics ARE the result; the image is for the model's eyes.
+    return {
+      content: [
+        { type: "image", data: result.base64, mimeType: result.mimeType },
+        {
+          type: "text",
+          text:
+            `${result.summary}\n` +
+            `frames [${result.frames.join(", ")}] in a ${result.grid.cols}×${result.grid.rows} grid, ` +
             `${result.width}×${result.height}`,
         },
       ],

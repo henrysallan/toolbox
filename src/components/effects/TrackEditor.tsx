@@ -19,9 +19,11 @@ import type { Edge, Node } from "@xyflow/react";
 import type { NodeDataPayload } from "@/state/graph";
 import { playbackClock } from "@/state/playback-clock";
 import {
+  type BezierEasing,
   type EasingPreset,
   type KeyframeAnimationBlock,
   type ProjectTimeline,
+  type SavedEasing,
   EASING_PRESET_ORDER,
   EASING_PRESET_LABELS,
   emptyAnimationBlock,
@@ -124,6 +126,17 @@ import { moveClipsByDelta, trimClipsByDelta } from "./timeline/clip-ops";
 import { rulerSpacing as computeRulerSpacing } from "./timeline/ruler";
 import { LaneFrameTicks, RulerFrameStubs } from "./timeline/FrameTicks";
 import { EasingTile } from "./timeline/EasingTile";
+import { EasingEditorOverlay } from "./timeline/EasingEditorOverlay";
+import {
+  applyBezierToLane,
+  applyPresetToLane,
+  easingPairsFor,
+  firstEasingPair,
+  pairsUniform,
+  seedForPair,
+  type EasingLane,
+  type EasingPair,
+} from "./timeline/easing-editor";
 import {
   HoverLine,
   type HoverLineHandle,
@@ -181,6 +194,17 @@ export interface TrackEditorProps {
   // the lifted selection back so a dock-tab round-trip (tracks → graph →
   // tracks) re-mounts with the same keyframes selected.
   initialKeyframeSelection?: SelectionKey[];
+  // The easing overlay (specdocs/091726_easing-editor.md). The toggle
+  // lives in the dock header, so the parent owns the flag; the overlay's
+  // own close button reports back through onEasingEditorOpenChange.
+  easingEditorOpen?: boolean;
+  onEasingEditorOpenChange?(open: boolean): void;
+  // The overlay's preset tray: the project's saved easings (EffectsApp
+  // owns the list and persists it on SavedProject.savedEasings).
+  savedEasings?: SavedEasing[];
+  onSaveEasing?(easing: SavedEasing): void;
+  onRenameEasing?(id: string, name: string): void;
+  onDeleteEasing?(id: string): void;
 }
 
 // ---------------------------------------------------------------------
@@ -345,6 +369,12 @@ export function TrackEditor(props: TrackEditorProps) {
     onKeyframeSelectionChange,
     initialKeyframeSelection,
     fitVersion,
+    easingEditorOpen = false,
+    onEasingEditorOpenChange,
+    savedEasings,
+    onSaveEasing,
+    onRenameEasing,
+    onDeleteEasing,
   } = props;
   // Null in the main window; the child Window when this editor is
   // popped out (080226_panel-popout-windows.md §3). Every window-level
@@ -628,11 +658,15 @@ export function TrackEditor(props: TrackEditorProps) {
           ? NODE_HEADER_HEIGHT
           : TRACK_HEIGHT);
 
-  // ---- Container width tracking ----
+  // ---- Container width (+ height, for the easing overlay's fit) ----
+  const [containerHeight, setContainerHeight] = useState(0);
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const update = () => setContainerWidth(el.clientWidth);
+    const update = () => {
+      setContainerWidth(el.clientWidth);
+      setContainerHeight(el.clientHeight);
+    };
     update();
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(update);
@@ -1229,6 +1263,57 @@ export function TrackEditor(props: TrackEditorProps) {
     }
   }
 
+  // Easing overlay: rewrite the pair-owning keys of every selected pair.
+  // Grouped per lane so each lane is one onAnimationChange; the overlay
+  // mints one gestureKey per drag (or shelf click), so a write across
+  // lanes is one undo entry however many moves it took.
+  function rewriteEasingPairs(
+    pairs: EasingPair[],
+    gestureKey: string,
+    rewrite: (keyframes: Keyframe[], aTicks: Set<number>) => Keyframe[]
+  ) {
+    const byLane = new Map<string, EasingPair[]>();
+    for (const p of pairs) {
+      const k = laneKey(p.nodeId, p.paramName);
+      const list = byLane.get(k);
+      if (list) list.push(p);
+      else byLane.set(k, [p]);
+    }
+    for (const [, items] of byLane) {
+      const { nodeId, paramName } = items[0];
+      const block = blockIndex.get(nodeId)?.get(paramName);
+      if (!block) continue;
+      const aTicks = new Set(items.map((p) => p.aTick));
+      onAnimationChange(
+        nodeId,
+        paramName,
+        { ...block, keyframes: rewrite(block.keyframes, aTicks) },
+        gestureKey
+      );
+    }
+  }
+  // A handle drag / saved-preset click: one normalized shape everywhere.
+  function applyEasingToPairs(
+    pairs: EasingPair[],
+    bezier: BezierEasing,
+    gestureKey: string
+  ) {
+    rewriteEasingPairs(pairs, gestureKey, (ks, aTicks) =>
+      applyBezierToLane(ks, aTicks, bezier)
+    );
+  }
+  // A built-in shelf tile: the named preset everywhere (what the easing
+  // menus write), so the non-cubic presets are reachable from the shelf.
+  function applyPresetToPairs(
+    pairs: EasingPair[],
+    preset: EasingPreset,
+    gestureKey: string
+  ) {
+    rewriteEasingPairs(pairs, gestureKey, (ks, aTicks) =>
+      applyPresetToLane(ks, aTicks, preset)
+    );
+  }
+
   // ---- Hit testing on lanes ----
   /**
    * The two keyframes bracketing a click on the connector line BETWEEN
@@ -1538,6 +1623,48 @@ export function TrackEditor(props: TrackEditorProps) {
     }
     return { allScalar, stepOnly };
   }, [lanes, selectionList]);
+
+  // ---- Easing overlay model ----
+  // The pairs the overlay writes to (both keys selected AND adjacent in
+  // their lane), the first pair's shape seeding the curve, and whether the
+  // pairs already agree. Only computed while the overlay is open.
+  const easingModel = useMemo(() => {
+    if (!easingEditorOpen) return null;
+    const laneOf = new Map<string, EasingLane>();
+    for (let i = 0; i < lanes.length; i++) {
+      const r = lanes[i];
+      if (r.kind !== "paramLane") continue;
+      laneOf.set(laneKey(r.nodeId, r.paramName), {
+        keyframes: r.block.keyframes,
+        paramType: r.paramType,
+        rowIdx: i,
+      });
+    }
+    const getLane = (nodeId: string, paramName: string) =>
+      laneOf.get(laneKey(nodeId, paramName));
+    const { pairs, skippedStepOnly } = easingPairsFor(selectionList, getLane);
+    const keysOf = (p: EasingPair): [Keyframe, Keyframe] | undefined => {
+      const ks = getLane(p.nodeId, p.paramName)?.keyframes;
+      const a = ks?.find((k) => k.tick === p.aTick);
+      const b = ks?.find((k) => k.tick === p.bTick);
+      return a && b ? [a, b] : undefined;
+    };
+    const first = firstEasingPair(pairs);
+    const firstKeys = first ? keysOf(first) : undefined;
+    const seed = firstKeys ? seedForPair(firstKeys[0], firstKeys[1]) : null;
+    const emptyReason =
+      pairs.length === 0 && skippedStepOnly
+        ? "Boolean and enum tracks hold their value between keys — easing doesn't apply"
+        : pairs.length === 0 && selectionList.length >= 2
+          ? "Select keyframes that sit next to each other in a track"
+          : null;
+    return {
+      pairs,
+      seed,
+      mixed: !pairsUniform(pairs, keysOf),
+      emptyReason,
+    };
+  }, [easingEditorOpen, lanes, selectionList]);
 
   // ---- Selection bounding box (in ticks + row idx range) ----
   const selectionBox = useMemo(() => {
@@ -3052,6 +3179,47 @@ export function TrackEditor(props: TrackEditorProps) {
           >
             delete
           </button>
+        </div>
+      )}
+
+      {/* Easing overlay — pinned to the upper-right corner, under the
+          ruler; steps down out of the razor indicator's way. */}
+      {easingEditorOpen && easingModel && (
+        <div
+          style={{
+            position: "absolute",
+            top: RULER_HEIGHT + 6 + (razorMode ? 26 : 0),
+            right: 8,
+            zIndex: 6,
+          }}
+        >
+          <EasingEditorOverlay
+            seed={easingModel.seed}
+            pairCount={easingModel.pairs.length}
+            mixed={easingModel.mixed}
+            emptyReason={easingModel.emptyReason}
+            maxHeight={
+              containerHeight > 0
+                ? Math.max(
+                    120,
+                    containerHeight -
+                      (RULER_HEIGHT + 6 + (razorMode ? 26 : 0)) -
+                      8
+                  )
+                : undefined
+            }
+            onApply={(bezier, gestureKey) =>
+              applyEasingToPairs(easingModel.pairs, bezier, gestureKey)
+            }
+            onApplyPreset={(preset, gestureKey) =>
+              applyPresetToPairs(easingModel.pairs, preset, gestureKey)
+            }
+            onClose={() => onEasingEditorOpenChange?.(false)}
+            presets={savedEasings}
+            onSavePreset={onSaveEasing}
+            onRenamePreset={onRenameEasing}
+            onDeletePreset={onDeleteEasing}
+          />
         </div>
       )}
 

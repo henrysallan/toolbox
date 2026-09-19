@@ -275,6 +275,27 @@ export default function ExportAppModal(props: Props): JSX.Element | null {
           )}
         </div>
 
+        {/* On-canvas handles (091726_live-gizmos.md): nodes whose GUI ships
+            as a visibility row + draggable overlay. Absent when none. */}
+        {(manifest.gizmos?.length ?? 0) > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={labelStyle()}>
+              On-canvas handles ({manifest.gizmos!.length})
+            </div>
+            <div style={listStyle()}>
+              {manifest.gizmos!.map((g) => (
+                <div key={`${g.nodeId}::@gizmo`} style={rowStyle()}>
+                  <span style={{ color: "var(--tb-a-emerald-400)" }}>◇</span>
+                  <span style={{ color: "var(--tb-n-16)" }}>{g.nodeName}</span>
+                  <span style={{ color: "var(--tb-n-10)" }}>—</span>
+                  <span style={{ color: "var(--tb-n-13)" }}>Handles</span>
+                  <span style={{ color: "var(--tb-n-10)" }}>({g.kind})</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {visibleWarnings.length > 0 && (
           <div style={{ marginBottom: 10 }}>
             <div style={labelStyle()}>Warnings</div>

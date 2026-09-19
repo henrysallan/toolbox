@@ -124,6 +124,101 @@ export function rampFieldSocketType(field: RampStopField): SocketType {
   return field === "color" ? "vec4" : "scalar";
 }
 
+// Virtual control keys for one layer of a `merge_layers` param. The live
+// link / exported app used to get the WHOLE layer stack as a single control
+// (the param-level control toggle on "Layers"); since 2026-09-16 each layer
+// carries its own toggle in the Merge editor instead. Three keys share one
+// grammar, all embedding the owning param name like the ramp keys above:
+//   - `mlayer:<param>:<layerId>` — the `controlParams` membership entry,
+//     one per toggled layer (what the editor's per-layer button flips),
+//   - `mlayer_m:<param>:<layerId>` / `mlayer_o:<param>:<layerId>` — the
+//     paramNames of the two controls the manifest builder synthesizes from
+//     that entry (blend mode enum, opacity scalar). The live viewer parses
+//     them back and patches the layer inside the array param in place.
+// A layer's opacity KEYFRAMES stay under LAYER_OPACITY_PREFIX — that's the
+// animation map's namespace, this is controlParams'.
+export const MLAYER_PREFIX = "mlayer:";
+export const MLAYER_M_PREFIX = "mlayer_m:";
+export const MLAYER_O_PREFIX = "mlayer_o:";
+
+export type MergeLayerField = "layer" | "mode" | "opacity";
+
+export function mergeLayerKey(paramName: string, layerId: string): string {
+  return MLAYER_PREFIX + paramName + ":" + layerId;
+}
+export function mergeLayerModeKey(paramName: string, layerId: string): string {
+  return MLAYER_M_PREFIX + paramName + ":" + layerId;
+}
+export function mergeLayerOpacityKey(
+  paramName: string,
+  layerId: string
+): string {
+  return MLAYER_O_PREFIX + paramName + ":" + layerId;
+}
+
+// Parse a virtual merge-layer key back into its parts. Returns null for
+// anything that isn't one (literal param names, other virtual prefixes).
+export function parseMergeLayerKey(
+  key: string
+): { field: MergeLayerField; paramName: string; layerId: string } | null {
+  let field: MergeLayerField;
+  let rest: string;
+  if (key.startsWith(MLAYER_PREFIX)) {
+    field = "layer";
+    rest = key.slice(MLAYER_PREFIX.length);
+  } else if (key.startsWith(MLAYER_M_PREFIX)) {
+    field = "mode";
+    rest = key.slice(MLAYER_M_PREFIX.length);
+  } else if (key.startsWith(MLAYER_O_PREFIX)) {
+    field = "opacity";
+    rest = key.slice(MLAYER_O_PREFIX.length);
+  } else return null;
+  const sep = rest.indexOf(":");
+  if (sep <= 0 || sep === rest.length - 1) return null;
+  return {
+    field,
+    paramName: rest.slice(0, sep),
+    layerId: rest.slice(sep + 1),
+  };
+}
+
+// Legacy → per-layer expansion for a node's `controlParams`. Saves from
+// before the per-layer toggle hold the literal `merge_layers` param name
+// ("layers") meaning "every layer is a control". Rewrite that entry into
+// one `mlayer:` key per layer currently in the array so the editor's
+// per-layer buttons light up and the manifest builder sees one grammar.
+// Order-preserving; a no-op (same array identity) when nothing to expand.
+export function expandMergeLayerControls(
+  paramDefs: readonly ParamDef[],
+  params: Record<string, unknown>,
+  controlParams: readonly string[]
+): string[] {
+  let changed = false;
+  const out: string[] = [];
+  for (const key of controlParams) {
+    const pdef = paramDefs.find(
+      (p) => p.name === key && p.type === "merge_layers"
+    );
+    if (!pdef) {
+      if (!out.includes(key)) out.push(key);
+      continue;
+    }
+    changed = true;
+    const raw = params[pdef.name];
+    const layers = Array.isArray(raw)
+      ? (raw as { id?: unknown }[])
+      : Array.isArray(pdef.default)
+        ? (pdef.default as unknown as { id?: unknown }[])
+        : [];
+    for (const l of layers) {
+      if (typeof l?.id !== "string") continue;
+      const k = mergeLayerKey(pdef.name, l.id);
+      if (!out.includes(k)) out.push(k);
+    }
+  }
+  return changed ? out : (controlParams as string[]);
+}
+
 // Normalize a resolved `color`-param override to the hex string the param
 // model stores. Colors reach the evaluator as 0..1 RGB(A) tuples from two
 // paths — a wired vec4 on an exposed color param, and keyframe

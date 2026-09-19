@@ -6,6 +6,12 @@ import type { SavedProject } from "@/lib/project";
 import { buildExportManifest } from "@/lib/export-manifest";
 import { fromSavedLiveDesign } from "@/lib/live-viewer/design";
 import { LiveRoot } from "@/lib/live-viewer/live-root";
+import {
+  LiveLoadOverlay,
+  liveLoadLabel,
+  useLiveLoad,
+} from "@/lib/live-viewer/LiveLoadOverlay";
+import { editorPathForSlug } from "@/lib/project-url";
 import { registerAllNodes } from "@/nodes";
 import "@/lib/live-viewer/styles.css";
 
@@ -22,7 +28,12 @@ registerAllNodes();
 // allocate state we'd then throw away.
 const LiveViewer = dynamic(() => import("@/lib/live-viewer/LiveViewer"), {
   ssr: false,
-  loading: () => <div className="fatal">Loading live viewer…</div>,
+  // No fallback of its own: LiveClient's LiveLoadOverlay is already up
+  // (server-rendered, so it's there before hydration) and stays through
+  // the chunk load, the deserialize and the first frame via onLoadPhase.
+  // Until 2026-09-16 this was "Loading live viewer…" in the `.fatal` red,
+  // lifting the moment the chunk arrived.
+  loading: () => null,
 });
 
 interface Props {
@@ -49,6 +60,9 @@ function pickOutputNodeId(graph: SavedProject): string | null {
 
 export default function LiveClient({ slug, name, authorName, graph }: Props) {
   const outputNodeId = useMemo(() => pickOutputNodeId(graph), [graph]);
+  // The editor's project-load veil, live-themed (LiveLoadOverlay): fills
+  // as the viewer reports its phases, holds, fades once a frame is up.
+  const { load, onLoadPhase, onFaded } = useLiveLoad();
 
   // We need a manifest to drive the viewer's panel. The same builder the
   // editor uses runs in-browser here — pure data, no DB access — and the
@@ -72,6 +86,10 @@ export default function LiveClient({ slug, name, authorName, graph }: Props) {
         params: n.params,
         exposedParams: n.exposedParams,
         controlParams: n.controlParams,
+        // Node-level control (091726_live-gizmos.md): the node's on-canvas
+        // handles ship as a gizmo row + overlay. Same copy-through rule as
+        // controlParams — dropping it here would silently drop the rows.
+        controlGizmo: n.controlGizmo,
         // Custom slider ranges (right-click "Slider range" on a scalar) —
         // the manifest builder bakes these into each control's def so the
         // live panel's sliders span the same min / max / soft max as the
@@ -133,50 +151,32 @@ export default function LiveClient({ slug, name, authorName, graph }: Props) {
     );
   }
 
+  // Patch identity (name · by author · #code) renders INSIDE the panel,
+  // at the top of its toolbar above the transport (ControlPanel
+  // PanelTitleRow), with an "Editor" link to the project's /p/<slug>
+  // page. Until 2026-09-16 it was a fixed bottom-left badge here, styled
+  // with editor tokens the design block never touched.
   return (
     <LiveRoot design={manifest.design}>
-      <LiveViewer graph={graph} manifest={manifest} />
-      <ShareCorner slug={slug} name={name} authorName={authorName} />
-    </LiveRoot>
-  );
-}
-
-function ShareCorner({
-  slug,
-  name,
-  authorName,
-}: {
-  slug: string;
-  name: string;
-  authorName: string | null;
-}) {
-  // Bottom-left badge identifying the patch and (optionally) its author.
-  // No interaction yet — copy/share is the editor's job. Kept terse so
-  // it stays out of the way of the canvas.
-  return (
-    <div
-      style={{
-        position: "fixed",
-        left: 12,
-        bottom: 12,
-        padding: "6px 10px",
-        background: "color-mix(in srgb, var(--tb-n-0) 85%, transparent)",
-        border: "1px solid var(--tb-n-7)",
-        borderRadius: 4,
-        color: "var(--tb-n-13)",
-        fontFamily: "ui-monospace, monospace",
-        fontSize: 10,
-        letterSpacing: 0.3,
-        pointerEvents: "none",
-      }}
-    >
-      <span style={{ color: "var(--tb-n-16)" }}>{name}</span>
-      {authorName && (
-        <span style={{ marginLeft: 6, color: "var(--tb-n-11)" }}>
-          · by {authorName}
-        </span>
+      <LiveViewer
+        graph={graph}
+        manifest={manifest}
+        title={{
+          name,
+          authorName,
+          slug,
+          editorHref: editorPathForSlug(slug),
+        }}
+        onLoadPhase={onLoadPhase}
+      />
+      {load && (
+        <LiveLoadOverlay
+          label={liveLoadLabel(name)}
+          progress={load.progress}
+          fading={load.fading}
+          onFaded={onFaded}
+        />
       )}
-      <span style={{ marginLeft: 6, color: "var(--tb-n-10)" }}>· #{slug.slice(0, 6)}</span>
-    </div>
+    </LiveRoot>
   );
 }

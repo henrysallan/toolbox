@@ -1,8 +1,10 @@
 import type { SplineSubpath } from "./types";
 import { hexToRgba } from "./spline-raster";
 import {
-  sampleColorRamp,
+  makeColorRampSampler,
+  rgba01ToCss,
   type ColorRampInterp,
+  type ColorRampSpace,
   type ColorRampStop,
 } from "./color-ramp";
 
@@ -29,6 +31,8 @@ export interface SubpathColorConfig {
   seed: number;
   angleDeg: number; // gradient axis for `position` mode
   interp: ColorRampInterp;
+  // Blend color space (091626_ramp-space-interp.md). Default sRGB.
+  space?: ColorRampSpace;
   // Phase shift on the sampled t; wraps so 1.2 ≡ 0.2. 0 = no shift
   // (legacy clamp, t=1 still hits the last stop).
   offset?: number;
@@ -144,8 +148,12 @@ export function makeSubpathColorFn(
   if (cfg.source !== "ramp") return () => flat;
 
   const stops = Array.isArray(cfg.stops) ? cfg.stops : [];
-  const interp = cfg.interp ?? "linear";
   const offset = cfg.offset ?? 0;
+  // One sampler for the whole loop: it sorts / converts the stops once.
+  const sample = makeColorRampSampler(stops, {
+    interp: cfg.interp,
+    space: cfg.space,
+  });
   const driverAt = makeSubpathDriverFn(subpaths, cfg);
-  return (i, sub) => sampleColorRamp(stops, driverAt(i, sub), interp, offset);
+  return (i, sub) => rgba01ToCss(sample(driverAt(i, sub), offset));
 }

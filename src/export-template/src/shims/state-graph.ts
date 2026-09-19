@@ -10,6 +10,7 @@ export type NodeDataPayload = {
   params: Record<string, unknown>;
   exposedParams?: string[];
   controlParams?: string[];
+  controlGizmo?: boolean;
   paramOverrides?: Record<
     string,
     { min?: number; max?: number; softMax?: number }

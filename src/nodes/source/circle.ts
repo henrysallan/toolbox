@@ -24,7 +24,7 @@ import {
 
 const KAPPA = 0.5522847498307933; // (4/3) * (√2 - 1)
 
-function makeCircleSubpath(
+export function makeCircleSubpath(
   cx: number,
   cy: number,
   rx: number,

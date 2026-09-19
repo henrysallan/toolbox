@@ -20,8 +20,11 @@ import {
 } from "@/engine/spline-repeat";
 import type { OverlapStyle } from "@/engine/spline-offset-resolve";
 import {
+  normalizeRampInterp,
+  normalizeRampSpace,
+  rampInterpParam,
+  rampSpaceParam,
   sampleColorRamp,
-  type ColorRampInterp,
   type ColorRampStop,
 } from "@/engine/color-ramp";
 import {
@@ -227,14 +230,14 @@ export const strokeNode: NodeDefinition = {
         p.color_source === "ramp" &&
         (p.ramp_by === "driver" || p.ramp_by === "attribute"),
     },
-    {
+    rampInterpParam({
       name: "ramp_interp",
-      label: "Ramp interpolation",
-      type: "enum",
-      options: ["linear", "ease", "constant"],
-      default: "linear",
       visibleIf: (p) => p.color_source === "ramp",
-    },
+    }),
+    rampSpaceParam({
+      name: "ramp_space",
+      visibleIf: (p) => p.color_source === "ramp",
+    }),
     {
       name: "thickness",
       label: "Thickness",
@@ -563,6 +566,7 @@ export const strokeNode: NodeDefinition = {
           ? params.driver_attr
           : 0,
       cint: colorRamp ? params.ramp_interp : 0,
+      csp: colorRamp ? params.ramp_space : 0,
       t: params.thickness,
       // Per-subpath thickness source (uniform / vary by index|random|
       // group|position × lo..hi) — gated like the color entries.
@@ -729,7 +733,8 @@ export const strokeNode: NodeDefinition = {
             by: ((params.ramp_by as ColorRampBy) ?? "index"),
             seed: Math.floor((params.ramp_seed as number) ?? 0),
             angleDeg: (params.ramp_angle as number) ?? 0,
-            interp: ((params.ramp_interp as string) ?? "linear") as ColorRampInterp,
+            interp: normalizeRampInterp(params.ramp_interp),
+            space: normalizeRampSpace(params.ramp_space),
             attr: (params.driver_attr as string) ?? "",
           };
           const solid = hexToRgba((params.color as string) ?? "#ffffff");
@@ -801,6 +806,7 @@ export const strokeNode: NodeDefinition = {
                     thicknessPx: ww,
                     stops: colorCfg.stops,
                     interp: colorCfg.interp,
+                    space: colorCfg.space,
                     closeOpen,
                     tAt:
                       params.ramp_by === "attribute"

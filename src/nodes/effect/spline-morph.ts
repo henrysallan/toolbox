@@ -12,11 +12,17 @@ import {
   buildMorphChain,
   applyMorphChain,
   type MorphCorrespondence,
+  type MorphMode,
 } from "@/engine/spline-morph";
 
 // Morph (tween) along a chain of splines. Adjacent shapes are put into
-// correspondence — resampled to a matched anchor count and aligned by
+// correspondence — brought to a matched anchor count and aligned by
 // orientation + start vertex — then interpolated per anchor by Amount.
+// `correspondence` picks how the count is matched: "resample" (every shape
+// resampled to Resolution — any two shapes morph, authored handles are
+// approximated) or "anchors" (same-count subpaths lerp their authored
+// anchors and handles 1:1 with no resampling, so Amount 0 / 1 are the
+// inputs exactly; a count mismatch falls back to resampling that pair).
 // Amount 0 is the first wired spline, 1 is the last; the 0..1 slider is
 // split evenly across the gaps (2 shapes → 0=A, 1=B; 3 → 0 / 0.5 / 1;
 // 4 → 0 / .33 / .66 / 1). Inputs auto-grow: A/B are the default sockets
@@ -66,14 +72,15 @@ interface MorphState {
   rasterCanvas: HTMLCanvasElement;
   rasterTex: WebGLTexture | null;
   // Per-segment correspondences depend only on the shape chain +
-  // resolution, not on Amount — cache them so animating Amount is just a
-  // per-anchor lerp. Shapes are compared by OBJECT IDENTITY: upstream
-  // re-renders hand us new SplineValue objects exactly when geometry
-  // changed (the evaluator caches otherwise), so identity invalidates
-  // precisely — and avoids JSON-stringifying potentially huge splines
-  // (e.g. SDF→Spline on video) every eval.
+  // resolution + correspondence mode, not on Amount — cache them so
+  // animating Amount is just a per-anchor lerp. Shapes are compared by
+  // OBJECT IDENTITY: upstream re-renders hand us new SplineValue objects
+  // exactly when geometry changed (the evaluator caches otherwise), so
+  // identity invalidates precisely — and avoids JSON-stringifying
+  // potentially huge splines (e.g. SDF→Spline on video) every eval.
   corrInputs: SplineValue[];
   corrRes: number;
+  corrMode: MorphMode;
   corrs: MorphCorrespondence[];
   // Bumped on every correspondence rebuild — stands in for the result
   // geometry in the raster signature (corrGen + amount fully determine
@@ -100,6 +107,7 @@ function ensureState(ctx: RenderContext, nodeId: string): MorphState {
     rasterTex: tex,
     corrInputs: [],
     corrRes: 0,
+    corrMode: "resample",
     corrs: [],
     corrGen: 0,
     lastRasterSig: null,
@@ -114,12 +122,13 @@ export const splineMorphNode: NodeDefinition = {
   category: "spline",
   subcategory: "modifier",
   description:
-    "Morph (tween) between two or more splines by Amount (0 = first, 1 = last). Extra spline sockets auto-grow; Amount is split evenly across the chain (3 shapes → 0 / 0.5 / 1). Shapes are auto-aligned by orientation and start vertex; surplus subpaths grow/shrink from a point. Outputs a spline, plus an image when stroke or fill is on.",
+    "Morph (tween) between two or more splines by Amount (0 = first, 1 = last). Extra spline sockets auto-grow; Amount is split evenly across the chain (3 shapes → 0 / 0.5 / 1). Shapes are auto-aligned by orientation and start vertex; surplus subpaths grow/shrink from a point. Correspondence is Resample (every shape resampled to Resolution) or Match anchors (subpaths with the same anchor count lerp their authored anchors and handles 1:1, no resampling). Outputs a spline, plus an image when stroke or fill is on.",
   facts: {
     space: { "param:stroke_thickness": "pixels" },
     gotchas: [
       "Amount is split evenly across the whole wired chain (3 shapes → 0/0.5/1, not 0..1 per adjacent pair); a wired amount scalar input overrides the Amount param.",
-      "Correspondence (resample to resolution + orientation/start-vertex alignment) rebuilds only when the shape set or resolution changes, not when Amount sweeps.",
+      "Correspondence (resample or 1:1 anchor pairing, plus orientation/start-vertex alignment) rebuilds only when the shape set, resolution or correspondence mode changes, not when Amount sweeps.",
+      "correspondence=anchors lerps authored anchors and handles 1:1 only for subpath pairs with equal anchor counts (Amount 0/1 reproduce the inputs exactly); a mismatched pair resamples to resolution.",
       "The image aux output only exists when stroke_enabled or fill_enabled is on; with both off only the spline output is produced.",
       "stroke_thickness is pixels at render resolution, unlike the canvas01 spline geometry it strokes.",
       "With zero or one wired shape the result passes through unchanged (or is empty) and Amount has no effect.",
@@ -160,7 +169,25 @@ export const splineMorphNode: NodeDefinition = {
       default: 0.5,
     },
     {
-      // Anchors each shape is resampled to before interpolating. Higher
+      // How adjacent shapes are put into anchor correspondence. "resample"
+      // (the original behavior) resamples every subpath to `resolution`
+      // evenly spaced anchors — any two shapes morph, but authored anchors
+      // and handles are approximated (corners soften, Amount 0/1 only
+      // approach the inputs). "anchors" pairs authored anchors 1:1 when a
+      // subpath pair has the same count — the "same points, moved, with
+      // different handles" morph reproduces the inputs exactly at 0/1 —
+      // and falls back to resampling only for pairs whose counts differ.
+      name: "correspondence",
+      label: "Correspondence",
+      type: "enum",
+      options: ["resample", "anchors"],
+      optionLabels: { resample: "Resample", anchors: "Match anchors" },
+      control: "segmented",
+      default: "resample",
+    },
+    {
+      // Anchors each shape is resampled to before interpolating (in
+      // "anchors" correspondence: only pairs whose counts differ). Higher
       // tracks the source curves more closely; heavier per rebuild.
       name: "resolution",
       label: "Resolution",
@@ -233,15 +260,24 @@ export const splineMorphNode: NodeDefinition = {
       3,
       Math.round((params.resolution as number) ?? 64)
     );
+    // Saved nodes from before this param exist without it → "resample",
+    // the behavior they were authored against.
+    const mode: MorphMode =
+      params.correspondence === "anchors" ? "anchors" : "resample";
 
     const state = ensureState(ctx, nodeId);
 
-    // Rebuild the chain only when shapes / resolution change — NOT when
-    // Amount sweeps. Zero/one wired spline has nothing to interpolate.
-    if (state.corrRes !== resolution || !sameInputs(state.corrInputs, shapes)) {
-      state.corrs = buildMorphChain(shapes, resolution);
+    // Rebuild the chain only when shapes / resolution / mode change — NOT
+    // when Amount sweeps. Zero/one wired spline has nothing to interpolate.
+    if (
+      state.corrRes !== resolution ||
+      state.corrMode !== mode ||
+      !sameInputs(state.corrInputs, shapes)
+    ) {
+      state.corrs = buildMorphChain(shapes, resolution, mode);
       state.corrInputs = shapes.slice();
       state.corrRes = resolution;
+      state.corrMode = mode;
       state.corrGen++;
     }
     const resultSpline =

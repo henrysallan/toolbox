@@ -14,7 +14,11 @@
                                     the list portals INTO .live-root, see
                                     live-root-context.ts, so it's in scope)
      transport     --ps-tr-*       (.transport .tr-btn, .is-on while playing,
-                                    plus the export-row / cancel buttons;
+                                    plus the export-row / cancel buttons,
+                                    whose fill is the separate text-button
+                                    pair --ps-tr-text-bg / -text-hover-bg —
+                                    a pack with unfilled icon buttons still
+                                    owes its text buttons a body;
                                     base rules live in styles.css)
 
    The editor never defines these, so it renders exactly as before. A preset
@@ -326,6 +330,9 @@
   --ps-tr-on-border: var(--accent);
   --ps-tr-on-color: var(--bg);
   --ps-tr-icon-scale: 1;
+  /* Text buttons already have a body here — same fill as the icons. */
+  --ps-tr-text-bg: var(--bg-3);
+  --ps-tr-text-hover-bg: var(--bg-hover);
 }
 
 /* Round — outlined circles, accent-filled while playing. */
@@ -344,6 +351,10 @@
   --ps-tr-on-border: var(--accent);
   --ps-tr-on-color: var(--bg);
   --ps-tr-icon-scale: 1.1;
+  /* Icons are outline-only; text buttons get a faint ink wash for a body
+     (relative to whatever the translucent panel shows), doubling on hover. */
+  --ps-tr-text-bg: color-mix(in srgb, var(--text) 8%, transparent);
+  --ps-tr-text-hover-bg: color-mix(in srgb, var(--text) 16%, transparent);
 }
 
 /* Ghost — bare icons, no box; a soft hover wash, accent while playing. */
@@ -362,4 +373,8 @@
   --ps-tr-on-border: transparent;
   --ps-tr-on-color: var(--accent);
   --ps-tr-icon-scale: 1.3;
+  /* Bare icons stay bare; text buttons need a body to read as buttons —
+     the same faint ink wash as `round`, brighter on hover (2026-09-16). */
+  --ps-tr-text-bg: color-mix(in srgb, var(--text) 8%, transparent);
+  --ps-tr-text-hover-bg: color-mix(in srgb, var(--text) 16%, transparent);
 }

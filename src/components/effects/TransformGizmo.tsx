@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { aspectCorrectY, aspectUncorrectY } from "@/engine/aspect";
 import { claimPointerGesture } from "@/lib/pointer-claim";
 import { isLocalPivotSpace, localPivot } from "@/engine/transform-pivot";
+import { guideLinesOn, type ViewportGuide } from "@/lib/viewport-guides";
 
 export interface TransformGizmoPatch {
   translateX?: number;
@@ -44,6 +45,12 @@ interface Props {
   // Cmd/Ctrl still suppresses a single gesture while it's on. Default
   // on so callers that don't pass it keep the historical behaviour.
   snapEnabled?: boolean;
+  // Ruler guides (specdocs/091726_viewport-rulers.md) — join the translate
+  // snap alongside the canvas edges / centre: the box's edges and centre
+  // each compete for the nearest guide. Screen-normalized canvas
+  // fractions; `y` guides convert into this gizmo's aspect-corrected node
+  // space before comparing. Empty / absent = none.
+  guides?: readonly ViewportGuide[];
 }
 
 type DragKind =
@@ -104,6 +111,7 @@ export default function TransformGizmo({
   pivotSpace = "global",
   boxTranslate = false,
   snapEnabled = true,
+  guides,
 }: Props) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -113,6 +121,12 @@ export default function TransformGizmo({
   const snapEnabledRef = useRef(snapEnabled);
   useEffect(() => {
     snapEnabledRef.current = snapEnabled;
+  });
+  // Same for the ruler guides — a guide added or hidden mid-drag applies
+  // on the next move without rebinding.
+  const guidesRef = useRef<readonly ViewportGuide[]>(guides ?? []);
+  useEffect(() => {
+    guidesRef.current = guides ?? [];
   });
 
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -130,12 +144,12 @@ export default function TransformGizmo({
   const [hoveredCorner, setHoveredCorner] = useState<CornerKey | null>(null);
   // Active snap state for the current translate drag. Each axis can
   // independently snap to the canvas's left edge (0), center (0.5),
-  // or right edge (1) — likewise top / center / bottom on Y.
-  // `lineUv` is the canvas-UV coordinate where the red snap line
-  // should be drawn for that axis. Cleared on pointerup.
+  // or right edge (1) — likewise top / center / bottom on Y — or to a
+  // ruler guide. `lineUv` is the node-space coordinate where the red
+  // snap line should be drawn for that axis. Cleared on pointerup.
   const [snap, setSnap] = useState<{
-    x: { kind: "left" | "center" | "right"; lineUv: number } | null;
-    y: { kind: "top" | "center" | "bottom"; lineUv: number } | null;
+    x: { kind: "left" | "center" | "right" | "guide"; lineUv: number } | null;
+    y: { kind: "top" | "center" | "bottom" | "guide"; lineUv: number } | null;
   }>({ x: null, y: null });
 
   // Default bounds = full canvas. Spline mode overrides via props.
@@ -231,16 +245,17 @@ export default function TransformGizmo({
           let nextTy = st.y + dy;
 
           // Snap targets per axis: canvas left/center/right edges
-          // (X = 0 / 0.5 / 1) and top/center/bottom (Y same). Each
-          // axis picks the closest target within SNAP_THRESHOLD;
-          // farther = no snap. Rendered as a red snap line at the
-          // target UV. Off when the viewport-bar lock is open; Cmd /
-          // ctrl still disables snapping for one drag while it's on.
+          // (X = 0 / 0.5 / 1) and top/center/bottom (Y same), plus every
+          // ruler guide on that axis. Each axis picks the closest target
+          // within SNAP_THRESHOLD; farther = no snap. Rendered as a red
+          // snap line at the target UV. Off when the viewport-bar lock is
+          // open; Cmd / ctrl still disables snapping for one drag while
+          // it's on.
           let nextSnapX:
-            | { kind: "left" | "center" | "right"; lineUv: number }
+            | { kind: "left" | "center" | "right" | "guide"; lineUv: number }
             | null = null;
           let nextSnapY:
-            | { kind: "top" | "center" | "bottom"; lineUv: number }
+            | { kind: "top" | "center" | "bottom" | "guide"; lineUv: number }
             | null = null;
           if (snapEnabledRef.current && !e.metaKey && !e.ctrlKey) {
             const SNAP_THRESHOLD = 0.015;
@@ -282,12 +297,12 @@ export default function TransformGizmo({
             // mid-sized gizmo near (0.5, 0.5) doesn't try to snap
             // its center AND its right edge at once.
             type CandX = {
-              kind: "left" | "center" | "right";
+              kind: "left" | "center" | "right" | "guide";
               delta: number;
               lineUv: number;
             };
             type CandY = {
-              kind: "top" | "center" | "bottom";
+              kind: "top" | "center" | "bottom" | "guide";
               delta: number;
               lineUv: number;
             };
@@ -301,6 +316,26 @@ export default function TransformGizmo({
               { kind: "center", delta: 0.5 - midY, lineUv: 0.5 },
               { kind: "bottom", delta: 1 - b.mxY, lineUv: 1 },
             ];
+            // Ruler guides: the box's two edges and its centre each
+            // compete for every guide on the axis, same rule as the
+            // canvas lines. X guides share this space; Y guides are
+            // screen fractions and convert through the same aspect
+            // un-correction the pointer does above.
+            for (const gx of guideLinesOn(guidesRef.current, "x")) {
+              candidatesX.push(
+                { kind: "guide", delta: gx - b.mnX, lineUv: gx },
+                { kind: "guide", delta: gx - midX, lineUv: gx },
+                { kind: "guide", delta: gx - b.mxX, lineUv: gx }
+              );
+            }
+            for (const gyScreen of guideLinesOn(guidesRef.current, "y")) {
+              const gy = aspectUncorrectY(gyScreen, aspect);
+              candidatesY.push(
+                { kind: "guide", delta: gy - b.mnY, lineUv: gy },
+                { kind: "guide", delta: gy - midY, lineUv: gy },
+                { kind: "guide", delta: gy - b.mxY, lineUv: gy }
+              );
+            }
             let bestX: CandX | null = null;
             for (const c of candidatesX) {
               if (
@@ -685,10 +720,14 @@ export default function TransformGizmo({
             (boxTranslate). Drawn first so every handle (corners, edges,
             rotation grips, pivot dot) paints on top and wins pointer
             events. */}
+        {/* `data-guide-grab`: a press on a ruler guide over this surface
+            grabs the GUIDE (ViewportRulers intercepts it) — Photoshop's
+            Move-tool rule. Handles below are deliberately untagged. */}
         {boxTranslate ? (
           <polygon
             points={polygonPoints}
             fill="transparent"
+            data-guide-grab="true"
             style={{
               cursor: drag?.kind === "translate" ? "grabbing" : "grab",
               pointerEvents: "auto",
@@ -702,6 +741,7 @@ export default function TransformGizmo({
             width={rect.width}
             height={rect.height}
             fill="transparent"
+            data-guide-grab="true"
             style={{
               cursor: drag?.kind === "translate" ? "grabbing" : "grab",
               pointerEvents: "auto",

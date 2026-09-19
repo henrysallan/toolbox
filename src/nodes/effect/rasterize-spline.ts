@@ -14,8 +14,13 @@ import {
   type SplineFillFit,
 } from "@/engine/spline-fill";
 import {
+  normalizeRampInterp,
+  normalizeRampSpace,
+  rampInterpParam,
+  rampSpaceParam,
   sampleColorRamp,
   type ColorRampInterp,
+  type ColorRampSpace,
   type ColorRampStop,
 } from "@/engine/color-ramp";
 import {
@@ -598,8 +603,11 @@ function strokeRampOffset(params: Record<string, unknown>): number {
 }
 
 function strokeProgressInterp(params: Record<string, unknown>): ColorRampInterp {
-  const v = (params.stroke_ramp_interp as string) ?? "linear";
-  return v === "ease" || v === "constant" ? v : "linear";
+  return normalizeRampInterp(params.stroke_ramp_interp);
+}
+
+function strokeProgressSpace(params: Record<string, unknown>): ColorRampSpace {
+  return normalizeRampSpace(params.stroke_ramp_space);
 }
 
 function strokeProgressStops(params: Record<string, unknown>): ColorRampStop[] {
@@ -626,6 +634,7 @@ function paintStrokeProgress(
     thicknessPx: c2d.lineWidth,
     stops: strokeProgressStops(params),
     interp: strokeProgressInterp(params),
+    space: strokeProgressSpace(params),
     closeOpen: !!params.close_open_paths,
     offset: strokeRampOffset(params),
     tAt: strokeRampTAt(params),
@@ -633,6 +642,7 @@ function paintStrokeProgress(
   if (!arrowheadsWanted(params)) return;
   const stops = strokeProgressStops(params);
   const interp = strokeProgressInterp(params);
+  const space = strokeProgressSpace(params);
   const off = strokeRampOffset(params);
   const tAt = strokeRampTAt(params);
   for (const sub of subs) {
@@ -641,13 +651,15 @@ function paintStrokeProgress(
       stops,
       tAt ? tAt(sub, 0) : 0,
       interp,
-      off
+      off,
+      space
     );
     const endCol = sampleColorRamp(
       stops,
       tAt ? tAt(sub, 1) : 1,
       interp,
-      off
+      off,
+      space
     );
     drawArrowheads(c2d, [sub], params, W, H, startCol, endCol);
   }
@@ -745,10 +757,8 @@ function makeFillColorFn(
     by: ((params.ramp_by as ColorRampBy) ?? "index"),
     seed: Math.floor((params.ramp_seed as number) ?? 0),
     angleDeg: (params.ramp_angle as number) ?? 0,
-    interp: ((params.ramp_interp as string) ?? "linear") as
-      | "linear"
-      | "ease"
-      | "constant",
+    interp: normalizeRampInterp(params.ramp_interp),
+    space: normalizeRampSpace(params.ramp_space),
     attr: (params.driver_attr as string) ?? "",
   });
 }
@@ -769,10 +779,8 @@ function makeStrokeColorFn(
     by: ((params.stroke_ramp_by as ColorRampBy) ?? "index"),
     seed: Math.floor((params.stroke_ramp_seed as number) ?? 0),
     angleDeg: (params.stroke_ramp_angle as number) ?? 0,
-    interp: ((params.stroke_ramp_interp as string) ?? "linear") as
-      | "linear"
-      | "ease"
-      | "constant",
+    interp: normalizeRampInterp(params.stroke_ramp_interp),
+    space: normalizeRampSpace(params.stroke_ramp_space),
     offset: strokeRampOffset(params),
     attr: (params.stroke_driver_attr as string) ?? "",
   });
@@ -799,7 +807,6 @@ function makeFillStyleFn(
   if ((params.fill_source as string) !== "gradient") {
     return makeFillColorFn(subpaths, params);
   }
-  const interp = (params.ramp_interp as string) ?? "linear";
   return makeSubpathGradientFn(
     c2d,
     subpaths,
@@ -812,9 +819,8 @@ function makeFillStyleFn(
       stops: Array.isArray(params.fill_ramp)
         ? (params.fill_ramp as ColorRampStop[])
         : [],
-      interp: (interp === "ease" || interp === "constant"
-        ? interp
-        : "linear") as ColorRampInterp,
+      interp: normalizeRampInterp(params.ramp_interp),
+      space: normalizeRampSpace(params.ramp_space),
       vary: ((params.gradient_vary as GradientVary) ?? "none"),
       varyAmount: (params.gradient_vary_amount as number) ?? 0.5,
       seed: Math.floor((params.ramp_seed as number) ?? 0),
@@ -1261,16 +1267,18 @@ export const rasterizeSplineNode: NodeDefinition = {
         ((p.fill_source === "ramp" && p.ramp_by === "driver") ||
           (p.fill_source === "gradient" && p.gradient_vary === "driver")),
     },
-    {
+    rampInterpParam({
       name: "ramp_interp",
-      label: "Ramp interpolation",
-      type: "enum",
-      options: ["linear", "ease", "constant"],
-      default: "linear",
       visibleIf: (p) =>
         p.enable_fill !== false &&
         (p.fill_source === "ramp" || p.fill_source === "gradient"),
-    },
+    }),
+    rampSpaceParam({
+      name: "ramp_space",
+      visibleIf: (p) =>
+        p.enable_fill !== false &&
+        (p.fill_source === "ramp" || p.fill_source === "gradient"),
+    }),
     {
       name: "fill_fit",
       label: "Fill fit",
@@ -1449,15 +1457,16 @@ export const rasterizeSplineNode: NodeDefinition = {
         p.stroke_source === "ramp" &&
         (p.stroke_ramp_by === "driver" || p.stroke_ramp_by === "attribute"),
     },
-    {
+    rampInterpParam({
       name: "stroke_ramp_interp",
-      label: "Ramp interpolation",
-      type: "enum",
-      options: ["linear", "ease", "constant"],
-      default: "linear",
       visibleIf: (p) =>
         p.enable_stroke !== false && p.stroke_source === "ramp",
-    },
+    }),
+    rampSpaceParam({
+      name: "stroke_ramp_space",
+      visibleIf: (p) =>
+        p.enable_stroke !== false && p.stroke_source === "ramp",
+    }),
     // See image_fill above — lets the wired `fill` image color the stroke
     // (its coverage stays the configured thickness/style/dashes).
     {
@@ -1754,6 +1763,7 @@ export const rasterizeSplineNode: NodeDefinition = {
             ? params.ramp_angle
             : null,
         rint: params.ramp_interp,
+        rsp: params.ramp_space,
         dattr:
           params.ramp_by === "driver" || params.gradient_vary === "driver"
             ? params.driver_attr
@@ -1788,6 +1798,7 @@ export const rasterizeSplineNode: NodeDefinition = {
             ? params.stroke_driver_attr
             : null,
         sint: params.stroke_ramp_interp,
+        ssp: params.stroke_ramp_space,
         soff: params.stroke_source === "ramp" ? params.stroke_ramp_offset : 0,
         t: params.thickness,
         tsrc: params.thickness_source,
@@ -1895,6 +1906,7 @@ export const rasterizeSplineNode: NodeDefinition = {
           ? params.ramp_angle
           : null,
       rint: params.ramp_interp,
+      rsp: params.ramp_space,
       dattr:
         params.ramp_by === "driver" || params.gradient_vary === "driver"
           ? params.driver_attr
@@ -1927,6 +1939,7 @@ export const rasterizeSplineNode: NodeDefinition = {
           ? params.stroke_driver_attr
           : null,
       sint: params.stroke_ramp_interp,
+      ssp: params.stroke_ramp_space,
       soff: params.stroke_source === "ramp" ? params.stroke_ramp_offset : 0,
       t: params.thickness,
       tsrc: params.thickness_source,

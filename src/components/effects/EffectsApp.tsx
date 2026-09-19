@@ -38,7 +38,7 @@ import {
 } from "./layout/LayoutRegion";
 import { PanelKindMenu } from "./layout/PanelKindMenu";
 import { PanelPopout } from "./layout/PanelPopout";
-import { broadcastAppEvent, ownerWindow } from "./layout/panel-window";
+import { broadcastAppEvent } from "./layout/panel-window";
 import {
   computeRects,
   countLeavesOfKind,
@@ -68,7 +68,11 @@ import {
   type LayoutPreset,
 } from "./layout/presets";
 import NewLayoutPresetModal from "./NewLayoutPresetModal";
-import { feedWheel, wheelWantsZoom } from "./input-device";
+import { feedWheel } from "./input-device";
+import {
+  useViewportGestures,
+  useViewportPanZoom,
+} from "@/lib/viewport-gestures";
 import { isGatewayInputLocked } from "@/lib/shortcut-freeze";
 import {
   mountCursorCapture,
@@ -89,6 +93,10 @@ import ProjectLoadOverlay, {
 } from "./ProjectLoadOverlay";
 import ViewportMenuBar from "./ViewportMenuBar";
 import TransformContextBar from "./TransformContextBar";
+import ViewportRulers, {
+  RULER_SIZE,
+  VERTICAL_RULER_SIDE,
+} from "./ViewportRulers";
 import PieMenu, { type PieMenuItem } from "./PieMenu";
 import {
   SaveIcon,
@@ -137,6 +145,7 @@ import {
   insertAnchorKeysAtTick,
   isAnchorTrackKey,
   layerOpacityKey,
+  mergeLayerKey,
   rampAlphaKey,
   rampColorKey,
   rampPositionKey,
@@ -409,6 +418,10 @@ import {
   fromSavedLiveDesign,
   type LiveDesign,
 } from "@/lib/live-viewer/design";
+import {
+  fromSavedViewportGuides,
+  type ViewportGuide,
+} from "@/lib/viewport-guides";
 import {
   audioBufferToWav,
   mixAudioBuffers,
@@ -797,6 +810,11 @@ const VIEWPORT_CHECKER_KEY = "viewport.checker";
 const VIEWPORT_GIZMOS_KEY = "viewport.gizmos";
 /** Same, for transform-gizmo + spline-editor snapping. */
 const VIEWPORT_SNAP_KEY = "viewport.snap";
+/** Same, for the rulers + guides overlay (Shift+R). Guides themselves are
+ *  project data (SavedProject.viewportGuides); only their visibility is a
+ *  per-machine view preference, like Photoshop's View → Rulers. */
+const VIEWPORT_RULERS_KEY = "viewport.rulers";
+const NO_VIEWPORT_GUIDES: ViewportGuide[] = [];
 
 // Every control in the dock toolbar — the tab toggle, the buttons either
 // side of it, the stagger popover trigger, the panel-kind chip — is
@@ -1005,6 +1023,15 @@ function EffectsShell({
   // cleared by File → New. The Live Link Designer (spec M2) is the writer.
   const [liveDesign, setLiveDesign] = useState<LiveDesign | null>(
     rehydrate?.liveDesign ?? null
+  );
+  // Viewport ruler guides (specdocs/091726_viewport-rulers.md): the lines
+  // dragged out of the rulers, as canvas fractions. Per-project data —
+  // persisted on SavedProject.viewportGuides (omitted when empty), replaced
+  // wholesale by every project load and cleared by File → New. Whether the
+  // rulers (and so the guides) SHOW is the per-machine `rulersVisible`
+  // preference below; ViewportRulers.tsx is the only writer.
+  const [viewportGuides, setViewportGuides] = useState<ViewportGuide[]>(
+    rehydrate?.viewportGuides ?? NO_VIEWPORT_GUIDES
   );
 
   // Composition registry (v5): the project's compositions and which one is
@@ -1225,6 +1252,12 @@ function EffectsShell({
             (initialProject.graph as { savedEasings?: unknown }).savedEasings
           )
         );
+        setViewportGuides(
+          fromSavedViewportGuides(
+            (initialProject.graph as { viewportGuides?: unknown })
+              .viewportGuides
+          )
+        );
         // Live-link design: absent stays null (never materialize a
         // default block), present is validated as an untrusted blob.
         const rawLiveDesign = (
@@ -1281,6 +1314,12 @@ function EffectsShell({
   // chip in the viewport bar turns it off. Cmd/Ctrl still suppresses
   // a single gesture while it's on.
   const [snapEnabled, setSnapEnabled] = useState(true);
+  // Rulers + guides overlay (Shift+R, Window → Rulers, the ruler chip).
+  // Off by default like Photoshop / After Effects; remembered per machine.
+  // Hidden guides also stop snapping — a lock onto an invisible line would
+  // read as a stuck handle.
+  const [rulersVisible, setRulersVisible] = useState(false);
+  const activeGuides = rulersVisible ? viewportGuides : NO_VIEWPORT_GUIDES;
   const [viewportPrefsHydrated, setViewportPrefsHydrated] = useState(false);
   useEffect(() => {
     try {
@@ -1296,11 +1335,22 @@ function EffectsShell({
       if (window.localStorage.getItem(VIEWPORT_SNAP_KEY) === "0") {
         setSnapEnabled(false);
       }
+      if (window.localStorage.getItem(VIEWPORT_RULERS_KEY) === "1") {
+        setRulersVisible(true);
+      }
     } catch {
       /* private mode — prefs just don't persist */
     }
     setViewportPrefsHydrated(true);
   }, []);
+  useEffect(() => {
+    if (!viewportPrefsHydrated) return;
+    try {
+      window.localStorage.setItem(VIEWPORT_RULERS_KEY, rulersVisible ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [rulersVisible, viewportPrefsHydrated]);
   useEffect(() => {
     if (!viewportPrefsHydrated) return;
     try {
@@ -1666,6 +1716,14 @@ function EffectsShell({
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         e.preventDefault();
         setViewportSplit((v) => !v);
+      } else if ((e.key === "R" || e.key === "r") && e.shiftKey) {
+        // Shift+R → rulers + guides overlay (091726_viewport-rulers.md).
+        // Plain R stays the spline editor's rotate and the graph editor's
+        // key-rotate (both ignore the Shift chord).
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.repeat) return;
+        e.preventDefault();
+        setRulersVisible((v) => !v);
       } else if (e.key === "0") {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         e.preventDefault();
@@ -2557,6 +2615,9 @@ function EffectsShell({
   // currently selected in the node editor. Keeps the dock readable
   // when a graph has dozens of animated parameters.
   const [tracksSelectedOnly, setTracksSelectedOnly] = useState(false);
+  // The Tracks editor's easing overlay (specdocs/091726_easing-editor.md).
+  // Toggled from the dock header; stays open across selection changes.
+  const [trackEasingEditorOpen, setTrackEasingEditorOpen] = useState(false);
   const [graphNormalizeY, setGraphNormalizeY] = useState(false);
   const [graphRefitVersion, setGraphRefitVersion] = useState(0);
   // Keyframe selection lifted from whichever Tracks/Layers editor the
@@ -2637,6 +2698,8 @@ function EffectsShell({
   savedEasingsRef.current = savedEasings;
   const liveDesignRef = useRef(liveDesign);
   liveDesignRef.current = liveDesign;
+  const viewportGuidesRef = useRef(viewportGuides);
+  viewportGuidesRef.current = viewportGuides;
 
   // Capsule for surviving a same-tab route change (e.g. docs "i"
   // button). Effect has empty deps on purpose: we only want the
@@ -2664,6 +2727,7 @@ function EffectsShell({
         activeCompositionId: activeCompositionIdRef.current,
         savedEasings: savedEasingsRef.current,
         liveDesign: liveDesignRef.current,
+        viewportGuides: viewportGuidesRef.current,
         layoutTree: layoutTreeRef.current,
         primaryViewportLeafId: primaryViewportLeafIdRef.current,
       });
@@ -2808,6 +2872,24 @@ function EffectsShell({
       }
       return [...prev, { ...easing, name }];
     });
+    graphRevRef.current++;
+    setSaveState("dirty");
+  }, []);
+  // The easing overlay's preset tray edits (right-click a tile). Same
+  // standing as saveEasing: not graph history, but persisted, so the
+  // pill goes dirty. Rename keys on the id, so the Graph Editor's
+  // dropdown selection survives it.
+  const renameEasing = useCallback((id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setSavedEasings((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, name: trimmed } : e))
+    );
+    graphRevRef.current++;
+    setSaveState("dirty");
+  }, []);
+  const deleteEasing = useCallback((id: string) => {
+    setSavedEasings((prev) => prev.filter((e) => e.id !== id));
     graphRevRef.current++;
     setSaveState("dirty");
   }, []);
@@ -6618,7 +6700,10 @@ function EffectsShell({
       // Color-ramp stop removal: a shrinking `color_ramp` array drops the
       // removed stops' virtual keyframe tracks, exposedParams/controlParams
       // entries, and any edges feeding their sockets — same edit, so one
-      // undo restores stop + tracks + sockets together.
+      // undo restores stop + tracks + sockets together. A shrinking
+      // `merge_layers` array likewise drops the removed layers' per-layer
+      // control entries (mlayer:<param>:<id>); their opacity tracks are
+      // already dropped by MergeLayersControl's remove button.
       let removedRampKeys: Set<string> | null = null;
       {
         const src = nodesRef.current.find((x) => x.id === nodeId);
@@ -6639,6 +6724,16 @@ function EffectsShell({
                 rampAlphaKey(paramName, s.id),
                 rampPositionKey(paramName, s.id),
               ])
+            );
+          }
+        } else if (pdefType === "merge_layers" && Array.isArray(value)) {
+          const before =
+            (src?.data.params[paramName] as MergeLayer[] | undefined) ?? [];
+          const kept = new Set((value as MergeLayer[]).map((l) => l.id));
+          const removed = before.filter((l) => !kept.has(l.id));
+          if (removed.length > 0) {
+            removedRampKeys = new Set(
+              removed.map((l) => mergeLayerKey(paramName, l.id))
             );
           }
         }
@@ -7680,6 +7775,30 @@ function EffectsShell({
             : [...current, paramName];
           return { ...n, data: { ...n.data, controlParams: next } };
         })
+      );
+    },
+    [setNodes, pushGraph, getGraphSnapshot]
+  );
+
+  // Node-level Control toggle (091726_live-gizmos.md): ship / unship the
+  // node's on-canvas handles to the live link. Same undo + dirty path as
+  // the per-param toggle above. Off is stored as absent, not `false`, so
+  // untouched nodes serialize exactly as before.
+  const onToggleNodeControlGizmo = useCallback(
+    (nodeId: string) => {
+      pushGraph(getGraphSnapshot());
+      setNodes((prev) =>
+        prev.map((n) =>
+          n.id !== nodeId
+            ? n
+            : {
+                ...n,
+                data: {
+                  ...n.data,
+                  controlGizmo: n.data.controlGizmo ? undefined : true,
+                },
+              }
+        )
       );
     },
     [setNodes, pushGraph, getGraphSnapshot]
@@ -10669,6 +10788,10 @@ function EffectsShell({
     if (savedEasingsRef.current.length > 0) {
       graph.savedEasings = savedEasingsRef.current;
     }
+    // Ruler guides ride the same way (omitted when none).
+    if (viewportGuidesRef.current.length > 0) {
+      graph.viewportGuides = viewportGuidesRef.current;
+    }
     // Live-link design rides the same way (omitted when never authored).
     // The designer's live draft wins over committed state — a ⌘S taken
     // while designing captures what's on screen.
@@ -11033,6 +11156,11 @@ function EffectsShell({
             (saved.graph as { savedEasings?: unknown }).savedEasings
           )
         );
+        setViewportGuides(
+          fromSavedViewportGuides(
+            (saved.graph as { viewportGuides?: unknown }).viewportGuides
+          )
+        );
         // Live-link design: absent stays null, present is validated.
         const rawLiveDesign = (saved.graph as { liveDesign?: unknown })
           .liveDesign;
@@ -11211,6 +11339,9 @@ function EffectsShell({
       // User-saved easing curves ride the same way (omitted when empty).
       if (savedEasingsRef.current.length > 0) {
         graph.savedEasings = savedEasingsRef.current;
+      }
+      if (viewportGuidesRef.current.length > 0) {
+        graph.viewportGuides = viewportGuidesRef.current;
       }
       // Live-link design rides the same way (omitted when never
       // authored); the designer's live draft wins, as in the cloud path.
@@ -11403,6 +11534,11 @@ function EffectsShell({
             (graph as { savedEasings?: unknown }).savedEasings
           )
         );
+        setViewportGuides(
+          fromSavedViewportGuides(
+            (graph as { viewportGuides?: unknown }).viewportGuides
+          )
+        );
         // Live-link design: absent stays null, present is validated.
         const rawLiveDesign = (graph as { liveDesign?: unknown }).liveDesign;
         setLiveDesign(
@@ -11482,6 +11618,9 @@ function EffectsShell({
       graph.layout = toSavedLayout(layoutTreeRef.current);
       if (savedEasingsRef.current.length > 0) {
         graph.savedEasings = savedEasingsRef.current;
+      }
+      if (viewportGuidesRef.current.length > 0) {
+        graph.viewportGuides = viewportGuidesRef.current;
       }
       if (liveDesignRef.current) {
         graph.liveDesign = liveDesignRef.current;
@@ -11574,6 +11713,11 @@ function EffectsShell({
         setSavedEasings(
           sanitizeSavedEasings(
             (graph as { savedEasings?: unknown }).savedEasings
+          )
+        );
+        setViewportGuides(
+          fromSavedViewportGuides(
+            (graph as { viewportGuides?: unknown }).viewportGuides
           )
         );
         const rawLiveDesign = (graph as { liveDesign?: unknown }).liveDesign;
@@ -11910,6 +12054,7 @@ function EffectsShell({
     setSaveState("saved");
     setSavedEasings([]);
     setLiveDesign(null);
+    setViewportGuides(NO_VIEWPORT_GUIDES);
     frameGraph();
     // Drop any survival snapshot from a prior session — otherwise a
     // docs round-trip after File → New would resurrect the graph
@@ -13452,6 +13597,7 @@ function EffectsShell({
       onConvertToEditable={convertSvgToEditable}
       onToggleParamExposed={onToggleParamExposed}
       onToggleParamControl={onToggleParamControl}
+      onToggleNodeControlGizmo={onToggleNodeControlGizmo}
       onExportApp={onOpenExportApp}
       onParamRangeChange={onParamRangeChange}
       onToggleParamLink={onToggleParamLink}
@@ -13577,6 +13723,17 @@ function EffectsShell({
                 >
                   fit
                 </DockButton>
+                <DockButton
+                  active={trackEasingEditorOpen}
+                  onClick={() => setTrackEasingEditorOpen((v) => !v)}
+                  title={
+                    trackEasingEditorOpen
+                      ? "Close the easing editor"
+                      : "Easing editor — shape one curve and apply it to every selected keyframe pair"
+                  }
+                >
+                  easing
+                </DockButton>
               </>
             )}
             {dockTab === "graph" && (
@@ -13674,6 +13831,12 @@ function EffectsShell({
               }}
               onKeyframeSelectionChange={onTimelineKfSelection}
               initialKeyframeSelection={timelineKfSelection}
+              easingEditorOpen={trackEasingEditorOpen}
+              onEasingEditorOpenChange={setTrackEasingEditorOpen}
+              savedEasings={savedEasings}
+              onSaveEasing={saveEasing}
+              onRenameEasing={renameEasing}
+              onDeleteEasing={deleteEasing}
             />
           ) : (
             <GraphEditor
@@ -13839,6 +14002,10 @@ function EffectsShell({
         onToggleShowNodeTimings={() => setShowNodeTimings((v) => !v)}
         viewportSplit={viewportSplit}
         onToggleViewportSplit={() => setViewportSplit((v) => !v)}
+        rulersVisible={rulersVisible}
+        onToggleRulers={() => setRulersVisible((v) => !v)}
+        canClearGuides={viewportGuides.length > 0}
+        onClearGuides={() => setViewportGuides(NO_VIEWPORT_GUIDES)}
         layoutPresets={layoutPresetEntries(layoutPresets)}
         onApplyLayoutPreset={applyLayoutPreset}
         onNewLayoutPreset={() => setNewLayoutPresetOpen(true)}
@@ -13912,6 +14079,10 @@ function EffectsShell({
                 <ViewportSnapToggle
                   on={snapEnabled}
                   onToggle={() => setSnapEnabled((v) => !v)}
+                />
+                <ViewportRulersToggle
+                  on={rulersVisible}
+                  onToggle={() => setRulersVisible((v) => !v)}
                 />
               </>
             }
@@ -13996,11 +14167,28 @@ function EffectsShell({
                 transformOrigin: "center center",
               }}
             />
-            {viewportSplit && <ViewportLabel label="1" />}
+            {viewportSplit && (
+              <ViewportLabel
+                label="1"
+                // Clear of the rulers when they're up (top bar + a
+                // left-hand side bar).
+                top={rulersVisible ? RULER_SIZE + 6 : undefined}
+                left={
+                  rulersVisible && VERTICAL_RULER_SIDE === "left"
+                    ? RULER_SIZE + 6
+                    : undefined
+                }
+              />
+            )}
             {!v1.isDefault && (
               <ViewportZoomChip
                 label={`${Math.round(v1.zoom * 100)}% · reset`}
                 onClick={v1.reset}
+                right={
+                  rulersVisible && VERTICAL_RULER_SIDE === "right"
+                    ? RULER_SIZE + 4
+                    : undefined
+                }
               />
             )}
           </div>
@@ -14070,6 +14258,19 @@ function EffectsShell({
                 />
               )}
             </div>
+          )}
+          {/* Rulers + guides (091726_viewport-rulers.md): a fixed-position
+              sibling like every other overlay — NOT inside the viewport
+              div, whose touch pan handler would capture the drags. Rides
+              viewport 1 only. Not gated on showGizmos: guides are a way
+              of looking at the canvas, not a node's GUI. */}
+          {rulersVisible && backendReady && (
+            <ViewportRulers
+              canvas={canvasRef.current}
+              canvasRes={canvasRes}
+              guides={viewportGuides}
+              onGuidesChange={setViewportGuides}
+            />
           )}
           {activePaintNode && (
             <PaintOverlay
@@ -14151,6 +14352,7 @@ function EffectsShell({
               nodes={nodes}
               canvas={canvasRef.current}
               snapEnabled={snapEnabled}
+              guides={activeGuides}
               onParamChange={onParamChange}
               onSelectNode={handlePanelSelectNode}
               onAnchorAnimate={onAnchorAnimate}
@@ -14227,6 +14429,7 @@ function EffectsShell({
                   multiGizmo={multiGizmo}
                   ticksPerFrame={ticksPerFrame}
                   snapEnabled={snapEnabled}
+                  guides={activeGuides}
                   onParamChange={onParamChange}
                   onMotionPathPointChange={onMotionPathPointChange}
                 />
@@ -14245,6 +14448,8 @@ function EffectsShell({
                 canvasHeight={canvasRes[1]}
                 evalCacheRef={evalCacheRef}
                 ticksPerFrame={ticksPerFrame}
+                snapEnabled={snapEnabled}
+                guides={activeGuides}
                 onParamChange={onParamChange}
                 onMotionPathPointChange={onMotionPathPointChange}
               />
@@ -14567,6 +14772,8 @@ function EffectsShell({
             22 + (platform.isNative && platform.windowControls ? 10 : 0)
           }
           projectName={currentProject?.name ?? "Untitled"}
+          authorName={currentProject?.authorName ?? null}
+          publicSlug={currentProject?.publicSlug ?? null}
           onDraftChange={(d) => {
             liveLinkDraftRef.current = d;
           }}
@@ -14813,276 +15020,6 @@ function newSaveHint(
     return `Saving will fork a private copy named "${currentProject.name}_copy".`;
   }
   return `Save will overwrite "${currentProject.name}".`;
-}
-
-// Pan/zoom state for one preview viewport. Owns its own ref + state so
-// each viewport can frame its preview independently when split.
-function useViewportPanZoom() {
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState<[number, number]>([0, 0]);
-  const reset = useCallback(() => {
-    setZoom(1);
-    setPan([0, 0]);
-  }, []);
-  const isDefault = zoom === 1 && pan[0] === 0 && pan[1] === 0;
-  return { viewportRef, zoom, pan, setZoom, setPan, reset, isDefault };
-}
-
-// Two-finger trackpad / mouse-wheel pan and Cmd-zoom on the given
-// viewport, plus middle-click drag to pan. Listens at the window level
-// and hit-tests the cursor against the viewport's rect, so the gesture
-// applies to whichever viewport the cursor is over — even when a
-// sibling overlay (paint, spline, gizmo, curve dock, etc.) sits visually
-// between the cursor and the viewport's DOM subtree. Overlays that want
-// to consume wheel themselves (the curve editor dock) call
-// stopPropagation, which prevents the bubble path from reaching window.
-//
-// "The window level" means the window that owns the VIEWPORT, resolved
-// via ownerDocument (layout/panel-window.ts) — not the module-scope
-// `window`, which is always the main one. A popped-out viewport
-// (080226_panel-popout-windows.md) lives in another document, where
-// module-scope `window` would both miss the child's events and
-// hit-test the main window's pointer coordinates against a rect from a
-// different coordinate space.
-function useViewportGestures(
-  viewportRef: React.RefObject<HTMLDivElement | null>,
-  setPan: React.Dispatch<React.SetStateAction<[number, number]>>,
-  setZoom: React.Dispatch<React.SetStateAction<number>>
-) {
-  useEffect(() => {
-    const onWheel = (e: WheelEvent) => {
-      const el = viewportRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      if (
-        e.clientX < rect.left ||
-        e.clientX > rect.right ||
-        e.clientY < rect.top ||
-        e.clientY > rect.bottom
-      ) {
-        return;
-      }
-      e.preventDefault();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      const dx = e.deltaX || 0;
-      const dy = e.deltaY || 0;
-      // Zoom on an explicit modifier OR when the active device is a mouse
-      // (whose wheel should zoom rather than pan). See input-device.ts.
-      const isZoom = wheelWantsZoom(e);
-      if (isZoom) {
-        const mag = Math.abs(dx) > Math.abs(dy) ? dx : dy;
-        const factor = Math.exp(-mag * 0.005);
-        setZoom((prevZoom) => {
-          const nextZoom = Math.max(0.1, Math.min(8, prevZoom * factor));
-          const ratio = nextZoom / prevZoom;
-          setPan(([px, py]) => [
-            px * ratio + (e.clientX - cx) * (1 - ratio),
-            py * ratio + (e.clientY - cy) * (1 - ratio),
-          ]);
-          return nextZoom;
-        });
-        return;
-      }
-      setPan(([px, py]) => [px - dx, py - dy]);
-    };
-    const win = ownerWindow(viewportRef.current);
-    win.addEventListener("wheel", onWheel, { passive: false });
-    return () => win.removeEventListener("wheel", onWheel);
-  }, [viewportRef, setPan, setZoom]);
-
-  useEffect(() => {
-    const win = ownerWindow(viewportRef.current);
-    const onDown = (e: PointerEvent) => {
-      if (e.button !== 1) return;
-      const el = viewportRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      if (
-        e.clientX < rect.left ||
-        e.clientX > rect.right ||
-        e.clientY < rect.top ||
-        e.clientY > rect.bottom
-      ) {
-        return;
-      }
-      e.preventDefault();
-      // Cmd/Ctrl + middle-drag zooms about the press point; plain middle-drag
-      // pans. (Drag right zooms in.)
-      const zoomDrag = e.metaKey || e.ctrlKey;
-      const startX = e.clientX;
-      const startY = e.clientY;
-      let curPan: [number, number] = [0, 0];
-      setPan((p) => {
-        curPan = p;
-        return p;
-      });
-      let curZoom = 1;
-      setZoom((z) => {
-        curZoom = z;
-        return z;
-      });
-      // Press point relative to the viewport center (matches the wheel-zoom
-      // anchoring math), held fixed while zooming.
-      const aX = startX - (rect.left + rect.width / 2);
-      const aY = startY - (rect.top + rect.height / 2);
-      const onMove = (ev: PointerEvent) => {
-        if (zoomDrag) {
-          // Drag up zooms in.
-          const factor = Math.exp(-(ev.clientY - startY) * 0.005);
-          const nextZoom = Math.max(0.1, Math.min(8, curZoom * factor));
-          const ratio = nextZoom / curZoom;
-          setZoom(nextZoom);
-          setPan([
-            curPan[0] * ratio + aX * (1 - ratio),
-            curPan[1] * ratio + aY * (1 - ratio),
-          ]);
-        } else {
-          setPan([
-            curPan[0] + (ev.clientX - startX),
-            curPan[1] + (ev.clientY - startY),
-          ]);
-        }
-      };
-      const onUp = () => {
-        win.removeEventListener("pointermove", onMove);
-        win.removeEventListener("pointerup", onUp);
-      };
-      win.addEventListener("pointermove", onMove);
-      win.addEventListener("pointerup", onUp);
-    };
-    win.addEventListener("pointerdown", onDown);
-    return () => win.removeEventListener("pointerdown", onDown);
-  }, [viewportRef, setPan, setZoom]);
-
-  // Touch / Pencil pan + pinch-zoom on the canvas viewport.
-  // Mirrors the wheel handler's pan/zoom semantics so the canvas
-  // behaves the same on touch as it does on a trackpad. Wired
-  // directly on the viewport element (not window) because we need
-  // multi-touch state and want to passively skip touches that start
-  // outside the viewport.
-  //
-  // One finger / one pen → pan.
-  // Two fingers → pinch zooms about the midpoint, AND drag pans
-  // by the midpoint delta (matches Figma / Procreate).
-  // Mouse pointers are ignored here — those go through the wheel
-  // and middle-button paths above.
-  useEffect(() => {
-    const el = viewportRef.current;
-    if (!el) return;
-    // Track active touch/pen pointers by id. Only the first two
-    // matter for pinch math; additional fingers are ignored until
-    // one of the active two leaves.
-    const active = new Map<number, { x: number; y: number }>();
-    let lastPanX = 0;
-    let lastPanY = 0;
-    let lastDist = 0;
-
-    const isAcceptedPointer = (e: PointerEvent) =>
-      e.pointerType === "touch" || e.pointerType === "pen";
-
-    const recompute = () => {
-      const pts = Array.from(active.values());
-      if (pts.length === 1) {
-        lastPanX = pts[0].x;
-        lastPanY = pts[0].y;
-        lastDist = 0;
-      } else if (pts.length >= 2) {
-        const a = pts[0];
-        const b = pts[1];
-        lastPanX = (a.x + b.x) / 2;
-        lastPanY = (a.y + b.y) / 2;
-        lastDist = Math.hypot(b.x - a.x, b.y - a.y);
-      }
-    };
-
-    const onDown = (e: PointerEvent) => {
-      if (!isAcceptedPointer(e)) return;
-      // Only own gestures that *started* over the canvas viewport.
-      const rect = el.getBoundingClientRect();
-      if (
-        e.clientX < rect.left ||
-        e.clientX > rect.right ||
-        e.clientY < rect.top ||
-        e.clientY > rect.bottom
-      ) {
-        return;
-      }
-      // Cap at two tracked pointers — third+ fingers are noise.
-      if (active.size >= 2) return;
-      active.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      recompute();
-      el.setPointerCapture(e.pointerId);
-    };
-
-    const onMove = (e: PointerEvent) => {
-      if (!active.has(e.pointerId)) return;
-      // Don't let the page see the gesture — touch-action on the el
-      // disables it for one-finger pans, but two-finger pinches still
-      // need this for some browsers.
-      e.preventDefault();
-      active.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      const pts = Array.from(active.values());
-      if (pts.length === 1) {
-        const dx = pts[0].x - lastPanX;
-        const dy = pts[0].y - lastPanY;
-        lastPanX = pts[0].x;
-        lastPanY = pts[0].y;
-        setPan(([px, py]) => [px + dx, py + dy]);
-      } else if (pts.length >= 2) {
-        const a = pts[0];
-        const b = pts[1];
-        const midX = (a.x + b.x) / 2;
-        const midY = (a.y + b.y) / 2;
-        const dist = Math.hypot(b.x - a.x, b.y - a.y);
-        // Pan by midpoint movement so two-finger drag pans the
-        // viewport, same as a trackpad two-finger swipe.
-        const dx = midX - lastPanX;
-        const dy = midY - lastPanY;
-        lastPanX = midX;
-        lastPanY = midY;
-        // Pinch about the midpoint, in viewport-center-relative
-        // coords (mirrors the wheel-zoom math above).
-        const factor = lastDist > 0 ? dist / lastDist : 1;
-        lastDist = dist;
-        const rect = el.getBoundingClientRect();
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        setZoom((prevZoom) => {
-          const nextZoom = Math.max(0.1, Math.min(8, prevZoom * factor));
-          const ratio = nextZoom / prevZoom;
-          setPan(([px, py]) => [
-            (px + dx) * ratio + (midX - cx) * (1 - ratio),
-            (py + dy) * ratio + (midY - cy) * (1 - ratio),
-          ]);
-          return nextZoom;
-        });
-      }
-    };
-
-    const release = (e: PointerEvent) => {
-      if (!active.has(e.pointerId)) return;
-      active.delete(e.pointerId);
-      try {
-        el.releasePointerCapture(e.pointerId);
-      } catch {
-        // Pointer was already released by the browser; ignore.
-      }
-      recompute();
-    };
-
-    el.addEventListener("pointerdown", onDown);
-    el.addEventListener("pointermove", onMove, { passive: false });
-    el.addEventListener("pointerup", release);
-    el.addEventListener("pointercancel", release);
-    return () => {
-      el.removeEventListener("pointerdown", onDown);
-      el.removeEventListener("pointermove", onMove);
-      el.removeEventListener("pointerup", release);
-      el.removeEventListener("pointercancel", release);
-    };
-  }, [viewportRef, setPan, setZoom]);
 }
 
 // Watch viewport — a non-primary viewport leaf in the tiled layout
@@ -15445,12 +15382,84 @@ function ViewportSnapToggle({
   );
 }
 
+/**
+ * Rulers switch — the fourth chip in the viewport bar's trailing cluster
+ * (same 19×17 chrome as gizmos / checker / snapping). Mirrors Shift+R and
+ * Window → Rulers. The glyph is a ruler corner: two graduated strips
+ * meeting at the top edge, the shape the overlay actually puts on screen.
+ */
+function ViewportRulersToggle({
+  on,
+  onToggle,
+}: {
+  on: boolean;
+  onToggle: () => void;
+}) {
+  const stroke = on ? "var(--tb-n-16)" : "var(--tb-n-11)";
+  return (
+    <button
+      onClick={onToggle}
+      aria-pressed={on}
+      aria-label={on ? "Rulers on" : "Rulers off"}
+      title={
+        on
+          ? "Rulers on — drag out of a ruler for a guide, right-click a guide for options; click to hide (⇧R)"
+          : "Rulers off — click to show rulers and guides (⇧R)"
+      }
+      style={{
+        width: 19,
+        height: 17,
+        padding: 0,
+        display: "grid",
+        placeItems: "center",
+        boxSizing: "border-box",
+        background: on ? "var(--tb-n-5)" : "var(--tb-n-3)",
+        border: `1px solid ${on ? "var(--tb-n-9)" : "var(--tb-n-7)"}`,
+        borderRadius: 3,
+        cursor: "pointer",
+      }}
+    >
+      <svg width={11} height={11} viewBox="0 0 11 11" aria-hidden>
+        {/* Top strip with ticks, side strip with ticks. */}
+        <path
+          d="M1 1.5H10M3 1.5V3.5M5 1.5V3M7 1.5V3.5M9 1.5V3"
+          fill="none"
+          stroke={stroke}
+          strokeWidth={1}
+          strokeLinecap="round"
+        />
+        <path
+          d="M9.5 1V10M9.5 4H7.5M9.5 6H8M9.5 8H7.5"
+          fill="none"
+          stroke={stroke}
+          strokeWidth={1}
+          strokeLinecap="round"
+        />
+        {/* A guide dropped onto the canvas. */}
+        <line
+          x1={1.5}
+          y1={7.5}
+          x2={6.5}
+          y2={7.5}
+          stroke={on ? "var(--tb-a-cyan-400)" : stroke}
+          strokeWidth={1}
+          strokeDasharray={on ? undefined : "1.5 1.5"}
+        />
+      </svg>
+    </button>
+  );
+}
+
 function ViewportZoomChip({
   label,
   onClick,
+  right = 4,
 }: {
   label: string;
   onClick: () => void;
+  // Inset from the panel's right edge — bumped when the rulers are up so
+  // the chip doesn't sit on the side ruler.
+  right?: number;
 }) {
   return (
     <button
@@ -15460,7 +15469,7 @@ function ViewportZoomChip({
         position: "absolute",
         // Tucked into the corner of the viewport, same inset as the
         // menu bar's trailing controls at the top.
-        right: 4,
+        right,
         bottom: 4,
         background: "var(--tb-n-3)",
         color: "var(--tb-n-13)",
@@ -15478,13 +15487,22 @@ function ViewportZoomChip({
   );
 }
 
-function ViewportLabel({ label }: { label: string }) {
+function ViewportLabel({
+  label,
+  top = 6,
+  left = 6,
+}: {
+  label: string;
+  // Insets — bumped when the rulers are up so the label clears them.
+  top?: number;
+  left?: number;
+}) {
   return (
     <div
       style={{
         position: "absolute",
-        top: 6,
-        left: 6,
+        top,
+        left,
         padding: "1px 6px",
         background: "color-mix(in srgb, var(--tb-n-0) 85%, transparent)",
         color: "var(--tb-n-13)",

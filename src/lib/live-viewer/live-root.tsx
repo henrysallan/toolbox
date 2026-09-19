@@ -39,6 +39,11 @@ export function LiveRoot({
   const style: Record<string, string> = {
     ...designTokens(d),
     "--lv-radius": `${CORNER_RADIUS_PX[d.layout.cornerRadius]}px`,
+    // Panel geometry (2026-09-16): the pre-zoom width and the CSS zoom
+    // factor styles.css puts on .sidebar — see LiveDesign.layout.
+    "--lv-panel-w": `${d.layout.panelWidth}px`,
+    "--lv-ui-scale": String(d.layout.uiScale),
+    "--lv-row-gap": `${d.layout.rowGap}px`,
     fontFamily: resolvePreset(FONT_PRESETS, d.presets.font).stack,
   };
   // The element itself, published through context so the shared

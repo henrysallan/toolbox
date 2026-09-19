@@ -6,6 +6,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { MultiPolygon } from "polygon-clipping";
 import type { FaceRef, PlanarShape } from "@/engine/spline-planar";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
+import type { ViewportGuide } from "@/lib/viewport-guides";
 import type { SelKey } from "./geometry";
 import type { SnapGuide } from "./snapping";
 
@@ -325,6 +326,11 @@ export interface SplineEditorEnv {
   // never touching the keyframed spline). Also feeds the snap service.
   guides: SplineGuide[];
   onGuidesChange: (next: SplineGuide[]) => void;
+  // Viewport ruler guides (spec 091726, owned by EffectsApp — read-only
+  // here): per-render snapshot, joined into the snap lines by
+  // ops.guideLines() alongside the per-node guides above. Screen-normalized
+  // canvas fractions, not anchor space.
+  viewportGuides: readonly ViewportGuide[];
   // px ↔ normalized converters for the current rect (aspect-corrected — see
   // the component). Return zeros when rect is null.
   clientToNorm: (cx: number, cy: number) => [number, number];

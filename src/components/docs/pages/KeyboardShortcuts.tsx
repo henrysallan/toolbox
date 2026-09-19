@@ -24,6 +24,7 @@ const GLOBAL: Shortcut[] = [
   { keys: <><Kbd>Space</Kbd></>, action: "Play / pause the scene." },
   { keys: <><Kbd>F</Kbd></>, action: "Toggle full-canvas mode (hides editor chrome)." },
   { keys: <><Kbd>⇧</Kbd>+<Kbd>S</Kbd></>, action: "Toggle split viewport — stacks two preview canvases with independent active terminals." },
+  { keys: <><Kbd>⇧</Kbd>+<Kbd>R</Kbd></>, action: "Toggle rulers and guides on the preview viewport (also Window → Rulers, or the ruler chip in the viewport bar). Rulers read in project pixels and follow pan and zoom." },
   { keys: <><Kbd>Esc</Kbd></>, action: "Exit full-canvas mode." },
 ];
 
@@ -44,12 +45,19 @@ const NODE_GRAPH: Shortcut[] = [
   { keys: "Scroll", action: "Zoom the graph." },
 ];
 
+const PARAM_PANEL: Shortcut[] = [
+  { keys: <><Kbd>⌥</Kbd>+edit a parameter</>, action: "With several nodes selected, start an edit with Option held — Option-drag a slider, Option-click a swatch, checkbox or dropdown, or Option-click into a field, then type and press Enter — and the value also lands on every other selected node that has the same parameter (same name and type, whatever its current value; a wire-driven one is skipped). Hold Option to see which rows qualify: they show a ⌥ ×N tag with the number of nodes the edit will reach. Option+Enter links a value you typed into a plainly focused field. The whole gesture across all nodes is one undo step." },
+];
+
 const CANVAS: Shortcut[] = [
   { keys: "Two-finger scroll / middle-click drag", action: "Pan the active preview viewport (the one your cursor is over)." },
   { keys: <><Kbd>⌘</Kbd>+scroll</>, action: "Zoom the active preview viewport, anchored at the cursor." },
   { keys: <><Kbd>0</Kbd></>, action: "Reset both preview viewports' pan and zoom to 1:1." },
   { keys: "Drag files onto the canvas", action: "Drops an image / video / audio / SVG as a new source node." },
   { keys: "Lock chip in the viewport bar", action: "Toggle snapping for transform gizmos and spline drawing. On by default; hold ⌘ / Ctrl while dragging to suppress one gesture." },
+  { keys: "Drag out of a ruler (⇧R shows them)", action: "Drop a guide over the canvas — the top ruler gives a horizontal guide, the side ruler a vertical one. Guides land on whole project pixels and save with the project. Transform boxes, shape primitives, text boxes, point handles and spline anchors snap their edges, centres and points to them (the lock chip and ⌘ / Ctrl still suppress snapping)." },
+  { keys: "Drag a guide (or its ruler marker)", action: "Move it; a readout shows its pixel position. A plain drag reaches a guide over the bare canvas and over a transform / shape gizmo's move surface (handles still win), and every guide has a small marker on the ruler it crosses. Inside tools that own their clicks — the pen, paint, the 3D orbit — hold ⌘ / Ctrl to grab the guide instead. Hovering where a press would grab highlights the guide. Drop it back on a ruler (or off the viewport) to remove it, or Esc mid-drag to put it back." },
+  { keys: "Right-click a guide (or its ruler marker)", action: "Edit position… (type an exact pixel value; Enter sets it), Mirror across centre (adds a one-off copy at the same distance from the opposite edge), Delete guide. Right-click a bare ruler for Clear all guides; Window → Clear Guides does the same." },
   { keys: <><Kbd>Shift</Kbd>+drag a transform handle</>, action: "Constrain the move to the X or Y axis based on the initial drag direction (text box, spline primitives, and other on-canvas gizmos)." },
 ];
 
@@ -99,8 +107,8 @@ export default function KeyboardShortcutsPage() {
       <H1>Keyboard shortcuts</H1>
       <Lede>
         Everything the editor responds to, grouped by surface: global
-        commands, the node graph, the preview canvas, the spline pen
-        tool, and the timeline curve editor.
+        commands, the node graph, the parameter panel, the preview canvas,
+        the spline pen tool, and the timeline curve editor.
       </Lede>
 
       <H2>Global</H2>
@@ -108,6 +116,9 @@ export default function KeyboardShortcutsPage() {
 
       <H2>Node graph</H2>
       <ShortcutTable items={NODE_GRAPH} />
+
+      <H2>Parameter panel</H2>
+      <ShortcutTable items={PARAM_PANEL} />
 
       <H2>Preview canvas</H2>
       <ShortcutTable items={CANVAS} />

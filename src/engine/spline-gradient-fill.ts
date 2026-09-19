@@ -2,8 +2,13 @@ import type { SplineSubpath } from "./types";
 import { aspectCorrectY } from "./aspect";
 import {
   COLOR_RAMP_MAX_STOPS,
-  sampleColorRamp,
+  makeColorRampSampler,
+  normalizeRampInterp,
+  normalizeRampSpace,
+  rgba01ToCss,
   type ColorRampInterp,
+  type ColorRampSampler,
+  type ColorRampSpace,
   type ColorRampStop,
 } from "./color-ramp";
 import { makeSubpathDriverFn, type ColorRampBy } from "./spline-color-source";
@@ -42,6 +47,8 @@ export interface SubpathGradientConfig {
   offset: number; // ramp phase; non-zero wraps (offsetRampT)
   stops: ColorRampStop[];
   interp: ColorRampInterp;
+  // Blend color space (091626_ramp-space-interp.md). Default sRGB.
+  space?: ColorRampSpace;
   // Per-subpath phase shift: shift = offset + varyAmount × driver t, with
   // t from the shared subpath driver (index / random / group / position /
   // driver). "none" = every subpath gets the same phase.
@@ -214,19 +221,53 @@ export interface GradientStop {
 }
 
 const EPS = 1e-6;
-const EASE_SUBDIV = 6;
+// Canvas2D only lerps in gamma sRGB between stops, so any other curve or
+// color space is approximated piecewise-linearly with this many segments
+// per interval. 16 keeps a smoothstep / OKLab arc within a step of 8-bit
+// output over a typical span.
+const CURVE_SUBDIV = 16;
+
+// Canvas needs subdivision whenever the true ramp between two knots is not
+// a straight line in gamma sRGB.
+function needsSubdivision(interp: ColorRampInterp, space: ColorRampSpace): boolean {
+  if (interp === "constant") return false;
+  return interp !== "linear" || space !== "srgb";
+}
 
 // Convert a color ramp into Canvas2D gradient stops that reproduce
-// `sampleColorRamp(stops, u, interp, offset)` along u ∈ [0,1]:
-//   linear   — a stop per ramp stop (Canvas lerps between them)
-//   constant — two stops per interval so each holds its left color
-//   ease     — each interval subdivided (piecewise-linear smoothstep)
+// `sampleColorRamp(stops, u, interp, offset, space)` along u ∈ [0,1]:
+//   linear/sRGB — a stop per ramp stop (Canvas lerps between them)
+//   constant    — two stops per interval so each holds its left color
+//   anything else — each interval subdivided into CURVE_SUBDIV linear
+//                   segments (the curve / color space, piecewise-linear)
 // A non-zero offset wraps (offsetRampT), so the point where t crosses
 // 1 → 0 gets a doubled stop: the seam a ramp with unequal ends shows.
 export function rampToGradientStops(
   stops: ColorRampStop[],
   interp: ColorRampInterp,
-  offset = 0
+  offset = 0,
+  space: ColorRampSpace = "srgb"
+): GradientStop[] {
+  const i = normalizeRampInterp(interp);
+  const s = normalizeRampSpace(space);
+  return rampToGradientStopsWith(
+    makeColorRampSampler(stops, { interp: i, space: s }),
+    stops,
+    i,
+    s,
+    offset
+  );
+}
+
+// Same, with a prebuilt sampler — makeSubpathGradientFn builds one sampler
+// and reuses it across every per-copy phase (the smooth / spline modes do
+// real work at construction).
+function rampToGradientStopsWith(
+  sample: ColorRampSampler,
+  stops: ColorRampStop[],
+  interp: ColorRampInterp,
+  space: ColorRampSpace,
+  offset: number
 ): GradientStop[] {
   const sorted = [...stops]
     .filter((s) => typeof s.position === "number")
@@ -245,7 +286,8 @@ export function rampToGradientStops(
   if (hasSeam) knotSet.add(seam);
   const knots = [...knotSet].sort((a, b) => a - b);
 
-  const color = (u: number) => sampleColorRamp(sorted, u, interp, offset);
+  const color = (u: number) => rgba01ToCss(sample(u, offset));
+  const subdiv = needsSubdivision(interp, space);
   const out: GradientStop[] = [];
   const K = knots.length;
   for (let i = 0; i < K; i++) {
@@ -266,10 +308,10 @@ export function rampToGradientStops(
       // an integer offset can't land the end stop on the first color.
       out.push({ pos: u, color: color(wrap && i === K - 1 ? 1 - EPS : u) });
     }
-    if (interp === "ease" && i < K - 1) {
+    if (subdiv && i < K - 1) {
       const next = knots[i + 1];
-      for (let j = 1; j < EASE_SUBDIV; j++) {
-        const v = u + ((next - u) * j) / EASE_SUBDIV;
+      for (let j = 1; j < CURVE_SUBDIV; j++) {
+        const v = u + ((next - u) * j) / CURVE_SUBDIV;
         out.push({ pos: v, color: color(v) });
       }
     }
@@ -293,7 +335,9 @@ export function makeSubpathGradientFn(
   const toPxY = (y: number) => aspectCorrectY(y, aspect) * H;
   const scale = Math.min(100, Math.max(0.01, cfg.scale ?? 1));
   const stops = Array.isArray(cfg.stops) ? cfg.stops : [];
-  const interp = cfg.interp ?? "linear";
+  const interp = normalizeRampInterp(cfg.interp);
+  const space = normalizeRampSpace(cfg.space);
+  const sample = makeColorRampSampler(stops, { interp, space });
   const baseOffset = Number.isFinite(cfg.offset) ? cfg.offset : 0;
   const amount = Number.isFinite(cfg.varyAmount) ? cfg.varyAmount : 0;
   const varyAt =
@@ -313,7 +357,7 @@ export function makeSubpathGradientFn(
     const key = Math.round(shift * 1024);
     let list = stopCache.get(key);
     if (!list) {
-      list = rampToGradientStops(stops, interp, key / 1024);
+      list = rampToGradientStopsWith(sample, stops, interp, space, key / 1024);
       stopCache.set(key, list);
     }
     return list;
@@ -321,7 +365,7 @@ export function makeSubpathGradientFn(
 
   return (i, sub) => {
     const shift = baseOffset + (varyAt ? amount * varyAt(i, sub) : 0);
-    const solid = () => sampleColorRamp(stops, 0.5, interp, shift);
+    const solid = () => rgba01ToCss(sample(0.5, shift));
     const fr = subpathGradientFrame(sub, cfg.frame, cfg.angleDeg ?? 0);
     if (!fr) return solid();
     let g: CanvasGradient;

@@ -6,7 +6,11 @@ import type {
   Curve3DValue,
 } from "./three-types";
 import type { TextStyle } from "./text-raster";
-import type { ColorRampInterp, ColorRampStop } from "./color-ramp";
+import type {
+  ColorRampInterp,
+  ColorRampSpace,
+  ColorRampStop,
+} from "./color-ramp";
 import type { CurvePoint } from "./float-curve";
 
 export type SocketType =
@@ -580,6 +584,9 @@ export type ColorRampValue = {
   kind: "color_ramp";
   stops: ColorRampStop[];
   interp: ColorRampInterp;
+  // Blend color space (091626_ramp-space-interp.md). Same standing as
+  // `interp`: carried, not yet applied at the consuming end.
+  space?: ColorRampSpace;
 };
 
 // One TRS-around-pivot step. Matches Transform / transformSpline math:
@@ -1289,6 +1296,14 @@ export type ParamType =
   // batch-render variation). Plain-JSON serialization, not keyframable.
   // See src/nodes/source/wedge.ts + specdocs/archive/071026_wedge-render-batching.md.
   | "wedge_values"
+  // Record<slot socket name, display name> — the Switch node's per-input
+  // names in toggle mode (`in0` → "Day"). Keyed by socket, not position, so
+  // a name follows its wire when a middle slot drops out. The panel renders
+  // one text field per wired slot (engine/graph-helpers switchToggleSlots);
+  // the names label the sockets and the Index pill / dropdown, and the
+  // export-manifest builder bakes them into the live link's control def.
+  // Plain-JSON serialization, not keyframable, not itself a live control.
+  | "slot_labels"
   // NoteEvent[] — the MIDI Editor node's authored piano-roll clip
   // (080926_midi-editor.md). Edited exclusively in the viewport piano
   // roll (declared `hidden` on the def, like spline_anchors' on-canvas
@@ -1628,9 +1643,26 @@ export interface ParamDef {
   // tops out at `count - 1`, so the slider spans exactly the slots that
   // exist). A per-node range override still wins, and `max` stays the
   // fallback wherever sibling params aren't in reach. UI-only hint like
-  // `stepFrom`: the engine ignores it (clamp in `compute`), and it doesn't
-  // survive export-manifest serialization.
+  // `stepFrom`: the engine ignores it (clamp in `compute`). Functions don't
+  // serialize, so the export-manifest builder EVALUATES it at build time and
+  // bakes the result into the cloned def's `max` — the live link's slider
+  // spans what the editor's did when the project was saved (before this,
+  // a Switch index in /live ran 0…255).
   maxFrom?: (params: Record<string, unknown>) => number | undefined;
+  // For "scalar" params: pick the widget from the node's CURRENT params.
+  // Returning "segmented" renders an integer pick over min…max instead of
+  // the slider — a pill up to SEGMENTED_MAX_OPTIONS choices, a dropdown
+  // past that (Switch's `index` in toggle mode). undefined → the static
+  // `control` / the slider. Baked into the manifest def like `maxFrom`.
+  controlFrom?: (
+    params: Record<string, unknown>
+  ) => ParamDef["control"] | undefined;
+  // For "scalar" params rendered as a pick: display labels keyed by
+  // `String(value)` ("0" → "Day"), derived from current params (Switch's
+  // `labels`). Unlabeled values show the number. Baked like `maxFrom`.
+  optionLabelsFrom?: (
+    params: Record<string, unknown>
+  ) => Record<string, string> | undefined;
   default: unknown;
   options?: string[];
   // Optional display labels for `options` values. The stored/enum value
@@ -1661,6 +1693,12 @@ export interface ParamDef {
   // this: reserved names stay illegal to write. UI-only hint; the engine
   // ignores it.
   suggestAttrsIncludeBuiltins?: boolean;
+  // With `suggestAttrsIncludeBuiltins`: narrow the built-ins offered and
+  // accepted to those this predicate passes. Attribute Transfer stores
+  // rotation / scale / position / group back into the typed fields but
+  // has nowhere to put index or z, so those tint red like a missing
+  // channel. UI-only hint; the engine ignores it.
+  suggestAttrsBuiltinFilter?: (name: string) => boolean;
   // For "expr_inputs" params: show a "Sync" button that scans the node's
   // sibling `expression` param for ch("name", default) channel references and
   // mints the matching slider inputs (Houdini-style). See Point Expression.
@@ -1668,7 +1706,11 @@ export interface ParamDef {
   // For "enum" params: override the default dropdown rendering. Purely a
   // ParamPanel rendering hint — the engine ignores it, and the value stays a
   // plain option string either way.
-  //   "segmented" — a pill toggle, best for 2–3 inline modes.
+  //   "segmented" — a pill toggle, best for 2–3 inline modes. Also honored
+  //                 on integer "scalar" params (usually via `controlFrom`):
+  //                 one state per integer in min…max, labeled through
+  //                 `optionLabels` / `optionLabelsFrom`, falling back to a
+  //                 dropdown past SEGMENTED_MAX_OPTIONS states.
   //   "font"      — a searchable font picker that merges the user's installed
   //                 (local) fonts with this param's `options` (the curated
   //                 baseline). The selected value is just the family name.

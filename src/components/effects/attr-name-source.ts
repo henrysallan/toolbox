@@ -78,16 +78,20 @@ export function builtinsFromValue(v: SocketValue | undefined): string[] {
 
 // Picker contents for a `suggestAttrsFrom` field. Built-ins first (stable
 // schema), then named channels. Unwired Map Attribute still offers the
-// 2D built-in set so the name is pickable before a wire lands.
+// 2D built-in set so the name is pickable before a wire lands. A param's
+// `suggestAttrsBuiltinFilter` narrows the built-ins to the ones its node
+// can actually consume (Attribute Transfer has nowhere to write `index`).
 export function attrNameSuggestions(
   info: AttrNameInfo,
-  includeBuiltins: boolean
+  includeBuiltins: boolean,
+  builtinFilter?: (name: string) => boolean
 ): string[] {
-  const builtins = includeBuiltins
+  let builtins = includeBuiltins
     ? info.builtins.length > 0
       ? info.builtins
       : [...BUILTIN_POINT_ATTR_SUGGESTIONS_2D]
     : [];
+  if (builtinFilter) builtins = builtins.filter(builtinFilter);
   if (builtins.length === 0 && info.names.length === 0) return [];
   const seen = new Set<string>();
   const out: string[] = [];
@@ -105,16 +109,18 @@ export function attrNameSuggestions(
 // never be a channel). Consumers (`require` true): a verified-missing name
 // is wrong, unless `includeBuiltins` and the name is a readable built-in
 // (index / x / y / …) or a component of a present named channel (`color.y`).
+// With a `builtinFilter`, a built-in the node cannot consume is wrong too.
 export function isAttrNameInvalid(
   name: string,
   info: AttrNameInfo,
   require: boolean,
-  includeBuiltins = false
+  includeBuiltins = false,
+  builtinFilter?: (name: string) => boolean
 ): boolean {
   const n = name.trim();
   if (!n) return false;
   if (includeBuiltins) {
-    if (isBuiltinPointAttrName(n)) return false;
+    if (isBuiltinPointAttrName(n)) return builtinFilter ? !builtinFilter(n) : false;
     if (!info.known) return false;
     if (info.names.includes(n)) return false;
     const dot = n.lastIndexOf(".");

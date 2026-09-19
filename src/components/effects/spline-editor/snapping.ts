@@ -123,9 +123,39 @@ export function guideSnapLines(
   return { xs, ys };
 }
 
+// Viewport ruler guides (lib/viewport-guides.ts, spec 091726) as snap-line
+// candidates, in client px. Their positions are screen-normalized fractions
+// of the canvas box — no aspect correction, unlike the per-node guides
+// above, which live in anchor space and go through normToPx.
+export function viewportGuideSnapLines(
+  guides: ReadonlyArray<{ axis: "x" | "y"; pos: number }>,
+  rect: { left: number; top: number; width: number; height: number }
+): { xs: number[]; ys: number[] } {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const g of guides) {
+    if (g.axis === "x") xs.push(rect.left + g.pos * rect.width);
+    else ys.push(rect.top + g.pos * rect.height);
+  }
+  return { xs, ys };
+}
+
+// Concatenate snap-line sets (per-node guidelines + viewport guides).
+export function mergeSnapLines(
+  ...parts: Array<{ xs: number[]; ys: number[] }>
+): { xs: number[]; ys: number[] } {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const p of parts) {
+    xs.push(...p.xs);
+    ys.push(...p.ys);
+  }
+  return { xs, ys };
+}
+
 // Snap a client-px point against point targets (coincidence + per-axis
 // alignment) and the canvas guide lines (+ optional extra lines — user
-// guidelines join here).
+// guidelines and viewport ruler guides join here).
 export function snapPoint(
   rect: DOMRect,
   pointTargets: Array<{ x: number; y: number }>,

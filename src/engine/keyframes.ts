@@ -9,6 +9,7 @@
 // precedence; this module only does the keyframe-evaluation step.
 
 import type { ParamType, SplineSubpath } from "./types";
+import { oklabToRgb, rgbToOklab } from "./color-space";
 
 export const DEFAULT_TICKS_PER_FRAME = 1000;
 export const DEFAULT_FPS = 60;
@@ -40,6 +41,10 @@ export type EasingPreset =
   | "hold"
   // User-shaped (scalar-only; uses the keyframe's bezierHandles)
   | "customBezier"
+  // User-shaped, type-agnostic: a normalized cubic-bezier time remap
+  // (the keyframe's `bezier`). Authored by the Tracks editor's easing
+  // overlay — not in EASING_PRESET_ORDER because it needs curve data.
+  | "cubicBezier"
   // Legacy aliases preserved so existing project files keep loading.
   // Map: easeIn → easeInQuad, easeOut → easeOutQuad,
   // easeInOut → easeInOutQuad (smoothstep-ish in the old impl).
@@ -56,11 +61,31 @@ export interface BezierHandles {
   leftHandle: { dx: number; dy: number };
 }
 
+// Normalized cubic-bezier easing — CSS cubic-bezier(x1, y1, x2, y2)
+// semantics. Control points are relative to the segment: x a fraction of
+// its duration, y a fraction of its value delta. x stays inside [0,1] so
+// time is monotonic (the same clamp interpolate() applies to customBezier
+// handles); y is unclamped, so a handle above 1 / below 0 overshoots.
+// Evaluates as a pure time remap t → t' (cubicBezierEase) and then rides
+// whatever interpolation the parameter type uses — which is what makes it
+// type-agnostic where `customBezier` (handles in value units) is
+// scalar-only. Authored by the Tracks editor's easing overlay
+// (specdocs/091726_easing-editor.md); a SavedEasing is one of these plus
+// an id and a name.
+export interface BezierEasing {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
 export interface Keyframe {
   tick: number;
   value: unknown;
   easingOut: EasingPreset;
   bezierHandles?: BezierHandles;
+  // Read when `easingOut` is "cubicBezier"; a missing shape plays linear.
+  bezier?: BezierEasing;
 }
 
 export interface KeyframeAnimationBlock {
@@ -254,6 +279,14 @@ export function easeOf(preset: EasingPreset, u: number): number {
     case "customBezier":
       // Caller handles custom bezier with explicit handles.
       return u;
+    case "cubicBezier":
+      // Caller evaluates the keyframe's normalized shape (cubicBezierEase).
+      return u;
+    default:
+      // A preset this build doesn't know (a file from a newer build, a
+      // hand-edited name). Linear is the honest fallback — falling off the
+      // switch returned undefined and NaN'd the whole segment.
+      return u;
   }
 }
 
@@ -298,6 +331,7 @@ export const EASING_PRESET_LABELS: Record<EasingPreset, string> = {
   easeOutElastic: "Ease Out Elastic",
   hold: "Hold",
   customBezier: "Custom Bezier",
+  cubicBezier: "Bezier",
   // Legacy aliases — kept readable for any UI that displays them.
   easeIn: "Ease In",
   easeOut: "Ease Out",
@@ -305,19 +339,14 @@ export const EASING_PRESET_LABELS: Record<EasingPreset, string> = {
 };
 
 // A named easing curve the user saved from the Graph Editor, reusable
-// across the project (persists on SavedProject.savedEasings). Control
-// points are normalized to the segment, curve from (0,0) to (1,1): x is
-// a fraction of the segment's duration, y a fraction of its value delta
-// — CSS cubic-bezier semantics, except evaluation stays parametric in
-// time like customBezier (see interpolate()). Applying one to a segment
-// denormalizes back into tick/value-unit BezierHandles.
-export interface SavedEasing {
+// across the project (persists on SavedProject.savedEasings). The shape
+// is a BezierEasing — control points normalized to the segment, curve from
+// (0,0) to (1,1). The Graph Editor applies one by denormalizing it into
+// tick/value-unit BezierHandles on a scalar segment; the easing overlay
+// writes the same four numbers onto a keyframe as a `cubicBezier`.
+export interface SavedEasing extends BezierEasing {
   id: string;
   name: string;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
 }
 
 // Validate a loaded `savedEasings` payload (untrusted: hand-edited
@@ -348,6 +377,132 @@ export function sanitizeSavedEasings(v: unknown): SavedEasing[] {
   return out;
 }
 
+let savedEasingSeq = 0;
+// Ids for user-saved easings: unique within a session and across saves
+// (time-stamped), so the Graph Editor's dropdown and the easing overlay's
+// preset tray can key on them while names stay free to change.
+export function newSavedEasingId(): string {
+  savedEasingSeq += 1;
+  return `ease-${Date.now().toString(36)}-${savedEasingSeq}`;
+}
+
+// The identity easing as a cubic: handles parked on the diagonal at
+// thirds, so they are visible and grabbable (CSS `linear` puts them on the
+// anchors — zero-length handles nobody can pick up).
+export const LINEAR_BEZIER: BezierEasing = {
+  x1: 1 / 3,
+  y1: 1 / 3,
+  x2: 2 / 3,
+  y2: 2 / 3,
+};
+
+// Cubic-bezier equivalents for the named presets that have one. The
+// power-basis curves (t², 2t−t², t³, 1−(1−t)³) ARE cubics, so with x at
+// thirds (x(u) = u) those entries reproduce the preset exactly; the
+// in-out pairs are two half-curves and sine isn't polynomial, so those
+// are the customary CSS approximations. Expo, back, bounce, elastic and
+// hold are not a single cubic and have no entry — callers sample easeOf()
+// for them. Seeds the easing editor and draws the Graph Editor's ghost
+// handles, so the two agree.
+export const EASING_PRESET_BEZIER: Partial<Record<EasingPreset, BezierEasing>> =
+  {
+    linear: LINEAR_BEZIER,
+    easeIn: { x1: 1 / 3, y1: 0, x2: 2 / 3, y2: 1 / 3 },
+    easeInQuad: { x1: 1 / 3, y1: 0, x2: 2 / 3, y2: 1 / 3 },
+    easeOut: { x1: 1 / 3, y1: 2 / 3, x2: 2 / 3, y2: 1 },
+    easeOutQuad: { x1: 1 / 3, y1: 2 / 3, x2: 2 / 3, y2: 1 },
+    easeInOut: { x1: 0.455, y1: 0.03, x2: 0.515, y2: 0.955 },
+    easeInOutQuad: { x1: 0.455, y1: 0.03, x2: 0.515, y2: 0.955 },
+    easeInCubic: { x1: 1 / 3, y1: 0, x2: 2 / 3, y2: 0 },
+    easeOutCubic: { x1: 1 / 3, y1: 1, x2: 2 / 3, y2: 1 },
+    easeInOutCubic: { x1: 0.645, y1: 0.045, x2: 0.355, y2: 1 },
+    easeInSine: { x1: 0.47, y1: 0, x2: 0.745, y2: 0.715 },
+    easeOutSine: { x1: 0.39, y1: 0.575, x2: 0.565, y2: 1 },
+    easeInOutSine: { x1: 0.445, y1: 0.05, x2: 0.55, y2: 0.95 },
+  };
+
+// Evaluate a normalized cubic-bezier easing as a time remap: solve
+// x(u) = t for u (x1/x2 clamped into [0,1] keeps the curve monotonic so
+// the solution is unique), return y(u). y is not clamped — overshoot is
+// the point of a handle outside the unit square.
+export function cubicBezierEase(e: BezierEasing, t: number): number {
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  const u = solveBezierX(clamp01(e.x1), clamp01(e.x2), t);
+  const omu = 1 - u;
+  return 3 * omu * omu * u * e.y1 + 3 * omu * u * u * e.y2 + u * u * u;
+}
+
+// Gate an untrusted shape (a hand-edited file, an MCP payload): four
+// finite numbers, x clamped into [0,1], y kept as authored.
+export function sanitizeBezierEasing(v: unknown): BezierEasing | null {
+  if (v == null || typeof v !== "object") return null;
+  const { x1, y1, x2, y2 } = v as Record<string, unknown>;
+  if (
+    ![x1, y1, x2, y2].every(
+      (n) => typeof n === "number" && Number.isFinite(n)
+    )
+  ) {
+    return null;
+  }
+  return {
+    x1: clamp01(x1 as number),
+    y1: y1 as number,
+    x2: clamp01(x2 as number),
+    y2: y2 as number,
+  };
+}
+
+// The normalized shape of the segment a→b, whatever kind of easing it
+// carries: a cubicBezier reads straight back; a scalar customBezier
+// normalizes its tick / value-unit handles (missing handles fall back to
+// the chord-third defaults the plot draws with; a flat segment normalizes
+// dy against 1 raw value unit — a dip on a flat segment has no delta to
+// be relative to); a preset with a cubic equivalent returns that table
+// entry. null for hold and the presets no single cubic expresses (expo,
+// back, bounce, elastic) — callers sample easeOf() to draw those.
+export function normalizedBezierOfSegment(
+  a: Keyframe,
+  b: Keyframe
+): BezierEasing | null {
+  if (a.easingOut === "cubicBezier") return a.bezier ?? LINEAR_BEZIER;
+  if (a.easingOut === "customBezier") {
+    const span = b.tick - a.tick;
+    if (!(span > 0)) return null;
+    if (typeof a.value !== "number" || typeof b.value !== "number") {
+      return null;
+    }
+    const dv = b.value - a.value;
+    const vd = Math.abs(dv) > 1e-9 ? dv : 1;
+    const defaults = defaultSegmentHandles(a, b);
+    const right = a.bezierHandles?.rightHandle ?? defaults.right;
+    const left = b.bezierHandles?.leftHandle ?? defaults.left;
+    return {
+      x1: clamp01(right.dx / span),
+      y1: right.dy / vd,
+      x2: clamp01(1 + left.dx / span),
+      y2: 1 + left.dy / vd,
+    };
+  }
+  return EASING_PRESET_BEZIER[a.easingOut] ?? null;
+}
+
+// Denormalize a shape onto the scalar segment a→b: tick/value-unit
+// handles for the outgoing key (right) and the incoming key (left) — the
+// pair interpolate() reads for a customBezier segment.
+export function bezierHandlesForSegment(
+  e: BezierEasing,
+  a: Keyframe,
+  b: Keyframe
+): { right: { dx: number; dy: number }; left: { dx: number; dy: number } } {
+  const span = b.tick - a.tick;
+  const dv = (b.value as number) - (a.value as number);
+  return {
+    right: { dx: e.x1 * span, dy: e.y1 * dv },
+    left: { dx: (e.x2 - 1) * span, dy: (e.y2 - 1) * dv },
+  };
+}
+
 // Sample an easing function (or `hold`) into an SVG polyline path
 // covering the box [0..w, 0..h]. Y is flipped so 0 = bottom, 1 = top.
 // Includes a small vertical pad so back/elastic overshoot stays visible.
@@ -366,8 +521,8 @@ export function easingPathFor(
     // jump to y=1 at the end.
     return `M 0 ${yFor(0)} L ${w * 0.95} ${yFor(0)} L ${w * 0.95} ${yFor(1)} L ${w} ${yFor(1)}`;
   }
-  if (preset === "customBezier") {
-    // Diagonal placeholder.
+  if (preset === "customBezier" || preset === "cubicBezier") {
+    // Diagonal placeholder — the real shape lives on the keyframe.
     return `M 0 ${yFor(0)} L ${w} ${yFor(1)}`;
   }
   let d = "";
@@ -381,48 +536,25 @@ export function easingPathFor(
   return d;
 }
 
+// The same box and vertical pad as easingPathFor, for a normalized cubic
+// (a saved easing / cubicBezier shape) — one `C` command, so a tile of a
+// user curve draws exactly the curve that plays.
+export function bezierPathFor(e: BezierEasing, w: number, h: number): string {
+  const padTop = h * 0.18;
+  const padBot = h * 0.18;
+  const usableH = h - padTop - padBot;
+  const yFor = (v: number) => padTop + (1 - v) * usableH;
+  const f = (n: number) => n.toFixed(2);
+  return `M 0 ${f(yFor(0))} C ${f(e.x1 * w)} ${f(yFor(e.y1))} ${f(e.x2 * w)} ${f(yFor(e.y2))} ${f(w)} ${f(yFor(1))}`;
+}
+
 // ---------------------------------------------------------------------
 // Color interpolation (OKLab default)
 // ---------------------------------------------------------------------
 
 type RGBA = [number, number, number, number];
 
-function srgbToLinear(c: number): number {
-  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-}
-function linearToSrgb(c: number): number {
-  return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
-}
-
-function rgbToOklab(r: number, g: number, b: number): [number, number, number] {
-  const lr = srgbToLinear(r);
-  const lg = srgbToLinear(g);
-  const lb = srgbToLinear(b);
-  const l = 0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb;
-  const m = 0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb;
-  const s = 0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb;
-  const l_ = Math.cbrt(l);
-  const m_ = Math.cbrt(m);
-  const s_ = Math.cbrt(s);
-  return [
-    0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_,
-    1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_,
-    0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_,
-  ];
-}
-function oklabToRgb(L: number, a: number, b: number): [number, number, number] {
-  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
-  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
-  const s_ = L - 0.0894841775 * a - 1.291485548 * b;
-  const l = l_ * l_ * l_;
-  const m = m_ * m_ * m_;
-  const s = s_ * s_ * s_;
-  return [
-    linearToSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
-    linearToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
-    linearToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s),
-  ];
-}
+// sRGB ↔ OKLab live in color-space.ts (shared with the ramp sampler).
 
 // Color keyframe values arrive in two forms: 0..1 RGBA tuples (gradient
 // point / ramp stop virtual keys seed tuples) and hex strings (literal
@@ -671,7 +803,12 @@ function interpolate(
       u * u * u * y3
     );
   }
-  t = easeOf(prev.easingOut, rawT);
+  // cubicBezier is a time remap, so it applies to every interpolable type
+  // below — the normalized shape needs no value units.
+  t =
+    prev.easingOut === "cubicBezier"
+      ? cubicBezierEase(prev.bezier ?? LINEAR_BEZIER, rawT)
+      : easeOf(prev.easingOut, rawT);
 
   switch (paramType) {
     case "scalar":

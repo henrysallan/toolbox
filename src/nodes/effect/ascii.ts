@@ -11,7 +11,14 @@ import {
 } from "@/engine/placeholder-tex";
 import { OPACITY_PARAM } from "@/engine/conventions";
 import {
-  COLOR_RAMP_MAX_STOPS,
+  colorRampLutGlsl,
+  getColorRampLut,
+  normalizeRampInterp,
+  normalizeRampSpace,
+  rampInterpParam,
+  rampSpaceParam,
+  releaseColorRampLut,
+  type ColorRampLutState,
   type ColorRampStop,
 } from "@/engine/color-ramp";
 import { hexToRgba01 } from "@/engine/spline-fill";
@@ -96,35 +103,12 @@ void main() {
   outColor = sum / float(taps);
 }`;
 
-// Per-prefix copy of the Color Ramp node's sampleRamp (same stop
-// semantics: sort/clamp/bracket, constant holds left, ease smoothsteps).
-// Generated per prefix rather than passing GLSL array params — identical
-// behavior for fg/bg without leaning on array-parameter driver support.
+// Per-prefix ramp sampler: a baked 1-D LUT (engine/color-ramp.ts — the
+// same CPU sampler as the Color Ramp node, every curve / color space),
+// one filtered fetch per cell. Generated per prefix so fg/bg each get
+// their own texture + constant flag.
 function rampGlsl(p: string): string {
-  return `
-uniform int u_${p}StopCount;
-uniform float u_${p}Positions[${COLOR_RAMP_MAX_STOPS}];
-uniform vec4 u_${p}Colors[${COLOR_RAMP_MAX_STOPS}];
-uniform int u_${p}Interp; // 0: linear, 1: ease, 2: constant
-vec4 sample_${p}_ramp(float t) {
-  if (u_${p}StopCount == 0) return vec4(t, t, t, 1.0);
-  if (u_${p}StopCount == 1) return u_${p}Colors[0];
-  if (t <= u_${p}Positions[0]) return u_${p}Colors[0];
-  if (t >= u_${p}Positions[u_${p}StopCount - 1])
-    return u_${p}Colors[u_${p}StopCount - 1];
-  for (int i = 0; i < ${COLOR_RAMP_MAX_STOPS - 1}; i++) {
-    if (i + 1 >= u_${p}StopCount) break;
-    float a = u_${p}Positions[i];
-    float b = u_${p}Positions[i + 1];
-    if (t >= a && t <= b) {
-      float f = (t - a) / max(b - a, 0.0001);
-      if (u_${p}Interp == 2) return u_${p}Colors[i];
-      if (u_${p}Interp == 1) f = smoothstep(0.0, 1.0, f);
-      return mix(u_${p}Colors[i], u_${p}Colors[i + 1], f);
-    }
-  }
-  return u_${p}Colors[u_${p}StopCount - 1];
-}`;
+  return colorRampLutGlsl(`sample_${p}_ramp`, `u_${p}Lut`, `u_${p}Constant`);
 }
 
 export const ASCII_FS = `#version 300 es
@@ -394,6 +378,9 @@ interface AsciiState {
   slotsPerRow: number;
   atlasW: number;
   atlasH: number;
+  // Baked fg / bg ramp LUTs (rebaked when stops / interp / space change).
+  fgLut: ColorRampLutState;
+  bgLut: ColorRampLutState;
 }
 
 function stateKey(nodeId: string): string {
@@ -427,6 +414,8 @@ function ensureState(ctx: RenderContext, nodeId: string): AsciiState {
     slotsPerRow: 1,
     atlasW: PITCH,
     atlasH: PITCH,
+    fgLut: {},
+    bgLut: {},
   };
   ctx.state[key] = s;
   return s;
@@ -589,17 +578,6 @@ function groupRefsEqual(
 
 // ---- ramp / color param plumbing ---------------------------------------
 
-function interpToInt(m: string): number {
-  switch (m) {
-    case "ease":
-      return 1;
-    case "constant":
-      return 2;
-    default:
-      return 0;
-  }
-}
-
 function byToInt(m: string): number {
   switch (m) {
     case "random":
@@ -618,44 +596,21 @@ function byToInt(m: string): number {
   }
 }
 
-function uploadRamp(
-  gl: WebGL2RenderingContext,
-  prog: WebGLProgram,
-  prefix: string,
-  stops: ColorRampStop[],
-  interp: string
-) {
-  const sorted = [...stops]
-    .filter((s) => typeof s.position === "number")
-    .sort((a, b) => a.position - b.position)
-    .slice(0, COLOR_RAMP_MAX_STOPS);
-  const positions = new Float32Array(COLOR_RAMP_MAX_STOPS);
-  const colors = new Float32Array(COLOR_RAMP_MAX_STOPS * 4);
-  for (let i = 0; i < sorted.length; i++) {
-    positions[i] = Math.max(0, Math.min(1, sorted[i].position));
-    const [r, g, b, a] = hexToRgba01(sorted[i].color ?? "#000000");
-    colors[i * 4 + 0] = r;
-    colors[i * 4 + 1] = g;
-    colors[i * 4 + 2] = b;
-    colors[i * 4 + 3] =
-      Math.max(0, Math.min(1, sorted[i].alpha ?? 1)) * a;
-  }
-  gl.uniform1i(
-    gl.getUniformLocation(prog, `u_${prefix}StopCount`),
-    sorted.length
-  );
-  gl.uniform1fv(
-    gl.getUniformLocation(prog, `u_${prefix}Positions[0]`),
-    positions
-  );
-  gl.uniform4fv(
-    gl.getUniformLocation(prog, `u_${prefix}Colors[0]`),
-    colors
-  );
-  gl.uniform1i(
-    gl.getUniformLocation(prog, `u_${prefix}Interp`),
-    interpToInt(interp)
-  );
+// Bake (or reuse) one prefix's ramp LUT from its `<prefix>_ramp` /
+// `<prefix>_ramp_interp` / `<prefix>_ramp_space` params.
+function rampLutFor(
+  ctx: RenderContext,
+  state: ColorRampLutState,
+  params: Record<string, unknown>,
+  prefix: string
+): { texture: WebGLTexture; constant: 0 | 1 } {
+  const stops = Array.isArray(params[`${prefix}_ramp`])
+    ? (params[`${prefix}_ramp`] as ColorRampStop[])
+    : [];
+  const interp = normalizeRampInterp(params[`${prefix}_ramp_interp`]);
+  const space = normalizeRampSpace(params[`${prefix}_ramp_space`]);
+  const image = getColorRampLut(ctx, state, stops, interp, space);
+  return { texture: image.texture, constant: interp === "constant" ? 1 : 0 };
 }
 
 const CELL_RAMP_BY = [
@@ -915,14 +870,14 @@ export const asciiNode: NodeDefinition = {
         p.fg_source === "ramp" &&
         p.fg_ramp_by === "position",
     },
-    {
+    rampInterpParam({
       name: "fg_ramp_interp",
-      label: "Ramp interpolation",
-      type: "enum",
-      options: ["linear", "ease", "constant"],
-      default: "linear",
       visibleIf: (p) => p.mode === "text" && p.fg_source === "ramp",
-    },
+    }),
+    rampSpaceParam({
+      name: "fg_ramp_space",
+      visibleIf: (p) => p.mode === "text" && p.fg_source === "ramp",
+    }),
     // ---- cell background ----
     // The background tile follows the glyph's effective transform
     // (glyph_scale × mod_scale, mod_rot) instead of filling the whole
@@ -990,14 +945,14 @@ export const asciiNode: NodeDefinition = {
       visibleIf: (p) =>
         p.bg_source === "ramp" && p.bg_ramp_by === "position",
     },
-    {
+    rampInterpParam({
       name: "bg_ramp_interp",
-      label: "Ramp interpolation",
-      type: "enum",
-      options: ["linear", "ease", "constant"],
-      default: "linear",
       visibleIf: (p) => p.bg_source === "ramp",
-    },
+    }),
+    rampSpaceParam({
+      name: "bg_ramp_space",
+      visibleIf: (p) => p.bg_source === "ramp",
+    }),
     OPACITY_PARAM,
   ],
   primaryOutput: "image",
@@ -1126,6 +1081,18 @@ export const asciiNode: NodeDefinition = {
     const modFg = resolveMod(inputs.mod_fg as ImageValue | undefined);
     const modBg = resolveMod(inputs.mod_bg as ImageValue | undefined);
 
+    // Ramp LUTs — baked outside the draw callback (the upload allocates a
+    // pool texture). Unused ramps bind the placeholder so every sampler
+    // uniform has a complete texture behind it.
+    const fgRamp =
+      fgSource === 2
+        ? rampLutFor(ctx, state.fgLut, params, "fg")
+        : { texture: placeholder, constant: 0 as const };
+    const bgRamp =
+      bgSource === 2
+        ? rampLutFor(ctx, state.bgLut, params, "bg")
+        : { texture: placeholder, constant: 0 as const };
+
     // Main pass.
     const prog = ctx.getShader("ascii/main", ASCII_FS);
     ctx.drawFullscreen(prog, output, (gl) => {
@@ -1140,6 +1107,10 @@ export const asciiNode: NodeDefinition = {
       bind(3, "u_modRot", modRot.tex);
       bind(4, "u_modFg", modFg.tex);
       bind(5, "u_modBg", modBg.tex);
+      bind(6, "u_fgLut", fgRamp.texture);
+      bind(7, "u_bgLut", bgRamp.texture);
+      gl.uniform1i(gl.getUniformLocation(prog, "u_fgConstant"), fgRamp.constant);
+      gl.uniform1i(gl.getUniformLocation(prog, "u_bgConstant"), bgRamp.constant);
 
       gl.uniform1i(
         gl.getUniformLocation(prog, "u_hasModScale"),
@@ -1228,15 +1199,6 @@ export const asciiNode: NodeDefinition = {
           gl.getUniformLocation(prog, "u_fgAngle"),
           (((params.fg_ramp_angle as number) ?? 0) * Math.PI) / 180
         );
-        uploadRamp(
-          gl,
-          prog,
-          "fg",
-          Array.isArray(params.fg_ramp)
-            ? (params.fg_ramp as ColorRampStop[])
-            : [],
-          (params.fg_ramp_interp as string) ?? "linear"
-        );
       }
       if (bgSource === 2) {
         gl.uniform1i(
@@ -1250,15 +1212,6 @@ export const asciiNode: NodeDefinition = {
         gl.uniform1f(
           gl.getUniformLocation(prog, "u_bgAngle"),
           (((params.bg_ramp_angle as number) ?? 0) * Math.PI) / 180
-        );
-        uploadRamp(
-          gl,
-          prog,
-          "bg",
-          Array.isArray(params.bg_ramp)
-            ? (params.bg_ramp as ColorRampStop[])
-            : [],
-          (params.bg_ramp_interp as string) ?? "linear"
         );
       }
     });
@@ -1297,6 +1250,8 @@ export const asciiNode: NodeDefinition = {
     const key = stateKey(nodeId);
     const state = ctx.state[key] as AsciiState | undefined;
     if (state?.atlasTex) ctx.gl.deleteTexture(state.atlasTex);
+    releaseColorRampLut(ctx, state?.fgLut);
+    releaseColorRampLut(ctx, state?.bgLut);
     delete ctx.state[key];
     disposePlaceholderTex(ctx.gl, ctx.state, `ascii:${nodeId}:zero`);
   },

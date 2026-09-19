@@ -12,7 +12,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ownerWindow } from "@/components/effects/layout/panel-window";
+import {
+  ownerWindow,
+  usePanelWindow,
+} from "@/components/effects/layout/panel-window";
+import { useOptionHeld } from "@/state/option-key";
 import { getNodeDef } from "@/engine/registry";
 import { resolveWedgeBatchInfo } from "@/lib/wedge-batch";
 import { paramSocketType } from "@/state/graph";
@@ -38,6 +42,7 @@ import {
 } from "@/engine/groups";
 import { listGroupShellControls } from "@/state/graph-ops";
 import { fuzzyScoreFields } from "@/lib/fuzzy-search";
+import { liveGizmoKind } from "@/lib/live-gizmo";
 import { evalNumExpr } from "@/lib/num-expr";
 import { EXPORT_PARAMS } from "@/nodes/output/output";
 import { SVG_STYLE_PARAMS } from "@/nodes/output/svg-export";
@@ -72,8 +77,8 @@ import {
 } from "@/engine/keyframes";
 import KeyframeDiamond from "./KeyframeDiamond";
 import TrackVisibilityEye from "./TrackVisibilityEye";
-import { Dropdown, ParamControl, menuItemStyle, type LayerAnimApi, type RampIoApi } from "@/lib/param-controls";
-import { animatedValueAt, parseRampParamKey } from "@/engine/conventions";
+import { Dropdown, ParamControl, menuItemStyle, type LayerAnimApi, type LayerIoApi, type RampIoApi } from "@/lib/param-controls";
+import { animatedValueAt, parseMergeLayerKey, parseRampParamKey } from "@/engine/conventions";
 
 // SVG styling param names, shared by the SVG Export node and the Output
 // node's spline tap. The Output panel hides these until a spline is wired.
@@ -278,6 +283,11 @@ interface Props {
   // panel. Independent of expose — both can be on; they answer different
   // questions (engine input socket vs end-user-app control).
   onToggleParamControl: (nodeId: string, paramName: string) => void;
+  // Node-level Control toggle (091726_live-gizmos.md): ships the node's
+  // on-canvas handles (transform / primitive / gradient gizmo) to the live
+  // link, where visitors get a visibility toggle for them. Rendered in the
+  // title bar, only for nodes lib/live-gizmo.ts deems eligible.
+  onToggleNodeControlGizmo?: (nodeId: string) => void;
   // Triggers the Export App modal for the given output node. Surfaced here
   // (and on the Output node header) per spec §16. Called only when the
   // selected node has `defType === "output"`.
@@ -566,11 +576,23 @@ function ParamPanel(props: Props) {
     []
   );
 
+  // Stack membership as ids. Referentially stable while the selection holds
+  // (`order` is the state array itself when nothing changed), so handing it
+  // to the memo'd blocks doesn't defeat the memo. Each block also reads it
+  // to find its Option-linked-edit peers.
+  const stackIds = useMemo<readonly string[]>(
+    () =>
+      !selectedId
+        ? EMPTY_IDS
+        : order.includes(selectedId)
+        ? order
+        : [selectedId, ...order],
+    [order, selectedId]
+  );
   const stack: Node<NodeDataPayload>[] = [];
-  if (selectedId) {
+  if (stackIds.length > 0) {
     const byId = new Map(nodes.map((n) => [n.id, n]));
-    const ids = order.includes(selectedId) ? order : [selectedId, ...order];
-    for (const id of ids) {
+    for (const id of stackIds) {
       const n = byId.get(id);
       if (n) stack.push(n);
     }
@@ -606,6 +628,7 @@ function ParamPanel(props: Props) {
                 {...props}
                 node={node}
                 stacked={stacked}
+                stackIds={stackIds}
                 collapsedGroups={collapsedGroups}
                 toggleGroup={toggleGroup}
               />
@@ -616,6 +639,25 @@ function ParamPanel(props: Props) {
     </ParamPanelShell>
   );
 }
+
+const EMPTY_IDS: readonly string[] = [];
+
+// Param types an Option-linked edit never copies across nodes: authored on
+// the canvas or produced by the node itself (a tracker's results, a paint
+// layer's bitmap — which also bypasses undo), so a value from another node
+// is meaningless there.
+const LINK_EXCLUDED_TYPES = new Set<ParamDef["type"]>([
+  "paint",
+  "spline_anchors",
+  "track_data",
+]);
+// One other stacked node, pre-indexed for the per-row peer lookup.
+interface LinkPeer {
+  id: string;
+  params: Map<string, ParamDef>;
+  exposed: Set<string>;
+}
+const EMPTY_PEERS: readonly LinkPeer[] = [];
 
 // Rule between stacked node blocks (multi-select).
 const STACK_DIVIDER_STYLE: React.CSSProperties = {
@@ -652,6 +694,9 @@ type NodeParamsBlockProps = Props & {
   // True when the block is one of several (multi-select) — adds the
   // caption / fixed-height treatment above.
   stacked: boolean;
+  // Every node in the stack, this one included — the pool an Option-linked
+  // edit fans out to (see linkPeers in the block).
+  stackIds: readonly string[];
   // Group collapse state lives on the panel (keyed `${nodeId}:${groupId}`)
   // so it survives re-selecting a node; blocks are keyed by node id and
   // would lose it on remount.
@@ -665,6 +710,7 @@ type NodeParamsBlockProps = Props & {
 const NodeParamsBlock = memo(function NodeParamsBlock({
   node,
   stacked,
+  stackIds,
   collapsedGroups,
   toggleGroup,
   nodes,
@@ -674,6 +720,7 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
   onConvertToEditable,
   onToggleParamExposed,
   onToggleParamControl,
+  onToggleNodeControlGizmo,
   onExportApp,
   onParamRangeChange,
   onToggleParamLink,
@@ -728,6 +775,77 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
   // enough rows to be worth a search field.
   const exposedSet = new Set(selected?.data.exposedParams ?? []);
   const controlSet = new Set(selected?.data.controlParams ?? []);
+
+  // Option-linked editing (multi-select). An edit started with Option held
+  // — see ParamRow's `linkedEdit` — also lands on every OTHER stacked node
+  // whose def carries a param with the same name AND type: two nodes'
+  // "Stroke width" rows are one knob to the user, whatever their values.
+  // Name alone isn't enough (a `mode` enum vs a `mode` scalar), and a
+  // def-hidden peer param is internal, not the same knob. Peers whose
+  // param is wire-driven are skipped: the stored value is inert while the
+  // wire is connected and their own row is read-only.
+  const linkPeers = useMemo(() => {
+    if (stackIds.length < 2) return EMPTY_PEERS;
+    const peers: LinkPeer[] = [];
+    for (const id of stackIds) {
+      if (id === selected.id) continue;
+      const n = nodes.find((x) => x.id === id);
+      const pdef = n ? getNodeDef(n.data.defType) : undefined;
+      if (!n || !pdef) continue;
+      peers.push({
+        id,
+        params: new Map(pdef.params.map((q) => [q.name, q])),
+        exposed: new Set(n.data.exposedParams ?? []),
+      });
+    }
+    return peers;
+  }, [stackIds, nodes, selected.id]);
+  // Tags the linkable rows while Option is down. Subscribed only when
+  // there is someone to link to, so a single-node panel never re-renders
+  // for the Alt-drag / Alt-cut shortcuts on the graph.
+  const optionHeld = useOptionHeld(usePanelWindow(), linkPeers.length > 0);
+  const linkTargetsFor = (p: ParamDef): string[] => {
+    if (linkPeers.length === 0 || LINK_EXCLUDED_TYPES.has(p.type)) return [];
+    const out: string[] = [];
+    for (const peer of linkPeers) {
+      const q = peer.params.get(p.name);
+      if (!q || q.type !== p.type || q.hidden) continue;
+      // Only an exposed param can be driven — same gate the row uses.
+      if (peer.exposed.has(p.name) && isParamDriven(peer.id, p.name)) continue;
+      out.push(peer.id);
+    }
+    return out;
+  };
+  // onChange for a row with `targets` link peers. A plain edit is the old
+  // single-node write. A linked one writes this node and every peer under
+  // ONE coalesce key: with the per-node default keys the writes would
+  // alternate and mint an undo entry per drag frame, whereas a shared key
+  // keeps the first snapshot, so the whole gesture across N nodes is one
+  // ⌘Z. A peer enum with a static option list that lacks the value is
+  // skipped rather than handed a value its dropdown can't show.
+  const linkedChange =
+    (p: ParamDef, targets: readonly string[]) =>
+    (v: unknown, linked?: boolean) => {
+      if (!linked || targets.length === 0) {
+        onParamChange(selected.id, p.name, v);
+        return;
+      }
+      const key = `param-linked:${p.name}:${[selected.id, ...targets].join(",")}`;
+      onParamChange(selected.id, p.name, v, key);
+      for (const id of targets) {
+        if (p.type === "enum" && typeof v === "string") {
+          const opts = linkPeers.find((pp) => pp.id === id)?.params.get(p.name)
+            ?.options;
+          if (opts && !opts.includes(v)) continue;
+        }
+        onParamChange(id, p.name, v, key);
+      }
+    };
+  const linkedEditFor = (
+    targets: readonly string[]
+  ): { targets: number; hint: boolean } | undefined =>
+    targets.length > 0 ? { targets: targets.length, hint: optionHeld } : undefined;
+
   const visibleParams =
     def
       ? def.params.filter((p) => {
@@ -744,6 +862,12 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
             }
             for (const s of controlSet) {
               if (parseRampParamKey(s)?.paramName === p.name) return true;
+            }
+          }
+          // …and per-layer merge controls (mlayer:<param>:<layerId>).
+          if (p.type === "merge_layers") {
+            for (const s of controlSet) {
+              if (parseMergeLayerKey(s)?.paramName === p.name) return true;
             }
           }
           // Output-only: the SVG styling rows stay out of sight until
@@ -878,13 +1002,15 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
               const p = def?.params.find((pp) => pp.name === name);
               if (!p) return null;
               const isExposed = exposedSet.has(name);
+              const linkTargets = linkTargetsFor(p);
               return (
                 <ParamRow
                   key={`${selected.id}:${name}`}
                   param={p}
                   value={selected.data.params[name]}
                   allParams={selected.data.params}
-                  onChange={(v) => onParamChange(selected.id, name, v)}
+                  onChange={linkedChange(p, linkTargets)}
+                  linkedEdit={linkedEditFor(linkTargets)}
                   exposed={isExposed}
                   exposable={paramSocketType(p.type) !== null}
                   driven={isExposed && isParamDriven(selected.id, name)}
@@ -1363,6 +1489,45 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                     </div>
                   )}
                 </div>
+                {/* Node-level Control toggle (091726_live-gizmos.md): the
+                    node's on-canvas handles ship to the live link as a
+                    visibility row + overlay. Same emerald glyph and states
+                    as the per-param control toggle, sized to the title
+                    bar. Only eligible nodes get it — see lib/live-gizmo. */}
+                {onToggleNodeControlGizmo && liveGizmoKind(def.type) && (
+                  <button
+                    type="button"
+                    onClick={() => onToggleNodeControlGizmo(selected.id)}
+                    title={
+                      selected.data.controlGizmo
+                        ? "Remove this node's on-canvas handles from the live link"
+                        : "Show this node's on-canvas handles in the live link (visitors get a visibility toggle)"
+                    }
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      alignSelf: "stretch",
+                      width: 28,
+                      flexShrink: 0,
+                      padding: 0,
+                      boxSizing: "border-box",
+                      background: selected.data.controlGizmo
+                        ? "var(--tb-a-emerald-800)"
+                        : "transparent",
+                      border: "1px solid var(--tb-n-7)",
+                      color: selected.data.controlGizmo
+                        ? "var(--tb-a-emerald-200)"
+                        : "var(--tb-n-11)",
+                      // Matches the two fields it sits between.
+                      borderRadius: 8,
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    <ControlIcon size={12} />
+                  </button>
+                )}
                 {/* Always present, even on a two-param node: a field that
                     comes and goes with the node you clicked is harder to
                     trust than one that's always in the same place. */}
@@ -1398,14 +1563,20 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                   p.suggestAttrsFrom
                 );
                 const includeBuiltins = !!p.suggestAttrsIncludeBuiltins;
-                const suggestions = attrNameSuggestions(info, includeBuiltins);
+                const builtinFilter = p.suggestAttrsBuiltinFilter;
+                const suggestions = attrNameSuggestions(
+                  info,
+                  includeBuiltins,
+                  builtinFilter
+                );
                 if (suggestions.length > 0) attrSuggestions = suggestions;
                 const current = selected.data.params[p.name];
                 attrInvalid = isAttrNameInvalid(
                   typeof current === "string" ? current : "",
                   info,
                   !!p.suggestAttrsRequire,
-                  includeBuiltins
+                  includeBuiltins,
+                  builtinFilter
                 );
               }
               const exposable = paramSocketType(p.type) !== null;
@@ -1421,7 +1592,8 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                 p.type !== "paint" &&
                 p.type !== "spline_anchors" &&
                 p.type !== "brush_settings" &&
-                p.type !== "track_data";
+                p.type !== "track_data" &&
+                p.type !== "slot_labels";
               const override = selected.data.paramOverrides?.[p.name];
               // Resolve chain-link UI state for this param. A param can
               // appear in at most one pair (linked pairs are exclusive
@@ -1437,6 +1609,7 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                     partnerName: pair.a === p.name ? pair.b : pair.a,
                   }
                 : undefined;
+              const linkTargets = linkTargetsFor(p);
               return (
                 <ParamRow
                   param={p}
@@ -1444,7 +1617,8 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                   allParams={selected.data.params}
                   attrSuggestions={attrSuggestions}
                   attrInvalid={attrInvalid}
-                  onChange={(v) => onParamChange(selected.id, p.name, v)}
+                  onChange={linkedChange(p, linkTargets)}
+                  linkedEdit={linkedEditFor(linkTargets)}
                   exposed={isExposed}
                   exposable={exposable}
                   driven={driven}
@@ -1455,8 +1629,13 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                       ? () => onToggleParamExposed(selected.id, p.name)
                       : undefined
                   }
-                  onToggleControl={() =>
-                    onToggleParamControl(selected.id, p.name)
+                  // Merge layers control per LAYER (the toggle sits on
+                  // each layer card — `layerIo` below), so the param-level
+                  // control button hides for the stack itself.
+                  onToggleControl={
+                    p.type === "merge_layers"
+                      ? undefined
+                      : () => onToggleParamControl(selected.id, p.name)
                   }
                   rangeOverride={override}
                   onRangeChange={
@@ -1502,6 +1681,15 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                           isDriven: (key) => isParamDriven(selected.id, key),
                           toggleExposed: (key) =>
                             onToggleParamExposed(selected.id, key),
+                          isControlled: (key) => controlSet.has(key),
+                          toggleControl: (key) =>
+                            onToggleParamControl(selected.id, key),
+                        }
+                      : undefined
+                  }
+                  layerIo={
+                    p.type === "merge_layers"
+                      ? {
                           isControlled: (key) => controlSet.has(key),
                           toggleControl: (key) =>
                             onToggleParamControl(selected.id, key),
@@ -3208,6 +3396,8 @@ function ParamRow({
   onAnimationChange,
   layerAnim,
   rampIo,
+  layerIo,
+  linkedEdit,
 }: {
   param: ParamDef;
   value: unknown;
@@ -3223,7 +3413,16 @@ function ParamRow({
   // upstream on a `suggestAttrsRequire` param) — the input renders in
   // the error tint.
   attrInvalid?: boolean;
-  onChange: (v: unknown) => void;
+  // `linked` is true when the edit belongs to an Option-linked gesture
+  // (see `linkedEdit`); callers without link peers can ignore it.
+  onChange: (v: unknown, linked?: boolean) => void;
+  // Option-linked editing (multi-select stack): `targets` other selected
+  // nodes carry this same param. Starting an edit with Option held —
+  // pointerdown or keydown anywhere in the row, portaled popovers included
+  // — arms the row, and every change until the next plain pointerdown on
+  // the row's own DOM reports `linked: true`. `hint` (Option currently
+  // down) shows the ⌥ ×N tag beside the label.
+  linkedEdit?: { targets: number; hint: boolean };
   exposed?: boolean;
   exposable?: boolean;
   driven?: boolean;
@@ -3264,10 +3463,44 @@ function ParamRow({
   layerAnim?: LayerAnimApi;
   // Per-stop expose/control toggles for color ramps — see RampIoApi.
   rampIo?: RampIoApi;
+  // Per-layer control toggles for merge layers — see LayerIoApi.
+  layerIo?: LayerIoApi;
 }) {
   const label = param.label ?? param.name;
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+
+  // Option-linked edit state. Armed / disarmed by the gesture that starts
+  // an edit, read when the control reports a change — a ref, since neither
+  // needs a render. Sticky by design: the user holds Option to START
+  // (Option-click a text field, release, type, Enter still links), and a
+  // popover's follow-up clicks (the colour picker after an Option-click on
+  // the swatch) don't need it held either.
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const linkArmedRef = useRef(false);
+  const linkable = !!linkedEdit && linkedEdit.targets > 0;
+  const emitChange = (v: unknown) =>
+    onChange(v, linkable && linkArmedRef.current);
+  const onLinkPointerDown = linkable
+    ? (e: React.PointerEvent) => {
+        // React events bubble through portals, so this sees presses in the
+        // row AND in any popover it portaled to <body>. Option anywhere
+        // (re)arms. A plain press on the row's own DOM is a new gesture
+        // and disarms; a plain press inside a portaled popover continues
+        // the one that opened it, so it leaves the state alone.
+        if (e.altKey) linkArmedRef.current = true;
+        else if (rootRef.current?.contains(e.target as globalThis.Node))
+          linkArmedRef.current = false;
+      }
+    : undefined;
+  const onLinkKeyDown = linkable
+    ? (e: React.KeyboardEvent) => {
+        // Option+Enter links a typed value even when the field was
+        // focused plainly. Plain keys never disarm — typing after an
+        // Option-click is the normal flow.
+        if (e.altKey) linkArmedRef.current = true;
+      }
+    : undefined;
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -3428,6 +3661,23 @@ function ParamRow({
       >
         {label}
       </span>
+      {linkable && linkedEdit.hint && (
+        <span
+          title={`Option-edit: also sets this parameter on ${
+            linkedEdit.targets
+          } other selected node${linkedEdit.targets === 1 ? "" : "s"}`}
+          style={{
+            color: "var(--tb-a-yellow-400)",
+            fontSize: 9,
+            fontWeight: 600,
+            letterSpacing: 0.5,
+            whiteSpace: "nowrap",
+            flexShrink: 0,
+          }}
+        >
+          ⌥ ×{linkedEdit.targets + 1}
+        </span>
+      )}
       {linkInfo && onToggleLink && (
         <button
           onClick={onToggleLink}
@@ -3565,11 +3815,12 @@ function ParamRow({
         allParams={allParams}
         attrSuggestions={attrSuggestions}
         attrInvalid={attrInvalid}
-        onChange={onChange}
+        onChange={emitChange}
         rangeOverride={rangeOverride}
         onRangeChange={onRangeChange}
         layerAnim={layerAnim}
         rampIo={rampIo}
+        layerIo={layerIo}
       />
     </div>
   );
@@ -3673,6 +3924,9 @@ function ParamRow({
 
   return (
     <div
+      ref={rootRef}
+      onPointerDownCapture={onLinkPointerDown}
+      onKeyDownCapture={onLinkKeyDown}
       style={{
         // Inline rows are a single line — trim the vertical padding so the
         // whole row is shorter. Wrapped rows are the same compact control,

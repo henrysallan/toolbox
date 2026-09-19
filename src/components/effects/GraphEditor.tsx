@@ -18,6 +18,7 @@ import {
   useState,
 } from "react";
 import type {
+  BezierEasing,
   BezierHandles,
   EasingPreset,
   Keyframe,
@@ -26,13 +27,18 @@ import type {
   SavedEasing,
 } from "@/engine/keyframes";
 import {
+  EASING_PRESET_BEZIER,
   EASING_PRESET_LABELS,
   EASING_PRESET_ORDER,
+  LINEAR_BEZIER,
+  bezierHandlesForSegment,
   defaultSegmentHandles,
   easeOf,
+  normalizedBezierOfSegment,
   emptyAnimationBlock,
   evaluateKeyframesAt,
   framesToTicks,
+  newSavedEasingId,
   snapTickToFrame,
   ticksToFrames,
 } from "@/engine/keyframes";
@@ -182,12 +188,14 @@ function buildCurvePathSegments(
       const c2y = valueToY(bv + left.dy);
       out.push(`C ${c1x} ${c1y} ${c2x} ${c2y} ${bx} ${by}`);
     } else {
-      const ctrl = PRESET_CTRL[a.easingOut];
+      // A cubicBezier key's own normalized shape, or a preset's cubic
+      // equivalent — both denormalize onto the segment the same way.
+      const ctrl = segmentBezierOf(a);
       if (ctrl) {
-        const c1Tick = a.tick + ctrl.p1[0] * span;
-        const c1Val = av + ctrl.p1[1] * (bv - av);
-        const c2Tick = a.tick + ctrl.p2[0] * span;
-        const c2Val = av + ctrl.p2[1] * (bv - av);
+        const c1Tick = a.tick + ctrl.x1 * span;
+        const c1Val = av + ctrl.y1 * (bv - av);
+        const c2Tick = a.tick + ctrl.x2 * span;
+        const c2Val = av + ctrl.y2 * (bv - av);
         out.push(
           `C ${tickToX(c1Tick)} ${valueToY(c1Val)} ${tickToX(c2Tick)} ${valueToY(c2Val)} ${bx} ${by}`
         );
@@ -293,33 +301,16 @@ export function mergeComponentEdit(
   return { ...view, keyframes };
 }
 
-let savedEasingSeq = 0;
-function newSavedEasingId(): string {
-  savedEasingSeq += 1;
-  return `ease-${Date.now().toString(36)}-${savedEasingSeq}`;
+// The normalized cubic a key's outgoing segment draws with when it isn't
+// a hand-shaped customBezier: a cubicBezier key's own shape (the easing
+// overlay's output — read-only here for now), or the preset's cubic
+// equivalent from the shared engine table. null for the presets that
+// aren't a single cubic (expo, back, bounce, elastic) and for hold —
+// those are drawn by sampling easeOf() into a polyline.
+function segmentBezierOf(k: Keyframe): BezierEasing | null {
+  if (k.easingOut === "cubicBezier") return k.bezier ?? LINEAR_BEZIER;
+  return EASING_PRESET_BEZIER[k.easingOut] ?? null;
 }
-
-// Implicit cubic-bezier control points for the *legacy* named presets
-// that still have a clean two-handle representation. Other presets
-// (sine, expo, back, bounce, elastic, etc.) are drawn by sampling
-// easeOf() into a polyline because they aren't a single cubic.
-const PRESET_CTRL: Partial<
-  Record<EasingPreset, { p1: [number, number]; p2: [number, number] }>
-> = {
-  linear: { p1: [0, 0], p2: [1, 1] },
-  easeIn: { p1: [0.42, 0], p2: [1, 1] },
-  easeOut: { p1: [0, 0], p2: [0.58, 1] },
-  easeInOut: { p1: [0.42, 0], p2: [0.58, 1] },
-  easeInQuad: { p1: [0.42, 0], p2: [1, 1] },
-  easeOutQuad: { p1: [0, 0], p2: [0.58, 1] },
-  easeInOutQuad: { p1: [0.42, 0], p2: [0.58, 1] },
-  easeInCubic: { p1: [0.55, 0.055], p2: [0.675, 0.19] },
-  easeOutCubic: { p1: [0.215, 0.61], p2: [0.355, 1] },
-  easeInOutCubic: { p1: [0.645, 0.045], p2: [0.355, 1] },
-  easeInSine: { p1: [0.47, 0], p2: [0.745, 0.715] },
-  easeOutSine: { p1: [0.39, 0.575], p2: [0.565, 1] },
-  easeInOutSine: { p1: [0.445, 0.05], p2: [0.55, 0.95] },
-};
 
 // ---------------------------------------------------------------------
 // Drag state machine
@@ -1413,8 +1404,14 @@ export function GraphEditor({
         return;
       }
       // Rotate needs ≥2 keys — a single key rotating about the selection
-      // centroid (itself) is a no-op.
-      if ((e.key === "r" || e.key === "R") && !inInput && totalSel > 1) {
+      // centroid (itself) is a no-op. Plain R only: Shift+R is the
+      // viewport rulers toggle (091726_viewport-rulers.md).
+      if (
+        (e.key === "r" || e.key === "R") &&
+        !inInput &&
+        !e.shiftKey &&
+        totalSel > 1
+      ) {
         e.preventDefault();
         startModal("rotate");
         return;
@@ -2167,6 +2164,15 @@ export function GraphEditor({
                   {p.label}
                 </option>
               ))}
+              {/* Not a pickable preset (it needs curve data — the Tracks
+                  editor's easing overlay writes it), but the control must
+                  still NAME it while such a key is selected instead of
+                  showing the first preset. */}
+              {firstSelected.easingOut === "cubicBezier" && (
+                <option value="cubicBezier" disabled>
+                  {EASING_PRESET_LABELS.cubicBezier} (easing editor)
+                </option>
+              )}
               {!componentView && savedEasings.length > 0 && (
                 <optgroup label="Saved">
                   {savedEasings.map((s) => (
@@ -2356,20 +2362,20 @@ export function GraphEditor({
                 </g>
               );
             } else if (prev.easingOut !== "hold") {
-              // Read-only ghost preview based on preset (mapped from
-              // preset-space (x,y) to local handle dx/dy at this key —
-              // the LEFT handle is anchored at b end, so it points
-              // back from p2 toward b: dx = (p2.x - 1)*span,
-              // dy = (p2.y - 1)*(b - a)).
-              const ctrl = PRESET_CTRL[prev.easingOut];
+              // Read-only ghost preview of the segment's normalized cubic
+              // (a preset's equivalent, or a cubicBezier key's own shape)
+              // mapped to local handle dx/dy at this key — the LEFT
+              // handle is anchored at the b end, so it points back from
+              // p2 toward b: dx = (x2 - 1)*span, dy = (y2 - 1)*(b - a).
+              const ctrl = segmentBezierOf(prev);
               if (!ctrl) {
-                // Non-cubic-bezier preset (sine/expo/back/bounce/etc.):
-                // skip the ghost handle preview.
+                // Not a single cubic (expo/back/bounce/elastic): skip the
+                // ghost handle preview.
               } else {
               const span = k.tick - prev.tick;
               const dv = (k.value as number) - (prev.value as number);
-              const dx = (ctrl.p2[0] - 1) * span;
-              const dy = (ctrl.p2[1] - 1) * dv;
+              const dx = (ctrl.x2 - 1) * span;
+              const dy = (ctrl.y2 - 1) * dv;
               const hx = tickToScreen(k.tick + dx);
               const hy = valueToScreen((k.value as number) + dy);
               arms.push(
@@ -2419,12 +2425,12 @@ export function GraphEditor({
                 </g>
               );
             } else if (k.easingOut !== "hold") {
-              const ctrl = PRESET_CTRL[k.easingOut];
+              const ctrl = segmentBezierOf(k);
               if (ctrl) {
               const span = next.tick - k.tick;
               const dv = (next.value as number) - (k.value as number);
-              const dx = ctrl.p1[0] * span;
-              const dy = ctrl.p1[1] * dv;
+              const dx = ctrl.x1 * span;
+              const dy = ctrl.y1 * dv;
               const hx = tickToScreen(k.tick + dx);
               const hy = valueToScreen((k.value as number) + dy);
               arms.push(
@@ -3061,49 +3067,36 @@ function defaultBezierHandles(ks: Keyframe[], i: number): BezierHandles {
   };
 }
 
-// Normalize key `i`'s outgoing customBezier segment into segment-relative
-// control points (SavedEasing shape): x as a fraction of the segment's
-// duration, y of its value delta. Missing handles fall back to the same
-// defaults the curve path draws with, so what saves is what the plot
-// shows. A flat segment (Δvalue ≈ 0) normalizes dy against 1 raw value
-// unit — a dip on a flat segment has no delta to be relative to.
-// Returns null when the segment isn't a saveable custom curve.
-// (Exported with easingHandlesForSegment for offline testing only.)
+// Normalize key `i`'s outgoing user-shaped segment into the SavedEasing
+// shape: a customBezier's tick/value-unit handles become x as a fraction
+// of the segment's duration and y of its value delta (missing handles
+// fall back to the defaults the curve path draws with, so what saves is
+// what the plot shows; a flat segment normalizes dy against 1 raw value
+// unit); a cubicBezier reads its own shape straight back. Returns null
+// when the segment isn't a saveable user curve (a preset, no next key).
+// The math lives in engine/keyframes.ts (normalizedBezierOfSegment) so
+// the easing overlay reads the same numbers.
 export function normalizedEasingFromSegment(
   ks: Keyframe[],
   i: number
-): Pick<SavedEasing, "x1" | "y1" | "x2" | "y2"> | null {
+): BezierEasing | null {
   const a = ks[i];
   const b = ks[i + 1];
-  if (!a || !b || a.easingOut !== "customBezier") return null;
-  const span = b.tick - a.tick;
-  if (!(span > 0)) return null;
-  const dv = (b.value as number) - (a.value as number);
-  const vd = Math.abs(dv) > 1e-9 ? dv : 1;
-  const right = a.bezierHandles?.rightHandle ?? defaultRightHandle(ks, i);
-  const left = b.bezierHandles?.leftHandle ?? defaultLeftHandle(ks, i + 1);
-  const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
-  return {
-    x1: clamp01(right.dx / span),
-    y1: right.dy / vd,
-    x2: clamp01(1 + left.dx / span),
-    y2: 1 + left.dy / vd,
-  };
+  if (!a || !b) return null;
+  if (a.easingOut !== "customBezier" && a.easingOut !== "cubicBezier") {
+    return null;
+  }
+  return normalizedBezierOfSegment(a, b);
 }
 
 // Denormalize a saved easing onto the segment a→b: tick/value-unit
 // handles for the outgoing key (right) and the incoming key (left).
 export function easingHandlesForSegment(
-  e: Pick<SavedEasing, "x1" | "y1" | "x2" | "y2">,
+  e: BezierEasing,
   a: Keyframe,
   b: Keyframe
 ): { right: { dx: number; dy: number }; left: { dx: number; dy: number } } {
-  const span = b.tick - a.tick;
-  const dv = (b.value as number) - (a.value as number);
-  return {
-    right: { dx: e.x1 * span, dy: e.y1 * dv },
-    left: { dx: (e.x2 - 1) * span, dy: (e.y2 - 1) * dv },
-  };
+  return bezierHandlesForSegment(e, a, b);
 }
 
 interface FitBounds {

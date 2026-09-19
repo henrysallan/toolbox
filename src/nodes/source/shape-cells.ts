@@ -1,7 +1,16 @@
 import { OPACITY_PARAM } from "@/engine/conventions";
 import type { NodeDefinition } from "@/engine/types";
-import type { ColorRampStop } from "@/nodes/effect/color-ramp";
-import { COLOR_RAMP_MAX_STOPS } from "@/nodes/effect/color-ramp";
+import {
+  colorRampLutGlsl,
+  getColorRampLut,
+  normalizeRampInterp,
+  normalizeRampSpace,
+  rampInterpParam,
+  rampSpaceParam,
+  releaseColorRampLut,
+  type ColorRampLutState,
+  type ColorRampStop,
+} from "@/engine/color-ramp";
 
 // Shape Cells — a grid generator where every cell renders nested concentric
 // copies of a shape primitive (circle / square / triangle). Each cell's
@@ -28,7 +37,7 @@ import { COLOR_RAMP_MAX_STOPS } from "@/nodes/effect/color-ramp";
 
 const MAX_COPIES = 8;
 
-const FS = `#version 300 es
+export const SHAPE_CELLS_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 
@@ -47,10 +56,8 @@ uniform vec4  u_bg;
 uniform int   u_shapeMask;       // bit 0: circle, bit 1: square, bit 2: triangle
 uniform int   u_lockBase;        // 1: outermost copy is pinned to scaleMax
 
-uniform int   u_stopCount;
-uniform float u_positions[${COLOR_RAMP_MAX_STOPS}];
-uniform vec4  u_colors[${COLOR_RAMP_MAX_STOPS}];
-uniform int   u_interp;          // 0 linear, 1 ease, 2 constant
+// Ramp: baked 1-D LUT (engine/color-ramp.ts), one filtered fetch.
+${colorRampLutGlsl("sampleRamp", "u_lut", "u_constant")}
 
 out vec4 outColor;
 
@@ -89,25 +96,6 @@ float sdTriangle(vec2 p, float r) {
   if (p.x + k * p.y > 0.0) p = vec2(p.x - k * p.y, -k * p.x - p.y) / 2.0;
   p.x -= clamp(p.x, -2.0 * r, 0.0);
   return -length(p) * sign(p.y);
-}
-
-vec4 sampleRamp(float t) {
-  if (u_stopCount == 0) return vec4(t, t, t, 1.0);
-  if (u_stopCount == 1) return u_colors[0];
-  if (t <= u_positions[0]) return u_colors[0];
-  if (t >= u_positions[u_stopCount - 1]) return u_colors[u_stopCount - 1];
-  for (int i = 0; i < ${COLOR_RAMP_MAX_STOPS - 1}; i++) {
-    if (i + 1 >= u_stopCount) break;
-    float a = u_positions[i];
-    float b = u_positions[i + 1];
-    if (t >= a && t <= b) {
-      float f = (t - a) / max(b - a, 0.0001);
-      if (u_interp == 2) return u_colors[i];
-      if (u_interp == 1) f = smoothstep(0.0, 1.0, f);
-      return mix(u_colors[i], u_colors[i + 1], f);
-    }
-  }
-  return u_colors[u_stopCount - 1];
 }
 
 // Pick a shape index (0 circle, 1 square, 2 triangle) from the enabled
@@ -208,14 +196,7 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
-function interpToInt(m: string): number {
-  switch (m) {
-    case "linear": return 0;
-    case "ease": return 1;
-    case "constant": return 2;
-    default: return 2;
-  }
-}
+const stateKey = (nodeId: string) => `shape-cells:${nodeId}`;
 
 // Default ramp matches the reference palette: pink, red, mustard, navy,
 // cream, light gray. Spaced evenly across the ramp so a `hueShift` of
@@ -279,10 +260,8 @@ export const shapeCellsNode: NodeDefinition = {
       name: "ramp", label: "Color Ramp", type: "color_ramp",
       default: DEFAULT_STOPS,
     },
-    {
-      name: "interpolation", label: "Ramp Interp", type: "enum",
-      options: ["linear", "ease", "constant"], default: "constant",
-    },
+    rampInterpParam({ name: "interpolation", label: "Ramp Interp", default: "constant" }),
+    rampSpaceParam({ name: "space", label: "Ramp Color Space" }),
     {
       name: "hueShift", label: "Hue Shift", type: "scalar",
       min: -1, max: 1, step: 0.01, default: 0.17,
@@ -294,7 +273,7 @@ export const shapeCellsNode: NodeDefinition = {
   primaryOutput: "image",
   auxOutputs: [],
 
-  compute({ inputs, params, ctx }) {
+  compute({ inputs, params, ctx, nodeId }) {
     const output = ctx.allocImage();
 
     const cols = Math.max(1, Math.floor((params.cols as number) ?? 9));
@@ -329,26 +308,21 @@ export const shapeCellsNode: NodeDefinition = {
     const rawStops = Array.isArray(params.ramp)
       ? (params.ramp as ColorRampStop[])
       : [];
-    const sorted = [...rawStops]
-      .filter((s) => typeof s.position === "number")
-      .sort((a, b) => a.position - b.position)
-      .slice(0, COLOR_RAMP_MAX_STOPS);
+    const interp = normalizeRampInterp(params.interpolation ?? "constant");
+    const space = normalizeRampSpace(params.space);
+    const key = stateKey(nodeId);
+    const lutState = (ctx.state[key] ??= {} as ColorRampLutState) as ColorRampLutState;
+    const lut = getColorRampLut(ctx, lutState, rawStops, interp, space);
 
-    const positions = new Float32Array(COLOR_RAMP_MAX_STOPS);
-    const colors = new Float32Array(COLOR_RAMP_MAX_STOPS * 4);
-    for (let i = 0; i < sorted.length; i++) {
-      positions[i] = Math.max(0, Math.min(1, sorted[i].position));
-      const [r, g, b] = hexToRgb(sorted[i].color ?? "#000000");
-      const a = Math.max(0, Math.min(1, sorted[i].alpha ?? 1));
-      colors[i * 4 + 0] = r;
-      colors[i * 4 + 1] = g;
-      colors[i * 4 + 2] = b;
-      colors[i * 4 + 3] = a;
-    }
-    const interp = interpToInt((params.interpolation as string) ?? "constant");
-
-    const prog = ctx.getShader("shape-cells/fs", FS);
+    const prog = ctx.getShader("shape-cells/fs-lut", SHAPE_CELLS_FS);
     ctx.drawFullscreen(prog, output, (gl) => {
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, lut.texture);
+      gl.uniform1i(gl.getUniformLocation(prog, "u_lut"), 0);
+      gl.uniform1i(
+        gl.getUniformLocation(prog, "u_constant"),
+        interp === "constant" ? 1 : 0
+      );
       gl.uniform2f(gl.getUniformLocation(prog, "u_resolution"), output.width, output.height);
       gl.uniform2f(gl.getUniformLocation(prog, "u_grid"), cols, rows);
       gl.uniform1f(gl.getUniformLocation(prog, "u_cellSize"), cellSize);
@@ -363,12 +337,14 @@ export const shapeCellsNode: NodeDefinition = {
       gl.uniform4f(gl.getUniformLocation(prog, "u_bg"), br, bg, bb, 1.0);
       gl.uniform1i(gl.getUniformLocation(prog, "u_shapeMask"), shapeMask);
       gl.uniform1i(gl.getUniformLocation(prog, "u_lockBase"), lockBase ? 1 : 0);
-      gl.uniform1i(gl.getUniformLocation(prog, "u_stopCount"), sorted.length);
-      gl.uniform1fv(gl.getUniformLocation(prog, "u_positions[0]"), positions);
-      gl.uniform4fv(gl.getUniformLocation(prog, "u_colors[0]"), colors);
-      gl.uniform1i(gl.getUniformLocation(prog, "u_interp"), interp);
     });
 
     return { primary: output };
+  },
+
+  dispose(ctx, nodeId) {
+    const key = stateKey(nodeId);
+    releaseColorRampLut(ctx, ctx.state[key] as ColorRampLutState | undefined);
+    delete ctx.state[key];
   },
 };

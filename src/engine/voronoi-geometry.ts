@@ -67,6 +67,25 @@ export function pcgUnit(h: number): number {
   return Math.fround(h >>> 0) / 4294967296;
 }
 
+// The GLSL twin of pcg3d / pcgUnit above, for every shader that must agree
+// with the CPU mirror bit-for-bit — Voronoi's lattice and cells shaders,
+// the Grain node's per-cell draws (engine/grain.ts). Keep the two in
+// lockstep: same constants, same statement order.
+export const PCG3D_GLSL = `
+uvec3 pcg3d(uvec3 v) {
+  v = v * 1664525u + 1013904223u;
+  v.x += v.y * v.z;
+  v.y += v.z * v.x;
+  v.z += v.x * v.y;
+  v ^= v >> 16u;
+  v.x += v.y * v.z;
+  v.y += v.z * v.x;
+  v.z += v.x * v.y;
+  return v;
+}
+float pcgUnit(uint h) { return float(h) * (1.0 / 4294967296.0); }
+`;
+
 export interface VoronoiGeometryInput {
   // Feature points in metric space, interleaved [x0,y0, x1,y1, ...].
   sites: Float64Array | Float32Array;

@@ -114,6 +114,14 @@ export interface EngineBackend {
     key: string,
     fragSrc: string
   ): { program: WebGLProgram | null; error: string | null };
+  // Same readback RenderContext.readImagePixels uses — exposed so MCP
+  // (compare_renders) can read a rendered node's pixels without holding a
+  // RenderContext. RGBA8, row 0 = visual top.
+  readImagePixels(
+    image: ImageValue,
+    width?: number,
+    height?: number
+  ): Uint8ClampedArray<ArrayBuffer> | null;
   destroy(): void;
 }
 
@@ -827,6 +835,7 @@ export function createEngineBackend(
     },
     makeContext,
     tryShader,
+    readImagePixels: readImagePixelsInternal,
     destroy() {
       flushPool();
       shaderCache.forEach((p) => gl!.deleteProgram(p));

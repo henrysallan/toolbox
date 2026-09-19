@@ -6,8 +6,13 @@ import type {
 } from "@/engine/types";
 import { measureSpline, sampleSplineAt } from "@/engine/spline-math";
 import {
-  sampleColorRampRgba01,
+  makeColorRampSampler,
+  normalizeRampInterp,
+  normalizeRampSpace,
+  rampInterpParam,
+  rampSpaceParam,
   type ColorRampInterp,
+  type ColorRampSpace,
   type ColorRampStop,
 } from "@/engine/color-ramp";
 import {
@@ -71,6 +76,7 @@ function buildSamples(
   leftStops: ColorRampStop[],
   rightStops: ColorRampStop[],
   interp: ColorRampInterp,
+  space: ColorRampSpace,
   wholeSplineT: boolean,
   blurMax: number,
   blurCurve: ReturnType<typeof sanitizeFloatCurve>
@@ -78,6 +84,8 @@ function buildSamples(
   const lengths = measureSpline(spline);
   if (lengths.total <= 1e-6) return null;
   const pxScale = Math.max(solveW, solveH);
+  const sampleLeft = makeColorRampSampler(leftStops, { interp, space });
+  const sampleRight = makeColorRampSampler(rightStops, { interp, space });
 
   // Per-subpath sample counts at ~SPACING_PX, scaled down to the global cap.
   const counts: number[] = lengths.perSubpath.map((m) =>
@@ -113,8 +121,8 @@ function buildSamples(
       const tGlobal = (lengths.offsets[i] + arc) / lengths.total;
       const s = sampleSplineAt(spline, lengths, tGlobal);
       const tRamp = wholeSplineT ? tGlobal : frac;
-      const cl = sampleColorRampRgba01(leftStops, tRamp, interp);
-      const cr = sampleColorRampRgba01(rightStops, tRamp, interp);
+      const cl = sampleLeft(tRamp);
+      const cr = sampleRight(tRamp);
       const sigma =
         blurMax > 0
           ? Math.min(
@@ -433,14 +441,14 @@ export const diffusionCurvesNode: NodeDefinition = {
       ] as ColorRampStop[],
       visibleIf: (p) => p.color_source !== "image",
     },
-    {
+    rampInterpParam({
       name: "ramp_interp",
-      label: "Ramp interpolation",
-      type: "enum",
-      options: ["linear", "ease", "constant"],
-      default: "linear",
       visibleIf: (p) => p.color_source !== "image",
-    },
+    }),
+    rampSpaceParam({
+      name: "ramp_space",
+      visibleIf: (p) => p.color_source !== "image",
+    }),
     {
       name: "ramp_span",
       label: "Ramp span",
@@ -537,7 +545,8 @@ export const diffusionCurvesNode: NodeDefinition = {
       solveH,
       (params.left_colors as ColorRampStop[]) ?? [],
       (params.right_colors as ColorRampStop[]) ?? [],
-      ((params.ramp_interp as string) ?? "linear") as ColorRampInterp,
+      normalizeRampInterp(params.ramp_interp),
+      normalizeRampSpace(params.ramp_space),
       ((params.ramp_span as string) ?? "per curve") === "whole spline",
       blurMax,
       sanitizeFloatCurve(params.blur_curve, 1, 1)

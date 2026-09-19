@@ -21,7 +21,11 @@ import type * as THREE from "three";
 // Type-only circular with ./types — legal (erased at runtime); types.ts
 // imports our value types the same way.
 import type { ImageValue } from "./types";
-import type { ColorRampInterp, ColorRampStop } from "./color-ramp";
+import type {
+  ColorRampInterp,
+  ColorRampSpace,
+  ColorRampStop,
+} from "./color-ramp";
 
 // A placed scene object: a mesh, a light, an InstancedMesh (Copy to
 // Points), or a group of objects. Kind-tagged via `variant` so the
@@ -160,7 +164,11 @@ export type MaterialDesc = {
   // the default 3-band ramp. Stop alpha is ignored (the gradient map is
   // an irradiance ramp — RGB only).
   shading?: "standard" | "toon" | "matcap";
-  toonRamp?: { stops: ColorRampStop[]; interp: ColorRampInterp };
+  toonRamp?: {
+    stops: ColorRampStop[];
+    interp: ColorRampInterp;
+    space?: ColorRampSpace;
+  };
   // Surface-detail perturbation (the Bump node — flow-through like the
   // Material node). "bump" reads the image as a height map (three's
   // bumpMap/bumpScale); "normal" reads it as a tangent-space normal map

@@ -2,6 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { claimPointerGesture } from "@/lib/pointer-claim";
+import {
+  guideLinesOn,
+  snapSpanToLines,
+  snapValueToLines,
+  type ViewportGuide,
+} from "@/lib/viewport-guides";
 
 // On-canvas transform handles for centered shape primitives (Circle,
 // Rectangle, …). The gizmo works in a node-agnostic "center + half-extents"
@@ -462,7 +468,20 @@ interface Props {
   // symmetric resize around a fixed center.
   anchorResize?: boolean;
   onChange: (patch: PrimitiveGizmoPatch) => void;
+  // Ruler guides (specdocs/091726_viewport-rulers.md): a move snaps the
+  // box's edges / centre to them, a resize snaps the dragged edge. Same
+  // screen-normalized UV as this gizmo, so no conversion. Absent = none.
+  guides?: readonly ViewportGuide[];
+  // Viewport snapping toggle (the lock chip); Cmd/Ctrl still suppresses a
+  // single gesture while it's on. Only guides snap here — primitives never
+  // snapped to the canvas edges and still don't.
+  snapEnabled?: boolean;
 }
+
+// px radius within which a primitive box edge / point locks onto a guide —
+// the spline editor's SNAP_R, so every guide feels the same to grab.
+const GUIDE_SNAP_PX = 8;
+const NO_GUIDES: readonly ViewportGuide[] = [];
 
 type DragKind =
   | "move"
@@ -516,6 +535,8 @@ export default function PrimitiveGizmo({
   hy,
   anchorResize = false,
   onChange,
+  guides = NO_GUIDES,
+  snapEnabled = true,
 }: Props) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -526,6 +547,21 @@ export default function PrimitiveGizmo({
   // releasing Shift resets it; re-pressing re-decides from the
   // remaining pointer delta since drag start.
   const lockedAxisRef = useRef<"x" | "y" | null>(null);
+  // Guides + the lock, live via refs so a mid-drag change applies on the
+  // next move without rebinding the listener (synced in an effect —
+  // assigning during render trips react-hooks/refs).
+  const guidesRef = useRef(guides);
+  const snapEnabledRef = useRef(snapEnabled);
+  useEffect(() => {
+    guidesRef.current = guides;
+    snapEnabledRef.current = snapEnabled;
+  });
+  // The guide each axis is currently snapped to (UV), for the red
+  // indicator hairline. Cleared on pointerup.
+  const [snap, setSnap] = useState<{ x: number | null; y: number | null }>({
+    x: null,
+    y: null,
+  });
 
   // Track the rendered canvas box (resize / splitter / scroll).
   useEffect(() => {
@@ -557,16 +593,88 @@ export default function PrimitiveGizmo({
       const s = drag.start;
       const shift = e.shiftKey;
 
+      // Ruler-guide snapping (spec 091726). Off with the viewport-bar
+      // lock open or Cmd/Ctrl held; Shift on a corner owns the box's
+      // ratio, so guide snapping stands down there rather than fighting
+      // it. Thresholds are px converted to this gizmo's UV per axis.
+      const isCorner = drag.kind.startsWith("corner");
+      const suppress =
+        !snapEnabledRef.current ||
+        e.metaKey ||
+        e.ctrlKey ||
+        (shift && isCorner && drag.kind !== "move");
+      const gxs = suppress ? [] : guideLinesOn(guidesRef.current, "x");
+      const gys = suppress ? [] : guideLinesOn(guidesRef.current, "y");
+      const thX = GUIDE_SNAP_PX / Math.max(1, rect.width);
+      const thY = GUIDE_SNAP_PX / Math.max(1, rect.height);
+      let snapX: number | null = null;
+      let snapY: number | null = null;
+      const commitSnap = () =>
+        setSnap((prev) =>
+          prev.x === snapX && prev.y === snapY ? prev : { x: snapX, y: snapY }
+        );
+
       if (drag.kind === "move") {
         let dx = ux - drag.startPointer.x;
         let dy = uy - drag.startPointer.y;
         ({ dx, dy } = lockAxisDelta(dx, dy, shift, lockedAxisRef));
+        let ncx = s.cx + dx;
+        let ncy = s.cy + dy;
+        // Edges and centre compete for the nearest guide per axis.
+        const sx = snapSpanToLines(ncx - s.hx, ncx + s.hx, gxs, thX);
+        if (sx) {
+          ncx += sx.delta;
+          snapX = sx.at;
+        }
+        const sy = snapSpanToLines(ncy - s.hy, ncy + s.hy, gys, thY);
+        if (sy) {
+          ncy += sy.delta;
+          snapY = sy.at;
+        }
+        commitSnap();
         onChangeRef.current({
-          cx: clamp01(s.cx + dx),
-          cy: clamp01(s.cy + dy),
+          cx: clamp01(ncx),
+          cy: clamp01(ncy),
         });
         return;
       }
+
+      const movesL =
+        drag.kind === "edge-l" ||
+        drag.kind === "corner-tl" ||
+        drag.kind === "corner-bl";
+      const movesR =
+        drag.kind === "edge-r" ||
+        drag.kind === "corner-tr" ||
+        drag.kind === "corner-br";
+      const movesT =
+        drag.kind === "edge-t" ||
+        drag.kind === "corner-tl" ||
+        drag.kind === "corner-tr";
+      const movesB =
+        drag.kind === "edge-b" ||
+        drag.kind === "corner-bl" ||
+        drag.kind === "corner-br";
+      // The dragged edge itself snaps onto a guide (both resize styles
+      // place an edge at the pointer, so snapping the pointer is
+      // snapping the edge).
+      let sux = ux;
+      let suy = uy;
+      if (movesL || movesR) {
+        const sx = snapValueToLines(ux, gxs, thX);
+        if (sx) {
+          sux = sx.at;
+          snapX = sx.at;
+        }
+      }
+      if (movesT || movesB) {
+        const sy = snapValueToLines(uy, gys, thY);
+        if (sy) {
+          suy = sy.at;
+          snapY = sy.at;
+        }
+      }
+      commitSnap();
 
       if (anchorResize) {
         // Box-style resize: the dragged edge/corner tracks the pointer,
@@ -577,27 +685,10 @@ export default function PrimitiveGizmo({
         let right = s.cx + s.hx;
         let top = s.cy - s.hy;
         let bottom = s.cy + s.hy;
-        const isCorner = drag.kind.startsWith("corner");
-        const movesL =
-          drag.kind === "edge-l" ||
-          drag.kind === "corner-tl" ||
-          drag.kind === "corner-bl";
-        const movesR =
-          drag.kind === "edge-r" ||
-          drag.kind === "corner-tr" ||
-          drag.kind === "corner-br";
-        const movesT =
-          drag.kind === "edge-t" ||
-          drag.kind === "corner-tl" ||
-          drag.kind === "corner-tr";
-        const movesB =
-          drag.kind === "edge-b" ||
-          drag.kind === "corner-bl" ||
-          drag.kind === "corner-br";
-        if (movesL) left = Math.min(right - minSize, ux);
-        if (movesR) right = Math.max(left + minSize, ux);
-        if (movesT) top = Math.min(bottom - minSize, uy);
-        if (movesB) bottom = Math.max(top + minSize, uy);
+        if (movesL) left = Math.min(right - minSize, sux);
+        if (movesR) right = Math.max(left + minSize, sux);
+        if (movesT) top = Math.min(bottom - minSize, suy);
+        if (movesB) bottom = Math.max(top + minSize, suy);
         if (shift && isCorner) {
           const m = Math.max(right - left, bottom - top);
           if (movesL) left = right - m;
@@ -619,17 +710,11 @@ export default function PrimitiveGizmo({
       }
 
       // Resize: half-extent = distance from the (fixed) center along each axis.
-      const movesX =
-        drag.kind === "edge-l" ||
-        drag.kind === "edge-r" ||
-        drag.kind.startsWith("corner");
-      const movesY =
-        drag.kind === "edge-t" ||
-        drag.kind === "edge-b" ||
-        drag.kind.startsWith("corner");
+      const movesX = movesL || movesR;
+      const movesY = movesT || movesB;
       const patch: PrimitiveGizmoPatch = {};
-      let nhx = movesX ? Math.max(MIN_HALF, Math.abs(ux - s.cx)) : s.hx;
-      let nhy = movesY ? Math.max(MIN_HALF, Math.abs(uy - s.cy)) : s.hy;
+      let nhx = movesX ? Math.max(MIN_HALF, Math.abs(sux - s.cx)) : s.hx;
+      let nhy = movesY ? Math.max(MIN_HALF, Math.abs(suy - s.cy)) : s.hy;
       if (shift && drag.kind.startsWith("corner")) {
         // Uniform — both halves share the larger magnitude.
         const m = Math.max(nhx, nhy);
@@ -643,6 +728,9 @@ export default function PrimitiveGizmo({
     const onUp = () => {
       setDrag(null);
       lockedAxisRef.current = null;
+      setSnap((prev) =>
+        prev.x === null && prev.y === null ? prev : { x: null, y: null }
+      );
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -720,10 +808,14 @@ export default function PrimitiveGizmo({
           pointerEvents: "none",
         }}
       >
-        {/* Box interior → move the shape's center. */}
+        {/* Box interior → move the shape's center. `data-guide-grab`: a
+            press on a ruler guide crossing this surface grabs the guide
+            instead (ViewportRulers intercepts it); the handles stay
+            untagged so they win over a guide they've been snapped onto. */}
         <polygon
           points={polygon}
           fill="transparent"
+          data-guide-grab="true"
           style={{
             cursor: drag?.kind === "move" ? "grabbing" : "grab",
             pointerEvents: "auto",
@@ -739,6 +831,31 @@ export default function PrimitiveGizmo({
           strokeDasharray="4 3"
           style={{ pointerEvents: "none" }}
         />
+
+        {/* Guide-snap indicators — the same red hairline TransformGizmo
+            draws, at the guide the axis is currently locked onto. */}
+        {snap.x !== null && (
+          <line
+            x1={rect.left + snap.x * rect.width}
+            y1={rect.top}
+            x2={rect.left + snap.x * rect.width}
+            y2={rect.top + rect.height}
+            stroke="#ef4444"
+            strokeWidth={0.75}
+            style={{ pointerEvents: "none" }}
+          />
+        )}
+        {snap.y !== null && (
+          <line
+            x1={rect.left}
+            y1={rect.top + snap.y * rect.height}
+            x2={rect.left + rect.width}
+            y2={rect.top + snap.y * rect.height}
+            stroke="#ef4444"
+            strokeWidth={0.75}
+            style={{ pointerEvents: "none" }}
+          />
+        )}
 
         {/* Corners — resize both axes */}
         {(
@@ -825,11 +942,16 @@ export function PrimitivePointHandles({
   points,
   connect,
   onChange,
+  guides = NO_GUIDES,
+  snapEnabled = true,
 }: {
   canvas: HTMLCanvasElement | null;
   points: Array<{ x: number; y: number; label?: string }>;
   connect?: "open" | "closed";
   onChange: (index: number, x: number, y: number) => void;
+  // Ruler guides (spec 091726): a dragged point snaps onto them per axis.
+  guides?: readonly ViewportGuide[];
+  snapEnabled?: boolean;
 }) {
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [drag, setDrag] = useState<{
@@ -844,8 +966,16 @@ export function PrimitivePointHandles({
   // so the drag listeners can stay subscribed across re-renders without
   // reading a ref mid-render.
   const onChangeRef = useRef(onChange);
+  const guidesRef = useRef(guides);
+  const snapEnabledRef = useRef(snapEnabled);
   useEffect(() => {
     onChangeRef.current = onChange;
+    guidesRef.current = guides;
+    snapEnabledRef.current = snapEnabled;
+  });
+  const [snap, setSnap] = useState<{ x: number | null; y: number | null }>({
+    x: null,
+    y: null,
   });
 
   useEffect(() => {
@@ -875,15 +1005,43 @@ export function PrimitivePointHandles({
       let dx = (e.clientX - rect.left) / rect.width - drag.startPointer.x;
       let dy = (e.clientY - rect.top) / rect.height - drag.startPointer.y;
       ({ dx, dy } = lockAxisDelta(dx, dy, e.shiftKey, lockedAxisRef));
-      onChangeRef.current(
-        drag.index,
-        drag.startPoint.x + dx,
-        drag.startPoint.y + dy
+      let nx = drag.startPoint.x + dx;
+      let ny = drag.startPoint.y + dy;
+      // Ruler-guide snapping (spec 091726), per axis; the lock chip and
+      // Cmd/Ctrl suppress it as everywhere else.
+      let snapX: number | null = null;
+      let snapY: number | null = null;
+      if (snapEnabledRef.current && !e.metaKey && !e.ctrlKey) {
+        const sx = snapValueToLines(
+          nx,
+          guideLinesOn(guidesRef.current, "x"),
+          GUIDE_SNAP_PX / Math.max(1, rect.width)
+        );
+        if (sx) {
+          nx = sx.at;
+          snapX = sx.at;
+        }
+        const sy = snapValueToLines(
+          ny,
+          guideLinesOn(guidesRef.current, "y"),
+          GUIDE_SNAP_PX / Math.max(1, rect.height)
+        );
+        if (sy) {
+          ny = sy.at;
+          snapY = sy.at;
+        }
+      }
+      setSnap((prev) =>
+        prev.x === snapX && prev.y === snapY ? prev : { x: snapX, y: snapY }
       );
+      onChangeRef.current(drag.index, nx, ny);
     };
     const onUp = () => {
       setDrag(null);
       lockedAxisRef.current = null;
+      setSnap((prev) =>
+        prev.x === null && prev.y === null ? prev : { x: null, y: null }
+      );
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -929,6 +1087,26 @@ export function PrimitivePointHandles({
             opacity={0.9}
           />
         ))}
+        {snap.x !== null && (
+          <line
+            x1={rect.left + snap.x * rect.width}
+            y1={rect.top}
+            x2={rect.left + snap.x * rect.width}
+            y2={rect.top + rect.height}
+            stroke="#ef4444"
+            strokeWidth={0.75}
+          />
+        )}
+        {snap.y !== null && (
+          <line
+            x1={rect.left}
+            y1={rect.top + snap.y * rect.height}
+            x2={rect.left + rect.width}
+            y2={rect.top + snap.y * rect.height}
+            stroke="#ef4444"
+            strokeWidth={0.75}
+          />
+        )}
         {px.map((p, i) => (
           <g key={`pt-${i}`}>
             <circle

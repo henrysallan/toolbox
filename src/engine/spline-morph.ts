@@ -2,20 +2,38 @@ import type { SplineAnchor, SplineSubpath, SplineValue } from "./types";
 import { resampleSubpath } from "./spline-math";
 
 // Shape morphing between two (or a chain of) splines. A morph is a
-// per-anchor lerp once shapes are put into correspondence: both resampled
-// to a matched anchor count, then aligned so anchor i of A pairs with the
+// per-anchor lerp once shapes are put into correspondence: both brought to
+// a matched anchor count, then aligned so anchor i of A pairs with the
 // geometrically nearest run of B (orientation + cyclic start-vertex for
 // closed loops). A chain of N shapes is N−1 such pairs; Amount 0..1 walks
 // them in equal slices.
 //
+// Two ways to reach a matched count (`MorphMode`):
+//   "resample" — every subpath is resampled to `resolution` evenly spaced
+//                anchors. Any two shapes morph, but the authored anchors
+//                and handles are approximated (resampleSubpath rebuilds
+//                handles from sampled tangents), so Amount 0 / 1 are only
+//                close to the inputs, and corners soften.
+//   "anchors"  — a subpath pair with the SAME anchor count on both sides
+//                is paired 1:1 as authored, no resampling: positions AND
+//                handles lerp directly, so Amount 0 / 1 reproduce the
+//                inputs exactly. The AE-style "same points, different
+//                positions" morph. Pairs whose counts differ still fall
+//                back to resampling, so a stray extra anchor degrades to
+//                the resample look instead of breaking.
+// Alignment (orientation + start vertex) runs in both modes — reversing
+// and rotating an anchor list are exact, lossless reorderings.
+//
 // The expensive part (resample + alignment) depends only on the input
-// shapes and the resolution — NOT on the morph amount t. So we build a
-// `MorphCorrespondence` (or chain) once and re-apply it cheaply every
-// frame as t animates. The node caches the correspondence by identity.
+// shapes, the resolution and the mode — NOT on the morph amount t. So we
+// build a `MorphCorrespondence` (or chain) once and re-apply it cheaply
+// every frame as t animates. The node caches the correspondence by identity.
 //
 // Handles are OFFSETS from their anchor (see SplineAnchor), so lerping
 // them is direct — no absolute/relative conversion. Reversing a subpath's
 // travel direction swaps each anchor's in/out handle.
+
+export type MorphMode = "resample" | "anchors";
 
 const ZERO: [number, number] = [0, 0];
 
@@ -26,12 +44,17 @@ interface AlignedPair {
 }
 export type MorphCorrespondence = AlignedPair[];
 
+// Endpoint-exact form: t=0 returns a and t=1 returns b bit-for-bit (the
+// `a + (b−a)·t` form can miss b by an ulp), so a 1:1 "anchors" morph hands
+// back the authored input at either end, and a chain knot is exactly the
+// shared shape.
 function lerp2(
   a: readonly [number, number],
   b: readonly [number, number],
   t: number
 ): [number, number] {
-  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  const s = 1 - t;
+  return [a[0] * s + b[0] * t, a[1] * s + b[1] * t];
 }
 
 function anchorLerp(a: SplineAnchor, b: SplineAnchor, t: number): SplineAnchor {
@@ -163,16 +186,37 @@ function sortedBySizeDesc(subs: SplineSubpath[]): SplineSubpath[] {
     .map((e) => e.s);
 }
 
-// Resample to n anchors, aligning B to A by the lowest-cost orientation +
-// (for closed loops) cyclic start vertex. Returns matched-length anchor
-// arrays ready to lerp.
+// Bring a subpath pair to a matched anchor count. "anchors" mode keeps the
+// authored lists when they already match (shared by reference — nothing
+// downstream mutates them; alignment only reverses/rotates into new
+// arrays); otherwise, and always in "resample" mode, both resample to n.
+function matchedAnchors(
+  sa: SplineSubpath,
+  sb: SplineSubpath,
+  n: number,
+  mode: MorphMode
+): { a: SplineAnchor[]; b: SplineAnchor[] } {
+  if (mode === "anchors" && sa.anchors.length === sb.anchors.length) {
+    return { a: sa.anchors, b: sb.anchors };
+  }
+  return {
+    a: resampleSubpath(sa, n).anchors,
+    b: resampleSubpath(sb, n).anchors,
+  };
+}
+
+// Match anchor counts (see matchedAnchors), aligning B to A by the
+// lowest-cost orientation + (for closed loops) cyclic start vertex. Returns
+// matched-length anchor arrays ready to lerp.
 function alignPair(
   sa: SplineSubpath,
   sb: SplineSubpath,
-  n: number
+  n: number,
+  mode: MorphMode
 ): AlignedPair {
-  const ra = resampleSubpath(sa, n).anchors;
-  let rb = resampleSubpath(sb, n).anchors;
+  const matched = matchedAnchors(sa, sb, n, mode);
+  const ra = matched.a;
+  let rb = matched.b;
   const closed = sa.closed && sb.closed;
 
   // Degenerate resample (zero-length/single-anchor) can return a count
@@ -205,23 +249,28 @@ function alignPair(
 
 // Build the (t-independent) correspondence between two splines. Subpaths
 // are paired biggest-to-biggest; a surplus subpath on one side morphs
-// to/from a collapsed point at its centroid so it shrinks/grows cleanly.
+// to/from a collapsed point at its centroid so it shrinks/grows cleanly
+// (in "anchors" mode it keeps its authored anchors while doing so — there
+// is nothing to match it against, so nothing to resample for).
 export function buildMorphCorrespondence(
   a: SplineValue,
   b: SplineValue,
-  resolution: number
+  resolution: number,
+  mode: MorphMode = "resample"
 ): MorphCorrespondence {
   const n = Math.max(2, Math.round(resolution));
   const aSubs = sortedBySizeDesc(a.subpaths.filter((s) => s.anchors.length >= 2));
   const bSubs = sortedBySizeDesc(b.subpaths.filter((s) => s.anchors.length >= 2));
   const pairs: MorphCorrespondence = [];
   const m = Math.min(aSubs.length, bSubs.length);
+  const surplus = (sub: SplineSubpath): SplineAnchor[] =>
+    mode === "anchors" ? sub.anchors : resampleSubpath(sub, n).anchors;
 
-  for (let i = 0; i < m; i++) pairs.push(alignPair(aSubs[i], bSubs[i], n));
+  for (let i = 0; i < m; i++) pairs.push(alignPair(aSubs[i], bSubs[i], n, mode));
 
   // Surplus A subpaths collapse to their centroid as t→1 (they vanish).
   for (let i = m; i < aSubs.length; i++) {
-    const ra = resampleSubpath(aSubs[i], n).anchors;
+    const ra = surplus(aSubs[i]);
     pairs.push({
       aAnchors: ra,
       bAnchors: pointAnchors(ra.length, centroid(ra)),
@@ -230,7 +279,7 @@ export function buildMorphCorrespondence(
   }
   // Surplus B subpaths grow from their centroid as t→1.
   for (let i = m; i < bSubs.length; i++) {
-    const rb = resampleSubpath(bSubs[i], n).anchors;
+    const rb = surplus(bSubs[i]);
     pairs.push({
       aAnchors: pointAnchors(rb.length, centroid(rb)),
       bAnchors: rb,
@@ -258,13 +307,19 @@ export function applyMorph(
 // pair would resample/reorient the shared shape twice and pop at the join.
 export function buildMorphChain(
   shapes: SplineValue[],
-  resolution: number
+  resolution: number,
+  mode: MorphMode = "resample"
 ): MorphCorrespondence[] {
   if (shapes.length < 2) return [];
   const corrs: MorphCorrespondence[] = [];
   let current = shapes[0];
   for (let k = 0; k < shapes.length - 1; k++) {
-    const corr = buildMorphCorrespondence(current, shapes[k + 1], resolution);
+    const corr = buildMorphCorrespondence(
+      current,
+      shapes[k + 1],
+      resolution,
+      mode
+    );
     corrs.push(corr);
     current = applyMorph(corr, 1);
   }
@@ -289,7 +344,8 @@ export function splineMorph(
   a: SplineValue,
   b: SplineValue,
   t: number,
-  resolution: number
+  resolution: number,
+  mode: MorphMode = "resample"
 ): SplineValue {
-  return applyMorph(buildMorphCorrespondence(a, b, resolution), t);
+  return applyMorph(buildMorphCorrespondence(a, b, resolution, mode), t);
 }

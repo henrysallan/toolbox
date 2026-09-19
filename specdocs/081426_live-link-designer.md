@@ -4,7 +4,23 @@ Status: designed with owner (Q&A 2026-08-14). M0–M3 implemented
 2026-08-14 → 2026-08-17 (gates green; in-browser verification pending).
 M4 landed 2026-09-15: three packs per control class plus three font
 stacks, see "Control style presets — how packs work" below; webfont
-loading still deferred. Implementation
+loading still deferred. 2026-09-16: three sliders added — Panel width and
+UI scale (Layout), Text brightness (Theme); see "Sliders (2026-09-16)"
+under the Designer section. Also 2026-09-16: the /live patch badge
+(`name · by author · #code`, previously a fixed bottom-left corner outside
+the panel, styled with editor tokens) moved into the panel as the first
+row of the toolbar, above the transport, and gained a quiet "Editor" link
+on its right to the project's `/p/<slug>` page — `ControlPanel`'s `title`
+prop (`PanelTitle`), passed by LiveClient and mirrored in the designer
+preview so the chrome matches (the preview keeps anchors inert so the
+link can't navigate the iframe); the exported app has no author or slug,
+passes nothing, and is unchanged. Same day: the sticky toolbar blurs at
+2× the panel's blur (`--toolbar-backdrop`, emitted beside
+`--panel-backdrop`), and the export / cancel text buttons take their fill
+from a new transport-pack pair, `--ps-tr-text-bg` / `--ps-tr-text-hover-bg`
+(classic falls back to bg-3 / bg-hover; `round` and `ghost`, whose icon
+buttons have no fill, set a faint ink wash that doubles on hover) — under
+those packs the buttons had no body until hovered. Implementation
 deltas from this spec: no export-gif.ts core refactor was needed — its
 `renderFrame` callback shape already fit the viewer, so the viewer GIF
 is frame-stepped (deterministic, better than the planned live capture)
@@ -100,6 +116,17 @@ export interface LiveDesign {
     // (0 / 10 / 20) applied to the inset canvas rect and the floating
     // panel card. Ignored where meaningless (full-bleed canvas,
     // full-height panel edges).
+    panelWidth: number;       // control-panel width, CSS px BEFORE
+                              // uiScale (added 2026-09-16); 160…640,
+                              // default 280 = the old fixed width
+    uiScale: number;          // CSS `zoom` on the panel — text, the
+                              // shared controls, spacing and the px
+                              // width scale together (added 2026-09-16);
+                              // 0.5…2, default 1; the canvas is content
+                              // and does not scale
+    rowGap: number;           // spacing between parameter rows, CSS px
+                              // before uiScale (added 2026-09-16);
+                              // 0…40, default 10 = the old row margin
   };
   theme: {
     mode: "dark" | "light";
@@ -110,6 +137,12 @@ export interface LiveDesign {
                               // 2026-08-17; --panel-bg token)
     panelBlur: number;        // control-panel backdrop blur px, 0..40
                               // (--panel-backdrop, emitted only when >0)
+    textBrightness: number;   // ink intensity 0..1 (added 2026-09-16);
+                              // < 1 fades --text* and the --tb-n ink
+                              // steps (INK_START up) toward the panel
+                              // surface in OKLCH lightness — dark dims,
+                              // light lightens; surfaces / borders /
+                              // accent untouched
   };
   presets: {
     slider: string;   // preset ids into the registries in design.ts;
@@ -310,6 +343,37 @@ Settings sections:
 Save / Cancel in a footer. Save = `setLiveDesign(next)` in EffectsApp +
 dirty mark (design persists on the next project save — same lifecycle as
 layout presets; no separate DB write). Cancel discards.
+
+**Sliders (2026-09-16).** Four native range sliders joined the pills
+(owner request). Panel width and UI scale are stored in real units but
+SHOWN as a 0–100 % slider position, because the owner framed today's look
+as "UI scale 50 %" (room both ways) and "panel width 25 %"; row gap and
+text brightness show their own unit:
+
+- **Panel width** — `layout.panelWidth`, px before zoom, linear across
+  160–640 px so 280 px (the old fixed width) reads 25 %. LiveRoot emits
+  `--lv-panel-w`; styles.css uses it as `.sidebar`'s width.
+- **UI scale** — `layout.uiScale`, logarithmic ½×–2× so 1× reads 50 %
+  (equal travel = equal size ratio). LiveRoot emits `--lv-ui-scale`;
+  styles.css applies it as CSS `zoom` on `.sidebar`, which scales fonts,
+  the inline-styled shared controls, paddings AND the px width — browser
+  zoom for the panel only; the canvas area is content and takes what's
+  left. Dropdown / FontPicker lists portal into `.live-root` outside the
+  zoomed panel, so param-controls (`popupRectBelow`) hands the popup the
+  trigger's `currentCSSZoom` and divides the fixed coordinates back out
+  (standardized CSS zoom reports rects in the un-zoomed frame).
+- **Row gap** — `layout.rowGap`, 0–40 px before zoom, default 10 (the
+  old `.row` margin). LiveRoot emits `--lv-row-gap`; styles.css uses it
+  as the parameter rows' bottom margin. Rows only — section padding, the
+  in-row label gap and the toolbar don't move.
+- **Text brightness** — `theme.textBrightness`, 100 % = today's ink, the
+  slider floors at 20 %. `designTokens` fades `--text*` and the neutral
+  ramp's ink steps toward `--bg-2` in OKLCH lightness (chroma/hue kept so
+  tinted greys stay tinted); surfaces, borders and the accent are
+  untouched, and 100 % leaves the sheet byte-identical.
+
+Calibration (`*ToPct` / `pctTo*` in design.ts), legacy defaults, clamping
+and the ink-only fade are guarded by `scripts/check-live-presets.mts`.
 
 ### Preview
 

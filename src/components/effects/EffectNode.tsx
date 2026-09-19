@@ -27,6 +27,7 @@ import {
   FloatCurveEditor,
   MiniBarSlider,
   NumberField,
+  ScalarPickControl,
   hexAlpha01,
   hexToHsl,
   hslToHex,
@@ -479,13 +480,19 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
     const current = data.params[stringInputParam];
     const info = readUpstreamAttrNames(id, stringParamDef.suggestAttrsFrom);
     const includeBuiltins = !!stringParamDef.suggestAttrsIncludeBuiltins;
+    const builtinFilter = stringParamDef.suggestAttrsBuiltinFilter;
     stringInvalid = isAttrNameInvalid(
       typeof current === "string" ? current : "",
       info,
       !!stringParamDef.suggestAttrsRequire,
-      includeBuiltins
+      includeBuiltins,
+      builtinFilter
     );
-    const suggestions = attrNameSuggestions(info, includeBuiltins);
+    const suggestions = attrNameSuggestions(
+      info,
+      includeBuiltins,
+      builtinFilter
+    );
     if (suggestions.length > 0) stringAttrSuggestions = suggestions;
   }
 
@@ -511,7 +518,24 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
     const step = dynStep ?? p.step ?? 0.01;
     const sliderMax = ov?.softMax ?? p.softMax ?? max;
     const sliderMin = Math.max(min, -sliderMax);
-    return { min, max, step, snapToStep: dynStep !== undefined, sliderMin, sliderMax };
+    // Widget choice (controlFrom — a toggle-mode Switch swaps the bar for
+    // the same pill / dropdown the ParamPanel and the live link render,
+    // labeled by its per-input names).
+    const control = p.controlFrom?.(data.params) ?? p.control;
+    const labels =
+      control === "segmented"
+        ? (p.optionLabelsFrom?.(data.params) ?? p.optionLabels)
+        : undefined;
+    return {
+      min,
+      max,
+      step,
+      snapToStep: dynStep !== undefined,
+      sliderMin,
+      sliderMax,
+      control,
+      labels,
+    };
   }, [data.defType, scalarInputParam, data.paramOverrides, data.params]);
 
   // On-node colour swatch (SDF primitives + SDF Material).
@@ -1559,27 +1583,56 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             borderTop: "1px solid var(--tb-n-7)",
           }}
         >
-          <NodeScalarSlider
-            id={id}
-            paramName={scalarInputParam}
-            value={
-              typeof data.params[scalarInputParam] === "number"
-                ? (data.params[scalarInputParam] as number)
-                : 0
-            }
-            min={scalarConfig.min}
-            max={scalarConfig.max}
-            step={scalarConfig.step}
-            snapToStep={scalarConfig.snapToStep}
-            sliderMin={scalarConfig.sliderMin}
-            sliderMax={scalarConfig.sliderMax}
-            // Keep the bar's floor in step with whatever width this node
-            // type declares: row budget = minWidth − 16px side padding −
-            // 4px gap − the 44px number field. Constant's 100 leaves 36.
-            // Without this the bar's own 40px floor wins and the node
-            // renders wider than its minWidth (it auto-sizes to content).
-            barMinWidth={Math.max(24, minWidth - 64)}
-          />
+          {scalarConfig.control === "segmented" ? (
+            <div
+              className="nodrag"
+              // Same guard as the header control: `nodrag` + stopping
+              // POINTERdown, so a tap on a segment picks instead of
+              // dragging the node.
+              onPointerDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <ScalarPickControl
+                value={
+                  typeof data.params[scalarInputParam] === "number"
+                    ? (data.params[scalarInputParam] as number)
+                    : 0
+                }
+                min={scalarConfig.min}
+                max={scalarConfig.max}
+                labels={scalarConfig.labels}
+                onChange={(v) =>
+                  window.dispatchEvent(
+                    new CustomEvent("effect-node-param", {
+                      detail: { id, name: scalarInputParam, value: v },
+                    })
+                  )
+                }
+              />
+            </div>
+          ) : (
+            <NodeScalarSlider
+              id={id}
+              paramName={scalarInputParam}
+              value={
+                typeof data.params[scalarInputParam] === "number"
+                  ? (data.params[scalarInputParam] as number)
+                  : 0
+              }
+              min={scalarConfig.min}
+              max={scalarConfig.max}
+              step={scalarConfig.step}
+              snapToStep={scalarConfig.snapToStep}
+              sliderMin={scalarConfig.sliderMin}
+              sliderMax={scalarConfig.sliderMax}
+              // Keep the bar's floor in step with whatever width this node
+              // type declares: row budget = minWidth − 16px side padding −
+              // 4px gap − the 44px number field. Constant's 100 leaves 36.
+              // Without this the bar's own 40px floor wins and the node
+              // renders wider than its minWidth (it auto-sizes to content).
+              barMinWidth={Math.max(24, minWidth - 64)}
+            />
+          )}
         </div>
       )}
 

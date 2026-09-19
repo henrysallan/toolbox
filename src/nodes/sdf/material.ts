@@ -9,8 +9,13 @@ import type {
 import { sdfHexToRgb01 } from "@/engine/sdf-material";
 import {
   type ColorRampInterp,
+  type ColorRampSpace,
   type ColorRampStop,
-  sampleColorRampRgba01,
+  buildColorRampLutData,
+  normalizeRampInterp,
+  normalizeRampSpace,
+  rampInterpParam,
+  rampSpaceParam,
 } from "@/engine/color-ramp";
 
 // Paint an SDF subtree. Distance is untouched — this only sets the
@@ -65,9 +70,10 @@ function buildLut(
   ctx: RenderContext,
   state: MaterialState,
   stops: ColorRampStop[],
-  interp: ColorRampInterp
+  interp: ColorRampInterp,
+  space: ColorRampSpace
 ): WebGLTexture | null {
-  const tag = JSON.stringify([stops, interp]);
+  const tag = JSON.stringify([stops, interp, space]);
   if (state.lut && state.tag === tag) return state.lut;
 
   const gl = ctx.gl;
@@ -82,15 +88,12 @@ function buildLut(
     state.lut = tex;
   }
 
+  // Baked at texel CENTRES (buildColorRampLutData) so the LINEAR fetch at
+  // t maps back to the same colour sampleColorRamp would give on the CPU.
+  const floats = buildColorRampLutData(stops, interp, space, LUT_SIZE);
   const data = new Uint8Array(LUT_SIZE * 4);
-  for (let i = 0; i < LUT_SIZE; i++) {
-    // Sample at texel CENTRES so the LINEAR fetch at t maps back to the
-    // same colour sampleColorRamp would give on the CPU.
-    const t = (i + 0.5) / LUT_SIZE;
-    const rgba = sampleColorRampRgba01(stops, t, interp);
-    for (let c = 0; c < 4; c++) {
-      data[i * 4 + c] = Math.round(Math.max(0, Math.min(1, rgba[c])) * 255);
-    }
+  for (let i = 0; i < data.length; i++) {
+    data[i] = Math.round(Math.max(0, Math.min(1, floats[i])) * 255);
   }
   gl.bindTexture(gl.TEXTURE_2D, state.lut);
   gl.texImage2D(
@@ -160,14 +163,16 @@ export const sdfMaterialNode: NodeDefinition = {
       ] as ColorRampStop[],
       visibleIf: (p) => p.color_mode === "ramp",
     },
-    {
+    rampInterpParam({
       name: "interpolation",
       label: "Interpolation",
-      type: "enum",
-      options: ["linear", "ease", "constant"],
-      default: "linear",
       visibleIf: (p) => p.color_mode === "ramp",
-    },
+    }),
+    rampSpaceParam({
+      name: "space",
+      label: "Color space",
+      visibleIf: (p) => p.color_mode === "ramp",
+    }),
   ],
   primaryOutput: "sdf",
   auxOutputs: [],
@@ -195,7 +200,8 @@ export const sdfMaterialNode: NodeDefinition = {
         ctx,
         state,
         stops,
-        (params.interpolation as ColorRampInterp) ?? "linear"
+        normalizeRampInterp(params.interpolation),
+        normalizeRampSpace(params.space)
       );
       if (lut) {
         // No field wired: hold the ramp's midpoint. Predictable and

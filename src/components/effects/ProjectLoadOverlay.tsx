@@ -2,35 +2,21 @@
 
 import { useEffect, useRef } from "react";
 import { setGatewayInputLock } from "@/lib/shortcut-freeze";
+import {
+  PROJECT_LOAD_BAR_MS,
+  PROJECT_LOAD_FADE_MS,
+} from "@/lib/load-overlay-timing";
 
-// Held long enough that a fast in-memory deserialize still reads as a
-// fill, not a snap-to-done. The bar itself eases over BAR_MS, so this
-// floor is slightly longer than that transition.
-export const PROJECT_LOAD_MIN_MS = 520;
-export const PROJECT_LOAD_FADE_MS = 480;
-export const PROJECT_LOAD_BAR_MS = 320;
-
-export function waitAnimationFrames(count = 2): Promise<void> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = () => {
-      if (settled) return;
-      settled = true;
-      resolve();
-    };
-    const step = (left: number) => {
-      if (left <= 0) {
-        done();
-        return;
-      }
-      requestAnimationFrame(() => step(left - 1));
-    };
-    requestAnimationFrame(() => step(count - 1));
-    // Hidden / background tabs throttle or pause rAF; don't let the
-    // overlay wait on a frame that will never come.
-    window.setTimeout(done, Math.max(50, count * 32));
-  });
-}
+// The cadence (min hold, fade, bar ease, waitAnimationFrames) lives in
+// lib/load-overlay-timing so the live viewer's veil (LiveLoadOverlay) can
+// share it without pulling editor code into the exported app; re-exported
+// here for EffectsApp, which drives the reveal.
+export {
+  PROJECT_LOAD_MIN_MS,
+  PROJECT_LOAD_FADE_MS,
+  PROJECT_LOAD_BAR_MS,
+  waitAnimationFrames,
+} from "@/lib/load-overlay-timing";
 
 export default function ProjectLoadOverlay({
   name,

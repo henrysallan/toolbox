@@ -48,10 +48,12 @@ import {
   gpointXKey,
   gpointYKey,
   layerOpacityKey,
+  mergeLayerKey,
   rampAlphaKey,
   rampColorKey,
   rampPositionKey,
 } from "@/engine/conventions";
+import { switchToggleSlots } from "@/engine/graph-helpers";
 import {
   COLOR_RAMP_MAX_STOPS,
   newStopId,
@@ -99,6 +101,34 @@ import {
   HslField,
 } from "@/lib/number-field";
 import { useLiveRootEl } from "@/lib/live-viewer/live-root-context";
+
+/**
+ * Where a trigger's popup goes: flush under it, in the trigger document's
+ * fixed-position frame, at the trigger's EFFECTIVE CSS ZOOM. The live
+ * panel zooms `.sidebar` (design.layout.uiScale, live-viewer/styles.css)
+ * while Dropdown / FontPicker lists portal into `.live-root` OUTSIDE it —
+ * so the popup is handed the same zoom, and the fixed coordinates (which
+ * getBoundingClientRect reports in the un-zoomed viewport frame under
+ * standardized CSS zoom, Chromium 128+ / Firefox 126+ / WebKit) are
+ * divided back out so the zoomed box lands exactly where the un-zoomed one
+ * would. Everywhere in the editor the zoom is 1 and this is a no-op; a
+ * browser without currentCSSZoom gets an un-zoomed list in the right spot.
+ */
+function popupRectBelow(el: HTMLElement): {
+  left: number;
+  top: number;
+  width: number;
+  zoom: number;
+} {
+  const r = el.getBoundingClientRect();
+  const zoom = el.currentCSSZoom || 1;
+  return {
+    left: r.left / zoom,
+    top: (r.bottom + 2) / zoom,
+    width: r.width / zoom,
+    zoom,
+  };
+}
 
 export function DampenedRangeInput(
   props: Omit<
@@ -1230,6 +1260,15 @@ export interface RampIoApi {
   toggleControl: (key: string) => void;
 }
 
+// Per-layer control access for MergeLayersControl. Keys are the virtual
+// `mlayer:<param>:<layerId>` names (engine/conventions): controlling a layer
+// puts its blend mode + opacity knobs on the live link / exported app's
+// panel. Editor-only — the live viewer passes nothing and the button hides.
+export interface LayerIoApi {
+  isControlled: (key: string) => boolean;
+  toggleControl: (key: string) => void;
+}
+
 export function normalizeHex(
   s: string,
   opts?: { alpha?: boolean }
@@ -1469,10 +1508,14 @@ export function SegmentedControl({
   value,
   options,
   onChange,
+  preserveCase,
 }: {
   value: string;
   options: Array<string | { value: string; label: string }>;
   onChange: (v: string) => void;
+  // Enum option ids read best Capitalized; user-typed names (Switch input
+  // labels) keep the case they were typed in.
+  preserveCase?: boolean;
 }) {
   const norm = options.map((o) =>
     typeof o === "string" ? { value: o, label: o } : o
@@ -1494,8 +1537,10 @@ export function SegmentedControl({
           <button
             key={o.value}
             onClick={() => onChange(o.value)}
+            title={o.label}
             style={{
               flex: 1,
+              minWidth: 0,
               background: on ? "var(--tb-n-9)" : "transparent",
               color: on ? "var(--tb-n-17)" : "var(--tb-n-13)",
               border: "none",
@@ -1503,7 +1548,12 @@ export function SegmentedControl({
               padding: "3px 8px",
               fontFamily: "inherit",
               fontSize: 11,
-              textTransform: "capitalize",
+              textTransform: preserveCase ? "none" : "capitalize",
+              // A long name ellipsizes inside its segment instead of
+              // stretching the pill past its row.
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
               cursor: "pointer",
             }}
           >
@@ -1513,6 +1563,59 @@ export function SegmentedControl({
       })}
     </div>
   );
+}
+
+// Widest pick a segmented pill renders; more states fall back to a
+// dropdown. Three is the house rule (ExprChannelKind's pick() documents the
+// same cutoff) — past that the flex:1 segments crush their labels.
+export const SEGMENTED_MAX_OPTIONS = 3;
+
+// Runaway guard for `control: "segmented"` on a wide scalar range — a
+// dropdown of thousands of integers helps nobody.
+const SCALAR_PICK_MAX_STATES = 64;
+
+// An integer scalar edited as a pick instead of a slider — `control:
+// "segmented"` on a scalar def, usually via `controlFrom` (Switch's Index in
+// toggle mode). One state per integer in [min, max]; `labels` (keyed by
+// String(value)) name them, the rest show the number. A pill up to
+// SEGMENTED_MAX_OPTIONS states, a dropdown beyond. The stored value stays a
+// number, so keyframes / wires / compute see exactly what the slider wrote.
+export function ScalarPickControl({
+  value,
+  min,
+  max,
+  labels,
+  onChange,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  labels?: Record<string, string>;
+  onChange: (v: number) => void;
+}) {
+  const lo = Math.ceil(Number.isFinite(min) ? min : 0);
+  const hi = Math.floor(Number.isFinite(max) ? max : lo);
+  const count = Math.max(1, Math.min(SCALAR_PICK_MAX_STATES, hi - lo + 1));
+  const options = Array.from({ length: count }, (_, k) => {
+    const v = String(lo + k);
+    return { value: v, label: labels?.[v] ?? v };
+  });
+  // A value outside the range (an index left pointing at a slot that has
+  // since dropped out) matches no state — nothing lights up until the
+  // user picks, which is the honest reading.
+  const current = String(Math.round(value));
+  const pick = (v: string) => onChange(Number(v));
+  if (options.length <= SEGMENTED_MAX_OPTIONS) {
+    return (
+      <SegmentedControl
+        value={current}
+        options={options}
+        onChange={pick}
+        preserveCase
+      />
+    );
+  }
+  return <Dropdown value={current} options={options} onChange={pick} />;
 }
 
 export function Dropdown({
@@ -1535,9 +1638,12 @@ export function Dropdown({
   const liveRootEl = useLiveRootEl();
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
-  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(
-    null
-  );
+  const [rect, setRect] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    zoom: number;
+  } | null>(null);
 
   const norm = options.map((o) =>
     typeof o === "string" ? { value: o, label: o } : o
@@ -1548,8 +1654,7 @@ export function Dropdown({
     if (!open) return;
     const el = btnRef.current;
     if (el) {
-      const r = el.getBoundingClientRect();
-      setRect({ left: r.left, top: r.bottom + 2, width: r.width });
+      setRect(popupRectBelow(el));
     }
     const onDown = (e: MouseEvent) => {
       const t = e.target as globalThis.Node | null;
@@ -1658,6 +1763,7 @@ export function Dropdown({
               left: rect.left,
               top: rect.top,
               width: rect.width,
+              zoom: rect.zoom,
               maxHeight: 260,
               overflowY: "auto",
               background: "var(--ps-dd-pop-bg, var(--tb-n-1))",
@@ -1746,9 +1852,12 @@ export function FontPicker({
   const [local, setLocal] = useState<{ family: string }[] | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
-  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(
-    null
-  );
+  const [rect, setRect] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    zoom: number;
+  } | null>(null);
 
   // Load the current family's bytes (curated → Google CDN; local/system →
   // no-op) so the trigger button previews in the right face.
@@ -1769,8 +1878,7 @@ export function FontPicker({
     if (!open) return;
     const el = btnRef.current;
     if (el) {
-      const r = el.getBoundingClientRect();
-      setRect({ left: r.left, top: r.bottom + 2, width: r.width });
+      setRect(popupRectBelow(el));
     }
     if (local === null) {
       void import("@/lib/local-fonts").then(async (m) => {
@@ -1899,6 +2007,7 @@ export function FontPicker({
               left: rect.left,
               top: rect.top,
               width: Math.max(rect.width, 200),
+              zoom: rect.zoom,
               background: "var(--tb-n-1)",
               border: "1px solid var(--tb-n-7)",
               borderRadius: 4,
@@ -2093,6 +2202,7 @@ export function ParamControl({
   onRangeChange,
   layerAnim,
   rampIo,
+  layerIo,
 }: {
   param: ParamDef;
   value: unknown;
@@ -2114,6 +2224,8 @@ export function ParamControl({
   layerAnim?: LayerAnimApi;
   // Per-stop expose/control toggles for color ramps — see RampIoApi.
   rampIo?: RampIoApi;
+  // Per-layer control toggles for merge layers — see LayerIoApi.
+  layerIo?: LayerIoApi;
 }) {
   if (param.type === "track_data") return null;
   if (param.type === "scalar") {
@@ -2126,6 +2238,27 @@ export function ParamControl({
     // live slot list). An explicit per-node range override still wins over it.
     const dynMax = allParams ? param.maxFrom?.(allParams) : undefined;
     const effMax = rangeOverride?.max ?? dynMax ?? param.max ?? 1;
+    // Widget choice. A def (or its controlFrom hint, fed the sibling
+    // params) can ask for a pick over the integers in range instead of the
+    // slider — Switch's Index in toggle mode. The live panel gets the same
+    // widget through the manifest's baked `control` / `optionLabels`, with
+    // no sibling params in reach. Range overrides still bound the pick.
+    const control =
+      (allParams ? param.controlFrom?.(allParams) : undefined) ?? param.control;
+    if (control === "segmented") {
+      const labels =
+        (allParams ? param.optionLabelsFrom?.(allParams) : undefined) ??
+        param.optionLabels;
+      return (
+        <ScalarPickControl
+          value={num}
+          min={effMin}
+          max={effMax}
+          labels={labels}
+          onChange={onChange}
+        />
+      );
+    }
     const effSoftMax = rangeOverride?.softMax ?? param.softMax;
     // Slider uses softMax when provided so the user can type past it
     // via the number input without the slider pinning the stored value.
@@ -2248,6 +2381,67 @@ export function ParamControl({
           </datalist>
         )}
       </>
+    );
+  }
+
+  if (param.type === "slot_labels") {
+    // Switch toggle-mode names: one text field per wired slot, in index
+    // order (the auto-grow spare is left out — nothing to name there).
+    // Keyed by slot socket so a name follows its wire when a middle slot
+    // drops out; an emptied field deletes its key. Immutable updates —
+    // the def's `{}` default is shared by every fresh instance.
+    const current =
+      value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    const slots = allParams ? switchToggleSlots(allParams) : [];
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {slots.map((slot, i) => {
+          const text = typeof current[slot] === "string" ? current[slot] : "";
+          return (
+            <div
+              key={slot}
+              style={{ display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <span
+                style={{
+                  flex: "0 0 14px",
+                  textAlign: "right",
+                  color: "var(--tb-n-11)",
+                  fontSize: 10,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {i}
+              </span>
+              <input
+                type="text"
+                value={text}
+                placeholder={`Input ${i}`}
+                spellCheck={false}
+                onChange={(e) => {
+                  const next = { ...current };
+                  if (e.target.value) next[slot] = e.target.value;
+                  else delete next[slot];
+                  onChange(next);
+                }}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  background: "var(--tb-n-0)",
+                  border: "1px solid var(--tb-n-7)",
+                  color: "var(--tb-n-16)",
+                  fontFamily: "inherit",
+                  fontSize: 11,
+                  padding: "2px 4px",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+          );
+        })}
+      </div>
     );
   }
 
@@ -2528,7 +2722,9 @@ export function ParamControl({
       <MergeLayersControl
         layers={layers}
         onChange={(next) => onChange(next)}
+        paramName={param.name}
         layerAnim={layerAnim}
+        layerIo={layerIo}
       />
     );
   }
@@ -3216,8 +3412,10 @@ function MaskInvertIcon({ active }: { active: boolean }) {
 
 // Editor for the Merge node's `merge_layers` param. One card per layer (blend
 // mode + opacity + keyframe diamond), plus a grip handle to drag-reorder the
-// stack, an eye toggle to bypass a layer, and a mask-invert badge next to
-// remove (flips the layer's wired matte; inert until a mask is connected).
+// stack, an eye toggle to bypass a layer, and — beside remove — a control
+// toggle (puts THIS layer's blend + opacity on the live link's panel; see
+// LayerIoApi) and a mask-invert badge (flips the layer's wired matte; inert
+// until a mask is connected).
 // Reordering rewrites the array,
 // which re-derives the node's `layer:<id>`/`mask:<id>` socket order via
 // resolveInputs (wires reference ids, so they follow their layer); bypass sets
@@ -3225,11 +3423,18 @@ function MaskInvertIcon({ active }: { active: boolean }) {
 export function MergeLayersControl({
   layers,
   onChange,
+  paramName,
   layerAnim,
+  layerIo,
 }: {
   layers: MergeLayer[];
   onChange: (next: MergeLayer[]) => void;
+  // Param the stack lives in — needed to build the per-layer control keys
+  // (mlayer:<param>:<layerId>). Optional: without it (or without layerIo)
+  // the per-layer control button hides (live viewer).
+  paramName?: string;
   layerAnim?: LayerAnimApi;
+  layerIo?: LayerIoApi;
 }) {
   const modes = BLEND_MODE_ORDER;
   const panelWin = usePanelWindow();
@@ -3293,6 +3498,11 @@ export function MergeLayersControl({
           layerOpacityKey(l.id),
           l.opacity
         );
+        const ctlKey =
+          paramName !== undefined && layerIo
+            ? mergeLayerKey(paramName, l.id)
+            : null;
+        const controlled = ctlKey !== null && !!layerIo?.isControlled(ctlKey);
         return (
           <div
             key={l.id}
@@ -3378,6 +3588,38 @@ export function MergeLayersControl({
                   flexShrink: 0,
                 }}
               >
+                {ctlKey !== null && layerIo && (
+                  <button
+                    onClick={() => layerIo.toggleControl(ctlKey)}
+                    title={
+                      controlled
+                        ? "Remove this layer's blend + opacity from the live link's control panel"
+                        : "Show this layer's blend + opacity as knobs in the live link's control panel"
+                    }
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      border: "1px solid var(--tb-n-7)",
+                      width: 16,
+                      height: 16,
+                      padding: 0,
+                      boxSizing: "border-box",
+                      borderRadius: 3,
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                      flexShrink: 0,
+                      background: controlled
+                        ? "var(--tb-a-emerald-800)"
+                        : "transparent",
+                      color: controlled
+                        ? "var(--tb-a-emerald-200)"
+                        : "var(--tb-n-11)",
+                    }}
+                  >
+                    <RampMaskGlyph src="/ControlSymbol.svg" width={10} height={10} />
+                  </button>
+                )}
                 <button
                   onClick={() => patch(l.id, { maskInvert: !l.maskInvert })}
                   title={

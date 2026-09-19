@@ -30,11 +30,7 @@ import type {
   Object3DValue,
 } from "./three-types";
 import type { ImageValue, RenderContext } from "./types";
-import {
-  sampleColorRampRgba01,
-  type ColorRampInterp,
-  type ColorRampStop,
-} from "./color-ramp";
+import { makeColorRampSampler, type ColorRampStop } from "./color-ramp";
 
 // -- MaterialDesc construction ----------------------------------------
 
@@ -236,7 +232,7 @@ const DEFAULT_TOON_RAMP: ToonRamp = {
 };
 
 function toonRampKey(r: ToonRamp): string {
-  return `${r.interp}|${r.stops
+  return `${r.interp}|${r.space ?? "srgb"}|${r.stops
     .map((s) => `${s.position}_${s.color}_${s.alpha ?? 1}`)
     .join(",")}`;
 }
@@ -255,15 +251,12 @@ function toonRampTexture(
   if (cached && cached.key === key) return cached.tex;
   if (cached) cached.tex.dispose();
   const stops: ColorRampStop[] = Array.isArray(r.stops) ? r.stops : [];
-  const interp: ColorRampInterp = r.interp ?? "constant";
+  const interp = r.interp ?? "constant";
+  const sample = makeColorRampSampler(stops, { interp, space: r.space });
   const data = new Uint8Array(TOON_LUT_N * 4);
   const c = new THREE.Color();
   for (let i = 0; i < TOON_LUT_N; i++) {
-    const [sr, sg, sb] = sampleColorRampRgba01(
-      stops,
-      i / (TOON_LUT_N - 1),
-      interp
-    );
+    const [sr, sg, sb] = sample(i / (TOON_LUT_N - 1));
     // sRGB stop colors → linear working space (default color management).
     c.setRGB(sr, sg, sb, THREE.SRGBColorSpace);
     data[i * 4] = Math.round(c.r * 255);

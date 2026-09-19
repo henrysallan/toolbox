@@ -89,6 +89,44 @@ export function nextSwitchSlot(taken: Set<string>): string {
   return `${SWITCH_SLOT_PREFIX}${k}`;
 }
 
+/** Switch `mode` param value that renders Index as a pick (pill / dropdown). */
+export const SWITCH_MODE_TOGGLE = "toggle";
+export function switchIsToggle(params: Record<string, unknown>): boolean {
+  return params.mode === SWITCH_MODE_TOGGLE;
+}
+
+// The slots a Switch's toggle offers — the WIRED ones. Under the auto-grow
+// invariant (`slots` = connected sockets + exactly one trailing spare) that
+// is every slot but the last, so no pill state points at an empty socket.
+// Never below SWITCH_MIN_COUNT: a fresh or one-wire Switch keeps two states
+// (the second is the spare, which the user is about to wire). Params-only on
+// purpose — the ParamPanel, the on-node control and the export-manifest
+// builder all derive the same option list from the same input, so the
+// editor and the live link can't disagree.
+export function switchToggleSlots(params: Record<string, unknown>): string[] {
+  const slots = readSwitchSlots(params);
+  return slots.length > SWITCH_MIN_COUNT ? slots.slice(0, -1) : slots;
+}
+
+/**
+ * Per-input display names for a Switch in toggle mode, keyed by slot socket
+ * name (`in0`, `in1`, …) so a name stays with its wire when a middle slot
+ * drops out and later indices shift. Trimmed; empty entries read as unset.
+ */
+export function readSwitchLabels(
+  params: Record<string, unknown>
+): Record<string, string> {
+  const raw = params.labels;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v !== "string") continue;
+    const t = v.trim();
+    if (t && isSwitchSlot(k)) out[k] = t;
+  }
+  return out;
+}
+
 // Combine (internal type `collect`; load alias `group`). onConnect flips
 // `mode` to match the wire; editorCanCoerce lets the wire land while the
 // sockets still read the previous type.

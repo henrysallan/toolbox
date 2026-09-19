@@ -15,6 +15,7 @@ import { pointsFromArray } from "@/engine/points";
 import {
   deriveVoronoiGeometry,
   emptyVoronoiGeometry,
+  PCG3D_GLSL,
   pcg3d,
   pcgUnit,
   type VoronoiGeometry,
@@ -71,22 +72,8 @@ import {
 // Shared GLSL chunks
 // ---------------------------------------------------------------------
 
-// Keep in lockstep with pcg3d/pcgUnit in engine/voronoi-geometry.ts —
-// same constants, same statement order.
-const PCG3D_GLSL = `
-uvec3 pcg3d(uvec3 v) {
-  v = v * 1664525u + 1013904223u;
-  v.x += v.y * v.z;
-  v.y += v.z * v.x;
-  v.z += v.x * v.y;
-  v ^= v >> 16u;
-  v.x += v.y * v.z;
-  v.y += v.z * v.x;
-  v.z += v.x * v.y;
-  return v;
-}
-float pcgUnit(uint h) { return float(h) * (1.0 / 4294967296.0); }
-`;
+// pcg3d / pcgUnit GLSL (PCG3D_GLSL) lives beside its TS mirror in
+// engine/voronoi-geometry.ts and is shared with the Grain node.
 
 // Salt for the cells-mode color hash (kept off the jitter stream so the
 // two never correlate). COLOR_SALT is baked into both shaders below;

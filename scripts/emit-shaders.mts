@@ -40,7 +40,23 @@ const {
 
 const { glslExpressionSource } = await import("@/nodes/effect/glsl-expression");
 const { LYAPUNOV_FS } = await import("@/nodes/source/lyapunov");
+// Ramp LUT consumers (091626_ramp-space-interp.md) — the shared
+// colorRampLutGlsl snippet must compile inside each host shader.
+const { COLOR_RAMP_FS } = await import("@/nodes/effect/color-ramp");
+const { ASCII_FS } = await import("@/nodes/effect/ascii");
+const { SHAPE_CELLS_FS } = await import("@/nodes/source/shape-cells");
 const { NOISE_FS } = await import("@/nodes/source/perlin-noise");
+// Grain v2 (091626_grain-node-v2.md): the legacy shader kept for saved
+// projects, plus the noise-plate and composite passes of the fine model.
+const {
+  GRAIN_FS,
+  GRAIN_NOISE_FS,
+  GRAIN_FILM_FS,
+  GRAIN_PLATE_FS,
+  GRAIN_TILE_FS,
+  GRAIN_BLUR_FS,
+  GRAIN_COMPOSITE_FS,
+} = await import("@/nodes/effect/grain");
 const {
   SH_INIT_FS,
   SH_SEED_FS,
@@ -106,6 +122,38 @@ out.vectorFieldImage = VECTOR_FIELD_IMAGE_FS;
 out.vectorFieldSdf = buildVectorFieldSdfFS("", "length(p - vec2(0.5))");
 out.lyapunov = LYAPUNOV_FS;
 out.noise = NOISE_FS;
+out.colorRamp = COLOR_RAMP_FS;
+out.asciiMain = ASCII_FS;
+out.shapeCells = SHAPE_CELLS_FS;
+out.grainClassic = GRAIN_FS;
+out.grainNoise = GRAIN_NOISE_FS;
+out.grainFilm = GRAIN_FILM_FS;
+out.grainPlate = GRAIN_PLATE_FS;
+out.grainTile = GRAIN_TILE_FS;
+out.grainBlur = GRAIN_BLUR_FS;
+out.grainComposite = GRAIN_COMPOSITE_FS;
+
+// Graph → GLSL node docs (091626_graph-to-glsl.md): every ```glsl-body fence
+// is a fused-shader snippet written against the GLSL Expression template.
+// Compile each one inside the template with the channels its comments
+// declare — a doc snippet that does not compile is a lie the gate catches.
+{
+  const { GLSL_DOCS } = await import("@/lib/glsl-translation/docs.generated");
+  const { syncChannelInputs } = await import("@/engine/expr-channels");
+  const FENCE = /```glsl-body\r?\n([\s\S]*?)```/g;
+  for (const doc of Object.values(GLSL_DOCS)) {
+    let m: RegExpExecArray | null;
+    let i = 0;
+    FENCE.lastIndex = 0;
+    while ((m = FENCE.exec(doc.body))) {
+      const body = m[1];
+      out[`doc:${doc.slug}#${i++}`] = glslExpressionSource({
+        inputs: syncChannelInputs([], body),
+        expression: body,
+      });
+    }
+  }
+}
 
 writeFileSync(process.argv[2] ?? "shaders.json", JSON.stringify(out));
 console.log(`emitted ${Object.keys(out).length} shader sources`);

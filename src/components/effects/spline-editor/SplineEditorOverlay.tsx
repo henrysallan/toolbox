@@ -71,6 +71,7 @@ import {
   type SplineEditorEnv,
   type ToolMode,
 } from "./types";
+import type { ViewportGuide } from "@/lib/viewport-guides";
 import {
   alignHandles,
   bezierAt,
@@ -294,10 +295,16 @@ interface Props {
   // join the snap service, and delete when dropped outside the canvas.
   guides?: SplineGuide[];
   onGuidesChange?: (next: SplineGuide[]) => void;
+  // Viewport ruler guides (spec 091726): read-only here — EffectsApp owns
+  // and renders them (ViewportRulers.tsx); the editor only snaps to them,
+  // alongside the per-node guides above.
+  viewportGuides?: readonly ViewportGuide[];
   // Viewport snapping toggle. Off skips anchor / canvas-guide snap;
   // Cmd/Ctrl still suppresses a single gesture while it's on.
   snapEnabled?: boolean;
 }
+
+const NO_VIEWPORT_GUIDES: readonly ViewportGuide[] = [];
 
 export default function SplineEditorOverlay({
   canvas,
@@ -315,6 +322,7 @@ export default function SplineEditorOverlay({
   onAnchorInsertKey,
   guides,
   onGuidesChange,
+  viewportGuides = NO_VIEWPORT_GUIDES,
   snapEnabled = true,
 }: Props) {
   const valueRef = useRef(value);
@@ -477,6 +485,7 @@ export default function SplineEditorOverlay({
     setMeasure,
     guides: guides ?? [],
     onGuidesChange: onGuidesChange ?? (() => {}),
+    viewportGuides,
     clientToNorm,
     normToPx,
   };

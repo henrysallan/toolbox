@@ -17,7 +17,7 @@
 
 import type { SplineAnchor } from "@/engine/types";
 import { mintAnchorId } from "../geometry";
-import { guideSnapLines, snapPoint } from "../snapping";
+import { snapPoint } from "../snapping";
 import type {
   DragState,
   PointerLike,
@@ -56,7 +56,7 @@ export function beginPrimitiveDraw(
       ops.anchorSnapTargets(null),
       sx,
       sy,
-      guideSnapLines(env.guides, env.normToPx)
+      ops.guideLines()
     );
     if (res.guides.length > 0) {
       sx = res.x;
@@ -97,7 +97,7 @@ export function primitiveBoxAt(
       ops.anchorSnapTargets(null),
       px,
       py,
-      guideSnapLines(env.guides, env.normToPx)
+      ops.guideLines()
     );
     env.setSnapGuides(res.guides);
     if (res.guides.length > 0) {

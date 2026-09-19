@@ -5,6 +5,7 @@ import type { SavedEasing } from "@/engine/keyframes";
 import type { SaveState } from "@/components/effects/FileNameMenu";
 import type { LayoutTree } from "@/components/effects/layout/model";
 import type { LiveDesign } from "@/lib/live-viewer/design";
+import type { ViewportGuide } from "@/lib/viewport-guides";
 
 // Module-level survival capsule for editor state across a client-side
 // route change (e.g. clicking the docs "i" button).
@@ -50,6 +51,9 @@ export interface EditorSessionSnapshot {
   // Live-link look-and-feel (081426_live-link-designer.md). Null = the
   // project never authored one (absent stays absent on save).
   liveDesign: LiveDesign | null;
+  // Viewport ruler guides (091726_viewport-rulers.md) — per-project data,
+  // carried so a docs round-trip keeps unsaved guides.
+  viewportGuides: ViewportGuide[];
   // Tiled window layout (072726_window-tiling.md M4). Carried by
   // reference — leaf ids survive, so the sticky primary election (and
   // NodeEditor's per-pane camera stash, keyed on leaf ids) restore

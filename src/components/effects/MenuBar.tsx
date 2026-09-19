@@ -147,6 +147,13 @@ export interface MenuBarProps {
   // each viewport from a different terminal node.
   viewportSplit: boolean;
   onToggleViewportSplit: () => void;
+  // Rulers + guides overlay (091726_viewport-rulers.md): the Shift+R
+  // toggle, and "Clear Guides" for the project's guide list (disabled
+  // when there are none).
+  rulersVisible: boolean;
+  onToggleRulers: () => void;
+  canClearGuides: boolean;
+  onClearGuides: () => void;
   // Layout presets for the tiled window system
   // (072726_window-tiling.md), rendered as the Window → Layouts
   // flyout. The list is built-ins ("Default" = canvas left, nodes over
@@ -231,6 +238,10 @@ export default function MenuBar({
   onToggleShowNodeTimings,
   viewportSplit,
   onToggleViewportSplit,
+  rulersVisible,
+  onToggleRulers,
+  canClearGuides,
+  onClearGuides,
   layoutPresets,
   onApplyLayoutPreset,
   onNewLayoutPreset,
@@ -561,6 +572,20 @@ export default function MenuBar({
           label: viewportSplit ? "Exit Split Viewport" : "Split Viewport",
           shortcut: "⇧S",
           onClick: onToggleViewportSplit,
+        },
+        {
+          kind: "item",
+          label: rulersVisible ? "Hide Rulers" : "Show Rulers",
+          shortcut: "⇧R",
+          onClick: onToggleRulers,
+          title:
+            "Rulers along the top and side of the preview, in project pixels.\nDrag out of a ruler to drop a guide; drag a guide (or its ruler marker) to move it, drop it back on a ruler to remove it.\nRight-click a guide to edit its position, mirror it, or delete it.",
+        },
+        {
+          kind: "item",
+          label: "Clear Guides",
+          onClick: onClearGuides,
+          disabled: !canClearGuides,
         },
         {
           // Built-in presets, then the user's saved ones, then the

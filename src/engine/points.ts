@@ -620,3 +620,134 @@ export function pointAttrExists(p: PointsValue, name: string): boolean {
   }
   return false;
 }
+
+// Built-in columns a by-name WRITER can store back into the typed arrays
+// (Attribute Transfer landing `rotation` from another set). Reserved names
+// never become named channels, so a writer that accepts them routes them
+// here. `index` is the row number and `z` / normals would turn a 2D value
+// 3D — neither is writable, and the resolver returns null for them (and
+// for any name that is not a built-in alias).
+export type WritableBuiltinPointColumn =
+  | { field: "position"; axis?: 0 | 1 }
+  | { field: "scale"; axis?: 0 | 1 }
+  | { field: "rotation" }
+  | { field: "group" };
+
+export function writableBuiltinPointColumn(
+  name: string
+): WritableBuiltinPointColumn | null {
+  switch (name.trim()) {
+    case "position":
+      return { field: "position" };
+    case "x":
+    case "position.x":
+    case "position x":
+      return { field: "position", axis: 0 };
+    case "y":
+    case "position.y":
+    case "position y":
+      return { field: "position", axis: 1 };
+    case "scale":
+      return { field: "scale" };
+    case "scale.x":
+    case "scale x":
+    case "sx":
+      return { field: "scale", axis: 0 };
+    case "scale.y":
+    case "scale y":
+    case "sy":
+      return { field: "scale", axis: 1 };
+    case "rotation":
+      return { field: "rotation" };
+    case "group":
+      return { field: "group" };
+  }
+  return null;
+}
+
+// Components per element: the two-axis columns (`position` / `scale`
+// without an axis) pack as [x, y]; everything else is one float.
+export function builtinPointColumnArity(
+  col: WritableBuiltinPointColumn
+): 1 | 2 {
+  return (col.field === "position" || col.field === "scale") &&
+    col.axis === undefined
+    ? 2
+    : 1;
+}
+
+// Pack a built-in column into a fresh interleaved Float32Array
+// (count × arity — the PointAttribute.data layout), using the defaults
+// readPointAttr uses for absent optional arrays (scale 1, rotation and
+// group 0).
+export function readBuiltinPointColumn(
+  p: PointsValue,
+  col: WritableBuiltinPointColumn
+): Float32Array {
+  const n = p.count;
+  const out = new Float32Array(n * builtinPointColumnArity(col));
+  switch (col.field) {
+    case "position":
+      if (col.axis === undefined) out.set(p.positions.subarray(0, n * 2));
+      else for (let i = 0; i < n; i++) out[i] = p.positions[i * 2 + col.axis];
+      break;
+    case "scale":
+      if (col.axis === undefined) {
+        for (let i = 0; i < n; i++) {
+          out[i * 2] = getScaleX(p, i);
+          out[i * 2 + 1] = getScaleY(p, i);
+        }
+      } else if (col.axis === 0) {
+        for (let i = 0; i < n; i++) out[i] = getScaleX(p, i);
+      } else {
+        for (let i = 0; i < n; i++) out[i] = getScaleY(p, i);
+      }
+      break;
+    case "rotation":
+      for (let i = 0; i < n; i++) out[i] = getRotation(p, i);
+      break;
+    case "group":
+      for (let i = 0; i < n; i++) out[i] = getGroupIndex(p, i);
+      break;
+  }
+  return out;
+}
+
+// Store a packed column (as readBuiltinPointColumn lays it out) into a
+// copy of `p`. A single-axis write keeps the other axis (or its default —
+// an absent scales array reads as 1); `group` rounds to an integer tag.
+// `p` is never mutated.
+export function withBuiltinPointColumn(
+  p: PointsValue,
+  col: WritableBuiltinPointColumn,
+  data: Float32Array
+): PointsValue {
+  const n = p.count;
+  switch (col.field) {
+    case "position": {
+      const positions = new Float32Array(p.positions.subarray(0, n * 2));
+      if (col.axis === undefined) positions.set(data.subarray(0, n * 2));
+      else for (let i = 0; i < n; i++) positions[i * 2 + col.axis] = data[i];
+      return copyPointsWith(p, { positions });
+    }
+    case "scale": {
+      const scales = new Float32Array(n * 2);
+      for (let i = 0; i < n; i++) {
+        scales[i * 2] = getScaleX(p, i);
+        scales[i * 2 + 1] = getScaleY(p, i);
+      }
+      if (col.axis === undefined) scales.set(data.subarray(0, n * 2));
+      else for (let i = 0; i < n; i++) scales[i * 2 + col.axis] = data[i];
+      return copyPointsWith(p, { scales });
+    }
+    case "rotation":
+      return copyPointsWith(p, {
+        rotations: new Float32Array(data.subarray(0, n)),
+      });
+    case "group": {
+      const groupIndices = new Int32Array(n);
+      for (let i = 0; i < n; i++) groupIndices[i] = Math.round(data[i]);
+      return copyPointsWith(p, { groupIndices });
+    }
+  }
+}

@@ -11,7 +11,8 @@ import { DEFAULT_BRUSH_SETTINGS } from "@/engine/types";
 import type { AnimationMap, SavedEasing } from "@/engine/keyframes";
 import type { ClipBlock } from "@/engine/clips";
 import { getNodeDef } from "@/engine/registry";
-import { withMaskInput } from "@/engine/conventions";
+import { expandMergeLayerControls, withMaskInput } from "@/engine/conventions";
+import { migrateGrainParams } from "@/engine/grain";
 import {
   MISSING_MEDIA_SUFFIX,
   readStoredMediaFile,
@@ -115,7 +116,14 @@ import { FRAME_XY_PROPS, newCompositionId } from "@/state/graph";
 // because an older build's re-save drops the `cloud` field — recoverable
 // (object + ledger survive) but silently back to relink. See
 // specdocs/081626_r2-media-storage.md §7.1.
-export const CURRENT_SCHEMA = 11;
+//
+// v12 — Cursor's primary output is a SPLINE (a circle of `radius` at the
+// pointer, or the wired `shape` re-centred on it); the circular falloff
+// field moved to `aux:image` and sits on a transparent background (alpha =
+// falloff) instead of opaque black. Loading a ≤v11 save re-points every wire
+// out of a Cursor's primary at `out:aux:image` (see deserializeGraph) so old
+// graphs keep receiving the field.
+export const CURRENT_SCHEMA = 12;
 
 // Thrown when a project was saved by a NEWER client than this one. Without
 // this guard the load silently drops fields the older client doesn't know,
@@ -160,6 +168,9 @@ export interface SavedNode {
   // Names of params marked as user-controllable in an exported app. See
   // NodeDataPayload for the runtime shape. Plain JSON, no special handling.
   controlParams?: string[];
+  // Node-level control: the node's on-canvas handles ship to the live link
+  // (091726_live-gizmos.md). Additive/optional; absent on older saves.
+  controlGizmo?: boolean;
   // User-defined slider range overrides — see NodeDataPayload for
   // the runtime shape. Plain JSON, no special handling needed.
   paramOverrides?: Record<
@@ -283,6 +294,13 @@ export interface SavedProject {
   // older builds ignore it and drop it on resave, losing only the
   // design.
   liveDesign?: unknown;
+  // Viewport ruler guides (091726_viewport-rulers.md). ADDITIVE and opaque
+  // here — lib/viewport-guides.ts owns the shape (fromSavedViewportGuides
+  // validates untrusted blobs) and EffectsApp attaches/applies it around
+  // serialize/deserialize like `layout` above; omitted when the project
+  // has no guides. Older builds ignore it and drop it on resave, losing
+  // only the guides. Live viewer / exported apps never read it.
+  viewportGuides?: unknown;
 }
 
 // --- image helpers -------------------------------------------------------
@@ -956,6 +974,7 @@ export async function serializeGraph(
       params: await serializeParams(n.data.defType, n.data.params, bundledFamilies),
       exposedParams: n.data.exposedParams,
       controlParams: n.data.controlParams,
+      controlGizmo: n.data.controlGizmo || undefined,
       paramOverrides: n.data.paramOverrides,
       animation: n.data.animation,
       clips: n.data.clips,
@@ -1030,6 +1049,13 @@ function migrateLoadedParams(
     params.start_y = 0.5 - 0.5 * dy;
     params.end_x = 0.5 + 0.5 * dx;
     params.end_y = 0.5 + 0.5 * dy;
+  }
+  if (defType === "grain") {
+    // Grain v2 (specdocs/091626_grain-node-v2.md): new nodes default to the
+    // integer-hash `fine` model with frame-locked motion; saved nodes keep
+    // the original float-hash shader under `classic` so they render
+    // pixel-identical, a Seed wired to Scene Time included.
+    migrateGrainParams(params);
   }
   if (defType === "gaussian-blur" && params.linearize === undefined) {
     // Gaussian Blur merged into the unified Blur node (spec
@@ -1338,11 +1364,19 @@ export async function deserializeGraph(
           : isSrcPlace
             ? (remapSourcePlacementList(sn.exposedParams) ?? [])
             : (sn.exposedParams ?? []),
-        controlParams: isInstXform
-          ? (remapUniformScaleList(sn.controlParams) ?? [])
-          : isSrcPlace
-            ? (remapSourcePlacementList(sn.controlParams) ?? [])
-            : (sn.controlParams ?? []),
+        // Pre-2026-09-16 saves control a Merge's whole layer stack via the
+        // literal "layers" entry; the editor now toggles per layer, so
+        // expand it to one `mlayer:` key per layer (engine/conventions).
+        controlParams: expandMergeLayerControls(
+          def?.params ?? [],
+          params,
+          isInstXform
+            ? (remapUniformScaleList(sn.controlParams) ?? [])
+            : isSrcPlace
+              ? (remapSourcePlacementList(sn.controlParams) ?? [])
+              : (sn.controlParams ?? [])
+        ),
+        controlGizmo: sn.controlGizmo === true ? true : undefined,
         paramOverrides: isInstXform
           ? remapUniformScaleRecord(sn.paramOverrides)
           : isSrcPlace
@@ -1505,6 +1539,22 @@ export async function deserializeGraph(
             },
           };
         }
+      }
+    }
+  }
+  // v12 migration: Cursor's primary output became a spline (a circle at the
+  // pointer, or the wired `shape`) and its falloff field moved to
+  // `aux:image`. Every ≤v11 wire out of a Cursor's primary carried that
+  // field, so re-point it at the aux — same pixels, now on a transparent
+  // background instead of opaque black.
+  if ((saved.schemaVersion ?? 1) < 12) {
+    const cursorIds = new Set(
+      saved.nodes.filter((n) => n.defType === "cursor").map((n) => n.id)
+    );
+    for (const e of edges) {
+      if (!cursorIds.has(e.source)) continue;
+      if (e.sourceHandle == null || e.sourceHandle === "out:primary") {
+        e.sourceHandle = "out:aux:image";
       }
     }
   }

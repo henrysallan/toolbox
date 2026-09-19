@@ -393,6 +393,16 @@ src/
                           a fixed-height box since a stack has no height
                           to fill. Group-collapse state stays on the panel
                           (survives re-select); the search box is per block.
+                          Option-linked editing: a row edit STARTED with
+                          Option held (pointerdown / keydown in the row,
+                          portaled popovers included — ParamRow arms a ref,
+                          a plain press on the row's own DOM disarms) also
+                          writes the same-name, same-type param on every
+                          other stacked node (linkPeers in NodeParamsBlock;
+                          def-hidden and wire-driven peers skipped) under
+                          one shared coalesce key, so the gesture is one
+                          undo. Rows tag themselves ⌥ ×N while Option is
+                          down (state/option-key.ts, per-window store).
     EffectNode.tsx        The node chrome on the graph canvas (sockets, header, +).
                           Also hosts ON-NODE param controls (first: the Color
                           node's per-output swatches → ColorPickerPopover, a
@@ -488,6 +498,14 @@ src/
                           re-renders only these leaves; actions read
                           playbackClock.get().tick at event time).
     *Overlay.tsx, TransformGizmo.tsx, PrimitiveGizmo.tsx   on-canvas editing.
+    ViewportRulers.tsx    Rulers + guides (091726_viewport-rulers.md): px
+                          rulers on the primary viewport's top + side edges
+                          (Shift+R), drag-out guides stored as canvas
+                          fractions on SavedProject.viewportGuides. Pure
+                          model + snap helpers in lib/viewport-guides.ts;
+                          TransformGizmo / PrimitiveGizmo / the spline snap
+                          service take the guide list as a prop and snap
+                          edges, centres and points to it.
                           spline-editor/: the Spline Draw overlay as a module
                           directory (071926_spline-draw-authoring-upgrade.md
                           M0) — SplineEditorOverlay.tsx owns state/effects/
@@ -692,7 +710,19 @@ src/
                           Link…, full-screen designer w/ iframe-isolated
                           preview). viewer-export.ts = viewer-facing
                           image/video/gif capture, gated per-link by
-                          design.export. design-presets.css = the style
+                          design.export. LiveGizmoLayer.tsx = the on-canvas
+                          handles (091726_live-gizmos.md): the editor's
+                          TransformGizmo / PrimitiveGizmo / GradientOverlay
+                          hosted over the live canvas for nodes whose
+                          `controlGizmo` flag ships them (manifest.gizmos),
+                          one visibility row each in the panel; eligibility
+                          + wired-away rules in lib/live-gizmo.ts. Pan /
+                          zoom (091826_live-pan-zoom.md): design.layout.
+                          panZoom puts a toggle button beside the panel's
+                          Editor link that binds the editor's own viewport
+                          gestures (lib/viewport-gestures.ts, moved out of
+                          EffectsApp) to the live canvas; off = reset.
+                          design-presets.css = the style
                           packs (spec M4, 2026-09-15): the shared controls
                           (bar slider, NumberField, Dropdown) read `--ps-*`
                           custom properties with their stock values as
@@ -1124,7 +1154,8 @@ To add a node:
   no param def (per-anchor spline vec2s, gradient-point / ramp-stop
   scalars) infer their shape from the values (inferValueShape). Custom
   bezier and saved easings stay scalar-only (vec evaluation runs through
-  easeOf and ignores handles), so component views hide those options.
+  easeOf and ignores handles), so component views hide those options;
+  the type-agnostic user shape is `cubicBezier` (easing editor, below).
   Colors / splines / step-only params don't graph and say so. The
   editors seed their keyframe selection from the lifted state on mount
   (tab round-trips keep the selection), and the graph seeds its own
@@ -1147,6 +1178,30 @@ To add a node:
   the graph header's easing dropdown; normalized like CSS cubic-bezier,
   persists on `SavedProject.savedEasings`, applied by denormalizing onto
   each selected key's outgoing segment).
+  **Easing editor** (specdocs/091726_easing-editor.md): the `easing`
+  button in the Tracks dock header opens a unit-square curve overlay in
+  the editor's upper-right corner. It shows the FIRST selected pair's
+  easing (a pair = two selected keys adjacent in their lane; first =
+  earliest in time, then topmost lane) and writes one shape to EVERY
+  selected pair across lanes as `easingOut: "cubicBezier"` +
+  `Keyframe.bezier` — CSS cubic-bezier control points evaluated as a time
+  remap (`cubicBezierEase` in interpolate()), so unlike `customBezier` it
+  applies to vec / color / spline lanes too and survives value edits.
+  Anchors are locked at (0,0)/(1,1); handle x clamps to [0,1], y
+  overshoots freely; presets with a cubic equivalent seed the handles
+  from `EASING_PRESET_BEZIER` (exact for quad / cubic, CSS fits for
+  in-out / sine), the rest (expo / back / bounce / elastic / hold) draw a
+  dashed ghost until the first drag. Not a picker tile (it needs curve
+  data); the Graph Editor draws it read-only for now. A preset shelf
+  under the graph carries every built-in tile (click = write the named
+  preset to the pairs) and the project's saved easings (click = apply the
+  shape, `+` saves the current curve, right-click renames / deletes);
+  gestures follow the node editor's (scroll pans, ⌘-scroll / mouse wheel
+  zooms, middle-drag pans, Ctrl/⌘ + middle-drag zooms) and act on
+  whatever the pointer is over; the
+  bottom-left corner resizes it, and a short dock shrinks the square so
+  the shelf never clips. Pure half in timeline/easing-editor.ts, guard
+  scripts/check-easing-editor.mts.
 - **Per-point time is a channel** (specdocs/090426_stagger-node.md): the
   Stagger node (`stagger`, point/modifier) gives each point a start time
   from its DENSE rank in an ordering (index / reverse / center / edges /
@@ -1712,6 +1767,17 @@ To add a node:
   prop); LiveClient's dummy nodes must copy `paramOverrides` through too.
   Before 2026-09-15 both were missing, so /live and exported-app sliders
   kept the stock range whatever the editor showed. Same gate.
+  On-canvas handles (091726_live-gizmos.md): a node-level Control toggle
+  (`controlGizmo`, beside the node name in the parameter panel) ships a
+  node's transform / primitive / gradient gizmo as `manifest.gizmos`; the
+  viewer renders a visibility row per gizmo in the Controls section
+  (design ref `<nodeId>::@gizmo`, so order / rename apply) and
+  LiveGizmoLayer hosts the editor's overlay components over the live
+  canvas while it's on — writes ride the same per-session onParamChange
+  the sliders use. Eligibility and the wired-away rules (a Transform with
+  `in:transform` wired, a primitive's `hideWhenWired`) are the editor's
+  own, in lib/live-gizmo.ts; the export template's vite config aliases the
+  three overlay components in. Same gate.
   The per-project **LiveDesign** block (081426_live-link-designer.md)
   rides `SavedProject.liveDesign` (additive, layout-block pattern —
   EffectsApp attaches/applies around serialize) and reaches the viewers

@@ -36,14 +36,22 @@ import "@/lib/live-viewer/styles.css";
 import type { NodeDataPayload } from "@/state/graph";
 import { buildExportManifest } from "@/lib/export-manifest";
 import { parseTargetHandleKind } from "@/engine/graph-helpers";
+import { computeActiveNodeSet } from "@/engine/active-branch";
+import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import {
   DEFAULT_LIVE_DESIGN,
   DROPDOWN_PRESETS,
   FONT_PRESETS,
+  GIZMO_REF_PARAM,
   NUMERIC_PRESETS,
+  ROW_GAP_RANGE,
   SLIDER_PRESETS,
   TRANSPORT_PRESETS,
   orderControlRefs,
+  panelWidthToPct,
+  pctToPanelWidth,
+  pctToUiScale,
+  uiScaleToPct,
   type LiveCanvasMode,
   type LiveCornerRadius,
   type LiveDesign,
@@ -52,6 +60,7 @@ import {
   type LivePanelSide,
   type LiveThemeMode,
 } from "@/lib/live-viewer/design";
+import { editorPathForSlug } from "@/lib/project-url";
 import { setGatewayInputLock } from "@/lib/shortcut-freeze";
 import { AspectLock, ResField, useAspectLock } from "../res-controls";
 import { DesignerPreview } from "./DesignerPreview";
@@ -59,7 +68,11 @@ import { DesignerPreview } from "./DesignerPreview";
 const ROW_H = 26;
 
 interface ControlRowEntry {
-  kind: "file" | "control";
+  // gizmo = a node's on-canvas handles (091726_live-gizmos.md): one
+  // visibility row in the viewer's Controls section; its "param" is the
+  // reserved GIZMO_REF_PARAM, so rowRef yields the same design ref
+  // ControlPanel keys on.
+  kind: "file" | "control" | "gizmo";
   nodeId: string;
   paramName: string;
   defaultLabel: string;
@@ -100,6 +113,14 @@ export interface LiveLinkDesignerProps {
    *  top edge sits flush against its bottom. */
   topInset: number;
   projectName: string;
+  /** For the preview panel's identity row, which /live renders above the
+   *  transport as "name · by author · #code". The editor only carries
+   *  the author label for rows the viewer doesn't own (EffectsApp's
+   *  currentProject), so an own project previews without "by …"; the
+   *  slug is null until the project has a cloud row, which drops the
+   *  code the same way an unpublished project has no link yet. */
+  authorName?: string | null;
+  publicSlug?: string | null;
   onSave: (design: LiveDesign) => void;
   onClose: () => void;
   /**
@@ -120,6 +141,8 @@ export default function LiveLinkDesigner({
   loopSecs,
   topInset,
   projectName,
+  authorName = null,
+  publicSlug = null,
   onSave,
   onClose,
   onDraftChange,
@@ -149,6 +172,18 @@ export default function LiveLinkDesigner({
     }).manifest;
   }, [nodes, edges, projectName, outputNodeId, canvasRes]);
 
+  // Same shape LiveClient hands the real viewer. The Editor link is
+  // display-only in the preview (DesignerPreview keeps anchors inert).
+  const panelTitle = useMemo(
+    () => ({
+      name: projectName,
+      authorName,
+      slug: publicSlug,
+      editorHref: publicSlug ? editorPathForSlug(publicSlug) : null,
+    }),
+    [projectName, authorName, publicSlug]
+  );
+
   // Ephemeral preview values — seeded from the graph, never written back.
   const [previewParams, setPreviewParams] = useState(() => {
     const m = new Map<string, Record<string, unknown>>();
@@ -169,6 +204,25 @@ export default function LiveLinkDesigner({
     []
   );
 
+  // Ephemeral gizmo visibility for the preview's rows (091726_live-gizmos.md)
+  // — the set switched ON, empty at load like the real viewer. Flip them to
+  // feel the chrome; nothing is written to the project and the poster
+  // draws no handles.
+  const [previewShownGizmos, setPreviewShownGizmos] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const onPreviewToggleGizmo = useCallback(
+    (nodeId: string, visible: boolean) => {
+      setPreviewShownGizmos((prev) => {
+        const next = new Set(prev);
+        if (visible) next.add(nodeId);
+        else next.delete(nodeId);
+        return next;
+      });
+    },
+    []
+  );
+
   const drivenParams = useMemo(() => {
     const set = new Set<string>();
     for (const e of edges) {
@@ -178,6 +232,35 @@ export default function LiveLinkDesigner({
     }
     return set;
   }, [edges]);
+
+  // Active-branch filter for the preview (engine/active-branch.ts) — the
+  // same hide-the-unpicked-branch rule the real viewer applies, fed the
+  // preview's ephemeral values so flipping a Switch pill here hides the
+  // other branch's rows too. The reorder / rename list below stays
+  // complete: authoring covers every branch.
+  const activeNodeIds = useMemo(() => {
+    if (!outputNodeId) return undefined;
+    const graphNodes: GraphNode[] = nodes.map((n) => ({
+      id: n.id,
+      type: n.data.defType,
+      parentId: n.data.parentId,
+      params: n.data.params,
+      exposedParams: n.data.exposedParams,
+      animation: n.data.animation,
+      clips: n.data.clips,
+      bypassed: n.data.bypassed,
+    }));
+    const graphEdges: GraphEdge[] = edges.map((e) => ({
+      id: e.id,
+      source: e.source,
+      sourceHandle: e.sourceHandle ?? "",
+      target: e.target,
+      targetHandle: e.targetHandle ?? "",
+    }));
+    return computeActiveNodeSet(graphNodes, graphEdges, outputNodeId, {
+      indexOf: (id) => previewParams.get(id)?.index,
+    });
+  }, [nodes, edges, outputNodeId, previewParams]);
 
   // The reorder/rename list: one order spans both panel sections
   // (File Inputs + Controls), matching how the viewer sorts them.
@@ -189,6 +272,14 @@ export default function LiveLinkDesigner({
         nodeId: fi.nodeId,
         paramName: fi.paramName,
         defaultLabel: `${fi.nodeName} — ${fi.label}`,
+      })),
+      // Gizmo rows lead the Controls section by default (ControlPanel's
+      // rule); listed here in the same position so the list matches.
+      ...(manifest.gizmos ?? []).map((g) => ({
+        kind: "gizmo" as const,
+        nodeId: g.nodeId,
+        paramName: GIZMO_REF_PARAM,
+        defaultLabel: `${g.nodeName} — Handles`,
       })),
       ...manifest.controls.map((c) => ({
         kind: "control" as const,
@@ -458,6 +549,33 @@ export default function LiveLinkDesigner({
               />
             </Field>
           )}
+          {/* Panel width + UI scale read as 0–100 % POSITIONS (design.ts
+              calibration): today's 280 px is 25 %, today's size is 50 %.
+              The tooltip carries the real unit for anyone who wants it. */}
+          <Field
+            label={`Panel width · ${Math.round(
+              panelWidthToPct(working.layout.panelWidth)
+            )}%`}
+          >
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={Math.round(panelWidthToPct(working.layout.panelWidth))}
+              title={`${working.layout.panelWidth}px`}
+              onChange={(e) =>
+                update((d) => ({
+                  ...d,
+                  layout: {
+                    ...d.layout,
+                    panelWidth: pctToPanelWidth(Number(e.target.value)),
+                  },
+                }))
+              }
+              style={{ width: "100%" }}
+            />
+          </Field>
           <Field label="Corners">
             <PillRow<LiveCornerRadius>
               value={working.layout.cornerRadius}
@@ -474,6 +592,75 @@ export default function LiveLinkDesigner({
               }
             />
           </Field>
+          <Field
+            label={`UI scale · ${Math.round(
+              uiScaleToPct(working.layout.uiScale)
+            )}%`}
+          >
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={Math.round(uiScaleToPct(working.layout.uiScale))}
+              title={`${working.layout.uiScale.toFixed(2)}×`}
+              onChange={(e) =>
+                update((d) => ({
+                  ...d,
+                  layout: {
+                    ...d.layout,
+                    uiScale: pctToUiScale(Number(e.target.value)),
+                  },
+                }))
+              }
+              style={{ width: "100%" }}
+            />
+          </Field>
+          {/* Spacing between parameter rows — px (pre-zoom), no %
+              calibration: 10px is today's row margin. */}
+          <Field label={`Row gap · ${working.layout.rowGap}px`}>
+            <input
+              type="range"
+              min={ROW_GAP_RANGE.min}
+              max={ROW_GAP_RANGE.max}
+              step={1}
+              value={working.layout.rowGap}
+              onChange={(e) =>
+                update((d) => ({
+                  ...d,
+                  layout: { ...d.layout, rowGap: Number(e.target.value) },
+                }))
+              }
+              style={{ width: "100%" }}
+            />
+          </Field>
+          {/* Pan / zoom (091826_live-pan-zoom.md): a button in the panel's
+              title row lets visitors pan and zoom the canvas with the
+              editor's gestures. Off = today's fixed framing. The preview's
+              button really pans / zooms the poster. */}
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={working.layout.panZoom}
+              onChange={(e) =>
+                update((d) => ({
+                  ...d,
+                  layout: { ...d.layout, panZoom: e.target.checked },
+                }))
+              }
+            />
+            <span style={{ color: "var(--tb-n-12)" }}>Pan / zoom control</span>
+          </label>
+          <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
+            Visitors get a button beside Editor to pan and zoom the canvas.
+          </div>
         </Section>
 
         <Section title="Theme">
@@ -525,6 +712,29 @@ export default function LiveLinkDesigner({
                 update((d) => ({
                   ...d,
                   theme: { ...d.theme, panelBlur: Number(e.target.value) },
+                }))
+              }
+              style={{ width: "100%" }}
+            />
+          </Field>
+          <Field
+            label={`Text brightness · ${Math.round(
+              working.theme.textBrightness * 100
+            )}%`}
+          >
+            <input
+              type="range"
+              min={0.2}
+              max={1}
+              step={0.01}
+              value={working.theme.textBrightness}
+              onChange={(e) =>
+                update((d) => ({
+                  ...d,
+                  theme: {
+                    ...d.theme,
+                    textBrightness: Number(e.target.value),
+                  },
                 }))
               }
               style={{ width: "100%" }}
@@ -670,8 +880,9 @@ export default function LiveLinkDesigner({
           >
             {rows.length === 0 && (
               <div style={{ color: "var(--tb-n-9)", padding: "6px 2px" }}>
-                No controls exposed yet — mark params as controls in the
-                editor’s parameter panel.
+                No controls exposed yet — mark params as controls (or a
+                node’s on-canvas handles, via the toggle beside its name)
+                in the editor’s parameter panel.
               </div>
             )}
             {rows.map((row, i) => {
@@ -715,7 +926,11 @@ export default function LiveLinkDesigner({
                       letterSpacing: "0.05em",
                     }}
                   >
-                    {row.kind === "file" ? "file" : "ctl"}
+                    {row.kind === "file"
+                      ? "file"
+                      : row.kind === "gizmo"
+                        ? "gui"
+                        : "ctl"}
                   </span>
                   <input
                     value={working.controls.labels[ref] ?? ""}
@@ -858,6 +1073,10 @@ export default function LiveLinkDesigner({
             paramValues={previewParams}
             drivenParams={drivenParams}
             onParamChange={onPreviewParamChange}
+            activeNodeIds={activeNodeIds}
+            title={panelTitle}
+            shownGizmos={previewShownGizmos}
+            onToggleGizmo={onPreviewToggleGizmo}
           />
         ) : (
           <div

@@ -390,6 +390,16 @@ const SYSTEM_PROMPT =
   "For motion, use screenshot_strip with a frame " +
   "count that represents the movement, and prefer get_keyframes over " +
   "screenshots when the question is numeric.\n\n" +
+  "GRAPH → GLSL. When asked to convert, fuse, bake, or port a node chain " +
+  "to GLSL / a shader: call plan_glsl_translation FIRST (it classifies the " +
+  "upstream nodes, cuts the fusable region at the 4-sampler cap, proposes " +
+  "the frames to compare, and returns the edit_group skeleton), read every " +
+  "doc it lists with get_glsl_docs before writing code, put the shader " +
+  "into the skeleton's add_node op, run get_shader_errors before the first " +
+  "screenshot, and judge parity against the ORIGINAL node at the plan's " +
+  "frames — numbers and diff shapes, not a glance. The new node lands " +
+  "beside the originals, unwired from Output; offer the swap separately. " +
+  "Relay a plan `refusal` instead of improvising around it.\n\n" +
   "NEVER guess node type strings, and never probe for them by inserting " +
   "throwaway recipes; every type you use must come from get_catalog. " +
   "mode=\"full\" is large and will usually spill to a file — prefer " +

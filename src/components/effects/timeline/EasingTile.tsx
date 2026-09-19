@@ -1,15 +1,24 @@
 "use client";
 
 // One easing-preset preview tile (the curve thumbnail button used by the
-// easing pickers in TrackEditor, LayersEditor and GraphEditor — grid
-// geometry stays with each menu; the tile itself is shared).
+// easing pickers in TrackEditor, LayersEditor and GraphEditor, and by the
+// easing overlay's preset tray — grid geometry stays with each menu; the
+// tile itself is shared).
 
 import { useState } from "react";
-import { easingPathFor, type EasingPreset } from "@/engine/keyframes";
+import {
+  bezierPathFor,
+  easingPathFor,
+  type BezierEasing,
+  type EasingPreset,
+} from "@/engine/keyframes";
 import { COLOR_BORDER } from "./theme";
 
 export interface EasingTileProps {
   preset: EasingPreset;
+  // A user shape (saved easing / cubicBezier) to draw instead of the
+  // preset's curve — the tray's tiles.
+  bezier?: BezierEasing;
   size: number;
   disabled: boolean;
   label: string;
@@ -17,15 +26,17 @@ export interface EasingTileProps {
   // the clicked keyframe's easing).
   active?: boolean;
   onClick(): void;
+  onContextMenu?(e: React.MouseEvent<HTMLButtonElement>): void;
 }
 
 export function EasingTile(props: EasingTileProps) {
-  const { preset, size, disabled, label, active, onClick } = props;
+  const { preset, bezier, size, disabled, label, active, onClick, onContextMenu } =
+    props;
   const [hover, setHover] = useState(false);
   const inset = 4;
   const w = size - inset * 2;
   const h = size - inset * 2;
-  const path = easingPathFor(preset, w, h, 40);
+  const path = bezier ? bezierPathFor(bezier, w, h) : easingPathFor(preset, w, h, 40);
   return (
     <button
       type="button"
@@ -34,6 +45,7 @@ export function EasingTile(props: EasingTileProps) {
       onClick={() => {
         if (!disabled) onClick();
       }}
+      onContextMenu={onContextMenu}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{

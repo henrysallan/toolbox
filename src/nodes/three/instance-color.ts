@@ -6,7 +6,11 @@ import type {
 } from "@/engine/types";
 import type { InstancesValue } from "@/engine/three-types";
 import {
-  sampleColorRampRgba01,
+  makeColorRampSampler,
+  normalizeRampInterp,
+  normalizeRampSpace,
+  rampInterpParam,
+  rampSpaceParam,
   type ColorRampInterp,
   type ColorRampStop,
 } from "@/engine/color-ramp";
@@ -142,14 +146,16 @@ export const instanceColor3DNode: NodeDefinition = {
       ] as ColorRampStop[],
       visibleIf: (p) => p.mode === "gradient",
     },
-    {
+    rampInterpParam({
       name: "ramp_interp",
       label: "Interpolation",
-      type: "enum",
-      options: ["linear", "ease", "constant"],
-      default: "linear",
       visibleIf: (p) => p.mode === "gradient",
-    },
+    }),
+    rampSpaceParam({
+      name: "ramp_space",
+      label: "Color space",
+      visibleIf: (p) => p.mode === "gradient",
+    }),
     // Gradient axis: +Y (bottom → top) rotated by these angles — e.g.
     // Z = 90° tips it onto −X for a horizontal sweep.
     { name: "rot_x", label: "Rotate X (°)", type: "scalar", min: -180, max: 180, step: 0.1, default: 0, visibleIf: (p) => p.mode === "gradient" },
@@ -268,15 +274,15 @@ export const instanceColor3DNode: NodeDefinition = {
       stops = Array.isArray(params.ramp)
         ? (params.ramp as ColorRampStop[])
         : [];
-      interp = ((params.ramp_interp as string) ?? "linear") as ColorRampInterp;
-      // Bake the ramp once per eval (the sampler re-sorts stops per call —
-      // fine 256×, not fine per-instance).
+      interp = normalizeRampInterp(params.ramp_interp);
+      // Bake the ramp once per eval (one sampler, 256 lookups — never
+      // per-instance).
+      const sample = makeColorRampSampler(stops, {
+        interp,
+        space: normalizeRampSpace(params.ramp_space),
+      });
       for (let k = 0; k < RAMP_LUT_N; k++) {
-        const [r, g, b2] = sampleColorRampRgba01(
-          stops,
-          k / (RAMP_LUT_N - 1),
-          interp
-        );
+        const [r, g, b2] = sample(k / (RAMP_LUT_N - 1));
         rampLut[k * 3] = r;
         rampLut[k * 3 + 1] = g;
         rampLut[k * 3 + 2] = b2;

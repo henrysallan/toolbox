@@ -9,6 +9,7 @@
 import type { NodeDefinition, NodeFacts, ParamDef, ParamType } from "./types";
 import { ASPECT_SPACE_DOC } from "./aspect";
 import { vetColorRampStops } from "./color-ramp";
+import { isSwitchSlot } from "./graph-helpers";
 
 // Param types the LLM may SET. These are the plain-JSON, generically
 // rendered types (ParamPanel renders them without a bespoke editor and they
@@ -27,6 +28,10 @@ export const SETTABLE_PARAM_TYPES: ReadonlySet<ParamType> = new Set([
   "enum",
   "string",
   "color_ramp",
+  // Switch per-input names, `{ in0: "Day", in1: "Night" }` — plain JSON
+  // keyed by slot socket, so a recipe can name the states of a toggle-mode
+  // Switch it just wired.
+  "slot_labels",
 ]);
 
 // Vet an LLM-supplied VALUE against its ParamDef. The builder/edit paths
@@ -37,6 +42,8 @@ export const SETTABLE_PARAM_TYPES: ReadonlySet<ParamType> = new Set([
 // repair loop fixes them); out-of-hard-range scalars are clamped like the
 // UI's sliders rather than rejected.
 const MAX_STRING_LEN = 20_000;
+// A Switch input name has to fit one segment of a three-way pill.
+const MAX_LABEL_LEN = 64;
 const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
 function finiteVec(v: unknown, arity: number): v is number[] {
@@ -110,6 +117,24 @@ export function vetParamValue(
         : { ok: false, reason: "expected [x, y, z, w] finite numbers" };
     case "color_ramp":
       return vetColorRampStops(value);
+    case "slot_labels": {
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        return {
+          ok: false,
+          reason: 'expected { "in0": "name", "in1": "name", … } keyed by slot',
+        };
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        if (!isSwitchSlot(k))
+          return { ok: false, reason: `"${k}" is not a slot socket (in0, in1, …)` };
+        if (typeof v !== "string")
+          return { ok: false, reason: `"${k}": expected a string name` };
+        if (v.length > MAX_LABEL_LEN)
+          return { ok: false, reason: `"${k}": name too long (max ${MAX_LABEL_LEN})` };
+        out[k] = v;
+      }
+      return { ok: true, value: out };
+    }
     default:
       // Not an LLM-settable type — callers gate on SETTABLE_PARAM_TYPES
       // before vetting, so this is unreachable in practice.

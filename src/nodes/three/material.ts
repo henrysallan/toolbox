@@ -1,7 +1,13 @@
 import type { ImageValue, NodeDefinition } from "@/engine/types";
 import type { GeometryValue } from "@/engine/three-types";
 import { makeMaterialDesc } from "@/engine/three-geometry";
-import type { ColorRampInterp, ColorRampStop } from "@/engine/color-ramp";
+import {
+  normalizeRampInterp,
+  normalizeRampSpace,
+  rampInterpParam,
+  rampSpaceParam,
+  type ColorRampStop,
+} from "@/engine/color-ramp";
 
 // =====================================================================
 // Material — flow-through PBR shader node (081026 spec §6.1)
@@ -236,14 +242,17 @@ export const material3DNode: NodeDefinition = {
       ] as ColorRampStop[],
       visibleIf: (p) => p.shading === "toon",
     },
-    {
+    rampInterpParam({
       name: "toon_interp",
       label: "Band interpolation",
-      type: "enum",
-      options: ["constant", "linear", "ease"],
       default: "constant",
       visibleIf: (p) => p.shading === "toon",
-    },
+    }),
+    rampSpaceParam({
+      name: "toon_space",
+      label: "Band color space",
+      visibleIf: (p) => p.shading === "toon",
+    }),
     {
       name: "alpha",
       label: "Alpha",
@@ -388,8 +397,8 @@ export const material3DNode: NodeDefinition = {
               stops: Array.isArray(params.toon_ramp)
                 ? (params.toon_ramp as ColorRampStop[])
                 : [],
-              interp: ((params.toon_interp as string) ??
-                "constant") as ColorRampInterp,
+              interp: normalizeRampInterp(params.toon_interp ?? "constant"),
+              space: normalizeRampSpace(params.toon_space),
             }
           : undefined,
       // Wired bump map wins; otherwise keep an upstream Bump node's

@@ -31,6 +31,22 @@ export interface ExportManifestControl {
   def: ParamDef;
 }
 
+// Which editor overlay draws a shipped on-canvas GUI
+// (specdocs/091726_live-gizmos.md): the TRS+pivot transform gizmo, the
+// shape-primitive box / point handles, or the gradient handles.
+export type LiveGizmoKind = "transform" | "primitive" | "gradient";
+
+// One node whose on-canvas handles ship to the live link (the node-level
+// Control toggle). The viewer renders a visibility row for it and, while
+// visible, the overlay over the canvas. `nodeName` shares the dedupe
+// counter with the node's param controls ("Transform (2)").
+export interface ExportManifestGizmo {
+  nodeId: string;
+  nodeName: string;
+  defType: string;
+  kind: LiveGizmoKind;
+}
+
 export interface ExportManifest {
   appName: string;
   description?: string;
@@ -38,6 +54,9 @@ export interface ExportManifest {
   canvasRes: [number, number];
   fileInputs: ExportManifestFileInput[];
   controls: ExportManifestControl[];
+  // On-canvas handles (091726_live-gizmos.md). Additive — a blob from
+  // before the field renders no gizmo rows; schemaVersion stays 1.
+  gizmos?: ExportManifestGizmo[];
   generatedAt: string;
   schemaVersion: 1;
   // Look-and-feel block (081426_live-link-designer.md), attached by the

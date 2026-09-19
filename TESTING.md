@@ -71,6 +71,14 @@ that pair). Offline node tests should push each input through
   WebCodecs/GL/IPC half is browser-only — drive it live
   (specdocs/090526_video-scrub-optimizations.md §Results describes the
   harness); `scripts/bench-video-seek.cjs` measures raw seek/decode costs.
+- `check-grain` — Grain v2 (specdocs/091626_grain-node-v2.md), the pure
+  half: the temporal moving-average kernel keeps unit variance at every
+  fractional grain time (`Σw² = 1`, the anti-breathing rule — a plain lerp
+  of two noise frames dips to 0.5), loops wrap seamlessly, the cache key is
+  one value per project frame while the kernel is hard, the CPU mirror of
+  the shader's hash → Gaussian draw has the right mean / std /
+  decorrelation, and saved nodes migrate to `classic`. The GLSL itself
+  compiles under `check:shaders`; the look is a live-app question.
 - `check-node-facts` — every visible node carries a well-formed `facts`
   block (the NodeFacts mini-schema behind `description`: per-socket space,
   attributes read/written, gotchas) and the catalog DSL renders it. It
@@ -100,14 +108,84 @@ that pair). Offline node tests should push each input through
   min / max / softMax, the right-click "Slider range" editor) land on the
   scalar control's def — full and partial overrides, stock def untouched —
   because the live panel renders `ParamControl` from `control.def` alone.
+  And the per-layer Merge controls (`mlayer:<param>:<layerId>` in
+  `controlParams`, toggled per layer card since 2026-09-16): one toggled
+  layer synthesizes a blend-mode enum + opacity scalar, a legacy literal
+  `layers` entry expands to every layer, a stale layer id warns.
+  And the param-driven scalar hints (`maxFrom` / `controlFrom` /
+  `optionLabelsFrom`, functions the JSON clone drops): the builder
+  evaluates them at build time, so a Switch index reaches the live panel
+  spanning its live slot list (not the 0…255 static cap) and, in toggle
+  mode, as a `segmented` pick over the wired inputs carrying their names.
+  And the active-branch filter (`engine/active-branch.ts` — the viewer's
+  "which rows show right now"): the same walk, but at a Switch only the
+  picked slot's upstream counts, so a live index flips which branch's rows
+  show, a node feeding both branches stays, picking the empty spare hides
+  both, a wired / exposed-param / keyframed / bypassed Switch shows
+  everything (no per-frame flicker), and a Switch inside a Layer resolves
+  after the builder's remap + flatten.
+  And the on-canvas handles (091726_live-gizmos.md): a node flagged
+  `controlGizmo` ships a `transform` / `primitive` / `gradient` gizmo only
+  when it is reachable, eligible (lib/live-gizmo.ts — the pen suite never
+  is) and not wired away (a Transform with `in:transform` wired, a
+  primitive's `hideWhenWired` socket), warning `gizmo-hidden-by-wiring`
+  otherwise; its `nodeName` comes from the same counter as the node's
+  knobs, and a gizmo-only link is not "no controls". The handles
+  themselves are a live-app question.
 - `check-live-presets` — the live-link style packs (081426 M4): every
   non-classic entry in design.ts's SLIDER/DROPDOWN/NUMERIC/TRANSPORT registries has
   a `.live-root[data-<class>="<id>"]` block in design-presets.css, every
   block sets the full `--ps-*` set for its class (no half-inherited
   fallbacks) with tokens only, and `fromSavedLiveDesign` keeps known ids /
-  degrades unknown ones to classic. Visual correctness is NOT covered —
+  degrades unknown ones to classic. Since 2026-09-16 it also guards the
+  designer's layout / theme sliders (`panelWidth`, `uiScale`, `rowGap`,
+  `textBrightness`): a pre-slider blob reads as today's look, values
+  clamp, non-numbers default rather than hitting the floor, the 0–100 %
+  slider calibration puts the defaults at 25 % / 50 % and round-trips,
+  and text brightness fades only ink tokens (surfaces, borders, accent
+  untouched; 100 % is byte-identical). And the pan / zoom flag
+  (091826_live-pan-zoom.md, `layout.panZoom`): off when absent or junk,
+  on only for `true`. Visual correctness is NOT covered —
   audition packs in File → Live Link… (the preview iframe is the real
   `.live-root`).
+- `check-glsl-translation` — the graph → GLSL tools (091626_graph-to-glsl.md):
+  every visible image producer is classified in
+  `src/lib/glsl-translation/classes.ts`, node docs agree with the table,
+  `docs.generated.ts` is fresh (`npm run gen:glsl-docs` after editing
+  `docs/**/*.md`), `get_glsl_docs` leads with the core three and names
+  missing slugs, and `planTranslation` cuts fixture graphs built from the
+  real registry the way the spec says (pure chain fuses whole, video is a
+  sampler, a stateful node splits the region, interior matte vs the
+  target's own mask, sampler cap shrinks with a named exclusion, zone
+  members stay out). The MCP hop for both tools is in `check:mcp`.
+- `check-viewport-guides` — viewport rulers + guides
+  (091726_viewport-rulers.md), the pure half in `lib/viewport-guides.ts`:
+  the `SavedProject.viewportGuides` gate drops malformed entries and
+  collapses duplicates but keeps off-canvas positions (a ruler drop, not a
+  clamp, is the delete); the shared snap helpers pick the SMALLEST
+  correction across a box's edges + centre and nothing beyond the
+  threshold; the ruler ladder only emits 1 / 2 / 5 × 10ⁿ steps with labels
+  ≥ minLabelPx apart; ruler drags land on the project pixel grid. The
+  overlay itself (ViewportRulers.tsx) and each gizmo's snap wiring are
+  live-app questions — Shift+R, drag a guide out, drag a Transform box
+  onto it.
+- `check-easing-editor` — the Tracks editor's easing overlay
+  (091726_easing-editor.md), the pure half: the `cubicBezier` easing kind
+  is a CSS cubic-bezier time remap (thirds = identity, the exact table
+  entries reproduce t² / t³, y overshoots, x clamps so time stays
+  monotonic), a scalar plays it exactly like the same shape as
+  `customBezier` handles while vec / color lanes get the remap too, a
+  shapeless key or an unknown preset name plays linear (not NaN); every
+  easing kind normalizes into the unit square and denormalize →
+  normalize round-trips; the pair rule (both selected AND adjacent in the
+  lane, per lane, across lanes, step-only lanes out, earliest-then-topmost
+  first), seeds / ghosts, the `mixed` comparison, the shape and named-
+  preset writes, the view math (zoom keeps the cursor's point fixed, the
+  pan clamp keeps the square reachable), the shelf's auto-naming and its
+  fit-to-height (a short dock shrinks the square, never below the
+  minimum). The overlay itself (EasingEditorOverlay.tsx) — anchors,
+  handle drags, gestures, resize grip, the shelf's clicks and right-click
+  menu, the dock button — is a live-app question.
 
 ---
 

@@ -3,13 +3,26 @@ import { computeNeededSet, type GraphEdge, type GraphNode } from "@/engine/evalu
 import { flattenGraph, resolvePreviewProducer } from "@/engine/flatten";
 import { getNodeDef } from "@/engine/registry";
 import type { ParamDef, ParamType } from "@/engine/types";
-import { parseRampParamKey } from "@/engine/conventions";
+import {
+  expandMergeLayerControls,
+  mergeLayerModeKey,
+  mergeLayerOpacityKey,
+  parseMergeLayerKey,
+  parseRampParamKey,
+} from "@/engine/conventions";
 import type { ColorRampStop } from "@/engine/color-ramp";
+import {
+  BLEND_MODE_ORDER,
+  blendModeLabel,
+  type MergeLayer,
+} from "@/nodes/effect/merge";
 import type { NodeDataPayload } from "@/state/graph";
+import { liveGizmoKind, liveGizmoWiringBlocker } from "@/lib/live-gizmo";
 import type {
   ExportManifest,
   ExportManifestControl,
   ExportManifestFileInput,
+  ExportManifestGizmo,
   FileParamType,
 } from "@/lib/live-viewer/manifest-types";
 
@@ -18,6 +31,7 @@ export type {
   ExportManifest,
   ExportManifestControl,
   ExportManifestFileInput,
+  ExportManifestGizmo,
   FileParamType,
 } from "@/lib/live-viewer/manifest-types";
 
@@ -43,6 +57,9 @@ const UNSUPPORTED_CONTROL_TYPES = new Set<ParamType>([
   "spline_anchors",
   "brush_settings",
   "track_data",
+  // Switch per-input names: authoring config that already reaches the
+  // viewer as the Index control's option labels — not a knob of its own.
+  "slot_labels",
 ]);
 
 export interface ExportWarning {
@@ -50,7 +67,10 @@ export interface ExportWarning {
     | "control-on-unsupported-type"
     | "control-on-missing-param"
     | "no-controls"
-    | "duplicate-control";
+    | "duplicate-control"
+    // The node ships its on-canvas handles, but a wire makes them lie
+    // (091726_live-gizmos.md) — left out, same rule the editor applies.
+    | "gizmo-hidden-by-wiring";
   nodeId?: string;
   paramName?: string;
   message: string;
@@ -112,6 +132,7 @@ export function buildExportManifest(
 
   const fileInputs: ExportManifestFileInput[] = [];
   const controls: ExportManifestControl[] = [];
+  const gizmos: ExportManifestGizmo[] = [];
   const warnings: ExportWarning[] = [];
 
   // Track def-name occurrences across reachable controlled nodes so we can
@@ -141,9 +162,6 @@ export function buildExportManifest(
       }
     }
 
-    const controlParams = node.data.controlParams ?? [];
-    if (controlParams.length === 0) continue;
-
     let nodeNameAssigned: string | null = null;
     const ensureNodeName = (): string => {
       if (nodeNameAssigned !== null) return nodeNameAssigned;
@@ -153,6 +171,48 @@ export function buildExportManifest(
       nodeNameAssigned = count === 1 ? baseName : `${baseName} (${count})`;
       return nodeNameAssigned;
     };
+
+    // On-canvas GUI (091726_live-gizmos.md): the node-level Control toggle
+    // ships the node's handles as one visibility row + overlay. Eligibility
+    // and the wired-away rules are the editor's own (lib/live-gizmo.ts), so
+    // the live link never shows handles the editor would hide. Named
+    // through the same counter as the node's param controls so
+    // "Transform (2) — Handles" and "Transform (2) — Rotate" agree.
+    if (node.data.controlGizmo) {
+      const kind = liveGizmoKind(node.data.defType);
+      if (kind) {
+        const blocker = liveGizmoWiringBlocker(
+          node.id,
+          node.data.defType,
+          kind,
+          edges
+        );
+        if (blocker) {
+          warnings.push({
+            kind: "gizmo-hidden-by-wiring",
+            nodeId: node.id,
+            message: `Node "${def.name}" ships its on-canvas handles, but ${blocker}, so they are left out.`,
+          });
+        } else {
+          gizmos.push({
+            nodeId: node.id,
+            nodeName: ensureNodeName(),
+            defType: node.data.defType,
+            kind,
+          });
+        }
+      }
+    }
+
+    // Pre-per-layer-toggle saves control the whole `merge_layers` param by
+    // its literal name; expand that to one `mlayer:` entry per layer so the
+    // live panel shows the same per-layer rows either way.
+    const controlParams = expandMergeLayerControls(
+      def.params,
+      node.data.params,
+      node.data.controlParams ?? []
+    );
+    if (controlParams.length === 0) continue;
 
     for (const paramName of controlParams) {
       // Per-stop ramp controls (`ramp_c/a/p:<param>:<stopId>` — see
@@ -224,6 +284,95 @@ export function buildExportManifest(
         });
         continue;
       }
+      // Per-layer Merge controls (`mlayer:<param>:<layerId>` — see
+      // engine/conventions). One toggled layer becomes TWO knobs — its
+      // blend mode (enum over the shared blend list) and its opacity
+      // (0..1 scalar) — each under a virtual paramName the live viewer
+      // parses back to patch the layer inside the array param.
+      const layerKey = parseMergeLayerKey(paramName);
+      if (layerKey) {
+        if (layerKey.field !== "layer") {
+          // Only the membership key belongs in controlParams; a stray
+          // synthesized name would double-render the knob.
+          warnings.push({
+            kind: "control-on-missing-param",
+            nodeId: node.id,
+            paramName,
+            message: `Node "${def.name}" has a control toggle on "${paramName}", which isn't a layer toggle key.`,
+          });
+          continue;
+        }
+        const layersDef = def.params.find(
+          (p) => p.name === layerKey.paramName && p.type === "merge_layers"
+        );
+        const layersRaw = node.data.params[layerKey.paramName];
+        const layers = Array.isArray(layersRaw)
+          ? (layersRaw as MergeLayer[])
+          : [];
+        const idx = layers.findIndex((l) => l.id === layerKey.layerId);
+        const layer = idx >= 0 ? layers[idx] : undefined;
+        if (!layersDef || !layer) {
+          warnings.push({
+            kind: "control-on-missing-param",
+            nodeId: node.id,
+            paramName,
+            message: `Node "${def.name}" has a control toggle on "${paramName}" but that layer no longer exists.`,
+          });
+          continue;
+        }
+        const dupKey = `${node.id}::${paramName}`;
+        if (seenControlKeys.has(dupKey)) {
+          warnings.push({
+            kind: "duplicate-control",
+            nodeId: node.id,
+            paramName,
+            message: `Layer control "${paramName}" on "${def.name}" is marked as a control more than once.`,
+          });
+          continue;
+        }
+        seenControlKeys.add(dupKey);
+        const layerLabel = `Layer ${idx + 1}`;
+        const modeName = mergeLayerModeKey(layerKey.paramName, layer.id);
+        const modeLabel = `${layerLabel} · blend`;
+        const modeDef: ParamDef = {
+          name: modeName,
+          label: modeLabel,
+          type: "enum",
+          options: [...BLEND_MODE_ORDER],
+          optionLabels: Object.fromEntries(
+            BLEND_MODE_ORDER.map((m) => [m, blendModeLabel(m)])
+          ),
+          default: layer.mode,
+        };
+        controls.push({
+          nodeId: node.id,
+          nodeName: ensureNodeName(),
+          paramName: modeName,
+          paramType: "enum",
+          label: modeLabel,
+          def: modeDef,
+        });
+        const opacityName = mergeLayerOpacityKey(layerKey.paramName, layer.id);
+        const opacityLabel = `${layerLabel} · opacity`;
+        const opacityDef: ParamDef = {
+          name: opacityName,
+          label: opacityLabel,
+          type: "scalar",
+          min: 0,
+          max: 1,
+          step: 0.01,
+          default: layer.opacity,
+        };
+        controls.push({
+          nodeId: node.id,
+          nodeName: ensureNodeName(),
+          paramName: opacityName,
+          paramType: "scalar",
+          label: opacityLabel,
+          def: opacityDef,
+        });
+        continue;
+      }
       const paramDef = def.params.find((p) => p.name === paramName);
       if (!paramDef) {
         warnings.push({
@@ -260,6 +409,26 @@ export function buildExportManifest(
       void _omit;
       const cloned = JSON.parse(JSON.stringify(rest)) as ParamDef;
 
+      // Param-driven scalar hints (maxFrom / controlFrom / optionLabelsFrom)
+      // are functions, so the JSON clone above drops them — and the live
+      // panel renders `control.def` with no sibling params to feed them
+      // anyway. Evaluate them against the node's params NOW and bake the
+      // results into the clone, so the viewer shows the widget and range
+      // the editor showed when the project was saved: a Switch index in
+      // toggle mode is a pill over its wired, named inputs, and in slider
+      // mode spans the live slot list instead of the 0…255 static fallback.
+      // Frozen per save by construction — the /live manifest rebuilds from
+      // the saved graph, not from viewer edits.
+      if (paramDef.type === "scalar") {
+        const params = node.data.params;
+        const dynMax = paramDef.maxFrom?.(params);
+        if (dynMax !== undefined) cloned.max = dynMax;
+        const dynControl = paramDef.controlFrom?.(params);
+        if (dynControl !== undefined) cloned.control = dynControl;
+        const dynLabels = paramDef.optionLabelsFrom?.(params);
+        if (dynLabels !== undefined) cloned.optionLabels = dynLabels;
+      }
+
       // Per-node slider range overrides (right-click a scalar slider →
       // "Slider range" min / max / soft max, stored as
       // `node.data.paramOverrides`). In the editor ParamControl reads them
@@ -290,7 +459,7 @@ export function buildExportManifest(
     }
   }
 
-  if (controls.length === 0) {
+  if (controls.length === 0 && gizmos.length === 0) {
     warnings.push({
       kind: "no-controls",
       message:
@@ -305,6 +474,7 @@ export function buildExportManifest(
     canvasRes,
     fileInputs,
     controls,
+    gizmos,
     generatedAt: new Date().toISOString(),
     schemaVersion: 1,
   };

@@ -240,6 +240,28 @@ const xf = (sub: SplineSubpath, o: Partial<Parameters<typeof transformSubpath>[1
       none[0].color === "rgba(0, 0, 0, 1)" &&
       none[1].color === "rgba(255, 255, 255, 1)"
   );
+
+  // Any curve or color space Canvas can't lerp natively gets subdivided
+  // (091626_ramp-space-interp.md); linear × sRGB stays two stops.
+  const okl = rampToGradientStops(wb, "linear", 0, "oklab");
+  check(
+    "linear × oklab: subdivided, monotone, ends preserved",
+    okl.length > 2 &&
+      okl.every((s, i) => i === 0 || s.pos >= okl[i - 1].pos) &&
+      okl[0].color === "rgba(255, 255, 255, 1)" &&
+      okl[okl.length - 1].color === "rgba(0, 0, 0, 1)",
+    JSON.stringify(okl)
+  );
+  const oklMid = okl.find((s) => close(s.pos, 0.5, 1e-9));
+  check(
+    "linear × oklab: midpoint is OKLab mid-grey (99), not 128",
+    oklMid?.color === "rgba(99, 99, 99, 1)",
+    oklMid?.color
+  );
+  const mono = rampToGradientStops(wb, "monotone", 0);
+  check("monotone × srgb: subdivided", mono.length > 2 && mono[0].pos === 0 && mono[mono.length - 1].pos === 1);
+  const conOk = rampToGradientStops(rb, "constant", 0, "oklch");
+  check("constant ignores color space (no mixing)", JSON.stringify(conOk) === JSON.stringify(con));
 }
 
 // ---- resolver against a recording canvas ---------------------------------

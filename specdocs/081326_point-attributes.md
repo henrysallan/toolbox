@@ -139,6 +139,15 @@ Every points-touching node is one of six classes; each has ONE rule:
   - **Attribute Transfer** (`attribute-transfer`): source points →
     target points by proximity; nearest or distance-weighted average
     within a radius. Same spatial core as Blur.
+    2026-09-17: built-in columns transfer too — `rotation`, `scale` /
+    `scale.x` / `scale.y`, `position` / `x` / `y`, `group` — when both
+    sides are points. The value is read off the source's typed arrays
+    and stored into the target's (`withBuiltinPointColumn`, points.ts),
+    never as a named channel (those names stay reserved). `group` is
+    nearest-only and rounds; `index` / `z` / normals are read-only and
+    pass through, as does a built-in name with a spline on either side.
+    The name picker offers exactly the writable set
+    (`suggestAttrsBuiltinFilter` on the param; `index` tints red).
   - **Spline attributes**: `attrs?: Record<string, number | number[]>`
     ON the SplineAnchor and SplineSubpath objects (the width/cornerRadius
     /driver precedent — object-attached so `{...a}` spread-copying ops

@@ -5,7 +5,7 @@
 // specdocs/archive/071926_spline-draw-authoring-upgrade.md.
 
 import { selKey, subpathsOf } from "../geometry";
-import { guideSnapLines, snapPoint } from "../snapping";
+import { snapPoint } from "../snapping";
 import type { PointerLike, SplineEditorEnv } from "../types";
 import type { SplineOps } from "../ops";
 
@@ -52,7 +52,7 @@ export function penBackgroundDown(
       ops.anchorSnapTargets(excludeAll),
       cx,
       cy,
-      guideSnapLines(env.guides, env.normToPx)
+      ops.guideLines()
     );
     if (res.guides.length > 0) {
       cx = res.x;

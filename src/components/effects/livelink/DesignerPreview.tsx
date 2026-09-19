@@ -21,10 +21,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { syncStyles } from "../layout/PanelPopout";
 import { PanelWindowProvider } from "../layout/panel-window";
-import { ControlPanel } from "@/lib/live-viewer/ControlPanel";
+import {
+  ControlPanel,
+  type PanelTitle,
+} from "@/lib/live-viewer/ControlPanel";
 import { LiveRoot } from "@/lib/live-viewer/live-root";
+import { ZoomChip } from "@/lib/live-viewer/ZoomChip";
 import type { LiveDesign } from "@/lib/live-viewer/design";
 import type { ExportManifest } from "@/lib/live-viewer/manifest-types";
+import {
+  useViewportGestures,
+  useViewportPanZoom,
+} from "@/lib/viewport-gestures";
 
 const noop = () => {};
 
@@ -45,6 +53,10 @@ export function DesignerPreview({
   paramValues,
   drivenParams,
   onParamChange,
+  activeNodeIds,
+  title,
+  shownGizmos,
+  onToggleGizmo,
 }: {
   manifest: ExportManifest;
   design: LiveDesign;
@@ -58,6 +70,19 @@ export function DesignerPreview({
     ref: { nodeId: string; paramName: string },
     value: unknown
   ) => void;
+  /** Rows on an unpicked Switch branch hide, as in the real viewer. */
+  activeNodeIds?: ReadonlySet<string>;
+  /** The panel's identity row (name · by author · #code), as /live
+   *  renders it above the transport — so the toolbar's height and look
+   *  match what visitors get. */
+  title?: PanelTitle;
+  /** Ephemeral visibility state for the gizmo rows (091726_live-gizmos.md)
+   *  — the set switched ON, empty at load like the real viewer. The rows
+   *  render and flip for chrome fidelity; the poster draws no handles (the
+   *  overlays bind the editor window's pointer events, which a drag inside
+   *  this iframe would never reach). */
+  shownGizmos?: ReadonlySet<string>;
+  onToggleGizmo?: (nodeId: string, visible: boolean) => void;
 }) {
   const [mount, setMount] = useState<{
     body: HTMLElement;
@@ -93,8 +118,19 @@ export function DesignerPreview({
     // the real page's <body>.
     doc.documentElement.style.height = "100%";
     doc.body.style.cssText = "margin:0;height:100%;overflow:hidden;";
+    // Links render for fidelity but must not navigate: the panel's
+    // "Editor" link would otherwise load the whole editor INSIDE this
+    // frame. Same rule as the inert transport — the preview is for
+    // feeling the chrome. Delegated on the body so any anchor the panel
+    // grows later is covered too.
+    const inertAnchors = (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      if (target?.closest?.("a[href]")) e.preventDefault();
+    };
+    doc.body.addEventListener("click", inertAnchors);
     setMount({ body: doc.body, win });
     return () => {
+      doc.body.removeEventListener("click", inertAnchors);
       stop();
       setMount(null);
     };
@@ -112,6 +148,35 @@ export function DesignerPreview({
     }),
     [manifest, design]
   );
+
+  // Pan / zoom (091826_live-pan-zoom.md) — the real thing on the poster:
+  // the same hooks the viewer binds, so auditioning the button pans and
+  // zooms the preview canvas with the editor's gestures. The gesture
+  // hooks resolve their window from the element (ownerWindow), so they
+  // listen on the iframe's window, not the editor's. Ephemeral, like the
+  // slider audition.
+  const panZoomAvailable = design.layout.panZoom;
+  const [panZoomOn, setPanZoomOn] = useState(false);
+  const {
+    viewportRef,
+    zoom,
+    pan,
+    setPan,
+    setZoom,
+    reset: resetView,
+    isDefault: viewIsDefault,
+  } = useViewportPanZoom();
+  const gesturesOn = panZoomAvailable && panZoomOn;
+  useViewportGestures(viewportRef, setPan, setZoom, gesturesOn);
+  const onTogglePanZoom = useCallback(() => {
+    if (panZoomOn) resetView();
+    setPanZoomOn(!panZoomOn);
+  }, [panZoomOn, resetView]);
+  // With the author's switch off the poster sits at its default framing
+  // whatever the audition state was.
+  const posterTransform = panZoomAvailable
+    ? `translate(${pan[0]}px, ${pan[1]}px) scale(${zoom})`
+    : undefined;
 
   return (
     <>
@@ -178,11 +243,19 @@ export function DesignerPreview({
           <PanelWindowProvider win={mount.win}>
             <LiveRoot design={design}>
               <div className="app">
-                <div className="canvas-area">
+                <div
+                  className="canvas-area"
+                  ref={viewportRef}
+                  style={gesturesOn ? { touchAction: "none" } : undefined}
+                >
                   <PosterCanvas
                     posterUrl={posterUrl}
                     canvasRes={previewManifest.canvasRes}
+                    transform={posterTransform}
                   />
+                  {panZoomAvailable && !viewIsDefault && (
+                    <ZoomChip zoom={zoom} onReset={resetView} />
+                  )}
                 </div>
                 <ControlPanel
                   manifest={previewManifest}
@@ -195,6 +268,12 @@ export function DesignerPreview({
                   time={0}
                   loopSecs={loopSecs}
                   renderScale={1}
+                  activeNodeIds={activeNodeIds}
+                  title={title}
+                  shownGizmos={shownGizmos}
+                  onToggleGizmo={onToggleGizmo}
+                  panZoomOn={panZoomOn}
+                  onTogglePanZoom={onTogglePanZoom}
                 />
               </div>
             </LiveRoot>
@@ -208,9 +287,13 @@ export function DesignerPreview({
 function PosterCanvas({
   posterUrl,
   canvasRes,
+  transform,
 }: {
   posterUrl: string | null;
   canvasRes: [number, number];
+  /** The audition's pan/zoom view, as the viewer composes it on its
+   *  canvas; undefined = default framing. */
+  transform?: string;
 }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
@@ -233,5 +316,14 @@ function PosterCanvas({
   }, [posterUrl, canvasRes[0], canvasRes[1]]);
   // No poster (fresh project, blank preview canvas) → the canvas stays
   // its --canvas-bg fill, which is still the right aspect and chrome.
-  return <canvas ref={ref} width={canvasRes[0]} height={canvasRes[1]} />;
+  return (
+    <canvas
+      ref={ref}
+      width={canvasRes[0]}
+      height={canvasRes[1]}
+      style={
+        transform ? { transform, transformOrigin: "center center" } : undefined
+      }
+    />
+  );
 }

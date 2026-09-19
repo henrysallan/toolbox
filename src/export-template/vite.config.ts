@@ -38,6 +38,24 @@ export default defineConfig({
         srcRoot,
         "components/effects/KeyframeDiamond"
       ),
+      // The live gizmo layer (lib/live-viewer/LiveGizmoLayer.tsx,
+      // 091726_live-gizmos.md) hosts the editor's three on-canvas overlay
+      // components over the live canvas. Their imports are lib/engine
+      // leaves (pointer-claim, viewport-guides, aspect, transform-pivot)
+      // plus GradientOverlay's relative ./overlay-rect, which resolves
+      // from the real file.
+      "@/components/effects/TransformGizmo": path.resolve(
+        srcRoot,
+        "components/effects/TransformGizmo"
+      ),
+      "@/components/effects/PrimitiveGizmo": path.resolve(
+        srcRoot,
+        "components/effects/PrimitiveGizmo"
+      ),
+      "@/components/effects/GradientOverlay": path.resolve(
+        srcRoot,
+        "components/effects/GradientOverlay"
+      ),
       // lib/live-viewer/design.ts (the LiveDesign block) imports two pure
       // leaves from the editor's theme dir: oklch (tint math) and tokens
       // (the neutral-ramp dark/light pairs its --tb-* sheet is generated
@@ -64,6 +82,14 @@ export default defineConfig({
       "@/components/effects/layout/panel-window": path.resolve(
         srcRoot,
         "components/effects/layout/panel-window"
+      ),
+      // lib/viewport-gestures.ts (the editor's canvas pan/zoom, shared with
+      // the live viewer — 091826_live-pan-zoom.md) reads the mouse-vs-
+      // trackpad predicate from this React-free leaf (React + localStorage
+      // only). LiveViewer also feeds its wheel detector.
+      "@/components/effects/input-device": path.resolve(
+        srcRoot,
+        "components/effects/input-device"
       ),
       "@/state/graph-ops": path.resolve(srcRoot, "state/graph-ops"),
       "@/state/graph": path.resolve(root, "src/shims/state-graph.ts"),

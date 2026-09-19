@@ -9,8 +9,14 @@ import {
   type GraphNode,
 } from "@/engine/evaluator";
 import { parseTargetHandleKind } from "@/engine/graph-helpers";
-import { colorValueToHex, parseRampParamKey } from "@/engine/conventions";
+import { computeActiveNodeSet } from "@/engine/active-branch";
+import {
+  colorValueToHex,
+  parseMergeLayerKey,
+  parseRampParamKey,
+} from "@/engine/conventions";
 import type { ColorRampStop } from "@/engine/color-ramp";
+import type { MergeLayer } from "@/nodes/effect/merge";
 import type { ImageValue } from "@/engine/types";
 import { registerAllNodes } from "@/nodes";
 import { deserializeGraph, type SavedProject } from "@/lib/project";
@@ -18,8 +24,17 @@ import {
   mountCursorCapture,
   type CursorCaptureHandle,
 } from "@/lib/cursor-capture";
+import { DEFAULT_TICKS_PER_FRAME } from "@/engine/keyframes";
+import { feedWheel } from "@/components/effects/input-device";
+import {
+  useViewportGestures,
+  useViewportPanZoom,
+} from "@/lib/viewport-gestures";
 import type { ExportManifest } from "./manifest-types";
-import { ControlPanel } from "./ControlPanel";
+import { ControlPanel, type PanelTitle } from "./ControlPanel";
+import { LiveGizmoLayer } from "./LiveGizmoLayer";
+import { ZoomChip } from "./ZoomChip";
+import type { LiveLoadPhase } from "./LiveLoadOverlay";
 import {
   exportViewerGif,
   exportViewerImage,
@@ -50,13 +65,45 @@ function buildDrivenSet(edges: GraphEdge[]): Set<string> {
 export interface LiveViewerProps {
   graph: SavedProject;
   manifest: ExportManifest;
+  // Patch identity for the panel's title row (ControlPanel PanelTitle).
+  // /live passes it; the exported app omits it and gets no row.
+  title?: PanelTitle;
+  // Load-phase reporting for the host's LiveLoadOverlay (mounted → graph →
+  // ready, or failed). Optional: a host without a veil just doesn't listen.
+  onLoadPhase?: (phase: LiveLoadPhase) => void;
 }
 
-export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
+export default function LiveViewer({
+  graph,
+  manifest,
+  title,
+  onLoadPhase,
+}: LiveViewerProps) {
   const [error, setError] = useState<string | null>(null);
   const [runtimeGraph, setRuntimeGraph] = useState<RuntimeGraph | null>(null);
 
+  // The host's veil listens through a ref so the deserialize and frame
+  // effects below don't re-run when the host re-renders with a fresh
+  // callback. "mounted" = the dynamic chunk arrived; "ready" fires once,
+  // from the first full runFrame.
+  const onLoadPhaseRef = useRef(onLoadPhase);
+  useEffect(() => {
+    onLoadPhaseRef.current = onLoadPhase;
+  });
+  const readyReportedRef = useRef(false);
+  useEffect(() => {
+    onLoadPhaseRef.current?.("mounted");
+  }, []);
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // The canvas ELEMENT as state, for the gizmo layer (091726_live-gizmos.md):
+  // the overlays take the element as a prop and track its rect, so they
+  // need a render after it mounts — a ref alone would never re-render them.
+  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
+  const attachCanvas = useCallback((el: HTMLCanvasElement | null) => {
+    canvasRef.current = el;
+    setCanvasEl(el);
+  }, []);
   const backendRef = useRef<EngineBackend | null>(null);
   const evalCacheRef = useRef<EvalCache>(new Map());
 
@@ -147,12 +194,16 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
         paramValuesRef.current = initialParams;
         setParamValues(new Map(initialParams));
         setRuntimeGraph({ graphNodes, graphEdges });
+        onLoadPhaseRef.current?.("graph");
       })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         // eslint-disable-next-line no-console
         console.error("LiveViewer deserialize failed", err);
-        if (!cancelled) setError(msg);
+        if (!cancelled) {
+          setError(msg);
+          onLoadPhaseRef.current?.("failed");
+        }
       });
     return () => {
       cancelled = true;
@@ -187,6 +238,7 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
       // eslint-disable-next-line no-console
       console.error("Engine init failed", err);
       setError(err instanceof Error ? err.message : String(err));
+      onLoadPhaseRef.current?.("failed");
     }
   }, [renderRes[0], renderRes[1]]);
 
@@ -194,6 +246,93 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
     () => buildDrivenSet(runtimeGraph?.graphEdges ?? []),
     [runtimeGraph]
   );
+
+  // Active-branch filter (engine/active-branch.ts): which manifest rows
+  // show follows what the graph is rendering — at a Switch, only the
+  // picked slot's upstream. Keyed on paramValues (a fresh Map per control
+  // edit) and fed the live Index values, so flipping a Switch pill hides
+  // the other branch's rows on the same render.
+  const activeNodeIds = useMemo(() => {
+    if (!runtimeGraph) return undefined;
+    return computeActiveNodeSet(
+      runtimeGraph.graphNodes,
+      runtimeGraph.graphEdges,
+      manifest.outputNodeId,
+      { indexOf: (id) => paramValues.get(id)?.index }
+    );
+  }, [runtimeGraph, paramValues, manifest.outputNodeId]);
+
+  // Visitor-facing gizmo visibility (091726_live-gizmos.md, decision 1):
+  // every shipped GUI starts HIDDEN — the canvas loads clean and a visitor
+  // opts into a set of handles from its row (the owner flipped the
+  // start-visible first cut after trying it). Per session only. Rows and
+  // handles on an unpicked Switch branch drop with the active-branch
+  // filter like every other row.
+  const [shownGizmos, setShownGizmos] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  const onToggleGizmo = useCallback((nodeId: string, visible: boolean) => {
+    setShownGizmos((prev) => {
+      const next = new Set(prev);
+      if (visible) next.add(nodeId);
+      else next.delete(nodeId);
+      return next;
+    });
+  }, []);
+  const visibleGizmos = useMemo(
+    () =>
+      (manifest.gizmos ?? []).filter(
+        (g) =>
+          shownGizmos.has(g.nodeId) &&
+          (!activeNodeIds || activeNodeIds.has(g.nodeId))
+      ),
+    [manifest.gizmos, shownGizmos, activeNodeIds]
+  );
+  // The tick the evaluator samples keyframes at for this frame — what
+  // makeContext derives when runFrame passes no timeline (frame × 1000) —
+  // so a handle on an animated param sits where the render put it.
+  const gizmoTick = Math.floor(time * fps) * DEFAULT_TICKS_PER_FRAME;
+
+  // Pan / zoom (091826_live-pan-zoom.md): the author enables the control
+  // per link (design.layout.panZoom); the visitor switches it on from the
+  // title-row button. The gestures are the editor's own
+  // (lib/viewport-gestures: trackpad scroll pans, pinch / ⌘-scroll zooms,
+  // a mouse wheel zooms, middle-drag pans, touch pans / pinches), bound to
+  // the canvas area and attached only while the button is on. Switching
+  // it off resets the view — that is also the visitor's way back to the
+  // default framing.
+  const panZoomAvailable = manifest.design?.layout.panZoom === true;
+  const [panZoomOn, setPanZoomOn] = useState(false);
+  const {
+    viewportRef,
+    zoom,
+    pan,
+    setPan,
+    setZoom,
+    reset: resetView,
+    isDefault: viewIsDefault,
+  } = useViewportPanZoom();
+  const gesturesOn = panZoomAvailable && panZoomOn;
+  useViewportGestures(viewportRef, setPan, setZoom, gesturesOn);
+  const onTogglePanZoom = useCallback(() => {
+    if (panZoomOn) resetView();
+    setPanZoomOn(!panZoomOn);
+  }, [panZoomOn, resetView]);
+  // Mouse-vs-trackpad detection behind wheelWantsZoom (input-device.ts) —
+  // the same capture listener the editor mounts. Only while the control
+  // is available; a link without it pays nothing.
+  useEffect(() => {
+    if (!panZoomAvailable) return;
+    const onWheel = (e: WheelEvent) => feedWheel(e);
+    window.addEventListener("wheel", onWheel, { capture: true, passive: true });
+    return () => window.removeEventListener("wheel", onWheel, { capture: true });
+  }, [panZoomAvailable]);
+  // The gizmo overlays cache the canvas rect and refresh it on window
+  // "resize" — the editor fires the same synthetic event on its own
+  // zoom / pan, so the handles follow the transformed canvas.
+  useEffect(() => {
+    window.dispatchEvent(new Event("resize"));
+  }, [zoom, pan]);
 
   const runFrame = useCallback(
     (renderTime: number) => {
@@ -218,6 +357,12 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
       const term = result.terminalImage;
       if (term && term.image.kind === "image") {
         ctx.blitToCanvas(term.image as ImageValue, canvas);
+      }
+      // First full pass: whatever it drew (a graph with no image at the
+      // terminal is still loaded), the viewer is up — lift the veil.
+      if (!readyReportedRef.current) {
+        readyReportedRef.current = true;
+        onLoadPhaseRef.current?.("ready");
       }
     },
     [runtimeGraph, manifest.outputNodeId]
@@ -298,7 +443,32 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
               node.params[rk.paramName] = stops;
             }
           } else {
-            node.params[ref.paramName] = value;
+            // Per-layer Merge controls (mlayer_m/o:<param>:<layerId>):
+            // patch the layer's blend mode / opacity inside the owning
+            // merge_layers array, same contract as the ramp stops.
+            const lk = parseMergeLayerKey(ref.paramName);
+            if (lk && lk.field !== "layer") {
+              const base = node.params[lk.paramName];
+              const layers = Array.isArray(base)
+                ? (base as MergeLayer[]).map((l) => ({ ...l }))
+                : [];
+              const layer = layers.find((l) => l.id === lk.layerId);
+              if (layer) {
+                if (lk.field === "mode") {
+                  if (typeof value === "string") {
+                    layer.mode = value as MergeLayer["mode"];
+                  }
+                } else if (
+                  typeof value === "number" &&
+                  Number.isFinite(value)
+                ) {
+                  layer.opacity = Math.max(0, Math.min(1, value));
+                }
+                node.params[lk.paramName] = layers;
+              }
+            } else {
+              node.params[ref.paramName] = value;
+            }
           }
         }
       }
@@ -468,16 +638,51 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
 
   return (
     <div className="app">
-      <div className="canvas-area">
+      <div
+        className="canvas-area"
+        ref={viewportRef}
+        // While the visitor's pan/zoom is on, the touch handler owns the
+        // gestures (one finger pans, two pinch); otherwise the page keeps
+        // its native touch scrolling.
+        style={gesturesOn ? { touchAction: "none" } : undefined}
+      >
         <canvas
-          ref={canvasRef}
+          ref={attachCanvas}
           width={renderRes[0]}
           height={renderRes[1]}
           // The CSS box keeps the project's aspect regardless of the
-          // render-scale buffer size.
-          style={{ aspectRatio: `${canvasRes[0]} / ${canvasRes[1]}` }}
+          // render-scale buffer size. The transform is the visitor's view
+          // (identity until they pan / zoom), same composition as the
+          // editor's viewport canvas.
+          style={{
+            aspectRatio: `${canvasRes[0]} / ${canvasRes[1]}`,
+            transform: `translate(${pan[0]}px, ${pan[1]}px) scale(${zoom})`,
+            transformOrigin: "center center",
+          }}
         />
+        {/* Zoom readout + reset — the editor's viewport chip, only while
+            the view is off the default framing. */}
+        {panZoomAvailable && !viewIsDefault && (
+          <ZoomChip zoom={zoom} onReset={resetView} />
+        )}
       </div>
+      {/* On-canvas handles (091726_live-gizmos.md): fixed-position
+          overlays that track the canvas box, so their place in the tree
+          doesn't matter for layout. DOM, not pixels — the viewer exports
+          capture the canvas alone. */}
+      {runtimeGraph && visibleGizmos.length > 0 && (
+        <LiveGizmoLayer
+          gizmos={visibleGizmos}
+          canvas={canvasEl}
+          canvasRes={canvasRes}
+          graphNodes={runtimeGraph.graphNodes}
+          graphEdges={runtimeGraph.graphEdges}
+          evalCacheRef={evalCacheRef}
+          paramValues={paramValues}
+          tick={gizmoTick}
+          onParamChange={onParamChange}
+        />
+      )}
       <ControlPanel
         manifest={manifest}
         paramValues={paramValues}
@@ -493,6 +698,12 @@ export default function LiveViewer({ graph, manifest }: LiveViewerProps) {
         onRenderScale={setRenderScale}
         exportHandlers={exportHandlers}
         exportStatus={exportStatus}
+        activeNodeIds={activeNodeIds}
+        title={title}
+        shownGizmos={shownGizmos}
+        onToggleGizmo={onToggleGizmo}
+        panZoomOn={panZoomOn}
+        onTogglePanZoom={onTogglePanZoom}
       />
     </div>
   );

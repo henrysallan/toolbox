@@ -10,6 +10,7 @@ import { WebSocket as RawWS } from "ws";
 import { connectBridge, type BridgeClient, type BridgeStatus } from "@/lib/mcp-bridge";
 import { registerAllNodes } from "@/nodes";
 import { buildCatalogDsl } from "@/lib/ai/generate-recipe-client";
+import { getGlslDocs } from "@/lib/glsl-translation";
 
 registerAllNodes();
 
@@ -135,8 +136,10 @@ process.on("unhandledRejection", bail);
 await client.connect(transport);
 
 const EXPECTED_TOOLS = [
+  "compare_renders",
   "edit_group",
   "get_catalog",
+  "get_glsl_docs",
   "get_graph",
   "get_keyframes",
   "get_node_data",
@@ -147,6 +150,7 @@ const EXPECTED_TOOLS = [
   "get_shader_errors",
   "get_status",
   "insert_recipe",
+  "plan_glsl_translation",
   "read_source",
   "screenshot",
   "screenshot_strip",
@@ -400,6 +404,33 @@ const bridge: BridgeClient = connectBridge({
       kind: "points",
       count: 0,
     }),
+    // Graph → GLSL (091626): the real doc bundle; the planner itself is
+    // covered by check-glsl-translation, so echo the args here.
+    get_glsl_docs: (args) =>
+      getGlslDocs({
+        slugs: args.slugs as string[] | string | undefined,
+        types: args.types as string[] | string | undefined,
+      }),
+    plan_glsl_translation: ({ target, maxInputs }) => ({
+      target: { id: target ?? "selected", handle: "out", type: "threshold" },
+      region: ["thr"],
+      maxInputs,
+      docs: ["conventions", "fusion", "parity"],
+    }),
+    compare_renders: ({ a, b, frames }) => ({
+      kind: "compare",
+      mimeType: "image/png",
+      base64: TINY_PNG,
+      width: 300,
+      height: 100,
+      frames: frames ?? [0],
+      grid: { cols: 3, rows: (frames as number[] | undefined)?.length ?? 1 },
+      a,
+      b,
+      overall: "close",
+      metrics: [{ frame: 0, meanAbs: 0.02, p95Abs: 0.1, alphaMeanAbs: 0, overThreshold: 0.1, compared: 1, worstBox: null, verdict: "close" }],
+      summary: `A = ${a} · B = ${b}\nf0: CLOSE — meanAbs 0.0200`,
+    }),
   }),
   isCodeTrusted: () => false,
   appVersion: "e2e",
@@ -586,6 +617,46 @@ check(
     JSON.parse(textOf(rse)).failed === 1,
   textOf(rse)
 );
+// Graph → GLSL tools (091626): docs come back as markdown with the core
+// three leading and missing slugs named; the plan forwards its args.
+{
+  const rd = await client.callTool({ name: "get_glsl_docs", arguments: {} });
+  check(
+    "get_glsl_docs returns the core docs with conventions first",
+    !isError(rd) && textOf(rd).startsWith("## conventions") && textOf(rd).includes("## parity"),
+    textOf(rd).slice(0, 80)
+  );
+  const rdMiss = await client.callTool({
+    name: "get_glsl_docs",
+    arguments: { slugs: ["conventions", "nodes/nope"] },
+  });
+  check(
+    "get_glsl_docs names a missing slug instead of dropping it",
+    !isError(rdMiss) && textOf(rdMiss).includes("No doc for: nodes/nope"),
+    textOf(rdMiss).slice(-200)
+  );
+  const rp = await client.callTool({
+    name: "plan_glsl_translation",
+    arguments: { target: "thr-1", maxInputs: 2 },
+  });
+  const plan = isError(rp) ? {} : JSON.parse(textOf(rp));
+  check(
+    "plan_glsl_translation forwards target + maxInputs",
+    !isError(rp) && plan.target?.id === "thr-1" && plan.maxInputs === 2,
+    textOf(rp).slice(0, 160)
+  );
+  const rc = await client.callTool({
+    name: "compare_renders",
+    arguments: { a: "thr-1", b: "glsl-1", frames: [0, 30] },
+  });
+  const cmpImg = (rc as { content: { type: string; data?: string }[] }).content.find((b) => b.type === "image");
+  check(
+    "compare_renders marshals as image + metrics text",
+    !isError(rc) && !!cmpImg && textOf(rc).includes("CLOSE") && textOf(rc).includes("[0, 30]") && textOf(rc).includes("3×2"),
+    textOf(rc)
+  );
+}
+
 // `seq` is required by the schema — a missing one must fail at the server,
 // never reach the editor as NaN.
 const rpfBad = await client.callTool({ name: "get_perf_frame", arguments: {} });

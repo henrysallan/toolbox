@@ -46,6 +46,11 @@ export type NodeDataPayload = {
   // is an export concept (panel knob in the exported app). Both can be on
   // for the same param. Persisted with the project; default empty.
   controlParams?: string[];
+  // Node-level control (091726_live-gizmos.md): ship this node's on-canvas
+  // GUI (transform / primitive / gradient handles) to the live link and
+  // exported app, where visitors get a visibility toggle for it. Only
+  // meaningful on nodes lib/live-gizmo.ts deems eligible; absent = off.
+  controlGizmo?: boolean;
   // User-defined slider range overrides keyed by param name. Each entry
   // can override `min`, `max`, and/or `softMax` from the param def.
   // Set via the right-click "Edit range" popover on a scalar slider;

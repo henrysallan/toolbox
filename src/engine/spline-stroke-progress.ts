@@ -1,6 +1,8 @@
 import {
-  sampleColorRamp,
+  makeColorRampSampler,
+  rgba01ToCss,
   type ColorRampInterp,
+  type ColorRampSpace,
   type ColorRampStop,
 } from "./color-ramp";
 import {
@@ -30,6 +32,8 @@ export interface StrokeProgressOpts {
   thicknessPx: number;
   stops: ColorRampStop[];
   interp: ColorRampInterp;
+  // Blend color space (091626_ramp-space-interp.md). Default sRGB.
+  space?: ColorRampSpace;
   closeOpen: boolean;
   // Phase shift along the ramp; wraps past 1. 0 = no shift.
   offset?: number;
@@ -44,14 +48,15 @@ export function paintStrokeAlongProgress(
   subpaths: SplineSubpath[],
   opts: StrokeProgressOpts
 ) {
-  const { W, H, thicknessPx, stops, interp, closeOpen, offset = 0, tAt } = opts;
+  const { W, H, thicknessPx, stops, interp, space, closeOpen, offset = 0, tAt } = opts;
   const savedDashOffset = c2d.lineDashOffset;
   const savedCap = c2d.lineCap;
+  const sample = makeColorRampSampler(stops, { interp, space });
 
   for (const raw of subpaths) {
     const sub = closeOpen && !raw.closed ? { ...raw, closed: true } : raw;
     const colorAt = (arcT: number) =>
-      sampleColorRamp(stops, tAt ? tAt(sub, arcT) : arcT, interp, offset);
+      rgba01ToCss(sample(tAt ? tAt(sub, arcT) : arcT, offset));
     if (subpathHasWidthProfile(sub) && thicknessPx > 0) {
       if (paintEnvelopeAlongProgress(c2d, sub, W, H, thicknessPx, colorAt)) {
         continue;

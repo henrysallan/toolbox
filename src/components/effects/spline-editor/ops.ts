@@ -11,6 +11,11 @@ import type { SplineParamValue } from "@/nodes/source/spline-draw";
 import type { BBoxHandle, DragState, SplineEditorEnv } from "./types";
 import { MERGE_DISTANCE_R } from "./constants";
 import {
+  guideSnapLines,
+  mergeSnapLines,
+  viewportGuideSnapLines,
+} from "./snapping";
+import {
   autoSmoothHandles,
   bezierAt,
   clusterKeysByDistance,
@@ -811,6 +816,18 @@ export function makeSplineOps(env: SplineEditorEnv) {
     return out;
   };
 
+  // Every user-authored line a point may snap to, in client px: this
+  // node's guidelines (spec 080226 M5, anchor space) plus the viewport's
+  // ruler guides (spec 091726, canvas fractions). Feeds snapPoint's
+  // `extraLines` at every pen / drag / primitive-draw call site.
+  const guideLines = (): { xs: number[]; ys: number[] } =>
+    mergeSnapLines(
+      guideSnapLines(env.guides, env.normToPx),
+      env.rect
+        ? viewportGuideSnapLines(env.viewportGuides, env.rect)
+        : { xs: [], ys: [] }
+    );
+
   const applyHandleOp = (
     index: number,
     op: (a: SplineAnchor) => SplineAnchor,
@@ -876,6 +893,7 @@ export function makeSplineOps(env: SplineEditorEnv) {
     applyHandleOp,
     harmonizeAnchors,
     anchorSnapTargets,
+    guideLines,
     applyShapeBuilder,
     cutAtAnchor,
     cutAtSegmentPoint,

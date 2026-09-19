@@ -10,7 +10,7 @@ import { DRAG_THRESHOLD, PENCIL_MIN_SAMPLE } from "./constants";
 import { bezierAt, selKey } from "./geometry";
 import type { DragState, SplineEditorEnv } from "./types";
 import type { SplineOps } from "./ops";
-import { angleLockPx, guideSnapLines, snapPoint } from "./snapping";
+import { angleLockPx, snapPoint } from "./snapping";
 import { cornerRadiusDragMove } from "./tools/corner";
 import { penAnchorClick } from "./tools/pen";
 import { commitPencilStroke } from "./tools/pencil";
@@ -95,7 +95,7 @@ export function dragMove(
             ops.anchorSnapTargets(exclude),
             p.x,
             p.y,
-            guideSnapLines(env.guides, env.normToPx)
+            ops.guideLines()
           );
           env.setSnapGuides(res.guides);
           if (res.guides.length > 0) {

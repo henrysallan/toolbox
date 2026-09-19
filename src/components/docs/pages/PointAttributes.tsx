@@ -168,7 +168,9 @@ export default function PointAttributesPage() {
         Names are yours to choose, except the built-in column names
         (<Code>x</Code>, <Code>y</Code>, <Code>index</Code>,{" "}
         <Code>rotation</Code>, <Code>scale</Code>, <Code>group</Code>, …) —
-        those are reserved and writes to them are ignored.
+        those are reserved and writes to them are ignored. Attribute
+        Transfer is the exception: naming a built-in there moves the
+        built-in itself between two point sets (see below).
       </Note>
       <Note>
         Accumulator (points mode) and Advect Points (accumulate mode) stamp
@@ -412,7 +414,17 @@ export default function PointAttributesPage() {
           gets a value) or zero (nothing in range writes 0). Source and
           target can each be points or spline anchors. Scatter over a
           photo, Set Named Attribute its colors, then transfer them onto
-          any other point set or onto a spline&rsquo;s anchors.
+          any other point set or onto a spline&rsquo;s anchors. Between
+          two point sets it also moves the built-in columns: name{" "}
+          <Code>rotation</Code>, <Code>scale</Code> (or{" "}
+          <Code>scale.x</Code> / <Code>scale.y</Code>),{" "}
+          <Code>position</Code> (or <Code>x</Code> / <Code>y</Code>), or{" "}
+          <Code>group</Code>, and the value lands in the target&rsquo;s
+          own rotation, scale, position, or group data rather than as a
+          channel — the way to give one scatter another&rsquo;s per-point
+          rotation. <Code>group</Code> always takes the nearest source
+          (tags don&rsquo;t average) and <Code>index</Code>, which
+          can&rsquo;t be written, passes the target through.
         </LI>
         <LI>
           <strong>Map Attribute</strong> — the bridge to visible motion:

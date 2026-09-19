@@ -68,11 +68,21 @@ import {
 } from "@/engine/expr-channels";
 import type { EngineBackend } from "@/engine/gl";
 import type { EvalCache } from "@/engine/evaluator";
-import type { NodeOutput } from "@/engine/types";
+import type { ImageValue, NodeOutput } from "@/engine/types";
 import {
   inspectSocketValue,
   pickInspectSocket,
 } from "@/engine/socket-inspect";
+import { withMaskInput } from "@/engine/conventions";
+import {
+  COMPARE_DEFAULTS,
+  compareRgba,
+  describeMetrics,
+  diffHeatRgba,
+  getGlslDocs,
+  planTranslation,
+  type PlanNodeInfo,
+} from "@/lib/glsl-translation";
 
 // Mutation log + graph snapshots so a timed-out tool call isn't a black
 // box: get_recent_edits (keyed by the summary the agent already sent) and
@@ -1092,6 +1102,11 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
             value: k.value,
             easing: k.easingOut,
             ...(k.bezierHandles ? { customBezier: true } : {}),
+            // The easing overlay's normalized shape (CSS cubic-bezier
+            // control points), only meaningful on a cubicBezier key.
+            ...(k.easingOut === "cubicBezier" && k.bezier
+              ? { bezier: [k.bezier.x1, k.bezier.y1, k.bezier.x2, k.bezier.y2] }
+              : {}),
           })),
         };
       }
@@ -1148,6 +1163,10 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         if (easing === "customBezier")
           throw new Error(
             "customBezier is hand-authored in the graph editor — pick a preset."
+          );
+        if (easing === "cubicBezier")
+          throw new Error(
+            "cubicBezier is shaped in the tracks editor's easing overlay — pick a preset."
           );
         if (!EASING_SET.has(easing))
           throw new Error(
@@ -1336,6 +1355,245 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         compiled: nodes.length,
         failed: nodes.filter((n) => !n.ok).length,
         nodes,
+      };
+    },
+
+    // ---- graph → GLSL (spec 091626_graph-to-glsl.md) ------------------------
+    plan_glsl_translation: ({ target, maxInputs }) => {
+      const nodes = deps.nodesRef.current;
+      const edges = deps.edgesRef.current;
+      const raw = target != null && String(target).trim() ? target : deps.status.selectedNodeId;
+      if (!raw)
+        throw new Error(
+          "Pass `target` (a node id from get_graph) — nothing is selected in the editor."
+        );
+      const peek = parseNodePeek(raw, nodes);
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      // The enclosing group / layer is edit_group's target; zone shells
+      // (Repeat / For Each / Iterate) are skipped — their members are
+      // listed in the enclosing scope with `parent` set.
+      let scopeId: string | undefined = peek.node.data.parentId;
+      while (scopeId && isZoneShell(byId.get(scopeId)?.data.defType))
+        scopeId = byId.get(scopeId)?.data.parentId;
+      const spec = graphToSpec(nodes, edges, scopeId, {
+        params: "non_default",
+        expressions: "full",
+      });
+      const fps = deps.fpsRef.current;
+      const infoOf = (id: string): PlanNodeInfo | undefined => {
+        const n = byId.get(id);
+        const def = n ? getNodeDef(n.data.defType) : undefined;
+        if (!n || !def) return undefined;
+        let ins = def.inputs;
+        try {
+          ins = def.resolveInputs?.(n.data.params) ?? def.inputs;
+        } catch {
+          ins = def.inputs;
+        }
+        ins = withMaskInput(ins, def);
+        return {
+          inputs: ins.map((i) => ({ name: i.name, type: i.type })),
+          primaryOutput: def.primaryOutput ?? undefined,
+          auxOutputs: (def.auxOutputs ?? []).map((a) => ({ name: a.name, type: a.type })),
+          readsTime: !!def.facts?.reads?.includes("time"),
+          simulation: !!def.simulation,
+          params: def.params
+            .filter((p) => SETTABLE_PARAM_TYPES.has(p.type))
+            .map((p) => ({
+              name: p.name,
+              type: p.type,
+              ...(p.min !== undefined ? { min: p.min } : {}),
+              ...(p.max !== undefined ? { max: p.max } : {}),
+              ...(p.options ? { options: p.options as string[] } : {}),
+              default: p.default,
+            })),
+        };
+      };
+      const handle = peek.handle === "out:primary" || !peek.handle ? "out" : peek.handle.replace(/^out:/, "");
+      return planTranslation({
+        nodes: spec.nodes,
+        edges: spec.edges,
+        target: handle === "out" ? peek.node.id : `${peek.node.id}:${handle}`,
+        scopeId: scopeId ?? "root",
+        infoOf,
+        valuesOf: (id) => byId.get(id)?.data.params ?? {},
+        keyframeFramesOf: (id) => {
+          const anim = (byId.get(id)?.data.animation ?? {}) as Record<string, KeyframeAnimationBlock>;
+          const out: number[] = [];
+          for (const block of Object.values(anim)) {
+            if (!block?.animated) continue;
+            for (const k of block.keyframes) out.push(frameOf(k.tick));
+          }
+          return out;
+        },
+        maxInputs: typeof maxInputs === "number" ? maxInputs : undefined,
+        frame: Math.round(deps.timeRef.current * fps),
+        fps,
+        loopFrames: deps.status.loopFrames,
+        canvas: { width: deps.status.canvasWidth, height: deps.status.canvasHeight },
+      });
+    },
+
+    get_glsl_docs: ({ slugs, types }) =>
+      getGlslDocs({
+        slugs: slugs as string[] | string | undefined,
+        types: types as string[] | string | undefined,
+      }),
+
+    // Render two nodes at the same frames, tile A | B | |A−B| per frame,
+    // and attach numeric parity metrics from a small RGBA8 readback — the
+    // oracle the graph → GLSL loop converges on instead of eyeballing two
+    // screenshots that live in different tool results.
+    compare_renders: async ({ a, b, frames, maxSize, threshold }) => {
+      const canvas = deps.canvasRef.current;
+      if (!canvas) throw new Error("Preview canvas unavailable.");
+      const backend = deps.backendRef.current;
+      if (!backend)
+        throw new Error("GL backend unavailable — wait for the editor to finish starting.");
+      const nodes = deps.nodesRef.current;
+      const fps = deps.fpsRef.current;
+      const peekA = parseNodePeek(a, nodes);
+      const peekB = parseNodePeek(b, nodes);
+
+      let list: number[];
+      if (Array.isArray(frames) && frames.length > 0) {
+        list = frames.map((f) => Math.max(0, Math.round(Number(f))));
+        if (list.some((f) => !Number.isFinite(f)))
+          throw new Error("`frames` must be an array of frame numbers.");
+      } else {
+        list = [Math.round(deps.timeRef.current * fps)];
+      }
+      if (list.length > 8)
+        throw new Error(`compare_renders takes 1–8 frames (got ${list.length}) — use the plan's time.frames.`);
+      const thr =
+        typeof threshold === "number" && Number.isFinite(threshold) && threshold > 0
+          ? Math.min(1, threshold)
+          : COMPARE_DEFAULTS.threshold;
+
+      // Analysis readback: small, aspect-preserving. Metrics are for
+      // convergence, not pixel-exactness at canvas resolution.
+      const ANALYSIS_LONG_EDGE = 256;
+      const an = ANALYSIS_LONG_EDGE / Math.max(canvas.width, canvas.height);
+      const aw = Math.max(1, Math.round(canvas.width * an));
+      const ah = Math.max(1, Math.round(canvas.height * an));
+
+      // Grid: one row per frame, three columns (A, B, heat).
+      const cols = 3;
+      const rows = list.length;
+      const enc = screenshotEncode({ maxSize, format: "jpeg", strip: true });
+      const aspect = canvas.width / canvas.height;
+      let cellW = Math.floor(Math.min(enc.max / cols, (enc.max / rows) * aspect, canvas.width));
+      cellW = Math.max(64, cellW);
+      const cellH = Math.max(64, Math.round(cellW / aspect));
+      const grid = document.createElement("canvas");
+      grid.width = cellW * cols;
+      grid.height = cellH * rows;
+      const g = grid.getContext("2d")!;
+      g.fillStyle = "#000";
+      g.fillRect(0, 0, grid.width, grid.height);
+      const label = Math.max(10, Math.round(cellH / 18));
+      const stamp = (x: number, y: number, text: string) => {
+        g.font = `${label}px ui-monospace, monospace`;
+        const tw = g.measureText(text).width;
+        g.fillStyle = "rgba(0,0,0,0.65)";
+        g.fillRect(x, y, tw + label, label * 1.6);
+        g.fillStyle = "#fff";
+        g.fillText(text, x + label * 0.5, y + label * 1.15);
+      };
+      const heatCanvas = document.createElement("canvas");
+      heatCanvas.width = aw;
+      heatCanvas.height = ah;
+      const heatCtx = heatCanvas.getContext("2d")!;
+
+      const socketOf = (peek: ReturnType<typeof parseNodePeek>) =>
+        !peek.handle || peek.handle === "out:primary" ? "out" : peek.handle.replace(/^out:/, "");
+      // Render `peek` at `frame` with it forced as the terminal, blit the
+      // canvas into the grid cell, and read its pixels back at analysis
+      // size — immediately, before the pool recycles the texture.
+      const renderCell = (
+        peek: ReturnType<typeof parseNodePeek>,
+        frame: number,
+        cx: number,
+        cy: number,
+        tag: string
+      ): Uint8ClampedArray => {
+        deps.forcedTerminalRef.current = peek.node.id;
+        deps.forcedTerminalHandleRef.current = peek.handle ?? null;
+        try {
+          deps.renderFrame(frame / fps, fps, false);
+        } finally {
+          deps.forcedTerminalRef.current = null;
+          deps.forcedTerminalHandleRef.current = null;
+        }
+        g.drawImage(canvas, cx, cy, cellW, cellH);
+        stamp(cx, cy, `f${frame} ${tag}`);
+        const output =
+          deps.evalCacheRef.current.get(peek.node.id)?.output ??
+          deps.lastEvalOutputsRef.current?.get(peek.node.id);
+        const picked = pickInspectSocket(output, socketOf(peek));
+        const v = picked.value;
+        if (!v || (v.kind !== "image" && v.kind !== "mask"))
+          throw new Error(
+            `"${peek.node.id}" (${picked.socket}) did not produce an image at frame ${frame} — ${
+              v ? `it carries ${v.kind}` : "no evaluated output (disconnected, gated, or a group shell)"
+            }.`
+          );
+        const px = backend.readImagePixels(v as ImageValue, aw, ah);
+        if (!px) throw new Error("Could not read pixels back from the GPU.");
+        return px;
+      };
+
+      const metrics: ({ frame: number } & ReturnType<typeof compareRgba>)[] = [];
+      const lines: string[] = [];
+      try {
+        for (let i = 0; i < list.length; i++) {
+          const y = i * cellH;
+          const pxA = renderCell(peekA, list[i], 0, y, "A");
+          const pxB = renderCell(peekB, list[i], cellW, y, "B");
+          const m = compareRgba(pxA, pxB, aw, ah, { threshold: thr });
+          metrics.push({ frame: list[i], ...m });
+          lines.push(describeMetrics(list[i], m));
+          heatCtx.putImageData(new ImageData(diffHeatRgba(pxA, pxB, aw, ah), aw, ah), 0, 0);
+          g.imageSmoothingEnabled = false;
+          g.drawImage(heatCanvas, cellW * 2, y, cellW, cellH);
+          g.imageSmoothingEnabled = true;
+          stamp(cellW * 2, y, `f${list[i]} |A−B| ${m.verdict}`);
+        }
+      } finally {
+        if (!deps.playingRef.current)
+          deps.renderFrame(deps.timeRef.current, deps.fpsRef.current, false);
+      }
+      const shader = glslInspectFor(peekB.node, backend) ?? glslInspectFor(peekA.node, backend);
+      const verdicts = metrics.map((m) => m.verdict);
+      const overall = verdicts.every((v) => v === "match")
+        ? "match"
+        : verdicts.some((v) => v === "off")
+          ? "off"
+          : "close";
+      const summary = [
+        `A = ${peekA.node.id}${peekA.handle ? ` (${socketOf(peekA)})` : ""} · B = ${peekB.node.id}${peekB.handle ? ` (${socketOf(peekB)})` : ""} · analysis ${aw}×${ah} · threshold ${thr}`,
+        ...lines,
+        `Overall: ${overall.toUpperCase()}. Columns: A | B | |A−B| heat (×4 gain; blue = alpha mismatch). Bands (provisional): match meanAbs≤${COMPARE_DEFAULTS.match.meanAbs} p95≤${COMPARE_DEFAULTS.match.p95Abs}; close meanAbs≤${COMPARE_DEFAULTS.close.meanAbs} p95≤${COMPARE_DEFAULTS.close.p95Abs}.`,
+        ...(shader?.error
+          ? [
+              `GLSL compile failed on ${peekB.node.id} — B is transparent/passthrough, not the shader: ${shader.error}`,
+            ]
+          : []),
+      ].join("\n");
+      return {
+        kind: "compare",
+        mimeType: enc.mimeType,
+        base64: await canvasToBase64(grid, enc.mimeType, enc.quality),
+        width: grid.width,
+        height: grid.height,
+        frames: list,
+        grid: { cols, rows },
+        a: peekA.node.id,
+        b: peekB.node.id,
+        analysis: { width: aw, height: ah },
+        overall,
+        metrics,
+        summary,
       };
     },
 

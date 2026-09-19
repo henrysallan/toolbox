@@ -30,6 +30,7 @@ import type { GradientPoint } from "@/engine/types";
 import type { NodeDataPayload } from "@/state/graph";
 import type { SplineParamValue } from "@/nodes/source/spline-draw";
 import type { SplineGuide } from "./spline-editor/types";
+import type { ViewportGuide } from "@/lib/viewport-guides";
 import { useClock } from "@/state/playback-clock";
 
 // Playhead-subscribed gizmo overlays (clock-store spec, shell detach).
@@ -104,6 +105,7 @@ export function SplineEditorOverlayAtTick({
   nodes,
   canvas,
   snapEnabled = true,
+  guides,
   onParamChange,
   onSelectNode,
   onAnchorAnimate,
@@ -117,6 +119,9 @@ export function SplineEditorOverlayAtTick({
   // Viewport snapping toggle. Off skips anchor / canvas-guide snap
   // (Cmd/Ctrl still suppresses a single gesture while it's on).
   snapEnabled?: boolean;
+  // Viewport ruler guides (spec 091726) the anchors / pen / primitive
+  // draws snap to, alongside the node's own guidelines.
+  guides?: readonly ViewportGuide[];
   onParamChange: ParamChange;
   onSelectNode?: (nodeId: string) => void;
   // Per-anchor keyframing (spec 072726 M6): create/remove the anchor
@@ -184,6 +189,7 @@ export function SplineEditorOverlayAtTick({
       nodeId={node.id}
       value={value}
       snapEnabled={snapEnabled}
+      viewportGuides={guides}
       onChange={(next) => onParamChange(node.id, "spline", next)}
       onionPrev={onionPrev}
       onionNext={onionNext}
@@ -226,6 +232,7 @@ export function TransformGizmoAtTick({
   multiGizmo,
   ticksPerFrame,
   snapEnabled = true,
+  guides,
   onParamChange,
   onMotionPathPointChange,
 }: {
@@ -242,6 +249,8 @@ export function TransformGizmoAtTick({
   // Viewport snapping toggle. Off skips canvas edge / centre snap
   // (Cmd/Ctrl still suppresses a single gesture while it's on).
   snapEnabled?: boolean;
+  // Viewport ruler guides (spec 091726) the box's edges / centre snap to.
+  guides?: readonly ViewportGuide[];
   onParamChange: ParamChange;
   onMotionPathPointChange: MotionPathPointChange;
 }) {
@@ -314,6 +323,7 @@ export function TransformGizmoAtTick({
         pivotSpace={isGizmo || !localSpace ? "global" : "local"}
         boxTranslate={multiGizmo}
         snapEnabled={snapEnabled}
+        guides={guides}
         onChange={(patch) => {
           const id = node.id;
           // Single coalescing key for the whole drag so a 60-frame gizmo
@@ -363,6 +373,8 @@ export function PrimitiveGizmoAtTick({
   canvasHeight,
   evalCacheRef,
   ticksPerFrame,
+  snapEnabled = true,
+  guides,
   onParamChange,
   onMotionPathPointChange,
 }: {
@@ -372,6 +384,10 @@ export function PrimitiveGizmoAtTick({
   canvasHeight: number;
   evalCacheRef: MutableRefObject<EvalCache>;
   ticksPerFrame: number;
+  // Viewport snapping toggle + the ruler guides (spec 091726) the box's
+  // edges / centre and the point handles snap to.
+  snapEnabled?: boolean;
+  guides?: readonly ViewportGuide[];
   onParamChange: ParamChange;
   onMotionPathPointChange: MotionPathPointChange;
 }) {
@@ -413,6 +429,8 @@ export function PrimitiveGizmoAtTick({
         canvas={canvas}
         points={pts}
         connect={adapter.points.connect}
+        guides={guides}
+        snapEnabled={snapEnabled}
         onChange={(index, x, y) => {
           const key = `gizmo:${node.id}`;
           for (const [name, value] of adapter.points!.write(
@@ -446,6 +464,8 @@ export function PrimitiveGizmoAtTick({
         hx={hx}
         hy={hy}
         anchorResize={adapter.anchorResize}
+        guides={guides}
+        snapEnabled={snapEnabled}
         onChange={(patch) => {
           const id = node.id;
           const key = `gizmo:${id}`;

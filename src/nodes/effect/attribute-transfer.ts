@@ -5,7 +5,14 @@ import type {
   SocketType,
   SplineValue,
 } from "@/engine/types";
-import { copyPointsWith, EMPTY_POINTS } from "@/engine/points";
+import {
+  builtinPointColumnArity,
+  copyPointsWith,
+  EMPTY_POINTS,
+  readBuiltinPointColumn,
+  withBuiltinPointColumn,
+  writableBuiltinPointColumn,
+} from "@/engine/points";
 import {
   buildSpatialHash,
   cellStart,
@@ -33,6 +40,16 @@ import {
 // Distances are authored units (Proximity Merge's convention). The
 // channel lands on the target under the same name; the target's other
 // channels carry through untouched.
+//
+// Built-in columns transfer too, when both sides are points: name
+// `rotation`, `scale` / `scale.x` / `scale.y`, `position` / `x` / `y`, or
+// `group`, and the value is read off the source's typed arrays and stored
+// into the target's (points.ts `withBuiltinPointColumn`) — never as a
+// named channel, since those names are reserved. `group` is an identity
+// tag, so it always takes the nearest source and rounds; `index`, `z` and
+// normals are read-only and pass the target through. Spline anchors carry
+// none of these fields, so a built-in name with a spline on either side
+// passes through as well.
 
 const MODE_OPTIONS = ["nearest", "weighted"] as const;
 const FALLBACK_OPTIONS = ["nearest", "zero"] as const;
@@ -162,15 +179,19 @@ export const attributeTransferNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Copies a named channel from a source (points or spline anchors) onto a target by proximity: nearest source, or a distance-weighted average within a radius. When nothing is in range, Fallback copies the nearest source or writes zero. The channel lands under the same name; a missing source channel passes the target through unchanged.",
+    "Copies a named channel, or a built-in column (rotation, scale, position, group), from a source onto a target by proximity: nearest source, or a distance-weighted average within a radius. When nothing is in range, Fallback copies the nearest source or writes zero. Source and target can each be points or spline anchors; a named channel lands under the same name, while a built-in lands in the target's own rotation / scale / position / group data (points on both sides). A missing source channel passes the target through unchanged.",
   facts: {
     space: { "param:radius": "canvas01", out: "in:points" },
+    reads: ["attr:rotation", "attr:scale", "attr:position", "attr:group"],
+    writes: ["attr:rotation", "attr:scale", "attr:position", "attr:group"],
     gotchas: [
       "mode=nearest ring-searches outward until it finds a source (ignores radius) unless fallback=zero, which keeps only a source within radius and writes 0 otherwise.",
       "mode=weighted averages sources within radius with linear falloff (weight = 1 − d/radius) over a 3×3 hash neighborhood; fallback=nearest copies the closest source on a miss, fallback=zero writes 0.",
       "radius is compared against authored point/spline-anchor positions (canvas01-scale distances, matching Proximity Merge), not pixels or UV.",
-      "The transferred attribute keeps the source's arity and color flag, so a vec3 color channel arrives flagged as color rather than three scalars.",
-      "If the named channel is absent on source (missing attribute, empty spline channel, or zero-count source), the target passes through unchanged.",
+      "A named channel keeps the source's arity and color flag (a vec3 color arrives flagged as color); a missing source channel passes the target through unchanged.",
+      "attr_name=rotation / scale(.x/.y) / position (x/y) / group lands in the target's own field (points on both sides only), never as a named channel; a single-axis name keeps the other axis.",
+      "group always takes the nearest source (mode=weighted is ignored for it) and rounds to an integer tag; fallback=zero writes a literal 0 to a built-in, so a missed scale collapses to 0.",
+      "index, z and nx/ny/nz are read-only and pass the target through, as does any built-in name with spline anchors on either side.",
     ],
   },
   backend: "webgl2",
@@ -205,6 +226,11 @@ export const attributeTransferNode: NodeDefinition = {
       placeholder: "attribute name",
       suggestAttrsFrom: "source",
       suggestAttrsRequire: true,
+      // Offer the built-in columns compute can store back (rotation,
+      // scale(.x/.y), position/x/y, group). index / z / normals have no
+      // home on the target, so they stay out of the picker and tint red.
+      suggestAttrsIncludeBuiltins: true,
+      suggestAttrsBuiltinFilter: (n) => writableBuiltinPointColumn(n) !== null,
     },
     {
       name: "target",
@@ -276,12 +302,29 @@ export const attributeTransferNode: NodeDefinition = {
       return { primary: emptyPrimary };
     }
 
+    // A writable built-in column (rotation / scale / position / group)
+    // rides the typed arrays on both sides, so it needs points on both
+    // sides. With a spline anywhere the name falls through to the named-
+    // channel path below, where a reserved name never resolves and the
+    // target passes through.
+    const builtin =
+      sourceKind === "points" && targetKind === "points"
+        ? writableBuiltinPointColumn(name)
+        : null;
+
     let sn = 0;
     let spos: Float32Array | undefined;
     let srcData: Float32Array | undefined;
     let k: 1 | 2 | 3 | 4 = 1;
     let srcColor: boolean | undefined;
-    if (sourceKind === "spline anchors") {
+    if (builtin) {
+      if (source && source.kind === "points" && source.count > 0) {
+        sn = source.count;
+        spos = source.positions;
+        srcData = readBuiltinPointColumn(source, builtin);
+        k = builtinPointColumnArity(builtin);
+      }
+    } else if (sourceKind === "spline anchors") {
       if (source && source.kind === "spline" && name) {
         const ch = readSplineAnchorChannel(source, name);
         if (ch) {
@@ -327,6 +370,9 @@ export const attributeTransferNode: NodeDefinition = {
 
     if (target.kind !== "points") return { primary: EMPTY_POINTS };
     const n = target.count;
+    // An identity tag cannot be averaged: `group` always takes the nearest
+    // source (fallback still applies) and rounds on write.
+    const effectiveMode = builtin?.field === "group" ? "nearest" : mode;
     const data = transferChannel(
       spos,
       sn,
@@ -334,10 +380,13 @@ export const attributeTransferNode: NodeDefinition = {
       k,
       target.positions,
       n,
-      mode,
+      effectiveMode,
       radius,
       fallback
     );
+    if (builtin) {
+      return { primary: withBuiltinPointColumn(target, builtin, data) };
+    }
     const result: PointAttribute = { arity: k, color: srcColor, data };
     return {
       primary: copyPointsWith(target, {

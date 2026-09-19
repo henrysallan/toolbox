@@ -15,6 +15,7 @@
 import { hexToOklch, oklchToHex } from "@/components/effects/theme/oklch";
 import {
   ACCENTS as EDITOR_ACCENTS,
+  INK_START,
   NEUTRAL_RAMP,
 } from "@/components/effects/theme/tokens";
 
@@ -43,6 +44,34 @@ export interface LiveDesign {
      * bleed canvas, full-height panel edges) ignore it.
      */
     cornerRadius: LiveCornerRadius;
+    /**
+     * Control-panel width in CSS px BEFORE uiScale (added 2026-09-16).
+     * PANEL_WIDTH_RANGE bounds it; 280 is the pre-design fixed width.
+     */
+    panelWidth: number;
+    /**
+     * Zoom factor for the whole control panel — text, the inline-styled
+     * shared controls, spacing AND the px width scale together (CSS
+     * `zoom` on .sidebar, added 2026-09-16). 1 = today's size;
+     * UI_SCALE_RANGE bounds it (½× … 2×). The canvas is content, not
+     * UI, and is untouched.
+     */
+    uiScale: number;
+    /**
+     * Vertical spacing between parameter rows in the panel, CSS px before
+     * uiScale (added 2026-09-16). ROW_GAP_RANGE bounds it; 10 is the
+     * pre-slider row margin. Rows only — section padding, the label-to-
+     * control gap inside a row and the toolbar are unchanged.
+     */
+    rowGap: number;
+    /**
+     * Pan / zoom control (091826_live-pan-zoom.md, added 2026-09-18): when
+     * true the panel's title row carries a button that lets a visitor pan
+     * and zoom the canvas with the editor's own gestures (scroll / pinch /
+     * middle-drag / touch). Off = today's fixed framing. The visitor's
+     * view is per session; switching the button off resets it.
+     */
+    panZoom: boolean;
   };
   theme: {
     mode: LiveThemeMode;
@@ -54,6 +83,14 @@ export interface LiveDesign {
     panelOpacity: number;
     /** Control-panel backdrop blur in px, 0…40 (0 = none). */
     panelBlur: number;
+    /**
+     * Ink intensity 0…1 (added 2026-09-16). 1 = today's text colors;
+     * lower fades every text token (--text*, the --tb-n ink steps) toward
+     * the panel surface — dark mode literally dims the text, light mode
+     * lightens it; either way less contrast. Surfaces, borders and the
+     * accent are untouched.
+     */
+    textBrightness: number;
   };
   /**
    * Ids into the registries below. Unknown id → the registry's first
@@ -96,6 +133,51 @@ export interface LiveDesign {
   };
 }
 
+// --- layout slider bounds + designer calibration --------------------------
+//
+// Both layout knobs are stored in real units (px, a zoom factor) but the
+// designer presents them as a 0–100 % POSITION, not a unit — the owner's
+// framing (2026-09-16): today's look must read "UI scale · 50 %" (room to
+// shrink and to grow) and "Panel width · 25 %". UI scale is logarithmic so
+// equal slider travel is an equal size RATIO (0 % = ½×, 50 % = 1×, 100 % =
+// 2×); width is linear across PANEL_WIDTH_RANGE (0 % = 160 px, 25 % =
+// 280 px, 100 % = 640 px). Calibration is checked by
+// scripts/check-live-presets.mts.
+
+export const PANEL_WIDTH_RANGE = { min: 160, max: 640, dflt: 280 } as const;
+export const UI_SCALE_RANGE = { min: 0.5, max: 2, dflt: 1 } as const;
+/** Row gap is shown in its own unit (px) — no % calibration. */
+export const ROW_GAP_RANGE = { min: 0, max: 40, dflt: 10 } as const;
+
+function clampRange(v: number, min: number, max: number): number {
+  return v < min ? min : v > max ? max : v;
+}
+
+export function uiScaleToPct(scale: number): number {
+  return 50 + 50 * Math.log2(scale);
+}
+
+export function pctToUiScale(pct: number): number {
+  const scale = 2 ** ((pct - 50) / 50);
+  // Four decimals: keeps the saved JSON tidy and still round-trips to
+  // the same integer percent.
+  return clampRange(
+    Math.round(scale * 1e4) / 1e4,
+    UI_SCALE_RANGE.min,
+    UI_SCALE_RANGE.max
+  );
+}
+
+export function panelWidthToPct(px: number): number {
+  const { min, max } = PANEL_WIDTH_RANGE;
+  return ((px - min) / (max - min)) * 100;
+}
+
+export function pctToPanelWidth(pct: number): number {
+  const { min, max } = PANEL_WIDTH_RANGE;
+  return Math.round(clampRange(min + (pct / 100) * (max - min), min, max));
+}
+
 export const DEFAULT_LIVE_DESIGN: LiveDesign = {
   version: 1,
   layout: {
@@ -104,6 +186,10 @@ export const DEFAULT_LIVE_DESIGN: LiveDesign = {
     panelMode: "full-height",
     panelAlign: "top",
     cornerRadius: "none",
+    panelWidth: PANEL_WIDTH_RANGE.dflt,
+    uiScale: UI_SCALE_RANGE.dflt,
+    rowGap: ROW_GAP_RANGE.dflt,
+    panZoom: false,
   },
   theme: {
     mode: "dark",
@@ -111,6 +197,7 @@ export const DEFAULT_LIVE_DESIGN: LiveDesign = {
     tintStrength: 0.5,
     panelOpacity: 1,
     panelBlur: 0,
+    textBrightness: 1,
   },
   presets: {
     slider: "classic",
@@ -301,6 +388,19 @@ const oneOf = <T extends string>(v: unknown, allowed: readonly T[], dflt: T): T 
 const clamp01 = (v: number): number =>
   !Number.isFinite(v) ? 0 : v < 0 ? 0 : v > 1 ? 1 : v;
 
+/**
+ * A finite number clamped to [min, max]; anything else — absent, null,
+ * NaN, a string — reads as `dflt`. Default BEFORE clamping on purpose: a
+ * pre-slider blob must render today's look, not the range's floor.
+ */
+const numberIn = (
+  v: unknown,
+  min: number,
+  max: number,
+  dflt: number
+): number =>
+  typeof v === "number" && Number.isFinite(v) ? clampRange(v, min, max) : dflt;
+
 /** Sanity caps for untrusted blobs — a live link renders public rows. */
 const MAX_ORDER_ENTRIES = 512;
 const MAX_LABEL_ENTRIES = 512;
@@ -367,6 +467,31 @@ export function fromSavedLiveDesign(saved: unknown): LiveDesign {
         ["none", "small", "large"],
         "none"
       ),
+      panelWidth: Math.round(
+        numberIn(
+          layout.panelWidth,
+          PANEL_WIDTH_RANGE.min,
+          PANEL_WIDTH_RANGE.max,
+          PANEL_WIDTH_RANGE.dflt
+        )
+      ),
+      uiScale: numberIn(
+        layout.uiScale,
+        UI_SCALE_RANGE.min,
+        UI_SCALE_RANGE.max,
+        UI_SCALE_RANGE.dflt
+      ),
+      rowGap: Math.round(
+        numberIn(
+          layout.rowGap,
+          ROW_GAP_RANGE.min,
+          ROW_GAP_RANGE.max,
+          ROW_GAP_RANGE.dflt
+        )
+      ),
+      // Off unless the blob says exactly true — a pre-flag design keeps
+      // its fixed framing.
+      panZoom: layout.panZoom === true,
     },
     theme: {
       mode: oneOf(theme.mode, ["dark", "light"], "dark"),
@@ -380,6 +505,7 @@ export function fromSavedLiveDesign(saved: unknown): LiveDesign {
       panelBlur: Number.isFinite(Number(theme.panelBlur))
         ? Math.max(0, Math.min(40, Number(theme.panelBlur)))
         : 0,
+      textBrightness: numberIn(theme.textBrightness, 0, 1, 1),
     },
     presets: {
       slider: presetId(presets.slider, SLIDER_PRESETS),
@@ -490,6 +616,19 @@ function tintToken(hex: string, hue: number, chroma: number): string {
 }
 
 /**
+ * Text brightness: pull an ink token's OKLCH lightness toward the panel
+ * surface's by (1 − k), keeping its chroma and hue so tinted greys stay
+ * tinted. k = 1 is the identity; k = 0 lands ON the surface (invisible —
+ * the designer's slider floors at 20 %). Lightness-only on purpose: in
+ * OKLab equal steps read as equal steps, so the ink ramp keeps its
+ * spacing as it fades instead of bunching up at one end.
+ */
+function fadeToward(hex: string, surfaceL: number, k: number): string {
+  const { l, c, h } = hexToOklch(hex);
+  return oklchToHex({ l: surfaceL + (l - surfaceL) * k, c, h });
+}
+
+/**
  * Sort panel entries by the design's control order. Ordered refs first (in
  * order-list position), unlisted entries after them in their incoming
  * (manifest) order. Used by ControlPanel for both the Controls and File
@@ -512,6 +651,17 @@ export function orderControlRefs<T>(
     .map((x) => x.entry);
 }
 
+/**
+ * Design ref of a node's gizmo row (091726_live-gizmos.md) — the same
+ * "<nodeId>::<param>" shape control rows use, with a reserved `@gizmo`
+ * param no node can declare, so ONE `controls.order` / `controls.labels`
+ * covers knobs and on-canvas handles alike.
+ */
+export const GIZMO_REF_PARAM = "@gizmo";
+export function gizmoControlRef(nodeId: string): string {
+  return `${nodeId}::${GIZMO_REF_PARAM}`;
+}
+
 /** 6-digit hex + alpha → 8-digit hex. */
 const hexWithAlpha = (hex: string, alpha: number): string =>
   hex +
@@ -521,8 +671,14 @@ const hexWithAlpha = (hex: string, alpha: number): string =>
 
 /** The complete inline var sheet for `.live-root`. */
 export function designTokens(design: LiveDesign): Record<string, string> {
-  const { mode, tintHue, tintStrength, panelOpacity, panelBlur } =
-    design.theme;
+  const {
+    mode,
+    tintHue,
+    tintStrength,
+    panelOpacity,
+    panelBlur,
+    textBrightness,
+  } = design.theme;
   const base = PALETTES[mode];
   const chroma = tintHue === null ? 0 : MAX_TINT_CHROMA * tintStrength;
   const out: Record<string, string> = {};
@@ -550,6 +706,26 @@ export function designTokens(design: LiveDesign): Record<string, string> {
   for (const [name, pair] of Object.entries(EDITOR_ACCENTS)) {
     out[`--tb-a-${name}`] = pair[mode];
   }
+  // Text brightness (2026-09-16): fade every INK token toward the panel
+  // surface (bg-2 — what the text sits on). Ink = the `--text*` family the
+  // panel's own labels use PLUS the neutral ramp from INK_START up, which
+  // is what the shared controls color their values, glyphs and chevrons
+  // with (tokens.ts names those steps "ink"; the slider handle borrows
+  // step 12 and fades along, which reads as intended — the whole panel's
+  // ink dims together). Applied after tinting so the chroma is already
+  // final; < 1 only, so the default sheet is byte-identical to before.
+  if (textBrightness < 1) {
+    const surfaceL = hexToOklch(out["--bg-2"]).l;
+    const fade = (name: string) => {
+      out[name] = fadeToward(out[name], surfaceL, textBrightness);
+    };
+    fade("--text");
+    fade("--text-dim");
+    fade("--text-faint");
+    for (let i = INK_START; i < NEUTRAL_RAMP.length; i++) {
+      fade(`--tb-n-${i}`);
+    }
+  }
   out["--accent"] = ACCENTS[mode];
   // The "playing" state of the classic transport buttons — the editor's
   // PlaybackBar uses a literal emerald fill with a pale mint glyph in both
@@ -565,6 +741,12 @@ export function designTokens(design: LiveDesign): Record<string, string> {
       : hexWithAlpha(out["--bg-2"], panelOpacity);
   if (panelBlur > 0) {
     out["--panel-backdrop"] = `blur(${Math.round(panelBlur)}px)`;
+    // The sticky toolbar (title / transport / export) repaints the panel
+    // surface over the rows that scroll under it; at 2× the panel's blur
+    // (2026-09-16) those rows smear into a wash instead of ghosting
+    // through. Tied to the panel's value rather than a second slider —
+    // one knob, and no blur here when the author wants none.
+    out["--toolbar-backdrop"] = `blur(${Math.round(panelBlur * 2)}px)`;
   }
   return out;
 }

@@ -2164,8 +2164,49 @@
         "options": [
           "linear",
           "ease",
+          "smoother",
+          "sine",
+          "ease_in",
+          "ease_out",
+          "cardinal",
+          "monotone",
+          "bspline",
+          "smooth",
           "constant"
-        ]
+        ],
+        "optionLabels": {
+          "linear": "Linear",
+          "ease": "Ease (smoothstep)",
+          "smoother": "Smoother (quintic)",
+          "sine": "Sine",
+          "ease_in": "Ease in",
+          "ease_out": "Ease out",
+          "cardinal": "Cardinal spline",
+          "monotone": "Monotone spline",
+          "bspline": "B-spline",
+          "smooth": "Gaussian smooth",
+          "constant": "Constant"
+        }
+      },
+      {
+        "name": "fg_ramp_space",
+        "type": "enum",
+        "settable": true,
+        "default": "srgb",
+        "options": [
+          "srgb",
+          "linear",
+          "oklab",
+          "oklch",
+          "oklch_long"
+        ],
+        "optionLabels": {
+          "srgb": "sRGB",
+          "linear": "Linear RGB",
+          "oklab": "OKLab",
+          "oklch": "OKLCH (short hue)",
+          "oklch_long": "OKLCH (long hue)"
+        }
       },
       {
         "name": "bg_transform",
@@ -2244,8 +2285,49 @@
         "options": [
           "linear",
           "ease",
+          "smoother",
+          "sine",
+          "ease_in",
+          "ease_out",
+          "cardinal",
+          "monotone",
+          "bspline",
+          "smooth",
           "constant"
-        ]
+        ],
+        "optionLabels": {
+          "linear": "Linear",
+          "ease": "Ease (smoothstep)",
+          "smoother": "Smoother (quintic)",
+          "sine": "Sine",
+          "ease_in": "Ease in",
+          "ease_out": "Ease out",
+          "cardinal": "Cardinal spline",
+          "monotone": "Monotone spline",
+          "bspline": "B-spline",
+          "smooth": "Gaussian smooth",
+          "constant": "Constant"
+        }
+      },
+      {
+        "name": "bg_ramp_space",
+        "type": "enum",
+        "settable": true,
+        "default": "srgb",
+        "options": [
+          "srgb",
+          "linear",
+          "oklab",
+          "oklch",
+          "oklch_long"
+        ],
+        "optionLabels": {
+          "srgb": "sRGB",
+          "linear": "Linear RGB",
+          "oklab": "OKLab",
+          "oklch": "OKLCH (short hue)",
+          "oklch_long": "OKLCH (long hue)"
+        }
       },
       {
         "name": "opacity",
@@ -2618,18 +2700,32 @@
     ],
     "subcategory": "modifier",
     "dynamic": true,
-    "description": "Copies a named channel from a source (points or spline anchors) onto a target by proximity: nearest source, or a distance-weighted average within a radius. When nothing is in range, Fallback copies the nearest source or writes zero. The channel lands under the same name; a missing source channel passes the target through unchanged.",
+    "description": "Copies a named channel, or a built-in column (rotation, scale, position, group), from a source onto a target by proximity: nearest source, or a distance-weighted average within a radius. When nothing is in range, Fallback copies the nearest source or writes zero. Source and target can each be points or spline anchors; a named channel lands under the same name, while a built-in lands in the target's own rotation / scale / position / group data (points on both sides). A missing source channel passes the target through unchanged.",
     "facts": {
       "space": {
         "param:radius": "canvas01",
         "out": "in:points"
       },
+      "reads": [
+        "attr:rotation",
+        "attr:scale",
+        "attr:position",
+        "attr:group"
+      ],
+      "writes": [
+        "attr:rotation",
+        "attr:scale",
+        "attr:position",
+        "attr:group"
+      ],
       "gotchas": [
         "mode=nearest ring-searches outward until it finds a source (ignores radius) unless fallback=zero, which keeps only a source within radius and writes 0 otherwise.",
         "mode=weighted averages sources within radius with linear falloff (weight = 1 − d/radius) over a 3×3 hash neighborhood; fallback=nearest copies the closest source on a miss, fallback=zero writes 0.",
         "radius is compared against authored point/spline-anchor positions (canvas01-scale distances, matching Proximity Merge), not pixels or UV.",
-        "The transferred attribute keeps the source's arity and color flag, so a vec3 color channel arrives flagged as color rather than three scalars.",
-        "If the named channel is absent on source (missing attribute, empty spline channel, or zero-count source), the target passes through unchanged."
+        "A named channel keeps the source's arity and color flag (a vec3 color arrives flagged as color); a missing source channel passes the target through unchanged.",
+        "attr_name=rotation / scale(.x/.y) / position (x/y) / group lands in the target's own field (points on both sides only), never as a named channel; a single-axis name keeps the other axis.",
+        "group always takes the nearest source (mode=weighted is ignored for it) and rounds to an integer tag; fallback=zero writes a literal 0 to a built-in, so a missed scale collapses to 0.",
+        "index, z and nx/ny/nz are read-only and pass the target through, as does any built-in name with spline anchors on either side."
       ]
     }
   },
@@ -7755,18 +7851,62 @@
         "options": [
           "linear",
           "ease",
+          "smoother",
+          "sine",
+          "ease_in",
+          "ease_out",
+          "cardinal",
+          "monotone",
+          "bspline",
+          "smooth",
           "constant"
-        ]
+        ],
+        "optionLabels": {
+          "linear": "Linear",
+          "ease": "Ease (smoothstep)",
+          "smoother": "Smoother (quintic)",
+          "sine": "Sine",
+          "ease_in": "Ease in",
+          "ease_out": "Ease out",
+          "cardinal": "Cardinal spline",
+          "monotone": "Monotone spline",
+          "bspline": "B-spline",
+          "smooth": "Gaussian smooth",
+          "constant": "Constant"
+        }
+      },
+      {
+        "name": "space",
+        "type": "enum",
+        "settable": true,
+        "default": "srgb",
+        "options": [
+          "srgb",
+          "linear",
+          "oklab",
+          "oklch",
+          "oklch_long"
+        ],
+        "optionLabels": {
+          "srgb": "sRGB",
+          "linear": "Linear RGB",
+          "oklab": "OKLab",
+          "oklch": "OKLCH (short hue)",
+          "oklch_long": "OKLCH (long hue)"
+        }
       }
     ],
     "subcategory": "modifier",
-    "description": "Remaps the input's luminance through a gradient of user-defined color stops. Offset slides the ramp; values past 1 wrap so the gradient loops.",
+    "description": "Remaps the input's luminance through a gradient of user-defined color stops. Offset slides the ramp; values past 1 wrap so the gradient loops. Interpolation picks the curve between stops (eases, splines through the stops, a Gaussian smooth, hard steps); Color space picks where the blend happens (sRGB, linear light, OKLab, OKLCH).",
     "facts": {
       "gotchas": [
         "Remaps by luminance (Rec.709 weighted), not per channel; the source's own alpha is preserved and multiplied by the ramp stop's alpha.",
         "offset=0 pins t=1 exactly to the last stop; any nonzero offset wraps the whole 0..1 domain via fract(), shifting what shows at the extremes.",
         "Up to 16 stops — extras are silently dropped after sorting by position.",
-        "The ramp aux always emits the sorted stop list, even with nothing wired into image — it works as a pure palette source into Stroke/Rasterize Spline."
+        "The ramp aux always emits the sorted stop list, even with nothing wired into image — it works as a pure palette source into Stroke/Rasterize Spline.",
+        "interpolation=cardinal can overshoot past a stop's color; monotone is the no-overshoot spline. bspline approximates: interior stops pull the curve rather than pin it.",
+        "space=oklch / oklch_long rotate hue the short / long way round with chroma kept up; out-of-gamut samples lose chroma, not hue. Identical hues under oklch_long make a full rainbow turn.",
+        "The ramp is sampled through a 1024-entry LUT: a `constant` step lands on a 1/1024 grid of t."
       ]
     }
   },
@@ -9153,10 +9293,19 @@
   {
     "type": "cursor",
     "name": "Cursor",
-    "category": "image",
-    "inputs": [],
-    "primaryOutput": "image",
+    "category": "spline",
+    "inputs": [
+      {
+        "name": "shape",
+        "type": "spline"
+      }
+    ],
+    "primaryOutput": "spline",
     "aux": [
+      {
+        "name": "image",
+        "type": "image"
+      },
       {
         "name": "velocity",
         "type": "image"
@@ -9229,18 +9378,24 @@
       }
     ],
     "subcategory": "generator",
-    "description": "Circular falloff field centered on the pointer, plus an aux velocity field encoded as RG (direction × magnitude, modulated by the same falloff). Radius and softness are in fractions of canvas width — circular on any aspect.",
+    "description": "Pointer source. Primary is a spline riding the cursor — a circle of `radius` by default, or a wired custom shape re-centred on the pointer — ready for Fill, Stroke, Rasterize or Copy to Points. Aux image is the circular falloff field (1 at the cursor, 0 beyond radius) on a transparent background, plus an aux velocity field encoded as RG (direction × magnitude, modulated by the same falloff). Radius and softness are fractions of canvas width — circular on any aspect.",
     "facts": {
       "space": {
+        "out": "canvas01",
+        "in:shape": "canvas01",
         "param:radius": "canvas01",
         "aux:position": "canvas01"
       },
       "gotchas": [
-        "radius is a fraction of canvas width (aspect-corrected), so the falloff disc stays circular on any aspect ratio.",
+        "The primary output is a SPLINE, not the falloff raster: a circle of radius at the pointer, or the wired shape translated so its anchor-bounds centre sits on the pointer. Wire aux image for the classic grayscale field.",
+        "A wired shape is only moved, never scaled or rotated — radius shapes the falloff and the default circle only.",
+        "radius is a fraction of canvas width (aspect-corrected), so the falloff disc and the default circle stay round on any aspect ratio.",
+        "The aux image's alpha is the falloff itself — transparent beyond radius — so Merge / Trails composite a soft disc; RGB still carries the min→max remap for colour-only readers like Displace or Math.",
+        "While the pointer is off the canvas (cursor inactive) the spline is empty and the falloff is all-zero with alpha 0; nothing holds the last position.",
         "Velocity is timed against wall-clock performance.now(), not scene time, so it keeps responding while playback is paused and does not replay identically across two exports of the same timeline.",
         "velocity_vec and the aux velocity image's R/G are canvas-UV units per second scaled by velocity_scale, distinct from aux position which is authored canvas coordinates (y-down, aspect-uncorrected).",
         "velocity_smoothing 0 is instant/unsmoothed, 1 freezes the value entirely (EMA alpha = 1 − smoothing); default 0.3 is light smoothing.",
-        "min/max remap the falloff output (default 0 outside, 1 at the cursor) and are not clamped, so max < min inverts the field."
+        "min/max remap the falloff's RGB (default 0 outside, 1 at the cursor) and are not clamped, so max < min inverts the field; alpha ignores them and always follows coverage."
       ]
     },
     "flags": [
@@ -9982,8 +10137,49 @@
         "options": [
           "linear",
           "ease",
+          "smoother",
+          "sine",
+          "ease_in",
+          "ease_out",
+          "cardinal",
+          "monotone",
+          "bspline",
+          "smooth",
           "constant"
-        ]
+        ],
+        "optionLabels": {
+          "linear": "Linear",
+          "ease": "Ease (smoothstep)",
+          "smoother": "Smoother (quintic)",
+          "sine": "Sine",
+          "ease_in": "Ease in",
+          "ease_out": "Ease out",
+          "cardinal": "Cardinal spline",
+          "monotone": "Monotone spline",
+          "bspline": "B-spline",
+          "smooth": "Gaussian smooth",
+          "constant": "Constant"
+        }
+      },
+      {
+        "name": "ramp_space",
+        "type": "enum",
+        "settable": true,
+        "default": "srgb",
+        "options": [
+          "srgb",
+          "linear",
+          "oklab",
+          "oklch",
+          "oklch_long"
+        ],
+        "optionLabels": {
+          "srgb": "sRGB",
+          "linear": "Linear RGB",
+          "oklab": "OKLab",
+          "oklch": "OKLCH (short hue)",
+          "oklch_long": "OKLCH (long hue)"
+        }
       },
       {
         "name": "ramp_span",
@@ -12486,16 +12682,252 @@
       {
         "name": "image",
         "type": "image"
+      },
+      {
+        "name": "plate",
+        "type": "image"
       }
     ],
     "primaryOutput": "image",
-    "aux": [],
+    "aux": [
+      {
+        "name": "grain",
+        "type": "image"
+      }
+    ],
     "params": [
+      {
+        "name": "preset",
+        "type": "enum",
+        "settable": true,
+        "default": "custom",
+        "options": [
+          "custom",
+          "35mm fine",
+          "35mm 500T",
+          "super 16",
+          "super 8",
+          "digital ISO 800",
+          "digital ISO 6400",
+          "video snow"
+        ]
+      },
+      {
+        "name": "model",
+        "type": "enum",
+        "settable": true,
+        "default": "fine",
+        "options": [
+          "fine",
+          "soft",
+          "film",
+          "parametric",
+          "sensor",
+          "video",
+          "plate",
+          "classic"
+        ]
+      },
+      {
+        "name": "scale",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 1,
+        "max": 32
+      },
+      {
+        "name": "size_um",
+        "type": "scalar",
+        "settable": true,
+        "default": 20,
+        "min": 1,
+        "max": 200
+      },
+      {
+        "name": "size_unit",
+        "type": "enum",
+        "settable": true,
+        "default": "px",
+        "options": [
+          "px",
+          "1080p px",
+          "um 35mm",
+          "um super 16",
+          "um super 8"
+        ]
+      },
+      {
+        "name": "aspect",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0.25,
+        "max": 4
+      },
+      {
+        "name": "distribution",
+        "type": "enum",
+        "settable": true,
+        "default": "gaussian",
+        "options": [
+          "gaussian",
+          "triangular",
+          "uniform"
+        ]
+      },
+      {
+        "name": "softness",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.5,
+        "min": 0,
+        "max": 2
+      },
+      {
+        "name": "irregularity",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.3,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "density",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0.25,
+        "max": 4
+      },
+      {
+        "name": "quality",
+        "type": "enum",
+        "settable": true,
+        "default": "full",
+        "options": [
+          "full",
+          "half",
+          "quarter"
+        ]
+      },
+      {
+        "name": "correlation",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.6,
+        "min": 0,
+        "max": 0.95
+      },
+      {
+        "name": "shot",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "fixed_pattern",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.15,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "banding",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.1,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "banding_axis",
+        "type": "enum",
+        "settable": true,
+        "default": "rows",
+        "options": [
+          "rows",
+          "columns"
+        ]
+      },
+      {
+        "name": "blotch",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.3,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "blotch_size",
+        "type": "scalar",
+        "settable": true,
+        "default": 8,
+        "min": 2,
+        "max": 32
+      },
+      {
+        "name": "streak",
+        "type": "scalar",
+        "settable": true,
+        "default": 12,
+        "min": 1,
+        "max": 64
+      },
+      {
+        "name": "line_jitter",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.3,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "dropout",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.05,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "plate_scale",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0.25,
+        "max": 8
+      },
+      {
+        "name": "plate_center",
+        "type": "scalar",
+        "settable": true,
+        "default": 0.5,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "plate_gain",
+        "type": "scalar",
+        "settable": true,
+        "default": 4,
+        "min": 0.1,
+        "max": 20
+      },
+      {
+        "name": "plate_flips",
+        "type": "boolean",
+        "settable": true,
+        "default": true
+      },
       {
         "name": "luminance",
         "type": "scalar",
         "settable": true,
-        "default": 0.15,
+        "default": 0.06,
         "min": 0,
         "max": 1
       },
@@ -12508,12 +12940,62 @@
         "max": 1
       },
       {
-        "name": "scale",
+        "name": "saturation",
         "type": "scalar",
         "settable": true,
         "default": 1,
-        "min": 1,
-        "max": 32
+        "min": 0,
+        "max": 2
+      },
+      {
+        "name": "tint",
+        "type": "color",
+        "settable": true,
+        "default": "#808080"
+      },
+      {
+        "name": "tint_amount",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "response_preset",
+        "type": "enum",
+        "settable": true,
+        "default": "flat",
+        "options": [
+          "flat",
+          "negative",
+          "print",
+          "digital",
+          "protect highlights",
+          "custom"
+        ]
+      },
+      {
+        "name": "response",
+        "type": "float_curve",
+        "settable": false
+      },
+      {
+        "name": "space",
+        "type": "enum",
+        "settable": true,
+        "default": "display",
+        "options": [
+          "display",
+          "linear",
+          "log"
+        ]
+      },
+      {
+        "name": "soft_clip",
+        "type": "boolean",
+        "settable": true,
+        "default": false
       },
       {
         "name": "seed",
@@ -12522,6 +13004,121 @@
         "default": 0,
         "min": 0,
         "max": 1000
+      },
+      {
+        "name": "per_channel",
+        "type": "boolean",
+        "settable": true,
+        "default": false
+      },
+      {
+        "name": "size_r",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 1,
+        "max": 3
+      },
+      {
+        "name": "size_g",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 1,
+        "max": 3
+      },
+      {
+        "name": "size_b",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 1,
+        "max": 3
+      },
+      {
+        "name": "intensity_r",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 2
+      },
+      {
+        "name": "intensity_g",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 2
+      },
+      {
+        "name": "intensity_b",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 2
+      },
+      {
+        "name": "motion",
+        "type": "enum",
+        "settable": true,
+        "default": "animated",
+        "options": [
+          "static",
+          "animated",
+          "looping"
+        ]
+      },
+      {
+        "name": "rate",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 240
+      },
+      {
+        "name": "smoothness",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 3
+      },
+      {
+        "name": "kernel",
+        "type": "enum",
+        "settable": true,
+        "default": "gaussian",
+        "options": [
+          "gaussian",
+          "bspline"
+        ]
+      },
+      {
+        "name": "drift",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": 0,
+        "max": 64
+      },
+      {
+        "name": "loop_frames",
+        "type": "scalar",
+        "settable": true,
+        "default": 120,
+        "min": 1,
+        "max": 100000
+      },
+      {
+        "name": "evolution",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": -100000,
+        "max": 100000
       },
       {
         "name": "mix_mode",
@@ -12545,21 +13142,41 @@
         "default": 1,
         "min": 0,
         "max": 1
+      },
+      {
+        "name": "view",
+        "type": "enum",
+        "settable": true,
+        "default": "result",
+        "options": [
+          "result",
+          "grain"
+        ]
       }
     ],
     "subcategory": "modifier",
-    "description": "Procedural film grain with separate luminance and chromatic channels. Works as a stand-alone grain source (no input → grain on 50% gray) or as a one-shot composite over an input image with a choice of mix modes. Animate Seed (e.g. wire Scene Time in via a Math expression) for moving grain.",
+    "description": "Procedural grain in six models — fine hash grain, soft blurred grain with coarser octaves, Boolean film discs, digital sensor noise, analog video snow, or a wired image / video plate — with a tonal response curve, display / linear / log working space, a per-channel colour model and film-stock presets, frame-locked to the project clock with a variance-preserving temporal kernel for smooth or looping evolution, composited over an optional image through a choice of mix modes or emitted alone on 50% gray.",
     "facts": {
       "space": {
         "param:scale": "pixels"
       },
+      "reads": [
+        "time"
+      ],
       "gotchas": [
-        "scale is grain-cell size in pixels at render resolution and does not scale with output size; 1 = finest, one independent sample per pixel.",
-        "No image wired: renders grain alone on neutral 50% gray and ignores mix_mode/mix entirely, doubling as a standalone grain source.",
-        "Every mix_mode treats grain as a layer centered at 0.5 + grain/2, so 0 grain is always identity regardless of which mode is chosen.",
-        "luminance grain applies one value to R/G/B (brightness only, no hue shift); chromatic grain hashes each channel independently for colored speckle."
+        "Size is grain cell size in render px; size_unit=1080p px scales by canvas height/1080, um units take size_um through the film gauge width; aspect stretches cells (video: streak x Size).",
+        "model=classic is the pre-v2 shader for saved projects (float hash, seed re-rolls continuously); a preset other than custom drives every look param from its table - pick custom to edit them.",
+        "luminance/chromatic = display std at mid-grey in every space; response scales grain by input luminance; saturation 0 = mono chromatic grain; no image = grain alone on 50% gray (also the grain aux).",
+        "soft blurs the plate (softness cells, sum w^2 = 1) and mixes 2x/4x octaves by irregularity; film draws Boolean disc grains at canvas/quality res whose count follows -ln(1-Y)*density.",
+        "sensor = fine + fixed pattern, banding, chroma blotch; video = streak x Size cells with line jitter/dropout; plate tiles the wired image; parametric tiles a CPU AR(1) template (cost ~ taps).",
+        "motion=animated steps grain time from the project clock at rate fps: rate 0 = new grain once per project frame in preview and export alike; rate 12 at 24 fps holds each grain frame two frames.",
+        "smoothness = sigma (grain frames) of a Gaussian moving average over hashed frames, renormalised by 1/sqrt(sum w^2) so contrast never breathes (kernel=bspline: 4 taps); drift wanders the layer, px/s.",
+        "evolution is a continuous grain-time offset in every mode (a wired ramp morphs smoothly when smoothness > 0); looping repeats every loop_frames project frames, which must divide the project loop."
       ]
-    }
+    },
+    "flags": [
+      "gates-outputs"
+    ]
   },
   {
     "type": "grid",
@@ -13609,8 +14226,49 @@
         "options": [
           "linear",
           "ease",
+          "smoother",
+          "sine",
+          "ease_in",
+          "ease_out",
+          "cardinal",
+          "monotone",
+          "bspline",
+          "smooth",
           "constant"
-        ]
+        ],
+        "optionLabels": {
+          "linear": "Linear",
+          "ease": "Ease (smoothstep)",
+          "smoother": "Smoother (quintic)",
+          "sine": "Sine",
+          "ease_in": "Ease in",
+          "ease_out": "Ease out",
+          "cardinal": "Cardinal spline",
+          "monotone": "Monotone spline",
+          "bspline": "B-spline",
+          "smooth": "Gaussian smooth",
+          "constant": "Constant"
+        }
+      },
+      {
+        "name": "ramp_space",
+        "type": "enum",
+        "settable": true,
+        "default": "srgb",
+        "options": [
+          "srgb",
+          "linear",
+          "oklab",
+          "oklch",
+          "oklch_long"
+        ],
+        "optionLabels": {
+          "srgb": "sRGB",
+          "linear": "Linear RGB",
+          "oklab": "OKLab",
+          "oklch": "OKLCH (short hue)",
+          "oklch_long": "OKLCH (long hue)"
+        }
       },
       {
         "name": "rot_x",
@@ -16541,10 +17199,51 @@
         "settable": true,
         "default": "constant",
         "options": [
-          "constant",
           "linear",
-          "ease"
-        ]
+          "ease",
+          "smoother",
+          "sine",
+          "ease_in",
+          "ease_out",
+          "cardinal",
+          "monotone",
+          "bspline",
+          "smooth",
+          "constant"
+        ],
+        "optionLabels": {
+          "linear": "Linear",
+          "ease": "Ease (smoothstep)",
+          "smoother": "Smoother (quintic)",
+          "sine": "Sine",
+          "ease_in": "Ease in",
+          "ease_out": "Ease out",
+          "cardinal": "Cardinal spline",
+          "monotone": "Monotone spline",
+          "bspline": "B-spline",
+          "smooth": "Gaussian smooth",
+          "constant": "Constant"
+        }
+      },
+      {
+        "name": "toon_space",
+        "type": "enum",
+        "settable": true,
+        "default": "srgb",
+        "options": [
+          "srgb",
+          "linear",
+          "oklab",
+          "oklch",
+          "oklch_long"
+        ],
+        "optionLabels": {
+          "srgb": "sRGB",
+          "linear": "Linear RGB",
+          "oklab": "OKLab",
+          "oklch": "OKLCH (short hue)",
+          "oklch_long": "OKLCH (long hue)"
+        }
       },
       {
         "name": "alpha",
@@ -21051,6 +21750,12 @@
         "default": false
       },
       {
+        "name": "fill_holes",
+        "type": "boolean",
+        "settable": true,
+        "default": false
+      },
+      {
         "name": "enable_fill",
         "type": "boolean",
         "settable": true,
@@ -21200,8 +21905,49 @@
         "options": [
           "linear",
           "ease",
+          "smoother",
+          "sine",
+          "ease_in",
+          "ease_out",
+          "cardinal",
+          "monotone",
+          "bspline",
+          "smooth",
           "constant"
-        ]
+        ],
+        "optionLabels": {
+          "linear": "Linear",
+          "ease": "Ease (smoothstep)",
+          "smoother": "Smoother (quintic)",
+          "sine": "Sine",
+          "ease_in": "Ease in",
+          "ease_out": "Ease out",
+          "cardinal": "Cardinal spline",
+          "monotone": "Monotone spline",
+          "bspline": "B-spline",
+          "smooth": "Gaussian smooth",
+          "constant": "Constant"
+        }
+      },
+      {
+        "name": "ramp_space",
+        "type": "enum",
+        "settable": true,
+        "default": "srgb",
+        "options": [
+          "srgb",
+          "linear",
+          "oklab",
+          "oklch",
+          "oklch_long"
+        ],
+        "optionLabels": {
+          "srgb": "sRGB",
+          "linear": "Linear RGB",
+          "oklab": "OKLab",
+          "oklch": "OKLCH (short hue)",
+          "oklch_long": "OKLCH (long hue)"
+        }
       },
       {
         "name": "fill_fit",
@@ -21337,8 +22083,49 @@
         "options": [
           "linear",
           "ease",
+          "smoother",
+          "sine",
+          "ease_in",
+          "ease_out",
+          "cardinal",
+          "monotone",
+          "bspline",
+          "smooth",
           "constant"
-        ]
+        ],
+        "optionLabels": {
+          "linear": "Linear",
+          "ease": "Ease (smoothstep)",
+          "smoother": "Smoother (quintic)",
+          "sine": "Sine",
+          "ease_in": "Ease in",
+          "ease_out": "Ease out",
+          "cardinal": "Cardinal spline",
+          "monotone": "Monotone spline",
+          "bspline": "B-spline",
+          "smooth": "Gaussian smooth",
+          "constant": "Constant"
+        }
+      },
+      {
+        "name": "stroke_ramp_space",
+        "type": "enum",
+        "settable": true,
+        "default": "srgb",
+        "options": [
+          "srgb",
+          "linear",
+          "oklab",
+          "oklch",
+          "oklch_long"
+        ],
+        "optionLabels": {
+          "srgb": "sRGB",
+          "linear": "Linear RGB",
+          "oklab": "OKLab",
+          "oklch": "OKLCH (short hue)",
+          "oklch_long": "OKLCH (long hue)"
+        }
       },
       {
         "name": "image_stroke",
@@ -21552,7 +22339,7 @@
       "gotchas": [
         "thickness/dash_length/dash_gap/dot_spacing/arrow_length default to raw pixels; units=% resolves them as a percent of canvas width instead.",
         "overlap=flatten draws all fills then all strokes on top; overlap=layered fills+strokes each subpath in order so later opaque fills occlude earlier strokes.",
-        "holes groups subpaths into containment islands and fills each as one even-odd path so nested contours punch instead of filling solid; fill only, capped at 2048 subpaths.",
+        "holes groups nested contours into islands and even-odd punches them; fill_holes fills those hole contours instead of the outer (outers with no hole stay empty); fill only, capped at 2048 subpaths.",
         "A per-anchor width profile (Spline Draw's Width tool) fills a variable-width envelope multiplying Thickness by each anchor's width, and ignores dash/dot style.",
         "stroke_ramp_by=progress or attribute ramps color along each subpath's own arc length (start→end) instead of one color per subpath; attribute reads stroke_driver_attr.",
         "ramp_by/stroke_ramp_by/thickness_by=group key off each subpath's stamped groupIndex (attr:group), e.g. from Copy to Points or String Art layers.",
@@ -24583,8 +25370,49 @@
         "options": [
           "linear",
           "ease",
+          "smoother",
+          "sine",
+          "ease_in",
+          "ease_out",
+          "cardinal",
+          "monotone",
+          "bspline",
+          "smooth",
           "constant"
-        ]
+        ],
+        "optionLabels": {
+          "linear": "Linear",
+          "ease": "Ease (smoothstep)",
+          "smoother": "Smoother (quintic)",
+          "sine": "Sine",
+          "ease_in": "Ease in",
+          "ease_out": "Ease out",
+          "cardinal": "Cardinal spline",
+          "monotone": "Monotone spline",
+          "bspline": "B-spline",
+          "smooth": "Gaussian smooth",
+          "constant": "Constant"
+        }
+      },
+      {
+        "name": "space",
+        "type": "enum",
+        "settable": true,
+        "default": "srgb",
+        "options": [
+          "srgb",
+          "linear",
+          "oklab",
+          "oklch",
+          "oklch_long"
+        ],
+        "optionLabels": {
+          "srgb": "sRGB",
+          "linear": "Linear RGB",
+          "oklab": "OKLab",
+          "oklch": "OKLCH (short hue)",
+          "oklch_long": "OKLCH (long hue)"
+        }
       }
     ],
     "description": "Paint an SDF subtree. Sets the color every shape below it renders with, unless a shape (or a nearer Material) paints itself. Distance is untouched. Constant mode takes a color (or a wired Color node); Ramp mode samples a gradient at a scalar field — wire SDF Repeat's Cell ID through a noise node to give every tile its own color.",
@@ -26940,8 +27768,49 @@
         "options": [
           "linear",
           "ease",
+          "smoother",
+          "sine",
+          "ease_in",
+          "ease_out",
+          "cardinal",
+          "monotone",
+          "bspline",
+          "smooth",
           "constant"
-        ]
+        ],
+        "optionLabels": {
+          "linear": "Linear",
+          "ease": "Ease (smoothstep)",
+          "smoother": "Smoother (quintic)",
+          "sine": "Sine",
+          "ease_in": "Ease in",
+          "ease_out": "Ease out",
+          "cardinal": "Cardinal spline",
+          "monotone": "Monotone spline",
+          "bspline": "B-spline",
+          "smooth": "Gaussian smooth",
+          "constant": "Constant"
+        }
+      },
+      {
+        "name": "space",
+        "type": "enum",
+        "settable": true,
+        "default": "srgb",
+        "options": [
+          "srgb",
+          "linear",
+          "oklab",
+          "oklch",
+          "oklch_long"
+        ],
+        "optionLabels": {
+          "srgb": "sRGB",
+          "linear": "Linear RGB",
+          "oklab": "OKLab",
+          "oklch": "OKLCH (short hue)",
+          "oklch_long": "OKLCH (long hue)"
+        }
       },
       {
         "name": "hueShift",
@@ -28878,17 +29747,59 @@
         "default": 3000,
         "min": 1,
         "max": 8000
+      },
+      {
+        "name": "align",
+        "type": "enum",
+        "settable": true,
+        "default": "off",
+        "options": [
+          "off",
+          "tangent",
+          "normal"
+        ]
+      },
+      {
+        "name": "pick",
+        "type": "enum",
+        "settable": true,
+        "default": "alternating",
+        "options": [
+          "alternating",
+          "random"
+        ]
+      },
+      {
+        "name": "seed",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
+        "min": 0,
+        "max": 10000
+      },
+      {
+        "name": "align_offset",
+        "type": "scalar",
+        "settable": true,
+        "default": 0,
+        "min": -180,
+        "max": 180
       }
     ],
     "subcategory": "generator",
-    "description": "Emit a point at every crossing of the input spline's segments — the 'nodes at intersections' construction-drawing look. Feed the output into Copy to Points to stamp a marker at each crossing. By default only segments from different subpaths are tested (so a cluster of shapes + lines marks line×shape and line×line crossings); enable Self-intersections for self-crossing polylines. The original spline passes through on the aux output so one wire carries both the drawing and its nodes.",
+    "description": "Emit a point at every crossing of the input spline's segments — the 'nodes at intersections' construction-drawing look. Feed the output into Copy to Points to stamp a marker at each crossing. By default only segments from different subpaths are tested (so a cluster of shapes + lines marks line×shape and line×line crossings); enable Self-intersections for self-crossing polylines. Align to spline bakes each point's rotation from the tangent or normal of one of the two splines that cross there — Pick spline chooses which: Alternating takes them in turn from point to point, Random flips a seeded coin per point. The original spline passes through on the aux output so one wire carries both the drawing and its nodes.",
     "facts": {
+      "writes": [
+        "attr:rotation"
+      ],
       "gotchas": [
         "By default only segments from different subpaths are tested; self_intersections adds within-subpath tests but skips adjacent segments (they share a construction vertex, not a crossing).",
         "Curves are flattened to polylines first (16 steps per curved cubic, 1 for a straight 2-anchor subpath), so a crossing inside a tight curve can be missed between sample steps.",
         "density thins evenly by taking every Nth crossing (step = round(1/density)), not a random subset; max_points then caps the result in discovery order.",
         "min_angle drops glancing crossings below that angle between the two segments' directions.",
-        "Near-duplicate crossings from shared flattened vertices are merged within 1e-4 of spline coordinate units."
+        "Near-duplicate crossings from shared flattened vertices are merged within 1e-4 of spline coordinate units.",
+        "align=tangent/normal writes attr:rotation (radians) from one of the two crossing segments' directions plus align_offset degrees; normal is tangent+90°; align=off leaves rotation unset.",
+        "pick=alternating uses segment A (lower subpath index; in self mode the earlier stretch) on even emitted indices and B on odd; pick=random is a seeded per-point coin keyed by emitted index."
       ]
     }
   },
@@ -29030,6 +29941,20 @@
         "max": 1
       },
       {
+        "name": "correspondence",
+        "type": "enum",
+        "settable": true,
+        "default": "resample",
+        "options": [
+          "resample",
+          "anchors"
+        ],
+        "optionLabels": {
+          "resample": "Resample",
+          "anchors": "Match anchors"
+        }
+      },
+      {
         "name": "resolution",
         "type": "scalar",
         "settable": true,
@@ -29072,14 +29997,15 @@
     ],
     "subcategory": "modifier",
     "dynamic": true,
-    "description": "Morph (tween) between two or more splines by Amount (0 = first, 1 = last). Extra spline sockets auto-grow; Amount is split evenly across the chain (3 shapes → 0 / 0.5 / 1). Shapes are auto-aligned by orientation and start vertex; surplus subpaths grow/shrink from a point. Outputs a spline, plus an image when stroke or fill is on.",
+    "description": "Morph (tween) between two or more splines by Amount (0 = first, 1 = last). Extra spline sockets auto-grow; Amount is split evenly across the chain (3 shapes → 0 / 0.5 / 1). Shapes are auto-aligned by orientation and start vertex; surplus subpaths grow/shrink from a point. Correspondence is Resample (every shape resampled to Resolution) or Match anchors (subpaths with the same anchor count lerp their authored anchors and handles 1:1, no resampling). Outputs a spline, plus an image when stroke or fill is on.",
     "facts": {
       "space": {
         "param:stroke_thickness": "pixels"
       },
       "gotchas": [
         "Amount is split evenly across the whole wired chain (3 shapes → 0/0.5/1, not 0..1 per adjacent pair); a wired amount scalar input overrides the Amount param.",
-        "Correspondence (resample to resolution + orientation/start-vertex alignment) rebuilds only when the shape set or resolution changes, not when Amount sweeps.",
+        "Correspondence (resample or 1:1 anchor pairing, plus orientation/start-vertex alignment) rebuilds only when the shape set, resolution or correspondence mode changes, not when Amount sweeps.",
+        "correspondence=anchors lerps authored anchors and handles 1:1 only for subpath pairs with equal anchor counts (Amount 0/1 reproduce the inputs exactly); a mismatched pair resamples to resolution.",
         "The image aux output only exists when stroke_enabled or fill_enabled is on; with both off only the spline output is produced.",
         "stroke_thickness is pixels at render resolution, unlike the canvas01 spline geometry it strokes.",
         "With zero or one wired shape the result passes through unchanged (or is empty) and Amount has no effect."
@@ -29472,8 +30398,49 @@
         "options": [
           "linear",
           "ease",
+          "smoother",
+          "sine",
+          "ease_in",
+          "ease_out",
+          "cardinal",
+          "monotone",
+          "bspline",
+          "smooth",
           "constant"
-        ]
+        ],
+        "optionLabels": {
+          "linear": "Linear",
+          "ease": "Ease (smoothstep)",
+          "smoother": "Smoother (quintic)",
+          "sine": "Sine",
+          "ease_in": "Ease in",
+          "ease_out": "Ease out",
+          "cardinal": "Cardinal spline",
+          "monotone": "Monotone spline",
+          "bspline": "B-spline",
+          "smooth": "Gaussian smooth",
+          "constant": "Constant"
+        }
+      },
+      {
+        "name": "ramp_space",
+        "type": "enum",
+        "settable": true,
+        "default": "srgb",
+        "options": [
+          "srgb",
+          "linear",
+          "oklab",
+          "oklch",
+          "oklch_long"
+        ],
+        "optionLabels": {
+          "srgb": "sRGB",
+          "linear": "Linear RGB",
+          "oklab": "OKLab",
+          "oklch": "OKLCH (short hue)",
+          "oklch_long": "OKLCH (long hue)"
+        }
       },
       {
         "name": "thickness",
@@ -30969,16 +31936,32 @@
         ]
       },
       {
+        "name": "mode",
+        "type": "enum",
+        "settable": true,
+        "default": "slider",
+        "options": [
+          "slider",
+          "toggle"
+        ]
+      },
+      {
         "name": "index",
         "type": "scalar",
         "settable": true,
         "default": 0,
         "min": 0,
         "max": 255
+      },
+      {
+        "name": "labels",
+        "type": "slot_labels",
+        "settable": true,
+        "default": {}
       }
     ],
     "dynamic": true,
-    "description": "Picks one of N inputs by index. Accepts any socket type: leave Type on \"auto\" and the node adopts whatever you wire in — mixed inputs coerce to the one type they share (a scalar beside a vec4 becomes vec4; a mask beside an image becomes image). Inputs auto-grow — there's always one spare empty socket. Wire a scalar to Index for live switching.",
+    "description": "Picks one of N inputs by index. Accepts any socket type: leave Type on \"auto\" and the node adopts whatever you wire in — mixed inputs coerce to the one type they share (a scalar beside a vec4 becomes vec4; a mask beside an image becomes image). Inputs auto-grow — there's always one spare empty socket. Wire a scalar to Index for live switching. Mode \"toggle\" turns Index into a pill (up to three wired inputs) or dropdown over the wired inputs, each nameable via Names — the pick the live link shows when Index is marked as a control.",
     "facts": {
       "space": {
         "out": "in:*"
@@ -30988,6 +31971,7 @@
         "Inputs auto-grow: connected numbered slots stay in order plus one trailing spare; disconnecting a middle slot drops it and later indices shift.",
         "The picked value passes through untouched and borrowed (ownsTextures: false) — the node never releases the upstream texture itself.",
         "index is rounded and clamped into [0, slotCount-1]; an unwired index slot falls back to the index param, and an empty slot at the picked index outputs nothing.",
+        "mode=toggle only changes how index is edited (pill ≤3 states, dropdown past that, over the wired slots — the spare is excluded); labels are keyed by slot socket (in0, in1, …), not position.",
         "render and vector socket types are excluded from the switchable type list."
       ]
     }
@@ -33165,7 +34149,7 @@
     ],
     "subcategory": "modifier",
     "dynamic": true,
-    "description": "Temporal trails — each echo is a faded copy of an earlier frame (opacity only, no color mix). Primary is the current frame over the echoes; the trail aux is echoes only. Feedback: continuous motion trail. Ring: stepped stop-motion echoes. Velocity: directional motion blur along a vector or UV field. History advances only while the timeline plays.",
+    "description": "Temporal trails — each echo is a faded copy of an earlier frame (opacity only, no color mix). Primary is the current frame over the echoes; the trail aux is echoes only. Feedback: continuous motion trail. Ring: stepped stop-motion echoes. Velocity: directional motion blur along a vector or UV field. History advances only while the timeline plays, and wipes on skip-to-start, loop wrap, or hitting Play.",
     "facts": {
       "space": {
         "param:velocity_x": "uv01",
@@ -33176,6 +34160,7 @@
       ],
       "gotchas": [
         "History only advances while the timeline is playing or exporting; paused param tweaks or repeated same-time evals freeze it instead of decaying further.",
+        "The history buffer wipes on skip-to-start / scene-time wrap back near 0, and on every Play (resume from pause); pause itself does not wipe.",
         "mode=ring captures a new echo only every step_frames active frames; between captures the primary output freezes on the last captured composite.",
         "mode=velocity always re-captures the raw current input as history (not the blurred output), so the directional blur doesn't compound frame over frame.",
         "velocity_x/y are the full backward-sweep UV offset at the last tap, not a per-tap or per-frame step; wiring vel_uv overrides them entirely.",
@@ -33205,7 +34190,12 @@
       }
     ],
     "primaryOutput": "image",
-    "aux": [],
+    "aux": [
+      {
+        "name": "transform",
+        "type": "transform"
+      }
+    ],
     "params": [
       {
         "name": "translateX",
@@ -33323,7 +34313,7 @@
       }
     ],
     "dynamic": true,
-    "description": "Scale, rotate, and translate the input around a pivot. Works on images, splines, or points. Wire a Gizmo into Transform to drive the same placement from a shared on-canvas control (that replaces this node's own TRS). `space=local` (Source, the default) is a fraction of the incoming shape's bounds so scale/rotate stay about the shape when you move it; `space=global` (Canvas) pins the pivot to a fixed frame point. Image mode can Tile the source past its edges (AE RepeTile) with per-side extent and Unfold. For SDFs use the Position-pipeline operators (Position Translate / Scale / Rotate) — they compose with Position Repeat / Mirror / Polar for tile-local transforms.",
+    "description": "Scale, rotate, and translate the input around a pivot. Works on images, splines, or points. Wire a Gizmo into Transform to drive the same placement from a shared on-canvas control (that replaces this node's own TRS). The Transform aux emits that effective placement so another Transform or primitive can share it. `space=local` (Source, the default) is a fraction of the incoming shape's bounds so scale/rotate stay about the shape when you move it; `space=global` (Canvas) pins the pivot to a fixed frame point. Image mode can Tile the source past its edges (AE RepeTile) with per-side extent and Unfold. For SDFs use the Position-pipeline operators (Position Translate / Scale / Rotate) — they compose with Position Repeat / Mirror / Polar for tile-local transforms.",
     "facts": {
       "space": {
         "in:image": [
@@ -33349,6 +34339,7 @@
       "gotchas": [
         "Behavior follows the connected input's type (image/spline/points), not a mode param; the legacy `mode` param is hidden and no longer read.",
         "Wiring a `transform` socket (e.g. from a Gizmo) replaces this node's own TRS params entirely, using inverse-affine math on images or direct math on spline/points.",
+        "The transform aux emits the placement this node applied: the wired value if connected, else own TRS with space=local pivot baked to canvas coords.",
         "space=local (default) makes pivotX/Y a fraction of the incoming shape's bbox so scale/rotate track it; space=global pins the pivot to a fixed canvas point; images always act as global.",
         "tile (image-only) wraps sampling past the edges by tileLeft/Right/Up/Down source-widths, with tileUnfold mirroring odd copies edge-to-edge.",
         "On points, rotation and scale compose with the point's existing rotation (additive) and scale (multiplicative) rather than replacing them."
