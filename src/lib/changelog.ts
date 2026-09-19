@@ -11,6 +11,20 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.5.8",
+    date: "2026-09-19",
+    added: [
+      "Easing editor — the `easing` button in the Tracks dock opens a curve editor that writes one shape to every selected keyframe pair at once, vec2 and color lanes included.",
+      "Viewport rulers and guides — ⇧R shows rulers in project pixels; drag guides out of them and transform boxes, shapes, text, point handles and spline anchors snap to them. Guides save with the project.",
+      "Live Link gizmos and pan / zoom — on-canvas transform, shape and gradient handles in live links and exported apps, plus the editor's pan and zoom gestures as a designer toggle.",
+      "Graph → GLSL — ask the agent to fuse an image node chain into one GLSL Expression; plan, docs and compare-renders MCP tools plus a graph-to-glsl skill drive the loop.",
+      "Grain v2 — a temporal grain model that animates smoothly instead of re-rolling every frame; existing Grain nodes keep the classic look. Color ramps everywhere gain a color-space and interpolation-curve choice.",
+    ],
+    changed: [
+      "Live Link designer gains layout and theme sliders (panel width, UI scale, row gap, text brightness), per-layer Merge blend / opacity controls, and control rows that follow the branch a Switch is showing.",
+    ],
+  },
+  {
     version: "0.5.7",
     date: "2026-09-15",
     added: [
