@@ -355,11 +355,11 @@ const laneFlag: EasingLane = {
   rowIdx: 3,
 };
 const lanes = new Map<string, EasingLane>([
-  ["n p", laneP],
-  ["n q", laneQ],
-  ["n flag", laneFlag],
+  ["n\u0000p", laneP],
+  ["n\u0000q", laneQ],
+  ["n\u0000flag", laneFlag],
 ]);
-const getLane = (nodeId: string, paramName: string) => lanes.get(`${nodeId} ${paramName}`);
+const getLane = (nodeId: string, paramName: string) => lanes.get(`${nodeId}\u0000${paramName}`);
 const sel = (param: string, ...ticks: number[]): SelectionKey[] =>
   ticks.map((tick) => ({ nodeId: "n", paramName: param, tick }));
 const pairKeys = (pairs: { aTick: number; bTick: number }[]) => pairs.map((p) => `${p.aTick}-${p.bTick}`).join(" ");
