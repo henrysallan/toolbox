@@ -11,6 +11,24 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.5.9",
+    date: "2026-09-21",
+    added: [
+      "Export presets — the Output node names the outcome (what plays where, at what size) instead of exposing tier / container / codec raw, and shows a \"what you get\" line. Progress now has two bars: frames captured and frames encoded.",
+      "Named live links — Project Settings → live link gives a public project a readable /@handle/title address alongside its random /live link. The slug freezes when you save, so renaming never moves a shared link.",
+      "Outline node — sweeps a spline with a thickness and outputs the silhouette as a closed spline; overlapping strokes merge and closed paths keep their hole.",
+      "Float Curve socket — Scene Time's easing (and any float_curve param) can be driven from the graph by a Float Curve node or an Expression with a curve output. Scene Time also gains sawtooth and stepped modes.",
+      "Find in graph — right-click → Find… fuzzy-matches nodes as you type, rings every hit and ↑ / ↓ pans between them.",
+      "Keyframe clipboard — copy keys in the Tracks editor, paste them from the Graph editor's right-click menu (and back), and \"Paste flipped\" plays the selection backwards.",
+      "Text px / % units — font size, stroke and letter spacing can be a percent of canvas width so text survives a comp resize and previews at the exported scale.",
+    ],
+    changed: [
+      "Desktop exports read frames straight off the GPU instead of the preview canvas, fixing long exports that froze on one frame; the native ffmpeg path pipelines the readback ahead of the encoder and each export writes a log.",
+      "Built-in and named point attributes share one schema, so Attribute Math, Map Attribute, Filter Points, Stagger, Modulate Points and friends accept either kind by name.",
+      "Live links and exported apps get ⌘Z / ⇧⌘Z for slider and gizmo edits; cloud save / load shows a progress pill; LFO takes a clock input.",
+    ],
+  },
+  {
     version: "0.5.8",
     date: "2026-09-19",
     added: [
