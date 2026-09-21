@@ -67,6 +67,7 @@ export const TIME_OFFSET_CARRIED_TYPES: readonly SocketType[] = [
   "uv",
   "notes",
   "color_ramp",
+  "float_curve",
   "transform",
 ];
 

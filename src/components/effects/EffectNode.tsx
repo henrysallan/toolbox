@@ -53,6 +53,7 @@ import { tintRgba } from "./node-tints";
 import { Spinner } from "./Spinner";
 import { useAudioAudible } from "@/state/audio-audibility";
 import { VIRTUAL_SOCKET } from "@/engine/groups";
+import type { MergeLayer } from "@/nodes/effect/merge";
 
 type EffectNodeType = Node<NodeDataPayload, "effect">;
 
@@ -154,8 +155,10 @@ const RAMP_WIDGET_PARAMS: Record<string, string> = {
 // burying the editor in the panel costs a selection round-trip per tweak.
 // Reuses the panel's FloatCurveEditor wholesale (click-to-add, drag,
 // drag-off-to-remove, x/y row); edits route through the same
-// `effect-node-param` event. Unlike the ramp there's no wired/read-only
-// case: float_curve params aren't exposable (paramSocketType → null).
+// `effect-node-param` event. Like the ramp, a wire into the exposed param
+// (float_curve is a socket type since 091926_float-curve-socket.md) wins at
+// eval, so the widget goes read-only while connected — it still shows the
+// STORED curve, not the wired one, the same limitation NodeColorRamp has.
 const CURVE_WIDGET_PARAMS: Record<string, string> = {
   "float-curve": "curve",
 };
@@ -375,6 +378,22 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
   // Hidden inputs (evaluator-only sockets like a layer's `content`)
   // never render — no handle, no row.
   const inputs = data.inputs.filter((i) => !i.hidden);
+
+  // Merge: per-layer bypass state keyed by layer id, so each `layer:<id>` /
+  // `mask:<id>` row can carry an eye toggle (left of the label) and dim
+  // while the layer is skipped. Mirrors the eye on the param panel's layer
+  // card — both flip `enabled` on the same MergeLayer.
+  const mergeLayerEnabled = useMemo(() => {
+    if (data.defType !== "merge") return null;
+    const layers = data.params.layers;
+    const m = new Map<string, boolean>();
+    if (Array.isArray(layers)) {
+      for (const l of layers as MergeLayer[]) {
+        if (l && typeof l.id === "string") m.set(l.id, l.enabled !== false);
+      }
+    }
+    return m;
+  }, [data.defType, data.params.layers]);
   const auxes = data.auxOutputs;
   const hasPrimary = !!data.primaryOutput;
 
@@ -507,16 +526,18 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
     const p = def?.params.find((x) => x.name === scalarInputParam);
     if (!p || p.type !== "scalar") return null;
     const ov = data.paramOverrides?.[scalarInputParam];
-    const min = ov?.min ?? p.min ?? 0;
-    // Param-driven upper bound (maxFrom — Switch's `index` spans exactly the
-    // live auto-grow slots). Override wins, `max` is the fallback.
+    // Param-driven bounds (minFrom / maxFrom / softMaxFrom — Switch's `index`
+    // spans exactly the live auto-grow slots; Text's `font_size` swaps to a
+    // percent range under units=%). Override wins, statics are the fallback.
+    const min = ov?.min ?? p.minFrom?.(data.params) ?? p.min ?? 0;
     const max = ov?.max ?? p.maxFrom?.(data.params) ?? p.max ?? 1;
     // Param-driven increment (stepFrom — e.g. Constant's value follows its
     // `step`/`mode` params). When active, edits snap to k·step (see
     // NodeScalarSlider) so the on-node bar matches the ParamPanel row.
     const dynStep = p.stepFrom?.(data.params);
     const step = dynStep ?? p.step ?? 0.01;
-    const sliderMax = ov?.softMax ?? p.softMax ?? max;
+    const sliderMax =
+      ov?.softMax ?? p.softMaxFrom?.(data.params) ?? p.softMax ?? max;
     const sliderMin = Math.max(min, -sliderMax);
     // Widget choice (controlFrom — a toggle-mode Switch swaps the bar for
     // the same pill / dropdown the ParamPanel and the live link render,
@@ -562,6 +583,15 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
     if (!curveParam) return null;
     return sanitizeFloatCurve(data.params[curveParam], 0, 1);
   }, [curveParam, data.params]);
+  // A wire into the exposed curve param wins at eval, so the on-node editor
+  // goes read-only while connected (same contract as NodeColorRamp). Hooks
+  // run unconditionally; on nodes without a curve widget the handle id
+  // matches nothing and the list is empty.
+  const curveConns = useNodeConnections({
+    handleType: "target",
+    handleId: `in:param:${curveParam ?? "curve"}`,
+  });
+  const curveWired = !!curveParam && curveConns.length > 0;
 
   // The two nodes whose output IS a colour: the Color node (one swatch per
   // colour output) and Solid Color (one colour, one image out). Both carry a
@@ -680,6 +710,15 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
       ),
     [data.animation]
   );
+
+  // Does this node ship anything to the live link / exported app — a
+  // param (or file picker) with its Control toggle on, or its on-canvas
+  // handles? Same sources the manifest builder reads. Reachability from
+  // the output is deliberately NOT part of it: the badge says "this node
+  // is marked", so an author can find and clear stray marks on a branch
+  // the link doesn't currently render.
+  const hasLiveControls =
+    (data.controlParams?.length ?? 0) > 0 || !!data.controlGizmo;
 
   const dispatch = (kind: "toggleActive" | "toggleActive2" | "toggleBypass") => {
     window.dispatchEvent(
@@ -837,6 +876,28 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
             background: "var(--tb-a-red-500)",
             // A dark rim keeps the dot legible over a wire or a node it
             // happens to overlap.
+            boxShadow: "0 0 0 1.5px var(--tb-n-3)",
+            zIndex: 5,
+          }}
+        />
+      )}
+      {hasLiveControls && (
+        <div
+          title="Live control — this node has a parameter (or its handles) exposed in the live link"
+          style={{
+            position: "absolute",
+            // Same off-corner dot as the animation badge, one step to the
+            // right of it so both read as a pair when a node has both.
+            // Still left of the timing readout at left: 2 + text, which
+            // sits at top: -14 — a different row.
+            top: -6,
+            left: hasKeyframes ? 4 : -6,
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            // Control-toggle emerald, same family as the lit toggle in the
+            // param panel, so the badge and the button that made it agree.
+            background: "var(--tb-a-emerald-400)",
             boxShadow: "0 0 0 1.5px var(--tb-n-3)",
             zIndex: 5,
           }}
@@ -1217,6 +1278,21 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           // Trailing virtual socket on Group Output — hollow dashed dot;
           // wiring into it mints a real typed socket.
           const isVirtual = input.name === VIRTUAL_SOCKET;
+          // Merge layer rows: `layer:<id>` gets the eye toggle; its
+          // `mask:<id>` twin only dims with it. Base rows have neither.
+          const mergeLayerId =
+            mergeLayerEnabled &&
+            (input.name.startsWith("layer:") || input.name.startsWith("mask:"))
+              ? input.name.slice(input.name.indexOf(":") + 1)
+              : null;
+          const mergeLayerOn =
+            mergeLayerId !== null
+              ? mergeLayerEnabled!.get(mergeLayerId) ?? true
+              : true;
+          const showLayerEye =
+            mergeLayerId !== null &&
+            mergeLayerEnabled!.has(mergeLayerId) &&
+            input.name.startsWith("layer:");
           return (
             <Fragment key={`in-${input.name}`}>
               <Handle
@@ -1256,10 +1332,34 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
                   ...(isQueue ? { right: 10 } : {}),
                 }}
               >
+                {showLayerEye && (
+                  <LayerEyeToggle
+                    on={mergeLayerOn}
+                    onClick={() =>
+                      window.dispatchEvent(
+                        new CustomEvent("effect-node-toggle", {
+                          detail: {
+                            id,
+                            kind: "mergeToggleLayer",
+                            layerId: mergeLayerId,
+                          },
+                        })
+                      )
+                    }
+                  />
+                )}
                 <span
                   style={{
-                    color: isVirtual ? "var(--tb-n-10)" : "var(--tb-n-13)",
+                    color: isVirtual
+                      ? "var(--tb-n-10)"
+                      : mergeLayerOn
+                        ? "var(--tb-n-13)"
+                        : "var(--tb-n-10)",
                     fontStyle: isVirtual ? "italic" : undefined,
+                    textDecoration: mergeLayerOn ? undefined : "line-through",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
                   }}
                 >
                   {isVirtual ? "new socket" : input.label ?? input.name}
@@ -1712,20 +1812,30 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
           // no reason to know about xyflow.
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
+          title={
+            curveWired
+              ? "Curve driven by a wired input — disconnect to edit"
+              : undefined
+          }
           style={{
             padding: "6px 8px",
             borderTop: "1px solid var(--tb-n-7)",
+            // Read-only while driven: the stored curve is shown dimmed and
+            // inert, since the wire's curve is what evaluates.
+            opacity: curveWired ? 0.5 : 1,
+            pointerEvents: curveWired ? "none" : "auto",
           }}
         >
           <FloatCurveEditor
             points={curvePoints}
-            onChange={(next) =>
+            onChange={(next) => {
+              if (curveWired) return;
               window.dispatchEvent(
                 new CustomEvent("effect-node-param", {
                   detail: { id, name: curveParam, value: next },
                 })
-              )
-            }
+              );
+            }}
           />
         </div>
       )}
@@ -1778,7 +1888,10 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
               third fixed boundary socket. Self-gating: renders nothing
               until something is wired into `in:spline`, so the usual
               two-button row is unchanged for everyone else. */}
-          <SvgExportButton id={id} />
+          <SvgExportButton
+            id={id}
+            sequence={data.params?.exportMode === "sequence"}
+          />
         </div>
       )}
 
@@ -1904,12 +2017,14 @@ function ExportButton({
 }
 
 // The third export product on an Output / Layer Output: the spline wired
-// into its `spline` tap, saved as a standalone .svg at the current playhead.
-// Its own component so the connection subscription lives here — the row
-// renders nothing at all when the tap is empty, which keeps the default
-// chrome (Image / Video) exactly as it was. The panel gates its
-// "Export SVG →" twin on the same wire.
-function SvgExportButton({ id }: { id: string }) {
+// into its `spline` tap, saved as a standalone .svg at the current playhead
+// — or, when the node's export mode is `sequence`, one .svg per frame over
+// the same range as the raster sequence (the label says so). Its own
+// component so the connection subscription lives here — the row renders
+// nothing at all when the tap is empty, which keeps the default chrome
+// (Image / Video) exactly as it was. The panel gates its "Export SVG →"
+// twin on the same wire.
+function SvgExportButton({ id, sequence }: { id: string; sequence: boolean }) {
   const conns = useNodeConnections({
     handleType: "target",
     handleId: "in:spline",
@@ -1917,7 +2032,7 @@ function SvgExportButton({ id }: { id: string }) {
   if (conns.length === 0) return null;
   return (
     <ExportButton
-      label="SVG"
+      label={sequence ? "SVG seq" : "SVG"}
       onClick={() =>
         window.dispatchEvent(
           new CustomEvent("effect-node-export", {
@@ -2793,7 +2908,67 @@ function EyeIcon() {
   );
 }
 
-function BanIcon() {
+// Per-layer visibility eye on a Merge node's layer row. Sits left of the
+// label, inside the row's flex so the socket dot stays put. Open eye = the
+// layer composites; struck eye = bypassed (`enabled:false`, wire kept).
+// Same event bus as the header buttons; the node doesn't own the params.
+function LayerEyeToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={on ? "Layer visible — click to bypass" : "Layer bypassed — click to show"}
+      aria-label={on ? "Bypass layer" : "Show layer"}
+      aria-pressed={on}
+      className="nodrag"
+      style={{
+        width: 14,
+        height: 14,
+        padding: 0,
+        marginLeft: -4,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        background: "transparent",
+        border: "none",
+        borderRadius: 3,
+        cursor: "pointer",
+        color: on
+          ? hover
+            ? "var(--tb-n-16)"
+            : "var(--tb-n-13)"
+          : hover
+            ? "var(--tb-n-13)"
+            : "var(--tb-n-9)",
+      }}
+    >
+      <svg
+        width="11"
+        height="11"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M1.5 12S5.8 5.5 12 5.5 22.5 12 22.5 12 18.2 18.5 12 18.5 1.5 12 1.5 12z" />
+        <circle cx="12" cy="12" r="3.2" />
+        {!on && <path d="M3 21 21 3" />}
+      </svg>
+    </button>
+  );
+}
+
+export function BanIcon() {
   return (
     <svg
       width="11"
@@ -2841,7 +3016,9 @@ function MutedSpeakerIcon() {
 // node, not a string, so the view + bypass toggles can carry icons while the
 // rest stay glyphs. Hover lives in local state on purpose — keeping it out of
 // EffectNode means pointing at one toggle doesn't re-render the whole node.
-function HeaderToggle({
+// Exported for FrameNode's bypass-all toggle so it reads as the same
+// control as the per-node "B".
+export function HeaderToggle({
   on,
   label,
   title,

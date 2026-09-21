@@ -71,6 +71,19 @@ async function listProjectAssetFilenames(
   return names;
 }
 
+// Progress events from uploadGraphAssets, in order: `hash` once per node
+// that carries inline media (done/total over those nodes), `list` once when
+// the dedupe listing starts, `upload` once at the start of the upload loop
+// (done = 0) and once per uploaded asset. `total` on `upload` is the count
+// of assets NOT already in Storage — 0 for a re-save of unchanged media.
+// Supabase's fetch-based upload has no byte-level progress, so per-asset
+// completion is the finest signal available here.
+export type AssetUploadProgress =
+  | { stage: "hash"; done: number; total: number }
+  | { stage: "list" }
+  | { stage: "upload"; done: number; total: number };
+export type AssetUploadProgressCallback = (e: AssetUploadProgress) => void;
+
 export interface UploadResult {
   // Graph with inline data-URLs replaced by { asset, ext } refs — write
   // THIS to the row. On a Storage failure this is the ORIGINAL inline graph
@@ -97,7 +110,8 @@ export interface UploadResult {
 export async function uploadGraphAssets(
   supabase: SupabaseClient,
   graph: SavedProject,
-  loc: AssetLocator
+  loc: AssetLocator,
+  onProgress?: AssetUploadProgressCallback
 ): Promise<UploadResult> {
   try {
     // 1. Extract: collect unique assets and rewrite params to refs.
@@ -109,20 +123,40 @@ export async function uploadGraphAssets(
       { bytes: Uint8Array; ext: string; mime: string }
     >();
 
+    // Only nodes carrying inline media cost anything here (base64 decode +
+    // sha256 of the bytes), so count those for the hash-stage denominator —
+    // a per-node count over the whole graph would sit still on media-free
+    // nodes and then jump.
+    const mediaNodes = new Set(
+      out.nodes.filter((n) => Object.values(n.params).some(isInlineAsset))
+    );
+    let hashed = 0;
     for (const node of out.nodes) {
+      const hasMedia = mediaNodes.has(node);
+      if (hasMedia) {
+        onProgress?.({ stage: "hash", done: hashed, total: mediaNodes.size });
+      }
       await rewriteNodeToRefs(node, pending, keepFilenames);
+      if (hasMedia) {
+        hashed++;
+        onProgress?.({ stage: "hash", done: hashed, total: mediaNodes.size });
+      }
     }
 
     // 2. Snapshot what's already stored BEFORE uploading. This is both the
     //    upload-dedup set and the prune candidate set (see UploadResult).
     //    Listed unconditionally — even a media-free save needs it to prune
     //    orphans left when the last media was removed.
+    onProgress?.({ stage: "list" });
     const existingBefore = await listProjectAssetFilenames(supabase, loc);
 
     // 3. Upload only the assets not already present (content-addressed).
-    for (const [hash, a] of pending) {
-      const filename = assetFilename(hash, a.ext);
-      if (existingBefore.has(filename)) continue;
+    const toUpload = Array.from(pending).filter(
+      ([hash, a]) => !existingBefore.has(assetFilename(hash, a.ext))
+    );
+    let uploaded = 0;
+    onProgress?.({ stage: "upload", done: 0, total: toUpload.length });
+    for (const [hash, a] of toUpload) {
       const { error } = await supabase.storage
         .from(PROJECT_ASSETS_BUCKET)
         .upload(assetPath(loc, hash, a.ext), a.bytes as BufferSource, {
@@ -133,6 +167,8 @@ export async function uploadGraphAssets(
           cacheControl: "31536000",
         });
       if (error) throw error;
+      uploaded++;
+      onProgress?.({ stage: "upload", done: uploaded, total: toUpload.length });
     }
 
     return { graph: out, usedStorage: true, keepFilenames, existingBefore };

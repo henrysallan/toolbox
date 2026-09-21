@@ -577,11 +577,13 @@ function emit(
     // [0,1) so the driver channel stays in range no matter how far it runs.
     const len = polylineLength(c.pos, n, c.closed);
     const ratio = c.initialLength > 1e-6 ? len / c.initialLength : 1;
+    const driver = clamp(1 - 1 / Math.max(1, ratio), 0, 1);
     subpaths.push({
       anchors,
       closed: c.closed,
       groupIndex: c.groupIndex,
-      driver: clamp(1 - 1 / Math.max(1, ratio), 0, 1),
+      driver,
+      attrs: { driver },
     });
 
     for (let i = 0; i < n; i++) {

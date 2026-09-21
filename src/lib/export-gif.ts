@@ -14,7 +14,9 @@
 
 import type { FFmpeg } from "@ffmpeg/ffmpeg";
 import gifsicle from "gifsicle-wasm-browser";
-import { canvasToPngBytes, getFfmpeg } from "./export-ffmpeg";
+import { frameChecksum, type ExportProgress } from "./export-capture";
+import { getFfmpeg, runFfmpeg } from "./export-ffmpeg";
+import type { ExportLog } from "./export-log";
 
 // The ffmpeg singleton is shared across the whole session and its MEMFS
 // PERSISTS across exec() calls (the worker only resets the encoder between
@@ -47,7 +49,12 @@ async function cleanupGifFs(ffmpeg: FFmpeg): Promise<void> {
 export type GifDither = "none" | "bayer" | "floyd";
 
 export interface GifExportOptions {
-  canvas: HTMLCanvasElement;
+  // PNG bytes of the frame `renderFrame` just produced — a direct GPU
+  // readback (export-capture.ts), never the on-screen canvas.
+  capturePng: () => Promise<Uint8Array>;
+  // Frame size, for the log line only.
+  width: number;
+  height: number;
   fps: number;
   durationFrames: number;
   // 2..256 — GIF palette size (color-quantization level).
@@ -59,12 +66,16 @@ export interface GifExportOptions {
   // otherwise frames are flattened onto black (fully opaque GIF).
   transparent: boolean;
   renderFrame: (frameIndex: number, timeSec: number) => void | Promise<void>;
-  onProgress?: (label: string, fraction: number) => void;
+  // Phases: `capture` for the frame loop; `encode` for the palette pass,
+  // the GIF encode and the gifsicle normalisation. Each phase is its own 0..1.
+  onProgress?: ExportProgress;
   // Optional cancel (live-viewer export, 081426_live-link-designer.md M3):
   // checked between captured frames and before the encode. Aborting
   // throws a DOMException("AbortError") — callers treat it as "user
   // cancelled", not a failure.
   signal?: AbortSignal;
+  // Export log: per-frame timings + checksums and ffmpeg's own output.
+  log?: ExportLog;
 }
 
 // paletteuse dither token per UI choice. floyd_steinberg = error diffusion
@@ -124,11 +135,10 @@ export async function exportGif(
   // export so this run can't trip over stale frames or an existing out.gif.
   await cleanupGifFs(ffmpeg);
 
-  // Capture (0.5), ffmpeg encode (0.4), gifsicle (0.1) — rough weighting so
-  // the progress bar advances sensibly across the three phases (gifsicle now
-  // always runs — see the normalize note below).
-  const CAPTURE_SHARE = 0.5;
-  const ENCODE_SHARE = 0.4;
+  // Two bars: the frame loop fills `capture`; palettegen + GIF encode take
+  // `encode` 0 → 0.9 and the gifsicle normalisation (which always runs — see
+  // the note below) the last tenth.
+  const ENCODE_SHARE = 0.9;
 
   const captureStart = performance.now();
   for (let i = 0; i < opts.durationFrames; i++) {
@@ -137,20 +147,34 @@ export async function exportGif(
       throw new DOMException("GIF export cancelled", "AbortError");
     }
     const t = i / opts.fps;
+    const tRender = performance.now();
     await opts.renderFrame(i, t);
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    const png = await canvasToPngBytes(opts.canvas);
+    const tCapture = performance.now();
+    const png = await opts.capturePng();
+    const tWrite = performance.now();
     const name = `gframe_${String(i).padStart(6, "0")}.png`;
     await ffmpeg.writeFile(name, png);
+    opts.log?.frame(
+      i,
+      opts.durationFrames,
+      {
+        render: tCapture - tRender,
+        capture: tWrite - tCapture,
+        write: performance.now() - tWrite,
+      },
+      frameChecksum(png),
+      png.byteLength
+    );
     if (opts.onProgress) {
       const done = i + 1;
       const elapsed = (performance.now() - captureStart) / 1000;
       const eta = done > 4 ? (elapsed / done) * (opts.durationFrames - done) : null;
       opts.onProgress(
-        `Capturing ${done}/${opts.durationFrames}${
+        `Rendering ${done}/${opts.durationFrames}${
           eta != null ? ` · ${formatEta(eta)} left` : ""
         }`,
-        (done / opts.durationFrames) * CAPTURE_SHARE
+        done / opts.durationFrames,
+        "capture"
       );
     }
   }
@@ -162,7 +186,7 @@ export async function exportGif(
 
   const filter = buildFilter(opts.colors, opts.dither, opts.transparent);
 
-  if (opts.onProgress) opts.onProgress("Building palette…", CAPTURE_SHARE);
+  if (opts.onProgress) opts.onProgress("Building palette…", 0, "encode");
 
   const args = [
     // -y: overwrite out.gif without the interactive "[y/N]" prompt (there's
@@ -183,14 +207,19 @@ export async function exportGif(
     const eta = frac > 0.05 && elapsed > 1 ? (elapsed * (1 - frac)) / frac : null;
     opts.onProgress(
       `Encoding GIF${eta != null ? ` · ${formatEta(eta)} left` : ""}`,
-      CAPTURE_SHARE + frac * ENCODE_SHARE
+      frac * ENCODE_SHARE,
+      "encode"
     );
   };
-  ffmpeg.on("progress", progressHandler);
   try {
-    await ffmpeg.exec(args);
-  } finally {
-    ffmpeg.off("progress", progressHandler);
+    await runFfmpeg(ffmpeg, args, {
+      label: "gif encode",
+      log: opts.log,
+      onProgress: progressHandler,
+    });
+  } catch (e) {
+    await cleanupGifFs(ffmpeg).catch(() => {});
+    throw e;
   }
 
   const data = await ffmpeg.readFile("out.gif");
@@ -206,11 +235,12 @@ export async function exportGif(
   const baseCopy = new Uint8Array(baseBytes.byteLength);
   baseCopy.set(baseBytes);
 
-  console.log(
-    `[gif] frames=${opts.durationFrames} ${opts.canvas.width}x${opts.canvas.height} ` +
-      `base=${baseCopy.byteLength}B colors=${opts.colors} dither=${opts.dither} ` +
-      `transparent=${opts.transparent} lossy=${opts.lossy}`
-  );
+  const gifSummary =
+    `frames=${opts.durationFrames} ${opts.width}x${opts.height} ` +
+    `base=${baseCopy.byteLength}B colors=${opts.colors} dither=${opts.dither} ` +
+    `transparent=${opts.transparent} lossy=${opts.lossy}`;
+  if (opts.log) opts.log.info(`gif ${gifSummary}`);
+  else console.log(`[gif] ${gifSummary}`);
 
   // ffmpeg returned success but the bytes aren't a valid GIF — fail loudly
   // (a clear toast) instead of downloading a file that won't open.
@@ -236,7 +266,8 @@ export async function exportGif(
   if (opts.onProgress) {
     opts.onProgress(
       opts.lossy > 0 ? "Compressing (lossy)…" : "Finalizing…",
-      CAPTURE_SHARE + ENCODE_SHARE
+      ENCODE_SHARE,
+      "encode"
     );
   }
   const baseGif = () => ({
@@ -276,7 +307,7 @@ export async function exportGif(
     return baseGif();
   }
   console.log(`[gif] gifsicle ${normalizeArgs} → ${outBytes.byteLength}B`);
-  if (opts.onProgress) opts.onProgress("Done", 1);
+  if (opts.onProgress) opts.onProgress("Done", 1, "encode");
   return { blob: new Blob([buf], { type: "image/gif" }), ext: "gif" };
 }
 

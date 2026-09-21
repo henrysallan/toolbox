@@ -602,7 +602,8 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
     },
 
     // ---- mutation ----------------------------------------------------------
-    insert_recipe: ({ recipe, recipes, connect, scope, replace_output }) => {
+    insert_recipe: ({ recipe, recipes, connect, scope, replace_output, dry_run }) => {
+      const dryRun = dry_run === true;
       const list: RecipeGraph[] = [];
       if (Array.isArray(recipes)) {
         for (const r of recipes) {
@@ -629,12 +630,13 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
           HARD_BUILD_CODES
         );
         if (errors.length) {
-          logMutation({
-            cmd: "insert_recipe",
-            summary: rg.name,
-            status: "error",
-            error: errors[0],
-          });
+          if (!dryRun)
+            logMutation({
+              cmd: "insert_recipe",
+              summary: rg.name,
+              status: "error",
+              error: errors[0],
+            });
           throw invalid("Recipe", errors);
         }
         allWarnings.push(...warnings);
@@ -642,10 +644,36 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       }
       const scopeArg =
         typeof scope === "string" && scope.trim() ? scope.trim() : undefined;
+      const nestingNote = `Editor is inside group "${deps.status.scope}". insert_recipe without scope would nest the new group inside it. Pass scope=${deps.status.parentScope} to insert beside it, scope=parent for the same, or scope=${deps.status.scope} to nest intentionally.`;
+      if (dryRun) {
+        // Validate only: same build + validator pass as a real insert,
+        // nothing committed, no undo entry, no toast, `rev` untouched.
+        const nextWarnings = [...allWarnings];
+        if (scopeArg == null && deps.status.scopeType === "group") nextWarnings.push(nestingNote);
+        return {
+          ok: true,
+          dry_run: true,
+          rev: graphRev,
+          valid: true,
+          recipes: builtList.map((b) => ({
+            name: b.rg.name,
+            nodes: b.built.nodes.length,
+            edges: b.built.edges.length,
+            // Local id → the type it resolved to; live ids are only minted
+            // on a real insert.
+            types: Object.fromEntries(
+              Object.entries(b.built.ids).map(([lid, builtId]) => [
+                lid,
+                b.built.nodes.find((n) => n.id === builtId)?.data.defType ?? "?",
+              ])
+            ),
+          })),
+          warnings: nextWarnings,
+          note: "Dry run — the recipe builds and validates; nothing was inserted. Call again without dry_run to commit.",
+        };
+      }
       if (scopeArg == null && deps.status.scopeType === "group") {
-        throw new Error(
-          `Editor is inside group "${deps.status.scope}". insert_recipe without scope would nest the new group inside it. Pass scope=${deps.status.parentScope} to insert beside it, scope=parent for the same, or scope=${deps.status.scope} to nest intentionally.`
-        );
+        throw new Error(nestingNote);
       }
       const hooked = connect !== false;
       const replaceOutput = replace_output === true;
@@ -743,7 +771,8 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       };
     },
 
-    edit_group: ({ groupId, ops, summary, verbosity }) => {
+    edit_group: ({ groupId, ops, summary, verbosity, dry_run }) => {
+      const dryRun = dry_run === true;
       const shell = nodeOrThrow(groupId);
       if (shell.data.defType !== GROUP_TYPE && shell.data.defType !== LAYER_TYPE)
         throw new Error(
@@ -753,10 +782,11 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         throw new Error("Pass `ops` as a non-empty array of edit operations.");
       const nodes = deps.nodesRef.current;
       const edges = deps.edgesRef.current;
-      rememberSpec(
-        String(groupId),
-        graphToSpec(nodes, edges, String(groupId))
-      );
+      if (!dryRun)
+        rememberSpec(
+          String(groupId),
+          graphToSpec(nodes, edges, String(groupId))
+        );
       const fragIds = expandWithDescendants(nodes, [String(groupId)]);
       const fragNodes = nodes.filter((n) => fragIds.has(n.id));
       const fragEdges = edges.filter((e) => fragIds.has(e.source) && fragIds.has(e.target));
@@ -772,16 +802,41 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         HARD_OP_CODES
       );
       if (errors.length) {
-        logMutation({
-          cmd: "edit_group",
-          summary: edit.summary,
-          status: "error",
-          error: errors[0],
-          groupId: String(groupId),
-          applied: result.applied,
-          failed: result.ops.filter((o) => !o.ok).length,
-        });
+        if (!dryRun)
+          logMutation({
+            cmd: "edit_group",
+            summary: edit.summary,
+            status: "error",
+            error: errors[0],
+            groupId: String(groupId),
+            applied: result.applied,
+            failed: result.ops.filter((o) => !o.ok).length,
+          });
         throw invalid("Edit", errors);
+      }
+      if (dryRun) {
+        // applyRecipeEdit is pure — the patched fragment above was never
+        // committed. Report what WOULD happen, `rev` untouched.
+        const failed = result.ops.filter((o) => !o.ok);
+        return {
+          ok: true,
+          dry_run: true,
+          rev: graphRev,
+          valid: true,
+          applied: result.applied,
+          failed: failed.map((o) => ({
+            i: o.i,
+            op: o.op,
+            error: o.error,
+            ...(o.node ? { node: o.node } : {}),
+            ...(o.id ? { id: o.id } : {}),
+          })),
+          // Local ids that add_node / duplicate_node WOULD mint — not live
+          // ids; a real call mints fresh ones.
+          ...(Object.keys(result.ids).length ? { wouldAdd: Object.keys(result.ids) } : {}),
+          warnings,
+          note: "Dry run — the patch applies and validates; nothing was committed. Call again without dry_run to commit.",
+        };
       }
       // add_node mints at (0,0) — place each new node beside its first
       // consumer on the row it feeds, sliding down past occupied slots
@@ -921,6 +976,14 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       const node = nodeOrThrow(nodeId);
       const def = getNodeDef(node.data.defType);
       if (!def) throw new Error(`Node "${nodeId}" has an unknown type.`);
+      // Every successful write is a graph mutation like any other: bump
+      // `rev` so get_graph({since}) reports the change instead of
+      // "unchanged", and log it so get_recent_edits can confirm it landed.
+      const done = <T extends Record<string, unknown>>(result: T, summary: string) => {
+        bumpGraphRev();
+        logMutation({ cmd: "set_param", summary, status: "ok" });
+        return { ...result, rev: graphRev };
+      };
       const pdef = def.params.find((p) => p.name === param);
       if (!pdef) {
         // A channel NAME — tune the row in place (Sync is add-only, so
@@ -949,7 +1012,10 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
           deps.flashToast(
             `Claude: set ${param} on ${node.data.name ?? node.data.defType}`
           );
-          return { ok: true, channel: param, kind, value: r.value };
+          return done(
+            { ok: true, channel: param, kind, value: r.value },
+            `${node.id}.${param} (channel)`
+          );
         }
         if (node.data.defType === GROUP_TYPE || node.data.defType === LAYER_TYPE) {
           const nodes = deps.nodesRef.current;
@@ -981,7 +1047,10 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
             deps.flashToast(
               `Claude: set ${ctrl.socketName} on ${node.data.name ?? node.data.defType}`
             );
-            return { ok: true, param: ctrl.socketName, value: vet.value, group: true };
+            return done(
+              { ok: true, param: ctrl.socketName, value: vet.value, group: true },
+              `${node.id}.${ctrl.socketName} (group knob)`
+            );
           }
           const names = listGroupShellControls(node, nodes, edges)
             .map((c) => c.socketName)
@@ -1028,7 +1097,10 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
           coerced = Number(value);
         } else if (pdef.type === "boolean" && (value === "true" || value === "false")) {
           coerced = value === "true";
-        } else if (pdef.type === "color_ramp" && value.trim().startsWith("[")) {
+        } else if (
+          (pdef.type === "color_ramp" || pdef.type === "float_curve") &&
+          value.trim().startsWith("[")
+        ) {
           try {
             coerced = JSON.parse(value);
           } catch {
@@ -1074,15 +1146,18 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         deps.flashToast(
           `Claude: set ${param} on ${node.data.name ?? node.data.defType}`
         );
-        return {
-          ok: true,
-          ...(minted.length ? { mintedChannels: minted } : {}),
-          ...note,
-        };
+        return done(
+          {
+            ok: true,
+            ...(minted.length ? { mintedChannels: minted } : {}),
+            ...note,
+          },
+          `${node.id}.${param}`
+        );
       }
       deps.onParamChange(String(nodeId), String(param), vet.value);
       deps.flashToast(`Claude: set ${param} on ${node.data.name ?? node.data.defType}`);
-      return { ok: true, ...note };
+      return done({ ok: true, ...note }, `${node.id}.${param}`);
     },
 
     get_keyframes: ({ nodeId, param }) => {
@@ -1147,7 +1222,9 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         // Clear the whole track.
         deps.onAnimationChange(String(nodeId), String(param), undefined);
         deps.flashToast(`Claude: cleared ${param} keyframes`);
-        return { ok: true, cleared: true };
+        bumpGraphRev();
+        logMutation({ cmd: "set_keyframes", summary: `${node.id}.${param} cleared`, status: "ok" });
+        return { ok: true, cleared: true, rev: graphRev };
       }
 
       const stepOnly = isStepOnly(pdef.type);
@@ -1196,8 +1273,15 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       deps.flashToast(
         `Claude: keyed ${param} (${block.keyframes.length} keys) on ${node.data.name ?? node.data.defType}`
       );
+      bumpGraphRev();
+      logMutation({
+        cmd: "set_keyframes",
+        summary: `${node.id}.${param} (${block.keyframes.length} keys)`,
+        status: "ok",
+      });
       return {
         ok: true,
+        rev: graphRev,
         param,
         animated: block.animated,
         frames: block.keyframes.map((k) => frameOf(k.tick)),

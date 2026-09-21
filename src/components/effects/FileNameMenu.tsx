@@ -40,6 +40,11 @@ export interface FileNameMenuProps {
   // toggle. "Copy live link" still requires isPublic; the live
   // viewer is public-only.
   publicSlug: string | null;
+  // Named live link path (/@<handle>/<slug>, 092126_vanity-live-links.md)
+  // when the owner has opted in AND the project is public. "Copy live
+  // link" hands out this address in preference to /live/<publicSlug>;
+  // both resolve.
+  liveVanityPath?: string | null;
   // null when there's no project row yet — in that case Save from the
   // dropdown falls through to the Save As flow (modal).
   projectId: string | null;
@@ -79,6 +84,7 @@ export default function FileNameMenu({
   saveState,
   isPublic,
   publicSlug,
+  liveVanityPath = null,
   projectId,
   canEdit,
   ownedByMe,
@@ -166,12 +172,15 @@ export default function FileNameMenu({
       ? `/p/${publicSlug}`
       : `${window.location.origin}/p/${publicSlug}`
     : null;
-  const liveUrl =
-    isPublic && publicSlug
-      ? typeof window === "undefined"
-        ? `/live/${publicSlug}`
-        : `${window.location.origin}/live/${publicSlug}`
-      : null;
+  // The named link, when the owner opted in, otherwise the random slug.
+  const livePath = isPublic
+    ? (liveVanityPath ?? (publicSlug ? `/live/${publicSlug}` : null))
+    : null;
+  const liveUrl = livePath
+    ? typeof window === "undefined"
+      ? livePath
+      : `${window.location.origin}${livePath}`
+    : null;
 
   const copyToClipboard = async (
     url: string,
@@ -402,7 +411,11 @@ export default function FileNameMenu({
               {liveUrl && (
                 <button
                   onClick={() => copyToClipboard(liveUrl, setLiveLinkCopied)}
-                  title="Copy the minimal client view link — full-screen output only, no editor chrome. Same project graph; different audience."
+                  title={
+                    liveVanityPath
+                      ? `Copy the named live link (${liveVanityPath}) — full-screen output only, no editor chrome. The /live/${publicSlug} address keeps working too.`
+                      : "Copy the minimal client view link — full-screen output only, no editor chrome. Same project graph; different audience."
+                  }
                   style={{
                     ...btnStyle(),
                     flex: 1,

@@ -55,7 +55,7 @@ export interface LiveGizmoLayerProps {
   paramValues: ReadonlyMap<string, Record<string, unknown>>;
   /** The tick the evaluator sampled keyframes at for this frame. */
   tick: number;
-  onParamChange: (ref: ParamRef, value: unknown) => void;
+  onParamChange: (ref: ParamRef, value: unknown, coalesceKey?: string) => void;
 }
 
 type Params = Record<string, unknown>;
@@ -108,8 +108,15 @@ export function LiveGizmoLayer({
         const params = paramValues.get(g.nodeId) ?? node.params;
         const effective: Effective = (name, fallback) =>
           effectiveScalar(params, node.animation, name, tick, fallback);
+        // One coalesce key per gizmo, as the editor's GizmoTickOverlays
+        // does: a drag that writes position + rotation per move is one
+        // undo step, not one per param (param-history.ts).
         const write: Write = (name, value) =>
-          onParamChange({ nodeId: g.nodeId, paramName: name }, value);
+          onParamChange(
+            { nodeId: g.nodeId, paramName: name },
+            value,
+            `gizmo:${g.nodeId}`
+          );
         switch (g.kind) {
           case "transform":
             return (

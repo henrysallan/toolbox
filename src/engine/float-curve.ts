@@ -120,6 +120,58 @@ export function sanitizeFloatCurve(raw: unknown, y0 = 0, y1 = 1): CurvePoint[] {
   return pts;
 }
 
+// Vet a remotely supplied curve (set_param on a `float_curve` param or a
+// curve() channel, a recipe param): [{x, y, id?}] with at least two finite
+// points. x / y clamp to 0..1 like the editor; ids are optional and minted
+// here when absent, so the plain [{x, y}] an agent writes is enough.
+export function vetFloatCurvePoints(
+  value: unknown
+): { ok: true; value: CurvePoint[] } | { ok: false; reason: string } {
+  if (!Array.isArray(value) || value.length < 2)
+    return { ok: false, reason: "expected at least 2 points as [{x, y}] with x, y in 0..1" };
+  const pts: CurvePoint[] = [];
+  for (const raw of value) {
+    if (
+      typeof raw !== "object" ||
+      raw === null ||
+      Array.isArray(raw) ||
+      typeof (raw as { x?: unknown }).x !== "number" ||
+      typeof (raw as { y?: unknown }).y !== "number" ||
+      !Number.isFinite((raw as { x: number }).x) ||
+      !Number.isFinite((raw as { y: number }).y)
+    )
+      return { ok: false, reason: "each point must be {x, y} finite numbers" };
+    const p = raw as { x: number; y: number; id?: unknown };
+    pts.push({
+      id: typeof p.id === "string" && p.id ? p.id : newCurvePointId(),
+      x: Math.max(0, Math.min(1, p.x)),
+      y: Math.max(0, Math.min(1, p.y)),
+    });
+  }
+  return { ok: true, value: sanitizeFloatCurve(pts) };
+}
+
+// The agent-facing shape of a curve: points without their editor ids (ids
+// are random per mint, so they are noise in a catalog default or a graph
+// dump and would make two identical curves compare unequal).
+export function compactFloatCurve(raw: unknown): { x: number; y: number }[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: { x: number; y: number }[] = [];
+  for (const p of raw as { x?: unknown; y?: unknown }[]) {
+    if (p && typeof p.x === "number" && typeof p.y === "number") out.push({ x: p.x, y: p.y });
+  }
+  return out;
+}
+
+// Same curve? Compares the sampled shape (x / y in order), not ids — a
+// node's stored identity ramp and the def default are minted separately.
+export function floatCurvesEqual(a: unknown, b: unknown): boolean {
+  const ca = compactFloatCurve(a);
+  const cb = compactFloatCurve(b);
+  if (!ca || !cb || ca.length !== cb.length) return false;
+  return ca.every((p, i) => p.x === cb[i].x && p.y === cb[i].y);
+}
+
 // Tangents + eval in one call. Param values round-trip by reference through
 // the evaluator, so array identity is a sound cache key — repeated sampling
 // of the same curve (per repeat index, per frame) pays the tangent solve

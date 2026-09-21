@@ -6,6 +6,7 @@ import type {
   SocketType,
   SocketValue,
 } from "@/engine/types";
+import { defaultFloatCurve, type CurvePoint } from "@/engine/float-curve";
 
 // The Expression node lets you type a JavaScript math expression instead of
 // wiring up a chain of Math/Compare/Lerp nodes. Each input socket is bound
@@ -17,6 +18,15 @@ import type {
 // scalar via the engine's universal coercions), and the output is a scalar
 // or a vec selected by `out_type`. Per-pixel image expressions (JS→GLSL)
 // are a separate follow-up — see specdocs/archive/062926_expression-node.md.
+//
+// `out_type: curve` (091926_float-curve-socket.md) makes the node a curve
+// PRODUCER instead of a value: the source is evaluated CURVE_SAMPLES+1
+// times with the global `u` swept over [0,1], and the results (clamped to
+// the unit square) become a float_curve wire — the same descriptor a Float
+// Curve node authors, so it lands on any exposed float_curve param (Scene
+// Time's custom easing: `u * u * (3 - 2 * u)` is smoothstep). Input
+// variables still bind normally, so `pow(u, k)` with `k` wired is a live
+// family of easings. `u` is 0 in the value modes.
 
 // ---------------------------------------------------------------------------
 // Input-variable helpers (also imported by the editor's `+`-button handler).
@@ -127,6 +137,8 @@ function makeEnv(ctx: RenderContext, nodeId: string): Record<string, unknown> {
     time: ctx.time,
     frame: ctx.frame,
     fps: ctx.fps,
+    // Curve-mode sample position (swept 0→1 by compute); 0 otherwise.
+    u: 0,
     PI: M.PI,
     TAU: M.PI * 2,
     E: M.E,
@@ -232,8 +244,20 @@ function toNum(v: unknown, fallback = 0): number {
 }
 
 type VecType = "vec2" | "vec3" | "vec4";
-type OutType = "scalar" | VecType;
+type OutType = "scalar" | VecType | "curve";
 const VEC_LEN: Record<VecType, number> = { vec2: 2, vec3: 3, vec4: 4 };
+
+// Curve mode samples the source at this many intervals (CURVE_SAMPLES + 1
+// points, u = i / CURVE_SAMPLES). 64 keeps a smoothstep / ease-in-out
+// within ~1e-4 of the analytic curve under the monotone cubic and a hard
+// `u < 0.5 ? 0 : 1` transition inside one interval, while 65 evaluations of
+// a `new Function` stay far below a frame's budget. Point ids are fixed
+// (`cu-<i>`) so the array is stable for the consumer's editor.
+export const CURVE_SAMPLES = 64;
+const CURVE_POINT_IDS = Array.from(
+  { length: CURVE_SAMPLES + 1 },
+  (_, i) => `cu-${i}`
+);
 
 // Build a properly-typed vec SocketValue from a components array (assumed to
 // already hold at least VEC_LEN[kind] finite numbers).
@@ -255,8 +279,10 @@ export const expressionNode: NodeDefinition = {
   description:
     "Type a JavaScript math expression instead of wiring a chain of Math " +
     "nodes. Each input socket is a named variable (x, y, z…); the + adds " +
-    "more. Outputs a scalar or vector. Globals: t, frame, PI, TAU, sin, " +
-    "cos, clamp, lerp, smoothstep, random, and the rest of Math.",
+    "more. Outputs a scalar, a vector, or (out_type curve) a float curve " +
+    "sampled over u in [0,1] for exposed float_curve params such as Scene " +
+    "Time's custom easing. Globals: t, frame, u, PI, TAU, sin, cos, clamp, " +
+    "lerp, smoothstep, random, and the rest of Math.",
   facts: {
     space: { out: "unitless" },
     reads: ["time"],
@@ -266,8 +292,9 @@ export const expressionNode: NodeDefinition = {
       "Every input socket is scalar; connecting image/mask/audio relies on the engine's universal coercion to a representative scalar, not on any per-socket logic here.",
       "An unconnected input falls back to that variable's own `default` field (from the Inputs list, itself defaulting to 1), not to 0.",
       "MCP/recipes wire by variable name (`<id>:in:x`), not the minted ein- id. Grow vars with params.inputs = [{name, default?}] or add_edge to a new name; ids stay by index across renames.",
-      "A compile error or an empty expression outputs a zero shaped by out_type; the error text only surfaces via a one-time console.warn, not in the graph UI.",
+      "A compile error or an empty expression outputs a zero shaped by out_type (the identity ramp for curve); the error text only surfaces via a one-time console.warn, not in the graph UI.",
       "out_type picks scalar vs vec2/3/4; a scalar result broadcasts to every vector component, an array result fills components in order and pads missing ones with 0.",
+      "out_type=curve evaluates the source 65 times with the global u swept 0..1 and emits a float_curve (y clamped to 0..1) for exposed float_curve params; u is 0 in the value modes.",
     ],
   },
   backend: "webgl2",
@@ -313,13 +340,14 @@ export const expressionNode: NodeDefinition = {
       name: "out_type",
       label: "Output",
       type: "enum",
-      options: ["scalar", "vec2", "vec3", "vec4"],
+      options: ["scalar", "vec2", "vec3", "vec4", "curve"],
       default: "scalar",
     },
   ],
   primaryOutput: "scalar",
   resolvePrimaryOutput(params) {
-    return (params.out_type as SocketType) ?? "scalar";
+    const out = (params.out_type as string) ?? "scalar";
+    return out === "curve" ? "float_curve" : (out as SocketType);
   },
   auxOutputs: [],
 
@@ -345,6 +373,11 @@ export const expressionNode: NodeDefinition = {
 
     const zero = (): SocketValue => {
       if (outType === "scalar") return { kind: "scalar", value: 0 };
+      // Curve mode's "nothing" is the identity ramp, not a flat zero: the
+      // consumers are easings and remaps, where identity is the neutral
+      // shape (a broken expression leaves the motion linear, not frozen).
+      if (outType === "curve")
+        return { kind: "float_curve", points: defaultFloatCurve(0, 1) };
       const len = VEC_LEN[outType];
       const v = new Array(len).fill(0);
       return { kind: outType, value: v as never };
@@ -364,7 +397,37 @@ export const expressionNode: NodeDefinition = {
       if (sock && sock.kind === "scalar") return sock.value;
       return e.default ?? 1;
     });
-    args.push(makeEnv(ctx, nodeId));
+    const env = makeEnv(ctx, nodeId);
+    args.push(env);
+
+    if (outType === "curve") {
+      // Sweep `u` over [0,1] and read one y per sample. The env object is
+      // shared across calls (the destructure runs per call), so mutating
+      // `u` between calls is enough. y is clamped to the unit square so the
+      // wire is sanitizeFloatCurve-clean and never asks the monotone cubic
+      // to reach outside the curve editor's domain.
+      const points: CurvePoint[] = new Array(CURVE_SAMPLES + 1);
+      try {
+        for (let i = 0; i <= CURVE_SAMPLES; i++) {
+          const x = i / CURVE_SAMPLES;
+          env.u = x;
+          const r = fn(...args);
+          const y = Array.isArray(r) ? toNum(r[0]) : toNum(r);
+          points[i] = {
+            id: CURVE_POINT_IDS[i],
+            x,
+            y: Math.max(0, Math.min(1, y)),
+          };
+        }
+        state.error = null;
+        state.lastWarned = null;
+      } catch (e) {
+        state.error = e instanceof Error ? e.message : String(e);
+        warnOnce(state, nodeId);
+        return { primary: zero() };
+      }
+      return { primary: { kind: "float_curve", points } };
+    }
 
     let raw: unknown;
     try {

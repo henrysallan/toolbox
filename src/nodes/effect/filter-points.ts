@@ -6,10 +6,10 @@ import type {
   SocketType,
 } from "@/engine/types";
 import {
-  copyPointsWith,
   gatherPoints,
+  isWritablePointAttr,
   makePoints,
-  RESERVED_POINT_ATTR_NAMES,
+  withPointAttr,
 } from "@/engine/points";
 
 // Keep or discard points by predicate. Four modes:
@@ -584,16 +584,10 @@ export const filterPointsNode: NodeDefinition = {
 
     if (result === "flag") {
       const flagName = ((params.flag_name as string) ?? "keep").trim();
-      if (!flagName || RESERVED_POINT_ATTR_NAMES.has(flagName)) {
-        return { primary: src };
-      }
+      if (!isWritablePointAttr(flagName)) return { primary: src };
       const data = new Float32Array(n);
       for (let i = 0; i < n; i++) data[i] = keep[i] ? 1 : 0;
-      return {
-        primary: copyPointsWith(src, {
-          attributes: { ...src.attributes, [flagName]: { arity: 1, data } },
-        }),
-      };
+      return { primary: withPointAttr(src, flagName, data) };
     }
 
     if (keepCount === n) return { primary: src };

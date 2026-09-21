@@ -23,6 +23,7 @@
 //      (their keyframes stay on the global clock for now).
 
 import { emptyElement } from "./element";
+import { defaultFloatCurve } from "./float-curve";
 import { emptyTextInstance } from "./text-raster";
 import { makePoints, pointsFromArray } from "./points";
 import type { NodeOutput, RenderContext, SocketType } from "./types";
@@ -194,6 +195,10 @@ export function emptyClipOutput(
       // identity greyscale ramp, so an off-clip ramp reads as "unmodified"
       // rather than as a solid colour.
       return { primary: { kind: "color_ramp", stops: [], interp: "linear" } };
+    case "float_curve":
+      // The linear ramp (0,0)→(1,1): off-clip a curve reads as identity,
+      // the same "unmodified" stance as the empty ramp above.
+      return { primary: { kind: "float_curve", points: defaultFloatCurve(0, 1) } };
     case "transform":
       // Identity affine — off-clip placement is "do nothing".
       return { primary: { kind: "transform", ops: [] } };

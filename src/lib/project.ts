@@ -13,6 +13,8 @@ import type { ClipBlock } from "@/engine/clips";
 import { getNodeDef } from "@/engine/registry";
 import { expandMergeLayerControls, withMaskInput } from "@/engine/conventions";
 import { migrateGrainParams } from "@/engine/grain";
+import { migrateSceneTimeParams } from "@/nodes/source/scene-time";
+import { migrateMapAttributeParams } from "@/nodes/effect/map-attribute";
 import {
   MISSING_MEDIA_SUFFIX,
   readStoredMediaFile,
@@ -33,7 +35,8 @@ import {
   primeBlobDataUrl,
 } from "@/lib/data-url";
 import { isExrImageValue } from "@/engine/exr";
-import { LAYER_TYPE } from "@/engine/groups";
+import { GROUP_OUTPUT_TYPE, LAYER_TYPE } from "@/engine/groups";
+import { hasLegacyVideoKeys } from "@/lib/export-presets";
 import { FRAME_TYPE, REROUTE_TYPE } from "@/engine/graph-helpers";
 import { makeLayerNodes, newEdgeId } from "@/state/graph-ops";
 import { FRAME_XY_PROPS, newCompositionId } from "@/state/graph";
@@ -1068,46 +1071,18 @@ function migrateLoadedParams(
     // default, so old projects get the corrected edges.
     params.linearize = false;
   }
-  if (defType === "scene-time" && params.period_frames === undefined) {
-    if (params.rate === undefined) {
-      // Ping-pong speed switched from `period` (half-cycle, i.e. min→max time,
-      // in the selected unit) to `rate` (full min→max→min cycles per unit). A
-      // full cycle is 2·period, so rate = 1 / (2·period). Applies regardless of
-      // mode (period was only used by ping-pong; harmless otherwise).
-      const period = typeof params.period === "number" ? params.period : 2;
-      params.rate = period > 0 ? 1 / (2 * period) : 0.25;
-      delete params.period;
-      if (params.mode === "pingpong") {
-        // Ping-pong no longer applies the global scale/offset; `amplitude` (a
-        // swing multiplier around the range centre) replaces the old `scale`.
-        // Old output was `(lo + t·span)·scale + offset` — a linear remap of the
-        // ramp — so fold scale/offset into min/max to preserve it exactly, set
-        // amplitude 1, and neutralize scale/offset (so switching to a scale-using
-        // mode later starts clean). Correct for any easing: the fold is a linear
-        // remap of the (possibly eased) ramp, which easing doesn't disturb.
-        const scale = typeof params.scale === "number" ? params.scale : 1;
-        const offset = typeof params.offset === "number" ? params.offset : 0;
-        const lo = typeof params.min === "number" ? params.min : 0;
-        const hi = typeof params.max === "number" ? params.max : 1;
-        params.min = lo * scale + offset;
-        params.max = hi * scale + offset;
-        params.amplitude = 1;
-        params.scale = 1;
-        params.offset = 0;
-      }
-    }
-    // Ping-pong speed then moved from `rate` (cycles per `unit`) to
-    // `period_frames` (frames per full cycle, unit-independent). Same speed:
-    // a cycle is 1/rate seconds (fps/rate frames) in seconds mode, 1/rate
-    // frames in frames mode. Clamped ≥1 so a degenerate stored rate can't
-    // produce a zero-length cycle.
-    const rate =
-      typeof params.rate === "number" && params.rate > 0 ? params.rate : 0.5;
-    params.period_frames = Math.max(
-      1,
-      params.unit === "frames" ? 1 / rate : fps / rate
-    );
-    delete params.rate;
+  if (defType === "scene-time") {
+    // Ping-pong's `period → rate → period_frames` / `scale,offset →
+    // amplitude` fold and the stepped `step_size → step duration + size`
+    // split live next to the def (nodes/source/scene-time.ts) so a check
+    // script can drive them against the node's own compute.
+    migrateSceneTimeParams(params, fps);
+  }
+  if (defType === "map-attribute") {
+    // The destination enum became output_name + mode
+    // (092026_unified-attributes.md): scale → scale/multiply, rotation →
+    // rotation/add, position x/y → x/y add. Lives next to the def.
+    migrateMapAttributeParams(params);
   }
   if (defType === "fracture") {
     // Fracture merged into Voronoi as its "scatter" source
@@ -1144,6 +1119,19 @@ function migrateLoadedParams(
     // [0, videoFrames) — so seed start/end to reproduce that exactly.
     params.startFrame = 0;
     params.endFrame = params.videoFrames;
+  }
+  if (
+    (defType === "output" || defType === GROUP_OUTPUT_TYPE) &&
+    params.videoPreset === undefined &&
+    hasLegacyVideoKeys(params)
+  ) {
+    // Export presets (092126_export-presets-and-progress.md). A save that
+    // configured the raw tier / container / codec rows keeps exactly that
+    // configuration under the Custom preset instead of silently jumping to
+    // the new default preset. effectiveVideoPreset applies the same rule at
+    // read time; writing it here makes the panel and the exporter agree
+    // without re-deriving it on every render.
+    params.videoPreset = "custom";
   }
   if (
     defType === "instance-transform-3d" &&

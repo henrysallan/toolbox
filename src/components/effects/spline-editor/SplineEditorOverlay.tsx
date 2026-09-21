@@ -395,9 +395,9 @@ export default function SplineEditorOverlay({
   // Onion-skin toggle (spec 072726 M1) — on by default; only surfaced in the
   // dock while a neighboring keyframe ghost actually exists.
   const [onionOn, setOnionOn] = useState(true);
-  // Multi-node ghosts toggle (spec 072726 M5) — on by default; surfaced only
-  // while another Spline Draw node exists.
-  const [ghostsOn, setGhostsOn] = useState(true);
+  // Multi-node ghosts toggle (spec 072726 M5) — off by default (opt-in per
+  // editing session); surfaced only while another Spline Draw node exists.
+  const [ghostsOn, setGhostsOn] = useState(false);
   // Right-click context menu anchored at a client position for one anchor.
   const [menu, setMenu] = useState<MenuState | null>(null);
   // Mirror selection in a ref so the long-running pointermove handler in

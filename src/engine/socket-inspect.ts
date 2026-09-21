@@ -4,6 +4,7 @@
 
 import type { NodeOutput, SocketValue, SplineAnchor, SplineValue } from "./types";
 import { is3DPoints } from "./points";
+import { readSubpathDriver } from "./spline-attrs";
 import { describeListItem } from "./list-value";
 
 export const INSPECT_DEFAULT_LIMIT = 32;
@@ -81,9 +82,24 @@ function inspectSpline(v: SplineValue, limit: number): SocketInspect {
   const subpaths: Record<string, unknown>[] = [];
   let shown = 0;
   let totalAnchors = 0;
+  // Attribute names are gathered over the WHOLE value, not just the rows
+  // that fit `limit`, and always reported — an empty list means "none
+  // present anywhere", which a truncated dump can't otherwise prove.
+  const anchorAttrNames = new Set<string>();
+  const subpathAttrNames = new Set<string>();
+  let groupTagged = 0;
+  let driven = 0;
   for (let i = 0; i < v.subpaths.length; i++) {
     const sub = v.subpaths[i];
     totalAnchors += sub.anchors.length;
+    if (sub.attrs) for (const k of Object.keys(sub.attrs)) subpathAttrNames.add(k);
+    if (sub.groupIndex !== undefined) groupTagged++;
+    const hasDriver =
+      sub.attrs?.driver !== undefined || sub.driver !== undefined;
+    if (hasDriver) driven++;
+    for (const a of sub.anchors) {
+      if (a.attrs) for (const k of Object.keys(a.attrs)) anchorAttrNames.add(k);
+    }
     if (shown >= limit) continue;
     const take = Math.min(sub.anchors.length, limit - shown);
     const row: Record<string, unknown> = {
@@ -93,7 +109,9 @@ function inspectSpline(v: SplineValue, limit: number): SocketInspect {
       anchors: sub.anchors.slice(0, take).map(compactAnchor),
     };
     if (sub.groupIndex !== undefined) row.groupIndex = sub.groupIndex;
-    if (sub.driver !== undefined) row.driver = round(sub.driver);
+    // `driver` reads through the subpath schema (attrs.driver first, the
+    // legacy field second) so the row agrees with what Rasterize sees.
+    if (hasDriver) row.driver = round(readSubpathDriver(sub));
     const attrs = compactAttrs(sub.attrs);
     if (attrs) row.attrs = attrs;
     if (take < sub.anchors.length) row.truncated = true;
@@ -108,6 +126,13 @@ function inspectSpline(v: SplineValue, limit: number): SocketInspect {
     anchorCount: totalAnchors,
     truncated: totalAnchors > limit,
     ...(bounds ? { bounds } : {}),
+    // Per-anchor channels (SplineAnchor.attrs) and per-subpath channels
+    // (SplineSubpath.attrs), plus how many subpaths carry a groupIndex /
+    // driver — the two built-in per-subpath tags.
+    attrNames: [...anchorAttrNames].sort(),
+    subpathAttrNames: [...subpathAttrNames].sort(),
+    groupTaggedSubpaths: groupTagged,
+    drivenSubpaths: driven,
     subpaths,
   };
 }
@@ -175,7 +200,8 @@ function inspectPoints(v: import("./types").PointsValue, limit: number): SocketI
     count,
     truncated: count > limit,
     ...(bounds ? { bounds } : {}),
-    ...(v.attributes ? { attrNames: Object.keys(v.attributes) } : {}),
+    // Always present: [] means the value carries no named attributes.
+    attrNames: v.attributes ? Object.keys(v.attributes).sort() : [],
     points,
   };
 }

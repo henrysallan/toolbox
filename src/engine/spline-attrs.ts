@@ -1,4 +1,4 @@
-import { RESERVED_POINT_ATTR_NAMES } from "./points";
+import { isBuiltinPointAttrName } from "./points";
 import {
   locateSplineAt,
   locateSubpathAt,
@@ -151,8 +151,9 @@ export function sampleSplineAttrs(
 }
 
 // N object-attr rows → SoA map. First-seen arity wins; later rows
-// pad/truncate. Reserved point-column names are skipped (they would
-// shadow built-ins on the way back onto a points value).
+// pad/truncate. Built-in point names (`scale`, `x`, …) are skipped: this
+// builds the NAMED-channel map only, and the callers (Spline to Points,
+// Points on Path…) set the built-in columns from geometry themselves.
 export function attributesFromObjectAttrs(
   rows: Array<ObjectAttrs | undefined>,
   count: number
@@ -163,7 +164,7 @@ export function attributesFromObjectAttrs(
     const row = rows[i];
     if (!row) continue;
     for (const name of Object.keys(row)) {
-      if (RESERVED_POINT_ATTR_NAMES.has(name) || arity.has(name)) continue;
+      if (isBuiltinPointAttrName(name) || arity.has(name)) continue;
       const v = row[name];
       const n = typeof v === "number" ? 1 : Math.max(1, Math.min(4, v.length));
       arity.set(name, n as 1 | 2 | 3 | 4);
@@ -256,6 +257,77 @@ export function writeSplineAnchorChannel(
     }),
   }));
   return { kind: "spline", subpaths };
+}
+
+// ---------------------------------------------------------------------------
+// Subpath attribute schema (092026_unified-attributes.md §4.4). Two names
+// route to fields: `group` ↔ groupIndex (an int identity tag) and `driver`
+// ↔ attrs.driver, with the legacy `SplineSubpath.driver` field as the read
+// fallback during the shim window and 0.5 as the default (an absent driver
+// sits mid-ramp, as it always has). Everything else is `attrs[name]`.
+// ---------------------------------------------------------------------------
+
+export const SUBPATH_DRIVER_ATTR = "driver";
+export const SUBPATH_DRIVER_DEFAULT = 0.5;
+
+// The value under `name` on this subpath — number or number[] as stored,
+// `group` as its groupIndex (0 when untagged), `driver` through the
+// fallback chain. Undefined for a channel the subpath doesn't carry.
+export function readSubpathAttr(
+  sub: SplineSubpath,
+  name: string
+): number | number[] | undefined {
+  const n = name.trim();
+  if (!n) return undefined;
+  if (n === "group") return sub.groupIndex ?? 0;
+  const v = sub.attrs?.[n];
+  if (v !== undefined) return v;
+  if (n === SUBPATH_DRIVER_ATTR) return sub.driver ?? SUBPATH_DRIVER_DEFAULT;
+  return undefined;
+}
+
+// The per-subpath driver in [0,1]: `attrs[attr || "driver"]` (component 0)
+// → the legacy `sub.driver` field → 0.5. A named attr that is missing on
+// this subpath falls back the same way (the pre-schema behaviour Rasterize
+// / Stroke users rely on). The one read every `by: "driver"` consumer
+// (ramps and thickness) goes through.
+export function readSubpathDriver(sub: SplineSubpath, attr?: string): number {
+  const name = (attr ?? "").trim() || SUBPATH_DRIVER_ATTR;
+  const v = sub.attrs?.[name];
+  const x = Array.isArray(v) ? v[0] : v;
+  if (typeof x === "number" && Number.isFinite(x)) {
+    return Math.min(1, Math.max(0, x));
+  }
+  const d = sub.driver;
+  if (typeof d === "number" && Number.isFinite(d)) {
+    return Math.min(1, Math.max(0, d));
+  }
+  return SUBPATH_DRIVER_DEFAULT;
+}
+
+// Store `value` under `name` on a copy of the subpath: `group` rounds into
+// groupIndex; `driver` lands in attrs AND the legacy field (so readers
+// still on `sub.driver` agree during the shim window); anything else is a
+// plain attrs write. Empty name → the subpath unchanged.
+export function withSubpathAttr(
+  sub: SplineSubpath,
+  name: string,
+  value: number | number[]
+): SplineSubpath {
+  const n = name.trim();
+  if (!n) return sub;
+  const scalar = Array.isArray(value) ? value[0] ?? 0 : value;
+  if (n === "group") {
+    return {
+      ...sub,
+      groupIndex: Math.round(Number.isFinite(scalar) ? scalar : 0),
+    };
+  }
+  const out: SplineSubpath = { ...sub, attrs: { ...sub.attrs, [n]: value } };
+  if (n === SUBPATH_DRIVER_ATTR) {
+    out.driver = Number.isFinite(scalar) ? scalar : SUBPATH_DRIVER_DEFAULT;
+  }
+  return out;
 }
 
 // Component 0 of a named channel at arc-length t, with subpath attrs as

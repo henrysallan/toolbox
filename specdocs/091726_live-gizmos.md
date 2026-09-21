@@ -132,7 +132,12 @@ skipped like everything else.
     derives without a timeline) else the session param value. Decision 4.
   - Writes go through the viewer's `onParamChange` — the same path the
     sliders use, so a slider on the same param follows the drag and the
-    eval bump repaints. No coalescing (no undo in the viewer).
+    eval bump repaints. Since 2026-09-19 the viewer has its own per-session
+    undo / redo (`lib/live-viewer/param-history.ts`, ⌘Z / ⇧⌘Z via the
+    editor's `useUndoShortcuts`): a gizmo passes `gizmo:<nodeId>` as the
+    coalesce key, as `GizmoTickOverlays` does, so a drag that writes
+    several params is one undo step; a slider coalesces on its own param.
+    Guarded by `check-live-param-history`.
   - Transform bounds in spline / points mode come from the eval cache of
     the node feeding `in:image` (`geometryAABBFromOutput`), the Gizmo node
     uses `GIZMO_REST_AABB`, pivot space follows `params.space` — all as the

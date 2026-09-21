@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ProjectSettings } from "./ParamPanel";
+import type { LiveLinkSettingsProps } from "./LiveLinkSettings";
 
 // Floating Project Settings anchored to the gear chip in a Parameters
 // panel's header — the same resolution / frame-rate / tempo rows as the
@@ -15,8 +16,9 @@ import { ProjectSettings } from "./ParamPanel";
 
 const W = 380;
 // Estimated height for viewport clamping (RateProjectPopover's
-// approach): section header + three setting rows + padding.
-const H = 175;
+// approach): section header + three setting rows + the live-link row
+// (toggle, URL preview, an optional action line) + padding.
+const H = 250;
 const MARGIN = 8;
 // Chip bottom edge → popover top edge.
 const GAP = 4;
@@ -33,6 +35,7 @@ export interface ProjectSettingsPopoverProps {
   onFpsChange: (fps: number) => void;
   bpm: number;
   onBpmChange: (bpm: number) => void;
+  liveLink?: LiveLinkSettingsProps;
   onClose: () => void;
 }
 
@@ -44,6 +47,7 @@ export default function ProjectSettingsPopover({
   onFpsChange,
   bpm,
   onBpmChange,
+  liveLink,
   onClose,
 }: ProjectSettingsPopoverProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -130,6 +134,7 @@ export default function ProjectSettingsPopover({
         onFpsChange={onFpsChange}
         bpm={bpm}
         onBpmChange={onBpmChange}
+        liveLink={liveLink}
       />
     </div>,
     anchorEl.ownerDocument.body

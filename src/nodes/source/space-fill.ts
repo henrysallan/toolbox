@@ -549,7 +549,16 @@ function emitSlice(
 
     const gi = groupIndexFor(trace, line, li, e);
     const weight = clamp(e.weightMin + line.weightU * wSpan, 0, 1);
-    subpaths.push({ anchors, closed: false, groupIndex: gi, driver: weight });
+    // `driver` is the per-line weight — written as the subpath attribute
+    // Rasterize / Stroke ramps read (092026_unified-attributes.md §4.4),
+    // plus the legacy field during the shim window.
+    subpaths.push({
+      anchors,
+      closed: false,
+      groupIndex: gi,
+      driver: weight,
+      attrs: { driver: weight },
+    });
 
     const prev = anchors[anchors.length - 2].pos;
     const tip = anchors[anchors.length - 1].pos;

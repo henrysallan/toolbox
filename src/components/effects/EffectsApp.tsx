@@ -109,6 +109,7 @@ import {
 } from "./pie-menu-icons";
 import { registerAllNodes } from "@/nodes";
 import { getNodeDef } from "@/engine/registry";
+import { convertGovernedUnits } from "@/engine/stroke-units";
 import { createEngineBackend, type EngineBackend } from "@/engine/gl";
 import { awaitMediaSettle } from "@/engine/offline-settle";
 import {
@@ -139,6 +140,8 @@ import {
   anchorOutKey,
   anchorPosKey,
   anchorTrackId,
+  expandMergeLayerControls,
+  parseMergeLayerKey,
   gpointCKey,
   gpointXKey,
   gpointYKey,
@@ -170,6 +173,7 @@ import {
   walkToCamera3DNode,
 } from "@/engine/graph-helpers";
 import {
+  collectFrameBypassIds,
   computeFrameRects,
   FRAME_DEFAULT_H,
   FRAME_DEFAULT_W,
@@ -284,6 +288,20 @@ import {
   resolveExportResolution,
   sanitizeFilename,
 } from "@/lib/export";
+import {
+  frameChecksum,
+  rgbaToBlob,
+  rgbaToBytes,
+  toError,
+  type CapturedFrame,
+} from "@/lib/export-capture";
+import { openExportLog, type ExportLog } from "@/lib/export-log";
+import { runFramePipeline, type AsyncRead } from "@/lib/export-pipeline";
+import {
+  describeVideoExport,
+  resolveVideoExportSettings,
+} from "@/lib/export-presets";
+import type { ExportPhase } from "@/lib/export-capture";
 import { outputNeedsSimPreroll } from "@/lib/sim-preroll";
 import {
   platform,
@@ -337,10 +355,22 @@ import {
   loadProject as loadProjectRow,
   renameProject as renameProjectRow,
   saveProject as saveProjectRow,
+  setProjectVanitySlug as setProjectVanitySlugRow,
   setProjectVisibility as setProjectVisibilityRow,
   updateProject as updateProjectRow,
   type ProjectRow,
+  type SetVanitySlugResult,
 } from "@/lib/supabase/projects";
+import { useOwnHandle } from "@/lib/use-own-handle";
+import { vanityPathFor } from "@/lib/vanity-slug";
+import type { LiveLinkSettingsProps } from "./LiveLinkSettings";
+import {
+  LOAD_START,
+  loadDeserializeReading,
+  loadStageReading,
+  saveSerializeReading,
+  saveStageReading,
+} from "@/lib/save-load-progress";
 import SaveConflictModal from "./SaveConflictModal";
 import CollaboratorsModal from "./CollaboratorsModal";
 import RecoveryModal from "./RecoveryModal";
@@ -500,7 +530,7 @@ import {
   type ProjectTimeline,
   type SavedEasing,
 } from "@/engine/keyframes";
-import type { ClipBlock } from "@/engine/clips";
+import { resolveClipAt, type ClipBlock } from "@/engine/clips";
 import type {
   ModelFileParamValue,
   PointsValue,
@@ -676,6 +706,11 @@ export interface InitialProjectPayload {
   updatedAt?: string | null;
   sharedWithMe?: boolean;
   hasCollaborators?: boolean;
+  // Named live link (092126_vanity-live-links.md): the row's opted-in
+  // slug and the owner's handle, so the pill's copy button and Project
+  // Settings are right from the first render.
+  vanitySlug?: string | null;
+  ownerHandle?: string | null;
 }
 
 function layoutFromSavedGraph(graph: { layout?: unknown } | undefined): LayoutTree {
@@ -705,6 +740,18 @@ function canvasResFromSavedGraph(
 // `videoFrames` duration param for any in-memory node that predates the
 // start/end split and never went through deserialize (old saves migrate in
 // project.ts). Shared by exportVideo and exportSequence.
+// FNV-1a over a string — the SVG sequence's stand-in for frameChecksum, so
+// the export log's identical-run tracker can flag a sequence whose every
+// frame serialized to the same document (a frozen spline).
+function stringChecksum(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h;
+}
+
 function resolveFrameRange(params: Record<string, unknown>): {
   startFrame: number;
   endFrame: number;
@@ -720,6 +767,44 @@ function resolveFrameRange(params: Record<string, unknown>): {
   const durationFrames = Math.max(1, endFrame - startFrame);
   return { startFrame, endFrame: startFrame + durationFrames, durationFrames };
 }
+
+// Success toast for a frame-loop export. When the capture checksums say most
+// of the run was one unchanging picture, say so: a still graph does this
+// legitimately, but for an animated one it is the frozen-export symptom the
+// direct GPU readback was added to prevent, and the log has the frame numbers.
+function exportDoneMessage(frames: number, log: ExportLog): string {
+  const base = `Exported ${frames} frame${frames === 1 ? "" : "s"}`;
+  const r = log.runs;
+  if (!r.suspicious) return base;
+  return `${base} — ${r.longestRun} in a row were identical from frame ${
+    r.longestRunStart + 1
+  }; see the export log`;
+}
+
+// Failure toast: the first line of the error, plus where the full log went
+// on desktop (web has no file; the tail is dumped to the console instead).
+function exportFailedMessage(prefix: string, err: Error, log: ExportLog): string {
+  const first = err.message.split("\n")[0] || "unknown error";
+  return `${prefix}: ${first}${log.path ? ` — log: ${log.path}` : ""}`;
+}
+
+function formatEtaShort(sec: number): string {
+  if (!isFinite(sec) || sec < 0) return "?";
+  if (sec < 60) return `${Math.ceil(sec)}s`;
+  const m = Math.floor(sec / 60);
+  const s = Math.ceil(sec - m * 60);
+  return `${m}m${String(s).padStart(2, "0")}s`;
+}
+
+// Offline export banner state: the frame loop owns `label` / `progress`; an
+// encoder that reports separately (native ffmpeg, the wasm encode pass, the
+// GIF palette / encode / optimize steps) owns the second bar in `encode`.
+type OfflineRecording = {
+  mode: "offline";
+  label: string;
+  progress: number;
+  encode?: { label: string; progress: number };
+};
 
 // Node types that retype their input sockets purely from `connectedTypes`
 // (what's wired in) with NO stored `mode` param to fall back on. Copy-to-
@@ -2029,6 +2114,12 @@ function EffectsShell({
         // Absent/false everywhere else, including rows opened before
         // the collaborators migration.
         sharedWithMe?: boolean;
+        // Named live link (092126_vanity-live-links.md): mirror of
+        // projects.vanity_slug (null/absent = off) and the OWNER's
+        // profile handle when the row isn't ours (own rows read the
+        // live handle from useOwnHandle instead).
+        vanitySlug?: string | null;
+        ownerHandle?: string | null;
       }
     | null
   >(
@@ -2042,6 +2133,8 @@ function EffectsShell({
           authorName: initialProject.authorName,
           updatedAt: initialProject.updatedAt,
           sharedWithMe: initialProject.sharedWithMe,
+          vanitySlug: initialProject.vanitySlug ?? null,
+          ownerHandle: initialProject.ownerHandle ?? null,
         }
       : (rehydrate?.currentProject ?? null)
   );
@@ -2948,6 +3041,13 @@ function EffectsShell({
   // The live/MediaRecorder path leaves this false (it's realtime; the
   // continuous loop lets deferred results catch up).
   const offlineRenderingRef = useRef(false);
+  // The terminal ImageValue of the most recent render pass. Export capture
+  // reads its pixels straight back from the GPU (captureFrameRGBA, below)
+  // instead of copying the on-screen canvas — Chromium can hold that canvas'
+  // contents stale while a window is occluded or the 2D canvas is starved,
+  // which is how the 2026-09-20 "video freezes a few frames in" export bug
+  // happened while the engine kept rendering every frame.
+  const lastTerminalImageRef = useRef<ImageValue | null>(null);
   const trackingCancelRef = useRef(false);
   const trackingRunningRef = useRef(false);
   const trackerRuntimeRef = useRef(new Map<string, Map<number, TrackRuntime>>());
@@ -2966,6 +3066,16 @@ function EffectsShell({
   // exported, not whatever the user happens to have set Active. Cleared back
   // to null when the export finishes.
   const forcedTerminalRef = useRef<string | null>(null);
+  // SVG export: the node whose compute WRITES the svg-export stash (the
+  // composition Output, the SVG Export node, or — for a Layer Output — the
+  // enclosing layer shell), forced into the eval's needed set for the
+  // duration of the export. Without this the stash is only written when
+  // that node happens to be in the live needed set: an Active node anywhere
+  // in the graph narrows the pass to its own branch, and a forced terminal
+  // on a Layer Output remaps to the interior image producer, so the layer
+  // shell never computes and the stash stays empty. Honored during offline
+  // renders (unlike the peek/bake/sheet targets, which are UI-only).
+  const svgExportStashTargetRef = useRef<string | null>(null);
   const forcedTerminalHandleRef = useRef<string | null>(null);
 
   // Preview dots for any selected node whose primary output is a points
@@ -3077,7 +3187,11 @@ function EffectsShell({
             handle: "out:primary",
           })
         : null;
-      const forced = [peek, bake, presetShot, ...sheets].filter(
+      // SVG export's stash writer — kept even offline (it IS the export).
+      const svgStashTarget = svgExportStashTargetRef.current
+        ? { nodeId: svgExportStashTargetRef.current, handle: "out:primary" }
+        : null;
+      const forced = [peek, bake, presetShot, svgStashTarget, ...sheets].filter(
         (f): f is { nodeId: string; handle: string } => !!f
       );
       const forceHandle = forcedTerminalHandleRef.current ?? undefined;
@@ -3112,6 +3226,13 @@ function EffectsShell({
         previewNodeId,
         peekOpts
       );
+      // Published for the export capture (captureFrameRGBA). Valid until the
+      // next eval: an uncacheable terminal's texture is a transient the
+      // NEXT pass releases, which is exactly when this is overwritten.
+      lastTerminalImageRef.current =
+        result.terminalImage && result.terminalImage.image.kind === "image"
+          ? (result.terminalImage.image as ImageValue)
+          : null;
       lastEvalOutputsRef.current = result.outputs;
       // Re-render the peek popover with this pass's value (rAF-coalesced,
       // same tick as the inspector popups).
@@ -3286,6 +3407,47 @@ function EffectsShell({
   );
   const renderFrameRef = useRef(renderFrame);
   renderFrameRef.current = renderFrame;
+
+  // Export capture: read the frame just rendered straight off its texture
+  // (EngineBackend.readImagePixels — the same readback the MCP screenshot
+  // uses). RGBA8, straight alpha, row 0 = visual top: what ffmpeg's rawvideo
+  // input and ImageData both want, with no on-screen canvas in the loop and
+  // no frame-boundary wait. Null when nothing rendered (no terminal image)
+  // or the backend can't read (lost context, incomplete FBO) — the
+  // exporters treat that as a hard error rather than encoding a stale frame.
+  const captureFrameRGBA = useCallback(
+    (width: number, height: number): CapturedFrame | null => {
+      const backend = backendRef.current;
+      const img = lastTerminalImageRef.current;
+      if (!backend || !img) return null;
+      const px = backend.readImagePixels(img, width, height);
+      return px ? { px, width, height } : null;
+    },
+    []
+  );
+
+  // Pipelined variant for the frame-loop exporters (092126_async-pipelined-
+  // readback.md): enqueue the readback of the frame just rendered and return
+  // at once, so the caller can start the next frame's eval while the GPU
+  // finishes this one. Same bytes as captureFrameRGBA — the engine draws the
+  // same Y-flipped blit into the same target; only the copy-out is deferred
+  // behind a fence. A read that lands null (nothing rendered, lost context,
+  // fence timeout) is the same hard error as the sync path's null.
+  const captureFrameRGBAAsync = useCallback(
+    (width: number, height: number): AsyncRead<CapturedFrame> => {
+      const backend = backendRef.current;
+      const img = lastTerminalImageRef.current;
+      if (!backend || !img) {
+        return { promise: Promise.resolve(null), cancel() {} };
+      }
+      const read = backend.readImagePixelsAsync(img, width, height);
+      return {
+        promise: read.promise.then((px) => (px ? { px, width, height } : null)),
+        cancel: () => read.cancel(),
+      };
+    },
+    []
+  );
 
   // `window.__perf` — arm/read the evaluator perf trace
   // (specdocs/080726_perf-profiler.md M1). Reads edges through the ref so the
@@ -7004,7 +7166,37 @@ function EffectsShell({
               }
             }
           }
-          const nextParams = { ...n.data.params, [paramName]: value };
+          let nextParams: Record<string, unknown> = {
+            ...n.data.params,
+            [paramName]: value,
+          };
+          // Units flip (px ↔ %, ParamDef.unitsConvert): rescale every
+          // governed sibling's constant + keyframes so the render doesn't
+          // change — Text's 96 px on a 1920 comp becomes 5 %. Against the
+          // PROJECT resolution, not the preview-scaled render size: px text
+          // lies in a 0.5× preview and the flip should keep the export look.
+          // Same setNodes pass, so one undo restores units + values.
+          {
+            const unitsDef = getNodeDef(n.data.defType)?.params.find(
+              (p) => p.name === paramName
+            );
+            if (unitsDef?.unitsConvert) {
+              const from = n.data.params[paramName] ?? unitsDef.default;
+              const [cw, ch] = canvasResRef.current;
+              const converted = convertGovernedUnits(
+                unitsDef,
+                from,
+                value,
+                nextParams,
+                nextAnimation,
+                { canvasWidth: cw, canvasHeight: ch }
+              );
+              if (converted) {
+                nextParams = converted.params;
+                nextAnimation = converted.animation;
+              }
+            }
+          }
           // Transform pivot-space flip: remap pivot X/Y so the on-canvas
           // marker stays put (canvas coords ↔ source-bbox fraction).
           if (
@@ -7495,13 +7687,16 @@ function EffectsShell({
 
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ id: string; kind: string }>).detail;
+      const detail = (
+        e as CustomEvent<{ id: string; kind: string; layerId?: string }>
+      ).detail;
       if (!detail) return;
       if (
         detail.kind === "toggleActive" ||
         detail.kind === "toggleActive2" ||
         detail.kind === "toggleBypass" ||
         detail.kind === "mergeAddLayer" ||
+        detail.kind === "mergeToggleLayer" ||
         detail.kind === "autolayoutAddItem" ||
         detail.kind === "queueAddItem" ||
         detail.kind === "exprAddInput" ||
@@ -7532,6 +7727,25 @@ function EffectsShell({
           prev.map((n) =>
             n.id === detail.id
               ? { ...n, data: { ...n.data, bypassed: !n.data.bypassed } }
+              : n
+          )
+        );
+      } else if (detail.kind === "frameToggleBypass") {
+        // Frame header toggle (FrameNode): drive every bypassable member
+        // to ONE state. The frame has no `bypassed` of its own — its state
+        // is derived (frameBypassState): all members bypassed → restore
+        // all; anything else → bypass all. One undo step for the batch,
+        // and no history entry at all for an empty frame.
+        const ids = collectFrameBypassIds(nodesRef.current, detail.id);
+        if (ids.length === 0) return;
+        const byId = new Map(nodesRef.current.map((n) => [n.id, n]));
+        const next = !ids.every((mid) => !!byId.get(mid)?.data.bypassed);
+        const idSet = new Set(ids);
+        pushGraph(getGraphSnapshot());
+        setNodes((prev) =>
+          prev.map((n) =>
+            idSet.has(n.id) && !!n.data.bypassed !== next
+              ? { ...n, data: { ...n.data, bypassed: next } }
               : n
           )
         );
@@ -7582,6 +7796,29 @@ function EffectsShell({
             });
           })
         );
+      } else if (detail.kind === "mergeToggleLayer") {
+        // Eye on a Merge node's layer row — flips that layer's `enabled`
+        // (same field the param panel's per-layer eye edits). The socket
+        // and its wire stay; merge.ts skips the layer in the blend chain.
+        const layerId = detail.layerId;
+        if (layerId) {
+          setNodes((prev) =>
+            prev.map((n) => {
+              if (n.id !== detail.id) return n;
+              const current = (n.data.params.layers as MergeLayer[]) ?? [];
+              if (!current.some((l) => l.id === layerId)) return n;
+              const nextLayers = current.map((l) =>
+                l.id === layerId
+                  ? { ...l, enabled: l.enabled === false ? true : false }
+                  : l
+              );
+              return withUpdatedParams(n, {
+                ...n.data.params,
+                layers: nextLayers,
+              });
+            })
+          );
+        }
       } else if (detail.kind === "autolayoutAddItem") {
         setNodes((prev) =>
           prev.map((n) => {
@@ -7774,6 +8011,54 @@ function EffectsShell({
             ? current.filter((p) => p !== paramName)
             : [...current, paramName];
           return { ...n, data: { ...n.data, controlParams: next } };
+        })
+      );
+    },
+    [setNodes, pushGraph, getGraphSnapshot]
+  );
+
+  // The Live Link Designer's per-row × (Controls list). Removing a row
+  // means turning its source OFF on the node — the same edit the param
+  // panel's Control toggle makes — never hiding it in the design block.
+  // A manifest control row carries the paramName the VIEWER keys on, which
+  // for a Merge layer is the synthesized mode / opacity key; both map back
+  // to the one membership key (`mlayer:<param>:<layerId>`) that actually
+  // lives in controlParams, and a legacy literal `merge_layers` entry is
+  // expanded first so dropping one layer leaves the others controlled.
+  const onRemoveLiveControl = useCallback(
+    (row: {
+      kind: "file" | "control" | "gizmo";
+      nodeId: string;
+      paramName: string;
+    }) => {
+      pushGraph(getGraphSnapshot());
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id !== row.nodeId) return n;
+          if (row.kind === "gizmo") {
+            if (!n.data.controlGizmo) return n;
+            return { ...n, data: { ...n.data, controlGizmo: undefined } };
+          }
+          const layerKey = parseMergeLayerKey(row.paramName);
+          const target = layerKey
+            ? mergeLayerKey(layerKey.paramName, layerKey.layerId)
+            : row.paramName;
+          const def = getNodeDef(n.data.defType);
+          const current = def
+            ? expandMergeLayerControls(
+                def.params,
+                n.data.params,
+                n.data.controlParams ?? []
+              )
+            : n.data.controlParams ?? [];
+          if (!current.includes(target)) return n;
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              controlParams: current.filter((p) => p !== target),
+            },
+          };
         })
       );
     },
@@ -8228,11 +8513,35 @@ function EffectsShell({
   // shows a progress bar from `progress` (0..1) and a label.
   const [recording, setRecording] = useState<
     | { mode: "live"; totalSec: number; startedAt: number }
-    | { mode: "offline"; label: string; progress: number }
+    | OfflineRecording
     | null
   >(null);
   const recordingRef = useRef(recording);
   recordingRef.current = recording;
+  // Phase-aware progress (092126_export-presets-and-progress.md). Merging
+  // through functional updates is what keeps the two writers — the frame
+  // loop and the encoder's own counter — from overwriting each other; the
+  // old single bar jumped between "120/240" and "61/240" for that reason.
+  const setCaptureProgress = useCallback((label: string, progress: number) => {
+    setRecording((prev) => ({
+      mode: "offline",
+      label,
+      progress,
+      encode: prev?.mode === "offline" ? prev.encode : undefined,
+    }));
+  }, []);
+  const setEncodeProgress = useCallback((label: string, progress: number) => {
+    setRecording((prev) =>
+      prev?.mode === "offline" ? { ...prev, encode: { label, progress } } : prev
+    );
+  }, []);
+  const setPhaseProgress = useCallback(
+    (prefix: string, label: string, fraction: number, phase?: ExportPhase) => {
+      if (phase === "encode") setEncodeProgress(`${prefix}${label}`, fraction);
+      else setCaptureProgress(`${prefix}${label}`, fraction);
+    },
+    [setCaptureProgress, setEncodeProgress]
+  );
   // Synchronous re-entrancy lock for the standalone Export button.
   // `recordingRef` mirrors React state and only reflects a COMMITTED render,
   // so two clicks landing before the next commit both pass its guard and start
@@ -9064,15 +9373,16 @@ function EffectsShell({
           );
       };
 
-      const quality =
-        (params.videoQuality as "fast" | "high" | "max") ?? "high";
-      const container =
-        (params.videoFormat as "mp4" | "webm" | "mov" | "mkv") ?? "mp4";
+      // Preset → concrete encoder settings (lib/export-presets.ts). Custom
+      // reads the raw rows with the defaults they always had.
+      const settings = resolveVideoExportSettings(params);
+      const quality = settings.tier;
+      const container = settings.container;
       // Frame range, half-open [startFrame, endFrame): count = end − start.
       // `videoFrames` is the legacy duration param (old saves migrate to
       // start/end in project.ts, but read it as a fallback here too).
       const { startFrame, durationFrames } = resolveFrameRange(params);
-      const bitrateMbps = (params.videoBitrateMbps as number) ?? 16;
+      const bitrateMbps = settings.bitrateMbps;
       // {i} tokens resolve to 0 in a single render (batch runs name their
       // files in the driver via `sink`, so this base is single-render only).
       const base = resolveWedgeName(
@@ -9092,6 +9402,42 @@ function EffectsShell({
 
       const savedTime = timeRef.current;
       const savedPlaying = playingRef.current;
+
+      // One log per export: settings, tier decisions, per-frame timings,
+      // capture checksums and the encoder's own output. Desktop writes it to
+      // ~/Library/Logs/Toolbox/exports (or the OS equivalent); web keeps it
+      // in memory and dumps the tail to the console on failure.
+      const log = await openExportLog("video", {
+        nodeId,
+        preset: settings.preset,
+        quality,
+        container,
+        codec: settings.codec,
+        crf: settings.crf,
+        proresProfile: settings.proresProfile,
+        alpha: settings.alpha,
+        startFrame,
+        durationFrames,
+        exportFps,
+        projectFps: previewFps,
+        resolution: targetRes,
+        bitrateMbps,
+        filename: base || null,
+        nativeEncoder: platform.canEncodeNative,
+        batchSink: !!opts?.sink,
+      });
+      // What the pipeline will really do with these settings — the same
+      // lines the export panel shows, so the log matches the promise.
+      const plan = describeVideoExport(settings, {
+        width: targetRes[0],
+        height: targetRes[1],
+        fps: exportFps,
+        frames: durationFrames,
+        nativeEncoder: platform.canEncodeNative && !opts?.sink,
+      });
+      for (const line of plan.lines) log.info(line);
+      for (const w of plan.warnings) log.warn(w);
+      let status: "ok" | "failed" | "cancelled" = "failed";
 
       // ---- Fast / live path (MediaRecorder) ------------------------------
       if (quality === "fast") {
@@ -9131,9 +9477,18 @@ function EffectsShell({
         }
         const picked = pickVideoMime(liveContainer, !!audioTrack);
         if (!picked) {
-          console.error("No supported video codec in this browser");
+          log.error("no MediaRecorder mime type supported for fast export", {
+            container: liveContainer,
+            audio: !!audioTrack,
+          });
+          await log.finish("failed");
+          flashToast("Export failed: this browser has no supported video codec for Fast quality");
           return;
         }
+        log.info("tier fast (MediaRecorder, real-time canvas capture)", {
+          mime: picked.mime,
+          audio: !!audioTrack,
+        });
         const totalSec = durationFrames / previewFps;
         const stream = canvas.captureStream(previewFps);
         if (audioTrack) stream.addTrack(audioTrack);
@@ -9175,6 +9530,13 @@ function EffectsShell({
 
           await new Promise((r) => setTimeout(r, totalSec * 1000));
           recorder.stop();
+        } catch (err) {
+          const e = toError(err);
+          console.error("Video export failed:", err);
+          log.error("fast export failed", { error: e.message });
+          await log.finish("failed");
+          flashToast(exportFailedMessage("Export failed", e, log));
+          throw err;
         } finally {
           forcedTerminalRef.current = null;
           setPlaying(savedPlaying);
@@ -9184,7 +9546,9 @@ function EffectsShell({
         }
 
         const blob = await done;
+        log.info("fast export captured", { bytes: blob.size, ext: picked.ext });
         deliver(blob, picked.ext);
+        await log.finish("ok", { tier: "fast" });
         return;
       }
 
@@ -9243,6 +9607,10 @@ function EffectsShell({
         // route below (WebCodecs CanvasSource, PNG frames, native-ffmpeg
         // readback) reads the preview canvas / backend at this size.
         await beginExportResolution(targetRes);
+        log.info("render resolution set", {
+          width: canvas.width,
+          height: canvas.height,
+        });
         // Render the wired audio into a buffer covering the export window
         // (file mode only — mic has no deterministic offline form). Shared
         // by both offline encoders; null when no file audio is connected.
@@ -9309,19 +9677,35 @@ function EffectsShell({
           }
         }
 
+        log.info("audio", {
+          wired: !!audioSpec,
+          chains: exportChains.length,
+          rendered: !!audioBuffer,
+          seconds: audioBuffer ? audioBuffer.duration : 0,
+        });
+
         let result: { blob: Blob; ext: string };
         if (quality === "high") {
           const { exportVideoWebCodecs } = await import("@/lib/export-webcodecs");
           // High-tier codec menu intersected with what mediabunny accepts
           // for the chosen container. Defaults to AVC for mp4, VP9 for webm.
-          const rawCodec = (params.videoCodec as string) ?? "avc";
+          // describeVideoExport resolved (and logged) the substitutions:
+          // an ffmpeg-only name → avc, a non-mp4/webm container → mp4.
+          const rawCodec = settings.codec;
           type WC = "avc" | "hevc" | "vp9" | "av1";
           const wcAllowed: WC[] = ["avc", "hevc", "vp9", "av1"];
           const codec: WC = (
-            wcAllowed.includes(rawCodec as WC) ? rawCodec : "avc"
+            wcAllowed.includes(plan.codec as WC) ? plan.codec : "avc"
           ) as WC;
-          const wcContainer =
-            container === "webm" ? "webm" : "mp4";
+          const wcContainer = plan.container === "webm" ? "webm" : "mp4";
+          // NOTE: this tier still samples the on-screen canvas (mediabunny's
+          // CanvasSource), so it is the one path without a direct readback.
+          log.info("tier high (WebCodecs via mediabunny CanvasSource — samples the preview canvas)", {
+            requestedCodec: rawCodec,
+            codec,
+            container: wcContainer,
+            bitrateMbps,
+          });
           result = await exportVideoWebCodecs({
             canvas,
             container: wcContainer,
@@ -9331,35 +9715,32 @@ function EffectsShell({
             durationFrames,
             audioBuffer,
             renderFrame: renderAt,
-            onProgress: (label, frac) =>
-              setRecording({
-                mode: "offline",
-                label: `${lp}${label}`,
-                progress: frac,
-              }),
+            // One bar: WebCodecs encodes as frames arrive and reports no
+            // separate count.
+            onProgress: (label, frac) => setCaptureProgress(`${lp}${label}`, frac),
           });
         } else {
-          const rawCodec = (params.videoCodec as string) ?? "h264";
+          const rawCodec = settings.codec;
           type FC =
             | "h264" | "h264-lossless" | "h265" | "prores" | "qtrle" | "vp9" | "av1";
           const ffAllowed: FC[] = [
             "h264", "h264-lossless", "h265", "prores", "qtrle", "vp9", "av1",
           ];
-          // If the user left a webcodecs-only codec selected when
-          // switching to Max, fall back to h264 silently.
+          // describeVideoExport resolved (and logged) the substitution a
+          // WebCodecs-only name needs here (hevc → h265, avc → h264).
           const codec: FC = (
-            ffAllowed.includes(rawCodec as FC) ? rawCodec : "h264"
+            ffAllowed.includes(plan.codec as FC) ? plan.codec : "h264"
           ) as FC;
-          const proresName = (params.videoProresProfile as string) ?? "hq";
+          const proresName = settings.proresProfile;
           const proresMap: Record<string, number> = {
             proxy: 0, lt: 1, standard: 2, hq: 3, "4444": 4, "4444xq": 5,
           };
           const proresProfile = proresMap[proresName] ?? 3;
-          const crf = (params.videoCrf as number) ?? 18;
-          // Mirror the Output node's ParamDef default (true): unedited and
-          // pre-existing saves have no stored value, so default to emitting
-          // alpha for 4444/4444xq. Ignored for non-4444 profiles.
-          const alpha = (params.videoAlpha as boolean) ?? true;
+          const crf = settings.crf;
+          // Custom mirrors the Output node's ParamDef default (true) when no
+          // value is stored; presets say explicitly. Ignored for non-4444
+          // profiles.
+          const alpha = settings.alpha;
           // ProRes and QuickTime Animation (qtrle) want a QuickTime container;
           // nudge mp4/webm → mov. (qtrle is the universal-alpha codec that AE
           // and Resolve both read — see export-ffmpeg-args.js.)
@@ -9368,6 +9749,29 @@ function EffectsShell({
             needsMov && (container === "mp4" || container === "webm")
               ? "mov"
               : container;
+          log.info("tier max (ffmpeg)", {
+            requestedCodec: rawCodec,
+            codec,
+            requestedContainer: container,
+            container: ffContainer,
+            crf,
+            proresProfile,
+            alpha,
+            encoder: platform.canEncodeNative && !opts?.sink ? "native ffmpeg" : "ffmpeg.wasm",
+          });
+
+          // The frame just rendered, straight off the GPU. Null means there
+          // is nothing to encode — fail loudly rather than write a stale or
+          // blank frame (the old on-screen copy could not tell the two apart).
+          const captureOrThrow = (i: number): CapturedFrame => {
+            const frame = captureFrameRGBA(canvas.width, canvas.height);
+            if (!frame) {
+              throw new Error(
+                `Frame ${i + 1}/${durationFrames}: nothing to capture — the Output has no image wired, or the GPU context was lost`
+              );
+            }
+            return frame;
+          };
 
           // ---- Native ffmpeg (Electron) ----------------------------------
           // Stream RGBA frames to a real ffmpeg process: no wasm heap limit,
@@ -9390,49 +9794,86 @@ function EffectsShell({
                 suggestedName: base
                   ? `${base}.${ffContainer}`
                   : defaultFilename(ffContainer),
+                logId: log.sinkId ?? undefined,
               },
-              (label, frac) =>
-                setRecording({ mode: "offline", label: `${lp}${label}`, progress: frac })
+              // ffmpeg's own frame counter (from its stderr) drives the
+              // second bar; it trails the frame loop by x264's lookahead.
+              (label, frac) => setEncodeProgress(`${lp}${label}`, frac)
             );
-            if (!session) return; // user cancelled the Save dialog
-            // Offscreen 2D canvas to read straight-alpha RGBA8 (same fidelity
-            // as the wasm path's canvas.toBlob, but skips PNG encode).
-            const rgbaCanvas = document.createElement("canvas");
-            rgbaCanvas.width = canvas.width;
-            rgbaCanvas.height = canvas.height;
-            const rgbaCtx = rgbaCanvas.getContext("2d", {
-              willReadFrequently: true,
-            });
+            if (!session) {
+              // User cancelled the Save dialog.
+              status = "cancelled";
+              log.warn("save dialog cancelled");
+              return;
+            }
+            log.info(
+              "native ffmpeg session open — streaming RGBA8 frames, one readback in flight"
+            );
+            setCaptureProgress(`${lp}Rendering 0/${durationFrames}`, 0);
+            setEncodeProgress(`${lp}Encoding 0/${durationFrames}`, 0);
+            const loopStart = performance.now();
             try {
-              for (let i = 0; i < durationFrames; i++) {
-                await renderAt(i, 0);
-                await new Promise<void>((r) => requestAnimationFrame(() => r()));
-                rgbaCtx?.clearRect(0, 0, rgbaCanvas.width, rgbaCanvas.height);
-                rgbaCtx?.drawImage(canvas, 0, 0);
-                const data = rgbaCtx?.getImageData(
-                  0, 0, rgbaCanvas.width, rgbaCanvas.height
-                ).data;
-                if (data) await session.writeFrame(new Uint8Array(data.buffer));
-                setRecording({
-                  mode: "offline",
-                  label: `${lp}Encoding ${i + 1}/${durationFrames}`,
-                  progress: (i + 1) / durationFrames,
-                });
-              }
-              await session.finish();
+              // Pipelined loop (092126_async-pipelined-readback.md): frame
+              // i's eval + PBO readback are issued before frame i-1's bytes
+              // are awaited and written, so the GPU renders i while the CPU
+              // ships i-1. `capture` in the log is now the fence wait alone;
+              // the progress bar counts frames HANDED OFF to ffmpeg.
+              await runFramePipeline<CapturedFrame>({
+                frames: durationFrames,
+                render: (i) => renderAt(i, 0),
+                // Issued right after renderAt resolves — i.e. after the
+                // media-settle re-render, never before it.
+                read: () => captureFrameRGBAAsync(canvas.width, canvas.height),
+                missing: (i) =>
+                  new Error(
+                    `Frame ${i + 1}/${durationFrames}: nothing to capture — the Output has no image wired, or the GPU context was lost`
+                  ),
+                consume: async (i, frame, timings) => {
+                  const tWrite = performance.now();
+                  const checksum = frameChecksum(frame.px);
+                  await session.writeFrame(new Uint8Array(frame.px.buffer));
+                  log.frame(
+                    i,
+                    durationFrames,
+                    { ...timings, write: performance.now() - tWrite },
+                    checksum,
+                    frame.px.byteLength
+                  );
+                  const done = i + 1;
+                  const elapsed = (performance.now() - loopStart) / 1000;
+                  const rate = done / Math.max(1e-3, elapsed);
+                  const eta = done > 4 ? (durationFrames - done) / rate : null;
+                  setCaptureProgress(
+                    `${lp}Rendering ${done}/${durationFrames} · ${rate.toFixed(1)} fps${
+                      eta != null ? ` · ${formatEtaShort(eta)} left` : ""
+                    }`,
+                    done / durationFrames
+                  );
+                },
+              });
+              const finished = await session.finish();
+              log.info("native encode finished", {
+                path: finished.path ?? null,
+                bytes: finished.bytes ?? null,
+                seconds: (performance.now() - loopStart) / 1000,
+              });
             } catch (e) {
               await session.abort().catch(() => {});
               throw e;
             }
-            flashToast(
-              `Exported ${durationFrames} frame${durationFrames === 1 ? "" : "s"}`
-            );
+            status = "ok";
+            flashToast(exportDoneMessage(durationFrames, log));
             return;
           }
 
           const { exportVideoFfmpeg } = await import("@/lib/export-ffmpeg");
           result = await exportVideoFfmpeg({
-            canvas,
+            capturePng: async (): Promise<Uint8Array> => {
+              // exportVideoFfmpeg calls this right after renderAt(i); the
+              // index only matters for the error text.
+              const frame = captureOrThrow(log.runs.frames);
+              return rgbaToBytes(frame, "image/png");
+            },
             container: ffContainer,
             codec,
             crf,
@@ -9442,17 +9883,23 @@ function EffectsShell({
             durationFrames,
             audioWav: audioBuffer ? audioBufferToWav(audioBuffer) : null,
             renderFrame: renderAt,
-            onProgress: (label, frac) =>
-              setRecording({ mode: "offline", label: `${lp}${label}`, progress: frac }),
+            onProgress: (label, frac, phase) => setPhaseProgress(lp, label, frac, phase),
+            log,
           });
         }
 
+        log.info("delivering", { ext: result.ext, bytes: result.blob.size });
         deliver(result.blob, result.ext);
+        status = "ok";
+        if (log.runs.suspicious) flashToast(exportDoneMessage(durationFrames, log));
       } catch (err) {
+        const e = toError(err);
         console.error("Video export failed:", err);
-        const msg = err instanceof Error ? err.message : "Export failed";
-        flashToast(msg);
+        log.error("video export failed", { error: e.message });
+        if (!log.path) console.error(`[export:video] last log lines:\n${log.tail(40)}`);
+        flashToast(exportFailedMessage("Export failed", e, log));
       } finally {
+        void log.finish(status);
         // Hand rendering back to the eval effect before restoring state, so
         // the restored time/playing values drive a normal render again.
         offlineRenderingRef.current = false;
@@ -9471,6 +9918,11 @@ function EffectsShell({
       renderSettledFrameAt,
       beginExportResolution,
       endExportResolution,
+      captureFrameRGBA,
+      captureFrameRGBAAsync,
+      setCaptureProgress,
+      setEncodeProgress,
+      setPhaseProgress,
     ]
   );
 
@@ -9714,6 +10166,20 @@ function EffectsShell({
       forcedTerminalRef.current = nodeId;
       setRecording({ mode: "offline", label: "Preparing…", progress: 0 });
 
+      const log = await openExportLog("sequence", {
+        nodeId,
+        format,
+        quality: useQuality ? quality : null,
+        delivery,
+        startFrame,
+        endFrame,
+        durationFrames,
+        fps,
+        variations: wedgeTotal,
+        resolution: resolveExportResolution(params, canvasResRef.current),
+      });
+      let status: "ok" | "failed" = "failed";
+
       const collected: { blob: Blob; name: string }[] = [];
       const totalFrames = wedgeTotal * durationFrames;
       let written = 0;
@@ -9734,25 +10200,44 @@ function EffectsShell({
           for (let i = 0; i < durationFrames; i++) {
             const frame = startFrame + i;
             const t = frame / fps;
-            await renderSettledFrameAt(t, fps, { flush: true });
-            const blob = await new Promise<Blob | null>((res) =>
-              canvas.toBlob(
-                (b) => res(b),
-                `image/${format}`,
-                useQuality ? quality : undefined
-              )
-            );
-            if (blob) {
-              const name = `${vbase}.${String(frame).padStart(pad, "0")}.${format}`;
-              if (delivery === "folder" && folder) {
-                await folder.writeFile(name, blob);
-              } else if (delivery === "sequential") {
-                downloadBlob(blob, name);
-              } else {
-                collected.push({ blob, name });
-              }
-              written++;
+            const tRender = performance.now();
+            await renderSettledFrameAt(t, fps);
+            const tCapture = performance.now();
+            // Direct GPU readback of the rendered frame, then encode from the
+            // bytes — the on-screen canvas is no longer part of the capture.
+            const captured = captureFrameRGBA(canvas.width, canvas.height);
+            if (!captured) {
+              throw new Error(
+                `Frame ${frame}: nothing to capture — the Output has no image wired, or the GPU context was lost`
+              );
             }
+            const checksum = frameChecksum(captured.px);
+            const blob = await rgbaToBlob(
+              captured,
+              `image/${format}`,
+              useQuality ? quality : undefined
+            );
+            const tWrite = performance.now();
+            const name = `${vbase}.${String(frame).padStart(pad, "0")}.${format}`;
+            if (delivery === "folder" && folder) {
+              await folder.writeFile(name, blob);
+            } else if (delivery === "sequential") {
+              downloadBlob(blob, name);
+            } else {
+              collected.push({ blob, name });
+            }
+            written++;
+            log.frame(
+              v * durationFrames + i,
+              totalFrames,
+              {
+                render: tCapture - tRender,
+                capture: tWrite - tCapture,
+                write: performance.now() - tWrite,
+              },
+              checksum,
+              blob.size
+            );
             setRecording({
               mode: "offline",
               label: `${vprefix}Frame ${i + 1}/${durationFrames}`,
@@ -9771,11 +10256,21 @@ function EffectsShell({
           // rather than resolving them to a single index.
           downloadBlob(zipBlob, `${stripWedgeTokens(base)}.zip`);
         }
-        flashToast(`Rendered ${written} frame${written === 1 ? "" : "s"}`);
+        status = "ok";
+        log.info("delivered", { written, delivery });
+        flashToast(
+          log.runs.suspicious
+            ? exportDoneMessage(written, log).replace(/^Exported/, "Rendered")
+            : `Rendered ${written} frame${written === 1 ? "" : "s"}`
+        );
       } catch (err) {
+        const e = toError(err, "Sequence export failed");
         console.error("Sequence export failed:", err);
-        flashToast(err instanceof Error ? err.message : "Sequence export failed");
+        log.error("sequence export failed", { error: e.message, written });
+        if (!log.path) console.error(`[export:sequence] last log lines:\n${log.tail(40)}`);
+        flashToast(exportFailedMessage("Sequence export failed", e, log));
       } finally {
+        void log.finish(status, { written });
         wedgeIndexRef.current = undefined;
         offlineRenderingRef.current = false;
         forcedTerminalRef.current = null;
@@ -9792,6 +10287,7 @@ function EffectsShell({
       renderSettledFrameAt,
       beginExportResolution,
       endExportResolution,
+      captureFrameRGBA,
     ]
   );
 
@@ -9835,6 +10331,19 @@ function EffectsShell({
         await renderSettledFrameAt((startFrame + frameIndex) / exportFps, exportFps);
       };
 
+      const log = await openExportLog("gif", {
+        nodeId,
+        startFrame,
+        durationFrames,
+        fps: exportFps,
+        colors,
+        dither,
+        lossy,
+        transparent,
+        resolution: resolveExportResolution(params, canvasResRef.current),
+      });
+      let status: "ok" | "failed" = "failed";
+
       // Wedge variations: one GIF per variation, sequential downloads with
       // iterated names (an unnamed batch still needs distinct names, so the
       // Output's node name backstops the timestamp fallback).
@@ -9854,7 +10363,18 @@ function EffectsShell({
           const vprefix =
             wedgeTotal > 1 ? `Variation ${v + 1}/${wedgeTotal} — ` : "";
           const result = await runGifExport({
-            canvas,
+            capturePng: async (): Promise<Uint8Array> => {
+              const frame = captureFrameRGBA(canvas.width, canvas.height);
+              if (!frame) {
+                throw new Error(
+                  "nothing to capture — the Output has no image wired, or the GPU context was lost"
+                );
+              }
+              return rgbaToBytes(frame, "image/png");
+            },
+            width: canvas.width,
+            height: canvas.height,
+            log,
             fps: exportFps,
             durationFrames,
             colors,
@@ -9862,12 +10382,8 @@ function EffectsShell({
             lossy,
             transparent,
             renderFrame: renderAt,
-            onProgress: (label, progress) =>
-              setRecording({
-                mode: "offline",
-                label: `${vprefix}${label}`,
-                progress,
-              }),
+            onProgress: (label, progress, phase) =>
+              setPhaseProgress(vprefix, label, progress, phase),
           });
           downloadBlob(
             result.blob,
@@ -9878,10 +10394,16 @@ function EffectsShell({
                 : defaultFilename(result.ext)
           );
         }
+        status = "ok";
+        if (log.runs.suspicious) flashToast(exportDoneMessage(durationFrames, log));
       } catch (err) {
+        const e = toError(err, "GIF export failed");
         console.error("GIF export failed:", err);
-        flashToast(err instanceof Error ? err.message : "GIF export failed");
+        log.error("gif export failed", { error: e.message });
+        if (!log.path) console.error(`[export:gif] last log lines:\n${log.tail(40)}`);
+        flashToast(exportFailedMessage("GIF export failed", e, log));
       } finally {
+        void log.finish(status);
         wedgeIndexRef.current = undefined;
         offlineRenderingRef.current = false;
         forcedTerminalRef.current = null;
@@ -9898,6 +10420,8 @@ function EffectsShell({
       renderSettledFrameAt,
       beginExportResolution,
       endExportResolution,
+      captureFrameRGBA,
+      setPhaseProgress,
     ]
   );
 
@@ -10616,39 +11140,59 @@ function EffectsShell({
     };
   }, [exportApp, compositionsForSave]);
 
-  // SVG Export node (spec 072726 M2): serialize the node's stashed input
-  // spline (written by its compute every eval — the node is terminal, so
-  // the stash always reflects the current playhead) and save it through
-  // the platform seam. The composition **Output** node stashes under the
-  // same key from its own optional `spline` tap and declares the same
-  // styling params, so this one exporter serves both.
+  // SVG export (spec 072726 M2, sequence mode 092126): serialize the spline
+  // stashed in ctx.state by the node's compute and save it through the
+  // platform seam. Three surfaces share this one exporter — the SVG Export
+  // node, the composition **Output** (its optional `spline` tap) and a
+  // **Layer Output** (whose ENCLOSING LAYER stashes on its behalf under the
+  // layer's own id, since flatten dissolves the boundary node; styling +
+  // export params still come from the Layer Output).
+  //
+  // The stash is only written when its owner COMPUTES, so each export runs
+  // its own settled render with the owner forced into the needed set
+  // (svgExportStashTargetRef) instead of trusting the live pass — an Active
+  // node elsewhere, or a Layer Output's forced-terminal remap to the
+  // interior producer, would otherwise leave the stash empty and the button
+  // useless. What's left after that is honest: a bypassed / gated layer, or
+  // a spline that really is empty at that frame.
+  //
+  // Output / Layer Output with `exportMode: "sequence"` write ONE .svg PER
+  // FRAME over the same frame range, fps and delivery (zip / folder /
+  // sequential) as the raster sequence, named `name.0000.svg`, so the two
+  // sequences line up frame for frame. Every other mode saves a single .svg
+  // at the current playhead.
   const exportSvgNode = useCallback(
     async (nodeId: string) => {
-      const backend = backendRef.current;
-      if (!backend) return;
-      const ctx = backend.makeContext(0, 0);
+      if (!backendRef.current) return;
+      if (recordingRef.current || queueRenderingRef.current) return;
       const node = nodesRef.current.find((n) => n.id === nodeId);
-      // A Layer Output never computes — flatten dissolves every group
-      // boundary — so its ENCLOSING LAYER stashes the tap's spline under
-      // the layer's own id (layer.compute). Styling params still come from
-      // the Layer Output, which owns the layer's export config.
+      if (!node) return;
       const isLayerOutput =
-        node?.data.defType === GROUP_OUTPUT_TYPE &&
+        node.data.defType === GROUP_OUTPUT_TYPE &&
         (node.data.params as { fixed?: boolean })?.fixed === true;
-      const stashId = (isLayerOutput ? node?.data.parentId : null) ?? nodeId;
-      const stash = ctx.state[svgExportStashKey(stashId)] as
-        | SvgExportStash
-        | undefined;
-      if (!stash || stash.subpaths.length === 0) {
-        const where = isLayerOutput
-          ? "Layer Output"
-          : node?.data.defType === "output"
-            ? "Output"
-            : "SVG Export";
+      const isOutput = node.data.defType === "output";
+      const where = isLayerOutput
+        ? "Layer Output"
+        : isOutput
+          ? "Output"
+          : "SVG Export";
+      const splineHandle = node.data.defType === "svg-export" ? "in:path" : "in:spline";
+      if (
+        !edgesRef.current.some(
+          (e) => e.target === nodeId && e.targetHandle === splineHandle
+        )
+      ) {
         flashToast(`Nothing to export — wire a spline into ${where}`);
         return;
       }
-      const p = node?.data.params ?? {};
+      const stashId = (isLayerOutput ? node.data.parentId : null) ?? nodeId;
+      const stashKey = svgExportStashKey(stashId);
+      // Read from the CURRENT backend — an export-resolution switch recreates
+      // it (and its state) mid-export, so never capture it up front.
+      const readStash = () =>
+        backendRef.current?.state[stashKey] as SvgExportStash | undefined;
+
+      const p = node.data.params ?? {};
       const style = {
         stroke: p.stroke_enabled
           ? {
@@ -10666,28 +11210,239 @@ function EffectsShell({
             }
           : undefined,
       };
-      const svg = splineToSvg(stash.subpaths, stash.width, stash.height, style);
       // SVG Export defaults `filename` to "spline"; Output leaves it empty
       // (its placeholder is the auto-timestamp used by the raster products),
       // so fall back to the node's own name before the generic default —
       // same ladder as the image/video paths.
       const base =
         sanitizeFilename(((p.filename as string) ?? "").trim()) ||
-        sanitizeFilename(node?.data.name ?? "") ||
+        sanitizeFilename(node.data.name ?? "") ||
         "spline";
+
+      // Why a forced render still produced nothing. Bypass and clip gating
+      // are the two ways a wired layer legitimately skips its compute; past
+      // those, the spline itself is empty at this frame (trails / emitters
+      // before their first frame, a Trim Path at 0, …).
+      const explainMissing = (t: number, fps: number) => {
+        if (isLayerOutput) {
+          const layer = nodesRef.current.find((n) => n.id === stashId);
+          const layerName = layer?.data.name || "the layer";
+          if (layer?.data.bypassed) {
+            return `Nothing to export — ${layerName} is bypassed, so its spline tap never evaluates`;
+          }
+          const tick = Math.round(t * fps * DEFAULT_TICKS_PER_FRAME);
+          if (resolveClipAt(layer?.data.clips, tick).gated) {
+            return `Nothing to export — the playhead is outside ${layerName}'s clip window`;
+          }
+        }
+        return `Nothing to export — the spline wired into ${where} is empty at this frame`;
+      };
+
+      const sequence =
+        (isOutput || isLayerOutput) && p.exportMode === "sequence";
+      const savedTime = timeRef.current;
+      const savedPlaying = playingRef.current;
+      const fpsLive = fpsRef.current;
+
+      // ---- single frame at the playhead ----------------------------------
+      if (!sequence) {
+        setPlaying(false);
+        offlineRenderingRef.current = true;
+        svgExportStashTargetRef.current = stashId;
+        try {
+          await renderSettledFrameAt(savedTime, fpsLive);
+          const stash = readStash();
+          if (!stash || stash.subpaths.length === 0) {
+            flashToast(explainMissing(savedTime, fpsLive));
+            return;
+          }
+          const svg = splineToSvg(
+            stash.subpaths,
+            stash.width,
+            stash.height,
+            style
+          );
+          await platform.saveFile(
+            new Blob([svg], { type: "image/svg+xml" }),
+            {
+              suggestedName: `${base}.svg`,
+              mimeType: "image/svg+xml",
+              filters: [{ name: "SVG", extensions: ["svg"] }],
+            }
+          );
+          flashToast(`Exported ${base}.svg`);
+        } catch (err) {
+          console.error("SVG export failed:", err);
+          flashToast(err instanceof Error ? err.message : "SVG export failed");
+        } finally {
+          svgExportStashTargetRef.current = null;
+          offlineRenderingRef.current = false;
+          setPlaying(savedPlaying);
+          setTime(savedTime);
+        }
+        return;
+      }
+
+      // ---- SVG sequence: one file per frame -------------------------------
+      // Mirrors exportSequence's scaffold (frame range, fps, delivery, wedge
+      // batch, export resolution, per-export log) minus the pixel capture:
+      // the "frame" is the stash after a settled render, serialized.
+      const { startFrame, endFrame, durationFrames } = resolveFrameRange(p);
+      if (durationFrames <= 0) {
+        flashToast("End frame must be after start frame");
+        return;
+      }
+      const delivery =
+        (p.seqDelivery as "zip" | "folder" | "sequential") ?? "zip";
+      const fps = Math.max(1, (p.videoFps as number) ?? fpsLive);
+      const pad = Math.max(4, String(Math.max(0, endFrame - 1)).length);
+      const batch = resolveWedgeBatch(nodeId);
+      const wedgeTotal = batch.count;
+      // The viewBox for a frame whose spline is empty (no stash to read the
+      // size from) — the export resolution, same as every other frame.
+      const exportRes = resolveExportResolution(p, canvasResRef.current);
+
+      let folder: FolderHandle | null = null;
+      if (delivery === "folder") {
+        if (!platform.isNative && !("showDirectoryPicker" in window)) {
+          flashToast("Folder mode needs a Chromium browser");
+          return;
+        }
+        folder = await platform.pickSaveFolder();
+        if (!folder) return;
+      }
+
+      setPlaying(false);
+      offlineRenderingRef.current = true;
+      svgExportStashTargetRef.current = stashId;
+      setRecording({ mode: "offline", label: "Preparing…", progress: 0 });
+
+      const log = await openExportLog("svg-sequence", {
+        nodeId,
+        stashId,
+        delivery,
+        startFrame,
+        endFrame,
+        durationFrames,
+        fps,
+        variations: wedgeTotal,
+        resolution: exportRes,
+      });
+      let status: "ok" | "failed" = "failed";
+
+      const collected: { blob: Blob; name: string }[] = [];
+      const totalFrames = wedgeTotal * durationFrames;
+      let written = 0;
+      let empty = 0;
       try {
-        await platform.saveFile(new Blob([svg], { type: "image/svg+xml" }), {
-          suggestedName: `${base}.svg`,
-          mimeType: "image/svg+xml",
-          filters: [{ name: "SVG", extensions: ["svg"] }],
-        });
-        flashToast(`Exported ${base}.svg`);
+        await beginExportResolution(exportRes);
+        for (let v = 0; v < wedgeTotal; v++) {
+          wedgeIndexRef.current = wedgeTotal > 1 ? v : undefined;
+          const vbase = resolveWedgeName(
+            base,
+            v,
+            wedgeTotal,
+            wedgeTokensAt(batch, v)
+          );
+          const vprefix =
+            wedgeTotal > 1 ? `Variation ${v + 1}/${wedgeTotal} — ` : "";
+          for (let i = 0; i < durationFrames; i++) {
+            const frame = startFrame + i;
+            const tRender = performance.now();
+            await renderSettledFrameAt(frame / fps, fps);
+            const tCapture = performance.now();
+            const stash = readStash();
+            const subpaths = stash?.subpaths ?? [];
+            if (subpaths.length === 0) empty++;
+            // An empty frame still gets a (path-less) file so the sequence
+            // stays contiguous and lines up with the raster frames.
+            const svg = splineToSvg(
+              subpaths,
+              stash?.width ?? exportRes[0],
+              stash?.height ?? exportRes[1],
+              style
+            );
+            const blob = new Blob([svg], { type: "image/svg+xml" });
+            const tWrite = performance.now();
+            const name = `${vbase}.${String(frame).padStart(pad, "0")}.svg`;
+            if (delivery === "folder" && folder) {
+              await folder.writeFile(name, blob);
+            } else if (delivery === "sequential") {
+              downloadBlob(blob, name);
+            } else {
+              collected.push({ blob, name });
+            }
+            written++;
+            log.frame(
+              v * durationFrames + i,
+              totalFrames,
+              {
+                render: tCapture - tRender,
+                capture: tWrite - tCapture,
+                write: performance.now() - tWrite,
+              },
+              stringChecksum(svg),
+              blob.size
+            );
+            setRecording({
+              mode: "offline",
+              label: `${vprefix}SVG ${i + 1}/${durationFrames}`,
+              progress: (v * durationFrames + i + 1) / totalFrames,
+            });
+          }
+        }
+
+        if (delivery === "zip" && collected.length) {
+          setRecording({ mode: "offline", label: "zipping…", progress: 1 });
+          const JSZip = (await import("jszip")).default;
+          const zip = new JSZip();
+          for (const c of collected) zip.file(c.name, c.blob);
+          const zipBlob = await zip.generateAsync({ type: "blob" });
+          downloadBlob(zipBlob, `${stripWedgeTokens(base)}.zip`);
+        }
+        status = "ok";
+        log.info("delivered", { written, empty, delivery });
+        if (empty === written) {
+          // Every frame came back empty — say WHY (bypass / gating / empty
+          // spline) rather than celebrating a folder of blank documents.
+          flashToast(
+            `Wrote ${written} empty SVG${written === 1 ? "" : "s"}: ${explainMissing(
+              startFrame / fps,
+              fps
+            ).replace(/^Nothing to export — /, "")}`
+          );
+        } else {
+          flashToast(
+            `Exported ${written} SVG${written === 1 ? "" : "s"}` +
+              (empty > 0 ? ` (${empty} empty)` : "")
+          );
+        }
       } catch (err) {
-        console.error("SVG export failed:", err);
-        flashToast(err instanceof Error ? err.message : "SVG export failed");
+        const e = toError(err, "SVG sequence export failed");
+        console.error("SVG sequence export failed:", err);
+        log.error("svg sequence export failed", { error: e.message, written });
+        if (!log.path) console.error(`[export:svg-sequence] last log lines:\n${log.tail(40)}`);
+        flashToast(exportFailedMessage("SVG sequence export failed", e, log));
+      } finally {
+        void log.finish(status, { written, empty });
+        wedgeIndexRef.current = undefined;
+        svgExportStashTargetRef.current = null;
+        offlineRenderingRef.current = false;
+        setPlaying(savedPlaying);
+        setTime(savedTime);
+        setRecording(null);
+        endExportResolution();
       }
     },
-    [flashToast]
+    [
+      flashToast,
+      renderSettledFrameAt,
+      resolveWedgeBatch,
+      beginExportResolution,
+      endExportResolution,
+      setPlaying,
+      setTime,
+    ]
   );
 
   useEffect(() => {
@@ -10708,7 +11463,8 @@ function EffectsShell({
         detail.kind === "image" ||
         detail.kind === "video" ||
         detail.kind === "sequence" ||
-        detail.kind === "gif";
+        detail.kind === "gif" ||
+        detail.kind === "svg";
       if (offlineKind) {
         if (exportBusyRef.current) return;
         exportBusyRef.current = true;
@@ -10717,6 +11473,7 @@ function EffectsShell({
           else if (detail.kind === "video") await exportWedged(detail.id, "video");
           else if (detail.kind === "sequence") await exportSequence(detail.id);
           else if (detail.kind === "gif") await exportGif(detail.id);
+          else if (detail.kind === "svg") await exportSvgNode(detail.id);
         } finally {
           exportBusyRef.current = false;
         }
@@ -10724,7 +11481,6 @@ function EffectsShell({
       }
       if (detail.kind === "app") onOpenExportApp(detail.id);
       else if (detail.kind === "queue") renderQueue(detail.id);
-      else if (detail.kind === "svg") exportSvgNode(detail.id);
     };
     window.addEventListener("effect-node-export", handler);
     return () => window.removeEventListener("effect-node-export", handler);
@@ -10738,10 +11494,12 @@ function EffectsShell({
   ]);
 
   // --- Save / Load ----------------------------------------------------------
-  // Progress budget: serialize/deserialize gets the first 70%, the network
-  // round-trip gets the tail. The upload/download step has no native
-  // progress, so we hold at 70% until the call resolves then snap to 100%.
-  const SERIALIZE_SHARE = 0.7;
+  // Progress budget lives in lib/save-load-progress: serialize gets the
+  // first 20%, then the row writers report stage starts (auth → hash →
+  // list → upload → thumbnail → row) and per-asset completion, which fill
+  // the rest. Loads mirror it: row fetch → meta → deserialize.
+  const setSaveProgress = (r: { label: string; progress: number }) =>
+    setProgressStatus({ ...r, tone: "save" });
 
   async function saveToRow(
     name: string,
@@ -10762,12 +11520,7 @@ function EffectsShell({
     const graph = await serializeGraph(
       overlayLandedMedia(nodesRef.current),
       edgesRef.current,
-      (f) =>
-        setProgressStatus({
-          label: "saving",
-          progress: f * SERIALIZE_SHARE,
-          tone: "save",
-        }),
+      (f) => setSaveProgress(saveSerializeReading(f)),
       {
         loopFrames: loopFramesRef.current,
         fps: fpsRef.current,
@@ -10811,7 +11564,7 @@ function EffectsShell({
             : "absent"
       }`
     );
-    setProgressStatus({ label: "saving", progress: SERIALIZE_SHARE, tone: "save" });
+    setSaveProgress(saveSerializeReading(1));
     // Heads-up on the INLINE media size. Post-Tier-2 the DB row is tiny
     // (media lives in Storage as refs), so this no longer gates the save —
     // the real ceiling is enforced on the final row inside the row writers
@@ -10846,7 +11599,8 @@ function EffectsShell({
         graph,
         thumbnail,
         expected,
-        assetOwnerId
+        assetOwnerId,
+        (e) => setSaveProgress(saveStageReading(e))
       );
       if (res.conflict) {
         // Someone saved a newer version after this editor loaded its
@@ -10883,7 +11637,9 @@ function EffectsShell({
       void clearRecoveryBucket(currentProject?.id ?? UNTITLED_BUCKET);
       return { id: existingId };
     }
-    const result = await saveProjectRow(name, graph, thumbnail);
+    const result = await saveProjectRow(name, graph, thumbnail, false, (e) =>
+      setSaveProgress(saveStageReading(e))
+    );
     if (!result) return null;
     setProgressStatus({ label: "saving", progress: 1, tone: "save" });
     void clearRecoveryBucket(currentProject?.id ?? UNTITLED_BUCKET);
@@ -11084,9 +11840,16 @@ function EffectsShell({
     async (id: string, nameHint?: string) => {
       beginProjectLoad(nameHint ?? "project");
       try {
-        setProgressStatus({ label: "loading", progress: 0.05, tone: "load" });
-        setProjectLoadProgress(0.12);
-        const saved = await loadProjectRow(id);
+        // Both the menu-bar chip and the full-tile veil follow the same
+        // reading; the veil clamps to monotonic itself.
+        const setLoadProgress = (r: { label: string; progress: number }) => {
+          setProgressStatus({ ...r, tone: "load" });
+          setProjectLoadProgress(r.progress);
+        };
+        setLoadProgress({ label: "loading", progress: LOAD_START });
+        const saved = await loadProjectRow(id, (e) =>
+          setLoadProgress(loadStageReading(e))
+        );
         if (!saved) {
           abortProjectLoad();
           return;
@@ -11094,12 +11857,7 @@ function EffectsShell({
         setProjectLoad((prev) =>
           prev && !prev.fading ? { ...prev, name: saved.name } : prev
         );
-        setProgressStatus({
-          label: "loading",
-          progress: 1 - SERIALIZE_SHARE,
-          tone: "load",
-        });
-        setProjectLoadProgress(1 - SERIALIZE_SHARE);
+        setLoadProgress(loadDeserializeReading(0));
         const {
           nodes: nextNodes,
           edges: nextEdges,
@@ -11110,15 +11868,7 @@ function EffectsShell({
           pendingMedia,
         } = await deserializeGraph(
           saved.graph,
-          (f) => {
-            const p = 1 - SERIALIZE_SHARE + f * SERIALIZE_SHARE;
-            setProgressStatus({
-              label: "loading",
-              progress: p,
-              tone: "load",
-            });
-            setProjectLoadProgress(p);
-          },
+          (f) => setLoadProgress(loadDeserializeReading(f)),
           { deferRemoteMedia: true }
         );
         // Only snapshot the outgoing graph once the incoming one has
@@ -11184,6 +11934,8 @@ function EffectsShell({
               : saved.author?.display_name ?? null,
           updatedAt: saved.updated_at,
           sharedWithMe: saved.shared_with_me,
+          vanitySlug: saved.vanity_slug,
+          ownerHandle: saved.owner_handle,
         });
         // Advisory lease, collaborative rows only. Fire-and-forget: a
         // held-by-other result opens the take-over dialog on top of the
@@ -11996,6 +12748,64 @@ function EffectsShell({
     setLoadRefreshKey((n) => n + 1);
     setPendingVisibility(null);
   }, [pendingVisibility, currentProject, user, flashToast]);
+
+  // ----------------------------------------------------------------------
+  // Named live link (specdocs/092126_vanity-live-links.md)
+  //
+  // Project Settings → "live link": the owner opts a PUBLIC project into
+  // /@<handle>/<title-slug>. The write is explicit (toggle, then Save) and
+  // CAS-guarded like rename / visibility; on success the row's new
+  // updated_at is mirrored so the next save doesn't false-conflict.
+  // ----------------------------------------------------------------------
+  const ownHandle = useOwnHandle();
+  const ownedByMe =
+    !currentProject || (!!user && currentProject.ownerId === user.id);
+  // Whose handle builds the link: ours (live, from the profile cache) for
+  // own rows; the owner's, fetched at load, for rows we merely opened.
+  const ownerHandle = currentProject
+    ? ownedByMe
+      ? ownHandle.handle
+      : (currentProject.ownerHandle ?? null)
+    : null;
+  const liveVanityPath =
+    currentProject?.isPublic && currentProject.vanitySlug && ownerHandle
+      ? vanityPathFor(ownerHandle, currentProject.vanitySlug)
+      : null;
+  const handleSetVanitySlug = useCallback(
+    async (slug: string | null): Promise<SetVanitySlugResult> => {
+      if (!currentProject || !user || currentProject.ownerId !== user.id) {
+        return { ok: false, reason: "error" };
+      }
+      const res = await setProjectVanitySlugRow(
+        currentProject.id,
+        slug,
+        currentProject.updatedAt ?? undefined
+      );
+      if (!res.ok) {
+        if (res.reason === "conflict") setSaveState("error");
+        return res;
+      }
+      setCurrentProject({
+        ...currentProject,
+        vanitySlug: slug,
+        updatedAt: res.updatedAt,
+      });
+      setLoadRefreshKey((n) => n + 1);
+      flashToast(slug ? "named live link on" : "named live link off");
+      return res;
+    },
+    [currentProject, user, flashToast]
+  );
+  const liveLinkSettings: LiveLinkSettingsProps = {
+    projectName: currentProject?.name ?? "Untitled",
+    hasRow: !!currentProject,
+    ownedByMe,
+    isPublic: currentProject?.isPublic ?? false,
+    handle: ownerHandle,
+    handleLoaded: ownedByMe ? ownHandle.loaded || !user : true,
+    vanitySlug: currentProject?.vanitySlug ?? null,
+    onSave: handleSetVanitySlug,
+  };
 
   // ----------------------------------------------------------------------
   // Private-project list refresh
@@ -13593,6 +14403,7 @@ function EffectsShell({
       onFpsChange={setFps}
       bpm={bpm}
       onBpmChange={setBpm}
+      liveLink={liveLinkSettings}
       onParamChange={onParamChange}
       onConvertToEditable={convertSvgToEditable}
       onToggleParamExposed={onToggleParamExposed}
@@ -13971,6 +14782,7 @@ function EffectsShell({
         saveState={saveState}
         isPublic={currentProject?.isPublic ?? false}
         publicSlug={currentProject?.publicSlug ?? null}
+        liveVanityPath={liveVanityPath}
         // When the viewer doesn't own the loaded row, rename and the
         // visibility toggle need to be disabled — those stay owner-only
         // even for collaborators. Save still works: in place (CAS) on
@@ -14730,6 +15542,7 @@ function EffectsShell({
           onFpsChange={setFps}
           bpm={bpm}
           onBpmChange={setBpm}
+          liveLink={liveLinkSettings}
           onClose={closeProjectSettingsPopover}
         />
       )}
@@ -14777,6 +15590,7 @@ function EffectsShell({
           onDraftChange={(d) => {
             liveLinkDraftRef.current = d;
           }}
+          onRemoveControl={onRemoveLiveControl}
           onSave={(d) => {
             setLiveDesign(d);
             // Sync the ref NOW — the save below serializes before
@@ -16260,12 +17074,35 @@ function QueueBanner({
   );
 }
 
+function BannerBar({ fraction, dim }: { fraction: number; dim?: boolean }) {
+  return (
+    <div
+      style={{
+        position: "relative",
+        height: 3,
+        background: "rgba(0,0,0,0.4)",
+        borderRadius: 2,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: `${Math.max(0, Math.min(1, fraction)) * 100}%`,
+          background: dim ? "var(--tb-a-red-200)" : "var(--tb-a-red-300)",
+          opacity: dim ? 0.75 : 1,
+          transition: "width 80ms linear",
+        }}
+      />
+    </div>
+  );
+}
+
 function RecordingBanner({
   state,
 }: {
-  state:
-    | { mode: "live"; totalSec: number; startedAt: number }
-    | { mode: "offline"; label: string; progress: number };
+  state: { mode: "live"; totalSec: number; startedAt: number } | OfflineRecording;
 }) {
   const [now, setNow] = useState(() => performance.now());
   useEffect(() => {
@@ -16323,25 +17160,18 @@ function RecordingBanner({
         {text}
       </div>
       {state.mode === "offline" && (
-        <div
-          style={{
-            position: "relative",
-            height: 3,
-            background: "rgba(0,0,0,0.4)",
-            borderRadius: 2,
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              width: `${Math.max(0, Math.min(1, state.progress)) * 100}%`,
-              background: "var(--tb-a-red-300)",
-              transition: "width 80ms linear",
-            }}
-          />
-        </div>
+        <>
+          <BannerBar fraction={state.progress} />
+          {state.encode && (
+            <>
+              {/* Second bar: the encoder's own count. It trails the frame
+                  loop (x264 buffers ~60 frames of lookahead) and that gap is
+                  real — showing both is what stops the bar from "jumping". */}
+              <div style={{ opacity: 0.85, paddingTop: 2 }}>{state.encode.label}</div>
+              <BannerBar fraction={state.encode.progress} dim />
+            </>
+          )}
+        </>
       )}
     </div>
   );

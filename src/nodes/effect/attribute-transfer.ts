@@ -1,17 +1,15 @@
 import type {
   InputSocketDef,
   NodeDefinition,
-  PointAttribute,
   SocketType,
   SplineValue,
 } from "@/engine/types";
 import {
-  builtinPointColumnArity,
-  copyPointsWith,
   EMPTY_POINTS,
-  readBuiltinPointColumn,
-  withBuiltinPointColumn,
-  writableBuiltinPointColumn,
+  isWritablePointAttr,
+  pointAttrSchema,
+  readPointAttrColumn,
+  withPointAttr,
 } from "@/engine/points";
 import {
   buildSpatialHash,
@@ -44,12 +42,12 @@ import {
 // Built-in columns transfer too, when both sides are points: name
 // `rotation`, `scale` / `scale.x` / `scale.y`, `position` / `x` / `y`, or
 // `group`, and the value is read off the source's typed arrays and stored
-// into the target's (points.ts `withBuiltinPointColumn`) — never as a
-// named channel, since those names are reserved. `group` is an identity
-// tag, so it always takes the nearest source and rounds; `index`, `z` and
-// normals are read-only and pass the target through. Spline anchors carry
-// none of these fields, so a built-in name with a spline on either side
-// passes through as well.
+// into the target's through the unified attribute API (points.ts
+// `readPointAttrColumn` / `withPointAttr`, 092026_unified-attributes.md).
+// `group` is an identity tag, so it always takes the nearest source and
+// rounds; `index`, `z` and normals are read-only and pass the target
+// through. Spline anchors carry none of these fields, so a built-in name
+// with a spline on either side passes through as well.
 
 const MODE_OPTIONS = ["nearest", "weighted"] as const;
 const FALLBACK_OPTIONS = ["nearest", "zero"] as const;
@@ -230,7 +228,7 @@ export const attributeTransferNode: NodeDefinition = {
       // scale(.x/.y), position/x/y, group). index / z / normals have no
       // home on the target, so they stay out of the picker and tint red.
       suggestAttrsIncludeBuiltins: true,
-      suggestAttrsBuiltinFilter: (n) => writableBuiltinPointColumn(n) !== null,
+      suggestAttrsBuiltinFilter: isWritablePointAttr,
     },
     {
       name: "target",
@@ -302,27 +300,31 @@ export const attributeTransferNode: NodeDefinition = {
       return { primary: emptyPrimary };
     }
 
-    // A writable built-in column (rotation / scale / position / group)
-    // rides the typed arrays on both sides, so it needs points on both
-    // sides. With a spline anywhere the name falls through to the named-
-    // channel path below, where a reserved name never resolves and the
-    // target passes through.
-    const builtin =
-      sourceKind === "points" && targetKind === "points"
-        ? writableBuiltinPointColumn(name)
-        : null;
+    // A built-in column (rotation / scale / position / group) rides the
+    // typed arrays on both sides, so it needs points on both sides — with
+    // a spline anywhere the name has no home and the target passes
+    // through. Non-writable built-ins (index, z, normals) pass through
+    // too; the picker filter tints them.
+    const schema = pointAttrSchema(name);
+    if (schema && (sourceKind !== "points" || targetKind !== "points")) {
+      return { primary: target };
+    }
+    if (schema && !schema.writable) return { primary: target };
 
     let sn = 0;
     let spos: Float32Array | undefined;
     let srcData: Float32Array | undefined;
     let k: 1 | 2 | 3 | 4 = 1;
     let srcColor: boolean | undefined;
-    if (builtin) {
+    if (schema) {
       if (source && source.kind === "points" && source.count > 0) {
-        sn = source.count;
-        spos = source.positions;
-        srcData = readBuiltinPointColumn(source, builtin);
-        k = builtinPointColumnArity(builtin);
+        const col = readPointAttrColumn(source, name);
+        if (col) {
+          sn = source.count;
+          spos = source.positions;
+          srcData = col.data;
+          k = col.arity;
+        }
       }
     } else if (sourceKind === "spline anchors") {
       if (source && source.kind === "spline" && name) {
@@ -370,9 +372,9 @@ export const attributeTransferNode: NodeDefinition = {
 
     if (target.kind !== "points") return { primary: EMPTY_POINTS };
     const n = target.count;
-    // An identity tag cannot be averaged: `group` always takes the nearest
-    // source (fallback still applies) and rounds on write.
-    const effectiveMode = builtin?.field === "group" ? "nearest" : mode;
+    // An identity tag cannot be averaged: `group` (kind int) always takes
+    // the nearest source (fallback still applies) and rounds on write.
+    const effectiveMode = schema?.kind === "int" ? "nearest" : mode;
     const data = transferChannel(
       spos,
       sn,
@@ -384,14 +386,8 @@ export const attributeTransferNode: NodeDefinition = {
       radius,
       fallback
     );
-    if (builtin) {
-      return { primary: withBuiltinPointColumn(target, builtin, data) };
-    }
-    const result: PointAttribute = { arity: k, color: srcColor, data };
     return {
-      primary: copyPointsWith(target, {
-        attributes: { ...target.attributes, [name]: result },
-      }),
+      primary: withPointAttr(target, name, data, { arity: k, color: srcColor }),
     };
   },
 };

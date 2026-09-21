@@ -48,7 +48,15 @@ import { LAYER_OPACITY_PREFIX } from "@/engine/conventions";
 import { getShortcutScope } from "./shortcut-scope";
 import { wheelWantsZoom, getEffectiveDevice } from "./input-device";
 import { EasingTile } from "./timeline/EasingTile";
-import type { SelectionKey } from "./timeline/keyframe-ops";
+import { nextGestureKey, type SelectionKey } from "./timeline/keyframe-ops";
+import {
+  buildPasteUpdates,
+  clipboardItemsFrom,
+  flipClipboardItems,
+  getKeyframeClipboard,
+  setKeyframeClipboard,
+} from "./timeline/keyframe-clipboard";
+import { mergeLayerLabel } from "@/nodes/effect/merge";
 
 // ---------------------------------------------------------------------
 // Public API
@@ -62,7 +70,10 @@ interface GraphEditorProps {
   onAnimationChange(
     nodeId: string,
     paramName: string,
-    next: KeyframeAnimationBlock | undefined
+    next: KeyframeAnimationBlock | undefined,
+    // Multi-lane gestures (paste) pass one shared key so every lane's
+    // write coalesces into a single undo step.
+    coalesceKey?: string
   ): void;
   onScrub(tick: number): void;
   // When true, ignore the param's declared min/max and fit y-bounds to
@@ -457,7 +468,12 @@ export function GraphEditor({
             nodeId: n.id,
             paramName: pname,
             label: `${n.data.name} · ${
-              idx >= 0 ? `layer ${idx + 1} opacity` : "layer opacity"
+              idx >= 0
+                ? `${mergeLayerLabel(
+                    (layersRaw as Array<{ name?: string }>)[idx],
+                    idx
+                  )} opacity`
+                : "layer opacity"
             }`,
             block: b,
             yMin: 0,
@@ -618,11 +634,15 @@ export function GraphEditor({
   // Axis lock latched when shift is first held mid-drag (keyframe/handle).
   const shiftAxisRef = useRef<"x" | "y" | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
+  // Right-click menu. `keyIdx` set → the keyframe menu (easing, delete);
+  // null → the empty-space menu (copy / paste / paste flipped) anchored
+  // at `tick`, the frame-snapped time under the cursor.
   const [contextMenu, setContextMenu] = useState<
     | {
         clientX: number;
         clientY: number;
-        keyIdx: number;
+        keyIdx: number | null;
+        tick: number;
         sub: null | "easing";
       }
     | null
@@ -1076,6 +1096,85 @@ export function GraphEditor({
     setExtraSel(new Map());
   }
 
+  // ----- Clipboard (shared with the Tracks editor) -----
+  // The real block for a lane, straight off the node: a component view's
+  // scalar is a projection of the vec key, so copy/paste move the WHOLE
+  // vec keyframe and never go through the component merge-back.
+  function realBlockFor(
+    nodeId: string,
+    paramName: string
+  ): KeyframeAnimationBlock | undefined {
+    return graphNodesRef.current.find((n) => n.id === nodeId)?.data
+      ?.animation?.[paramName];
+  }
+
+  // Copy the cross-track selection. A vec key selected on two component
+  // views is one keyframe — dedupe per (lane, tick). Returns false when
+  // nothing was copied (the clipboard is left as it was).
+  function copySelectedToClipboard(): boolean {
+    const keys: { nodeId: string; paramName: string; keyframe: Keyframe }[] =
+      [];
+    const seen = new Set<string>();
+    const addFrom = (tkey: string, indices: Iterable<number>) => {
+      const v = trackViewsRef.current.find((tv) => tv.track.key === tkey);
+      if (!v) return;
+      const t = v.track;
+      const real = realBlockFor(t.nodeId, t.paramName);
+      if (!real) return;
+      for (const i of indices) {
+        const k = real.keyframes[i];
+        if (!k) continue;
+        const id = `${t.nodeId}|${t.paramName}|${k.tick}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        keys.push({ nodeId: t.nodeId, paramName: t.paramName, keyframe: k });
+      }
+    };
+    if (active) addFrom(active.key, selected);
+    for (const [tkey, set] of extraSelRef.current) {
+      if (tkey !== active?.key) addFrom(tkey, set);
+    }
+    if (keys.length === 0) return false;
+    setKeyframeClipboard(clipboardItemsFrom(keys));
+    return true;
+  }
+
+  // Paste the clipboard with its earliest key at `anchorTick`, into the
+  // lanes the keys were copied from (so a copy from one param never
+  // lands on another). `flipped` mirrors the keys in time about their
+  // midpoint first — first key becomes last, easings reversed — so the
+  // pasted curve plays the copied one backwards. The pasted keys on the
+  // active track become the selection.
+  function pasteClipboard(anchorTick: number, flipped: boolean) {
+    const clip = getKeyframeClipboard();
+    if (!clip) return;
+    const items = flipped ? flipClipboardItems(clip.items) : clip.items;
+    const updates = buildPasteUpdates(items, anchorTick, realBlockFor);
+    if (updates.length === 0) return;
+    const gestureKey = nextGestureKey(flipped ? "paste-flipped" : "paste");
+    for (const u of updates) {
+      onAnimationChange(u.nodeId, u.paramName, u.block, gestureKey);
+    }
+    const own = active
+      ? updates.find(
+          (u) =>
+            u.nodeId === active.nodeId && u.paramName === active.paramName
+        )
+      : undefined;
+    if (own) {
+      // Component views map 1:1 onto the real block's indices.
+      const ticks = new Set(own.pastedTicks);
+      const idx = new Set<number>();
+      own.block.keyframes.forEach((k, i) => {
+        if (ticks.has(k.tick)) idx.add(i);
+      });
+      setSelected(idx);
+    } else {
+      setSelected(new Set());
+    }
+    setExtraSel(new Map());
+  }
+
   // ----- Mutation primitives -----
   const commit = useCallback(
     (next: KeyframeAnimationBlock) => onChange(next),
@@ -1421,6 +1520,22 @@ export function GraphEditor({
         e.preventDefault();
         deleteSelectedMulti();
       }
+      // Copy / paste on the shared keyframe clipboard. Cmd+V pastes at
+      // the playhead (as the Tracks editor does); Shift+Cmd+V pastes
+      // flipped. Both also live on the empty-space right-click menu,
+      // which pastes at the clicked tick instead.
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && !inInput && !e.altKey && (e.key === "c" || e.key === "C")) {
+        if (totalSel === 0 || e.shiftKey) return;
+        if (copySelectedToClipboard()) e.preventDefault();
+        return;
+      }
+      if (mod && !inInput && !e.altKey && (e.key === "v" || e.key === "V")) {
+        if (!getKeyframeClipboard()) return;
+        e.preventDefault();
+        pasteClipboard(currentTick, e.shiftKey);
+        return;
+      }
       if ((e.key === "f" || e.key === "F") && !inInput) {
         const ks = blockRef.current.keyframes;
         const subset =
@@ -1634,16 +1749,28 @@ export function GraphEditor({
     }
     const { x, y } = getMousePos(e);
     const ph = pointAt(x, y);
-    if (ph === null) return;
+    // Off a keyframe, the menu only opens over the plot itself (not the
+    // ruler / margins) — and only when there's a track to paste into.
+    const inPlot =
+      x >= PADDING.left &&
+      x <= PADDING.left + innerW &&
+      y >= PADDING.top &&
+      y <= PADDING.top + innerH;
+    if (ph === null && (!inPlot || !active)) return;
     e.preventDefault();
-    if (!selected.has(ph)) {
+    if (ph !== null && !selected.has(ph)) {
       setSelected(new Set([ph]));
       setExtraSel(new Map());
     }
+    const tick = Math.max(
+      0,
+      snapTickToFrame(Math.round(screenToTick(x)), timeline.ticksPerFrame)
+    );
     setContextMenu({
       clientX: e.clientX,
       clientY: e.clientY,
       keyIdx: ph,
+      tick,
       sub: null,
     });
   }
@@ -2668,21 +2795,38 @@ export function GraphEditor({
         <KeyframeContextMenu
           clientX={contextMenu.clientX}
           clientY={contextMenu.clientY}
-          keyframe={ks[contextMenu.keyIdx]}
+          mode={contextMenu.keyIdx == null ? "space" : "key"}
+          keyframe={
+            contextMenu.keyIdx == null ? undefined : ks[contextMenu.keyIdx]
+          }
           sub={contextMenu.sub}
           onSubmenu={(sub) =>
             setContextMenu({ ...contextMenu, sub })
           }
           hideCustomBezier={componentView}
+          canCopy={selected.size + extraCount > 0}
+          canPaste={getKeyframeClipboard() != null}
+          pasteFrame={ticksToFrames(contextMenu.tick, timeline.ticksPerFrame)}
+          onCopy={() => {
+            copySelectedToClipboard();
+            setContextMenu(null);
+          }}
+          onPaste={(flipped) => {
+            pasteClipboard(contextMenu.tick, flipped);
+            setContextMenu(null);
+          }}
           onPickEasing={(preset) => {
             // Scalar-only guard (see componentView above).
             if (componentView && preset === "customBezier") return;
             // Apply to all selected keys (so power-users can change a group).
             const updates = new Map<number, Partial<Keyframe>>();
             const ksLocal = blockRef.current.keyframes;
-            const targets = selected.size > 0
-              ? Array.from(selected)
-              : [contextMenu.keyIdx];
+            const targets =
+              selected.size > 0
+                ? Array.from(selected)
+                : contextMenu.keyIdx != null
+                  ? [contextMenu.keyIdx]
+                  : [];
             for (const i of targets) {
               const k = ksLocal[i];
               if (!k) continue;
@@ -2699,9 +2843,12 @@ export function GraphEditor({
             setContextMenu(null);
           }}
           onDelete={() => {
-            const targets = selected.size > 0
-              ? selected
-              : new Set([contextMenu.keyIdx]);
+            const targets =
+              selected.size > 0
+                ? selected
+                : contextMenu.keyIdx != null
+                  ? new Set([contextMenu.keyIdx])
+                  : new Set<number>();
             deleteKeyframes(targets);
             setSelected(new Set());
             setContextMenu(null);
@@ -2893,12 +3040,23 @@ function SaveEasingButton({
 interface ContextMenuProps {
   clientX: number;
   clientY: number;
+  // "key": right-clicked a keyframe (copy / easing / delete).
+  // "space": right-clicked empty plot (copy / paste / paste flipped).
+  mode: "key" | "space";
   keyframe: Keyframe | undefined;
   sub: null | "easing";
   onSubmenu: (sub: null | "easing") => void;
   onPickEasing: (preset: EasingPreset) => void;
   onDelete: () => void;
   onClose: () => void;
+  // Clipboard state + actions. Paste lands the clipboard's first key at
+  // the clicked frame (`pasteFrame`, for the hint); `flipped` mirrors
+  // the keys in time first.
+  canCopy: boolean;
+  canPaste: boolean;
+  pasteFrame: number;
+  onCopy: () => void;
+  onPaste: (flipped: boolean) => void;
   // True on a vec lane's per-component view — custom bezier is
   // scalar-only, so its tile is dropped from the easing grid.
   hideCustomBezier?: boolean;
@@ -2907,12 +3065,18 @@ interface ContextMenuProps {
 function KeyframeContextMenu({
   clientX,
   clientY,
+  mode,
   keyframe,
   sub,
   onSubmenu,
   onPickEasing,
   onDelete,
   onClose,
+  canCopy,
+  canPaste,
+  pasteFrame,
+  onCopy,
+  onPaste,
   hideCustomBezier = false,
 }: ContextMenuProps) {
   useEffect(() => {
@@ -2932,7 +3096,7 @@ function KeyframeContextMenu({
     };
   }, [onClose]);
 
-  if (!keyframe) return null;
+  if (mode === "key" && !keyframe) return null;
 
   const itemStyle: React.CSSProperties = {
     padding: "5px 10px",
@@ -2945,6 +3109,40 @@ function KeyframeContextMenu({
     alignItems: "center",
     gap: 12,
   };
+  const divider = (
+    <div style={{ height: 1, background: BORDER, margin: "2px 0" }} />
+  );
+  // One menu row. Disabled rows stay visible (muted, no hover) so the
+  // menu's shape is stable and the user learns what it can do.
+  const item = (
+    label: string,
+    onClick: () => void,
+    opts: { disabled?: boolean; hint?: string; danger?: boolean } = {}
+  ) => (
+    <div
+      style={{
+        ...itemStyle,
+        cursor: opts.disabled ? "default" : "pointer",
+        color: opts.disabled ? MUTED : TEXT,
+      }}
+      onClick={opts.disabled ? undefined : onClick}
+      onMouseEnter={(e) => {
+        if (opts.disabled) return;
+        e.currentTarget.style.background = opts.danger
+          ? "var(--tb-t-red-d-0)"
+          : BORDER;
+      }}
+      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+    >
+      <span>{label}</span>
+      {opts.hint && (
+        <span style={{ color: MUTED, fontVariantNumeric: "tabular-nums" }}>
+          {opts.hint}
+        </span>
+      )}
+    </div>
+  );
+  const frameHint = `f${Number.isInteger(pasteFrame) ? pasteFrame : pasteFrame.toFixed(2)}`;
 
   return (
     <div
@@ -2962,7 +3160,21 @@ function KeyframeContextMenu({
       }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {sub === "easing" && (
+      {mode === "space" && (
+        <>
+          {item("Copy", onCopy, { disabled: !canCopy })}
+          {divider}
+          {item("Paste", () => onPaste(false), {
+            disabled: !canPaste,
+            hint: frameHint,
+          })}
+          {item("Paste flipped", () => onPaste(true), {
+            disabled: !canPaste,
+            hint: frameHint,
+          })}
+        </>
+      )}
+      {mode === "key" && keyframe && sub === "easing" && (
         <div style={{ padding: 6 }}>
           <div
             style={{
@@ -2986,48 +3198,16 @@ function KeyframeContextMenu({
             ))}
           </div>
           <div style={{ height: 1, background: BORDER, margin: "6px 0 2px" }} />
-          <div
-            style={itemStyle}
-            onClick={() => onSubmenu(null)}
-            onMouseEnter={(e) =>
-              (e.currentTarget.style.background = BORDER)
-            }
-            onMouseLeave={(e) =>
-              (e.currentTarget.style.background = "transparent")
-            }
-          >
-            ← Back
-          </div>
+          {item("← Back", () => onSubmenu(null))}
         </div>
       )}
-      {sub === null && (
+      {mode === "key" && sub === null && (
         <>
-          <div
-            style={itemStyle}
-            onClick={() => onSubmenu("easing")}
-            onMouseEnter={(e) =>
-              (e.currentTarget.style.background = BORDER)
-            }
-            onMouseLeave={(e) =>
-              (e.currentTarget.style.background = "transparent")
-            }
-          >
-            <span>Set easing</span>
-            <span>›</span>
-          </div>
-          <div style={{ height: 1, background: BORDER, margin: "2px 0" }} />
-          <div
-            style={itemStyle}
-            onClick={onDelete}
-            onMouseEnter={(e) =>
-              (e.currentTarget.style.background = "var(--tb-t-red-d-0)")
-            }
-            onMouseLeave={(e) =>
-              (e.currentTarget.style.background = "transparent")
-            }
-          >
-            Delete keyframe
-          </div>
+          {item("Copy", onCopy, { disabled: !canCopy })}
+          {divider}
+          {item("Set easing", () => onSubmenu("easing"), { hint: "›" })}
+          {divider}
+          {item("Delete keyframe", onDelete, { danger: true })}
         </>
       )}
     </div>

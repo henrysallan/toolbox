@@ -36,6 +36,13 @@ export interface EditorSessionSnapshot {
     publicSlug: string | null;
     ownerId: string;
     authorName: string | null;
+    // Named live link state (092126_vanity-live-links.md) — carried so a
+    // docs round-trip keeps the Project Settings row and the pill's
+    // copy button honest without a refetch.
+    vanitySlug?: string | null;
+    ownerHandle?: string | null;
+    updatedAt?: string | null;
+    sharedWithMe?: boolean;
   } | null;
   selectedId: string | null;
   paramView: "project" | "node" | "load";

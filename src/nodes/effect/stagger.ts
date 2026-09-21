@@ -1,10 +1,10 @@
-import type { NodeDefinition, PointAttribute, PointsValue } from "@/engine/types";
+import type { NodeDefinition, PointsValue } from "@/engine/types";
 import {
-  copyPointsWith,
   EMPTY_POINTS,
+  isWritablePointAttr,
   pointAttrExists,
   readPointAttr,
-  RESERVED_POINT_ATTR_NAMES,
+  withPointAttrs,
 } from "@/engine/points";
 
 // Stagger — per-point timing as a channel (specdocs/090426_stagger-node.md).
@@ -259,7 +259,7 @@ export const staggerNode: NodeDefinition = {
   ],
   facts: {
     gotchas: [
-      "attr_name (default `phase`) names the written channel; empty or a reserved point-attribute name passes the input through unchanged.",
+      "attr_name (default `phase`) names the written attribute — a channel, or a writable built-in such as scale so the phase drives geometry; empty or read-only (index, z, nx/ny/nz) passes through.",
       "unit scales Spacing/Total/Duration/Jitter/Start and a wired Clock into frames internally; an unwired Clock uses the scoped playhead in fractional frames.",
       "order=attribute sorts by order_attr (a named channel or built-in like x/y/group); a missing/blank column falls back to index order silently.",
       "Ordering is a dense rank, so tied keys share one start time (an unsorted grid ordered by y starts a whole row together).",
@@ -271,8 +271,11 @@ export const staggerNode: NodeDefinition = {
   },
   backend: "webgl2",
   // Pure CPU eval keyed on the scoped tick (fingerprintExtras) — same
-  // caching contract as a time-dependent Point Expression.
+  // caching contract as a time-dependent Point Expression. `tickDriven`
+  // lets the Iterate / Time Offset interior hash see that dependence too
+  // (they otherwise count only stable:false defs as time-driven).
   stable: true,
+  tickDriven: true,
   noMaskInput: true,
   inputs: [
     { name: "points", type: "points", required: true },
@@ -424,7 +427,9 @@ export const staggerNode: NodeDefinition = {
     const aux = { name: { kind: "string", value: name } as const };
     const src = inputs.points;
     if (!src || src.kind !== "points") return { primary: EMPTY_POINTS, aux };
-    if (!name || RESERVED_POINT_ATTR_NAMES.has(name) || src.count === 0) {
+    // Any writable attribute — a channel, or a built-in like `scale` so
+    // the phase drives geometry directly (092026_unified-attributes.md).
+    if (!isWritablePointAttr(name) || src.count === 0) {
       return { primary: src, aux };
     }
 
@@ -471,16 +476,15 @@ export const staggerNode: NodeDefinition = {
       loop
     );
 
-    const attributes: Record<string, PointAttribute> = {
-      ...src.attributes,
-      [name]: { arity: 1, data: phase },
+    const writes: Record<string, { data: Float32Array }> = {
+      [name]: { data: phase },
     };
     if (params.extras === true) {
       const t0Unit = new Float32Array(t0.length);
       for (let i = 0; i < t0.length; i++) t0Unit[i] = t0[i] / k;
-      attributes[`${name}_t0`] = { arity: 1, data: t0Unit };
-      attributes[`${name}_active`] = { arity: 1, data: active };
+      writes[`${name}_t0`] = { data: t0Unit };
+      writes[`${name}_active`] = { data: active };
     }
-    return { primary: copyPointsWith(src, { attributes }), aux };
+    return { primary: withPointAttrs(src, writes), aux };
   },
 };

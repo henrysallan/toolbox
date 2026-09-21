@@ -13,6 +13,7 @@ const { app, BrowserWindow, shell, ipcMain, nativeImage } = require("electron");
 const path = require("path");
 const { registerFileHandlers } = require("./files");
 const { register: registerFfmpeg, killAllSessions } = require("./ffmpeg");
+const { register: registerExportLog, closeAll: closeExportLogs } = require("./export-log");
 const { registerRecentsHandlers } = require("./recents");
 const { registerAssetsHandlers } = require("./assets");
 const { registerUpdater } = require("./updater");
@@ -209,6 +210,7 @@ app.whenReady().then(() => {
   setDevDockIcon();
   registerFileHandlers();
   registerFfmpeg();
+  registerExportLog();
   registerWindowControls();
   registerRecentsHandlers();
   registerAssetsHandlers();
@@ -221,6 +223,7 @@ app.whenReady().then(() => {
 
 app.on("before-quit", () => {
   killAllSessions();
+  closeExportLogs();
   stopAgentHost();
   stopServer();
 });

@@ -15,6 +15,7 @@ import { coerceValue } from "../src/engine/coerce.ts";
 import { copyPointsWith, makePoints } from "../src/engine/points.ts";
 import { makeSubpathDriverFn } from "../src/engine/spline-color-source.ts";
 import { transformSubpath } from "../src/engine/spline-transform.ts";
+import { collectNode } from "../src/nodes/effect/collect.ts";
 import { copyToPointsNode } from "../src/nodes/effect/copy-to-points.ts";
 import { rasterizeSplineNode } from "../src/nodes/effect/rasterize-spline.ts";
 import { strokeNode } from "../src/nodes/effect/stroke.ts";
@@ -195,6 +196,79 @@ function square(extra?: Partial<SplineSubpath>): SplineSubpath {
   check(
     "Copy to Points declares driver_field input",
     cInputs.includes("driver_field")
+  );
+}
+
+// Combine (collect) in spline mode concatenates subpaths and retags
+// groupIndex — and since 2026-09-20 carries `driver`, per-subpath `attrs`
+// and the anchors (with their attrs) through untouched. Stripping them was
+// what silently broke a Rasterize ramp driven by a per-subpath channel
+// downstream of a Combine.
+{
+  const ctx = makeCtx();
+  const a: SplineValue = {
+    kind: "spline",
+    subpaths: [square({ groupIndex: 7, driver: 0.2, attrs: { fade: 0.1, tint: [1, 0, 0] } })],
+  };
+  const b: SplineValue = {
+    kind: "spline",
+    subpaths: [
+      square({ closed: false, driver: 0.9, attrs: { fade: 0.8 } }),
+      // A bare subpath: no driver / attrs at all — stays bare.
+      { closed: true, anchors: [{ pos: [0, 0] }, { pos: [1, 0] }, { pos: [1, 1] }] },
+    ],
+  };
+  const out = collectNode.compute({
+    inputs: {
+      a: coerceValue(a, "spline", ctx),
+      b: coerceValue(b, "spline", ctx),
+    },
+    auxIn: {},
+    params: { mode: "spline", slots: ["a", "b", "c"] },
+    ctx,
+    nodeId: "combine",
+    consumedOutputs: new Set(["primary"]),
+  } as Parameters<typeof collectNode.compute>[0]) as NodeOutput;
+  const sp = out.primary?.kind === "spline" ? out.primary.subpaths : [];
+  check("Combine spline: three subpaths out (disconnected c dropped)", sp.length === 3);
+  check(
+    "Combine spline: groupIndex is the connected-socket ordinal, replacing the input's own",
+    sp[0]?.groupIndex === 0 && sp[1]?.groupIndex === 1 && sp[2]?.groupIndex === 1
+  );
+  check(
+    "Combine spline: driver carried through",
+    close(sp[0]?.driver ?? -1, 0.2) && close(sp[1]?.driver ?? -1, 0.9) && sp[2]?.driver === undefined
+  );
+  check(
+    "Combine spline: per-subpath attrs carried through (scalar and vector)",
+    sp[0]?.attrs?.fade === 0.1 &&
+      Array.isArray(sp[0]?.attrs?.tint) &&
+      (sp[0]!.attrs!.tint as number[])[0] === 1 &&
+      sp[1]?.attrs?.fade === 0.8 &&
+      sp[2]?.attrs === undefined
+  );
+  check(
+    "Combine spline: anchors (and their attrs) are the same objects, closed flag kept",
+    sp[0]?.anchors === a.subpaths[0].anchors &&
+      sp[0]?.anchors[0].attrs?.w === 0.25 &&
+      sp[0]?.closed === true &&
+      sp[1]?.closed === false
+  );
+  // The carried channel reaches the shared driver read that Rasterize /
+  // Stroke ramps use.
+  const byAttr = makeSubpathDriverFn(sp, { by: "driver", seed: 0, angleDeg: 0, attr: "fade" });
+  const byDriver = makeSubpathDriverFn(sp, { by: "driver", seed: 0, angleDeg: 0 });
+  check(
+    "Combine spline: a per-subpath channel still drives a ramp downstream",
+    close(byAttr(0, sp[0]), 0.1) && close(byAttr(1, sp[1]), 0.8)
+  );
+  check(
+    "Combine spline: driver still drives a ramp downstream",
+    close(byDriver(0, sp[0]), 0.2) && close(byDriver(1, sp[1]), 0.9)
+  );
+  check(
+    "Combine spline: inputs are not mutated",
+    a.subpaths[0].groupIndex === 7 && b.subpaths[0].groupIndex === 3
   );
 }
 

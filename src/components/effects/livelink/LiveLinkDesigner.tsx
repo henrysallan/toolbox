@@ -130,6 +130,21 @@ export interface LiveLinkDesignerProps {
    * depend on which Save the user reaches for.
    */
   onDraftChange?: (design: LiveDesign) => void;
+  /**
+   * The × on a Controls-list row. Turns the row's source OFF on the node
+   * itself — the param's Control toggle for a knob or file picker, the
+   * node-level Control toggle for a Handles row — exactly as clicking that
+   * toggle in the param panel would (one undo entry, dirty pill). The row
+   * then drops out of the list because the manifest is rebuilt from the
+   * graph. This edits the GRAPH, not the design block: the design never
+   * hides a control the node still says it ships, so the node badge, the
+   * param panel and this list can't disagree. Absent = no × rendered.
+   */
+  onRemoveControl?: (row: {
+    kind: "file" | "control" | "gizmo";
+    nodeId: string;
+    paramName: string;
+  }) => void;
 }
 
 export default function LiveLinkDesigner({
@@ -146,6 +161,7 @@ export default function LiveLinkDesigner({
   onSave,
   onClose,
   onDraftChange,
+  onRemoveControl,
 }: LiveLinkDesignerProps) {
   const [working, setWorking] = useState<LiveDesign>(
     () => design ?? DEFAULT_LIVE_DESIGN
@@ -293,8 +309,9 @@ export default function LiveLinkDesigner({
 
   // --- drag-to-reorder (pointer-based, fixed row height) -----------------
   // Not memoized on purpose: the handler closes over the CURRENT `rows`
-  // at pointerdown time, and rows can't change mid-drag (the graph is
-  // frozen while the designer is up; order commits only on release).
+  // at pointerdown time, and rows can't change mid-drag (the only graph
+  // edit the designer makes is a row's ×, which needs its own click;
+  // order commits only on release).
   const listRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ from: number; to: number } | null>(null);
   const [drag, setDrag] = useState<{ from: number; to: number } | null>(null);
@@ -867,6 +884,7 @@ export default function LiveLinkDesigner({
         <Section title="Controls">
           <div style={{ color: "var(--tb-n-10)", fontSize: 10 }}>
             Drag ⠿ to reorder · type to rename (blank = default)
+            {onRemoveControl ? " · × to remove" : ""}
           </div>
           <div
             ref={listRef}
@@ -947,6 +965,44 @@ export default function LiveLinkDesigner({
                       padding: "2px 6px",
                     }}
                   />
+                  {onRemoveControl && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onRemoveControl({
+                          kind: row.kind,
+                          nodeId: row.nodeId,
+                          paramName: row.paramName,
+                        })
+                      }
+                      title={
+                        row.kind === "gizmo"
+                          ? "Remove — turns off the node's on-canvas handles for the live link"
+                          : row.kind === "file"
+                            ? "Remove — turns off this file's Control toggle; the saved asset ships bundled"
+                            : "Remove — turns off this param's Control toggle on the node"
+                      }
+                      style={{
+                        flexShrink: 0,
+                        width: 18,
+                        height: 18,
+                        padding: 0,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        background: "transparent",
+                        border: "1px solid var(--tb-n-6)",
+                        borderRadius: 3,
+                        color: "var(--tb-n-10)",
+                        fontSize: 12,
+                        lineHeight: 1,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
               );
             })}

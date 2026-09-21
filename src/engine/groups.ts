@@ -16,6 +16,7 @@
 // specdocs/archive/layers-groups-attributes.md.
 
 import type { ColorRampStop } from "./color-ramp";
+import type { CurvePoint } from "./float-curve";
 import type {
   ParamDef,
   ParamType,
@@ -345,6 +346,12 @@ export function socketValueFromGroupDefault(
       return Array.isArray(raw)
         ? { kind: "color_ramp", stops: raw as ColorRampStop[], interp: "linear" }
         : undefined;
+    case "float_curve":
+      // A shell default for a curve socket is the bare CurvePoint[] the
+      // param type stores; wrap it as the Float Curve node's aux would.
+      return Array.isArray(raw)
+        ? { kind: "float_curve", points: raw as CurvePoint[] }
+        : undefined;
     default:
       return undefined;
   }
@@ -500,7 +507,9 @@ export function groupInputControlDef(
     softMax: target.softMax,
     step: target.step,
     stepFrom: target.stepFrom,
+    minFrom: target.minFrom,
     maxFrom: target.maxFrom,
+    softMaxFrom: target.softMaxFrom,
     options: target.options,
     optionLabels: target.optionLabels,
     default: target.default,

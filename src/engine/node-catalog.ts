@@ -9,6 +9,7 @@
 import type { NodeDefinition, NodeFacts, ParamDef, ParamType } from "./types";
 import { ASPECT_SPACE_DOC } from "./aspect";
 import { vetColorRampStops } from "./color-ramp";
+import { compactFloatCurve, vetFloatCurvePoints } from "./float-curve";
 import { isSwitchSlot } from "./graph-helpers";
 
 // Param types the LLM may SET. These are the plain-JSON, generically
@@ -18,6 +19,9 @@ import { isSwitchSlot } from "./graph-helpers";
 // See spec §7. `color_ramp` is the structured exception: same
 // [{position,color,alpha?}] shape as GLSL ramp() channels, so palette
 // authoring (Color Ramp stops, Rasterize fill/stroke ramps) is writable.
+// `float_curve` follows the same reasoning: [{x, y}] is the curve()
+// channel shape, and Map Attribute / Scene Time / Float Curve are unusable
+// remotely when their whole value is the curve.
 export const SETTABLE_PARAM_TYPES: ReadonlySet<ParamType> = new Set([
   "scalar",
   "vec2",
@@ -28,6 +32,7 @@ export const SETTABLE_PARAM_TYPES: ReadonlySet<ParamType> = new Set([
   "enum",
   "string",
   "color_ramp",
+  "float_curve",
   // Switch per-input names, `{ in0: "Day", in1: "Night" }` — plain JSON
   // keyed by slot socket, so a recipe can name the states of a toggle-mode
   // Switch it just wired.
@@ -117,6 +122,8 @@ export function vetParamValue(
         : { ok: false, reason: "expected [x, y, z, w] finite numbers" };
     case "color_ramp":
       return vetColorRampStops(value);
+    case "float_curve":
+      return vetFloatCurvePoints(value);
     case "slot_labels": {
       if (!value || typeof value !== "object" || Array.isArray(value))
         return {
@@ -259,7 +266,10 @@ function paramToCatalog(p: ParamDef): CatalogParam {
   const out: CatalogParam = { name: p.name, type: p.type, settable };
   if (settable) {
     // The LLM only needs defaults/ranges/options for params it can set.
-    if (p.default !== undefined) out.default = p.default;
+    // A float_curve default carries random point ids — strip them so the
+    // catalog (a cached prompt prefix) is stable across boots.
+    if (p.type === "float_curve") out.default = compactFloatCurve(p.default) ?? p.default;
+    else if (p.default !== undefined) out.default = p.default;
     if (p.min !== undefined) out.min = p.min;
     if (p.max !== undefined) out.max = p.max;
     if (p.options) out.options = p.options;

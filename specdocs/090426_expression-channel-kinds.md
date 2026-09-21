@@ -127,6 +127,11 @@ slider. The `fingerprintExtras` clock rule is unchanged.
 3. **`curve` has no socket** — there is no `float_curve` socket type, and
    inventing one for this is a bigger decision (Map Attribute etc. would
    want it too). Panel-only, like `pick`.
+   *Update 2026-09-19:* the socket type now exists
+   (091926_float-curve-socket.md — it made every `float_curve` PARAM
+   exposable). The `curve()` channel row is still panel-only:
+   `channelSocketType` was left returning null so this spec's gate holds;
+   giving channel rows a curve socket is the natural follow-up.
 4. **Ramp interpolation is linear** on both sides (the wire drops `interp`
    anyway — see `ColorRampValue` in types.ts). `constant`/`ease` would be
    a per-row option later.

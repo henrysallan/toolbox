@@ -120,6 +120,82 @@ const imageParam = (g2: SavedProject) => (g2.nodes[0].params as any).image;
   check("kept filename matches the ref", res.keepFilenames.has(`${ref.asset}.png`));
 }
 
+// --- 1b. save/load progress: uploadGraphAssets reports stage starts + per-asset
+//         completion, and the pill budget in lib/save-load-progress is monotonic ---
+{
+  const { saveSerializeReading, saveStageReading, loadStageReading, loadDeserializeReading, LOAD_START } =
+    await import("@/lib/save-load-progress");
+  // Two media nodes, one asset already in Storage → hash 2 nodes, upload 1.
+  const fake = makeFakeSupabase();
+  const twoNodes = graphWith({ kind: "file", dataUrl: PNG_DATA_URL });
+  twoNodes.nodes.push({
+    id: "n2",
+    defType: "image-source",
+    position: { x: 0, y: 0 },
+    // A different data URL (a JPEG) so it hashes to a second asset.
+    params: { image: { kind: "file", dataUrl: "data:image/jpeg;base64,/9j/4AAQSkZJRg==" } },
+  } as any);
+  twoNodes.nodes.push({ id: "n3", defType: "noise", position: { x: 0, y: 0 }, params: { scale: 1 } } as any);
+  const first = await uploadGraphAssets(fake.supabase, twoNodes, LOC);
+  const [preExisting] = first.keepFilenames;
+  fake.uploads.length = 0;
+  const fake2 = makeFakeSupabase([preExisting]);
+  const events: any[] = [];
+  const res = await uploadGraphAssets(fake2.supabase, twoNodes, LOC, (e) => events.push(e));
+  const stages = events.map((e) => e.stage);
+  check(
+    "progress stages run hash → list → upload",
+    stages.indexOf("hash") === 0 &&
+      stages.indexOf("list") === stages.lastIndexOf("hash") + 1 &&
+      stages.indexOf("upload") === stages.indexOf("list") + 1,
+    stages.join(",")
+  );
+  const hash = events.filter((e) => e.stage === "hash");
+  check(
+    "hash counts only media-bearing nodes",
+    hash.every((e) => e.total === 2) && hash.at(-1)?.done === 2 && hash[0].done === 0,
+    JSON.stringify(hash)
+  );
+  const up = events.filter((e) => e.stage === "upload");
+  check(
+    "upload reports start + one completion for the ONE new asset",
+    up.length === 2 && up[0].done === 0 && up[0].total === 1 && up[1].done === 1 && fake2.uploads.length === 1,
+    JSON.stringify(up)
+  );
+  check("progress callback leaves the result intact", res.usedStorage && res.keepFilenames.size === 2);
+
+  // Budget: replay a full save and a full load; readings must never decrease.
+  const saveSeq = [
+    saveSerializeReading(0),
+    saveSerializeReading(0.5),
+    saveSerializeReading(1),
+    saveStageReading({ stage: "auth" }),
+    ...events.map((e) => saveStageReading(e)),
+    saveStageReading({ stage: "thumbnail" }),
+    saveStageReading({ stage: "row" }),
+  ];
+  const monotonic = (seq: { progress: number }[]) =>
+    seq.every((r, i) => i === 0 || r.progress >= seq[i - 1].progress);
+  check("save budget is monotonic", monotonic(saveSeq), saveSeq.map((r) => r.progress.toFixed(2)).join(" "));
+  check("save budget ends below 1 before the row write resolves", saveSeq.at(-1)!.progress < 1);
+  check(
+    "media-free save collapses hash/upload to their end points",
+    saveStageReading({ stage: "hash", done: 0, total: 0 }).progress <= saveStageReading({ stage: "list" }).progress &&
+      saveStageReading({ stage: "upload", done: 0, total: 0 }).progress <=
+        saveStageReading({ stage: "thumbnail" }).progress
+  );
+  check("save labels name the stage", saveSeq.some((r) => r.label.startsWith("uploading media 1/1")) && saveSeq.at(-1)!.label === "writing project");
+  const loadSeq = [
+    { progress: LOAD_START },
+    loadStageReading({ stage: "row" }),
+    loadStageReading({ stage: "meta" }),
+    loadDeserializeReading(0),
+    loadDeserializeReading(0.5),
+    loadDeserializeReading(1),
+  ];
+  check("load budget is monotonic and ends at 1", monotonic(loadSeq) && loadSeq.at(-1)!.progress === 1);
+}
+
 // --- 2. resolveAssetRefs preserves asset/ext (the 1b root cause) ---
 {
   const fake = makeFakeSupabase(["HASHY.png"]);

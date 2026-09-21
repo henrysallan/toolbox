@@ -59,6 +59,11 @@ contextBridge.exposeInMainWorld("toolboxNative", {
     return () => ipcRenderer.removeListener("toolbox:encodeProgress", listener);
   },
 
+  // ---- Export log: one file per export run (export-log.js) ----
+  exportLogOpen: (name) => ipcRenderer.invoke("toolbox:exportLogOpen", name),
+  exportLogAppend: (id, line) => ipcRenderer.invoke("toolbox:exportLogAppend", id, line),
+  exportLogClose: (id) => ipcRenderer.invoke("toolbox:exportLogClose", id),
+
   // ---- Transcode-on-import ----
   transcodeForPlayback: (opts) => ipcRenderer.invoke("toolbox:transcodeForPlayback", opts),
 

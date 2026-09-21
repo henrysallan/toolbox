@@ -50,9 +50,140 @@ function check(label: string, ok: boolean, detail?: string) {
     ramp.slice(0, 400)
   );
   check(
-    "map-attribute curve is listed as not remotely settable",
-    ramp.includes("curve:float_curve~(not remotely settable)")
+    "map-attribute curve is listed as a settable float_curve with an id-free default",
+    ramp.includes('curve:float_curve=[{"x":0,"y":0},{"x":1,"y":1}]') &&
+      !ramp.includes("curve:float_curve~(not remotely settable)") &&
+      !ramp.includes('"id":"cp-'),
+    ramp.slice(ramp.indexOf("map-attribute"), ramp.indexOf("map-attribute") + 400)
   );
+  // The vetter behind set_param / recipe params / curve() channels.
+  const { vetParamValue } = await import("@/engine/node-catalog");
+  const curveDef = { name: "curve", type: "float_curve" as const, default: [] };
+  const vetted = vetParamValue(curveDef, [{ x: 0.9, y: 2 }, { x: -1, y: 0.25 }]);
+  check(
+    "vetParamValue float_curve: sorts by x, clamps to 0..1, mints ids",
+    vetted.ok &&
+      JSON.stringify((vetted.value as { x: number; y: number }[]).map((p) => [p.x, p.y])) ===
+        JSON.stringify([[0, 0.25], [0.9, 1]]) &&
+      (vetted.value as { id: string }[]).every((p) => typeof p.id === "string" && p.id.length > 0),
+    JSON.stringify(vetted)
+  );
+  check(
+    "vetParamValue float_curve rejects a single point and a non-numeric one",
+    !vetParamValue(curveDef, [{ x: 0, y: 0 }]).ok && !vetParamValue(curveDef, [{ x: 0, y: "a" }, { x: 1, y: 1 }]).ok
+  );
+
+// get_node_data's geometry dump: attribute names are gathered over the whole
+// value and ALWAYS present, so "no attrs in the rows shown" and "no attrs at
+// all" are distinguishable (2026-09-20 MCP feedback — it took three reads to
+// conclude a Combine had dropped them).
+{
+  const { inspectSocketValue } = await import("@/engine/socket-inspect");
+  const anchor = (x: number, attrs?: Record<string, number>) => ({ pos: [x, 0.5] as [number, number], ...(attrs ? { attrs } : {}) });
+  const spline = {
+    kind: "spline" as const,
+    subpaths: [
+      { closed: false, anchors: [anchor(0), anchor(0.1)] },
+      { closed: false, anchors: [anchor(0.2), anchor(0.3)], groupIndex: 1 },
+      { closed: true, anchors: [anchor(0.4, { heat: 1 }), anchor(0.5)], attrs: { weight: 0.3 }, driver: 0.5 },
+    ],
+  };
+  const truncated = inspectSocketValue(spline, 2) as Record<string, unknown>;
+  check(
+    "spline inspect reports attrNames from beyond the shown rows",
+    truncated.truncated === true &&
+      JSON.stringify(truncated.attrNames) === '["heat"]' &&
+      JSON.stringify(truncated.subpathAttrNames) === '["weight"]' &&
+      truncated.groupTaggedSubpaths === 1 &&
+      truncated.drivenSubpaths === 1,
+    JSON.stringify(truncated)
+  );
+  const bare = inspectSocketValue({ kind: "spline", subpaths: [{ closed: false, anchors: [anchor(0), anchor(1)] }] }) as Record<string, unknown>;
+  check(
+    "spline inspect says [] when no attrs exist anywhere",
+    JSON.stringify(bare.attrNames) === "[]" && JSON.stringify(bare.subpathAttrNames) === "[]" && bare.groupTaggedSubpaths === 0
+  );
+  const pts = inspectSocketValue({ kind: "points", count: 1, positions: new Float32Array([0.5, 0.5]) } as never) as Record<string, unknown>;
+  check("points inspect always carries attrNames", JSON.stringify(pts.attrNames) === "[]", JSON.stringify(pts));
+}
+
+// Source tools at the paired editor's version (the source reader is pure
+// node:fs + git + fetch — exercised directly, no bridge). The tar reader
+// must cope with both long-name encodings a producer may use: pax `x`
+// headers (bsdtar, git archive, GitHub tarballs) and GNU `L` entries.
+{
+  const { createSourceReader, readTar } = await import("./mcp-source.mjs");
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const pathMod = await import("node:path");
+  const head = readTar(
+    execFileSync("git", ["archive", "--format=tar", "HEAD", "--", "src/engine/coerce.ts"], { maxBuffer: 1 << 26 })
+  );
+  check(
+    "readTar reads a git archive (pax global header skipped)",
+    head.size === 1 && (head.get("src/engine/coerce.ts") ?? "").includes("export function coerceValue"),
+    [...head.keys()].join(",")
+  );
+  const dir = mkdtempSync(pathMod.join(tmpdir(), "tb-tar-"));
+  try {
+    const deep = pathMod.join(dir, "a".repeat(60), "b".repeat(60));
+    mkdirSync(deep, { recursive: true });
+    writeFileSync(pathMod.join(deep, "long.ts"), "const long = 1;\n");
+    for (const fmt of ["pax", "gnu"]) {
+      let tar: Buffer | null = null;
+      try {
+        // COPYFILE_DISABLE: macOS bsdtar otherwise adds AppleDouble `._long.ts`
+        // metadata entries beside the file.
+        tar = execFileSync("tar", ["--format", fmt, "-cf", "-", "-C", dir, "."], {
+          maxBuffer: 1 << 24,
+          env: { ...process.env, COPYFILE_DISABLE: "1" },
+        });
+      } catch {
+        // this tar can't emit that format — skip, the other one covers it
+      }
+      if (!tar) continue;
+      const got = readTar(tar, { keep: (rel) => rel.endsWith("/long.ts"), strip: 1 });
+      const key = [...got.keys()][0] ?? "";
+      check(
+        `readTar decodes a >100-char path in ${fmt} format`,
+        got.size === 1 && key.endsWith("/long.ts") && key.length > 100 && got.get(key) === "const long = 1;\n",
+        key
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const reader = createSourceReader();
+  check("skewRef: same version / junk / traversal → local", reader.skewRef(reader.localVersion) === null && reader.skewRef("1.0.0/../x") === null && reader.skewRef("e2e") === null);
+  check("skewRef: a different release is a ref", reader.skewRef("0.0.1") === "0.0.1");
+  // A real older tag. Its tree comes from local git when the tag is fetched,
+  // GitHub otherwise; either way the header must name THAT version, and the
+  // local-fallback wording only when neither source answered.
+  const skewed = await reader.searchSource({ pattern: "splineSelfMerge", glob: "*.ts", appVersion: "0.5.7" });
+  const skewHead = skewed.text?.split("\n")[0] ?? "";
+  const tree = await reader.treeFor("0.5.7");
+  check(
+    tree
+      ? `search_source at a skewed version searches the v0.5.7 tag (${tree.source})`
+      : "search_source at an unreachable tag falls back to local with a note",
+    tree
+      ? skewHead.includes("Search ran on the v0.5.7 tag") && (skewed.text ?? "").includes("spline-merge.ts")
+      : skewHead.includes("LOCAL checkout") && skewHead.includes("v0.5.7"),
+    skewHead
+  );
+  if (tree) {
+    const node = await reader.getNodeSource({ type: "spline-merge", appVersion: "0.5.7" });
+    check(
+      "get_node_source at a skewed version reads the tag's tree",
+      (node.text ?? "").includes("showing source from the v0.5.7 tag") && (node.text ?? "").includes("splineSelfMerge"),
+      (node.text ?? node.error ?? "").split("\n").slice(0, 5).join(" | ")
+    );
+  }
+  const same = await reader.searchSource({ pattern: "splineSelfMerge", glob: "*.ts", appVersion: reader.localVersion });
+  check("search_source at the local version carries no version note", !(same.text ?? "").includes("Paired editor") && !(same.text ?? "").includes("Search ran on"), (same.text ?? "").split("\n")[0]);
+}
+
   check(
     "full catalog carries NodeFacts slots (Grid writes ix/iy/cellW/cellH)",
     full.includes("# writes: attr:ix, attr:iy, attr:cellW, attr:cellH") && full.includes("# space: ") && full.includes("# ! "),
@@ -172,11 +303,25 @@ check(
   const insert = tools.tools.find((t) => t.name === "insert_recipe");
   const schema = insert?.inputSchema as { properties?: Record<string, unknown> } | undefined;
   check(
-    "insert_recipe schema lists replace_output and recipes",
-    !!schema?.properties?.replace_output && !!schema?.properties?.recipes,
+    "insert_recipe schema lists replace_output, recipes and dry_run",
+    !!schema?.properties?.replace_output && !!schema?.properties?.recipes && !!schema?.properties?.dry_run,
     JSON.stringify(schema?.properties ? Object.keys(schema.properties) : schema)
   );
   const edit = tools.tools.find((t) => t.name === "edit_group");
+  const editProps = (edit?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+  check("edit_group schema lists dry_run", !!editProps?.dry_run, JSON.stringify(editProps ? Object.keys(editProps) : editProps));
+  const sp = tools.tools.find((t) => t.name === "set_param");
+  check(
+    "set_param docstring documents float_curve [{x, y}] and the rev bump",
+    !!sp?.description?.includes("float_curve") && !!sp?.description?.includes("[{x, y}]") && !!sp?.description?.includes("bumps `rev`"),
+    (sp?.description ?? "").slice(0, 300)
+  );
+  const nd = tools.tools.find((t) => t.name === "get_node_data");
+  check(
+    "get_node_data docstring says attrNames is always present",
+    !!nd?.description?.includes("ALWAYS") && !!nd?.description?.includes("subpathAttrNames"),
+    (nd?.description ?? "").slice(0, 300)
+  );
   check(
     "edit_group docstring shows a literal JSON op",
     !!edit?.description?.includes('"op": "set_param"'),
@@ -349,12 +494,18 @@ const bridge: BridgeClient = connectBridge({
       height: 1,
       frame: 7,
     }),
-    insert_recipe: ({ recipe, connect, scope, replace_output }) => {
+    insert_recipe: ({ recipe, connect, scope, replace_output, dry_run }) => {
       if ((recipe as { name?: string }).name === "echo") {
-        return { ok: true, connect, scope, replace_output, ids: { a: "n-1" } };
+        return { ok: true, connect, scope, replace_output, dry_run, ids: { a: "n-1" } };
       }
       throw new Error("Recipe not applied — fix these and retry:\n- UNKNOWN_TYPE example");
     },
+    edit_group: ({ groupId, ops, dry_run }) => ({
+      ok: true,
+      groupId,
+      applied: (ops as unknown[]).length,
+      dry_run,
+    }),
     transport: ({ action }) => ({ ok: true, action, playing: action === "play" }),
     tidy: ({ nodes, scope }) => ({ ok: true, moved: Array.isArray(nodes) ? nodes.length : 0, scope: scope ?? "current" }),
     screenshot_strip: ({ frames }) => ({
@@ -714,8 +865,26 @@ const riEcho = await client.callTool({
   const j = isError(riEcho) ? {} : JSON.parse(textOf(riEcho));
   check(
     "insert_recipe forwards replace_output and returns ids",
-    !isError(riEcho) && j.replace_output === true && j.ids?.a === "n-1",
+    !isError(riEcho) && j.replace_output === true && j.ids?.a === "n-1" && !("dry_run" in j),
     textOf(riEcho)
+  );
+}
+{
+  const riDry = await client.callTool({
+    name: "insert_recipe",
+    arguments: { recipe: { name: "echo" }, dry_run: true },
+  });
+  const j = isError(riDry) ? {} : JSON.parse(textOf(riDry));
+  check("insert_recipe forwards dry_run", !isError(riDry) && j.dry_run === true, textOf(riDry));
+  const reDry = await client.callTool({
+    name: "edit_group",
+    arguments: { groupId: "g-1", ops: [{ op: "set_param", node: "n", param: "count", value: 3 }], dry_run: true },
+  });
+  const k = isError(reDry) ? {} : JSON.parse(textOf(reDry));
+  check(
+    "edit_group forwards dry_run and ops",
+    !isError(reDry) && k.dry_run === true && k.groupId === "g-1" && k.applied === 1,
+    textOf(reDry)
   );
 }
 const rnd = await client.callTool({

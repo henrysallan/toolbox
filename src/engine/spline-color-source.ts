@@ -1,5 +1,6 @@
 import type { SplineSubpath } from "./types";
 import { hexToRgba } from "./spline-raster";
+import { readSubpathDriver } from "./spline-attrs";
 import {
   makeColorRampSampler,
   rgba01ToCss,
@@ -77,10 +78,11 @@ export interface SubpathDriverConfig {
   by: ColorRampBy;
   seed: number;
   angleDeg: number; // gradient axis for `position` mode
-  // When `by === "driver"`: read this named subpath channel (component 0)
-  // instead of `sub.driver`. Empty / missing falls back to `sub.driver`.
-  // Lets Set Named Attribute / Copy to Points' gathered point attrs drive
-  // ramps and thickness without a separate producer-authored scalar.
+  // When `by === "driver"`: the named subpath channel to read (component
+  // 0). Empty / missing reads the `driver` attribute itself — which is
+  // what every producer (Space Fill, Copy to Points, Set Named Attribute
+  // target=subpaths name=driver) writes — then the legacy `sub.driver`
+  // field, then 0.5 (spline-attrs.ts readSubpathDriver).
   attr?: string;
 }
 
@@ -108,22 +110,7 @@ export function makeSubpathDriverFn(
 
   return (i, sub) => {
     if (by === "random") return hash01(i, seed);
-    if (by === "driver") {
-      // Named attr (component 0) wins when configured; else the
-      // producer-authored scalar. Missing either sits at mid-ramp.
-      const name = (cfg.attr ?? "").trim();
-      if (name) {
-        const v = sub.attrs?.[name];
-        const n = Array.isArray(v) ? v[0] : v;
-        if (typeof n === "number" && Number.isFinite(n)) {
-          return Math.min(1, Math.max(0, n));
-        }
-      }
-      const d = sub.driver;
-      return typeof d === "number" && Number.isFinite(d)
-        ? Math.min(1, Math.max(0, d))
-        : 0.5;
-    }
+    if (by === "driver") return readSubpathDriver(sub, cfg.attr);
     if (by === "group") {
       const gi = groups.indexOf(sub.groupIndex ?? 0);
       return groups.length > 1 ? gi / (groups.length - 1) : 0;

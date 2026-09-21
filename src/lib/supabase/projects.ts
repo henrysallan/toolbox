@@ -5,7 +5,39 @@ import {
   pruneProjectAssets,
   resolveAssetRefs,
   uploadGraphAssets,
+  type AssetUploadProgress,
 } from "@/lib/supabase/project-assets";
+import {
+  getHandleForUser,
+  getProfileIdByHandle,
+} from "@/lib/supabase/profiles";
+import { isValidVanitySlug } from "@/lib/vanity-slug";
+
+// PostgREST error codes the vanity-slug paths branch on.
+const COLUMN_MISSING = "42703";
+const UNIQUE_VIOLATION = "23505";
+const CHECK_VIOLATION = "23514";
+
+// Stage-level progress from the cloud row writers (saveProject /
+// updateProject). Emitted in this order: `auth`, then the asset stages
+// forwarded from uploadGraphAssets (`hash` → `list` → `upload`), then
+// `thumbnail` (only when a thumbnail is being uploaded) and `row` just
+// before the PostgREST write. Each is a stage START — the caller learns
+// a stage finished when the next one begins or the promise resolves.
+// None of these has byte-level granularity (supabase-js uploads over
+// fetch); the pure fraction/label mapping lives in lib/save-load-progress.
+export type ProjectSaveProgress =
+  | { stage: "auth" }
+  | AssetUploadProgress
+  | { stage: "thumbnail" }
+  | { stage: "row" };
+export type ProjectSaveProgressCallback = (e: ProjectSaveProgress) => void;
+
+// Stage-level progress from loadProject. `row` starts the graph row
+// fetch (the bulk of a cloud load's wall time); `meta` starts the
+// follow-up author / collaborator lookups. A cache hit emits nothing.
+export type ProjectLoadProgress = { stage: "row" } | { stage: "meta" };
+export type ProjectLoadProgressCallback = (e: ProjectLoadProgress) => void;
 
 // Practical ceiling for the jsonb `graph` column. After Tier 2, media lives
 // in Storage and the row is tiny, so this only bites the inline FALLBACK
@@ -247,9 +279,11 @@ export async function saveProject(
   name: string,
   graph: SavedProject,
   thumbnail: string | null,
-  isPublic = false
+  isPublic = false,
+  onProgress?: ProjectSaveProgressCallback
 ): Promise<{ id: string; slug: string } | null> {
   const supabase = createClient();
+  onProgress?.({ stage: "auth" });
   const { data: userResp } = await supabase.auth.getUser();
   if (!userResp.user) return null;
   const userId = userResp.user.id;
@@ -262,15 +296,19 @@ export async function saveProject(
   // content-addressed refs (falls back to the inline graph if Storage is
   // unavailable). A failed insert below then leaves only cheap orphan
   // objects, never a row pointing at missing assets.
-  const { graph: rowGraph } = await uploadGraphAssets(supabase, graph, {
-    userId,
-    projectId,
-  });
+  const { graph: rowGraph } = await uploadGraphAssets(
+    supabase,
+    graph,
+    { userId, projectId },
+    onProgress
+  );
   guardRowSize(rowGraph);
   let thumbnailUrl: string | null = null;
   if (thumbnail) {
+    onProgress?.({ stage: "thumbnail" });
     thumbnailUrl = await uploadThumbnail(userId, projectId, thumbnail);
   }
+  onProgress?.({ stage: "row" });
   let slug = mintProjectSlug();
   let { error } = await supabase.from("projects").insert({
     id: projectId,
@@ -335,9 +373,11 @@ export async function updateProject(
   // save keyed to their own uid would strand every media ref. Storage
   // RLS admits collaborator writes to the owner's prefix (see
   // specdocs/shared-projects-migration.sql). Omit for your own rows.
-  ownerId?: string
+  ownerId?: string,
+  onProgress?: ProjectSaveProgressCallback
 ): Promise<UpdateProjectResult> {
   const supabase = createClient();
+  onProgress?.({ stage: "auth" });
   const { data: userResp } = await supabase.auth.getUser();
   if (!userResp.user) return { ok: false };
   const userId = ownerId ?? userResp.user.id;
@@ -349,7 +389,12 @@ export async function updateProject(
     usedStorage,
     keepFilenames,
     existingBefore,
-  } = await uploadGraphAssets(supabase, graph, { userId, projectId: id });
+  } = await uploadGraphAssets(
+    supabase,
+    graph,
+    { userId, projectId: id },
+    onProgress
+  );
   guardRowSize(rowGraph);
   // Upload the thumbnail so the thumbnail column is only touched when we've
   // actually got a fresh URL to point at. If the upload fails we still push
@@ -361,6 +406,7 @@ export async function updateProject(
     updated_at: updatedAt,
   };
   if (thumbnail) {
+    onProgress?.({ stage: "thumbnail" });
     const url = await uploadThumbnail(userId, id, thumbnail);
     if (url) payload = { ...payload, thumbnail: url };
   } else if (thumbnail === null) {
@@ -368,6 +414,7 @@ export async function updateProject(
     // (we generally pass a data URL), but respect the contract.
     payload = { ...payload, thumbnail: null };
   }
+  onProgress?.({ stage: "row" });
   let query = supabase.from("projects").update(payload).eq("id", id);
   if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
   const { data, error } = await query.select("id");
@@ -484,6 +531,49 @@ export async function setProjectVisibility(
   }
   invalidateProjectCaches();
   return { ok: true, slug: resolvedSlug, updatedAt };
+}
+
+// Named live link (specdocs/092126_vanity-live-links.md): set or clear
+// the project's vanity slug. Owner-only (RLS). Bumps updated_at with the
+// same compare-and-swap contract as renameProject so a stale window's
+// write conflicts instead of laundering a fresh stamp past the next
+// save's CAS. The unique index is per (user_id, vanity_slug), so "taken"
+// means another of the CALLER's projects already uses that slug.
+export type SetVanitySlugResult =
+  | { ok: true; updatedAt: string }
+  | {
+      ok: false;
+      reason: "conflict" | "taken" | "invalid" | "migration" | "error";
+    };
+
+export async function setProjectVanitySlug(
+  id: string,
+  slug: string | null,
+  expectedUpdatedAt?: string
+): Promise<SetVanitySlugResult> {
+  if (slug !== null && !isValidVanitySlug(slug)) {
+    return { ok: false, reason: "invalid" };
+  }
+  const supabase = createClient();
+  const updatedAt = new Date().toISOString();
+  let query = supabase
+    .from("projects")
+    .update({ vanity_slug: slug, updated_at: updatedAt })
+    .eq("id", id);
+  if (expectedUpdatedAt) query = query.eq("updated_at", expectedUpdatedAt);
+  const { data, error } = await query.select("id");
+  if (error) {
+    if (error.code === UNIQUE_VIOLATION) return { ok: false, reason: "taken" };
+    if (error.code === COLUMN_MISSING) return { ok: false, reason: "migration" };
+    if (error.code === CHECK_VIOLATION) return { ok: false, reason: "invalid" };
+    console.error("setProjectVanitySlug failed:", error);
+    return { ok: false, reason: "error" };
+  }
+  if (expectedUpdatedAt && (!data || data.length === 0)) {
+    return { ok: false, reason: "conflict" };
+  }
+  invalidateProjectCaches();
+  return { ok: true, updatedAt };
 }
 
 // Mint a slug on an owned row that's missing one (pre-backfill private
@@ -858,6 +948,40 @@ export interface LoadedProject {
   // so a collaborator added mid-session starts leasing on the next
   // fresh load.
   has_collaborators: boolean;
+  // Named live link (092126_vanity-live-links.md): the title-derived
+  // slug the owner opted into, or null. Null on pre-migration DBs too.
+  vanity_slug: string | null;
+  // The owner's profile handle — fetched only when vanity_slug is set,
+  // so the copy-link buttons can build /@<handle>/<vanity_slug>.
+  owner_handle: string | null;
+}
+
+// Select the project columns the editor load paths need, tolerating a
+// DB that predates the vanity_slug column (42703 → retry without it and
+// report null). Shared by loadProject and loadEditorProjectBySlug.
+async function selectProjectForEditor(
+  client: ReturnType<typeof createClient>,
+  match: { column: "id" | "public_slug"; value: string },
+  single: boolean
+): Promise<{
+  data: Record<string, unknown> | null;
+  error: { code?: string; message?: string } | null;
+}> {
+  const base = "id, name, graph, is_public, user_id, public_slug, updated_at";
+  const run = async (cols: string) => {
+    const q = client.from("projects").select(cols).eq(match.column, match.value);
+    const res = single ? await q.single() : await q.maybeSingle();
+    return res as unknown as {
+      data: Record<string, unknown> | null;
+      error: { code?: string; message?: string } | null;
+    };
+  };
+  let res = await run(`${base}, vanity_slug`);
+  if (res.error?.code === COLUMN_MISSING) {
+    res = await run(base);
+    if (res.data) res.data = { ...res.data, vanity_slug: null };
+  }
+  return res;
 }
 
 // Server-side variant: resolves a public project by its URL slug. Takes
@@ -909,6 +1033,61 @@ export async function loadPublicProjectBySlug(
   };
 }
 
+// Named live link resolve (092126_vanity-live-links.md): /@<handle>/<slug>
+// → the owner's profile by handle, then their PUBLIC row by vanity_slug.
+// Both reads ride anon-readable policies; a private row with a vanity
+// slug is invisible here exactly as it is at /live/<slug>. Returns the
+// same shape as loadPublicProjectBySlug so LiveClient is shared — the
+// panel's "Editor" link and share code still come from public_slug.
+export async function loadPublicProjectByVanity(
+  client: ReturnType<typeof createClient>,
+  handle: string,
+  vanitySlug: string
+): Promise<{
+  id: string;
+  name: string;
+  graph: SavedProject;
+  user_id: string;
+  author: ProjectAuthor | null;
+  public_slug: string | null;
+} | null> {
+  if (!isValidVanitySlug(vanitySlug)) return null;
+  const ownerId = await getProfileIdByHandle(client, handle);
+  if (!ownerId) return null;
+  const { data, error } = await client
+    .from("projects")
+    .select("id, name, graph, user_id, public_slug")
+    .eq("user_id", ownerId)
+    .eq("vanity_slug", vanitySlug)
+    .eq("is_public", true)
+    .maybeSingle();
+  if (error) {
+    if (error.code !== COLUMN_MISSING) {
+      console.error("loadPublicProjectByVanity failed:", error);
+    }
+    return null;
+  }
+  if (!data) return null;
+  let author: ProjectAuthor | null = null;
+  const { data: prof } = await client
+    .from("profiles")
+    .select("id, display_name, avatar_url")
+    .eq("id", data.user_id)
+    .maybeSingle();
+  if (prof) author = prof as ProjectAuthor;
+  return {
+    id: data.id as string,
+    name: data.name as string,
+    graph: resolveAssetRefs(client, data.graph as SavedProject, {
+      userId: data.user_id as string,
+      projectId: data.id as string,
+    }),
+    user_id: data.user_id as string,
+    author,
+    public_slug: (data.public_slug as string | null) ?? null,
+  };
+}
+
 // /p/<slug> editor resolve. Unlike loadPublicProjectBySlug this admits
 // private rows the caller is allowed to read (owner or collaborator via
 // RLS). When RLS hides the row, project_slug_exists() distinguishes a
@@ -926,6 +1105,8 @@ export type EditorProjectBySlug =
       updated_at: string | null;
       shared_with_me: boolean;
       has_collaborators: boolean;
+      vanity_slug: string | null;
+      owner_handle: string | null;
     }
   | { status: "private" }
   | { status: "missing" };
@@ -934,11 +1115,11 @@ export async function loadEditorProjectBySlug(
   client: ReturnType<typeof createClient>,
   slug: string
 ): Promise<EditorProjectBySlug> {
-  const { data, error } = await client
-    .from("projects")
-    .select("id, name, graph, user_id, is_public, updated_at")
-    .eq("public_slug", slug)
-    .maybeSingle();
+  const { data, error } = await selectProjectForEditor(
+    client,
+    { column: "public_slug", value: slug },
+    false
+  );
   if (error) {
     console.error("loadEditorProjectBySlug failed:", error);
     return { status: "missing" };
@@ -995,6 +1176,11 @@ export async function loadEditorProjectBySlug(
     hasCollaborators = !!anyCollab && anyCollab.length > 0;
   }
 
+  const vanitySlug = (data.vanity_slug as string | null | undefined) ?? null;
+  const ownerHandle = vanitySlug
+    ? await getHandleForUser(client, data.user_id as string)
+    : null;
+
   return {
     status: "ok",
     id: data.id as string,
@@ -1010,6 +1196,8 @@ export async function loadEditorProjectBySlug(
     updated_at: (data.updated_at as string | null) ?? null,
     shared_with_me: sharedWithMe,
     has_collaborators: hasCollaborators,
+    vanity_slug: vanitySlug,
+    owner_handle: ownerHandle,
   };
 }
 
@@ -1057,7 +1245,10 @@ export async function getProjectSaveStamp(
   return { updatedAt: row.updated_at ?? null, updatedByName };
 }
 
-export async function loadProject(id: string): Promise<LoadedProject | null> {
+export async function loadProject(
+  id: string,
+  onProgress?: ProjectLoadProgressCallback
+): Promise<LoadedProject | null> {
   const supabase = createClient();
   // getSession is local (no network) — the uid decides cache policy below.
   const { data: sess } = await supabase.auth.getSession();
@@ -1071,15 +1262,17 @@ export async function loadProject(id: string): Promise<LoadedProject | null> {
   if (cached && fresh(cached) && !!uid && cached.project.user_id === uid) {
     return cached.project;
   }
-  const { data, error } = await supabase
-    .from("projects")
-    .select("name, graph, is_public, user_id, public_slug, updated_at")
-    .eq("id", id)
-    .single();
-  if (error) {
+  onProgress?.({ stage: "row" });
+  const { data, error } = await selectProjectForEditor(
+    supabase,
+    { column: "id", value: id },
+    true
+  );
+  if (error || !data) {
     console.error("loadProject failed:", error);
     return null;
   }
+  onProgress?.({ stage: "meta" });
   const isMine = !!uid && (data.user_id as string) === uid;
   let author: ProjectAuthor | null = null;
   // Only bother looking up the author for rows the viewer doesn't own —
@@ -1118,6 +1311,10 @@ export async function loadProject(id: string): Promise<LoadedProject | null> {
       .limit(1);
     hasCollaborators = !!anyCollab && anyCollab.length > 0;
   }
+  const vanitySlug = (data.vanity_slug as string | null | undefined) ?? null;
+  const ownerHandle = vanitySlug
+    ? await getHandleForUser(supabase, data.user_id as string)
+    : null;
   const project: LoadedProject = {
     name: data.name as string,
     // Rewrite v9 asset refs → public Storage URLs so the deserializer
@@ -1133,6 +1330,8 @@ export async function loadProject(id: string): Promise<LoadedProject | null> {
     updated_at: (data.updated_at as string | null) ?? null,
     shared_with_me: sharedWithMe,
     has_collaborators: hasCollaborators,
+    vanity_slug: vanitySlug,
+    owner_handle: ownerHandle,
   };
   loadedCache.set(id, { project, fetchedAt: Date.now() });
   return project;

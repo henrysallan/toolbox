@@ -157,6 +157,13 @@ function posOf(
   ];
 }
 
+// The per-subpath driver (birth order) as the `driver` subpath attribute
+// Rasterize / Stroke read by default (092026_unified-attributes.md §4.4),
+// plus the legacy field during the shim window.
+function driverOf(v: number): Pick<SplineSubpath, "driver" | "attrs"> {
+  return { driver: v, attrs: { driver: v } };
+}
+
 function groupIdOf(
   trace: GrowthTrace,
   i: number,
@@ -306,7 +313,7 @@ export function emitGrowth(
         ],
         closed: false,
         groupIndex: groupIdOf(trace, i, o),
-        driver: trace.birth[i],
+        ...driverOf(trace.birth[i]),
       });
     }
     if (hasExtra) {
@@ -322,7 +329,7 @@ export function emitGrowth(
           ],
           closed: false,
           groupIndex: groupIdOf(trace, b, o),
-          driver: trace.birth[b],
+          ...driverOf(trace.birth[b]),
         });
       }
     }
@@ -364,7 +371,7 @@ export function emitGrowth(
         anchors: limb,
         closed: false,
         groupIndex: groupIdOf(trace, tip, o),
-        driver: trace.birth[tip],
+        ...driverOf(trace.birth[tip]),
       });
     }
     // Limbs tile the TREE edges; the fusion/T-junction edges live outside
@@ -384,7 +391,7 @@ export function emitGrowth(
           ],
           closed: false,
           groupIndex: groupIdOf(trace, b, o),
-          driver: trace.birth[b],
+          ...driverOf(trace.birth[b]),
         });
       }
     }
@@ -422,7 +429,7 @@ export function emitGrowth(
         anchors,
         closed: false,
         groupIndex: groupIdOf(trace, i, o),
-        driver: trace.birth[i],
+        ...driverOf(trace.birth[i]),
       });
     }
   }

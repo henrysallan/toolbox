@@ -111,7 +111,9 @@ export const splinePackNode: NodeDefinition = {
       step: 0.5,
       default: 2,
     },
-    strokeUnitsParam("units"),
+    strokeUnitsParam("units", undefined, {
+      governs: ["min_width", "max_width", "gap", "min_length", "spacing"],
+    }),
     {
       name: "seed",
       label: "Seed",

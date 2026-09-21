@@ -18,6 +18,7 @@ import {
 import type { ColorRampStop } from "@/engine/color-ramp";
 import type { MergeLayer } from "@/nodes/effect/merge";
 import type { ImageValue } from "@/engine/types";
+import { rgbaToBytes } from "@/lib/export-capture";
 import { registerAllNodes } from "@/nodes";
 import { deserializeGraph, type SavedProject } from "@/lib/project";
 import {
@@ -30,8 +31,14 @@ import {
   useViewportGestures,
   useViewportPanZoom,
 } from "@/lib/viewport-gestures";
+import { useUndoShortcuts } from "@/state/history";
 import type { ExportManifest } from "./manifest-types";
 import { ControlPanel, type PanelTitle } from "./ControlPanel";
+import {
+  createParamHistory,
+  type HistoryGroup,
+  type ParamEdit,
+} from "./param-history";
 import { LiveGizmoLayer } from "./LiveGizmoLayer";
 import { ZoomChip } from "./ZoomChip";
 import type { LiveLoadPhase } from "./LiveLoadOverlay";
@@ -105,6 +112,10 @@ export default function LiveViewer({
     setCanvasEl(el);
   }, []);
   const backendRef = useRef<EngineBackend | null>(null);
+  // Terminal image of the latest runFrame pass — the GIF export reads its
+  // pixels straight off the GPU (export-capture.ts) rather than copying the
+  // on-screen canvas, which a hidden tab can hold stale.
+  const lastTerminalRef = useRef<ImageValue | null>(null);
   const evalCacheRef = useRef<EvalCache>(new Map());
 
   const [paramValues, setParamValues] = useState<
@@ -115,6 +126,12 @@ export default function LiveViewer({
   );
 
   const [evalBump, setEvalBump] = useState(0);
+
+  // Undo / redo for the visitor's param edits (param-history.ts): a
+  // per-session stack over the same two writes onParamChange makes. The
+  // editor's history never sees these edits (they never leave the viewer),
+  // so before this ⌘Z on a live link did nothing.
+  const historyRef = useRef(createParamHistory());
 
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
@@ -193,6 +210,9 @@ export default function LiveViewer({
         }
         paramValuesRef.current = initialParams;
         setParamValues(new Map(initialParams));
+        // A fresh graph means fresh nodes — entries recorded against the
+        // old ones would write into objects nothing renders any more.
+        historyRef.current.clear();
         setRuntimeGraph({ graphNodes, graphEdges });
         onLoadPhaseRef.current?.("graph");
       })
@@ -355,6 +375,8 @@ export default function LiveViewer({
         manifest.outputNodeId
       );
       const term = result.terminalImage;
+      lastTerminalRef.current =
+        term && term.image.kind === "image" ? (term.image as ImageValue) : null;
       if (term && term.image.kind === "image") {
         ctx.blitToCanvas(term.image as ImageValue, canvas);
       }
@@ -412,17 +434,57 @@ export default function LiveViewer({
     runFrame(timeRef.current);
   }, [evalBump, runFrame]);
 
+  // Write one per-session value into `paramValues` (copy-on-write: the
+  // Map identity is what the panel and the active-branch filter key on).
+  // `undefined` deletes the key, so an undo of a virtual ramp / merge key
+  // that never existed before the edit leaves the record as it was.
+  const writeSessionValue = useCallback(
+    (nodeId: string, key: string, value: unknown) => {
+      const next = new Map(paramValuesRef.current);
+      const existing = next.get(nodeId) ?? {};
+      const updated = { ...existing };
+      if (value === undefined) delete updated[key];
+      else updated[key] = value;
+      next.set(nodeId, updated);
+      paramValuesRef.current = next;
+    },
+    []
+  );
+
   const onParamChange = useCallback(
-    (ref: { nodeId: string; paramName: string }, value: unknown) => {
+    (
+      ref: { nodeId: string; paramName: string },
+      value: unknown,
+      // History grouping: rapid writes sharing a key collapse into one
+      // undo step (a slider drag, a gizmo drag writing several params).
+      // Defaults to the param itself; the gizmo layer passes its node.
+      coalesceKey?: string
+    ) => {
       const graph = runtimeGraph;
+      // Where the write lands on the runtime node, and its before / after,
+      // for the history entry. Defaults to "the param itself"; the ramp /
+      // merge branches below redirect it to the owning array.
+      let storedKey = ref.paramName;
+      let prevStored: unknown;
+      let nextStored: unknown;
+      let touchedNode = false;
       if (graph) {
         const node = graph.graphNodes.find((n) => n.id === ref.nodeId);
         if (node) {
+          touchedNode = true;
           // Per-stop ramp controls carry a virtual paramName
           // (ramp_c/a/p:<param>:<stopId> — engine/conventions): patch the
           // stop inside the owning color_ramp param instead of writing a
           // literal param the node would never read.
           const rk = parseRampParamKey(ref.paramName);
+          const lk = rk ? null : parseMergeLayerKey(ref.paramName);
+          if (rk) storedKey = rk.paramName;
+          else if (lk && lk.field !== "layer") storedKey = lk.paramName;
+          // Captured BEFORE the branches write. The ramp / merge branches
+          // shallow-copy the stops / layers into a fresh array, and the
+          // plain branch replaces the value, so this reference is not
+          // mutated by what follows.
+          prevStored = node.params[storedKey];
           if (rk) {
             const base = node.params[rk.paramName];
             const stops = Array.isArray(base)
@@ -446,7 +508,6 @@ export default function LiveViewer({
             // Per-layer Merge controls (mlayer_m/o:<param>:<layerId>):
             // patch the layer's blend mode / opacity inside the owning
             // merge_layers array, same contract as the ramp stops.
-            const lk = parseMergeLayerKey(ref.paramName);
             if (lk && lk.field !== "layer") {
               const base = node.params[lk.paramName];
               const layers = Array.isArray(base)
@@ -470,18 +531,73 @@ export default function LiveViewer({
               node.params[ref.paramName] = value;
             }
           }
+          nextStored = node.params[storedKey];
         }
       }
-      const next = new Map(paramValuesRef.current);
-      const existing = next.get(ref.nodeId) ?? {};
-      const updated = { ...existing, [ref.paramName]: value };
-      next.set(ref.nodeId, updated);
-      paramValuesRef.current = next;
-      setParamValues(next);
+      const prevValue = paramValuesRef.current.get(ref.nodeId)?.[ref.paramName];
+      writeSessionValue(ref.nodeId, ref.paramName, value);
+      setParamValues(paramValuesRef.current);
+      setEvalBump((n) => n + 1);
+      // A write that found no runtime node changed nothing the render
+      // reads; recording it would make undo delete a stored param that
+      // was never touched.
+      if (!touchedNode) return;
+      const edit: ParamEdit = {
+        nodeId: ref.nodeId,
+        storedKey,
+        prevStored,
+        nextStored,
+        valueKey: ref.paramName,
+        prevValue,
+        nextValue: value,
+      };
+      historyRef.current.record(
+        edit,
+        coalesceKey ?? `param:${ref.nodeId}:${ref.paramName}`
+      );
+    },
+    [runtimeGraph, writeSessionValue]
+  );
+
+  // Apply one history entry in either direction: the stored params go
+  // straight back onto the runtime nodes (the evaluator reads them
+  // per-eval, fingerprinting by value), the session values through the
+  // same copy-on-write the live write uses, then one repaint.
+  const applyHistoryGroup = useCallback(
+    (group: HistoryGroup, dir: "prev" | "next") => {
+      const graph = runtimeGraph;
+      if (graph) {
+        for (const w of group.stored) {
+          const node = graph.graphNodes.find((n) => n.id === w.nodeId);
+          if (!node) continue;
+          const v = w[dir];
+          if (v === undefined) delete node.params[w.key];
+          else node.params[w.key] = v;
+        }
+      }
+      for (const w of group.values) {
+        writeSessionValue(w.nodeId, w.key, w[dir]);
+      }
+      setParamValues(paramValuesRef.current);
       setEvalBump((n) => n + 1);
     },
-    [runtimeGraph]
+    [runtimeGraph, writeSessionValue]
   );
+
+  const undo = useCallback(() => {
+    const group = historyRef.current.undo();
+    if (group) applyHistoryGroup(group, "prev");
+  }, [applyHistoryGroup]);
+
+  const redo = useCallback(() => {
+    const group = historyRef.current.redo();
+    if (group) applyHistoryGroup(group, "next");
+  }, [applyHistoryGroup]);
+
+  // ⌘Z / ⇧⌘Z / ⌘Y — the editor's own binding (state/history.ts), which
+  // already skips text fields (native undo) but not range / color inputs,
+  // so ⌘Z with a slider focused undoes the slider.
+  useUndoShortcuts(undo, redo);
 
   const onTogglePlay = useCallback(() => {
     setPlaying((p) => {
@@ -591,7 +707,25 @@ export default function LiveViewer({
       cancel: () => controller.abort(),
     });
     exportViewerGif({
-      canvas,
+      capturePng: async () => {
+        const backend = backendRef.current;
+        const img = lastTerminalRef.current;
+        const px =
+          backend && img
+            ? backend.readImagePixels(img, canvas.width, canvas.height)
+            : null;
+        if (!px) {
+          throw new Error(
+            "nothing to capture — the graph has no image at its output, or the GPU context was lost"
+          );
+        }
+        return rgbaToBytes(
+          { px, width: canvas.width, height: canvas.height },
+          "image/png"
+        );
+      },
+      width: canvas.width,
+      height: canvas.height,
       durationSecs: exportDurationSecs,
       baseName: appName,
       renderFrame: (t) => runFrame(t),

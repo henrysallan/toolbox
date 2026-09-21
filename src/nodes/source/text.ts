@@ -40,6 +40,46 @@ import {
 } from "@/engine/text-animators";
 import { CURATED_FONTS, ensureFontLoaded, isFontReady } from "@/lib/fonts";
 import { asAxisDict, hasMaskDriven } from "@/lib/font-axis";
+import {
+  resolveStrokePx,
+  strokeUnitsParam,
+  unitsRangeHints,
+} from "@/engine/stroke-units";
+
+// The three pixel metrics governed by the `units` toggle (spec
+// 091926_text-size-units.md). `%` reads each as a percent of canvas width,
+// so text keeps its framing across comp resolutions and preview scales.
+export const TEXT_UNITS_GOVERNS = ["font_size", "letter_spacing", "strokeWidth"];
+
+export interface TextMetricsPx {
+  size: number;
+  letterSpacing: number;
+  strokeWidth: number;
+}
+
+// Resolve the governed metrics to canvas pixels at `canvasWidth`. Pure —
+// the check gate drives it directly; everything downstream (raster,
+// element measure/render, the text_instance carrier, text-on-path offsets)
+// consumes the resolved px through TextStyle.
+export function resolveTextMetrics(
+  params: Record<string, unknown>,
+  canvasWidth: number
+): TextMetricsPx {
+  const units = params.units;
+  return {
+    size: resolveStrokePx((params.font_size as number) ?? 64, units, canvasWidth),
+    letterSpacing: resolveStrokePx(
+      (params.letter_spacing as number) ?? 0,
+      units,
+      canvasWidth
+    ),
+    strokeWidth: resolveStrokePx(
+      (params.strokeWidth as number) ?? 0,
+      units,
+      canvasWidth
+    ),
+  };
+}
 
 // The built-in transform shader. Mostly identical to transform.ts but with an
 // extra Y-flip when sampling the rasterized 2D canvas, whose row 0 sits at
@@ -196,7 +236,7 @@ interface TextState {
   splineValid: boolean;
 }
 
-function computeRasterSig(
+export function computeRasterSig(
   params: Record<string, unknown>,
   family: string,
   W: number,
@@ -206,6 +246,9 @@ function computeRasterSig(
     t: params.text,
     f: family,
     s: params.font_size,
+    // px | % — the same number rasterizes differently per unit. W is
+    // already keyed below, so a `%` node re-rasterizes on a canvas resize.
+    u: params.units,
     c: params.color,
     a: params.alignment,
     l: params.leading,
@@ -368,9 +411,12 @@ function fillFromParams(params: Record<string, unknown>): TextFill {
   return { mode: "linear", stops, angle: (params.gradientAngle as number) ?? 0 };
 }
 
-function strokeFromParams(params: Record<string, unknown>): TextStroke | null {
+function strokeFromParams(
+  params: Record<string, unknown>,
+  canvasWidth: number
+): TextStroke | null {
   if (params.strokeEnabled !== true) return null;
-  const width = (params.strokeWidth as number) ?? 0;
+  const width = resolveTextMetrics(params, canvasWidth).strokeWidth;
   if (width <= 0) return null;
   return {
     width,
@@ -384,13 +430,18 @@ function strokeFromParams(params: Record<string, unknown>): TextStroke | null {
 // live in engine/text-raster.ts now — see the comments there.
 function styleFromParams(
   params: Record<string, unknown>,
-  family: string
+  family: string,
+  // Render width the `%` unit resolves against (ctx.width — the pixel grid
+  // being drawn into, so preview scale and the export override both frame
+  // identically).
+  canvasWidth: number
 ): TextStyle {
   const customFont = params.custom_font as FontParamValue | null | undefined;
+  const metrics = resolveTextMetrics(params, canvasWidth);
   return {
     text: applyTextCase((params.text as string) ?? "", params.textCase as string),
     family,
-    size: (params.font_size as number) ?? 64,
+    size: metrics.size,
     color: (params.color as string) ?? "#ffffff",
     alignment: ((params.alignment as string) ?? "center") as
       | "left"
@@ -398,11 +449,11 @@ function styleFromParams(
       | "right",
     vAlign: ((params.vAlign as string) ?? "middle") as VAlign,
     leading: (params.leading as number) ?? 1.2,
-    letterSpacing: (params.letter_spacing as number) ?? 0,
+    letterSpacing: metrics.letterSpacing,
     weight: (params.font_weight as number) ?? 400,
     italic: params.italic === true,
     fill: fillFromParams(params),
-    stroke: strokeFromParams(params),
+    stroke: strokeFromParams(params, canvasWidth),
     fontAxes: customFont?.axes,
     axesDict: asAxisDict(params.font_variations),
   };
@@ -474,7 +525,7 @@ function rasterize(
 ): void {
   // Single-pass canvas2d render for all (non-image-fill) modes — the
   // mask-driven mode samples per char, not per pixel.
-  const style = styleFromParams(params, family);
+  const style = styleFromParams(params, family, ctx.width);
   renderTextLayer(ctx, state, params, style, maskData, state.rasterTex, anim, pathLayout);
 }
 
@@ -675,7 +726,7 @@ export const textNode: NodeDefinition = {
     gotchas: [
       "boxWidth/boxHeight are per-axis uv01 fractions of the working canvas (width/height respectively), not aspect-corrected canvas01; 1×1 is the full canvas.",
       "translateX/Y, pivotX/Y, and rotate operate as raw per-axis UV offsets on the rasterized image (uv01), so rotate skews text on a non-square canvas.",
-      "font_size, strokeWidth, and letter_spacing are literal canvas pixels at the working render resolution; they don't scale with boxWidth/Height or output size.",
+      "font_size, strokeWidth and letter_spacing default to raw pixels; units=% resolves them as a percent of canvas width, so the framing holds across comp resolutions and preview scales.",
       "sdf and spline aux build lazily only when consumed; dragging text while only primary/element are wired skips the JFA SDF and marching-squares contour work.",
       "A wired path or a maskDriven morph_mask axis forces a full re-rasterize every frame, bypassing the normal per-param signature cache.",
       "morph_mask (variable-font axis morph) only modulates the primary raster; element and instances aux always use the unmodulated base style.",
@@ -761,16 +812,27 @@ export const textNode: NodeDefinition = {
         return !!(f?.axes && f.axes.length > 0);
       },
     },
+    // Size + the px/% units toggle right beside it. px = literal canvas
+    // pixels at the render resolution (legacy, resolution-dependent); % =
+    // percent of canvas width, so the text keeps its framing when the comp
+    // goes 2K → 4K or the preview scale drops. One toggle governs size,
+    // letter spacing and the in-raster stroke width (mirroring Stroke's
+    // single `units` over thickness + dash/dot metrics). Flipping it
+    // converts the governed values + keyframes against the PROJECT width
+    // so what is on screen doesn't change (ParamDef.unitsConvert). Ranges
+    // swap to the percent scale under % — 4…1000 px vs 0.1…100 % (soft 20).
     {
       name: "font_size",
-      label: "Size (px)",
+      label: "Size",
       type: "scalar",
       min: 4,
       max: 1000,
       softMax: 200,
       step: 1,
       default: 96,
+      ...unitsRangeHints("units", { min: 0.1, max: 100, softMax: 20, step: 0.1 }),
     },
+    strokeUnitsParam("units", undefined, { governs: TEXT_UNITS_GOVERNS }),
     // Base weight applies to any font (the Google CDN ships the full
     // wght@100..900 range, so built-in families interpolate too). A
     // modulated `wght` variable axis overrides this per glyph.
@@ -857,6 +919,7 @@ export const textNode: NodeDefinition = {
       step: 0.5,
       default: 2,
       visibleIf: (p) => p.strokeEnabled === true,
+      ...unitsRangeHints("units", { max: 5, softMax: 2, step: 0.05 }),
     },
     // alpha: verbatim into Canvas strokeStyle, signature-keyed (`sc`).
     {
@@ -913,6 +976,7 @@ export const textNode: NodeDefinition = {
       max: 40,
       step: 0.5,
       default: 0,
+      ...unitsRangeHints("units", { min: -1, max: 4, step: 0.05 }),
     },
     // Text box — a rect the text is laid out inside (alignment is
     // box-relative; vertical centering is within the box). Sizes are
@@ -1245,7 +1309,7 @@ export const textNode: NodeDefinition = {
         // in-raster stroke in its own color. Composited with the image below.
         const gl = ctx.gl;
         if (!state.fillCovTex) state.fillCovTex = makeTex(gl);
-        const baseStyle = styleFromParams(params, family);
+        const baseStyle = styleFromParams(params, family, ctx.width);
         renderTextLayer(
           ctx,
           state,
@@ -1256,7 +1320,7 @@ export const textNode: NodeDefinition = {
           animCoverage,
           pathLayout
         );
-        const strokeOnly = strokeFromParams(params);
+        const strokeOnly = strokeFromParams(params, ctx.width);
         if (strokeOnly) {
           if (!state.strokeLayerTex) state.strokeLayerTex = makeTex(gl);
           renderTextLayer(
@@ -1346,7 +1410,7 @@ export const textNode: NodeDefinition = {
     // path re-rasterizes whenever the primary actually changes.
     // maskDriven axis modulation is primary-only (mask coords are canvas
     // space, which doesn't exist inside a layout rect).
-    const style = styleFromParams(params, family);
+    const style = styleFromParams(params, family, ctx.width);
     const element: ElementValue = {
       kind: "element",
       measure(constraints) {

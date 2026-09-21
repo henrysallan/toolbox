@@ -105,6 +105,9 @@ export interface MenuBarProps {
   // file-name pill exposes a "Copy editor link" button (/p/<slug>).
   // Live-link copy still requires isPublic.
   publicSlug: string | null;
+  // Named live link path when opted in + public (092126_vanity-live-links.md);
+  // the pill's "Copy live link" prefers it over /live/<publicSlug>.
+  liveVanityPath?: string | null;
   // False when viewing someone else's public project — disables
   // rename + visibility toggle. Save still works (forks a copy).
   ownedByMe: boolean;
@@ -221,6 +224,7 @@ export default function MenuBar({
   saveState,
   isPublic,
   publicSlug,
+  liveVanityPath = null,
   ownedByMe,
   authorName,
   onRenameProject,
@@ -810,6 +814,7 @@ export default function MenuBar({
           saveState={saveState}
           isPublic={isPublic}
           publicSlug={publicSlug}
+          liveVanityPath={liveVanityPath}
           projectId={projectId}
           canEdit={signedIn}
           ownedByMe={ownedByMe}

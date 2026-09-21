@@ -643,5 +643,93 @@ const want = [`${constant.id}::value`, `${transform.id}::rotate`].sort();
   );
 }
 
+// --- 9. File inputs are opt-in via the Control toggle (2026-09-21) --------
+// Every reachable file param used to ship as a File Inputs picker
+// unconditionally, so a bundled image source surfaced as "replace this
+// image" on every live link. Now: Control-toggled → File Input (never a
+// knob); untoggled → bundled, no row.
+{
+  const out9 = makeInstanceNode("output", { x: 400, y: 0 });
+  const imgA = makeInstanceNode("image-source", { x: 0, y: 0 });
+  const imgB = makeInstanceNode("image-source", { x: 0, y: 200 });
+  const xf9 = makeInstanceNode("transform", { x: 200, y: 0 });
+  imgB.data.controlParams = ["file"];
+  xf9.data.controlParams = ["rotate"];
+  const nodes9: any[] = [out9, imgA, imgB, xf9];
+  const edges9: any[] = [
+    edge("e9-a-xf", imgA.id, xf9.id, "in:image"),
+    edge("e9-b-xf", imgB.id, xf9.id, "in:param:scaleX"),
+    edge("e9-xf-out", xf9.id, out9.id, "in:image"),
+  ];
+  const { manifest: m9, warnings: w9 } = buildExportManifest({
+    nodes: nodes9,
+    edges: edges9,
+    appName: "t",
+    outputNodeId: out9.id,
+    canvasRes: [64, 64],
+  });
+  const fileKeys = m9.fileInputs.map((f) => `${f.nodeId}::${f.paramName}`);
+  check(
+    "an untoggled file param ships NO file input (bundled)",
+    !fileKeys.includes(`${imgA.id}::file`),
+    JSON.stringify(fileKeys)
+  );
+  check(
+    "a Control-toggled file param ships as a file input",
+    JSON.stringify(fileKeys) === JSON.stringify([`${imgB.id}::file`]),
+    JSON.stringify(fileKeys)
+  );
+  check(
+    "a Control-toggled file param is NOT also a knob in controls",
+    !m9.controls.some((c) => c.nodeId === imgB.id),
+    JSON.stringify(keys(m9))
+  );
+  check(
+    "the only knob is the Transform's rotate",
+    JSON.stringify(keys(m9)) === JSON.stringify([`${xf9.id}::rotate`]),
+    JSON.stringify(keys(m9))
+  );
+  check(
+    "the file input's paramType is the def's file type",
+    m9.fileInputs[0]?.paramType === "file" && m9.fileInputs[0]?.nodeName === "Image Source",
+    `${m9.fileInputs[0]?.paramType} / ${m9.fileInputs[0]?.nodeName}`
+  );
+  check(
+    "no unexpected warnings",
+    w9.length === 0,
+    JSON.stringify(w9.map((w) => w.kind))
+  );
+  // Only a toggled file picker, nothing else — still not "no controls".
+  const fileOnly = buildExportManifest({
+    nodes: nodes9.map((n) =>
+      n.id === xf9.id ? { ...n, data: { ...n.data, controlParams: [] } } : n
+    ),
+    edges: edges9,
+    appName: "t",
+    outputNodeId: out9.id,
+    canvasRes: [64, 64],
+  });
+  check(
+    "a file-input-only manifest doesn't warn no-controls",
+    fileOnly.manifest.fileInputs.length === 1 &&
+      fileOnly.manifest.controls.length === 0 &&
+      !fileOnly.warnings.some((w) => w.kind === "no-controls"),
+    JSON.stringify(fileOnly.warnings.map((w) => w.kind))
+  );
+  // Nothing toggled anywhere → no file inputs, and no-controls DOES fire.
+  const nothing = buildExportManifest({
+    nodes: nodes9.map((n) => ({ ...n, data: { ...n.data, controlParams: [] } })),
+    edges: edges9,
+    appName: "t",
+    outputNodeId: out9.id,
+    canvasRes: [64, 64],
+  });
+  check(
+    "with nothing toggled there are no file inputs and no-controls warns",
+    nothing.manifest.fileInputs.length === 0 &&
+      nothing.warnings.some((w) => w.kind === "no-controls")
+  );
+}
+
 console.log(failures === 0 ? "\ncheck-export-manifest: all passed" : `\ncheck-export-manifest: ${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

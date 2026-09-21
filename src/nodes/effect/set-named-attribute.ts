@@ -1,23 +1,30 @@
 import type {
   InputSocketDef,
   NodeDefinition,
-  PointAttribute,
   RenderContext,
   SocketType,
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
 import {
-  copyPointsWith,
   EMPTY_POINTS,
-  RESERVED_POINT_ATTR_NAMES,
+  isWritablePointAttr,
+  withPointAttr,
+  type PointAttrWriteMode,
 } from "@/engine/points";
+import { readSubpathAttr, withSubpathAttr } from "@/engine/spline-attrs";
 
-// Set Named Attribute — write a named channel onto points or splines
-// (081326_point-attributes.md M2 + M3). The authoring counterpart to the
-// Spreadsheet panel: pick a name, a type, a target domain, and a source,
-// and every element gains that channel. Downstream nodes carry channels
-// automatically; Point Expression reads point channels via attr("name").
+// Set Named Attribute — write an attribute onto points or splines by name
+// (081326_point-attributes.md M2 + M3; 092026_unified-attributes.md). The
+// authoring counterpart to the Spreadsheet panel: pick a name, a type, a
+// target domain, and a source, and every element gains that value.
+//
+// The name is ANY attribute. A named channel (`weight`, `color`) lands in
+// PointsValue.attributes / the anchor or subpath `attrs`; a built-in name
+// (`scale`, `scale.x`, `rotation`, `x`, `y`, `group`; `group` / `driver`
+// on subpaths) lands in the element's own transform data through the
+// unified attribute API, so "index → scale" is one node. `index`, `z` and
+// normals are read-only and pass the input through (the name field tints).
 //
 // Targets: Points (SoA channel on PointsValue.attributes), Spline Anchors
 // / Spline Subpaths (object-attached `attrs` on each anchor/subpath — the
@@ -25,12 +32,16 @@ import {
 // The input socket keeps its shipped name `points` and retypes with the
 // target (the set-position resolveInputs pattern), so saved wires hold.
 //
-// Sources: Constant, Index (0→1 ramp over element order), Random
-// (deterministic per-index hash — stable across frames), Image (sample
-// the wired image at the element's position: a point's position, an
-// anchor's position, a subpath's anchor centroid).
+// Sources: Constant, Index (0→1 ramp over element order, remapped lo..hi),
+// Exponential (the geometric ramp lo · (hi/lo)^t — a scale ladder in one
+// node; falls back to the linear ramp when lo/hi straddle zero), Random
+// (deterministic per-index hash — stable across frames), Image (sample the
+// wired image at the element's position: a point's position, an anchor's
+// position, a subpath's anchor centroid).
 //
-// A reserved or empty name passes the input through unchanged.
+// Mode: set replaces; multiply / add combine with the element's current
+// value (a built-in's default where absent — scale 1, rotation 0; a
+// missing channel reads as the op's identity).
 
 const KIND_OPTIONS = ["float", "vec2", "vec3", "vec4", "color"] as const;
 type Kind = (typeof KIND_OPTIONS)[number];
@@ -42,8 +53,16 @@ const TARGET_OPTIONS = [
 ] as const;
 type Target = (typeof TARGET_OPTIONS)[number];
 
-const SOURCE_OPTIONS = ["constant", "index", "random", "image"] as const;
+const SOURCE_OPTIONS = [
+  "constant",
+  "index",
+  "exponential",
+  "random",
+  "image",
+] as const;
 type Source = (typeof SOURCE_OPTIONS)[number];
+
+const MODE_OPTIONS = ["set", "multiply", "add"] as const;
 
 const ARITY: Record<Kind, 1 | 2 | 3 | 4> = {
   float: 1,
@@ -141,6 +160,16 @@ interface ValueOpts {
   buf: ImageBuffer | null;
 }
 
+// lo · (hi/lo)^t — the geometric ramp. Only defined when lo and hi share a
+// sign and neither is 0; otherwise the linear lerp so a slider dragged
+// through zero degrades instead of producing NaN.
+export function geometricRamp(lo: number, hi: number, t: number): number {
+  if (lo !== 0 && hi !== 0 && Math.sign(lo) === Math.sign(hi)) {
+    return lo * Math.pow(hi / lo, t);
+  }
+  return lo + (hi - lo) * t;
+}
+
 // The per-element value, shared across all three targets. `pos` is the
 // element's authored-space sample position (image source only).
 function valueAt(
@@ -151,12 +180,14 @@ function valueAt(
 ): number[] {
   const out = new Array<number>(o.arity).fill(0);
   const remap = (v: number) =>
-    o.kind === "float" && o.source !== "constant"
-      ? o.lo + (o.hi - o.lo) * v
-      : v;
+    o.kind !== "float" || o.source === "constant"
+      ? v
+      : o.source === "exponential"
+        ? geometricRamp(o.lo, o.hi, v)
+        : o.lo + (o.hi - o.lo) * v;
   if (o.source === "constant") {
     for (let c = 0; c < o.arity; c++) out[c] = o.constant[c] ?? 0;
-  } else if (o.source === "index") {
+  } else if (o.source === "index" || o.source === "exponential") {
     const t = remap(nRows > 1 ? i / (nRows - 1) : 0);
     for (let c = 0; c < o.arity; c++) out[c] = t;
     if (o.kind === "color") out[3] = 1;
@@ -185,21 +216,43 @@ function subpathCentroid(sub: SplineSubpath): [number, number] {
   return [cx / n, cy / n];
 }
 
+// Object-attr combine for the spline targets: componentwise against the
+// current value (missing → the op's identity), stored as number for arity
+// 1 and number[] otherwise (spline-attrs' number | number[] convention).
+function combineObj(
+  cur: number | number[] | undefined,
+  v: number[],
+  mode: PointAttrWriteMode
+): number | number[] {
+  const out = v.slice();
+  if (mode !== "set") {
+    const c = cur === undefined ? [] : Array.isArray(cur) ? cur : [cur];
+    const id = mode === "multiply" ? 1 : 0;
+    for (let k = 0; k < out.length; k++) {
+      const x = typeof c[k] === "number" ? c[k] : id;
+      out[k] = mode === "multiply" ? x * out[k] : x + out[k];
+    }
+  }
+  return out.length === 1 ? out[0] : out;
+}
+
 export const setNamedAttributeNode: NodeDefinition = {
   type: "set-named-attribute",
   name: "Set Named Attribute",
   category: "point",
   subcategory: "modifier",
   description:
-    "Writes a named channel (a Blender-style attribute) onto points, spline anchors, or spline subpaths: pick a name, a type, and a source — a constant, a 0→1 ramp over element order, a stable per-element random, or an image sampled at each element's position. Channels flow through downstream nodes, show as columns in the Spreadsheet panel, and point channels read back in Point Expression via attr(\"name\"). Reserved names (the built-in x/y/index/rotation/scale/group columns) pass through unchanged.",
+    "Writes an attribute by name onto points, spline anchors, or spline subpaths: pick a name, a type, and a source — a constant, a 0→1 ramp over element order (linear or exponential lo→hi), a stable per-element random, or an image sampled at each element's position. Set replaces the value; multiply / add combine with what the element already has. A named channel flows through downstream nodes, shows as a column in the Spreadsheet panel, and reads back in Point Expression via attr(\"name\"); a built-in name (scale, scale.x, rotation, x, y, group — group or driver on subpaths) writes the element's own transform data directly, so index → scale needs no Map Attribute. index, z and normals are read-only and pass the input through.",
   facts: {
     space: { "in:points": "canvas01", out: "in:points" },
+    writes: ["attr:scale", "attr:rotation", "attr:position", "attr:group", "attr:driver"],
     gotchas: [
-      "The written channel's name comes from `attr_name`; an empty name or a reserved one (position/x/y/index/rotation/scale/group/z/nx/ny/nz) passes the input through unchanged.",
-      "target=points writes a PointsValue.attributes channel; target=spline anchors/subpaths write to each anchor's or subpath's object-attached `attrs` instead.",
+      "attr_name is any attribute: a channel, or a built-in (scale, scale.x, rotation, x, y, group) landing in the point's own data. Empty or read-only (index, z, nx/ny/nz) passes the input through.",
+      "target=points writes PointsValue.attributes (the typed array for a built-in); spline anchors/subpaths write object-attached attrs. On subpaths group is groupIndex, driver is what ramps read.",
       "source=image samples nearest-texel at each element's own position (point, anchor, or subpath centroid) — float kind uses luminance, vec/color kinds use RGBA.",
-      "source=index and source=random remap through lo/hi only when kind=float; other kinds ignore lo/hi and use the raw [0,1) value per component.",
+      "index, exponential and random remap through lo/hi only when kind=float; other kinds use the raw [0,1) value. exponential is lo·(hi/lo)^t and falls back to linear when lo/hi straddle or touch zero.",
       "source=random is a deterministic hash keyed on seed and element index, not Math.random, so it's stable across frames and re-evaluations.",
+      "mode=multiply / add combine with the current value: an absent built-in reads its default (scale 1, rotation 0), a missing channel the op's identity. A float into scale fills both lanes; group rounds.",
       "The `name` aux output is the channel's name as a string, meant to be wired into another node's attribute-name param so a rename here ripples downstream.",
     ],
   },
@@ -230,6 +283,10 @@ export const setNamedAttributeNode: NodeDefinition = {
       // renders this param on the node body — the name IS the node).
       placeholder: "attribute name",
       suggestAttrsFrom: "points",
+      // Offer the writable built-ins alongside the upstream channels;
+      // index / z / normals tint red.
+      suggestAttrsIncludeBuiltins: true,
+      suggestAttrsBuiltinFilter: isWritablePointAttr,
     },
     {
       name: "target",
@@ -251,6 +308,13 @@ export const setNamedAttributeNode: NodeDefinition = {
       type: "enum",
       options: SOURCE_OPTIONS as unknown as string[],
       default: "constant",
+    },
+    {
+      name: "mode",
+      label: "Mode",
+      type: "enum",
+      options: MODE_OPTIONS as unknown as string[],
+      default: "set",
     },
     {
       name: "value",
@@ -334,6 +398,11 @@ export const setNamedAttributeNode: NodeDefinition = {
     const aux = { name: { kind: "string", value: name } as const };
     const kind = ((params.kind as string) ?? "float") as Kind;
     const source = ((params.source as string) ?? "constant") as Source;
+    const mode = (
+      (MODE_OPTIONS as readonly string[]).includes(params.mode as string)
+        ? params.mode
+        : "set"
+    ) as PointAttrWriteMode;
     const arity = ARITY[kind];
 
     let constant: number[] = [];
@@ -367,9 +436,7 @@ export const setNamedAttributeNode: NodeDefinition = {
 
     if (target === "points") {
       if (!src || src.kind !== "points") return { primary: EMPTY_POINTS, aux };
-      if (!name || RESERVED_POINT_ATTR_NAMES.has(name)) {
-        return { primary: src, aux };
-      }
+      if (!isWritablePointAttr(name)) return { primary: src, aux };
       const n = src.count;
       const data = new Float32Array(n * arity);
       const pos: [number, number] = [0, 0];
@@ -379,15 +446,13 @@ export const setNamedAttributeNode: NodeDefinition = {
         const v = valueAt(opts, i, n, pos);
         for (let c = 0; c < arity; c++) data[i * arity + c] = v[c];
       }
-      const attr: PointAttribute = {
-        arity: ARITY[kind],
-        color: kind === "color" ? true : undefined,
-        data,
-      };
       return {
-        primary: copyPointsWith(src, {
-          attributes: { ...src.attributes, [name]: attr },
+        primary: withPointAttr(src, name, data, {
+          arity,
+          mode,
+          color: kind === "color" ? true : undefined,
         }),
+        aux,
       };
     }
 
@@ -397,24 +462,25 @@ export const setNamedAttributeNode: NodeDefinition = {
     if (!src || src.kind !== "spline") {
       return { primary: { kind: "spline", subpaths: [] } as SplineValue, aux };
     }
-    if (!name || RESERVED_POINT_ATTR_NAMES.has(name)) {
-      return { primary: src };
-    }
-    const store = (v: number[]): number | number[] =>
-      arity === 1 ? v[0] : v;
+    if (!name) return { primary: src, aux };
     if (target === "spline subpaths") {
       const nSub = src.subpaths.length;
-      const subpaths = src.subpaths.map((sub, i) => ({
-        ...sub,
-        attrs: {
-          ...sub.attrs,
-          [name]: store(valueAt(opts, i, nSub, subpathCentroid(sub))),
-        },
-      }));
+      const subpaths = src.subpaths.map((sub, i) =>
+        withSubpathAttr(
+          sub,
+          name,
+          combineObj(
+            readSubpathAttr(sub, name),
+            valueAt(opts, i, nSub, subpathCentroid(sub)),
+            mode
+          )
+        )
+      );
       return { primary: { kind: "spline", subpaths } as SplineValue, aux };
     }
     // spline anchors — index runs across ALL anchors in subpath order,
-    // matching the spreadsheet's row order.
+    // matching the spreadsheet's row order. Anchors have no built-in
+    // schema, so every name is an anchor channel.
     let total = 0;
     for (const sub of src.subpaths) total += sub.anchors.length;
     let row = 0;
@@ -424,7 +490,11 @@ export const setNamedAttributeNode: NodeDefinition = {
         ...a,
         attrs: {
           ...a.attrs,
-          [name]: store(valueAt(opts, row++, total, a.pos)),
+          [name]: combineObj(
+            a.attrs?.[name] ?? sub.attrs?.[name],
+            valueAt(opts, row++, total, a.pos),
+            mode
+          ),
         },
       })),
     }));

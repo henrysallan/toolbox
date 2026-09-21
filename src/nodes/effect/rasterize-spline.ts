@@ -1493,7 +1493,9 @@ export const rasterizeSplineNode: NodeDefinition = {
     // px = absolute pixels (legacy); % = percent of canvas width, so the
     // stroke keeps its look at any resolution (#174). Applies to thickness
     // and the dash/dot metrics below.
-    strokeUnitsParam("units", (p) => p.enable_stroke !== false),
+    strokeUnitsParam("units", (p) => p.enable_stroke !== false, {
+      governs: ["thickness", "dash_length", "dash_gap", "dot_spacing", "arrow_length"],
+    }),
     // Per-subpath thickness, ported from Stroke: `vary` maps each
     // subpath's driver t (same index/random/group/position/driver
     // resolver) linearly into a lo→hi multiplier on the base thickness.

@@ -11,6 +11,9 @@ const fs = require("fs");
 const fsp = require("fs/promises");
 const os = require("os");
 const path = require("path");
+// Export log files: the renderer opens one per export and passes its id in
+// the encode spec; we append the command line and ffmpeg's stderr to it.
+const exportLog = require("./export-log");
 // ffmpeg 9.0, vendored by scripts/fetch-ffmpeg.mjs (NOT the ffmpeg-static npm
 // package, which is stuck on 6.0 and writes ProRes 4444 alpha that Apple's
 // decoder silently renders opaque — see specdocs/091526_prores-alpha.md).
@@ -83,6 +86,18 @@ function killAllSessions() {
   for (const id of [...sessions.keys()]) abortSession(id);
 }
 
+// Shell-style quoting for the log only (the process is spawned with an
+// argv array, never a shell string).
+function quoteArg(a) {
+  const s = String(a);
+  return /[^A-Za-z0-9_@%+=:,./-]/.test(s) ? `'${s.replace(/'/g, "'\\''")}'` : s;
+}
+
+function lastLines(text, n) {
+  const lines = String(text).split(/\r\n|\n|\r/).filter((l) => l.trim());
+  return lines.slice(-n).join("\n");
+}
+
 function progress(win, sessionId, label, fraction) {
   if (win && !win.isDestroyed()) {
     win.webContents.send("toolbox:encodeProgress", { sessionId, label, fraction });
@@ -134,13 +149,28 @@ function register() {
     if (!(w > 0 && h > 0 && fps > 0)) throw new Error("bad dimensions/fps");
     const crf = Number.isFinite(spec.crf) ? spec.crf : 18;
     const proresProfile = Number.isFinite(spec.proresProfile) ? spec.proresProfile : 3;
+    // Renderer-owned export log (export-log.js); unknown/absent id = no file.
+    const logId = typeof spec.logId === "string" ? spec.logId : null;
+    const log = (line) => {
+      if (logId) exportLog.appendLog(logId, `[ffmpeg] ${line}`);
+    };
 
     const win = BrowserWindow.fromWebContents(event.sender) || undefined;
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
       defaultPath: spec.suggestedName,
       filters: [EXT_FILTER[spec.container]],
     });
-    if (canceled || !filePath) return null;
+    if (canceled || !filePath) {
+      log("save dialog cancelled");
+      return null;
+    }
+    log(`binary: ${ffmpegPath}`);
+    log(`output: ${filePath}`);
+    log(
+      `spec: ${w}x${h} @ ${fps}fps, ${Number(spec.durationFrames) || 0} frames, ` +
+        `${spec.codec} in ${spec.container}, crf ${crf}, prores profile ${proresProfile}, ` +
+        `alpha ${!!spec.alpha}, audio ${spec.audioWav ? `${spec.audioWav.byteLength} bytes` : "none"}`
+    );
 
     // Audio (optional): write the WAV to a temp file and mux as a 2nd input.
     let audioPath = null;
@@ -166,20 +196,43 @@ function register() {
       filePath,
     ];
 
+    log(`spawn: ffmpeg ${args.map(quoteArg).join(" ")}`);
     const proc = spawn(ffmpegPath, args, { stdio: ["pipe", "ignore", "pipe"] });
     const sessionId = `enc-${++counter}`;
     const totalFrames = Math.max(0, Number(spec.durationFrames) || 0);
-    const session = { proc, audioPath, filePath, win, totalFrames };
+    const session = {
+      proc,
+      audioPath,
+      filePath,
+      win,
+      totalFrames,
+      log,
+      framesIn: 0,
+      bytesIn: 0,
+      startedAt: Date.now(),
+    };
     sessions.set(sessionId, session);
+    log(`session ${sessionId} pid ${proc.pid}`);
 
     // Don't crash on a broken pipe if ffmpeg dies early; the exit promise
     // surfaces the real error to encodeVideoEnd.
-    proc.stdin.on("error", () => {});
+    proc.stdin.on("error", (e) => {
+      log(`stdin error: ${e && e.message ? e.message : e}`);
+    });
 
+    // Every stderr line goes to the export log (x264/prores diagnostics,
+    // "Conversion failed!", the final stats); the tail rides along on the
+    // error so a failure toast can quote it even without the file.
     let stderrTail = "";
+    let partial = "";
     proc.stderr.setEncoding("utf8");
     proc.stderr.on("data", (chunk) => {
-      stderrTail = (stderrTail + chunk).slice(-4000);
+      stderrTail = (stderrTail + chunk).slice(-12000);
+      partial += chunk;
+      // ffmpeg's progress line uses \r; treat it as a line break too.
+      const pieces = partial.split(/\r\n|\n|\r/);
+      partial = pieces.pop() || "";
+      for (const line of pieces) if (line.trim()) log(line);
       const m = /frame=\s*(\d+)/.exec(chunk);
       if (m) {
         const f = Number(m[1]);
@@ -189,10 +242,25 @@ function register() {
     });
 
     session.exit = new Promise((resolve, reject) => {
-      proc.on("error", reject);
-      proc.on("close", (code) => {
+      proc.on("error", (e) => {
+        log(`process error: ${e && e.message ? e.message : e}`);
+        reject(e);
+      });
+      proc.on("close", (code, signal) => {
+        if (partial.trim()) log(partial);
+        log(
+          `exit code ${code}${signal ? ` (signal ${signal})` : ""} after ` +
+            `${((Date.now() - session.startedAt) / 1000).toFixed(1)}s, ` +
+            `${session.framesIn} frames / ${session.bytesIn} bytes received`
+        );
         if (code === 0) resolve();
-        else reject(new Error(`ffmpeg exited with code ${code}\n${stderrTail}`));
+        else
+          reject(
+            new Error(
+              `ffmpeg exited with code ${code}${signal ? ` (${signal})` : ""}\n` +
+                lastLines(stderrTail, 25)
+            )
+          );
       });
     });
 
@@ -202,7 +270,17 @@ function register() {
   ipcMain.handle("toolbox:encodeVideoFrame", async (_event, sessionId, rgba) => {
     const s = sessions.get(sessionId);
     if (!s) throw new Error("encodeVideoFrame: unknown session");
-    const ok = s.proc.stdin.write(Buffer.from(rgba));
+    const buf = Buffer.from(rgba);
+    s.framesIn++;
+    s.bytesIn += buf.byteLength;
+    if (s.framesIn === 1) s.log(`first frame received: ${buf.byteLength} bytes`);
+    if (s.proc.exitCode !== null || s.proc.stdin.destroyed) {
+      throw new Error(
+        `ffmpeg is no longer accepting frames (exit code ${s.proc.exitCode})\n` +
+          `frame ${s.framesIn} of ${s.totalFrames || "?"}`
+      );
+    }
+    const ok = s.proc.stdin.write(buf);
     // Backpressure: resolve only once the OS pipe has drained the chunk.
     if (!ok) await new Promise((resolve) => s.proc.stdin.once("drain", resolve));
   });
@@ -210,18 +288,26 @@ function register() {
   ipcMain.handle("toolbox:encodeVideoEnd", async (_event, sessionId) => {
     const s = sessions.get(sessionId);
     if (!s) throw new Error("encodeVideoEnd: unknown session");
+    s.log(`end of frames: ${s.framesIn} sent (${s.bytesIn} bytes); closing stdin`);
     s.proc.stdin.end();
+    // x264's lookahead (60 frames at veryslow) is still draining here; the
+    // encode bar would otherwise sit on the last frame= line it saw.
+    progress(s.win, sessionId, "Finalizing…", 0.99);
     try {
       await s.exit;
     } finally {
       if (s.audioPath) fsp.unlink(s.audioPath).catch(() => {});
       sessions.delete(sessionId);
     }
+    const st = await fsp.stat(s.filePath).catch(() => null);
+    s.log(`done: ${s.filePath} (${st ? st.size : "?"} bytes)`);
     progress(s.win, sessionId, "Done", 1);
-    return { path: s.filePath };
+    return { path: s.filePath, bytes: st ? st.size : undefined };
   });
 
   ipcMain.handle("toolbox:encodeVideoAbort", async (_event, sessionId) => {
+    const s = sessions.get(sessionId);
+    if (s) s.log(`aborted by the renderer after ${s.framesIn} frames`);
     abortSession(sessionId);
   });
 

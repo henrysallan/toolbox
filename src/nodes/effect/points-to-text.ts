@@ -12,6 +12,11 @@ import {
   type PointLabelUnits,
 } from "@/engine/point-labels";
 import { CURATED_FONTS } from "@/lib/fonts";
+import {
+  resolveStrokePx,
+  strokeUnitsParam,
+  unitsRangeHints,
+} from "@/engine/stroke-units";
 
 // Points to Text — format each point's OWN data (position, index, rotation,
 // scale, group) into a string, one per point in point order, and emit a
@@ -46,6 +51,7 @@ export const pointsToTextNode: NodeDefinition = {
       "units=pixels multiplies x by canvas width and y by canvas height independently (anisotropic) — not one aspect-scaled number.",
       "Pairing with Copy to Points (text mode, 'by index') matches strings to points strictly by INDEX; a filter/reorder/resample in between desyncs labels from dots.",
       "style input (a wired Text node's text_instance) overrides font_family/size/color/alignment entirely; the local params are only the no-wire fallback.",
+      "size defaults to raw pixels; size_units=% reads it as a percent of canvas width (the separate `units` param only affects the {x}/{y} coordinate tokens).",
     ],
   },
   backend: "webgl2",
@@ -107,14 +113,19 @@ export const pointsToTextNode: NodeDefinition = {
     },
     {
       name: "size",
-      label: "Size (px)",
+      label: "Size",
       type: "scalar",
       min: 1,
       max: 512,
       softMax: 128,
       step: 1,
       default: 32,
+      ...unitsRangeHints("size_units", { min: 0.1, max: 50, softMax: 10, step: 0.1 }),
     },
+    // px | % for `size` (the coordinate `units` above is a different axis).
+    // % = percent of canvas width, matching Text's toggle; flipping converts
+    // the value so the labels don't jump. Spec: 091926_text-size-units.md.
+    strokeUnitsParam("size_units", undefined, { governs: ["size"] }),
     {
       name: "color",
       label: "Color",
@@ -132,10 +143,13 @@ export const pointsToTextNode: NodeDefinition = {
   primaryOutput: "text_instance",
   auxOutputs: [],
 
-  // Pixel units depend on canvas size, which isn't in the default fingerprint —
-  // fold it in so a canvas resize busts the cache. No-op for normalized units.
+  // Pixel coordinate units and a % font size both depend on canvas size,
+  // which isn't in the default fingerprint — fold it in so a canvas resize
+  // busts the cache. No-op for normalized coords + px size.
   fingerprintExtras(params, ctx) {
-    return params.units === "pixels" ? `${ctx.width}x${ctx.height}` : "";
+    return params.units === "pixels" || params.size_units === "%"
+      ? `${ctx.width}x${ctx.height}`
+      : "";
   },
 
   compute({ inputs, params, ctx }) {
@@ -152,7 +166,13 @@ export const pointsToTextNode: NodeDefinition = {
         : {
             ...DEFAULT_TEXT_STYLE,
             family: (params.font_family as string) ?? DEFAULT_TEXT_STYLE.family,
-            size: (params.size as number) ?? DEFAULT_TEXT_STYLE.size,
+            // size_units=% reads `size` as a percent of canvas width
+            // (fingerprintExtras keys the canvas size for that case).
+            size: resolveStrokePx(
+              (params.size as number) ?? DEFAULT_TEXT_STYLE.size,
+              params.size_units,
+              ctx.width
+            ),
             color: (params.color as string) ?? DEFAULT_TEXT_STYLE.color,
             alignment:
               (params.alignment as TextStyle["alignment"]) ?? "center",

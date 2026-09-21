@@ -247,6 +247,8 @@ export function ValueSummary({ value }: { value: SocketValue | undefined }) {
       return <PointsSummary value={value} />;
     case "audio":
       return <span>audio · {value.source === "mic" ? "mic" : "file"}</span>;
+    case "float_curve":
+      return <span>curve · {value.points.length} pts</span>;
     case "image_group":
       return <ImageGroupSummary value={value} />;
     case "instances": {

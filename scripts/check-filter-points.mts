@@ -384,6 +384,66 @@ const five = line(5);
   );
 }
 
+// The cyclic / transcendental set (2026-09-20): modulo is floored, wrap
+// uses the In Lo / In Hi rows, fraction / log / exp are unary.
+{
+  const src = copyPointsWith(five, {
+    attributes: {
+      w: { arity: 1, data: new Float32Array([-0.25, 0.5, 1, 1.75, 3]) },
+      p: { arity: 1, data: new Float32Array([1.5, 1.5, 1.5, 1.5, 0]) },
+    },
+  });
+  const mod = chan(evalMath(src, { attr_name: "w", op: "modulo", operand: "constant", value: 1 }), "w");
+  check(
+    "attribute-math modulo is FLOORED (-0.25 mod 1 → 0.75; 3 mod 1 → 0)",
+    !!mod && close(mod[0], 0.75) && close(mod[1], 0.5) && close(mod[2], 0) && close(mod[3], 0.75) && close(mod[4], 0)
+  );
+  const mod0 = chan(evalMath(src, { attr_name: "w", op: "modulo", operand: "constant", value: 0 }), "w");
+  check("attribute-math modulo by 0 reads 0, not NaN", !!mod0 && mod0.every((v) => v === 0));
+  const modAttr = chan(
+    evalMath(src, { attr_name: "w", op: "modulo", operand: "attribute", operand_attr: "p", output_name: "m" }),
+    "m"
+  );
+  check(
+    "attribute-math modulo vs a second channel (1.75 mod 1.5 → 0.25; mod 0 → 0)",
+    !!modAttr && close(modAttr[3], 0.25) && close(modAttr[0], 1.25) && close(modAttr[4], 0)
+  );
+
+  const wrap = chan(evalMath(src, { attr_name: "w", op: "wrap", in_lo: 0.5, in_hi: 1.5 }), "w");
+  check(
+    "attribute-math wrap folds into [In Lo, In Hi) (3 → 1; -0.25 → 0.75; 1.5 → 0.5)",
+    !!wrap && close(wrap[4], 1) && close(wrap[0], 0.75) && close(wrap[1], 0.5) && close(wrap[2], 1) && close(wrap[3], 0.75)
+  );
+  const wrap0 = chan(evalMath(src, { attr_name: "w", op: "wrap", in_lo: 2, in_hi: 2 }), "w");
+  check("attribute-math wrap with a zero-width range collapses to In Lo", !!wrap0 && wrap0.every((v) => v === 2));
+
+  const frac = chan(evalMath(src, { attr_name: "w", op: "fraction" }), "w");
+  check(
+    "attribute-math fraction is x - floor(x) (-0.25 → 0.75)",
+    !!frac && close(frac[0], 0.75) && close(frac[1], 0.5) && close(frac[2], 0) && close(frac[3], 0.75)
+  );
+  const log = chan(evalMath(src, { attr_name: "w", op: "log" }), "w");
+  check(
+    "attribute-math log is natural and reads 0 for x <= 0",
+    !!log && close(log[0], 0) && close(log[2], 0) && close(log[4], Math.log(3))
+  );
+  const exp = chan(evalMath(src, { attr_name: "w", op: "exp" }), "w");
+  check("attribute-math exp is e^x", !!exp && close(exp[2], Math.E) && close(exp[1], Math.exp(0.5)));
+
+  // Def: the range rows show for wrap as well as remap; the unary ops and
+  // wrap hide the operand rows.
+  const row = (name: string) => attributeMathNode.params.find((x) => x.name === name)!;
+  const vis = (name: string, params: Record<string, unknown>) => row(name).visibleIf?.(params) ?? true;
+  check(
+    "attribute-math def: In Lo / In Hi show for wrap and remap only",
+    vis("in_lo", { op: "wrap" }) && vis("in_hi", { op: "remap" }) && !vis("in_lo", { op: "modulo" }) && !vis("out_lo", { op: "wrap" })
+  );
+  check(
+    "attribute-math def: operand rows hide for wrap / fraction / log / exp, show for modulo",
+    !vis("operand", { op: "wrap" }) && !vis("operand", { op: "fraction" }) && !vis("operand", { op: "log" }) && !vis("operand", { op: "exp" }) && vis("operand", { op: "modulo" }) && vis("value", { op: "modulo", operand: "constant" })
+  );
+}
+
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed`);
   process.exit(1);

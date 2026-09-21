@@ -56,7 +56,9 @@ export const SPLINE_RASTER_PARAMS: ParamDef[] = [
   },
   // px = absolute pixels (legacy); % = percent of canvas width, so the
   // stroke keeps its look at any resolution (#174).
-  strokeUnitsParam("stroke_units", (p) => !!p.stroke_enabled),
+  strokeUnitsParam("stroke_units", (p) => !!p.stroke_enabled, {
+    governs: ["stroke_thickness"],
+  }),
   // alpha: every consume path is 8-digit-safe — hexToRgba into Canvas
   // stroke/fill styles here and in buildSplineElement, hexToRgba01 via
   // compositeSplineFill's fillColorHex on the image-fill path — and the

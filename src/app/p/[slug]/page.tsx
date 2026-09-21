@@ -66,6 +66,8 @@ export default async function ProjectPage({ params }: PageProps) {
       updatedAt={project.updated_at}
       sharedWithMe={project.shared_with_me}
       hasCollaborators={project.has_collaborators}
+      vanitySlug={project.vanity_slug}
+      ownerHandle={project.owner_handle}
     />
   );
 }

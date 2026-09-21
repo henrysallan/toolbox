@@ -525,6 +525,11 @@ function socketToParamRaw(
       // ColorRampValue wrapper. The wire's `interp` is dropped here; see the
       // note on ColorRampValue (types.ts) for why, and what would change it.
       return sv.kind === "color_ramp" ? sv.stops : undefined;
+    case "float_curve":
+      // Same contract as color_ramp: the param stores a bare CurvePoint[]
+      // and consumers read it through sanitizeFloatCurve, so hand back the
+      // points, not the FloatCurveValue wrapper.
+      return sv.kind === "float_curve" ? sv.points : undefined;
     default:
       return undefined;
   }
@@ -947,7 +952,10 @@ export function evaluateGraph(
           stableStringify(n.params),
           n.animation ? "a:" + stableStringify(n.animation) : "_"
         );
-        if (getNodeDef(n.type)?.stable === false) timeDriven = true;
+        {
+          const d = getNodeDef(n.type);
+          if (d?.stable === false || d?.tickDriven) timeDriven = true;
+        }
         if (n.animation) {
           for (const block of Object.values(n.animation)) {
             if (block?.animated && block.keyframes.length > 0) {
@@ -1084,7 +1092,10 @@ export function evaluateGraph(
           parts.push("c:" + stableStringify(n.clips));
           timeDriven = true;
         }
-        if (getNodeDef(n.type)?.stable === false) timeDriven = true;
+        {
+          const d = getNodeDef(n.type);
+          if (d?.stable === false || d?.tickDriven) timeDriven = true;
+        }
         if (!timeDriven && n.animation) {
           for (const block of Object.values(n.animation)) {
             if (block?.animated && block.keyframes.length > 0) {

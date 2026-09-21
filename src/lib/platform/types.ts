@@ -38,6 +38,9 @@ export interface NativeVideoEncodeSpec {
   alpha?: boolean;
   audioWav?: Uint8Array;
   suggestedName: string;
+  /** Export log sink id (ExportLogSink.id): the native encoder appends the
+   *  spawned command line and ffmpeg's stderr to that file. */
+  logId?: string;
 }
 
 /** A live native encode. The renderer drives the frame loop and pushes RGBA8
@@ -45,8 +48,19 @@ export interface NativeVideoEncodeSpec {
 export interface VideoEncodeSession {
   /** width*height*4 bytes, straight (non-premultiplied) alpha. Awaits backpressure. */
   writeFrame(rgba: Uint8Array): Promise<void>;
-  finish(): Promise<void>;
+  /** Resolves with where the file landed and its size when the shell reports it. */
+  finish(): Promise<{ path?: string; bytes?: number }>;
   abort(): Promise<void>;
+}
+
+/** One export run's log file (lib/export-log.ts writes through it). `id` is
+ *  what the native encoder takes as `NativeVideoEncodeSpec.logId` so ffmpeg's
+ *  own output lands in the same file; `path` is shown to the user on failure. */
+export interface ExportLogSink {
+  readonly id: string | null;
+  readonly path: string | null;
+  append(line: string): void;
+  close(): Promise<void>;
 }
 
 export interface Platform {
@@ -75,6 +89,10 @@ export interface Platform {
     spec: NativeVideoEncodeSpec,
     onProgress?: (label: string, fraction: number) => void
   ): Promise<VideoEncodeSession | null>;
+
+  /** Open a per-export log file. null = the shell has no file sink (web, or
+   *  an older desktop shell); the exporter then logs to the console only. */
+  openExportLog?(name: string): Promise<ExportLogSink | null>;
 
   /** Transcode a video the renderer's <video> couldn't decode into a
    *  Chromium-playable form (native ffmpeg). Returns the playable bytes +

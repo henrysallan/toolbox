@@ -62,6 +62,7 @@ import {
 import {
   BLEND_MODE_ORDER,
   blendModeLabel,
+  mergeLayerLabel,
   type MergeLayer,
 } from "@/nodes/effect/merge";
 import {
@@ -2233,9 +2234,12 @@ export function ParamControl({
     // Effective range: per-instance override wins over the param def.
     // Each field overrides independently — set just `max` and the
     // others stay at their def defaults.
-    const effMin = rangeOverride?.min ?? param.min ?? 0;
-    // Param-driven upper bound (maxFrom — e.g. Switch's `index` follows its
-    // live slot list). An explicit per-node range override still wins over it.
+    // Param-driven bounds (minFrom / maxFrom / softMaxFrom — e.g. Switch's
+    // `index` follows its live slot list; Text's `font_size` swaps to a
+    // percent range under units=%). An explicit per-node range override
+    // still wins over them.
+    const dynMin = allParams ? param.minFrom?.(allParams) : undefined;
+    const effMin = rangeOverride?.min ?? dynMin ?? param.min ?? 0;
     const dynMax = allParams ? param.maxFrom?.(allParams) : undefined;
     const effMax = rangeOverride?.max ?? dynMax ?? param.max ?? 1;
     // Widget choice. A def (or its controlFrom hint, fed the sibling
@@ -2259,7 +2263,8 @@ export function ParamControl({
         />
       );
     }
-    const effSoftMax = rangeOverride?.softMax ?? param.softMax;
+    const dynSoftMax = allParams ? param.softMaxFrom?.(allParams) : undefined;
+    const effSoftMax = rangeOverride?.softMax ?? dynSoftMax ?? param.softMax;
     // Slider uses softMax when provided so the user can type past it
     // via the number input without the slider pinning the stored value.
     const sliderMax = effSoftMax ?? effMax;
@@ -3410,6 +3415,80 @@ function MaskInvertIcon({ active }: { active: boolean }) {
   );
 }
 
+// Inline rename box on a Merge layer card. Reads as plain text (transparent
+// until hovered/focused) so the card doesn't look like a form; the ordinal
+// "layer N" shows as the placeholder when no name is set. Commit on blur /
+// Enter, Escape reverts; committing blank clears the name (back to the
+// ordinal). The name is display-only — see MergeLayer.name.
+function MergeLayerNameField({
+  name,
+  placeholder,
+  enabled,
+  onCommit,
+}: {
+  name: string;
+  placeholder: string;
+  enabled: boolean;
+  onCommit: (name: string) => void;
+}) {
+  const [draft, setDraft] = useState(name);
+  // External change (undo, recipe edit) wins over a stale draft.
+  const [lastName, setLastName] = useState(name);
+  if (name !== lastName) {
+    setLastName(name);
+    setDraft(name);
+  }
+  const [hover, setHover] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const commit = () => {
+    const v = draft.trim().slice(0, 64);
+    if (v !== name) onCommit(v);
+    setDraft(v);
+  };
+  return (
+    <input
+      type="text"
+      value={draft}
+      placeholder={placeholder}
+      spellCheck={false}
+      title="Layer name — click to rename (blank restores “layer N”)"
+      onChange={(e) => setDraft(e.target.value)}
+      onFocus={() => setFocus(true)}
+      onBlur={() => {
+        setFocus(false);
+        commit();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        if (e.key === "Escape") {
+          setDraft(name);
+          (e.target as HTMLInputElement).blur();
+        }
+        e.stopPropagation();
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        flex: "1 1 auto",
+        minWidth: 40,
+        background: focus ? "var(--tb-n-0)" : "transparent",
+        border: `1px solid ${
+          focus ? "var(--tb-n-9)" : hover ? "var(--tb-n-7)" : "transparent"
+        }`,
+        borderRadius: 3,
+        color: enabled ? "var(--tb-n-13)" : "var(--tb-n-10)",
+        fontFamily: "inherit",
+        fontSize: "inherit",
+        padding: "1px 4px",
+        margin: "-2px 0",
+        boxSizing: "border-box",
+        outline: "none",
+        textOverflow: "ellipsis",
+      }}
+    />
+  );
+}
+
 // Editor for the Merge node's `merge_layers` param. One card per layer (blend
 // mode + opacity + keyframe diamond), plus a grip handle to drag-reorder the
 // stack, an eye toggle to bypass a layer, and — beside remove — a control
@@ -3566,19 +3645,19 @@ export function MergeLayersControl({
                 >
                   <MergeEyeIcon open={enabled} />
                 </button>
-                <span
-                  style={{
-                    color: enabled ? "var(--tb-n-13)" : "var(--tb-n-10)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  layer {i + 1}
-                  {!enabled && (
-                    <span style={{ color: "var(--tb-n-10)" }}> (bypassed)</span>
-                  )}
-                </span>
+                <MergeLayerNameField
+                  name={l.name ?? ""}
+                  placeholder={mergeLayerLabel(undefined, i)}
+                  enabled={enabled}
+                  onCommit={(v) =>
+                    patch(l.id, { name: v ? v : undefined })
+                  }
+                />
+                {!enabled && (
+                  <span style={{ color: "var(--tb-n-10)", flexShrink: 0 }}>
+                    (bypassed)
+                  </span>
+                )}
               </div>
               <div
                 style={{

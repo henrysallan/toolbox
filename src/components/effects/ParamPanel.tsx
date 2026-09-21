@@ -43,8 +43,17 @@ import {
 import { listGroupShellControls } from "@/state/graph-ops";
 import { fuzzyScoreFields } from "@/lib/fuzzy-search";
 import { liveGizmoKind } from "@/lib/live-gizmo";
+import { isFileParamType } from "@/lib/export-manifest";
 import { evalNumExpr } from "@/lib/num-expr";
 import { EXPORT_PARAMS } from "@/nodes/output/output";
+import {
+  describeVideoExport,
+  effectiveVideoPreset,
+  getVideoPreset,
+  resolveVideoExportSettings,
+} from "@/lib/export-presets";
+import { resolveExportResolution } from "@/lib/export";
+import { platform } from "@/lib/platform";
 import { SVG_STYLE_PARAMS } from "@/nodes/output/svg-export";
 import { colorForSocket } from "./socketColor";
 import {
@@ -54,6 +63,9 @@ import {
   useAspectLock,
 } from "./res-controls";
 import LoadGrid from "./LoadGrid";
+import LiveLinkSettings, {
+  type LiveLinkSettingsProps,
+} from "./LiveLinkSettings";
 import ImageGeneratePanel from "./ImageGeneratePanel";
 import BgRemovePanel from "./BgRemovePanel";
 import SegmentPanel from "./SegmentPanel";
@@ -272,6 +284,9 @@ interface Props {
   // (080826_audio-nodes.md). Lives beside fps in Project Settings.
   bpm: number;
   onBpmChange: (bpm: number) => void;
+  // Named live link row (092126_vanity-live-links.md). Optional so hosts
+  // without a cloud project context (the designer preview) omit the row.
+  liveLink?: LiveLinkSettingsProps;
   onParamChange: (
     nodeId: string,
     paramName: string,
@@ -542,6 +557,7 @@ function ParamPanel(props: Props) {
     onFpsChange,
     bpm,
     onBpmChange,
+    liveLink,
     signedIn,
     currentUserId,
     onLoadProject,
@@ -609,6 +625,7 @@ function ParamPanel(props: Props) {
           onFpsChange={onFpsChange}
           bpm={bpm}
           onBpmChange={onBpmChange}
+          liveLink={liveLink}
         />
       ) : mode === "load" ? (
         <LoadGrid
@@ -1107,6 +1124,8 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                 node={selected}
                 edges={edges ?? []}
                 onParamChange={onParamChange}
+                canvasRes={canvasRes}
+                fps={fps}
               />
             )}
         </div>
@@ -1362,9 +1381,15 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                 textAlign: "center",
                 letterSpacing: 0.3,
               }}
-              title="Save the spline wired into this Output at the current playhead as a standalone .svg"
+              title={
+                selected.data.params?.exportMode === "sequence"
+                  ? "Save the spline wired into this Output as one .svg per frame over the export frame range (same range, fps and delivery as the image sequence)"
+                  : "Save the spline wired into this Output at the current playhead as a standalone .svg (set export mode to Sequence for one .svg per frame)"
+              }
             >
-              Export SVG →
+              {selected.data.params?.exportMode === "sequence"
+                ? "Export SVG sequence →"
+                : "Export SVG →"}
             </button>
           )}
           {def.type === "scene-render" && (
@@ -1781,6 +1806,17 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
               );
             });
           })()}
+          {/* Output: "what you actually get" for the current export preset —
+              the container / codec after the tier's substitutions, the
+              encoder that runs, what plays it, a size estimate and the traps
+              the exporter would otherwise only log (lib/export-presets.ts). */}
+          {def.type === "output" && (
+            <ExportSummary
+              params={selected.data.params}
+              canvasRes={canvasRes}
+              fps={fps}
+            />
+          )}
           {/* Spline Draw: keyframe the whole path shape. The spline param is
               hidden (authored on-canvas), so this row is rendered explicitly
               rather than via the visible-params loop above. */}
@@ -1979,6 +2015,7 @@ export function ProjectSettings({
   onFpsChange,
   bpm,
   onBpmChange,
+  liveLink,
 }: {
   canvasRes: [number, number];
   onCanvasResChange: (res: [number, number]) => void;
@@ -1986,6 +2023,7 @@ export function ProjectSettings({
   onFpsChange: (fps: number) => void;
   bpm: number;
   onBpmChange: (bpm: number) => void;
+  liveLink?: LiveLinkSettingsProps;
 }) {
   const resKey = `${canvasRes[0]}×${canvasRes[1]}`;
   const isPreset = RES_PRESETS.some((r) => `${r.w}×${r.h}` === resKey);
@@ -2067,6 +2105,15 @@ export function ProjectSettings({
           />
           <span style={{ color: "var(--tb-n-10)" }}>bpm</span>
         </SettingRow>
+        {liveLink && (
+          // Top-aligned: the row grows (URL preview, Save / Cancel, an
+          // error line) and the label should stay level with the toggle.
+          <SettingRow label="live link" align="flex-start">
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <LiveLinkSettings {...liveLink} />
+            </div>
+          </SettingRow>
+        )}
       </div>
     </Section>
   );
@@ -2077,13 +2124,24 @@ export function ProjectSettings({
 function SettingRow({
   label,
   children,
+  align = "center",
 }: {
   label: string;
   children: ReactNode;
+  align?: "center" | "flex-start";
 }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <span style={{ flex: "0 0 90px", color: "var(--tb-n-12)" }}>{label}</span>
+    <div style={{ display: "flex", alignItems: align, gap: 6 }}>
+      <span
+        style={{
+          flex: "0 0 90px",
+          color: "var(--tb-n-12)",
+          // Level with the first line of a top-aligned multi-line control.
+          paddingTop: align === "flex-start" ? 1 : 0,
+        }}
+      >
+        {label}
+      </span>
       {children}
     </div>
   );
@@ -2576,10 +2634,14 @@ function LayerOutputExportSettings({
   node,
   edges,
   onParamChange,
+  canvasRes,
+  fps,
 }: {
   node: Node<NodeDataPayload>;
   edges: Edge[];
   onParamChange: (nodeId: string, paramName: string, value: unknown) => void;
+  canvasRes: [number, number];
+  fps: number;
 }) {
   // The layer's vector tap — the third fixed boundary socket. Wired ⇒ this
   // panel grows the SVG styling rows and an "Export SVG →" action, exactly
@@ -2597,6 +2659,10 @@ function LayerOutputExportSettings({
   for (const p of EXPORT_PARAMS) defaults[p.name] = p.default;
   for (const p of SVG_STYLE_PARAMS) defaults[p.name] = p.default;
   const merged = { ...defaults, ...node.data.params };
+  // The preset row must show what the EXPORTER will use: a layer saved with
+  // the raw encoder rows but no preset is Custom, not the default preset the
+  // defaults-merge above would suggest (lib/export-presets.ts).
+  merged.videoPreset = effectiveVideoPreset(node.data.params);
   const visible = params.filter(
     (p) => !p.hidden && (p.visibleIf?.(merged) ?? true)
   );
@@ -2611,6 +2677,7 @@ function LayerOutputExportSettings({
           onChange={(v) => onParamChange(node.id, p.name, v)}
         />
       ))}
+      <ExportSummary params={merged} canvasRes={canvasRes} fps={fps} />
       {splineWired && (
         <button
           onClick={() =>
@@ -2632,12 +2699,92 @@ function LayerOutputExportSettings({
             textAlign: "center",
             letterSpacing: 0.3,
           }}
-          title="Save the spline wired into this Layer Output at the current playhead as a standalone .svg"
+          title={
+            merged.exportMode === "sequence"
+              ? "Save the spline wired into this Layer Output as one .svg per frame over the export frame range (same range, fps and delivery as the image sequence)"
+              : "Save the spline wired into this Layer Output at the current playhead as a standalone .svg (set export mode to Sequence for one .svg per frame)"
+          }
         >
-          Export SVG →
+          {merged.exportMode === "sequence"
+            ? "Export SVG sequence →"
+            : "Export SVG →"}
         </button>
       )}
     </Section>
+  );
+}
+
+// "What you actually get" under the export rows (092126_export-presets-and-
+// progress.md): the file the pipeline will really write for these settings
+// — container, codec and chroma after the tier's substitutions, the encoder
+// that runs, what plays it, a size estimate for the frame range — plus the
+// warnings the exporter would otherwise only put in the log. Same
+// describeVideoExport call exportVideo logs, so the panel and the log agree.
+function ExportSummary({
+  params,
+  canvasRes,
+  fps,
+}: {
+  params: Record<string, unknown>;
+  canvasRes: [number, number];
+  fps: number;
+}) {
+  if ((params.exportMode ?? "video") !== "video") return null;
+  const settings = resolveVideoExportSettings(params);
+  const preset = getVideoPreset(settings.preset);
+  const [w, h] = resolveExportResolution(params, canvasRes, { even: true });
+  const startFrame = Math.max(0, Math.round((params.startFrame as number) ?? 0));
+  const endFrame =
+    typeof params.endFrame === "number"
+      ? Math.round(params.endFrame)
+      : startFrame + ((params.videoFrames as number) ?? 240);
+  const frames = Math.max(1, endFrame - startFrame);
+  const exportFps =
+    settings.tier === "fast"
+      ? fps
+      : Math.max(1, (params.videoFps as number) ?? fps);
+  const plan = describeVideoExport(settings, {
+    width: w,
+    height: h,
+    fps: exportFps,
+    frames,
+    nativeEncoder: platform.canEncodeNative,
+  });
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        padding: "8px 10px",
+        borderRadius: 4,
+        background: "var(--tb-n-3)",
+        border: "1px solid var(--tb-n-6)",
+        color: "var(--tb-n-11)",
+        fontSize: 11,
+        lineHeight: 1.45,
+      }}
+    >
+      <div
+        style={{
+          color: "var(--tb-n-10)",
+          textTransform: "uppercase",
+          letterSpacing: 1,
+          fontSize: 9,
+        }}
+      >
+        you get
+      </div>
+      {preset && <div style={{ color: "var(--tb-n-12)" }}>{preset.blurb}</div>}
+      {plan.lines.map((line) => (
+        <div key={line}>{line}</div>
+      ))}
+      {plan.warnings.map((warning) => (
+        <div key={warning} style={{ color: "var(--tb-a-amber-300, #f5c46b)" }}>
+          ⚠ {warning}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -3754,6 +3901,10 @@ function ParamRow({
           title={
             !controlSupported
               ? "This param type can't be rendered in an exported app — toggling has no effect"
+              : isFileParamType(param.type)
+              ? controlled
+                ? "Stop offering this file as a picker in the live link — the saved asset ships bundled instead"
+                : "Offer this file as a picker in the live link's panel (off = the saved asset ships bundled)"
               : controlled
               ? "Remove this knob from the exported app's control panel"
               : "Show this param as a knob in the exported app's control panel"

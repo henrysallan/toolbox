@@ -33,6 +33,7 @@ import { WireLabelContext, type WireLabelApi } from "./wire-label-context";
 import WireActionOverlay from "./WireActionOverlay";
 import NodeSearchPopup from "./NodeSearchPopup";
 import SimulationZoneUnderlay from "./SimulationZoneUnderlay";
+import { NodeFindBar, FindHighlightOverlay, findNodeMatches } from "./NodeFindBar";
 import IterateZoneUnderlay, {
   computeIterateZoneRects,
 } from "./IterateZoneUnderlay";
@@ -388,6 +389,7 @@ function NodeEditor({
     deleteElements,
     getViewport,
     setViewport,
+    setCenter,
     fitView,
     getInternalNode,
   } = useReactFlow();
@@ -804,6 +806,12 @@ function NodeEditor({
       // (wrap-in-Merge) above. Render Queue has no bypass — it produces
       // nothing to pass through — matching the button's !isQueue gate.
       // !e.repeat so holding the key doesn't flicker the toggle on/off.
+      //
+      // A selected FRAME routes to its header's bypass-all toggle
+      // (frameToggleBypass — the frame node itself has no bypass). A
+      // marquee over a frame's interior selects the frame AND its members,
+      // so members of a selected frame are left to the frame's batch
+      // rather than flipped twice.
       if (
         !e.repeat &&
         !e.shiftKey &&
@@ -812,11 +820,30 @@ function NodeEditor({
         !e.altKey &&
         (e.key === "m" || e.key === "M")
       ) {
-        const bypassable = rfGetNodes().filter(
-          (n) => n.selected && n.data?.defType !== "render-queue"
+        const selected = rfGetNodes().filter((n) => n.selected);
+        const frameIds = new Set(
+          selected
+            .filter((n) => n.data?.defType === FRAME_TYPE)
+            .map((n) => n.id)
         );
-        if (bypassable.length === 0) return;
+        const bypassable = selected.filter(
+          (n) =>
+            n.data?.defType !== "render-queue" &&
+            n.data?.defType !== FRAME_TYPE &&
+            !(
+              typeof n.data?.frameId === "string" &&
+              frameIds.has(n.data.frameId)
+            )
+        );
+        if (bypassable.length === 0 && frameIds.size === 0) return;
         e.preventDefault();
+        for (const fid of frameIds) {
+          window.dispatchEvent(
+            new CustomEvent("effect-node-toggle", {
+              detail: { id: fid, kind: "frameToggleBypass" },
+            })
+          );
+        }
         for (const n of bypassable) {
           window.dispatchEvent(
             new CustomEvent("effect-node-toggle", {
@@ -1019,6 +1046,62 @@ function NodeEditor({
     nodeId: string;
   } | null>(null);
   const closeContextMenu = () => setContextMenu(null);
+
+  // Find-in-graph (right-click → Find…). `find` is null while the bar is
+  // closed; open, it holds the live query and the cycle index. Hits are
+  // recomputed from the current visible nodes every render (cheap: a few
+  // hundred fuzzy scores at most), so renames / deletes while the bar is
+  // open stay in sync. The index is clamped rather than reset so deleting
+  // an earlier hit doesn't jump the cursor back to the first match.
+  const [find, setFind] = useState<{ query: string; index: number } | null>(null);
+  const findQuery = find?.query ?? "";
+  const findHits = useMemo(
+    () => (findQuery ? findNodeMatches(nodes, findQuery) : []),
+    [nodes, findQuery]
+  );
+  const findHitIds = useMemo(
+    () => new Set(findHits.map((h) => h.id)),
+    [findHits]
+  );
+  const findIndex =
+    find && findHits.length ? Math.min(find.index, findHits.length - 1) : 0;
+  const findCurrentId = find && findHits.length ? findHits[findIndex].id : null;
+  const openFind = useCallback(() => {
+    setFind((cur) => cur ?? { query: "", index: 0 });
+  }, []);
+  const closeFind = useCallback(() => setFind(null), []);
+  const findStep = useCallback(
+    (dir: 1 | -1) => {
+      setFind((cur) => {
+        if (!cur) return cur;
+        const n = findHits.length;
+        if (n === 0) return cur;
+        const base = Math.min(cur.index, n - 1);
+        return { ...cur, index: (base + dir + n) % n };
+      });
+    },
+    [findHits.length]
+  );
+  // Pan to the current hit whenever it changes (typing narrows to a new
+  // best match, or ↑/↓ steps). Zoom is kept unless the user is zoomed so
+  // far out the node would be illegible, then nudged up to 0.75. Linear
+  // interpolation with an ease-out reads as a direct, snappy slide — the
+  // default "smooth" mode swoops out and back in, which feels slow for a
+  // find-next hop.
+  useEffect(() => {
+    if (!findCurrentId) return;
+    const n = rfGetNodes().find((nn) => nn.id === findCurrentId);
+    if (!n) return;
+    const w = n.measured?.width ?? n.width ?? 220;
+    const h = n.measured?.height ?? n.height ?? 100;
+    const zoom = Math.max(getViewport().zoom, 0.75);
+    void setCenter(n.position.x + w / 2, n.position.y + h / 2, {
+      zoom,
+      duration: 240,
+      interpolate: "linear",
+      ease: (t) => 1 - Math.pow(1 - t, 3),
+    });
+  }, [findCurrentId, rfGetNodes, getViewport, setCenter]);
 
   // Wire right-click menu (091526): Label Wire / Edit Label / Remove
   // Label. Opening it selects the wire (like a click would) so the
@@ -2993,6 +3076,13 @@ function NodeEditor({
           <SimulationZoneUnderlay nodes={nodes} />
           <IterateZoneUnderlay nodes={nodes} />
           {viewportOverlay && <ViewportPortal>{viewportOverlay}</ViewportPortal>}
+          {find && (
+            <FindHighlightOverlay
+              nodes={nodes}
+              hitIds={findHitIds}
+              currentId={findCurrentId}
+            />
+          )}
         </ReactFlow>
       </WireLabelContext.Provider>
 
@@ -3001,6 +3091,20 @@ function NodeEditor({
           visual — the actual add-node trigger is the corner button
           below. Render-suppressed when the search popup is open so
           a stray ring doesn't sit on top of the menu. */}
+      {/* Find-in-graph bar (right-click → Find…). Pinned top-centre of the
+          pane; the yellow rings live inside the flow above. */}
+      {find && (
+        <NodeFindBar
+          query={find.query}
+          onQueryChange={(q) => setFind({ query: q, index: 0 })}
+          hitCount={findHits.length}
+          hitIndex={findIndex}
+          onNext={() => findStep(1)}
+          onPrev={() => findStep(-1)}
+          onClose={closeFind}
+        />
+      )}
+
       {penHover && !nodePopup && (
         <PenHoverCursor
           x={penHover.x}
@@ -3215,6 +3319,7 @@ function NodeEditor({
           y={paneMenu.y}
           onClose={() => setPaneMenu(null)}
           paneMode
+          onFind={openFind}
           onPaste={onPasteNodes ? () => onPasteNodes() : undefined}
           tidyLabel="Tidy All"
           onTidy={() => tidyIds(nodes.filter((n) => !n.hidden).map((n) => n.id))}
@@ -3249,6 +3354,7 @@ function NodeEditor({
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={closeContextMenu}
+          onFind={openFind}
           // Tidy (090626_tidy-layout.md): a multi-selection that includes
           // the clicked node tidies the selection; otherwise the clicked
           // node's wire-connected neighbourhood. Align / distribute need
@@ -3427,10 +3533,14 @@ function NodeContextMenu({
   wireLabeled,
   onLabelWire,
   onRemoveWireLabel,
+  onFind,
 }: {
   x: number;
   y: number;
   onClose: () => void;
+  // Find-in-graph: opens the fuzzy search bar at the top of the pane.
+  // Offered on both the node and empty-pane menus.
+  onFind?: () => void;
   // Tidy / align / distribute (090626_tidy-layout.md). `paneMode` renders
   // the empty-pane variant (Paste + Tidy All only).
   onTidy?: () => void;
@@ -3546,6 +3656,8 @@ function NodeContextMenu({
     ...(paneMode || wireMode
       ? []
       : [{ label: "Detach", shortcut: "⌘-drag", onClick: onDetach }]),
+    // Fuzzy find across the visible graph (NodeFindBar).
+    ...(onFind && !wireMode ? [{ label: "Find…", onClick: onFind }] : []),
     // Bold outline toggle — check shows the clicked node's current state.
     ...(onToggleBold
       ? [{ label: "Bold", shortcut: bold ? "✓" : undefined, onClick: onToggleBold }]

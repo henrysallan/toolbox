@@ -3,6 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useUser } from "@/lib/auth-context";
+import { useOwnHandle } from "@/lib/use-own-handle";
+import { claimHandle, clearOwnHandleCache } from "@/lib/supabase/profiles";
+import {
+  describeHandleProblem,
+  normalizeHandle,
+} from "@/lib/vanity-slug";
 
 export default function AccountMenu() {
   const { user, loading } = useUser();
@@ -31,6 +37,7 @@ export default function AccountMenu() {
   const signOut = async () => {
     const supabase = createClient();
     await supabase.auth.signOut();
+    clearOwnHandleCache();
     setOpen(false);
   };
 
@@ -145,6 +152,7 @@ export default function AccountMenu() {
           >
             {user.email}
           </div>
+          <HandleRow />
           <div style={{ height: 1, background: "var(--tb-n-7)", margin: "4px 0" }} />
           <button
             onClick={signOut}
@@ -174,6 +182,220 @@ export default function AccountMenu() {
             Sign out
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+// The user's profile handle — the "@hallan" half of a named live link
+// (specdocs/092126_vanity-live-links.md). Seeded from the email at signup;
+// editable here. Enter / Save commits, Escape cancels. "Taken" comes from
+// the DB's unique index; shape problems are caught client-side first.
+function HandleRow() {
+  const { handle, loaded } = useOwnHandle();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) {
+      const t = setTimeout(() => inputRef.current?.select(), 20);
+      return () => clearTimeout(t);
+    }
+  }, [editing]);
+
+  const begin = () => {
+    setDraft(handle ?? "");
+    setError(null);
+    setEditing(true);
+  };
+  const cancel = () => {
+    setEditing(false);
+    setError(null);
+  };
+  const commit = async () => {
+    if (busy) return;
+    const norm = normalizeHandle(draft);
+    if (!norm.ok) {
+      setError(describeHandleProblem(norm.problem));
+      return;
+    }
+    if (norm.handle === handle) {
+      cancel();
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await claimHandle(norm.handle);
+      if (res.ok) {
+        setEditing(false);
+        return;
+      }
+      switch (res.reason) {
+        case "taken":
+          setError("That handle is taken.");
+          break;
+        case "invalid":
+          setError(
+            res.problem
+              ? describeHandleProblem(res.problem)
+              : "That handle isn't valid."
+          );
+          break;
+        case "migration":
+          setError("Handles aren't enabled on this database yet.");
+          break;
+        case "signed-out":
+          setError("Sign in again to change your handle.");
+          break;
+        default:
+          setError("Couldn't save the handle. Try again.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // The live preview of what will be stored, as the user types.
+  const preview = editing ? normalizeHandle(draft) : null;
+
+  return (
+    <div
+      style={{
+        padding: "2px 10px 6px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        fontSize: 10,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
+        <span style={{ color: "var(--tb-n-11)" }}>handle</span>
+        {!editing && (
+          <button
+            type="button"
+            onClick={begin}
+            title="Your handle is the @name in named live links: toolbox.design/@handle/project"
+            style={{
+              background: "transparent",
+              border: "1px solid var(--tb-n-9)",
+              color: "var(--tb-n-15)",
+              fontFamily: "inherit",
+              fontSize: 10,
+              padding: "1px 8px",
+              borderRadius: 999,
+              cursor: "pointer",
+            }}
+          >
+            {handle ? "Change" : "Claim"}
+          </button>
+        )}
+      </div>
+      {!editing ? (
+        <div
+          style={{
+            color: handle ? "var(--tb-n-16)" : "var(--tb-n-10)",
+            fontFamily: "var(--mono-font, ui-monospace, monospace)",
+            fontSize: 11,
+            wordBreak: "break-all",
+          }}
+        >
+          {!loaded ? "…" : handle ? `@${handle}` : "no handle yet"}
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={{ color: "var(--tb-n-12)" }}>@</span>
+            <input
+              ref={inputRef}
+              value={draft}
+              disabled={busy}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setError(null);
+              }}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void commit();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancel();
+                }
+              }}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              aria-label="Handle"
+              style={{
+                flex: 1,
+                minWidth: 0,
+                background: "var(--tb-n-0)",
+                border: "1px solid var(--tb-n-7)",
+                borderRadius: 6,
+                color: "var(--tb-n-16)",
+                fontFamily: "var(--mono-font, ui-monospace, monospace)",
+                fontSize: 11,
+                padding: "3px 6px",
+                outline: "none",
+              }}
+            />
+          </div>
+          {preview && preview.ok && preview.handle !== draft.trim() && (
+            <div style={{ color: "var(--tb-n-11)" }}>
+              will be saved as <span style={{ color: "var(--tb-n-14)" }}>@{preview.handle}</span>
+            </div>
+          )}
+          {error && <div style={{ color: "var(--tb-a-red-400)" }}>{error}</div>}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 4 }}>
+            <button
+              type="button"
+              onClick={cancel}
+              disabled={busy}
+              style={{
+                background: "transparent",
+                border: "1px solid var(--tb-n-9)",
+                color: "var(--tb-n-15)",
+                fontFamily: "inherit",
+                fontSize: 10,
+                padding: "2px 8px",
+                borderRadius: 999,
+                cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void commit()}
+              disabled={busy}
+              style={{
+                background: "var(--tb-a-green-600)",
+                border: "1px solid var(--tb-a-green-600)",
+                color: "var(--tb-a-green-100)",
+                fontFamily: "inherit",
+                fontSize: 10,
+                padding: "2px 10px",
+                borderRadius: 999,
+                cursor: "pointer",
+                opacity: busy ? 0.6 : 1,
+              }}
+            >
+              {busy ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </>
       )}
     </div>
   );

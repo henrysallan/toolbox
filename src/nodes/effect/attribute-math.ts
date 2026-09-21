@@ -1,24 +1,38 @@
 import type {
   InputSocketDef,
   NodeDefinition,
-  PointAttribute,
   SocketType,
   SplineValue,
 } from "@/engine/types";
-import { copyPointsWith, EMPTY_POINTS } from "@/engine/points";
+import {
+  EMPTY_POINTS,
+  isWritablePointAttr,
+  readPointAttrColumn,
+  withPointAttr,
+} from "@/engine/points";
 import {
   readSplineAnchorChannel,
   writeSplineAnchorChannel,
 } from "@/engine/spline-attrs";
 
-// Attribute Math — componentwise math on a named channel (points or
-// spline anchors; 081326_point-attributes.md M3). The node-based
-// convenience for the common one-liners; Point Expression's setattr
-// stays the escape hatch for arbitrary formulas. The operand is a
-// constant or a SECOND channel (arity-1 operands broadcast across
+// Attribute Math — componentwise math on an attribute (points or spline
+// anchors; 081326_point-attributes.md M3). The node-based convenience for
+// the common one-liners; Point Expression's setattr stays the escape
+// hatch for arbitrary formulas. On points every name is an attribute
+// (092026_unified-attributes.md): the source, the operand and the output
+// can each be a named channel OR a built-in — `index`, `x`, `scale`,
+// `scale.x`, `rotation`, `group` — so `index ^ 1.35 → scale` is one node
+// and the result lands in the point's own transform data. The operand is
+// a constant or a SECOND attribute (arity-1 operands broadcast across
 // components; mismatched arities read as 0). Remap fits
 // [In Lo..In Hi] → [Out Lo..Out Hi], clamped. Comparisons (greater /
-// less / step) write 1 or 0 per component; abs is unary.
+// less / step) write 1 or 0 per component; abs / fraction / log / exp
+// are unary. The cyclic set (2026-09-20) mirrors the scalar Math node so
+// a per-point phase offset or colour cycle no longer needs a Point
+// Expression: `modulo` is the FLOORED modulo (result takes the operand's
+// sign, so a negative x wraps up into [0, o)), `wrap` folds into
+// [In Lo, In Hi) — the same rows remap uses — and `fraction` is x −
+// floor(x). `log` is the natural log (x ≤ 0 → 0) and `exp` is e^x.
 //
 // A missing source channel passes the input through unchanged — math on
 // nothing is a wiring mistake, not a request to invent zeros.
@@ -33,7 +47,12 @@ const OP_OPTIONS = [
   "min",
   "max",
   "power",
+  "modulo",
+  "wrap",
+  "fraction",
   "abs",
+  "log",
+  "exp",
   "greater than",
   "less than",
   "step",
@@ -41,10 +60,26 @@ const OP_OPTIONS = [
 ] as const;
 type Op = (typeof OP_OPTIONS)[number];
 
-// Remap has its own lo/hi rows; abs is unary. Everything else reads the
-// operand (constant or a second channel).
+const UNARY_OPS: ReadonlySet<string> = new Set(["abs", "fraction", "log", "exp"]);
+
+// Remap and wrap read the lo/hi rows; the unary ops read nothing.
+// Everything else reads the operand (constant or a second channel).
 function usesOperand(op: unknown): boolean {
-  return op !== "remap" && op !== "abs";
+  return op !== "remap" && op !== "wrap" && !UNARY_OPS.has(op as string);
+}
+
+// Which ops show the In Lo / In Hi rows (remap's input range; wrap's
+// target range).
+function usesRange(op: unknown): boolean {
+  return op === "remap" || op === "wrap";
+}
+
+// Blender / GLSL-style wrap into [lo, hi): a zero-width range collapses to
+// lo instead of dividing by zero. Same formula as the Math node's Wrap.
+export function wrapValue(v: number, lo: number, hi: number): number {
+  const range = hi - lo;
+  if (range === 0) return lo;
+  return v - Math.floor((v - lo) / range) * range;
 }
 
 const OPERAND_OPTIONS = ["constant", "attribute"] as const;
@@ -78,8 +113,19 @@ function applyOp(
       return Math.max(x, o);
     case "power":
       return Math.pow(x, o);
+    case "modulo":
+      // Floored modulo (Math node's "Floored Modulo"): the result takes
+      // the operand's sign, so −0.25 mod 1 = 0.75 — what a cyclic phase
+      // wants. A zero operand reads as 0, like divide.
+      return o === 0 ? 0 : x - Math.floor(x / o) * o;
     case "abs":
       return Math.abs(x);
+    case "fraction":
+      return x - Math.floor(x);
+    case "log":
+      return x <= 0 ? 0 : Math.log(x);
+    case "exp":
+      return Math.exp(x);
     case "greater than":
       return x > o ? 1 : 0;
     case "less than":
@@ -118,8 +164,10 @@ function runMath(
           1
         );
         y = outLo + t * (outHi - outLo);
-      } else if (op === "abs") {
-        y = Math.abs(x);
+      } else if (op === "wrap") {
+        y = wrapValue(x, inLo, inHi);
+      } else if (UNARY_OPS.has(op)) {
+        y = applyOp(x, 0, op);
       } else {
         const o = !useAttr
           ? constant
@@ -142,14 +190,17 @@ export const attributeMathNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Componentwise math on a named channel (points or spline anchors): add/subtract/multiply/divide/min/max/power/abs against a constant or a second channel, greater than / less than / step (0/1 comparisons), or remap a range. Writes back in place, or to a new name via Output. A missing channel passes through unchanged.",
+    "Componentwise math on an attribute (points or spline anchors): add/subtract/multiply/divide/min/max/power/modulo against a constant or a second attribute, the unary abs/fraction/log/exp, wrap into [In Lo, In Hi), greater than / less than / step (0/1 comparisons), or remap a range. Writes back in place, or to a new name via Output. On points, name / with / output can each be a named channel or a built-in (index, x, y, scale, scale.x, rotation, group), so index ^ ratio → scale is one node. A missing channel passes through unchanged.",
   facts: {
     space: { out: "in:points" },
+    reads: ["attr:index", "attr:scale", "attr:rotation", "attr:position", "attr:group"],
+    writes: ["attr:scale", "attr:rotation", "attr:position", "attr:group"],
     gotchas: [
-      "An arity-1 operand attribute broadcasts across every component of a higher-arity target; any other arity mismatch reads as 0 for every component.",
-      "divide returns 0 when the operand is exactly 0, not Infinity/NaN.",
-      "greater than and less than write 1 or 0 per component using a strict inequality against the operand (constant or second channel).",
-      "step writes 1 when the channel ≥ the operand and 0 otherwise (GLSL step(operand, x)); equality sits on the 1 side.",
+      "On points, attr_name / operand_attr / output_name accept built-ins (index, x, y, scale, scale.x, rotation, group) as well as channels; a built-in output lands in the typed array.",
+      "index, z and nx/ny/nz are read-only outputs and pass through. Spline anchors have no built-ins. An arity-1 operand broadcasts across a higher-arity target; any other arity mismatch reads as 0.",
+      "divide and modulo return 0 when the operand is exactly 0, not Infinity/NaN; modulo is FLOORED (sign of the operand), so -0.25 mod 1 = 0.75.",
+      "wrap folds into [In Lo, In Hi) using the same rows remap uses (no operand); a zero-width range collapses to In Lo. fraction is x - floor(x); log is natural and reads 0 for x <= 0.",
+      "greater than / less than write 1 or 0 per component with a strict inequality against the operand; step writes 1 when the channel ≥ the operand (GLSL step(operand, x)), equality on the 1 side.",
       "remap clamps t to [0,1] before lerping, so inputs outside In Lo..In Hi saturate at Out Lo/Hi instead of extrapolating.",
       "aux name emits the resolved output name (output_name or else attr_name) as a string even when the source channel is missing and nothing was written.",
       "Spline-anchor reads fall back to the subpath's own attrs when an anchor lacks the named value, but writing always stamps a per-anchor value, flattening that fallback.",
@@ -177,6 +228,7 @@ export const attributeMathNode: NodeDefinition = {
       placeholder: "attribute name",
       suggestAttrsFrom: "points",
       suggestAttrsRequire: true,
+      suggestAttrsIncludeBuiltins: true,
     },
     {
       name: "target",
@@ -219,6 +271,7 @@ export const attributeMathNode: NodeDefinition = {
       placeholder: "second attribute",
       suggestAttrsFrom: "points",
       suggestAttrsRequire: true,
+      suggestAttrsIncludeBuiltins: true,
       visibleIf: (p) => usesOperand(p.op) && p.operand === "attribute",
     },
     {
@@ -230,7 +283,7 @@ export const attributeMathNode: NodeDefinition = {
       softMax: 1,
       step: 0.001,
       default: 0,
-      visibleIf: (p) => p.op === "remap",
+      visibleIf: (p) => usesRange(p.op),
     },
     {
       name: "in_hi",
@@ -241,7 +294,7 @@ export const attributeMathNode: NodeDefinition = {
       softMax: 1,
       step: 0.001,
       default: 1,
-      visibleIf: (p) => p.op === "remap",
+      visibleIf: (p) => usesRange(p.op),
     },
     {
       name: "out_lo",
@@ -271,6 +324,11 @@ export const attributeMathNode: NodeDefinition = {
       type: "string",
       default: "",
       placeholder: "same name",
+      // A writer: offer the writable built-ins (scale, rotation, x…) with
+      // the channels; index / z / normals tint red.
+      suggestAttrsFrom: "points",
+      suggestAttrsIncludeBuiltins: true,
+      suggestAttrsBuiltinFilter: isWritablePointAttr,
     },
   ],
   primaryOutput: "points",
@@ -329,10 +387,12 @@ export const attributeMathNode: NodeDefinition = {
     if (!src || src.kind !== "points") {
       return { primary: EMPTY_POINTS, aux };
     }
-    const a = name ? src.attributes?.[name] : undefined;
-    if (!a) return { primary: src, aux };
+    // Any attribute in, any writable attribute out. A missing source, or
+    // a read-only output (index / z / normals), passes through.
+    const a = name ? readPointAttrColumn(src, name) : undefined;
+    if (!a || !isWritablePointAttr(outName)) return { primary: src, aux };
 
-    const b = useAttr ? src.attributes?.[operandName] : undefined;
+    const b = useAttr ? readPointAttrColumn(src, operandName) : undefined;
     const n = src.count;
     const k = a.arity;
     const data = runMath(
@@ -349,11 +409,8 @@ export const attributeMathNode: NodeDefinition = {
       outLo,
       outHi
     );
-    const result: PointAttribute = { arity: a.arity, color: a.color, data };
     return {
-      primary: copyPointsWith(src, {
-        attributes: { ...src.attributes, [outName]: result },
-      }),
+      primary: withPointAttr(src, outName, data, { arity: k, color: a.color }),
       aux,
     };
   },

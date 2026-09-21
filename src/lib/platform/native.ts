@@ -8,6 +8,7 @@
 
 import type {
   AssetsFolderHandle,
+  ExportLogSink,
   FolderHandle,
   NativeVideoEncodeSpec,
   Platform,
@@ -77,6 +78,7 @@ async function encodeVideo(
     alpha: spec.alpha,
     audioWav: spec.audioWav ? viewToArrayBuffer(spec.audioWav) : undefined,
     suggestedName: spec.suggestedName,
+    logId: spec.logId,
   });
   if (!begun) return null; // user cancelled the save dialog
   const { sessionId } = begun;
@@ -91,7 +93,8 @@ async function encodeVideo(
     },
     async finish() {
       try {
-        await b.encodeVideoEnd(sessionId);
+        const done = await b.encodeVideoEnd(sessionId);
+        return { path: done?.path, bytes: done?.bytes };
       } finally {
         unsub();
       }
@@ -102,6 +105,29 @@ async function encodeVideo(
       } finally {
         unsub();
       }
+    },
+  };
+}
+
+// One log file per export run (electron/export-log.js). An older shell
+// without the handlers yields null and the exporter logs to the console only.
+async function openExportLog(name: string): Promise<ExportLogSink | null> {
+  const b = bridge();
+  if (!b.exportLogOpen || !b.exportLogAppend || !b.exportLogClose) return null;
+  const opened = await b.exportLogOpen(name);
+  if (!opened) return null;
+  const { id, path } = opened;
+  const append = b.exportLogAppend;
+  const close = b.exportLogClose;
+  return {
+    id,
+    path,
+    append(line: string) {
+      // Fire-and-forget: a log write must never stall the frame loop.
+      void append(id, line).catch(() => {});
+    },
+    async close() {
+      await close(id).catch(() => {});
     },
   };
 }
@@ -202,6 +228,7 @@ export const nativePlatform: Platform = {
   pickSaveFolder,
   pickOpenFiles,
   encodeVideo,
+  openExportLog,
   transcodeVideoForPlayback,
   makeScrubProxy,
   windowControls,

@@ -82,7 +82,9 @@ export const splineDrawNode: NodeDefinition = {
     // px = absolute pixels (legacy); % = percent of canvas width, so the
     // stroke keeps its look at any resolution (#174). Read by the shared
     // rasterizeSplineAux.
-    strokeUnitsParam("stroke_units", (p) => !!p.stroke_enabled),
+    strokeUnitsParam("stroke_units", (p) => !!p.stroke_enabled, {
+      governs: ["stroke_thickness"],
+    }),
     // alpha: rendered by the shared rasterizeSplineAux, whose paths are
     // 8-digit-safe (see SPLINE_RASTER_PARAMS in spline-raster-aux.ts).
     {

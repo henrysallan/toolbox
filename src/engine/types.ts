@@ -145,6 +145,15 @@ export type SocketType =
   // Curves… instead of each node carrying a hand-rebuilt copy.
   // Spec: 080526_on-node-color-ramp.md.
   | "color_ramp"
+  // A single-channel curve as a value (see FloatCurveValue) — the same CPU
+  // descriptor shape as color_ramp: the `CurvePoint[]` a `float_curve`
+  // PARAM stores, x∈[0,1] → y∈[0,1], sampled with the monotone cubic in
+  // engine/float-curve.ts. Produced by the Float Curve node's `curve` aux
+  // and by the Expression node in `curve` output mode (the source sampled
+  // over u∈[0,1]); consumed by every `float_curve` param, all exposable
+  // through paramSocketType — Scene Time's custom easing, Map Attribute's
+  // remap, Stroke's falloffs… Spec: specdocs/091926_float-curve-socket.md.
+  | "float_curve"
   // CPU affine (TRS around a pivot). Produced by the Gizmo node; consumed
   // by primitives and Transform. Empty `ops` is identity. Spec:
   // specdocs/082826_gizmo-node.md.
@@ -335,12 +344,13 @@ export type PointsValue = {
   normals?: Float32Array;
   // Named per-point channels (081326_point-attributes.md). Additive and
   // optional like z/normals; the fixed fields above are NOT part of the
-  // map (they have their own semantics — groupIndex is an identity tag).
-  // Names must not shadow the built-in column set (position/x/y/index/
-  // rotation/scale/group/z/nx/ny/nz). Missing channel reads as 0.
-  // Runtime-only, never serialized. Every transform must carry these —
-  // build outputs with copyPointsWith/gatherPoints (points.ts), never a
-  // hand-rolled literal.
+  // map — they are the BUILT-IN attributes, addressed by the same names
+  // through points.ts's schema (`readPointAttr` / `withPointAttr` route
+  // "scale", "x", "group"… to the typed arrays; 092026_unified-
+  // attributes.md), so a channel never carries one of those names.
+  // Missing channel reads as 0. Runtime-only, never serialized. Every
+  // transform must carry these — build outputs with copyPointsWith/
+  // gatherPoints (points.ts), never a hand-rolled literal.
   attributes?: Record<string, PointAttribute>;
   // Lazy view onto the typed arrays. Producers may emit `[]` and let
   // `ensurePointArray()` build it on demand. Never mutate this without
@@ -587,6 +597,17 @@ export type ColorRampValue = {
   // Blend color space (091626_ramp-space-interp.md). Same standing as
   // `interp`: carried, not yet applied at the consuming end.
   space?: ColorRampSpace;
+};
+
+// A float curve on the wire — the exact array a `float_curve` param stores
+// (sanitizeFloatCurve-clean: sorted by x, both axes in [0,1], ≥ 2 points),
+// wrapped so it can be a SocketValue. socketToParamRaw hands `points` back
+// verbatim, so every consumer keeps its `sanitizeFloatCurve(params.curve)`
+// read unchanged. Pure data: sample with sampleFloatCurve. Spec:
+// specdocs/091926_float-curve-socket.md.
+export type FloatCurveValue = {
+  kind: "float_curve";
+  points: CurvePoint[];
 };
 
 // One TRS-around-pivot step. Matches Transform / transformSpline math:
@@ -878,6 +899,7 @@ export type SocketValue =
   | NoiseFieldValue
   | CameraValue
   | ColorRampValue
+  | FloatCurveValue
   | TransformValue;
 
 // SDF AST. Every SDF node's compute() returns one of these — a small
@@ -1634,9 +1656,10 @@ export interface ParamDef {
   // number, edits also SNAP to zero-based multiples of it (k·step, clamped
   // to the range) so the stored value lands on the increments the user set
   // — not the offset grid a native range's `min + n·step` would produce.
-  // UI-only hint like `visibleIf`: the engine ignores it, it doesn't
-  // survive export-manifest serialization, and `step` stays the fallback
-  // wherever sibling params aren't in reach (exported-app controls).
+  // UI-only hint like `visibleIf`: the engine ignores it. The export-
+  // manifest builder bakes its result into the clone's `step` (like
+  // `maxFrom`), so the live slider gets the increment the editor showed at
+  // save time; `step` stays the fallback where it returns undefined.
   stepFrom?: (params: Record<string, unknown>) => number | undefined;
   // For "scalar" params: derive the control's upper bound from the node's
   // CURRENT param values instead of the static `max` (e.g. Switch's `index`
@@ -1649,6 +1672,30 @@ export interface ParamDef {
   // spans what the editor's did when the project was saved (before this,
   // a Switch index in /live ran 0…255).
   maxFrom?: (params: Record<string, unknown>) => number | undefined;
+  // For "scalar" params: `min` / `softMax` counterparts of `maxFrom`, for
+  // params whose sensible range depends on a sibling — Text's `font_size`
+  // spans 4…1000 in px but 0.1…100 (soft 20) in %, so a static `min: 4`
+  // would forbid every sane percent. Same contract as `maxFrom`: UI-only,
+  // range override wins, static field is the fallback, baked into the
+  // export manifest at build time.
+  minFrom?: (params: Record<string, unknown>) => number | undefined;
+  softMaxFrom?: (params: Record<string, unknown>) => number | undefined;
+  // For "enum" params that pick the UNITS of sibling scalars (px | %):
+  // when the user flips the enum, the editor multiplies every governed
+  // param's constant AND keyframe values by `factor(from, to, env)` in the
+  // same edit, so what is on screen does not change — 96 px on a 1920-wide
+  // comp becomes 5 %. `env` is the PROJECT resolution (not the preview-
+  // scaled render size): px text lies in a 0.5× preview, and the flip
+  // should preserve the export look. UI-only hint like `stepFrom`: the
+  // engine ignores it. See engine/stroke-units.ts.
+  unitsConvert?: {
+    governs: string[];
+    factor: (
+      from: unknown,
+      to: unknown,
+      env: { canvasWidth: number; canvasHeight: number }
+    ) => number;
+  };
   // For "scalar" params: pick the widget from the node's CURRENT params.
   // Returning "segmented" renders an integer pick over min…max instead of
   // the slider — a pill up to SEGMENTED_MAX_OPTIONS choices, a dropdown
@@ -2013,6 +2060,13 @@ export interface NodeDefinition {
     ctx: RenderContext,
     nodeId?: string
   ) => string;
+  // True when `fingerprintExtras` folds the scoped tick in — a cacheable
+  // def whose UNWIRED output still advances with the playhead (Stagger,
+  // LFO). The Iterate / Time Offset shells hash their interiors to decide
+  // whether a nested pass is due, and treat only `stable: false` defs,
+  // keyframes and clips as time-driven; without this flag an interior made
+  // of such a node alone would hash identically every frame and freeze.
+  tickDriven?: boolean;
   // Static sanity check of a node's params, run by the AI-recipe validator
   // (graph-validation.ts) — never during evaluation. Return human-readable
   // problems (empty array = fine); each becomes a validation error the

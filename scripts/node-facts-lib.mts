@@ -7,7 +7,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { NodeDefinition, NodeFacts } from "@/engine/types";
-import { POINT_AGE_ATTR, RESERVED_POINT_ATTR_NAMES } from "@/engine/points";
+import { BUILTIN_POINT_ATTR_NAMES, POINT_AGE_ATTR } from "@/engine/points";
 
 export const COORD_SPACES = [
   "canvas01",
@@ -22,10 +22,8 @@ export const COORD_SPACES = [
 // Attribute names that may be cited without appearing as a literal in the
 // node's own source (they are stamped by shared engine helpers).
 export const WELL_KNOWN_ATTRS: ReadonlySet<string> = new Set([
-  ...RESERVED_POINT_ATTR_NAMES,
+  ...BUILTIN_POINT_ATTR_NAMES,
   POINT_AGE_ATTR,
-  "scale.x",
-  "scale.y",
   "ix",
   "iy",
   "cellW",

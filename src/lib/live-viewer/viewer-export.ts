@@ -154,7 +154,12 @@ export const VIEWER_GIF_FPS = 15;
 export const VIEWER_GIF_COLORS = 128;
 
 export async function exportViewerGif(opts: {
-  canvas: HTMLCanvasElement;
+  /** PNG bytes of the frame `renderFrame` just produced — a direct GPU
+   *  readback of the viewer's terminal texture (lib/export-capture.ts),
+   *  never the on-screen canvas. */
+  capturePng: () => Promise<Uint8Array>;
+  width: number;
+  height: number;
   durationSecs: number;
   baseName: string;
   /** Deterministic render of the frame at `timeSec` (LiveViewer.runFrame). */
@@ -171,7 +176,9 @@ export async function exportViewerGif(opts: {
     Math.round(opts.durationSecs * VIEWER_GIF_FPS)
   );
   const { blob } = await exportGif({
-    canvas: opts.canvas,
+    capturePng: opts.capturePng,
+    width: opts.width,
+    height: opts.height,
     fps: VIEWER_GIF_FPS,
     durationFrames,
     colors: VIEWER_GIF_COLORS,

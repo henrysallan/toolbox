@@ -255,7 +255,10 @@ export function deriveVoronoiGeometry(
       }
     }
     const cell: SplineSubpath = { anchors, closed: true, groupIndex: id };
-    if (drivers) cell.driver = drivers[site];
+    if (drivers) {
+      cell.driver = drivers[site];
+      cell.attrs = { driver: drivers[site] };
+    }
     cells.push(cell);
 
     // ---- centers ----------------------------------------------------

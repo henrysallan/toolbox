@@ -71,7 +71,7 @@ export const blendIntersectionsNode: NodeDefinition = {
       step: 0.1,
       default: 24,
     },
-    strokeUnitsParam("units"),
+    strokeUnitsParam("units", undefined, { governs: ["width", "blend"] }),
     {
       // Field samples across the network bbox's larger span — the
       // quality/perf dial. The field covers only the network's bounding

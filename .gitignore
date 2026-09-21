@@ -66,3 +66,7 @@ next-env.d.ts
 
 # Per-node benchmark output (npm run bench:nodes) — regenerate locally.
 /bench/
+
+# scratch bundles/fixtures written by the Electron GL gates (check:shaders, check:blend-gpu, check:readback-async)
+*.tmp.json
+*.tmp.js

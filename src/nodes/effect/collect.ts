@@ -115,6 +115,7 @@ export const collectNode: NodeDefinition = {
     gotchas: [
       "Disconnected sockets are dropped, not stubbed — the group's effective size is the count of connected sockets, independent of count/slots.",
       "Spline/points 'groups' aren't containers — they're flattened into one value tagged with per-item groupIndex (a=0, b=1, c=2...), compacted over connected sockets only.",
+      "Spline mode carries each subpath's driver, per-subpath attrs and anchor attrs through; only groupIndex is rewritten. Points mode unions named channels (a channel missing on one input reads 0 there).",
       "mode=object clears and re-adds children into one retained THREE.Group every eval; geometry wires land here via the geometry-to-object3d auto-wrap.",
       "Switching mode changes the output socket type (image_group / spline / points / object3d), so downstream wires must accept the new type.",
     ],
@@ -189,18 +190,19 @@ export const collectNode: NodeDefinition = {
       // Flatten into a single SplineValue. Each incoming subpath
       // inherits a groupIndex matching its source socket index
       // (position in the sequence of connected sockets, compacted —
-      // a disconnected socket doesn't reserve an index).
+      // a disconnected socket doesn't reserve an index). Everything
+      // else on the subpath — `driver`, per-subpath `attrs`, and the
+      // anchors with their own attrs — rides through untouched: the
+      // per-subpath channels are the documented way to drive Rasterize
+      // / Stroke ramps, and a concatenation that stripped them broke
+      // that pipeline silently (fixed 2026-09-20).
       const subpaths: SplineSubpath[] = [];
       let outerIdx = 0;
       for (const name of slots) {
         const v = inputs[name];
         if (!v || v.kind !== "spline") continue;
         for (const sub of v.subpaths) {
-          subpaths.push({
-            closed: sub.closed,
-            anchors: sub.anchors,
-            groupIndex: outerIdx,
-          });
+          subpaths.push({ ...sub, groupIndex: outerIdx });
         }
         outerIdx++;
       }

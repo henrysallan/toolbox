@@ -251,7 +251,9 @@ export const strokeNode: NodeDefinition = {
     // px = absolute pixels (legacy, resolution-dependent); % = percent of
     // canvas width, so the stroke keeps its look at any resolution (#174).
     // Applies to thickness and the dash/dot metrics below.
-    strokeUnitsParam("units"),
+    strokeUnitsParam("units", undefined, {
+      governs: ["thickness", "dash_length", "dash_gap", "dot_spacing"],
+    }),
     // Per-subpath thickness, mirroring the color source: `vary` maps each
     // subpath's driver t (same index/random/group/position semantics —
     // one shared resolver in engine/spline-color-source.ts) linearly into

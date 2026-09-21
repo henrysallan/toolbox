@@ -1219,9 +1219,17 @@ export const copyToPointsNode: NodeDefinition = {
             ...transformed,
             groupIndex: tagFor(sub.groupIndex, i, pt.groupIndex),
           };
-          if (drv !== undefined) emitted.driver = drv;
           if (pointAttrs) {
             emitted.attrs = { ...transformed.attrs, ...pointAttrs };
+          }
+          // The per-copy driver is the `driver` subpath attribute (what
+          // Rasterize / Stroke read by default — 092026_unified-
+          // attributes.md §4.4); the legacy field rides along for the
+          // shim window. driver_attr / driver_field win over a gathered
+          // target channel that happens to be named `driver`.
+          if (drv !== undefined) {
+            emitted.driver = drv;
+            emitted.attrs = { ...emitted.attrs, driver: drv };
           }
           outSubpaths.push(emitted);
         }

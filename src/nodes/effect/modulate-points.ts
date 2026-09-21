@@ -4,7 +4,12 @@ import type {
   NodeDefinition,
   RenderContext,
 } from "@/engine/types";
-import { copyPointsWith, EMPTY_POINTS } from "@/engine/points";
+import {
+  copyPointsWith,
+  EMPTY_POINTS,
+  pointAttrExists,
+  readPointAttr,
+} from "@/engine/points";
 
 // Per-point modulation. Reads a points input and writes per-point
 // `scale` / `rotation` based on:
@@ -13,11 +18,24 @@ import { copyPointsWith, EMPTY_POINTS } from "@/engine/points";
 //   - image field inputs (scale_field, rotate_field) — sampled at each
 //     point's UV. Field luminance maps via the configured lo/hi range
 //     for scale, or via amount × luma for rotation.
+//   - attribute sources (scale_attr, rotate_attr; 2026-09-20) — a point
+//     column read per point: a named channel, a dotted component, or a
+//     built-in like index / group. Unlike a field, a column can tell
+//     stacked points apart (concentric copies at one position, a
+//     Stagger phase, an Attribute Math result), which is what made the
+//     Points → Copy to Points detour the only route to per-instance
+//     scale before. Scale multiplies by the value as-is (an arity-2
+//     channel scales x / y separately); rotation adds value ×
+//     rotate_attr_amount radians, so a 0..1 phase with the default
+//     amount (2π) is one full turn per unit. Missing column → ignored.
+//     Map Attribute is the curve-shaped alternative when the value
+//     needs remapping first.
 //
 // Existing per-point scale/rotation values are preserved and combined:
-// new scale = old scale × (uniform × field_value), new rotation =
-// old rotation + (uniform + field_value × amount). Stack multiple
-// Modulate Points nodes to layer modulations.
+// new scale = old scale × (uniform × field_value × attr_value), new
+// rotation = old rotation + (uniform + field_value × amount + attr ×
+// attr_amount). Stack multiple Modulate Points nodes to layer
+// modulations.
 //
 // Image-mode Copy-to-Points already samples its own scale_field /
 // rotate_field on the GPU. This node is the equivalent for the CPU
@@ -250,7 +268,7 @@ export const modulatePointsNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Modulate per-point scale and rotation on a points value. Uniform inputs apply to every point; image fields are sampled at each point's UV and mapped through the configured ranges. Stack to layer modulations; feed the result into Copy to Points (or any consumer that respects per-point attributes).",
+    "Modulate per-point scale and rotation on a points value. Uniform inputs apply to every point; image fields are sampled at each point's UV and mapped through the configured ranges; a Scale / Rotate attribute reads a point column per point (a named channel such as a Stagger phase or an Attribute Math result, or a built-in like index), which unlike a field can tell stacked points apart. Stack to layer modulations; feed the result into Copy to Points (or any consumer that respects per-point attributes).",
   facts: {
     reads: ["attr:scale", "attr:rotation"],
     writes: ["attr:scale", "attr:rotation"],
@@ -258,7 +276,9 @@ export const modulatePointsNode: NodeDefinition = {
       "scale_field/rotate_field images are downsampled to a fixed 128x128 working buffer, so fine texture detail in the field is lost.",
       "Field sampling uses an async GPU readback (PBO + fence), so field-driven modulation lags the live image by about one frame.",
       "New scale multiplies the existing per-point scale and new rotation adds to the existing rotation, so stacked nodes compound rather than replace.",
-      "With scale_mul=1, rotate_add=0 and no fields wired, the node is a no-op and returns the input points object unchanged.",
+      "scale_attr multiplies scale by the column as-is (arity 2 scales x/y separately; arity 1 or a built-in broadcasts); rotate_attr adds value × rotate_attr_amount rad (default 2π = a turn per unit).",
+      "A blank or missing scale_attr/rotate_attr column is ignored, not an error — the name field's red tint is the only signal.",
+      "With scale_mul=1, rotate_add=0, no fields wired and no attribute names set, the node is a no-op and returns the input points object unchanged.",
     ],
   },
   backend: "webgl2",
@@ -368,6 +388,37 @@ export const modulatePointsNode: NodeDefinition = {
       step: 0.001,
       default: Math.PI,
     },
+    {
+      name: "scale_attr",
+      label: "Scale attribute",
+      type: "string",
+      default: "",
+      placeholder: "none — multiplies scale",
+      suggestAttrsFrom: "points",
+      suggestAttrsRequire: true,
+      suggestAttrsIncludeBuiltins: true,
+    },
+    {
+      name: "rotate_attr",
+      label: "Rotate attribute",
+      type: "string",
+      default: "",
+      placeholder: "none — adds rotation",
+      suggestAttrsFrom: "points",
+      suggestAttrsRequire: true,
+      suggestAttrsIncludeBuiltins: true,
+    },
+    {
+      name: "rotate_attr_amount",
+      label: "Rotate attr amount (rad per 1.0)",
+      type: "scalar",
+      min: -4 * Math.PI,
+      max: 4 * Math.PI,
+      softMax: 2 * Math.PI,
+      step: 0.001,
+      default: 2 * Math.PI,
+      visibleIf: (p) => typeof p.rotate_attr === "string" && p.rotate_attr.trim() !== "",
+    },
   ],
   primaryOutput: "points",
   auxOutputs: [],
@@ -408,12 +459,38 @@ export const modulatePointsNode: NodeDefinition = {
       state.rotate.cache = undefined;
     }
 
+    // Attribute sources: a per-point column. Resolved once here so the
+    // hot loop only does typed-array reads. A named arity-≥2 channel
+    // scales x / y from its first two components; anything else (an
+    // arity-1 channel, a dotted component, a built-in) broadcasts.
+    const scaleAttrName = ((params.scale_attr as string) ?? "").trim();
+    const rotAttrName = ((params.rotate_attr as string) ?? "").trim();
+    const rotAttrAmount =
+      typeof params.rotate_attr_amount === "number" &&
+      Number.isFinite(params.rotate_attr_amount)
+        ? params.rotate_attr_amount
+        : 2 * Math.PI;
+    const scaleAttr =
+      scaleAttrName && pointAttrExists(src, scaleAttrName) ? scaleAttrName : "";
+    const scaleAttrVec = scaleAttr ? src.attributes?.[scaleAttr] : undefined;
+    const scaleAttrXY =
+      scaleAttrVec && scaleAttrVec.arity >= 2 ? scaleAttrVec : undefined;
+    const rotAttr =
+      rotAttrName && pointAttrExists(src, rotAttrName) ? rotAttrName : "";
+
     // Fast path: nothing to do — return the input unchanged. Sharing
     // the typed-array buffers is safe because the evaluator treats
     // PointsValue as immutable across consumers.
     const noUniformScale = uniformScale === 1;
     const noUniformRot = uniformRot === 0;
-    if (noUniformScale && noUniformRot && !scaleSampler && !rotSampler) {
+    if (
+      noUniformScale &&
+      noUniformRot &&
+      !scaleSampler &&
+      !rotSampler &&
+      !scaleAttr &&
+      !rotAttr
+    ) {
       return { primary: src };
     }
 
@@ -446,11 +523,26 @@ export const modulatePointsNode: NodeDefinition = {
       if (rotSampler) {
         rotAdd += rotSampler(px, py) * rotAmount;
       }
+      if (rotAttr) {
+        const v = readPointAttr(src, rotAttr, i);
+        if (v !== undefined && Number.isFinite(v)) rotAdd += v * rotAttrAmount;
+      }
+
+      let attrSx = 1;
+      let attrSy = 1;
+      if (scaleAttrXY) {
+        const base = i * scaleAttrXY.arity;
+        attrSx = scaleAttrXY.data[base];
+        attrSy = scaleAttrXY.data[base + 1];
+      } else if (scaleAttr) {
+        const v = readPointAttr(src, scaleAttr, i);
+        if (v !== undefined && Number.isFinite(v)) attrSx = attrSy = v;
+      }
 
       const oldSx = inScales ? inScales[i * 2] : 1;
       const oldSy = inScales ? inScales[i * 2 + 1] : 1;
-      outScales[i * 2] = oldSx * scaleFactor;
-      outScales[i * 2 + 1] = oldSy * scaleFactor;
+      outScales[i * 2] = oldSx * scaleFactor * attrSx;
+      outScales[i * 2 + 1] = oldSy * scaleFactor * attrSy;
       outRotations[i] = (inRots ? inRots[i] : 0) + rotAdd;
     }
 

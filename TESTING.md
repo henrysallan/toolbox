@@ -19,6 +19,7 @@ Run these before claiming a change works. The first three are CI gates.
 | `npm run check` | ~60s | 13 offline `check-*.mts` scripts. Hard gate. |
 | `npm run lint:ratchet` | ~90s | Fails only on errors **above** `scripts/lint-baseline.json`. |
 | `npm run check:shaders` | ~20s | GLSL compiles/links + blend equivalence. Needs Electron + GL. |
+| `npm run check:readback-async` | ~10s | `EngineBackend.readImagePixelsAsync` (PBO + fence) is byte-identical to the sync readback, never hands back a stale frame with one read in flight, and cancel/destroy leave GL clean. Needs Electron (SwiftShader). |
 | `npm run check:blend-gpu` | ~2min | Blend Intersections GPU field ≡ CPU reference (field/contour/temporal gates). Needs Electron + GL. |
 | `npm run bench:nodes` | ~2min | Per-node cost ranking. Needs Electron + hardware GL. |
 
@@ -45,7 +46,20 @@ that pair). Offline node tests should push each input through
 - `check-validator/builder/edit/*-loop`, `check-mcp` — the AI-recipe and MCP
   trust boundary. `check-mcp` also covers the multi-instance hub/proxy
   handoff (091126_mcp-proxy.md): a second server on the same port must
-  proxy tool calls through the first and take over when it exits.
+  proxy tool calls through the first and take over when it exits. Since
+  2026-09-20 it also guards the agent-facing shapes that MCP feedback
+  found missing: `float_curve` params are settable as `[{x, y}]` and print
+  id-free with the identity default omitted (the recipe half is in
+  `check-builder`); `get_node_data` always reports `attrNames` /
+  `subpathAttrNames` gathered over the whole value; `insert_recipe` and
+  `edit_group` forward `dry_run`; and the source tools read the PAIRED
+  editor's tag — `git archive v<ref>` locally, the GitHub tarball as the
+  fallback — for `search_source` too, not just `get_node_source`. The
+  tag test needs either the `v0.5.7` tag fetched or network; with neither
+  it asserts the local-fallback wording instead. That `set_param` /
+  `set_keyframes` bump `rev` is editor-side (mcp-handlers.ts) and not
+  covered offline: set a param over MCP and `get_graph({since})` must
+  report the change, not `unchanged`.
 - `check-persistence`, `check-graph-ops`, `check-fragment-roundtrip` — save
   format and structural graph edits.
 - `check-node-presets` — user node presets ("Save as Preset"): fragment
@@ -71,6 +85,52 @@ that pair). Offline node tests should push each input through
   WebCodecs/GL/IPC half is browser-only — drive it live
   (specdocs/090526_video-scrub-optimizations.md §Results describes the
   harness); `scripts/bench-video-seek.cjs` measures raw seek/decode costs.
+- `check-lfo` — the LFO's timebase (2026-09-20): unwired it rides the
+  scoped playhead (`ctx.time`, which the evaluator derives from the tick —
+  never wall-clock, so it was always scrub-exact; the old `stable: false`
+  flag meant "uncacheable", not "nondeterministic"); a wired `clock`
+  replaces it (seconds, or frames ÷ fps per `clock_unit`) and the wave is
+  a pure function of that value; sawtooth at amplitude 0.5 / offset 0.5
+  is a 0→1 ramp per period; negative clocks wrap. The def is now
+  cacheable with the tick in `fingerprintExtras` and flagged
+  `tickDriven`, which the Iterate / Time Offset interior hash reads so an
+  interior made of an LFO (or Stagger) alone still re-evaluates per frame
+  — that hash previously counted only `stable: false` defs as
+  time-driven. The interior half is a live-app question (an LFO inside a
+  Time Offset must keep moving).
+- `check-modulate-points` — the attribute sources on Modulate Points
+  (2026-09-20): `scale_attr` multiplies the per-point scale by a point
+  column (arity-1 channel / dotted component / built-in broadcasts to
+  x and y; an arity-2 channel scales the axes separately), `rotate_attr`
+  adds value × `rotate_attr_amount` radians (default 2π), both compound
+  with the uniform inputs and the existing per-point values, a blank or
+  missing column is ignored, and the no-op fast path returns the input
+  object itself. The image-field path (GL readback) is not covered.
+- `check-scene-time` — Scene Time's stepped mode ("change by `step_size`
+  every `step_seconds` / `step_frames`, per `unit`; `scale` is ignored) and
+  the node's saved-param migrations: a pre-2026-09-19 save, where
+  `step_size` was the step duration and `scale` converted time units to
+  output units, must render identically after the split (duration = old
+  step_size, size = old step_size·scale), in either unit and any mode, and
+  migrate idempotently; the ping-pong `period → rate → period_frames` fold
+  still runs from its new home next to the def. Also the `custom` easing:
+  the ramp samples `easing_curve`, clamps, and blends with
+  `ease_intensity` exactly like a named curve, in both eased modes. And
+  the `sawtooth` mode (2026-09-20): a min→max ramp over `period_frames`
+  that resets hard, sharing ping-pong's controls and hiding unit / scale /
+  offset — with the defaults, the plain 0→1 loop driver.
+- `check-float-curve-socket` — the `float_curve` socket type
+  (091926_float-curve-socket.md): `paramSocketType` maps it (so every
+  float_curve param is exposable), `coercible` is identity-only, the clip
+  and group-shell defaults are the identity ramp, Switch and Time Offset
+  carry it, the wire colour exists; the Float Curve node's `curve` aux is
+  the sanitized authored curve; the Expression node's `out_type: curve`
+  sweeps `u` over 65 samples, clamps y, binds input variables, and emits
+  the identity ramp on error; `validateGraph` accepts curve → exposed
+  float_curve param and rejects scalar → it; and a real `evaluateGraph`
+  run drives Scene Time's custom easing from each producer through the
+  exposed-param path. The editor's dashed handle and the read-only on-node
+  curve widget are live-app questions.
 - `check-grain` — Grain v2 (specdocs/091626_grain-node-v2.md), the pure
   half: the temporal moving-average kernel keeps unit variance at every
   fractional grain time (`Σw² = 1`, the anti-breathing rule — a plain lerp
@@ -148,6 +208,18 @@ that pair). Offline node tests should push each input through
   on only for `true`. Visual correctness is NOT covered —
   audition packs in File → Live Link… (the preview iframe is the real
   `.live-root`).
+- `check-live-param-history` — the live viewer's undo / redo
+  (`lib/live-viewer/param-history.ts`, 2026-09-19), the pure half: rapid
+  same-key writes coalesce into one entry that undoes to the FIRST
+  before-value and redoes to the last after-value; the window refreshes
+  per write so a long drag stays one step; a gap, a different key, no key
+  or an undo in between starts a new entry; a gizmo drag writing several
+  params undoes them together; two ramp-stop virtual keys landing on one
+  stored array unwind to the array before either moved and redo to the
+  final one however the writes interleaved; a write after undo drops the
+  redo stack; `MAX_HISTORY` caps the stack. ⌘Z reaching the viewer, and
+  the writes onto the runtime graph / `paramValues`, are live-app
+  questions (open a `/live` link, drag a slider or a gizmo, ⌘Z).
 - `check-glsl-translation` — the graph → GLSL tools (091626_graph-to-glsl.md):
   every visible image producer is classified in
   `src/lib/glsl-translation/classes.ts`, node docs agree with the table,
@@ -169,6 +241,20 @@ that pair). Offline node tests should push each input through
   overlay itself (ViewportRulers.tsx) and each gizmo's snap wiring are
   live-app questions — Shift+R, drag a guide out, drag a Transform box
   onto it.
+- `check-unified-attrs` — one schema for built-in and named point
+  attributes (092026_unified-attributes.md): `withPointAttr` routes any
+  name — `scale`, `scale.y`, `x`, `group`, a channel — with the schema's
+  coercion (a scalar fills both scale lanes, `group` rounds, non-finite →
+  the lane default, a lane write keeps the others, multiply / add against
+  the current value, `index` / `z` / normals return the input unchanged);
+  Set Named Attribute (any name, `mode`, `source=exponential`), Attribute
+  Math (built-ins in and out), Map Attribute (`output_name` + `mode`, and
+  the `map_target` load migration renders identically) and Point
+  Expression's `setattr("scale", …)` all go through it; the subpath
+  `driver` is `attrs.driver` (legacy field → 0.5 fallback) for Rasterize /
+  Stroke `by: driver`; Collect and Copy to Points carry every attribute;
+  the name-field rule accepts writable built-ins on writers. The picker
+  tint in the live editor is a live-app question.
 - `check-easing-editor` — the Tracks editor's easing overlay
   (091726_easing-editor.md), the pure half: the `cubicBezier` easing kind
   is a CSS cubic-bezier time remap (thirds = identity, the exact table
@@ -186,6 +272,103 @@ that pair). Offline node tests should push each input through
   minimum). The overlay itself (EasingEditorOverlay.tsx) — anchors,
   handle drags, gestures, resize grip, the shelf's clicks and right-click
   menu, the dock button — is a live-app question.
+- `check-export-capture` — the export capture + log path
+  (lib/export-capture.ts, lib/export-log.ts), pure half. Exports read frames
+  straight off the terminal texture (EngineBackend.readImagePixels) since
+  2026-09-21 — never the on-screen canvas, which Chromium can hold stale
+  while a window is occluded or the 2D canvas is starved (the desktop 3840²
+  export that froze a few frames in while the evaluator kept rendering).
+  The gate covers the sampled frame checksum (deterministic, length-aware,
+  byte 0 and every stride multiple always sampled), the identical-run
+  tracker and its "mostly one picture" hint threshold (≥20 frames, run ≥10
+  and ≥ half), the worker string → Error normalisation, and ExportLog's
+  line format, frame-line cadence (first 3 / every 30th / last), one-shot
+  run warning, summary numbers, ring cap and idempotent finish. The GPU
+  readback itself, rgbaToBlob (OffscreenCanvas), the desktop log file
+  (electron/export-log.js, `~/Library/Logs/Toolbox/exports`) and ffmpeg's
+  stderr landing in it are live-app questions — run an export and open the
+  log the failure toast names.
+- `check-export-pipeline` — the pipelined export frame loop
+  (092126_async-pipelined-readback.md, lib/export-pipeline.ts), pure half.
+  Since 2026-09-21 the native-ffmpeg exporter keeps ONE readback in flight:
+  frame i's eval + PBO copy are issued before frame i-1's bytes are awaited
+  and written, so the GPU renders i while the CPU ships i-1. The gate drives
+  `runFramePipeline` with hand-resolved fake reads and asserts the issue
+  order (render 0, read 0, render 1, read 1, THEN wait on 0), that a later
+  frame landing first is never consumed early, strict index-order hand-off,
+  the `render` / `capture` (fence wait) timings, and the abort paths: a null
+  read rejects naming the frame, a throwing `consume` or `render` propagates
+  the same error, and in every case the read already issued for the next
+  frame is cancelled. The GPU half is `check:readback-async` (above); the
+  speed win is a hardware question — see the parity + speed procedure below.
+
+  **Verifying the pipelined export on the desktop.** Export the same project
+  twice from the desktop app, once on the current build and once with the
+  sync loop (check out the commit before the pipeline landed, or temporarily
+  swap `runFramePipeline` for the old loop), same range, size and codec.
+  Open the two logs under `~/Library/Logs/Toolbox/exports`: every per-frame
+  `checksum` must match between runs (the log prints one per frame at its
+  cadence — for an exhaustive comparison, temporarily set `FRAME_LOG_EVERY`
+  to 1 in lib/export-log.ts). `distinctFrames` must equal `frames` for an
+  animated graph and the "unchanged for 10 frames" warning must not fire.
+  Speed is in the summary's `avgMs` block: `capture` should fall from the
+  GPU-finish-plus-copy time (340 ms at 3840² on the M5 Pro reference) to
+  the fence wait alone, and the per-frame total toward
+  `max(render + gpu, write)`. State the project, size, codec and machine
+  with the numbers (§6); a window that is occluded during the run still
+  exports correctly but is not a fair timing.
+- `check-export-presets` — the video export presets
+  (092126_export-presets-and-progress.md, lib/export-presets.ts): every
+  preset's codec belongs to its tier and survives `describeVideoExport`
+  without a silent substitution; `effectiveVideoPreset` sends an untouched
+  node to the default, a pre-preset save with raw encoder rows to Custom,
+  and an unknown id to the default; Custom resolves the legacy rows with
+  the Output's old defaults; the description maps hevc-under-Max → h265,
+  h264/mov-under-High → avc/.mp4, ProRes-in-mp4 → .mov, warns for lossless
+  H.264 playback, browser ProRes alpha, browser AV1 and low bitrates at
+  large sizes, and sizes fixed-bitrate and ProRes exports (150 Mbps × 4 s
+  = 75 MB; 4444 at 3840² × 240 ≈ 1.9 GB); the Output rows hide the raw
+  encoder rows under a preset and show them under Custom. The panel's
+  summary block, the two-bar banner and the encoders are live-app
+  questions.
+- `check-vanity-slug` — named live links (092126_vanity-live-links.md),
+  the pure half in `lib/vanity-slug.ts`: title → slug (lowercase ASCII
+  kebab-case, diacritics stripped, capped on a word boundary, null when
+  nothing usable survives), typed text → handle (tolerates `@` and casing,
+  3–32 chars, no edge dashes, the reserved list), the `@<handle>` route
+  segment parser (anything else must 404 — the root `[handle]` route
+  catches every unrouted two-segment URL), and the URL builders. The DB
+  constraints in `specdocs/vanity-live-links-migration.sql` mirror these
+  rules by hand — change both. The settings row, the account-menu handle
+  editor, and the `/@handle/slug` page resolving against Supabase are
+  live-app questions.
+- `check-svg-export-stash` — the evaluator contract behind the SVG button
+  on Output / Layer Output / SVG Export (nodes/output/svg-export.ts): the
+  `svg-export:<id>` stash is written by whichever node COMPUTES for the
+  surface — a Layer Output's lives under its enclosing LAYER's id (flatten
+  pushes the tap onto the layer shell) — so a pass that skips that node
+  (an Active node elsewhere, or the offline forced terminal on a Layer
+  Output, which remaps to the interior image producer) leaves no stash
+  even with the wire present; `extraTargets: [stashOwner]` restores it,
+  while a bypassed / clip-gated layer or an empty spline honestly stays
+  empty. Pins the "Nothing to export — wire a spline into Layer Output"
+  regression. EffectsApp's exportSvgNode forcing the owner via
+  `svgExportStashTargetRef`, the sequence-mode file loop and its toasts
+  are live-app questions.
+- `check-keyframe-clipboard` — the keyframe clipboard shared by the
+  Tracks editor (Cmd+C / Cmd+V) and the Graph editor's right-click menus
+  (Copy / Paste / Paste flipped): offsets are relative to the earliest
+  copied key across lanes; "flipped" mirrors ticks about the span
+  midpoint (integers stay integers, multi-lane about the WHOLE span) and
+  reverses every segment's easing — ease-in ↔ ease-out, a `cubicBezier`
+  shape reflected through the unit square, `customBezier` handles swapped
+  with dx negated — so the flipped block evaluates at t exactly as the
+  original does at min+max−t (scalar and vec; hold and the mirror-less
+  bounce / elastic stay as they are); flipping twice is the identity;
+  paste re-anchors, replaces a colliding key, sorts, marks the block
+  animated, drops sub-zero ticks and skips a lane whose block is gone.
+  The menus themselves and the selection after paste are a live-app
+  question.
 
 ---
 

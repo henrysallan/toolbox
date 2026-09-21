@@ -38,6 +38,7 @@ import {
   evalMonotoneCubic,
   newCurvePointId,
   sanitizeFloatCurve,
+  vetFloatCurvePoints,
   type CurvePoint,
 } from "./float-curve";
 
@@ -405,10 +406,6 @@ export function channelRangeOverride(
   return Object.keys(r).length ? r : undefined;
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
 // Vet a remotely supplied value for a row (set_param by channel name). The
 // simple kinds ride vetParamValue via the synthesized def; ramp / curve
 // take their plain-JSON shapes with ids minted here. Scalars clamp to the
@@ -419,27 +416,9 @@ export function vetChannelValue(
 ): { ok: true; value: unknown } | { ok: false; reason: string } {
   const kind = channelKind(e);
   if (kind === "ramp") return vetColorRampStops(value);
-  if (kind === "curve") {
-    if (!Array.isArray(value) || value.length < 2)
-      return { ok: false, reason: "expected at least 2 points as [{x, y}] with x, y in 0..1" };
-    const pts: CurvePoint[] = [];
-    for (const raw of value) {
-      if (
-        !isRecord(raw) ||
-        typeof raw.x !== "number" ||
-        typeof raw.y !== "number" ||
-        !Number.isFinite(raw.x) ||
-        !Number.isFinite(raw.y)
-      )
-        return { ok: false, reason: "each point must be {x, y} finite numbers" };
-      pts.push({
-        id: typeof raw.id === "string" && raw.id ? raw.id : newCurvePointId(),
-        x: Math.max(0, Math.min(1, raw.x)),
-        y: Math.max(0, Math.min(1, raw.y)),
-      });
-    }
-    return { ok: true, value: sanitizeFloatCurve(pts) };
-  }
+  // Same vetting as a `float_curve` param (vetParamValue) — one shape for
+  // both: [{x, y}] with optional ids.
+  if (kind === "curve") return vetFloatCurvePoints(value);
   const def = channelParamDef(e);
   if (kind === "scalar") {
     const r = channelRangeOverride(e);

@@ -247,6 +247,7 @@ export function growExprVarHandle(
 
 const BLEND_MODE_SET = new Set<string>(BLEND_MODE_ORDER);
 const MAX_MERGE_LAYERS = 16;
+const MAX_MERGE_LAYER_NAME = 64;
 const ORDINAL_RE = /^in:(layer|mask)([1-9]\d*)$/;
 
 export function vetMergeLayers(
@@ -265,6 +266,7 @@ export function vetMergeLayers(
       opacity?: unknown;
       enabled?: unknown;
       maskInvert?: unknown;
+      name?: unknown;
     } | null;
     if (raw === null || typeof raw !== "object")
       return { ok: false, reason: `entry ${i} must be an object` };
@@ -286,6 +288,12 @@ export function vetMergeLayers(
       return { ok: false, reason: `entry ${i}: maskInvert must be a boolean` };
     const maskInvert =
       raw.maskInvert === undefined ? existing?.[i]?.maskInvert : raw.maskInvert;
+    if (raw.name !== undefined && typeof raw.name !== "string")
+      return { ok: false, reason: `entry ${i}: name must be a string` };
+    // Display name: a blank string clears it (back to "layer N").
+    const name = (
+      raw.name === undefined ? existing?.[i]?.name : raw.name
+    )?.trim().slice(0, MAX_MERGE_LAYER_NAME);
     out.push({
       id: existing?.[i]?.id ?? newLayerId(),
       mode: mode as BlendMode,
@@ -293,6 +301,7 @@ export function vetMergeLayers(
       // Omit the flags at their defaults so the authored shape stays minimal.
       ...(enabled === false ? { enabled: false } : {}),
       ...(maskInvert === true ? { maskInvert: true } : {}),
+      ...(name ? { name } : {}),
     });
   }
   return { ok: true, value: out };

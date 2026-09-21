@@ -1,12 +1,11 @@
 import type { NodeDefinition } from "@/engine/types";
 import {
-  copyPointsWith,
   EMPTY_POINTS,
-  getRotation,
-  getScaleX,
-  getScaleY,
+  isWritablePointAttr,
   pointAttrExists,
   readPointAttr,
+  withPointAttr,
+  type PointAttrWriteMode,
 } from "@/engine/points";
 import {
   defaultFloatCurve,
@@ -14,30 +13,47 @@ import {
   sanitizeFloatCurve,
 } from "@/engine/float-curve";
 
-// Map Attribute — drive the built-in point data from any point column
-// (081326_point-attributes.md M4): the bridge from "data on the wire" to
-// "pixels move". Pipeline per point:
+// Map Attribute — remap any point attribute onto any other through a range
+// and a curve (081326_point-attributes.md M4; 092026_unified-attributes.md).
+// Pipeline per point:
 //
 //   1. Read the named column — a named channel's component 0, a dotted
 //      axis (`color.y`), or a built-in (index, x, y, scale.x, rotation,
 //      group, …). Normalize [In Lo..In Hi] → [0,1] (clamped).
-//   2. Sample the 0..1 float curve (identity by default — a linear ramp
-//      leaves this step a no-op, so old graphs keep their linear remap).
-//   3. Map the curve's y through [Out Lo..Out Hi] and apply it:
-//        scale      — uniform multiply of the existing per-point scale
-//        rotation   — radians ADDED to the existing rotation
-//        position x/y — authored-space offset added to the position
+//   2. Sample the 0..1 float curve. The default two-point (0,0)→(1,1)
+//      curve is EXACTLY linear (a two-point monotone-cubic segment has
+//      unit end tangents), so an untouched curve leaves this a no-op.
+//   3. Map the curve's y through [Out Lo..Out Hi] and store it into the
+//      output attribute by name (`scale`, `rotation`, `x`, `y`, a channel…)
+//      with the chosen mode: multiply the current value, add to it, or set.
 //
-// A missing named channel passes through unchanged (the name field's red
-// tint explains why). Built-ins always resolve.
+// The legacy `map_target` enum (scale = multiply, rotation = add, position
+// x / y = add) migrates to output_name + mode on load (see
+// migrateMapAttributeParams; lib/project.ts calls it). A missing named
+// channel passes through unchanged (the name field's red tint explains
+// why). Built-ins always resolve.
 
-const TARGET_OPTIONS = [
-  "scale",
-  "rotation",
-  "position x",
-  "position y",
-] as const;
-type Target = (typeof TARGET_OPTIONS)[number];
+const MODE_OPTIONS = ["multiply", "add", "set"] as const;
+
+// Pre-2026-09-20 saves stored the destination as an enum. Each maps to the
+// attribute it wrote and the op it applied — behaviour-identical.
+const LEGACY_TARGETS: Record<string, [string, PointAttrWriteMode]> = {
+  scale: ["scale", "multiply"],
+  rotation: ["rotation", "add"],
+  "position x": ["x", "add"],
+  "position y": ["y", "add"],
+};
+
+// Called by migrateLoadedParams (lib/project.ts) for every loaded node and
+// fragment. Idempotent: once `output_name` exists nothing happens.
+export function migrateMapAttributeParams(params: Record<string, unknown>): void {
+  if (params.output_name !== undefined) return;
+  const legacy = LEGACY_TARGETS[(params.map_target as string) ?? "scale"];
+  if (!legacy) return;
+  params.output_name = legacy[0];
+  params.mode = legacy[1];
+  delete params.map_target;
+}
 
 export const mapAttributeNode: NodeDefinition = {
   type: "map-attribute",
@@ -45,16 +61,17 @@ export const mapAttributeNode: NodeDefinition = {
   category: "point",
   subcategory: "modifier",
   description:
-    "Drives built-in point data from any point column — a named channel, or a built-in like index, x, y, scale.x, rotation, or group. Normalize through In Lo/Hi, shape with a 0–1 curve, then map through Out Lo/Hi and apply as a scale multiplier, a rotation offset (radians), or a position offset. The curve defaults to a linear ramp, so a straight diagonal is the old In→Out remap. A missing named channel passes through unchanged.",
+    "Remaps any point attribute onto any other — read a named channel or a built-in like index, x, y, scale.x, rotation, or group; normalize through In Lo/Hi, shape with a 0–1 curve, map through Out Lo/Hi, then multiply, add, or set the output attribute (scale, rotation, x, y, group, or a named channel). The default curve is a straight diagonal, so an untouched curve is a plain In→Out linear remap. A missing named channel passes through unchanged.",
   facts: {
     space: { "param:out_lo": "canvas01", "param:out_hi": "canvas01" },
     reads: ["attr:scale", "attr:rotation", "attr:position"],
-    writes: ["attr:scale", "attr:rotation", "attr:position"],
+    writes: ["attr:scale", "attr:rotation", "attr:position", "attr:group"],
     gotchas: [
       "attr_name is read at runtime and can be any named channel or a built-in (index, x, y, scale.x, rotation, group, ...); an unknown name passes points through unchanged.",
-      "map_target picks exactly one destination per point: scale multiplies existing scale, rotation adds radians to existing rotation, position x/y offsets one position axis.",
-      "Position x/y offsets add directly into the point's stored canvas01 coordinate (authored space); for the other targets out_lo/out_hi become a scale multiplier or radians instead.",
-      "The curve defaults to an identity (0,0)-(1,1) ramp, so an untouched curve behaves as a plain In Lo/Hi -> Out Lo/Hi linear remap.",
+      "output_name is any writable attribute — scale, scale.x, rotation, x, y, group, or a channel; index, z, nx/ny/nz pass through. mode multiply scales the current value, add offsets, set replaces.",
+      "out_lo/out_hi are in the OUTPUT attribute's units: a scale multiplier for scale, radians for rotation, canvas01 for x / y (an add on x/y offsets the stored coordinate directly).",
+      "The curve defaults to a two-point (0,0)-(1,1) ramp, which the monotone-cubic sampler renders exactly linear, so an untouched curve behaves as a plain In Lo/Hi -> Out Lo/Hi remap.",
+      "Saved nodes with the old map_target enum load as output_name + mode (scale -> scale/multiply, rotation -> rotation/add, position x/y -> x/y add) and render identically.",
     ],
   },
   backend: "webgl2",
@@ -71,15 +88,26 @@ export const mapAttributeNode: NodeDefinition = {
       suggestAttrsIncludeBuiltins: true,
     },
     {
-      name: "map_target",
-      label: "Target",
-      type: "enum",
-      options: TARGET_OPTIONS as unknown as string[],
+      name: "output_name",
+      label: "Output",
+      type: "string",
       default: "scale",
+      placeholder: "scale, rotation, x, y, …",
+      suggestAttrsFrom: "points",
+      suggestAttrsIncludeBuiltins: true,
+      suggestAttrsBuiltinFilter: isWritablePointAttr,
     },
     {
-      // 0..1 shaper after In-range normalize, before Out-range. Identity
-      // (0,0)→(1,1) is a no-op so existing linear remaps stay linear.
+      name: "mode",
+      label: "Mode",
+      type: "enum",
+      options: MODE_OPTIONS as unknown as string[],
+      default: "multiply",
+    },
+    {
+      // 0..1 shaper after In-range normalize, before Out-range. The
+      // two-point default is exactly linear, so old graphs keep their
+      // linear remap.
       name: "curve",
       label: "Curve",
       type: "float_curve",
@@ -136,8 +164,18 @@ export const mapAttributeNode: NodeDefinition = {
     if (!name || src.count === 0 || !pointAttrExists(src, name)) {
       return { primary: src };
     }
+    // An un-migrated legacy node (a recipe that still says map_target)
+    // resolves the same way the load migration would.
+    const legacy = LEGACY_TARGETS[(params.map_target as string) ?? ""];
+    const outName =
+      ((params.output_name as string) ?? legacy?.[0] ?? "scale").trim();
+    const mode = (
+      (MODE_OPTIONS as readonly string[]).includes(params.mode as string)
+        ? params.mode
+        : legacy?.[1] ?? "multiply"
+    ) as PointAttrWriteMode;
+    if (!isWritablePointAttr(outName)) return { primary: src };
 
-    const target = ((params.map_target as string) ?? "scale") as Target;
     const inLo = (params.in_lo as number) ?? 0;
     const inHi = (params.in_hi as number) ?? 1;
     const outLo = (params.out_lo as number) ?? 0;
@@ -146,36 +184,15 @@ export const mapAttributeNode: NodeDefinition = {
     const curve = sanitizeFloatCurve(params.curve, 0, 1);
 
     const n = src.count;
-    const mapped = (i: number): number => {
+    const data = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
       const raw = readPointAttr(src, name, i) ?? 0;
       const t = Math.min(
         Math.max(span === 0 ? 0 : (raw - inLo) / span, 0),
         1
       );
-      const shaped = sampleFloatCurve(curve, t);
-      return outLo + shaped * (outHi - outLo);
-    };
-
-    if (target === "scale") {
-      const scales = new Float32Array(n * 2);
-      for (let i = 0; i < n; i++) {
-        const m = mapped(i);
-        scales[i * 2] = getScaleX(src, i) * m;
-        scales[i * 2 + 1] = getScaleY(src, i) * m;
-      }
-      return { primary: copyPointsWith(src, { scales }) };
+      data[i] = outLo + sampleFloatCurve(curve, t) * (outHi - outLo);
     }
-    if (target === "rotation") {
-      const rotations = new Float32Array(n);
-      for (let i = 0; i < n; i++) {
-        rotations[i] = getRotation(src, i) + mapped(i);
-      }
-      return { primary: copyPointsWith(src, { rotations }) };
-    }
-    // position x / y — authored-space offset on one axis.
-    const axis = target === "position x" ? 0 : 1;
-    const positions = new Float32Array(src.positions.subarray(0, n * 2));
-    for (let i = 0; i < n; i++) positions[i * 2 + axis] += mapped(i);
-    return { primary: copyPointsWith(src, { positions }) };
+    return { primary: withPointAttr(src, outName, data, { arity: 1, mode }) };
   },
 };

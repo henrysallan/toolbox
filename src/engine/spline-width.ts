@@ -30,7 +30,7 @@ export function splineHasWidthProfile(subpaths: SplineSubpath[]): boolean {
   return subpaths.some(subpathHasWidthProfile);
 }
 
-interface PxSegment {
+export interface PxSegment {
   curve: Bezier;
   length: number;
   ia: number; // anchor index at the segment start
@@ -38,8 +38,9 @@ interface PxSegment {
 }
 
 // Segment cubics with ABSOLUTE control points mapped through the
-// rasterizer's normalized→px mapping.
-function subpathToPxSegments(
+// rasterizer's normalized→px mapping. (Exported for spline-outline.ts,
+// which sweeps the same px-space geometry into a silhouette polygon.)
+export function subpathToPxSegments(
   sub: SplineSubpath,
   W: number,
   H: number

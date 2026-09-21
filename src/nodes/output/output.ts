@@ -1,9 +1,23 @@
 import type { NodeDefinition, ParamDef } from "@/engine/types";
 import {
+  DEFAULT_VIDEO_PRESET,
+  VIDEO_PRESET_LABELS,
+  VIDEO_PRESET_OPTIONS,
+  isCustomVideoPreset,
+  resolveVideoExportSettings,
+} from "@/lib/export-presets";
+import {
   SVG_STYLE_PARAMS,
   svgExportStashKey,
   type SvgExportStash,
 } from "./svg-export";
+
+// Video rows: shown for exportMode=video; the raw encoder rows additionally
+// need the Custom preset (092126_export-presets-and-progress.md).
+const isVideo = (p: Record<string, unknown>) =>
+  (p.exportMode ?? "video") === "video";
+const isCustomVideo = (p: Record<string, unknown>) =>
+  isVideo(p) && isCustomVideoPreset(p);
 
 // The export configuration params, shared verbatim between the composition
 // Output node (below) and each **Layer Output** (the fixed `group-output`
@@ -132,45 +146,65 @@ export const EXPORT_PARAMS: ParamDef[] = [
       visibleIf: (p) =>
         p.exportMode === "sequence" ||
         p.exportMode === "gif" ||
-        p.videoQuality !== "fast",
+        resolveVideoExportSettings(p).tier !== "fast",
     },
     // ----- video-only ---------------------------------------------------
-    // Three quality tiers:
+    // A preset names the OUTCOME (a ProRes master, an H.264 review copy, a
+    // hardware HEVC delivery file) and resolves to the encoder rows below;
+    // lib/export-presets.ts is the table, and its describeVideoExport is
+    // what the panel prints under these rows. `custom` shows the raw rows.
+    // A save from before presets loads as `custom` with its values intact
+    // (effectiveVideoPreset + the project.ts migration).
+    {
+      name: "videoPreset",
+      label: "Preset",
+      type: "enum",
+      options: VIDEO_PRESET_OPTIONS,
+      optionLabels: VIDEO_PRESET_LABELS,
+      default: DEFAULT_VIDEO_PRESET,
+      visibleIf: isVideo,
+    },
+    // Three quality tiers behind the presets (Custom exposes them):
     //   fast — MediaRecorder. Real-time capture, ~25 Mbps cap, every browser.
     //   high — WebCodecs offline. True bitrate, frame-stepped, no drops.
-    //   max  — ffmpeg.wasm. ProRes/H.265/lossless, slowest but best quality.
+    //   max  — ffmpeg (native on desktop, wasm in the browser). ProRes /
+    //          H.265 / lossless, slowest but best quality.
     {
       name: "videoQuality",
-      label: "Quality preset",
+      label: "Encoder tier",
       type: "enum",
       options: ["fast", "high", "max"],
+      optionLabels: {
+        fast: "fast — MediaRecorder (real-time)",
+        high: "high — WebCodecs (hardware)",
+        max: "max — ffmpeg",
+      },
       default: "high",
-      visibleIf: (p) => (p.exportMode ?? "video") === "video",
+      visibleIf: isCustomVideo,
     },
     {
       name: "videoFormat",
       label: "Container",
       type: "enum",
       // Container choices depend on the encoder. mediabunny only writes
-      // mp4/webm; ffmpeg writes mov/mkv too. We expose the union and
-      // validate at export time — anything illegal falls back gracefully.
+      // mp4/webm; ffmpeg writes mov/mkv too. We expose the union; the
+      // summary under the rows says what the file really becomes.
       options: ["mp4", "webm", "mov", "mkv"],
       default: "mp4",
-      visibleIf: (p) => (p.exportMode ?? "video") === "video",
+      visibleIf: isCustomVideo,
     },
     {
       name: "videoCodec",
       label: "Codec",
       type: "enum",
-      // Per-quality codec menus would need a dependent enum; flatten
-      // and validate at export time instead.
+      // Per-quality codec menus would need a dependent enum; flatten and
+      // resolve at export time (describeVideoExport names the substitution):
       //   fast: not used (MediaRecorder picks)
       //   high: avc, hevc, vp9, av1
       //   max:  h264, h264-lossless, h265, prores, qtrle, vp9, av1
       // qtrle = QuickTime Animation: lossless RGBA with a straight alpha
-      // channel that After Effects AND DaVinci Resolve both read (ffmpeg's
-      // ProRes 4444 alpha isn't reliably honored by either). Max tier only,
-      // forced to a .mov container; always alpha-bearing.
+      // channel that After Effects and Premiere read via their own decoder
+      // (macOS itself has none). Max tier only, forced to .mov.
       options: [
         "avc",
         "hevc",
@@ -182,20 +216,30 @@ export const EXPORT_PARAMS: ParamDef[] = [
         "prores",
         "qtrle",
       ],
+      optionLabels: {
+        avc: "avc — H.264 (WebCodecs, high tier)",
+        hevc: "hevc — HEVC (WebCodecs, high tier)",
+        vp9: "vp9 — VP9",
+        av1: "av1 — AV1",
+        h264: "h264 — x264 CRF (ffmpeg, max tier)",
+        "h264-lossless": "h264-lossless — x264 lossless 4:4:4 (ffmpeg)",
+        h265: "h265 — x265 CRF (ffmpeg, max tier)",
+        prores: "prores — Apple ProRes (ffmpeg)",
+        qtrle: "qtrle — QuickTime Animation RGBA (ffmpeg)",
+      },
       default: "avc",
-      visibleIf: (p) =>
-        (p.exportMode ?? "video") === "video" && p.videoQuality !== "fast",
+      visibleIf: (p) => isCustomVideo(p) && p.videoQuality !== "fast",
     },
     {
       name: "videoBitrateMbps",
       label: "Bitrate (Mbps)",
       type: "scalar",
       min: 0.5,
-      max: 200,
+      max: 400,
+      softMax: 200,
       step: 0.5,
       default: 16,
-      visibleIf: (p) =>
-        (p.exportMode ?? "video") === "video" && p.videoQuality !== "max",
+      visibleIf: (p) => isCustomVideo(p) && p.videoQuality !== "max",
     },
     {
       name: "videoCrf",
@@ -208,7 +252,7 @@ export const EXPORT_PARAMS: ParamDef[] = [
       step: 1,
       default: 18,
       visibleIf: (p) =>
-        (p.exportMode ?? "video") === "video" &&
+        isCustomVideo(p) &&
         p.videoQuality === "max" &&
         p.videoCodec !== "prores" &&
         p.videoCodec !== "qtrle" &&
@@ -222,7 +266,7 @@ export const EXPORT_PARAMS: ParamDef[] = [
       options: ["proxy", "lt", "standard", "hq", "4444", "4444xq"],
       default: "hq",
       visibleIf: (p) =>
-        (p.exportMode ?? "video") === "video" &&
+        isCustomVideo(p) &&
         p.videoQuality === "max" &&
         p.videoCodec === "prores",
     },
@@ -237,7 +281,7 @@ export const EXPORT_PARAMS: ParamDef[] = [
       // selecting ProRes already forces the container away from mp4/webm.
       default: true,
       visibleIf: (p) =>
-        (p.exportMode ?? "video") === "video" &&
+        isCustomVideo(p) &&
         p.videoQuality === "max" &&
         p.videoCodec === "prores" &&
         (p.videoProresProfile === "4444" ||
@@ -313,13 +357,15 @@ export const outputNode: NodeDefinition = {
   name: "Output",
   category: "output",
   description:
-    "Terminal node. Its input image is rendered to the visible canvas by the engine. Wire a spline into the optional `spline` input to unlock an SVG button alongside Image and Video — it saves that path at the current playhead as a standalone .svg, styled by the stroke/fill params that appear with it.",
+    "Terminal node. Its input image is rendered to the visible canvas by the engine. Wire a spline into the optional `spline` input to unlock an SVG button alongside Image and Video — it saves that path at the current playhead as a standalone .svg, styled by the stroke/fill params that appear with it. With exportMode=sequence the SVG button writes one .svg per frame over the export frame range instead, matching the image sequence's naming and delivery.",
   facts: {
     space: { "param:resWidth": "pixels", "param:resHeight": "pixels" },
     gotchas: [
-      "Wiring a spline unlocks an SVG export button; the spline is snapshotted at the current playhead into ctx.state, but the engine never renders it — the canvas only shows `image`.",
+      "Wiring a spline unlocks an SVG export button; the spline is snapshotted into ctx.state by Output's compute, but the engine never renders it — the canvas only shows `image`.",
+      "exportMode=sequence makes the SVG button write one `name.0000.svg` per frame over startFrame/endFrame at videoFps via seqDelivery; other modes save a single .svg at the playhead.",
       "The `render` aux output carries no value; it only exists to link this Output into a Render Queue node as a queue item.",
-      "videoQuality=fast locks output fps to the live page render rate (MediaRecorder capture); sequence, gif, and high/max video instead step the clock independently at videoFps.",
+      "videoPreset names the outcome (ProRes master, H.264 review, hardware HEVC delivery…) and overrides the encoder rows; videoPreset=custom exposes videoQuality/videoFormat/videoCodec and friends.",
+      "A fast-tier export (preset preview-fast, or custom videoQuality=fast) locks output fps to the live render rate (MediaRecorder); sequence, gif and high/max video step the clock at videoFps.",
       "videoCodec=qtrle (QuickTime Animation) is forced to a .mov container and is always alpha-bearing, unlike prores which needs videoAlpha plus a 4444/4444xq profile.",
       "resolution=custom sizes the export from resWidth/resHeight in pixels; canvas uses the project resolution and scale multiplies it by resScale.",
       "startFrame/endFrame is a half-open range [start, end): frame count = end − start, so the 0/240 default renders 240 frames.",

@@ -51,17 +51,30 @@ declare global {
       alpha?: boolean;
       audioWav?: ArrayBuffer;
       suggestedName: string;
+      /** Export log id (exportLogOpen) — ffmpeg's stderr is appended there. */
+      logId?: string;
     }): Promise<{ sessionId: string; path: string } | null>;
     /** Push one RGBA8 frame; resolves when drained (backpressure). */
     encodeVideoFrame(sessionId: string, rgba: ArrayBuffer): Promise<void>;
-    /** Close stdin and await ffmpeg exit; resolves with the written path. */
-    encodeVideoEnd(sessionId: string): Promise<{ path: string }>;
+    /** Close stdin and await ffmpeg exit; resolves with the written path
+     *  and its size on disk. */
+    encodeVideoEnd(sessionId: string): Promise<{ path: string; bytes?: number }>;
     /** Abort the encode and clean up. */
     encodeVideoAbort(sessionId: string): Promise<void>;
     /** Subscribe to encode progress; returns an unsubscribe fn. */
     onEncodeProgress(
       cb: (e: { sessionId: string; label: string; fraction: number }) => void
     ): () => void;
+
+    // ---- Export log (electron/export-log.js) -------------------------------
+    /** Open one log file for an export run under app.getPath("logs")/exports.
+     *  Optional so an older shell loading a newer renderer simply has no
+     *  file sink (the renderer keeps logging to the console). */
+    exportLogOpen?(name: string): Promise<{ id: string; path: string }>;
+    /** Append one line (length-capped by main). */
+    exportLogAppend?(id: string, line: string): Promise<void>;
+    /** Flush + close the file. */
+    exportLogClose?(id: string): Promise<void>;
 
     // ---- Transcode-on-import (Milestone 3.1) ------------------------------
     /** Transcode an undecodable video to a Chromium-playable form. */

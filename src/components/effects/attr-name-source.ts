@@ -15,7 +15,7 @@ import {
   BUILTIN_POINT_ATTR_SUGGESTIONS_2D,
   builtinPointAttrNames,
   isBuiltinPointAttrName,
-  RESERVED_POINT_ATTR_NAMES,
+  isWritablePointAttr,
 } from "@/engine/points";
 
 export interface AttrNameInfo {
@@ -105,11 +105,14 @@ export function attrNameSuggestions(
 
 // The one invalid-name rule, shared by both surfaces. Empty is never
 // flagged — it reads as "not set yet", and the placeholder does the talking.
-// Writers (`require` false): a reserved name is always wrong (and it can
-// never be a channel). Consumers (`require` true): a verified-missing name
-// is wrong, unless `includeBuiltins` and the name is a readable built-in
-// (index / x / y / …) or a component of a present named channel (`color.y`).
-// With a `builtinFilter`, a built-in the node cannot consume is wrong too.
+// With `includeBuiltins` (the node routes names through the unified
+// attribute API, 092026_unified-attributes.md): a built-in is fine unless
+// the `builtinFilter` rejects it (a writer's `isWritablePointAttr` tints
+// index / z / normals); a named channel must exist when `require`, or be a
+// component of a present channel (`color.y`). Without it, the node reads
+// or writes `attributes[name]` directly, so a built-in name is wrong on a
+// consumer (it can never be a channel there) and a NON-WRITABLE built-in
+// is wrong on a writer; a verified-missing name is wrong on a consumer.
 export function isAttrNameInvalid(
   name: string,
   info: AttrNameInfo,
@@ -127,6 +130,6 @@ export function isAttrNameInvalid(
     if (dot > 0 && info.names.includes(n.slice(0, dot))) return false;
     return require;
   }
-  if (RESERVED_POINT_ATTR_NAMES.has(n)) return true;
+  if (isBuiltinPointAttrName(n)) return require ? true : !isWritablePointAttr(n);
   return require && info.known && !info.names.includes(n);
 }

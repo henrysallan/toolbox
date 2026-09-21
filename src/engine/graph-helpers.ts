@@ -330,6 +330,12 @@ export function paramSocketType(type: ParamType): SocketType | null {
       return "string";
     case "color_ramp":
       return "color_ramp";
+    // Same leverage as color_ramp: this one case makes every float_curve
+    // param (Scene Time's custom easing, Map Attribute, Stroke's falloffs,
+    // Grain, Taper, Bevel, Shade…) drivable by the Float Curve node's
+    // `curve` aux or an Expression in curve mode. 091926_float-curve-socket.md.
+    case "float_curve":
+      return "float_curve";
     case "vec2":
       return "vec2";
     case "vec3":

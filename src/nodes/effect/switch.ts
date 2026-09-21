@@ -88,6 +88,8 @@ const TYPES: SocketType[] = [
   "collider",
   "particles",
   "transform",
+  "color_ramp",
+  "float_curve",
 ];
 
 const TYPE_OPTIONS: string[] = [SWITCH_AUTO, ...TYPES];

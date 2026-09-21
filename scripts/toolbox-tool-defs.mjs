@@ -37,7 +37,10 @@ export const RECIPE_CONTRACT =
   "catalog lists without the ~(not remotely settable) tag (respect " +
   "ranges/options). color_ramp is settable: [{position, color, alpha?}] " +
   "— same shape as GLSL ramp() channels (Color Ramp stops, Rasterize " +
-  "fill/stroke ramps). Allowed cross-type wires: " +
+  "fill/stroke ramps). float_curve is settable: [{x, y}] with x, y in 0..1, " +
+  "at least 2 points, sorted by x (Map Attribute curve, Scene Time " +
+  "easing_curve, Float Curve curve) — same shape as curve() channels; the " +
+  "identity ramp is [{x:0,y:0},{x:1,y:1}]. Allowed cross-type wires: " +
   "mask↔image, spline→mask, scalar→vec2/vec3/vec4/uv, image|mask→scalar, " +
   "audio→scalar, image↔element; anything else must match exactly. The " +
   "graph must be acyclic. Expression/Point Expression `expression` params " +
@@ -221,7 +224,8 @@ export const BRIDGED_TOOLS = [
     timeoutMs: CMD_TIMEOUT_MS,
     description:
       "Recent graph mutations from this editor session (insert_recipe, " +
-      "edit_group) with the `rev` get_graph uses. Key by the `summary` " +
+      "edit_group, set_param, set_keyframes) with the `rev` get_graph uses. " +
+      "set_param entries are summarized as `<nodeId>.<param>`. Key by the `summary` " +
       "you sent on edit_group — after a timeout, this is how you learn " +
       "whether the edit landed (status ok + matching summary) without " +
       "re-reading the group. Newest last. `rev` is the current mutation " +
@@ -248,7 +252,12 @@ export const BRIDGED_TOOLS = [
       "screenshot pixels. 2D geometry is authored-space normalized [0,1]² " +
       "Y-DOWN (y=0 at the top of the frame, y=1 at the bottom); 3D points " +
       "are world meters Y-up. Returns bounds plus the first `limit` points " +
-      "or anchors (default 32, max 256) with attrs. Optional `socket` " +
+      "or anchors (default 32, max 256) with attrs. `attrNames` is ALWAYS " +
+      "present and gathered over the whole value, not just the rows shown: " +
+      "points → the named attribute channels; splines → per-anchor attrs, " +
+      "plus `subpathAttrNames` (per-subpath attrs) and `groupTaggedSubpaths` " +
+      "/ `drivenSubpaths` counts. An empty list means none present anywhere " +
+      "— no need to raise `limit` to find out. Optional `socket` " +
       'selects "out" (primary) or "aux:<name>"; default prefers primary, ' +
       "then a points/spline aux. Optional `frame` evaluates at that frame " +
       "then restores the playhead. Group shells dissolve at eval — pass " +
@@ -336,13 +345,23 @@ export const BRIDGED_TOOLS = [
       "zones) so you do not need a follow-up get_graph just to patch. " +
       "A `recipes` batch returns `groups: [{name, groupId, ids, wired}]`; " +
       "`connect` applies to the last group only. " +
-      "The user sees a toast and can undo. " +
+      "The user sees a toast and can undo. Pass `dry_run: true` to run the " +
+      "same build + validation WITHOUT touching the graph: returns valid " +
+      "true + warnings (or the same validation error a real insert would), " +
+      "so wiring (:param:<name>, mask:<n> sockets, edge grammar) can be " +
+      "checked before mutating; `rev` is unchanged and no ids are minted. " +
       RECIPE_CONTRACT,
     inputSchema: {
       recipe: z
         .record(z.string(), z.unknown())
         .optional()
         .describe("The RecipeGraph object."),
+      dry_run: z
+        .boolean()
+        .optional()
+        .describe(
+          "Validate only — build + validator pass, nothing inserted, no undo entry, rev unchanged (default false)."
+        ),
       recipes: z
         .array(z.record(z.string(), z.unknown()))
         .optional()
@@ -422,9 +441,18 @@ export const BRIDGED_TOOLS = [
       "by the group-level value — the op succeeds with a PARAM_EXPOSED " +
       "warning; set_param the group shell with the exposed label instead. " +
       "Change by exception; never rebuild what you can patch. " +
-      "Validation errors return as the tool error — fix and retry.",
+      "Validation errors return as the tool error — fix and retry. " +
+      "`dry_run: true` applies the ops to a copy and validates without " +
+      "committing (no undo entry, rev unchanged) — returns applied / " +
+      "failed[] / warnings exactly as the real call would.",
     inputSchema: {
       groupId: z.string().describe("The node-group or layer id."),
+      dry_run: z
+        .boolean()
+        .optional()
+        .describe(
+          "Validate only — apply the ops to a copy and run the validator, commit nothing (default false)."
+        ),
       ops: z
         .array(z.record(z.string(), z.unknown()))
         .describe(
@@ -452,7 +480,11 @@ export const BRIDGED_TOOLS = [
       "get_graph). Values are vetted against the param's type/range/options. " +
       "Prefer this over edit_group for single tweaks — it's the same path " +
       "the UI sliders use (undo + auto-keyframing included). color_ramp " +
-      "params take [{position, color, alpha?}] (same as GLSL ramp() channels). " +
+      "params take [{position, color, alpha?}] (same as GLSL ramp() channels); " +
+      "float_curve params (Map Attribute `curve`, Scene Time `easing_curve`, " +
+      "Float Curve `curve`) take [{x, y}] with x, y in 0..1 and at least 2 " +
+      "points (same as curve() channels; ids optional). Every successful " +
+      "write bumps `rev` (returned) and is listed by get_recent_edits. " +
       "Setting " +
       "`expression` on Point Expression / GLSL Expression also Syncs new " +
       "channels (ch/toggle/pick/color/ramp/curve; add-only, ids preserved) — " +

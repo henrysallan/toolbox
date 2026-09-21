@@ -18,6 +18,11 @@ import {
 } from "@/engine/point-labels";
 import { aspectCorrectY } from "@/engine/aspect";
 import { OPACITY_PARAM } from "@/engine/conventions";
+import {
+  resolveStrokePx,
+  strokeUnitsParam,
+  unitsRangeHints,
+} from "@/engine/stroke-units";
 import { CURATED_FONTS, ensureFontLoaded, isFontReady } from "@/lib/fonts";
 
 // Point Labels — the self-contained convenience node: `points` → `image`. It
@@ -118,6 +123,7 @@ export const pointLabelsNode: NodeDefinition = {
       "placement picks which point of the label box sits at the (offset) target: 'on' centers it, 'above' puts the box's bottom edge there, etc.",
       "label_scale is baked into the rasterized font size (stays crisp) rather than stretching the box; any style/color/font/scale change clears the whole raster cache.",
       "style input (a wired Text node's text_instance) overrides font_family/size/color/alignment entirely; the local params are only the no-wire fallback.",
+      "size defaults to raw pixels; size_units=% reads it as a percent of canvas width (the separate `units` param only affects the {x}/{y} coordinate tokens).",
       "stable:false — re-checks font readiness every eval; an unready font paints nothing that frame and re-triggers once the async load completes.",
     ],
   },
@@ -214,14 +220,19 @@ export const pointLabelsNode: NodeDefinition = {
     },
     {
       name: "size",
-      label: "Size (px)",
+      label: "Size",
       type: "scalar",
       min: 1,
       max: 512,
       softMax: 128,
       step: 1,
       default: 32,
+      ...unitsRangeHints("size_units", { min: 0.1, max: 50, softMax: 10, step: 0.1 }),
     },
+    // px | % for `size` (the coordinate `units` above is a different axis).
+    // % = percent of canvas width, matching Text's toggle; flipping converts
+    // the value so the labels don't jump. Spec: 091926_text-size-units.md.
+    strokeUnitsParam("size_units", undefined, { governs: ["size"] }),
     // alpha: lands verbatim in the shared text-raster Canvas fillStyle
     // (8-digit hex is valid CSS); the label raster cache keys on it.
     {
@@ -261,7 +272,14 @@ export const pointLabelsNode: NodeDefinition = {
         : {
             ...DEFAULT_TEXT_STYLE,
             family: (params.font_family as string) ?? DEFAULT_TEXT_STYLE.family,
-            size: (params.size as number) ?? DEFAULT_TEXT_STYLE.size,
+            // size_units=% reads `size` as a percent of canvas width. The
+            // resolved px lands in styleSig below, so a canvas resize under
+            // % clears the raster cache like any other style change.
+            size: resolveStrokePx(
+              (params.size as number) ?? DEFAULT_TEXT_STYLE.size,
+              params.size_units,
+              ctx.width
+            ),
             color: (params.color as string) ?? DEFAULT_TEXT_STYLE.color,
             alignment:
               (params.alignment as TextStyle["alignment"]) ?? "center",

@@ -487,10 +487,44 @@ from unpkg at runtime; keep it that way).
 - Real slider/dropdown/numeric/font packs from the owner's references;
   possible webfont loading; swatch-style preset pickers in the designer.
 
+## Removing controls + opt-in file inputs (2026-09-21)
+
+Owner requests, shipped together:
+
+- **File inputs are opt-in.** `buildExportManifest` used to list every
+  reachable file-typed param (image / video / audio / SVG / font / model)
+  as a File Inputs row unconditionally, so an image source meant as a
+  fixed part of the effect surfaced as a "replace this image" picker on
+  every link. A file param now ships as a File Input only when its
+  per-param **Control** toggle is on — the same toggle every knob uses,
+  already rendered on file rows in the param panel. Off (the default)
+  means the saved asset ships bundled and the viewer shows no picker. A
+  controlled file param never doubles as a knob in the Controls section,
+  and a link with only file pickers does not warn `no-controls`. Existing
+  projects lose their pickers on next load unless the author toggles them
+  back on; that is the intended default.
+- **× on a Controls-list row.** Each row in the designer's reorder /
+  rename list has a remove button. It turns the row's source **off on the
+  node** — the param's Control toggle for a knob or file picker, the
+  node-level Control toggle for a Handles row — through EffectsApp's
+  `onRemoveLiveControl` (one undo entry, dirty pill), exactly as clicking
+  the toggle in the param panel would. The row drops out because the
+  manifest rebuilds from the graph. This is a graph edit, not a design
+  block field: the design never hides a control the node still says it
+  ships, so the node badge, the param panel and the list cannot disagree.
+  Merge-layer rows map their synthesized mode / opacity key back to the
+  one `mlayer:` membership key; a legacy literal `merge_layers` entry is
+  expanded first so removing one layer keeps the others.
+- **Node badge.** EffectNode shows an emerald dot at the top-left corner
+  (beside the red animation dot when both apply) on any node with a
+  Control-toggled param or its handles shipped. Marked-ness, not
+  reachability — stray marks on a branch the link doesn't render are
+  exactly what the badge is for finding.
+
 ## Deferred / open
 
-- Control grouping into labeled sections; hiding controls from the
-  designer; per-link output-node choice (heuristic stays).
+- Control grouping into labeled sections; per-link output-node choice
+  (heuristic stays).
 - Link version pinning (link tracks head today — editing silently
   changes shared links; separate feature).
 - Embed/iframe mode (exportappspec post-v1 note stands).

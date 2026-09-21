@@ -9,6 +9,7 @@ export const TOC = [
   { id: "ownership-rules", title: "Ownership rules" },
   { id: "save-a-copy", title: "Saving a copy of someone else's project" },
   { id: "authorship", title: "Authorship display" },
+  { id: "named-live-links", title: "Named live links" },
 ];
 
 export default function PublicPrivatePage() {
@@ -128,6 +129,51 @@ export default function PublicPrivatePage() {
         Projects you authored show as <em>&ldquo;by you&rdquo;</em>{" "}
         in the Public tab, so you can spot your own public work
         mixed in with the feed.
+      </P>
+
+      <H2 id="named-live-links">Named live links</H2>
+      <P>
+        A public project&rsquo;s live link is normally{" "}
+        <Code>/live/&lt;random slug&gt;</Code>. You can opt into a
+        readable alias built from your handle and the project title:
+      </P>
+      <P>
+        <Code>toolbox.design/@hallan/orbit</Code>
+      </P>
+      <UL>
+        <LI>
+          Open <strong>File → Project Settings…</strong> (or the gear
+          chip in a Parameters panel) and switch on{" "}
+          <strong>Use the project title in the live link</strong>. The
+          address is previewed; hit <strong>Save</strong> to claim it.
+          The project has to be public and saved to the cloud first.
+        </LI>
+        <LI>
+          The slug is frozen when you save. Renaming the project
+          later never moves a link you&rsquo;ve already shared — the
+          settings row offers an <strong>Update link</strong> action
+          when the title has drifted, and you decide.
+        </LI>
+        <LI>
+          Two of your projects can&rsquo;t share an address. Saving a
+          slug another of your projects already uses fails with a
+          message; rename one of them first. Other users&rsquo;
+          projects never collide with yours, because the URL carries
+          your handle.
+        </LI>
+        <LI>
+          The random <Code>/live/&lt;slug&gt;</Code> link keeps
+          working, so switching the named link off (or flipping the
+          project private and back) never breaks it.
+        </LI>
+      </UL>
+      <P>
+        Your <strong>handle</strong> is the <Code>@name</Code> half.
+        One is assigned from your email at signup; change it from the
+        account menu (top-right) → <strong>handle → Change</strong>.
+        Handles are 3–32 lowercase letters, digits and dashes, unique
+        across Toolbox. Changing your handle changes every named link
+        you own — the random links are unaffected.
       </P>
     </>
   );

@@ -128,6 +128,20 @@ frame's own box, and undo restores members whose rect then re-derives.
   travel check tells the two apart); commits through a
   new `effect-node-rename` window event → `handleRenameNode` (undo,
   breadcrumbs etc. for free). Enter/blur commit, Esc cancels.
+- Bypass-all toggle (2026-09-19): a "B" pill right of the label, the
+  same `HeaderToggle` as the per-node button. The frame has NO
+  `bypassed` of its own — `frameBypassState(nodes, frameId)` derives
+  it from the members (`collectFrameBypassIds`: direct members only,
+  no zone expansion, Render Queues excluded). ON = every member
+  bypassed; a click dispatches `effect-node-toggle` kind
+  `frameToggleBypass`, and EffectsApp drives every member to one
+  state (all bypassed → restore all, otherwise bypass all) in a single
+  undo step. Hidden on an empty frame. FrameNode reads the members via
+  xyflow's `useStore` with a string-valued selector so it re-renders
+  only when the derived state flips. `m` on a selected frame routes
+  here too, and members of a selected frame are skipped by the
+  per-node path so a marquee (which selects frame + members) doesn't
+  flip them twice.
 
 **Copy/paste/duplicate:** cloneSubgraph remaps `frameId` when the
 frame is in the cloned set (same second pass as `parentId`);

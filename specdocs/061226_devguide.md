@@ -1664,9 +1664,18 @@ To add a node:
   bracket every export driver: it recreates the engine backend at the
   target size via the exportResOverride → renderRes path (the same
   battle-tested recreation as a project-resolution change; the preview
-  canvas element resizes with it, so toBlob / captureStream / native
-  readback all capture at target size with no per-path code), then
-  restores. A depth counter lets Render Queue / wedge batches hold the
+  canvas element resizes with it, so the fast tier's captureStream and
+  WebCodecs' CanvasSource capture at target size with no per-path code),
+  then restores. The frame-loop exporters (native ffmpeg, ffmpeg.wasm,
+  PNG sequence, GIF) no longer read the preview canvas at all: since
+  2026-09-21 they read the terminal texture straight back through
+  `EngineBackend.readImagePixels` (lib/export-capture.ts) — Chromium can
+  hold an occluded or starved 2D canvas stale, which froze desktop
+  exports a few frames in while the evaluator kept rendering. Every
+  export also writes a log (lib/export-log.ts; desktop:
+  `~/Library/Logs/Toolbox/exports`, ffmpeg's stderr included) with
+  per-frame timings and capture checksums — see
+  specdocs/092126_export-capture-readback.md. A depth counter lets Render Queue / wedge batches hold the
   bracket open (`beginExportResolution(null)`) so per-row brackets don't
   thrash back to preview res between items. This also fixed a bug:
   exports used to capture at `canvasRes × previewScale`, so a lowered
@@ -2024,8 +2033,15 @@ every colour literal still unthemed, and
    wire>keyframe>constant precedence — they're applied by the evaluator,
    not by nodes.
 7. **Type changes ripple**: SocketType additions touch types.ts, coerce.ts,
-   socketColor.ts, NodeEditor validation (×2 places), clips.ts
-   emptyClipOutput, and possibly the docs/colors legend.
+   socketColor.ts (+ `npm run gen:theme-css`), NodeEditor validation (×2
+   places), clips.ts emptyClipOutput, groups.ts socketValueFromGroupDefault,
+   the Switch `TYPES` and Time Offset `TIME_OFFSET_CARRIED_TYPES` lists if
+   the value is a plain CPU descriptor, and possibly the docs/colors legend.
+   A type that DRIVES a param type also needs graph-helpers.ts
+   `paramSocketType` and evaluator.ts `socketToParamRaw` (the color_ramp /
+   float_curve pattern). None of these maps is typed over SocketType, so a
+   missed site fails silently — see 091926_float-curve-socket.md for the
+   last full walk.
 
 ## Specdocs & process
 

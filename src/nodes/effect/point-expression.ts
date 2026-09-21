@@ -3,7 +3,6 @@ import type {
   ImageValue,
   InputSocketDef,
   NodeDefinition,
-  PointAttribute,
   PointsValue,
   RenderContext,
   SocketType,
@@ -97,9 +96,11 @@ import type { CurvePoint } from "@/engine/float-curve";
 import {
   copyPointsWith,
   EMPTY_POINTS,
-  gatherAttributes,
   gatherPoints,
-  RESERVED_POINT_ATTR_NAMES,
+  isWritablePointAttr,
+  pointAttrSchema,
+  readPointAttrColumn,
+  withPointAttr,
 } from "@/engine/points";
 import {
   sampleEncodedVelocity,
@@ -668,13 +669,9 @@ function runAnchorExpression(
       return 0;
     },
     setattr: (name, value) => {
-      if (
-        typeof name !== "string" ||
-        !name ||
-        RESERVED_POINT_ATTR_NAMES.has(name)
-      ) {
-        return;
-      }
+      // Anchors have no built-in schema (092026_unified-attributes.md
+      // non-goals), so every non-empty name is a float anchor channel.
+      if (typeof name !== "string" || !name.trim()) return;
       let arr = written.get(name);
       if (!arr) {
         arr = new Float32Array(total);
@@ -1011,7 +1008,10 @@ export const pointExpressionNode: NodeDefinition = {
     // full-length buffers (compacted with keptMap below); reads see the
     // SOURCE value only, so results never depend on iteration order.
     const cursor = { i: 0 };
-    const written = new Map<string, Float32Array>();
+    // Per written name: the values and a row mask. The mask matters for
+    // built-in targets (`setattr("scale", v)`): rows the expression never
+    // called setattr on keep the kernel's value instead of reading 0.
+    const written = new Map<string, { data: Float32Array; mask: Uint8Array }>();
     const srcAttrs = src.attributes;
     const env = makeEnv(ctx, nodeId, pathEnv, channels, {
       attr: (name, component = 0) => {
@@ -1021,20 +1021,18 @@ export const pointExpressionNode: NodeDefinition = {
         return a.data[cursor.i * a.arity + c];
       },
       setattr: (name, value) => {
-        if (
-          typeof name !== "string" ||
-          !name ||
-          RESERVED_POINT_ATTR_NAMES.has(name)
-        ) {
-          return;
-        }
-        let arr = written.get(name);
-        if (!arr) {
-          arr = new Float32Array(n);
-          written.set(name, arr);
+        // Any writable attribute — a channel or a built-in (`scale`,
+        // `rotation`, `x`…). index / z / normals are silently ignored,
+        // as every writer does (092026_unified-attributes.md §4.2).
+        if (typeof name !== "string" || !isWritablePointAttr(name)) return;
+        let w = written.get(name);
+        if (!w) {
+          w = { data: new Float32Array(n), mask: new Uint8Array(n) };
+          written.set(name, w);
         }
         const v = +value;
-        arr[cursor.i] = Number.isFinite(v) ? v : 0;
+        w.data[cursor.i] = Number.isFinite(v) ? v : 0;
+        w.mask[cursor.i] = 1;
       },
     }, fieldEnv);
     const inPos = src.positions;
@@ -1145,15 +1143,7 @@ export const pointExpressionNode: NodeDefinition = {
     // The kernel computed positions/scales/rotations/groups; everything it
     // doesn't know about (z/normals, other channels) carries from the
     // source — whole when nothing was culled, gathered by keptMap
-    // otherwise. setattr results overlay the carried channels last, so a
-    // same-name write wins.
-    let writtenAttrs: Record<string, PointAttribute> | undefined;
-    if (written.size > 0) {
-      writtenAttrs = {};
-      for (const [name, data] of written) {
-        writtenAttrs[name] = { arity: 1, data };
-      }
-    }
+    // otherwise.
     let out: PointsValue;
     if (kept === n) {
       out = copyPointsWith(src, {
@@ -1161,24 +1151,46 @@ export const pointExpressionNode: NodeDefinition = {
         scales: outScales,
         rotations: outRots,
         groupIndices: outGroups,
-        ...(writtenAttrs
-          ? { attributes: { ...src.attributes, ...writtenAttrs } }
-          : {}),
       });
     } else {
-      const base = gatherPoints(src, keptMap, kept);
-      const compactWritten = writtenAttrs
-        ? gatherAttributes(writtenAttrs, keptMap, kept)
-        : undefined;
-      out = copyPointsWith(base, {
+      out = copyPointsWith(gatherPoints(src, keptMap, kept), {
         positions: outPos.slice(0, kept * 2),
         scales: outScales.slice(0, kept * 2),
         rotations: outRots.slice(0, kept),
         groupIndices: outGroups.slice(0, kept),
-        ...(compactWritten
-          ? { attributes: { ...base.attributes, ...compactWritten } }
-          : {}),
       });
+    }
+    // setattr results land last, so a same-name write wins — over a
+    // carried channel, or over the kernel's own scale / rotation / x when
+    // the name is a built-in. A channel's unwritten rows read 0 (as they
+    // always have); a built-in's unwritten rows keep the kernel's value.
+    for (const [name, w] of written) {
+      let data = w.data;
+      let mask = w.mask;
+      if (kept !== n) {
+        data = new Float32Array(kept);
+        mask = new Uint8Array(kept);
+        for (let r = 0; r < kept; r++) {
+          data[r] = w.data[keptMap[r]];
+          mask[r] = w.mask[keptMap[r]];
+        }
+      }
+      const schema = pointAttrSchema(name);
+      if (!schema) {
+        out = withPointAttr(out, name, data);
+        continue;
+      }
+      const col = readPointAttrColumn(out, name)!;
+      const k = col.arity;
+      // A scalar setattr fills every lane of a broadcast target (scale),
+      // lane 0 of anything else (position) — withPointAttr's own rule.
+      const fill = schema.broadcastScalar ? k : 1;
+      const packed = new Float32Array(col.data.subarray(0, kept * k));
+      for (let r = 0; r < kept; r++) {
+        if (!mask[r]) continue;
+        for (let c = 0; c < fill; c++) packed[r * k + c] = data[r];
+      }
+      out = withPointAttr(out, name, packed, { arity: k });
     }
     return { primary: out };
   },

@@ -35,6 +35,13 @@ export type {
   FileParamType,
 } from "@/lib/live-viewer/manifest-types";
 
+// Param types the manifest ships as File Inputs (a picker) rather than
+// knobs, and only when Control-toggled. Exported so the param panel can
+// word the toggle's tooltip for them.
+export function isFileParamType(type: ParamType): boolean {
+  return FILE_PARAM_TYPES.has(type);
+}
+
 const FILE_PARAM_TYPES = new Set<ParamType>([
   "file",
   "video_file",
@@ -146,20 +153,38 @@ export function buildExportManifest(
     const def = getNodeDef(node.data.defType);
     if (!def) continue;
 
+    // Pre-per-layer-toggle saves control the whole `merge_layers` param by
+    // its literal name; expand that to one `mlayer:` entry per layer so the
+    // live panel shows the same per-layer rows either way.
+    const controlParams = expandMergeLayerControls(
+      def.params,
+      node.data.params,
+      node.data.controlParams ?? []
+    );
+    const controlSet = new Set(controlParams);
+
+    // File params (image / video / audio / SVG / font / model) ship as
+    // File Inputs — a picker the visitor loads their own asset into — ONLY
+    // when the author marks them with the same per-param Control toggle
+    // every knob uses. Unmarked file params stay bundled: the viewer
+    // renders the asset saved with the project and shows no picker for
+    // it. Until 2026-09-21 every reachable file param was listed
+    // unconditionally, so an image source meant as a fixed part of the
+    // effect surfaced as a "replace this image" input on every live link.
     for (const param of def.params) {
-      if (FILE_PARAM_TYPES.has(param.type)) {
-        const baseName = def.name;
-        const count = (fileNodeNameCounts.get(baseName) ?? 0) + 1;
-        fileNodeNameCounts.set(baseName, count);
-        const nodeName = count === 1 ? baseName : `${baseName} (${count})`;
-        fileInputs.push({
-          nodeId: node.id,
-          nodeName,
-          paramName: param.name,
-          paramType: param.type as FileParamType,
-          label: param.label ?? param.name,
-        });
-      }
+      if (!FILE_PARAM_TYPES.has(param.type)) continue;
+      if (!controlSet.has(param.name)) continue;
+      const baseName = def.name;
+      const count = (fileNodeNameCounts.get(baseName) ?? 0) + 1;
+      fileNodeNameCounts.set(baseName, count);
+      const nodeName = count === 1 ? baseName : `${baseName} (${count})`;
+      fileInputs.push({
+        nodeId: node.id,
+        nodeName,
+        paramName: param.name,
+        paramType: param.type as FileParamType,
+        label: param.label ?? param.name,
+      });
     }
 
     let nodeNameAssigned: string | null = null;
@@ -204,14 +229,6 @@ export function buildExportManifest(
       }
     }
 
-    // Pre-per-layer-toggle saves control the whole `merge_layers` param by
-    // its literal name; expand that to one `mlayer:` entry per layer so the
-    // live panel shows the same per-layer rows either way.
-    const controlParams = expandMergeLayerControls(
-      def.params,
-      node.data.params,
-      node.data.controlParams ?? []
-    );
     if (controlParams.length === 0) continue;
 
     for (const paramName of controlParams) {
@@ -331,7 +348,8 @@ export function buildExportManifest(
           continue;
         }
         seenControlKeys.add(dupKey);
-        const layerLabel = `Layer ${idx + 1}`;
+        // A renamed layer's knobs carry its name; unnamed keep "Layer N".
+        const layerLabel = layer.name?.trim() || `Layer ${idx + 1}`;
         const modeName = mergeLayerModeKey(layerKey.paramName, layer.id);
         const modeLabel = `${layerLabel} · blend`;
         const modeDef: ParamDef = {
@@ -383,6 +401,9 @@ export function buildExportManifest(
         });
         continue;
       }
+      // A controlled file param already became a File Inputs row above —
+      // it is a picker, not a knob, so it never doubles as a control.
+      if (FILE_PARAM_TYPES.has(paramDef.type)) continue;
       if (UNSUPPORTED_CONTROL_TYPES.has(paramDef.type)) {
         warnings.push({
           kind: "control-on-unsupported-type",
@@ -421,8 +442,17 @@ export function buildExportManifest(
       // the saved graph, not from viewer edits.
       if (paramDef.type === "scalar") {
         const params = node.data.params;
+        const dynMin = paramDef.minFrom?.(params);
+        if (dynMin !== undefined) cloned.min = dynMin;
         const dynMax = paramDef.maxFrom?.(params);
         if (dynMax !== undefined) cloned.max = dynMax;
+        const dynSoftMax = paramDef.softMaxFrom?.(params);
+        if (dynSoftMax !== undefined) cloned.softMax = dynSoftMax;
+        // stepFrom is documented as not surviving serialization, but a
+        // units-dependent step (Text's 0.1 under %) is exactly the one
+        // hint the live slider needs baked — same frozen-per-save contract.
+        const dynStep = paramDef.stepFrom?.(params);
+        if (dynStep !== undefined) cloned.step = dynStep;
         const dynControl = paramDef.controlFrom?.(params);
         if (dynControl !== undefined) cloned.control = dynControl;
         const dynLabels = paramDef.optionLabelsFrom?.(params);
@@ -459,7 +489,8 @@ export function buildExportManifest(
     }
   }
 
-  if (controls.length === 0 && gizmos.length === 0) {
+  // A link with only file pickers is still a link with something to touch.
+  if (controls.length === 0 && gizmos.length === 0 && fileInputs.length === 0) {
     warnings.push({
       kind: "no-controls",
       message:

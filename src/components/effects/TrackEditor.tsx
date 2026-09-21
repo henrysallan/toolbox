@@ -32,6 +32,7 @@ import {
   isStepOnly,
   removeKeyframeAt,
   snapTickToFrame,
+  ticksToFrames,
   upsertKeyframe,
   type Keyframe,
 } from "@/engine/keyframes";
@@ -122,6 +123,13 @@ import {
   spaceKeyframes as spaceKeyframesOp,
   staggerKeyframes as staggerKeyframesOp,
 } from "./timeline/keyframe-ops";
+import {
+  buildPasteUpdates,
+  clipboardItemsFrom,
+  flipClipboardItems,
+  getKeyframeClipboard,
+  setKeyframeClipboard,
+} from "./timeline/keyframe-clipboard";
 import { moveClipsByDelta, trimClipsByDelta } from "./timeline/clip-ops";
 import { rulerSpacing as computeRulerSpacing } from "./timeline/ruler";
 import { LaneFrameTicks, RulerFrameStubs } from "./timeline/FrameTicks";
@@ -144,6 +152,7 @@ import {
   PlayheadLine,
 } from "./timeline/PlayheadChrome";
 import { DiamondNav } from "./timeline/DiamondNav";
+import { mergeLayerLabel } from "@/nodes/effect/merge";
 
 // ---------------------------------------------------------------------
 // Public types
@@ -345,8 +354,12 @@ interface ContextMenuState {
   x: number;
   y: number;
   // The keyframe that was right-clicked (used as primary target if no
-  // selection exists yet).
-  target: SelectionKey;
+  // selection exists yet). Null → empty lane space: the menu offers
+  // copy / paste / paste flipped instead of easing / delete.
+  target: SelectionKey | null;
+  // Frame-snapped tick under the cursor — where a paste from this menu
+  // lands its first key.
+  tick: number;
   submenu: "easing" | null;
 }
 
@@ -491,18 +504,10 @@ export function TrackEditor(props: TrackEditorProps) {
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
 
   // --- Clipboard for copy/paste ---
-  // Multi-track aware: each entry remembers its source (nodeId,
+  // Module-level and shared with the Graph editor (keyframe-clipboard.ts):
+  // multi-track aware, each entry remembers its source (nodeId,
   // paramName) plus a tick offset relative to the earliest copied
   // keyframe. Paste re-anchors the offsets at the current playhead.
-  // Lives on a ref (not state) — it's pure clipboard, no UI binding.
-  const clipboardRef = useRef<{
-    items: Array<{
-      nodeId: string;
-      paramName: string;
-      offsetTicks: number;
-      keyframe: Keyframe;
-    }>;
-  } | null>(null);
 
   // Internal: hold space-key state for pan-gesture activation.
   const spaceDownRef = useRef(false);
@@ -605,7 +610,13 @@ export function TrackEditor(props: TrackEditorProps) {
                 (l) => (l as { id?: string } | null)?.id === layerId
               )
             : -1;
-          paramLabel = idx >= 0 ? `layer ${idx + 1} opacity` : "layer opacity";
+          paramLabel =
+            idx >= 0
+              ? `${mergeLayerLabel(
+                  (layersRaw as Array<{ name?: string }>)[idx],
+                  idx
+                )} opacity`
+              : "layer opacity";
         }
         // Virtual ramp-stop keys (ramp_c/a/p:<param>:<stopId>) — label by
         // the ramp's label + the stop's sorted position, matching the
@@ -873,7 +884,7 @@ export function TrackEditor(props: TrackEditorProps) {
   const keyActionsRef = useRef({
     deleteSelected: () => {},
     copySelected: () => {},
-    pasteAtPlayhead: () => {},
+    pasteAtPlayhead: (_flipped?: boolean) => {},
     fit: () => {},
     focusSelection: () => {},
     hasSelection: false,
@@ -984,12 +995,13 @@ export function TrackEditor(props: TrackEditorProps) {
         e.stopPropagation();
         acts.copySelected();
       }
+      // Shift+Cmd+V pastes flipped (mirrored in time).
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") {
         if (!hoveredRef.current) return;
-        if (!clipboardRef.current) return;
+        if (!getKeyframeClipboard()) return;
         e.preventDefault();
         e.stopPropagation();
-        acts.pasteAtPlayhead();
+        acts.pasteAtPlayhead(e.shiftKey);
       }
     }
     function onKeyUp(e: KeyboardEvent) {
@@ -1082,92 +1094,48 @@ export function TrackEditor(props: TrackEditorProps) {
 
   function copySelected() {
     if (selectionList.length === 0) return;
-    // Snapshot the actual Keyframe records (value + easing + handles)
-    // and store each one's tick offset relative to the earliest copied
-    // tick. Paste re-anchors at the playhead so multi-track selections
-    // preserve their internal timing.
-    const minTick = selectionList.reduce(
-      (m, s) => Math.min(m, s.tick),
-      Infinity
-    );
-    const items: NonNullable<typeof clipboardRef.current>["items"] = [];
+    // Snapshot the actual Keyframe records (value + easing + handles);
+    // clipboardItemsFrom stores each one's tick offset relative to the
+    // earliest copied tick so paste re-anchors at the playhead and
+    // multi-track selections preserve their internal timing.
+    const keys: { nodeId: string; paramName: string; keyframe: Keyframe }[] =
+      [];
     for (const s of selectionList) {
       const block = blockIndex.get(s.nodeId)?.get(s.paramName);
       const kf = block?.keyframes.find((k) => k.tick === s.tick);
       if (!kf) continue;
-      items.push({
-        nodeId: s.nodeId,
-        paramName: s.paramName,
-        offsetTicks: s.tick - minTick,
-        keyframe: { ...kf, bezierHandles: kf.bezierHandles },
-      });
+      keys.push({ nodeId: s.nodeId, paramName: s.paramName, keyframe: kf });
     }
-    if (items.length === 0) return;
-    clipboardRef.current = { items };
+    if (keys.length === 0) return;
+    setKeyframeClipboard(clipboardItemsFrom(keys));
   }
 
-  function pasteAtPlayhead() {
-    const clip = clipboardRef.current;
+  // Cmd+V / Shift+Cmd+V: paste at the LIVE playhead — read at paste
+  // time, not captured at render.
+  function pasteAtPlayhead(flipped = false) {
+    pasteAt(playbackClock.get().tick, flipped);
+  }
+
+  // Paste the clipboard with its earliest key at `anchorTick`, into the
+  // lanes the keys were copied from. `flipped` mirrors the keys in time
+  // about their midpoint first (first key becomes last, easings
+  // reversed) so the pasted run plays the copied one backwards.
+  function pasteAt(anchorTick: number, flipped: boolean) {
+    const clip = getKeyframeClipboard();
     if (!clip || clip.items.length === 0) return;
-    // The LIVE playhead — read at paste time, not captured at render.
-    const tickNow = playbackClock.get().tick;
-    const gestureKey = nextGestureKey("paste");
-    // Group pastes by lane so each affected block emits a single
-    // onAnimationChange call.
-    const grouped = new Map<
-      string,
-      {
-        nodeId: string;
-        paramName: string;
-        items: { tick: number; keyframe: Keyframe }[];
-      }
-    >();
-    for (const it of clip.items) {
-      const targetTick = tickNow + it.offsetTicks;
-      const key = laneKey(it.nodeId, it.paramName);
-      const g = grouped.get(key);
-      const item = {
-        tick: targetTick,
-        keyframe: { ...it.keyframe, tick: targetTick },
-      };
-      if (g) g.items.push(item);
-      else
-        grouped.set(key, {
-          nodeId: it.nodeId,
-          paramName: it.paramName,
-          items: [item],
-        });
-    }
-    // Apply per-block. If the source track is gone (param renamed,
-    // node deleted), skip silently — keyframable check ensures we
-    // only paste into params that can hold animation.
+    const items = flipped ? flipClipboardItems(clip.items) : clip.items;
+    const gestureKey = nextGestureKey(flipped ? "paste-flipped" : "paste");
+    // One onAnimationChange per affected lane; a pasted key replaces an
+    // existing key at the same tick. If the source track is gone (param
+    // renamed, node deleted) the lane is skipped silently.
+    const updates = buildPasteUpdates(items, anchorTick, (nodeId, param) =>
+      blockIndex.get(nodeId)?.get(param)
+    );
     const newSelection: SelectionKey[] = [];
-    for (const g of grouped.values()) {
-      const block = blockIndex.get(g.nodeId)?.get(g.paramName);
-      if (!block) continue;
-      // Drop any existing keyframe at the same tick to avoid
-      // collision; the pasted one wins.
-      const ticks = new Set(g.items.map((i) => i.tick));
-      const filtered = block.keyframes.filter((k) => !ticks.has(k.tick));
-      const merged = [...filtered, ...g.items.map((i) => i.keyframe)].sort(
-        (a, b) => a.tick - b.tick
-      );
-      onAnimationChange(
-        g.nodeId,
-        g.paramName,
-        {
-          ...block,
-          animated: true,
-          keyframes: merged,
-        },
-        gestureKey
-      );
-      for (const i of g.items) {
-        newSelection.push({
-          nodeId: g.nodeId,
-          paramName: g.paramName,
-          tick: i.tick,
-        });
+    for (const u of updates) {
+      onAnimationChange(u.nodeId, u.paramName, u.block, gestureKey);
+      for (const tick of u.pastedTicks) {
+        newSelection.push({ nodeId: u.nodeId, paramName: u.paramName, tick });
       }
     }
     setSelectionList(newSelection);
@@ -2232,7 +2200,7 @@ export function TrackEditor(props: TrackEditorProps) {
     });
   }
 
-  // ---- Right-click on a keyframe ----
+  // ---- Right-click on a keyframe, or on empty lane space ----
   function onLanesContextMenu(e: React.MouseEvent) {
     const rect = lanesAreaRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -2240,14 +2208,25 @@ export function TrackEditor(props: TrackEditorProps) {
     const my = e.clientY - rect.top;
     const contentX = mx;
     const contentY = my + scrollY;
+    const tick = Math.max(
+      0,
+      snapTickToFrame(pxToTick(contentX), timeline.ticksPerFrame)
+    );
     const hit = hitTestKeyframe(contentX, contentY);
-    if (!hit) return;
+    if (!hit) {
+      // Clip bars have their own gestures; everything else in the lanes
+      // area is "empty space" for the copy / paste menu.
+      if (hitTestClip(contentX, contentY)) return;
+      e.preventDefault();
+      setMenu({ x: e.clientX, y: e.clientY, target: null, tick, submenu: null });
+      return;
+    }
     e.preventDefault();
     // If the clicked keyframe is not in the selection, replace selection.
     if (!selection.has(selKey(hit.key))) {
       setSelectionList([hit.key]);
     }
-    setMenu({ x: e.clientX, y: e.clientY, target: hit.key, submenu: null });
+    setMenu({ x: e.clientX, y: e.clientY, target: hit.key, tick, submenu: null });
   }
 
   // Click-outside dismiss for menu.
@@ -3251,6 +3230,17 @@ export function TrackEditor(props: TrackEditorProps) {
         <ContextMenuView
           menu={menu}
           onClose={() => setMenu(null)}
+          canCopy={selectionList.length > 0}
+          canPaste={getKeyframeClipboard() != null}
+          pasteFrame={ticksToFrames(menu.tick, timeline.ticksPerFrame)}
+          onCopy={() => {
+            copySelected();
+            setMenu(null);
+          }}
+          onPaste={(flipped) => {
+            pasteAt(menu.tick, flipped);
+            setMenu(null);
+          }}
           onDelete={() => {
             // If the right-clicked keyframe wasn't already in the selection
             // we replaced selection on context-down; either way, delete.
@@ -3702,14 +3692,74 @@ interface ContextMenuViewProps {
   onClose(): void;
   onDelete(): void;
   onSetEasing(p: EasingPreset): void;
+  // Clipboard state + actions. Paste lands the clipboard's first key at
+  // the right-clicked frame (`pasteFrame`, shown as a hint); `flipped`
+  // mirrors the keys in time first.
+  canCopy: boolean;
+  canPaste: boolean;
+  pasteFrame: number;
+  onCopy(): void;
+  onPaste(flipped: boolean): void;
   allScalar: boolean;
   stepOnly: boolean;
 }
 
 function ContextMenuView(props: ContextMenuViewProps) {
-  const { menu, onDelete, onSetEasing, allScalar, stepOnly } = props;
+  const {
+    menu,
+    onDelete,
+    onSetEasing,
+    canCopy,
+    canPaste,
+    pasteFrame,
+    onCopy,
+    onPaste,
+    allScalar,
+    stepOnly,
+  } = props;
   const panelWin = usePanelWindow();
   const [hoverEasing, setHoverEasing] = useState(false);
+  const onSpace = menu.target === null;
+  // One plain menu row. Disabled rows stay visible (muted, no hover) so
+  // the menu keeps its shape and the user learns what it can do.
+  const item = (
+    label: string,
+    onClick: () => void,
+    opts: { disabled?: boolean; hint?: string } = {}
+  ) => (
+    <div
+      onClick={opts.disabled ? undefined : onClick}
+      style={{
+        padding: "6px 10px",
+        cursor: opts.disabled ? "default" : "pointer",
+        color: opts.disabled ? COLOR_MUTED : COLOR_TEXT,
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 12,
+      }}
+      onMouseEnter={(e) => {
+        if (opts.disabled) return;
+        (e.currentTarget as HTMLDivElement).style.background = "var(--tb-n-7)";
+      }}
+      onMouseLeave={(e) =>
+        ((e.currentTarget as HTMLDivElement).style.background = "transparent")
+      }
+    >
+      <span>{label}</span>
+      {opts.hint && (
+        <span style={{ color: COLOR_MUTED, fontVariantNumeric: "tabular-nums" }}>
+          {opts.hint}
+        </span>
+      )}
+    </div>
+  );
+  const frameHint = `f${
+    Number.isInteger(pasteFrame) ? pasteFrame : pasteFrame.toFixed(2)
+  }`;
+  const divider = (
+    <div style={{ height: 1, background: COLOR_BORDER, margin: "2px 0" }} />
+  );
   // Portal to the body — the dock's slide transform would otherwise be
   // the containing block for `position: fixed`, offsetting the menu from
   // the cursor.
@@ -3730,7 +3780,27 @@ function ContextMenuView(props: ContextMenuViewProps) {
         fontSize: 12,
       }}
     >
-      {!stepOnly && (
+      {onSpace && (
+        <>
+          {item("Copy", onCopy, { disabled: !canCopy })}
+          {divider}
+          {item("Paste", () => onPaste(false), {
+            disabled: !canPaste,
+            hint: frameHint,
+          })}
+          {item("Paste flipped", () => onPaste(true), {
+            disabled: !canPaste,
+            hint: frameHint,
+          })}
+        </>
+      )}
+      {!onSpace && (
+        <>
+          {item("Copy", onCopy, { disabled: !canCopy })}
+          {divider}
+        </>
+      )}
+      {!onSpace && !stepOnly && (
         <div
           onMouseEnter={() => setHoverEasing(true)}
           onMouseLeave={() => setHoverEasing(false)}
@@ -3755,21 +3825,7 @@ function ContextMenuView(props: ContextMenuViewProps) {
           )}
         </div>
       )}
-      <div
-        onClick={onDelete}
-        style={{
-          padding: "6px 10px",
-          cursor: "pointer",
-        }}
-        onMouseEnter={(e) =>
-          ((e.currentTarget as HTMLDivElement).style.background = "var(--tb-n-7)")
-        }
-        onMouseLeave={(e) =>
-          ((e.currentTarget as HTMLDivElement).style.background = "transparent")
-        }
-      >
-        Delete keyframe
-      </div>
+      {!onSpace && item("Delete keyframe", onDelete)}
     </div>,
     // This editor's OWN body — a popped-out timeline must not drop its
     // context menu into the main window.

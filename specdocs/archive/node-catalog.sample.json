@@ -2480,7 +2480,12 @@
           "min",
           "max",
           "power",
+          "modulo",
+          "wrap",
+          "fraction",
           "abs",
+          "log",
+          "exp",
           "greater than",
           "less than",
           "step",
@@ -2552,16 +2557,30 @@
     ],
     "subcategory": "modifier",
     "dynamic": true,
-    "description": "Componentwise math on a named channel (points or spline anchors): add/subtract/multiply/divide/min/max/power/abs against a constant or a second channel, greater than / less than / step (0/1 comparisons), or remap a range. Writes back in place, or to a new name via Output. A missing channel passes through unchanged.",
+    "description": "Componentwise math on an attribute (points or spline anchors): add/subtract/multiply/divide/min/max/power/modulo against a constant or a second attribute, the unary abs/fraction/log/exp, wrap into [In Lo, In Hi), greater than / less than / step (0/1 comparisons), or remap a range. Writes back in place, or to a new name via Output. On points, name / with / output can each be a named channel or a built-in (index, x, y, scale, scale.x, rotation, group), so index ^ ratio → scale is one node. A missing channel passes through unchanged.",
     "facts": {
       "space": {
         "out": "in:points"
       },
+      "reads": [
+        "attr:index",
+        "attr:scale",
+        "attr:rotation",
+        "attr:position",
+        "attr:group"
+      ],
+      "writes": [
+        "attr:scale",
+        "attr:rotation",
+        "attr:position",
+        "attr:group"
+      ],
       "gotchas": [
-        "An arity-1 operand attribute broadcasts across every component of a higher-arity target; any other arity mismatch reads as 0 for every component.",
-        "divide returns 0 when the operand is exactly 0, not Infinity/NaN.",
-        "greater than and less than write 1 or 0 per component using a strict inequality against the operand (constant or second channel).",
-        "step writes 1 when the channel ≥ the operand and 0 otherwise (GLSL step(operand, x)); equality sits on the 1 side.",
+        "On points, attr_name / operand_attr / output_name accept built-ins (index, x, y, scale, scale.x, rotation, group) as well as channels; a built-in output lands in the typed array.",
+        "index, z and nx/ny/nz are read-only outputs and pass through. Spline anchors have no built-ins. An arity-1 operand broadcasts across a higher-arity target; any other arity mismatch reads as 0.",
+        "divide and modulo return 0 when the operand is exactly 0, not Infinity/NaN; modulo is FLOORED (sign of the operand), so -0.25 mod 1 = 0.75.",
+        "wrap folds into [In Lo, In Hi) using the same rows remap uses (no operand); a zero-width range collapses to In Lo. fraction is x - floor(x); log is natural and reads 0 for x <= 0.",
+        "greater than / less than write 1 or 0 per component with a strict inequality against the operand; step writes 1 when the channel ≥ the operand (GLSL step(operand, x)), equality on the 1 side.",
         "remap clamps t to [0,1] before lerping, so inputs outside In Lo..In Hi saturate at Out Lo/Hi instead of extrapolating.",
         "aux name emits the resolved output name (output_name or else attr_name) as a string even when the source channel is missing and nothing was written.",
         "Spline-anchor reads fall back to the subpath's own attrs when an anchor lacks the named value, but writing always stamps a per-anchor value, flattening that fallback."
@@ -5474,7 +5493,17 @@
       {
         "name": "profile",
         "type": "float_curve",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "x": 0,
+            "y": 1
+          },
+          {
+            "x": 1,
+            "y": 1
+          }
+        ]
       },
       {
         "name": "angle",
@@ -7297,6 +7326,7 @@
       "gotchas": [
         "Disconnected sockets are dropped, not stubbed — the group's effective size is the count of connected sockets, independent of count/slots.",
         "Spline/points 'groups' aren't containers — they're flattened into one value tagged with per-item groupIndex (a=0, b=1, c=2...), compacted over connected sockets only.",
+        "Spline mode carries each subpath's driver, per-subpath attrs and anchor attrs through; only groupIndex is rewritten. Points mode unions named channels (a channel missing on one input reads 0 there).",
         "mode=object clears and re-adds children into one retained THREE.Group every eval; geometry wires land here via the geometry-to-object3d auto-wrap.",
         "Switching mode changes the output socket type (image_group / spline / points / object3d), so downstream wires must accept the new type."
       ]
@@ -9387,9 +9417,8 @@
         "aux:position": "canvas01"
       },
       "gotchas": [
-        "The primary output is a SPLINE, not the falloff raster: a circle of radius at the pointer, or the wired shape translated so its anchor-bounds centre sits on the pointer. Wire aux image for the classic grayscale field.",
+        "The primary output is a SPLINE, not the falloff raster: a radius circle at the pointer, or the wired shape moved so its anchor-bounds centre sits there. Wire aux image for the grayscale field.",
         "A wired shape is only moved, never scaled or rotated — radius shapes the falloff and the default circle only.",
-        "radius is a fraction of canvas width (aspect-corrected), so the falloff disc and the default circle stay round on any aspect ratio.",
         "The aux image's alpha is the falloff itself — transparent beyond radius — so Merge / Trails composite a soft disc; RGB still carries the min→max remap for colour-only readers like Displace or Math.",
         "While the pointer is off the canvas (cursor inactive) the spline is empty and the falloff is all-zero with alpha 0; nothing holds the last position.",
         "Velocity is timed against wall-clock performance.now(), not scene time, so it keeps responding while playback is paused and does not replay identically across two exports of the same timeline.",
@@ -10202,7 +10231,17 @@
       {
         "name": "blur_curve",
         "type": "float_curve",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "x": 0,
+            "y": 1
+          },
+          {
+            "x": 1,
+            "y": 1
+          }
+        ]
       },
       {
         "name": "quality",
@@ -10849,12 +10888,13 @@
           "scalar",
           "vec2",
           "vec3",
-          "vec4"
+          "vec4",
+          "curve"
         ]
       }
     ],
     "dynamic": true,
-    "description": "Type a JavaScript math expression instead of wiring a chain of Math nodes. Each input socket is a named variable (x, y, z…); the + adds more. Outputs a scalar or vector. Globals: t, frame, PI, TAU, sin, cos, clamp, lerp, smoothstep, random, and the rest of Math.",
+    "description": "Type a JavaScript math expression instead of wiring a chain of Math nodes. Each input socket is a named variable (x, y, z…); the + adds more. Outputs a scalar, a vector, or (out_type curve) a float curve sampled over u in [0,1] for exposed float_curve params such as Scene Time's custom easing. Globals: t, frame, u, PI, TAU, sin, cos, clamp, lerp, smoothstep, random, and the rest of Math.",
     "facts": {
       "space": {
         "out": "unitless"
@@ -10868,8 +10908,9 @@
         "Every input socket is scalar; connecting image/mask/audio relies on the engine's universal coercion to a representative scalar, not on any per-socket logic here.",
         "An unconnected input falls back to that variable's own `default` field (from the Inputs list, itself defaulting to 1), not to 0.",
         "MCP/recipes wire by variable name (`<id>:in:x`), not the minted ein- id. Grow vars with params.inputs = [{name, default?}] or add_edge to a new name; ids stay by index across renames.",
-        "A compile error or an empty expression outputs a zero shaped by out_type; the error text only surfaces via a one-time console.warn, not in the graph UI.",
-        "out_type picks scalar vs vec2/3/4; a scalar result broadcasts to every vector component, an array result fills components in order and pads missing ones with 0."
+        "A compile error or an empty expression outputs a zero shaped by out_type (the identity ramp for curve); the error text only surfaces via a one-time console.warn, not in the graph UI.",
+        "out_type picks scalar vs vec2/3/4; a scalar result broadcasts to every vector component, an array result fills components in order and pads missing ones with 0.",
+        "out_type=curve evaluates the source 65 times with the global u swept 0..1 and emits a float_curve (y clamped to 0..1) for exposed float_curve params; u is 0 in the value modes."
       ]
     },
     "flags": [
@@ -11468,7 +11509,12 @@
       }
     ],
     "primaryOutput": "scalar",
-    "aux": [],
+    "aux": [
+      {
+        "name": "curve",
+        "type": "float_curve"
+      }
+    ],
     "params": [
       {
         "name": "value",
@@ -11481,15 +11527,26 @@
       {
         "name": "curve",
         "type": "float_curve",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "x": 0,
+            "y": 0
+          },
+          {
+            "x": 1,
+            "y": 1
+          }
+        ]
       }
     ],
-    "description": "Remap a scalar through an editable curve: the input is x in [0..1], the output is the curve's y there. Inputs outside 0..1 hold the endpoint values. Use Remap to bring other ranges into 0..1 first.",
+    "description": "Remap a scalar through an editable curve: the input is x in [0..1], the output is the curve's y there. Inputs outside 0..1 hold the endpoint values. Use Remap to bring other ranges into 0..1 first. The `curve` aux emits the curve itself for exposed float_curve params (e.g. Scene Time's custom easing).",
     "facts": {
       "gotchas": [
         "The value input, when wired, overrides the value param entirely; the param only applies unwired.",
         "Curve points are clamped to [0,1] on both axes and re-sorted by x, so dragging a point past its neighbor changes evaluation order.",
-        "Interpolation is monotone cubic Hermite, so the curve never overshoots past a control point's y even between widely-spaced points."
+        "Interpolation is monotone cubic Hermite, so the curve never overshoots past a control point's y even between widely-spaced points.",
+        "aux:curve carries the authored curve itself as a float_curve wire; it lands on any exposed float_curve param (Scene Time easing_curve, Map Attribute curve), while out stays the sampled scalar."
       ]
     }
   },
@@ -12978,7 +13035,17 @@
       {
         "name": "response",
         "type": "float_curve",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "x": 0,
+            "y": 1
+          },
+          {
+            "x": 1,
+            "y": 1
+          }
+        ]
       },
       {
         "name": "space",
@@ -15171,6 +15238,10 @@
     "category": "utility",
     "inputs": [
       {
+        "name": "clock",
+        "type": "scalar"
+      },
+      {
         "name": "frequency",
         "type": "scalar"
       },
@@ -15200,6 +15271,16 @@
           "triangle",
           "sawtooth",
           "square"
+        ]
+      },
+      {
+        "name": "clock_unit",
+        "type": "enum",
+        "settable": true,
+        "default": "seconds",
+        "options": [
+          "seconds",
+          "frames"
         ]
       },
       {
@@ -15235,20 +15316,19 @@
         "max": 100
       }
     ],
-    "description": "Periodic scalar oscillator — sine, triangle, sawtooth, or square. Frequency is in Hz, phase is in cycles. Output rides in [-amplitude, +amplitude] + offset.",
+    "description": "Periodic scalar oscillator — sine, triangle, sawtooth, or square. Frequency is in Hz, phase is in cycles. Output rides in [-amplitude, +amplitude] + offset. Runs on the playhead (tick-derived, scrub-exact) unless a Clock is wired, in which case the wave is a pure function of that scalar (seconds or frames per Clock unit).",
     "facts": {
       "reads": [
         "time"
       ],
       "gotchas": [
         "frequency, phase, amplitude, and offset each take the wired scalar input over their same-named param when connected.",
-        "phase wraps via ((time*frequency+phase)%1+1)%1, so negative frequency or phase still produce a valid, non-jumping phase.",
-        "square is a hard step: +1 for phase<0.5, -1 otherwise, with no smoothing at the transition."
+        "Unwired, the timebase is the scoped playhead in seconds (tick-derived, not wall-clock); a wired clock replaces it, and clock_unit=frames divides by the composition fps so frequency stays in Hz.",
+        "phase wraps via ((t*frequency+phase)%1+1)%1, so negative frequency, clock or phase still produce a valid, non-jumping phase.",
+        "square is a hard step: +1 for phase<0.5, -1 otherwise, with no smoothing at the transition.",
+        "sawtooth with amplitude 0.5 and offset 0.5 is a plain 0→1 ramp per period (1/frequency seconds) — the loopable driver for cyclic per-point effects."
       ]
-    },
-    "flags": [
-      "unstable"
-    ]
+    }
   },
   {
     "type": "light-3d",
@@ -16932,21 +17012,36 @@
         "default": "weight"
       },
       {
-        "name": "map_target",
+        "name": "output_name",
+        "type": "string",
+        "settable": true,
+        "default": "scale"
+      },
+      {
+        "name": "mode",
         "type": "enum",
         "settable": true,
-        "default": "scale",
+        "default": "multiply",
         "options": [
-          "scale",
-          "rotation",
-          "position x",
-          "position y"
+          "multiply",
+          "add",
+          "set"
         ]
       },
       {
         "name": "curve",
         "type": "float_curve",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "x": 0,
+            "y": 0
+          },
+          {
+            "x": 1,
+            "y": 1
+          }
+        ]
       },
       {
         "name": "in_lo",
@@ -16982,7 +17077,7 @@
       }
     ],
     "subcategory": "modifier",
-    "description": "Drives built-in point data from any point column — a named channel, or a built-in like index, x, y, scale.x, rotation, or group. Normalize through In Lo/Hi, shape with a 0–1 curve, then map through Out Lo/Hi and apply as a scale multiplier, a rotation offset (radians), or a position offset. The curve defaults to a linear ramp, so a straight diagonal is the old In→Out remap. A missing named channel passes through unchanged.",
+    "description": "Remaps any point attribute onto any other — read a named channel or a built-in like index, x, y, scale.x, rotation, or group; normalize through In Lo/Hi, shape with a 0–1 curve, map through Out Lo/Hi, then multiply, add, or set the output attribute (scale, rotation, x, y, group, or a named channel). The default curve is a straight diagonal, so an untouched curve is a plain In→Out linear remap. A missing named channel passes through unchanged.",
     "facts": {
       "space": {
         "param:out_lo": "canvas01",
@@ -16996,13 +17091,15 @@
       "writes": [
         "attr:scale",
         "attr:rotation",
-        "attr:position"
+        "attr:position",
+        "attr:group"
       ],
       "gotchas": [
         "attr_name is read at runtime and can be any named channel or a built-in (index, x, y, scale.x, rotation, group, ...); an unknown name passes points through unchanged.",
-        "map_target picks exactly one destination per point: scale multiplies existing scale, rotation adds radians to existing rotation, position x/y offsets one position axis.",
-        "Position x/y offsets add directly into the point's stored canvas01 coordinate (authored space); for the other targets out_lo/out_hi become a scale multiplier or radians instead.",
-        "The curve defaults to an identity (0,0)-(1,1) ramp, so an untouched curve behaves as a plain In Lo/Hi -> Out Lo/Hi linear remap."
+        "output_name is any writable attribute — scale, scale.x, rotation, x, y, group, or a channel; index, z, nx/ny/nz pass through. mode multiply scales the current value, add offsets, set replaces.",
+        "out_lo/out_hi are in the OUTPUT attribute's units: a scale multiplier for scale, radians for rotation, canvas01 for x / y (an add on x/y offsets the stored coordinate directly).",
+        "The curve defaults to a two-point (0,0)-(1,1) ramp, which the monotone-cubic sampler renders exactly linear, so an untouched curve behaves as a plain In Lo/Hi -> Out Lo/Hi remap.",
+        "Saved nodes with the old map_target enum load as output_name + mode (scale -> scale/multiply, rotation -> rotation/add, position x/y -> x/y add) and render identically."
       ]
     }
   },
@@ -17706,12 +17803,13 @@
     ],
     "subcategory": "modifier",
     "dynamic": true,
-    "description": "Blends a base image with one or more layer images. Every image input carries its own mask input underneath — the matte for that layer (multiplies its per-pixel coverage, like a track matte). In AI recipes: `layers: [{mode, opacity, maskInvert?}, …]` *replaces* the default stack (N entries → N layers, new ids — not appended onto lyr-initial). Later set_param patches keep ids by index so existing wires never dangle. Wire inputs ordinally — layer1, layer2, … (mask1, mask2, … for the mattes) — they resolve to the real per-layer sockets, growing the stack when layerN points past the end.",
+    "description": "Blends a base image with one or more layer images. Every image input carries its own mask input underneath — the matte for that layer (multiplies its per-pixel coverage, like a track matte). In AI recipes: `layers: [{mode, opacity, maskInvert?, name?}, …]` *replaces* the default stack (N entries → N layers, new ids — not appended onto lyr-initial). Later set_param patches keep ids by index so existing wires never dangle. Wire inputs ordinally — layer1, layer2, … (mask1, mask2, … for the mattes) — they resolve to the real per-layer sockets, growing the stack when layerN points past the end.",
     "facts": {
       "gotchas": [
         "mode=mix is a legacy alias identical to normal (same blend formula); it only exists so old saves keep loading.",
         "A layer's enabled=false skips it from compositing but keeps its socket, so the wire stays connected without contributing.",
         "maskInvert only inverts a layer that has a mask actually wired; on an unmasked layer it is a no-op, not a full blank.",
+        "A layer's optional name is display-only (socket label, panel card, track name); sockets are still addressed as layer:<id> / mask:<id>, and ordinal aliases layerN / maskN still resolve by position.",
         "Composites in straight (non-premultiplied) alpha via source-over; every RGB blend formula (multiply, screen, etc.) operates on straight color."
       ]
     },
@@ -17994,11 +18092,31 @@
         "default": 3.141592653589793,
         "min": 0,
         "max": 3.141592653589793
+      },
+      {
+        "name": "scale_attr",
+        "type": "string",
+        "settable": true,
+        "default": ""
+      },
+      {
+        "name": "rotate_attr",
+        "type": "string",
+        "settable": true,
+        "default": ""
+      },
+      {
+        "name": "rotate_attr_amount",
+        "type": "scalar",
+        "settable": true,
+        "default": 6.283185307179586,
+        "min": -12.566370614359172,
+        "max": 12.566370614359172
       }
     ],
     "subcategory": "modifier",
     "dynamic": true,
-    "description": "Modulate per-point scale and rotation on a points value. Uniform inputs apply to every point; image fields are sampled at each point's UV and mapped through the configured ranges. Stack to layer modulations; feed the result into Copy to Points (or any consumer that respects per-point attributes).",
+    "description": "Modulate per-point scale and rotation on a points value. Uniform inputs apply to every point; image fields are sampled at each point's UV and mapped through the configured ranges; a Scale / Rotate attribute reads a point column per point (a named channel such as a Stagger phase or an Attribute Math result, or a built-in like index), which unlike a field can tell stacked points apart. Stack to layer modulations; feed the result into Copy to Points (or any consumer that respects per-point attributes).",
     "facts": {
       "reads": [
         "attr:scale",
@@ -18012,7 +18130,9 @@
         "scale_field/rotate_field images are downsampled to a fixed 128x128 working buffer, so fine texture detail in the field is lost.",
         "Field sampling uses an async GPU readback (PBO + fence), so field-driven modulation lags the live image by about one frame.",
         "New scale multiplies the existing per-point scale and new rotation adds to the existing rotation, so stacked nodes compound rather than replace.",
-        "With scale_mul=1, rotate_add=0 and no fields wired, the node is a no-op and returns the input points object unchanged."
+        "scale_attr multiplies scale by the column as-is (an arity-2 channel scales x/y separately; arity 1 or a built-in broadcasts); rotate_attr adds value × rotate_attr_amount rad (default 2π = a turn per unit).",
+        "A blank or missing scale_attr/rotate_attr column is ignored, not an error — the name field's red tint is the only signal.",
+        "With scale_mul=1, rotate_add=0, no fields wired and no attribute names set, the node is a no-op and returns the input points object unchanged."
       ]
     }
   },
@@ -20169,6 +20289,16 @@
         "max": 512
       },
       {
+        "name": "size_units",
+        "type": "enum",
+        "settable": true,
+        "default": "px",
+        "options": [
+          "px",
+          "%"
+        ]
+      },
+      {
         "name": "color",
         "type": "color",
         "settable": true,
@@ -20213,6 +20343,7 @@
         "placement picks which point of the label box sits at the (offset) target: 'on' centers it, 'above' puts the box's bottom edge there, etc.",
         "label_scale is baked into the rasterized font size (stays crisp) rather than stretching the box; any style/color/font/scale change clears the whole raster cache.",
         "style input (a wired Text node's text_instance) overrides font_family/size/color/alignment entirely; the local params are only the no-wire fallback.",
+        "size defaults to raw pixels; size_units=% reads it as a percent of canvas width (the separate `units` param only affects the {x}/{y} coordinate tokens).",
         "stable:false — re-checks font readiness every eval; an unready font paints nothing that frame and re-triggers once the async load completes."
       ]
     },
@@ -20852,6 +20983,16 @@
         "max": 512
       },
       {
+        "name": "size_units",
+        "type": "enum",
+        "settable": true,
+        "default": "px",
+        "options": [
+          "px",
+          "%"
+        ]
+      },
+      {
         "name": "color",
         "type": "color",
         "settable": true,
@@ -20884,7 +21025,8 @@
         "field=custom's {token} template is shared with Point Labels/Points to String; unrecognized {…} sequences pass through literally.",
         "units=pixels multiplies x by canvas width and y by canvas height independently (anisotropic) — not one aspect-scaled number.",
         "Pairing with Copy to Points (text mode, 'by index') matches strings to points strictly by INDEX; a filter/reorder/resample in between desyncs labels from dots.",
-        "style input (a wired Text node's text_instance) overrides font_family/size/color/alignment entirely; the local params are only the no-wire fallback."
+        "style input (a wired Text node's text_instance) overrides font_family/size/color/alignment entirely; the local params are only the no-wire fallback.",
+        "size defaults to raw pixels; size_units=% reads it as a percent of canvas width (the separate `units` param only affects the {x}/{y} coordinate tokens)."
       ]
     },
     "flags": [
@@ -24262,7 +24404,7 @@
         "target picks which attribute is overwritten (scale, rotation, or a named channel via attr_name); the others pass through unchanged.",
         "blend=replace ignores the existing attribute entirely; multiply/add combine the remapped sample with the point's current scale/rotation/named value.",
         "target=scale writes the same value to both x and y (isotropic); for anisotropic scaling, chain two of these after splitting the source.",
-        "target=named attribute writes a float channel named by attr_name (setattr-style); reserved names (position/x/y/index/rotation/scale/group/…) pass the points through unchanged.",
+        "target=named attribute writes a float attribute named by attr_name — a channel, or a writable built-in (scale, scale.x, rotation, x, y, group); read-only index / z / nx/ny/nz pass through.",
         "Point UV is aspect-corrected before sampling (py = 0.5 + (y-0.5)*canvasAspect) so the sample lands where the point visually sits on non-square canvases.",
         "No image wired, or an image whose pixels fail to read back, passes the points through unchanged rather than erroring."
       ]
@@ -24601,8 +24743,15 @@
         "options": [
           "linear",
           "pingpong",
+          "sawtooth",
           "stepped"
-        ]
+        ],
+        "optionLabels": {
+          "linear": "Linear",
+          "pingpong": "Ping-pong",
+          "sawtooth": "Sawtooth",
+          "stepped": "Stepped"
+        }
       },
       {
         "name": "period_frames",
@@ -24675,7 +24824,8 @@
           "ease-in-out-elastic",
           "ease-in-bounce",
           "ease-out-bounce",
-          "ease-in-out-bounce"
+          "ease-in-out-bounce",
+          "custom"
         ]
       },
       {
@@ -24683,8 +24833,24 @@
         "type": "scalar",
         "settable": true,
         "default": 1,
+        "min": -10,
+        "max": 1000
+      },
+      {
+        "name": "step_seconds",
+        "type": "scalar",
+        "settable": true,
+        "default": 1,
         "min": 0.01,
         "max": 60
+      },
+      {
+        "name": "step_frames",
+        "type": "scalar",
+        "settable": true,
+        "default": 12,
+        "min": 1,
+        "max": 3600
       },
       {
         "name": "easing",
@@ -24725,7 +24891,23 @@
           "ease-in-out-elastic",
           "ease-in-bounce",
           "ease-out-bounce",
-          "ease-in-out-bounce"
+          "ease-in-out-bounce",
+          "custom"
+        ]
+      },
+      {
+        "name": "easing_curve",
+        "type": "float_curve",
+        "settable": true,
+        "default": [
+          {
+            "x": 0,
+            "y": 0
+          },
+          {
+            "x": 1,
+            "y": 1
+          }
         ]
       },
       {
@@ -24753,16 +24935,20 @@
         "max": 100
       }
     ],
-    "description": "Emits the current playback time as a scalar in seconds or frames. Modes: linear, ping-pong (period in frames + amplitude + min/max, with an easing curve on each ramp), or stepped with easing. Connect to an exposed scalar input to drive animation.",
+    "description": "Emits the current playback time as a scalar in seconds or frames. Modes: linear, ping-pong (period in frames + amplitude + min/max, with an easing curve on each ramp), sawtooth (the same controls, but a min→max ramp that resets each period — the plain 0→1 loop driver), or stepped (change by a step size every step duration, with easing on each transition). Easing can be a named curve or `custom`: an editable float curve that, exposed as a socket, a Float Curve or Expression node can drive. Connect to an exposed scalar input to drive animation.",
     "facts": {
       "reads": [
         "time"
       ],
       "gotchas": [
-        "mode=pingpong ignores unit, scale, and offset entirely; period_frames is always frame-based and min/max/amplitude alone own the output range.",
-        "unit=frames and pingpong both use the tick-derived fractional frame (tick/ticksPerFrame), not integer frame count, so motion stays smooth when the render loop outruns project fps.",
+        "mode=pingpong and mode=sawtooth ignore unit, scale, and offset entirely; period_frames is always frame-based and min/max/amplitude alone own the output range.",
+        "mode=sawtooth ramps min→max over period_frames then resets hard to min (no return ramp); it reads pingpong_easing / easing_curve / ease_intensity like ping-pong, and with the defaults is a 0→1 loop.",
+        "unit=frames, pingpong and sawtooth all use the tick-derived fractional frame (tick/ticksPerFrame), not integer frame count, so motion stays smooth when the render loop outruns project fps.",
         "Integer frame count is used only as a fallback when ticksPerFrame<=0.",
-        "mode=stepped floors base/step_size to an index and eases only the fractional remainder between steps: easing=step is a hard staircase, smoothstep glides mid-step and holds near boundaries.",
+        "mode=stepped adds step_size (output units; negative counts down) once per step and ignores scale; the step lasts step_seconds (unit=seconds) or step_frames (unit=frames).",
+        "mode=stepped eases only the fraction within a step: easing=step is a hard staircase, linear a ramp at step_size/duration, smoothstep holds at the boundaries; offset is the value before step one.",
+        "easing=custom (either enum) samples easing_curve, a float_curve (x=ramp position, y=eased); expose it and wire Float Curve's curve aux or an Expression with out_type=curve to drive it.",
+        "easing_curve is clamped to the unit square with no overshoot, so a custom curve cannot push past the ends; back/elastic/bounce are enum-only.",
         "ease_intensity blends the eased curve against the raw linear ramp: 0=linear, 1=the exact named curve, >1 exaggerates it (overshoot/snap); shared by pingpong and stepped."
       ]
     },
@@ -26343,7 +26529,17 @@
       {
         "name": "height_curve",
         "type": "float_curve",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "x": 0,
+            "y": 0
+          },
+          {
+            "x": 1,
+            "y": 1
+          }
+        ]
       },
       {
         "name": "depth",
@@ -27437,8 +27633,20 @@
         "options": [
           "constant",
           "index",
+          "exponential",
           "random",
           "image"
+        ]
+      },
+      {
+        "name": "mode",
+        "type": "enum",
+        "settable": true,
+        "default": "set",
+        "options": [
+          "set",
+          "multiply",
+          "add"
         ]
       },
       {
@@ -27493,18 +27701,26 @@
     ],
     "subcategory": "modifier",
     "dynamic": true,
-    "description": "Writes a named channel (a Blender-style attribute) onto points, spline anchors, or spline subpaths: pick a name, a type, and a source — a constant, a 0→1 ramp over element order, a stable per-element random, or an image sampled at each element's position. Channels flow through downstream nodes, show as columns in the Spreadsheet panel, and point channels read back in Point Expression via attr(\"name\"). Reserved names (the built-in x/y/index/rotation/scale/group columns) pass through unchanged.",
+    "description": "Writes an attribute by name onto points, spline anchors, or spline subpaths: pick a name, a type, and a source — a constant, a 0→1 ramp over element order (linear or exponential lo→hi), a stable per-element random, or an image sampled at each element's position. Set replaces the value; multiply / add combine with what the element already has. A named channel flows through downstream nodes, shows as a column in the Spreadsheet panel, and reads back in Point Expression via attr(\"name\"); a built-in name (scale, scale.x, rotation, x, y, group — group or driver on subpaths) writes the element's own transform data directly, so index → scale needs no Map Attribute. index, z and normals are read-only and pass the input through.",
     "facts": {
       "space": {
         "in:points": "canvas01",
         "out": "in:points"
       },
+      "writes": [
+        "attr:scale",
+        "attr:rotation",
+        "attr:position",
+        "attr:group",
+        "attr:driver"
+      ],
       "gotchas": [
-        "The written channel's name comes from `attr_name`; an empty name or a reserved one (position/x/y/index/rotation/scale/group/z/nx/ny/nz) passes the input through unchanged.",
-        "target=points writes a PointsValue.attributes channel; target=spline anchors/subpaths write to each anchor's or subpath's object-attached `attrs` instead.",
+        "attr_name is any attribute: a channel, or a built-in (scale, scale.x, rotation, x, y, group) landing in the point's own data. Empty or read-only (index, z, nx/ny/nz) passes the input through.",
+        "target=points writes PointsValue.attributes (the typed array for a built-in); spline anchors/subpaths write object-attached attrs. On subpaths group is groupIndex, driver is what ramps read.",
         "source=image samples nearest-texel at each element's own position (point, anchor, or subpath centroid) — float kind uses luminance, vec/color kinds use RGBA.",
-        "source=index and source=random remap through lo/hi only when kind=float; other kinds ignore lo/hi and use the raw [0,1) value per component.",
+        "index, exponential and random remap through lo/hi only when kind=float; other kinds use the raw [0,1) value. exponential is lo·(hi/lo)^t and falls back to linear when lo/hi straddle or touch zero.",
         "source=random is a deterministic hash keyed on seed and element index, not Math.random, so it's stable across frames and re-evaluations.",
+        "mode=multiply / add combine with the current value: an absent built-in reads its default (scale 1, rotation 0), a missing channel the op's identity. A float into scale fills both lanes; group rounds.",
         "The `name` aux output is the channel's name as a string, meant to be wired into another node's attribute-name param so a rename here ripples downstream."
       ]
     }
@@ -30069,6 +30285,96 @@
     }
   },
   {
+    "type": "spline-outline",
+    "name": "Outline",
+    "category": "spline",
+    "inputs": [
+      {
+        "name": "path",
+        "type": "spline",
+        "required": true
+      }
+    ],
+    "primaryOutput": "spline",
+    "aux": [],
+    "params": [
+      {
+        "name": "thickness",
+        "type": "scalar",
+        "settable": true,
+        "default": 4,
+        "min": 0,
+        "max": 200
+      },
+      {
+        "name": "units",
+        "type": "enum",
+        "settable": true,
+        "default": "px",
+        "options": [
+          "px",
+          "%"
+        ]
+      },
+      {
+        "name": "cap",
+        "type": "enum",
+        "settable": true,
+        "default": "round",
+        "options": [
+          "round",
+          "butt",
+          "square"
+        ]
+      },
+      {
+        "name": "join",
+        "type": "enum",
+        "settable": true,
+        "default": "round",
+        "options": [
+          "round",
+          "miter",
+          "bevel"
+        ]
+      },
+      {
+        "name": "miter_limit",
+        "type": "scalar",
+        "settable": true,
+        "default": 10,
+        "min": 1,
+        "max": 20
+      },
+      {
+        "name": "resolution",
+        "type": "scalar",
+        "settable": true,
+        "default": 24,
+        "min": 3,
+        "max": 96
+      }
+    ],
+    "subcategory": "modifier",
+    "description": "Sweep a spline with a uniform thickness and output the silhouette as a closed spline — the shape Rasterize Stroke would paint, kept as geometry. Overlapping strokes merge into one outline; closed paths keep their hole. Cap and join match Rasterize Stroke, so wire the result into Rasterize Spline with Fill on to draw it.",
+    "facts": {
+      "space": {
+        "param:thickness": "pixels"
+      },
+      "reads": [
+        "attr:width"
+      ],
+      "gotchas": [
+        "Output is polygonal (flattened curves): resolution sets line segments per curved bezier segment; straight constant-width segments stay one quad.",
+        "Each anchor's width multiplier scales the local thickness (smoothstep between anchors), so a tapered stroke outlines to its taper, like Rasterize Stroke.",
+        "Everything unions: crossings, self-overlaps and tight corners resolve to one boundary, but closed subpaths keep their interior hole (a circle becomes a ring).",
+        "thickness is canvas px at render resolution unless units=%, which is percent of canvas width — the same toggle as Rasterize Stroke.",
+        "miter_limit only applies when join=miter and uses the canvas rule (tip distance / half-width); sharper corners fall back to a bevel.",
+        "Fill the output with Rasterize Spline (even-odd) — its rings already carry the holes; stroking it draws both edges of the original stroke."
+      ]
+    }
+  },
+  {
     "type": "spline-pack",
     "name": "Spline Pack",
     "category": "spline",
@@ -30223,7 +30529,17 @@
       {
         "name": "spacing_curve",
         "type": "float_curve",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "x": 0,
+            "y": 0
+          },
+          {
+            "x": 1,
+            "y": 1
+          }
+        ]
       },
       {
         "name": "overlap",
@@ -30622,7 +30938,17 @@
       {
         "name": "repeat_spacing",
         "type": "float_curve",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "x": 0,
+            "y": 0
+          },
+          {
+            "x": 1,
+            "y": 1
+          }
+        ]
       },
       {
         "name": "repeat_overlap",
@@ -30646,12 +30972,32 @@
       {
         "name": "repeat_thickness",
         "type": "float_curve",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "x": 0,
+            "y": 1
+          },
+          {
+            "x": 1,
+            "y": 1
+          }
+        ]
       },
       {
         "name": "repeat_opacity",
         "type": "float_curve",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "x": 0,
+            "y": 1
+          },
+          {
+            "x": 1,
+            "y": 1
+          }
+        ]
       },
       {
         "name": "repeat_color_mode",
@@ -30985,7 +31331,7 @@
     "description": "Gives every point its own start time and writes a 0→1 `phase` channel: 0 before the point's start, a linear ramp over Duration, 1 after. Order picks who goes first — point index, reverse, center-out, edges-in, a seeded random, or ascending by any point column (a named channel, or a built-in like x / y / group; equal values start together). Spacing mode steps each start by Spacing; Fit mode spreads the starts so the whole sequence ends at Total. Jitter adds a stable per-point random delay, Start shifts the sequence, Loop repeats it (cycle or ping-pong). Unit sets whether all of those — and a wired Clock — read as frames or seconds; unwired, the Clock is the playhead. Read phase downstream with Map Attribute (its curve is the per-point easing), Filter Points, or Copy to Points' tint / opacity / variant pick. Extras also writes `<name>_t0` (each start) and `<name>_active` (1 only while in flight). Pure and stateless — scrub-exact, exportable, retimeable by Time Offset.",
     "facts": {
       "gotchas": [
-        "attr_name (default `phase`) names the written channel; empty or a reserved point-attribute name passes the input through unchanged.",
+        "attr_name (default `phase`) names the written attribute — a channel, or a writable built-in such as scale so the phase drives geometry; empty or read-only (index, z, nx/ny/nz) passes through.",
         "unit scales Spacing/Total/Duration/Jitter/Start and a wired Clock into frames internally; an unwired Clock uses the scoped playhead in fractional frames.",
         "order=attribute sorts by order_attr (a named channel or built-in like x/y/group); a missing/blank column falls back to index order silently.",
         "Ordering is a dense rank, so tied keys share one start time (an unsorted grid ordered by y starts a whole row together).",
@@ -31932,7 +32278,9 @@
           "emitter",
           "collider",
           "particles",
-          "transform"
+          "transform",
+          "color_ramp",
+          "float_curve"
         ]
       },
       {
@@ -32032,7 +32380,17 @@
       {
         "name": "curve",
         "type": "float_curve",
-        "settable": false
+        "settable": true,
+        "default": [
+          {
+            "x": 0,
+            "y": 0
+          },
+          {
+            "x": 1,
+            "y": 1
+          }
+        ]
       },
       {
         "name": "out_lo",
@@ -32166,6 +32524,16 @@
         "default": 96,
         "min": 4,
         "max": 1000
+      },
+      {
+        "name": "units",
+        "type": "enum",
+        "settable": true,
+        "default": "px",
+        "options": [
+          "px",
+          "%"
+        ]
       },
       {
         "name": "font_weight",
@@ -33279,7 +33647,7 @@
       "gotchas": [
         "boxWidth/boxHeight are per-axis uv01 fractions of the working canvas (width/height respectively), not aspect-corrected canvas01; 1×1 is the full canvas.",
         "translateX/Y, pivotX/Y, and rotate operate as raw per-axis UV offsets on the rasterized image (uv01), so rotate skews text on a non-square canvas.",
-        "font_size, strokeWidth, and letter_spacing are literal canvas pixels at the working render resolution; they don't scale with boxWidth/Height or output size.",
+        "font_size, strokeWidth and letter_spacing default to raw pixels; units=% resolves them as a percent of canvas width, so the framing holds across comp resolutions and preview scales.",
         "sdf and spline aux build lazily only when consumed; dragging text while only primary/element are wired skips the JFA SDF and marching-squares contour work.",
         "A wired path or a maskDriven morph_mask axis forces a full re-rasterize every frame, bypassing the normal per-param signature cache.",
         "morph_mask (variable-font axis morph) only modulates the primary raster; element and instances aux always use the unmodulated base style.",

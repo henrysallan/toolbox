@@ -116,6 +116,7 @@ import { fillNode } from "./effect/fill";
 import { rasterizeSplineNode } from "./effect/rasterize-spline";
 import { splineBooleanNode } from "./effect/spline-boolean";
 import { splineMergeNode } from "./effect/spline-merge";
+import { outlineNode } from "./effect/outline";
 import { splinePackNode } from "./effect/spline-pack";
 import { blendIntersectionsNode } from "./effect/blend-intersections";
 import { splineMorphNode } from "./effect/spline-morph";
@@ -458,6 +459,7 @@ export function registerAllNodes() {
   registerNode(rasterizeSplineNode);
   registerNode(splineBooleanNode);
   registerNode(splineMergeNode);
+  registerNode(outlineNode);
   registerNode(splinePackNode);
   registerNode(blendIntersectionsNode);
   registerNode(splineMorphNode);

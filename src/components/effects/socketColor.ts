@@ -112,6 +112,12 @@ export const SOCKET_PALETTE: Record<string, SocketColorPair> = {
   // params, so a blue ramp wire would be ambiguous on the very node that
   // wants it most. Spec: 080526_on-node-color-ramp.md.
   color_ramp: { dark: "#f87962", light: "#ca3a23" },
+  // Float-curve wires — rose-gold, a deliberate cousin of color_ramp's
+  // coral (both are "authored lookup" descriptors: a palette, a shape)
+  // sitting between it and the pink mask hue, and clear of scalar's yellow
+  // so a curve wire never reads as the value it shapes. Spec:
+  // 091926_float-curve-socket.md.
+  float_curve: { dark: "#fb9f9f", light: "#b5484f" },
   // Transform wires (Gizmo → primitives / Transform) — cyan-300, a cousin
   // of spline's cyan the way points3d is of points. Spec: 082826_gizmo-node.md.
   transform: { dark: "#67e8f9", light: "#0e7490" },

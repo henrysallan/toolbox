@@ -487,6 +487,90 @@ const badValues: RecipeGraph = {
   );
 }
 
+// float_curve params (Map Attribute `curve`, Scene Time `easing_curve`) take
+// the curve() channel shape [{x, y}] — ids are minted, x/y clamp, points
+// sort by x — and print back as [{x, y}] with the identity omitted as the
+// catalog default (2026-09-20 MCP feedback: the whole value of Map
+// Attribute is its curve, and it was neither readable nor writable).
+{
+  const { graphToSpec, applyRecipeEdit } = await import("@/state/recipe-edit");
+  const curved: RecipeGraph = {
+    name: "Curve",
+    nodes: [
+      { id: "g", type: "grid" },
+      {
+        id: "m",
+        type: "map-attribute",
+        params: { curve: [{ x: 1, y: 1 }, { x: 0, y: 0 }, { x: 0.5, y: 1.7 }] },
+      },
+      { id: "flat", type: "map-attribute" },
+    ],
+    edges: [
+      { from: "g:out", to: "m:in:points" },
+      { from: "g:out", to: "flat:in:points" },
+    ],
+    outputs: [{ name: "points", from: "m:out", type: "points" }],
+  };
+  const built = buildRecipe(curved);
+  const m = built.nodes.find((n) => n.id === built.ids.m)!;
+  const pts = m.data.params.curve as { id: string; x: number; y: number }[];
+  check(
+    "float_curve params are recipe-settable ([{x, y}] → sorted, clamped, ids minted)",
+    built.issues.length === 0 &&
+      pts.length === 3 &&
+      pts.map((p) => p.x).join(",") === "0,0.5,1" &&
+      pts[1].y === 1 &&
+      pts.every((p) => typeof p.id === "string" && p.id.length > 0),
+    JSON.stringify({ issues: built.issues, pts })
+  );
+  // buildRecipe wraps the interior in a node-group — that shell is the
+  // get_graph scope.
+  const groupId = built.nodes.find((n) => n.data.defType === "node-group")!.id;
+  const spec = graphToSpec(built.nodes, built.edges, groupId, { params: "non_default" });
+  const specM = spec.nodes.find((n) => n.id === built.ids.m);
+  const specFlat = spec.nodes.find((n) => n.id === built.ids.flat);
+  check(
+    "get_graph prints a float_curve as [{x, y}] (no ids) and omits the identity default",
+    JSON.stringify(specM?.params?.curve) === JSON.stringify([{ x: 0, y: 0 }, { x: 0.5, y: 1 }, { x: 1, y: 1 }]) &&
+      specFlat?.params?.curve === undefined,
+    JSON.stringify({ m: specM?.params, flat: specFlat?.params })
+  );
+  const all = graphToSpec(built.nodes, built.edges, groupId, { params: "all" });
+  check(
+    "get_graph params=all keeps the identity curve",
+    JSON.stringify(all.nodes.find((n) => n.id === built.ids.flat)?.params?.curve) ===
+      JSON.stringify([{ x: 0, y: 0 }, { x: 1, y: 1 }])
+  );
+  const bad = buildRecipe({
+    ...curved,
+    nodes: [curved.nodes[0], { id: "m", type: "map-attribute", params: { curve: [{ x: 0, y: 0 }] } }],
+    edges: [curved.edges![0]],
+  });
+  check(
+    "a one-point float_curve is BAD_PARAM_VALUE",
+    bad.issues.some((i) => i.code === "BAD_PARAM_VALUE" && i.message.includes("m.curve")),
+    JSON.stringify(bad.issues)
+  );
+  // edit_group set_param with the same shape lands on the live node.
+  const edited = applyRecipeEdit(
+    groupId,
+    built.nodes,
+    built.edges,
+    {
+      ops: [
+        { op: "set_param", node: built.ids.flat, param: "curve", value: [{ x: 0, y: 1 }, { x: 1, y: 0 }] },
+      ],
+    }
+  );
+  const flatAfter = edited.nodes.find((n) => n.id === built.ids.flat);
+  const after = flatAfter?.data.params.curve as { x: number; y: number }[] | undefined;
+  check(
+    "edit_group set_param writes a float_curve",
+    edited.applied === 1 && !!after && after.length === 2 && after[0].y === 1 && after[1].y === 0,
+    JSON.stringify({ applied: edited.applied, ops: edited.ops, after })
+  );
+}
+
 {
   const bad = buildRecipe({
     name: "Bad Expose",

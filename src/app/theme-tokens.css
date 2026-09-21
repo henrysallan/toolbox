@@ -146,6 +146,7 @@
   --tb-s-noise_field: #ca8a04;
   --tb-s-curve3d: #0891b2;
   --tb-s-color_ramp: #f87962;
+  --tb-s-float_curve: #fb9f9f;
   --tb-s-transform: #67e8f9;
   --tb-s-fallback: #9ca3af;
 
@@ -306,6 +307,7 @@
   --tb-s-noise_field: #8a5c00;
   --tb-s-curve3d: #0e7490;
   --tb-s-color_ramp: #ca3a23;
+  --tb-s-float_curve: #b5484f;
   --tb-s-transform: #0e7490;
   --tb-s-fallback: #6b7280;
 

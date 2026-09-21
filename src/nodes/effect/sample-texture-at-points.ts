@@ -2,7 +2,8 @@ import type { NodeDefinition, RenderContext } from "@/engine/types";
 import {
   copyPointsWith,
   EMPTY_POINTS,
-  RESERVED_POINT_ATTR_NAMES,
+  isWritablePointAttr,
+  withPointAttr,
 } from "@/engine/points";
 
 // Sample an image at each point's UV position and write the value into
@@ -90,7 +91,7 @@ export const sampleTextureAtPointsNode: NodeDefinition = {
       "target picks which attribute is overwritten (scale, rotation, or a named channel via attr_name); the others pass through unchanged.",
       "blend=replace ignores the existing attribute entirely; multiply/add combine the remapped sample with the point's current scale/rotation/named value.",
       "target=scale writes the same value to both x and y (isotropic); for anisotropic scaling, chain two of these after splitting the source.",
-      "target=named attribute writes a float channel named by attr_name (setattr-style); reserved names (position/x/y/index/rotation/scale/group/…) pass the points through unchanged.",
+      "target=named attribute writes a float attribute named by attr_name — a channel, or a writable built-in (scale, scale.x, rotation, x, y, group); read-only index / z / nx/ny/nz pass through.",
       "Point UV is aspect-corrected before sampling (py = 0.5 + (y-0.5)*canvasAspect) so the sample lands where the point visually sits on non-square canvases.",
       "No image wired, or an image whose pixels fail to read back, passes the points through unchanged rather than erroring.",
     ],
@@ -178,10 +179,9 @@ export const sampleTextureAtPointsNode: NodeDefinition = {
     const buf = readImage(ctx, img);
     if (!buf) return { primary: src };
 
-    if (
-      target === "named attribute" &&
-      (!attrName || RESERVED_POINT_ATTR_NAMES.has(attrName))
-    ) {
+    // Any writable attribute name — a channel, or a built-in like `scale`
+    // (the enum targets stay as the two-lane / rotation shortcuts).
+    if (target === "named attribute" && !isWritablePointAttr(attrName)) {
       return { primary: src };
     }
 
@@ -256,14 +256,9 @@ export const sampleTextureAtPointsNode: NodeDefinition = {
     }
 
     if (target === "named attribute" && outAttr) {
-      return {
-        primary: copyPointsWith(src, {
-          attributes: {
-            ...src.attributes,
-            [attrName]: { arity: 1, data: outAttr },
-          },
-        }),
-      };
+      // Blend was already applied against the existing channel above, so
+      // this is a plain set (a built-in name lands in its typed array).
+      return { primary: withPointAttr(src, attrName, outAttr) };
     }
 
     return {

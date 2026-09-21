@@ -121,6 +121,23 @@ export interface MergeLayer {
   // coverage, so the toggle is inert on unmasked layers rather than blanking
   // them. Optional/undefined = off (old saves never wrote it).
   maskInvert?: boolean;
+  // User-given display name. Labels the layer's socket on the node, its
+  // card in the param panel, its opacity track and its live-link knobs.
+  // Optional/undefined (or blank) = the ordinal "layer N" fallback; renaming
+  // never touches the id, so wires and keyframes are unaffected.
+  name?: string;
+}
+
+// Display label for layer `i` of a stack: the user's name when set, else
+// the ordinal "layer N". Every surface that names a layer (socket label,
+// param card, timeline track, export manifest) goes through this so a
+// rename shows up everywhere at once.
+export function mergeLayerLabel(
+  layer: Pick<MergeLayer, "name"> | undefined,
+  index: number
+): string {
+  const n = layer?.name?.trim();
+  return n ? n : `layer ${index + 1}`;
 }
 
 export const BLIT_FS = `#version 300 es
@@ -379,7 +396,8 @@ export function isDefaultMergeStack(
     layers[0].mode === "normal" &&
     layers[0].opacity === 1 &&
     layers[0].enabled !== false &&
-    !layers[0].maskInvert
+    !layers[0].maskInvert &&
+    !layers[0].name
   );
 }
 
@@ -392,7 +410,7 @@ export const mergeNode: NodeDefinition = {
     "Blends a base image with one or more layer images. Every image input " +
     "carries its own mask input underneath — the matte for that layer " +
     "(multiplies its per-pixel coverage, like a track matte). In AI " +
-    "recipes: `layers: [{mode, opacity, maskInvert?}, …]` *replaces* the " +
+    "recipes: `layers: [{mode, opacity, maskInvert?, name?}, …]` *replaces* the " +
     "default stack (N entries → N layers, new ids — not appended onto " +
     "lyr-initial). Later set_param patches keep ids by index so existing " +
     "wires never dangle. Wire inputs ordinally — layer1, layer2, … " +
@@ -403,6 +421,7 @@ export const mergeNode: NodeDefinition = {
       "mode=mix is a legacy alias identical to normal (same blend formula); it only exists so old saves keep loading.",
       "A layer's enabled=false skips it from compositing but keeps its socket, so the wire stays connected without contributing.",
       "maskInvert only inverts a layer that has a mask actually wired; on an unmasked layer it is a no-op, not a full blank.",
+      "A layer's optional name is display-only (socket label, panel card, track name); sockets are still addressed as layer:<id> / mask:<id>, and ordinal aliases layerN / maskN still resolve by position.",
       "Composites in straight (non-premultiplied) alpha via source-over; every RGB blend formula (multiply, screen, etc.) operates on straight color.",
     ],
   },
@@ -421,15 +440,18 @@ export const mergeNode: NodeDefinition = {
       { name: "mask:base", label: "base mask", type: "mask", required: false },
     ];
     layers.forEach((l, i) => {
+      const label = mergeLayerLabel(l, i);
       result.push({
         name: `layer:${l.id}`,
-        label: `layer ${i + 1}`,
+        label,
         type: "image",
         required: false,
       });
       result.push({
         name: `mask:${l.id}`,
-        label: `mask ${i + 1}`,
+        // A named layer's matte reads "<name> mask"; unnamed keeps the
+        // ordinal pair "layer N" / "mask N".
+        label: l.name?.trim() ? `${label} mask` : `mask ${i + 1}`,
         type: "mask",
         required: false,
       });

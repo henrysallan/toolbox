@@ -24,6 +24,7 @@ import {
   withInputValues,
 } from "@/engine/groups";
 import { paramSocketType } from "@/engine/graph-helpers";
+import { compactFloatCurve, floatCurvesEqual } from "@/engine/float-curve";
 import {
   channelListParam,
   channelSocketType,
@@ -291,8 +292,14 @@ export function graphToSpec(
     }
     const params: Record<string, unknown> = {};
     for (const p of def?.params ?? []) {
-      if (SETTABLE_PARAM_TYPES.has(p.type) && n.data.params[p.name] !== undefined)
-        params[p.name] = n.data.params[p.name];
+      if (SETTABLE_PARAM_TYPES.has(p.type) && n.data.params[p.name] !== undefined) {
+        // A float_curve prints as [{x, y}] — the shape set_param accepts;
+        // the stored point ids are editor-only noise.
+        params[p.name] =
+          p.type === "float_curve"
+            ? compactFloatCurve(n.data.params[p.name]) ?? n.data.params[p.name]
+            : n.data.params[p.name];
+      }
       // merge_layers is plain JSON ({id, mode, opacity}[]) — showing it
       // gives the model the layer ids/modes it needs to patch a Merge.
       if (p.type === "merge_layers" && n.data.params[p.name] !== undefined)
@@ -310,7 +317,11 @@ export function graphToSpec(
     if (nonDefault) {
       for (const p of def?.params ?? []) {
         if (!(p.name in params)) continue;
-        if (paramEqualsDefault(params[p.name], p.default)) delete params[p.name];
+        const same =
+          p.type === "float_curve"
+            ? floatCurvesEqual(params[p.name], p.default)
+            : paramEqualsDefault(params[p.name], p.default);
+        if (same) delete params[p.name];
       }
       if (n.data.defType === GROUP_TYPE || n.data.defType === LAYER_TYPE) {
         for (const ctrl of listGroupShellControls(n, nodes, edges)) {

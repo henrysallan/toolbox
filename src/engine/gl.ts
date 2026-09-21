@@ -122,8 +122,40 @@ export interface EngineBackend {
     width?: number,
     height?: number
   ): Uint8ClampedArray<ArrayBuffer> | null;
+  // Same bytes as readImagePixels, without the GPU stall: the readback is
+  // enqueued into a PIXEL_PACK_BUFFER behind a fence and the promise
+  // resolves once the GPU has finished the copy. The caller may go on
+  // issuing GL work (the next frame's eval) immediately — GL executes in
+  // order, so the copy finishes before anything later overwrites the
+  // source or the readback target. Resolves null on a lost context, an
+  // incomplete FBO, a failed fence, a 5 s timeout, or after cancel().
+  // Spec: 092126_async-pipelined-readback.md.
+  readImagePixelsAsync(
+    image: ImageValue,
+    width?: number,
+    height?: number
+  ): AsyncPixelRead;
   destroy(): void;
 }
+
+export interface AsyncPixelRead {
+  promise: Promise<Uint8ClampedArray<ArrayBuffer> | null>;
+  /** Drop the read: frees its fence + buffer now, resolves the promise null. */
+  cancel(): void;
+}
+
+// Async readback: give up on a fence that has not signaled after this long.
+// Five seconds is far past any frame the export loop would tolerate anyway.
+const ASYNC_READ_TIMEOUT_MS = 5000;
+// Poll cadence while a fence is pending. Short enough that the hand-off
+// adds a few ms at most on top of the GPU's own time, long enough not to
+// spin the event loop.
+const ASYNC_READ_POLL_MS = 2;
+// Pixel-pack buffers kept alive between reads. One frame in flight needs
+// two (the pending one and the one just issued); the third absorbs a
+// consumer that is a poll behind. Anything beyond is allocated for the
+// one read and deleted with it.
+const PBO_POOL_MAX = 3;
 
 export function createEngineBackend(
   initialWidth: number,
@@ -355,15 +387,14 @@ export function createEngineBackend(
   const readbackFbo = gl.createFramebuffer();
   if (!readbackFbo) throw new Error("Failed to create readback FBO");
 
-  function readImagePixelsInternal(
-    image: ImageValue,
-    width?: number,
-    height?: number
-  ): Uint8ClampedArray<ArrayBuffer> | null {
-    const w = Math.max(1, Math.floor(width ?? image.width));
-    const h = Math.max(1, Math.floor(height ?? image.height));
+  // Draw `image` Y-flipped into the pooled RGBA8 target at w×h and leave
+  // readbackFbo bound, ready for readPixels. Shared by the sync and async
+  // readbacks so the two produce byte-identical output. False when the
+  // target could not be created or the FBO is incomplete (caller returns
+  // null; the FBO binding is restored to null).
+  function drawReadbackTarget(image: ImageValue, w: number, h: number): boolean {
     const tex = acquireReadbackTarget(w, h);
-    if (!tex) return null;
+    if (!tex) return false;
 
     gl!.bindFramebuffer(gl!.FRAMEBUFFER, readbackFbo);
     gl!.framebufferTexture2D(
@@ -375,7 +406,7 @@ export function createEngineBackend(
     );
     if (gl!.checkFramebufferStatus(gl!.FRAMEBUFFER) !== gl!.FRAMEBUFFER_COMPLETE) {
       gl!.bindFramebuffer(gl!.FRAMEBUFFER, null);
-      return null;
+      return false;
     }
     gl!.viewport(0, 0, w, h);
     gl!.disable(gl!.DEPTH_TEST);
@@ -387,6 +418,17 @@ export function createEngineBackend(
     gl!.uniform1i(gl!.getUniformLocation(readbackProgram, "u_src"), 0);
     gl!.drawArrays(gl!.TRIANGLES, 0, 3);
     gl!.bindVertexArray(null);
+    return true;
+  }
+
+  function readImagePixelsInternal(
+    image: ImageValue,
+    width?: number,
+    height?: number
+  ): Uint8ClampedArray<ArrayBuffer> | null {
+    const w = Math.max(1, Math.floor(width ?? image.width));
+    const h = Math.max(1, Math.floor(height ?? image.height));
+    if (!drawReadbackTarget(image, w, h)) return null;
 
     const bytes = new Uint8Array(w * h * 4);
     gl!.readPixels(0, 0, w, h, gl!.RGBA, gl!.UNSIGNED_BYTE, bytes);
@@ -394,6 +436,167 @@ export function createEngineBackend(
     // Zero-copy view — values are already 0..255 so clamping semantics
     // are moot; the type just matches ImageData.data for drop-in reuse.
     return new Uint8ClampedArray(bytes.buffer);
+  }
+
+  // ---- Asynchronous readback (PBO + fence) ----------------------------
+  // The export frame loop's stall was `readPixels` into client memory: the
+  // CPU blocks until the GPU finishes the frame AND the 60 MB copy lands.
+  // Reading into a PIXEL_PACK_BUFFER instead enqueues the copy on the GPU
+  // and returns at once; a fence tells us when it is done, and only then
+  // does getBufferSubData move the bytes (a plain memcpy, no GPU wait).
+  // Meanwhile the caller has already issued the next frame's GL work, so
+  // GPU render of frame N+1 overlaps the CPU's handling of frame N.
+  //
+  // PIXEL_PACK_BUFFER binding is global GL state: every path below unbinds
+  // it, because a stray binding turns the next plain readPixels anywhere in
+  // the engine into a PBO write.
+  interface PboSlot {
+    buf: WebGLBuffer;
+    bytes: number;
+    busy: boolean;
+    // Pooled slots outlive their read; ephemeral ones (pool exhausted) are
+    // deleted when the read completes.
+    pooled: boolean;
+  }
+  const pboPool: PboSlot[] = [];
+  // Every read that has a fence outstanding — so destroy() and cancel()
+  // can free them and nothing polls a dead context.
+  const pendingReads = new Set<{ dispose(): void }>();
+
+  function acquirePbo(bytes: number): PboSlot | null {
+    let slot = pboPool.find((s) => !s.busy);
+    if (!slot && pboPool.length < PBO_POOL_MAX) {
+      const buf = gl!.createBuffer();
+      if (!buf) return null;
+      slot = { buf, bytes: 0, busy: false, pooled: true };
+      pboPool.push(slot);
+    }
+    if (!slot) {
+      const buf = gl!.createBuffer();
+      if (!buf) return null;
+      slot = { buf, bytes: 0, busy: false, pooled: false };
+    }
+    slot.busy = true;
+    gl!.bindBuffer(gl!.PIXEL_PACK_BUFFER, slot.buf);
+    if (slot.bytes !== bytes) {
+      // (Re)allocate; a previous read into this buffer has already been
+      // collected (busy was false), so orphaning the old store is safe.
+      gl!.bufferData(gl!.PIXEL_PACK_BUFFER, bytes, gl!.STREAM_READ);
+      slot.bytes = bytes;
+    }
+    return slot;
+  }
+
+  function releasePbo(slot: PboSlot): void {
+    slot.busy = false;
+    if (!slot.pooled) gl!.deleteBuffer(slot.buf);
+  }
+
+  function readImagePixelsAsyncInternal(
+    image: ImageValue,
+    width?: number,
+    height?: number
+  ): AsyncPixelRead {
+    const w = Math.max(1, Math.floor(width ?? image.width));
+    const h = Math.max(1, Math.floor(height ?? image.height));
+    const settled = (v: Uint8ClampedArray<ArrayBuffer> | null): AsyncPixelRead => ({
+      promise: Promise.resolve(v),
+      cancel() {},
+    });
+
+    if (gl!.isContextLost() || typeof gl!.fenceSync !== "function") {
+      return settled(null);
+    }
+    if (!drawReadbackTarget(image, w, h)) return settled(null);
+
+    const byteLength = w * h * 4;
+    const slot = acquirePbo(byteLength);
+    if (!slot) {
+      gl!.bindFramebuffer(gl!.FRAMEBUFFER, null);
+      return settled(null);
+    }
+    // Offset 0 into the bound PBO: GPU-side copy, returns immediately.
+    gl!.readPixels(0, 0, w, h, gl!.RGBA, gl!.UNSIGNED_BYTE, 0);
+    gl!.bindBuffer(gl!.PIXEL_PACK_BUFFER, null);
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, null);
+    const sync = gl!.fenceSync(gl!.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    // Submit — without this the fence can sit in the command buffer until
+    // the next frame is issued.
+    gl!.flush();
+    if (!sync) {
+      releasePbo(slot);
+      return settled(null);
+    }
+
+    let done = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let resolveFn: (v: Uint8ClampedArray<ArrayBuffer> | null) => void = () => {};
+    const promise = new Promise<Uint8ClampedArray<ArrayBuffer> | null>((r) => {
+      resolveFn = r;
+    });
+    const entry = {
+      dispose() {
+        finish(null, /* collect */ false);
+      },
+    };
+    pendingReads.add(entry);
+
+    const finish = (
+      value: Uint8ClampedArray<ArrayBuffer> | null,
+      collect: boolean
+    ) => {
+      if (done) return;
+      done = true;
+      if (timer != null) clearTimeout(timer);
+      pendingReads.delete(entry);
+      let out = value;
+      if (collect && !gl!.isContextLost()) {
+        const bytes = new Uint8Array(byteLength);
+        gl!.bindBuffer(gl!.PIXEL_PACK_BUFFER, slot.buf);
+        gl!.getBufferSubData(gl!.PIXEL_PACK_BUFFER, 0, bytes);
+        gl!.bindBuffer(gl!.PIXEL_PACK_BUFFER, null);
+        out = new Uint8ClampedArray(bytes.buffer);
+      }
+      if (!gl!.isContextLost()) gl!.deleteSync(sync);
+      releasePbo(slot);
+      resolveFn(out);
+    };
+
+    const started = performance.now();
+    const poll = () => {
+      if (done) return;
+      if (gl!.isContextLost()) {
+        finish(null, false);
+        return;
+      }
+      const status = gl!.clientWaitSync(sync, 0, 0);
+      if (status === gl!.ALREADY_SIGNALED || status === gl!.CONDITION_SATISFIED) {
+        finish(null, true);
+        return;
+      }
+      if (status === gl!.WAIT_FAILED) {
+        finish(null, false);
+        return;
+      }
+      if (performance.now() - started > ASYNC_READ_TIMEOUT_MS) {
+        console.warn(
+          `readImagePixelsAsync: fence not signaled after ${ASYNC_READ_TIMEOUT_MS} ms (${w}×${h})`
+        );
+        finish(null, false);
+        return;
+      }
+      timer = setTimeout(poll, ASYNC_READ_POLL_MS);
+    };
+    // First check on the next tick: the fence has had no chance to signal
+    // yet and the caller wants control back to issue the next frame.
+    timer = setTimeout(poll, ASYNC_READ_POLL_MS);
+
+    return {
+      promise,
+      cancel() {
+        finish(null, false);
+      },
+    };
   }
 
   function acquireReadbackTarget(w: number, h: number): WebGLTexture | null {
@@ -836,7 +1039,14 @@ export function createEngineBackend(
     makeContext,
     tryShader,
     readImagePixels: readImagePixelsInternal,
+    readImagePixelsAsync: readImagePixelsAsyncInternal,
     destroy() {
+      // Outstanding async reads first: each frees its fence and PBO slot
+      // and resolves null, so nothing polls a destroyed context.
+      for (const r of [...pendingReads]) r.dispose();
+      pendingReads.clear();
+      for (const s of pboPool) gl!.deleteBuffer(s.buf);
+      pboPool.length = 0;
       flushPool();
       shaderCache.forEach((p) => gl!.deleteProgram(p));
       shaderCache.clear();
