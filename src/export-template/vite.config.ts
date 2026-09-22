@@ -92,6 +92,12 @@ export default defineConfig({
         "components/effects/input-device"
       ),
       "@/state/graph-ops": path.resolve(srcRoot, "state/graph-ops"),
+      // lib/live-viewer/LiveViewer.tsx binds ⌘Z / ⇧⌘Z / ⌘Y for the visitor's
+      // param edits (param-history.ts) through the editor's own
+      // useUndoShortcuts hook. state/history.ts costs React only: its other
+      // imports are type-only (@xyflow/react, @/state/graph, @/lib/project),
+      // and the two it names are shimmed / aliased above.
+      "@/state/history": path.resolve(srcRoot, "state/history"),
       "@/state/graph": path.resolve(root, "src/shims/state-graph.ts"),
       "@xyflow/react": path.resolve(root, "src/shims/xyflow-react.ts"),
     },
