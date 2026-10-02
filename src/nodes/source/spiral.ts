@@ -27,6 +27,7 @@ export const spiralNode: NodeDefinition = {
   type: "spiral",
   name: "Spiral",
   category: "spline",
+  pickable: true,
   subcategory: "generator",
   description:
     "Generate an Archimedean spiral as an open spline — set turns, inner/outer radius, start angle (degrees, 0 = +X), direction, and reverse (walk outer→inner without swapping radii). Authored in [0,1]² Y-down; the rasterizer scales y about 0.5 by W/H so radii stay width-relative.",

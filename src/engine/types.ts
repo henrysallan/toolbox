@@ -1746,6 +1746,12 @@ export interface ParamDef {
   // has nowhere to put index or z, so those tint red like a missing
   // channel. UI-only hint; the engine ignores it.
   suggestAttrsBuiltinFilter?: (name: string) => boolean;
+  // With `suggestAttrsIncludeBuiltins`: also offer the whole-vector
+  // built-ins (`position`, `scale`, `normal`) ahead of their lanes. Only
+  // for nodes that read or write the full vector (Attribute Read's vec2,
+  // Attribute Math / Transfer's column ops, Set Named Attribute's vec2
+  // kind); a scalar reader would silently take lane 0. UI-only hint.
+  suggestAttrsVectors?: boolean;
   // For "expr_inputs" params: show a "Sync" button that scans the node's
   // sibling `expression` param for ch("name", default) channel references and
   // mints the matching slider inputs (Houdini-style). See Point Expression.
@@ -2033,6 +2039,12 @@ export interface NodeDefinition {
   // node is selected. Nodes must expose `translateX/translateY/scaleX/scaleY/
   // rotate/pivotX/pivotY` params for the gizmo to have something to drive.
   supportsTransformGizmo?: boolean;
+  // A discrete on-canvas object (Text, Image Source, shape primitives): the
+  // viewport pick tool can select this node by clicking pixels it drew.
+  // Leave off for full-canvas generators (noise, gradients, solid color)
+  // and for modifiers — clicking through a Blur should land on its source.
+  // See src/lib/viewport-pick.ts.
+  pickable?: boolean;
   // Pairs of params that the user can chain-lock so editing one updates
   // the other proportionally. Both params must be type:"scalar". The
   // pair key is `${a}:${b}` (using the order declared here); state lives

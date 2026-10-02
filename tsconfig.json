@@ -36,6 +36,9 @@
   ],
   "exclude": [
     "node_modules",
+    // Figma plugin: its own sandbox globals + tsconfigs
+    // (npm run figma-plugin:typecheck).
+    "figma-plugin",
     "src/export-template",
     "public/export-template",
     ".next/standalone",

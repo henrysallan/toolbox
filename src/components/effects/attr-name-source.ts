@@ -5,7 +5,7 @@
 //
 // EffectsApp registers the reader (a closure over its edges + eval-cache
 // read); consumers call readUpstreamAttrNames during render. Reading a
-// module singleton in render is the paneCameraStash/peek pattern: the
+// module singleton in render is the node-camera-store/peek pattern: the
 // answer refreshes whenever the consumer re-renders (param edits,
 // selection), which can lag one eval behind a purely-upstream change —
 // same freshness contract as the suggestions themselves.
@@ -15,6 +15,7 @@ import {
   BUILTIN_POINT_ATTR_SUGGESTIONS_2D,
   builtinPointAttrNames,
   isBuiltinPointAttrName,
+  isVectorBuiltinPointAttr,
   isWritablePointAttr,
 } from "@/engine/points";
 
@@ -81,16 +82,21 @@ export function builtinsFromValue(v: SocketValue | undefined): string[] {
 // 2D built-in set so the name is pickable before a wire lands. A param's
 // `suggestAttrsBuiltinFilter` narrows the built-ins to the ones its node
 // can actually consume (Attribute Transfer has nowhere to write `index`).
+// Whole-vector built-ins (`position`, `scale`, `normal`) are offered only
+// with `includeVectors` (the param's `suggestAttrsVectors`); scalar readers
+// get the lanes (`x`, `y`, `scale.x`, …).
 export function attrNameSuggestions(
   info: AttrNameInfo,
   includeBuiltins: boolean,
-  builtinFilter?: (name: string) => boolean
+  builtinFilter?: (name: string) => boolean,
+  includeVectors = false
 ): string[] {
   let builtins = includeBuiltins
     ? info.builtins.length > 0
       ? info.builtins
       : [...BUILTIN_POINT_ATTR_SUGGESTIONS_2D]
     : [];
+  if (!includeVectors) builtins = builtins.filter((n) => !isVectorBuiltinPointAttr(n));
   if (builtinFilter) builtins = builtins.filter(builtinFilter);
   if (builtins.length === 0 && info.names.length === 0) return [];
   const seen = new Set<string>();

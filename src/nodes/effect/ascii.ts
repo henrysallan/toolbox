@@ -22,7 +22,13 @@ import {
   type ColorRampStop,
 } from "@/engine/color-ramp";
 import { hexToRgba01 } from "@/engine/spline-fill";
-import { CURATED_FONTS, ensureFontLoaded, isFontReady } from "@/lib/fonts";
+import { pushMediaSettle } from "@/engine/offline-settle";
+import {
+  CURATED_FONTS,
+  ensureFontLoaded,
+  fontVersion,
+  isFontReady,
+} from "@/lib/fonts";
 
 // ASCII / glyph-grid effect. Subdivides the input image into cols × rows
 // cells, box-averages each cell's color/brightness via a two-pass reduce
@@ -373,6 +379,9 @@ interface AsciiState {
   atlasCanvas: HTMLCanvasElement;
   atlasTex: WebGLTexture | null;
   atlasSig: string | null;
+  // Text mode's family at the last bake — fingerprintExtras keys on its load
+  // version.
+  fontFamily: string | null;
   lastGroupRefs: WebGLTexture[] | null;
   atlasCount: number;
   slotsPerRow: number;
@@ -409,6 +418,7 @@ function ensureState(ctx: RenderContext, nodeId: string): AsciiState {
     atlasCanvas: document.createElement("canvas"),
     atlasTex: tex,
     atlasSig: null,
+    fontFamily: null,
     lastGroupRefs: null,
     atlasCount: 0,
     slotsPerRow: 1,
@@ -961,6 +971,17 @@ export const asciiNode: NodeDefinition = {
     { name: "brightness", type: "image" },
   ],
 
+  // Text mode bakes whatever face is live and re-bakes when the family's
+  // load settles — but a cacheable node only re-runs when its fingerprint
+  // moves, so key on that load version.
+  fingerprintExtras: (params, ctx, nodeId) => {
+    const state = nodeId
+      ? (ctx.state[stateKey(nodeId)] as AsciiState | undefined)
+      : undefined;
+    const family = state?.fontFamily ?? (params.font_family as string) ?? "Menlo";
+    return `font:${fontVersion(family)}`;
+  },
+
   compute({ inputs, params, ctx, nodeId }) {
     const output = ctx.allocImage();
     const indexOut = ctx.allocImage();
@@ -1005,9 +1026,14 @@ export const asciiNode: NodeDefinition = {
     if (mode === "text") {
       const text = String(params.text ?? " .:-=+*#%@");
       const family = (params.font_family as string) ?? "Menlo";
-      const ready = isFontReady(family);
-      if (!ready) ensureFontLoaded(family);
-      const sig = `text:${family}:${ready ? 1 : 0}:${text}`;
+      state.fontFamily = family;
+      const ready = isFontReady(family, { text });
+      if (!ready) {
+        const loading = ensureFontLoaded(family, { text });
+        // An export frame waits for the face rather than baking the fallback.
+        if (ctx.offline) pushMediaSettle(ctx, loading);
+      }
+      const sig = `text:${family}:${ready ? 1 : 0}:${fontVersion(family)}:${text}`;
       if (state.atlasSig !== sig) {
         state.atlasCount = buildTextAtlas(state, ctx, text, family);
         uploadTextAtlas(state, ctx);

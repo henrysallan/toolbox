@@ -16,6 +16,11 @@ import { migrateGrainParams } from "@/engine/grain";
 import { migrateSceneTimeParams } from "@/nodes/source/scene-time";
 import { migrateMapAttributeParams } from "@/nodes/effect/map-attribute";
 import {
+  GUIDE_TOGGLE_PARAMS,
+  LEGACY_GUIDES_PARAM,
+  migrateBoundingBoxParams,
+} from "@/nodes/effect/bounding-box";
+import {
   MISSING_MEDIA_SUFFIX,
   readStoredMediaFile,
   type MediaEnvelope,
@@ -1084,6 +1089,12 @@ function migrateLoadedParams(
     // rotation/add, position x/y → x/y add. Lives next to the def.
     migrateMapAttributeParams(params);
   }
+  if (defType === "bounding-box") {
+    // Every aux socket became opt-in behind its own show_* toggle
+    // (default off); a save from before keeps the sockets it always had,
+    // so its wires survive. Lives next to the def.
+    migrateBoundingBoxParams(params);
+  }
   if (defType === "fracture") {
     // Fracture merged into Voronoi as its "scatter" source
     // (073026_voronoi-unified.md). Old saves predate the `source` param —
@@ -1181,6 +1192,36 @@ function remapUniformScaleRecord<T>(
   if (!rec || rec.scale === undefined || rec.scale_x !== undefined) return rec;
   const { scale, ...rest } = rec;
   return { ...rest, scale_x: scale, scale_y: scale, scale_z: scale };
+}
+
+// One param split into several (Bounding Box's `guides` → a toggle per
+// guide socket): expose / control entries and keyframe tracks on the old
+// name move to every new one. No-op when the old name isn't there.
+function splitParamList(
+  list: string[] | undefined,
+  from: string,
+  to: readonly string[]
+): string[] | undefined {
+  if (!list?.includes(from)) return list;
+  const next = list.filter((p) => p !== from);
+  for (const k of to) {
+    if (!next.includes(k)) next.push(k);
+  }
+  return next;
+}
+
+function splitParamRecord<T>(
+  rec: Record<string, T> | undefined,
+  from: string,
+  to: readonly string[]
+): Record<string, T> | undefined {
+  if (!rec || rec[from] === undefined) return rec;
+  const { [from]: moved, ...rest } = rec;
+  const out: Record<string, T> = { ...rest };
+  for (const k of to) {
+    if (out[k] === undefined) out[k] = moved;
+  }
+  return out;
 }
 
 function isSourcePlacementType(defType: string): boolean {
@@ -1545,6 +1586,47 @@ export async function deserializeGraph(
         e.sourceHandle = "out:aux:image";
       }
     }
+  }
+  // Bounding Box's one `guides` toggle became show_guides_v / show_guides_h
+  // (migrateBoundingBoxParams moved the value). Its expose / control
+  // entries, keyframe track and any wire into its exposed socket follow
+  // onto both.
+  const bboxIds = new Set<string>();
+  for (const n of nodes) {
+    if (n.data.defType !== "bounding-box") continue;
+    bboxIds.add(n.id);
+    n.data.exposedParams = splitParamList(
+      n.data.exposedParams,
+      LEGACY_GUIDES_PARAM,
+      GUIDE_TOGGLE_PARAMS
+    );
+    n.data.controlParams = splitParamList(
+      n.data.controlParams,
+      LEGACY_GUIDES_PARAM,
+      GUIDE_TOGGLE_PARAMS
+    );
+    n.data.animation = splitParamRecord(
+      n.data.animation,
+      LEGACY_GUIDES_PARAM,
+      GUIDE_TOGGLE_PARAMS
+    );
+  }
+  for (let i = edges.length - 1; i >= 0; i--) {
+    const e = edges[i];
+    if (
+      e.targetHandle !== `in:param:${LEGACY_GUIDES_PARAM}` ||
+      !bboxIds.has(e.target)
+    )
+      continue;
+    edges.splice(
+      i,
+      1,
+      ...GUIDE_TOGGLE_PARAMS.map((p) => ({
+        ...e,
+        id: `${e.id}::${p}`,
+        targetHandle: `in:param:${p}`,
+      }))
+    );
   }
   // Pre-layers projects wrap into "Layer 1" on load (v4 migration) —
   // done here in the loader so every consumer (editor, live viewer,

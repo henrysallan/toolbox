@@ -514,6 +514,7 @@ export const videoNode: NodeDefinition = {
   type: "video-source",
   name: "Video Source",
   category: "image",
+  pickable: true,
   subcategory: "generator",
   description:
     "Load a video file and render its current frame. Sync the clock to scene time for deterministic playback (good for exports), or let it play on its own.",

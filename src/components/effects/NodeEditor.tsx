@@ -89,7 +89,13 @@ import {
   registerNodesPane,
   unregisterNodesPane,
 } from "./nodes-pane-scope";
+import {
+  getNodeCamera,
+  setNodeCamera,
+  type NodeCamera,
+} from "./node-camera-store";
 import { looksLikeFragmentText } from "@/lib/fragment-clipboard";
+import { looksLikeFigmaSceneText } from "@/lib/figma-import/scene";
 import { looksLikeSvgPasteText } from "@/lib/svg-parse";
 import type { NodeDataPayload } from "@/state/graph";
 import { useTheme } from "./theme/theme";
@@ -183,6 +189,9 @@ interface Props {
   // OS-clipboard text looked like a Toolbox fragment (copied from another tab /
   // instance, or a shared snippet). Handles the cross-instance paste.
   onPasteFragmentText?: (text: string) => void;
+  // OS-clipboard text is a scene from the "Copy to toolbox" Figma plugin —
+  // imported as a wired node graph. Spec: 092326_figma-import.md.
+  onPasteFigmaScene?: (text: string) => void;
   // OS-clipboard text looked like SVG markup or bare path data (Figma
   // "Copy as SVG" → Spline Draw node at the cursor). Spec: 073026_svg-paste.md.
   onPasteSvgText?: (text: string, flowPos: { x: number; y: number }) => void;
@@ -286,6 +295,13 @@ interface Props {
   // increments this to ask the editor to fit the freshly-loaded graph
   // once React Flow has measured it. Initial value (0) is a no-op.
   frameSignal?: number;
+  // Camera memory key for the scope on screen (nodeCameraKey: project +
+  // comp + group/layer). When it changes — dive in/out, comp switch,
+  // project open — the editor parks the outgoing camera under the old key
+  // and restores the incoming key's camera, or frames every node when the
+  // scope has no memory (or the memory shows none of its nodes). Omitted
+  // → a per-pane in-memory key, i.e. restore-on-remount only.
+  cameraKey?: string;
   // Tiled layout (072726_window-tiling.md): several NodeEditor panes can
   // mount at once. Window-level shortcut/paste handlers gate on this
   // pane owning the instance scope (nodes-pane-scope.ts) so two panes
@@ -297,17 +313,10 @@ interface Props {
 // (v5). A real scope id is a node id / null; this never collides.
 export const PROJECT_CRUMB_ID = "__project__";
 
-// Per-pane camera stash (tiled layout, 072726 M4 polish): a pane that
-// unmounts (its leaf's kind switched away, or the docs round-trip)
-// parks its viewport here keyed by pane id; remounting the SAME pane
-// restores it instead of re-running the initial fitView. Module-level
-// so it survives React unmounts within a page load — the same
-// rationale as state/editor-session.ts. Leaf ids retire over a
-// session, so stale entries just sit unused (tiny).
-const paneCameraStash = new Map<
-  string,
-  { x: number; y: number; zoom: number }
->();
+// Frame-all envelope, shared by the initial fit, frameSignal, and the
+// scope-change fallback. maxZoom 1 so a tiny graph doesn't blow up;
+// padding for breathing room.
+const FIT_VIEW_OPTIONS = { maxZoom: 1, padding: 0.25 };
 
 // Memoized (export at the bottom): EffectsApp re-renders on every rAF tick
 // during playback; with stable prop identities (EffectsApp memoizes /
@@ -336,6 +345,7 @@ function NodeEditor({
   onCopyNodes,
   onPasteNodes,
   onPasteFragmentText,
+  onPasteFigmaScene,
   onPasteSvgText,
   onAddFileNode,
   onAddImageNodeFromImageGen,
@@ -359,8 +369,10 @@ function NodeEditor({
   onOpenProject,
   atRoot,
   frameSignal,
+  cameraKey: cameraKeyProp,
   paneId = "main",
 }: Props) {
+  const cameraKey = cameraKeyProp ?? `u:pane:${paneId}`;
   // Null in the main window; the child Window when this pane is popped
   // out (080226_panel-popout-windows.md §3). EVERY window-level
   // listener below resolves through it — module-scope `window` is
@@ -405,14 +417,67 @@ function NodeEditor({
     registerNodesPane(paneId, panelWin ?? window);
     return () => unregisterNodesPane(paneId);
   }, [paneId, panelWin]);
-  // Camera restore: read once at mount (lazy useState — not a ref, so
-  // render never touches ref.current); park the live camera on unmount.
-  const [stashedCamera] = useState(() => paneCameraStash.get(paneId));
+  // Camera memory (node-camera-store.ts), per scope. `cameraKeyRef` is the
+  // key the LIVE camera belongs to — written only in effects, so on a key
+  // change it still names the outgoing scope and its camera can be parked.
+  const cameraKeyRef = useRef(cameraKey);
+  // Does `cam` show any of the scope's nodes in this pane? A remembered
+  // camera can predate the nodes moving (edits, undo, another pane) — if
+  // it would open onto empty canvas, framing everything is the better
+  // answer. Unmeasured nodes (just swapped in) use a nominal size.
+  const cameraShowsNodes = useCallback(
+    (cam: NodeCamera) => {
+      const el = flowWrapperRef.current;
+      const list = rfGetNodes().filter((n) => !n.hidden);
+      if (!el || list.length === 0) return true;
+      const x0 = -cam.x / cam.zoom;
+      const y0 = -cam.y / cam.zoom;
+      const x1 = (el.clientWidth - cam.x) / cam.zoom;
+      const y1 = (el.clientHeight - cam.y) / cam.zoom;
+      return list.some((n) => {
+        const p = getInternalNode(n.id)?.internals.positionAbsolute ?? n.position;
+        const w = n.measured?.width ?? n.width ?? 160;
+        const h = n.measured?.height ?? n.height ?? 60;
+        return p.x < x1 && p.x + w > x0 && p.y < y1 && p.y + h > y0;
+      });
+    },
+    [rfGetNodes, getInternalNode]
+  );
+  // Restore the current scope's remembered camera, or frame all its nodes.
+  // fitView queues itself until React Flow has measured the new node set.
+  const applyScopeCamera = useCallback(() => {
+    const saved = getNodeCamera(cameraKeyRef.current);
+    if (saved && cameraShowsNodes(saved)) void setViewport(saved);
+    else void fitView(FIT_VIEW_OPTIONS);
+  }, [cameraShowsNodes, setViewport, fitView]);
+  // Mount: the remembered camera (if any) goes in as defaultViewport so
+  // there's no fit-then-jump flash (lazy useState — read once, and render
+  // never touches a ref). Once mounted, sanity-check it against the
+  // actual nodes and pane size.
+  const [initialCamera] = useState(() => getNodeCamera(cameraKey));
+  useEffect(() => {
+    if (initialCamera && !cameraShowsNodes(initialCamera)) {
+      void fitView(FIT_VIEW_OPTIONS);
+    }
+    // Mount-only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Scope change (dive in/out, comp switch, project open): park the
+  // outgoing camera, then restore-or-fit the incoming scope.
+  useEffect(() => {
+    const prev = cameraKeyRef.current;
+    if (prev === cameraKey) return;
+    setNodeCamera(prev, getViewport());
+    cameraKeyRef.current = cameraKey;
+    applyScopeCamera();
+  }, [cameraKey, getViewport, applyScopeCamera]);
+  // Park the live camera on unmount (kind switch / docs round-trip) so a
+  // remount lands where the user left it.
   useEffect(() => {
     return () => {
-      paneCameraStash.set(paneId, getViewport());
+      setNodeCamera(cameraKeyRef.current, getViewport());
     };
-  }, [paneId, getViewport]);
+  }, [getViewport]);
   useEffect(() => {
     const el = flowWrapperRef.current;
     if (!el) return;
@@ -425,17 +490,16 @@ function NodeEditor({
     };
   }, [paneId]);
 
-  // Re-frame the whole graph when the parent bumps `frameSignal` (a project
+  // Re-resolve the camera when the parent bumps `frameSignal` (a project
   // was opened / a new one seeded → the node set was swapped in place, which
-  // the mount-only `fitView` prop can't catch). `setNodes` is async and React
-  // Flow measures the new nodes a frame or two later, so we can't fit
-  // synchronously: a signal bump *arms* a pending fit, which fires once
-  // `useNodesInitialized` reports every node has real dimensions. This one
-  // effect re-runs on either signal — so it works whether or not
-  // `nodesInitialized` toggles (an already-measured / empty scope stays
-  // constant). Same envelope as the initial fit (maxZoom 1 so a tiny graph
-  // doesn't blow up; padding for breathing room). frameSignal 0 is the initial
-  // value — the `fitView` prop already frames the first mount, so it's a no-op.
+  // the mount-only `fitView` prop can't catch): the project's remembered
+  // camera for this scope if it has one, else frame the whole graph. A
+  // signal bump *arms* a pending resolve, which fires once
+  // `useNodesInitialized` reports every node has real dimensions (so the
+  // visibility check sees the new nodes). This one effect re-runs on either
+  // signal — so it works whether or not `nodesInitialized` toggles (an
+  // already-measured / empty scope stays constant). frameSignal 0 is the
+  // initial value — mount already resolved the camera, so it's a no-op.
   const nodesInitialized = useNodesInitialized();
   const pendingFrameRef = useRef(false);
   const lastFrameSignalRef = useRef(frameSignal);
@@ -446,9 +510,9 @@ function NodeEditor({
     }
     if (pendingFrameRef.current && nodesInitialized) {
       pendingFrameRef.current = false;
-      void fitView({ maxZoom: 1, padding: 0.25 });
+      applyScopeCamera();
     }
-  }, [frameSignal, nodesInitialized, fitView]);
+  }, [frameSignal, nodesInitialized, applyScopeCamera]);
 
   // Cmd/Ctrl + middle-drag = zoom about the press point. React Flow's pan is
   // driven by d3-zoom on the pane (a `mousedown` listener), so we intercept
@@ -2166,6 +2230,14 @@ function NodeEditor({
       // snippet). Read it synchronously and route it before the file /
       // in-memory-clipboard paths.
       const txt = e.clipboardData?.getData("text/plain") ?? "";
+      // A frame copied with the "Copy to toolbox" Figma plugin. Checked
+      // first — a scene can carry any text (layer names included), so it
+      // must never fall through to the fragment / SVG sniffers.
+      if (txt && looksLikeFigmaSceneText(txt) && onPasteFigmaScene) {
+        e.preventDefault();
+        onPasteFigmaScene(txt);
+        return;
+      }
       if (txt && looksLikeFragmentText(txt) && onPasteFragmentText) {
         e.preventDefault();
         onPasteFragmentText(txt);
@@ -2217,6 +2289,7 @@ function NodeEditor({
     onAddFileNode,
     onPasteNodes,
     onPasteFragmentText,
+    onPasteFigmaScene,
     onPasteSvgText,
     screenToFlowPosition,
     paneId,
@@ -3039,17 +3112,20 @@ function NodeEditor({
           // already works on plain drag via `selectionOnDrag`.
           multiSelectionKeyCode={["Shift", "Meta", "Control"]}
           selectionKeyCode={null}
-          // A pane remounting with a parked camera (kind round-trip /
-          // docs nav — paneCameraStash) restores it and skips the fit.
-          fitView={!stashedCamera}
-          defaultViewport={stashedCamera}
+          // A scope with a remembered camera (node-camera-store: an earlier
+          // visit, a kind round-trip, a reload) restores it and skips the fit.
+          fitView={!initialCamera}
+          defaultViewport={initialCamera}
+          // Remember where the user left each scope. Fires once per
+          // gesture (and after programmatic moves, which is harmless).
+          onMoveEnd={(_, vp) => setNodeCamera(cameraKeyRef.current, vp)}
           // Cap the initial fit so a project with a single small node (a fresh
           // "Layer 1", or an opened project whose graph is tiny) doesn't get
           // blown up toward maxZoom to fill the viewport — that reads as "opened
           // way too zoomed in". maxZoom 1 keeps nodes at natural size or smaller;
           // fitView still zooms *out* freely to frame large graphs. Padding
           // leaves a little breathing room around the framed content.
-          fitViewOptions={{ maxZoom: 1, padding: 0.25 }}
+          fitViewOptions={FIT_VIEW_OPTIONS}
           // Open up the zoom + pan envelope. Defaults are minZoom 0.5
           // and a tight translateExtent that walls off the empty area
           // around the graph; both feel cramped for the kind of large

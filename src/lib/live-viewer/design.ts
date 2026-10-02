@@ -123,6 +123,13 @@ export interface LiveDesign {
     video: boolean;
     gif: boolean;
     /**
+     * The spline wired into the rendered terminal's SVG tap, saved as a
+     * standalone .svg at the playhead. Only takes effect when the
+     * manifest carries `svgExport` (something is wired); otherwise the
+     * designer greys the toggle and the viewer renders no button.
+     */
+    svg: boolean;
+    /**
      * Live-link canvas resolution override, [w, h]; null = the
      * project's resolution. Overrides manifest.canvasRes for the whole
      * viewer (render AND capture), not just exports — surfaced in the
@@ -207,7 +214,13 @@ export const DEFAULT_LIVE_DESIGN: LiveDesign = {
     font: "system",
   },
   controls: { order: [], labels: {} },
-  export: { image: false, video: false, gif: false, resolution: null },
+  export: {
+    image: false,
+    video: false,
+    gif: false,
+    svg: false,
+    resolution: null,
+  },
 };
 
 // --- preset registries ---------------------------------------------------
@@ -519,6 +532,7 @@ export function fromSavedLiveDesign(saved: unknown): LiveDesign {
       image: exp.image === true,
       video: exp.video === true,
       gif: exp.gif === true,
+      svg: exp.svg === true,
       resolution: sanitizeResolution(exp.resolution),
     },
   };

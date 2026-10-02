@@ -45,8 +45,14 @@ import type { LiveLoadPhase } from "./LiveLoadOverlay";
 import {
   exportViewerGif,
   exportViewerImage,
+  exportViewerSvg,
   recordViewerVideo,
 } from "./viewer-export";
+import {
+  svgExportStashKey,
+  svgStyleFromParams,
+  type SvgExportStash,
+} from "@/nodes/output/svg-export";
 
 // Node defs are global state — register once on module init. Safe to call
 // repeatedly (the registry no-ops on dupes), but module-init keeps it
@@ -355,7 +361,9 @@ export default function LiveViewer({
   }, [zoom, pan]);
 
   const runFrame = useCallback(
-    (renderTime: number) => {
+    // extraTargets: nodes to force into the pass beyond the terminal's
+    // branch — the SVG export's stash owner (evaluateGraph opts).
+    (renderTime: number, extraTargets?: string[]) => {
       const backend = backendRef.current;
       const canvas = canvasRef.current;
       if (!backend || !canvas || !runtimeGraph) return;
@@ -372,7 +380,10 @@ export default function LiveViewer({
         runtimeGraph.graphEdges,
         ctx,
         evalCacheRef.current,
-        manifest.outputNodeId
+        manifest.outputNodeId,
+        undefined,
+        null,
+        extraTargets ? { extraTargets } : undefined
       );
       const term = result.terminalImage;
       lastTerminalRef.current =
@@ -748,18 +759,55 @@ export default function LiveViewer({
       });
   }, [appName, exportDurationSecs, runFrame, showExportError]);
 
+  // SVG: the spline tap at the playhead. The stash is written only when its
+  // owner COMPUTES, and a Layer Output terminal remaps to its interior
+  // image producer — the layer shell that stashes on its behalf would be
+  // skipped — so render this frame with the owner forced into the pass
+  // (the editor's exporter does the same; check-svg-export-stash).
+  const svgSource = manifest.svgExport;
+  const onExportSvg = useCallback(() => {
+    if (!svgSource || !runtimeGraph || exportingRef.current) return;
+    runFrame(timeRef.current, [svgSource.stashId]);
+    const stash = backendRef.current?.state[
+      svgExportStashKey(svgSource.stashId)
+    ] as SvgExportStash | undefined;
+    if (!stash || stash.subpaths.length === 0) {
+      showExportError(new Error("the spline is empty at this frame"));
+      return;
+    }
+    const node = runtimeGraph.graphNodes.find(
+      (n) => n.id === svgSource.nodeId
+    );
+    exportViewerSvg({
+      subpaths: stash.subpaths,
+      width: canvasRes[0],
+      height: canvasRes[1],
+      style: svgStyleFromParams(node?.params ?? {}),
+      baseName: appName,
+    });
+  }, [svgSource, runtimeGraph, runFrame, canvasRes, appName, showExportError]);
+
   const exportFlags = manifest.design?.export;
   const exportHandlers = useMemo(() => {
     if (!exportFlags) return undefined;
-    if (!exportFlags.image && !exportFlags.video && !exportFlags.gif) {
+    const svg = exportFlags.svg && !!svgSource;
+    if (!exportFlags.image && !exportFlags.video && !exportFlags.gif && !svg) {
       return undefined;
     }
     return {
       image: exportFlags.image ? onExportImage : undefined,
       video: exportFlags.video ? onExportVideo : undefined,
       gif: exportFlags.gif ? onExportGif : undefined,
+      svg: svg ? onExportSvg : undefined,
     };
-  }, [exportFlags, onExportImage, onExportVideo, onExportGif]);
+  }, [
+    exportFlags,
+    svgSource,
+    onExportImage,
+    onExportVideo,
+    onExportGif,
+    onExportSvg,
+  ]);
 
   if (error) {
     return (

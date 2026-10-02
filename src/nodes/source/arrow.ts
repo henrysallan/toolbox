@@ -66,6 +66,7 @@ export const arrowNode: NodeDefinition = {
   type: "arrow",
   name: "Arrow",
   category: "spline",
+  pickable: true,
   subcategory: "generator",
   description:
     "Generate an arrow outline as a closed spline — aim it tail→tip and set the shaft thickness and head size.",

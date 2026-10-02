@@ -24,6 +24,7 @@ import TransformGizmo from "@/components/effects/TransformGizmo";
 import PrimitiveGizmo, {
   PRIMITIVE_GIZMO_ADAPTERS,
   PrimitivePointHandles,
+  readWiredInputs,
   type PrimitiveGizmoEnv,
 } from "@/components/effects/PrimitiveGizmo";
 import GradientOverlay, {
@@ -140,6 +141,7 @@ export function LiveGizmoLayer({
                 params={params}
                 canvas={canvas}
                 canvasRes={canvasRes}
+                graphEdges={graphEdges}
                 evalCacheRef={evalCacheRef}
                 effective={effective}
                 write={write}
@@ -243,6 +245,7 @@ function PrimitiveLiveGizmo({
   params,
   canvas,
   canvasRes,
+  graphEdges,
   evalCacheRef,
   effective,
   write,
@@ -251,6 +254,7 @@ function PrimitiveLiveGizmo({
   params: Params;
   canvas: HTMLCanvasElement | null;
   canvasRes: [number, number];
+  graphEdges: readonly GraphEdge[];
   evalCacheRef: MutableRefObject<EvalCache>;
   effective: Effective;
   write: Write;
@@ -277,9 +281,19 @@ function PrimitiveLiveGizmo({
     canvasHeight: canvasRes[1],
     getRaw: (name) => params[name],
     solvedSize,
+    // Wired values the adapter places handles from (Line's start / end).
+    wired: adapter.wiredInputs
+      ? readWiredInputs(
+          node.id,
+          adapter.wiredInputs,
+          graphEdges,
+          // eslint-disable-next-line react-hooks/refs -- engine-owned eval cache, mutated outside React with no change notifications; sampled at render exactly as the editor's GizmoTickOverlays does
+          evalCacheRef.current
+        )
+      : undefined,
   };
-  // Point-handle primitives (SDF Line Segment / Triangle) render dots
-  // instead of a box — a centre+extent gizmo can't express "move one
+  // Point-handle primitives (SDF Line Segment / Triangle, Line) render
+  // dots instead of a box — a centre+extent gizmo can't express "move one
   // endpoint".
   if (adapter.points) {
     const pts = adapter.points.read(effective, env);
@@ -290,7 +304,7 @@ function PrimitiveLiveGizmo({
         points={pts}
         connect={adapter.points.connect}
         onChange={(index, x, y) => {
-          for (const [name, value] of writePoints(index, x, y, env)) {
+          for (const [name, value] of writePoints(index, x, y, env, pts)) {
             write(name, value);
           }
         }}

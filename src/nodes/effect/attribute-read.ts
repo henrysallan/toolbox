@@ -64,6 +64,7 @@ export const attributeReadNode: NodeDefinition = {
       suggestAttrsFrom: "points",
       suggestAttrsRequire: true,
       suggestAttrsIncludeBuiltins: true,
+      suggestAttrsVectors: true,
     },
     {
       name: "shape",

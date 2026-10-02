@@ -1,6 +1,7 @@
 import type { Edge, Node } from "@xyflow/react";
 import { computeNeededSet, type GraphEdge, type GraphNode } from "@/engine/evaluator";
 import { flattenGraph, resolvePreviewProducer } from "@/engine/flatten";
+import { GROUP_OUTPUT_TYPE } from "@/engine/groups";
 import { getNodeDef } from "@/engine/registry";
 import type { ParamDef, ParamType } from "@/engine/types";
 import {
@@ -23,6 +24,7 @@ import type {
   ExportManifestControl,
   ExportManifestFileInput,
   ExportManifestGizmo,
+  ExportManifestSvgExport,
   FileParamType,
 } from "@/lib/live-viewer/manifest-types";
 
@@ -32,6 +34,7 @@ export type {
   ExportManifestControl,
   ExportManifestFileInput,
   ExportManifestGizmo,
+  ExportManifestSvgExport,
   FileParamType,
 } from "@/lib/live-viewer/manifest-types";
 
@@ -81,6 +84,39 @@ export interface ExportWarning {
   nodeId?: string;
   paramName?: string;
   message: string;
+}
+
+// The viewer SVG button's source: the spline tap on the terminal the link
+// renders, when something is wired into it — Output's `spline` socket, a
+// Layer Output's (its LAYER stashes on its behalf, so that's the stash id),
+// or an SVG Export node's `path`. Same surfaces and socket names as the
+// editor's exporter (EffectsApp exportSvgNode). Read off the RAW graph:
+// flatten dissolves the Layer Output, and the tap with it.
+function resolveSvgExport(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  terminalId: string
+): ExportManifestSvgExport | undefined {
+  const terminal = nodes.find((n) => n.id === terminalId);
+  if (!terminal) return undefined;
+  const isLayerOutput =
+    terminal.type === GROUP_OUTPUT_TYPE &&
+    (terminal.params as { fixed?: boolean } | undefined)?.fixed === true &&
+    !!terminal.parentId;
+  const socket =
+    terminal.type === "output" || isLayerOutput
+      ? "in:spline"
+      : terminal.type === "svg-export"
+        ? "in:path"
+        : null;
+  if (!socket) return undefined;
+  if (!edges.some((e) => e.target === terminalId && e.targetHandle === socket)) {
+    return undefined;
+  }
+  return {
+    nodeId: terminalId,
+    stashId: isLayerOutput ? terminal.parentId! : terminalId,
+  };
 }
 
 export interface BuildManifestInput {
@@ -509,6 +545,8 @@ export function buildExportManifest(
     generatedAt: new Date().toISOString(),
     schemaVersion: 1,
   };
+  const svgExport = resolveSvgExport(graphNodes, graphEdges, outputNodeId);
+  if (svgExport) manifest.svgExport = svgExport;
 
   return { manifest, warnings };
 }

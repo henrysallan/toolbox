@@ -47,6 +47,16 @@ export interface ExportManifestGizmo {
   kind: LiveGizmoKind;
 }
 
+// Where the viewer's SVG button reads its spline (nodes/output/svg-export.ts):
+// `nodeId` is the rendered terminal whose spline tap is wired and whose
+// SVG_STYLE_PARAMS style the file; `stashId` is the id its
+// `svg-export:<id>` stash lives under — the terminal itself, except a
+// Layer Output, whose enclosing LAYER stashes on its behalf.
+export interface ExportManifestSvgExport {
+  nodeId: string;
+  stashId: string;
+}
+
 export interface ExportManifest {
   appName: string;
   description?: string;
@@ -57,6 +67,10 @@ export interface ExportManifest {
   // On-canvas handles (091726_live-gizmos.md). Additive — a blob from
   // before the field renders no gizmo rows; schemaVersion stays 1.
   gizmos?: ExportManifestGizmo[];
+  // SVG export source. Additive like `gizmos`: absent = nothing wired into
+  // the terminal's spline tap, so no SVG button whatever design.export.svg
+  // says.
+  svgExport?: ExportManifestSvgExport;
   generatedAt: string;
   schemaVersion: 1;
   // Look-and-feel block (081426_live-link-designer.md), attached by the

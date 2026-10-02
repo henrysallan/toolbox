@@ -214,6 +214,19 @@ check(
     fromSavedLiveDesign({ layout: { panZoom: 1 } }).layout.panZoom === false
 );
 
+// Viewer SVG export (design.export.svg, 2026-09-23): same rule — off unless
+// exactly `true`, so a pre-flag design ships no SVG button, and the other
+// export flags don't bleed into it.
+check(
+  "export.svg: absent → off, true → on, junk → off, independent of the others",
+  fromSavedLiveDesign({}).export.svg === false &&
+    fromSavedLiveDesign({ export: { svg: true } }).export.svg === true &&
+    fromSavedLiveDesign({ export: { svg: "yes" } }).export.svg === false &&
+    fromSavedLiveDesign({ export: { image: true, video: true, gif: true } })
+      .export.svg === false &&
+    fromSavedLiveDesign({ export: { svg: true } }).export.image === false
+);
+
 const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
 check(
   "designer calibration: 280 px ↔ 25 %, 1× ↔ 50 %, ½× ↔ 0 %, 2× ↔ 100 %",

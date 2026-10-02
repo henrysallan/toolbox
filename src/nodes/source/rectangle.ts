@@ -234,6 +234,7 @@ export const rectangleNode: NodeDefinition = {
   type: "rectangle",
   name: "Rectangle",
   category: "spline",
+  pickable: true,
   subcategory: "generator",
   description:
     "Generate a rectangle as a closed spline, optionally with round or squircle corners. Authored in [0,1]² Y-down; the rasterizer scales y about 0.5 by W/H so sizes stay width-relative.",

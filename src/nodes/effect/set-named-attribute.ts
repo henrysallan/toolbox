@@ -286,6 +286,7 @@ export const setNamedAttributeNode: NodeDefinition = {
       // Offer the writable built-ins alongside the upstream channels;
       // index / z / normals tint red.
       suggestAttrsIncludeBuiltins: true,
+      suggestAttrsVectors: true,
       suggestAttrsBuiltinFilter: isWritablePointAttr,
     },
     {

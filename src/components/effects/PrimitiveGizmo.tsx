@@ -8,6 +8,9 @@ import {
   snapValueToLines,
   type ViewportGuide,
 } from "@/lib/viewport-guides";
+import { aspectCorrectY, aspectUncorrectY } from "@/engine/aspect";
+import type { EvalCache } from "@/engine/evaluator";
+import type { SocketValue } from "@/engine/types";
 
 // On-canvas transform handles for centered shape primitives (Circle,
 // Rectangle, …). The gizmo works in a node-agnostic "center + half-extents"
@@ -35,6 +38,31 @@ export interface PrimitiveGizmoEnv {
   canvasHeight: number;
   getRaw: (name: string) => unknown;
   solvedSize?: { width: number; height: number } | null;
+  // Latest-eval values on the sockets the adapter lists in `wiredInputs`
+  // (readWiredInputs). A key is present only while that socket is wired;
+  // its value is undefined when the producer has no cached output to read.
+  wired?: Record<string, SocketValue | undefined>;
+}
+
+// One dot of a `points` adapter.
+export interface PrimitiveHandlePoint {
+  // Normalized canvas space, Y-DOWN (screen convention), same space the
+  // box gizmo's cx/cy live in.
+  x: number;
+  y: number;
+  label?: string;
+  // Adapter-defined identity. `write` reads it off the dragged point
+  // instead of trusting the index, so an adapter can leave points out
+  // (Line drops a wired endpoint it can't place) without shifting what
+  // each index means.
+  key?: string;
+  // Drawn but not draggable: a wire sets this position (Line's `start` /
+  // `end`), so a drag would write a param the wire overrides.
+  locked?: boolean;
+  // A bézier handle hanging off the anchor at index `of` in the same list.
+  // Drawn smaller and tethered to it by a stem; `side` says whether it
+  // bends the `connect` segment leaving (out) or entering (in) the anchor.
+  handle?: { of: number; side: "in" | "out" };
 }
 
 // Describes which two scalar params drive the primitive's on-canvas position
@@ -59,24 +87,29 @@ export interface PrimitiveGizmoAdapter {
   // longer sits at its raw x/y and the handles would float off it —
   // better no gizmo than a gizmo pointing at the wrong place.
   hideWhenWired?: string[];
+  // Input sockets whose wired VALUES `points.read` places handles from
+  // (env.wired) — for a wire that moves one point rather than retargeting
+  // the whole shape. Unlike `hideWhenWired`, wiring these keeps the gizmo
+  // up: Line pins a wired endpoint in place and keeps its handles live.
+  wiredInputs?: string[];
   // Point-handle primitives (Line Segment's two endpoints, Triangle's
   // three corners). A centre+extent box is the wrong control for these —
   // resizing a box can't express "move one endpoint" — so when `points`
   // is present the host renders draggable dots INSTEAD of the box, and
   // `read` is not required.
   points?: {
-    // Handle positions in normalized canvas space, Y-DOWN (screen
-    // convention), same space the box gizmo's cx/cy live in.
     read: (
       get: (name: string, fallback: number) => number,
       env: PrimitiveGizmoEnv
-    ) => Array<{ x: number; y: number; label?: string }>;
-    // Map a dragged handle back to params.
+    ) => PrimitiveHandlePoint[];
+    // Map a dragged handle back to params. `points` is the list `read`
+    // returned for this render; `points[index]` is the dragged one.
     write: (
       index: number,
       x: number,
       y: number,
-      env: PrimitiveGizmoEnv
+      env: PrimitiveGizmoEnv,
+      points: readonly PrimitiveHandlePoint[]
     ) => Array<[string, number]>;
     // Draw connecting lines between consecutive handles; `closed` also
     // joins last→first. Purely cosmetic, but it makes a segment read as
@@ -174,6 +207,78 @@ function sdfRadialAdapter(radiusParam = "radius"): PrimitiveGizmoAdapter {
       return out;
     },
   };
+}
+
+// ── Spline primitive coordinate conversion ────────────────────────
+//
+// Spline primitives are authored [0,1]² Y-down in width units, and
+// buildPath2D scales y about 0.5 by W/H at raster time (aspectCorrectY) so
+// lengths stay width-relative. So a dot sits at aspectCorrectY(y), and a y
+// OFFSET (a bézier handle) spans offset × aspect on screen.
+const splineAspect = (env: PrimitiveGizmoEnv) =>
+  env.canvasWidth / Math.max(1, env.canvasHeight);
+
+// Minimal edge shape — xyflow's Edge and the engine's GraphEdge both fit.
+export interface GizmoWireEdge {
+  source: string;
+  sourceHandle?: string | null;
+  target: string;
+  targetHandle?: string | null;
+}
+
+// env.wired for an adapter's `wiredInputs`: each wired socket's value, read
+// off its producer's latest cached output through the edge's `out:primary`
+// / `out:aux:<name>` handle — the same eval-cache read the transform
+// gizmo's bounds make. Uncoerced: an adapter mirrors the socket's coercion
+// itself.
+export function readWiredInputs(
+  nodeId: string,
+  sockets: readonly string[],
+  edges: ReadonlyArray<GizmoWireEdge>,
+  evalCache: EvalCache
+): Record<string, SocketValue | undefined> {
+  const out: Record<string, SocketValue | undefined> = {};
+  for (const e of edges) {
+    if (e.target !== nodeId || !e.targetHandle?.startsWith("in:")) continue;
+    const socket = e.targetHandle.slice("in:".length);
+    if (!sockets.includes(socket)) continue;
+    const src = evalCache.get(e.source)?.output;
+    const handle = e.sourceHandle ?? "";
+    out[socket] =
+      handle === "out:primary"
+        ? src?.primary
+        : handle.startsWith("out:aux:")
+          ? src?.aux?.[handle.slice("out:aux:".length)]
+          : undefined;
+  }
+  return out;
+}
+
+// Line's endpoints, keyed by their param prefix (startX / startInX / …).
+// Fallbacks match line.ts, for saves from before the handle params.
+const LINE_ENDS = [
+  { key: "start", label: "Start", x: 0.25, y: 0.5 },
+  { key: "end", label: "End", x: 0.75, y: 0.5 },
+] as const;
+const LINE_HANDLE_FALLBACK = 0.1667;
+
+// Where Line's compute puts an endpoint whose socket is wired: the value
+// coerceValue hands a vec2 socket (vec2 as-is, a scalar on both axes).
+// Anything else, or a non-finite vec2, never overrides compute's params —
+// "params" — and undefined means nothing is cached to read yet.
+function lineWiredEnd(
+  v: SocketValue | undefined
+): [number, number] | "params" | undefined {
+  if (!v) return undefined;
+  const xy: [number, number] | null =
+    v.kind === "vec2"
+      ? [v.value[0], v.value[1]]
+      : v.kind === "scalar"
+        ? [v.value, v.value]
+        : null;
+  return xy && Number.isFinite(xy[0]) && Number.isFinite(xy[1])
+    ? xy
+    : "params";
 }
 
 // defType → adapter. Add new spline primitives here.
@@ -297,26 +402,81 @@ export const PRIMITIVE_GIZMO_ADAPTERS: Record<string, PrimitiveGizmoAdapter> = {
       return out;
     },
   },
-  // Endpoint handles, not a box: a segment is defined by where its two
-  // ends are. Same control as SDF Line Segment, in canvas UV (Y-DOWN).
+  // Endpoint dots, not a box: a segment is defined by where its two ends
+  // are. In bezier mode each endpoint also shows its in / out handle,
+  // tethered to it; the handle params are offsets RELATIVE to the
+  // endpoint, so dragging an endpoint carries its handles. A wired `start`
+  // / `end` pins that dot to the wired value (locked — the params a drag
+  // would write are overridden) and keeps its handles draggable around it;
+  // a wired endpoint with nothing cached to read is left out, handles and
+  // all, rather than drawn at the rest pose.
   line: {
     hideWhenWired: ["transform"],
+    wiredInputs: ["start", "end"],
     points: {
       connect: "open",
-      read: (g) => [
-        { x: g("startX", 0.25), y: g("startY", 0.5), label: "A" },
-        { x: g("endX", 0.75), y: g("endY", 0.5), label: "B" },
-      ],
-      write: (i, x, y) =>
-        i === 0
-          ? [
-              ["startX", x],
-              ["startY", y],
-            ]
-          : [
-              ["endX", x],
-              ["endY", y],
-            ],
+      read: (g, env) => {
+        const a = splineAspect(env);
+        const bezier = env.getRaw("mode") === "bezier";
+        const pts: PrimitiveHandlePoint[] = [];
+        for (const end of LINE_ENDS) {
+          let x = g(`${end.key}X`, end.x);
+          let y = g(`${end.key}Y`, end.y);
+          let locked = false;
+          if (env.wired && end.key in env.wired) {
+            const w = lineWiredEnd(env.wired[end.key]);
+            if (w === undefined) continue;
+            if (w !== "params") {
+              [x, y] = w;
+              locked = true;
+            }
+          }
+          const of = pts.length;
+          pts.push({
+            x,
+            y: aspectCorrectY(y, a),
+            label: locked ? `${end.label} (wired)` : end.label,
+            key: end.key,
+            locked,
+          });
+          if (!bezier) continue;
+          for (const side of ["in", "out"] as const) {
+            const key = `${end.key}${side === "in" ? "In" : "Out"}`;
+            const hx = g(
+              `${key}X`,
+              side === "in" ? -LINE_HANDLE_FALLBACK : LINE_HANDLE_FALLBACK
+            );
+            const hy = g(`${key}Y`, 0);
+            // A zero offset emits no handle (line.ts), and its dot would
+            // hide under the endpoint's anyway.
+            if (hx === 0 && hy === 0) continue;
+            pts.push({
+              x: x + hx,
+              y: aspectCorrectY(y + hy, a),
+              key,
+              handle: { of, side },
+            });
+          }
+        }
+        return pts;
+      },
+      write: (i, x, y, env, pts) => {
+        const p = pts[i];
+        if (!p?.key || p.locked) return [];
+        const a = splineAspect(env);
+        if (p.handle) {
+          const anchor = pts[p.handle.of];
+          if (!anchor) return [];
+          return [
+            [`${p.key}X`, x - anchor.x],
+            [`${p.key}Y`, (y - anchor.y) / a],
+          ];
+        }
+        return [
+          [`${p.key}X`, x],
+          [`${p.key}Y`, aspectUncorrectY(y, a)],
+        ];
+      },
     },
   },
   // Start / center / end dots. Polar params (radius + angles) still store
@@ -932,11 +1092,17 @@ export default function PrimitiveGizmo({
   );
 }
 
+// px radius of a bézier handle's dot, and of the transparent ring around it
+// that takes the press (the dot alone is fiddly to grab). Endpoint dots
+// paint above both, so a press on an endpoint still takes the endpoint.
+const HANDLE_DOT_R = 3.5;
+const HANDLE_HIT_R = 8;
+
 // Draggable point handles for primitives defined by explicit points
 // rather than a box — SDF Line Segment's two endpoints, SDF Triangle's
-// three corners. Same fixed-overlay + canvas-rect mapping as
-// PrimitiveGizmo; the adapter owns all coordinate conversion, so this
-// component never learns anything about SDF space.
+// three corners, Line's endpoints and bézier handles. Same fixed-overlay +
+// canvas-rect mapping as PrimitiveGizmo; the adapter owns all coordinate
+// conversion, so this component never learns anything about SDF space.
 export function PrimitivePointHandles({
   canvas,
   points,
@@ -946,7 +1112,7 @@ export function PrimitivePointHandles({
   snapEnabled = true,
 }: {
   canvas: HTMLCanvasElement | null;
-  points: Array<{ x: number; y: number; label?: string }>;
+  points: readonly PrimitiveHandlePoint[];
   connect?: "open" | "closed";
   onChange: (index: number, x: number, y: number) => void;
   // Ruler guides (spec 091726): a dragged point snaps onto them per axis.
@@ -956,6 +1122,8 @@ export function PrimitivePointHandles({
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [drag, setDrag] = useState<{
     index: number;
+    // The grabbed point's `key`, when it has one — see onMove.
+    key?: string;
     startPointer: { x: number; y: number };
     startPoint: { x: number; y: number };
   } | null>(null);
@@ -966,10 +1134,12 @@ export function PrimitivePointHandles({
   // so the drag listeners can stay subscribed across re-renders without
   // reading a ref mid-render.
   const onChangeRef = useRef(onChange);
+  const pointsRef = useRef(points);
   const guidesRef = useRef(guides);
   const snapEnabledRef = useRef(snapEnabled);
   useEffect(() => {
     onChangeRef.current = onChange;
+    pointsRef.current = points;
     guidesRef.current = guides;
     snapEnabledRef.current = snapEnabled;
   });
@@ -1000,6 +1170,14 @@ export function PrimitivePointHandles({
   useEffect(() => {
     if (!drag || !rect) return;
     const onMove = (e: PointerEvent) => {
+      // A keyed point is re-found by key: the list can change under a
+      // drag (a wired endpoint drops out mid-playback), and the index
+      // handed on must keep naming the point that was grabbed.
+      let index = drag.index;
+      if (drag.key !== undefined) {
+        index = pointsRef.current.findIndex((p) => p.key === drag.key);
+        if (index < 0) return;
+      }
       // Unclamped on purpose: these points legitimately live outside
       // [0,1] (a segment can run off-canvas), unlike a box centre.
       let dx = (e.clientX - rect.left) / rect.width - drag.startPointer.x;
@@ -1034,7 +1212,7 @@ export function PrimitivePointHandles({
       setSnap((prev) =>
         prev.x === snapX && prev.y === snapY ? prev : { x: snapX, y: snapY }
       );
-      onChangeRef.current(drag.index, nx, ny);
+      onChangeRef.current(index, nx, ny);
     };
     const onUp = () => {
       setDrag(null);
@@ -1056,16 +1234,63 @@ export function PrimitivePointHandles({
   const px = points.map((p) => ({
     x: rect.left + p.x * rect.width,
     y: rect.top + p.y * rect.height,
-    label: p.label,
   }));
+  const isDragged = (i: number) =>
+    !!drag &&
+    (drag.key !== undefined ? points[i]?.key === drag.key : drag.index === i);
 
-  const segments: Array<[typeof px[0], typeof px[0]]> = [];
+  // Each anchor's in / out handle, by anchor index. `connect` joins the
+  // anchors only; handles bend those segments.
+  const handleOf = {
+    in: new Map<number, number>(),
+    out: new Map<number, number>(),
+  };
+  const anchors: number[] = [];
+  points.forEach((p, i) => {
+    if (p.handle) handleOf[p.handle.side].set(p.handle.of, i);
+    else anchors.push(i);
+  });
+  const segments: Array<[number, number]> = [];
   if (connect) {
-    for (let i = 0; i + 1 < px.length; i++) segments.push([px[i], px[i + 1]]);
-    if (connect === "closed" && px.length > 2) {
-      segments.push([px[px.length - 1], px[0]]);
+    for (let k = 0; k + 1 < anchors.length; k++) {
+      segments.push([anchors[k], anchors[k + 1]]);
+    }
+    if (connect === "closed" && anchors.length > 2) {
+      segments.push([anchors[anchors.length - 1], anchors[0]]);
     }
   }
+
+  const startDrag = (i: number) => (e: React.PointerEvent<SVGElement>) => {
+    e.stopPropagation();
+    e.preventDefault();
+    claimPointerGesture(e.pointerId);
+    lockedAxisRef.current = null;
+    const pt = points[i];
+    if (!pt) return;
+    setDrag({
+      index: i,
+      key: pt.key,
+      startPointer: {
+        x: (e.clientX - rect.left) / rect.width,
+        y: (e.clientY - rect.top) / rect.height,
+      },
+      startPoint: { x: pt.x, y: pt.y },
+    });
+  };
+  // A locked dot takes the press without dragging, so it can't fall
+  // through to the canvas underneath.
+  const swallow = (e: React.PointerEvent<SVGElement>) => {
+    e.stopPropagation();
+    e.preventDefault();
+    claimPointerGesture(e.pointerId);
+  };
+
+  const connector = {
+    stroke: "#22c55e",
+    strokeWidth: "1",
+    strokeDasharray: "4 3",
+    opacity: 0.9,
+  };
 
   return (
     <div style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 2 }}>
@@ -1074,19 +1299,36 @@ export function PrimitivePointHandles({
         height="100%"
         style={{ position: "absolute", inset: 0, overflow: "visible" }}
       >
-        {segments.map(([a, b], i) => (
-          <line
-            key={`seg-${i}`}
-            x1={a.x}
-            y1={a.y}
-            x2={b.x}
-            y2={b.y}
-            stroke="#22c55e"
-            strokeWidth="1"
-            strokeDasharray="4 3"
-            opacity={0.9}
-          />
-        ))}
+        {segments.map(([ai, bi], k) => {
+          const a = px[ai];
+          const b = px[bi];
+          const c1 = handleOf.out.get(ai);
+          const c2 = handleOf.in.get(bi);
+          if (c1 === undefined && c2 === undefined) {
+            return (
+              <line
+                key={`seg-${k}`}
+                x1={a.x}
+                y1={a.y}
+                x2={b.x}
+                y2={b.y}
+                {...connector}
+              />
+            );
+          }
+          // The cubic the rasterizer draws: a missing handle's control
+          // point is its own anchor (buildPath2D).
+          const p1 = c1 === undefined ? a : px[c1];
+          const p2 = c2 === undefined ? b : px[c2];
+          return (
+            <path
+              key={`seg-${k}`}
+              d={`M ${a.x} ${a.y} C ${p1.x} ${p1.y} ${p2.x} ${p2.y} ${b.x} ${b.y}`}
+              fill="none"
+              {...connector}
+            />
+          );
+        })}
         {snap.x !== null && (
           <line
             x1={rect.left + snap.x * rect.width}
@@ -1107,47 +1349,95 @@ export function PrimitivePointHandles({
             strokeWidth={0.75}
           />
         )}
-        {px.map((p, i) => (
-          <g key={`pt-${i}`}>
-            <circle
-              cx={p.x}
-              cy={p.y}
-              r={CENTER_R + 1}
-              fill={drag?.index === i ? "#ef4444" : "#22c55e"}
-              stroke="#fef2f2"
-              strokeWidth="0.75"
-              style={{ cursor: "move", pointerEvents: "auto" }}
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                claimPointerGesture(e.pointerId);
-                lockedAxisRef.current = null;
-                const pt = points[i];
-                if (!pt) return;
-                setDrag({
-                  index: i,
-                  startPointer: {
-                    x: (e.clientX - rect.left) / rect.width,
-                    y: (e.clientY - rect.top) / rect.height,
-                  },
-                  startPoint: { x: pt.x, y: pt.y },
-                });
-              }}
+        {/* Handle stems (anchor → handle), beneath every dot. */}
+        {points.map((p, i) => {
+          const a = p.handle ? px[p.handle.of] : undefined;
+          if (!a) return null;
+          return (
+            <line
+              key={`stem-${i}`}
+              x1={a.x}
+              y1={a.y}
+              x2={px[i].x}
+              y2={px[i].y}
+              stroke="#22c55e"
+              strokeWidth="1"
+              opacity={0.9}
             />
-            {p.label && (
-              <text
-                x={p.x + CENTER_R + 4}
-                y={p.y - CENTER_R - 2}
-                fill="#fef2f2"
-                fontSize="10"
-                fontFamily="var(--ui-font)"
-                style={{ pointerEvents: "none", userSelect: "none" }}
-              >
-                {p.label}
-              </text>
-            )}
-          </g>
-        ))}
+          );
+        })}
+        {/* Handle dots, then anchor dots on top of them. */}
+        {points.map((p, i) => {
+          if (!p.handle) return null;
+          const q = px[i];
+          return (
+            <g key={`hd-${i}`}>
+              <circle
+                cx={q.x}
+                cy={q.y}
+                r={HANDLE_DOT_R}
+                fill={isDragged(i) ? "#ef4444" : "#fef2f2"}
+                stroke="#22c55e"
+                strokeWidth="1"
+              />
+              <circle
+                cx={q.x}
+                cy={q.y}
+                r={HANDLE_HIT_R}
+                fill="transparent"
+                style={{ cursor: "move", pointerEvents: "auto" }}
+                onPointerDown={startDrag(i)}
+              />
+            </g>
+          );
+        })}
+        {points.map((p, i) => {
+          if (p.handle) return null;
+          const q = px[i];
+          return (
+            <g key={`pt-${i}`}>
+              {p.locked ? (
+                // Wired: dashed ring, no drag.
+                <circle
+                  cx={q.x}
+                  cy={q.y}
+                  r={CENTER_R + 1}
+                  fill="rgba(17, 17, 17, 0.55)"
+                  stroke="#22c55e"
+                  strokeWidth="1.25"
+                  strokeDasharray="2 2"
+                  style={{ cursor: "not-allowed", pointerEvents: "auto" }}
+                  onPointerDown={swallow}
+                >
+                  <title>Set by its wired input</title>
+                </circle>
+              ) : (
+                <circle
+                  cx={q.x}
+                  cy={q.y}
+                  r={CENTER_R + 1}
+                  fill={isDragged(i) ? "#ef4444" : "#22c55e"}
+                  stroke="#fef2f2"
+                  strokeWidth="0.75"
+                  style={{ cursor: "move", pointerEvents: "auto" }}
+                  onPointerDown={startDrag(i)}
+                />
+              )}
+              {p.label && (
+                <text
+                  x={q.x + CENTER_R + 4}
+                  y={q.y - CENTER_R - 2}
+                  fill="#fef2f2"
+                  fontSize="10"
+                  fontFamily="var(--ui-font)"
+                  style={{ pointerEvents: "none", userSelect: "none" }}
+                >
+                  {p.label}
+                </text>
+              )}
+            </g>
+          );
+        })}
       </svg>
     </div>
   );

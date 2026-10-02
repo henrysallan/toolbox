@@ -10,7 +10,11 @@ import type {
   SocketValue,
 } from "../src/engine/types.ts";
 import { coerceValue } from "../src/engine/coerce.ts";
-import { copyPointsWith, makePoints } from "../src/engine/points.ts";
+import {
+  builtinPointAttrNames,
+  copyPointsWith,
+  makePoints,
+} from "../src/engine/points.ts";
 import { attributeReadNode } from "../src/nodes/effect/attribute-read.ts";
 import {
   attrNameSuggestions,
@@ -316,6 +320,51 @@ const pts = samplePoints();
   check(
     "suggestions lead with builtins then named",
     suggestions[0] === "index" && suggestions.includes("weight")
+  );
+}
+
+{
+  // Whole-vector built-ins: listed by builtinPointAttrNames, offered only
+  // to params that opt into suggestAttrsVectors (a scalar reader would
+  // silently take lane 0 of `position`).
+  const attrName = attributeReadNode.params.find((p) => p.name === "attr_name");
+  check(
+    "attr_name opts into vector built-ins",
+    attrName?.suggestAttrsVectors === true
+  );
+  const info: AttrNameInfo = {
+    known: true,
+    names: ["weight"],
+    builtins: builtinPointAttrNames(pts),
+  };
+  const withVec = attrNameSuggestions(info, true, undefined, true);
+  check(
+    "vector picker offers position ahead of x / y",
+    withVec.indexOf("position") >= 0 &&
+      withVec.indexOf("position") < withVec.indexOf("x") &&
+      withVec.indexOf("x") < withVec.indexOf("y") &&
+      withVec.includes("scale"),
+    withVec.join(",")
+  );
+  const scalarOnly = attrNameSuggestions(info, true);
+  check(
+    "scalar picker keeps lanes only",
+    !scalarOnly.includes("position") &&
+      !scalarOnly.includes("scale") &&
+      scalarOnly.includes("x") &&
+      scalarOnly.includes("scale.x"),
+    scalarOnly.join(",")
+  );
+  const unwired = attrNameSuggestions(
+    { known: false, names: [], builtins: [] },
+    true,
+    undefined,
+    true
+  );
+  check(
+    "unwired 2D fallback offers position, not normal",
+    unwired.includes("position") && !unwired.includes("normal"),
+    unwired.join(",")
   );
 }
 

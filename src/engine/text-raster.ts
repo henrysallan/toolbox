@@ -23,10 +23,15 @@ import {
 } from "@/lib/font-axis";
 import {
   FIELD_PROPS,
+  fieldSampledByWord,
+  isIdentityXform,
   resolveGlyphAnim,
   resolveTrackingExtra,
+  wordCentres,
+  wordIndices,
   type AnimProp,
   type GlyphFields,
+  type GlyphIndex,
   type TextAnimators,
 } from "@/engine/text-animators";
 import { aspectCorrectY } from "@/engine/aspect";
@@ -41,10 +46,31 @@ import type {
 
 // Per-character animators + their field pixel buffers, threaded into the
 // modulated draw path. Present (non-null) forces per-character layout even when
-// every font axis is constant. Fields are sampled at each glyph's centre.
+// every font axis is constant. Fields are sampled at each glyph's centre, or
+// at its word's centre for an animator based on `word`.
 export interface TextDrawAnim {
   animators: TextAnimators;
   fields: Partial<Record<AnimProp, ImageData | null>>;
+}
+
+// Sample every wired animator field (absolute canvas px): at the glyph centre
+// (gx, gy), or the word centre (wx, wy) for a word-based animator.
+function sampleAnimFields(
+  anim: TextDrawAnim | null,
+  gx: number,
+  gy: number,
+  wx: number,
+  wy: number
+): GlyphFields {
+  const f: GlyphFields = {};
+  if (!anim) return f;
+  for (const p of FIELD_PROPS) {
+    const d = anim.fields[p];
+    if (!d) continue;
+    const byWord = fieldSampledByWord(anim.animators, p);
+    f[p] = sampleMask(d, byWord ? wx : gx, byWord ? wy : gy, d.width, d.height);
+  }
+  return f;
 }
 
 // Text-on-path layout. Present (non-null) lays every glyph along `path` — a
@@ -488,19 +514,17 @@ function drawGlyphsAlongPath(
   const chars = Array.from(lines.join(" "));
   const total = chars.length;
   if (total === 0) return;
+  const words = wordIndices([chars]);
+  const wordIds = words.ids[0];
+  const gi = (i: number): GlyphIndex => ({
+    char: i,
+    charTotal: total,
+    word: wordIds[i],
+    wordTotal: words.total,
+  });
 
   c2d.textAlign = "left";
   (c2d as unknown as { letterSpacing?: string }).letterSpacing = "0px";
-
-  const sampleFields = (x: number, y: number): GlyphFields => {
-    const f: GlyphFields = {};
-    if (!anim) return f;
-    for (const p of FIELD_PROPS) {
-      const d = anim.fields[p];
-      if (d) f[p] = sampleMask(d, x, y, d.width, d.height);
-    }
-    return f;
-  };
 
   // Pre-measure advances + tracking with per-glyph axis styling so the
   // along-path spacing matches the visible glyph widths.
@@ -515,10 +539,18 @@ function drawGlyphsAlongPath(
     );
     const adv = c2d.measureText(chars[i]).width;
     advances.push(adv);
-    const trk = anim ? resolveTrackingExtra(anim.animators, i, total) : 0;
+    const trk = anim ? resolveTrackingExtra(anim.animators, gi(i)) : 0;
     tracks.push(trk);
     textWidth += adv + letterSpacing + trk;
   }
+  // Each glyph's left edge along the run (relative to `start`) → word centres
+  // (the pivot + field sample point of word-based animators).
+  const relX: number[] = [];
+  for (let i = 0, x = 0; i < total; i++) {
+    relX.push(x);
+    x += advances[i] + letterSpacing + tracks[i];
+  }
+  const wordMid = anim ? wordCentres(chars, wordIds, relX, advances) : null;
   // Trailing inter-glyph gap doesn't count toward the visible run width.
   textWidth -= letterSpacing + tracks[total - 1];
 
@@ -536,28 +568,55 @@ function drawGlyphsAlongPath(
   const sideShift =
     layout.side === "above" ? -size * 0.5 : layout.side === "below" ? size * 0.5 : 0;
 
+  // Flip reads from the far end and turns each glyph to face the new way.
+  const pathAt = (runPx: number) => {
+    const sample = sampler.at(layout.flip ? totalPx - runPx : runPx);
+    const angle = layout.flip ? sample.angle + Math.PI : sample.angle;
+    return { x: sample.x, y: sample.y, angle };
+  };
+
   let cursor = start;
   for (let i = 0; i < total; i++) {
     const t = total <= 1 ? 0 : i / (total - 1);
     const adv = advances[i];
     const centre = cursor + adv / 2;
-    // Flip reads from the far end and turns each glyph to face the new way.
-    const s = layout.flip ? totalPx - centre : centre;
-    const sample = sampler.at(s);
-    const angle = layout.flip ? sample.angle + Math.PI : sample.angle;
+    const sample = pathAt(centre);
+    const angle = sample.angle;
     const mVal = maskData ? sampleMask(maskData, sample.x, sample.y, W, H) : null;
     applyAxisStyling(
       canvas, c2d, style.fontAxes, style.axesDict, t, i,
       style.family, size, mVal, style.weight ?? 400, style.italic ?? false
     );
+    // The word's centre on the path (a whitespace-only run falls back to the
+    // glyph's own) — pivot + field sample point of word-based animators.
+    const wMid = wordMid?.get(wordIds[i]);
+    const wSample = wMid === undefined ? sample : pathAt(start + wMid);
+    const g = anim
+      ? resolveGlyphAnim(
+          anim.animators,
+          gi(i),
+          sampleAnimFields(anim, sample.x, sample.y, wSample.x, wSample.y)
+        )
+      : null;
     c2d.save();
+    if (g && !isIdentityXform(g.word)) {
+      // Word transform in the word centre's own path frame (side shift
+      // included), so a word offset runs along its tangent like a glyph's.
+      const w = g.word;
+      c2d.translate(wSample.x, wSample.y);
+      c2d.rotate(wSample.angle);
+      if (sideShift) c2d.translate(0, sideShift);
+      c2d.translate(w.offsetX, w.offsetY);
+      if (w.rotation) c2d.rotate(w.rotation);
+      if (w.scale !== 1) c2d.scale(w.scale, w.scale);
+      if (sideShift) c2d.translate(0, -sideShift);
+      c2d.rotate(-wSample.angle);
+      c2d.translate(-wSample.x, -wSample.y);
+    }
     c2d.translate(sample.x, sample.y);
     c2d.rotate(angle);
     if (sideShift) c2d.translate(0, sideShift);
-    if (anim) {
-      const g = resolveGlyphAnim(
-        anim.animators, i, total, sampleFields(sample.x, sample.y)
-      );
+    if (g) {
       c2d.globalAlpha = Math.max(0, Math.min(1, g.alpha));
       if (g.color) c2d.fillStyle = g.color;
       c2d.translate(g.offsetX, g.offsetY);
@@ -665,25 +724,24 @@ export function drawTextBlock(
     // accumulation, which textAlign can't do mid-string).
     c2d.textAlign = "left";
     (c2d as unknown as { letterSpacing?: string }).letterSpacing = "0px";
-    // Global character index across all lines so a cascade / type-on reveals
-    // continuously through wrapped text rather than restarting each line.
+    // Global character (and word) index across all lines so a cascade /
+    // type-on reveals continuously through wrapped text rather than
+    // restarting each line.
+    const lineChars = lines.map((l) => Array.from(l)); // codepoint-safe split
     let globalTotal = 0;
-    for (const l of lines) globalTotal += Array.from(l).length;
+    for (const l of lineChars) globalTotal += l.length;
     let globalOffset = 0;
-    // Sample every wired animator field at a glyph centre (absolute canvas px).
-    const sampleFields = (x: number, y: number): GlyphFields => {
-      const f: GlyphFields = {};
-      if (!anim) return f;
-      for (const p of FIELD_PROPS) {
-        const d = anim.fields[p];
-        if (d) f[p] = sampleMask(d, x, y, d.width, d.height);
-      }
-      return f;
-    };
+    const words = wordIndices(lineChars);
     for (let li = 0; li < lines.length; li++) {
-      const line = lines[li];
-      const chars = Array.from(line); // codepoint-safe split
+      const chars = lineChars[li];
       const total = chars.length;
+      const wordIds = words.ids[li];
+      const gi = (i: number): GlyphIndex => ({
+        char: globalOffset + i,
+        charTotal: globalTotal,
+        word: wordIds[i],
+        wordTotal: words.total,
+      });
       const y = startY + li * lineHeight;
       // Pre-measure each char with its axis values applied so alignment
       // uses real advances. Mask sampling for the measure pass uses a
@@ -713,9 +771,7 @@ export function drawTextBlock(
         );
         const adv = c2d.measureText(chars[i]).width;
         advances.push(adv);
-        const trk = anim
-          ? resolveTrackingExtra(anim.animators, globalOffset + i, globalTotal)
-          : 0;
+        const trk = anim ? resolveTrackingExtra(anim.animators, gi(i)) : 0;
         tracks.push(trk);
         lineWidth += adv + letterSpacing + trk;
       }
@@ -730,6 +786,17 @@ export function drawTextBlock(
           : alignment === "right"
             ? areaW - lineWidth
             : (areaW - lineWidth) / 2);
+      // Word centres on this line (absolute canvas x) — the pivot + field
+      // sample point of word-based animators.
+      let wordMid: Map<number, number> | null = null;
+      if (anim) {
+        const xs: number[] = [];
+        for (let i = 0, x = cx; i < total; i++) {
+          xs.push(x);
+          x += advances[i] + letterSpacing + tracks[i];
+        }
+        wordMid = wordCentres(chars, wordIds, xs, advances);
+      }
       // Final draw pass — re-apply per-char styling and draw at cx.
       // Mask sampling reads at the glyph's CENTRE so a wide character is
       // driven by its own mid-region rather than its leading edge.
@@ -754,16 +821,25 @@ export function drawTextBlock(
         );
         if (anim) {
           // Per-glyph transform + alpha + color from the active animators,
-          // applied about the glyph centre so scale/rotation pivot there.
+          // applied about the glyph centre so scale/rotation pivot there —
+          // and, for word-based animators, first about the word centre so
+          // the word moves as one piece.
+          const wcx = wordMid?.get(wordIds[i]) ?? cxCentre;
           const g = resolveGlyphAnim(
             anim.animators,
-            globalOffset + i,
-            globalTotal,
-            sampleFields(cxCentre, y)
+            gi(i),
+            sampleAnimFields(anim, cxCentre, y, wcx, y)
           );
           c2d.save();
           c2d.globalAlpha = Math.max(0, Math.min(1, g.alpha));
           if (g.color) c2d.fillStyle = g.color;
+          if (!isIdentityXform(g.word)) {
+            const w = g.word;
+            c2d.translate(wcx + w.offsetX, y + w.offsetY);
+            if (w.rotation) c2d.rotate(w.rotation);
+            if (w.scale !== 1) c2d.scale(w.scale, w.scale);
+            c2d.translate(-wcx, -y);
+          }
           c2d.translate(cxCentre + g.offsetX, y + g.offsetY);
           if (g.rotation) c2d.rotate(g.rotation);
           if (g.scale !== 1) c2d.scale(g.scale, g.scale);

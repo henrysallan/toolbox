@@ -37,6 +37,7 @@ export const paintNode: NodeDefinition = {
   type: "paint",
   name: "Paint",
   category: "image",
+  pickable: true,
   subcategory: "generator",
   description:
     "Draw on the main canvas while this node is selected — brush, eraser, " +

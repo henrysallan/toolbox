@@ -510,7 +510,8 @@ function EffectNode({ id, data, selected }: NodeProps<EffectNodeType>) {
     const suggestions = attrNameSuggestions(
       info,
       includeBuiltins,
-      builtinFilter
+      builtinFilter,
+      !!stringParamDef.suggestAttrsVectors
     );
     if (suggestions.length > 0) stringAttrSuggestions = suggestions;
   }

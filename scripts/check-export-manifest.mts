@@ -731,5 +731,70 @@ const want = [`${constant.id}::value`, `${transform.id}::rotate`].sort();
   );
 }
 
+// --- SVG export source (manifest.svgExport, 2026-09-23) --------------------
+// The live link's SVG button saves the spline wired into the RENDERED
+// terminal's tap, styled by that terminal's SVG_STYLE_PARAMS. The viewer
+// forces `stashId` into its pass and reads `svg-export:<stashId>`: the
+// terminal's own id, except a Layer Output, whose enclosing LAYER stashes
+// on its behalf (check-svg-export-stash pins the evaluator half). Absent =
+// nothing wired, so the designer greys the toggle and the viewer shows no
+// button.
+{
+  const out = makeInstanceNode("output", { x: 800, y: 0 });
+  const { layer: lyr, groupInput: gi, groupOutput: go } = makeLayerNodes("Layer 1", { x: 400, y: 0 });
+  const shape = makeInstanceNode("polygon", { x: 0, y: 0 });
+  const shapeIn = makeInstanceNode("polygon", { x: 0, y: 200 });
+  shapeIn.data.parentId = lyr.id;
+  const svgNode = makeInstanceNode("svg-export", { x: 400, y: 200 });
+  const xf = makeInstanceNode("transform", { x: 200, y: 0 });
+  const allNodes: any[] = [out, lyr, gi, go, shape, shapeIn, svgNode, xf];
+  const svgOf = (outputNodeId: string, es: any[]) =>
+    buildExportManifest({
+      nodes: allNodes,
+      edges: es,
+      appName: "t",
+      outputNodeId,
+      canvasRes: [64, 64],
+    }).manifest.svgExport;
+  const base = [edge("e-l-o", lyr.id, out.id, "in:image")];
+
+  const onOutput = svgOf(out.id, [...base, edge("e-s-o", shape.id, out.id, "in:spline")]);
+  check(
+    "Output with a spline in its tap → source is the Output, stashed under its own id",
+    onOutput?.nodeId === out.id && onOutput?.stashId === out.id,
+    JSON.stringify(onOutput)
+  );
+  check(
+    "Output with nothing in its spline tap → no svgExport",
+    svgOf(out.id, base) === undefined
+  );
+  check(
+    "a spline wired into the Output's IMAGE socket is not the tap",
+    svgOf(out.id, [edge("e-s-o", shape.id, out.id, "in:image")]) === undefined
+  );
+
+  const onLayer = svgOf(go.id, [...base, edge("e-s-go", shapeIn.id, go.id, "in:spline")]);
+  check(
+    "Layer Output with a spline in its tap → styled by the Layer Output, stashed under the LAYER",
+    onLayer?.nodeId === go.id && onLayer?.stashId === lyr.id,
+    JSON.stringify(onLayer)
+  );
+  check(
+    "a wired Layer Output tap doesn't leak onto the Output terminal",
+    svgOf(out.id, [...base, edge("e-s-go", shapeIn.id, go.id, "in:spline")]) === undefined
+  );
+
+  const onSvgNode = svgOf(svgNode.id, [edge("e-s-svg", shape.id, svgNode.id, "in:path")]);
+  check(
+    "SVG Export node as the terminal → itself, via its `path` socket",
+    onSvgNode?.nodeId === svgNode.id && onSvgNode?.stashId === svgNode.id,
+    JSON.stringify(onSvgNode)
+  );
+  check(
+    "any other terminal has no SVG source",
+    svgOf(xf.id, [edge("e-s-xf", shape.id, xf.id, "in:image")]) === undefined
+  );
+}
+
 console.log(failures === 0 ? "\ncheck-export-manifest: all passed" : `\ncheck-export-manifest: ${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

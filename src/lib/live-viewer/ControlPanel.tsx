@@ -70,6 +70,7 @@ export interface ControlPanelProps {
     image?: () => void;
     video?: () => void;
     gif?: () => void;
+    svg?: () => void;
   };
   exportStatus?: { label: string; cancel?: () => void } | null;
   // Active-branch filter (engine/active-branch.ts): node ids on the path
@@ -182,9 +183,12 @@ export function ControlPanel(props: ControlPanelProps) {
   }, [manifest.gizmos, manifest.controls, design, activeNodeIds]);
 
   const exportFlags = design?.export;
+  // The SVG button also needs a spline wired into the terminal's tap — a
+  // flag left on after the wire went away renders nothing.
+  const svgExport = !!exportFlags?.svg && !!manifest.svgExport;
   const anyExport =
     !!exportFlags &&
-    (exportFlags.image || exportFlags.video || exportFlags.gif);
+    (exportFlags.image || exportFlags.video || exportFlags.gif || svgExport);
   const exportBusy = !!exportStatus?.cancel;
 
   return (
@@ -273,6 +277,11 @@ export function ControlPanel(props: ControlPanelProps) {
             {exportFlags.gif && (
               <button onClick={exportHandlers?.gif} disabled={exportBusy}>
                 GIF
+              </button>
+            )}
+            {svgExport && (
+              <button onClick={exportHandlers?.svg} disabled={exportBusy}>
+                SVG
               </button>
             )}
           </div>

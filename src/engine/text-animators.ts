@@ -1,23 +1,41 @@
 // Text animators — stackable, additive, per-character animation for the Text
 // node. Each animator drives one property (opacity, position, scale, rotation,
-// tracking, color, or a type-on reveal) per glyph. The per-character drive is
+// tracking, color, or a type-on reveal) per glyph. The per-unit drive is
 // `t ∈ [0,1]`, produced from a keyframable Amount by the animator's driver:
 //   uniform  → t = Amount                       (whole-word)
-//   field    → t = Amount × field(glyphCentre)  (Amount masters a spatial image)
-//   cascade  → t = sweep(Amount, charIndex, …)  (range-selector / type-on)
+//   field    → t = Amount × field(unitCentre)   (Amount masters a spatial image)
+//   cascade  → t = sweep(Amount, unitIndex, …)  (range-selector / type-on)
 // then an optional per-animator Easing shapes that t: `t = ease(t)`. Doing this
-// AFTER the cascade split is what makes each glyph ease individually — easing
+// AFTER the cascade split is what makes each unit ease individually — easing
 // the master Amount upstream (e.g. a Scene Time ping-pong wired into Amount)
-// only warps the group wavefront, not the per-glyph curve. The property value
+// only warps the group wavefront, not the per-unit curve. The property value
 // is `lerp(min, max, t)`. Animators stack additively.
 // See specdocs/archive/062526_text-animators.md.
+//
+// "Based on" (`anim_<p>_by`, AE's range-selector Based On) picks the unit per
+// animator: `character` (the default — every glyph is its own unit) or `word`
+// (a run of non-whitespace; the cascade index/total count words, a field is
+// sampled at the word's centre, and scale/rotation/position pivot about the
+// word's centre so the word moves as one piece). Whitespace joins the word
+// before it; a line break always starts a new word. Tracking by word still
+// spaces every glyph of the word — it only shares the word's t.
+//
+// Easing may be `custom`: the animator's `anim_<p>_easing_curve` float_curve
+// param, which exposed is a socket a Float Curve's `curve` aux (or an
+// Expression in curve mode) drives — Scene Time's pattern
+// (091926_float-curve-socket.md).
 //
 // Pure module — no GL, no DOM. The Text node parses params into TextAnimators
 // and reads any wired field images to pixel buffers; text-raster.ts applies the
 // resolved per-glyph result in its modulated (per-character) draw path.
 
 import type { InputSocketDef, ParamDef } from "@/engine/types";
-import { EASING_OPTIONS, applyEasing } from "@/engine/easing";
+import {
+  CUSTOM_EASING,
+  EASING_OPTIONS_WITH_CUSTOM,
+  applyEasingOrCurve,
+} from "@/engine/easing";
+import { defaultFloatCurve } from "@/engine/float-curve";
 
 // Property keys. `typeon` is a fixed 0→1 opacity reveal (always cascade);
 // `tracking` is index-driven only (it changes advances, so it can't sample a
@@ -32,6 +50,7 @@ export type AnimProp =
   | "color";
 
 export type AnimDriver = "field" | "cascade" | "uniform";
+export type AnimBy = "character" | "word";
 export type CascadeDir = "forward" | "backward" | "center" | "edges" | "random";
 
 // Props that can be driven by an image field (→ get a conditional field input).
@@ -49,23 +68,26 @@ interface CascadeCfg {
   seed: number;
 }
 
-// Per-character easing applied to the driver's 0→1 output. Shaping the value
+// Per-unit easing applied to the driver's 0→1 output. Shaping the value
 // AFTER the cascade split (`ease(sweep(...))`) is what makes each glyph ease
 // individually — easing the master Amount upstream (e.g. via Scene Time) only
 // warps the group wavefront. `linear` intensity 1 = identity (no change).
+// `custom` samples `curve` (the raw float_curve param value).
 interface EaseCfg {
   easing: string;
   easeIntensity: number;
+  curve: unknown;
 }
 
 interface BaseCfg extends CascadeCfg, EaseCfg {
   enabled: boolean;
   amount: number;
   driver: AnimDriver;
+  by: AnimBy;
 }
 
 export interface TextAnimators {
-  typeon?: CascadeCfg & EaseCfg & { enabled: boolean; amount: number };
+  typeon?: CascadeCfg & EaseCfg & { enabled: boolean; amount: number; by: AnimBy };
   opacity?: BaseCfg & { min: number; max: number };
   position?: BaseCfg & { minX: number; maxX: number; minY: number; maxY: number };
   scale?: BaseCfg & { min: number; max: number };
@@ -74,19 +96,95 @@ export interface TextAnimators {
   color?: BaseCfg & { min: string; max: string };
 }
 
-// Per-glyph resolved result the rasterizer applies (draw pass).
-export interface GlyphAnim {
+// A glyph's position in both unit orders. `word` / `wordTotal` come from
+// wordIndices (whitespace joins the preceding word).
+export interface GlyphIndex {
+  char: number;
+  charTotal: number;
+  word: number;
+  wordTotal: number;
+}
+
+// One pivot's worth of transform. The char set pivots about the glyph centre,
+// the word set about the word centre; the rasterizer applies word ∘ char.
+export interface GlyphXform {
   offsetX: number; // px
   offsetY: number; // px
   scale: number; // multiplicative (1 = unchanged)
   rotation: number; // radians
+}
+
+// Per-glyph resolved result the rasterizer applies (draw pass).
+export interface GlyphAnim extends GlyphXform {
+  // Transform from animators based on `word` — about the word centre.
+  word: GlyphXform;
   alpha: number; // multiplicative (1 = opaque)
   color: string | null; // fill override, or null to keep base
 }
 
-// Per-glyph field samples (R/luminance ∈ [0,1]) at the glyph centre, or null
-// when that animator has no field wired. Keyed by prop.
+export const isIdentityXform = (x: GlyphXform): boolean =>
+  x.offsetX === 0 && x.offsetY === 0 && x.scale === 1 && x.rotation === 0;
+
+// Per-glyph field samples (R/luminance ∈ [0,1]) at the unit centre — the
+// glyph's, or its word's for a `word` animator (see fieldSampledByWord) — or
+// null when that animator has no field wired. Keyed by prop.
 export type GlyphFields = Partial<Record<AnimProp, number | null>>;
+
+// Whether prop `p`'s field is sampled at the word centre (vs the glyph's).
+export function fieldSampledByWord(anim: TextAnimators, p: AnimProp): boolean {
+  return anim[p]?.by === "word";
+}
+
+const WS = /\s/;
+
+// Word id per glyph for lines of already-split codepoints, numbered across
+// all lines so a word cascade runs continuously through wrapped text. A word
+// is a run of non-whitespace; whitespace takes the id of the word before it
+// (leading whitespace of the first line joins word 0), and every line starts
+// a new word. `total` is the word count, at least 1.
+export function wordIndices(lines: string[][]): { ids: Int32Array[]; total: number } {
+  let w = -1;
+  const ids = lines.map((chars) => {
+    const out = new Int32Array(chars.length);
+    let prevWs = true;
+    for (let i = 0; i < chars.length; i++) {
+      const ws = WS.test(chars[i]);
+      if (!ws && prevWs) w++;
+      prevWs = ws;
+      out[i] = Math.max(0, w);
+    }
+    return out;
+  });
+  return { ids, total: Math.max(1, w + 1) };
+}
+
+// Centre (along the run, px) of each word's visible glyphs on one line/run:
+// the midpoint of the first non-whitespace glyph's left edge and the last
+// one's right edge. `xs[i]` is glyph i's left edge, `advs[i]` its advance.
+// A word with no visible glyph on this run is absent — callers fall back to
+// the glyph's own centre.
+export function wordCentres(
+  chars: string[],
+  ids: Int32Array,
+  xs: ArrayLike<number>,
+  advs: ArrayLike<number>
+): Map<number, number> {
+  const span = new Map<number, [number, number]>();
+  for (let i = 0; i < chars.length; i++) {
+    if (WS.test(chars[i])) continue;
+    const a = xs[i];
+    const b = xs[i] + advs[i];
+    const s = span.get(ids[i]);
+    if (!s) span.set(ids[i], [a, b]);
+    else {
+      if (a < s[0]) s[0] = a;
+      if (b > s[1]) s[1] = b;
+    }
+  }
+  const out = new Map<number, number>();
+  for (const [id, [a, b]] of span) out.set(id, (a + b) / 2);
+  return out;
+}
 
 // ── math ──────────────────────────────────────────────────────────────────
 
@@ -130,24 +228,35 @@ function sweep(amount: number, i: number, total: number, c: CascadeCfg): number 
   return clamp01((clamp01(amount) - start) / w);
 }
 
-function driveT(c: BaseCfg, i: number, total: number, field: number | null): number {
+// The unit index/total an animator sweeps over.
+function unitOf(by: AnimBy, g: GlyphIndex): [number, number] {
+  return by === "word" ? [g.word, g.wordTotal] : [g.char, g.charTotal];
+}
+
+function ease(c: EaseCfg, t: number): number {
+  return applyEasingOrCurve(c.easing, t, c.easeIntensity, c.curve);
+}
+
+function driveT(c: BaseCfg, g: GlyphIndex, field: number | null): number {
   let t: number;
   switch (c.driver) {
     case "field":
       t = clamp01(c.amount * (field ?? 1));
       break;
-    case "cascade":
+    case "cascade": {
+      const [i, total] = unitOf(c.by, g);
       t = sweep(c.amount, i, total, c);
       break;
+    }
     case "uniform":
     default:
       t = clamp01(c.amount);
       break;
   }
-  // Ease the per-character value (identity at `linear`). For `cascade` this
-  // eases each glyph through its own window; for `uniform`/`field` it shapes
-  // the shared response.
-  return applyEasing(c.easing, t, c.easeIntensity);
+  // Ease the per-unit value (identity at `linear`). For `cascade` this eases
+  // each unit through its own window; for `uniform`/`field` it shapes the
+  // shared response.
+  return ease(c, t);
 }
 
 // hex (#rgb / #rrggbb) → [r,g,b] 0..255; null on parse failure.
@@ -174,22 +283,19 @@ function lerpColor(a: string, b: string, t: number): string {
 
 // Per-char tracking offset (px) added to the advance in the layout pass.
 // Index-driven only — see the module header.
-export function resolveTrackingExtra(
-  anim: TextAnimators,
-  i: number,
-  total: number
-): number {
+export function resolveTrackingExtra(anim: TextAnimators, g: GlyphIndex): number {
   const c = anim.tracking;
   if (!c || !c.enabled) return 0;
-  const t = driveT(c, i, total, null);
+  const t = driveT(c, g, null);
   return lerp(c.min, c.max, t);
 }
 
 // Resolve the per-glyph transform/alpha/color from every active animator.
+// Position / scale / rotation land in the char or word transform by each
+// animator's `by`, so a word animator pivots the whole word.
 export function resolveGlyphAnim(
   anim: TextAnimators,
-  i: number,
-  total: number,
+  g: GlyphIndex,
   fields: GlyphFields
 ): GlyphAnim {
   const out: GlyphAnim = {
@@ -197,33 +303,38 @@ export function resolveGlyphAnim(
     offsetY: 0,
     scale: 1,
     rotation: 0,
+    word: { offsetX: 0, offsetY: 0, scale: 1, rotation: 0 },
     alpha: 1,
     color: null,
   };
+  const xf = (by: AnimBy): GlyphXform => (by === "word" ? out.word : out);
 
   if (anim.typeon?.enabled) {
+    const [i, total] = unitOf(anim.typeon.by, g);
     const t = sweep(anim.typeon.amount, i, total, anim.typeon);
-    out.alpha *= applyEasing(anim.typeon.easing, t, anim.typeon.easeIntensity);
+    out.alpha *= ease(anim.typeon, t);
   }
   if (anim.opacity?.enabled) {
-    const t = driveT(anim.opacity, i, total, fields.opacity ?? null);
+    const t = driveT(anim.opacity, g, fields.opacity ?? null);
     out.alpha *= lerp(anim.opacity.min, anim.opacity.max, t);
   }
   if (anim.position?.enabled) {
-    const t = driveT(anim.position, i, total, fields.position ?? null);
-    out.offsetX += lerp(anim.position.minX, anim.position.maxX, t);
-    out.offsetY += lerp(anim.position.minY, anim.position.maxY, t);
+    const t = driveT(anim.position, g, fields.position ?? null);
+    const x = xf(anim.position.by);
+    x.offsetX += lerp(anim.position.minX, anim.position.maxX, t);
+    x.offsetY += lerp(anim.position.minY, anim.position.maxY, t);
   }
   if (anim.scale?.enabled) {
-    const t = driveT(anim.scale, i, total, fields.scale ?? null);
-    out.scale *= lerp(anim.scale.min, anim.scale.max, t);
+    const t = driveT(anim.scale, g, fields.scale ?? null);
+    xf(anim.scale.by).scale *= lerp(anim.scale.min, anim.scale.max, t);
   }
   if (anim.rotation?.enabled) {
-    const t = driveT(anim.rotation, i, total, fields.rotation ?? null);
-    out.rotation += (lerp(anim.rotation.min, anim.rotation.max, t) * Math.PI) / 180;
+    const t = driveT(anim.rotation, g, fields.rotation ?? null);
+    xf(anim.rotation.by).rotation +=
+      (lerp(anim.rotation.min, anim.rotation.max, t) * Math.PI) / 180;
   }
   if (anim.color?.enabled) {
-    const t = driveT(anim.color, i, total, fields.color ?? null);
+    const t = driveT(anim.color, g, fields.color ?? null);
     out.color = lerpColor(anim.color.min, anim.color.max, t);
   }
   return out;
@@ -248,14 +359,20 @@ function easeFrom(params: Record<string, unknown>, p: AnimProp): EaseCfg {
   return {
     easing: str(params[`anim_${p}_easing`], "linear"),
     easeIntensity: num(params[`anim_${p}_ease_intensity`], 1),
+    curve: params[`anim_${p}_easing_curve`],
   };
 }
+
+// Absent (every pre-toggle save) reads as `character`.
+const byFrom = (params: Record<string, unknown>, p: AnimProp): AnimBy =>
+  params[`anim_${p}_by`] === "word" ? "word" : "character";
 
 function baseFrom(params: Record<string, unknown>, p: AnimProp): BaseCfg {
   return {
     enabled: bool(params[`anim_${p}_enabled`]),
     amount: num(params[`anim_${p}_amount`], 1),
     driver: str(params[`anim_${p}_driver`], "uniform") as AnimDriver,
+    by: byFrom(params, p),
     ...cascadeFrom(params, p),
     ...easeFrom(params, p),
   };
@@ -266,6 +383,7 @@ export function parseAnimators(params: Record<string, unknown>): TextAnimators {
     typeon: {
       enabled: bool(params.anim_typeon_enabled),
       amount: num(params.anim_typeon_amount, 1),
+      by: byFrom(params, "typeon"),
       ...cascadeFrom(params, "typeon"),
       ...easeFrom(params, "typeon"),
     },
@@ -352,8 +470,10 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 // ── param builder ────────────────────────────────────────────────────────────
 
 const DIR_OPTIONS = ["forward", "backward", "center", "edges", "random"];
+const BY_OPTIONS: AnimBy[] = ["character", "word"];
 
-// Shared rows for one animator: enable, amount, driver, and cascade shaping.
+// Shared rows for one animator: enable, amount, driver, unit, and cascade
+// shaping.
 function commonRows(
   p: AnimProp,
   label: string,
@@ -393,6 +513,19 @@ function commonRows(
     });
   }
   rows.push(
+    // Per character vs per word: the cascade's index/total, where a field is
+    // sampled, and the scale/rotation/position pivot.
+    {
+      name: `anim_${p}_by`,
+      label: `Based on`,
+      type: "enum",
+      options: BY_OPTIONS,
+      optionLabels: { character: "Character", word: "Word" },
+      control: "segmented",
+      default: "character",
+      visibleIf: en,
+      group: p,
+    },
     {
       name: `anim_${p}_softness`,
       label: `Softness`,
@@ -424,17 +557,30 @@ function commonRows(
       visibleIf: isRandom,
       group: p,
     },
-    // Per-character easing on the driver's 0→1 output — this is what eases each
-    // glyph individually (vs. easing the Amount upstream, which only warps the
-    // group wavefront). Defaults to `linear` so existing animators are
-    // unchanged.
+    // Per-unit easing on the driver's 0→1 output — this is what eases each
+    // glyph (or word) individually (vs. easing the Amount upstream, which only
+    // warps the group wavefront). Defaults to `linear` so existing animators
+    // are unchanged.
     {
       name: `anim_${p}_easing`,
       label: `Easing`,
       type: "enum",
-      options: EASING_OPTIONS,
+      options: EASING_OPTIONS_WITH_CUSTOM,
       default: "linear",
       visibleIf: en,
+      group: p,
+    },
+    // `custom` easing's curve (x = unit's 0→1 drive, y = eased). Exposable
+    // (paramSocketType maps float_curve), so a Float Curve node's `curve` aux
+    // or an Expression in curve mode can drive it; the row stays visible
+    // while exposed even if the enum moves off `custom` (ParamPanel rule).
+    // The identity ramp is the neutral start — a fresh `custom` is `linear`.
+    {
+      name: `anim_${p}_easing_curve`,
+      label: `Easing curve`,
+      type: "float_curve",
+      default: defaultFloatCurve(0, 1),
+      visibleIf: (q) => en(q) && q[`anim_${p}_easing`] === CUSTOM_EASING,
       group: p,
     },
     {

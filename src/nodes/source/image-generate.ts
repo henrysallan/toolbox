@@ -167,6 +167,7 @@ export const imageGenerateNode: NodeDefinition = {
   type: "image-generate",
   name: "Image Generate",
   category: "image",
+  pickable: true,
   subcategory: "generator",
   description:
     "Generate images via OpenAI's gpt-image-2 with a chat interface in the param panel. Bring-your-own OpenAI key (Toolbox → User Preferences). Three optional reference image inputs feed the model as context. Outputs the currently-selected generation, or transparent when none is selected.",

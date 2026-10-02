@@ -23,7 +23,13 @@ import {
   strokeUnitsParam,
   unitsRangeHints,
 } from "@/engine/stroke-units";
-import { CURATED_FONTS, ensureFontLoaded, isFontReady } from "@/lib/fonts";
+import { pushMediaSettle } from "@/engine/offline-settle";
+import {
+  CURATED_FONTS,
+  ensureFontLoaded,
+  fontVersion,
+  isFontReady,
+} from "@/lib/fonts";
 
 // Point Labels — the self-contained convenience node: `points` → `image`. It
 // formats each point's own data into a string (shared formatter with Points to
@@ -66,6 +72,9 @@ interface PointLabelsState {
   // style change, and dispose (NOT by the evaluator).
   cache: Map<string, ImageValue>;
   styleSig: string;
+  // The family the last compute drew (a wired Text style's, or the local
+  // param) — fingerprintExtras keys on its load version.
+  family: string | null;
 }
 
 // Cap the raster LRU so animated position labels (a fresh string per frame)
@@ -81,6 +90,7 @@ function ensureState(ctx: RenderContext, nodeId: string): PointLabelsState {
     textCanvas: null,
     cache: new Map(),
     styleSig: "",
+    family: null,
   };
   ctx.state[key] = s;
   return s;
@@ -131,6 +141,16 @@ export const pointLabelsNode: NodeDefinition = {
   // stable:false so font-readiness and canvas size are re-checked every eval,
   // like the Text node. Per-string raster caching keeps steady-state cheap.
   stable: false,
+  // The labels appear on the eval after their font lands, but the
+  // fingerprint (params + time) doesn't move, so a paused graph's cached
+  // downstream nodes would keep the blank frame. Key on the drawn family's
+  // load version, as Text does.
+  fingerprintExtras: (params, ctx, nodeId) => {
+    const state = ctx.state[`point-labels:${nodeId}`] as PointLabelsState | undefined;
+    const family =
+      state?.family ?? (params.font_family as string) ?? DEFAULT_TEXT_STYLE.family;
+    return `font:${fontVersion(family)}`;
+  },
   inputs: [
     { name: "points", type: "points", required: true },
     { name: "style", type: "text_instance", required: false, label: "Style" },
@@ -285,29 +305,6 @@ export const pointLabelsNode: NodeDefinition = {
               (params.alignment as TextStyle["alignment"]) ?? "center",
           };
 
-    // Font gate — mirror the Text node: if the family isn't ready, kick the
-    // async load (it fires `pipeline-bump` on completion, re-driving eval) and
-    // paint nothing this frame. Avoids caching a fallback-face raster.
-    const family = baseStyle.family;
-    if (!isFontReady(family)) {
-      ensureFontLoaded(family);
-      ctx.clearTarget(output, [0, 0, 0, 0]);
-      return { primary: output };
-    }
-
-    // Bake the label scale into the font size so text stays crisp (vs.
-    // stretching the raster in the rect). Style signature keys the raster
-    // cache; a change (color/size/font/scale) invalidates every cached raster.
-    const rasterStyle: TextStyle = {
-      ...baseStyle,
-      size: Math.max(1, baseStyle.size * labelScale),
-    };
-    const styleSig = JSON.stringify({ ...rasterStyle, text: "" });
-    if (state.styleSig !== styleSig) {
-      clearCache(ctx, state);
-      state.styleSig = styleSig;
-    }
-
     const strings = formatPointLabels(src, {
       field: (params.field as PointLabelField) ?? "position",
       template: (params.template as string) ?? "{x}, {y}",
@@ -316,6 +313,41 @@ export const pointLabelsNode: NodeDefinition = {
       width: ctx.width,
       height: ctx.height,
     });
+
+    // Font gate — mirror the Text node: if the family isn't ready for these
+    // labels' characters, kick the async load (it fires `pipeline-bump` when
+    // it settles, re-driving eval) and paint nothing this frame. Avoids
+    // caching a fallback-face raster; an offline export holds the frame on
+    // the load instead.
+    const family = baseStyle.family;
+    state.family = family;
+    const fontQuery = {
+      weight: baseStyle.weight,
+      italic: baseStyle.italic,
+      text: strings.join(""),
+    };
+    if (!isFontReady(family, fontQuery)) {
+      const loading = ensureFontLoaded(family, fontQuery);
+      if (ctx.offline) pushMediaSettle(ctx, loading);
+      ctx.clearTarget(output, [0, 0, 0, 0]);
+      return { primary: output };
+    }
+
+    // Bake the label scale into the font size so text stays crisp (vs.
+    // stretching the raster in the rect). Style signature keys the raster
+    // cache; a change (color/size/font/scale) invalidates every cached raster,
+    // as does the family's load version (a fallback raster drawn after a load
+    // gave up must not outlive the real face).
+    const rasterStyle: TextStyle = {
+      ...baseStyle,
+      size: Math.max(1, baseStyle.size * labelScale),
+    };
+    const styleSig =
+      JSON.stringify({ ...rasterStyle, text: "" }) + `|font:${fontVersion(family)}`;
+    if (state.styleSig !== styleSig) {
+      clearCache(ctx, state);
+      state.styleSig = styleSig;
+    }
 
     const [ax, ay] = anchorFrac((params.placement as string) ?? "on");
     const offX = (params.offset_x as number) ?? 0;

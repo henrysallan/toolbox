@@ -41,13 +41,22 @@ spline, and optional full-canvas guide lines.
   to `aspectUncorrectY(1)`, NOT 0..1, which on a non-square canvas is
   wrong — at x = left and x = right. Horizontal guides run the full
   canvas **width** (x 0..1) at y = top and y = bottom.
+- **Per-socket toggles (2026-09-23, supersedes the guides toggle):** every
+  aux socket is opt-in behind its own `show_<socket>` boolean, labeled like
+  the socket and all default off, so a fresh node shows only `box`;
+  `guides` split into `show_guides_v` / `show_guides_h`. compute emits
+  values for shown sockets only. Saves from before load with the sockets
+  they always had (the 14 measurement sockets on, the guide pair per
+  `guides`), because the editor drops wires out of a missing socket — see
+  `migrateBoundingBoxParams` and `scripts/check-bounding-box.mts`.
 
 ## Sockets
 
 Primary: `box` (spline) — the rectangle as one closed 4-anchor subpath
 (TL → TR → BR → BL).
 
-Aux, in display order (grouped by ordering + labels):
+Aux, in display order (grouped by ordering + labels; since 2026-09-23 each
+one only exists while its `show_<name>` toggle is on):
 
 | group | name | type | value |
 |---|---|---|---|

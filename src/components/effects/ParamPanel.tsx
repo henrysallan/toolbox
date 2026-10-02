@@ -1592,7 +1592,8 @@ const NodeParamsBlock = memo(function NodeParamsBlock({
                 const suggestions = attrNameSuggestions(
                   info,
                   includeBuiltins,
-                  builtinFilter
+                  builtinFilter,
+                  !!p.suggestAttrsVectors
                 );
                 if (suggestions.length > 0) attrSuggestions = suggestions;
                 const current = selected.data.params[p.name];

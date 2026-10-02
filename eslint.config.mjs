@@ -20,6 +20,9 @@ const eslintConfig = defineConfig([
     "dist-electron/**",
     // Vendored WASM glue (wasm-bindgen output).
     "src/wasm/vtracer/**",
+    // Figma plugin — a separate sandboxed bundle with its own tsconfigs
+    // (npm run figma-plugin:typecheck); not a Next.js source.
+    "figma-plugin/**",
   ]),
   // Electron main-process files are CommonJS by design (they run unbundled
   // in Electron's Node; ESM would need a build step for no benefit).

@@ -28,6 +28,7 @@ export const crossNode: NodeDefinition = {
   type: "cross",
   name: "Cross",
   category: "spline",
+  pickable: true,
   subcategory: "generator",
   description:
     "Generate a crosshair / registration mark — four arms with an adjustable central gap (start offset), arm length, and rotation.",

@@ -192,6 +192,11 @@ that pair). Offline node tests should push each input through
   otherwise; its `nodeName` comes from the same counter as the node's
   knobs, and a gizmo-only link is not "no controls". The handles
   themselves are a live-app question.
+  And the viewer SVG source (`manifest.svgExport`, 2026-09-23): set only
+  when the rendered terminal has a spline in its tap — Output / Layer
+  Output `in:spline`, SVG Export `in:path` — with `stashId` = the
+  terminal, except a Layer Output, whose is its LAYER; a spline on the
+  image socket, another node's tap, or any other terminal gives none.
 - `check-live-presets` — the live-link style packs (081426 M4): every
   non-classic entry in design.ts's SLIDER/DROPDOWN/NUMERIC/TRANSPORT registries has
   a `.live-root[data-<class>="<id>"]` block in design-presets.css, every
@@ -205,7 +210,8 @@ that pair). Offline node tests should push each input through
   and text brightness fades only ink tokens (surfaces, borders, accent
   untouched; 100 % is byte-identical). And the pan / zoom flag
   (091826_live-pan-zoom.md, `layout.panZoom`): off when absent or junk,
-  on only for `true`. Visual correctness is NOT covered —
+  on only for `true`; `export.svg` follows the same rule. Visual
+  correctness is NOT covered —
   audition packs in File → Live Link… (the preview iframe is the real
   `.live-root`).
 - `check-live-param-history` — the live viewer's undo / redo
@@ -352,9 +358,13 @@ that pair). Offline node tests should push each input through
   even with the wire present; `extraTargets: [stashOwner]` restores it,
   while a bypassed / clip-gated layer or an empty spline honestly stays
   empty. Pins the "Nothing to export — wire a spline into Layer Output"
-  regression. EffectsApp's exportSvgNode forcing the owner via
-  `svgExportStashTargetRef`, the sequence-mode file loop and its toasts
-  are live-app questions.
+  regression. Also `svgStyleFromParams`, the style both the editor and the
+  live link's SVG button write: unset rows read as their defaults, so an
+  untouched Layer Output (seeded with EXPORT_PARAMS only) exports a
+  visible stroke rather than `fill="none"` and no stroke. EffectsApp's
+  exportSvgNode forcing the owner via `svgExportStashTargetRef`, the
+  viewer's forced render (LiveViewer onExportSvg), the sequence-mode file
+  loop and its toasts are live-app questions.
 - `check-keyframe-clipboard` — the keyframe clipboard shared by the
   Tracks editor (Cmd+C / Cmd+V) and the Graph editor's right-click menus
   (Copy / Paste / Paste flipped): offsets are relative to the earliest
@@ -369,6 +379,65 @@ that pair). Offline node tests should push each input through
   animated, drops sub-zero ticks and skips a lane whose block is gone.
   The menus themselves and the selection after paste are a live-app
   question.
+- `check-bounding-box` — Bounding Box's per-socket output toggles
+  (2026-09-23). Every aux socket is opt-in behind its own `show_<socket>`
+  boolean, all off: a fresh node shows only the Box spline, each toggle
+  adds exactly its socket in display order, and compute emits values for
+  shown sockets only (empty content → empty values, still only the shown
+  ones). The load migration matters most — the editor drops wires out of a
+  missing socket, so a save from before the toggles must keep the sockets
+  it always had: the 14 measurement sockets on, the guide pair per the old
+  `guides` flag (dropped), its expose / control / keyframe entries and any
+  `in:param:guides` wire fanned out onto both guide toggles; a current
+  save (all-off toggles) is never mistaken for legacy, and re-save is
+  stable. A node with no `show_*` key at all (an editor that hot-reloaded
+  onto the new def keeps its in-memory nodes un-migrated) resolves and
+  computes that same old set. Also: wiring a hidden socket in a recipe
+  fails with the toggle named (`hiddenAuxHint` in graph-validation.ts,
+  generic over boolean-gated aux sockets), and the catalog still
+  advertises all sixteen. The panel rows and the node's handles appearing
+  / wires dropping on a toggle are a live-app question.
+- `check-line` — the Line node's `start` / `end` vec2 sockets and bezier
+  mode (2026-09-23), compute and gizmo together. Wired values go through
+  `coerceValue` first: a wired socket replaces that endpoint's params, a
+  scalar lands on both axes, a non-finite vec2 falls back to the params.
+  `mode=straight` ignores the eight handle params; `mode=bezier` emits
+  them as offsets relative to their (possibly wired) endpoint, leaves a
+  0,0 handle off (all-zero bezier ≡ straight), gives a save without them
+  the def defaults, and trims along the curve. The gizmo half is the
+  line adapter in PrimitiveGizmo.tsx: every dot sits on the point compute
+  emitted, mapped through buildPath2D's `aspectCorrectY` (a raw-y adapter
+  drifts off the line on a non-square canvas — the gate runs at 1920×1080);
+  endpoint drags write X/Y with the aspect undone, handle drags write the
+  offset from the endpoint (y ÷ aspect); a wired endpoint is pinned to the
+  wired value and locked while its handles stay draggable, or left out,
+  handles and all, when its producer has nothing cached (`readWiredInputs`
+  → undefined), with writes still resolving by key; wiring start / end
+  never hides the gizmo, in the editor or the live link — only transform
+  does. The overlay itself (PrimitivePointHandles' cubic connector, stems,
+  handle hit rings, the locked ring) is a live-app question: select a Line,
+  flip it to Bezier, drag a handle, then wire a Vec2 into Start.
+- `check-figma-import` — the Figma → toolbox import
+  (092326_figma-import.md), pure half. `parseFigmaScene` is the clipboard
+  trust boundary: truncated JSON, a missing marker, a newer format, non-
+  base64 / non-image payloads and path data with foreign characters are
+  refused or dropped, non-numeric values fall back, the root transform is
+  pinned. `convertFigmaScene` on a hand-built scene: the root Merge follows
+  Figma's bottom→top order, a flat white frame fill becomes the Solid Color
+  base, frame px land in width-relative spline space (closing duplicate
+  folded, its in-handle kept), rotation is exact, fill + centred stroke
+  share one Rasterize, an inside stroke is 2× weight matted by the shape, an
+  open dashed path strokes its centerline in `%` metrics, a half-opacity
+  group of two isolates into a nested Merge, a clipping frame with overflow
+  mattes by its outline, a mask mattes every sibling above it up to the
+  next mask, text imports as glyph outlines, an image FILL lands on its
+  cover rect through Rasterize's fill input — and every edge meets a real
+  socket and `validateGraph` is clean. It then converts every plugin export
+  in `scripts/fixtures/figma-import/` (drop a **Download JSON** file there to
+  add one). Pixels are a live-app question: paste with **Include Figma's
+  render** on and `compare_renders` the "Figma reference" node against the
+  root Merge. The plugin itself type-checks with `npm run
+  figma-plugin:typecheck` (it runs only inside Figma's desktop app).
 
 ---
 

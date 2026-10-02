@@ -27,6 +27,7 @@ export const sdfCircleNode: NodeDefinition = {
   type: "sdf-circle",
   name: "SDF Circle",
   category: "utility",
+  pickable: true,
   description:
     "SDF primitive — a circle of radius r at (x, y). Wire `position` to feed a transformed coordinate space (Translate / Repeat / Mirror / etc.) — unwired defaults to canvas UV.",
   facts: {

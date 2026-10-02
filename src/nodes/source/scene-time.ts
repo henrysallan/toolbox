@@ -1,11 +1,10 @@
 import type { NodeDefinition } from "@/engine/types";
-import { EASING_OPTIONS, applyEasing } from "@/engine/easing";
 import {
-  defaultFloatCurve,
-  sampleFloatCurve,
-  sanitizeFloatCurve,
-  type CurvePoint,
-} from "@/engine/float-curve";
+  CUSTOM_EASING,
+  EASING_OPTIONS_WITH_CUSTOM,
+  applyEasingOrCurve,
+} from "@/engine/easing";
+import { defaultFloatCurve } from "@/engine/float-curve";
 
 // Scene time as a scalar output.
 //
@@ -91,11 +90,11 @@ import {
 export const STEP_SECONDS_DEFAULT = 1;
 export const STEP_FRAMES_DEFAULT = 12;
 
-// The enum value that routes easing through `easing_curve`. Appended to the
-// shared curve list rather than added to engine/easing.ts: the Text
-// animators share that list and have no curve param to honour it with.
-export const CUSTOM_EASING = "custom";
-const SCENE_TIME_EASING_OPTIONS = [...EASING_OPTIONS, CUSTOM_EASING];
+// The enum value that routes easing through `easing_curve` lives in
+// engine/easing.ts beside the curve sampler, shared with the Text animators'
+// per-animator `anim_<p>_easing_curve`. Re-exported for existing importers.
+export { CUSTOM_EASING };
+const SCENE_TIME_EASING_OPTIONS = EASING_OPTIONS_WITH_CUSTOM;
 
 // The two period-driven modes share one control set (period_frames, min /
 // max / amplitude, pingpong_easing, ease_intensity) and ignore unit / scale
@@ -105,34 +104,16 @@ export function isCyclic(mode: unknown): boolean {
   return mode === "pingpong" || mode === "sawtooth";
 }
 
-// sanitizeFloatCurve allocates a fresh array per call, which would defeat
-// sampleFloatCurve's by-identity tangent cache every frame. Param values
-// round-trip by reference through the evaluator (a wired curve arrives as
-// the producer's own `points` array), so the raw array is a sound key.
-const sanitizedCurves = new WeakMap<object, CurvePoint[]>();
-function curveOf(raw: unknown): CurvePoint[] {
-  if (!Array.isArray(raw)) return sanitizeFloatCurve(raw, 0, 1);
-  let clean = sanitizedCurves.get(raw);
-  if (!clean) {
-    clean = sanitizeFloatCurve(raw, 0, 1);
-    sanitizedCurves.set(raw, clean);
-  }
-  return clean;
-}
-
 // Ease a [0,1] ramp position by the named curve, or by `easing_curve` when
 // the enum says custom. Both paths clamp t and blend against the raw ramp
-// with `intensity`, exactly as applyEasing does for the named set.
+// with `intensity` (applyEasingOrCurve).
 function easeRamp(
   params: Record<string, unknown>,
   name: string,
   t: number,
   intensity: number
 ): number {
-  if (name !== CUSTOM_EASING) return applyEasing(name, t, intensity);
-  const tt = Math.max(0, Math.min(1, t));
-  const eased = sampleFloatCurve(curveOf(params.easing_curve), tt);
-  return tt + intensity * (eased - tt);
+  return applyEasingOrCurve(name, t, intensity, params.easing_curve);
 }
 
 export const sceneTimeNode: NodeDefinition = {

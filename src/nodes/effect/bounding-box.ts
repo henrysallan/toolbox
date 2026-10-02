@@ -3,10 +3,12 @@ import type {
   MaskValue,
   NodeDefinition,
   OutputSocketDef,
+  ParamDef,
   PointsValue,
   RenderContext,
   ScalarValue,
   SocketType,
+  SocketValue,
   SplineValue,
   Vec2Value,
 } from "@/engine/types";
@@ -21,8 +23,10 @@ import { aspectUncorrectY } from "@/engine/aspect";
 
 // Measure the axis-aligned bounding box of whatever is wired in and expose
 // it every way downstream work wants it: scalar edges, midpoint/corner point
-// sockets, the rectangle as a spline, and (behind a toggle) full-canvas
-// guide lines through the four edges.
+// sockets, the rectangle as a spline, and full-canvas guide lines through
+// the four edges. Only the box spline (primary) is always there — every
+// other socket is opt-in through its own `show_<socket>` toggle, so a fresh
+// node isn't a wall of sixteen outputs.
 //
 // The `source` socket is polymorphic — image, mask, spline, or points —
 // retyped from `connectedTypes` like Transform/Displace (the matching
@@ -187,7 +191,9 @@ function line(
 const EMPTY_SPLINE: SplineValue = { kind: "spline", subpaths: [] };
 
 // Aux socket list, in display order — edges, edge midpoints, corners,
-// extras. Grouping on the node is by ordering + labels.
+// extras, guides. Grouping on the node is by ordering + labels. This is the
+// full set (what the catalog advertises); resolveAuxOutputs keeps the ones
+// whose toggle is on.
 const AUX_OUTPUTS: OutputSocketDef[] = [
   { name: "left", label: "Left", type: "scalar", description: "Left edge x (authored space)." },
   { name: "right", label: "Right", type: "scalar", description: "Right edge x (authored space)." },
@@ -203,9 +209,6 @@ const AUX_OUTPUTS: OutputSocketDef[] = [
   { name: "corner_br", label: "Bottom Right", type: "points", description: "Bottom-right corner (single point)." },
   { name: "center", label: "Center", type: "points", description: "Center of the box (single point)." },
   { name: "size", label: "Size", type: "vec2", description: "Box (width, height) in authored units." },
-];
-
-const GUIDE_OUTPUTS: OutputSocketDef[] = [
   {
     name: "guides_v",
     label: "V Guides",
@@ -222,12 +225,64 @@ const GUIDE_OUTPUTS: OutputSocketDef[] = [
   },
 ];
 
+const GUIDE_SOCKETS = new Set(["guides_v", "guides_h"]);
+
+export function showParamName(socket: string): string {
+  return `show_${socket}`;
+}
+
+// One toggle per aux socket, labeled like the socket it adds. All off: a
+// fresh node shows just the Box spline.
+const SOCKET_TOGGLES: ParamDef[] = AUX_OUTPUTS.map((s) => ({
+  name: showParamName(s.name),
+  label: s.label,
+  type: "boolean",
+  default: false,
+}));
+
+// Before the per-socket toggles (2026-09-23) every aux socket always existed
+// except the guide pair, which one `guides` boolean switched on together.
+// The toggles default off, so reading an old node as "all off" would hide
+// its sockets — and the editor drops wires out of a missing socket. A node
+// with no show_* key at all is that old node: saved (the load migration
+// below pins the keys) or still in memory in an editor that hot-reloaded
+// onto this def, which never re-runs the migration.
+export const LEGACY_GUIDES_PARAM = "guides";
+export const GUIDE_TOGGLE_PARAMS = [...GUIDE_SOCKETS].map(showParamName);
+
+function isPreToggle(params: Record<string, unknown>): boolean {
+  return !SOCKET_TOGGLES.some((t) => params[t.name] !== undefined);
+}
+
+function preToggleShows(params: Record<string, unknown>, socket: string): boolean {
+  return !GUIDE_SOCKETS.has(socket) || params[LEGACY_GUIDES_PARAM] === true;
+}
+
+function shownAux(params: Record<string, unknown>): OutputSocketDef[] {
+  const pre = isPreToggle(params);
+  return AUX_OUTPUTS.filter((s) =>
+    pre ? preToggleShows(params, s.name) : params[showParamName(s.name)] === true
+  );
+}
+
+// Called by migrateLoadedParams (lib/project.ts) for every loaded node and
+// fragment: pins exactly the old socket set on as explicit toggles, so the
+// panel shows what the node shows. Idempotent. (lib/project.ts also carries
+// expose / control / keyframe entries on `guides` onto both guide toggles.)
+export function migrateBoundingBoxParams(params: Record<string, unknown>): void {
+  if (!isPreToggle(params)) return;
+  for (const s of AUX_OUTPUTS) {
+    params[showParamName(s.name)] = preToggleShows(params, s.name);
+  }
+  delete params[LEGACY_GUIDES_PARAM];
+}
+
 export const boundingBoxNode: NodeDefinition = {
   type: "bounding-box",
   name: "Bounding Box",
   category: "utility",
   description:
-    "Measure the bounding box of an image (alpha extent), mask, spline, or points and output it as edge scalars, midpoint/corner points, the box as a spline, and optional full-canvas guide lines.",
+    "Measure the bounding box of an image (alpha extent), mask, spline, or points and output the box as a spline. Edge scalars, midpoint/corner/center points, size, and full-canvas guide lines are extra sockets, each switched on by its own toggle.",
   facts: {
     space: {
       "aux:left": "canvas01",
@@ -237,9 +292,10 @@ export const boundingBoxNode: NodeDefinition = {
       "aux:size": "canvas01",
     },
     gotchas: [
+      "Each aux socket exists only while its show_<socket> toggle is on (show_center, show_guides_v, ...): set it before wiring that socket; switching it off drops the socket's wires.",
       "Masks and images share one <=256px alpha/R-channel proxy readback (cached per value identity) — not the mask-to-image coercion shader, which writes alpha=1 everywhere.",
       "No content (fully transparent image, empty spline/points) yields empty outputs — zero-length points/spline and size=[0,0] — never a full-canvas box.",
-      "guides_v/guides_h only exist when guides=true; they are full canvas-height/width lines through the box edges, not the box outline.",
+      "guides_v/guides_h are full canvas-height/width lines through the box edges, not the box outline.",
       "Spline bounds include the flattened bezier curve, not just anchors, so a bulging curve can extend the box past its own anchor points.",
     ],
   },
@@ -258,24 +314,21 @@ export const boundingBoxNode: NodeDefinition = {
             : "Image";
     return [{ name: "source", label, type: mode, required: true }];
   },
-  params: [
-    {
-      name: "guides",
-      label: "Canvas Guides",
-      type: "boolean",
-      default: false,
-    },
-  ],
+  params: SOCKET_TOGGLES,
   primaryOutput: "spline",
   auxOutputs: AUX_OUTPUTS,
-  resolveAuxOutputs(params): OutputSocketDef[] {
-    return params.guides ? [...AUX_OUTPUTS, ...GUIDE_OUTPUTS] : AUX_OUTPUTS;
-  },
+  resolveAuxOutputs: shownAux,
 
   compute({ inputs, params, ctx }) {
     const src = inputs["source"];
     const aspect = ctx.width / Math.max(1, ctx.height);
-    const wantGuides = params.guides === true;
+    // Only toggled-on sockets get a value: a hidden socket isn't produced
+    // (the guides' old behavior, now every socket's).
+    const pick = (all: Record<string, SocketValue>) => {
+      const aux: Record<string, SocketValue> = {};
+      for (const s of shownAux(params)) aux[s.name] = all[s.name];
+      return aux;
+    };
 
     let bbox: BBox | null = null;
     if (src?.kind === "spline") {
@@ -292,7 +345,7 @@ export const boundingBoxNode: NodeDefinition = {
 
     if (!bbox) {
       const none = pointsFromArray([]);
-      const aux: Record<string, ScalarValue | PointsValue | Vec2Value | SplineValue> = {
+      const aux = pick({
         left: scalar(0),
         right: scalar(0),
         top: scalar(0),
@@ -307,11 +360,9 @@ export const boundingBoxNode: NodeDefinition = {
         corner_br: none,
         center: none,
         size: { kind: "vec2", value: [0, 0] } satisfies Vec2Value,
-      };
-      if (wantGuides) {
-        aux.guides_v = EMPTY_SPLINE;
-        aux.guides_h = EMPTY_SPLINE;
-      }
+        guides_v: EMPTY_SPLINE,
+        guides_h: EMPTY_SPLINE,
+      });
       return { primary: EMPTY_SPLINE, aux };
     }
 
@@ -334,7 +385,13 @@ export const boundingBoxNode: NodeDefinition = {
       ],
     };
 
-    const aux: Record<string, ScalarValue | PointsValue | Vec2Value | SplineValue> = {
+    // Full canvas height in authored space is aspectUncorrectY(0..1), NOT
+    // 0..1 — on a non-square canvas those differ. X is uncorrected, so full
+    // width is plainly 0..1.
+    const canvasTop = aspectUncorrectY(0, aspect);
+    const canvasBottom = aspectUncorrectY(1, aspect);
+
+    const aux = pick({
       left: scalar(left),
       right: scalar(right),
       top: scalar(top),
@@ -352,26 +409,18 @@ export const boundingBoxNode: NodeDefinition = {
         kind: "vec2",
         value: [right - left, bottom - top],
       } satisfies Vec2Value,
-    };
-
-    if (wantGuides) {
-      // Full canvas height in authored space is aspectUncorrectY(0..1),
-      // NOT 0..1 — on a non-square canvas those differ. X is uncorrected,
-      // so full width is plainly 0..1.
-      const canvasTop = aspectUncorrectY(0, aspect);
-      const canvasBottom = aspectUncorrectY(1, aspect);
-      aux.guides_v = {
+      guides_v: {
         kind: "spline",
         subpaths: [
           line(left, canvasTop, left, canvasBottom),
           line(right, canvasTop, right, canvasBottom),
         ],
-      };
-      aux.guides_h = {
+      },
+      guides_h: {
         kind: "spline",
         subpaths: [line(0, top, 1, top), line(0, bottom, 1, bottom)],
-      };
-    }
+      },
+    });
 
     return { primary: box, aux };
   },

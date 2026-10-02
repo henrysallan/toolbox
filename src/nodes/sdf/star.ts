@@ -24,6 +24,7 @@ export const sdfStarNode: NodeDefinition = {
   type: "sdf-star",
   name: "SDF Star",
   category: "utility",
+  pickable: true,
   description:
     "SDF primitive — an N-pointed star. Sharpness 2 = sharpest spike, equal-to-points = regular polygon. 3 ≤ Points ≤ 24. Wire `position` to feed a transformed coordinate space.",
   facts: {

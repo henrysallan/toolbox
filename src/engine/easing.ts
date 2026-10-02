@@ -6,6 +6,12 @@
 // tripping the engine self-containment invariant (nodes → engine is fine;
 // engine → engine is fine).
 
+import {
+  sampleFloatCurve,
+  sanitizeFloatCurve,
+  type CurvePoint,
+} from "@/engine/float-curve";
+
 export type EasingFn = (t: number) => number;
 
 // Each family is defined by its "ease-in" shape; the "out" and "in-out"
@@ -93,5 +99,46 @@ export function applyEasing(name: string, t: number, intensity = 1): number {
   const fn = EASINGS[name] ?? EASINGS.linear;
   const tt = Math.max(0, Math.min(1, t));
   const eased = fn(tt);
+  return tt + intensity * (eased - tt);
+}
+
+// The enum value that routes easing through a node's own float_curve param
+// instead of a named curve (x = input position, y = eased value). Not a key
+// of EASINGS: only consumers that carry a curve param (Scene Time's
+// `easing_curve`, each Text animator's `anim_<p>_easing_curve`) append it to
+// their options, via EASING_OPTIONS_WITH_CUSTOM. Exposed, that param is a
+// float_curve socket a Float Curve / Expression node can drive
+// (091926_float-curve-socket.md).
+export const CUSTOM_EASING = "custom";
+export const EASING_OPTIONS_WITH_CUSTOM = [...EASING_OPTIONS, CUSTOM_EASING];
+
+// sanitizeFloatCurve allocates a fresh array per call, which would defeat
+// sampleFloatCurve's by-identity tangent cache every frame. Param values
+// round-trip by reference through the evaluator (a wired curve arrives as
+// the producer's own `points` array), so the raw array is a sound key.
+const sanitizedCurves = new WeakMap<object, CurvePoint[]>();
+function curveOf(raw: unknown): CurvePoint[] {
+  if (!Array.isArray(raw)) return sanitizeFloatCurve(raw, 0, 1);
+  let clean = sanitizedCurves.get(raw);
+  if (!clean) {
+    clean = sanitizeFloatCurve(raw, 0, 1);
+    sanitizedCurves.set(raw, clean);
+  }
+  return clean;
+}
+
+// applyEasing, plus the `custom` route: sample `curve` (a raw float_curve
+// param value; missing/invalid → the identity ramp) and blend against the
+// raw input with `intensity` exactly like the named path. The float-curve
+// model is clamped to the unit square, so a custom curve cannot overshoot.
+export function applyEasingOrCurve(
+  name: string,
+  t: number,
+  intensity: number,
+  curve: unknown
+): number {
+  if (name !== CUSTOM_EASING) return applyEasing(name, t, intensity);
+  const tt = Math.max(0, Math.min(1, t));
+  const eased = sampleFloatCurve(curveOf(curve), tt);
   return tt + intensity * (eased - tt);
 }

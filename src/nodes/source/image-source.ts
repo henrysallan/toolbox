@@ -123,6 +123,7 @@ export const imageSourceNode: NodeDefinition = {
   type: "image-source",
   name: "Image Source",
   category: "image",
+  pickable: true,
   subcategory: "generator",
   description:
     "Uploads an image and produces it as the canonical output. Accepts EXR files (single or multilayer, scene-linear HDR) with a layer picker.",

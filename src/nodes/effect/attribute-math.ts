@@ -229,6 +229,7 @@ export const attributeMathNode: NodeDefinition = {
       suggestAttrsFrom: "points",
       suggestAttrsRequire: true,
       suggestAttrsIncludeBuiltins: true,
+      suggestAttrsVectors: true,
     },
     {
       name: "target",
@@ -272,6 +273,7 @@ export const attributeMathNode: NodeDefinition = {
       suggestAttrsFrom: "points",
       suggestAttrsRequire: true,
       suggestAttrsIncludeBuiltins: true,
+      suggestAttrsVectors: true,
       visibleIf: (p) => usesOperand(p.op) && p.operand === "attribute",
     },
     {
@@ -328,6 +330,7 @@ export const attributeMathNode: NodeDefinition = {
       // the channels; index / z / normals tint red.
       suggestAttrsFrom: "points",
       suggestAttrsIncludeBuiltins: true,
+      suggestAttrsVectors: true,
       suggestAttrsBuiltinFilter: isWritablePointAttr,
     },
   ],

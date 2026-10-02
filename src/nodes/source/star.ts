@@ -48,6 +48,7 @@ export const starNode: NodeDefinition = {
   type: "star",
   name: "Star",
   category: "spline",
+  pickable: true,
   subcategory: "generator",
   description:
     "Generate an N-point star as a closed spline — set the point count, outer/inner radius, and rotation. Authored in [0,1]² Y-down; the rasterizer scales y about 0.5 by W/H so radii stay width-relative.",

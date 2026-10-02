@@ -187,6 +187,7 @@ export default function LiveLinkDesigner({
       canvasRes,
     }).manifest;
   }, [nodes, edges, projectName, outputNodeId, canvasRes]);
+  const svgAvailable = !!manifest?.svgExport;
 
   // Same shape LiveClient hands the real viewer. The Editor link is
   // display-only in the preview (DesignerPreview keeps anchors inert).
@@ -1026,33 +1027,68 @@ export default function LiveLinkDesigner({
               ["image", "Image (PNG)"],
               ["video", "Video (one loop)"],
               ["gif", "GIF (one loop)"],
+              ["svg", "SVG (spline at playhead)"],
             ] as const
-          ).map(([key, label]) => (
-            <label
-              key={key}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                cursor: "pointer",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={working.export[key]}
-                onChange={(e) =>
-                  update((d) => ({
-                    ...d,
-                    export: { ...d.export, [key]: e.target.checked },
-                  }))
-                }
-              />
-              <span style={{ color: "var(--tb-n-12)" }}>{label}</span>
-            </label>
-          ))}
+          ).map(([key, label]) => {
+            // SVG saves the spline wired into the rendered terminal's tap;
+            // with nothing wired there is nothing to save. A flag already on
+            // stays clickable so the author can clear it.
+            const unavailable = key === "svg" && !svgAvailable;
+            const disabled = unavailable && !working.export.svg;
+            return (
+              <div key={key}>
+                <label
+                  title={
+                    unavailable
+                      ? "Wire a spline into the Output's spline input to enable"
+                      : undefined
+                  }
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    cursor: disabled ? "default" : "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={working.export[key]}
+                    disabled={disabled}
+                    onChange={(e) =>
+                      update((d) => ({
+                        ...d,
+                        export: { ...d.export, [key]: e.target.checked },
+                      }))
+                    }
+                  />
+                  <span
+                    style={{
+                      color: unavailable ? "var(--tb-n-8)" : "var(--tb-n-12)",
+                    }}
+                  >
+                    {label}
+                  </span>
+                </label>
+                {unavailable && (
+                  <div
+                    style={{
+                      color: "var(--tb-n-9)",
+                      fontSize: 10,
+                      paddingLeft: 19,
+                    }}
+                  >
+                    {working.export.svg
+                      ? "No spline is wired into the Output’s spline input, so viewers get no SVG button."
+                      : "Wire a spline into the Output’s spline input to enable."}
+                  </div>
+                )}
+              </div>
+            );
+          })}
           {(working.export.image ||
             working.export.video ||
-            working.export.gif) && (
+            working.export.gif ||
+            (working.export.svg && svgAvailable)) && (
             <Field label={`Size · ${ratioLabel(effectiveExportRes)}`}>
               <div
                 style={{ display: "flex", alignItems: "center", gap: 4 }}

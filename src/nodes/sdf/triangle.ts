@@ -24,6 +24,7 @@ export const sdfTriangleNode: NodeDefinition = {
   type: "sdf-triangle",
   name: "SDF Triangle",
   category: "utility",
+  pickable: true,
   description:
     "SDF primitive — a triangle through three corners (A, B, C). For a regular triangle, prefer SDF Polygon with sides=3. Wire `position` to feed a transformed coordinate space.",
   facts: {

@@ -25,6 +25,7 @@ export const sdfLineSegmentNode: NodeDefinition = {
   type: "sdf-line-segment",
   name: "SDF Line Segment",
   category: "utility",
+  pickable: true,
   description:
     "SDF primitive — a thick line (capsule) between (Ax, Ay) and (Bx, By) with the given thickness. Endpoints are rounded. Wire `position` to feed a transformed coordinate space.",
   facts: {

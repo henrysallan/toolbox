@@ -25,6 +25,7 @@ export const sdfRectangleNode: NodeDefinition = {
   type: "sdf-rectangle",
   name: "SDF Rectangle",
   category: "utility",
+  pickable: true,
   description:
     "SDF primitive — a rectangle (with optional rounded corners) centered at (x, y) with the given width × height. Wire `position` to feed a transformed coordinate space.",
   facts: {

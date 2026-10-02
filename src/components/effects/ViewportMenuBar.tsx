@@ -17,8 +17,9 @@ export interface ViewportMenuBarProps {
   onPreviewScaleChange: (scale: number) => void;
   /**
    * Right-aligned slot — viewport view options (gizmos, transparency
-   * grid, snapping) sit here, on the same row as the resolution slider
-   * rather than floating over the canvas.
+   * grid, snapping, rulers) sit here, on the same row as the resolution
+   * slider rather than floating over the canvas, led by the selected
+   * Transform node's flip actions when there is one.
    */
   trailing?: React.ReactNode;
 }

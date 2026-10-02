@@ -45,6 +45,7 @@ export const polygonNode: NodeDefinition = {
   type: "polygon",
   name: "Polygon",
   category: "spline",
+  pickable: true,
   subcategory: "generator",
   description:
     "Generate a regular polygon as a closed spline — set the number of sides, radius, and rotation. Authored in [0,1]² Y-down; the rasterizer scales y about 0.5 by W/H so radii stay width-relative.",

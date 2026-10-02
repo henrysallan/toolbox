@@ -34,7 +34,8 @@ const { layerNode } = await import("@/nodes/group/layer");
 const { groupOutputNode } = await import("@/nodes/group/group-output");
 const { groupInputNode } = await import("@/nodes/group/group-input");
 const { outputNode } = await import("@/nodes/output/output");
-const { svgExportNode, svgExportStashKey } = await import("@/nodes/output/svg-export");
+const { svgExportNode, svgExportStashKey, svgStyleFromParams } = await import("@/nodes/output/svg-export");
+const { splineToSvg } = await import("@/engine/svg-serialize");
 const { LAYER_INPUT_SOCKETS, LAYER_OUTPUT_SOCKETS } = await import("@/engine/groups");
 import type { SvgExportStash } from "@/nodes/output/svg-export";
 
@@ -237,6 +238,34 @@ function evalWith(
   check("svg-export: an unrelated Active node starves it (the bug)", stashOf("E"), undefined);
   evalWith(graph, "X", { extraTargets: ["E"] });
   check("svg-export: extraTargets [node] restores the stash", stashOf("E")?.subpaths.length, 1);
+}
+
+// --- svgStyleFromParams: unset rows read as their defaults -----------------
+// Shared by the editor's exporter and the live link's SVG button. A Layer
+// Output is seeded with EXPORT_PARAMS only, so an untouched one stores no
+// SVG styling keys; reading them raw gave `fill="none"` and no stroke — an
+// invisible path — while the panel showed Stroke on.
+{
+  const untouched = svgStyleFromParams({});
+  check("style: untouched params → the default stroke", JSON.stringify(untouched.stroke), JSON.stringify({ color: "#ffffff", width: 4 }));
+  check("style: untouched params → no fill", untouched.fill, undefined);
+  const doc = splineToSvg(
+    [{ anchors: [{ pos: [0.1, 0.1], inHandle: null, outHandle: null }, { pos: [0.9, 0.9], inHandle: null, outHandle: null }], closed: false }] as any,
+    16,
+    9,
+    untouched
+  );
+  check("style: an untouched Layer Output's SVG carries a visible stroke", /stroke="#ffffff"/.test(doc), true);
+  const filled = svgStyleFromParams({
+    stroke_enabled: false,
+    fill_enabled: true,
+    fill_color: "#ff000080",
+    fill_rule: "nonzero",
+  });
+  check("style: stroke off → no stroke", filled.stroke, undefined);
+  check("style: fill on keeps its color and rule", JSON.stringify(filled.fill), JSON.stringify({ color: "#ff000080", rule: "nonzero" }));
+  check("style: an unknown fill_rule reads as evenodd", svgStyleFromParams({ fill_enabled: true, fill_rule: "junk" }).fill?.rule, "evenodd");
+  check("style: a set stroke width wins over the default", svgStyleFromParams({ stroke_width: 12 }).stroke?.width, 12);
 }
 
 console.log(

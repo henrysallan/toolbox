@@ -787,3 +787,14 @@ export function parseSvgPasteText(
 export function parsePathData(d: string): SplineSubpath[] {
   return parsePathD(d, IDENTITY);
 }
+
+// Path data mapped through an affine as it parses — `m` is the SVG matrix
+// [a, b, c, d, e, f] (x' = a·x + c·y + e, y' = b·x + d·y + f). Affine maps
+// keep béziers exact, so this is lossless. Used by the Figma importer
+// (lib/figma-import) to land node-local geometry in spline space.
+export function parsePathDataTransformed(
+  d: string,
+  m: [number, number, number, number, number, number]
+): SplineSubpath[] {
+  return parsePathD(d, m);
+}

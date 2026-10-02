@@ -356,6 +356,28 @@ interface ResolvedOut {
   aux: Map<string, string>;
 }
 
+// An aux socket the def declares but the node's params switch off (Bounding
+// Box's show_* toggles, a spline primitive's image with stroke and fill
+// off). Names the boolean that brings it back when flipping one does.
+function hiddenAuxHint(node: ValNode | undefined, name: string): string {
+  const def = node ? getNodeDef(node.defType) : undefined;
+  if (!node || !def?.resolveAuxOutputs) return "";
+  if (!def.auxOutputs.some((a) => a.name === name)) return "";
+  const params = node.params ?? {};
+  for (const p of def.params) {
+    if (p.type !== "boolean" || params[p.name] === true) continue;
+    try {
+      const aux = def.resolveAuxOutputs({ ...params, [p.name]: true });
+      if (aux.some((a) => a.name === name)) {
+        return ` (hidden while ${p.name} is off; set ${p.name}: true)`;
+      }
+    } catch {
+      // A resolver that throws on odd params just gets no hint.
+    }
+  }
+  return " (a param on this node hides it)";
+}
+
 function outputTypeOf(
   sourceId: string,
   handle: string,
@@ -469,6 +491,8 @@ export function validateGraph(nodes: ValNode[], edges: ValEdge[]): ValResult {
           .map(([n]) => n)
           .slice(0, 4);
         hint = ` (this node has no primary; did you mean ${names.map((n) => `aux:${n}`).join(" or ")})`;
+      } else if (e.sourceHandle.startsWith("out:aux:")) {
+        hint = hiddenAuxHint(byId.get(e.source), e.sourceHandle.slice("out:aux:".length));
       }
       err(
         "EDGE_UNKNOWN_OUTPUT",

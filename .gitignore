@@ -70,3 +70,9 @@ next-env.d.ts
 # scratch bundles/fixtures written by the Electron GL gates (check:shaders, check:blend-gpu, check:readback-async)
 *.tmp.json
 *.tmp.js
+
+# Figma plugin exports used as import fixtures are real design files, so they
+# (and real-exports.mts, which asserts on their content) stay local; only the
+# README ships. scripts/check-figma-import.mts runs whatever is present.
+/scripts/fixtures/figma-import/*
+!/scripts/fixtures/figma-import/README.md

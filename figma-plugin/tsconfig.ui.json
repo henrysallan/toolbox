@@ -1,0 +1,14 @@
+{
+  // UI iframe: a plain browser page (null origin, not a secure context).
+  "compilerOptions": {
+    "target": "es2020",
+    "lib": ["es2020", "dom", "dom.iterable"],
+    "strict": true,
+    "noEmit": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "types": []
+  },
+  "files": ["src/ui.ts", "src/globals.d.ts"]
+}

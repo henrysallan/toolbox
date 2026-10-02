@@ -4,6 +4,7 @@ import type {
   SplineSubpath,
   SplineValue,
 } from "@/engine/types";
+import type { SvgStyle } from "@/engine/svg-serialize";
 
 // SVG Export — snapshot a wired spline at the current playhead as a
 // standalone .svg (spec 072726_spline-animation-program.md M2, devlist
@@ -81,6 +82,30 @@ export const SVG_STYLE_PARAMS: ParamDef[] = [
     visibleIf: (p) => !!p.fill_enabled,
   },
 ];
+
+/**
+ * The serializer style for a node carrying SVG_STYLE_PARAMS — shared by the
+ * editor's exporter and the live link's SVG button. Unset rows read as
+ * their defaults, the way the param panel shows them: a Layer Output is
+ * seeded with EXPORT_PARAMS only, so an untouched one stores none of these
+ * keys, and reading them raw exported `fill="none"` with no stroke (an
+ * invisible path).
+ */
+export function svgStyleFromParams(params: Record<string, unknown>): SvgStyle {
+  const p: Record<string, unknown> = {};
+  for (const def of SVG_STYLE_PARAMS) p[def.name] = params[def.name] ?? def.default;
+  return {
+    stroke: p.stroke_enabled
+      ? { color: p.stroke_color as string, width: p.stroke_width as number }
+      : undefined,
+    fill: p.fill_enabled
+      ? {
+          color: p.fill_color as string,
+          rule: p.fill_rule === "nonzero" ? "nonzero" : "evenodd",
+        }
+      : undefined,
+  };
+}
 
 const EMPTY: SplineValue = { kind: "spline", subpaths: [] };
 

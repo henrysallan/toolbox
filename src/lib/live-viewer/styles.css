@@ -514,6 +514,9 @@
 /* Viewer export (081426_live-link-designer.md M3). */
 .live-root .export-row {
   display: flex;
+  /* Up to four buttons (Image / Video / GIF / SVG): wrap rather than
+     overflow a narrow panel. */
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
 }

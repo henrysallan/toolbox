@@ -228,6 +228,7 @@ export const attributeTransferNode: NodeDefinition = {
       // scale(.x/.y), position/x/y, group). index / z / normals have no
       // home on the target, so they stay out of the picker and tint red.
       suggestAttrsIncludeBuiltins: true,
+      suggestAttrsVectors: true,
       suggestAttrsBuiltinFilter: isWritablePointAttr,
     },
     {

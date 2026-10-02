@@ -38,8 +38,14 @@ import {
   parseAnimators,
   type AnimProp,
 } from "@/engine/text-animators";
-import { CURATED_FONTS, ensureFontLoaded, isFontReady } from "@/lib/fonts";
+import {
+  CURATED_FONTS,
+  ensureFontLoaded,
+  fontVersion,
+  isFontReady,
+} from "@/lib/fonts";
 import { asAxisDict, hasMaskDriven } from "@/lib/font-axis";
+import { pushMediaSettle } from "@/engine/offline-settle";
 import {
   resolveStrokePx,
   strokeUnitsParam,
@@ -227,6 +233,10 @@ interface TextState {
   lastPostSig: string | null;
   lastW: number;
   lastH: number;
+  // The family the last compute drew (or waited on) — the effective value,
+  // which a keyframed font makes differ from params.font_family.
+  // fingerprintExtras keys on its load version.
+  family: string | null;
   // Whether the cached sdf / spline reflect the CURRENT raster+transform.
   // Reset whenever the raster or transform changes; the expensive
   // recompute is deferred until something actually consumes that output
@@ -339,6 +349,7 @@ function ensureState(ctx: RenderContext, nodeId: string): TextState {
     lastPostSig: null,
     lastW: ctx.width,
     lastH: ctx.height,
+    family: null,
     sdfValid: false,
     splineValid: false,
   };
@@ -708,6 +719,7 @@ export const textNode: NodeDefinition = {
   type: "text",
   name: "Text",
   category: "image",
+  pickable: true,
   subcategory: "generator",
   description:
     "Renders text with a built-in transform. Wire a spline into the Path input to lay the text along it (Text on Path). Primary is the rasterized image; aux exposes an SDF (jump-flood) and the glyph outline as a spline.",
@@ -731,12 +743,21 @@ export const textNode: NodeDefinition = {
       "A wired path or a maskDriven morph_mask axis forces a full re-rasterize every frame, bypassing the normal per-param signature cache.",
       "morph_mask (variable-font axis morph) only modulates the primary raster; element and instances aux always use the unmodulated base style.",
       "aux:spline is a simplified polyline (marching squares + ~0.4px RDP tolerance), not smooth beziers, so sharp zoom-ins show facets.",
+      "Animator anim_<p>_by=word counts words in the cascade, samples fields and pivots scale/rotation/position at the word centre; easing=custom samples the exposable anim_<p>_easing_curve.",
     ],
   },
   backend: "webgl2",
   // Unstable so font-load pipeline bumps re-enter compute; a local signature
   // cache inside the compute skips re-rasterization when nothing changed.
   stable: false,
+  // A font landing redraws this node's textures in place, but the
+  // fingerprint (params + time) doesn't move, so a paused graph's cached
+  // downstream nodes would keep the placeholder / fallback output. Key on
+  // the drawn family's load version.
+  fingerprintExtras: (params, ctx, nodeId) => {
+    const state = ctx.state[`text:${nodeId}`] as TextState | undefined;
+    return `font:${fontVersion(state?.family ?? effectiveFamily(params))}`;
+  },
   // On-canvas manipulation is the bounds gizmo (PRIMITIVE_GIZMO_ADAPTERS
   // "text" entry): drag the box, resize edges/corners with the opposite
   // side anchored. The legacy symmetric transform gizmo is off.
@@ -833,9 +854,10 @@ export const textNode: NodeDefinition = {
       ...unitsRangeHints("units", { min: 0.1, max: 100, softMax: 20, step: 0.1 }),
     },
     strokeUnitsParam("units", undefined, { governs: TEXT_UNITS_GOVERNS }),
-    // Base weight applies to any font (the Google CDN ships the full
-    // wght@100..900 range, so built-in families interpolate too). A
-    // modulated `wght` variable axis overrides this per glyph.
+    // Base weight applies to any font: variable Google families interpolate
+    // across their axis, static ones snap to the nearest shipped weight
+    // (GOOGLE_FONT_WEIGHTS in lib/fonts.ts). A modulated `wght` variable
+    // axis overrides this per glyph.
     {
       name: "font_weight",
       label: "Weight",
@@ -1126,7 +1148,9 @@ export const textNode: NodeDefinition = {
     },
     // Stackable per-character animators (Type On / Opacity / Position / Scale /
     // Rotation / Tracking / Color). Each: enable toggle → min/max + a keyframable
-    // 0–1 Amount + driver (field/cascade/uniform). See engine/text-animators.ts.
+    // 0–1 Amount + driver (field/cascade/uniform), based on character or word,
+    // with a named or custom (float_curve, exposable) easing. See
+    // engine/text-animators.ts.
     ...TEXT_ANIMATOR_PARAMS,
   ],
   primaryOutput: "image",
@@ -1162,12 +1186,18 @@ export const textNode: NodeDefinition = {
     resizeStateIfNeeded(ctx, state);
 
     const family = effectiveFamily(params);
+    state.family = family;
+    // Resolved once: the font gate below, then the element / instances aux.
+    const style = styleFromParams(params, family, ctx.width);
 
-    // Font not yet loaded — paint a transparent placeholder and trigger the
-    // async load. The load helper fires `pipeline-bump` on completion so
-    // EffectsApp re-enters the evaluation loop.
-    if (!isFontReady(family)) {
-      ensureFontLoaded(family);
+    // Font not yet loaded (for this weight, style and these characters) —
+    // paint a transparent placeholder and trigger the async load, which fires
+    // `pipeline-bump` when it settles so EffectsApp re-enters the evaluation
+    // loop. An offline export holds the frame on it instead: the driver
+    // awaits the settle and renders again before capturing.
+    if (!isFontReady(family, style)) {
+      const loading = ensureFontLoaded(family, style);
+      if (ctx.offline) pushMediaSettle(ctx, loading);
       ctx.clearTarget(state.primary, [0, 0, 0, 0]);
       ctx.clearTarget(state.sdf, [0, 0, 0, 0]);
       state.lastSig = null;
@@ -1263,7 +1293,10 @@ export const textNode: NodeDefinition = {
         inputs[`field_${p}`]?.kind === "image" ? "1" : "0"
       ).join("") +
       "|path:" +
-      (pathActive ? "1" : "0");
+      (pathActive ? "1" : "0") +
+      // A face landing (or a load giving up on the fallback) re-rasterizes.
+      "|font:" +
+      fontVersion(family);
     const postSig = computePostSig(params);
 
     // Force re-rasterize every frame when maskDriven is in play
@@ -1410,7 +1443,6 @@ export const textNode: NodeDefinition = {
     // path re-rasterizes whenever the primary actually changes.
     // maskDriven axis modulation is primary-only (mask coords are canvas
     // space, which doesn't exist inside a layout rect).
-    const style = styleFromParams(params, family, ctx.width);
     const element: ElementValue = {
       kind: "element",
       measure(constraints) {

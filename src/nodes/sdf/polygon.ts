@@ -48,6 +48,7 @@ export const sdfPolygonNode: NodeDefinition = {
   type: "sdf-polygon",
   name: "SDF Polygon",
   category: "utility",
+  pickable: true,
   description:
     "SDF primitive — a regular N-gon. Sides 3 = triangle, 4 = square, 5 = pentagon, 6 = hexagon… Wire a scalar field into Sides Field for per-pixel / per-tile variation in side count (set Quantize Sides on for clean integer counts; pair with SDF Repeat.cell_id → Noise for per-tile randomness).",
   facts: {

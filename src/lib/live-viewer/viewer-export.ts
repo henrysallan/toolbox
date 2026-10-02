@@ -12,7 +12,11 @@
 // silent-capture mime probe. The GIF path is the exception — it imports
 // the real encoder (lib/export-gif.ts ffmpeg+gifsicle pipeline), which
 // is why the template's package.json carries @ffmpeg/ffmpeg,
-// @ffmpeg/util and gifsicle-wasm-browser.
+// @ffmpeg/util and gifsicle-wasm-browser. SVG serializes with the engine's
+// own pure splineToSvg.
+
+import { splineToSvg, type SvgStyle } from "@/engine/svg-serialize";
+import type { SplineSubpath } from "@/engine/types";
 
 export function viewerDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -44,6 +48,29 @@ export async function exportViewerImage(
   );
   if (!blob) throw new Error("Canvas capture failed");
   viewerDownload(blob, `${viewerFileBase(baseName)}.png`);
+}
+
+// --- svg -----------------------------------------------------------------
+
+/**
+ * Saves the terminal's spline tap as a standalone .svg — the same
+ * serializer as the editor's SVG button. The caller hands over the stash
+ * after a render that forced its owner into the pass; `width`/`height`
+ * are the link's canvas resolution (the stash records the render-scale
+ * buffer, which would shrink the document and its pixel stroke widths).
+ */
+export function exportViewerSvg(opts: {
+  subpaths: SplineSubpath[];
+  width: number;
+  height: number;
+  style: SvgStyle;
+  baseName: string;
+}): void {
+  const svg = splineToSvg(opts.subpaths, opts.width, opts.height, opts.style);
+  viewerDownload(
+    new Blob([svg], { type: "image/svg+xml" }),
+    `${viewerFileBase(opts.baseName)}.svg`
+  );
 }
 
 // --- video (MediaRecorder live capture, silent) --------------------------

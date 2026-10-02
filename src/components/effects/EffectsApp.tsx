@@ -20,6 +20,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import NodeEditor, { PROJECT_CRUMB_ID, type PendingWire } from "./NodeEditor";
+import { nodeCameraKey } from "./node-camera-store";
 import { CompositionTabBar } from "./CompositionTabBar";
 import { ProjectView } from "./ProjectView";
 import {
@@ -92,7 +93,7 @@ import ProjectLoadOverlay, {
   waitAnimationFrames,
 } from "./ProjectLoadOverlay";
 import ViewportMenuBar from "./ViewportMenuBar";
-import TransformContextBar from "./TransformContextBar";
+import TransformContextActions from "./TransformContextActions";
 import ViewportRulers, {
   RULER_SIZE,
   VERTICAL_RULER_SIDE,
@@ -133,6 +134,7 @@ import {
 import { splineToSvg } from "@/engine/svg-serialize";
 import {
   svgExportStashKey,
+  svgStyleFromParams,
   type SvgExportStash,
 } from "@/nodes/output/svg-export";
 import {
@@ -394,7 +396,8 @@ import {
   type AddAssetResult,
 } from "@/state/user-assets";
 import { userAssetFilename, userAssetUrl } from "@/lib/supabase/user-assets";
-import { resolvePreviewProducer } from "@/engine/flatten";
+import { flattenGraph, resolvePreviewProducer } from "@/engine/flatten";
+import { PICK_ALPHA_THRESHOLD, pickNodesAt } from "@/lib/viewport-pick";
 import {
   importImageSourceValue,
   importSvgSourceValue,
@@ -434,6 +437,14 @@ import {
   parseFragmentText,
   writeFragmentToClipboard,
 } from "@/lib/fragment-clipboard";
+import {
+  FigmaSceneError,
+  looksLikeFigmaSceneText,
+  parseFigmaScene,
+} from "@/lib/figma-import/scene";
+import FigmaImportToast, {
+  type FigmaImportNotice,
+} from "./FigmaImportToast";
 import {
   startPointerDrag,
   useCoarsePointer,
@@ -497,6 +508,7 @@ import {
   TransformGizmoAtTick,
 } from "./GizmoTickOverlays";
 import SegmentDotsOverlay from "./SegmentDotsOverlay";
+import { ViewportPickOverlay, ViewportPickToggle } from "./ViewportPickTool";
 import KeyerSampleOverlay, {
   type KeyerSourcePixels,
 } from "./KeyerSampleOverlay";
@@ -1394,6 +1406,26 @@ function EffectsShell({
   // make the node unpaintable), the second draws actual output rather than
   // chrome.
   const [showGizmos, setShowGizmos] = useState(true);
+  // Viewport pick-select tool (ViewportPickTool.tsx). A transient mode,
+  // never persisted: a reload should not land in a click-to-select canvas.
+  const [pickMode, setPickMode] = useState(false);
+  // While picking, the preview stays on the node that was on screen at the
+  // first pick. With no Output drawing, the canvas previews the SELECTED
+  // node — so without the pin, each pick would swap the picture for the
+  // picked node's own output and the next click would walk the wrong image.
+  const pickPreviewPinRef = useRef<string | null>(null);
+  // Leaving pick mode releases the preview pin so the canvas follows the
+  // selection again (pickMode is a render-effect dep, so it repaints).
+  // Cleared here, not in an effect: it must land before that repaint.
+  const exitPickMode = useCallback(() => {
+    pickPreviewPinRef.current = null;
+    setPickMode(false);
+  }, []);
+  // The chip and Shift+V.
+  const togglePickMode = useCallback(() => {
+    pickPreviewPinRef.current = null;
+    setPickMode((v) => !v);
+  }, []);
   // Snapping for the transform gizmo (canvas edges / centre) and the
   // spline editor (anchors + canvas guides). On by default; the lock
   // chip in the viewport bar turns it off. Cmd/Ctrl still suppresses
@@ -1809,6 +1841,14 @@ function EffectsShell({
         if (e.repeat) return;
         e.preventDefault();
         setRulersVisible((v) => !v);
+      } else if ((e.key === "V" || e.key === "v") && e.shiftKey) {
+        // Shift+V → viewport pick-select tool. Plain V stays the Track
+        // Editor's select tool (it ignores modifiers only for Cmd/Ctrl/Alt,
+        // so Shift+V over the timeline also drops razor mode — harmless).
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.repeat) return;
+        e.preventDefault();
+        togglePickMode();
       } else if (e.key === "0") {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         e.preventDefault();
@@ -1832,7 +1872,7 @@ function EffectsShell({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [fullCanvas]);
+  }, [fullCanvas, togglePickMode]);
 
   const enterBrowserFullscreen = useCallback(() => {
     const el = document.documentElement;
@@ -3048,6 +3088,8 @@ function EffectsShell({
   // which is how the 2026-09-20 "video freezes a few frames in" export bug
   // happened while the engine kept rendering every frame.
   const lastTerminalImageRef = useRef<ImageValue | null>(null);
+  // Which node that image came from — the pick tool walks upstream from it.
+  const lastTerminalNodeIdRef = useRef<string | null>(null);
   const trackingCancelRef = useRef(false);
   const trackingRunningRef = useRef(false);
   const trackerRuntimeRef = useRef(new Map<string, Map<number, TrackRuntime>>());
@@ -3129,7 +3171,9 @@ function EffectsShell({
       // that node evaluates and publishes its scene for the orbit viewport
       // (the 2D preview it produces sits hidden under the viewport overlay).
       const previewNodeId = !activeNodeId
-        ? viewport3DTargetRef.current ?? selectedIdRef.current
+        ? viewport3DTargetRef.current ??
+          pickPreviewPinRef.current ??
+          selectedIdRef.current
         : null;
       const graphEdges: GraphEdge[] = currentEdges.map((e) => ({
         id: e.id,
@@ -3233,6 +3277,7 @@ function EffectsShell({
         result.terminalImage && result.terminalImage.image.kind === "image"
           ? (result.terminalImage.image as ImageValue)
           : null;
+      lastTerminalNodeIdRef.current = result.terminalImage?.nodeId ?? null;
       lastEvalOutputsRef.current = result.outputs;
       // Re-render the peek popover with this pass's value (rAF-coalesced,
       // same tick as the inspector popups).
@@ -3512,6 +3557,8 @@ function EffectsShell({
     // Re-render when the selection changes so the selected-node preview
     // (when nothing is set Active) updates on the canvas.
     selectedId,
+    // Leaving pick mode drops its preview pin (see pickPreviewPinRef).
+    pickMode,
     // Toggling split view mounts/unmounts the second canvas; re-render so it
     // paints immediately instead of showing a blank checkerboard until an
     // unrelated eval (cursor move, param edit) happens to fire. See 072226
@@ -4692,6 +4739,154 @@ function EffectsShell({
     [setNodes, setEdges, navigateScope]
   );
 
+  // Figma "Copy to toolbox" import (specdocs/092326_figma-import.md): parse
+  // the scene, decode its images, convert, then commit like a source drop —
+  // at strict root the frame becomes its own named layer with the root Merge
+  // wired into the layer's Group Output; inside a scope it drops in at the
+  // pointer. Shared by clipboard paste and a dropped "Download JSON" file.
+  const [figmaNotice, setFigmaNotice] = useState<FigmaImportNotice | null>(null);
+  const figmaNoticeIdRef = useRef(0);
+  const importFigmaSceneText = useCallback(
+    async (text: string) => {
+      let result: import("@/lib/figma-import/convert").FigmaImportResult;
+      try {
+        const scene = parseFigmaScene(text);
+        const { importFigmaScene } = await import("@/lib/figma-import/import");
+        result = await importFigmaScene(scene);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("Figma import failed:", err);
+        flashToast(
+          err instanceof FigmaSceneError
+            ? err.message
+            : "Couldn't import the Figma frame"
+        );
+        return;
+      }
+      pushGraph(getGraphSnapshot());
+      const active = activeCompositionIdRef.current;
+      let baseNodes = nodesRef.current;
+      let baseEdges = edgesRef.current;
+      let scope = currentGroupIdRef.current;
+      let layerId: string | null = null;
+      if (!scope) {
+        const res = createLayer(
+          baseNodes,
+          baseEdges,
+          { name: result.frame.name },
+          active
+        );
+        baseNodes = res.nodes;
+        baseEdges = res.edges;
+        scope = res.layerId;
+        layerId = res.layerId;
+      }
+      const inLayer = (type: string) =>
+        layerId
+          ? baseNodes.find(
+              (n) => n.data.parentId === layerId && n.data.defType === type
+            )
+          : undefined;
+      const groupOutput = inLayer(GROUP_OUTPUT_TYPE);
+      const groupInput = inLayer(GROUP_INPUT_TYPE);
+      // Root Merge one column left of the new layer's Group Output; inside
+      // a scope, the graph's top-left lands at the pointer.
+      const outNode = result.nodes.find((n) => n.id === result.output.nodeId);
+      let dx: number;
+      let dy: number;
+      if (groupOutput && outNode) {
+        dx = groupOutput.position.x - 380 - outNode.position.x;
+        dy = groupOutput.position.y - outNode.position.y;
+      } else {
+        const p = lastPanePointerRef.current ?? { x: 24, y: 24 };
+        dx = p.x - Math.min(...result.nodes.map((n) => n.position.x));
+        dy = p.y - Math.min(...result.nodes.map((n) => n.position.y));
+      }
+      const imported = result.nodes.map((n) => ({
+        ...n,
+        position: { x: n.position.x + dx, y: n.position.y + dy },
+        data: { ...n.data, parentId: scope, compositionId: active },
+      }));
+      if (groupInput) {
+        // Nothing reads the layer's backdrop, but its Group Input shouldn't
+        // sit on top of the imported graph.
+        const left = Math.min(...imported.map((n) => n.position.x));
+        baseNodes = baseNodes.map((n) =>
+          n.id === groupInput.id
+            ? { ...n, position: { x: left - 420, y: n.position.y } }
+            : n
+        );
+      }
+      setNodes([
+        ...baseNodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
+        ...imported,
+      ]);
+      setEdges([
+        ...baseEdges,
+        ...result.edges,
+        ...(groupOutput
+          ? [
+              {
+                id: newEdgeId(),
+                source: result.output.nodeId,
+                sourceHandle: result.output.handle,
+                target: groupOutput.id,
+                targetHandle: "in:image",
+              },
+            ]
+          : []),
+      ]);
+      if (layerId) navigateScope(layerId);
+      // navigateScope clears the selection — land on the root Merge, the
+      // frame's layer stack.
+      setNodes((prev) =>
+        prev.map((n) =>
+          n.id === result.output.nodeId ? { ...n, selected: true } : n
+        )
+      );
+      setSelectedId(result.output.nodeId);
+      setParamView("node");
+
+      const { shapes, texts, images } = result.stats;
+      const frame: [number, number] = [
+        Math.round(result.frame.width),
+        Math.round(result.frame.height),
+      ];
+      flashToast(`Imported “${result.frame.name}” from Figma`);
+      if (result.warnings.length) {
+        // Keep the notes in the console history too, after the card closes.
+        setConsoleLog((prev) =>
+          prev.concat(
+            result.warnings.map((w) => ({
+              id: ++consoleIdRef.current,
+              text: `Figma import: ${w}`,
+              at: Date.now(),
+            }))
+          )
+        );
+      }
+      setFigmaNotice({
+        id: ++figmaNoticeIdRef.current,
+        frameName: result.frame.name,
+        layers: shapes + texts + images,
+        nodes: result.nodes.length,
+        frame,
+        canvas: [canvasResRef.current[0], canvasResRef.current[1]],
+        warnings: result.warnings,
+      });
+    },
+    [
+      flashToast,
+      pushGraph,
+      getGraphSnapshot,
+      setNodes,
+      setEdges,
+      navigateScope,
+      setSelectedId,
+      setParamView,
+    ]
+  );
+
   // Insert a GLB scene-expansion group at a canvas position
   // (081626_glb-scene-import.md §3). Same insertion mechanics as the
   // preset: branch of onAddNode — cloneSubgraph mints fresh ids and
@@ -4757,6 +4952,17 @@ function EffectsShell({
   // file metadata; the node spawns as soon as the load resolves.
   const onAddFileNode = useCallback(
     async (file: File, flowPos: { x: number; y: number }) => {
+      // A "Download JSON" export from the Figma plugin — the fallback when a
+      // frame is too big for the clipboard.
+      if (/\.json$/i.test(file.name) || file.type === "application/json") {
+        const text = await file.text();
+        if (looksLikeFigmaSceneText(text)) {
+          await importFigmaSceneText(text);
+        } else {
+          flashToast("That JSON file isn't a Figma export from the toolbox plugin");
+        }
+        return;
+      }
       const kind = detectFileKind(file);
       if (!kind) return;
 
@@ -4871,6 +5077,7 @@ function EffectsShell({
       placeSourceNode,
       flashToast,
       commitModelGroup,
+      importFigmaSceneText,
     ]
   );
 
@@ -5191,6 +5398,68 @@ function EffectsShell({
     },
     []
   );
+
+  // Pick tool: pickable node ids under a canvas point (UV, Y-down), topmost
+  // first — see src/lib/viewport-pick.ts. Walks the same flattened graph the
+  // last eval ran on, reading that eval's outputs; called synchronously from
+  // the click, before the next eval releases uncacheable nodes' textures.
+  const pickNodesAtUv = useCallback((u: number, v: number): string[] => {
+    const backend = backendRef.current;
+    const outputs = lastEvalOutputsRef.current;
+    const startNodeId = lastTerminalNodeIdRef.current;
+    if (!backend || !outputs || !startNodeId) return [];
+    const ctx = backend.makeContext(0, 0);
+    const sampleAlpha = (img: ImageValue | MaskValue): number | null => {
+      const px = ctx.readImageRegion(
+        img,
+        Math.min(img.width - 1, Math.floor(u * img.width)),
+        Math.min(img.height - 1, Math.floor(v * img.height)),
+        1,
+        1,
+        img.kind === "mask" ? { gray: true } : undefined
+      );
+      if (!px) return null;
+      return img.kind === "mask" ? px[0]! : px[3]!;
+    };
+    const shown = lastTerminalImageRef.current;
+    if (shown) {
+      const a = sampleAlpha(shown);
+      if (a != null && a <= PICK_ALPHA_THRESHOLD) return [];
+    }
+    const { nodes: compNodes, edges: compEdges } = resolveComposition(
+      nodesRef.current,
+      edgesRef.current,
+      activeCompositionIdRef.current
+    );
+    const flat = flattenGraph(
+      compNodes.map((n) => ({
+        id: n.id,
+        type: n.data.defType,
+        parentId: n.data.parentId,
+        params: n.data.params,
+        bypassed: !!n.data.bypassed,
+      })),
+      compEdges.map((e) => ({
+        id: e.id,
+        source: e.source,
+        sourceHandle: e.sourceHandle ?? "out:primary",
+        target: e.target,
+        targetHandle: e.targetHandle ?? "in:image",
+      }))
+    );
+    const [cw, ch] = canvasResRef.current;
+    return pickNodesAt({
+      nodes: flat.nodes,
+      edges: flat.edges,
+      outputs,
+      startNodeId,
+      u,
+      v,
+      aspect: cw / Math.max(1, ch),
+      isPickable: (type) => getNodeDef(type)?.pickable === true,
+      sampleAlpha,
+    });
+  }, []);
 
   // Drop an Image-Generate thumbnail onto the node editor → spawn
   // an Image Source node owning its own copy of the bitmap. The new
@@ -11193,23 +11462,7 @@ function EffectsShell({
         backendRef.current?.state[stashKey] as SvgExportStash | undefined;
 
       const p = node.data.params ?? {};
-      const style = {
-        stroke: p.stroke_enabled
-          ? {
-              color: (p.stroke_color as string) ?? "#ffffff",
-              width: (p.stroke_width as number) ?? 4,
-            }
-          : undefined,
-        fill: p.fill_enabled
-          ? {
-              color: (p.fill_color as string) ?? "#ffffff",
-              rule:
-                p.fill_rule === "nonzero"
-                  ? ("nonzero" as const)
-                  : ("evenodd" as const),
-            }
-          : undefined,
-      };
+      const style = svgStyleFromParams(p);
       // SVG Export defaults `filename` to "spline"; Output leaves it empty
       // (its placeholder is the auto-timestamp used by the raster products),
       // so fall back to the node's own name before the generic default —
@@ -13363,8 +13616,8 @@ function EffectsShell({
   const multiGizmo =
     transformGizmoNodes.length + primitiveGizmoNodes.length > 1;
 
-  // The TransformContextBar (flip H/V) stays bound to the single primary
-  // selection, as does the ParamPanel.
+  // The flip H/V actions (TransformContextActions) stay bound to the
+  // single primary selection, as does the ParamPanel.
   const activeTransformNode = selectedId
     ? nodes.find((n) => {
         if (n.id !== selectedId) return false;
@@ -13860,6 +14113,7 @@ function EffectsShell({
       onCopyNodes={handleCopyNodes}
       onPasteNodes={handlePasteNodes}
       onPasteFragmentText={handlePasteFragmentText}
+      onPasteFigmaScene={importFigmaSceneText}
       onPasteSvgText={handlePasteSvgText}
       onEditWithAINode={handleEditWithAI}
       onAddFileNode={onAddFileNode}
@@ -13883,6 +14137,11 @@ function EffectsShell({
       onOpenProject={handleOpenProjectView}
       atRoot={currentGroupId == null}
       frameSignal={frameGraphSignal}
+      cameraKey={nodeCameraKey(
+        currentProject?.id,
+        activeCompositionId,
+        currentGroupId
+      )}
       viewportOverlay={
         inspectIds.length > 0 || socketPeek ? (
           <>
@@ -14213,6 +14472,26 @@ function EffectsShell({
     setSelectedId(nodeId);
     setParamView("node");
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Pick tool hit → select it, entering its group / layer first when it
+  // lives outside the scope on screen so the selection is visible.
+  const handleViewportPick = useCallback(
+    (nodeId: string) => {
+      const node = nodesRef.current.find((n) => n.id === nodeId);
+      if (!node) return;
+      pickPreviewPinRef.current ??= lastTerminalNodeIdRef.current;
+      if (node.data.parentId !== currentGroupIdRef.current) {
+        navigateScope(node.data.parentId);
+      }
+      handlePanelSelectNode(nodeId);
+    },
+    [navigateScope, handlePanelSelectNode]
+  );
+  const pickLabelFor = useCallback((nodeId: string): string => {
+    const node = nodesRef.current.find((n) => n.id === nodeId);
+    if (!node) return nodeId;
+    return node.data.name || getNodeDef(node.data.defType)?.name || nodeId;
   }, []);
 
   // Per-anchor keyframing (Spline Draw, spec 072726 M6): create or remove
@@ -14880,6 +15159,31 @@ function EffectsShell({
             onPreviewScaleChange={setPreviewScale}
             trailing={
               <>
+                {activeTransformNode && (
+                  <TransformContextActions
+                    // Flip = invert the corresponding scale around the pivot.
+                    // The transform shader applies scale around pivot, so a
+                    // negative scale produces a mirror across the pivot's
+                    // perpendicular axis. Coalesce key keyed on the node id so
+                    // a click is one undo entry.
+                    onFlipHorizontal={() => {
+                      const id = activeTransformNode.id;
+                      const cur = activeTransformNode.data.params.scaleX;
+                      const v = typeof cur === "number" ? cur : 1;
+                      onParamChange(id, "scaleX", -v, `flip:${id}`);
+                    }}
+                    onFlipVertical={() => {
+                      const id = activeTransformNode.id;
+                      const cur = activeTransformNode.data.params.scaleY;
+                      const v = typeof cur === "number" ? cur : 1;
+                      onParamChange(id, "scaleY", -v, `flip:${id}`);
+                    }}
+                  />
+                )}
+                <ViewportPickToggle
+                  on={pickMode}
+                  onToggle={togglePickMode}
+                />
                 <ViewportGizmoToggle
                   on={showGizmos}
                   onToggle={() => setShowGizmos((v) => !v)}
@@ -14898,27 +15202,6 @@ function EffectsShell({
                 />
               </>
             }
-          />
-        )}
-        {!fullCanvas && activeTransformNode && (
-          <TransformContextBar
-            // Flip = invert the corresponding scale around the pivot.
-            // The transform shader applies scale around pivot, so a
-            // negative scale produces a mirror across the pivot's
-            // perpendicular axis. Coalesce key keyed on the node id so
-            // a click is one undo entry.
-            onFlipHorizontal={() => {
-              const id = activeTransformNode.id;
-              const cur = activeTransformNode.data.params.scaleX;
-              const v = typeof cur === "number" ? cur : 1;
-              onParamChange(id, "scaleX", -v, `flip:${id}`);
-            }}
-            onFlipVertical={() => {
-              const id = activeTransformNode.id;
-              const cur = activeTransformNode.data.params.scaleY;
-              const v = typeof cur === "number" ? cur : 1;
-              onParamChange(id, "scaleY", -v, `flip:${id}`);
-            }}
           />
         )}
         <div
@@ -15255,6 +15538,7 @@ function EffectsShell({
               <PrimitiveGizmoAtTick
                 key={node.id}
                 node={node}
+                edges={edges}
                 canvas={canvasRef.current}
                 canvasWidth={canvasRes[0]}
                 canvasHeight={canvasRes[1]}
@@ -15273,6 +15557,17 @@ function EffectsShell({
               node={activeGradientNode}
               canvas={canvasRef.current}
               onParamChange={onParamChange}
+            />
+          )}
+          {/* Pick-select tool — above every gizmo while it is on. */}
+          {pickMode && backendReady && (
+            <ViewportPickOverlay
+              canvas={canvasRef.current}
+              layoutKey={`${v1.pan[0]},${v1.pan[1]},${v1.zoom}`}
+              pick={pickNodesAtUv}
+              onPick={handleViewportPick}
+              labelFor={pickLabelFor}
+              onExit={exitPickMode}
             />
           )}
           {/* Piano-roll takeover (080926_midi-editor.md): a FULL-COVER
@@ -15680,6 +15975,18 @@ function EffectsShell({
           projectId={collabTarget.id}
           projectName={collabTarget.name}
           onClose={() => setCollabTarget(null)}
+        />
+      )}
+      {figmaNotice && (
+        <FigmaImportToast
+          key={figmaNotice.id}
+          notice={figmaNotice}
+          onMatch={([w, h]) => {
+            const clamp = (v: number) => Math.max(16, Math.min(8192, Math.round(v)));
+            setCanvasRes([clamp(w), clamp(h)]);
+            setFigmaNotice((n) => (n ? { ...n, canvas: [clamp(w), clamp(h)] } : n));
+          }}
+          onDismiss={() => setFigmaNotice(null)}
         />
       )}
       {recoveryOpen && (

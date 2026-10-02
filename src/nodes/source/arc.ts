@@ -152,6 +152,7 @@ export const arcNode: NodeDefinition = {
   type: "arc",
   name: "Arc",
   category: "spline",
+  pickable: true,
   subcategory: "generator",
   description:
     "Generate a circular arc / pie wedge as a spline — set radius, start/end angle, and whether it's an open arc, a pie, or a chord. Wire Center / Start / End to drive those anchors from a vec2 (unwired sockets keep the polar params). Authored in [0,1]² Y-down; the rasterizer scales y about 0.5 by W/H so radii stay width-relative.",

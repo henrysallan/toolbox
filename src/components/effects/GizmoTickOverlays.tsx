@@ -6,6 +6,8 @@ import TransformGizmo from "./TransformGizmo";
 import PrimitiveGizmo, {
   PRIMITIVE_GIZMO_ADAPTERS,
   PrimitivePointHandles,
+  readWiredInputs,
+  type GizmoWireEdge,
   type PrimitiveGizmoEnv,
 } from "./PrimitiveGizmo";
 import MotionPathOverlay from "./MotionPathOverlay";
@@ -368,6 +370,7 @@ export function TransformGizmoAtTick({
 // coalesce into one undo entry.
 export function PrimitiveGizmoAtTick({
   node,
+  edges,
   canvas,
   canvasWidth,
   canvasHeight,
@@ -379,6 +382,9 @@ export function PrimitiveGizmoAtTick({
   onMotionPathPointChange,
 }: {
   node: EffectsNode;
+  // Graph edges — for adapters that place handles from wired input
+  // values (`wiredInputs`: Line's start / end).
+  edges: ReadonlyArray<GizmoWireEdge>;
   canvas: HTMLCanvasElement | null;
   canvasWidth: number;
   canvasHeight: number;
@@ -418,9 +424,18 @@ export function PrimitiveGizmoAtTick({
     canvasHeight,
     getRaw: (name) => node.data.params[name],
     solvedSize,
+    wired: adapter.wiredInputs
+      ? readWiredInputs(
+          node.id,
+          adapter.wiredInputs,
+          edges,
+          // eslint-disable-next-line react-hooks/refs -- engine-owned eval cache, mutated outside React with no change notifications; sampled at render exactly like the transform gizmo's bounds (the tick subscription that caused this render also caused the eval)
+          evalCacheRef.current
+        )
+      : undefined,
   };
-  // Point-handle primitives (SDF Line Segment / Triangle) render dots
-  // instead of a box — a centre+extent gizmo can't express "move one
+  // Point-handle primitives (SDF Line Segment / Triangle, Line) render
+  // dots instead of a box — a centre+extent gizmo can't express "move one
   // endpoint". These carry no motion path.
   if (adapter.points) {
     const pts = adapter.points.read(get, env);
@@ -437,7 +452,8 @@ export function PrimitiveGizmoAtTick({
             index,
             x,
             y,
-            env
+            env,
+            pts
           )) {
             onParamChange(node.id, name, value, key);
           }

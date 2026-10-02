@@ -1,0 +1,7 @@
+{
+  "name": "toolbox-figma-plugin",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Figma → toolbox: copies a frame as a scene toolbox pastes as a wired node graph. Built from the repo root (npm run figma-plugin:build).",
+  "type": "module"
+}

@@ -263,15 +263,31 @@ export const BUILTIN_POINT_ATTR_NAMES: ReadonlySet<string> = (() => {
   return out;
 })();
 
+// A multi-component built-in named whole (`position`, `scale`, `normal`),
+// not one of its lanes. Pickers offer these only on nodes that read or
+// write the full vector; a scalar reader would silently take lane 0.
+export function isVectorBuiltinPointAttr(name: string): boolean {
+  const r = resolveBuiltinPointAttr(name);
+  return !!r && r.lane === undefined && r.schema.arity > 1;
+}
+
+// A schema row's picker entries: the whole-vector name ahead of its lanes
+// (`position`, `x`, `y`), or just the name for arity 1.
+function schemaPickerNames(s: PointAttrSchema): string[] {
+  return s.arity > 1 ? [s.name, ...s.laneNames] : [...s.laneNames];
+}
+
 // Built-in columns a picker should offer for this value. Always-readable
 // fallbacks (scale 1, rotation/group 0) are listed even when the typed
 // array is absent; z / normals only when the value actually carries them.
+// Includes the whole-vector names — `attrNameSuggestions` drops them for
+// params that don't opt into `suggestAttrsVectors`.
 export function builtinPointAttrNames(p: PointsValue): string[] {
   const names: string[] = [];
   for (const s of POINT_ATTR_SCHEMA) {
     if (s.storage === "z" && !p.z) continue;
     if (s.storage === "normals" && !p.normals) continue;
-    names.push(...s.laneNames);
+    names.push(...schemaPickerNames(s));
   }
   return names;
 }
@@ -281,7 +297,7 @@ export function builtinPointAttrNames(p: PointsValue): string[] {
 export const BUILTIN_POINT_ATTR_SUGGESTIONS_2D: readonly string[] =
   POINT_ATTR_SCHEMA.filter(
     (s) => s.storage !== "z" && s.storage !== "normals"
-  ).flatMap((s) => [...s.laneNames]);
+  ).flatMap(schemaPickerNames);
 
 // Allocate a points value with reserved capacity. Caller fills the
 // returned typed arrays in place. `points` starts empty (lazy).
