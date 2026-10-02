@@ -1,6 +1,6 @@
 {
   "name": "toolbox",
-  "version": "0.5.9",
+  "version": "0.6.0",
   "private": true,
   "description": "Node-graph motion design tool",
   "author": "Isthishenry",

@@ -11,6 +11,23 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.6.0",
+    date: "2026-10-02",
+    added: [
+      "Figma import — copy a frame with the \"Copy to toolbox\" Figma plugin and paste it into the node editor (or drop its .toolbox-figma.json). It lands as a wired graph: shapes and strokes as splines, image fills, groups, clips and masks, and text as live Text nodes. A result card lists anything that didn't map and offers to match the comp to the frame's size.",
+      "Viewport pick tool — Shift+V, then click the canvas to select the node that drew that pixel. Click the same spot again to cycle down through what's stacked beneath it; Esc leaves the tool.",
+      "Text animators can step by word as well as by character (the whole word moves together and scales / rotates about its centre), and any animator's easing can be a custom curve, exposable as a Float Curve socket.",
+      "Line gains start / end sockets and a bézier mode, with handles you drag in the viewport. A wired endpoint stays pinned while its handles stay live.",
+      "Live links can offer an SVG button that saves the spline wired into the output's SVG tap at the playhead.",
+      "The node editor remembers where you were looking in each group, layer and comp: diving in and climbing back out returns you to the same pan and zoom, and a scope you haven't visited yet frames all its nodes.",
+    ],
+    changed: [
+      "Curated Google fonts load for real. 12 of 18 families had been silently falling back to sans-serif. Static families snap to their nearest shipped weight, and Text, Point Labels and ASCII redraw once a font lands instead of keeping the fallback.",
+      "Bounding Box shows only its Box output by default, with a toggle per measurement and guide socket. Older saves keep the sockets and wires they had.",
+      "Flip H / V for the selected Transform moved into the viewport menu bar, so the canvas no longer shifts when the selection changes. Attribute nodes now suggest the whole-vector built-ins (position, scale, normal) by name.",
+    ],
+  },
+  {
     version: "0.5.9",
     date: "2026-09-21",
     added: [
