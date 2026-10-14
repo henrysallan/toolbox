@@ -58,6 +58,7 @@ export const sdfRotateNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "sksl" },
   stable: true,
   inputs: [
     {

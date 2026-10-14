@@ -52,6 +52,7 @@ export const sdfRepeatNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "sksl" },
   stable: true,
   inputs: [
     {

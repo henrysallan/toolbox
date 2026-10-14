@@ -328,6 +328,7 @@ import { skiaCanvasNode } from "./skia/canvas";
 import { skiaFillNode } from "./skia/fill";
 import { skiaGroupNode } from "./skia/group";
 import { skiaShapeNode } from "./skia/shape";
+import { skiaSdfBevelNode, skiaSdfRasterizeNode, skiaSdfShadeNode, skiaSdfToDistanceImageNode, skiaSdfToMaskNode } from "./skia/sdf";
 
 let registered = false;
 
@@ -694,5 +695,10 @@ export function registerAllNodes() {
   registerNode(skiaFillNode);
   registerNode(skiaGroupNode);
   registerNode(skiaShapeNode);
+  registerNode(skiaSdfRasterizeNode);
+  registerNode(skiaSdfToMaskNode);
+  registerNode(skiaSdfToDistanceImageNode);
+  registerNode(skiaSdfBevelNode);
+  registerNode(skiaSdfShadeNode);
   registered = true;
 }

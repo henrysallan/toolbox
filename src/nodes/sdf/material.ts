@@ -127,6 +127,7 @@ export const sdfMaterialNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "sksl" },
   stable: true,
   inputs: [
     { name: "sdf", type: "sdf", required: true, label: "SDF" },

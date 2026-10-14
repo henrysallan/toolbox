@@ -44,6 +44,7 @@ export const sdfStarNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "sksl" },
   stable: true,
   inputs: [
     { name: "position", type: "position", required: false, label: "Position" },

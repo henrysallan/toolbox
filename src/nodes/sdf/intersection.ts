@@ -23,6 +23,7 @@ export const sdfIntersectionNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "sksl" },
   stable: true,
   inputs: [
     { name: "a", type: "sdf", required: false, label: "A" },
