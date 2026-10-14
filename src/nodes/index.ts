@@ -324,6 +324,10 @@ import { sdfToSplineNode } from "./sdf/to-spline";
 import { outputNode } from "./output/output";
 import { renderQueueNode } from "./output/render-queue";
 import { svgExportNode } from "./output/svg-export";
+import { skiaCanvasNode } from "./skia/canvas";
+import { skiaFillNode } from "./skia/fill";
+import { skiaGroupNode } from "./skia/group";
+import { skiaShapeNode } from "./skia/shape";
 
 let registered = false;
 
@@ -686,5 +690,9 @@ export function registerAllNodes() {
   registerNode(outputNode);
   registerNode(renderQueueNode);
   registerNode(svgExportNode);
+  registerNode(skiaCanvasNode);
+  registerNode(skiaFillNode);
+  registerNode(skiaGroupNode);
+  registerNode(skiaShapeNode);
   registered = true;
 }

@@ -136,6 +136,7 @@ export const TRANSLATION_CLASSES: Record<string, TranslationEntry> = {
   "sksl-shader": { class: "opaque", note: "Rendered by Skia (CanvasKit), not the engine's GL. Wire its image in; porting it to GLSL is a manual SkSL rewrite (Y-down pixel coords, premultiplied return)." },
   "skia-noise": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `noise` node it mirrors (same params) instead." },
   "skia-color-ramp": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `color-ramp` node it mirrors (same params) instead." },
+  "skia-canvas": { class: "opaque", note: "Renders a Skia scene IR with CanvasKit (paths, groups, filters), not the engine's GL. Wire its image in." },
   "glsl-expression": { class: "pure", note: "Already GLSL. Inline its body as a helper: rename its u_a..u_d to whatever you wired, re-declare its channels (names must not collide), keep its own helpers hoisted." },
 
   // ---- warps / inverse samplers (pure, 1 tap at a transformed uv) ----------
