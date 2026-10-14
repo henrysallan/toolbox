@@ -458,6 +458,27 @@ that pair). Offline node tests should push each input through
   a generator with its bundled raster on still evaluates without GL, and
   that an upstream compute that throws refuses the export instead of
   shipping an empty path.
+- `check-skia-paint` — the paint / modifier / text family (Stroke, Fill,
+  Trim Path, Round Corners, Dash, Gradient Fill, Text (Skia)) against
+  `scripts/fixtures/skia/paint-graph.ts`. Every Skia Canvas there
+  exports clean; one combined canvas (animated trim end, corner radius,
+  fillet radius, dash offset, font size) type-checks in skia-harness and
+  ships tracks / interpolated path series where the nodes tag them. The
+  mirrors are checked against the originals' own math, not pixels: the
+  fillet path is `roundCorners`', the trim windows are `trimSubpaths`',
+  the gradients are what Rasterize Spline hands Canvas2D (a recording
+  fake, conic stops rotated). The text constants are measured truths:
+  the bundled fonts' tables match the files, the Canvas2D middle →
+  alphabetic offset equals Chromium's TextMetrics (measured in Electron;
+  re-measure if Chromium's em-box rule changes), `paragraphLineBox`
+  equals CanvasKit's SkParagraph line metrics. CanvasKit (CPU) pixels:
+  trim share, wrapped remainder, cleared star tips, Dash ≡ Stroke dashed
+  pixel for pixel, dot count, radial center color, paragraph wrap,
+  kerning. Pixel parity vs the native nodes is `compare:skia` on the
+  fixture's pairs (`--a paint:<pair>n --b paint:<pair>s --expect close`;
+  the Text pairs need Chromium's text, so they only run there — and on
+  macOS CoreText draws the Text node's glyphs ~10 % heavier than
+  CanvasKit's FreeType: compare text edges, not ink mass).
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run compare:skia -- --a <fixture>:<node>[:aux:<name>] --b …` —
     renders two nodes of `scripts/fixtures/skia/<fixture>-graph.ts`

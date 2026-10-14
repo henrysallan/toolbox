@@ -212,6 +212,8 @@ class SceneEmitter {
   effects: { sksl: string; where: string[]; fused: string[] }[] = [];
   private n = 0;
   private pathHooks = new Map<string, V>();
+  // Enclosing groups' opacities, outermost first (see the Paragraph case).
+  private groupOpacity: Bind<number>[] = [];
   private assetHooks = new Map<string, string>();
   needB = false;
   needF = false;
@@ -704,7 +706,10 @@ class SceneEmitter {
           this.rn.add("Paint");
           props.push(["layer", fx.length || cf.length ? el("Paint", [], [...fx, ...cf]) : "true"]);
         }
-        return el("Group", props, n.children.map((c, i) => this.node(c, `${path}.children.${i}`)));
+        if (n.opacity) this.groupOpacity.push(n.opacity);
+        const kids = n.children.map((c, i) => this.node(c, `${path}.children.${i}`));
+        if (n.opacity) this.groupOpacity.pop();
+        return el("Group", props, kids);
       }
       case "fill": {
         this.rn.add("Fill");
@@ -733,6 +738,10 @@ class SceneEmitter {
           this.rn.add("Skia");
           this.helpers.add("makeParagraph");
           const align = n.align === "center" ? "TextAlign.Center" : n.align === "right" ? "TextAlign.Right" : "TextAlign.Left";
+          // RN's drawParagraph paints with the paragraph's own paint, not
+          // the group's: fold the enclosing groups' opacities into the run
+          // (clamped per level, as RN's opacity stack and the preview do).
+          const stack = this.groupOpacity.map((b) => this.bind(b));
           const para = this.composite(
             [
               this.fonts(n.font.asset),
@@ -740,8 +749,13 @@ class SceneEmitter {
               this.bind(n.font.size),
               n.paint.color ? this.bind(n.paint.color) : { kind: "static", code: "[0, 0, 0, 1]" },
               n.paint.opacity ? this.bind(n.paint.opacity) : { kind: "static", code: "1" },
+              ...stack,
             ],
-            ([f, t, s, c, o]) => `makeParagraph(${f}, ${lit(n.font.asset)}, ${t}, ${s}, ${align}, ${c}, ${o})`
+            ([f, t, s, c, o, ...g]) => {
+              const clamp = (x: string) => `Math.min(1, Math.max(0, ${x}))`;
+              const op = g.length ? clamp(`${g.reduce((acc, x) => clamp(`${acc} * ${x}`), "1")} * ${o}`) : o;
+              return `makeParagraph(${f}, ${lit(n.font.asset)}, ${t}, ${s}, ${align}, ${c}, ${op})`;
+            }
           );
           return el("Paragraph", [["paragraph", prop(para)], ["x", prop(this.bind(n.x))], ["y", prop(this.bind(n.y))], ["width", prop(this.bind(n.width))]]);
         }
