@@ -134,6 +134,8 @@ export const TRANSLATION_CLASSES: Record<string, TranslationEntry> = {
   dither: { class: "pure", note: "Ordered/Bayer modes are pure; error-diffusion modes run on the CPU and do NOT translate — check `algorithm` first." },
   merge: { class: "pure", note: "Per-pixel blend of layers in order (straight-alpha over). Blend formulas are in BLEND_FS; each layer is an image input, so a 3-layer Merge alone uses 3 of the 4 samplers." },
   "sksl-shader": { class: "opaque", note: "Rendered by Skia (CanvasKit), not the engine's GL. Wire its image in; porting it to GLSL is a manual SkSL rewrite (Y-down pixel coords, premultiplied return)." },
+  "skia-noise": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `noise` node it mirrors (same params) instead." },
+  "skia-color-ramp": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `color-ramp` node it mirrors (same params) instead." },
   "glsl-expression": { class: "pure", note: "Already GLSL. Inline its body as a helper: rename its u_a..u_d to whatever you wired, re-declare its channels (names must not collide), keep its own helpers hoisted." },
 
   // ---- warps / inverse samplers (pure, 1 tap at a transformed uv) ----------
