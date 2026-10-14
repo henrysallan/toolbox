@@ -1,7 +1,7 @@
 # Skia target: SkSL authoring, Skia layers, and React Native Skia + Reanimated export
 
 Spike + proposal — 2026-10-13. Status: **M0 built and measured** (§2);
-**owner decisions taken (§5)**; **Wave 1 merged and measured (§2b)**. The owner's three questions, and the answers this doc
+**owner decisions taken (§5)**; **Wave 1 (§2b) and Wave 2 (§2c) merged and measured**. The owner's three questions, and the answers this doc
 substantiates:
 
 1. **Can toolbox have an SkSL node?** Yes. It exists: `sksl-shader`, rendered
@@ -336,6 +336,58 @@ Open items carried to Wave 2:
 - `--bundle scene` exists on web only; the native deep link doesn't select a bundle yet.
 - The asset cache in the editor never evicts.
 - Vector-kernel WASM in exported apps (pre-existing bug).
+
+## 2c. Wave 2 results (2026-10-13/14, branch `skia-wave1`)
+
+All eight families merged. Every port is proven with `compare:skia` against the GL node it mirrors (same drivers, real engine), and exports via `checkExportable` (programs compile in CanvasKit with exact uniforms; the emitted bundle type-checks against react-native-skia 3.4.0 + Reanimated 4.7). Each family has its own gate in `npm run check`.
+
+| family | nodes | compare:skia | not ported / notes |
+|---|---|---|---|
+| F1 noise & fields | skia-noise (all 11 algorithms, loop, flow, phasor, uv_in), skia-shape-cells, skia-lyapunov, skia-texture-coordinate | 21/24 MATCH (max ≤ 6/255 on noise) | Shape Cells: uint hash → float hash, every cell draws differently (OFF by design, geometry MATCH). Lyapunov: CLOSE in chaotic regions (fp32 amplification). Per-variant functions via `defineSkslVariantNode`. |
+| F2 color | solid-color, gradient (all modes), color-correction, rgb-curves, posterize, threshold, color-space-transform, keyer, dither (ordered) + color-ramp: every interpolation × space | 37/37 MATCH | Error-diffusion dither (the native default) refused. Keyer's matte output not mirrored. Color Ramp uses ~96 uniform slots. |
+| F3 warps | skia-transform, -mirror, -polar-coords, -pixelate, -array | all MATCH (meanAbs ≤ 0.0013) | Gathers clamp to the outer texel centre to match CLAMP_TO_EDGE textures (`tbx.warp.texel`). |
+| F4 gathers | skia-displace, -chromatic-aberration, -sharpen, -edge-detect, -bevel-emboss, -vector-field, -flow-blur, -kuwahara | 15/15 MATCH | Over the phone budget (32 units/px, an estimate): Flow Blur, Kuwahara (and Sharpen / Edge Detect over noise) → filter-stage split later. Bevel outer/inner/pillow and Kuwahara r > 24 px refused. |
+| F5 SDF | skia-sdf-rasterize, -to-mask, -to-distance-image, -bevel, -shade; 24 SDF tree nodes allowed in Skia layers | 28/28 MATCH | SkSL generated per tree SHAPE (values are uniforms → tracks). SDF Displace / From Image / Material ramp refused. Splines ≤ 128 segments. |
+| F6 merge | skia-merge (all 29 blend formulas, masks, layer_opacity tracks) | 29/29 MATCH | ≤ 8 enabled layers per node. Skia's native blendMode agrees with Merge only over an opaque backdrop (documented); 14 Merge modes have no RN equivalent. |
+| F7 vector shapes | skia-circle, -rect, -line (exact tracks via BindRef.scale); all spline generators allowed in Skia layers → Skia Shape | 15/15 MATCH, interiors 0/255 | AA edges differ within ~1 px (Chromium canvas2D vs CanvasKit coverage). |
+| F8 paint & text | skia-stroke, -spline-fill, -trim-path, -round-corners, -dash, -gradient-fill, -text (+ Geist OFL font asset) | 21/21 MATCH | Text glyph ink 9–15 % lighter than the Text node (CoreText vs FreeType rasterization). Wrapped paragraphs ignore `leading` and hang from the box top. Corner effect is quadratic, not arc. |
+
+**Integration fixes made while merging Wave 2:**
+- Skia Fill no longer writes srcOver, so a Group's blendMode reaches it (F6).
+- Producer problems now ride from shader → Fill → Group → Canvas, so an unported option refuses the export instead of shipping transparent (F4/F5/F8).
+- A program that only declares iTime is driven by the clock, with no false "not the scene clock" warning (F1).
+- `layer_opacity:<id>` refs are typed as scalars (F6).
+- Paragraphs fold inherited group opacity, since RN draws them with their own paint (F8).
+- Generators are data-only-safe, and an upstream throw refuses the export (F7).
+- Mirror/Array translation classes corrected (F3).
+
+**Native toolbox bugs found by the ports (outside this work):**
+- Displace `wrap=mirror` flips the whole image (task chip filed).
+- Trim Path cuts by segment parameter, not arc length (F8).
+- The Text node blurs fractional translates (F8).
+- Noise's CPU `value` aux doesn't match the GL image for value/phasor noise at seed ≥ 1 or w ≠ 0 (F1).
+- Circle's "equal radii are round only on a square canvas" gotcha is wrong (F7).
+
+**Carried to M3/M4:**
+- Font and image assets aren't copied into exported bundles yet.
+- RN Paragraphs drop an inherited group blendMode.
+- Filter-stage splitting for over-budget gathers.
+- Device bands: CI lanes ready, not yet run.
+- The P3 decision (§2b).
+- `tbx.warp.texel` and `tbx.gather.edge` should become one shared helper.
+- Merge (Skia) has no grow-on-wire / "+" layer button.
+
+**Additive contract proposals collected (none applied):**
+- `defineSkslNode`:
+  - structural variants (F1);
+  - wired-input flags in binds/unsupported (F2/F3/F4);
+  - param-aware taps (F3/F4);
+  - extra shader outputs and non-shader inputs (F2/F3);
+  - a clock-dependency marker on binds (F2);
+  - `float3x3` params (F2).
+- `BindRef.offset` (affine canvas01 → px, F7); optional producer ids on SDF values (F5).
+- Text IR: `lineHeight` and a vertical anchor (F8).
+- `trim` inverted mode (F8).
 
 ## 3. Design for the full implementation
 
