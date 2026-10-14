@@ -31,7 +31,7 @@
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { ExprInput } from "@/engine/types";
 import { channelKind } from "@/engine/expr-channels";
-import { LAYER_TYPE } from "@/engine/groups";
+import { parseRampParamKey } from "@/engine/conventions";
 import type { Keyframe } from "@/engine/keyframes";
 import { getNodeDef } from "@/engine/registry";
 import {
@@ -39,17 +39,32 @@ import {
   type AssetIR,
   type Bind,
   type BindRef,
-  type GeomIR,
   type ImageFilterIR,
   type PaintIR,
+  type PathEffectIR,
   type ShaderIR,
   type SkiaNode,
   type SkiaScene,
+  type SkslProgramIR,
 } from "@/engine/skia/scene-ir";
-import { hexToTuple, liveBlock, resolveDriver, toTimelineKey, type DriverBinding } from "./drivers";
-import { evaluateTrack, type TimelineKey, type TimelineTrack } from "./runtime/toolbox-timeline";
+import {
+  byte01,
+  channelKeyTrack,
+  hexToTuple,
+  liveBlock,
+  resolveDriver,
+  toTimelineKey,
+  type DriverBinding,
+  type TimelineTrackQ,
+} from "./drivers";
+import { evaluateTrack, evaluateTrackRaw, type TimelineKey, type TimelineTrack } from "./runtime/toolbox-timeline";
 
 export type BindValue = number | number[] | string;
+
+// BindRef.scale (additive, skia-wave1): the IR value is the param value ×
+// scale (a degrees param bound as radians). Read through this alias so the
+// planner builds on either side of that contract change.
+type ScaledRef = BindRef & { scale?: number };
 
 // How the emitter types and reads a bind.
 //   number  a scalar prop / uniform
@@ -61,8 +76,9 @@ export type BindRole = "number" | "array" | "string" | "path";
 export type BindPlan =
   | { kind: "static"; value: BindValue; from: string }
   // One track ⇒ its value (or component `pick` of a color track); several
-  // ⇒ a vector, one scalar track per component.
-  | { kind: "track"; tracks: TimelineTrack[]; pick?: number; from: string }
+  // ⇒ a vector, one scalar track per component. `scale` multiplies the
+  // evaluated value (BindRef.scale).
+  | { kind: "track"; tracks: TimelineTrack[]; pick?: number; scale?: number; from: string }
   // Seconds on the master clock (a fused program's iTime).
   | { kind: "clock"; from: string }
   // The producer's value at every frame 0..frames-1 (dense; scene-emit
@@ -125,31 +141,36 @@ interface FoundBind {
   path: string;
   bind: Bind<unknown>;
   role: BindRole;
+  // The nearest enclosing SkiaNode's `id` — the engine node that produced
+  // the value (resolves `deps: []`, "derived from my inputs").
+  owner?: string;
 }
 
 // Every Bind under the root, depth-first in key order (the emitter walks the
 // same tree and looks binds up by path, so order only names the ids).
 export function collectBinds(root: SkiaNode): FoundBind[] {
   const out: FoundBind[] = [];
-  const visit = (x: unknown, path: string, parentK: string | undefined, key: string) => {
+  const visit = (x: unknown, path: string, parentK: string | undefined, key: string, owner: string | undefined) => {
     if (isBind(x)) {
       const v = x.v;
       const role: BindRole =
         typeof v === "string" ? (parentK === "path" && key === "d" ? "path" : "string") : Array.isArray(v) ? "array" : "number";
-      out.push({ path, bind: x, role });
+      out.push({ path, bind: x, role, ...(owner ? { owner } : {}) });
       return;
     }
     if (Array.isArray(x)) {
-      x.forEach((c, i) => visit(c, `${path}.${i}`, parentK, String(i)));
+      x.forEach((c, i) => visit(c, `${path}.${i}`, parentK, String(i), owner));
       return;
     }
     if (x && typeof x === "object") {
       const o = x as Record<string, unknown>;
       const k = typeof o.k === "string" ? o.k : parentK;
-      for (const [kk, c] of Object.entries(o)) visit(c, `${path}.${kk}`, k, kk);
+      // Only SkiaNodes carry an `id` next to their `k`.
+      const own = typeof o.k === "string" && typeof o.id === "string" ? o.id : owner;
+      for (const [kk, c] of Object.entries(o)) visit(c, `${path}.${kk}`, k, kk, own);
     }
   };
-  visit(root, "root", undefined, "root");
+  visit(root, "root", undefined, "root", undefined);
   return out;
 }
 
@@ -208,14 +229,45 @@ function sameValue(a: unknown, b: unknown): boolean {
   return Object.is(a, b);
 }
 
+// Equal up to float rounding (relative 1e-12).
+export function closeValue(a: unknown, b: unknown): boolean {
+  const close = (x: unknown, y: unknown) =>
+    typeof x === "number" && typeof y === "number" ? Object.is(x, y) || Math.abs(x - y) <= 1e-12 * Math.max(1, Math.abs(x), Math.abs(y)) : Object.is(x, y);
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((x, i) => close(x, b[i]));
+  return close(a, b);
+}
+
 function shapeOf(v: unknown): "number" | "array" | "string" | "other" {
   return typeof v === "number" ? "number" : typeof v === "string" ? "string" : Array.isArray(v) ? "array" : "other";
 }
 
 // ---- structural validation (what the emitter cannot express) ----------------------
 
-function validateScene(scene: SkiaScene, problems: string[], assetsUsed: Map<string, AssetIR>) {
+// What a program declares: its non-shader uniforms and its child shaders,
+// in declaration order (comments stripped; good enough for the fuser's and
+// the SkSL node's output — CanvasKit is the real judge, in the gates).
+export function skslDeclarations(sksl: string): { uniforms: string[]; children: string[] } {
+  const code = sksl.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const uniforms: string[] = [];
+  const children: string[] = [];
+  const re = /\buniform\s+(?:layout\s*\([^)]*\)\s+)?(\w+)\s+(\w+)\s*(?:\[[^\]]*\])?\s*;/g;
+  for (let m = re.exec(code); m; m = re.exec(code)) (m[1] === "shader" ? children : uniforms).push(m[2]);
+  return { uniforms, children };
+}
+
+function validateScene(scene: SkiaScene, problems: string[], warnings: string[], assetsUsed: Map<string, AssetIR>) {
   if (scene.version !== SKIA_IR_VERSION) problems.push(`Scene IR version ${scene.version} — this exporter reads version ${SKIA_IR_VERSION}.`);
+  // React Native Skia throws on a declared uniform without a value and binds
+  // children by position.
+  const program = (p: SkslProgramIR, where: string, content?: string) => {
+    const d = skslDeclarations(p.sksl);
+    const missing = d.uniforms.filter((u) => !(u in p.uniforms));
+    if (missing.length) problems.push(`${where}: the program declares uniform${missing.length > 1 ? "s" : ""} ${missing.join(", ")} with no bind — React Native Skia throws on a missing uniform.`);
+    const want = content !== undefined ? [content] : p.children.map((c) => c.name);
+    if (d.children.join() !== want.join()) {
+      problems.push(`${where}: the program declares child shaders (${d.children.join(", ") || "none"}) but binds (${want.join(", ") || "none"}) — React Native Skia binds children by position.`);
+    }
+  };
   const noteAsset = (id: string, kinds: AssetIR["kind"][], where: string) => {
     const a = scene.assets?.[id];
     if (!a) {
@@ -229,19 +281,26 @@ function validateScene(scene: SkiaScene, problems: string[], assetsUsed: Map<str
     if (!assetsUsed.has(id)) assetsUsed.set(id, a);
   };
   const shader = (s: ShaderIR, where: string) => {
-    if (s.k === "runtime") for (const c of s.program.children) shader(c.shader, `${where} child ${c.name}`);
+    if (s.k === "runtime") {
+      program(s.program, where);
+      for (const c of s.program.children) shader(c.shader, `${where} child ${c.name}`);
+    }
     if (s.k === "image") noteAsset(s.asset, ["image"], where);
   };
   const imageFilter = (f: ImageFilterIR, where: string) => {
     if (f.k === "displacement") shader(f.map, `${where} displacement map`);
-    if (f.k === "runtime" && f.program.children.length) {
-      problems.push(`${where}: a RuntimeShader image filter reads only the rendered content — extra child shaders (${f.program.children.map((c) => c.name).join(", ")}) don't export (React Native Skia binds the content as the program's only child).`);
+    if (f.k === "runtime") {
+      if (f.program.children.length) {
+        problems.push(`${where}: a RuntimeShader image filter reads only the rendered content — extra child shaders (${f.program.children.map((c) => c.name).join(", ")}) don't export (React Native Skia binds the content as the program's only child).`);
+      } else program(f.program, where, f.content);
+      warnings.push(`${where}: a runtime image filter (<RuntimeShader>) is not playable on React Native Skia web — CanvasKit has no factory for it; native only.`);
     }
   };
-  const paint = (p: PaintIR, where: string, geom?: GeomIR) => {
+  const paint = (p: PaintIR, where: string) => {
     if (p.shader) shader(p.shader, where);
-    if (geom && p.pathEffects?.some((e) => e.k === "trim") && geom.k === "points" && geom.mode !== "polygon") {
-      problems.push(`${where}: trimming ${geom.mode} needs a path — only polygon points trim.`);
+    const effects = (p.pathEffects ?? []).filter((e: PathEffectIR) => e.k !== "trim");
+    if (effects.length > 1) {
+      warnings.push(`${where}: ${effects.length} composed path effects (${effects.map((e) => e.k).join(" → ")}) are not playable on React Native Skia web — CanvasKit can't compose path effects; native only.`);
     }
   };
   const visit = (n: SkiaNode, path: string) => {
@@ -257,15 +316,30 @@ function validateScene(scene: SkiaScene, problems: string[], assetsUsed: Map<str
         paint(n.paint, where);
         return;
       case "shape":
-        paint(n.paint, where, n.geom);
+        paint(n.paint, where);
         return;
       case "image":
         noteAsset(n.asset, ["image"], where);
         return;
-      case "text":
+      case "text": {
         noteAsset(n.font.asset, ["font"], where);
         paint(n.paint, where);
+        // With a width it ships as <Paragraph>, whose run takes one
+        // foreground paint built from the color and opacity.
+        const p = n.paint;
+        const extra = [
+          p.style === "stroke" && "stroke style",
+          p.shader && "a shader",
+          p.maskFilter && "a mask filter",
+          p.colorFilters?.length && "color filters",
+          p.pathEffects?.length && "path effects",
+          p.blendMode && p.blendMode !== "srcOver" && "a blend mode",
+        ].filter(Boolean);
+        if (n.width && extra.length) {
+          problems.push(`${where}: text with a width exports as a Paragraph, which takes the paint's color and opacity only — not ${extra.join(", ")}.`);
+        }
         return;
+      }
       case "atlas":
         noteAsset(n.asset, ["image"], where);
         if (Array.isArray(n.xforms.v) && n.xforms.v.length !== n.sprites.length * 4) {
@@ -289,10 +363,12 @@ type Plain = { kind: "plain"; from: string };
 interface Ctx {
   byId: Map<string, GraphNode>;
   edges: GraphEdge[];
+  // Notes the resolution leaves for the export (wire-over-keyframes…).
+  warnings: string[];
 }
 
-function refLabel(r: BindRef): string {
-  return `${r.node}.${r.param}${r.component === undefined ? "" : `[${r.component}]`}`;
+function refLabel(r: ScaledRef): string {
+  return `${r.node}.${r.param}${r.component === undefined ? "" : `[${r.component}]`}${r.scale !== undefined && r.scale !== 1 ? ` ×${r.scale}` : ""}`;
 }
 
 function channelRow(node: GraphNode, name: string): ExprInput | undefined {
@@ -312,36 +388,75 @@ function wireInto(c: Ctx, node: GraphNode, param: string): GraphEdge | undefined
   return c.edges.find((e) => e.target === node.id && e.targetHandle === `in:param:${param}`);
 }
 
-// Could this ref's value change over the scene? (keyframed, wired —
-// including an input socket of that name — or clipped). Over-approximate:
-// sampling collapses a value that turns out constant.
+// Ramp params animate per stop through virtual keys (`ramp_c:<param>:<id>`,
+// `ramp_a:` / `ramp_p:` — conventions.ts), keyframed or exposed and wired.
+function rampStopAnimates(c: Ctx, node: GraphNode, param: string): boolean {
+  for (const k of Object.keys(node.animation ?? {})) {
+    if (parseRampParamKey(k)?.paramName === param && liveBlock(node, k)) return true;
+  }
+  return (node.exposedParams ?? []).some(
+    (p) => parseRampParamKey(p)?.paramName === param && c.edges.some((e) => e.target === node.id && e.targetHandle === `in:param:${p}`)
+  );
+}
+
+// Could this ref's value change over the scene? (keyframed — the param or a
+// ramp stop of it —, wired — including an input socket of that name —, or
+// clipped). Over-approximate: sampling collapses a value that turns out
+// constant.
 function refAnimates(c: Ctx, r: BindRef): boolean {
   const node = c.byId.get(r.node);
   if (!node) return false;
-  if (liveBlock(node, r.param)) return true;
+  if (liveBlock(node, r.param) || rampStopAnimates(c, node, r.param)) return true;
   if (wireInto(c, node, r.param)) return true;
   if (c.edges.some((e) => e.target === node.id && e.targetHandle === `in:${r.param}`)) return true;
   return !!node.clips?.some((cl) => cl.enabled);
 }
 
-type ParamKind = "scalar" | "vec2" | "vec3" | "vec4" | "color" | "other";
+// Could anything feeding `nodeId` (itself included) change over the scene?
+// For `deps: []` — a value derived from the producer's INPUTS (Skia Shape's
+// path from its spline wire), which a compute can't name.
+function upstreamAnimates(c: Ctx, nodeId: string): string | null {
+  const seen = new Set<string>();
+  const stack = [nodeId];
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const n = c.byId.get(id);
+    if (!n) continue;
+    const def = getNodeDef(n.type);
+    if (Object.keys(n.animation ?? {}).some((k) => liveBlock(n, k))) return `${id} is keyframed`;
+    if (n.clips?.some((cl) => cl.enabled)) return `${id} sits on a clip window`;
+    if (def?.tickDriven || def?.stable === false) return `${id} (${n.type}) is time-driven`;
+    for (const e of c.edges) if (e.target === id) stack.push(e.source);
+  }
+  return null;
+}
 
-function paramKindOf(node: GraphNode, param: string): { kind: ParamKind; alpha: boolean; label: string } {
+type ParamKind = "scalar" | "vec2" | "vec3" | "vec4" | "color" | "boolean" | "enum" | "other";
+
+function paramKindOf(
+  node: GraphNode,
+  param: string
+): { kind: ParamKind; alpha: boolean; label: string; options?: string[]; row?: ExprInput } {
   if (param.startsWith("ch:")) {
     const row = channelRow(node, param.slice(3));
     const k = row ? channelKind(row) : "other";
-    return { kind: k === "scalar" || k === "color" ? k : "other", alpha: true, label: row ? k : "missing" };
+    const kind: ParamKind = k === "scalar" || k === "color" ? k : k === "toggle" ? "boolean" : k === "enum" ? "enum" : "other";
+    return { kind, alpha: true, label: row ? k : "missing", ...(row ? { row } : {}) };
   }
   const pdef = getNodeDef(node.type)?.params.find((p) => p.name === param);
   if (pdef) {
     const t = pdef.type;
-    const kind: ParamKind = t === "scalar" || t === "vec2" || t === "vec3" || t === "vec4" || t === "color" ? t : "other";
-    return { kind, alpha: !!pdef.alpha, label: t };
+    const kind: ParamKind =
+      t === "scalar" || t === "vec2" || t === "vec3" || t === "vec4" || t === "color" || t === "boolean" || t === "enum" ? t : "other";
+    return { kind, alpha: !!pdef.alpha, label: t, ...(pdef.options ? { options: pdef.options } : {}) };
   }
   // No registered def (a fixture, a type from a newer build): infer from
   // the stored value.
   const v = node.params[param];
   if (typeof v === "number") return { kind: "scalar", alpha: false, label: "scalar" };
+  if (typeof v === "boolean") return { kind: "boolean", alpha: false, label: "boolean" };
   if (typeof v === "string" && /^#[0-9a-f]{3,8}$/i.test(v)) return { kind: "color", alpha: false, label: "color" };
   if (Array.isArray(v) && v.length >= 2 && v.length <= 4 && v.every((x) => typeof x === "number")) {
     const kind = (["vec2", "vec3", "vec4"] as const)[v.length - 2];
@@ -350,22 +465,12 @@ function paramKindOf(node: GraphNode, param: string): { kind: ParamKind; alpha: 
   return { kind: "other", alpha: false, label: typeof v };
 }
 
-// The layer (if any) whose clip windows put this node on local time.
-function retimingLayer(c: Ctx, node: GraphNode): GraphNode | null {
-  const seen = new Set<string>();
-  let cur: GraphNode | undefined = node.parentId ? c.byId.get(node.parentId) : undefined;
-  while (cur && !seen.has(cur.id)) {
-    seen.add(cur.id);
-    if (cur.type === LAYER_TYPE && cur.clips?.some((cl) => cl.enabled && cl.inTick !== cl.sourceInTick)) return cur;
-    cur = cur.parentId ? c.byId.get(cur.parentId) : undefined;
-  }
-  return null;
-}
-
 // A static driver is "plain": the producer's `v` already holds its value
 // (in whatever units the producer draws in).
-function bindingToPlan(b: DriverBinding, pick: number | undefined): BindPlan | Plain {
-  if (b.track) return { kind: "track", tracks: [b.track], ...(pick === undefined ? {} : { pick }), from: b.from };
+function bindingToPlan(b: DriverBinding, pick: number | undefined, scale: number | undefined): BindPlan | Plain {
+  if (b.track) {
+    return { kind: "track", tracks: [b.track], ...(pick === undefined ? {} : { pick }), ...(scale === undefined ? {} : { scale }), from: b.from };
+  }
   return { kind: "plain", from: b.from };
 }
 
@@ -384,28 +489,29 @@ function componentTrack(keys: Keyframe[], c: number): TimelineTrack | null {
   return { kind: "scalar", keys: out };
 }
 
-function resolveRef(c: Ctx, r: BindRef, path: string): BindPlan | Plain {
+function resolveRef(c: Ctx, r: ScaledRef, path: string): BindPlan | Plain {
   const node = c.byId.get(r.node);
   const label = refLabel(r);
   if (!node) return { kind: "refused", reason: `${path} reads ${label}, but node "${r.node}" is not in the graph.` };
   if (node.clips?.some((cl) => cl.enabled)) {
     return { kind: "refused", reason: `${path} reads ${label}, which sits on a clip window — retimed values don't export yet.` };
   }
-  const layer = retimingLayer(c, node);
-  if (layer) {
-    return { kind: "refused", reason: `${path} reads ${label} inside layer "${layer.id}", whose clip shifts its local time — retimed layers don't export yet.` };
-  }
+  // (A layer's clip offset is fine: the interior's keys are on the layer's
+  // local clock, which is the clock the export plays from 0.)
   const isChannel = r.param.startsWith("ch:");
   const pk = paramKindOf(node, r.param);
   if (isChannel && pk.label === "missing") {
     return { kind: "refused", reason: `${path} reads channel "${r.param.slice(3)}", which node "${r.node}" does not have.` };
   }
   const comp = r.component;
+  const scale = typeof r.scale === "number" && r.scale !== 1 ? r.scale : undefined;
   const isVec = pk.kind === "vec2" || pk.kind === "vec3" || pk.kind === "vec4";
+  const block = liveBlock(node, r.param);
 
   // 1. Wire > keyframes > constant.
   const edge = wireInto(c, node, r.param);
   if (edge) {
+    if (block) c.warnings.push(`${path}: ${label} is wired — its own keyframes are ignored (wire > keyframes), in the editor and in this export.`);
     const src = c.byId.get(edge.source);
     if (!src) return { kind: "refused", reason: `${path} reads ${label}, wired from a missing node "${edge.source}".` };
     let driverKind: string;
@@ -420,11 +526,10 @@ function resolveRef(c: Ctx, r: BindRef, path: string): BindPlan | Plain {
       tail: "only Animated Value (scalar), Constant (scalar) and Color (color) drive an exported Skia value.",
     });
     if (res.problems.length || !res.binding) return { kind: "refused", reason: res.problems.join(" ") };
-    return bindingToPlan(res.binding, pk.kind === "color" ? comp : undefined);
+    return bindingToPlan(res.binding, pk.kind === "color" ? comp : undefined, pk.kind === "color" ? undefined : scale);
   }
 
   // 2. Keyframes on the node itself.
-  const block = liveBlock(node, r.param);
   if (block) {
     const def = getNodeDef(node.type);
     const clock = def?.clockInput;
@@ -433,46 +538,94 @@ function resolveRef(c: Ctx, r: BindRef, path: string): BindPlan | Plain {
     }
     const n = block.keyframes.length;
     const from = `keyframes ${node.id}.${r.param} (${n} keys)`;
+    const withScale = (p: Extract<BindPlan, { kind: "track" }>): BindPlan => (scale === undefined ? p : { ...p, scale });
+    if (isChannel && pk.row) {
+      // Lane L4's channel keyframes (`ch:<name>` on the node itself).
+      const problems: string[] = [];
+      const track = channelKeyTrack(pk.row, block, problems);
+      if (!track) return { kind: "refused", reason: `${path}: ${problems.join(" ")}` };
+      return withScale({
+        kind: "track",
+        tracks: [track],
+        ...(comp === undefined || track.kind !== "color" ? {} : { pick: comp }),
+        from: `channel keyframes ${node.id}.${r.param} (${n} keys${track.kind === "color" ? `, ${track.colorSpace}` : ""})`,
+      });
+    }
     if (pk.kind === "scalar") {
       if (block.keyframes.some((k) => typeof k.value !== "number")) {
         return { kind: "refused", reason: `${path}: keyframes on ${label} hold non-numbers.` };
       }
-      return { kind: "track", tracks: [{ kind: "scalar", keys: block.keyframes.map((k) => toTimelineKey(k, "scalar")) }], from };
+      return withScale({ kind: "track", tracks: [{ kind: "scalar", keys: block.keyframes.map((k) => toTimelineKey(k, "scalar")) }], from });
+    }
+    if (pk.kind === "boolean" || pk.kind === "enum") {
+      // Step-only params snap (keyframes.ts isStepOnly); the producer binds
+      // the number it uploads: 0 | 1, or the option index (define-node.ts).
+      const num = (v: unknown) =>
+        pk.kind === "boolean" ? (v === true || (typeof v === "number" && v !== 0) ? 1 : 0) : Math.max(0, (pk.options ?? []).indexOf(String(v)));
+      return withScale({
+        kind: "track",
+        tracks: [{ kind: "scalar", keys: block.keyframes.map((k) => ({ tick: k.tick, value: num(k.value), easing: "hold" })) }],
+        from: `${from}, stepped`,
+      });
     }
     if (isVec) {
       const width = Number(pk.kind.slice(3));
       const comps = comp === undefined ? Array.from({ length: width }, (_, i) => i) : [comp];
       const tracks = comps.map((i) => componentTrack(block.keyframes, i));
       if (tracks.some((t) => !t)) return { kind: "refused", reason: `${path}: keyframes on ${label} are not ${pk.kind} values.` };
-      return { kind: "track", tracks: tracks as TimelineTrack[], from };
+      return withScale({ kind: "track", tracks: tracks as TimelineTrack[], from });
     }
     if (pk.kind === "color") {
-      if (block.keyframes.some((k) => hexToTuple(k.value)[3] !== 1)) {
-        return { kind: "refused", reason: `${path}: keyframes on ${label} carry alpha — translucent color keys don't export yet (animate an opacity instead).` };
+      // A color param stores hex: every sample snaps to 8 bits
+      // (colorValueToHex). Its alpha byte survives only on ParamDef.alpha
+      // params — exactly what quantizeAlpha replays; elsewhere a translucent
+      // key keeps its alpha AT the key and loses it between keys, which no
+      // track reproduces.
+      const translucent = block.keyframes.some((k) => hexToTuple(k.value)[3] !== 1);
+      if (translucent && !pk.alpha) {
+        return { kind: "refused", reason: `${path}: keyframes on ${label} carry alpha, which this param drops between keys — make the keys opaque (or animate an opacity).` };
       }
-      const track: TimelineTrack = isChannel
-        ? { kind: "color", colorSpace: block.colorSpace ?? "oklab", keys: block.keyframes.map((k) => toTimelineKey(k, "color")) }
-        : // A color param stores hex: every sample snaps to 8 bits (colorValueToHex).
-          { kind: "color", colorSpace: block.colorSpace ?? "oklab", quantize8: true, alpha: 1, keys: block.keyframes.map((k) => toTimelineKey(k, "color")) };
+      const keys = block.keyframes.map((k) => toTimelineKey(k, "color"));
+      const track: TimelineTrackQ = pk.alpha
+        ? { kind: "color", colorSpace: block.colorSpace ?? "oklab", quantize8: true, quantizeAlpha: true, keys }
+        : { kind: "color", colorSpace: block.colorSpace ?? "oklab", quantize8: true, alpha: 1, keys };
       return { kind: "track", tracks: [track], ...(comp === undefined ? {} : { pick: comp }), from: `${from}, ${track.colorSpace}` };
     }
-    return { kind: "refused", reason: `${path} reads keyframed ${label} (${pk.label}) — only scalar, vector and color keyframes export.` };
+    return { kind: "refused", reason: `${path} reads keyframed ${label} (${pk.label}) — only scalar, vector, color, boolean and enum keyframes export.` };
   }
 
   // 3. A plain param: whatever the producer evaluated.
   return { kind: "plain", from: `static ${label}` };
 }
 
-function resolveBind(c: Ctx, fb: FoundBind): BindPlan | NeedsSample {
+function resolveBind(c: Ctx, fb: FoundBind, sampler: boolean): BindPlan | NeedsSample {
   const b = fb.bind;
-  const deps = b.deps ?? [];
-  if (deps.length) {
+  const deps = b.deps;
+  if (deps && !deps.length && !b.ref) {
+    // `deps: []`: derived from the producer's inputs (a compute can't see
+    // the graph) — resolve the producer from the tree and walk its wires.
+    if (!fb.owner || !c.byId.has(fb.owner)) {
+      return sampler
+        ? { kind: "needs-sample", from: "derived from an unnamed producer's inputs" }
+        : { kind: "refused", reason: `${fb.path} is derived from its producer's inputs, but the tree names no producer node (id) — it needs the per-frame sampler.` };
+    }
+    const why = upstreamAnimates(c, fb.owner);
+    const from = `derived from ${fb.owner}'s inputs`;
+    if (!why) return { kind: "static", value: b.v as BindValue, from };
+    return sampler
+      ? { kind: "needs-sample", from: `${from} (${why})` }
+      : { kind: "refused", reason: `${fb.path} is ${from}, and ${why} — it needs a per-frame sampler (exportSkia supplies one).` };
+  }
+  if (deps?.length) {
     const all = b.ref ? [...deps, b.ref] : deps;
     const missing = all.find((d) => !c.byId.has(d.node));
     if (missing) return { kind: "refused", reason: `${fb.path} depends on ${refLabel(missing)}, but node "${missing.node}" is not in the graph.` };
     const moving = all.filter((d) => refAnimates(c, d));
     const from = `derived from ${all.map(refLabel).join(", ")}`;
-    return moving.length ? { kind: "needs-sample", from: `${from} (animated: ${moving.map(refLabel).join(", ")})` } : { kind: "static", value: b.v as BindValue, from };
+    if (!moving.length) return { kind: "static", value: b.v as BindValue, from };
+    return sampler
+      ? { kind: "needs-sample", from: `${from} (animated: ${moving.map(refLabel).join(", ")})` }
+      : { kind: "refused", reason: `${fb.path} is ${from} (animated: ${moving.map(refLabel).join(", ")}) — it needs a per-frame sampler (exportSkia supplies one).` };
   }
   if (b.ref) {
     const r = resolveRef(c, b.ref, fb.path);
@@ -483,12 +636,23 @@ function resolveBind(c: Ctx, fb: FoundBind): BindPlan | NeedsSample {
 }
 
 // What a track plan evaluates to at `tick` (the emitted sampler's math).
-export function evaluateTrackPlan(p: { tracks: TimelineTrack[]; pick?: number }, tick: number): number | number[] {
+// quantizeAlpha is applied here as well, so the result is the same with
+// the M0 runtime and with lane L4's (which applies it itself).
+export function evaluateTrackPlan(p: { tracks: TimelineTrack[]; pick?: number; scale?: number }, tick: number): number | number[] {
+  const one = (t: TimelineTrackQ) => {
+    const v = evaluateTrack(t, tick);
+    if (!t.quantizeAlpha || !Array.isArray(v)) return v;
+    const raw = evaluateTrackRaw(t, tick) as number[];
+    return [v[0], v[1], v[2], byte01(raw[3])];
+  };
+  const s = p.scale;
   if (p.tracks.length === 1) {
-    const v = evaluateTrack(p.tracks[0], tick);
-    return p.pick !== undefined && Array.isArray(v) ? v[p.pick] : v;
+    const v = one(p.tracks[0]);
+    const picked = p.pick !== undefined && Array.isArray(v) ? v[p.pick] : v;
+    if (s === undefined) return picked;
+    return Array.isArray(picked) ? picked.map((x) => x * s) : picked * s;
   }
-  return p.tracks.map((t) => evaluateTrack(t, tick) as number);
+  return p.tracks.map((t) => (one(t) as number) * (s ?? 1));
 }
 
 // ---- the planner ----------------------------------------------------------------------
@@ -501,14 +665,14 @@ export function planSceneExport(
 ): ScenePlanResult {
   const problems: string[] = [];
   const warnings: string[] = [];
-  const c: Ctx = { byId: new Map(nodes.map((n) => [n.id, n])), edges };
+  const c: Ctx = { byId: new Map(nodes.map((n) => [n.id, n])), edges, warnings };
   const assetsUsed = new Map<string, AssetIR>();
-  validateScene(scene, problems, assetsUsed);
+  validateScene(scene, problems, warnings, assetsUsed);
 
   const tl = opts.timeline;
   const frames = Math.max(1, Math.ceil(tl.sceneDurationTicks / tl.ticksPerFrame) + 1);
   const found = collectBinds(scene.root);
-  const resolutions = found.map((fb) => resolveBind(c, fb));
+  const resolutions = found.map((fb) => resolveBind(c, fb, !!opts.sampleAt));
 
   // A resolved track whose value shape disagrees with the producer's `v`
   // can't be what the producer draws: let the sampler decide.
@@ -579,7 +743,11 @@ export function planSceneExport(
         plan = sampled(`${r.from} (untagged animation)`);
       }
     } else if (r.kind === "track") {
-      const bad = vals.findIndex((v, f) => !sameValue(evaluateTrackPlan(r, f * tl.ticksPerFrame), v));
+      // A scaled track (BindRef.scale) multiplies after evaluation; the
+      // producer may have rounded `(deg * π) / 180` instead of
+      // `deg * (π / 180)` — equal within a few ulps, never bit for bit.
+      const eq = r.scale === undefined ? sameValue : closeValue;
+      const bad = vals.findIndex((v, f) => !eq(evaluateTrackPlan(r, f * tl.ticksPerFrame), v));
       if (bad < 0) plan = r;
       else {
         warnings.push(`${fb.path}: ${r.from} does not reproduce the producer's value at frame ${bad} (a transformed param tagged as a plain ref?) — sampled instead.`);

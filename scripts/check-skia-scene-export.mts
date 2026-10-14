@@ -43,7 +43,8 @@ const { registerAllNodes } = await import("@/nodes/index");
 registerAllNodes();
 const { syncChannelInputs } = await import("@/engine/expr-channels");
 const { exportSkia, exportSkiaScene, makeSceneSampler, planSceneExport } = await import("@/lib/skia-export");
-const { collectBinds } = await import("@/lib/skia-export/scene-plan");
+const { closeValue, collectBinds, skslDeclarations } = await import("@/lib/skia-export/scene-plan");
+const { hexToRgba01 } = await import("@/engine/spline-fill");
 const { svgPathSignature } = await import("@/lib/skia-export/scene-emit");
 const fx = await import("./fixtures/skia/scene-fixture.ts");
 
@@ -79,7 +80,7 @@ if (!res.files) {
   process.exit(1);
 }
 const files = res.files;
-const sampler = makeSceneSampler(g.nodes, g.edges, g.canvasId, fx.SCENE_CANVAS, TL);
+const sampler = makeSceneSampler(g.nodes, g.edges, g.canvasId, fx.SCENE_CANVAS, TL, hexToRgba01("#10203080") as [number, number, number, number]);
 if ("problem" in sampler) throw new Error(sampler.problem);
 const scene0 = sampler.sampleAt(0)!;
 const direct = exportSkiaScene(scene0, g.nodes, g.edges, { name: "Scene fixture", timeline: TL, runtimeSource, sampleAt: (t) => sampler.sampleAt(t) });
@@ -93,7 +94,8 @@ const expectKinds: [string, string, string][] = [
   ["root.children.0.paint.shader.program.children.0.shader.stops.0.color", "track", "color param wired from a keyframed Color → track"],
   ["root.children.1.transform.translate.0", "track", "vec2 component (customBezier keys) → scalar track"],
   ["root.children.1.transform.translate.1", "track", "vec2 component → scalar track"],
-  ["root.children.1.transform.rotate", "track", "keyframed scalar → track"],
+  ["root.children.1.transform.rotate", "track", "degrees param bound as radians (BindRef.scale) → scaled track"],
+  ["root.children.2.children.6.geom.d", "sampled", "deps: [] → the producer's wires animate → sampled, no warning"],
   ["root.children.1.transform.scale.0", "static", "param wired from a static Constant → static"],
   ["root.children.1.layer.imageFilters.0.sx", "track", "param wired from a keyframed Animated Value → track"],
   ["root.children.1.children.0.geom.r", "track", "keyframed radius (hold + cubicBezier keys) → track"],
@@ -113,6 +115,31 @@ check(
   res.warnings.some((w) => w.includes("root.children.4.text") && w.includes("say static")) &&
     res.warnings.some((w) => w.includes("root.children.8.geom.r") && w.includes("does not reproduce"))
 );
+check("deps: [] resolved through the producer's wires raises no warning", !res.warnings.some((w) => w.includes("children.2.children.6")));
+const rot = plan("root.children.1.transform.rotate") as any;
+check(
+  "a scaled ref exports the raw track × scale",
+  rot?.scale === Math.PI / 180 && rot.tracks[0].keys[1].value === 90 && files["timeline.ts"].includes(`* ${Math.PI / 180}, // keyframes scene.turn`)
+);
+check(
+  "manifest flags RN-web-unplayable features (runtime image filter, composed path effects)",
+  JSON.parse(files["manifest.json"]).webPlayable === false &&
+    res.warnings.some((w) => w.includes("runtime image filter") && w.includes("not playable on React Native Skia web")) &&
+    res.warnings.some((w) => w.includes("composed path effects (dash → corner)"))
+);
+{
+  const tsx = files["ToolboxScene.tsx"];
+  check(
+    "text with a width → <Paragraph> (top-left, aligned in the width); without → <Text> anchored by its advance",
+    /<Paragraph paragraph=\{D\d+\} x=\{156\} y=\{460\} width=\{200\} \/>/.test(tsx) &&
+      tsx.includes("makeParagraph(FONTS") &&
+      tsx.includes("TextAlign.Center") &&
+      /240 - textAdvance\(/.test(tsx)
+  );
+  check("several trims compose into one interval", tsx.includes("trimSpan([0, 0.75, 0.2, 1], 0)") && tsx.includes("trimSpan([0, 0.75, 0.2, 1], 1)"));
+  check("a trimmed open polyline draws as its open path", tsx.includes("Skia.Path.Polygon(toPoints([40, 10, 60, 30, 80, 10]), false)"));
+  check("the canvas background ships as the first fill", tsx.includes(`<Fill color={${JSON.stringify(hexToRgba01("#10203080")).replace(/,/g, ", ")}} />`));
+}
 const tintPlan = plan("root.children.0.paint.shader.program.uniforms.tint") as any;
 check("a color param's track snaps to 8 bits like colorValueToHex", tintPlan?.tracks?.[0]?.quantize8 === true && tintPlan.tracks[0].alpha === 1);
 const tl = files["timeline.ts"];
@@ -166,7 +193,7 @@ try {
       const want = byPath.get(b.path);
       const got = b.role === "path" ? emitted.seriesStep(emitted[`PATH_${b.sample}`], f) : out[b.sample];
       compared++;
-      if (!same(want, got)) {
+      if (!(b.scale !== undefined ? closeValue(want, got) : same(want, got))) {
         mismatch = `frame ${f} ${b.path}: producer ${JSON.stringify(want)?.slice(0, 80)} export ${JSON.stringify(got)?.slice(0, 80)}`;
         break;
       }
@@ -260,7 +287,21 @@ const kf = (frames: [number, unknown][], easingOut: any = "linear") => ({
     n.push({ id: "lay", type: "layer", params: {}, clips: [{ inTick: 10_000, outTick: 60_000, sourceInTick: 0, enabled: true }] });
     node(n, "scene").parentId = "lay";
   });
-  check("refuses refs inside a layer whose clip shifts local time", has(r, "shifts its local time"), r.problems.join(" | "));
+  // The interior's keys are on the layer's local clock, which the export
+  // plays from 0 (the editor's export action warns about the offset).
+  check("a layer whose clip shifts local time still exports (local clock from 0)", !!r.files && JSON.stringify(r.files) === JSON.stringify(files), r.problems.join(" | "));
+}
+{
+  const r = refuse((n) => {
+    node(n, "scene").params.fail = true;
+  });
+  check("refuses when the producer reports problems (SkiaDrawValue.problems)", has(r, "asked to fail"), r.problems.join(" | "));
+}
+{
+  const r = refuse((n) => {
+    node(n, "canvas").animation = { background: kf([[0, "#000000"], [30, "#ffffff"]]) };
+  });
+  check("refuses an animated canvas background", has(r, "animated background"), r.problems.join(" | "));
 }
 {
   const r = exportSkia({ ...req, edges: g.edges.filter((e) => e.target !== g.canvasId) });
@@ -350,6 +391,124 @@ const circle = (r: Bind<number>): SkiaNode => ({ k: "shape", geom: { k: "circle"
   gg.edges.find((e) => e.id === "c1")!.source = "wob";
   const lfo = planOf(sceneOf(prog({ amount: { v: 2, ref: { node: "sk", param: "ch:amount" } } })), gg.nodes, gg.edges);
   check("refuses a ch: channel driven by an LFO", lfo.problems.some((x) => x.includes("driven by a lfo")), lfo.problems.join(" | "));
+
+  // Lane L4: keyframes on the channel itself (`ch:<name>` on the node).
+  const own = fx.sceneFixtureGraph();
+  own.nodes.push({
+    id: "sk2",
+    type: "sksl-shader",
+    params: { expression: src, inputs },
+    animation: {
+      "ch:amount": kf([[0, 0.25], [30, 0.75]], "easeInOutCubic"),
+      "ch:ink": kf([[0, "#ff000080"], [30, "#0000ffff"]], "linear"),
+      "ch:on": kf([[0, true], [20, false]], "linear"),
+    },
+  });
+  const ownPlan = planOf(
+    sceneOf(
+      prog({
+        amount: { v: 0.25, ref: { node: "sk2", param: "ch:amount" } },
+        ink: { v: [1, 0, 0, 0.5], ref: { node: "sk2", param: "ch:ink" } },
+        on: { v: 1, ref: { node: "sk2", param: "ch:on" } },
+      })
+    ),
+    own.nodes,
+    own.edges
+  );
+  const ownAt = (u: string) => ownPlan.binds.find((b) => b.path === `root.paint.shader.program.uniforms.${u}`)?.plan as any;
+  check(
+    "ch: scalar keyframes → scalar track",
+    ownAt("amount")?.kind === "track" && ownAt("amount").tracks[0].kind === "scalar" && JSON.stringify(ownAt("amount").tracks[0].keys.map((k: any) => k.value)) === "[0.25,0.75]"
+  );
+  check(
+    "ch: color keyframes → quantize8 + quantizeAlpha track (the row's hex keeps alpha)",
+    ownAt("ink")?.tracks?.[0]?.quantize8 === true && ownAt("ink").tracks[0].quantizeAlpha === true && ownAt("ink").tracks[0].keys[0].value[3] === 128 / 255
+  );
+  check("ch: toggle keyframes → stepped 1 / 0", JSON.stringify(ownAt("on")?.tracks?.[0]?.keys.map((k: any) => [k.value, k.easing])) === '[[1,"hold"],[0,"hold"]]');
+}
+
+// ---- 5b. provenance the graph resolves ------------------------------------------------------------
+{
+  const gg = fx.sceneFixtureGraph();
+  // `deps: []` with a still producer → static; with no producer named → needs the sampler.
+  gg.nodes.push({ id: "still", type: "constant", params: { value: 1 } }, { id: "shp", type: "constant", params: { value: 2 } });
+  gg.edges.push({ id: "s1", source: "still", sourceHandle: "out:primary", target: "shp", targetHandle: "in:x" });
+  const pathNode = (id?: string): SkiaNode => ({ k: "shape", ...(id ? { id } : {}), geom: { k: "path", d: { v: "M0 0L1 1", deps: [] } }, paint: { style: "stroke" } });
+  const still = planOf(sceneOf(pathNode("shp")), gg.nodes, gg.edges);
+  check("deps: [] over a still upstream → static", still.binds[0]?.plan.kind === "static", JSON.stringify(still.binds[0]?.plan));
+  gg.nodes.find((n) => n.id === "still")!.animation = { value: kf([[0, 1], [10, 2]]) };
+  const moving = planOf(sceneOf(pathNode("shp")), gg.nodes, gg.edges);
+  check("deps: [] over a keyframed upstream, no sampler → refused (needs the sampler)", moving.problems.some((p) => p.includes("still is keyframed") && p.includes("per-frame sampler")), moving.problems.join(" | "));
+  const anon = planOf(sceneOf(pathNode()), gg.nodes, gg.edges);
+  check("deps: [] with no producer id, no sampler → refused", anon.problems.some((p) => p.includes("names no producer")), anon.problems.join(" | "));
+
+  // L2's Skia Color Ramp: stops derived from `stops`, animated per stop
+  // through virtual keys (ramp_c: / ramp_a: / ramp_p:).
+  gg.nodes.push({ id: "ramp", type: "constant", params: { stops: [] } });
+  const stopsBind = (): SkiaNode => ({
+    k: "fill",
+    paint: { style: "fill", shader: { k: "runtime", program: { sksl: "uniform float n[4];\nhalf4 main(float2 p){return half4(n[0]);}", uniforms: { n: { v: [0, 0, 0, 0], deps: [{ node: "ramp", param: "stops" }] } }, children: [] } } },
+  });
+  check("ramp stops with no stop keys → static", planOf(sceneOf(stopsBind()), gg.nodes, gg.edges).binds[0]?.plan.kind === "static");
+  gg.nodes.find((n) => n.id === "ramp")!.animation = { "ramp_c:stops:s1": kf([[0, "#000000"], [10, "#ffffff"]]) };
+  const rp = planOf(sceneOf(stopsBind()), gg.nodes, gg.edges);
+  check("a keyframed ramp stop (ramp_c:stops:<id>) animates `stops`", rp.problems.some((p) => p.includes("ramp.stops") && p.includes("per-frame sampler")), rp.problems.join(" | "));
+
+  // Step-only params: the producer uploads 0 | 1 / the option index.
+  const sc = fx.sceneFixtureGraph();
+  node(sc.nodes, "scene").animation!.mode = kf([[0, "soft"], [10, "wild"], [20, "hard"]], "linear");
+  node(sc.nodes, "scene").animation!.extra = kf([[0, false], [10, true]], "linear");
+  const step = planOf(
+    sceneOf({
+      k: "group",
+      children: [circle({ v: 0, ref: { node: "scene", param: "mode" } }), circle({ v: 0, ref: { node: "scene", param: "extra" } })],
+    }),
+    sc.nodes,
+    sc.edges
+  );
+  const keysOf = (i: number) => JSON.stringify((step.binds[3 * i + 2]?.plan as any)?.tracks?.[0]?.keys.map((k: any) => [k.value, k.easing]));
+  check("a keyframed enum param → stepped option indices", keysOf(0) === '[[0,"hold"],[2,"hold"],[1,"hold"]]', keysOf(0));
+  check("a keyframed boolean param → stepped 0 / 1", keysOf(1) === '[[0,"hold"],[1,"hold"]]', keysOf(1));
+
+  // A color param with ParamDef.alpha replays translucent keys exactly
+  // (quantizeAlpha): the hex round trip, alpha byte included.
+  node(sc.nodes, "scene").animation!.ink = kf([[0, "#ff000040"], [30, "#00ff80ff"], [60, "#2040ffc0"]], "easeInOutQuad");
+  const ink = planOf(sceneOf(circle({ v: 0, ref: { node: "scene", param: "ink", component: 3 } })), sc.nodes, sc.edges).binds.find((b) => b.path === "root.geom.r")?.plan as any;
+  const { evaluateKeyframesAt } = await import("@/engine/keyframes");
+  const { colorValueToHex } = await import("@/engine/conventions");
+  const { evaluateTrackPlan } = await import("@/lib/skia-export/scene-plan");
+  let inkBad = "";
+  for (let t = 0; t <= 60_000 && !inkBad; t += 250) {
+    const hex = colorValueToHex(evaluateKeyframesAt(node(sc.nodes, "scene").animation!.ink, "color", t), "#ffffff", true);
+    const want = hexToRgba01(hex)[3];
+    const got = evaluateTrackPlan(ink, t);
+    if (!Object.is(want, got)) inkBad = `tick ${t}: hex ${hex} → ${want}, track ${got}`;
+  }
+  check("a ParamDef.alpha color param's translucent keys → quantizeAlpha track, bit-identical alpha", ink?.kind === "track" && ink.tracks[0].quantizeAlpha === true && !inkBad, inkBad || JSON.stringify(ink)?.slice(0, 100));
+}
+
+// ---- 5c. programs must bind every declared uniform and child -----------------------------------
+{
+  check(
+    "skslDeclarations reads uniforms (layout, arrays) and children in order",
+    JSON.stringify(skslDeclarations("// uniform float nope;\nuniform float3 iResolution;\nlayout(color) uniform float4 c[16];\nuniform shader a;\nuniform shader b;\nuniform int k;")) ===
+      JSON.stringify({ uniforms: ["iResolution", "c", "k"], children: ["a", "b"] })
+  );
+  const p = planOf(
+    sceneOf({
+      k: "fill",
+      paint: { style: "fill", shader: { k: "runtime", program: { sksl: "uniform float a;\nuniform float b;\nuniform shader s;\nhalf4 main(float2 p){return half4(a+b);}", uniforms: { a: s(1) }, children: [] } } },
+    })
+  );
+  check("refuses a declared uniform with no bind (RN throws)", p.problems.some((x) => x.includes("declares uniform b with no bind")), p.problems.join(" | "));
+  check("refuses declared children that don't match the bound ones", p.problems.some((x) => x.includes("child shaders (s) but binds (none)")));
+  const para = planOf(
+    sceneOf(
+      { k: "text", text: s("hi"), font: { asset: "f", size: s(12) }, x: s(0), y: s(0), width: s(40), paint: { style: "fill", shader: { k: "color", color: s([1, 1, 1, 1]) } } },
+      { f: { id: "f", kind: "font", mime: "font/ttf", url: "x.ttf" } }
+    )
+  );
+  check("refuses a Paragraph whose paint needs more than color + opacity", para.problems.some((x) => x.includes("exports as a Paragraph")), para.problems.join(" | "));
 }
 
 // ---- 6. snapshots ---------------------------------------------------------------------------------

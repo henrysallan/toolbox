@@ -9,8 +9,8 @@
 // then sees whatever IR it produced (the Skia library has none).
 
 import { evaluateGraph, type EvalCache, type GraphEdge, type GraphNode } from "@/engine/evaluator";
-import type { ImageValue, MaskValue, RenderContext, SocketValue, UvValue } from "@/engine/types";
-import { SKIA_IR_VERSION, type SkiaScene } from "@/engine/skia/scene-ir";
+import type { ImageValue, MaskValue, RenderContext, SkiaDrawValue, SocketValue, UvValue } from "@/engine/types";
+import { SKIA_IR_VERSION, type RGBA, type SkiaScene } from "@/engine/skia/scene-ir";
 
 export const SKIA_CANVAS_TYPE = "skia-canvas";
 export const SKIA_CANVAS_SCENE_HANDLE = "in:scene";
@@ -73,7 +73,14 @@ export interface SceneSampler {
   sampleAt(tick: number): SkiaScene | null;
   // Why the last null happened.
   lastProblem(): string | null;
+  // Every distinct producer failure (SkiaDrawValue.problems) seen at any
+  // sampled tick, in first-seen order.
+  producerProblems(): string[];
 }
+
+// SkiaDrawValue.problems (additive, skia-wave1): producer failures the
+// Skia Canvas lists — an export must refuse on them.
+type DrawWithProblems = SkiaDrawValue & { problems?: string[] };
 
 // Evaluates the producer wired into `canvasId`'s scene input. One cache
 // across calls: tick-independent nodes compute once.
@@ -82,7 +89,8 @@ export function makeSceneSampler(
   edges: GraphEdge[],
   canvasId: string,
   canvas: { width: number; height: number },
-  timeline: { fps: number; ticksPerFrame: number }
+  timeline: { fps: number; ticksPerFrame: number },
+  background?: RGBA
 ): SceneSampler | { problem: string } {
   const edge = edges.find((e) => e.target === canvasId && e.targetHandle === SKIA_CANVAS_SCENE_HANDLE);
   if (!edge) return { problem: `Nothing is wired into the Skia Canvas "${canvasId}"'s scene input.` };
@@ -91,8 +99,10 @@ export function makeSceneSampler(
   const cache: EvalCache = new Map();
   const handle = edge.sourceHandle;
   let last: string | null = null;
+  const seen = new Set<string>();
   return {
     lastProblem: () => last,
+    producerProblems: () => [...seen],
     sampleAt(tick: number) {
       ctx.tick = tick;
       ctx.frame = Math.floor(tick / timeline.ticksPerFrame);
@@ -112,10 +122,12 @@ export function makeSceneSampler(
         return null;
       }
       last = null;
+      for (const p of (v as DrawWithProblems).problems ?? []) seen.add(p);
       return {
         version: SKIA_IR_VERSION,
         width: canvas.width,
         height: canvas.height,
+        ...(background ? { background } : {}),
         root: v.node,
         assets: v.assets ?? {},
       };

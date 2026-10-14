@@ -22,7 +22,7 @@
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { Keyframe, KeyframeAnimationBlock } from "@/engine/keyframes";
 import { getNodeDef, registerNode } from "@/engine/registry";
-import { bindDerived, bindParam, bindStatic, type AssetIR, type Bind, type RGBA, type SkiaNode } from "@/engine/skia/scene-ir";
+import { bindDerived, bindParam, bindStatic, type AssetIR, type Bind, type BindRef, type RGBA, type SkiaNode } from "@/engine/skia/scene-ir";
 import { hexToRgba01 } from "@/engine/spline-fill";
 import type { NodeDefinition, SkiaDrawValue } from "@/engine/types";
 
@@ -143,7 +143,8 @@ function buildScene(P: Record<string, unknown>, id: string, frame: number, time:
       id,
       transform: {
         translate: [bindParam(center[0], id, "center", 0), bindParam(center[1], id, "center", 1)],
-        rotate: bindParam(spin, id, "spin"),
+        // Skia Group's convention: a degrees param bound as radians.
+        rotate: { v: (num(P.turn) * Math.PI) / 180, ref: { node: id, param: "turn", scale: Math.PI / 180 } as BindRef },
         scale: [bindParam(gain, id, "gain"), bindParam(gain, id, "gain")],
         origin: [s(0), s(0)],
       },
@@ -243,7 +244,13 @@ function buildScene(P: Record<string, unknown>, id: string, frame: number, time:
           k: "shape",
           id,
           geom: { k: "path", d: bindDerived(polygonPath(120, 120, 50, num(P.steps, 3)), [ref("steps")]) },
-          paint: { style: "stroke", strokeWidth: s(3), color: s([0.4, 0.9, 1, 1] as RGBA), pathEffects: [{ k: "trim", start: s(0), end: s(0.75) }] },
+          paint: {
+            style: "stroke",
+            strokeWidth: s(3),
+            color: s([0.4, 0.9, 1, 1] as RGBA),
+            // Two trims compose: [0, 0.75] then [0.2, 1] of what is left.
+            pathEffects: [{ k: "trim", start: s(0), end: s(0.75) }, { k: "trim", start: s(0.2), end: bindParam(gain + 0.25, id, "gain") }],
+          },
         },
         {
           k: "shape",
@@ -262,30 +269,46 @@ function buildScene(P: Record<string, unknown>, id: string, frame: number, time:
           geom: { k: "points", pts: s([10, 10, 20, 20, 30, 10]), mode: "points" },
           paint: { style: "stroke", strokeWidth: s(4), strokeCap: "round", color: s([1, 1, 1, 1] as RGBA) },
         },
+        {
+          k: "shape",
+          // An open polyline (mode "lines") trimmed: drawn as its open path.
+          geom: { k: "points", pts: s([40, 10, 60, 30, 80, 10]), mode: "lines" },
+          paint: { style: "stroke", strokeWidth: s(2), color: s([1, 1, 0, 1] as RGBA), pathEffects: [{ k: "trim", start: s(0), end: s(0.5) }] },
+        },
+        {
+          k: "shape",
+          id,
+          // `deps: []` — derived from the producer's inputs (Skia Shape's
+          // spline path): the exporter walks the producer's wires.
+          geom: { k: "path", d: bindDerived(starPath(400, 260, 30, 12, 4, spin * 0.5), []) },
+          paint: { style: "stroke", strokeWidth: s(4), strokeCap: "round", color: s([1, 1, 1, 1] as RGBA) },
+        },
       ],
     },
     // 3 — image.
     { k: "image", id, asset: "logo", x: s(16), y: s(16), w: s(48), h: s(48), fit: "contain" },
-    // 4 — centered text whose content changes each frame without tags.
+    // 4 — a paragraph (width set: top-left at x, y, centered in the width)
+    //     whose content changes each frame without tags.
     {
       k: "text",
       id,
       text: s(`frame ${frame}`),
       font: { asset: "inter", size: s(24) },
       x: s(156),
-      y: s(480),
+      y: s(460),
       width: s(200),
       align: "center",
-      paint: { style: "fill", color: s([1, 1, 1, 1] as RGBA) },
+      paint: { style: "fill", color: bindParam(tint, id, "tint") },
     },
-    // 5 — text with a keyframed size.
+    // 5 — one line at the baseline, right-anchored at x, keyframed size.
     {
       k: "text",
       id,
       text: bindParam(String(P.label), id, "label"),
       font: { asset: "inter", size: bindParam(num(P.size, 24), id, "size") },
-      x: s(24),
+      x: s(240),
       y: s(110),
+      align: "right",
       paint: { style: "fill", color: s([1, 1, 1, 1] as RGBA), opacity: s(0.8) },
     },
     // 6 — atlas with derived xforms.
@@ -331,11 +354,21 @@ const producer: NodeDefinition = {
     { name: "size", label: "Size", type: "scalar", default: 24 },
     { name: "label", label: "Label", type: "string", default: "Hello" },
     { name: "extra", label: "Extra", type: "boolean", default: false },
+    { name: "turn", label: "Turn (°)", type: "scalar", default: 0 },
+    { name: "mode", label: "Mode", type: "enum", options: ["soft", "hard", "wild"], default: "soft" },
+    { name: "fail", label: "Fail", type: "boolean", default: false },
+    { name: "ink", label: "Ink", type: "color", alpha: true, default: "#ffffff" },
   ],
   primaryOutput: "skia_draw",
   auxOutputs: [],
   compute({ params, ctx, nodeId }) {
-    const value: SkiaDrawValue = { kind: "skia_draw", node: buildScene(params, nodeId, ctx.frame, ctx.time), assets: SCENE_ASSETS };
+    // `problems` is SkiaDrawValue's additive producer-failure list.
+    const value: SkiaDrawValue & { problems?: string[] } = {
+      kind: "skia_draw",
+      node: buildScene(params, nodeId, ctx.frame, ctx.time),
+      assets: SCENE_ASSETS,
+      ...(params.fail === true ? { problems: [`Test Skia Scene ${nodeId}: asked to fail`] } : {}),
+    };
     return { primary: value };
   },
 };
@@ -385,6 +418,10 @@ export function sceneFixtureGraph(): { nodes: GraphNode[]; edges: GraphEdge[]; c
           { tick: F(0), value: 0, easingOut: "linear" },
           { tick: F(60), value: Math.PI, easingOut: "linear" },
         ]),
+        turn: block([
+          { tick: F(0), value: 0, easingOut: "easeInOutSine" },
+          { tick: F(60), value: 90, easingOut: "linear" },
+        ]),
         steps: block([
           { tick: F(0), value: 3, easingOut: "hold" },
           { tick: F(30), value: 6, easingOut: "linear" },
@@ -421,7 +458,8 @@ export function sceneFixtureGraph(): { nodes: GraphNode[]; edges: GraphEdge[]; c
       },
     },
     { id: "k", type: "constant", params: { ...defaults("constant"), value: 0.75 } },
-    { id: "canvas", type: "skia-canvas", params: {} },
+    // Skia Canvas params (lane L1): background_on + an alpha color.
+    { id: "canvas", type: "skia-canvas", params: { background_on: true, background: "#10203080" } },
   ];
   const edges: GraphEdge[] = [
     { id: "e1", source: "av", sourceHandle: "out:primary", target: "scene", targetHandle: "in:param:stroke" },

@@ -8,8 +8,8 @@
 //   skia-canvas  a whole Skia layer's scene IR (scene-plan.ts/scene-emit.ts)
 
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
-import { LAYER_TYPE } from "@/engine/groups";
-import type { SkiaScene } from "@/engine/skia/scene-ir";
+import type { RGBA, SkiaScene } from "@/engine/skia/scene-ir";
+import { hexToRgba01 } from "@/engine/spline-fill";
 import { emitSkiaBundle } from "./emit";
 import { planSkiaExport } from "./plan";
 import { emitSceneBundle } from "./scene-emit";
@@ -78,7 +78,13 @@ export function exportSkia(req: SkiaExportRequest): SkiaExportResult {
       return { files: emitSkiaBundle(plan, req.runtimeSource), problems: [], warnings: plan.warnings };
     }
     case SKIA_CANVAS_TYPE: {
-      const sampler = makeSceneSampler(req.nodes, req.edges, target.id, req.canvas, req.timeline);
+      // The canvas's own background (skia-canvas: background_on + an alpha
+      // color) is static in the IR.
+      const bg = canvasBackground(target, req.edges);
+      if (typeof bg === "string") return { files: null, problems: [bg], warnings: [] };
+      // Interior nodes run on the layer's local clock from 0 — the editor's
+      // export action says so when the layer starts later (L6).
+      const sampler = makeSceneSampler(req.nodes, req.edges, target.id, req.canvas, req.timeline, bg);
       if ("problem" in sampler) return { files: null, problems: [sampler.problem], warnings: [] };
       const scene = sampler.sampleAt(0);
       if (!scene) return { files: null, problems: [sampler.lastProblem() ?? "The scene input produced nothing."], warnings: [] };
@@ -88,12 +94,11 @@ export function exportSkia(req: SkiaExportRequest): SkiaExportResult {
         runtimeSource: req.runtimeSource,
         sampleAt: (tick) => sampler.sampleAt(tick),
       });
-      const warnings = [...r.warnings];
-      const layer = enclosingLayer(req.nodes, target);
-      if (layer?.clips?.some((c) => c.enabled)) {
-        warnings.push(`Layer "${layer.id}" has a clip window — the export plays the scene for the whole timeline; gate it in the app.`);
-      }
-      return { files: r.files, problems: r.problems, warnings };
+      // What the producers themselves could not express (an unfused shader,
+      // an unported option) refuses the export, as it fails the preview.
+      const producer = sampler.producerProblems();
+      if (producer.length) return { files: null, problems: [...producer, ...r.problems], warnings: r.warnings };
+      return { files: r.files, problems: r.problems, warnings: r.warnings };
     }
     default:
       return {
@@ -104,14 +109,17 @@ export function exportSkia(req: SkiaExportRequest): SkiaExportResult {
   }
 }
 
-function enclosingLayer(nodes: GraphNode[], n: GraphNode): GraphNode | null {
-  const byId = new Map(nodes.map((x) => [x.id, x]));
-  const seen = new Set<string>();
-  let cur = n.parentId ? byId.get(n.parentId) : undefined;
-  while (cur && !seen.has(cur.id)) {
-    if (cur.type === LAYER_TYPE) return cur;
-    seen.add(cur.id);
-    cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+// The Skia Canvas background as the IR's static RGBA (undefined = off), or
+// a problem when it animates.
+function canvasBackground(canvas: GraphNode, edges: GraphEdge[]): RGBA | undefined | string {
+  for (const p of ["background_on", "background"]) {
+    const keyed = canvas.animation?.[p];
+    const wired = (canvas.exposedParams ?? []).includes(p) && edges.some((e) => e.target === canvas.id && e.targetHandle === `in:param:${p}`);
+    if ((keyed?.animated && keyed.keyframes.length) || wired) {
+      return `The Skia Canvas "${canvas.id}" has an animated background (${p}) — the exported canvas background is static; animate a Skia Fill under the scene instead.`;
+    }
   }
-  return null;
+  if (canvas.params.background_on !== true) return undefined;
+  const v = canvas.params.background;
+  return hexToRgba01(typeof v === "string" ? v : "#000000");
 }

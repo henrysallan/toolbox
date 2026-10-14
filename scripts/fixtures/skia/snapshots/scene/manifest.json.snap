@@ -18,11 +18,12 @@
     "frames": 61
   },
   "sampledFrames": 61,
+  "webPlayable": false,
   "bindCounts": {
-    "static": 130,
+    "static": 138,
     "clock": 1,
-    "track": 15,
-    "sampled": 6
+    "track": 16,
+    "sampled": 7
   },
   "binds": [
     {
@@ -69,8 +70,9 @@
       "path": "root.children.1.transform.rotate",
       "kind": "track",
       "sample": "b14",
-      "from": "keyframes scene.spin (2 keys)",
-      "keys": 2
+      "from": "keyframes scene.turn (2 keys)",
+      "keys": 2,
+      "scale": 0.017453292519943295
     },
     {
       "id": "b25",
@@ -140,7 +142,7 @@
       "id": "b84",
       "path": "root.children.1.children.4.paint.pathEffects.0.phase",
       "kind": "track",
-      "sample": "b14",
+      "sample": "b84",
       "from": "keyframes scene.spin (2 keys)",
       "keys": 2
     },
@@ -163,45 +165,62 @@
       "distinct": 2
     },
     {
-      "id": "b111",
+      "id": "b113",
       "path": "root.children.2.children.3.geom.pts",
       "kind": "sampled",
-      "sample": "b111",
+      "sample": "b113",
       "role": "array",
       "from": "derived from scene.spin (animated: scene.spin); sampled 61 frames",
       "distinct": 61
     },
     {
-      "id": "b123",
+      "id": "b126",
+      "path": "root.children.2.children.6.geom.d",
+      "kind": "sampled",
+      "sample": "b126",
+      "role": "path",
+      "from": "derived from scene's inputs (scene is keyframed); sampled 61 frames",
+      "distinct": 61
+    },
+    {
+      "id": "b133",
       "path": "root.children.4.text",
       "kind": "sampled",
-      "sample": "b123",
+      "sample": "b133",
       "role": "string",
       "from": "static (untagged animation); sampled 61 frames",
       "distinct": 61
     },
     {
-      "id": "b130",
+      "id": "b138",
+      "path": "root.children.4.paint.color",
+      "kind": "track",
+      "sample": "b3",
+      "from": "keyframes scene.tint (2 keys), oklab",
+      "keys": 2
+    },
+    {
+      "id": "b140",
       "path": "root.children.5.font.size",
       "kind": "track",
-      "sample": "b130",
+      "sample": "b140",
       "from": "keyframes scene.size (2 keys)",
       "keys": 2
     },
     {
-      "id": "b135",
+      "id": "b145",
       "path": "root.children.6.xforms",
       "kind": "sampled",
-      "sample": "b135",
+      "sample": "b145",
       "role": "array",
       "from": "derived from scene.spin (animated: scene.spin); sampled 61 frames",
       "distinct": 61
     },
     {
-      "id": "b146",
+      "id": "b156",
       "path": "root.children.8.geom.r",
       "kind": "sampled",
-      "sample": "b146",
+      "sample": "b156",
       "role": "number",
       "from": "keyframes scene.radius (4 keys); sampled 61 frames",
       "distinct": 47
@@ -254,6 +273,8 @@
     }
   ],
   "warnings": [
+    "root.children.1 (group from scene): a runtime image filter (<RuntimeShader>) is not playable on React Native Skia web — CanvasKit has no factory for it; native only.",
+    "root.children.1.children.4 (shape): 2 composed path effects (dash → corner) are not playable on React Native Skia web — CanvasKit can't compose path effects; native only.",
     "root.children.4.text changes over time but its tags (static) say static — sampled per frame; tag it with ref/deps in the producer.",
     "root.children.8.geom.r: keyframes scene.radius (4 keys) does not reproduce the producer's value at frame 0 (a transformed param tagged as a plain ref?) — sampled instead."
   ]
