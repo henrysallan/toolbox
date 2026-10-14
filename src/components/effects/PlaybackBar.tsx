@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { evalNumExpr } from "@/lib/num-expr";
 import { wheelWantsZoom } from "./input-device";
 import { useClock } from "@/state/playback-clock";
+import type { TimelineMarker } from "@/lib/timeline-markers";
+import { COLOR_MARKER } from "./timeline/theme";
 
 interface Props {
   fps: number;
@@ -18,6 +20,9 @@ interface Props {
   // layouts that manage the track editor elsewhere can omit it.
   tracksOpen?: boolean;
   onToggleTracks?: () => void;
+  // The active composition's timeline markers, drawn as ticks on the scrub
+  // track (read-only — they're edited on the Tracks / Layers ruler).
+  markers?: readonly TimelineMarker[];
 }
 
 // Width-based picks for tick spacing, in frames. Tries ascending
@@ -49,6 +54,7 @@ export default function PlaybackBar({
   onLoopFramesChange,
   tracksOpen,
   onToggleTracks,
+  markers,
 }: Props) {
   // Clock reads come straight from the playback store — this component
   // re-renders per frame BY DESIGN (it draws the playhead + frame
@@ -392,6 +398,40 @@ export default function PlaybackBar({
             />
           );
         })()}
+        {/* Timeline markers — a violet tick per marker (edited on the
+            Tracks / Layers ruler). */}
+        {pxPerSec > 0 &&
+          markers?.map((m) => {
+            const mx = (m.frame / fps - viewOffset) * pxPerSec;
+            if (mx < 0 || mx > trackWidth) return null;
+            return (
+              <div
+                key={m.id}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: mx,
+                  width: 1,
+                  height: "100%",
+                  background: COLOR_MARKER,
+                  opacity: 0.85,
+                  pointerEvents: "none",
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: 0,
+                    height: 0,
+                    borderTop: `5px solid ${COLOR_MARKER}`,
+                    borderRight: "4px solid transparent",
+                  }}
+                />
+              </div>
+            );
+          })}
         {/* Hover preview — a faded red line mirroring the playhead that
             tracks the cursor. Hidden while scrubbing, since the real
             playhead is already snapped to the cursor then. */}

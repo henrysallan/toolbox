@@ -60,6 +60,7 @@
 // program text). Strict ES2: no array initialisers, no dynamic indexing,
 // constant loop bounds, floor() for rounding.
 
+import { NO_EXPORT_SEGMENTS, type ExportSegments } from "./segments";
 import { rgbToOklab } from "@/engine/color-space";
 import type { Bind, SkiaScene, SkslProgramIR } from "@/engine/skia/scene-ir";
 import { emitSkiaBundle } from "./emit";
@@ -847,12 +848,13 @@ function staticLit(v: number | number[] | undefined): string {
 // clock and the static uniforms only, and toolbox-timeline.ts isn't shipped.
 export function emitBakedSkiaBundle(
   plan: SkiaExportPlan,
-  runtimeSource: string
+  runtimeSource: string,
+  segments: ExportSegments = NO_EXPORT_SEGMENTS
 ): { files: Record<string, string> | null; problems: string[]; warnings: string[] } {
   const b = bakeSkiaPlan(plan);
   if (!b.plan || !b.program) return { files: null, problems: b.problems, warnings: b.warnings };
   const baked = b.plan;
-  const files = emitSkiaBundle(baked, runtimeSource);
+  const files = emitSkiaBundle(baked, runtimeSource, segments);
   delete files["toolbox-timeline.ts"];
 
   // (emit.ts's provenance comment, restated for the baked program.)
@@ -1078,11 +1080,12 @@ export function bakeScenePlan(plan: ScenePlan): BakeSceneResult {
 
 export function emitBakedSceneBundle(
   plan: ScenePlan,
-  runtimeSource: string
+  runtimeSource: string,
+  segments: ExportSegments = NO_EXPORT_SEGMENTS
 ): { files: Record<string, string> | null; problems: string[]; warnings: string[] } {
   const b = bakeScenePlan(plan);
   if (!b.plan) return { files: null, problems: b.problems, warnings: b.warnings };
-  const files = emitSceneBundle(b.plan, runtimeSource);
+  const files = emitSceneBundle(b.plan, runtimeSource, segments);
   const m = JSON.parse(files["manifest.json"]) as Record<string, unknown>;
   const left = b.worklet.filter((x) => x.plan.kind !== "clock");
   // Program ids as effects.ts numbers them (deduped by SkSL, first use).

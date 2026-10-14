@@ -102,6 +102,8 @@ import {
   PlayheadLine,
 } from "./timeline/PlayheadChrome";
 import { DiamondNav } from "./timeline/DiamondNav";
+import { MarkerRuler, type MarkerRulerHandle } from "./timeline/MarkerRuler";
+import { NO_MARKERS, type TimelineMarker } from "@/lib/timeline-markers";
 
 // AE-style layer stack editor (spec §2 "Layers editor"). A lens over
 // the root compositing chain: each row is a layer, top-of-list =
@@ -183,6 +185,10 @@ export interface LayersEditorProps {
   // the lifted selection back so a dock-tab round-trip (layers → graph →
   // layers) re-mounts with the same keyframes selected.
   initialKeyframeSelection?: SelectionKey[];
+  // The active composition's timeline markers, drawn on the ruler. Omit
+  // onMarkersChange for a read-only strip.
+  markers?: readonly TimelineMarker[];
+  onMarkersChange?(next: TimelineMarker[], label: string): void;
 }
 
 type Drag =
@@ -266,10 +272,15 @@ export function LayersEditor({
   fitVersion,
   onKeyframeSelectionChange,
   initialKeyframeSelection,
+  markers = NO_MARKERS,
+  onMarkersChange,
 }: LayersEditorProps) {
   // Null in the main window; the child Window when the timeline panel
   // is popped out (080226_panel-popout-windows.md §3).
   const panelWin = usePanelWindow();
+  // Timeline markers on the ruler (timeline/MarkerRuler.tsx); the ruler's
+  // contextmenu goes through its handle.
+  const markerRulerRef = useRef<MarkerRulerHandle>(null);
   // No top-level clock subscription (clock-store spec, leaf pass): the
   // playhead chrome and DiamondNav subscribe themselves, and actions
   // read the tick imperatively at event time — playback no longer
@@ -1486,6 +1497,7 @@ export function LayersEditor({
             onScrub(Math.max(0, Math.round(tick)));
             setDrag({ kind: "scrub" });
           }}
+          onContextMenu={(e) => markerRulerRef.current?.onRulerContextMenu(e)}
         >
           {/* Minor divisions as short stubs off the bottom edge, on the
               same 1/2/5 ladder as the numbers. First in the DOM so the
@@ -1531,6 +1543,16 @@ export function LayersEditor({
               {t.frame}
             </div>
           ))}
+          <MarkerRuler
+            ref={markerRulerRef}
+            markers={markers}
+            timeline={timeline}
+            tickToPx={tickToPx}
+            pxToTick={pxToTick}
+            width={lanesWidth}
+            onChange={onMarkersChange}
+            onSeek={onScrub}
+          />
           {/* Hover preview line through the ruler. */}
           <HoverLine ref={rulerHoverRef} />
           {/* Playhead triangle handle — drag to scrub (self-subscribing

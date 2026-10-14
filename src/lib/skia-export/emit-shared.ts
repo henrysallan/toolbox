@@ -17,20 +17,17 @@ export function timelineConstSource(t: EmitTimeline): string {
   return `\nexport const TIMELINE = {\n  fps: ${t.fps},\n  ticksPerFrame: ${t.ticksPerFrame},\n  durationTicks: ${t.durationTicks},\n  durationSec: ${JSON.stringify(durationSecOf(t))},\n} as const;\n`;
 }
 
-// useToolboxClock(): the master clock, in the component module (it reads
-// TIMELINE.durationSec, which the component imports from ./timeline).
+// The bundle barrel's (index.ts) clock exports.
+export const CLOCK_BARREL =
+  `export {\n  useToolboxClock,\n  SEGMENTS,\n  MARKERS,\n  DURATION_SEC,\n  type ToolboxClock,\n  type ToolboxClockOptions,\n  type PlaySegmentOptions,\n  type SegmentName,\n  type MarkerName,\n} from "./toolbox-clock";\n`;
+
+// useToolboxClock(): the master clock lives in its own generated module,
+// toolbox-clock.ts (segments.ts clockModuleSource — SEGMENTS, MARKERS and
+// the controls). The component module re-exports it, so app code importing
+// the hook from the component keeps resolving.
 export function toolboxClockSource(): string {
   return (
-    `\n// One master clock in seconds, advanced on the UI thread. \`loop\` wraps at\n// the toolbox scene length; pass playing=false to hold (and drive time.value\n// yourself — a gesture, a scroll position, withTiming to a marker).\n` +
-    `export function useToolboxClock(opts: { playing?: boolean; loop?: boolean; start?: number } = {}) {\n` +
-    `  const { playing = true, loop = true, start = 0 } = opts;\n` +
-    `  const time = useSharedValue(start);\n` +
-    `  useFrameCallback((frame) => {\n` +
-    `    "worklet";\n` +
-    `    const dt = (frame.timeSincePreviousFrame ?? 0) / 1000;\n` +
-    `    const next = time.value + dt;\n` +
-    `    time.value = loop ? next % TIMELINE.durationSec : Math.min(next, TIMELINE.durationSec);\n` +
-    `  }, playing);\n` +
-    `  return time;\n}\n`
+    `\n// The master clock and its controls (play, pause, seek, playSegment, …).\n` +
+    `export {\n  useToolboxClock,\n  SEGMENTS,\n  MARKERS,\n  type ToolboxClock,\n  type ToolboxClockOptions,\n  type SegmentName,\n} from "./toolbox-clock";\n`
   );
 }

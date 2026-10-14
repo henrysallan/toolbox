@@ -7,3 +7,13 @@ export { exportSkiaScene, type SkiaSceneExportOptions } from "./api";
 export { planSceneExport, type ScenePlan, type PlannedBind, type BindPlan, type ScenePlanOptions } from "./scene-plan";
 export { emitSceneBundle, SKIA_SCENE_EXPORT_FORMAT } from "./scene-emit";
 export { makeSceneSampler } from "./scene-sample";
+// Timeline markers → SEGMENTS + the clock module both bundles ship (M3).
+export {
+  exportSegments,
+  clockModuleSource,
+  manifestSegments,
+  NO_EXPORT_SEGMENTS,
+  type ExportSegment,
+  type ExportSegments,
+  type ExportMarker,
+} from "./segments";

@@ -563,7 +563,7 @@ const server = new McpServer(
       "separately. Tools: get_status, get_catalog, get_graph, get_recent_edits, " +
       "get_node_data, screenshot, screenshot_strip, insert_recipe, edit_group, " +
       "set_param, get_keyframes, set_keyframes, validate_expression, " +
-      "get_shader_errors, transport, tidy, plan_glsl_translation, " +
+      "get_shader_errors, transport, set_markers, tidy, plan_glsl_translation, " +
       "get_glsl_docs, compare_renders, get_node_source, read_source, search_source, " +
       "set_perf_capture, get_perf, get_perf_frame, plan_skia_export, export_skia.",
   }

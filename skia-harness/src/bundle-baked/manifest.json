@@ -1,5 +1,5 @@
 {
-  "format": 1,
+  "format": 3,
   "name": "Aurora",
   "exportedBy": "toolbox SkSL Shader",
   "canvaskit": "0.41.0",
@@ -14,6 +14,55 @@
     "durationTicks": 300000,
     "durationSec": 5
   },
+  "segments": [
+    {
+      "name": "intro",
+      "start": 0,
+      "end": 2,
+      "frames": [
+        0,
+        120
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "loop",
+      "start": 2,
+      "end": 5,
+      "frames": [
+        120,
+        300
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "flash",
+      "start": 2.5,
+      "end": 3,
+      "frames": [
+        150,
+        180
+      ],
+      "kind": "range"
+    }
+  ],
+  "markers": [
+    {
+      "name": "intro",
+      "frame": 0,
+      "time": 0
+    },
+    {
+      "name": "loop",
+      "frame": 120,
+      "time": 2
+    },
+    {
+      "name": "flash",
+      "frame": 150,
+      "time": 2.5
+    }
+  ],
   "usesTime": true,
   "uniforms": [
     {

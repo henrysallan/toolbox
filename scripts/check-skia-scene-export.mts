@@ -170,8 +170,8 @@ check(
 check("runtime ships verbatim", files["toolbox-timeline.ts"] === runtimeSource);
 const manifest = JSON.parse(files["manifest.json"]);
 check(
-  "manifest: format 2, kind scene, non-bundled assets keep their URL",
-  manifest.format === 2 &&
+  "manifest: format 3, kind scene, non-bundled assets keep their URL",
+  manifest.format === 3 &&
     manifest.kind === "scene" &&
     manifest.assets.find((a: any) => a.id === "sprites")?.url === fx.SCENE_ASSETS.sprites.url &&
     manifest.assets.find((a: any) => a.id === "logo")?.bundled === true &&

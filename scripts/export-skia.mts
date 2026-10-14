@@ -11,7 +11,9 @@
 //                         (emit-baked.ts; default: the worklet timeline)
 //
 // g.json: { nodes: GraphNode[], edges: GraphEdge[], timeline?, canvas? }
-// (engine/evaluator.ts shapes; timeline = { fps, ticksPerFrame, sceneDurationTicks }).
+// (engine/evaluator.ts shapes; timeline = { fps, ticksPerFrame,
+// sceneDurationTicks, markers? } — markers [{ id, name, frame, duration? }]
+// become the bundle's SEGMENTS). The aurora fixtures ship AURORA_MARKERS.
 // --node is an sksl-shader or a skia-canvas node.
 //
 // ir.json: { scene: SkiaScene, nodes?, edges?, timeline?, name? } — a
@@ -66,7 +68,7 @@ if (sceneFile) {
   if (fixture === "aurora") {
     const fx = await import("./fixtures/skia/aurora.ts");
     ({ nodes, edges, targetId } = fx.auroraGraph());
-    timeline = fx.AURORA_TIMELINE;
+    timeline = { ...fx.AURORA_TIMELINE, markers: fx.AURORA_MARKERS };
     canvas = { width: 512, height: 512 };
     name = "Aurora";
   } else if (fixture === "scene") {
@@ -84,7 +86,7 @@ if (sceneFile) {
     const { auroraSceneGraph } = await import("./fixtures/skia/aurora-scene-graph.ts");
     ({ nodes, edges } = auroraSceneGraph(fx.AURORA_SKSL));
     targetId = "skc";
-    timeline = fx.AURORA_TIMELINE;
+    timeline = { ...fx.AURORA_TIMELINE, markers: fx.AURORA_MARKERS };
     canvas = { width: 512, height: 512 };
     name = "Aurora (Skia layer)";
   } else if (fixture) {
@@ -125,6 +127,11 @@ for (const [f, text] of Object.entries(result.files)) {
 }
 for (const w of result.warnings) console.warn(`warning: ${w}`);
 const manifest = JSON.parse(result.files["manifest.json"]);
+if (manifest.segments?.length) {
+  console.log(
+    `segments: ${manifest.segments.map((s: { name: string; frames: number[] }) => `${s.name} [${s.frames[0]}, ${s.frames[1]})`).join(", ")}`
+  );
+}
 if (manifest.kind === "scene") {
   const kinds: Record<string, number> = manifest.bindCounts;
   const total = Object.values(kinds).reduce((a, b) => a + b, 0);

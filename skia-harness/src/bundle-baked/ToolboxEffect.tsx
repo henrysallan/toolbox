@@ -3,9 +3,9 @@
 
 import React from "react";
 import { Canvas, Fill, Shader, Skia, type CanvasRef } from "react-native-skia";
-import { useDerivedValue, useFrameCallback, useSharedValue, type SharedValue } from "react-native-reanimated";
+import { useDerivedValue, type SharedValue } from "react-native-reanimated";
 import { SKSL } from "./effect";
-import { TIMELINE, sampleUniforms } from "./timeline";
+import { sampleUniforms } from "./timeline";
 
 const effect = Skia.RuntimeEffect.Make(SKSL);
 if (!effect) throw new Error("toolbox export: the SkSL program did not compile on this Skia build");
@@ -29,17 +29,12 @@ export function ToolboxEffect({ time, width, height, canvasRef }: ToolboxEffectP
   );
 }
 
-// One master clock in seconds, advanced on the UI thread. `loop` wraps at
-// the toolbox scene length; pass playing=false to hold (and drive time.value
-// yourself — a gesture, a scroll position, withTiming to a marker).
-export function useToolboxClock(opts: { playing?: boolean; loop?: boolean; start?: number } = {}) {
-  const { playing = true, loop = true, start = 0 } = opts;
-  const time = useSharedValue(start);
-  useFrameCallback((frame) => {
-    "worklet";
-    const dt = (frame.timeSincePreviousFrame ?? 0) / 1000;
-    const next = time.value + dt;
-    time.value = loop ? next % TIMELINE.durationSec : Math.min(next, TIMELINE.durationSec);
-  }, playing);
-  return time;
-}
+// The master clock and its controls (play, pause, seek, playSegment, …).
+export {
+  useToolboxClock,
+  SEGMENTS,
+  MARKERS,
+  type ToolboxClock,
+  type ToolboxClockOptions,
+  type SegmentName,
+} from "./toolbox-clock";

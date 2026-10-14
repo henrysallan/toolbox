@@ -45,6 +45,7 @@ import { hasLegacyVideoKeys } from "@/lib/export-presets";
 import { FRAME_TYPE, REROUTE_TYPE } from "@/engine/graph-helpers";
 import { makeLayerNodes, newEdgeId } from "@/state/graph-ops";
 import { FRAME_XY_PROPS, newCompositionId } from "@/state/graph";
+import { sanitizeMarkers, type TimelineMarker } from "@/lib/timeline-markers";
 
 // Bump when the on-wire shape changes. Load path should branch on this.
 //
@@ -262,6 +263,26 @@ export interface SavedComposition {
   // and when the project is saved while this comp is active. Shown in the
   // Project view. Absent on older saves.
   modifiedAt?: number;
+  // Timeline markers (lib/timeline-markers.ts): named composition frames
+  // whose spans are the React Native Skia export's SEGMENTS. ADDITIVE, no
+  // schema bump: absent on older saves (= no markers), and the composition
+  // registry rides through older builds' load → save untouched (they spread
+  // the entry), so a resave there keeps them. Sanitized on load
+  // (deserializeGraph); omitted when a comp has none. Lives here, not on
+  // `scene`, because the active comp's scene is rebuilt from the live
+  // loop/fps/resolution at save — and so undo (GraphSnapshot.compositions)
+  // covers marker edits.
+  markers?: TimelineMarker[];
+}
+
+// A composition entry with its `markers` repaired (sanitizeMarkers); an
+// empty result drops the field.
+function withSanitizedMarkers(c: SavedComposition): SavedComposition {
+  const markers = sanitizeMarkers((c as { markers?: unknown }).markers);
+  const out: SavedComposition = { ...c };
+  delete out.markers;
+  if (markers.length) out.markers = markers;
+  return out;
 }
 
 export interface SavedProject {
@@ -1313,7 +1334,13 @@ export async function deserializeGraph(
   let compositions: SavedComposition[];
   let activeCompositionId: string;
   if (Array.isArray(saved.compositions)) {
-    compositions = saved.compositions;
+    // Markers are untrusted JSON like the rest of the row: repair them here
+    // so every consumer (editor, MCP, exporter) sees valid ones.
+    compositions = saved.compositions.map((c) =>
+      c && typeof c === "object" && "markers" in c
+        ? withSanitizedMarkers(c)
+        : c
+    );
     activeCompositionId =
       saved.activeCompositionId ?? compositions[0]?.id ?? "";
   } else {

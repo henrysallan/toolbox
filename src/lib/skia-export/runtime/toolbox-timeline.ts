@@ -85,6 +85,76 @@ function clamp01(x: number): number {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
 
+// ---- spring: Reanimated 4.7's withSpring from rest (x0 = −1, v0 = 0,
+// toValue = 1), timed in segment units — springUtils.ts's under-damped /
+// critically damped solutions with their operation order, and its energy
+// snap. Twin of engine/spring-easing.ts (gate: check-spring-easing).
+
+export function springState(zeta: number, omega0: number, t: number): { position: number; velocity: number } {
+  "worklet";
+  const x0 = -1;
+  const v0 = 0;
+  const toValue = 1;
+  if (zeta < 1) {
+    const omega1 = omega0 * Math.sqrt(1 - zeta ** 2);
+    const sin1 = Math.sin(omega1 * t);
+    const cos1 = Math.cos(omega1 * t);
+    const underDampedEnvelope = Math.exp(-zeta * omega0 * t);
+    const underDampedFrag1 = underDampedEnvelope * (sin1 * ((v0 + zeta * omega0 * x0) / omega1) + x0 * cos1);
+    return {
+      position: toValue + underDampedFrag1,
+      velocity: -zeta * omega0 * underDampedFrag1 + underDampedEnvelope * (cos1 * (v0 + zeta * omega0 * x0) - omega1 * x0 * sin1),
+    };
+  }
+  const criticallyDampedEnvelope = Math.exp(-omega0 * t);
+  return {
+    position: toValue + criticallyDampedEnvelope * (x0 + (v0 + omega0 * x0) * t),
+    velocity:
+      criticallyDampedEnvelope * -omega0 * (x0 + (v0 + omega0 * x0) * t) + criticallyDampedEnvelope * (v0 + omega0 * x0),
+  };
+}
+
+// Reanimated's currentEnergy / initialEnergy at dimensionless time s.
+function springEnergyFraction(zeta: number, s: number): number {
+  "worklet";
+  const st = springState(zeta, 1, s);
+  const d = 1 - st.position;
+  const currentEnergy = 0.5 * d ** 2 + 0.5 * st.velocity ** 2;
+  return currentEnergy / 0.5;
+}
+
+// First dimensionless time (ω0·t) at which Reanimated's energy test
+// (≤ 6e-9, withSpring's default energyThreshold) passes.
+export function springRestTime(zeta: number): number {
+  "worklet";
+  const threshold = 6e-9;
+  let hi = 1;
+  for (let i = 0; i < 64 && !(springEnergyFraction(zeta, hi) <= threshold); i++) hi *= 2;
+  let lo = 0;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (mid === lo || mid === hi) break;
+    if (springEnergyFraction(zeta, mid) <= threshold) hi = mid;
+    else lo = mid;
+  }
+  return hi;
+}
+
+// Progress at u ∈ [0,1]: exactly 0 / 1 at the ends and from the snap on.
+export function springEase(spring: TimelineSpring | undefined, u: number): number {
+  "worklet";
+  if (u <= 0) return 0;
+  if (u >= 1) return 1;
+  const z = spring ? spring.dampingRatio : undefined;
+  const s = spring ? spring.settle : undefined;
+  const zeta = typeof z === "number" && Number.isFinite(z) && z > 0 ? (z < 0.01 ? 0.01 : z > 10 ? 10 : z) : 0.5;
+  const settle = typeof s === "number" && Number.isFinite(s) && s > 0 ? (s < 0.05 ? 0.05 : s > 1 ? 1 : s) : 1;
+  const rest = spring && typeof spring.rest === "number" ? spring.rest : springRestTime(zeta);
+  const omega = (1.01 * rest) / settle;
+  if (u * omega >= rest) return 1;
+  return springState(zeta, omega, u).position;
+}
+
 export function easeOf(preset: string, u: number): number {
   "worklet";
   const HALF_PI = Math.PI / 2;
@@ -157,76 +227,6 @@ export function easeOf(preset: string, u: number): number {
     default:
       return u;
   }
-}
-
-// ---- spring: Reanimated 4.7's withSpring from rest (x0 = −1, v0 = 0,
-// toValue = 1), timed in segment units — springUtils.ts's under-damped /
-// critically damped solutions with their operation order, and its energy
-// snap. Twin of engine/spring-easing.ts (gate: check-spring-easing).
-
-export function springState(zeta: number, omega0: number, t: number): { position: number; velocity: number } {
-  "worklet";
-  const x0 = -1;
-  const v0 = 0;
-  const toValue = 1;
-  if (zeta < 1) {
-    const omega1 = omega0 * Math.sqrt(1 - zeta ** 2);
-    const sin1 = Math.sin(omega1 * t);
-    const cos1 = Math.cos(omega1 * t);
-    const underDampedEnvelope = Math.exp(-zeta * omega0 * t);
-    const underDampedFrag1 = underDampedEnvelope * (sin1 * ((v0 + zeta * omega0 * x0) / omega1) + x0 * cos1);
-    return {
-      position: toValue + underDampedFrag1,
-      velocity: -zeta * omega0 * underDampedFrag1 + underDampedEnvelope * (cos1 * (v0 + zeta * omega0 * x0) - omega1 * x0 * sin1),
-    };
-  }
-  const criticallyDampedEnvelope = Math.exp(-omega0 * t);
-  return {
-    position: toValue + criticallyDampedEnvelope * (x0 + (v0 + omega0 * x0) * t),
-    velocity:
-      criticallyDampedEnvelope * -omega0 * (x0 + (v0 + omega0 * x0) * t) + criticallyDampedEnvelope * (v0 + omega0 * x0),
-  };
-}
-
-// Reanimated's currentEnergy / initialEnergy at dimensionless time s.
-function springEnergyFraction(zeta: number, s: number): number {
-  "worklet";
-  const st = springState(zeta, 1, s);
-  const d = 1 - st.position;
-  const currentEnergy = 0.5 * d ** 2 + 0.5 * st.velocity ** 2;
-  return currentEnergy / 0.5;
-}
-
-// First dimensionless time (ω0·t) at which Reanimated's energy test
-// (≤ 6e-9, withSpring's default energyThreshold) passes.
-export function springRestTime(zeta: number): number {
-  "worklet";
-  const threshold = 6e-9;
-  let hi = 1;
-  for (let i = 0; i < 64 && !(springEnergyFraction(zeta, hi) <= threshold); i++) hi *= 2;
-  let lo = 0;
-  for (let i = 0; i < 60; i++) {
-    const mid = (lo + hi) / 2;
-    if (mid === lo || mid === hi) break;
-    if (springEnergyFraction(zeta, mid) <= threshold) hi = mid;
-    else lo = mid;
-  }
-  return hi;
-}
-
-// Progress at u ∈ [0,1]: exactly 0 / 1 at the ends and from the snap on.
-export function springEase(spring: TimelineSpring | undefined, u: number): number {
-  "worklet";
-  if (u <= 0) return 0;
-  if (u >= 1) return 1;
-  const z = spring ? spring.dampingRatio : undefined;
-  const s = spring ? spring.settle : undefined;
-  const zeta = typeof z === "number" && Number.isFinite(z) && z > 0 ? (z < 0.01 ? 0.01 : z > 10 ? 10 : z) : 0.5;
-  const settle = typeof s === "number" && Number.isFinite(s) && s > 0 ? (s < 0.05 ? 0.05 : s > 1 ? 1 : s) : 1;
-  const rest = spring && typeof spring.rest === "number" ? spring.rest : springRestTime(zeta);
-  const omega = (1.01 * rest) / settle;
-  if (u * omega >= rest) return 1;
-  return springState(zeta, omega, u).position;
 }
 
 function solveBezierX(x1: number, x2: number, x: number): number {

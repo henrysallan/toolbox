@@ -344,6 +344,7 @@ import {
   type MissingMedia,
 } from "@/lib/media-relink";
 import { registerImageOriginal } from "@/lib/image-bytes";
+import { addMarker, describeMarkers, NO_MARKERS, type TimelineMarker } from "@/lib/timeline-markers";
 import { playbackClock } from "@/state/playback-clock";
 import { audibleAudioSet } from "@/state/audio-audibility";
 import MediaRelinkModal, {
@@ -2990,6 +2991,38 @@ function EffectsShell({
     setSaveState("dirty");
   }, [rawRedo]);
   useUndoShortcuts(undo, redo);
+
+  // Timeline markers (lib/timeline-markers.ts) of the ACTIVE composition.
+  // They live on its registry entry (SavedComposition.markers), so the
+  // undo snapshot (GraphSnapshot.compositions), comp switching, save/load
+  // and the session capsule carry them with no state of their own. Each
+  // edit — one ruler gesture, one set_markers call — is one undo step.
+  const activeMarkers = useMemo(
+    () => compositions.find((c) => c.id === activeCompositionId)?.markers ?? NO_MARKERS,
+    [compositions, activeCompositionId]
+  );
+  const activeMarkersRef = useRef(activeMarkers);
+  activeMarkersRef.current = activeMarkers;
+  const setActiveMarkers = useCallback(
+    (next: TimelineMarker[]) => {
+      pushGraph(getGraphSnapshot());
+      const id = activeCompositionIdRef.current;
+      setCompositions((prev) =>
+        prev.map((c) => {
+          if (c.id !== id) return c;
+          const out: SavedComposition = { ...c };
+          if (next.length) out.markers = next;
+          else delete out.markers;
+          return out;
+        })
+      );
+    },
+    [pushGraph, getGraphSnapshot]
+  );
+  const addMarkerAtPlayhead = useCallback(() => {
+    const frame = Math.round(playbackClock.get().tick / DEFAULT_TICKS_PER_FRAME);
+    setActiveMarkers(addMarker(activeMarkersRef.current, frame).markers);
+  }, [setActiveMarkers]);
 
   // Graph Editor "Save" button → add a named easing to the project's
   // list. Upsert by (trimmed) name so re-saving under the same name
@@ -8552,7 +8585,23 @@ function EffectsShell({
           ? nodes.find((x) => x.id === currentGroupId)?.data.parentId
           : undefined) ?? "root",
       scopeTarget: skiaLayerScope ? "skia" : "default",
+      // The active composition's timeline markers and the named segments
+      // they make (the React Native Skia export's SEGMENTS).
+      ...(() => {
+        const r = describeMarkers(
+          activeMarkers,
+          fps,
+          loopFrames != null && loopFrames > 0 ? loopFrames : fps * 5
+        );
+        return {
+          markers: r.markers,
+          segments: r.segments,
+          ...(r.issues.length ? { markerIssues: r.issues } : {}),
+        };
+      })(),
     },
+    getMarkers: () => activeMarkersRef.current,
+    setMarkers: setActiveMarkers,
     nodesRef,
     edgesRef,
     canvasRef,
@@ -8776,6 +8825,8 @@ function EffectsShell({
         name: `${src?.name ?? "Composition"} copy`,
         scene: src?.scene,
         thumbnail: src?.thumbnail,
+        // Timeline markers are the comp's content, like its nodes.
+        ...(src?.markers?.length ? { markers: src.markers } : {}),
         modifiedAt: Date.now(),
       };
       const idx = compositionsRef.current.findIndex((c) => c.id === compId);
@@ -11761,6 +11812,8 @@ function EffectsShell({
           canvas: { width: canvasResRef.current[0], height: canvasResRef.current[1] },
           fps,
           frames: lf != null && lf > 0 ? lf : fps * 5,
+          // → the bundle's SEGMENTS / MARKERS.
+          markers: activeMarkersRef.current,
         }
       );
       const files = result.files;
@@ -14903,6 +14956,14 @@ function EffectsShell({
             <TransportButtons onPlayPause={onPlayPause} onReset={onReset} />
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {dockTab !== "graph" && (
+              <DockButton
+                onClick={addMarkerAtPlayhead}
+                title="Add a timeline marker at the playhead — markers name the segments a React Native Skia export plays. Drag a marker to move it, double-click to rename, right-click it (or the ruler) for more."
+              >
+                + marker
+              </DockButton>
+            )}
             {dockTab === "tracks" && (
               <>
                 <DockButton
@@ -14986,6 +15047,8 @@ function EffectsShell({
               fitVersion={trackFitVersion}
               onKeyframeSelectionChange={onTimelineKfSelection}
               initialKeyframeSelection={timelineKfSelection}
+              markers={activeMarkers}
+              onMarkersChange={setActiveMarkers}
             />
           ) : dockTab === "tracks" ? (
             <TrackEditor
@@ -15036,6 +15099,8 @@ function EffectsShell({
               onSaveEasing={saveEasing}
               onRenameEasing={renameEasing}
               onDeleteEasing={deleteEasing}
+              markers={activeMarkers}
+              onMarkersChange={setActiveMarkers}
             />
           ) : (
             <GraphEditor
@@ -15073,6 +15138,7 @@ function EffectsShell({
       onLoopFramesChange={setLoopFrames}
       tracksOpen={trackEditorOpen}
       onToggleTracks={() => setTrackEditorOpen((o) => !o)}
+      markers={activeMarkers}
     />
   );
 

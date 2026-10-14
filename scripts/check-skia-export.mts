@@ -230,6 +230,23 @@ check(
   ["effect.ts", "timeline.ts", "toolbox-timeline.ts", "ToolboxEffect.tsx", "manifest.json", "index.ts"].every((f) => f in files)
 );
 check("runtime ships verbatim", files["toolbox-timeline.ts"] === runtimeSrc);
+{
+  // The worklets Babel plugin turns each "worklet" function into an object
+  // that CAPTURES the functions it calls when it is created — at module
+  // evaluation, in source order. A worklet calling a function declared
+  // further down throws "Cannot access 'x' before initialization" on device
+  // (and in the RN web harness), even though plain JS hoisting makes it work
+  // in Node. So: every top-level function may call only functions above it.
+  const decls = [...runtimeSrc.matchAll(/^(?:export )?function (\w+)\(/gm)].map((m) => ({ name: m[1], at: m.index! }));
+  const late: string[] = [];
+  decls.forEach((d, i) => {
+    const body = runtimeSrc.slice(d.at, decls[i + 1]?.at ?? runtimeSrc.length);
+    for (const later of decls.slice(i + 1)) {
+      if (new RegExp(`\\b${later.name}\\s*\\(`).test(body)) late.push(`${d.name} → ${later.name}`);
+    }
+  });
+  check("runtime worklets only call functions declared above them (worklets capture order)", late.length === 0, late.join(", "));
+}
 const emitted = await import(pathToFileURL(path.join(tmp, "timeline.ts")).href);
 
 {

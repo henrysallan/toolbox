@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { auroraGraph as build } from "./aurora-graph.ts";
 
-export { AURORA_TIMELINE, AURORA_FRAMES } from "./aurora-graph.ts";
+export { AURORA_TIMELINE, AURORA_FRAMES, AURORA_MARKERS } from "./aurora-graph.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const AURORA_SKSL = fs.readFileSync(path.join(HERE, "aurora.sksl"), "utf8");
