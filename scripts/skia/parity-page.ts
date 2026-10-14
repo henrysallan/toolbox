@@ -14,6 +14,7 @@ import { evaluateGraph, type EvalCache } from "@/engine/evaluator";
 import { setCanvasKit, CANVASKIT_BASE } from "@/engine/skia/canvaskit";
 import { compareRgba, diffHeatRgba } from "@/lib/glsl-translation/compare";
 import { auroraGraph, AURORA_TIMELINE } from "../fixtures/skia/aurora-graph";
+import { auroraSceneGraph } from "../fixtures/skia/aurora-scene-graph";
 // esbuild --loader:.sksl=text
 import AURORA_SKSL from "../fixtures/skia/aurora.sksl";
 
@@ -32,12 +33,15 @@ function fromB64(b64: string): Uint8Array {
   return out;
 }
 
-export async function renderToolbox(frames: number[], size: number): Promise<string[]> {
+// `which`: "effect" renders the M0 SkSL Shader node (src/bundle), "scene"
+// the Skia-layer chain's Skia Canvas (src/bundle-scene).
+export async function renderToolbox(frames: number[], size: number, which: "effect" | "scene" = "effect"): Promise<string[]> {
   registerAllNodes();
   const init = (window as unknown as { CanvasKitInit: (o: object) => Promise<never> }).CanvasKitInit;
   setCanvasKit(await init({ locateFile: (f: string) => CANVASKIT_BASE + f }));
   const backend = createEngineBackend(size, size);
-  const { nodes, edges, targetId } = auroraGraph(AURORA_SKSL);
+  const { nodes, edges, targetId } =
+    which === "scene" ? { ...auroraSceneGraph(AURORA_SKSL), targetId: "skc" } : auroraGraph(AURORA_SKSL);
   const { fps, ticksPerFrame } = AURORA_TIMELINE;
   const out: string[] = [];
   for (const f of frames) {

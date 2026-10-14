@@ -320,11 +320,29 @@ function wireInto(c: Ctx, node: GraphNode, param: string): GraphEdge | undefined
 // Could this ref's value change over the scene? (keyframed, wired —
 // including an input socket of that name — or clipped). Over-approximate:
 // sampling collapses a value that turns out constant.
+// Virtual sub-keys that animate PART of a param (engine/conventions.ts): a
+// ramp's stops (`ramp_c|a|p:<param>:<stopId>`), a Merge's layer opacities,
+// a multipoint gradient's points. Keyframed or wired, they move the param.
+function subKeysOf(node: GraphNode, param: string): (key: string) => boolean {
+  const t = getNodeDef(node.type)?.params.find((p) => p.name === param)?.type;
+  return (key) =>
+    key.startsWith(`ramp_c:${param}:`) ||
+    key.startsWith(`ramp_a:${param}:`) ||
+    key.startsWith(`ramp_p:${param}:`) ||
+    (t === "merge_layers" && key.startsWith("layer_opacity:")) ||
+    (t === "gradient_points" && /^gpoint_[xyc]:/.test(key));
+}
+
 function refAnimates(c: Ctx, r: BindRef): boolean {
   const node = c.byId.get(r.node);
   if (!node) return false;
   if (liveBlock(node, r.param)) return true;
   if (wireInto(c, node, r.param)) return true;
+  const sub = subKeysOf(node, r.param);
+  if (Object.keys(node.animation ?? {}).some((k) => sub(k) && liveBlock(node, k))) return true;
+  if (c.edges.some((e) => e.target === node.id && e.targetHandle.startsWith("in:param:") && sub(e.targetHandle.slice("in:param:".length)))) {
+    return true;
+  }
   if (c.edges.some((e) => e.target === node.id && e.targetHandle === `in:${r.param}`)) return true;
   return !!node.clips?.some((cl) => cl.enabled);
 }

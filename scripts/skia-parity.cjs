@@ -43,13 +43,16 @@ const BUNDLE_DIR = path.join(OUT, ".bundle");
 const FRAMES = H.arg("frames", "0,45,90,120,150,200,240,299").split(",").map(Number);
 const SIZE = Number(H.arg("size", "512"));
 const WRITE_GOLDEN = H.flag("write-golden");
+// effect = the M0 SkSL Shader bundle (skia-harness/src/bundle); scene = the
+// Skia-layer scene bundle (src/bundle-scene, `--fixture aurora-scene`).
+const BUNDLE = H.arg("bundle", "effect");
 const FPS = 60;
 
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
 app.commandLine.appendSwitch("ignore-gpu-blocklist");
 
-if (FRAMES.some((f) => !Number.isInteger(f) || f < 0) || !(SIZE > 0)) {
-  console.error("usage: npm run parity:skia -- [--frames 0,45,120] [--size 512] [--write-golden]");
+if (FRAMES.some((f) => !Number.isInteger(f) || f < 0) || !(SIZE > 0) || !["effect", "scene"].includes(BUNDLE) || (WRITE_GOLDEN && BUNDLE !== "effect")) {
+  console.error("usage: npm run parity:skia -- [--frames 0,45,120] [--size 512] [--bundle effect|scene] [--write-golden (effect only)]");
   process.exit(2);
 }
 if (!fs.existsSync(path.join(HARNESS_DIST, "index.html"))) {
@@ -110,7 +113,7 @@ app.whenReady().then(async () => {
     const win = H.makeWindow(SIZE + 64, SIZE + 96);
 
     // ---- device: React Native Skia (web) -------------------------------------
-    await win.loadURL(`${server.base}/?t=0&size=${SIZE}&chrome=0`);
+    await win.loadURL(`${server.base}/?t=0&size=${SIZE}&chrome=0${BUNDLE === "scene" ? "&bundle=scene" : ""}`);
     await H.waitFor(win, "window.__toolboxHarnessReady");
     const device = [];
     for (const f of FRAMES) {
@@ -123,7 +126,7 @@ app.whenReady().then(async () => {
     // ---- toolbox: the engine + SkSL Shader node --------------------------------
     await win.loadURL(`${server.base}/__parity/page.html`);
     await H.waitFor(win, "window.__parity && window.CanvasKitInit");
-    const toolbox = await H.call(win, `window.__parity.renderToolbox(${JSON.stringify(FRAMES)}, ${SIZE})`, 120000, "toolbox render");
+    const toolbox = await H.call(win, `window.__parity.renderToolbox(${JSON.stringify(FRAMES)}, ${SIZE}, ${JSON.stringify(BUNDLE)})`, 120000, "toolbox render");
     const served = server.served.filter((s) => s.path.endsWith("canvaskit.wasm"));
     console.log(
       `toolbox: rendered ${toolbox.length} frames at ${SIZE}×${SIZE} · CanvasKit ${ck.version} ` +

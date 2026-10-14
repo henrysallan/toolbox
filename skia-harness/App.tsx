@@ -20,7 +20,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { Linking, PixelRatio, Platform, StyleSheet, Text, View } from "react-native";
 import { useSharedValue, type SharedValue } from "react-native-reanimated";
 import { useCanvasRef, type CanvasRef } from "react-native-skia";
-import { CANVAS, NAME, TIMELINE, ToolboxEffect, useToolboxClock } from "./src/bundle";
+import * as Effect from "./src/bundle";
+import * as Scene from "./src/bundle-scene";
 import { deviceInfo, loopbackHost, nextFrames, parseLink, postJson, snapshot, toBase64, type Snapshot } from "./capture";
 
 const query =
@@ -28,6 +29,13 @@ const query =
     ? new URLSearchParams(window.location.search)
     : null;
 const webFrozenAt = query?.get("t") != null ? Number(query.get("t")) : null;
+// Which export plays: the M0 SkSL Shader bundle (src/bundle) or the
+// Skia-layer scene bundle (src/bundle-scene) with ?bundle=scene. Fixed for
+// the page's lifetime, so the hook choice below is stable.
+const SCENE = query?.get("bundle") === "scene";
+const { CANVAS, NAME, TIMELINE } = SCENE ? Scene : Effect;
+const ToolboxEffect = SCENE ? Scene.ToolboxScene : Effect.ToolboxEffect;
+const useToolboxClock = SCENE ? Scene.useToolboxClock : Effect.useToolboxClock;
 const initialSize = Number(query?.get("size") ?? CANVAS.width);
 
 type Capture = (t: number, sizePx?: number) => Promise<Snapshot>;

@@ -1,0 +1,83 @@
+{
+  "format": 2,
+  "kind": "scene",
+  "name": "Aurora (Skia layer)",
+  "exportedBy": "toolbox Skia Canvas",
+  "irVersion": 1,
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "canvas": {
+    "width": 512,
+    "height": 512
+  },
+  "timeline": {
+    "fps": 60,
+    "ticksPerFrame": 1000,
+    "durationTicks": 300000,
+    "durationSec": 5,
+    "frames": 301
+  },
+  "sampledFrames": 301,
+  "bindCounts": {
+    "static": 18,
+    "clock": 1,
+    "track": 3,
+    "sampled": 1
+  },
+  "binds": [
+    {
+      "id": "b3",
+      "path": "root.paint.shader.program.uniforms.iTime",
+      "kind": "clock",
+      "sample": "b3",
+      "from": "master clock (seconds)"
+    },
+    {
+      "id": "b4",
+      "path": "root.paint.shader.program.uniforms.nskn_scale",
+      "kind": "track",
+      "sample": "b4",
+      "from": "Animated Value scale (3 keys)",
+      "keys": 3
+    },
+    {
+      "id": "b8",
+      "path": "root.paint.shader.program.uniforms.nskn_offset_x",
+      "kind": "track",
+      "sample": "b8",
+      "from": "Animated Value drift (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b12",
+      "path": "root.paint.shader.program.uniforms.nskn_contrast",
+      "kind": "track",
+      "sample": "b12",
+      "from": "Animated Value contrast (4 keys)",
+      "keys": 4
+    },
+    {
+      "id": "b18",
+      "path": "root.paint.shader.program.uniforms.nskr_stops_color",
+      "kind": "sampled",
+      "sample": "b18",
+      "role": "array",
+      "from": "derived from skr.stops (animated: skr.stops); sampled 301 frames",
+      "distinct": 95
+    }
+  ],
+  "programs": [
+    {
+      "id": "SKSL_0",
+      "usedBy": [
+        "root (skf)"
+      ],
+      "fused": [
+        "tbx.noise.simplex@1",
+        "tbx.color_ramp@1"
+      ]
+    }
+  ],
+  "assets": [],
+  "warnings": []
+}

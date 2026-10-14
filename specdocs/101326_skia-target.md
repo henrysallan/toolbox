@@ -1,7 +1,7 @@
 # Skia target: SkSL authoring, Skia layers, and React Native Skia + Reanimated export
 
 Spike + proposal — 2026-10-13. Status: **M0 built and measured** (§2);
-**owner decisions taken (§5)**; M1 (Wave 1, §7) in progress. The owner's three questions, and the answers this doc
+**owner decisions taken (§5)**; **Wave 1 merged and measured (§2b)**. The owner's three questions, and the answers this doc
 substantiates:
 
 1. **Can toolbox have an SkSL node?** Yes. It exists: `sksl-shader`, rendered
@@ -281,6 +281,61 @@ npm --prefix skia-harness run web                                 # watch it pla
 ```
 
 ---
+
+## 2b. Wave 1 results (2026-10-13, branch `skia-wave1`)
+
+All six lanes merged (integration notes in the merge commits). Measured:
+
+| what | result |
+|---|---|
+| Aurora built from Skia-layer nodes (Noise (Skia) → Color Ramp (Skia) → Skia Fill → Skia Canvas) vs native Noise → Color Ramp, real engine, 512², 8 frames (`compare:skia -- --a aurora-scene:ramp --b aurora-scene:skc`) | **MATCH**, max 1/255, mean meanAbs 0.00025 |
+| …exported through the **scene exporter** and played by React Native Skia web vs toolbox's Skia Canvas (`parity:skia -- --bundle scene`) | **pixel-identical**, 8/8 frames, 0/255 |
+| M0 SkSL-node bundle after CanvasKit `bin/full` + runtime changes (`parity:skia`) | pixel-identical, 8/8 |
+| Fused library ports vs the hand-written Aurora SkSL (`check:skia-library`) | max 1/255, 9 of 369,408 px differ |
+| Exported timeline vs the evaluator, channel keyframes incl. translucent color (`check:skia-export`) | bit-identical, frames 0..300 |
+| Scene exporter: 22 animated binds × 61 frames replayed from the emitted worklets (`check:skia-scene-export`) | bit-identical |
+| Emitted scene bundles type-check against react-native-skia 3.4.0 + Reanimated 4.7 | pass |
+
+What exists now:
+- Nodes: `skia-canvas`, `skia-fill`, `skia-group`, `skia-shape`, `skia-noise` (simplex only), `skia-color-ramp` (the closed-form interpolations; srgb / linear / oklab).
+- Library: the fuser, `defineSkslNode`.
+- Exporters: the scene renderer and the scene exporter (`exportSkia` on a Skia Canvas).
+- Keyframes on channels.
+- Editor: the Skia layer target, the catalog filter and validator, "Export for React Native Skia…" (zip), and the `plan_skia_export` / `export_skia` MCP tools.
+- Device parity: the `compare:skia` harness, the device driver with its CI workflow (`.github/workflows/skia-device-parity.yml`, dispatch-only, never run), and golden frames.
+
+**Findings that change plans:**
+- **iOS renders in Display P3 on P3 screens, with no option.** react-native-skia
+  3.4.0 picks the color space from `UIScreen.displayGamut`
+  (`RNSkApplePlatformContext::mainScreenSupportsP3`), and `Canvas` exposes no
+  color-space prop. Android always uses sRGB. Honouring decision #5 on iOS
+  needs a native patch (patch-package forcing `prefersP3ColorSpace()` to
+  false) or an upstream option. Without it, uniform colors stay correct
+  (`layout(color)` converts them) but procedural colors computed in the
+  shader are read as P3, so they come out more saturated. Device snapshots
+  re-render into sRGB, so the CI parity numbers can't see this; only
+  on-screen captures can. Owner decision pending.
+- **RN Skia web tags its WebGL buffer `display-p3`.** Pixel values are
+  unaffected, but on wide-gamut monitors the web harness may look more
+  saturated than toolbox.
+- **Text semantics.** `width` means a wrapped paragraph (L1's renderer). The
+  exporter refuses text with a width until the `<Paragraph>` emitter lands
+  (Wave 2, text family).
+- **RN web throws on runtime image filters and composed path effects.**
+  Native supports both; the manifest flags them, and the renderer emulates
+  them.
+- **Previously untested since 0.5.x:** `insert_recipe` channel-by-name wiring
+  (fixed in M0), and exported web apps loading CanvasKit from a sub-path
+  (fixed by L5; the vector kernel WASM still 404s in exported apps, a
+  pre-existing bug).
+
+Open items carried to Wave 2:
+- AI Recipe / Edit with AI don't pass the Skia-layer context to the validator yet.
+- Wired-and-keyframed channel rows don't show that the wire wins.
+- No UI picks a channel color track's color space.
+- `--bundle scene` exists on web only; the native deep link doesn't select a bundle yet.
+- The asset cache in the editor never evicts.
+- Vector-kernel WASM in exported apps (pre-existing bug).
 
 ## 3. Design for the full implementation
 

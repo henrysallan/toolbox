@@ -4,6 +4,7 @@
 //
 //   npx tsx scripts/export-skia.mts --fixture aurora --out skia-harness/src/bundle
 //   npx tsx scripts/export-skia.mts --fixture scene --out <dir>
+//   npx tsx scripts/export-skia.mts --fixture aurora-scene --out skia-harness/src/bundle-scene
 //   npx tsx scripts/export-skia.mts --graph g.json --node <id> --out <dir> [--name N]
 //   npx tsx scripts/export-skia.mts --scene ir.json --out <dir> [--name N]
 //
@@ -36,7 +37,7 @@ const { exportSkia, exportSkiaScene } = await import("@/lib/skia-export");
 
 const out = arg("out");
 if (!out) {
-  console.error("usage: export-skia.mts (--fixture aurora|scene | --graph g.json --node id | --scene ir.json) --out dir");
+  console.error("usage: export-skia.mts (--fixture aurora|aurora-scene|scene | --graph g.json --node id | --scene ir.json) --out dir");
   process.exit(2);
 }
 
@@ -71,8 +72,18 @@ if (sceneFile) {
     timeline = fx.SCENE_TIMELINE;
     canvas = fx.SCENE_CANVAS;
     name = "Scene fixture";
+  } else if (fixture === "aurora-scene") {
+    // Aurora through the Skia-layer nodes (aurora-scene-graph.ts): a scene
+    // bundle (ToolboxScene) for the harness's ?bundle=scene slot.
+    const fx = await import("./fixtures/skia/aurora.ts");
+    const { auroraSceneGraph } = await import("./fixtures/skia/aurora-scene-graph.ts");
+    ({ nodes, edges } = auroraSceneGraph(fx.AURORA_SKSL));
+    targetId = "skc";
+    timeline = fx.AURORA_TIMELINE;
+    canvas = { width: 512, height: 512 };
+    name = "Aurora (Skia layer)";
   } else if (fixture) {
-    throw new Error(`unknown fixture "${fixture}" (have: aurora, scene)`);
+    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene)`);
   } else {
     const file = arg("graph");
     const node = arg("node");
