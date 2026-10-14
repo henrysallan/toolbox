@@ -333,6 +333,9 @@ import { skiaMirrorNode } from "./skia/mirror";
 import { skiaPolarCoordsNode } from "./skia/polar-coords";
 import { skiaPixelateNode } from "./skia/pixelate";
 import { skiaArrayNode } from "./skia/array";
+import { skiaCircleNode } from "./skia/circle";
+import { skiaRectNode } from "./skia/rect";
+import { skiaLineNode } from "./skia/line";
 
 let registered = false;
 
@@ -704,5 +707,8 @@ export function registerAllNodes() {
   registerNode(skiaPolarCoordsNode);
   registerNode(skiaPixelateNode);
   registerNode(skiaArrayNode);
+  registerNode(skiaCircleNode);
+  registerNode(skiaRectNode);
+  registerNode(skiaLineNode);
   registered = true;
 }

@@ -447,6 +447,17 @@ that pair). Offline node tests should push each input through
   `skia-*` node. That an exported app actually loads it is a served-`dist/`
   question (`build:export-template`, then open `dist/` over http — never
   file://, which can't instantiate WASM).
+- `check-skia-shapes` — the vector-shapes family (Circle / Rectangle /
+  Line (Skia), the twelve spline generators in a Skia layer). The
+  primitives bind each value as one param × a constant, so keyframed or
+  driven params export as tracks; generator → Skia Shape paths export
+  sampled from upstream provenance, with no warning. Every node exports
+  keyframed and static and type-checks in skia-harness; one canvas holding
+  all of them replays every animated bind at every frame; CanvasKit (CPU)
+  pixels land where the params say at 256² and 320×180. It also pins that
+  a generator with its bundled raster on still evaluates without GL, and
+  that an upstream compute that throws refuses the export instead of
+  shipping an empty path.
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run compare:skia -- --a <fixture>:<node>[:aux:<name>] --b …` —
     renders two nodes of `scripts/fixtures/skia/<fixture>-graph.ts`
@@ -459,6 +470,15 @@ that pair). Offline node tests should push each input through
     frame evaluates from a fresh cache: stateful nodes see no history.
     `--analysis 256` reproduces the editor's compare_renders sampling (the
     Aurora fixture reads meanAbs 0.0006 there, 0.00025 at full 512²).
+    Two traps for vector ports: its `max N/255` includes the RGB of fully
+    transparent pixels (a meaningless 255 on any anti-aliased edge), and
+    its `motion` line compares RGB where both frames are opaque only, so a
+    moving stroke over transparency reads "static". For shapes run
+    `node scripts/skia/edge-band.cjs <out dir> [--band 2]`: premultiplied,
+    split into a band around every edge vs the interior, plus the real
+    per-frame change. The shapes pairs (`shapes-graph.ts`) read interior
+    0/255 and band p95 ≤ 56/255: Chromium's canvas 2D (the generators'
+    own raster) anti-aliases in coarse coverage steps, CanvasKit finely.
   - `npm run parity:skia [-- --write-golden]` — toolbox vs the exported
     bundle on RN Skia's web target (needs `npm --prefix skia-harness run
     export:web`); `--write-golden` also writes toolbox's frames to

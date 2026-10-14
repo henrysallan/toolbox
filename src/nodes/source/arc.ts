@@ -175,6 +175,7 @@ export const arcNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "native" },
   inputs: [
     SPLINE_FILL_INPUT,
     TRANSFORM_INPUT,

@@ -268,6 +268,10 @@ export function rasterizeSplineAux(
   const strokeOn = !!params.stroke_enabled;
   const fillOn = !!params.fill_enabled;
   if (!strokeOn && !fillOn) return null;
+  // A data-only evaluation has no GL (the Skia exporter's scene sampler,
+  // lib/skia-export/scene-sample.ts): skip the image aux so the spline —
+  // what a Skia Shape downstream reads — still computes instead of throwing.
+  if (typeof ctx.gl?.createTexture !== "function") return null;
 
   const img =
     fillImage && fillImage.kind === "image" ? (fillImage as ImageValue) : null;

@@ -45,6 +45,7 @@ export const splineDrawNode: NodeDefinition = {
     ],
   },
   backend: "webgl2",
+  skia: { class: "native" },
   // Optional `fill` image input — when wired (and fill is on) the shape is
   // filled with that image instead of the flat fill color.
   inputs: [SPLINE_FILL_INPUT],
