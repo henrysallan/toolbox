@@ -5,6 +5,7 @@
 //   npx tsx scripts/export-skia.mts --fixture aurora --out skia-harness/src/bundle
 //   npx tsx scripts/export-skia.mts --fixture scene --out <dir>
 //   npx tsx scripts/export-skia.mts --fixture aurora-scene --out skia-harness/src/bundle-scene
+//   npx tsx scripts/export-skia.mts --fixture split --out skia-harness/src/bundle-split
 //   npx tsx scripts/export-skia.mts --graph g.json --node <id> --out <dir> [--name N]
 //   npx tsx scripts/export-skia.mts --scene ir.json --out <dir> [--name N]
 //   … --animation baked   program uniforms as SkSL functions of iTime
@@ -64,7 +65,7 @@ async function resolveAssets(uses: AssetUse[]) {
 const out = arg("out");
 if (!out) {
   console.error(
-    "usage: export-skia.mts (--fixture aurora|aurora-scene|scene|easings|atlas|image|procedural | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked|native]"
+    "usage: export-skia.mts (--fixture aurora|aurora-scene|scene|easings|atlas|image|procedural|split | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked|native]"
   );
   process.exit(2);
 }
@@ -162,8 +163,17 @@ if (sceneFile) {
     timeline = { ...pfx.PROCEDURAL_TIMELINE, markers: pfx.PROCEDURAL_MARKERS };
     canvas = { width: 512, height: 512 };
     name = "Aurora (procedural)";
+  } else if (fixture === "split") {
+    // Stage splitting (split-graph.ts `combo`): two nested runtime-filter
+    // layers, one read by a gather and a plain read (?bundle=split).
+    const fx = await import("./fixtures/skia/split-graph.ts");
+    ({ nodes, edges } = fx.splitGraph());
+    targetId = fx.SPLIT_PARITY_CANVAS;
+    timeline = { ...fx.SPLIT_TIMELINE, markers: fx.SPLIT_MARKERS };
+    canvas = { width: 512, height: 512 };
+    name = "Split stages";
   } else if (fixture) {
-    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings, atlas, image, procedural)`);
+    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings, atlas, image, procedural, split)`);
   } else {
     const file = arg("graph");
     const node = arg("node");

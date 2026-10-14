@@ -119,6 +119,8 @@ export const skiaDitherNode = defineSkslNode({
       { name: "cells", type: "float2" },
     ],
     inputs: [{ name: "src", mode: "gather", taps: 4 }],
+    // tbx_dither_texel reads texel centres only (its own bilinear).
+    gridTaps: ["src"],
     cost: 0.5,
   },
   params: mirrorParams(ditherNode, ["algorithm", "pixel_scale", "threshold", "spread", "color_mode", "levels"]),

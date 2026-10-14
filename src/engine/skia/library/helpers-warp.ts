@@ -14,6 +14,9 @@
 
 import type { Bind } from "../scene-ir";
 import { registerSkslHelper } from "./registry";
+import { TEXEL_HELPER } from "./texel";
+
+export { TEXEL_HELPER };
 
 // Degrees → radians, applied as `value * scale` exactly like an exported
 // scaled track (toolbox-timeline.ts), so preview and device bind the same
@@ -41,17 +44,10 @@ registerSkslHelper({
 // CLAMP_TO_EDGE, the engine's wrap mode: a GL warp that samples its input
 // texture past the outermost texel CENTERS reads the edge texel, so a port
 // must not evaluate its upstream out there (that would extrapolate it — a
-// pixelate cell centered beyond the top edge, say). Clamp the gather point
-// to [0.5, res − 0.5] px first; inside that box only the GL node's bilinear
-// filter remains as a difference. `res` is the input texture's size, which
-// is the canvas in a Skia layer.
-registerSkslHelper({
-  id: "tbx.warp.texel",
-  source: `float2 tbx_warp_texel(float2 q, float2 res) {
-  float2 h = 0.5 / res;
-  return clamp(q, h, 1.0 - h);
-}`,
-});
+// pixelate cell centered beyond the top edge, say). It clamps the gather
+// point with tbx_texel_clamp (TEXEL_HELPER, library/texel.ts: the one texel
+// helper the gathers, the warps and the stage splitter share — it replaced
+// `tbx.warp.texel` on 2026-10-14).
 
 // p rotated by the angle whose cosine / sine are (c, s): the
 // `vec2(c * p.x - s * p.y, s * p.x + c * p.y)` every GL warp inlines.

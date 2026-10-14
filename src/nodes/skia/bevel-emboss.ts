@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import { GATHER_EDGE } from "@/engine/skia/library/helpers-gather";
+import { TEXEL_HELPER } from "@/engine/skia/library/helpers-gather";
 import { bevelEmbossNode } from "../effect/bevel-emboss";
 import { isShader, withWiring } from "./gather-wiring";
 
@@ -18,7 +18,7 @@ import { isShader, withWiring } from "./gather-wiring";
 
 const BEVEL_SKSL = `float tbx_bevel_emboss_height(float2 uv, float2 res) {
   // Luminance of the source, alpha-weighted so transparent areas show no relief.
-  float4 c = $height(tbx_gather_edge_uv(uv, res));
+  float4 c = $height(tbx_texel_clamp(uv, res));
   return dot(c.rgb, float3(0.2126, 0.7152, 0.0722)) * c.a;
 }
 
@@ -157,8 +157,12 @@ const base = defineSkslNode({
       { name: "height", mode: "gather", taps: "param" },
       { name: "src", mode: "pure" },
     ],
-    uses: [GATHER_EDGE],
+    uses: [TEXEL_HELPER],
     cost: 0.6,
+    // The cost readout at the current feather (estimateShaderCost
+    // `at: "params"`). The height taps are soften- / feather-scaled, so
+    // off the texel grid in general (no gridTaps).
+    tapsAt: (p) => skiaBevelEmbossTaps(p),
   },
   params: mirrorParams(bevelEmbossNode, [
     "style",

@@ -7,27 +7,22 @@
 // The engine's GL gathers sample a TEXTURE of their upstream: canvas-sized,
 // LINEAR, CLAMP_TO_EDGE (engine/gl.ts allocImage). A Skia gather re-evaluates
 // the upstream FUNCTION at the offset uv instead, which is defined
-// everywhere. tbx_gather_edge_uv reproduces the texture's edge rule — clamp
-// the sample point to the outermost texel centres — so border pixels read
-// what the GL node reads. What it cannot reproduce is bilinear filtering
-// between texel centres: off-grid taps (displace, chromatic aberration,
-// vector field, flow blur) see the exact function where the GL node sees a
-// bilinear blend of fp16 texels. Taps on the pixel grid (sharpen, edge
-// detect, emboss, kuwahara) land on texel centres, where the two agree.
+// everywhere. tbx_texel_clamp (TEXEL_HELPER, library/texel.ts — one helper
+// shared with the warps and the stage splitter since 2026-10-14; it replaced
+// `tbx.gather.edge`) reproduces the texture's edge rule — clamp the sample
+// point to the outermost texel centres — so border pixels read what the GL
+// node reads. What it cannot reproduce is bilinear filtering between texel
+// centres: off-grid taps (displace, chromatic aberration, vector field, flow
+// blur) see the exact function where the GL node sees a bilinear blend of
+// fp16 texels. Taps on the pixel grid (sharpen, edge detect, kuwahara) land
+// on texel centres, where the two agree (`gridTaps`, registry.ts).
 //
 // Ports of the wire conventions, line for line:
 //   tbx.gather.velocity      engine/velocity-field.ts VELOCITY_DECODE/ENCODE_GLSL
 //   tbx.gather.orientation   engine/orientation-field.ts ORIENTATION_DECODE_GLSL
 
 import { registerSkslFunction, registerSkslHelper, type SkslLibFunctionDef } from "./registry";
-
-registerSkslHelper({
-  id: "tbx.gather.edge",
-  source: `float2 tbx_gather_edge_uv(float2 uv, float2 res) {
-  float2 h = 0.5 / res;
-  return clamp(uv, h, 1.0 - h);
-}`,
-});
+import { TEXEL_HELPER } from "./texel";
 
 // R = 0.5 + vx/2, G = 0.5 + vy/2 (Y-DOWN, canvas-width units), B 0, A 1.
 registerSkslHelper({
@@ -74,8 +69,8 @@ export const TBX_GATHER_FLAT: SkslLibFunctionDef = {
 
 registerSkslFunction(TBX_GATHER_FLAT);
 
-// The ids, for `uses` lists.
-export const GATHER_EDGE = "tbx.gather.edge";
+// The ids, for `uses` lists. The edge rule is the shared texel helper.
+export { TEXEL_HELPER };
 export const GATHER_VELOCITY = "tbx.gather.velocity";
 export const GATHER_ORIENTATION = "tbx.gather.orientation";
 

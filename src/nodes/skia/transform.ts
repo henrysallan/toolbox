@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import { bindDegrees } from "@/engine/skia/library/helpers-warp";
+import { bindDegrees, TEXEL_HELPER } from "@/engine/skia/library/helpers-warp";
 import { transformNode } from "../effect/transform";
 
 // Transform (Skia) — the Skia-layer port of Transform's IMAGE path
@@ -49,7 +49,7 @@ const TRANSFORM_SKSL = `float4 tbx_transform(float2 uv, float2 res, float transl
       q = fract(q);
     }
   }
-  return $image(tbx_warp_texel(q, res));
+  return $image(tbx_texel_clamp(q, res));
 }`;
 
 export const skiaTransformNode = defineSkslNode({
@@ -96,7 +96,7 @@ export const skiaTransformNode = defineSkslNode({
       { name: "tileUnfold", type: "int" },
     ],
     inputs: [{ name: "image", mode: "gather", taps: 1 }],
-    uses: ["tbx.warp.rotate", "tbx.warp.outside", "tbx.warp.texel"],
+    uses: ["tbx.warp.rotate", "tbx.warp.outside", TEXEL_HELPER],
     cost: 0.1,
   },
   params: mirrorParams(transformNode, [

@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import { GATHER_EDGE, GATHER_VELOCITY } from "@/engine/skia/library/helpers-gather";
+import { TEXEL_HELPER, GATHER_VELOCITY } from "@/engine/skia/library/helpers-gather";
 import { bindStatic } from "@/engine/skia/scene-ir";
 import { vectorFieldNode } from "../effect/vector-field";
 import { flatShader, isShader, wiredInputs, withWiring } from "./gather-wiring";
@@ -17,7 +17,7 @@ import { flatShader, isShader, wiredInputs, withWiring } from "./gather-wiring";
 // the neutral (0.5, 0.5, 0, 1), which decodes to exactly zero.
 
 const VECTOR_FIELD_SKSL = `float tbx_vector_field_luma(float2 uv, float2 res) {
-  return dot($source(tbx_gather_edge_uv(uv, res)).rgb, float3(0.2126, 0.7152, 0.0722));
+  return dot($source(tbx_texel_clamp(uv, res)).rgb, float3(0.2126, 0.7152, 0.0722));
 }
 
 float2 tbx_vector_field_from_normal(float2 n, float metric, int mode, float strength, float radius,
@@ -84,7 +84,7 @@ const base = defineSkslNode({
       { name: "source", mode: "gather", taps: 4 },
       { name: "field", mode: "pure" },
     ],
-    uses: [GATHER_EDGE, GATHER_VELOCITY],
+    uses: [TEXEL_HELPER, GATHER_VELOCITY],
     cost: 0.3,
   },
   params: mirrorParams(vectorFieldNode, ["mode", "strength", "radius", "invert", "aspect_correct"]),

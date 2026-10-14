@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import "@/engine/skia/library/helpers-warp";
+import { TEXEL_HELPER } from "@/engine/skia/library/helpers-warp";
 import { pixelateNode } from "../effect/pixelate";
 
 // Pixelate (Skia) — the Skia-layer port of Pixelate
@@ -19,7 +19,7 @@ const PIXELATE_SKSL = `float4 tbx_pixelate(float2 uv, float2 res, float size, in
   float2 grid = res / max(cell, float2(1.0));
   float2 cellId = floor(uv * grid);
   float2 cellUv = (cellId + 0.5) / grid;
-  float4 c = $image(tbx_warp_texel(cellUv, res));
+  float4 c = $image(tbx_texel_clamp(cellUv, res));
   if (shape == 1) {
     float2 f = fract(uv * grid) - 0.5;
     if (length(f) > 0.5) c = float4(0.0);
@@ -55,7 +55,7 @@ export const skiaPixelateNode = defineSkslNode({
       { name: "opacity", type: "float" },
     ],
     inputs: [{ name: "image", mode: "gather", taps: 1 }],
-    uses: ["tbx.warp.texel"],
+    uses: [TEXEL_HELPER],
     cost: 0.1,
   },
   params: mirrorParams(pixelateNode, ["size", "shape", "aspect", "opacity"]),

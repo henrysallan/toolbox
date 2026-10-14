@@ -356,8 +356,8 @@ All eight families merged. Every port is proven with `compare:skia` against the 
 |---|---|---|---|
 | F1 noise & fields | skia-noise (all 11 algorithms, loop, flow, phasor, uv_in), skia-shape-cells, skia-lyapunov, skia-texture-coordinate | 21/24 MATCH (max ≤ 6/255 on noise) | Shape Cells: uint hash → float hash, every cell draws differently (OFF by design, geometry MATCH). Lyapunov: CLOSE in chaotic regions (fp32 amplification). Per-variant functions via `defineSkslVariantNode`. |
 | F2 color | solid-color, gradient (all modes), color-correction, rgb-curves, posterize, threshold, color-space-transform, keyer, dither (ordered) + color-ramp: every interpolation × space | 37/37 MATCH | Error-diffusion dither (the native default) refused. Keyer's matte output not mirrored. Color Ramp uses ~96 uniform slots. |
-| F3 warps | skia-transform, -mirror, -polar-coords, -pixelate, -array | all MATCH (meanAbs ≤ 0.0013) | Gathers clamp to the outer texel centre to match CLAMP_TO_EDGE textures (`tbx.warp.texel`). |
-| F4 gathers | skia-displace, -chromatic-aberration, -sharpen, -edge-detect, -bevel-emboss, -vector-field, -flow-blur, -kuwahara | 15/15 MATCH | Over the phone budget (32 units/px, an estimate): Flow Blur, Kuwahara (and Sharpen / Edge Detect over noise) → filter-stage split later. Bevel outer/inner/pillow and Kuwahara r > 24 px refused. |
+| F3 warps | skia-transform, -mirror, -polar-coords, -pixelate, -array | all MATCH (meanAbs ≤ 0.0013) | Gathers clamp to the outer texel centre to match CLAMP_TO_EDGE textures (`tbx.warp.texel`; since §3.3a the shared `tbx.texel`). |
+| F4 gathers | skia-displace, -chromatic-aberration, -sharpen, -edge-detect, -bevel-emboss, -vector-field, -flow-blur, -kuwahara | 15/15 MATCH | Over the phone budget (32 units/px, an estimate): Flow Blur, Kuwahara (and Sharpen / Edge Detect over noise) → filter-stage split (built: §3.3a). Bevel outer/inner/pillow and Kuwahara r > 24 px refused. |
 | F5 SDF | skia-sdf-rasterize, -to-mask, -to-distance-image, -bevel, -shade; 24 SDF tree nodes allowed in Skia layers | 28/28 MATCH | SkSL generated per tree SHAPE (values are uniforms → tracks). SDF Displace / From Image / Material ramp refused. Splines ≤ 128 segments. |
 | F6 merge | skia-merge (all 29 blend formulas, masks, layer_opacity tracks) | 29/29 MATCH | ≤ 8 enabled layers per node. Skia's native blendMode agrees with Merge only over an opaque backdrop (documented); 14 Merge modes have no RN equivalent. |
 | F7 vector shapes | skia-circle, -rect, -line (exact tracks via BindRef.scale); all spline generators allowed in Skia layers → Skia Shape | 15/15 MATCH, interiors 0/255 | AA edges differ within ~1 px (Chromium canvas2D vs CanvasKit coverage). |
@@ -382,10 +382,10 @@ All eight families merged. Every port is proven with `compare:skia` against the 
 **Carried to M3/M4:**
 - Font and image assets aren't copied into exported bundles yet.
 - RN Paragraphs drop an inherited group blendMode.
-- Filter-stage splitting for over-budget gathers.
+- ~~Filter-stage splitting for over-budget gathers.~~ Built 2026-10-14 (§3.3a, Wave 3 lane S).
 - Device bands: CI lanes ready, not yet run.
 - ~~The P3 decision (§2b).~~ Decided and built 2026-10-14 (§5.5).
-- `tbx.warp.texel` and `tbx.gather.edge` should become one shared helper.
+- ~~`tbx.warp.texel` and `tbx.gather.edge` should become one shared helper.~~ Done: `tbx.texel` (§3.3a).
 - ~~Merge (Skia) has no grow-on-wire / "+" layer button.~~ Done 2026-10-14 (Wave 3 lane C, §2e).
 
 **Additive contract proposals collected (none applied):**
@@ -428,7 +428,7 @@ The owner asked to "switch to p3 and then do the m3 work" and chose "identical e
   - each window edge inside a key segment adds a cut easing (89 in the easings fixture).
 - **Baked mode:** a scene's binds outside programs stay on the worklet timeline (warned in the manifest).
 - ~~**SkSL Shader:** an `iImageN` passed into a user helper function is sampled without conversion~~ — SkSL can't pass a shader into a function at all (§1.2); the holes were parenthesized and comment-split samples, now converted (§2e).
-- **Still carried from §2c:** font / image assets in bundles, filter-stage splitting, the shared texel helper.
+- **Still carried from §2c:** font / image assets in bundles (filter-stage splitting and the shared texel helper: built, §3.3a).
 
 ## 2e. Wave 3 (M4) results
 
@@ -534,11 +534,121 @@ Cost model: per-pixel evaluations × per-node ALU class, reported against
 budgets for 3× density phones (iPhone 12-class at 1170×2532 ≈ 3 M px). The
 planner warns when a gather-of-gather exceeds a budget. Then it either
 splits the layer at that node into a `RuntimeShader` filter stage (a second
-pass over a `Group`), or refuses.
+pass over a `Group`), or refuses. *Built (§3.3a): Skia Fill splits
+automatically; when nothing saves, it stays fused and says why — it never
+refuses.*
 
 When a layer contains `filter` or `native` nodes the output is a **tree**:
 `Group`s of native drawing, a fused `Shader` per contiguous `sksl` region,
 filters on `Group layer` props. Same IR, so the same preview path.
+
+#### 3.3a Stage splitting: built and measured (Wave 3 lane S, 2026-10-14)
+
+`src/engine/skia/split.ts`, called by Skia Fill. A gather re-evaluates its
+upstream once per tap, so cost multiplies (Sharpen 9 × a 4-unit noise = 36
+units/px). Over the phone budget (32 units/px, `PHONE_PIXEL_BUDGET`), the
+Fill renders the gather's upstream U **once** into a layer, and the gather
+runs as a runtime image filter over it:
+
+```
+fill(K(U))  →  group { layer: { imageFilters: [{ k: "runtime", program: K(content), content: "s0" }] } }
+                 └─ fill(U)  (blendMode src, default paint)
+```
+
+React Native gets `<Group layer={<Paint><RuntimeShader source uniforms/></Paint>}>`. The scene IR, `scene-render.ts`'s emulated layers and `scene-emit.ts` were already there; no new IR kind and no special path. The editor preview is the split.
+
+- **Plan.** The split is greedy and structural. While a stage is over the budget, the planner tries every distinct upstream that feeds a gather input:
+  - each read of it is replaced by the layer;
+  - it keeps the split that saves the most (old cost − filter − U − `SPLIT_LAYER_COST` 2);
+  - it then re-plans both halves.
+
+  The re-plan is what makes chains work: U may be over budget itself, and a later upstream that *contains* the layer becomes the next, outer layer. Fan-out comes free, because every read of U goes to the one layer: several gathers, and plain reads too.
+
+  Costs are **declared** (taps `"param"` → 9). An animated radius therefore never flips a split, which the scene planner would refuse as a structure change.
+
+  Splits are skipped when:
+  - the filter would need a second layer;
+  - the filter would keep any other child shader. RN's `<RuntimeShader>` binds the content as the only child.
+  - the Fill has its own non-srcOver blendMode. The IR's `layer` has no blend mode.
+- **Reading the layer.** Taps on the texel grid (`gridTaps`: Sharpen, Edge Detect, Kuwahara, Dither) fetch a texel centre directly: exactly the texel the fused program re-evaluated there.
+
+  Off-grid taps (Flow Blur, Displace, Bevel's scaled stencil, anything inside an off-grid gather) go through `tbx.split.bilinear@1`. It mixes the four centres, which is the GL texture's own LINEAR + CLAMP_TO_EDGE rule. The program therefore never depends on the sampler: the preview's emulation samples nearest, native Skia linear.
+
+  The shared texel helper `tbx.texel` (`tbx_texel_clamp`) replaced `tbx.gather.edge` and `tbx.warp.texel`. The gathers, the warps and the splitter all use it.
+- **What a layer can't hold.**
+  - A layer is a colour image, so it clips straight values outside [0, 1]. Functions flagged `unbounded` are never layered: Sharpen's overshoot, Edge Detect's magnitude × strength. A range audit in the gate keeps the flag honest at node defaults.
+  - Measured on Edge(Sharpen(noise)): layering the sharpen put 1 % of pixels ≥ 42/255 off (max 144). The planner stages the noise instead.
+  - A layer rounds to 8 bits, and every high-gain kernel after it amplifies the rounding.
+- **Paint.**
+  - The Fill's colour alpha × opacity fade the filtered result (`tbx.split.paint@1`), not the content.
+  - An enclosing Group's opacity / blendMode reach the content draw, per RN's per-draw rule. A layer composites srcOver.
+- **With the other Wave 3 lanes.**
+  - An image leaf (lane I) or a gradient leaf (lane C) inside the split upstream becomes a child of the layer's own fill program.
+  - The image's asset still rides the staged draw value. The gradient is lowered to its colour-managed program wherever it is drawn or exported.
+  - The split draws what the fused Fill draws, within the kernel's rounding (≤ 2/255 measured). It exports with the asset, and with the lowered program compiling.
+  - A leaf *outside* the upstream would stay in the filter, so that split is skipped.
+
+**Cost readout** (units/px, declared → after; "at params" is the frame-0 values via `tapsAt` / `costAt`; `check:skia-split` prints all):
+
+| canvas | split | declared | at params (f0) | notes |
+|---|---|---|---|---|
+| gather `shp`, `shp_x` (Sharpen over noise) | 1 layer | 36.2 → 15.2 | 36.2 → 15.2 | under budget |
+| gather `edge` (Edge Detect over noise) | 1 layer | 32.3 → 14.3 | 32.3 → 14.3 | under budget |
+| gather `fb` (Flow Blur, field = Vector Field(noise)) | 1 layer, bilinear | 185.7 → 95.1 | 999.2 → 424.6 | the field is staged; the image (4-unit noise) is cheaper than a 4.2-unit bilinear read and stays fused |
+| gather `fb_t` | 1 layer, bilinear | 221.7 → 99.1 | 609.8 → 229.6 | the same |
+| gather `fb_n` (Flow Blur over two noises) | — | 75.0 | 267.0 | nothing saves |
+| gather `kuw` (Kuwahara r 3 → 7 animated) | 1 layer | 206.0 → 185.0 | 159.5 → 78.5 | Kuwahara's own ALU (170) stays |
+| gather `kuw_a` (anisotropic) | 1 layer | 222.3 → 201.3 | 461.8 → 224.8 | |
+| gather `bev`, `bev_h` (Bevel over noise) | — | 40.6 | 20.6 | the stencil is off-grid, so the bilinear reads cost more than the noise |
+| split `chain` Edge(Kuwahara(N)) | 2 nested | 1648.3 → 195.3 | 1276.3 → 88.8 | |
+| split `fan` Merge(Sharpen(N), Edge(N)) | 1 shared | 69.5 → 24.5 | 69.5 → 24.5 | under budget |
+| split `combo` Merge(Edge(Kuwahara(N)), Kuwahara(N)) | 2 nested + plain read | 1855.3 → 197.3 | 1436.8 → 90.8 | the parity slot |
+| gate: Edge(Sharpen(N)) | 1 (the noise) | 289.9 → 79.9 | | the sharpen isn't layered (it overshoots) |
+
+**Measured.**
+
+Exactness, `check:skia-split`, CanvasKit CPU at 64×48 with edges included:
+- Over an 8-bit-exact upstream, every on-grid gather draws the fused program's bytes **exactly**. That covers sharpen ×4 kernels, edge ×2 and Kuwahara.
+- Off-grid reads equal a CPU bilinear of the layer's bytes, ≤ 0.5/255.
+- Over real noise the error stays within ceil(½ Σ|w|) + 1 steps: unsharp 1.5 max 2/255, box 2 × N max 6, fan max 4. Chains are held by mean and p99: Edge(Kuwahara) mean 0.7/255, p99 5.
+- On Display P3 surfaces with P3 layers vs sRGB: Sharpen max 4/255, Flow Blur max 1, chain p99 7.
+
+`compare:skia`, 512², ANGLE Metal, split canvas vs the GL node. The "before" column is the fused Skia preview vs GL:
+
+| pair | before (fused) | split | split vs fused |
+|---|---|---|---|
+| gather `shp` | MATCH 0.00033, max 1 | MATCH 0.00155, max 3 | 0.00148 |
+| gather `shp_x` (cross 1.5) | MATCH 0.00063, max 1 | MATCH 0.00728, max 7 | 0.00725 |
+| gather `edge` (prewitt, strength 2–6) | MATCH 0.00062, max 11 | MATCH 0.00618, max 18 | 0.00614 |
+| gather `fb` | MATCH 0.00035, max 48 | MATCH 0.00035, max 24 | 0.00005 |
+| gather `fb_t` | MATCH 0.00218, max 69 | MATCH 0.00204, max 63 | 0.00288 |
+| gather `kuw` | MATCH 0.00033, max 1 | MATCH 0.00146, max 2 | 0.00134 |
+| gather `kuw_a` | MATCH 0.00034, max 24 | MATCH 0.00049, max 24 | 0.00036 |
+| split `chain` (edge strength 1.5–4) | MATCH 0.00093, max 6 | **CLOSE** 0.00904, p95 9/255 | 0.00901 |
+| split `fan` | MATCH 0.00058, max 4 | MATCH 0.00316, max 11 | 0.00311 |
+| split `combo` | MATCH 0.00073, max 5 | MATCH 0.00607, max 17 | 0.00604 |
+
+All other gather pairs are unchanged (fused, MATCH). The price of a split is the 8-bit intermediate × the gain of the kernels after it. Kuwahara and Flow Blur average it away; Sharpen cross 1.5 multiplies it by about 13, and Edge Detect at strength 4 by about 23 (`chain` CLOSE). The GL node's fp16 texture is about 4× finer. A `highBitDepth` RN canvas (F16 layers on iOS) would close this, but Android's 10-bit has 2-bit alpha, so it isn't emitted.
+
+Web parity, `parity:skia -- --bundle split`, `combo` with two nested layers and four tracks: **pixel-identical**, 8/8 frames, 0/255.
+
+RN web has no runtime image filter: RN Skia 3.4's `RuntimeShaderBuilder` and `MakeRuntimeShader` throw. The harness therefore plays the emitted JSX through `skia-harness/runtime-filter-web.ts`, which records the layer, binds it as a 1:1 picture shader and runs the program as scene-render's emulation does. This parity measures the emitted structure, uniforms and timeline, not native Skia's filter. The device lanes have to measure that, along with whether native samples the content at 1:1 texel centres under a scaled RN canvas.
+
+**Refusals: does splitting lift them? No.**
+- **Kuwahara r > 24.** The cap is the constant loop bound, not where the taps come from. Kuwahara's own ALU (≈ 1.5 units/tap) dominates: over an already-rendered layer it costs 283 units/px at r 6 and 4,483 at r 24, which is 140× the budget at the cap. At r 48 it would be ≈ 18,000.
+- **Bevel outer / inner / pillow.** These read a JFA distance field: log2(size) ping-pong passes of a coordinate field, then a shade that needs both the field and the image. A split stages one gather's upstream into one layer, and a `<RuntimeShader>` reads one child. A JFA chain of ~10 nested runtime filters, with coordinates packed into 8-bit RGBA, is a dedicated port, not an automatic split.
+
+**Contract changes (additive):**
+- `fuse.ts`: `estimateShaderCost(expr, { at?: "declared" | "params" })` and `shaderExprKey`. The fuse signature is unchanged.
+- `scene-render.ts`: `SceneRenderOptions.layerColorSpace`, the colour space of emulated layers. The default is sRGB, as before.
+- `registry.ts` (not frozen): `SkslLibFunctionDef.gridTaps / tapsAt / costAt / unbounded`.
+- The scene IR, `shader-expr.ts`, `exportSkia`, the socket types and `NodeDefinition.skia` are untouched.
+
+**Open:**
+- **Device runs.** Native `<RuntimeShader>` sampling and layer bounds; P3 8-bit layers, measured here only as CanvasKit P3 surfaces.
+- **A precision-aware policy.** Skip a split right before a high-gain kernel when the program is near the budget. Sharpen cross over noise trades 2.4× fewer units for meanAbs 0.007.
+- **`layer.blendMode` in the IR**, so a Fill with its own blend mode can split.
+- **Flow Blur.** Its image and field can't both be layers (one content per filter).
 
 ### 3.4 Skia scene IR
 

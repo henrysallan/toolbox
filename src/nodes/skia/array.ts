@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import { bindDegrees } from "@/engine/skia/library/helpers-warp";
+import { bindDegrees, TEXEL_HELPER } from "@/engine/skia/library/helpers-warp";
 import { arrayNode } from "../effect/array";
 
 // Array (Skia) — the Skia-layer port of Array's IMAGE mode
@@ -36,7 +36,7 @@ const ARRAY_SKSL = `float4 tbx_array(float2 uv, float2 res, float countX, float 
 
   // The JS clamps the copy scale >= 0.0001 before the modulator scales it.
   float2 effScale = max(float2(localScaleX, localScaleY), float2(0.0001));
-  float2 cc = tbx_warp_texel(cellCenter, res);
+  float2 cc = tbx_texel_clamp(cellCenter, res);
   float m = $mod_scale(cc).r;
   effScale *= (1.0 + (m - 0.5) * 2.0 * modScaleAmount);
   float4 mp = $mod_pos(cc);
@@ -49,7 +49,7 @@ const ARRAY_SKSL = `float4 tbx_array(float2 uv, float2 res, float countX, float 
   p /= max(effScale, float2(0.0001));
   float2 srcUv = p + float2(0.5);
   if (tbx_warp_outside(srcUv, float2(0.0), float2(1.0))) return float4(0.0);
-  return $instance(tbx_warp_texel(srcUv, res));
+  return $instance(tbx_texel_clamp(srcUv, res));
 }`;
 
 const MID_GREY: [number, number, number, number] = [0.5, 0.5, 0.5, 1];
@@ -107,7 +107,7 @@ export const skiaArrayNode = defineSkslNode({
       { name: "mod_pos", mode: "gather", taps: 1 },
       { name: "mod_rot", mode: "gather", taps: 1 },
     ],
-    uses: ["tbx.warp.rotate", "tbx.warp.outside", "tbx.warp.texel"],
+    uses: ["tbx.warp.rotate", "tbx.warp.outside", TEXEL_HELPER],
     cost: 0.15,
   },
   params: mirrorParams(arrayNode, [

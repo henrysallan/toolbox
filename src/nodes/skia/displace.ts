@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import { GATHER_EDGE } from "@/engine/skia/library/helpers-gather";
+import { TEXEL_HELPER } from "@/engine/skia/library/helpers-gather";
 import { bindDerived } from "@/engine/skia/scene-ir";
 import { displaceNode } from "../effect/displace";
 import { flatShader, isShader, withWiring } from "./gather-wiring";
@@ -47,7 +47,7 @@ float4 tbx_displace(float2 uv, float2 res, float amountX, float amountY, int cha
   }
   p += offset;
   if (wrap == 0 && (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0)) return float4(0.0);
-  return $src(tbx_gather_edge_uv(tbx_displace_wrap(p, wrap), res));
+  return $src(tbx_texel_clamp(tbx_displace_wrap(p, wrap), res));
 }`;
 
 const base = defineSkslNode({
@@ -86,7 +86,7 @@ const base = defineSkslNode({
       { name: "src", mode: "gather", taps: 1 },
       { name: "disp", mode: "pure" },
     ],
-    uses: [GATHER_EDGE],
+    uses: [TEXEL_HELPER],
     cost: 0.2,
   },
   params: mirrorParams(displaceNode, ["amountX", "amountY", "channelX", "channelY", "midlevel", "rotate", "rotateAmount", "wrap"]),

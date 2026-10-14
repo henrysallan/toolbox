@@ -77,6 +77,7 @@ import type {
   Canvas,
   CanvasKit,
   ColorFilter,
+  ColorSpace,
   EmbindEnumEntity,
   EmbindObject,
   Image,
@@ -142,6 +143,11 @@ export interface SceneRenderOptions {
   // before 2026-10-14 lane C. Gates only: the export always ships the
   // program, so the preview must too.
   nativeGradients?: boolean;
+  // The target surface's color space, which emulated runtime-filter layers
+  // are allocated in — as a device layer is in its canvas's (a CanvasKit
+  // Canvas doesn't report it). Default sRGB, the editor's surface. Additive
+  // (2026-10-14, Wave 3 lane S): the split gate renders on Display P3.
+  layerColorSpace?: ColorSpace;
 }
 
 // Sprite sheets larger than this on a side are refused (GPU texture limits
@@ -631,7 +637,7 @@ class SceneRenderer {
       height: Math.max(1, Math.round(h)),
       colorType: kit.ColorType.RGBA_8888,
       alphaType: kit.AlphaType.Premul,
-      colorSpace: kit.ColorSpace.SRGB,
+      colorSpace: this.opts.layerColorSpace ?? kit.ColorSpace.SRGB,
     };
     const parent = this.canvas;
     const ctm = parent.getTotalMatrix();

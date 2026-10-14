@@ -10,6 +10,10 @@ import { registerRootComponent } from "expo";
 import { LoadSkiaWeb } from "react-native-skia/lib/module/web";
 
 LoadSkiaWeb({ locateFile: (file: string) => `/${file}` }).then(async () => {
+  // <RuntimeShader> layers (?bundle=split) — RN web throws on them; the shim
+  // plays them as toolbox's preview does (runtime-filter-web.ts).
+  const { installRuntimeFilterShim } = await import("./runtime-filter-web");
+  installRuntimeFilterShim();
   const { default: App } = await import("./App");
   fakeClock()?.bindReanimated();
   registerRootComponent(App);
