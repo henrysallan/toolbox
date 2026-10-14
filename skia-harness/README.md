@@ -15,7 +15,13 @@ Two more slots, chosen on the web with `?bundle=`: `scene` plays
 `src/bundle-scene/` (`--fixture aurora-scene`), `baked` plays
 `src/bundle-baked/` — the same Aurora node exported with
 `--animation baked`, its timeline compiled into the SkSL and driven by
-iTime alone (`npm run parity:skia -- --bundle baked`).
+iTime alone (`npm run parity:skia -- --bundle baked`). `bake` plays
+`src/bundle-bake/` (`--fixture bake`): a Skia Bake — animated Noise → Blur
+rendered by the engine, shipped as a sprite sheet the clock steps through
+(`npm run parity:skia -- --bundle bake`; 128²). `export:web` needs
+`public/canvaskit.wasm` (gitignored): copy
+`node_modules/canvaskit-wasm/bin/full/canvaskit.wasm` there in a fresh
+checkout.
 
 `src/bundle/` is generated; regenerate instead of editing it. Install
 packages with `npx expo install` (`.npmrc` sets `legacy-peer-deps`:

@@ -20,6 +20,8 @@ import { easingsGraph, EASINGS_TIMELINE } from "../fixtures/skia/easings-graph";
 import { atlasGraph, ATLAS_TIMELINE } from "../fixtures/skia/atlas-graph";
 import { imageEffectGraph, imageFixtureReady, IMAGE_TIMELINE } from "../fixtures/skia/image-graph";
 import { proceduralAuroraGraph } from "../fixtures/skia/procedural-graph";
+import { bakeGraph, BAKE_TIMELINE } from "../fixtures/skia/bake-graph";
+import { evaluateKeyframesAt } from "@/engine/keyframes";
 // esbuild --loader:.sksl=text
 import AURORA_SKSL from "../fixtures/skia/aurora.sksl";
 
@@ -52,10 +54,13 @@ function fromB64(b64: string): Uint8Array {
 // Source into iImage1 + ramp / curve LUT channels (src/bundle-image).
 // "procedural" / "procedural-baked" (Wave 3 lane P) the Aurora node on
 // procedural drivers (procedural-graph.ts) — the graph both slots export.
+// "bake" (Wave 3 lane B) renders the Skia Bake fixture's canvas
+// (bake-graph.ts, src/bundle-bake) — the live engine frames (Noise → Blur
+// → Skia Bake's preview) the shipped sprite sheet was baked from.
 export async function renderToolbox(
   frames: number[],
   size: number,
-  which: "effect" | "scene" | "baked" | "native" | "native-easings" | "native-scene" | "atlas" | "image" | "procedural" | "procedural-baked" = "effect"
+  which: "effect" | "scene" | "baked" | "native" | "native-easings" | "native-scene" | "atlas" | "image" | "procedural" | "procedural-baked" | "bake" = "effect"
 ): Promise<string[]> {
   registerAllNodes();
   const init = (window as unknown as { CanvasKitInit: (o: object) => Promise<never> }).CanvasKitInit;
@@ -72,9 +77,11 @@ export async function renderToolbox(
             ? imageEffectGraph(await imageFixtureReady())
             : which === "procedural" || which === "procedural-baked"
               ? proceduralAuroraGraph(AURORA_SKSL)
+            : which === "bake"
+              ? bakeGraph()
               : auroraGraph(AURORA_SKSL);
   const { fps, ticksPerFrame } =
-    which === "native-easings" ? EASINGS_TIMELINE : which === "atlas" ? ATLAS_TIMELINE : which === "image" ? IMAGE_TIMELINE : AURORA_TIMELINE;
+    which === "native-easings" ? EASINGS_TIMELINE : which === "atlas" ? ATLAS_TIMELINE : which === "image" ? IMAGE_TIMELINE : which === "bake" ? BAKE_TIMELINE : AURORA_TIMELINE;
   const out: string[] = [];
   // Images / fonts load asynchronously (scene-assets.ts): one warm-up frame
   // asks for them, and every frame below renders with them decoded.
@@ -115,4 +122,35 @@ export function compare(a: string, b: string, width: number, height: number) {
     metrics: { ...m, maxSteps, identical: identical / (width * height) },
     heat: toB64(diffHeatRgba(pa, pb, width, height)),
   };
+}
+
+// The bake fixture between frames (skia-parity.cjs `bake`, the hold check):
+// toolbox frame f vs a device capture at f + δ, outside the band the ring
+// sweeps over [f, f + 1] (its radius is a track and moves between frames;
+// the baked noise must not). The ring is centred on the canvas, radius ×
+// width, 3 px stroke; 3 px of anti-aliasing margin either side.
+export function compareOutsideRing(a: string, b: string, width: number, height: number, frame: number) {
+  const pa = fromB64(a);
+  const pb = fromB64(b);
+  const ring = bakeGraph().nodes.find((n) => n.id === "ring")!;
+  const rAt = (f: number) =>
+    (evaluateKeyframesAt(ring.animation!.radiusX, "scalar", f * BAKE_TIMELINE.ticksPerFrame) as number) * width;
+  const r0 = Math.min(rAt(frame), rAt(frame + 1)) - 1.5 - 3;
+  const r1 = Math.max(rAt(frame), rAt(frame + 1)) + 1.5 + 3;
+  let maxSteps = 0;
+  let identical = 0;
+  let pixels = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const d = Math.hypot(x + 0.5 - width / 2, y + 0.5 - height / 2);
+      if (d >= r0 && d <= r1) continue;
+      pixels++;
+      const i = y * width + x;
+      let px = 0;
+      for (let c = 0; c < 4; c++) px = Math.max(px, Math.abs(pa[i * 4 + c] - pb[i * 4 + c]));
+      if (px === 0) identical++;
+      if (px > maxSteps) maxSteps = px;
+    }
+  }
+  return { metrics: { verdict: maxSteps === 0 ? "match" : "off", maxSteps, identical: identical / pixels, pixels } };
 }

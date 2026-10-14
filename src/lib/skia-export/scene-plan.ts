@@ -85,8 +85,9 @@ export type BindPlan =
   // Seconds on the master clock (a fused program's iTime).
   | { kind: "clock"; from: string }
   // The producer's value at every frame 0..frames-1 (dense; scene-emit
-  // compresses). Exact at frame ticks.
-  | { kind: "sampled"; values: BindValue[]; from: string }
+  // compresses). Exact at frame ticks. `hold` (a Bind.hold source, Skia
+  // Bake's sheet offsets): stepped between frames, never interpolated.
+  | { kind: "sampled"; values: BindValue[]; from: string; hold?: true }
   // A procedural driver subgraph (Expression / LFO / Math / Scene Time /
   // Random / Constant / Animated Value) compiled to a scalar program of the
   // tick (procedural/, spec §3.5e) — a worklet in sampleBinds, SkSL when
@@ -149,7 +150,7 @@ export interface ScenePlanResult {
 export function isBind(x: unknown): x is Bind<unknown> {
   if (!x || typeof x !== "object" || Array.isArray(x)) return false;
   const keys = Object.keys(x);
-  return keys.includes("v") && keys.every((k) => k === "v" || k === "ref" || k === "deps");
+  return keys.includes("v") && keys.every((k) => k === "v" || k === "ref" || k === "deps" || k === "hold");
 }
 
 interface FoundBind {
@@ -679,6 +680,13 @@ function resolveRef(c: Ctx, r: BindRef, path: string): BindPlan | Plain | NeedsS
 function resolveBind(c: Ctx, fb: FoundBind, sampler: boolean): BindPlan | NeedsSample {
   const b = fb.bind;
   const deps = b.deps;
+  // A held value (Bind.hold) is per-frame by definition: sample it (a
+  // constant collapses to static below).
+  if (b.hold) {
+    return sampler
+      ? { kind: "needs-sample", from: `held per frame${fb.owner ? ` (${fb.owner})` : ""}` }
+      : { kind: "refused", reason: `${fb.path} holds a per-frame value — it needs the per-frame sampler (exportSkia supplies one).` };
+  }
   if (deps && !deps.length && !b.ref) {
     // `deps: []`: derived from the producer's inputs (a compute can't see
     // the graph) — resolve the producer from the tree and walk its wires.
@@ -850,7 +858,12 @@ export function planSceneExport(
     const r = resolutions[i];
     const id = `b${i}`;
     const vals = samples?.[i];
-    const sampled = (from: string): BindPlan => ({ kind: "sampled", values: vals as BindValue[], from: `${from}; sampled ${frames} frames` });
+    const sampled = (from: string): BindPlan => ({
+      kind: "sampled",
+      values: vals as BindValue[],
+      from: `${from}; sampled ${frames} frames${fb.bind.hold ? ", held between frames" : ""}`,
+      ...(fb.bind.hold ? { hold: true as const } : {}),
+    });
     let plan: BindPlan;
     if (r.kind === "needs-sample") {
       if (!vals) plan = { kind: "refused", reason: `${fb.path} is ${r.from} and could not be sampled${sampleFailed ? " (the scene's structure is not stable — above)" : ""}.` };

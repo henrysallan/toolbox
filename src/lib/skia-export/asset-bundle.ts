@@ -12,7 +12,7 @@
 // plain text file beside it.
 
 import { dataUrlBytes, bytesToBase64 } from "@/engine/skia/asset-bytes";
-import type { AssetIR } from "@/engine/skia/scene-ir";
+import type { AssetIR, AssetSheetIR } from "@/engine/skia/scene-ir";
 import type { SkiaExportAssets } from "./api";
 
 export interface AssetUse {
@@ -35,6 +35,9 @@ export interface ManifestAsset {
   height?: number;
   // The licence file shipped beside it.
   license?: string;
+  // A sprite sheet's layout (Skia Bake, AssetIR.sheet): cell size, grid,
+  // gutter, the tick each cell holds, cells per second. Additive (lane B).
+  sheet?: AssetSheetIR;
 }
 
 const EXT: Record<string, string> = {
@@ -131,6 +134,7 @@ export function writeAssetFiles(
       ...(a.width ? { width: a.width } : {}),
       ...(a.height ? { height: a.height } : {}),
       ...(lic && licBytes ? { license: lic } : {}),
+      ...(a.sheet ? { sheet: a.sheet } : {}),
     };
   });
 }

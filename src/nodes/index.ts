@@ -367,6 +367,7 @@ import { skiaGradientFillNode } from "./skia/gradient-fill";
 import { skiaTextNode } from "./skia/text";
 import { skiaCopyToPointsNode } from "./skia/copy-to-points";
 import { skiaImageNode } from "./skia/image";
+import { skiaBakeNode } from "./skia/bake";
 
 let registered = false;
 
@@ -776,5 +777,6 @@ export function registerAllNodes() {
   registerNode(skiaTextNode);
   registerNode(skiaCopyToPointsNode);
   registerNode(skiaImageNode);
+  registerNode(skiaBakeNode);
   registered = true;
 }

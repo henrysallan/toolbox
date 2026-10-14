@@ -50,9 +50,18 @@ import {
 import type { GraphNode } from "@/state/graph-ops";
 import type { TimelineMarker } from "@/lib/timeline-markers";
 import { base64ToBytes, resolveSkiaAssetBytes, type SkiaAssetResolver } from "@/engine/skia/asset-bytes";
+import { bakeNodeOfUrl } from "@/engine/skia/bake-frames";
 import { exportSkia, type SkiaExportRequest, type SkiaExportResult } from "./api";
 import { assetBytesOf } from "./asset-bundle";
 import { collectSkiaExportAssets, resolveSkiaExportAssets } from "./assets";
+import {
+  cachingBakeRenderer,
+  makeBakeAssetResolver,
+  withBakeModes,
+  type BakeFrameRenderer,
+  type BakeMode,
+  type BakeReport,
+} from "./bake";
 import { planSkiaExport } from "./plan";
 import { TOOLBOX_TIMELINE_SOURCE } from "./runtime.generated";
 import { exportSegments, type ExportSegment } from "./segments";
@@ -77,6 +86,13 @@ export interface SkiaExportEnv {
   // URL → bytes for every asset the bundle ships (see the header). Default
   // resolveSkiaAssetBytes: registered schemes, data:, fetch.
   resolveAsset?: SkiaAssetResolver;
+  // The host's real-engine frame renderer for Skia Bake (EffectsApp's
+  // renderSkiaBakeFrames, the CLI's Electron harness): `bake:` URLs resolve
+  // through it in exportSkiaFromEditor's asset pre-pass (lib/skia-export/
+  // bake.ts makeBakeAssetResolver), ahead of `resolveAsset`. Without it a
+  // bake falls to the registered `bake` scheme, which says why it can't.
+  // Additive (Wave 3 lane B).
+  renderBakeFrames?: BakeFrameRenderer;
 }
 
 export interface SkiaExportNodeRef {
@@ -94,6 +110,9 @@ export interface PreparedSkiaExport {
   target: SkiaExportNodeRef | null;
   // The layer the target sits in, if any.
   layer: { id: string; name: string; target: "default" | "skia" } | null;
+  // The exported clock's tick 0 on the composition clock (a late layer's
+  // in-point): where a Skia Bake renders its engine frames. Additive.
+  clockOffsetTicks?: number;
   problems: string[];
   warnings: string[];
 }
@@ -213,6 +232,7 @@ export function prepareSkiaExport(
   // Composition frames → the exported clock's frames (a late layer's local
   // clock starts at its in-point).
   let markerShiftFrames = 0;
+  let clockOffsetTicks = 0;
   const layerId = flat.layerOf.get(target.id);
   const layerNode = layerId ? byId.get(layerId) : undefined;
   if (layerNode) {
@@ -226,6 +246,7 @@ export function prepareSkiaExport(
     // from 0, which is what an app embeds — say so when they differ.
     const windows = (layerNode.data.clips ?? []).filter((c) => c.enabled);
     const offset = windows.length ? windows[0].inTick - windows[0].sourceInTick : 0;
+    clockOffsetTicks = offset;
     if (windows.length > 1) {
       warnings.push(
         `Layer "${layer.name}" has ${windows.length} clip windows — the export plays its interior once on the layer's own clock, not the windows.`
@@ -261,12 +282,15 @@ export function prepareSkiaExport(
     runtimeSource: env.runtimeSource ?? TOOLBOX_TIMELINE_SOURCE,
     ...(env.animation && env.animation !== "worklet" ? { animation: env.animation } : {}),
   };
-  return { request, clicked, target, layer, problems, warnings };
+  return { request, clicked, target, layer, clockOffsetTicks, problems, warnings };
 }
 
 export interface EditorSkiaExport {
   prepared: PreparedSkiaExport;
   result: SkiaExportResult;
+  // Every Skia Bake the export rendered: what shipped (one PNG / a sheet),
+  // frames, distinct frames, PNG bytes. Additive (Wave 3 lane B).
+  bakes?: BakeReport[];
 }
 
 // An exporter that throws (a branch meeting a graph it doesn't expect)
@@ -312,15 +336,71 @@ export async function exportSkiaFromEditor(
       result: { files: null, problems: prepared.problems, warnings: prepared.warnings },
     };
   }
-  const r = safeExport(await withSkiaAssets(prepared.request, env.resolveAsset));
+  const r = await exportSkiaWithBakes(prepared.request, env, { clockOffsetTicks: prepared.clockOffsetTicks });
   return {
     prepared,
-    result: {
-      files: r.files,
-      problems: r.problems,
-      warnings: [...prepared.warnings, ...r.warnings],
-    },
+    result: { ...r.result, warnings: [...prepared.warnings, ...r.result.warnings] },
+    ...(r.bakes ? { bakes: r.bakes } : {}),
   };
+}
+
+// The asset pre-pass + exportSkia for a ready request, with Skia Bake
+// (lib/skia-export/bake.ts): `bake:` URLs render through the host's engine
+// (env.renderBakeFrames) inside the same pre-pass — the resolver handed to
+// withSkiaAssets answers them first and passes every other URL to
+// env.resolveAsset (default resolveSkiaAssetBytes). A bake on Auto whose
+// rendered frames contradict the graph's verdict (a "static" one whose
+// probe frames move, an "animated" one whose frames are all identical) is
+// exported once more in the mode the frames show — the renders are cached,
+// nothing draws twice. The editor (above), MCP and the CLI call this.
+// `clockOffsetTicks`: the exported clock's tick 0 on the composition clock.
+export async function exportSkiaWithBakes(
+  request: SkiaExportRequest,
+  env: Pick<SkiaExportEnv, "resolveAsset" | "renderBakeFrames">,
+  opts: { clockOffsetTicks?: number } = {}
+): Promise<{ result: SkiaExportResult; bakes?: BakeReport[] }> {
+  let req = request;
+  const render = env.renderBakeFrames ? cachingBakeRenderer(env.renderBakeFrames) : null;
+  const flips = new Map<string, BakeMode>();
+  const flipNotes: string[] = [];
+  for (let round = 0; ; round++) {
+    const bake = render
+      ? makeBakeAssetResolver({
+          nodes: req.nodes,
+          edges: req.edges,
+          timeline: req.timeline,
+          canvas: req.canvas,
+          clockOffsetTicks: opts.clockOffsetTicks,
+          render,
+        })
+      : null;
+    const base = env.resolveAsset ?? resolveSkiaAssetBytes;
+    const resolve: SkiaAssetResolver = bake ? (a) => (bakeNodeOfUrl(a.url) ? bake.resolveAsset(a) : base(a)) : base;
+    const r = safeExport(await withSkiaAssets(req, resolve));
+    const reports = bake?.reports() ?? [];
+    const flipped = round === 0 && r.files ? reports.filter((x) => x.flip) : [];
+    if (flipped.length) {
+      for (const f of flipped) {
+        flips.set(f.nodeId, f.flip!);
+        flipNotes.push(
+          `Skia Bake "${f.nodeId}": Auto read the graph as ${f.shipped}, but the rendered frames ${
+            f.flip === "static" ? `are all identical (${f.frames} frames)` : "change over the timeline"
+          } — shipped as ${f.flip === "static" ? "one PNG" : "a sprite sheet"}.`
+        );
+      }
+      req = { ...req, nodes: withBakeModes(req.nodes, flips) };
+      continue;
+    }
+    const bakeProblems = bake?.problems() ?? [];
+    const warnings = [...r.warnings, ...flipNotes, ...(bake?.warnings() ?? [])];
+    // A bake that could not render refuses the export: a hole in the scene
+    // is not what the editor showed.
+    if (bakeProblems.length) return { result: { files: null, problems: [...bakeProblems, ...r.problems], warnings } };
+    return {
+      result: { files: r.files, problems: r.problems, warnings },
+      ...(reports.length ? { bakes: reports.map((x) => (flips.has(x.nodeId) ? { ...x, requested: "auto" as const } : x)) } : {}),
+    };
+  }
 }
 
 // ---- plan summary (MCP plan_skia_export) -------------------------------------

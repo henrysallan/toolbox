@@ -17,7 +17,7 @@
 // window.__toolboxHarness.capture(t) seeks, waits for Skia to draw, and
 // returns the canvas pixels (RGBA8, unpremultiplied, row 0 = top).
 //
-// ?bundle=scene | atlas | baked | image | procedural | procedural-baked picks
+// ?bundle=scene | atlas | baked | image | procedural | procedural-baked | bake picks
 // another export on the same master clock (procedural: Aurora on LFO /
 // Expression / Scene Time drivers compiled to worklets; -baked: the same
 // drivers in the SkSL).
@@ -47,6 +47,7 @@ import * as NativeEasings from "./src/bundle-native-easings";
 import { evaluateTrack as nativeEasingsTrack } from "./src/bundle-native-easings/toolbox-timeline";
 import * as NativeScene from "./src/bundle-native-scene";
 import { evaluateTrack as nativeSceneTrack } from "./src/bundle-native-scene/toolbox-timeline";
+import * as BakeScene from "./src/bundle-bake";
 import { NativeHarness, type NativeBundle } from "./native-harness";
 import { deviceInfo, loopbackHost, nextFrames, parseLink, postJson, snapshot, toBase64, type Snapshot } from "./capture";
 
@@ -61,7 +62,17 @@ const webFrozenAt = query?.get("t") != null ? Number(query.get("t")) : null;
 // ?bundle=atlas: Copy to Points (Skia) — sprite-sheet atlases (useTexture +
 // useRSXformBuffer) and vector copy groups in one scene (src/bundle-atlas,
 // `export-skia.mts --fixture atlas`).
-const SceneBundle = query?.get("bundle") === "scene" ? Scene : query?.get("bundle") === "atlas" ? AtlasScene : null;
+// ?bundle=bake: a Skia layer holding a Skia Bake (src/bundle-bake,
+// `export-skia.mts --fixture bake`) — an engine effect (animated Noise →
+// Blur) shipped as a sprite sheet the master clock steps through.
+const SceneBundle =
+  query?.get("bundle") === "scene"
+    ? Scene
+    : query?.get("bundle") === "atlas"
+      ? AtlasScene
+      : query?.get("bundle") === "bake"
+        ? BakeScene
+        : null;
 // ?bundle=baked: the same SkSL Shader export with animation "baked"
 // (src/bundle-baked) — the timeline inside the SkSL, driven by iTime alone.
 // ?bundle=image: an SkSL Shader sampling a bundled image (iImage1, an
@@ -81,7 +92,7 @@ const EffectBundle =
           ? ProceduralBaked
           : Effect;
 const { CANVAS, NAME, TIMELINE } = SceneBundle ?? EffectBundle;
-// (The atlas slot has no markers — its SEGMENTS is {} — so read every slot's
+// (The atlas and bake slots have no markers — its SEGMENTS is {} — so read every slot's
 // table as the Aurora one; the chrome lists only the names it really has.)
 const SEGMENTS = (SceneBundle ?? EffectBundle).SEGMENTS as typeof Effect.SEGMENTS;
 const ToolboxEffect = SceneBundle ? SceneBundle.ToolboxScene : EffectBundle.ToolboxEffect;

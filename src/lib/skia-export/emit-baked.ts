@@ -973,7 +973,9 @@ export function bakeScenePlan(plan: ScenePlan): BakeSceneResult {
     for (const [name, b] of Object.entries(p.uniforms)) {
       const pb = plan.bindFor.get(b as Bind<unknown>);
       const kind = pb?.plan.kind;
-      if (!pb || (kind !== "track" && kind !== "sampled" && kind !== "expr")) {
+      // A held series (Bind.hold) steps between frames; the baked series
+      // interpolate — it stays on the worklet timeline, which steps it.
+      if (!pb || (kind !== "track" && kind !== "sampled" && kind !== "expr") || (pb.plan.kind === "sampled" && pb.plan.hold)) {
         kept[name] = b;
         continue;
       }

@@ -4,6 +4,7 @@ import { canvasKit, canvasKitError, canvasKitReady, ensureCanvasKit } from "@/en
 import { SKIA_IR_VERSION, type RGBA, type SkiaScene } from "@/engine/skia/scene-ir";
 import { renderScene } from "@/engine/skia/scene-render";
 import { makeSceneAssetResolver, sceneAssetGeneration } from "@/engine/skia/scene-assets";
+import { withBakeFrames } from "@/engine/skia/bake-frames";
 import { renderSkiaToImage, skiaGpuError } from "@/engine/skia/sksl-render";
 import { hexToRgba01 } from "@/engine/spline-fill";
 
@@ -134,7 +135,11 @@ export const skiaCanvasNode: NodeDefinition = {
     };
     let problems: string[] = [];
     const out = renderSkiaToImage(ctx, kit, ctx.width, ctx.height, (canvas) => {
-      const r = renderScene(kit, canvas, scene, { assets: makeSceneAssetResolver(kit), textureCache: (state.textures ??= new Map()) });
+      // `bake:` assets are Skia Bake frames filed in this context (bake-frames.ts).
+      const r = renderScene(kit, canvas, scene, {
+        assets: withBakeFrames(ctx, makeSceneAssetResolver(kit)),
+        textureCache: (state.textures ??= new Map()),
+      });
       problems = r.problems;
       return r.release;
     });

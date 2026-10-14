@@ -11,19 +11,25 @@
 import { evaluateGraph, type EvalCache, type GraphEdge, type GraphNode } from "@/engine/evaluator";
 import type { ImageValue, MaskValue, RenderContext, SkiaDrawValue, SocketValue, UvValue } from "@/engine/types";
 import { SKIA_IR_VERSION, type RGBA, type SkiaScene } from "@/engine/skia/scene-ir";
+import { BAKE_IMAGE_HANDLE, SKIA_BAKE_TYPE } from "@/engine/skia/bake-frames";
 
 export const SKIA_CANVAS_TYPE = "skia-canvas";
 export const SKIA_CANVAS_SCENE_HANDLE = "in:scene";
 
 // Every node the target depends on (following edges upstream), with the
-// edges among them.
-export function upstreamClosure(nodes: GraphNode[], edges: GraphEdge[], rootId: string): { nodes: GraphNode[]; edges: GraphEdge[] } {
+// edges among them. `stop` (additive, Wave 3 lane B): edges not followed.
+export function upstreamClosure(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  rootId: string,
+  stop?: (e: GraphEdge) => boolean
+): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const keep = new Set<string>([rootId]);
   const stack = [rootId];
   while (stack.length) {
     const id = stack.pop()!;
     for (const e of edges) {
-      if (e.target === id && !keep.has(e.source)) {
+      if (e.target === id && !keep.has(e.source) && !stop?.(e)) {
         keep.add(e.source);
         stack.push(e.source);
       }
@@ -31,7 +37,7 @@ export function upstreamClosure(nodes: GraphNode[], edges: GraphEdge[], rootId: 
   }
   return {
     nodes: nodes.filter((n) => keep.has(n.id)),
-    edges: edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
+    edges: edges.filter((e) => keep.has(e.source) && keep.has(e.target) && !stop?.(e)),
   };
 }
 
@@ -90,7 +96,17 @@ export function makeSceneSampler(
 ): SceneSampler | { problem: string } {
   const edge = edges.find((e) => e.target === canvasId && e.targetHandle === SKIA_CANVAS_SCENE_HANDLE);
   if (!edge) return { problem: `Nothing is wired into the Skia Canvas "${canvasId}"'s scene input.` };
-  const sub = upstreamClosure(nodes, edges, edge.source);
+  // A Skia Bake's input is ENGINE content: the bake renderer draws it with
+  // GL at export (bake.ts). Here the bake node sees it unwired and returns
+  // its asset draw, so the engine graph behind it never runs on this
+  // GL-less context.
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const sub = upstreamClosure(
+    nodes,
+    edges,
+    edge.source,
+    (e) => e.targetHandle === BAKE_IMAGE_HANDLE && byId.get(e.target)?.type === SKIA_BAKE_TYPE
+  );
   const ctx = dataOnlyContext(canvas, timeline);
   const cache: EvalCache = new Map();
   const handle = edge.sourceHandle;

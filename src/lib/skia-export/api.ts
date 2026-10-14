@@ -11,6 +11,7 @@ import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { RGBA, SkiaScene } from "@/engine/skia/scene-ir";
 import { hexToRgba01 } from "@/engine/spline-fill";
 import type { TimelineMarker } from "@/lib/timeline-markers";
+import { planSceneBakes } from "./bake";
 import { emitSkiaBundle } from "./emit";
 import { emitBakedSceneBundle, emitBakedSkiaBundle } from "./emit-baked";
 import { emitNativeEffect, emitNativeScene } from "./emit-native";
@@ -145,21 +146,26 @@ export function exportSkia(req: SkiaExportRequest): SkiaExportResult {
       // export action says so when the layer starts later (L6).
       const sampler = makeSceneSampler(req.nodes, req.edges, target.id, req.canvas, req.timeline, bg);
       if ("problem" in sampler) return { files: null, problems: [sampler.problem], warnings: [] };
-      const scene = sampler.sampleAt(0);
-      if (!scene) return { files: null, problems: [sampler.lastProblem() ?? "The scene input produced nothing."], warnings: [] };
+      const scene0 = sampler.sampleAt(0);
+      if (!scene0) return { files: null, problems: [sampler.lastProblem() ?? "The scene input produced nothing."], warnings: [] };
+      // Skia Bake draws (bake.ts): one PNG, or a sprite sheet stepped by a
+      // held per-frame offset — the scene the planner sees at every tick.
+      const bakes = planSceneBakes(scene0, req.nodes, req.edges, req.canvas, req.timeline);
+      if (bakes.problems.length) return { files: null, problems: bakes.problems, warnings: bakes.warnings };
+      const scene = bakes.rewrite(scene0, 0)!;
       const r = exportSkiaScene(scene, req.nodes, req.edges, {
         name: req.name,
         timeline: req.timeline,
         runtimeSource: req.runtimeSource,
-        sampleAt: (tick) => sampler.sampleAt(tick),
+        sampleAt: (tick) => bakes.rewrite(sampler.sampleAt(tick), tick),
         animation: req.animation,
         ...(req.assets ? { assets: req.assets } : {}),
       });
       // What the producers themselves could not express (an unfused shader,
       // an unported option) refuses the export, as it fails the preview.
       const producer = sampler.producerProblems();
-      if (producer.length) return { files: null, problems: [...producer, ...r.problems], warnings: r.warnings };
-      return { files: r.files, problems: r.problems, warnings: r.warnings };
+      if (producer.length) return { files: null, problems: [...producer, ...r.problems], warnings: [...bakes.warnings, ...r.warnings] };
+      return { files: r.files, problems: r.problems, warnings: [...bakes.warnings, ...r.warnings] };
     }
     default:
       return {

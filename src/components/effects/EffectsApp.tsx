@@ -241,6 +241,8 @@ import {
 import { editorCanCoerce } from "@/engine/graph-validation";
 import { enclosingSkiaLayer } from "@/engine/skia/layer-target";
 import type { SkiaExportReport } from "@/lib/skia-export/editor";
+import type { BakeFrameRenderer } from "@/lib/skia-export/bake";
+import { pickInspectSocket } from "@/engine/socket-inspect";
 import { getPreset } from "@/state/presets";
 import {
   getUserNodePreset,
@@ -3117,6 +3119,10 @@ function EffectsShell({
   // The live/MediaRecorder path leaves this false (it's realtime; the
   // continuous loop lets deferred results catch up).
   const offlineRenderingRef = useRef(false);
+  // Skia Bake's export renderer (renderSkiaBakeFrames, defined with the
+  // React Native Skia export below) — a ref so the MCP handlers, built
+  // earlier in this component, reach it.
+  const skiaBakeFramesRef = useRef<BakeFrameRenderer | null>(null);
   // The terminal ImageValue of the most recent render pass. Export capture
   // reads its pixels straight back from the GPU (captureFrameRGBA, below)
   // instead of copying the on-screen canvas — Chromium can hold that canvas'
@@ -8622,6 +8628,11 @@ function EffectsShell({
     backendRef,
     evalCacheRef,
     lastEvalOutputsRef,
+    renderSkiaBakeFrames: (bake, ticks, size) => {
+      const render = skiaBakeFramesRef.current;
+      if (!render) return Promise.reject(new Error("The editor is still starting — retry export_skia."));
+      return render(bake, ticks, size);
+    },
   });
 
   // The live loop/fps/resolution ARE the active composition's working scene;
@@ -11787,13 +11798,82 @@ function EffectsShell({
     ]
   );
 
+  // Skia Bake's frames for the React Native Skia export
+  // (lib/skia-export/bake.ts): render what is wired into the bake at each
+  // composition tick with the real engine — the node forced as the
+  // terminal, as compare_renders does, at the export canvas size inside
+  // the export-resolution bracket — and read it back straight off its
+  // texture. Simulations upstream are stepped from frame 0 so their state
+  // is the playback's. Restores the playhead, play state and resolution.
+  const renderSkiaBakeFrames = useCallback<BakeFrameRenderer>(
+    async (bake, ticks, size) => {
+      if (exportBusyRef.current || recordingRef.current || queueRenderingRef.current) {
+        throw new Error("Another export is running — wait for it to finish, then export again.");
+      }
+      const fps = fpsRef.current;
+      const tpf = DEFAULT_TICKS_PER_FRAME;
+      const want = new Set(ticks);
+      const last = Math.max(0, ...ticks);
+      const sequential = outputNeedsSimPreroll(nodesRef.current, edgesRef.current, bake.source.node);
+      const order = sequential
+        ? [...new Set([...Array.from({ length: Math.floor(last / tpf) + 1 }, (_, f) => f * tpf), ...ticks])].sort((a, b) => a - b)
+        : [...want].sort((a, b) => a - b);
+      const handle = bake.source.handle || "out:primary";
+      const socket = handle === "out:primary" ? "out" : handle.replace(/^out:/, "");
+      const got = new Map<number, Uint8Array | null>();
+      const savedTime = timeRef.current;
+      const savedPlaying = playingRef.current;
+      exportBusyRef.current = true;
+      setPlaying(false);
+      offlineRenderingRef.current = true;
+      forcedTerminalRef.current = bake.source.node;
+      forcedTerminalHandleRef.current = handle === "out:primary" ? null : handle;
+      try {
+        await beginExportResolution([size.width, size.height]);
+        let done = 0;
+        for (let i = 0; i < order.length; i++) {
+          const tick = order[i];
+          await renderSettledFrameAt(tick / (tpf * fps), fps);
+          if (!want.has(tick)) continue;
+          const output =
+            evalCacheRef.current.get(bake.source.node)?.output ??
+            lastEvalOutputsRef.current?.get(bake.source.node);
+          const v = pickInspectSocket(output, socket).value;
+          const backend = backendRef.current;
+          const px =
+            backend && v && (v.kind === "image" || v.kind === "mask")
+              ? backend.readImagePixels(v as ImageValue, size.width, size.height)
+              : null;
+          got.set(tick, px ? new Uint8Array(px) : null);
+          done++;
+          setCaptureProgress(`Baking ${bake.nodeId} for React Native Skia — frame ${done}/${want.size}`, done / want.size);
+          // Let the banner paint now and then.
+          if (done % 12 === 0) await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        }
+      } finally {
+        offlineRenderingRef.current = false;
+        forcedTerminalRef.current = null;
+        forcedTerminalHandleRef.current = null;
+        setRecording(null);
+        setPlaying(savedPlaying);
+        setTime(savedTime);
+        endExportResolution();
+        exportBusyRef.current = false;
+      }
+      return ticks.map((t) => got.get(t) ?? null);
+    },
+    [beginExportResolution, endExportResolution, renderSettledFrameAt, setCaptureProgress, setPlaying, setTime]
+  );
+  skiaBakeFramesRef.current = renderSkiaBakeFrames;
+
   // "Export for React Native Skia…" (101326_skia-target.md §3.7) on SkSL
-  // Shader / Skia Canvas nodes and Skia layers: no render pass — the
-  // exporter reads the graph, so the playhead and the GL state stay put.
-  // Resolution, flatten and emission are lib/skia-export/editor (pure, in
-  // check-skia-layer); here only the zip download and the report the param
-  // panel lists under its button. Lazy-loaded: the runtime string and jszip
-  // stay out of the editor's first load.
+  // Shader / Skia Canvas nodes and Skia layers: the exporter reads the
+  // graph, so the playhead and the GL state stay put — unless the scene
+  // holds a Skia Bake, whose frames render through renderSkiaBakeFrames.
+  // Resolution, flatten, emission and asset bytes are lib/skia-export/
+  // editor (pure, in check-skia-layer); here only the zip download and the
+  // report the param panel lists under its button. Lazy-loaded: the
+  // runtime string and jszip stay out of the editor's first load.
   const [skiaExportReport, setSkiaExportReport] =
     useState<SkiaExportReport | null>(null);
   const exportSkiaNode = useCallback(
@@ -11802,19 +11882,23 @@ function EffectsShell({
       const mode = m.isSkiaAnimationMode(animation) ? animation : "worklet";
       const fps = fpsRef.current;
       const lf = loopFramesRef.current;
-      const { prepared, result } = await m.exportSkiaFromEditor(
-        nodesRef.current,
-        edgesRef.current,
-        nodeId,
-        {
+      let exported: Awaited<ReturnType<typeof m.exportSkiaFromEditor>>;
+      try {
+        exported = await m.exportSkiaFromEditor(nodesRef.current, edgesRef.current, nodeId, {
           canvas: { width: canvasResRef.current[0], height: canvasResRef.current[1] },
           fps,
           frames: lf != null && lf > 0 ? lf : fps * 5,
           // → the bundle's SEGMENTS / MARKERS.
           markers: activeMarkersRef.current,
           animation: mode,
-        }
-      );
+          renderBakeFrames: renderSkiaBakeFrames,
+        });
+      } catch (err) {
+        const e = toError(err, "React Native Skia export failed");
+        flashToast(`React Native Skia export failed: ${e.message.split("\n")[0]}`);
+        return;
+      }
+      const { prepared, result } = exported;
       const files = result.files;
       setSkiaExportReport({
         nodeId,
@@ -11849,7 +11933,7 @@ function EffectsShell({
         flashToast(`React Native Skia export failed: ${e.message.split("\n")[0]}`);
       }
     },
-    [flashToast]
+    [flashToast, renderSkiaBakeFrames]
   );
 
   useEffect(() => {
