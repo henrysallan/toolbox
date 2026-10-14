@@ -328,6 +328,7 @@ import { skiaCanvasNode } from "./skia/canvas";
 import { skiaFillNode } from "./skia/fill";
 import { skiaGroupNode } from "./skia/group";
 import { skiaShapeNode } from "./skia/shape";
+import { skiaMergeNode } from "./skia/merge";
 
 let registered = false;
 
@@ -694,5 +695,6 @@ export function registerAllNodes() {
   registerNode(skiaFillNode);
   registerNode(skiaGroupNode);
   registerNode(skiaShapeNode);
+  registerNode(skiaMergeNode);
   registered = true;
 }

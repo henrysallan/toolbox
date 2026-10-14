@@ -31,6 +31,7 @@
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { ExprInput } from "@/engine/types";
 import { channelKind } from "@/engine/expr-channels";
+import { LAYER_OPACITY_PREFIX } from "@/engine/conventions";
 import { LAYER_TYPE } from "@/engine/groups";
 import type { Keyframe } from "@/engine/keyframes";
 import { getNodeDef } from "@/engine/registry";
@@ -354,6 +355,12 @@ function paramKindOf(node: GraphNode, param: string): { kind: ParamKind; alpha: 
     const row = channelRow(node, param.slice(3));
     const k = row ? channelKind(row) : "other";
     return { kind: k === "scalar" || k === "color" ? k : "other", alpha: true, label: row ? k : "missing" };
+  }
+  // A Merge-style layer's opacity (engine/conventions.ts LAYER_OPACITY_PREFIX)
+  // is a scalar keyframed under its own virtual key; Skia Merge binds to it.
+  // Added 2026-10-13 by Wave 2 family 6 (merge & blend).
+  if (param.startsWith(LAYER_OPACITY_PREFIX) && getNodeDef(node.type)?.params.some((p) => p.type === "merge_layers")) {
+    return { kind: "scalar", alpha: false, label: "scalar" };
   }
   const pdef = getNodeDef(node.type)?.params.find((p) => p.name === param);
   if (pdef) {
