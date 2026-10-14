@@ -146,10 +146,10 @@ export const TRANSLATION_CLASSES: Record<string, TranslationEntry> = {
 
   // ---- warps / inverse samplers (pure, 1 tap at a transformed uv) ----------
   transform: { class: "pure", taps: 1, note: "Inverse-sample: compute the source uv from the output uv (TRANSFORM_FS), then evaluate the upstream there. Rotation is degrees in the param, radians in the shader." },
-  mirror: { class: "pure", taps: 1 },
+  mirror: { class: "gather", taps: "param", note: "Image path reads the upstream once per copy (2–4 in the axis modes, up to 2× the wedge count in radial/kaleidoscope) and composites them source-over." },
   "polar-coords": { class: "pure", taps: 1 },
   pixelate: { class: "pure", taps: 1, note: "Quantize uv to the cell grid (aspect-aware), then evaluate upstream at the cell center." },
-  array: { class: "gather", taps: "param", note: "Tiles/copies: one upstream evaluation per copy that covers the pixel." },
+  array: { class: "gather", taps: 4, note: "Image pass: each pixel reads only its own cell — one instance tap plus up to three modulator taps (scale / position / rotation)." },
 
   // ---- gathers -------------------------------------------------------------
   displace: { class: "gather", doc: "displace", taps: 1, note: "Image branch only. Reads the map at v_uv, offsets in uv01 units (NOT canvas01), then samples the source once. Wrap mode matters at the edges." },
