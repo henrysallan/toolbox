@@ -143,6 +143,14 @@ export const TRANSLATION_CLASSES: Record<string, TranslationEntry> = {
   "skia-pixelate": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `pixelate` node it mirrors (same params) instead." },
   "skia-array": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `array` node it mirrors (same params) instead." },
   "skia-merge": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `merge` node it mirrors (same `layers` param, same blend formulas) instead." },
+  "skia-displace": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `displace` node it mirrors (same params) instead." },
+  "skia-chromatic-aberration": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `chromatic-aberration` node it mirrors (same params) instead." },
+  "skia-sharpen": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `sharpen` node it mirrors (same params) instead." },
+  "skia-edge-detect": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `edge-detect` node it mirrors (same params) instead." },
+  "skia-bevel-emboss": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `bevel-emboss` node it mirrors (same params) instead." },
+  "skia-vector-field": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `vector-field` node it mirrors (same params) instead." },
+  "skia-flow-blur": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `flow-blur` node it mirrors (same params) instead." },
+  "skia-kuwahara": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `kuwahara` node it mirrors (same params) instead." },
   "glsl-expression": { class: "pure", note: "Already GLSL. Inline its body as a helper: rename its u_a..u_d to whatever you wired, re-declare its channels (names must not collide), keep its own helpers hoisted." },
 
   // ---- warps / inverse samplers (pure, 1 tap at a transformed uv) ----------

@@ -334,6 +334,14 @@ import { skiaPolarCoordsNode } from "./skia/polar-coords";
 import { skiaPixelateNode } from "./skia/pixelate";
 import { skiaArrayNode } from "./skia/array";
 import { skiaMergeNode } from "./skia/merge";
+import { skiaDisplaceNode } from "./skia/displace";
+import { skiaChromaticAberrationNode } from "./skia/chromatic-aberration";
+import { skiaSharpenNode } from "./skia/sharpen";
+import { skiaEdgeDetectNode } from "./skia/edge-detect";
+import { skiaBevelEmbossNode } from "./skia/bevel-emboss";
+import { skiaVectorFieldNode } from "./skia/vector-field";
+import { skiaFlowBlurNode } from "./skia/flow-blur";
+import { skiaKuwaharaNode } from "./skia/kuwahara";
 
 let registered = false;
 
@@ -706,5 +714,13 @@ export function registerAllNodes() {
   registerNode(skiaPixelateNode);
   registerNode(skiaArrayNode);
   registerNode(skiaMergeNode);
+  registerNode(skiaDisplaceNode);
+  registerNode(skiaChromaticAberrationNode);
+  registerNode(skiaSharpenNode);
+  registerNode(skiaEdgeDetectNode);
+  registerNode(skiaBevelEmbossNode);
+  registerNode(skiaVectorFieldNode);
+  registerNode(skiaFlowBlurNode);
+  registerNode(skiaKuwaharaNode);
   registered = true;
 }
