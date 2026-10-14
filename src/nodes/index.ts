@@ -328,6 +328,11 @@ import { skiaCanvasNode } from "./skia/canvas";
 import { skiaFillNode } from "./skia/fill";
 import { skiaGroupNode } from "./skia/group";
 import { skiaShapeNode } from "./skia/shape";
+import { skiaTransformNode } from "./skia/transform";
+import { skiaMirrorNode } from "./skia/mirror";
+import { skiaPolarCoordsNode } from "./skia/polar-coords";
+import { skiaPixelateNode } from "./skia/pixelate";
+import { skiaArrayNode } from "./skia/array";
 
 let registered = false;
 
@@ -694,5 +699,10 @@ export function registerAllNodes() {
   registerNode(skiaFillNode);
   registerNode(skiaGroupNode);
   registerNode(skiaShapeNode);
+  registerNode(skiaTransformNode);
+  registerNode(skiaMirrorNode);
+  registerNode(skiaPolarCoordsNode);
+  registerNode(skiaPixelateNode);
+  registerNode(skiaArrayNode);
   registered = true;
 }

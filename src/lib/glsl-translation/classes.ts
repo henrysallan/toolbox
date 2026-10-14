@@ -137,6 +137,11 @@ export const TRANSLATION_CLASSES: Record<string, TranslationEntry> = {
   "skia-noise": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `noise` node it mirrors (same params) instead." },
   "skia-color-ramp": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `color-ramp` node it mirrors (same params) instead." },
   "skia-canvas": { class: "opaque", note: "Renders a Skia scene IR with CanvasKit (paths, groups, filters), not the engine's GL. Wire its image in." },
+  "skia-transform": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `transform` node it mirrors (same params) instead." },
+  "skia-mirror": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `mirror` node it mirrors (same params) instead." },
+  "skia-polar-coords": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `polar-coords` node it mirrors (same params) instead." },
+  "skia-pixelate": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `pixelate` node it mirrors (same params) instead." },
+  "skia-array": { class: "opaque", note: "Skia-layer node: its preview is CanvasKit running the fused SkSL. To fuse into GLSL, port the `array` node it mirrors (same params) instead." },
   "glsl-expression": { class: "pure", note: "Already GLSL. Inline its body as a helper: rename its u_a..u_d to whatever you wired, re-declare its channels (names must not collide), keep its own helpers hoisted." },
 
   // ---- warps / inverse samplers (pure, 1 tap at a transformed uv) ----------
