@@ -91,3 +91,5 @@ next-env.d.ts
 /skia-harness/android
 /skia-harness/public/canvaskit.wasm
 /skia-harness/parity-out
+# scratch bundles check:skia-scene-export type-checks inside the harness
+/skia-harness/src/__scene_check__/

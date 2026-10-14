@@ -50,6 +50,10 @@ export interface TimelineTrack {
   // included: with quantize8, alpha interpolates with the color and snaps
   // to 8 bits too, and `alpha` is ignored.
   quantizeAlpha?: boolean;
+  // Scalar tracks whose IR value is the param × scale (BindRef.scale — a
+  // degrees param feeding a radians prop). Applied after evaluation, the
+  // same `value * scale` the producer computes.
+  scale?: number;
   keys: TimelineKey[];
 }
 
@@ -294,6 +298,7 @@ export function evaluateTrackRaw(track: TimelineTrack, tick: number): number | n
 export function evaluateTrack(track: TimelineTrack, tick: number): number | number[] {
   "worklet";
   const v = evaluateTrackRaw(track, tick);
+  if (track.kind === "scalar" && track.scale !== undefined) return (v as number) * track.scale;
   if (track.kind !== "color" || !track.quantize8) return v;
   const c = v as number[];
   const q = (x: number) => {

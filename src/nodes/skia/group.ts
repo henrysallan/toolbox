@@ -14,6 +14,9 @@ import { SKIA_BLEND_PARAM, skiaBlendMode } from "./blend-modes";
 // mislabeled radians.
 
 const CHILDREN = ["child1", "child2", "child3", "child4"] as const;
+// Degrees → radians, as `value * scale` exactly like the exported track
+// (toolbox-timeline.ts), so the device reproduces the bound value bit for bit.
+const DEG = Math.PI / 180;
 
 const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
 
@@ -77,7 +80,7 @@ export const skiaGroupNode: NodeDefinition = {
           bindParam(num(params.translateX, 0), nodeId, "translateX"),
           bindParam(num(params.translateY, 0), nodeId, "translateY"),
         ],
-        rotate: { v: (deg * Math.PI) / 180, ref: { node: nodeId, param: "rotate", scale: Math.PI / 180 } },
+        rotate: { v: deg * DEG, ref: { node: nodeId, param: "rotate", scale: DEG } },
         scale: [
           bindParam(num(params.scaleX, 1), nodeId, "scaleX"),
           bindParam(num(params.scaleY, 1), nodeId, "scaleY"),

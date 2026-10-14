@@ -1,0 +1,28 @@
+{
+  "format": 2,
+  "kind": "scene",
+  "name": "Static fixture",
+  "exportedBy": "toolbox Skia Canvas",
+  "irVersion": 1,
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "canvas": {
+    "width": 256,
+    "height": 128
+  },
+  "timeline": {
+    "fps": 30,
+    "ticksPerFrame": 1000,
+    "durationTicks": 60000,
+    "durationSec": 2,
+    "frames": 61
+  },
+  "sampledFrames": 0,
+  "bindCounts": {
+    "static": 7
+  },
+  "binds": [],
+  "programs": [],
+  "assets": [],
+  "warnings": []
+}
