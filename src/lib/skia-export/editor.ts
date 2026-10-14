@@ -17,9 +17,11 @@ import {
   SKIA_EXPORT_TARGET_TYPES,
 } from "@/engine/skia/layer-target";
 import type { GraphNode } from "@/state/graph-ops";
+import type { TimelineMarker } from "@/lib/timeline-markers";
 import { exportSkia, type SkiaExportRequest, type SkiaExportResult } from "./api";
 import { planSkiaExport } from "./plan";
 import { TOOLBOX_TIMELINE_SOURCE } from "./runtime.generated";
+import { exportSegments, type ExportSegment } from "./segments";
 
 export interface SkiaExportEnv {
   // The composition canvas in px.
@@ -27,6 +29,9 @@ export interface SkiaExportEnv {
   fps: number;
   // Scene length in frames (the timeline's loop length).
   frames: number;
+  // The active composition's timeline markers (composition frames) — the
+  // bundle's SEGMENTS. Shifted onto a late layer's own clock below.
+  markers?: readonly TimelineMarker[];
   // Defaults to the generated runtime module; the gate passes the file on
   // disk to prove the two agree.
   runtimeSource?: string;
@@ -163,6 +168,9 @@ export function prepareSkiaExport(
   }
 
   let layer: PreparedSkiaExport["layer"] = null;
+  // Composition frames → the exported clock's frames (a late layer's local
+  // clock starts at its in-point).
+  let markerShiftFrames = 0;
   const layerId = flat.layerOf.get(target.id);
   const layerNode = layerId ? byId.get(layerId) : undefined;
   if (layerNode) {
@@ -182,11 +190,18 @@ export function prepareSkiaExport(
       );
     } else if (offset !== 0) {
       const frames = Math.round((offset / DEFAULT_TICKS_PER_FRAME) * 100) / 100;
+      markerShiftFrames = offset / DEFAULT_TICKS_PER_FRAME;
       warnings.push(
-        `Layer "${layer.name}" starts at frame ${frames} of the composition — the export plays its interior from the layer's own frame 0.`
+        `Layer "${layer.name}" starts at frame ${frames} of the composition — the export plays its interior from the layer's own frame 0.` +
+          (env.markers?.length ? ` Timeline markers shift by −${frames} frames onto that clock.` : "")
       );
     }
   }
+  const markers = env.markers?.length
+    ? markerShiftFrames
+      ? env.markers.map((m) => ({ ...m, frame: m.frame - markerShiftFrames }))
+      : [...env.markers]
+    : undefined;
 
   const name = clicked.type === LAYER_TYPE ? clicked.name : target.name;
   const request: SkiaExportRequest = {
@@ -199,6 +214,7 @@ export function prepareSkiaExport(
       fps: env.fps,
       ticksPerFrame: DEFAULT_TICKS_PER_FRAME,
       sceneDurationTicks: Math.max(1, Math.round(env.frames)) * DEFAULT_TICKS_PER_FRAME,
+      ...(markers ? { markers } : {}),
     },
     runtimeSource: env.runtimeSource ?? TOOLBOX_TIMELINE_SOURCE,
   };
@@ -261,6 +277,8 @@ export interface SkiaPlanSummary {
   warnings: string[];
   canvas?: { width: number; height: number };
   timeline?: { fps: number; ticksPerFrame: number; durationTicks: number; frames: number; seconds: number };
+  // The bundle's SEGMENTS (seconds + frames on the exported clock).
+  segments?: ExportSegment[];
   usesTime?: boolean;
   // SkSL Shader targets: one row per uniform the program declares.
   uniforms?: {
@@ -306,13 +324,15 @@ export function planSkiaExportForEditor(
     frames: req.timeline.sceneDurationTicks / tpf,
     seconds: req.timeline.sceneDurationTicks / (tpf * req.timeline.fps),
   };
+  const segs = exportSegments(req.timeline.markers, req.timeline);
+  const segments = segs.segments.length ? { segments: segs.segments } : {};
   if (prepared.target?.type === "sksl-shader") {
     const { plan, problems } = planSkiaExport(req.nodes, req.edges, req.targetId, {
       name: req.name,
       canvas: req.canvas,
       timeline: req.timeline,
     });
-    const warnings = [...prepared.warnings, ...(plan?.warnings ?? [])];
+    const warnings = [...prepared.warnings, ...(plan?.warnings ?? []), ...(plan ? segs.warnings : [])];
     if (!plan) return { ok: false, ...base, problems, warnings, canvas: req.canvas, timeline };
     return {
       ok: true,
@@ -321,6 +341,7 @@ export function planSkiaExportForEditor(
       warnings,
       canvas: plan.canvas,
       timeline,
+      ...segments,
       usesTime: plan.usesTime,
       uniforms: plan.uniforms.map((u) => {
         const keys = u.track?.keys ?? [];
@@ -356,6 +377,7 @@ export function planSkiaExportForEditor(
     warnings,
     canvas: req.canvas,
     timeline,
+    ...segments,
     files: Object.keys(r.files).sort(),
     ...(manifest !== undefined ? { manifest } : {}),
   };

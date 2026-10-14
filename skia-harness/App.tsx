@@ -9,15 +9,19 @@
 //
 // Web query params: ?t=<seconds> freezes the clock at that time, ?size=<px>
 // sets the canvas edge (default: the export's canvas width), ?chrome=0 hides
-// the label. For parity:skia, window.__toolboxHarness.capture(t) seeks,
-// waits for Skia to draw, and returns the canvas pixels (RGBA8,
-// unpremultiplied, row 0 = top).
+// the label, ?segment=<name> loops that named segment (the export's
+// SEGMENTS, from the composition's timeline markers) instead of the whole
+// timeline. With the chrome on, a button row drives the clock's controls
+// (loopSegment / playAll / pause / play), and window.__toolboxHarness.clock()
+// returns the live clock for scripts. For parity:skia,
+// window.__toolboxHarness.capture(t) seeks, waits for Skia to draw, and
+// returns the canvas pixels (RGBA8, unpremultiplied, row 0 = top).
 //
 // Native: deep links drive the same capture (capture.ts has the contract):
 //   toolboxharness://capture?t=1.25&run=<id>&host=http://127.0.0.1:<port>&frame=75&size=512
 // The first capture freezes the clock for the rest of the session.
 import React, { useEffect, useRef, useState } from "react";
-import { Linking, PixelRatio, Platform, StyleSheet, Text, View } from "react-native";
+import { Linking, PixelRatio, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSharedValue, type SharedValue } from "react-native-reanimated";
 import { useCanvasRef, type CanvasRef } from "react-native-skia";
 import * as Effect from "./src/bundle";
@@ -33,19 +37,80 @@ const webFrozenAt = query?.get("t") != null ? Number(query.get("t")) : null;
 // Skia-layer scene bundle (src/bundle-scene) with ?bundle=scene. Fixed for
 // the page's lifetime, so the hook choice below is stable.
 const SCENE = query?.get("bundle") === "scene";
-const { CANVAS, NAME, TIMELINE } = SCENE ? Scene : Effect;
+const { CANVAS, NAME, TIMELINE, SEGMENTS } = SCENE ? Scene : Effect;
 const ToolboxEffect = SCENE ? Scene.ToolboxScene : Effect.ToolboxEffect;
 const useToolboxClock = SCENE ? Scene.useToolboxClock : Effect.useToolboxClock;
 const initialSize = Number(query?.get("size") ?? CANVAS.width);
+// Both harness bundles are exported with the same markers (AURORA_MARKERS).
+type SegmentName = Effect.SegmentName;
+type ToolboxClock = Effect.ToolboxClock;
+const SEGMENT_NAMES = Object.keys(SEGMENTS) as SegmentName[];
+const webSegment = SEGMENT_NAMES.find((n) => n === query?.get("segment"));
 
 type Capture = (t: number, sizePx?: number) => Promise<Snapshot>;
 
-// The live master clock. Its frame callback is armed once at mount
-// (useFrameCallback ignores later autostart changes), so freezing swaps
-// this component out for <Frozen> rather than flipping a prop.
-function Playing({ size, canvasRef }: { size: number; canvasRef: React.RefObject<CanvasRef | null> }) {
-  const time = useToolboxClock({ playing: true });
-  return <ToolboxEffect time={time} width={size} height={size} canvasRef={canvasRef} />;
+// The playing clock, for scripts: window.__toolboxHarness.clock().
+let liveClock: ToolboxClock | null = null;
+
+// The live master clock. Freezing swaps this component out for <Frozen>
+// (a capture owns its own shared value) rather than pausing it.
+function Playing({
+  size,
+  canvasRef,
+  chrome,
+}: {
+  size: number;
+  canvasRef: React.RefObject<CanvasRef | null>;
+  chrome: boolean;
+}) {
+  const clock = useToolboxClock({ playing: true, loop: true, segment: webSegment });
+  useEffect(() => {
+    liveClock = clock;
+    return () => {
+      if (liveClock === clock) liveClock = null;
+    };
+  }, [clock]);
+  return (
+    <>
+      <ToolboxEffect time={clock.time} width={size} height={size} canvasRef={canvasRef} />
+      {chrome && <ClockControls clock={clock} />}
+    </>
+  );
+}
+
+// The clock's controls as a button row: loop a segment, the whole timeline,
+// pause / play. The highlight is this row's own state (shared values don't
+// re-render React).
+function ClockControls({ clock }: { clock: ToolboxClock }) {
+  const [active, setActive] = useState<SegmentName | "all">(webSegment ?? "all");
+  const [paused, setPaused] = useState(false);
+  const button = (key: string, label: string, on: boolean, onPress: () => void) => (
+    <Pressable key={key} onPress={onPress} style={[styles.button, on && styles.buttonOn]}>
+      <Text style={[styles.buttonText, on && styles.buttonTextOn]}>{label}</Text>
+    </Pressable>
+  );
+  return (
+    <View style={styles.controls}>
+      {button("all", "all", active === "all", () => {
+        clock.playAll({ loop: true });
+        setActive("all");
+        setPaused(false);
+      })}
+      {SEGMENT_NAMES.map((name) => {
+        const [a, b] = SEGMENTS[name];
+        return button(name, `${name} ${a}–${b}s`, active === name, () => {
+          clock.loopSegment(name);
+          setActive(name);
+          setPaused(false);
+        });
+      })}
+      {button("pause", paused ? "play" : "pause", paused, () => {
+        if (paused) clock.play();
+        else clock.pause();
+        setPaused(!paused);
+      })}
+    </View>
+  );
 }
 
 function Frozen({
@@ -92,7 +157,10 @@ export default function App() {
     w.__toolboxHarness = {
       name: NAME,
       timeline: TIMELINE,
+      segments: SEGMENTS,
       size: initialSize,
+      // The live clock (null while frozen) — its shared values and controls.
+      clock: () => liveClock,
       async capture(t: number) {
         const s = await capture.current(t);
         return { width: s.width, height: s.height, rgba: toBase64(s.rgba), attempts: s.attempts };
@@ -156,11 +224,14 @@ export default function App() {
       {frozen ? (
         <Frozen time={frozenTime} size={sizePt} canvasRef={canvasRef} />
       ) : (
-        <Playing size={sizePt} canvasRef={canvasRef} />
+        <Playing size={sizePt} canvasRef={canvasRef} chrome={chrome} />
       )}
       {chrome && (
         <Text style={styles.label}>
-          {NAME} · toolbox export · {TIMELINE.durationSec}s loop
+          {NAME} · toolbox export ·{" "}
+          {webSegment
+            ? `segment "${webSegment}" [${SEGMENTS[webSegment][0]}–${SEGMENTS[webSegment][1]}s) looping`
+            : `${TIMELINE.durationSec}s loop`}
         </Text>
       )}
     </View>
@@ -170,4 +241,9 @@ export default function App() {
 const styles = StyleSheet.create({
   root: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#111" },
   label: { color: "#bbb", marginTop: 12, fontSize: 12 },
+  controls: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 6, marginTop: 12 },
+  button: { borderWidth: 1, borderColor: "#555", borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
+  buttonOn: { borderColor: "#a78bfa", backgroundColor: "#2a1f4a" },
+  buttonText: { color: "#bbb", fontSize: 12 },
+  buttonTextOn: { color: "#c4b5fd" },
 });

@@ -25,6 +25,11 @@ iPhone, a 2.625× emulator and the 1× web page alike.
 
 - **Web**: `?t=<sec>&size=<px>&chrome=0`, then
   `window.__toolboxHarness.capture(t)` (used by `npm run parity:skia`).
+  `?segment=<name>` loops one of the bundle's SEGMENTS (the composition's
+  timeline markers) instead of the whole timeline; with the chrome on, a
+  button row drives the clock (`loopSegment` / `playAll` / `pause` /
+  `play`), and `window.__toolboxHarness.clock()` is the live
+  `useToolboxClock()` object.
 - **Native**: deep links (scheme `toolboxharness`, set in `app.json`):
   - `toolboxharness://hello?run=<id>&host=<url>` → `POST <host>/hello`
   - `toolboxharness://capture?t=<sec>&frame=<n>&size=<px>&run=<id>&host=<url>`

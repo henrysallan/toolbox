@@ -9,7 +9,8 @@
 //      skia-harness/node_modules is absent, as in CI; SKIA_HARNESS_REQUIRED=1
 //      turns the skip into a failure).
 // The pattern is check-skia-scene-export.mts §7–8, factored so each family
-// gate stays short. Call registerAllNodes() before using it.
+// gate stays short. Call registerAllNodes() before using it. Step 3 alone,
+// for any bundle kind (an SkSL Shader bundle too), is typecheckBundle().
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -18,6 +19,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { ImageFilterIR, PaintIR, ShaderIR, SkiaNode, SkslProgramIR } from "@/engine/skia/scene-ir";
+import type { TimelineMarker } from "@/lib/timeline-markers";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -27,9 +29,11 @@ export interface ExportCheckOptions {
   canvasId: string;
   name?: string;
   canvas?: { width: number; height: number };
-  timeline?: { fps: number; ticksPerFrame: number; sceneDurationTicks: number };
+  timeline?: { fps: number; ticksPerFrame: number; sceneDurationTicks: number; markers?: readonly TimelineMarker[] };
   // Type-check the emitted bundle in skia-harness (slow: a few seconds).
   typecheck?: boolean;
+  // Files type-checked beside the bundle (e.g. an app screen using it).
+  extraFiles?: Record<string, string>;
   // Subfolder under skia-harness/src/__family_check__/ (unique per gate).
   slot: string;
 }
@@ -127,45 +131,56 @@ export async function checkExportable(o: ExportCheckOptions): Promise<ExportChec
     }
   }
 
-  if (o.typecheck && r.files) {
-    const harness = path.join(ROOT, "skia-harness");
-    if (!fs.existsSync(path.join(harness, "node_modules", "react-native-skia"))) {
-      result.typecheck = {
-        ran: false,
-        ok: !process.env.SKIA_HARNESS_REQUIRED,
-        output: "skia-harness/node_modules is not installed — type-check skipped (SKIA_HARNESS_REQUIRED=1 makes this a failure)",
+  if (o.typecheck && r.files) result.typecheck = typecheckBundle(r.files, o.slot, o.extraFiles);
+  return result;
+}
+
+// Type-check bundle files (any export kind) inside skia-harness against
+// react-native-skia 3.4.0 + Reanimated 4.7, under
+// skia-harness/src/__family_check__/<slot>/. `extra` adds files beside the
+// bundle (an app-side usage file that imports it). Skipped with a notice when
+// skia-harness/node_modules is absent; SKIA_HARNESS_REQUIRED=1 turns the
+// skip into a failure.
+export function typecheckBundle(
+  files: Record<string, string>,
+  slot: string,
+  extra: Record<string, string> = {}
+): ExportCheckResult["typecheck"] {
+  const harness = path.join(ROOT, "skia-harness");
+  if (!fs.existsSync(path.join(harness, "node_modules", "react-native-skia"))) {
+    return {
+      ran: false,
+      ok: !process.env.SKIA_HARNESS_REQUIRED,
+      output: "skia-harness/node_modules is not installed — type-check skipped (SKIA_HARNESS_REQUIRED=1 makes this a failure)",
+    };
+  }
+  const dir = path.join(harness, "src", "__family_check__", slot);
+  fs.rmSync(dir, { recursive: true, force: true });
+  try {
+    for (const [f, text] of Object.entries({ ...files, ...extra })) {
+      if (f.endsWith(".b64")) continue;
+      fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+      fs.writeFileSync(path.join(dir, f), text);
+    }
+    const own = path.join(harness, "node_modules", ".bin", "tsc");
+    const [cmd, args] = fs.existsSync(own) ? [own, ["--noEmit", "-p", harness]] : ["npx", ["tsc", "--noEmit", "-p", harness]];
+    try {
+      execFileSync(cmd, args, { cwd: ROOT, stdio: "pipe" });
+      return { ran: true, ok: true, output: "" };
+    } catch (e) {
+      const output = String((e as { stdout?: Buffer }).stdout ?? e);
+      return {
+        ran: true,
+        ok: false,
+        output: output.split("\n").filter((l) => l.includes("__family_check__") || l.includes("error")).slice(0, 12).join("\n"),
       };
-    } else {
-      const dir = path.join(harness, "src", "__family_check__", o.slot);
-      fs.rmSync(dir, { recursive: true, force: true });
-      try {
-        for (const [f, text] of Object.entries(r.files)) {
-          if (f.endsWith(".b64")) continue;
-          fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
-          fs.writeFileSync(path.join(dir, f), text);
-        }
-        const own = path.join(harness, "node_modules", ".bin", "tsc");
-        const [cmd, args] = fs.existsSync(own) ? [own, ["--noEmit", "-p", harness]] : ["npx", ["tsc", "--noEmit", "-p", harness]];
-        try {
-          execFileSync(cmd, args, { cwd: ROOT, stdio: "pipe" });
-          result.typecheck = { ran: true, ok: true, output: "" };
-        } catch (e) {
-          const output = String((e as { stdout?: Buffer }).stdout ?? e);
-          result.typecheck = {
-            ran: true,
-            ok: false,
-            output: output.split("\n").filter((l) => l.includes("__family_check__") || l.includes("error")).slice(0, 12).join("\n"),
-          };
-        }
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-        try {
-          fs.rmdirSync(path.join(harness, "src", "__family_check__"));
-        } catch {
-          /* other slots still present */
-        }
-      }
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    try {
+      fs.rmdirSync(path.join(harness, "src", "__family_check__"));
+    } catch {
+      /* other slots still present */
     }
   }
-  return result;
 }

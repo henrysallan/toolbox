@@ -157,7 +157,9 @@ import {
   PlayheadLine,
 } from "./timeline/PlayheadChrome";
 import { DiamondNav } from "./timeline/DiamondNav";
+import { MarkerRuler, type MarkerRulerHandle } from "./timeline/MarkerRuler";
 import { mergeLayerLabel } from "@/nodes/effect/merge";
+import { NO_MARKERS, type TimelineMarker } from "@/lib/timeline-markers";
 
 // ---------------------------------------------------------------------
 // Public types
@@ -219,6 +221,10 @@ export interface TrackEditorProps {
   onSaveEasing?(easing: SavedEasing): void;
   onRenameEasing?(id: string, name: string): void;
   onDeleteEasing?(id: string): void;
+  // The active composition's timeline markers, drawn on the ruler. Omit
+  // onMarkersChange for a read-only strip.
+  markers?: readonly TimelineMarker[];
+  onMarkersChange?(next: TimelineMarker[], label: string): void;
 }
 
 // ---------------------------------------------------------------------
@@ -393,7 +399,12 @@ export function TrackEditor(props: TrackEditorProps) {
     onSaveEasing,
     onRenameEasing,
     onDeleteEasing,
+    markers = NO_MARKERS,
+    onMarkersChange,
   } = props;
+  // Timeline markers on the ruler (timeline/MarkerRuler.tsx); the ruler's
+  // contextmenu goes through its handle.
+  const markerRulerRef = useRef<MarkerRulerHandle>(null);
   // Null in the main window; the child Window when this editor is
   // popped out (080226_panel-popout-windows.md §3). Every window-level
   // listener below resolves through it.
@@ -2655,6 +2666,7 @@ export function TrackEditor(props: TrackEditorProps) {
       >
         <div
           onPointerDown={onRulerPointerDown}
+          onContextMenu={(e) => markerRulerRef.current?.onRulerContextMenu(e)}
           onMouseMove={(e) => {
             // Measure against the lanes viewport so the preview lines up
             // with the playhead's coordinate space (shared column origin).
@@ -2681,6 +2693,16 @@ export function TrackEditor(props: TrackEditorProps) {
             timeline={timeline}
             majorFrames={rulerSpacing.majorFrames}
             minorFrames={rulerSpacing.minorFrames}
+          />
+          <MarkerRuler
+            ref={markerRulerRef}
+            markers={markers}
+            timeline={timeline}
+            tickToPx={tickToPx}
+            pxToTick={pxToTick}
+            width={lanesAreaWidth}
+            onChange={onMarkersChange}
+            onSeek={onScrub}
           />
           {/* Hover preview within the ruler — continues the lanes line up
               through the time markers. */}

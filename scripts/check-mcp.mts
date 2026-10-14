@@ -294,6 +294,7 @@ const EXPECTED_TOOLS = [
   "screenshot_strip",
   "search_source",
   "set_keyframes",
+  "set_markers",
   "set_param",
   "set_perf_capture",
   "tidy",
@@ -514,7 +515,10 @@ const bridge: BridgeClient = connectBridge({
       applied: (ops as unknown[]).length,
       dry_run,
     }),
-    transport: ({ action }) => ({ ok: true, action, playing: action === "play" }),
+    transport: ({ action, marker }) => ({ ok: true, action, marker, playing: action === "play" }),
+    // Timeline markers (101326 §3.5a): the vetting + segment derivation are
+    // check-skia-segments; here the list must cross the bridge intact.
+    set_markers: ({ markers }) => ({ ok: true, markers, segments: [] }),
     tidy: ({ nodes, scope }) => ({ ok: true, moved: Array.isArray(nodes) ? nodes.length : 0, scope: scope ?? "current" }),
     screenshot_strip: ({ frames }) => ({
       kind: "image",
@@ -730,6 +734,28 @@ check(
 
 const rt = await client.callTool({ name: "transport", arguments: { action: "play" } });
 check("transport round-trips", !isError(rt) && JSON.parse(textOf(rt)).playing === true);
+const rtm = await client.callTool({ name: "transport", arguments: { action: "seek", marker: "intro" } });
+check("transport forwards a marker name for seek", !isError(rtm) && JSON.parse(textOf(rtm)).marker === "intro", textOf(rtm).slice(0, 120));
+{
+  const list = [
+    { name: "intro", frame: 0 },
+    { name: "flash", frame: 150, duration: 30, id: "mk-flash" },
+  ];
+  const rsm = await client.callTool({ name: "set_markers", arguments: { markers: list } });
+  check(
+    "set_markers forwards the full list (duration + id intact)",
+    !isError(rsm) && JSON.stringify(JSON.parse(textOf(rsm)).markers) === JSON.stringify(list),
+    textOf(rsm).slice(0, 200)
+  );
+  const rsmBad = await client.callTool({ name: "set_markers", arguments: { markers: [{ frame: 3 }] } });
+  check("set_markers rejects a marker without a name at the server", isError(rsmBad), textOf(rsmBad).slice(0, 120));
+  const smd = tools.tools.find((t) => t.name === "set_markers")?.description ?? "";
+  check(
+    "set_markers docstring: whole-list replace, point vs ranged segments, SEGMENTS",
+    smd.includes("WHOLE") && smd.includes("duration") && smd.includes("SEGMENTS") && smd.includes("next"),
+    smd.slice(0, 160)
+  );
+}
 
 // --- 3c. perf tools (spec 080726_perf-profiler.md M2) ---
 const rpc = await client.callTool({

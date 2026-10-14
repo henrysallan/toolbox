@@ -17,6 +17,14 @@ import type { SkiaGraphFixture } from "../../skia/fixture";
 
 export const AURORA_TIMELINE = { fps: 60, ticksPerFrame: 1000, sceneDurationTicks: 300_000 };
 export const AURORA_FRAMES = [0, 45, 90, 120, 150, 200, 240, 299];
+// Timeline markers (M3 lane B) the harness bundles ship as SEGMENTS:
+// intro [0, 120) → loop [120, 300), plus a ranged "flash" [150, 180) over
+// the glow's pink peak. `?segment=loop` in skia-harness plays one.
+export const AURORA_MARKERS = [
+  { id: "mk-intro", name: "intro", frame: 0 },
+  { id: "mk-loop", name: "loop", frame: 120 },
+  { id: "mk-flash", name: "flash", frame: 150, duration: 30 },
+];
 
 type K = [frame: number, value: number | string, easing: EasingPreset];
 const block = (keys: K[]): KeyframeAnimationBlock => ({

@@ -5,20 +5,27 @@
 //   timeline.ts         track data + sampleUniforms(t, w, h) — a worklet
 //   toolbox-timeline.ts the keyframe evaluator (src/lib/skia-export/runtime)
 //   ToolboxEffect.tsx   <ToolboxEffect time={sharedValue} width height />
-//                       and useToolboxClock() — one master clock, so every
+//                       (re-exports useToolboxClock)
+//   toolbox-clock.ts    useToolboxClock() — one master clock, so every
 //                       uniform samples the same instant (no per-segment
-//                       withTiming chains to drift apart)
-//   manifest.json       uniforms, provenance, timing, versions
+//                       withTiming chains to drift apart) — plus its
+//                       controls and the composition's SEGMENTS / MARKERS
+//                       (segments.ts)
+//   manifest.json       uniforms, provenance, timing, segments, versions
 //   index.ts            barrel
 //
 // The runtime source is passed in (the CLI reads it from disk) so this
 // module stays importable from the editor bundle and the Node gates alike.
 
 import { CANVASKIT_VERSION } from "@/engine/skia/canvaskit";
-import { durationSecOf, timelineConstSource, toolboxClockSource } from "./emit-shared";
+import { CLOCK_BARREL, durationSecOf, timelineConstSource, toolboxClockSource } from "./emit-shared";
 import type { SkiaExportPlan } from "./plan";
+import { clockModuleSource, manifestSegments, NO_EXPORT_SEGMENTS, type ExportSegments } from "./segments";
 
-export const SKIA_EXPORT_FORMAT = 1;
+// 3: useToolboxClock() returns { time, …controls } (was the bare shared
+// value) and lives in toolbox-clock.ts with SEGMENTS / MARKERS. Shared with
+// the scene bundle's format: one number, one clock contract.
+export const SKIA_EXPORT_FORMAT = 3;
 // The React Native Skia release this export is checked against.
 export const RN_SKIA_VERSION = "3.4.0";
 
@@ -29,7 +36,13 @@ function ident(name: string): string {
   return `T_${name.replace(/[^A-Za-z0-9_]/g, "_")}`;
 }
 
-export function emitSkiaBundle(plan: SkiaExportPlan, runtimeSource: string): Record<string, string> {
+// `segments`: the composition's markers on this timeline (exportSegments);
+// default none — SEGMENTS ships empty.
+export function emitSkiaBundle(
+  plan: SkiaExportPlan,
+  runtimeSource: string,
+  segments: ExportSegments = NO_EXPORT_SEGMENTS
+): Record<string, string> {
   const files: Record<string, string> = {};
   const durationSec = durationSecOf(plan.timeline);
 
@@ -70,9 +83,9 @@ export function emitSkiaBundle(plan: SkiaExportPlan, runtimeSource: string): Rec
     HEADER("the React Native Skia component") +
     `\nimport React from "react";\n` +
     `import { Canvas, Fill, Shader, Skia, type CanvasRef } from "react-native-skia";\n` +
-    `import { useDerivedValue, useFrameCallback, useSharedValue, type SharedValue } from "react-native-reanimated";\n` +
+    `import { useDerivedValue, type SharedValue } from "react-native-reanimated";\n` +
     `import { SKSL } from "./effect";\n` +
-    `import { TIMELINE, sampleUniforms } from "./timeline";\n` +
+    `import { sampleUniforms } from "./timeline";\n` +
     `\nconst effect = Skia.RuntimeEffect.Make(SKSL);\n` +
     `if (!effect) throw new Error("toolbox export: the SkSL program did not compile on this Skia build");\n` +
     `\nexport interface ToolboxEffectProps {\n  // Seconds on the toolbox timeline (see useToolboxClock).\n  time: SharedValue<number>;\n  width: number;\n  height: number;\n  canvasRef?: React.Ref<CanvasRef>;\n}\n` +
@@ -80,6 +93,8 @@ export function emitSkiaBundle(plan: SkiaExportPlan, runtimeSource: string): Rec
     `  const uniforms = useDerivedValue(() => sampleUniforms(time.value, width, height));\n` +
     `  return (\n    <Canvas ref={canvasRef} style={{ width, height }}>\n      <Fill>\n        <Shader source={effect!} uniforms={uniforms} />\n      </Fill>\n    </Canvas>\n  );\n}\n` +
     toolboxClockSource();
+
+  files["toolbox-clock.ts"] = clockModuleSource(plan.timeline, segments, HEADER("the playback clock and its segments"));
 
   files["manifest.json"] =
     JSON.stringify(
@@ -91,6 +106,8 @@ export function emitSkiaBundle(plan: SkiaExportPlan, runtimeSource: string): Rec
         reactNativeSkia: RN_SKIA_VERSION,
         canvas: plan.canvas,
         timeline: { ...plan.timeline, durationSec },
+        // Named segments (toolbox-clock.ts SEGMENTS) and marker times.
+        ...manifestSegments(segments),
         usesTime: plan.usesTime,
         uniforms: plan.uniforms.map((u) => ({
           name: u.name,
@@ -107,7 +124,8 @@ export function emitSkiaBundle(plan: SkiaExportPlan, runtimeSource: string): Rec
 
   files["index.ts"] =
     HEADER("barrel") +
-    `\nexport { ToolboxEffect, useToolboxClock } from "./ToolboxEffect";\n` +
+    `\nexport { ToolboxEffect } from "./ToolboxEffect";\n` +
+    CLOCK_BARREL +
     `export { SKSL, NAME } from "./effect";\n` +
     `export { TIMELINE, CANVAS, sampleUniforms } from "./timeline";\n`;
 

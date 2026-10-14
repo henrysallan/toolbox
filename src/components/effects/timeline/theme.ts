@@ -73,6 +73,16 @@ export const COLOR_SEGMENT = "var(--tb-n-8)";
 export const COLOR_SEGMENT_HOLD = "var(--tb-n-10)";
 export const COLOR_SEGMENT_HOVER = "var(--tb-n-11)";
 
+// Timeline markers on the ruler (timeline/MarkerRuler.tsx). Violet, so a
+// marker reads apart from the amber keyframes, cyan clips and green
+// playhead; the tint tokens flip with the theme (dark chip + light text in
+// dark mode, the reverse in light).
+export const COLOR_MARKER = "var(--tb-a-violet-400)";
+export const COLOR_MARKER_CHIP = "var(--tb-t-violet-d-0)";
+export const COLOR_MARKER_TEXT = "var(--tb-t-violet-l-1)";
+export const COLOR_MARKER_SPAN = "color-mix(in srgb, var(--tb-a-violet-400) 18%, transparent)";
+export const COLOR_MARKER_SPAN_ALT = "color-mix(in srgb, var(--tb-a-violet-400) 55%, transparent)";
+
 // Metrics shared by the tick-based editors.
 export const RULER_HEIGHT = 24;
 // Lateral slop for grabbing a keyframe diamond.

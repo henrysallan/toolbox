@@ -479,6 +479,30 @@ that pair). Offline node tests should push each input through
   the Text pairs need Chromium's text, so they only run there — and on
   macOS CoreText draws the Text node's glyphs ~10 % heavier than
   CanvasKit's FreeType: compare text edges, not ink mass).
+- `check-skia-segments` — timeline markers → named segments → the exported
+  clock (101326_skia-target.md §3.5a, M3). The marker model
+  (`lib/timeline-markers.ts`: save sanitizer, ruler edits, the strict
+  `set_markers` boundary), segment derivation (a point marker runs to the
+  next point marker or the scene end; a ranged marker is its own span and
+  doesn't cut the chain; duplicates / out-of-range / clamped / empty are
+  issues, never throws), persistence on `SavedComposition.markers` (round
+  trip, repair on load, an older build's resave keeps them — why there is
+  no schema bump), and `SEGMENTS` / `MARKERS` in both bundle kinds plus the
+  late-layer shift. Then it RUNS the emitted `toolbox-clock.ts` on fake
+  frames twice: as TypeScript with mocked hooks, and as the worklets Babel
+  plugin's output on an emulated UI runtime (each worklet rebuilt from its
+  code string with only its closure — a control that reaches a JS function
+  throws there as on a phone). Both runs prove frame-exact wraps at segment
+  boundaries over many loops, play-once holds, `thenLoop` chaining,
+  seek / pause / play semantics, and that the whole-timeline loop is
+  bit-identical to the format-2 clock. Finally both bundles type-check in
+  skia-harness beside an app screen using every control (an unknown
+  segment name must be a compile error). The (ui) run and the type-check
+  skip without `skia-harness/node_modules` (`SKIA_HARNESS_REQUIRED=1` fails
+  instead). That real Reanimated plays it is the harness: the web build's
+  `?segment=<name>` loops a segment, its chrome row drives the controls,
+  and `window.__toolboxHarness.clock()` exposes the live clock. The ruler
+  UI itself (drag / rename / context menus) is a live-app question.
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run compare:skia -- --a <fixture>:<node>[:aux:<name>] --b …` —
     renders two nodes of `scripts/fixtures/skia/<fixture>-graph.ts`

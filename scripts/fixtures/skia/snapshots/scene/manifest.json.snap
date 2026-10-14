@@ -1,5 +1,5 @@
 {
-  "format": 2,
+  "format": 3,
   "kind": "scene",
   "name": "Scene fixture",
   "exportedBy": "toolbox Skia Canvas",
@@ -17,6 +17,8 @@
     "durationSec": 2,
     "frames": 61
   },
+  "segments": [],
+  "markers": [],
   "sampledFrames": 61,
   "webPlayable": false,
   "bindCounts": {

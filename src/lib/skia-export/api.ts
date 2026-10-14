@@ -10,11 +10,13 @@
 import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { RGBA, SkiaScene } from "@/engine/skia/scene-ir";
 import { hexToRgba01 } from "@/engine/spline-fill";
+import type { TimelineMarker } from "@/lib/timeline-markers";
 import { emitSkiaBundle } from "./emit";
 import { planSkiaExport } from "./plan";
 import { emitSceneBundle } from "./scene-emit";
 import { planSceneExport, type PlannedBind } from "./scene-plan";
 import { makeSceneSampler, SKIA_CANVAS_TYPE } from "./scene-sample";
+import { exportSegments } from "./segments";
 
 export interface SkiaExportRequest {
   // The FLATTENED graph the evaluator sees (group/layer shells dissolved).
@@ -23,7 +25,10 @@ export interface SkiaExportRequest {
   targetId: string;
   name: string;
   canvas: { width: number; height: number };
-  timeline: { fps: number; ticksPerFrame: number; sceneDurationTicks: number };
+  // `markers` (additive, M3): the composition's timeline markers in frames
+  // on the TARGET's clock (editor.ts shifts them for a late layer). They
+  // become the bundle's SEGMENTS / MARKERS (segments.ts); absent = none.
+  timeline: { fps: number; ticksPerFrame: number; sceneDurationTicks: number; markers?: readonly TimelineMarker[] };
   // src/lib/skia-export/runtime/toolbox-timeline.ts, verbatim. The CLI reads
   // it from disk; the editor imports the generated string module.
   runtimeSource: string;
@@ -61,7 +66,13 @@ export function exportSkiaScene(
     sampleAt: opts.sampleAt,
   });
   if (!plan) return { files: null, problems, warnings: [], binds };
-  return { files: emitSceneBundle(plan, opts.runtimeSource), problems: [], warnings: plan.warnings, binds };
+  const segments = exportSegments(opts.timeline.markers, opts.timeline);
+  return {
+    files: emitSceneBundle(plan, opts.runtimeSource, segments),
+    problems: [],
+    warnings: [...plan.warnings, ...segments.warnings],
+    binds,
+  };
 }
 
 export function exportSkia(req: SkiaExportRequest): SkiaExportResult {
@@ -75,7 +86,12 @@ export function exportSkia(req: SkiaExportRequest): SkiaExportResult {
         timeline: req.timeline,
       });
       if (!plan) return { files: null, problems, warnings: [] };
-      return { files: emitSkiaBundle(plan, req.runtimeSource), problems: [], warnings: plan.warnings };
+      const segments = exportSegments(req.timeline.markers, req.timeline);
+      return {
+        files: emitSkiaBundle(plan, req.runtimeSource, segments),
+        problems: [],
+        warnings: [...plan.warnings, ...segments.warnings],
+      };
     }
     case SKIA_CANVAS_TYPE: {
       // The canvas's own background (skia-canvas: background_on + an alpha

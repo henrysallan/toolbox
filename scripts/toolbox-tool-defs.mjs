@@ -105,7 +105,12 @@ export const BRIDGED_TOOLS = [
       "in `scope` unless you pass `scope=` — use parentScope when replacing " +
       "a group you're currently inside. `scopeTarget: \"skia\"` means the " +
       "scope sits inside a Skia layer: build there only with " +
-      "get_catalog({ target: \"skia\" }) types.",
+      "get_catalog({ target: \"skia\" }) types. `markers` are the active " +
+      "composition's timeline markers ({id, name, frame, duration?, " +
+      "seconds}) and `segments` the named spans they make ({name, " +
+      "startFrame, endFrame, start, end} — end exclusive; the React Native " +
+      "Skia export's SEGMENTS); `markerIssues` lists problems such as a " +
+      "marker past the scene end. Edit them with set_markers.",
     inputSchema: {},
   },
   {
@@ -663,12 +668,16 @@ export const BRIDGED_TOOLS = [
     resultKind: "text",
     timeoutMs: CMD_TIMEOUT_MS,
     description:
-      "Control playback: play, pause, or seek to a frame. Seek while " +
-      "paused re-renders immediately — pair with screenshot to inspect " +
-      "specific moments.",
+      "Control playback: play, pause, or seek to a frame (or to a timeline " +
+      "marker by name). Seek while paused re-renders immediately — pair " +
+      "with screenshot to inspect specific moments.",
     inputSchema: {
       action: z.enum(["play", "pause", "seek"]),
       frame: z.number().optional().describe("Target frame (seek only)."),
+      marker: z
+        .string()
+        .optional()
+        .describe("Seek to this timeline marker's frame instead (seek only; names from get_status `markers`)."),
     },
   },
   {
@@ -842,7 +851,8 @@ export const BRIDGED_TOOLS = [
       "nothing is written by the editor; YOU write them. Same `target` as " +
       "plan_skia_export. Result: `files` (relative path → contents: the " +
       "SkSL program, the timeline worklet, toolbox-timeline.ts runtime, the " +
-      "component, manifest.json, index.ts), `folder` (a suggested folder " +
+      "component, toolbox-clock.ts (useToolboxClock + the composition's " +
+      "SEGMENTS / MARKERS), manifest.json, index.ts), `folder` (a suggested folder " +
       "name), `warnings`, and a `note`. Write every file verbatim into one " +
       "folder of the app; `assets/*.b64` entries are base64 — decode to " +
       "binary and drop the suffix. Fails with the plan's problems when the " +
@@ -852,6 +862,39 @@ export const BRIDGED_TOOLS = [
         .string()
         .optional()
         .describe("SkSL Shader / Skia Canvas node id, or a Skia layer id. Default: the selected node."),
+    },
+  },
+  // --- Timeline markers (spec 101326_skia-target.md §3.5a, M3) --------------
+  {
+    name: "set_markers",
+    mutates: true,
+    resultKind: "text",
+    timeoutMs: CMD_TIMEOUT_MS,
+    description:
+      "Replace the active composition's timeline markers — the named " +
+      "segments a React Native Skia export plays (SEGMENTS; app code calls " +
+      "clock.playSegment(\"intro\") / loopSegment(\"idle\")). Pass the WHOLE " +
+      "list: markers you omit are deleted, [] clears them; keep a marker's " +
+      "`id` (from get_status `markers`) to update it in place. A marker is " +
+      "{name, frame, duration?}: `frame` a whole frame ≥ 0, `name` unique. " +
+      "A point marker (no duration) starts a segment that runs to the next " +
+      "point marker, or to the scene end — e.g. intro@0 + idle@72 make intro " +
+      "[0, 72) and idle [72, end). A marker with `duration` frames is its " +
+      "own range [frame, frame + duration) and doesn't cut the others. One " +
+      "undo step. Returns `markers`, the derived `segments` (frames and " +
+      "seconds, end exclusive) and `issues` (e.g. a marker past the scene " +
+      "end has no segment).",
+    inputSchema: {
+      markers: z
+        .array(
+          z.object({
+            name: z.string(),
+            frame: z.number(),
+            duration: z.number().optional(),
+            id: z.string().optional(),
+          })
+        )
+        .describe("The full marker list, any order."),
     },
   },
 ];

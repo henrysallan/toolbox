@@ -92,6 +92,12 @@ import {
 } from "@/lib/glsl-translation";
 import { enclosingSkiaLayer, type SkiaLayerRef } from "@/engine/skia/layer-target";
 import type { SkiaExportEnv } from "@/lib/skia-export/editor";
+import {
+  describeMarkers,
+  vetMarkersInput,
+  type McpMarkerReport,
+  type TimelineMarker,
+} from "@/lib/timeline-markers";
 
 // Mutation log + graph snapshots so a timed-out tool call isn't a black
 // box: get_recent_edits (keyed by the summary the agent already sent) and
@@ -157,10 +163,20 @@ export interface McpStatus {
   // "skia" when `scope` sits inside a Skia layer: insert_recipe / edit_group
   // there accept only get_catalog({ target: "skia" }) types.
   scopeTarget?: "default" | "skia";
+  // The active composition's timeline markers and the named segments they
+  // make (describeMarkers — the React Native Skia export's SEGMENTS), plus
+  // any marker issues (a repeated name, a marker past the scene end).
+  markers?: McpMarkerReport["markers"];
+  segments?: McpMarkerReport["segments"];
+  markerIssues?: string[];
 }
 
 export interface McpHandlerDeps {
   status: McpStatus;
+  // The active composition's timeline markers, and the one-undo-step setter
+  // set_markers writes through. Optional: hosts without a timeline omit them.
+  getMarkers?: () => readonly TimelineMarker[];
+  setMarkers?: (next: TimelineMarker[]) => void;
   nodesRef: MutableRefObject<GraphNode[]>;
   edgesRef: MutableRefObject<Edge[]>;
   canvasRef: MutableRefObject<HTMLCanvasElement | null>;
@@ -383,6 +399,7 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
     canvas: { width: deps.status.canvasWidth, height: deps.status.canvasHeight },
     fps: deps.status.fps,
     frames: deps.status.loopFrames,
+    markers: deps.getMarkers?.(),
   });
   const skiaTargetId = (raw: unknown): string => {
     const id = raw != null && String(raw).trim() ? String(raw).trim() : deps.status.selectedNodeId;
@@ -1852,14 +1869,41 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       };
     },
 
+    // ---- timeline markers (101326_skia-target.md §3.5a) -------------------
+    // The whole list replaces the active composition's; vetMarkersInput is
+    // the strict boundary (whole frames, unique names). One undo step.
+    set_markers: ({ markers }) => {
+      if (!deps.getMarkers || !deps.setMarkers)
+        throw new Error("This editor can't edit timeline markers.");
+      const vet = vetMarkersInput(markers, deps.getMarkers());
+      if (!vet.ok) throw invalid("Markers", vet.errors);
+      deps.setMarkers(vet.markers);
+      const n = vet.markers.length;
+      deps.flashToast(n ? `Claude: set ${n} timeline marker${n === 1 ? "" : "s"}` : "Claude: cleared the timeline markers");
+      bumpGraphRev();
+      logMutation({ cmd: "set_markers", summary: `${n} marker${n === 1 ? "" : "s"}`, status: "ok" });
+      return { ok: true, rev: graphRev, ...describeMarkers(vet.markers, deps.status.fps, deps.status.loopFrames) };
+    },
+
     // ---- transport ---------------------------------------------------------
-    transport: ({ action, frame }) => {
+    transport: ({ action, frame: frameArg, marker }) => {
       const fps = deps.fpsRef.current;
+      let frame = frameArg;
+      if (action === "seek" && marker != null && String(marker).trim()) {
+        const name = String(marker).trim();
+        const all = deps.getMarkers?.() ?? [];
+        const hit = all.find((m) => m.name === name);
+        if (!hit)
+          throw new Error(
+            `No timeline marker "${name}".${all.length ? ` Markers: ${all.map((m) => m.name).join(", ")}.` : " This composition has no markers (set_markers adds them)."}`
+          );
+        frame = hit.frame;
+      }
       if (action === "play") deps.setPlaying(true);
       else if (action === "pause") deps.setPlaying(false);
       else if (action === "seek") {
         if (typeof frame !== "number" || !Number.isFinite(frame))
-          throw new Error("`seek` needs a numeric `frame`.");
+          throw new Error("`seek` needs a numeric `frame` (or a `marker` name).");
         deps.setTime(Math.max(0, frame) / fps);
       } else throw new Error(`Unknown action "${action}" — use play, pause, or seek.`);
       return {
