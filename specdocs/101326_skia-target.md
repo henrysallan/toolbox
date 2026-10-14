@@ -822,7 +822,8 @@ Frozen contracts (2026-10-13, additive changes only):
   Reanimated-native transitions, spring easing. **Done 2026-10-14 (§2d)**,
   with P3 colour management (§5.5).
 - **M4 — completion.** Filters/`RuntimeShader` stages, text, Atlas, the
-  `bake` class, procedural drivers (Expression → worklet).
+  `bake` class, procedural drivers (Expression → worklet). Wave 3 lanes
+  F, S, I, T, A, P, B, C (§7), launched 2026-10-14.
 - **M5 — polish.** Cost readout, docs pages, the `graph-to-sksl` skill.
 
 ## 7. Parallelisation plan (subagent lanes)
@@ -876,6 +877,40 @@ concurrent:
    generators as derived binds.
 8. **vector modifiers (native):** stroke/fill paint, trim-path, round-corners,
    dash, spline-boolean, transform, gradient fill.
+
+### Wave 3 (M4), launched 2026-10-14
+
+Starting point (inventory, `main` at 89b6cfd):
+- The scene IR, `scene-render.ts` and `scene-emit.ts` already handle these, but no node produces them:
+  - image filters: blur, shadow, offset, morphology, displacement, runtime;
+  - colour filters: matrix, blend, lerp;
+  - mask filters, `image` draws, `atlas`.
+- Assets are bundled only when their URL is a `data:` URL. Project media and the Geist font ship as editor URLs listed in the manifest.
+- The SkSL Shader planner refuses wired `iImage1..4`, ramp / curve channels, and any driver other than Animated Value / Color / Constant.
+- Scene binds driven by LFO / Expression / Math fall back to a per-frame sampled table.
+
+Lane conventions are as in Waves 1–2, with these additions:
+- Each lane branches from **`main`**: run `git reset --hard main` in the fresh worktree first.
+- Each lane rebases onto `main` before reporting.
+- Every new runtime program goes through `tbx.color.cm` (§5.5).
+- Every emitted worklet calls only functions declared above it (§2d).
+
+| lane | owns | done when |
+|---|---|---|
+| **F Filters** (`filter` class) | `skia-blur` (Gaussian → Group `layer` blur; other modes refused), `skia-bloom` (threshold RuntimeShader + Blur + Blend plus), `skia-grain` (RuntimeShader over `content`), `skia-drop-shadow`, `skia-morphology`, `skia-color-matrix`, `skia-sksl-filter` (author SkSL over `content` — the RuntimeShader stage as a node); liquid-glass / lens-flare assessed, ported or refused with reasons | each mirror MATCHes its GL node in `compare:skia`; `check:skia-filters`; exports via `checkExportable` |
+| **S Stage splitting** | the cost model's over-budget path: split a fused program at the gather into a RuntimeShader stage over a `Group` (§3.3); Flow Blur / Kuwahara / Sharpen-over-noise export; `tbx.warp.texel` + `tbx.gather.edge` → one helper | split exports draw the same pixels as the unsplit preview (`compare:skia`, parity); `check:skia-split` |
+| **I Images + assets** | `skia-image` (image-source → `image` draw, fit modes); image leaves in fused programs (`ImageShader` child); SkSL Shader `iImage1..4` export (static images: bundled asset + `useImage`); ramp / curve channels → exact 256×1 LUT `ImageShader` children (§3.8.2); the **async asset pipeline**: the editor / MCP export resolves every `AssetIR.url` to bytes through `SkiaExportEnv.resolveAsset?(asset) → Promise<Uint8Array \| null>` (default: fetch) and ships them under `assets/` (fonts included) | an exported bundle has every asset's bytes; `check:skia-assets`; parity slot with an image |
+| **T Text** | additive Text IR: `lineHeight`, vertical anchor; the Text node's font choice → a font asset (beware the curated-font fallback trap: confirm the real face loaded); paragraphs inherit group blendMode; `leading` | `compare:skia` vs the Text node per option; `check:skia-text` |
+| **A Atlas** | `skia-copy-to-points`: points + an instance → `atlas` (sprite from an image asset or a rasterised Skia sub-scene; research RN Skia 3.4's texture APIs) or N `Group` copies when N is small (lane measures which is exact); xforms static / track / sampled | MATCH vs Copy to Points; `check:skia-atlas`; parity slot |
+| **P Procedural drivers** | compile Expression (its JS math subset, deterministic `random`), LFO, Math, Wave, Scene Time, Random into worklets (worklet / native modes) and SkSL (baked mode); SkSL Shader channels accept them; scene binds get an `expr` plan kind instead of a sampled table; unsupported syntax refuses (scenes keep sampling) | worklet == engine evaluation bit-for-bit on fixtures; baked ≤ 1e-6; `check:skia-procedural` |
+| **B Bake class** | `skia-bake`: an engine image wired into a Skia layer, rendered by the editor at export and shipped as an asset — static → one PNG, animated → a frame sprite sheet played by time (cap and fps reported); the preview draws the live image; assets come through lane I's `resolveAsset` hook (`bake:<nodeId>` URLs) | an exported bake replays the editor's frames (parity); `check:skia-bake` |
+| **C Carried polish** | P3 residuals: native gradients → colour-managed programs where they shift; native group blend modes on P3 measured and lowered or documented; SkSL Shader `iImageN` passed to helper functions converted; Merge (Skia) grow-on-wire / "+" layer; native mode `from: "current"` colours + harness segment capture | `check:skia-color-management` covers gradients and blends; each item's own check |
+
+Shared seams are integrated serially by the integrator:
+- `editor.ts` export flow: lane I makes it async; lanes B and T plug in.
+- The scene-emit asset section: lanes I, T, A, B.
+- `plan.ts` refusals: lanes I and P.
+- `scene-render.ts` / `scene-emit.ts`: additive per-kind sections.
 
 ### Not parallelisable
 
