@@ -40,10 +40,10 @@ export interface ToolboxSceneProps extends ToolboxSceneGroupProps {
 // drop it into your own <Canvas> to stack it with other content.
 export function ToolboxSceneGroup({ time, width, height }: ToolboxSceneGroupProps) {
   const B = useDerivedValue(() => sampleBinds(time.value));
-  const D0 = useDerivedValue((): Uniforms => ({ iResolution: [512, 512, 1], iTime: B.value.b3, nskn_scale: B.value.b4, nskn_octaves: 4, nskn_persistence: 0.5, nskn_lacunarity: 2, nskn_offset_x: B.value.b8, nskn_offset_y: 0, nskn_seed: 0, nskn_w: 0, nskn_contrast: B.value.b12, nskn_color_a: [0, 0, 0, 1], nskn_color_b: [1, 1, 1, 1], nskn_alpha: 1, nskn_opacity: 1, nskr_stops_pos: [0, 0.45, 0.75, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], nskr_stops_color: B.value.b18, nskr_stops_count: 4, nskr_offset: 0, nskr_interpolation: 0, nskr_space: 2 }));
+  const D0 = useDerivedValue((): Uniforms => ({ iResolution: [512, 512, 1], iTime: B.value.b3, nskn_scale: B.value.b4, nskn_octaves: 4, nskn_persistence: 0.5, nskn_lacunarity: 2, nskn_offset_x: B.value.b8, nskn_offset_y: 0, nskn_seed: 0, nskn_w: 0, nskn_contrast: B.value.b12, nskn_color_a: [0, 0, 0, 1], nskn_color_b: [1, 1, 1, 1], nskn_alpha: 1, nskn_opacity: 1, nskr_stops_pos: [0, 0.45, 0.75, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], nskr_stops_color: B.value.b18, nskr_stops_count: 4, nskr_stops_work: B.value.b20, nskr_stops_tan: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], nskr_offset: 0, nskr_interpolation: 0, nskr_space: 2 }));
   return (
     <Group transform={[{ scaleX: width / CANVAS.width }, { scaleY: height / CANVAS.height }]}>
-      <Fill color={[1, 1, 1, 1]} opacity={1} blendMode="srcOver">
+      <Fill color={[1, 1, 1, 1]} opacity={1}>
         <Shader source={EFFECT_0} uniforms={D0} />
       </Fill>
     </Group>

@@ -18,11 +18,12 @@
     "frames": 301
   },
   "sampledFrames": 301,
+  "webPlayable": true,
   "bindCounts": {
-    "static": 18,
+    "static": 19,
     "clock": 1,
     "track": 3,
-    "sampled": 1
+    "sampled": 2
   },
   "binds": [
     {
@@ -63,6 +64,15 @@
       "sample": "b18",
       "role": "array",
       "from": "derived from skr.stops (animated: skr.stops); sampled 301 frames",
+      "distinct": 95
+    },
+    {
+      "id": "b20",
+      "path": "root.paint.shader.program.uniforms.nskr_stops_work",
+      "kind": "sampled",
+      "sample": "b20",
+      "role": "array",
+      "from": "derived from skr.stops, skr.interpolation, skr.space (animated: skr.stops); sampled 301 frames",
       "distinct": 95
     }
   ],

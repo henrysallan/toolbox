@@ -255,6 +255,8 @@ const call = (fn: string, node: string, params: Record<string, any>, inputs: Rec
   // unique across the library.
   const order = lib.resolveHelpers(helpers.map((h) => h.id)).order;
   const all = [
+    // Functions with usesTime read the fused program's iTime uniform.
+    "uniform float iTime;",
     "float4 tbx_gate_gather(float2 uv) { return float4(uv, 0.0, 1.0); }",
     ...order.map((h) => h.source),
     ...fns.map((f) => f.source.replace(/\$[A-Za-z_]\w*\s*\(/g, "tbx_gate_gather(")),
@@ -591,7 +593,9 @@ const noiseCall = (node = "nz", over: Record<string, any> = {}) => call("tbx.noi
     check(`${type}: every lib param is fed by a same-named param (or the stops split)`, unfed.length === 0, unfed.join());
   }
   const noise = getNodeDef("skia-noise")!;
-  check("skia-noise rejects other algorithms and the looping evolution", noise.validateParams!({ type: "perlin" }).length === 1 && noise.validateParams!({ type: "simplex", animated: true }).length === 1 && noise.validateParams!({ type: "simplex" }).length === 0);
+  // Every algorithm and the looping evolution are ported (noise family,
+  // check:skia-noise); a type outside the enum is still refused.
+  check("skia-noise accepts every algorithm and the looping evolution, rejects unknown types", noise.validateParams!({ type: "voronoi" }).length === 1 && noise.validateParams!({ type: "perlin", animated: true }).length === 0 && noise.validateParams!({ type: "simplex" }).length === 0);
   const ramp = getNodeDef("skia-color-ramp")!;
   check("skia-color-ramp accepts every interpolation and space", [...COLOR_RAMP_INTERP_OPTIONS.map((o) => ({ interpolation: o })), ...COLOR_RAMP_SPACE_OPTIONS.map((o) => ({ space: o }))].every((p) => ramp.validateParams!(p).length === 0));
   const warn = console.warn;

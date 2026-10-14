@@ -354,6 +354,9 @@ import { skiaDitherNode } from "./skia/dither";
 import { skiaCircleNode } from "./skia/circle";
 import { skiaRectNode } from "./skia/rect";
 import { skiaLineNode } from "./skia/line";
+import { skiaShapeCellsNode } from "./skia/shape-cells";
+import { skiaLyapunovNode } from "./skia/lyapunov";
+import { skiaTextureCoordinateNode } from "./skia/texture-coordinate";
 
 let registered = false;
 
@@ -746,5 +749,8 @@ export function registerAllNodes() {
   registerNode(skiaCircleNode);
   registerNode(skiaRectNode);
   registerNode(skiaLineNode);
+  registerNode(skiaShapeCellsNode);
+  registerNode(skiaLyapunovNode);
+  registerNode(skiaTextureCoordinateNode);
   registered = true;
 }
