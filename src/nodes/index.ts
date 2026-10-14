@@ -342,6 +342,15 @@ import { skiaBevelEmbossNode } from "./skia/bevel-emboss";
 import { skiaVectorFieldNode } from "./skia/vector-field";
 import { skiaFlowBlurNode } from "./skia/flow-blur";
 import { skiaKuwaharaNode } from "./skia/kuwahara";
+import { skiaSolidColorNode } from "./skia/solid-color";
+import { skiaGradientNode } from "./skia/gradient";
+import { skiaColorCorrectionNode } from "./skia/color-correction";
+import { skiaRgbCurvesNode } from "./skia/rgb-curves";
+import { skiaPosterizeNode } from "./skia/posterize";
+import { skiaThresholdNode } from "./skia/threshold";
+import { skiaColorSpaceTransformNode } from "./skia/color-space-transform";
+import { skiaKeyerNode } from "./skia/keyer";
+import { skiaDitherNode } from "./skia/dither";
 
 let registered = false;
 
@@ -722,5 +731,14 @@ export function registerAllNodes() {
   registerNode(skiaVectorFieldNode);
   registerNode(skiaFlowBlurNode);
   registerNode(skiaKuwaharaNode);
+  registerNode(skiaSolidColorNode);
+  registerNode(skiaGradientNode);
+  registerNode(skiaColorCorrectionNode);
+  registerNode(skiaRgbCurvesNode);
+  registerNode(skiaPosterizeNode);
+  registerNode(skiaThresholdNode);
+  registerNode(skiaColorSpaceTransformNode);
+  registerNode(skiaKeyerNode);
+  registerNode(skiaDitherNode);
   registered = true;
 }
