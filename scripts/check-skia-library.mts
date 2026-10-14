@@ -511,11 +511,14 @@ const noiseCall = (node = "nz", over: Record<string, any> = {}) => call("tbx.noi
     }
   }
   check(`Color Ramp (Skia) matches makeColorRampSampler (${interps.length} interpolations × ${spaces.length} spaces × 2 offsets)`, worst <= 1.5, `max |Δ| ${worst.toFixed(2)}/255${worst > 0 ? ` at ${worstAt}` : ""}`);
+  // The spline / smooth / OKLCH modes (Wave 2, color family) are verified
+  // against the sampler in check:skia-color.
+  const colorGate = new Set<string>(["cardinal", "monotone", "bspline", "smooth", "oklch", "oklch_long"]);
   const silent = [
-    ...COLOR_RAMP_INTERP_OPTIONS.filter((o) => interps.includes(o) === (def.validateParams!({ interpolation: o }).length > 0)),
-    ...COLOR_RAMP_SPACE_OPTIONS.filter((o) => spaces.includes(o) === (def.validateParams!({ space: o }).length > 0)),
+    ...COLOR_RAMP_INTERP_OPTIONS.filter((o) => (interps.includes(o) || colorGate.has(o)) === (def.validateParams!({ interpolation: o }).length > 0)),
+    ...COLOR_RAMP_SPACE_OPTIONS.filter((o) => (spaces.includes(o) || colorGate.has(o)) === (def.validateParams!({ space: o }).length > 0)),
   ];
-  check("every Color Ramp option is either verified above or reported unsupported", silent.length === 0, silent.join());
+  check("every Color Ramp option is either verified (here or in check:skia-color) or reported unsupported", silent.length === 0, silent.join());
   const edge = (st: unknown[]) => {
     const out = def.compute({ inputs: { image: { kind: "skia_shader", expr: call("test.uvx@1", "ux", {}) } } as any, auxIn: {}, params: { stops: st, offset: 0, interpolation: "linear", space: "srgb" }, ctx: ctxFor(8, 1), nodeId: "r", consumedOutputs: new Set(["primary"]) }) as any;
     return renderProgram(fused(out.primary.expr, 8, 1), 8, 1);
@@ -590,7 +593,7 @@ const noiseCall = (node = "nz", over: Record<string, any> = {}) => call("tbx.noi
   const noise = getNodeDef("skia-noise")!;
   check("skia-noise rejects other algorithms and the looping evolution", noise.validateParams!({ type: "perlin" }).length === 1 && noise.validateParams!({ type: "simplex", animated: true }).length === 1 && noise.validateParams!({ type: "simplex" }).length === 0);
   const ramp = getNodeDef("skia-color-ramp")!;
-  check("skia-color-ramp rejects unported interpolations and spaces", ramp.validateParams!({ interpolation: "monotone" }).length === 1 && ramp.validateParams!({ space: "oklch" }).length === 1 && ramp.validateParams!({ interpolation: "ease_out", space: "oklab" }).length === 0);
+  check("skia-color-ramp accepts every interpolation and space", [...COLOR_RAMP_INTERP_OPTIONS.map((o) => ({ interpolation: o })), ...COLOR_RAMP_SPACE_OPTIONS.map((o) => ({ space: o }))].every((p) => ramp.validateParams!(p).length === 0));
   const warn = console.warn;
   console.warn = () => {};
   const out = noise.compute({ inputs: {}, auxIn: {}, params: { ...defaults("skia-noise"), type: "voronoi" }, ctx: ctxFor(8, 8), nodeId: "n", consumedOutputs: new Set(["primary"]) }) as any;
