@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import { GATHER_EDGE, GATHER_ORIENTATION } from "@/engine/skia/library/helpers-gather";
+import { TEXEL_HELPER, GATHER_ORIENTATION } from "@/engine/skia/library/helpers-gather";
 import { flowBlurNode } from "../effect/flow-blur";
 import { wiredInputs, withWiring } from "./gather-wiring";
 
@@ -23,12 +23,12 @@ import { wiredInputs, withWiring } from "./gather-wiring";
 export const FLOW_BLUR_MAX_STEPS = 64;
 
 const FLOW_BLUR_SKSL = `float4 tbx_flow_blur_pm(float2 uv, float2 res) {
-  float4 c = $src(tbx_gather_edge_uv(uv, res));
+  float4 c = $src(tbx_texel_clamp(uv, res));
   return float4(c.rgb * c.a, c.a);
 }
 
 float2 tbx_flow_blur_dir(float2 uv, float2 res, int mode) {
-  float4 f = $field(tbx_gather_edge_uv(uv, res));
+  float4 f = $field(tbx_texel_clamp(uv, res));
   return mode == 1 ? 2.0 * (f.rg - float2(0.5)) : tbx_gather_tangent_decode(f);
 }
 
@@ -104,9 +104,13 @@ const base = defineSkslNode({
       { name: "src", mode: "gather", taps: "param" },
       { name: "field", mode: "gather", taps: "param" },
     ],
-    uses: [GATHER_EDGE, GATHER_ORIENTATION],
+    uses: [TEXEL_HELPER, GATHER_ORIENTATION],
     // Per evaluation at the default 16 samples: 33 steps of decode + weight.
     cost: 3,
+    // The cost readout at the current samples (estimateShaderCost
+    // `at: "params"`); the split decision stays on the declared numbers.
+    tapsAt: (p) => skiaFlowBlurTaps(p),
+    costAt: (p) => (3 * skiaFlowBlurTaps(p).src) / 33,
   },
   params: mirrorParams(flowBlurNode, ["length", "samples", "mode", "falloff", "smooth", "opacity"]),
   inputs: [

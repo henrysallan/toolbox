@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import { GATHER_EDGE, GATHER_ORIENTATION } from "@/engine/skia/library/helpers-gather";
+import { TEXEL_HELPER, GATHER_ORIENTATION } from "@/engine/skia/library/helpers-gather";
 import { kuwaharaNode } from "../effect/kuwahara";
 import { wiredInputs, withWiring } from "./gather-wiring";
 
@@ -63,7 +63,7 @@ const KUWAHARA_SKSL = `float4 tbx_kuwahara(float2 uv, float2 res, float radius, 
       float2 v = float2(dot(off, major) / a, dot(off, minor) / b);
       float r2 = dot(v, v);
       if (r2 > 1.0) continue;
-      float4 c = $src(tbx_gather_edge_uv(uv + off * invRes, res));
+      float4 c = $src(tbx_texel_clamp(uv + off * invRes, res));
       float4 pm = float4(c.rgb * c.a, c.a);
       float w[8];
       float zsum = 0.0;
@@ -103,7 +103,7 @@ const KUWAHARA_SKSL = `float4 tbx_kuwahara(float2 uv, float2 res, float radius, 
   }
   float4 c;
   if (accW > 1e-6) c = acc / accW;
-  else c = $src(tbx_gather_edge_uv(uv, res));
+  else c = $src(tbx_texel_clamp(uv, res));
   return float4(c.a > 1e-5 ? c.rgb / c.a : float3(0.0), c.a * clamp(opacity, 0.0, 1.0));
 }`;
 
@@ -151,10 +151,16 @@ const base = defineSkslNode({
       { name: "src", mode: "gather", taps: "param" },
       { name: "field", mode: "pure" },
     ],
-    uses: [GATHER_EDGE, GATHER_ORIENTATION],
+    uses: [TEXEL_HELPER, GATHER_ORIENTATION],
+    // Integer pixel offsets from the pixel, clamped: on texel centres.
+    gridTaps: ["src"],
     // Its own ALU at the default radius 6: 113 taps × ≈ 1.5 (8 sector
     // weights and accumulators per tap).
     cost: 170,
+    // The cost readout at the current radius (estimateShaderCost
+    // `at: "params"`); the split decision stays on the declared numbers.
+    tapsAt: (p) => skiaKuwaharaTaps(p),
+    costAt: (p) => 1.5 * skiaKuwaharaTaps(p).src,
   },
   params: mirrorParams(kuwaharaNode, ["radius", "mode", "sharpness", "hardness", "anisotropy", "min_coherence", "smooth", "opacity"]),
   inputs: [

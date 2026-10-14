@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import { GATHER_EDGE } from "@/engine/skia/library/helpers-gather";
+import { TEXEL_HELPER } from "@/engine/skia/library/helpers-gather";
 import { chromaticAberrationNode } from "../effect/chromatic-aberration";
 
 // Chromatic Aberration (Skia) — the Skia-layer port of Chromatic Aberration
@@ -12,7 +12,7 @@ import { chromaticAberrationNode } from "../effect/chromatic-aberration";
 
 const CA_SKSL = `float4 tbx_chromatic_aberration_samp(float2 uv, float2 res) {
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return float4(0.0);
-  return $src(tbx_gather_edge_uv(uv, res));
+  return $src(tbx_texel_clamp(uv, res));
 }
 
 float4 tbx_chromatic_aberration(float2 uv, float2 res, float amount, int mode, float2 center,
@@ -66,7 +66,7 @@ export const skiaChromaticAberrationNode = defineSkslNode({
       { name: "opacity", type: "float" },
     ],
     inputs: [{ name: "src", mode: "gather", taps: 3 }],
-    uses: [GATHER_EDGE],
+    uses: [TEXEL_HELPER],
     cost: 0.2,
   },
   params: mirrorParams(chromaticAberrationNode, ["amount", "mode", "center", "falloff", "angle", "opacity"]),

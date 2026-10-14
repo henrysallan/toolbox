@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import "@/engine/skia/library/helpers-warp";
+import { TEXEL_HELPER } from "@/engine/skia/library/helpers-warp";
 import { mirrorNode } from "../effect/mirror";
 
 // Mirror (Skia) — the Skia-layer port of Mirror's IMAGE path
@@ -45,7 +45,7 @@ float4 tbx_mirror_tap(float4 acc, float2 res, float2 p, float2 center, float asp
   // canvas01 (Y-down, width units) → uv.
   float2 q = float2(src.x, 0.5 - (src.y - 0.5) * aspect);
   if (tbx_warp_outside(q, float2(0.0), float2(1.0))) return acc;
-  return tbx_warp_over($source(tbx_warp_texel(q, res)), acc);
+  return tbx_warp_over($source(tbx_texel_clamp(q, res)), acc);
 }
 
 float4 tbx_mirror(float2 uv, float2 res, int mode, int keep, float centerX, float centerY,
@@ -109,7 +109,7 @@ export const skiaMirrorNode = defineSkslNode({
       { name: "includeSource", type: "int" },
     ],
     inputs: [{ name: "source", mode: "gather", taps: "param" }],
-    uses: ["tbx.warp.outside", "tbx.warp.over", "tbx.warp.texel"],
+    uses: ["tbx.warp.outside", "tbx.warp.over", TEXEL_HELPER],
     cost: 0.15,
   },
   params: mirrorParams(mirrorNode, ["mode", "keep", "centerX", "centerY", "count", "kaleidoscope", "includeSource"]),

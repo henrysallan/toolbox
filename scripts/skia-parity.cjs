@@ -40,7 +40,10 @@ const golden = require("./skia/golden.cjs");
 const REPO = H.REPO;
 const HARNESS_DIST = path.join(REPO, "skia-harness", "dist");
 // effect = the M0 SkSL Shader bundle (skia-harness/src/bundle); scene = the
-// Skia-layer scene bundle (src/bundle-scene, `--fixture aurora-scene`); baked =
+// Skia-layer scene bundle (src/bundle-scene, `--fixture aurora-scene`); split =
+// a scene the stage splitter split into two nested <RuntimeShader> layers
+// (src/bundle-split, `--fixture split`; RN web plays them through the
+// harness's runtime-filter-web.ts shim); baked =
 // the effect bundle exported with `--animation baked` (src/bundle-baked);
 // image = an SkSL Shader sampling a bundled image + ramp / curve LUT
 // children (src/bundle-image, `--fixture image`, Wave 3 lane I);
@@ -104,11 +107,11 @@ if (
   !(JITTER >= 0) ||
   (JITTER > 0 && !NATIVE) ||
   (SEGMENT && !NATIVE) ||
-  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas", "image", "procedural", "procedural-baked", "text", "filters"].includes(BUNDLE) ||
+  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas", "image", "procedural", "procedural-baked", "text", "filters", "split"].includes(BUNDLE) ||
   (WRITE_GOLDEN && BUNDLE !== "effect")
 ) {
   console.error(
-    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image|procedural|procedural-baked|text|filters] [--segment name --jitter ms --seed n (native only)] [--write-golden (effect only)]"
+    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image|procedural|procedural-baked|text|filters|split] [--segment name --jitter ms --seed n (native only)] [--write-golden (effect only)]"
   );
   process.exit(2);
 }

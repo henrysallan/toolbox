@@ -1,0 +1,170 @@
+{
+  "format": 3,
+  "kind": "scene",
+  "name": "Split stages",
+  "exportedBy": "toolbox Skia Canvas",
+  "irVersion": 1,
+  "canvaskit": "0.41.0",
+  "reactNativeSkia": "3.4.0",
+  "colorManaged": true,
+  "canvas": {
+    "width": 512,
+    "height": 512
+  },
+  "timeline": {
+    "fps": 60,
+    "ticksPerFrame": 1000,
+    "durationTicks": 300000,
+    "durationSec": 5,
+    "frames": 301
+  },
+  "segments": [
+    {
+      "name": "intro",
+      "start": 0,
+      "end": 2,
+      "frames": [
+        0,
+        120
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "loop",
+      "start": 2,
+      "end": 5,
+      "frames": [
+        120,
+        300
+      ],
+      "kind": "next"
+    },
+    {
+      "name": "flash",
+      "start": 2.5,
+      "end": 3,
+      "frames": [
+        150,
+        180
+      ],
+      "kind": "range"
+    }
+  ],
+  "markers": [
+    {
+      "name": "intro",
+      "frame": 0,
+      "time": 0
+    },
+    {
+      "name": "loop",
+      "frame": 120,
+      "time": 2
+    },
+    {
+      "name": "flash",
+      "frame": 150,
+      "time": 2.5
+    }
+  ],
+  "sampledFrames": 301,
+  "webPlayable": false,
+  "bindCounts": {
+    "static": 83,
+    "clock": 3,
+    "track": 4
+  },
+  "binds": [
+    {
+      "id": "b1",
+      "path": "root.layer.imageFilters.0.program.uniforms.iTime",
+      "kind": "clock",
+      "sample": "b1",
+      "from": "master clock (seconds)"
+    },
+    {
+      "id": "b3",
+      "path": "root.layer.imageFilters.0.program.uniforms.ns_5fcombo_5fedge_strength",
+      "kind": "track",
+      "sample": "b3",
+      "from": "keyframes s_combo_edge.strength (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b25",
+      "path": "root.layer.imageFilters.0.program.uniforms.ns_5fcombo_opacity0",
+      "kind": "track",
+      "sample": "b25",
+      "from": "keyframes s_combo.layer_opacity:L (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b66",
+      "path": "root.children.0.layer.imageFilters.0.program.uniforms.iTime",
+      "kind": "clock",
+      "sample": "b1",
+      "from": "master clock (seconds)"
+    },
+    {
+      "id": "b71",
+      "path": "root.children.0.layer.imageFilters.0.program.uniforms.ns_5fcombo_5fkuw_hardness",
+      "kind": "track",
+      "sample": "b71",
+      "from": "keyframes s_combo_kuw.hardness (2 keys)",
+      "keys": 2
+    },
+    {
+      "id": "b76",
+      "path": "root.children.0.children.0.paint.shader.program.uniforms.iTime",
+      "kind": "clock",
+      "sample": "b1",
+      "from": "master clock (seconds)"
+    },
+    {
+      "id": "b81",
+      "path": "root.children.0.children.0.paint.shader.program.uniforms.ns_5fn_offset_x",
+      "kind": "track",
+      "sample": "b81",
+      "from": "keyframes s_n.offset_x (2 keys)",
+      "keys": 2
+    }
+  ],
+  "programs": [
+    {
+      "id": "SKSL_0",
+      "usedBy": [
+        "root (f_combo)"
+      ],
+      "fused": [
+        "tbx.edge_detect@1",
+        "tbx.const@1",
+        "tbx.merge@1",
+        "tbx.split.paint@1"
+      ]
+    },
+    {
+      "id": "SKSL_1",
+      "usedBy": [
+        "root.children.0 (f_combo)"
+      ],
+      "fused": [
+        "tbx.const@1",
+        "tbx.kuwahara@1"
+      ]
+    },
+    {
+      "id": "SKSL_2",
+      "usedBy": [
+        "root.children.0.children.0 (f_combo)"
+      ],
+      "fused": [
+        "tbx.noise.simplex@1"
+      ]
+    }
+  ],
+  "assets": [],
+  "warnings": [
+    "root (group from f_combo): a runtime image filter (<RuntimeShader>) is not playable on React Native Skia web — CanvasKit has no factory for it; native only.",
+    "root.children.0 (group from f_combo): a runtime image filter (<RuntimeShader>) is not playable on React Native Skia web — CanvasKit has no factory for it; native only."
+  ]
+}

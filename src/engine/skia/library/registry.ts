@@ -27,6 +27,30 @@ export interface SkslLibParam {
 
 export interface SkslLibFunctionDef extends SkslLibFunction {
   params: SkslLibParam[];
+  // ---- the cost model and the stage splitter (engine/skia/split.ts) ----
+  // Additive 2026-10-14 (Wave 3 lane S); all optional.
+  //
+  // Gather inputs whose taps land on texel CENTRES whenever the function
+  // itself is evaluated at one (integer pixel offsets, clamped with
+  // tbx_texel_clamp): sharpen, edge detect, kuwahara. A split reads a
+  // rendered upstream there with one texel fetch; any other gather input
+  // (an off-grid tap) reads it bilinearly from the four centres around the
+  // tap (tbx.split.bilinear@1), the GL texture's own filter.
+  gridTaps?: string[];
+  // The real taps per gather input at these call params (bind values), for
+  // the `at: "params"` cost readout (estimateShaderCost). The SPLIT decision
+  // never reads it: it is structural (declared taps), so an animated radius
+  // cannot change the exported scene's structure between frames.
+  tapsAt?: (params: Record<string, number | number[]>) => Record<string, number>;
+  // The function's own relative ALU cost at these params (`cost` is the
+  // declared one), for the same readout.
+  costAt?: (params: Record<string, number | number[]>) => number;
+  // It can return straight color outside [0, 1] (sharpen's overshoot, edge
+  // detect's magnitude × strength). A layer is a color image that clips
+  // there, where the fused program and the GL node's fp16 texture keep the
+  // value, so the splitter never renders an expression containing it into
+  // a layer. check:skia-split audits every shader node at its defaults.
+  unbounded?: boolean;
 }
 
 const helpers = new Map<string, SkslHelper>();

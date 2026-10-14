@@ -151,7 +151,8 @@ export interface SceneRenderOptions {
   // colour space, so a caller drawing on, say, a Display P3 surface passes
   // it here: a layer in another colour space would convert the runtime
   // stage's output when compositing it, and alpha-0 additive light (Bloom's
-  // glow) does not survive a conversion. Additive (2026-10-14, lane F).
+  // glow) does not survive a conversion. Additive (2026-10-14, lane F; lane S's split gate renders
+  // its P3 case through `colorSpace` too).
   layerFormat?: { colorSpace?: ColorSpace; f32?: boolean };
 }
 

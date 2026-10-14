@@ -16,7 +16,7 @@ Run these before claiming a change works. The first three are CI gates.
 | Command | Time | Guards |
 |---|---|---|
 | `npm run typecheck` | ~40s | `tsc --noEmit`. Hard gate. |
-| `npm run check` | ~60s | 13 offline `check-*.mts` scripts. Hard gate. |
+| `npm run check` | ~8–12 min | 115 offline `check-*.mts` scripts (measured 8m19s alone and 12m17s beside other lanes' jobs on an M5 Pro, 2026-10-14 — past a 10-minute foreground tool timeout: run it in the background). Hard gate. |
 | `npm run lint:ratchet` | ~90s | Fails only on errors **above** `scripts/lint-baseline.json`. |
 | `npm run check:shaders` | ~20s | GLSL compiles/links + blend equivalence. Needs Electron + GL. |
 | `npm run check:readback-async` | ~10s | `EngineBackend.readImagePixelsAsync` (PBO + fence) is byte-identical to the sync readback, never hands back a stale frame with one read in flight, and cancel/destroy leave GL clean. Needs Electron (SwiftShader). |
@@ -855,6 +855,41 @@ that pair). Offline node tests should push each input through
     (`layerFormat`), or the glow vanishes on a P3 surface;
   - a Skia Group's `blendMode` reaches the draws inside a filter's layer,
     never the layer's own composite: that is `layer.blendMode`.
+- `check-skia-split` — automatic filter-stage splitting (src/engine/skia/
+  split.ts; 101326_skia-target.md §3.3 "built and measured"). A Skia Fill
+  whose fused shader is over the phone budget (32 units/px) renders a
+  gather's upstream once into a layer and runs the gather as a runtime
+  image filter over it. The gate: one texel helper (`tbx.texel`) replaced
+  `tbx.gather.edge` / `tbx.warp.texel`; a range audit (every Skia shader
+  node at its defaults, read raw on F32: exactly the ones leaving [0, 1] —
+  Sharpen, Edge Detect — are flagged `unbounded`, and the splitter never
+  layers them); declared vs at-params cost; the planner's shapes through
+  the real evaluator (one split, a nested chain, fan-out, plain reads,
+  off-grid → bilinear, a child shader or a second layer blocks, a Fill
+  blendMode stays fused, structure + SkSL hold still while a radius
+  animates); exactness on CanvasKit CPU — over an 8-bit-exact upstream
+  every on-grid gather draws the fused program's bytes exactly, off-grid
+  reads equal a CPU bilinear of the layer (≤ 0.5/255), over noise within
+  ceil(½ Σ|w|) + 1 steps (chains by mean / p99); the Fill's alpha ×
+  opacity on the filtered result; P3 surfaces with P3 layers
+  (`SceneRenderOptions.layerFormat.colorSpace`); export of `split-graph.ts`'s
+  canvases (+ baked / native modes) with exact binds, harness type-check,
+  worklet order, and `skia-harness/src/bundle-split` == today's export;
+  an image leaf (asset on the staged draw value) and a gradient leaf
+  (lowered program) inside the split upstream — drawn and exported;
+  the before / after readout of the gather and split fixtures. Traps: a
+  layer is a COLOR image — it clips an overshooting upstream (Edge(Sharpen)
+  measured p99 42/255 off when the sharpen was layered; hence `unbounded`)
+  and rounds to 8 bits, which a high-gain kernel after it amplifies
+  (Sharpen cross 1.5: meanAbs 0.007 vs GL; Edge(Kuwahara) at strength 4:
+  CLOSE). The split decision is structural (declared taps): a value-based
+  one would flip with an animated radius and change the exported
+  structure, which the scene planner refuses. check-skia-color-management
+  measures a runtime filter program with its `content` bound to the
+  layer's own fill program. RN web throws on `<RuntimeShader>`; the
+  harness plays it through `skia-harness/runtime-filter-web.ts`
+  (index.web.ts installs it), which mirrors scene-render's emulation — web
+  parity is NOT native Skia.
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run bench:skia-atlas [-- --counts 1,4,16,64 --frames 120 --static]`
     — per-frame draw cost of Copy to Points (Skia), groups vs atlas, on
@@ -901,8 +936,11 @@ that pair). Offline node tests should push each input through
     baked]`; a fresh worktree needs `skia-harness/public/canvaskit.wasm`
     first — see check-skia-assets' traps: without it the page 404s the wasm,
     "expected magic word 00 61 73 6d, found 3c 21 64 6f", and the run times
-    out waiting for `__toolboxHarnessReady`). `--bundle native |
-    native-easings | native-scene` plays the
+    out waiting for `__toolboxHarnessReady`). `--bundle split` plays the
+    stage splitter's two-layer scene (`export-skia.mts --fixture split`,
+    `split-graph.ts` `c_combo`); rebuild `skia-harness/dist` after
+    re-exporting it. `--bundle native | native-easings | native-scene`
+    plays the
     Reanimated-native slots instead (`export-skia.mts --animation
     native`): the page runs on a fake animation clock (`?clock=fake`,
     `skia-harness/fake-clock.ts`) that steps Reanimated's real frame loop

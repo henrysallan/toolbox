@@ -501,7 +501,17 @@ function scenePrograms(node: SkiaNode, where: string, out: Found[]) {
   switch (node.k) {
     case "group":
       node.children.forEach((c, i) => scenePrograms(c, `${where}/${c.id ?? i}`, out));
-      for (const f of node.layer?.imageFilters ?? []) if (f.k === "runtime") out.push({ where: `${where}.filter`, shader: { k: "runtime", program: f.program } });
+      // A runtime image filter reads the rendered layer through `content`
+      // (the stage splitter's, engine/skia/split.ts): measured as a shader
+      // whose `content` child is the layer's own innermost fill program —
+      // its samples arrive in the working space, as a layer's would.
+      for (const f of node.layer?.imageFilters ?? []) {
+        if (f.k !== "runtime") continue;
+        const inner = (n: SkiaNode): ShaderIR | null =>
+          n.k === "fill" && n.paint.shader ? n.paint.shader : n.k === "group" ? n.children.map(inner).find(Boolean) ?? null : null;
+        const content = node.children.map(inner).find(Boolean);
+        if (content) out.push({ where: `${where}.filter`, shader: { k: "runtime", program: { ...f.program, children: [{ name: f.content, shader: content }] } } });
+      }
       break;
     case "fill":
     case "shape":

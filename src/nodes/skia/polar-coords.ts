@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import "@/engine/skia/library/helpers-warp";
+import { TEXEL_HELPER } from "@/engine/skia/library/helpers-warp";
 import { polarCoordsNode } from "../effect/polar-coords";
 
 // Polar Coords (Skia) — the Skia-layer port of Polar Coords
@@ -33,7 +33,7 @@ const POLAR_COORDS_SKSL = `float4 tbx_polar_coords(float2 uv, float2 res, int mo
   if (wrap == 0 && tbx_warp_outside(q, float2(0.0), float2(1.0))) return float4(0.0);
   if (wrap == 1) q = clamp(q, 0.0, 1.0);
   else if (wrap == 2) q = abs(fract(q * 0.5) * 2.0 - 1.0);
-  return $image(tbx_warp_texel(q, res));
+  return $image(tbx_texel_clamp(q, res));
 }`;
 
 export const skiaPolarCoordsNode = defineSkslNode({
@@ -66,7 +66,7 @@ export const skiaPolarCoordsNode = defineSkslNode({
       { name: "wrap", type: "int" },
     ],
     inputs: [{ name: "image", mode: "gather", taps: 1 }],
-    uses: ["tbx.warp.outside", "tbx.warp.texel"],
+    uses: ["tbx.warp.outside", TEXEL_HELPER],
     cost: 0.1,
   },
   params: mirrorParams(polarCoordsNode, ["mode", "center_x", "center_y", "rotation", "scale_radius", "wrap"]),

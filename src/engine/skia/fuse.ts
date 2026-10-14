@@ -144,8 +144,21 @@ export const PARAM_TAPS = 9;
 // function invoked `taps` times per evaluation of its caller). A child
 // sample (leaf / program) counts one evaluation at cost 1. Unknown
 // functions count at cost 1, so the estimate never throws.
-export function estimateShaderCost(expr: ShaderExpr): ShaderCost {
+//
+// `at: "declared"` (the default) is STRUCTURAL: declared taps (`"param"` →
+// PARAM_TAPS) and declared costs, independent of bind values — what the
+// stage splitter (split.ts) decides with, so an animated value can't change
+// the scene's structure. `at: "params"` reads the current bind values
+// through a function's `tapsAt` / `costAt` (registry.ts) where it has them —
+// the readout of what this frame really costs. Additive 2026-10-14.
+export function estimateShaderCost(expr: ShaderExpr, opts?: { at?: "declared" | "params" }): ShaderCost {
+  const atParams = opts?.at === "params";
   const byNode = new Map<string, ShaderCostNode>();
+  const values = (e: Extract<ShaderExpr, { k: "call" }>) => {
+    const out: Record<string, number | number[]> = {};
+    for (const [k, b] of Object.entries(e.params)) out[k] = b.v;
+    return out;
+  };
   const visit = (e: ShaderExpr, mult: number, seen: Set<string>, depth: number) => {
     if (depth > 256) return;
     const key = exprKey(e);
@@ -154,16 +167,19 @@ export function estimateShaderCost(expr: ShaderExpr): ShaderCost {
     const fn = e.k === "call" ? getSkslFunction(e.fn) : undefined;
     const id = e.k === "leaf" ? key : e.node;
     const label = e.k === "call" ? e.fn : e.k;
-    const unit = e.k === "call" ? (fn?.cost ?? 1) : 1;
+    const real = atParams && e.k === "call" && fn && (fn.tapsAt || fn.costAt) ? values(e) : null;
+    const unit = e.k === "call" ? ((real && fn?.costAt ? fn.costAt(real) : undefined) ?? fn?.cost ?? 1) : 1;
     const row = byNode.get(id) ?? { node: id, fn: label, evaluations: 0, cost: 0 };
     row.evaluations += mult;
     row.cost += mult * unit;
     byNode.set(id, row);
     if (e.k !== "call") return;
+    const realTaps = real && fn?.tapsAt ? fn.tapsAt(real) : null;
     for (const [name, input] of Object.entries(e.inputs)) {
       const decl = fn?.inputs.find((i) => i.name === name);
       if (decl?.mode === "gather") {
-        const taps = decl.taps === "param" ? PARAM_TAPS : (decl.taps ?? 1);
+        const declared = decl.taps === "param" ? PARAM_TAPS : (decl.taps ?? 1);
+        const taps = realTaps && Number.isFinite(realTaps[name]) ? realTaps[name] : declared;
         visit(input, mult * taps, new Set(), depth + 1);
       } else {
         visit(input, mult, seen, depth + 1);
@@ -185,7 +201,13 @@ function dedupe(xs: string[]): string[] {
   return [...new Set(xs)];
 }
 
-// Dedupe key: calls and programs by node id, leaves by content.
+// Dedupe key: calls and programs by node id, leaves by content. Exported
+// (additive, 2026-10-14) for the stage splitter, which must name
+// subexpressions exactly as the fuser dedupes them.
+export function shaderExprKey(e: ShaderExpr): string {
+  return exprKey(e);
+}
+
 function exprKey(e: ShaderExpr): string {
   switch (e.k) {
     case "call":

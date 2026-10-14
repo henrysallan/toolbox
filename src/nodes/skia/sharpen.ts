@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import { GATHER_EDGE } from "@/engine/skia/library/helpers-gather";
+import { TEXEL_HELPER } from "@/engine/skia/library/helpers-gather";
 import { sharpenNode } from "../effect/sharpen";
 
 // Sharpen (Skia) — the Skia-layer port of Sharpen (specdocs/101326_skia-target.md
@@ -10,12 +10,12 @@ import { sharpenNode } from "../effect/sharpen";
 // frame edge clamps like the texture's CLAMP_TO_EDGE.
 
 const SHARPEN_SKSL = `float3 tbx_sharpen_tap(float2 uv, float2 res) {
-  return $src(tbx_gather_edge_uv(uv, res)).rgb;
+  return $src(tbx_texel_clamp(uv, res)).rgb;
 }
 
 float4 tbx_sharpen(float2 uv, float2 res, int algorithm, float amount) {
   float2 o = 1.0 / res;
-  float4 c = $src(tbx_gather_edge_uv(uv, res));
+  float4 c = $src(tbx_texel_clamp(uv, res));
   float3 center = c.rgb;
   float3 rgb;
   if (algorithm == 0) {
@@ -87,7 +87,11 @@ export const skiaSharpenNode = defineSkslNode({
       { name: "amount", type: "float" },
     ],
     inputs: [{ name: "src", mode: "gather", taps: 9 }],
-    uses: [GATHER_EDGE],
+    uses: [TEXEL_HELPER],
+    // One-pixel taps: on texel centres (a split reads its layer 1 fetch per tap).
+    gridTaps: ["src"],
+    // RGB overshoots [0, 1]: never rendered into a split's layer (it would clip).
+    unbounded: true,
     cost: 0.2,
   },
   params: mirrorParams(sharpenNode, ["algorithm", "amount"]),

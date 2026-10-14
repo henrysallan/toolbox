@@ -1,5 +1,5 @@
 import { defineSkslNode, mirrorParams } from "@/engine/skia/library";
-import { GATHER_EDGE } from "@/engine/skia/library/helpers-gather";
+import { TEXEL_HELPER } from "@/engine/skia/library/helpers-gather";
 import { edgeDetectNode } from "../effect/edge-detect";
 
 // Edge Detect (Skia) — the Skia-layer port of Edge Detect
@@ -10,7 +10,7 @@ import { edgeDetectNode } from "../effect/edge-detect";
 // transparent upstream would otherwise read as opaque black).
 
 const EDGE_SKSL = `float tbx_edge_detect_lum(float2 uv, float2 res) {
-  return dot($src(tbx_gather_edge_uv(uv, res)).rgb, float3(0.299, 0.587, 0.114));
+  return dot($src(tbx_texel_clamp(uv, res)).rgb, float3(0.299, 0.587, 0.114));
 }
 
 float4 tbx_edge_detect(float2 uv, float2 res, int algorithm, float strength, float threshold) {
@@ -65,7 +65,11 @@ export const skiaEdgeDetectNode = defineSkslNode({
       { name: "threshold", type: "float" },
     ],
     inputs: [{ name: "src", mode: "gather", taps: 8 }],
-    uses: [GATHER_EDGE],
+    uses: [TEXEL_HELPER],
+    // One-pixel taps: on texel centres (a split reads its layer 1 fetch per tap).
+    gridTaps: ["src"],
+    // magnitude × strength passes 1: never rendered into a split's layer.
+    unbounded: true,
     cost: 0.3,
   },
   params: mirrorParams(edgeDetectNode, ["algorithm", "strength", "threshold"]),

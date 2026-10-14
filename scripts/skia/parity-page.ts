@@ -24,6 +24,7 @@ import { imageEffectGraph, imageFixtureReady, IMAGE_TIMELINE } from "../fixtures
 import { proceduralAuroraGraph } from "../fixtures/skia/procedural-graph";
 import { textBundleGraph, TEXT_TIMELINE } from "../fixtures/skia/text-graph";
 import { filtersGraph, FILTERS_HARNESS_CANVAS, FILTERS_SIZE, FILTERS_TIMELINE } from "../fixtures/skia/filters-graph";
+import { splitGraph, SPLIT_PARITY_CANVAS, SPLIT_TIMELINE } from "../fixtures/skia/split-graph";
 // esbuild --loader:.sksl=text
 import AURORA_SKSL from "../fixtures/skia/aurora.sksl";
 
@@ -83,10 +84,12 @@ function loadKit(): Promise<never> {
 // WebGL surface with canvas.scale(size / 512), what React Native Skia
 // replays) — and renderFiltersReference gives the editor's 512² frames
 // box-downsampled, the density cross-check.
+// "split" (Wave 3 lane S) the stage splitter's two-layer canvas
+// (split-graph.ts `c_combo`, src/bundle-split).
 export async function renderToolbox(
   frames: number[],
   size: number,
-  which: "effect" | "scene" | "baked" | "native" | "native-easings" | "native-scene" | "atlas" | "image" | "procedural" | "procedural-baked" | "text" | "filters" = "effect"
+  which: "effect" | "scene" | "baked" | "native" | "native-easings" | "native-scene" | "atlas" | "image" | "procedural" | "procedural-baked" | "text" | "filters" | "split" = "effect"
 ): Promise<string[]> {
   registerAllNodes();
   const kit = await loadKit();
@@ -106,9 +109,21 @@ export async function renderToolbox(
               ? proceduralAuroraGraph(AURORA_SKSL)
               : which === "text"
                 ? textBundleGraph()
-                : auroraGraph(AURORA_SKSL);
+                : which === "split"
+                  ? { ...splitGraph(), targetId: SPLIT_PARITY_CANVAS }
+                  : auroraGraph(AURORA_SKSL);
   const { fps, ticksPerFrame } =
-    which === "native-easings" ? EASINGS_TIMELINE : which === "atlas" ? ATLAS_TIMELINE : which === "image" ? IMAGE_TIMELINE : which === "text" ? TEXT_TIMELINE : AURORA_TIMELINE;
+    which === "native-easings"
+      ? EASINGS_TIMELINE
+      : which === "atlas"
+        ? ATLAS_TIMELINE
+        : which === "image"
+          ? IMAGE_TIMELINE
+          : which === "text"
+            ? TEXT_TIMELINE
+            : which === "split"
+              ? SPLIT_TIMELINE
+              : AURORA_TIMELINE;
   const out: string[] = [];
   // Images / fonts load asynchronously (scene-assets.ts): one warm-up frame
   // asks for them, and every frame below renders with them decoded.
