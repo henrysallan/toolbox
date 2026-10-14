@@ -655,6 +655,20 @@ export function evaluateTrackPlan(p: { tracks: TimelineTrack[]; pick?: number },
 
 // ---- the planner ----------------------------------------------------------------------
 
+// The runtime program owning a `….program.uniforms.iTime` bind path, and
+// whether its source uses iTime beyond the `uniform float iTime;` line.
+function programReadsTime(scene: SkiaScene, path: string): boolean {
+  const programPath = path.replace(/\.uniforms\.iTime$/, "").split(".");
+  let at: unknown = scene;
+  for (const key of programPath) {
+    if (at == null || typeof at !== "object") return true;
+    at = (at as Record<string, unknown>)[key];
+  }
+  const sksl = (at as { sksl?: unknown } | undefined)?.sksl;
+  if (typeof sksl !== "string") return true;
+  return /\biTime\b/.test(sksl.replace(/uniform\s+float\s+iTime\s*;/g, ""));
+}
+
 export function planSceneExport(
   scene: SkiaScene,
   nodes: GraphNode[],
@@ -753,7 +767,10 @@ export function planSceneExport(
       }
     } else if (r.kind === "clock") {
       const bad = vals.findIndex((v, f) => !Object.is(v, (f * tl.ticksPerFrame) / (tl.ticksPerFrame * tl.fps)));
-      if (bad < 0) plan = r;
+      // A program that only DECLARES iTime (every fused program does) can't
+      // show the difference: its producer may have cached frame 0's value
+      // because nothing upstream moves. Drive it from the clock, no warning.
+      if (bad < 0 || !programReadsTime(scene, fb.path)) plan = r;
       else {
         warnings.push(`${fb.path}: iTime is not the scene clock at frame ${bad} — sampled instead.`);
         plan = sampled("iTime");

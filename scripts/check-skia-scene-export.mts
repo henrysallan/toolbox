@@ -235,6 +235,22 @@ try {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// ---- 3b. a static fused fill: iTime is declared but never read ------------------------
+{
+  // Nothing upstream animates, so the Skia Fill stays cached and its iTime
+  // bind keeps frame 0's value — the planner must still ship it as the clock
+  // (the program never reads it) without a "not the scene clock" warning.
+  const e = (source: string, target: string, targetHandle: string) => ({ id: `${source}->${target}`, source, sourceHandle: "out:primary", target, targetHandle });
+  const sn: GraphNode[] = [
+    { id: "sn", type: "skia-noise", params: { type: "simplex", scale: 4 } },
+    { id: "sf", type: "skia-fill", params: { color: "#ffffff", opacity: 1 } },
+    { id: "sc", type: "skia-canvas", params: { background_on: false } },
+  ];
+  const se = [e("sn", "sf", "in:shader"), e("sf", "sc", "in:scene")];
+  const r = exportSkia({ ...req, nodes: sn, edges: se, targetId: "sc", name: "static fill" });
+  check("a static fused fill exports iTime as the clock with no warning", !!r.files && r.warnings.length === 0, [...r.problems, ...r.warnings].join(" | "));
+}
+
 // ---- 4. refusals --------------------------------------------------------------------------------
 const refuse = (mut: (n: GraphNode[], e: GraphEdge[]) => void) => {
   const gg = fx.sceneFixtureGraph();
