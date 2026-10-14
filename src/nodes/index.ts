@@ -367,6 +367,14 @@ import { skiaGradientFillNode } from "./skia/gradient-fill";
 import { skiaTextNode } from "./skia/text";
 import { skiaCopyToPointsNode } from "./skia/copy-to-points";
 import { skiaImageNode } from "./skia/image";
+import { skiaBlurNode } from "./skia/blur";
+import { skiaBloomNode } from "./skia/bloom";
+import { skiaGrainNode } from "./skia/grain";
+import { skiaDropShadowNode } from "./skia/drop-shadow";
+import { skiaMorphologyNode } from "./skia/morphology";
+import { skiaColorMatrixNode } from "./skia/color-matrix";
+import { skiaSkslFilterNode } from "./skia/sksl-filter";
+import { skiaLensFlareNode } from "./skia/lens-flare";
 
 let registered = false;
 
@@ -776,5 +784,13 @@ export function registerAllNodes() {
   registerNode(skiaTextNode);
   registerNode(skiaCopyToPointsNode);
   registerNode(skiaImageNode);
+  registerNode(skiaBlurNode);
+  registerNode(skiaBloomNode);
+  registerNode(skiaGrainNode);
+  registerNode(skiaDropShadowNode);
+  registerNode(skiaMorphologyNode);
+  registerNode(skiaColorMatrixNode);
+  registerNode(skiaSkslFilterNode);
+  registerNode(skiaLensFlareNode);
   registered = true;
 }

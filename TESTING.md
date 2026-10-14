@@ -824,6 +824,37 @@ that pair). Offline node tests should push each input through
   without text). A fresh worktree's harness also needs
   `skia-harness/public/canvaskit.wasm` (gitignored; copy
   `canvaskit-wasm/bin/full/canvaskit.wasm`) or the web build 404s it.
+- `check-skia-filters` — the Skia filter family, the `filter` lowering class
+  (101326_skia-target.md §3.2a): Blur, Bloom, Grain, Drop Shadow,
+  Morphology, Color Matrix, SkSL Filter, Lens Flare (Skia), each a Group
+  whose `layer` filters its `content`. CanvasKit CPU in Node. The mirrors
+  carry the GL nodes' own ParamDefs; Blur's GL kernel variance is (r/2)²
+  up to its 64-tap cap and `glBlurSigma` past it; CPU references against
+  the CONTENT CanvasKit rendered (Morphology exact, Color Matrix ≤ 1/255,
+  Drop Shadow drop / inner over Skia's own blur ≤ 2/255, Grain classic's
+  hash in fp32, the SkSL Filter's vignette 0/255, Bloom's bright pass
+  0/255); `bloomLevelSigmas` against a phase-averaged 1-D simulation of
+  Bloom's GL mip chain (exact); the renderer's `layer.blendMode`, the
+  emulated layer's margin and filters scaling with the CTM; every runtime
+  filter program P3 ≡ sRGB ≤ 1/255 (alpha-0 glow included); every fixture
+  canvas exports, the stacks pass `checkExportable` in worklet / baked /
+  native, keyframed params plan as tracks, and `skia-harness/src/
+  bundle-filters` is today's export; an Image (Skia) behind Blur → Bloom
+  ships its bytes, and a filtered Copy to Points (Skia) instance draws in
+  the atlas's sprite sheet as in its groups. Pixel parity with the GL nodes is
+  `compare:skia` on `filters-graph.ts` (pairs `<name>_n` / `<name>_s`).
+  Traps it hit:
+  - CanvasKit's CPU raster blurs with box passes: a line's measured sigma
+    is up to 8 % low (σ 8 draws 7.39) — references build on Skia's own
+    blur, and GPU sigma is compare:skia's number;
+  - Grain's hash flips in ~0.05 % of cells between JS fp32 and Skia's CPU
+    backend (GPU vs GPU it is max 1/255);
+  - Bloom's glow is alpha-0 ADDITIVE LIGHT; it survives Skia's layers,
+    blur and srcATop, but not a colour-space conversion — renderScene's
+    emulated layers must be in the target's colour space
+    (`layerFormat`), or the glow vanishes on a P3 surface;
+  - a Skia Group's `blendMode` reaches the draws inside a filter's layer,
+    never the layer's own composite: that is `layer.blendMode`.
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run bench:skia-atlas [-- --counts 1,4,16,64 --frames 120 --static]`
     — per-frame draw cost of Copy to Points (Skia), groups vs atlas, on
@@ -897,6 +928,16 @@ that pair). Offline node tests should push each input through
     harness web build needs `skia-harness/public/canvaskit.wasm`
     (gitignored; copy `node_modules/canvaskit-wasm/bin/full/canvaskit.wasm`
     in a fresh worktree) or the page never gets ready.
+    `--bundle filters [--size 256]` plays `skia-harness/src/bundle-filters`
+    (`export-skia.mts --fixture filters`: the filter family's web-playable
+    stack — runtime image filters are native only). Its params are canvas
+    px, so at a size other than 512 the toolbox side is the same scene IR
+    under the export's root scale, and a `density` line scores the
+    editor's 512² frames box-downsampled (MATCH where a Morphology radius
+    scales to whole pixels; Skia rounds the scaled radius). Trap: an
+    exception while the parity script itself loads ("App threw an error
+    during load") leaves Electron open forever — run it in the foreground
+    or with a timeout.
   - `npm run parity:skia:device -- --platform ios|android` — the same
     frames captured on the iOS Simulator / Android emulator through the
     harness's deep-link capture mode, scored against the goldens. Needs

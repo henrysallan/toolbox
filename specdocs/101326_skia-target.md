@@ -508,6 +508,128 @@ stateful 18, opaque 42 (incl. `sksl-shader`). Spline 52, image 66.
 - Color math in gamma sRGB (the engine's convention), OKLab helpers from one
   shared snippet.
 
+#### 3.2a built and measured: the `filter` class (M4 lane F, 2026-10-14)
+
+Eight nodes in `src/nodes/skia/` (shared code `filter-shared.ts`), each
+`skia: { class: "filter" }` with a `content` skia_draw in and out. A filter
+returns a Skia Group whose `layer` filters the content (RN `<Group
+layer={<Paint>…</Paint>}>`); runtime programs are hand-assembled around
+`tbx.color.cm` (`filterProgramSksl`). The mirrors carry the GL node's own
+ParamDefs (`mirrorParams`).
+
+| node | mirrors | lowers to | notes |
+|---|---|---|---|
+| Blur (Skia) | blur (gaussian) | `Blur` σ = r/2, tile clamp; linear light = `srgbToLinear` layer inside a `[Blur] + linearToSrgb` layer | σ binds as `radius × 0.5` (scaled track). Past the GL cap (64 taps, r ≈ 43) the GL kernel is truncated: σ is the truncated kernel's variance-matched one (`glBlurSigma`, derived bind). Bokeh / convolve refuse. |
+| Bloom (Skia) | bloom | isolate{ content, levels × group{ layer [threshold RuntimeShader, `Blur` σ_j], blendMode srcATop }{content} } | One Gaussian per mip level with that level's variance through Bloom's chain (`bloomLevelSigmas`: σ ≈ 1, 3.8, 7.9, 15.9, 32, 64 px at quality high, Karis on); per-level tint products × intensity (`bloomLevelWeights`). The bright pass returns **alpha-0 additive light**; srcATop then gives `D + glow·Da, alpha Da` — Bloom's straight-alpha composite exactly, any source alpha. |
+| Grain (Skia) | grain (classic) | RuntimeShader | Classic already hashes with a float hash (hash13): ported line for line, cell = floor((x, H − y)/scale) — **no look change**. The v2 models (uint pcg3d, multipass) refuse. |
+| Lens Flare (Skia) | lens-flare | isolate{ group{[bright, ghosts+halo, Blur 1.29]}, group{[bright, streak, Blur 1.29], plus} } | GL passes ported in the GL uv frame, every sample clamped like CLAMP_TO_EDGE; ≤ 27 + 21 taps in two stages (budget 32 each). A σ 1.29 blur stands in for the GL half-res passes. `output: over` adds it over the content. |
+| Drop Shadow (Skia) | — | `Shadow` (drop / inner, shadowOnly) | blur is a CSS-style radius: σ = blur/2. |
+| Morphology (Skia) | — | `Morphology` | Skia's square (2r+1)² window, radius rounded (measured: 1.4 → 1, 1.5 → 2). |
+| Color Matrix (Skia) | — | `ColorMatrix` on the layer | 4×5 on unpremultiplied colour, offsets in 0..1 (measured). `adjust` = CSS Filter Effects matrices in a fixed order; `custom` = 20 numbers. Derived bind (sampled when animated). |
+| SkSL Filter (Skia) | — | RuntimeShader | The SkSL Shader node's contract (prelude, lints, `// ch()` channels, error lines) with one child, `content` (`engine/skia/sksl-filter.ts`). Channels bind as `ch:<name>`: keyframes / wires export as tracks. Ramp / curve channels refuse (their LUT children cannot ride a one-child RuntimeShader filter); a parenthesised receiver, `(content).eval(…)`, is not rewritten to the colour-managed sampler (lane C made the SkSL Shader rewrite token-based; this one is still pattern-based). |
+
+**Additive contract change:** `SkiaNode` group `layer.blendMode?:
+BlendMode` — the layer paint's blend mode, how the filtered layer
+composites (RN `layer={<Paint blendMode>}`; renderer and emitter both
+implement it). A group's own `blendMode` reaches the draws *inside* the
+layer, never the layer — so Bloom's srcATop and Lens Flare's plus need it.
+
+**compare:skia** (GL node over the CanvasKit-rendered content vs the Skia
+mirror, same drawing; 512², frames 0 / 60 / 120, ANGLE Metal, CanvasKit
+bin/full; `scripts/fixtures/skia/filters-graph.ts`):
+
+| pair | verdict | mean meanAbs | worst p95 | worst max |
+|---|---|---|---|---|
+| blur r 12, linear light | MATCH | 0.0021 | 3/255 | 18/255 |
+| blur r 12, sRGB | MATCH | 0.0012 | 1/255 | 17/255 |
+| blur r 3, linear | MATCH | 0.0024 | 3/255 | 7/255 |
+| blur r 70 (past the GL cap) | MATCH (σ r/2: CLOSE 0.0157) | 0.0078 | 9/255 | 46/255 |
+| blur keyframed 2 → 24 | MATCH | 0.0025 | 3/255 | 23/255 |
+| bloom defaults / Karis off | MATCH | 0.0044 / 0.0043 | 6/255 | 33/255 |
+| bloom balanced / performance | MATCH | 0.0050 / 0.0052 | 6–7/255 | 37/255 |
+| bloom tinted + anamorphic 0.6, 5 levels | MATCH | 0.0029 | 3/255 | 24/255 |
+| bloom intensity 4.5 | **CLOSE** | 0.0142 | 28/255 | 70/255 |
+| grain classic (overlay / add + chroma / soft-light / grain view / keyed seed) | MATCH | 0.0002 | 1/255 | **1/255** |
+| lens flare defaults / 8 ghosts + diagonal / output over (vs Lens Flare → Merge add) | MATCH | 0.0011 / 0.0017 / 0.0009 | 1–3/255 | 16–40/255 |
+
+The max errors sit at the canvas edges (GL clamps the edge texel; Skia
+blurs the drawing beyond it) and, for linear light, in dark gradients (the
+8-bit linear layer). Bloom intensity 4.5 is the documented limit: a level's
+bright pass × weight above 1 clips before its blur (8-bit layers, and
+`tbx_cm_premul_out` clips like an 8-bit canvas), where Bloom keeps float16.
+
+**parity:skia `--bundle filters`** (`skia-harness/src/bundle-filters`: keyframed
+Morphology → Blur → Drop Shadow → Color Matrix, web-playable): 512², 8 frames
+— **pixel-identical (0/255, 100 %)**. At `--size 256` (the 512 px
+composition scaled 0.5 by the exported root group) — **pixel-identical** to
+the scene IR drawn under the same scale, and against the editor's 512² frames
+box-downsampled MATCH (meanAbs 0.0016–0.0019) where the keyed Morphology
+radius scales to a whole pixel, CLOSE (0.011–0.014) where Skia rounds the
+scaled radius differently (r 1 → 0.5 → 1 px at 256). Filters scale with the
+canvas.
+
+**`check:skia-filters`** (CPU, ~60 s): the variance derivation behind
+`bloomLevelSigmas` equals a phase-averaged 1-D simulation of Bloom's GL
+chain to < 0.1 % (2.4 % for anamorphic, whose tent offsets leave the
+quarter-texel grid); Morphology exact; Color Matrix ≤ 1/255; Drop Shadow ≤
+2/255 over Skia's own blur; SkSL Filter 0/255; every runtime filter
+program P3 ≡ sRGB ≤ 0.46/255 (management forced off: 38.6/255); every
+fixture canvas exports; worklet / baked / native exports compile and
+type-check.
+
+**Renderer / emitter fixes:**
+- The emulated runtime-filter layer (CanvasKit has no RuntimeShader filter)
+  now runs on a margin sized to the chain's native filters, as native Skia
+  sizes a filtered layer: content just off the canvas blurs in, and a blur
+  after a runtime stage no longer fades at the canvas edge (0/255 vs native).
+- `SceneRenderOptions.layerFormat` (additive): emulated layers in the
+  target's colour space / F32 — alpha-0 light does not survive a colour
+  conversion.
+- `emit-baked`: a program reached by two paths (Bloom draws its content
+  levels + 1 times) is baked once; its added iTime is found by bind, not path.
+- Atlas sprite sheets (lane A): a filter inside a Copy to Points (Skia)
+  instance renders into the sheet with the emulated layers sized to the
+  SHEET, not the canvas. Measured (gate, 128², 3×3 copies): atlas vs
+  groups of a Blur instance mean 0.56/255, of a Grain (runtime) instance
+  0.63/255; both export with the filter inside the `useTexture` element.
+- Assets (lane I) ride through every filter on `SkiaDrawValue.assets`
+  (Bloom's repeated content draws included): an Image (Skia) behind Blur →
+  Bloom ships its bytes (gate).
+
+**Not ported / limits:**
+- **Runtime filters are native-only.** RN web throws on `<RuntimeShader>`
+  filters, so Grain, Bloom, Lens Flare and SkSL Filter export
+  `webPlayable: false` (manifest + warning) and their RN pixels are not
+  measured here — the renderer's emulation and compare:skia are.
+- **Liquid Glass: refused.** Its default mode (Frost off) mixes the sharp
+  and the blurred backdrop per pixel by edge distance, at refracted
+  coordinates, and then runs the non-linear LCH fresnel / glare on the mix:
+  one program needs both images. RN Skia's `<RuntimeShader>` filter binds
+  exactly one child (`MakeRuntimeShader(builder, null, null)`); the
+  multi-input factory is not a JSX element and throws on web; blurring
+  inside the program instead costs (6σ + 1)² taps — 625 at the default
+  blur 8, 20× the 32-unit budget. Its `shape` SDF input is spliced GLSL
+  (needs the F5 SkSL SDF compiler). A Frost-only / blur-0 subset fits one
+  input (`[Blur, glass program]` over the content inside an isolated
+  layer) — the path when it is wanted.
+- Bloom: lens dirt, `bloom_only`, Karis's per-pixel firefly weighting
+  (approximated by its effect on the kernel width), intensity above ~3 on
+  white. Cost on device: content drawn levels + 1 times (an image-filter
+  Blend DAG would draw it once, but RN's `<Blend>` filter splices the whole
+  filter stack and the IR has no filter DAG).
+- On a Display P3 iPhone the glow's srcATop add and the Color Matrix run on
+  the working space's numbers like every native blend (Bloom whole scene,
+  P3 vs sRGB: max 24/255, mean 1.3/255) — lane C's P3 residual class.
+
+**To verify on device:** RN's RuntimeShader filter under the scaled root
+group (the emulation evaluates per device pixel in parent-local coords; if
+Skia's runtime filter handles only translation it evaluates at canvas
+resolution and resamples); alpha-0 light through Graphite's layers.
+
+**Native toolbox bug found:** Lens Flare's description says it outputs the
+flare "(transparent background)"; its composite writes alpha 1 (opaque
+black). The Skia mirror follows the pixels.
+
 ### 3.3 Fusion: Skia layer → one shader (deterministic)
 
 Every `sksl` node is authored as **one SkSL function plus a parameter

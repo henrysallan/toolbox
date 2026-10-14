@@ -1087,7 +1087,10 @@ export function bakeScenePlan(plan: ScenePlan): BakeSceneResult {
   const binds: PlannedBind[] = found.map((fb) => {
     const known = byPath.get(fb.path);
     if (known) return known;
-    if (addedBinds.some((a) => a.path === fb.path)) return { id: `bk${extra++}`, path: fb.path, role: "number", plan: { kind: "clock", from: "master clock (seconds) — added by the baked timeline" } };
+    // (By bind as well as path: a program the tree reaches twice — a
+    // filter that draws its content more than once, Bloom (Skia) — is
+    // baked once, so its added iTime sits at every path that reaches it.)
+    if (addedBinds.some((a) => a.path === fb.path || a.bind === fb.bind)) return { id: `bk${extra++}`, path: fb.path, role: "number", plan: { kind: "clock", from: "master clock (seconds) — added by the baked timeline" } };
     throw new Error(`bakeScenePlan: no bind for ${fb.path}`);
   });
   const bindFor = new Map<Bind<unknown>, PlannedBind>();

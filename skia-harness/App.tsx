@@ -17,10 +17,11 @@
 // window.__toolboxHarness.capture(t) seeks, waits for Skia to draw, and
 // returns the canvas pixels (RGBA8, unpremultiplied, row 0 = top).
 //
-// ?bundle=scene | atlas | text | baked | image | procedural | procedural-baked picks
-// another export on the same master clock (procedural: Aurora on LFO /
-// Expression / Scene Time drivers compiled to worklets; -baked: the same
-// drivers in the SkSL).
+// ?bundle=scene | atlas | text | baked | image | procedural | procedural-baked |
+// filters picks another export on the same master clock (procedural: Aurora
+// on LFO / Expression / Scene Time drivers compiled to worklets; -baked: the
+// same drivers in the SkSL; filters: the Skia filter family's web-playable
+// stack, src/bundle-filters).
 //
 // ?bundle=native | native-easings | native-scene plays a Reanimated-native export instead
 // (native-harness.tsx; with ?clock=fake its capture steps Reanimated's own
@@ -38,6 +39,7 @@ import * as Effect from "./src/bundle";
 import * as Scene from "./src/bundle-scene";
 import * as AtlasScene from "./src/bundle-atlas";
 import * as TextScene from "./src/bundle-text";
+import * as Filters from "./src/bundle-filters";
 import * as Baked from "./src/bundle-baked";
 import * as ImageBundle from "./src/bundle-image";
 import * as Procedural from "./src/bundle-procedural";
@@ -64,8 +66,19 @@ const webFrozenAt = query?.get("t") != null ? Number(query.get("t")) : null;
 // `export-skia.mts --fixture atlas`).
 // ?bundle=text: the Text (Skia) scene bundle (src/bundle-text, `--fixture
 // text`: paragraphs, anchors, letter spacing, a blend group, bundled fonts).
+// ?bundle=filters: the Skia filter family's web-playable scene
+// (src/bundle-filters: keyframed Blur, Drop Shadow, Morphology and Color
+// Matrix on Group layers; `export-skia.mts --fixture filters`).
 const SceneBundle =
-  query?.get("bundle") === "scene" ? Scene : query?.get("bundle") === "atlas" ? AtlasScene : query?.get("bundle") === "text" ? TextScene : null;
+  query?.get("bundle") === "scene"
+    ? Scene
+    : query?.get("bundle") === "atlas"
+      ? AtlasScene
+      : query?.get("bundle") === "text"
+        ? TextScene
+        : query?.get("bundle") === "filters"
+          ? Filters
+          : null;
 // ?bundle=baked: the same SkSL Shader export with animation "baked"
 // (src/bundle-baked) — the timeline inside the SkSL, driven by iTime alone.
 // ?bundle=image: an SkSL Shader sampling a bundled image (iImage1, an

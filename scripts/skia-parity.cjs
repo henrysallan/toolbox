@@ -51,8 +51,15 @@ const HARNESS_DIST = path.join(REPO, "skia-harness", "dist");
 // layer); atlas = Copy to Points (Skia) (src/bundle-atlas, `--fixture atlas`:
 // sprite-sheet atlases + vector copy groups); procedural / procedural-baked =
 // Aurora on procedural drivers (LFO, Expressions, Scene Time: `--fixture
-// procedural`, src/bundle-procedural and its `--animation baked` twin). The
-// native pages run on the harness's fake clock
+// procedural`, src/bundle-procedural and its `--animation baked` twin);
+// filters = the Skia filter family's web-playable canvas (src/bundle-
+// filters, `export-skia.mts --fixture filters`: keyframed Blur, Drop
+// Shadow, Morphology, Color Matrix on Group layers). Its params are canvas
+// px, so at a --size other than the composition's 512 the toolbox side is
+// the same scene IR under the export's root scale (parity-page.ts) and the
+// run also scores the editor's 512² frames box-downsampled ("density"):
+// filters must scale with the canvas. The native pages run on the
+// harness's fake clock
 // (?clock=fake): each capture steps Reanimated frame by frame from play(),
 // so frames must ascend, and the run also reports every animated value's
 // drift from the worklet-mode curve at every frame (drift.json).
@@ -69,7 +76,7 @@ const SEED = Number(H.arg("seed", "1"));
 // start (default: eight spread over it), and toolbox renders the same
 // frames of the timeline, offset by the segment's start.
 const SEGMENT = H.arg("segment", "");
-const OUT = path.join(REPO, "skia-harness", "parity-out", NATIVE ? `${BUNDLE}${SEGMENT ? `-${SEGMENT}` : ""}${JITTER ? `-jitter${JITTER}` : ""}` : "");
+const OUT = path.join(REPO, "skia-harness", "parity-out", NATIVE ? `${BUNDLE}${SEGMENT ? `-${SEGMENT}` : ""}${JITTER ? `-jitter${JITTER}` : ""}` : BUNDLE === "filters" ? `filters-${H.arg("size", "512")}` : "");
 const BUNDLE_DIR = path.join(OUT, ".bundle");
 
 // atlas = Copy to Points (Skia) (src/bundle-atlas, `--fixture atlas`): a 30 fps
@@ -97,11 +104,11 @@ if (
   !(JITTER >= 0) ||
   (JITTER > 0 && !NATIVE) ||
   (SEGMENT && !NATIVE) ||
-  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas", "image", "procedural", "procedural-baked", "text"].includes(BUNDLE) ||
+  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas", "image", "procedural", "procedural-baked", "text", "filters"].includes(BUNDLE) ||
   (WRITE_GOLDEN && BUNDLE !== "effect")
 ) {
   console.error(
-    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image|procedural|procedural-baked|text] [--segment name --jitter ms --seed n (native only)] [--write-golden (effect only)]"
+    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image|procedural|procedural-baked|text|filters] [--segment name --jitter ms --seed n (native only)] [--write-golden (effect only)]"
   );
   process.exit(2);
 }
@@ -246,6 +253,27 @@ app.whenReady().then(async () => {
         `f${f}: ${metrics.verdict.toUpperCase()} meanAbs ${metrics.meanAbs.toFixed(5)} p95 ${metrics.p95Abs.toFixed(4)} max ${metrics.maxSteps}/255 identical ${(metrics.identical * 100).toFixed(2)}%`
       );
     }
+    // Density (filters at a size other than the composition's): the device
+    // vs the editor's own 512² frames box-downsampled. Px-unit filters that
+    // failed to scale with the exported root group (a blur in device px)
+    // would show here as a different blur, not as edge noise.
+    let density = null;
+    if (BUNDLE === "filters" && SIZE !== 512 && 512 % SIZE === 0) {
+      const ref = await H.call(win, `window.__parity.renderFiltersReference(${JSON.stringify(FRAMES)}, ${SIZE})`, 120000, "toolbox reference render");
+      density = [];
+      for (let i = 0; i < FRAMES.length; i++) {
+        const { metrics } = await H.call(
+          win,
+          `window.__parity.compare(${JSON.stringify(ref[i])}, ${JSON.stringify(device[i].rgba)}, ${SIZE}, ${SIZE})`
+        );
+        writePng(path.join(OUT, `f${FRAMES[i]}-editor512-down.png`), ref[i], SIZE, SIZE);
+        density.push({ frame: FRAMES[i], ...metrics });
+        console.log(
+          `density f${FRAMES[i]} (device ${SIZE}² vs editor 512² ↓${512 / SIZE}): ${metrics.verdict.toUpperCase()} meanAbs ${metrics.meanAbs.toFixed(5)} p95 ${metrics.p95Abs.toFixed(4)} max ${metrics.maxSteps}/255`
+        );
+      }
+    }
+
     // The clock really moved: first and middle device frames must differ.
     const mid = Math.floor(FRAMES.length / 2);
     const moved = (
@@ -283,6 +311,7 @@ app.whenReady().then(async () => {
           toolboxMotionMeanAbs: tmoved,
           rows,
           ...(drift ? { drift } : {}),
+          ...(density ? { density } : {}),
           ok: all,
         },
         null,

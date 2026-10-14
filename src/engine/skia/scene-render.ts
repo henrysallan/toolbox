@@ -28,7 +28,9 @@
 //                    saveLayer(fresh paint + filters) OUTSIDE the group's
 //                    own transform / clip / opacity, so those apply to the
 //                    draws inside the layer and filter params are in the
-//                    parent's coordinates.
+//                    parent's coordinates. `layer.blendMode` is that
+//                    paint's blend mode: how the filtered layer composites
+//                    (RN `<Paint blendMode>`; default srcOver).
 //   group clip       Applied after the transform (local coordinates),
 //                    anti-aliased; `invert` is ClipOp.Difference.
 //   paint            Starts from RN's default paint (opaque black,
@@ -77,6 +79,7 @@ import type {
   Canvas,
   CanvasKit,
   ColorFilter,
+  ColorSpace,
   EmbindEnumEntity,
   EmbindObject,
   Image,
@@ -142,6 +145,14 @@ export interface SceneRenderOptions {
   // before 2026-10-14 lane C. Gates only: the export always ships the
   // program, so the preview must too.
   nativeGradients?: boolean;
+  // The target surface's format, for the offscreen layers a runtime image
+  // filter is emulated with (drawEmulatedLayer). Default 8-bit sRGB, the
+  // editor's surface. Native Skia's layers take the canvas's own format and
+  // colour space, so a caller drawing on, say, a Display P3 surface passes
+  // it here: a layer in another colour space would convert the runtime
+  // stage's output when compositing it, and alpha-0 additive light (Bloom's
+  // glow) does not survive a conversion. Additive (2026-10-14, lane F).
+  layerFormat?: { colorSpace?: ColorSpace; f32?: boolean };
 }
 
 // Sprite sheets larger than this on a side are refused (GPU texture limits
@@ -385,7 +396,12 @@ class SceneRenderer {
   // caller's flush (renderSkiaToImage runs it as the draw's cleanup).
   private frame: Deletable[] = [];
   private canvas: Canvas;
-  private readonly size: [number, number];
+  // The pixel size of the surface being drawn on (offscreen layers are
+  // allocated at it) — the sprite sheet's while an atlas texture renders.
+  private size: [number, number];
+  // The target surface's size: the scene-px → device-px scale every sprite
+  // sheet rasterises at, nested sheets included.
+  private readonly rootSize: [number, number];
 
   constructor(
     private readonly kit: CanvasKit,
@@ -395,6 +411,7 @@ class SceneRenderer {
   ) {
     this.canvas = canvas;
     this.size = opts.surfaceSize ?? [scene.width, scene.height];
+    this.rootSize = this.size;
   }
 
   run(): void {
@@ -594,8 +611,9 @@ class SceneRenderer {
       body();
       return;
     }
+    const layerBlend = node.layer.blendMode;
     if (imageFilters.some((f) => f?.k === "runtime")) {
-      this.drawEmulatedLayer(imageFilters, colorFilters, body, what);
+      this.drawEmulatedLayer(imageFilters, colorFilters, layerBlend, body, what);
       return;
     }
     const lp = this.track(new this.kit.Paint());
@@ -603,8 +621,47 @@ class SceneRenderer {
     if (imf) lp.setImageFilter(imf);
     const cf = this.composeColorFilters(colorFilters, what);
     if (cf) lp.setColorFilter(cf);
+    // The layer's own composite (RN `layer={<Paint blendMode>}`).
+    if (layerBlend !== undefined) lp.setBlendMode(this.blend(layerBlend, `${what} layer`));
     this.canvas.saveLayer(lp);
     body();
+  }
+
+  // How far (device px) past the canvas the native filters of a chain
+  // reach: native Skia sizes a filtered layer to what its filters need, so
+  // content just off the canvas blurs into view and a runtime stage is
+  // evaluated beyond the edge for the filters after it. The emulated layer
+  // reproduces that with a margin of this many pixels on every side.
+  private filterMargin(list: ImageFilterIR[], ctm: number[]): number {
+    // Largest scale the CTM applies (its 2×2 part's column norms).
+    const s = Math.max(Math.hypot(ctm[0], ctm[3]), Math.hypot(ctm[1], ctm[4]), 1e-6);
+    const n = (b: Bind<number> | undefined) => {
+      const v = b?.v;
+      return typeof v === "number" && Number.isFinite(v) ? Math.abs(v) : 0;
+    };
+    let px = 0;
+    for (const f of list) {
+      switch (f?.k) {
+        case "blur":
+          px += 3 * Math.max(n(f.sx), n(f.sy)) * s;
+          break;
+        case "shadow":
+          px += (3 * n(f.blur) + Math.max(n(f.dx), n(f.dy))) * s;
+          break;
+        case "offset":
+          px += Math.max(n(f.dx), n(f.dy)) * s;
+          break;
+        case "morphology":
+          px += (n(f.r) + 1) * s;
+          break;
+        case "displacement":
+          px += (n(f.scale) / 2) * s;
+          break;
+        default:
+          break;
+      }
+    }
+    return px > 0 ? Math.min(2048, Math.ceil(px) + 1) : 0;
   }
 
   // Layer whose filter chain contains a runtime program. The group renders
@@ -618,26 +675,38 @@ class SceneRenderer {
   //     space, what native RN Skia hands a RuntimeShader filter), and the
   //     content child maps those back onto the device-space snapshot.
   // The result composites back under the inverse CTM, inside the parent's
-  // clip. Programs evaluate per device pixel; under a rotated or skewed CTM
-  // native Skia evaluates on a layer grid and resamples, which can differ
-  // by edge AA.
+  // clip, with the layer's own blend mode. Programs evaluate per device
+  // pixel; under a rotated or skewed CTM native Skia evaluates on a layer
+  // grid and resamples, which can differ by edge AA.
+  //
+  // Margin (2026-10-14, lane F): every surface here extends `filterMargin`
+  // device px past the canvas on each side, drawn under T(M, M)·CTM — what
+  // native Skia's layer bounds do (it sizes a filtered layer to the input
+  // its filters need). So content just off the canvas still blurs into
+  // view, and a runtime stage followed by a blur is evaluated beyond the
+  // edge exactly as on device (a runtime filter's output is unbounded);
+  // without it the blur after a runtime stage faded at the canvas edge.
   private drawEmulatedLayer(
     imageFilters: ImageFilterIR[],
     colorFilters: ColorFilterIR[],
+    blendMode: BlendMode | undefined,
     body: () => void,
     what: string
   ): void {
     const { kit } = this;
     const [w, h] = this.size;
-    const info = {
-      width: Math.max(1, Math.round(w)),
-      height: Math.max(1, Math.round(h)),
-      colorType: kit.ColorType.RGBA_8888,
-      alphaType: kit.AlphaType.Premul,
-      colorSpace: kit.ColorSpace.SRGB,
-    };
     const parent = this.canvas;
-    const ctm = parent.getTotalMatrix();
+    const deviceCtm = parent.getTotalMatrix();
+    const M = this.filterMargin(imageFilters, deviceCtm);
+    const info = {
+      width: Math.max(1, Math.round(w)) + 2 * M,
+      height: Math.max(1, Math.round(h)) + 2 * M,
+      colorType: this.opts.layerFormat?.f32 ? kit.ColorType.RGBA_F32 : kit.ColorType.RGBA_8888,
+      alphaType: kit.AlphaType.Premul,
+      colorSpace: this.opts.layerFormat?.colorSpace ?? kit.ColorSpace.SRGB,
+    };
+    // Parent-local → margin-surface pixels, and back.
+    const ctm = M ? mul3(translate3(M, M), deviceCtm) : deviceCtm;
     const inv = kit.Matrix.invert(ctm);
     if (!inv) return; // a degenerate CTM draws nothing anyway
     const mk = (): Surface | null => this.track(parent.makeSurface(info));
@@ -706,6 +775,8 @@ class SceneRenderer {
     const p = this.track(new kit.Paint());
     const cf = this.composeColorFilters(colorFilters, what);
     if (cf) p.setColorFilter(cf);
+    if (blendMode !== undefined) p.setBlendMode(this.blend(blendMode, `${what} layer`));
+    // inv carries T(−M): the margin surface lands back on the canvas.
     parent.save();
     parent.concat(inv);
     parent.drawImage(img, 0, 0, p);
@@ -1121,7 +1192,7 @@ class SceneRenderer {
       this.problem(`${what}: texture.rect must be 4 finite numbers with a positive size`);
       return null;
     }
-    const k0 = this.size[0] / (this.scene.width || 1);
+    const k0 = this.rootSize[0] / (this.scene.width || 1);
     const k = Number.isFinite(k0) && k0 > 0 ? k0 : 1;
     const tw = Math.max(1, Math.ceil(r[2] * k));
     const th = Math.max(1, Math.ceil(r[3] * k));
@@ -1152,13 +1223,18 @@ class SceneRenderer {
     c.scale(k, k);
     c.translate(-r[0], -r[1]);
     const parent = this.canvas;
+    const parentSize = this.size;
     const pendingBefore = this.pending.size;
     const problemsBefore = this.problems.size;
     this.canvas = c;
+    // A filtered layer inside the sheet (a Skia filter in the instance)
+    // allocates its emulated layers at the SHEET's size, not the canvas's.
+    this.size = [tw, th];
     try {
       this.drawNode(t.node, { opacity: 1 }, depth + 1);
     } finally {
       this.canvas = parent;
+      this.size = parentSize;
     }
     const image = surf.makeImageSnapshot();
     if (cache && this.pending.size === pendingBefore && this.problems.size === problemsBefore) {

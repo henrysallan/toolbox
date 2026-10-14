@@ -861,8 +861,13 @@ class SceneEmitter {
         const fx = [...(n.layer?.imageFilters ?? [])].reverse().map((f) => this.imageFilter(f, where));
         const cf = [...(n.layer?.colorFilters ?? [])].reverse().map((f) => this.colorFilter(f));
         if (n.layer) {
+          // The layer paint: its filters, and its blend mode — how the
+          // filtered layer composites (RN saveLayer(paint)).
+          const lb = n.layer.blendMode;
+          const paintProps: [string, string | undefined][] = [["blendMode", lb && lb !== "srcOver" ? lit(lb) : undefined]];
+          const needPaint = fx.length || cf.length || paintProps.some((p) => p[1] !== undefined);
           this.rn.add("Paint");
-          props.push(["layer", fx.length || cf.length ? el("Paint", [], [...fx, ...cf]) : "true"]);
+          props.push(["layer", needPaint ? el("Paint", paintProps, [...fx, ...cf]) : "true"]);
         }
         if (n.opacity) this.groupOpacity.push(n.opacity);
         if (n.blendMode) this.groupBlend.push(n.blendMode);
