@@ -11280,7 +11280,7 @@ function EffectsShell({
           );
           return out;
         };
-        const { packageExportApp, graphUsesMlNodes, ORT_WASM_ASSET_RE } =
+        const { packageExportApp, graphUsesMlNodes, templateDistFilesFor } =
           await import("@/lib/export-packager");
         // The ~22 MB ONNX-runtime wasm is only ever fetched at runtime by
         // the ML nodes (bg-remove / segment / depth) — drop it from the
@@ -11295,9 +11295,8 @@ function EffectsShell({
             "This project uses ML nodes (bg-remove / segment / depth), whose ~22 MB runtime isn't part of the hosted export template. Export from the desktop app instead."
           );
         }
-        const wantedDistFiles = usesMl
-          ? distManifest.distFiles
-          : distManifest.distFiles.filter((p) => !ORT_WASM_ASSET_RE.test(p));
+        // Same rule for CanvasKit (~8 MB): only graphs with Skia nodes ship it.
+        const wantedDistFiles = templateDistFilesFor(graphJson, distManifest.distFiles);
         const [distFiles, sourceFiles] = await Promise.all([
           fetchAll("/export-template/v1/dist", wantedDistFiles),
           fetchAll("/export-template/v1/source", distManifest.sourceFiles),
@@ -11363,7 +11362,7 @@ function EffectsShell({
             activeCompositionId: activeCompositionIdRef.current,
           }
         );
-        const { graphUsesMlNodes, ORT_WASM_ASSET_RE } = await import(
+        const { graphUsesMlNodes, templateDistFilesFor } = await import(
           "@/lib/export-packager"
         );
         const ml = graphUsesMlNodes(graphJson);
@@ -11380,9 +11379,9 @@ function EffectsShell({
             tierABytes?: number;
           };
           mlUnavailable = m.mlRuntime === false;
-          for (const [p, b] of Object.entries(m.distBytes ?? {})) {
-            if (!ml && ORT_WASM_ASSET_RE.test(p)) continue;
-            templateBytes += b;
+          const distBytes = m.distBytes ?? {};
+          for (const p of templateDistFilesFor(graphJson, Object.keys(distBytes))) {
+            templateBytes += distBytes[p];
           }
           for (const b of Object.values(m.sourceBytes ?? {})) {
             templateBytes += b;

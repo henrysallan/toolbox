@@ -91,3 +91,6 @@ next-env.d.ts
 /skia-harness/android
 /skia-harness/public/canvaskit.wasm
 /skia-harness/parity-out
+/skia-harness/device-out
+# compare:skia output (PNGs + report.json)
+/scripts/.skia-compare-out/

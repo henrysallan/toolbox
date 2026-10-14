@@ -1,0 +1,181 @@
+# Skia device parity — does the React Native Skia export render on iOS and
+# Android what toolbox renders? (specdocs/101326_skia-target.md §3.6, §5.4)
+#
+# Manual only (workflow_dispatch, never on push): each lane builds the Expo
+# harness (skia-harness/) natively, ~20–40 min. Both lanes run
+# scripts/skia-device-parity.mjs, which builds a Release app (JS bundle
+# embedded, no Metro), boots a simulator / emulator, captures the exported
+# bundle's frames through the harness's deep-link capture mode
+# (skia-harness/capture.ts) and scores them against the committed golden
+# frames (scripts/fixtures/skia/golden/, from `npm run parity:skia --
+# --write-golden`) with compare_renders' metrics. A frame beyond the chosen
+# band, or a clock that never moved, fails the job; the report, the device /
+# golden / heat PNGs and (unscored) screen captures upload either way.
+#
+# Run it: GitHub lists dispatch-only workflows from the default branch, so
+# this file has to be on main first; then
+#   gh workflow run skia-device-parity.yml --ref <branch> -f platforms=both
+# runs that branch's copy. No secrets: simulator builds are unsigned and the
+# Android release APK is signed with the template's debug keystore.
+#
+# What the numbers measure: makeImageSnapshot() of a declarative canvas is a
+# replay into an offscreen sRGB surface, i.e. the device GPU's math in sRGB.
+# The iOS view itself renders in Display P3 on wide-gamut screens
+# (react-native-skia 3.4.0 exposes no option); the screen captures show
+# that, unscored.
+name: Skia device parity
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Lanes to run
+        type: choice
+        options: [both, ios, android]
+        default: both
+      expect:
+        description: Band every frame must reach (match = compare_renders' match band)
+        type: choice
+        options: [match, close]
+        default: match
+      xcode:
+        description: Xcode to select — the newest /Applications/Xcode_<this>*.app on the runner
+        type: string
+        default: "26"
+      ios_runner:
+        description: macOS runner image (needs Xcode 16+ and an iOS simulator runtime)
+        type: string
+        default: macos-15
+      android_api:
+        description: Android emulator API level (x86_64 google_apis image)
+        type: string
+        default: "34"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skia-device-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: iOS simulator
+    if: inputs.platforms == 'both' || inputs.platforms == 'ios'
+    runs-on: ${{ inputs.ios_runner }}
+    timeout-minutes: 90
+    env:
+      CI: "1"
+      EXPO_NO_TELEMETRY: "1"
+      XCODE: ${{ inputs.xcode }}
+      EXPECT: ${{ inputs.expect }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          XCODE_APP=$(ls -d /Applications/Xcode_"$XCODE"*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$XCODE_APP" ]; then
+            echo "::error::No /Applications/Xcode_${XCODE}*.app on this runner. Installed:"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+          xcrun simctl list runtimes available
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node >= 22.18: the driver imports compare.ts with native type stripping.
+          node-version: 24
+          cache: npm
+          cache-dependency-path: skia-harness/package-lock.json
+
+      # skia-harness/.npmrc sets legacy-peer-deps (Reanimated 4.7 vs the RN rc).
+      - name: Install harness dependencies
+        working-directory: skia-harness
+        run: npm ci
+
+      - name: Cache CocoaPods downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: cocoapods-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('skia-harness/package-lock.json', 'skia-harness/app.json') }}
+          restore-keys: cocoapods-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build (expo prebuild, pod install, xcodebuild Release for the simulator)
+        run: npm run parity:skia:device -- --platform ios --build-only
+
+      - name: Capture and compare on the simulator
+        run: npm run parity:skia:device -- --platform ios --skip-build --expect "$EXPECT" --screenshots
+
+      - name: Upload report and frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skia-device-parity-ios
+          path: skia-harness/device-out/ios/
+          if-no-files-found: warn
+          retention-days: 30
+
+  android:
+    name: Android emulator
+    if: inputs.platforms == 'both' || inputs.platforms == 'android'
+    # x86_64 emulator images under KVM; arm64 images don't run on these hosts.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CI: "1"
+      EXPO_NO_TELEMETRY: "1"
+      EXPECT: ${{ inputs.expect }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: skia-harness/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle (with cache)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install harness dependencies
+        working-directory: skia-harness
+        run: npm ci
+
+      - name: Build (expo prebuild, gradle assembleRelease for x86_64)
+        run: npm run parity:skia:device -- --platform android --build-only --abi x86_64
+
+      # The action boots the emulator, runs `script`, and shuts it down. Keep
+      # `script` one line: the action runs each line as a separate shell.
+      - name: Capture and compare on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ inputs.android_api }}
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          disable-animations: true
+          script: npm run parity:skia:device -- --platform android --skip-build --expect "$EXPECT" --screenshots
+
+      - name: Upload report and frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skia-device-parity-android
+          path: skia-harness/device-out/android/
+          if-no-files-found: warn
+          retention-days: 30

@@ -13,6 +13,7 @@ import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { EasingPreset, KeyframeAnimationBlock } from "@/engine/keyframes";
 import { syncChannelInputs } from "@/engine/expr-channels";
 import type { ExprInput } from "@/engine/types";
+import type { SkiaGraphFixture } from "../../skia/fixture";
 
 export const AURORA_TIMELINE = { fps: 60, ticksPerFrame: 1000, sceneDurationTicks: 300_000 };
 export const AURORA_FRAMES = [0, 45, 90, 120, 150, 200, 240, 299];
@@ -92,3 +93,78 @@ export function auroraGraph(sksl: string): { nodes: GraphNode[]; edges: GraphEdg
   ];
   return { nodes, edges, targetId: "aurora" };
 }
+
+// ---- compare:skia fixture (scripts/skia-compare.cjs) ----------------------
+// The graph the port was made from: toolbox's native Noise → Color Ramp,
+// driven by the SAME four drivers as the SkSL node, so the port can be
+// proven against its source without an editor:
+//
+//   npm run compare:skia -- --a aurora:ramp --b aurora:aurora
+//
+// Noise: simplex fBm, 4 octaves, black → white (so the ramp's Rec.709
+// luminance is exactly the noise value t). Color Ramp: the SkSL's four
+// stops, linear in OKLab; the glow Color drives stop c2 through the
+// per-stop exposed socket (ramp_c:stops:<id>), as the editor wires it.
+export const AURORA_RAMP_STOPS = [
+  { id: "stop-c0", position: 0, color: "#0a0f2c" },
+  { id: "stop-c1", position: 0.45, color: "#3d5afe" },
+  { id: "stop-c2", position: 0.75, color: "#ff7a45" },
+  { id: "stop-c3", position: 1, color: "#ffe3c2" },
+];
+
+export function auroraNativeGraph(sksl: string): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const g = auroraGraph(sksl);
+  const c2 = "ramp_c:stops:stop-c2";
+  const nodes: GraphNode[] = [
+    ...g.nodes,
+    {
+      id: "noise",
+      type: "noise",
+      params: {
+        type: "simplex",
+        scale: 3,
+        octaves: 4,
+        persistence: 0.5,
+        lacunarity: 2,
+        offset_x: 0,
+        offset_y: 0,
+        seed: 0,
+        contrast: 1.2,
+        color_a: "#000000",
+        color_b: "#ffffff",
+        alpha: 1,
+      },
+      exposedParams: ["scale", "offset_x", "contrast"],
+    },
+    {
+      id: "ramp",
+      type: "color-ramp",
+      params: { stops: AURORA_RAMP_STOPS, offset: 0, interpolation: "linear", space: "oklab" },
+      exposedParams: [c2],
+    },
+  ];
+  const e = (source: string, target: string, targetHandle: string): GraphEdge => ({
+    id: `${source}->${target}:${targetHandle}`,
+    source,
+    sourceHandle: "out:primary",
+    target,
+    targetHandle,
+  });
+  const edges: GraphEdge[] = [
+    ...g.edges,
+    e("drift", "noise", "in:param:offset_x"),
+    e("scale", "noise", "in:param:scale"),
+    e("contrast", "noise", "in:param:contrast"),
+    e("noise", "ramp", "in:image"),
+    e("glow", "ramp", `in:param:${c2}`),
+  ];
+  return { nodes, edges };
+}
+
+export const fixture: SkiaGraphFixture = {
+  description: "Aurora: native Noise → Color Ramp (`ramp`) and its SkSL port (`aurora`), same drivers",
+  timeline: AURORA_TIMELINE,
+  frames: AURORA_FRAMES,
+  size: 512,
+  build: ({ text }) => auroraNativeGraph(text("aurora.sksl")),
+};

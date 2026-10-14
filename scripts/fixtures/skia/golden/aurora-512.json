@@ -1,0 +1,39 @@
+{
+  "fixture": "aurora",
+  "size": 512,
+  "fps": 60,
+  "frames": [
+    0,
+    45,
+    90,
+    120,
+    150,
+    200,
+    240,
+    299
+  ],
+  "files": {
+    "0": "aurora-512-f0.png",
+    "45": "aurora-512-f45.png",
+    "90": "aurora-512-f90.png",
+    "120": "aurora-512-f120.png",
+    "150": "aurora-512-f150.png",
+    "200": "aurora-512-f200.png",
+    "240": "aurora-512-f240.png",
+    "299": "aurora-512-f299.png"
+  },
+  "bundle": {
+    "dir": "skia-harness/src/bundle",
+    "sha256": "110f7af7fee1bbaa751cb4942048e82f9da4319bd791c262fd30eca49f77d762"
+  },
+  "source": "toolbox (scripts/skia/parity-page.ts: evaluateGraph → sksl-shader → readImagePixels)",
+  "canvasKit": {
+    "version": "0.41.0",
+    "build": "bin/full"
+  },
+  "toolboxCommit": "6c80b16",
+  "webParity": {
+    "verdict": "match",
+    "maxSteps": 0
+  }
+}
