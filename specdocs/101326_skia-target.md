@@ -430,7 +430,52 @@ The owner asked to "switch to p3 and then do the m3 work" and chose "identical e
 - ~~**SkSL Shader:** an `iImageN` passed into a user helper function is sampled without conversion~~ — SkSL can't pass a shader into a function at all (§1.2); the holes were parenthesized and comment-split samples, now converted (§2e).
 - **Still carried from §2c:** font / image assets in bundles (filter-stage splitting and the shared texel helper: built, §3.3a).
 
-## 2e. Wave 3 (M4) results
+## 2e. Wave 3 (M4) results (2026-10-14, on `main` at ebf3489)
+
+Eight lanes worked in parallel worktrees. The integrator merged them in the order A, I, C, P, T, then F + S + B. Every merge was verified on the merged tree before `main` moved:
+- every harness bundle regenerates byte-identically;
+- `npm run check`, `check:mcp`, the lint ratchet, and the harness tsc + `export:web` pass.
+
+At ebf3489 there are **14 parity slots**, and all match toolbox on every frame:
+- effect, scene, baked;
+- native, native-easings, native-scene;
+- atlas, image, procedural, procedural-baked, text, filters, split, bake.
+
+| lane | what shipped | headline numbers | details |
+|---|---|---|---|
+| A, Copy to Points (Skia) | `skia-copy-to-points`: vector copy groups below 16 copies, one sprite-sheet `<Atlas>` (useTexture + useRSXformBuffer) from 16; Point / Grid / Space Fill / Voronoi allowed in Skia layers | atlas vs GL Copy to Points MATCH max 1/255 (opaque instance); web cost 0.3 ms/frame at 4,096 copies vs 213 ms for groups | §3.4a |
+| I, images + assets | the one URL → bytes seam (`engine/skia/asset-bytes.ts`, `registerSkiaAssetScheme`), async editor / MCP export with bytes under `assets/`, Image (Skia), image leaves, SkSL Shader `iImage1..4` export, ramp / curve channels as 256×1 LUT children | `--bundle image` pixel-identical; LUTs 0/255 at texel centres (≤ 1/255 on P3) | §3.8.2–3.8.3 |
+| C, carried polish | gradients lowered to colour-managed programs; token-based SkSL sample rewrite; Merge (Skia) grow-on-wire; native `from: "current"` colours; segment parity | gradients P3 vs sRGB 24/255 → ≤ 1/255 at 2.1–3.2× the GPU cost; 11 native segments MATCH | below |
+| P, procedural drivers | Expression (a real parser, no eval) / LFO / Math / Scene Time / Random / Constant / Animated Value chains compile into `procedural.ts` worklets, SkSL for baked mode, and the native linear clock; an `expr` bind plan | 162,540 values bit-identical to `evaluateGraph` (V8); baked: 97.1% within 1e-6, all within 4× an fp32 error bound | §3.5e |
+| T, text | lineHeight / anchor / letterSpacing / baselineOffset; fonts that ship (Inter, Geist + OFL, uploads); paragraph blend modes; **the editor's Text node no longer applies automatic optical sizing** (owner's decision: Inter above 14 px is ~9% wider in the editor, matching devices) | 24/24 text pairs MATCH; `--bundle text` 0/255 | §3.4b |
+| F, filters | Blur, Bloom, Grain, Lens Flare, Drop Shadow, Morphology, Color Matrix, SkSL Filter (`filter` class); additive `layer.blendMode`; emulated-layer margin; Liquid Glass refused (owner: skip the Frost subset for now) | the mirrors MATCH their GL nodes (Bloom at intensity 4.5 CLOSE: 8-bit layers); `--bundle filters` 0/255 at 512 and 256 | §3.2a |
+| S, stage splitting | over-budget fused Fills split into `<RuntimeShader>` layers (`engine/skia/split.ts`); one texel helper (`tbx.texel`); a cost readout | Edge(Kuwahara(N)) 1648 → 195 units/px; split vs GL MATCH except the high-gain chain (CLOSE); `--bundle split` 0/255 through a web shim | §3.3a |
+| B, bake | `skia-bake`: an engine image wired in through the Layer Input, shipped as one PNG or a frame sprite sheet; `bake:` resolves through lane I's seam | `--bundle bake` 10/10 frames 0/255, and it holds between ticks | §3.2b |
+
+**Integration decisions:**
+- Lane I's asset seam is canonical. Lane B dropped its duplicate and registers `bake:`.
+- `AssetIR.license` uses US spelling (lane T's `licence` was folded into it).
+- Lane F's `SceneRenderOptions.layerFormat { colorSpace, f32 }` absorbed lane S's `layerColorSpace`.
+
+**Facts the lanes established:**
+- RN Skia web has no `<RuntimeShader>` image filter. Grain, Bloom, Lens Flare and SkSL Filter are native only; the split slot plays through `skia-harness/runtime-filter-web.ts`, which mirrors the renderer's emulation and is not a measurement of native Skia.
+- RN Skia 3.4 has no runtime blender API, so native blend modes can't be made exact on P3.
+- RN Skia native ignores variable-font axes (`fontVariations`).
+- SkSL rejects shader-typed function parameters.
+
+**Open after M4 (needs devices or owner decisions):**
+- **Device runs** (CI dispatch, once `main` is pushed). They should cover:
+  - native `<RuntimeShader>` filters and split layers;
+  - P3 on-screen colour and Metal fp16;
+  - Hermes `Math` vs V8 for procedural drivers;
+  - native vsync jitter in native mode;
+  - Graphite PNG decoding for bakes;
+  - CoreText ink.
+- **Not lowerable:** native blend modes and translucent overlaps on P3.
+- **Liquid Glass:** refused; a Frost-only subset is possible.
+- **Kuwahara r > 24 and Bevel outer / inner / pillow** stay refused. They need dedicated ports, not splitting.
+- **Bloom draws its content levels + 1 times.** An image-filter Blend graph would draw it once.
+- **GL bugs found** (outside this work): Copy to Points image mode darkens AA edges; Lens Flare's "transparent background" description is wrong (it writes alpha 1).
 
 ### Lane C: carried polish (2026-10-14)
 
@@ -1743,7 +1788,8 @@ Frozen contracts (2026-10-13, additive changes only):
   with P3 colour management (§5.5).
 - **M4 — completion.** Filters/`RuntimeShader` stages, text, Atlas, the
   `bake` class, procedural drivers (Expression → worklet). Wave 3 lanes
-  F, S, I, T, A, P, B, C (§7), launched 2026-10-14.
+  F, S, I, T, A, P, B, C (§7), launched 2026-10-14. **Done 2026-10-14
+  (§2e)**; device confirmation pending.
 - **M5 — polish.** Cost readout, docs pages, the `graph-to-sksl` skill.
 
 ## 7. Parallelisation plan (subagent lanes)
