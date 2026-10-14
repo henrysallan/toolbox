@@ -6,7 +6,15 @@
 // Expression uses (glsl-expression.ts): built-in uniforms, the child shaders
 // the source references, and one uniform per channel minted from the same
 // `// ch("k", …)` comment grammar (engine/expr-channels.ts). The exporter
-// ships prelude + source verbatim, so what toolbox compiled is the file.
+// ships the assembled program, so what toolbox compiled is the file.
+//
+// Color management (library/color-management.ts, spec §5 decision 5): the
+// user's math runs on sRGB numbers on any canvas. The source's `main` is
+// renamed `tbx_user_main` and `iImageN.eval(` becomes `tbx_eval_iImageN(`
+// (code only, comments untouched, no line moves), the prelude defines those
+// sampling helpers (working space → sRGB), and a `main` appended after the
+// source hands the user's premultiplied result to the destination's working
+// space. Identity on an sRGB canvas, so the preview is unchanged.
 //
 // Contract (shaders.skia.org-compatible names, so playground shaders paste):
 //   fragCoord     — LOCAL coords, Y-DOWN, pixel centres at +0.5
@@ -14,8 +22,10 @@
 //   iTime         — seconds
 //   iImage1..4    — child shaders (wired images), declared only when the
 //                   source mentions them; sample with iImage1.eval(xy)
-//   return value  — PREMULTIPLIED color (Skia's rule; the node converts to
-//                   the engine's straight alpha after rendering)
+//                   (premultiplied, sRGB)
+//   return value  — PREMULTIPLIED sRGB color (Skia's rule; the node converts
+//                   to the engine's straight alpha after rendering)
+//   colors        — sRGB numbers everywhere: channels, samples, the result
 // Skia compiles runtime effects as strict GLSL ES 1.0: no uint / bitwise
 // ops, no while loops, constant loop bounds (use `break`), no derivatives,
 // no bool uniforms. CanvasKit's compile error is the authority; the lints
@@ -24,9 +34,14 @@
 import type { CanvasKit, RuntimeEffect } from "canvaskit-wasm";
 import type { ExprInput } from "../types";
 import { channelKind, type ExprChannelValue } from "../expr-channels";
+import { colorManagementSksl } from "./library/color-management";
 
 export const SKSL_CHILD_NAMES = ["iImage1", "iImage2", "iImage3", "iImage4"] as const;
 const PRELUDE_NAMES = new Set(["iResolution", "iTime", "main", ...SKSL_CHILD_NAMES]);
+// What the user's main is renamed to, and the color-managed child samplers
+// `iImageN.eval(` is rewritten to (prelude-defined; names in errors map back).
+export const SKSL_USER_MAIN = "tbx_user_main";
+export const skslChildEval = (child: string) => `tbx_eval_${child}`;
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 // SkSL type and keyword names a channel must not shadow.
 const SKSL_RESERVED = new Set([
@@ -44,6 +59,8 @@ export function usableSkslChannelName(name: string): boolean {
     !PRELUDE_NAMES.has(name) &&
     !SKSL_RESERVED.has(name) &&
     !name.startsWith("sk_") &&
+    // The prelude's color-management helpers and samplers.
+    !name.startsWith("tbx_") &&
     !name.includes("__")
   );
 }
@@ -63,8 +80,10 @@ function optionIdent(opt: string): string | null {
 }
 
 // Channel kinds → SkSL declarations. Toggles are ints because SkSL forbids
-// bool uniforms (read them as `on != 0`); colors are layout(color) so a P3
-// device surface converts the authored sRGB value instead of misreading it.
+// bool uniforms (read them as `on != 0`); colors are plain float4 holding
+// the authored sRGB numbers — NOT layout(color), which would hand the
+// user's sRGB math working-space (P3) numbers on a P3 canvas; the wrapper
+// main converts the result instead.
 // Ramps and curves have no M0 lowering (they become child gradient shaders
 // in M2) and are reported, not silently dropped.
 export function skslChannelDecls(entries: ExprInput[]): {
@@ -93,7 +112,7 @@ export function skslChannelDecls(entries: ExprInput[]): {
         break;
       }
       case "color":
-        lines.push(`layout(color) uniform float4 ${e.name};  // straight alpha, sRGB`);
+        lines.push(`uniform float4 ${e.name};  // straight alpha, sRGB numbers`);
         break;
       case "ramp":
       case "curve":
@@ -118,15 +137,38 @@ export function stripComments(src: string): string {
 export const SKSL_SOURCE_MARKER = "// ---- shader source ----";
 
 export interface SkslProgram {
-  // Prelude + user source: the exact program CanvasKit compiles and the
+  // Prelude + user source (main renamed, child samples rewritten in place)
+  // + the color-managed main: the exact program CanvasKit compiles and the
   // exporter ships.
   sksl: string;
   // Lines before the user's first line — subtract from error line numbers.
   preludeLines: number;
+  // Lines of the user's source; anything after them is the wrapper.
+  sourceLines: number;
   children: string[];
   channels: ExprInput[];
   // Channel names with no SkSL lowering yet (ramp / curve).
   unsupported: string[];
+}
+
+// The user's source with `main(` renamed and `iImageN.eval(` pointed at the
+// color-managed samplers — in code only (comments are left alone) and
+// without adding or removing a line break, so error lines still map 1:1.
+export function rewriteSkslSource(source: string): { code: string; hasMain: boolean } {
+  let hasMain = false;
+  const code = source
+    .split(/(\/\*[\s\S]*?\*\/|\/\/[^\n]*)/)
+    .map((part, i) => {
+      if (i % 2 === 1) return part; // a comment
+      return part
+        .replace(/\bmain(\s*\()/g, (_m, paren: string) => {
+          hasMain = true;
+          return `${SKSL_USER_MAIN}${paren}`;
+        })
+        .replace(/\b(iImage[1-4])\s*\.\s*eval\s*\(/g, (m: string, child: string) => `${skslChildEval(child)}${m.replace(/[^\n]/g, "")}(`);
+    })
+    .join("");
+  return { code, hasMain };
 }
 
 export function buildSkslProgram(params: Record<string, unknown>): SkslProgram {
@@ -140,11 +182,28 @@ export function buildSkslProgram(params: Record<string, unknown>): SkslProgram {
     "uniform float iTime;         // seconds",
     ...children.map((c) => `uniform shader ${c};`),
     ...lines,
+    "// Color management: your code runs on sRGB numbers on any canvas.",
+    ...colorManagementSksl().split("\n"),
+    ...children.map((c) => `half4 ${skslChildEval(c)}(float2 p) { return tbx_cm_premul_in(${c}.eval(p)); }  // ${c}.eval(p), in sRGB`),
     SKSL_SOURCE_MARKER,
   ];
+  const { code, hasMain } = rewriteSkslSource(source);
+  // No main → no wrapper: Skia's own "missing main" error (and the lint's).
+  const wrapper = hasMain
+    ? [
+        "",
+        "// ---- toolbox color management: main() above runs on sRGB numbers; this",
+        "// hands its premultiplied result to the canvas's color space (identity on sRGB).",
+        "half4 main(float2 tbx_p) {",
+        `  return tbx_cm_premul_out(float4(${SKSL_USER_MAIN}(tbx_p)));`,
+        "}",
+        "",
+      ].join("\n")
+    : "";
   return {
-    sksl: `${prelude.join("\n")}\n${source}`,
+    sksl: `${prelude.join("\n")}\n${code}${wrapper && !code.endsWith("\n") ? "\n" : ""}${wrapper}`,
     preludeLines: prelude.length,
+    sourceLines: source.split("\n").length,
     children,
     channels: channels.filter((c) => !unsupported.includes(c.name)),
     unsupported,
@@ -152,16 +211,22 @@ export function buildSkslProgram(params: Record<string, unknown>): SkslProgram {
 }
 
 // Skia's error text is `error: <line>: <message>` with lines counted from
-// the top of the compiled program; rewrite to the user's own line numbers.
-export function userLineError(raw: string, preludeLines: number): string {
+// the top of the compiled program; rewrite to the user's own line numbers
+// (past `sourceLines`, when given, is the color-management wrapper) and the
+// renamed identifiers back to what the user wrote.
+export function userLineError(raw: string, preludeLines: number, sourceLines?: number): string {
   return raw
     .split("\n")
     .filter((l) => l.trim())
     .map((l) =>
-      l.replace(/^(error|warning): (\d+):/, (_m, kind: string, n: string) => {
-        const line = Number(n) - preludeLines;
-        return line > 0 ? `${kind}: line ${line}:` : `${kind}: (prelude):`;
-      })
+      l
+        .replace(/^(error|warning): (\d+):/, (_m, kind: string, n: string) => {
+          const line = Number(n) - preludeLines;
+          if (line <= 0) return `${kind}: (prelude):`;
+          return sourceLines !== undefined && line > sourceLines ? `${kind}: (color-management wrapper):` : `${kind}: line ${line}:`;
+        })
+        .replace(new RegExp(`\\b${SKSL_USER_MAIN}\\b`, "g"), "main")
+        .replace(/\btbx_eval_(iImage[1-4])\b/g, "$1.eval")
     )
     .join("\n");
 }
@@ -190,6 +255,14 @@ export function lintSksl(source: string): { problems: string[]; warnings: string
   }
   if (/\bsk_FragCoord\b/.test(code)) {
     warnings.push("sk_FragCoord is not available to runtime effects — use main()'s coordinate.");
+  }
+  if (/\b(toLinearSrgb|fromLinearSrgb)\s*\(/.test(code)) {
+    warnings.push(
+      "toLinearSrgb / fromLinearSrgb: the node already converts — main() and iImage samples are sRGB on every canvas (Display P3 included), so converting again shifts colors."
+    );
+  }
+  if (/\btbx_\w*/.test(code)) {
+    warnings.push("Names starting with tbx_ are reserved for the node's prelude (color management); rename yours.");
   }
   return { problems, warnings };
 }

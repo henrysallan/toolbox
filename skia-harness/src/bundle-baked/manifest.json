@@ -4,6 +4,7 @@
   "exportedBy": "toolbox SkSL Shader",
   "canvaskit": "0.41.0",
   "reactNativeSkia": "3.4.0",
+  "colorManaged": true,
   "canvas": {
     "width": 512,
     "height": 512
@@ -147,9 +148,7 @@
       "from": "static (channel row)"
     }
   ],
-  "warnings": [
-    "Baked colors are computed by the shader, so Skia no longer converts them as layout(color) uniforms: identical on sRGB canvases (toolbox, React Native Skia web, Android); on a Display P3 iOS canvas they read as P3, like any procedural color (spec §2b)."
-  ],
+  "warnings": [],
   "animation": "baked",
   "baked": {
     "note": "Animated uniforms are SkSL functions of iTime inside the program; the component drives iTime from the master clock and supplies the static uniforms. No worklet timeline ships (toolbox-timeline.ts is omitted).",
@@ -205,7 +204,6 @@
     "worklet": {
       "binds": 0
     },
-    "color": "Baked colors are computed by the shader, so Skia no longer converts them as layout(color) uniforms: identical on sRGB canvases (toolbox, React Native Skia web, Android); on a Display P3 iOS canvas they read as P3, like any procedural color (spec §2b).",
     "limits": {
       "maxTicks": 16777216,
       "trackKeys": 1024,

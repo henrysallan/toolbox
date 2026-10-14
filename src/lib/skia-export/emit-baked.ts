@@ -45,11 +45,12 @@
 // Integer ticks are exact in fp32 below 2^24 (279.6 s at 60 fps × 1000):
 // longer scenes refuse.
 //
-// Color. A baked color is a value the shader computes, not a
-// `layout(color)` uniform, so Skia no longer converts it from sRGB to the
-// canvas's working space: identical on sRGB canvases (toolbox, React Native
-// Skia web, Android), read as Display P3 on a P3 iOS canvas — the same as
-// any procedural color (§2b's pending P3 decision).
+// Color. A baked color is an sRGB number the shader computes — exactly what
+// a color uniform is in every toolbox program (they are plain float4, never
+// layout(color)). The program's own main, now tbk_main, still converts its
+// sRGB result to the canvas's working space at the boundary
+// (engine/skia/library/color-management.ts), so a baked color is the same
+// color on sRGB and Display P3 canvases.
 //
 // Cost. Every pixel evaluates the clock and every baked function, but the
 // branches are uniform (all from iTime), so a GPU runs one segment per track
@@ -96,7 +97,8 @@ export interface BakedUniformInfo {
   type: string;
   // Keys (track) or kept frames (sampled).
   points: number;
-  // Was a `layout(color)` uniform (see the color note above).
+  // A color track (straight sRGB, like every program color — see the color
+  // note above). Sampled series report false.
   color: boolean;
   // Scene exports: the bind ids the uniform had.
   bind?: string;
@@ -752,9 +754,6 @@ function durationProblem(durationTicks: number): string | null {
     : null;
 }
 
-const COLOR_NOTE =
-  "Baked colors are computed by the shader, so Skia no longer converts them as layout(color) uniforms: identical on sRGB canvases (toolbox, React Native Skia web, Android); on a Display P3 iOS canvas they read as P3, like any procedural color (spec §2b).";
-
 // The statement assigning a track (or several, or one component of one)
 // into a target; null + a problem when the shapes disagree.
 function trackAssign(gen: BakeGen, tracks: TimelineTrack[], pick: number | undefined, target: BakeTarget, label: string): string | null {
@@ -822,13 +821,12 @@ export function bakeSkiaPlan(plan: SkiaExportPlan): BakeEffectResult {
     const stmt = trackAssign(gen, [u.track!], undefined, target, label);
     if (!stmt) continue;
     bake.push(stmt);
-    program.baked.push({ name: u.name, kind: "track", from: u.from, type: target.type, points: u.track!.keys.length, color: decl.color });
+    program.baked.push({ name: u.name, kind: "track", from: u.from, type: target.type, points: u.track!.keys.length, color: u.track!.kind === "color" });
   }
   if (gen.problems.length) return { plan: null, program: null, problems: gen.problems, warnings: gen.warnings };
   const r = rewriteProgram(plan.sksl, program.baked.map((b) => b.name), gen, bake, false, "The SkSL program");
   if (!r) return { plan: null, program: null, problems: gen.problems, warnings: gen.warnings };
   const warnings = [...gen.warnings];
-  if (program.baked.some((b) => b.color)) warnings.push(COLOR_NOTE);
   return {
     plan: { ...plan, sksl: r.sksl, usesTime: true, uniforms: plan.uniforms.filter((u) => !u.track), warnings: [...plan.warnings, ...warnings] },
     program,
@@ -859,9 +857,10 @@ export function emitBakedSkiaBundle(
 
   // (emit.ts's provenance comment, restated for the baked program.)
   files["effect.ts"] = files["effect.ts"].replace(
-    /\/\/ Prelude \(first (\d+) lines\) \+ the node's source, exactly as\n\/\/ toolbox compiled it with CanvasKit /,
+    /\/\/ Prelude \(first (\d+) lines\) \+ the node's source[\s\S]*?compiled it with CanvasKit /,
     (_m, n: string) =>
-      `// Prelude (first ${n} lines) + the node's source, then — animation: "baked" —\n` +
+      `// Prelude (first ${n} lines) + the node's source + the color-managed main, then\n` +
+      `// — animation: "baked" —\n` +
       `// the timeline as SkSL functions of iTime (the tbk_ block at the end): the\n` +
       `// animated uniforms are globals the program assigns itself. Checked with CanvasKit `
   );
@@ -894,7 +893,6 @@ export function emitBakedSkiaBundle(
     time: `tick = iTime × ${baked.timeline.fps * baked.timeline.ticksPerFrame} in fp32, snapped to the nearest integer tick within 1e-6 + 2.5e-7·tick; scenes must stay below 2^24 ticks`,
     programs: [b.program],
     worklet: { binds: 0 },
-    ...(b.program.baked.some((x) => x.color) ? { color: COLOR_NOTE } : {}),
     limits: BAKED_LIMITS,
   };
   m.warnings = baked.warnings;
@@ -969,13 +967,13 @@ export function bakeScenePlan(plan: ScenePlan): BakeSceneResult {
         const stmt = trackAssign(gen, pb.plan.tracks, pb.plan.pick, target, label);
         if (!stmt) continue;
         bake.push(stmt);
-        info.baked.push({ name, kind: "track", from: pb.plan.from, type: target.type, points: pb.plan.tracks.reduce((n, t) => n + t.keys.length, 0), color: decl.color, bind: pb.id, path: pb.path });
+        info.baked.push({ name, kind: "track", from: pb.plan.from, type: target.type, points: pb.plan.tracks.reduce((n, t) => n + t.keys.length, 0), color: pb.plan.tracks.some((t) => t.kind === "color"), bind: pb.id, path: pb.path });
       } else {
         const stmts = gen.series(pb.plan.values, target, label);
         if (!stmts) continue;
         usesFrame = true;
         bake.push(...stmts);
-        info.baked.push({ name, kind: "sampled", from: pb.plan.from, type: target.type + (target.count !== undefined ? `[${target.count}]` : ""), points: compress(pb.plan.values, "lerp").f.length, color: decl.color, bind: pb.id, path: pb.path });
+        info.baked.push({ name, kind: "sampled", from: pb.plan.from, type: target.type + (target.count !== undefined ? `[${target.count}]` : ""), points: compress(pb.plan.values, "lerp").f.length, color: false, bind: pb.id, path: pb.path });
       }
     }
     const unchanged = () => {
@@ -1059,7 +1057,6 @@ export function bakeScenePlan(plan: ScenePlan): BakeSceneResult {
   found.forEach((fb, i) => {
     if (!bindFor.has(fb.bind)) bindFor.set(fb.bind, binds[i]);
   });
-  if (programs.some((p) => p.baked.some((b) => b.color))) warnings.push(COLOR_NOTE);
   const left = worklet(binds).filter((b) => b.plan.kind !== "clock");
   if (left.length) {
     warnings.push(
@@ -1104,7 +1101,6 @@ export function emitBakedSceneBundle(
       kinds: left.reduce<Record<string, number>>((acc, x) => ({ ...acc, [x.plan.kind]: (acc[x.plan.kind] ?? 0) + 1 }), {}),
       paths: left.map((x) => x.path),
     },
-    ...(b.programs.some((p) => p.baked.some((x) => x.color)) ? { color: COLOR_NOTE } : {}),
     limits: BAKED_LIMITS,
   };
   files["manifest.json"] = JSON.stringify(m, null, 2) + "\n";

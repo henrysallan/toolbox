@@ -24,14 +24,14 @@
   },
   "bundle": {
     "dir": "skia-harness/src/bundle",
-    "sha256": "47f45bf05d9d5bf728b8777d7cdc4d60ab2e3923be28f7e41882c23442b7a5ee"
+    "sha256": "e77bfe27d2df0841dfb42658c2d7c33fece2a79ae301f8c00e4906bd89b1cfe0"
   },
   "source": "toolbox (scripts/skia/parity-page.ts: evaluateGraph → sksl-shader → readImagePixels)",
   "canvasKit": {
     "version": "0.41.0",
     "build": "bin/full"
   },
-  "toolboxCommit": "0555d5a",
+  "toolboxCommit": "bf94691",
   "webParity": {
     "verdict": "match",
     "maxSteps": 0

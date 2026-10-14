@@ -16,7 +16,8 @@
 //   uniform shader s0; …                   // one per distinct `leaf` / `program` expr
 //   uniform <type> n<node>_<param>; …      // one per call param
 //   <shared helpers, deduped by id, dependencies first>
-//   float4 c<k>(float2 uv) { … }           // child wrapper: uv → px, un-premultiply
+//   float4 c<k>(float2 uv) { … }           // child wrapper: uv → px, un-premultiply,
+//                                          // working space → sRGB
 //   float4 g<k>(float2 uv);                // prototypes, one per GATHER input edge
 //   <each library function once, by entry name; a function whose gather
 //    edges differ between uses is copied with every <entry>-prefixed
@@ -25,8 +26,13 @@
 //   half4 main(float2 fc) {
 //     float2 uv = float2(fc.x / iResolution.x, 1.0 - fc.y / iResolution.y);
 //     float4 c = <root call>;
-//     return half4(c.rgb * c.a, c.a);      // premultiply ONCE, at the end
+//     return tbx_cm_out(c);                // sRGB → working space, premultiply ONCE
 //   }
+//
+// Color management (2026-10-14, library/color-management.ts): everything
+// between main's result and the child samples is gamma-encoded sRGB on any
+// destination (sRGB, Display P3, unmanaged); `color` params are plain
+// float4 uniforms holding sRGB numbers, never layout(color).
 //
 // Conventions inside library functions (so ports stay line-for-line with the
 // engine's GL nodes and comparable with compare:skia):
@@ -36,7 +42,8 @@
 //   - Gather inputs are read with `$<input>(uv2)` — the fuser rewrites the
 //     token to the generated g<k> function for that edge.
 //   - Children (leaves) are sampled via the generated wrappers, which
-//     convert uv → Skia px and un-premultiply.
+//     convert uv → Skia px, un-premultiply and convert to sRGB.
+//   - Never call toLinearSrgb / fromLinearSrgb: the boundaries convert.
 //   - Skia's strict-ES2 rules hold (no uint / bitwise / while / dynamic
 //     index / derivatives); `float` everywhere. check:skia-library compiles
 //     every function through CanvasKit.

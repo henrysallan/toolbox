@@ -33,6 +33,7 @@
 // frame's pre-parsed path (one array read). No per-frame SVG parsing.
 
 import { CANVASKIT_VERSION } from "@/engine/skia/canvaskit";
+import { isColorManagedSksl } from "@/engine/skia/library/color-management";
 import {
   SKIA_IR_VERSION,
   type Bind,
@@ -1041,6 +1042,9 @@ export function emitSceneBundle(
         irVersion: SKIA_IR_VERSION,
         canvaskit: CANVASKIT_VERSION,
         reactNativeSkia: RN_SKIA_VERSION,
+        // Every program converts its sRGB math to the canvas's color space
+        // (native drawing is Skia's to convert): same colors on sRGB and P3.
+        colorManaged: em.effects.every((e) => isColorManagedSksl(e.sksl)),
         canvas: plan.canvas,
         timeline: { fps: plan.timeline.fps, ticksPerFrame: plan.timeline.ticksPerFrame, durationTicks: plan.timeline.durationTicks, durationSec, frames: plan.timeline.frames },
         // Named segments (toolbox-clock.ts SEGMENTS) and marker times.

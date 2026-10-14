@@ -11,7 +11,8 @@
 //   uniform … n<node>_<param>;      one per call param (arrays for `count`)
 //   <helpers>                       deduped by id, dependencies first
 //   float4 c<k>(float2 uv)          child wrapper: uv (Y-up 0..1) → Skia px,
-//                                   then un-premultiply
+//                                   then un-premultiply and convert the
+//                                   working-space sample to sRGB
 //   float4 g<k>(float2 uv);         prototypes, so library functions can
 //                                   call the gather functions defined below
 //   <library functions>             each once by entry; a function with
@@ -21,7 +22,12 @@
 //                                   every `<entry>…` identifier suffixed
 //                                   `_G<j>` (its `$in(` tokens differ)
 //   float4 g<k>(float2 uv) { … }    one per distinct gather upstream
-//   half4 main(float2 fc) { … }     evaluate at uv, premultiply ONCE
+//   half4 main(float2 fc) { … }     evaluate at uv, convert the sRGB result
+//                                   to the working space, premultiply ONCE
+//
+// Color management (library/color-management.ts): the math between the
+// boundaries is gamma sRGB whatever the destination; `color` params are
+// plain float4 uniforms holding sRGB numbers (no layout(color)).
 //
 // Inside main and each g<k>, every distinct subexpression is evaluated once
 // into a local `v<j>` (calls dedupe by node id, children by content), and
@@ -50,6 +56,7 @@ import {
 } from "./library/registry";
 import "./library/helpers";
 import "./library/core";
+import { SKSL_CM_HELPER } from "./library/color-management";
 
 export interface FuseOptions {
   // Canvas px — becomes iResolution's value.
@@ -244,8 +251,7 @@ class Fuser {
     const top = this.evalIn(main, root, 0);
     if (this.problems.length) return null;
 
-    const helperIds: string[] = [];
-    if (this.children.length) helperIds.push("tbx.unpremul");
+    const helperIds: string[] = [SKSL_CM_HELPER];
     for (const fn of this.fnOrder) helperIds.push(...(fn.uses ?? []));
     const helpers = resolveHelpers(helperIds);
     this.problems.push(...helpers.problems);
@@ -259,11 +265,11 @@ class Fuser {
     for (const c of this.children) out.push(`uniform shader ${c.name};`);
     out.push(...this.uniformDecls);
     for (const h of helpers.order) out.push("", `// ---- ${h.id}`, h.source.trim());
-    if (this.children.length) out.push("", "// ---- children (Skia px, premultiplied → uv, straight)");
+    if (this.children.length) out.push("", "// ---- children (Skia px, premultiplied working space → uv, straight sRGB)");
     this.children.forEach((c, k) => {
       out.push(
         `float4 c${k}(float2 uv) {`,
-        `  return tbx_unpremul(float4(${c.name}.eval(float2(uv.x * iResolution.x, (1.0 - uv.y) * iResolution.y))));`,
+        `  return tbx_cm_child(float4(${c.name}.eval(float2(uv.x * iResolution.x, (1.0 - uv.y) * iResolution.y))));`,
         `}`
       );
     });
@@ -281,7 +287,7 @@ class Fuser {
       "  float2 uv = float2(fc.x / iResolution.x, 1.0 - fc.y / iResolution.y);",
       ...main.lines.map((l) => `  ${l}`),
       `  float4 c = ${top};`,
-      "  return half4(c.rgb * c.a, c.a);",
+      "  return tbx_cm_out(c);",
       "}"
     );
     return {
@@ -436,7 +442,9 @@ class Fuser {
         this.problems.push(`${at}: uniform ${name} collides with another call's`);
         return;
       }
-      const decl = `${p.type === "color" ? "layout(color) " : ""}uniform ${skslTypeOf(p.type)} ${name}${p.count !== undefined ? `[${p.count}]` : ""};`;
+      // `color` params stay sRGB numbers: no layout(color) (the math is sRGB;
+      // main converts its result instead — library/color-management.ts).
+      const decl = `uniform ${skslTypeOf(p.type)} ${name}${p.count !== undefined ? `[${p.count}]` : ""};`;
       this.uniformDecls.push(decl);
       this.uniforms[name] = bind;
     });

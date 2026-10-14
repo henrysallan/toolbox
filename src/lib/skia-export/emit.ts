@@ -18,6 +18,7 @@
 // module stays importable from the editor bundle and the Node gates alike.
 
 import { CANVASKIT_VERSION } from "@/engine/skia/canvaskit";
+import { isColorManagedSksl } from "@/engine/skia/library/color-management";
 import { CLOCK_BARREL, durationSecOf, timelineConstSource, toolboxClockSource } from "./emit-shared";
 import type { SkiaExportPlan } from "./plan";
 import { clockModuleSource, manifestSegments, NO_EXPORT_SEGMENTS, type ExportSegments } from "./segments";
@@ -49,7 +50,7 @@ export function emitSkiaBundle(
   files["effect.ts"] =
     HEADER("the SkSL program") +
     `\nexport const NAME = ${JSON.stringify(plan.name)};\n` +
-    `\n// Prelude (first ${plan.preludeLines} lines) + the node's source, exactly as\n// toolbox compiled it with CanvasKit ${CANVASKIT_VERSION}.\n` +
+    `\n// Prelude (first ${plan.preludeLines} lines) + the node's source (its main\n// renamed tbx_user_main, iImage samples in sRGB) + the color-managed main,\n// exactly as toolbox compiled it with CanvasKit ${CANVASKIT_VERSION}.\n` +
     `export const SKSL = ${JSON.stringify(plan.sksl)};\n`;
 
   const tracks = plan.uniforms.filter((u) => u.track);
@@ -104,6 +105,9 @@ export function emitSkiaBundle(
         exportedBy: "toolbox SkSL Shader",
         canvaskit: CANVASKIT_VERSION,
         reactNativeSkia: RN_SKIA_VERSION,
+        // sRGB math, converted to the canvas's color space at the program's
+        // boundaries: the same colors on sRGB and Display P3 canvases.
+        colorManaged: isColorManagedSksl(plan.sksl),
         canvas: plan.canvas,
         timeline: { ...plan.timeline, durationSec },
         // Named segments (toolbox-clock.ts SEGMENTS) and marker times.

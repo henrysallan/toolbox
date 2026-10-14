@@ -526,7 +526,7 @@ const emitted = await import(pathToFileURL(path.join(tmp, "timeline.ts")).href);
   const prog = buildSkslProgram({ expression: src, inputs: syncChannelInputs([], src) });
   check("toggle → uniform int", prog.sksl.includes("uniform int on;"));
   check("pick → int + option consts", prog.sksl.includes("uniform int mode;") && prog.sksl.includes("const int mode_hard = 1;"));
-  check("color → layout(color) float4", prog.sksl.includes("layout(color) uniform float4 tint;"));
+  check("color → plain float4 of sRGB numbers (no layout(color): the program is color-managed)", /^uniform float4 tint;/m.test(prog.sksl) && !prog.sksl.includes("layout(color)"));
   check("only referenced children are declared", prog.children.join() === "iImage2" && !prog.sksl.includes("iImage1"));
   check("lint rejects `uniform` lines", lintSksl("uniform float x;\nhalf4 main(float2 p){return half4(x);}").problems.length === 1);
   check("lint rejects a missing main", lintSksl("float f(){return 1.0;}").problems.some((p) => p.includes("main")));

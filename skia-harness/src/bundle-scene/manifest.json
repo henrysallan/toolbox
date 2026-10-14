@@ -6,6 +6,7 @@
   "irVersion": 1,
   "canvaskit": "0.41.0",
   "reactNativeSkia": "3.4.0",
+  "colorManaged": true,
   "canvas": {
     "width": 512,
     "height": 512

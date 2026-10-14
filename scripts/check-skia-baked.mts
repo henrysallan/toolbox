@@ -641,8 +641,8 @@ if (sceneBake.plan) {
   info(`Aurora scene: ${frames * 2 + 6} renders in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   const bm = JSON.parse(bRes.files!["manifest.json"]);
   check(
-    "Aurora scene manifest: animation \"baked\", the baked uniforms by program, an empty worklet list",
-    bm.animation === "baked" && bm.baked.programs[0].program === "SKSL_0" && bm.baked.programs[0].baked.length === 5 && bm.baked.worklet.binds === 0 && !!bm.baked.color
+    "Aurora scene manifest: animation \"baked\", the baked uniforms by program, an empty worklet list, color-managed (no P3 caveat)",
+    bm.animation === "baked" && bm.baked.programs[0].program === "SKSL_0" && bm.baked.programs[0].baked.length === 5 && bm.baked.worklet.binds === 0 && bm.colorManaged === true && bm.baked.color === undefined
   );
   check("Aurora scene: timeline.ts carries only the clock", !/S_b18|S_b20|T_b4|T_b8|T_b12/.test(bRes.files!["timeline.ts"]) && /b3: seconds/.test(bRes.files!["timeline.ts"]));
 }
@@ -677,12 +677,12 @@ if (auroraB.files && auroraW.files) {
   check("…effect.ts says the program carries its timeline", /animation: "baked"/.test(f["effect.ts"]) && /Checked with CanvasKit 0\.41\.0/.test(f["effect.ts"]));
   const m = JSON.parse(f["manifest.json"]);
   check(
-    "…manifest: animation \"baked\", scale/drift_x/contrast/c2 baked, the 7 static uniforms not, the color note",
+    "…manifest: animation \"baked\", scale/drift_x/contrast/c2 baked (c2 a color track), the 7 static uniforms not, color-managed (no P3 caveat)",
     m.animation === "baked" &&
       m.uniforms.filter((u: any) => u.baked).map((u: any) => u.name).join() === "scale,drift_x,contrast,c2" &&
       m.uniforms.filter((u: any) => !u.baked).length === 7 &&
       m.baked.programs[0].baked.find((b: any) => b.name === "c2")?.color === true &&
-      !!m.baked.color &&
+      m.colorManaged === true && m.baked.color === undefined && !m.warnings.some((w: string) => w.includes("P3")) &&
       m.usesTime === true
   );
   const block = (skslOfEffect(f).split("// ---- toolbox: the animation, baked into the shader")[1] ?? "").replace(/\/\/[^\n]*/g, "");

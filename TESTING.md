@@ -539,6 +539,29 @@ that pair). Offline node tests should push each input through
   `?segment=<name>` loops a segment, its chrome row drives the controls,
   and `window.__toolboxHarness.clock()` exposes the live clock. The ruler
   UI itself (drag / rename / context menus) is a live-app question.
+- `check-skia-color-management` — every runtime program looks the same on
+  an sRGB canvas and on React Native Skia's Display P3 iOS canvas
+  (101326_skia-target.md §5.5, `engine/skia/library/color-management.ts`).
+  Every registered library function (minimal fused program), every program
+  of every family fixture (fused chains, SDF programs, a program child),
+  the SkSL Shader node (default source, a user shader sampling iImage1 —
+  plus its main / `iImageN.eval` rewrite and error-line mapping), baked
+  programs (`animation: "baked"`) and a chain with image / color leaves and
+  an SDF program child render on CanvasKit CPU surfaces in sRGB 8-bit,
+  Display P3 F32 and Display P3 8-bit. Held to 1/255: P3 F32 read back as
+  sRGB vs sRGB; P3 8-bit bytes vs Skia's own P3 encoding of the exact
+  result. Held to 0: sRGB vs the same program with color management forced
+  off (no drift), and with the intrinsics stubbed to identities (an
+  untagged surface). NEGATIVE controls: the same programs uncorrected on
+  P3 (up to ~116/255), a literal color, the old `layout(color)` style.
+  Native drawing is reported, not held: Skia converts solids and images
+  (≤ 1/255) but interpolates gradients and blends in the working space
+  (~24–100/255 on P3). Traps it hit: Skia's CPU backend skips a color
+  intrinsic inside a conditional once a child was sampled (the helper
+  never branches around them), and CanvasKit 0.41.0's F32 `readPixels`
+  returns an array 4× too long (slice it). Programs that are slow on the
+  CPU backend (Kuwahara, Flow Blur, Lyapunov) render smaller (`CM_SIZE`,
+  default 32, is the cap).
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run compare:skia -- --a <fixture>:<node>[:aux:<name>] --b …` —
     renders two nodes of `scripts/fixtures/skia/<fixture>-graph.ts`
@@ -571,8 +594,9 @@ that pair). Offline node tests should push each input through
     Xcode or the Android SDK; runs in GitHub Actions
     (`skia-device-parity.yml`, dispatch only). `--simulate` self-tests the
     collector → metrics → report path with no device. Device snapshots are
-    replays into an sRGB surface: they measure GPU math, not a Display P3
-    screen.
+    replays into an untagged (color-management-off) offscreen surface, where
+    the programs' color management passes through: they measure GPU math,
+    not a Display P3 screen (`check:skia-color-management` covers that).
 
 ---
 

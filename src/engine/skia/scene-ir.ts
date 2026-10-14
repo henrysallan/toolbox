@@ -11,7 +11,8 @@
 // Space: the toolbox composition's canvas PIXELS (SkiaScene.width × height),
 // Y-DOWN, origin top-left — Skia's own convention. The exporter scales the
 // root group to the React Native canvas size. Angles are radians. Colors are
-// straight-alpha sRGB in 0..1 (the owner's color policy: sRGB canvases).
+// straight-alpha sRGB in 0..1 (the owner's color policy, §5.5: sRGB colors
+// on any canvas; programs convert to a Display P3 canvas themselves).
 //
 // The SDF socket is the precedent: nodes return small data trees and do no
 // GL work; one terminal (Skia Canvas) renders the tree.
@@ -152,7 +153,12 @@ export type ImageFilterIR =
   | { k: "morphology"; op: "dilate" | "erode"; r: Bind<number> }
   | { k: "displacement"; channelX: "r" | "g" | "b" | "a"; channelY: "r" | "g" | "b" | "a"; scale: Bind<number>; map: ShaderIR }
   // An SkSL program over the rendered content, which it reads through the
-  // child named `content` (RN Skia <RuntimeShader>).
+  // child named `content` (RN Skia <RuntimeShader>). Color management
+  // applies as to every program (engine/skia/library/color-management.ts):
+  // the `content` sample is in the canvas's working space — read it through
+  // tbx_cm_child / tbx_cm_premul_in (helper `tbx.color.cm`) — and the
+  // result goes back through tbx_cm_out / tbx_cm_premul_out, so the math in
+  // between is sRGB on a Display P3 canvas too.
   | { k: "runtime"; program: SkslProgramIR; content: string };
 
 export type PathEffectIR =

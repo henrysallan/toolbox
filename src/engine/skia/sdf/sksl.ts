@@ -38,17 +38,22 @@
 //   - Clamps the SDF defs apply on the CPU (max(0, r), star sharpness ≤
 //     points, …) are re-applied in-shader, so a uniform may carry the raw
 //     param and bind to it as a plain ref.
+//   - Color management (library/color-management.ts): colors are plain
+//     float4 uniforms holding sRGB numbers and all the math is sRGB; the
+//     generated body is `sdf_main`, and `main` converts its premultiplied
+//     result to the destination's working space (identity on sRGB).
 
 import type { PositionNode, ScalarFieldNode, SdfNode, SocketValue, SplineValue } from "../../types";
 import type { Bind, SkslProgramIR } from "../scene-ir";
 import { flattenSpline } from "../../spline-flatten";
+import { colorManagementSksl } from "../library/color-management";
 import { bindSdfColor, bindSdfDerived, bindSdfField, sdfProvenance } from "./provenance";
 
 export type SkiaSdfMode = "rasterize" | "mask" | "distance" | "bevel" | "shade";
 
 // Terminal uniforms, declared by every program of a mode: `t_<param>`.
-// float = a scalar / boolean (0|1) / enum index; color = layout(color)
-// float4, straight RGBA; curve = float4[SKIA_SDF_CURVE_POINTS] of
+// float = a scalar / boolean (0|1) / enum index; color = float4, straight
+// sRGB RGBA (not layout(color): the math is sRGB); curve = float4[SKIA_SDF_CURVE_POINTS] of
 // (x, y, monotone tangent, 0) per point, plus `t_<param>_count`. The node
 // binds them (nodes/skia/sdf.ts).
 export type SkiaSdfTerminalType = "float" | "color" | "curve";
@@ -548,7 +553,7 @@ class SdfSkslGen {
 
   color(obj: object, field: string, rgb: readonly number[]): string {
     return this.slot(obj, field, (name) => {
-      this.decls.push(`layout(color) uniform float4 ${name};`);
+      this.decls.push(`uniform float4 ${name};`);
       this.uniforms[name] = bindSdfColor(obj, field, rgb);
     });
   }
@@ -1243,7 +1248,7 @@ export function compileSdfSksl(root: SdfNode, mode: SkiaSdfMode, opts: SdfSkslOp
     if (type === "curve") {
       termDecls.push(`uniform float4 ${name}[${SKIA_SDF_CURVE_POINTS}];`, `uniform float ${name}_count;`);
     } else {
-      termDecls.push(type === "color" ? `layout(color) uniform float4 ${name};` : `uniform float ${name};`);
+      termDecls.push(type === "color" ? `uniform float4 ${name};` : `uniform float ${name};`);
     }
     for (const n of names) uniforms[n] = opts.terminal[n.slice(2)];
   }
@@ -1263,8 +1268,13 @@ export function compileSdfSksl(root: SdfNode, mode: SkiaSdfMode, opts: SdfSkslOp
     ...(distFn ? [distFn] : []),
     ...(surfFn ? [surfFn] : []),
     UV_FN,
-    "half4 main(float2 fc) {",
+    colorManagementSksl(),
+    "half4 sdf_main(float2 fc) {",
     ...mainBody(mode).map((l) => `  ${l}`),
+    "}",
+    "// The body's premultiplied sRGB result → the destination's working space.",
+    "half4 main(float2 fc) {",
+    "  return tbx_cm_premul_out(float4(sdf_main(fc)));",
     "}",
     "",
   ].join("\n");

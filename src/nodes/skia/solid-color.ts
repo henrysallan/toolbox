@@ -21,7 +21,7 @@ export const skiaSolidColorNode = defineSkslNode({
   facts: {
     gotchas: [
       "Output alpha is alpha × opacity, folded into the shader; the color's own alpha digits (#rrggbbaa) are ignored, as in Solid Color.",
-      "The color uniform is layout(color): on a non-sRGB canvas Skia converts it to the working space.",
+      "The color is a plain sRGB uniform; the fused program converts its result to the device's color space (Display P3 on iPhone), so it matches on every canvas.",
     ],
   },
   fn: {

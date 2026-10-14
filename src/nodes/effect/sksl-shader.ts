@@ -21,14 +21,19 @@ import { renderSkslToImage, skiaGpuError } from "@/engine/skia/sksl-render";
 // Skia (CanvasKit), so the preview is the program React Native Skia runs,
 // not a GLSL translation of it (specdocs/101326_skia-target.md, M0).
 // Contract and prelude: engine/skia/sksl-program.ts. Rendering and the
-// premultiplied → straight hand-off: engine/skia/sksl-render.ts.
+// premultiplied → straight hand-off: engine/skia/sksl-render.ts. Color
+// management (the user's math is sRGB on every canvas, Display P3
+// included): engine/skia/library/color-management.ts.
 
 const DEFAULT_SOURCE = `// SkSL runtime shader — the same file React Native Skia runs.
 // fragCoord is in pixels, Y-DOWN. iResolution.xy = canvas size,
 // iTime = seconds. Wired images are iImage1..iImage4: iImage1.eval(xy).
-// Return PREMULTIPLIED color. Tunables are one-line comments that Sync
-// turns into controls: ch → float, color → float4 (straight alpha),
-// toggle → int 0/1 (SkSL has no bool uniforms), pick → int + consts.
+// Write sRGB math and return PREMULTIPLIED sRGB color: colors, iImage
+// samples and the result are sRGB numbers on every canvas, and the node
+// converts for the device (Display P3 on iPhone), so it looks the same
+// everywhere. Tunables are one-line comments that Sync turns into
+// controls: ch → float, color → float4 (straight alpha, sRGB), toggle →
+// int 0/1 (SkSL has no bool uniforms), pick → int + consts.
 // ch("amount", 0.5, 0, 1)
 // color("tint", "#3d7bff")
 
@@ -77,7 +82,7 @@ export function inspectSkslShader(params: Record<string, unknown>): {
   let error: string | undefined;
   if (kit) {
     const r = compileSksl(kit, prog.sksl);
-    if (r.error) error = userLineError(r.error, prog.preludeLines);
+    if (r.error) error = userLineError(r.error, prog.preludeLines, prog.sourceLines);
   }
   return {
     ok: !error && lint.problems.length === 0 && prog.unsupported.length === 0,
@@ -98,13 +103,14 @@ export const skslShaderNode: NodeDefinition = {
   // Skia layers: already a runtime effect — it exports as itself.
   skia: { class: "sksl" },
   description:
-    "A Skia runtime shader (SkSL) rendered by Skia itself through CanvasKit — the same program React Native Skia runs on device, so the preview is the shipped shader rather than a translation. Write helpers plus `half4 main(float2 fragCoord)`: fragCoord is pixels Y-DOWN, iResolution.xy is the canvas size, iTime is seconds, wired images are iImage1..iImage4 (sample with iImage1.eval(xy)), and the return value is PREMULTIPLIED. Tunables are // comments synced into controls: // ch(\"k\", 0.5, 0, 1) → float k; // color(\"tint\", \"#ff8800\") → float4 tint (straight alpha, layout(color)); // toggle(\"on\", true) → int on (SkSL forbids bool uniforms); // pick(\"mode\", \"a\", \"b\") → int mode plus const int mode_a, mode_b. Skia compiles strict GLSL ES 1.0: no uint or bitwise ops, no while loops, constant loop bounds (break out early), no dFdx/fwidth. ch/toggle/pick/color channels keyframe directly (set_keyframes with the channel name; a wire still wins), and scalar/toggle/color channels are also wireable from keyframed Animated Value / Color nodes — both export as a Reanimated timeline.",
+    "A Skia runtime shader (SkSL) rendered by Skia itself through CanvasKit — the same program React Native Skia runs on device, so the preview is the shipped shader rather than a translation. Write helpers plus `half4 main(float2 fragCoord)`: fragCoord is pixels Y-DOWN, iResolution.xy is the canvas size, iTime is seconds, wired images are iImage1..iImage4 (sample with iImage1.eval(xy)), and the return value is PREMULTIPLIED. Write sRGB math: channel colors, iImage samples and the returned color are gamma-encoded sRGB numbers on every canvas — the node converts the result (and the samples) for the device's color space (Display P3 on wide-gamut iPhones, sRGB on Android and the web), so the shader looks identical everywhere; don't call toLinearSrgb / fromLinearSrgb yourself. Tunables are // comments synced into controls: // ch(\"k\", 0.5, 0, 1) → float k; // color(\"tint\", \"#ff8800\") → float4 tint (straight alpha, sRGB numbers); // toggle(\"on\", true) → int on (SkSL forbids bool uniforms); // pick(\"mode\", \"a\", \"b\") → int mode plus const int mode_a, mode_b. Skia compiles strict GLSL ES 1.0: no uint or bitwise ops, no while loops, constant loop bounds (break out early), no dFdx/fwidth. ch/toggle/pick/color channels keyframe directly (set_keyframes with the channel name; a wire still wins), and scalar/toggle/color channels are also wireable from keyframed Animated Value / Color nodes — both export as a Reanimated timeline.",
   searchAliases: ["skia", "sksl", "react native", "runtime effect", "shader", "canvaskit"],
   facts: {
     reads: ["time"],
     gotchas: [
       "fragCoord is Y-DOWN pixels (Skia local coords), unlike GLSL Expression's Y-up v_uv; divide by iResolution.xy for 0..1.",
       "Return premultiplied color (rgb * a); an unpremultiplied return with alpha < 1 renders too bright, exactly as on device.",
+      "Colors are sRGB numbers on every canvas (Display P3 iPhones too): your main() becomes tbx_user_main and an appended main converts its result for the device. tbx_ names are reserved.",
       "Rendered by CanvasKit in its own WebGL context: the first frames are transparent until the 7 MB WASM loads, then it re-renders.",
       "Wired images cross into Skia as 8-bit RGBA through a CPU readback per frame, so HDR input values clip and large inputs cost.",
       "ramp() and curve() channels have no SkSL lowering yet; they are reported as unsupported and their uniforms are not declared.",
@@ -197,7 +203,7 @@ export const skslShaderNode: NodeDefinition = {
     const lint = lintSksl(typeof params.expression === "string" ? params.expression : "");
     if (lint.problems.length) return fail(lint.problems.join(" "));
     const compiled = compileSksl(kit, prog.sksl);
-    if (!compiled.effect) return fail(userLineError(compiled.error, prog.preludeLines));
+    if (!compiled.effect) return fail(userLineError(compiled.error, prog.preludeLines, prog.sourceLines));
     if (prog.unsupported.length && state.lastWarned !== "unsupported") {
       console.warn(
         `[SkSL Shader ${nodeId}] ramp/curve channels have no SkSL lowering yet: ${prog.unsupported.join(", ")}`

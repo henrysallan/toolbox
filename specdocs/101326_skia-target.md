@@ -115,7 +115,8 @@ ES 1.00 rules. Probe results (`RuntimeEffect.Make`):
 | array constructor `float[3](…)` | **rejected** |
 | recursion | **rejected** |
 | `sk_FragCoord` in a runtime shader | **rejected** |
-| `layout(color) uniform float4` | OK (sRGB → working space on non-sRGB surfaces) |
+| `layout(color) uniform float4` | OK (sRGB → working space on non-sRGB surfaces) — no longer used (§5.5) |
+| `toLinearSrgb` / `fromLinearSrgb` (half3) | OK (probed on sRGB, Display P3 and Adobe RGB surfaces, 2026-10-14). **CPU backend bug:** inside a conditional, after a child was sampled, the conversion is skipped — call them unconditionally and select the result |
 | `uniform shader x; x.eval(p)` | OK |
 
 Semantics: `main` receives **local** coordinates, Y-down, pixel centres at
@@ -172,7 +173,8 @@ gitignored).
   (shaders.skia.org names, so playground shaders paste), `uniform shader
   iImage1..4` **only when referenced**, then one uniform per channel. Mapping:
   scalar → `float`, toggle → `int` (no bool uniforms), pick → `int` + consts,
-  color → `layout(color) float4` (straight alpha). ramp/curve → reported
+  color → `float4` (straight alpha, sRGB numbers; was `layout(color)` until
+  the 2026-10-14 color-management change, §5.5). ramp/curve → reported
   unsupported (M2). The prelude plus the source is the shipped file.
 - **Render path.** CanvasKit runs in its own WebGL2 context (one shared
   offscreen canvas, `premultipliedAlpha: false`, sRGB surface).
@@ -308,13 +310,18 @@ What exists now:
 - **iOS renders in Display P3 on P3 screens, with no option.** react-native-skia
   3.4.0 picks the color space from `UIScreen.displayGamut`
   (`RNSkApplePlatformContext::mainScreenSupportsP3`), and `Canvas` exposes no
-  color-space prop. Android always uses sRGB. Honouring decision #5 on iOS
-  needs a native patch (patch-package forcing `prefersP3ColorSpace()` to
-  false) or an upstream option. Without it, uniform colors stay correct
-  (`layout(color)` converts them) but procedural colors computed in the
-  shader are read as P3, so they come out more saturated. Device snapshots
-  re-render into sRGB, so the CI parity numbers can't see this; only
-  on-screen captures can. Owner decision pending.
+  color-space prop. Android always uses sRGB. Without a fix, uniform colors
+  stay correct (`layout(color)` converts them) but procedural colors computed
+  in the shader are read as P3, so they come out more saturated.
+  **Resolved 2026-10-14 (§5.5): P3 accepted, programs color-managed.** Every
+  generated program runs its math on sRGB numbers and converts at its
+  boundaries (`tbx.color.cm`, `engine/skia/library/color-management.ts`);
+  `check:skia-color-management` holds every program to ≤ 1/255 between sRGB
+  and Display P3 surfaces. Device snapshots (`makeImageSnapshot` of
+  declarative content) replay into an UNTAGGED offscreen surface
+  (`RNSkView::makeImageSnapshot` → `MakeOffscreen(…, nullptr)`): color
+  management is off there, the programs pass through unchanged, so the CI
+  parity numbers still measure GPU math, not the P3 screen.
 - **RN Skia web tags its WebGL buffer `display-p3`.** Pixel values are
   unaffected, but on wide-gamut monitors the web harness may look more
   saturated than toolbox.
@@ -373,7 +380,7 @@ All eight families merged. Every port is proven with `compare:skia` against the 
 - RN Paragraphs drop an inherited group blendMode.
 - Filter-stage splitting for over-budget gathers.
 - Device bands: CI lanes ready, not yet run.
-- The P3 decision (§2b).
+- ~~The P3 decision (§2b).~~ Decided and built 2026-10-14 (§5.5).
 - `tbx.warp.texel` and `tbx.gather.edge` should become one shared helper.
 - Merge (Skia) has no grow-on-wire / "+" layer button.
 
@@ -583,10 +590,11 @@ d. **Springs (new).** Add a `spring` easing to toolbox whose evaluator *is*
    `MakeLazyImageFromTextureSource` with an engine-blitted canvas, else share
    a WebGL context (state isolation risk). Export images as bundled assets
    (`useImage` + `ImageShader` child).
-4. **Color policy.** Decide sRGB vs Display P3 for exported canvases. Measure
-   RN Skia v3's default iOS surface (M1 calibration). Keep `layout(color)` on
-   color uniforms either way. Expose `highBitDepth` in the layer when
-   gradients band.
+4. **Color policy.** Done 2026-10-14 (§5.5): RN Skia's Display P3 canvases
+   on iOS are accepted and every runtime program is color-managed — sRGB math
+   inside, `toLinearSrgb` / `fromLinearSrgb` at main's result and at each
+   child sample, color uniforms plain `float4` (no `layout(color)`). Expose
+   `highBitDepth` in the layer when gradients band.
 5. **Density.** `iResolution` in points matches RN. Pixel-unit params (blur
    radius px, grain size px) need a declared unit policy:
    `iResolution.z` = pixel ratio on device, 1 in toolbox, unless the layer
@@ -615,8 +623,10 @@ exactly; the copy script reads only from `node_modules/canvaskit-wasm`.
 | timeline values (worklet) | **bit-identical** (gate) | bit-identical | JS doubles both sides |
 | SkSL pixels, sRGB, `float` math | **identical** (8/8 frames) | ≤ 1/255 expected | Metal fp32; Graphite vs Ganesh irrelevant for `drawPaint` |
 | `half` math | identical | **differs** (fp16) | lint warns; library bans it |
-| color uniforms | identical | identical if canvas sRGB; converted by `layout(color)` if P3 | measure in M1 |
-| procedural colors (non-uniform) on P3 canvas | — | **shift** (math runs in working space) | policy decision §3.8.4 |
+| color uniforms | identical | identical (plain sRGB numbers; the program converts its result) | §5.5 |
+| procedural colors on a Display P3 canvas | identical (sRGB canvas: conversions skipped, byte-identical) | **≤ 1/255** (CanvasKit P3 surfaces, every generated program: `check:skia-color-management`); fp16 intrinsics on Metal add ≤ ~0.5/255, to confirm on device | §5.5; uncorrected the same programs differ by up to 116/255 |
+| 8-bit P3 surface vs the sRGB color | — | ≤ 8/255 in saturated darks (the surface's own quantization; native drawing shares it) | an 8-bit P3 step is coarse where sRGB's encoding is steep |
+| native gradients / blends / translucent overlaps on P3 | — | **shift** up to ~24/255 (red → blue gradient), ~28/255 (50 % pink over green), Merge-style native blendModes up to ~100/255 | Skia interpolates and blends in the working space; RN exposes no interpolation color space — fused programs (Merge (Skia), Gradient (Skia)) are exact |
 | native paths/AA | n/a in M0 | ≤ 1 px edge differences | Graphite AA vs Ganesh |
 | text | n/a | layout differences possible | Paragraph + bundled fonts only |
 | baked-in-shader timeline | — | ≤ 1e-6 per value | fp32 vs double |
@@ -635,9 +645,20 @@ exactly; the copy script reads only from `node_modules/canvaskit-wasm`.
    simulator on GitHub's macOS runners, the Android emulator on Linux runners
    (KVM). Same capture contract as the web harness. Physical devices
    (EAS / TestFlight) are out of scope for now.
-5. **sRGB canvases.** `layout(color)` stays on color uniforms; library math
-   assumes an sRGB working space; the exported Canvas pins sRGB where React
-   Native Skia exposes the choice (L5 verifies what v3 does by default).
+5. **Display P3 canvases accepted; programs color-managed; colors stay in
+   the sRGB gamut** (revised 2026-10-14). React Native Skia 3.4.0 renders iOS
+   canvases in Display P3 on P3 screens and offers no option; the library is
+   not patched. Instead every runtime program toolbox generates (the fuser,
+   the SDF compiler, the SkSL Shader node's wrapper, and so lane A's baked
+   programs, which keep the generated main as `tbk_main`) runs its math on
+   gamma-encoded sRGB numbers whatever the destination, and converts at the
+   boundaries with Skia's intrinsics: main's result sRGB → working space,
+   each child sample working space → sRGB. Color uniforms are plain `float4`
+   of sRGB numbers (never `layout(color)`). A probe (`fromLinearSrgb(0.5, 0,
+   0)`) skips the conversions where sRGB numbers already are working-space
+   numbers — sRGB canvases and untagged surfaces — so toolbox, Android and
+   the web are byte-identical to before. Native drawing is Skia's to convert.
+   Manifests say `colorManaged: true`.
 6. **Version policy:** `react-native-skia` and `canvaskit-wasm` are bumped
    together in one PR that re-runs `parity:skia` and the CI device lanes.
 7. **Delivery:** a copy-in bundle folder (with `manifest.format`) for now; a

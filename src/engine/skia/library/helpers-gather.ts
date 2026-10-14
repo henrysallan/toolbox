@@ -57,9 +57,10 @@ float2 tbx_gather_coherent_step(float2 t, float2 prev) {
 });
 
 // A constant DATA value (a map at midlevel, a neutral field), where
-// tbx.const@1 is a COLOR: its `layout(color)` uniform is converted to the
-// working space on a non-sRGB canvas (Display P3 on iOS), which would turn
-// "no displacement" into a small one. This one is a plain float4.
+// tbx.const@1 is a COLOR. Both are plain float4 uniforms now (color
+// management converts at the program's boundaries, never a uniform —
+// library/color-management.ts), but data stays its own function so it can
+// never be mistaken for a color.
 export const TBX_GATHER_FLAT: SkslLibFunctionDef = {
   id: "tbx.gather.flat@1",
   entry: "tbx_gather_flat",
