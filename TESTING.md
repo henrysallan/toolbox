@@ -438,6 +438,40 @@ that pair). Offline node tests should push each input through
   render** on and `compare_renders` the "Figma reference" node against the
   root Merge. The plugin itself type-checks with `npm run
   figma-plugin:typecheck` (it runs only inside Figma's desktop app).
+- `check-skia-canvaskit` — the CanvasKit wiring behind SkSL / Skia nodes
+  (101326_skia-target.md): the loader's pinned version is the installed
+  `canvaskit-wasm` (and RN Skia's, when skia-harness is installed),
+  `copy-canvaskit` copies `bin/full/` (RN Skia web's build) byte for byte,
+  the export template points the loader at its own `dist/canvaskit/<ver>/`,
+  and Export App ships CanvasKit only for graphs with an SkSL Shader or
+  `skia-*` node. That an exported app actually loads it is a served-`dist/`
+  question (`build:export-template`, then open `dist/` over http — never
+  file://, which can't instantiate WASM).
+- **Skia parity tools** (Electron or devices, not in `npm run check`):
+  - `npm run compare:skia -- --a <fixture>:<node>[:aux:<name>] --b …` —
+    renders two nodes of `scripts/fixtures/skia/<fixture>-graph.ts`
+    (`export const fixture`, contract in `scripts/skia/fixture.ts`) through
+    the real evaluator, headless, and prints compare_renders' metrics plus
+    max channel error and identical-pixel fraction; PNGs + report.json in
+    `scripts/.skia-compare-out/`. Exit 0 within `--expect` (default
+    `match`), 1 beyond it, 2 on any setup/render error. How a port (native
+    node vs its `skia-*` / SkSL version) is proven without an editor. Each
+    frame evaluates from a fresh cache: stateful nodes see no history.
+    `--analysis 256` reproduces the editor's compare_renders sampling (the
+    Aurora fixture reads meanAbs 0.0006 there, 0.00025 at full 512²).
+  - `npm run parity:skia [-- --write-golden]` — toolbox vs the exported
+    bundle on RN Skia's web target (needs `npm --prefix skia-harness run
+    export:web`); `--write-golden` also writes toolbox's frames to
+    `scripts/fixtures/skia/golden/` for the device lanes. Re-run it whenever
+    the bundle is re-exported: the device lane refuses stale goldens.
+  - `npm run parity:skia:device -- --platform ios|android` — the same
+    frames captured on the iOS Simulator / Android emulator through the
+    harness's deep-link capture mode, scored against the goldens. Needs
+    Xcode or the Android SDK; runs in GitHub Actions
+    (`skia-device-parity.yml`, dispatch only). `--simulate` self-tests the
+    collector → metrics → report path with no device. Device snapshots are
+    replays into an sRGB surface: they measure GPU math, not a Display P3
+    screen.
 
 ---
 

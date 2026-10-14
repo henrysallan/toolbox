@@ -93,3 +93,6 @@ next-env.d.ts
 /skia-harness/parity-out
 # scratch bundles check:skia-scene-export type-checks inside the harness
 /skia-harness/src/__scene_check__/
+/skia-harness/device-out
+# compare:skia output (PNGs + report.json)
+/scripts/.skia-compare-out/

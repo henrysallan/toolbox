@@ -2,74 +2,155 @@
 // (specdocs/101326_skia-target.md). The same App runs on iOS / Android dev
 // builds and on the web (CanvasKit).
 //
-// Web query params: ?t=<seconds> freezes the clock at that time, ?size=<pt>
-// sets the canvas edge (default: the export's canvas width). For the parity
-// script, window.__toolboxHarness.capture(t) seeks, waits for Skia to draw,
-// and returns the canvas pixels (RGBA8, unpremultiplied, row 0 = top).
-import React, { useEffect } from "react";
-import { Platform, StyleSheet, Text, View } from "react-native";
-import { AlphaType, ColorType, useCanvasRef } from "react-native-skia";
+// Sizes are DEVICE PIXELS: the canvas is size / PixelRatio points, so a
+// capture at size=512 is a 512×512 snapshot on a 3× iPhone, a 2.625×
+// Android emulator and the 1× web page alike, sampling the shader at the
+// same uv as toolbox's 512² render (the export's iResolution is in points).
+//
+// Web query params: ?t=<seconds> freezes the clock at that time, ?size=<px>
+// sets the canvas edge (default: the export's canvas width), ?chrome=0 hides
+// the label. For parity:skia, window.__toolboxHarness.capture(t) seeks,
+// waits for Skia to draw, and returns the canvas pixels (RGBA8,
+// unpremultiplied, row 0 = top).
+//
+// Native: deep links drive the same capture (capture.ts has the contract):
+//   toolboxharness://capture?t=1.25&run=<id>&host=http://127.0.0.1:<port>&frame=75&size=512
+// The first capture freezes the clock for the rest of the session.
+import React, { useEffect, useRef, useState } from "react";
+import { Linking, PixelRatio, Platform, StyleSheet, Text, View } from "react-native";
+import { useSharedValue, type SharedValue } from "react-native-reanimated";
+import { useCanvasRef, type CanvasRef } from "react-native-skia";
 import { CANVAS, NAME, TIMELINE, ToolboxEffect, useToolboxClock } from "./src/bundle";
+import { deviceInfo, loopbackHost, nextFrames, parseLink, postJson, snapshot, toBase64, type Snapshot } from "./capture";
 
 const query =
   Platform.OS === "web" && typeof window !== "undefined"
     ? new URLSearchParams(window.location.search)
     : null;
-const frozenAt = query?.get("t") != null ? Number(query.get("t")) : null;
-const size = Number(query?.get("size") ?? CANVAS.width);
+const webFrozenAt = query?.get("t") != null ? Number(query.get("t")) : null;
+const initialSize = Number(query?.get("size") ?? CANVAS.width);
 
-function nextFrames(n: number): Promise<void> {
-  return new Promise((resolve) => {
-    const step = (left: number) =>
-      left <= 0 ? resolve() : requestAnimationFrame(() => step(left - 1));
-    step(n);
-  });
+type Capture = (t: number, sizePx?: number) => Promise<Snapshot>;
+
+// The live master clock. Its frame callback is armed once at mount
+// (useFrameCallback ignores later autostart changes), so freezing swaps
+// this component out for <Frozen> rather than flipping a prop.
+function Playing({ size, canvasRef }: { size: number; canvasRef: React.RefObject<CanvasRef | null> }) {
+  const time = useToolboxClock({ playing: true });
+  return <ToolboxEffect time={time} width={size} height={size} canvasRef={canvasRef} />;
 }
 
-function toBase64(bytes: Uint8Array): string {
-  let s = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    s += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
-  }
-  return btoa(s);
+function Frozen({
+  time,
+  size,
+  canvasRef,
+}: {
+  time: SharedValue<number>;
+  size: number;
+  canvasRef: React.RefObject<CanvasRef | null>;
+}) {
+  return <ToolboxEffect time={time} width={size} height={size} canvasRef={canvasRef} />;
 }
 
 export default function App() {
-  const time = useToolboxClock({ playing: frozenAt === null, start: frozenAt ?? 0 });
   const canvasRef = useCanvasRef();
+  const frozenTime = useSharedValue(webFrozenAt ?? 0);
+  const [frozen, setFrozen] = useState(webFrozenAt !== null);
+  const [sizePx, setSizePx] = useState(initialSize);
+  const sizePt = sizePx / PixelRatio.get();
+  // What the last committed render shows — a capture waits for its own
+  // state changes to land before snapshotting.
+  const shown = useRef({ frozen, sizePx });
+  useEffect(() => {
+    shown.current = { frozen, sizePx };
+  }, [frozen, sizePx]);
 
+  const capture = useRef<Capture>(async () => {
+    throw new Error("not ready");
+  });
+  capture.current = async (t, px) => {
+    const want = px && px > 0 ? Math.round(px) : sizePx;
+    if (!frozen) setFrozen(true);
+    if (want !== sizePx) setSizePx(want);
+    for (let i = 0; i < 120 && (!shown.current.frozen || shown.current.sizePx !== want); i++) await nextFrames(1);
+    frozenTime.value = t;
+    return snapshot(canvasRef, { expectWidth: Platform.OS === "web" ? undefined : want });
+  };
+
+  // ---- web: the parity:skia hook -------------------------------------------
   useEffect(() => {
     if (Platform.OS !== "web") return;
     const w = window as unknown as Record<string, unknown>;
     w.__toolboxHarness = {
       name: NAME,
       timeline: TIMELINE,
-      size,
+      size: initialSize,
       async capture(t: number) {
-        time.value = t;
-        await nextFrames(4);
-        const img = canvasRef.current?.makeImageSnapshot();
-        if (!img) throw new Error("makeImageSnapshot returned nothing");
-        const width = img.width();
-        const height = img.height();
-        const px = img.readPixels(0, 0, {
-          width,
-          height,
-          colorType: ColorType.RGBA_8888,
-          alphaType: AlphaType.Unpremul,
-        });
-        if (!(px instanceof Uint8Array)) throw new Error("readPixels returned no 8-bit data");
-        return { width, height, rgba: toBase64(px) };
+        const s = await capture.current(t);
+        return { width: s.width, height: s.height, rgba: toBase64(s.rgba), attempts: s.attempts };
       },
     };
     w.__toolboxHarnessReady = true;
-  }, [time, canvasRef]);
+  }, []);
 
+  // ---- native: deep links (scripts/skia-device-parity.mjs) ------------------
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    let queue = Promise.resolve();
+    const onLink = async (url: string) => {
+      const link = parseLink(url);
+      if (!link) return;
+      const host = loopbackHost(link.params.host);
+      if (!host) {
+        console.warn(`skia-harness: ignoring ${link.action} link — host must be loopback, got ${link.params.host}`);
+        return;
+      }
+      const run = link.params.run ?? "";
+      const frame = link.params.frame != null ? Number(link.params.frame) : null;
+      try {
+        if (link.action === "hello") {
+          await postJson(`${host}/hello`, { run, name: NAME, timeline: TIMELINE, canvas: CANVAS, ...deviceInfo() });
+        } else if (link.action === "capture") {
+          const t = Number(link.params.t);
+          if (!Number.isFinite(t)) throw new Error(`capture needs t=<seconds>, got "${link.params.t}"`);
+          const size = link.params.size ? Number(link.params.size) : undefined;
+          const s = await capture.current(t, size);
+          await postJson(`${host}/frame`, {
+            run,
+            frame,
+            t,
+            width: s.width,
+            height: s.height,
+            pixelRatio: PixelRatio.get(),
+            attempts: s.attempts,
+            rgba: toBase64(s.rgba),
+          });
+        } else {
+          throw new Error(`unknown action "${link.action}"`);
+        }
+      } catch (e) {
+        await postJson(`${host}/error`, { run, frame, message: e instanceof Error ? e.message : String(e) }).catch(
+          () => {}
+        );
+      }
+    };
+    const enqueue = (url: string | null | undefined) => {
+      if (url) queue = queue.then(() => onLink(url));
+    };
+    Linking.getInitialURL().then(enqueue, () => {});
+    const sub = Linking.addEventListener("url", (e) => enqueue(e.url));
+    return () => sub.remove();
+  }, []);
+
+  const chrome = query ? query.get("chrome") !== "0" : !frozen;
   return (
     <View style={styles.root}>
-      <ToolboxEffect time={time} width={size} height={size} canvasRef={canvasRef} />
-      {query?.get("chrome") !== "0" && (
+      {frozen ? (
+        <Frozen time={frozenTime} size={sizePt} canvasRef={canvasRef} />
+      ) : (
+        <Playing size={sizePt} canvasRef={canvasRef} />
+      )}
+      {chrome && (
         <Text style={styles.label}>
           {NAME} · toolbox export · {TIMELINE.durationSec}s loop
         </Text>

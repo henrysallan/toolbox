@@ -19,11 +19,21 @@
 // `install:export-template` therefore passes --include=dev; without it the
 // install brings in only react/react-dom and `npx vite` falls back to an
 // ephemeral latest-vite that can't load vite.config.ts's plugin imports.
+//
+// CanvasKit (Skia's WASM build, the one react-native-skia's web target
+// loads) is copied from node_modules/canvaskit-wasm into dist/canvaskit/<ver>/
+// so Skia-rendered nodes (SkSL Shader, skia-*) work in exported apps; the
+// template's main.tsx points the loader there (setCanvasKitBase). The
+// editor's packager drops it from graphs without such nodes
+// (templateDistFilesFor in src/lib/export-packager.ts), like the ONNX wasm.
+// The Tier-A single file can't use it: browsers won't instantiate WASM
+// fetched from file://, so SkSL needs dist/ served over http.
 
 import { execSync } from "node:child_process";
 import { mkdirSync, rmSync, cpSync, writeFileSync, readdirSync, statSync, readFileSync, existsSync } from "node:fs";
 import { join, relative, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { copyCanvasKit } from "./copy-canvaskit.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, "..");
@@ -140,6 +150,20 @@ if (SLIM) {
   );
 }
 
+console.log("[build-export-template] Copying CanvasKit into dist/canvaskit/…");
+const canvasKit = copyCanvasKit(join(OUT_DIR, "dist", "canvaskit"));
+if (canvasKit) {
+  console.log(
+    `[build-export-template] CanvasKit ${canvasKit.version}: ${canvasKit.files
+      .map((f) => `${relative(OUT_DIR, f)} (${statSync(f).size} B)`)
+      .join(", ")}`
+  );
+} else {
+  console.warn(
+    "[build-export-template] canvaskit-wasm is not installed — exported apps will render SkSL Shader nodes transparent."
+  );
+}
+
 console.log("[build-export-template] Copying Tier C source tree…");
 const sourceOut = join(OUT_DIR, "source");
 mkdirSync(sourceOut, { recursive: true });
@@ -178,6 +202,8 @@ const manifest = {
   // against it. Absent on manifests built before --slim existed, which the
   // editor treats as true (full template).
   mlRuntime: !SLIM,
+  // CanvasKit version shipped at dist/canvaskit/<version>/, or null.
+  canvasKit: canvasKit ? canvasKit.version : null,
   distFiles,
   sourceFiles,
   distBytes,

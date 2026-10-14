@@ -48,6 +48,28 @@ export function graphUsesMlNodes(graph: SavedProject): boolean {
   return (graph.nodes ?? []).some((n) => ML_NODE_TYPES.has(n.defType));
 }
 
+// CanvasKit (Skia's WASM build, ~8 MB) ships in the template's dist/ at
+// canvaskit/<version>/ (scripts/build-export-template.mjs) for the nodes
+// Skia renders: the SkSL Shader node and the Skia layer's `skia-*` nodes
+// (specdocs/101326_skia-target.md). Like the ONNX runtime, it is dropped
+// from every export whose graph has none of them.
+export const CANVASKIT_ASSET_RE = /^canvaskit\//;
+
+export function graphUsesCanvasKit(graph: SavedProject): boolean {
+  return (graph.nodes ?? []).some(
+    (n) => n.defType === "sksl-shader" || n.defType.startsWith("skia-")
+  );
+}
+
+// The template dist/ files this project's exported app actually needs.
+export function templateDistFilesFor(graph: SavedProject, distFiles: string[]): string[] {
+  const ml = graphUsesMlNodes(graph);
+  const skia = graphUsesCanvasKit(graph);
+  return distFiles.filter(
+    (p) => (ml || !ORT_WASM_ASSET_RE.test(p)) && (skia || !CANVASKIT_ASSET_RE.test(p))
+  );
+}
+
 function sanitizeAppName(name: string): string {
   const replaced = name.replace(/[^A-Za-z0-9_-]/g, "-");
   const collapsed = replaced.replace(/-+/g, "-");
