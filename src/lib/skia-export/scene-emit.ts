@@ -165,6 +165,9 @@ export function compress(values: BindValue[], mode: "lerp" | "step"): { f: numbe
 
 function seriesMode(pb: PlannedBind & { plan: { kind: "sampled" } }): "lerp" | "lerpN" | "step" {
   const vals = pb.plan.values;
+  // Held values (a baked sprite sheet's cell offset) step: between two
+  // frames there is no in-between cell.
+  if (pb.plan.hold) return "step";
   if (pb.role === "number") return "lerp";
   if (pb.role === "array") {
     const n = (vals[0] as number[]).length;
@@ -236,7 +239,7 @@ export function sampleKeys(plan: ScenePlan): Map<string, string> {
     let key: string;
     if (p.kind === "track") key = JSON.stringify(["t", b.role, p.pick ?? null, p.tracks]);
     else if (p.kind === "clock") key = "clock";
-    else if (p.kind === "sampled") key = JSON.stringify(["s", b.role, p.values]);
+    else if (p.kind === "sampled") key = JSON.stringify(p.hold ? ["h", b.role, p.values] : ["s", b.role, p.values]);
     else if (p.kind === "expr") key = JSON.stringify(["e", b.role, p.scale ?? null, programKey(p.program)]);
     else continue;
     const first = byKey.get(key);
@@ -1433,7 +1436,7 @@ export function emitSceneBundle(
             case "clock":
               return [{ ...base, from: p.from }];
             case "sampled":
-              return [{ ...base, role: b.role, from: p.from, distinct: new Set(p.values.map((v) => JSON.stringify(v))).size }];
+              return [{ ...base, role: b.role, from: p.from, distinct: new Set(p.values.map((v) => JSON.stringify(v))).size, ...(p.hold ? { hold: true } : {}) }];
             case "expr":
               // Compiled from a driver subgraph: procedural.ts P_<sample>.
               return [{ ...base, from: p.from, procedural: proceduralManifest(p.program), ...(p.scale === undefined ? {} : { scale: p.scale }) }];

@@ -31,6 +31,10 @@ fetches the SPA index as WASM ("expected magic word 00 61 73 6d") and
 parity:skia times out waiting for the harness:
 `cp ../node_modules/canvaskit-wasm/bin/full/canvaskit.wasm public/`.
 
+`bake` plays `src/bundle-bake/` (`--fixture bake`): a Skia Bake — animated
+Noise → Blur rendered by the engine, shipped as a sprite sheet the clock
+steps through (`npm run parity:skia -- --bundle bake`; 128²).
+
 `src/bundle/` is generated; regenerate instead of editing it. Install
 packages with `npx expo install` (`.npmrc` sets `legacy-peer-deps`:
 Reanimated 4.7's peer range rejects the RN 0.88 release candidate).

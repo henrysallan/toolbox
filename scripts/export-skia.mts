@@ -21,6 +21,13 @@
 //                         resolve locally, anything else ships unbundled
 //                         with a warning)
 //   npx tsx scripts/export-skia.mts --fixture filters --out skia-harness/src/bundle-filters [--node <canvas>]
+//   npx tsx scripts/export-skia.mts --fixture bake --out skia-harness/src/bundle-bake
+//
+// Skia Bake assets (`bake:<nodeId>`, lib/skia-export/bake.ts) need the real
+// engine: their frames render in headless Electron
+// (scripts/skia-bake-frames.cjs) inside the same asset pre-pass
+// (editor.ts exportSkiaWithBakes) and land as assets/<id>.png — one PNG,
+// or a sprite sheet when the bake animates.
 //
 // g.json: { nodes: GraphNode[], edges: GraphEdge[], timeline?, canvas? }
 // (engine/evaluator.ts shapes; timeline = { fps, ticksPerFrame,
@@ -35,12 +42,44 @@
 //
 // Exit 1 with the planner's problems when the target can't export as-is.
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { GraphEdge, GraphNode } from "@/engine/evaluator";
 import type { SkiaExportResult } from "@/lib/skia-export";
+import type { BakeFrameRenderer } from "@/lib/skia-export/bake";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+// Skia Bake frames from the real engine, in headless Electron (one run per
+// bake asset).
+function electronBakeFrames(nodes: GraphNode[], edges: GraphEdge[], timeline: { fps: number; ticksPerFrame: number }): BakeFrameRenderer {
+  return async (bake, ticks, size) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "export-skia-bake-"));
+    try {
+      const jobFile = path.join(dir, "job.json");
+      fs.writeFileSync(
+        jobFile,
+        JSON.stringify({ nodes, edges, size, timeline: { fps: timeline.fps, ticksPerFrame: timeline.ticksPerFrame }, renders: [{ nodeId: bake.nodeId, source: bake.source, ticks }] })
+      );
+      const env = { ...process.env };
+      delete env.ELECTRON_RUN_AS_NODE;
+      const r = spawnSync(path.join(ROOT, "node_modules", ".bin", "electron"), [path.join(ROOT, "scripts", "skia-bake-frames.cjs"), "--job", jobFile, "--out", path.join(dir, "out")], {
+        env,
+        stdio: "inherit",
+      });
+      if (r.status !== 0) throw new Error(`skia-bake-frames exited ${r.status ?? r.signal} for Skia Bake "${bake.nodeId}"`);
+      return ticks.map((t) => {
+        const f = path.join(dir, "out", `0-${t}.rgba`);
+        return fs.existsSync(f) ? new Uint8Array(fs.readFileSync(f)) : null;
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+}
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -67,7 +106,7 @@ async function resolveAssets(uses: AssetUse[]) {
 const out = arg("out");
 if (!out) {
   console.error(
-    "usage: export-skia.mts (--fixture aurora|aurora-scene|scene|easings|atlas|image|procedural|text|filters [--node canvas]|split | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked|native]"
+    "usage: export-skia.mts (--fixture aurora|aurora-scene|scene|easings|atlas|image|procedural|text|filters [--node canvas]|split|bake | --graph g.json --node id | --scene ir.json) --out dir [--animation worklet|baked|native]"
   );
   process.exit(2);
 }
@@ -193,8 +232,16 @@ if (sceneFile) {
     timeline = { ...fx.SPLIT_TIMELINE, markers: fx.SPLIT_MARKERS };
     canvas = { width: 512, height: 512 };
     name = "Split stages";
+  } else if (fixture === "bake") {
+    // Animated Noise → Blur baked into a Skia layer under a native ring
+    // (bake-graph.ts): the ?bundle=bake slot, a sprite sheet.
+    const fx = await import("./fixtures/skia/bake-graph.ts");
+    ({ nodes, edges, targetId } = fx.bakeGraph());
+    timeline = fx.BAKE_TIMELINE;
+    canvas = { width: fx.BAKE_SIZE, height: fx.BAKE_SIZE };
+    name = "Bake";
   } else if (fixture) {
-    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings, atlas, image, procedural, text, filters, split)`);
+    throw new Error(`unknown fixture "${fixture}" (have: aurora, aurora-scene, scene, easings, atlas, image, procedural, text, filters, split, bake)`);
   } else {
     const file = arg("graph");
     const node = arg("node");
@@ -209,8 +256,24 @@ if (sceneFile) {
   }
   label = targetId;
   const req = { nodes, edges, targetId, name, canvas, timeline, runtimeSource, animation };
-  const assets = await resolveAssets(collectSkiaExportAssets(req));
-  result = exportSkia({ ...req, ...(assets ? { assets } : {}) });
+  if ((nodes as GraphNode[]).some((n) => n.type === "skia-bake")) {
+    // Skia Bake: the editor's pre-pass (editor.ts exportSkiaWithBakes) with
+    // the frames from headless Electron; every other asset through the
+    // Node resolver, as below.
+    const { exportSkiaWithBakes } = await import("@/lib/skia-export/editor");
+    const nodeResolve = nodeResolveAsset({ remote });
+    const r = await exportSkiaWithBakes(req, {
+      renderBakeFrames: electronBakeFrames(nodes, edges, timeline),
+      resolveAsset: (a) => (nodeAssetHandles(a.url, { remote }) ? nodeResolve(a) : Promise.resolve(null)),
+    });
+    result = r.result;
+    for (const b of r.bakes ?? []) {
+      console.log(`bake ${b.nodeId}: ${b.shipped === "static" ? "one PNG" : `sprite sheet, ${b.frames} frames (${b.distinct} distinct)`}, ${b.bytes} B PNG (Bake ${b.requested})`);
+    }
+  } else {
+    const assets = await resolveAssets(collectSkiaExportAssets(req));
+    result = exportSkia({ ...req, ...(assets ? { assets } : {}) });
+  }
 }
 
 if (!result.files) {

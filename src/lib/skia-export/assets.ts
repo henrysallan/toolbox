@@ -23,6 +23,7 @@ import { resolveSkiaAssetBytes, type SkiaAssetResolver } from "@/engine/skia/ass
 import type { AssetIR, SkiaNode, SkiaScene } from "@/engine/skia/scene-ir";
 import { exportSkia, type SkiaExportAssets, type SkiaExportRequest, type SkiaExportResult } from "./api";
 import type { AssetUse } from "./asset-bundle";
+import { planSceneBakes } from "./bake";
 import { planSkiaExport } from "./plan";
 import { makeSceneSampler, SKIA_CANVAS_TYPE } from "./scene-sample";
 
@@ -86,7 +87,11 @@ export function collectSkiaExportAssets(req: SkiaExportRequest): AssetUse[] {
   if (target.type === SKIA_CANVAS_TYPE) {
     const sampler = makeSceneSampler(req.nodes, req.edges, target.id, req.canvas, req.timeline);
     if ("problem" in sampler) return [];
-    const scene = sampler.sampleAt(0);
+    const raw = sampler.sampleAt(0);
+    if (!raw) return [];
+    // Skia Bake (bake.ts): the AssetIR exportSkia bundles — an animated
+    // bake's sprite sheet (AssetIR.sheet) — not the node's own draw.
+    const scene = planSceneBakes(raw, req.nodes, req.edges, req.canvas, req.timeline).rewrite(raw, 0);
     return scene ? sceneUses(scene, typeOf) : [];
   }
   return [];

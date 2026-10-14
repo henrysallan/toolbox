@@ -65,9 +65,13 @@ const HARNESS_DIST = path.join(REPO, "skia-harness", "dist");
 // harness's fake clock
 // (?clock=fake): each capture steps Reanimated frame by frame from play(),
 // so frames must ascend, and the run also reports every animated value's
-// drift from the worklet-mode curve at every frame (drift.json).
+// drift from the worklet-mode curve at every frame (drift.json). bake = a
+// Skia layer holding a Skia Bake (src/bundle-bake, `--fixture bake`): an
+// engine effect shipped as a sprite sheet the clock steps through, 128²,
+// 60 frames — toolbox renders the live engine frames it was baked from.
 const BUNDLE = H.arg("bundle", "effect");
 const NATIVE = BUNDLE === "native" || BUNDLE === "native-easings" || BUNDLE === "native-scene";
+const BAKE = BUNDLE === "bake";
 // --jitter <ms> [--seed n] (native only): the fake clock's frames wobble by
 // up to ± that much, deterministically — a real vsync, not a perfect one.
 // Drift is then measured against the worklet value at the same jittered
@@ -79,7 +83,7 @@ const SEED = Number(H.arg("seed", "1"));
 // start (default: eight spread over it), and toolbox renders the same
 // frames of the timeline, offset by the segment's start.
 const SEGMENT = H.arg("segment", "");
-const OUT = path.join(REPO, "skia-harness", "parity-out", NATIVE ? `${BUNDLE}${SEGMENT ? `-${SEGMENT}` : ""}${JITTER ? `-jitter${JITTER}` : ""}` : BUNDLE === "filters" ? `filters-${H.arg("size", "512")}` : "");
+const OUT = path.join(REPO, "skia-harness", "parity-out", NATIVE ? `${BUNDLE}${SEGMENT ? `-${SEGMENT}` : ""}${JITTER ? `-jitter${JITTER}` : ""}` : BUNDLE === "filters" ? `filters-${H.arg("size", "512")}` : BAKE ? "bake" : "");
 const BUNDLE_DIR = path.join(OUT, ".bundle");
 
 // atlas = Copy to Points (Skia) (src/bundle-atlas, `--fixture atlas`): a 30 fps
@@ -90,10 +94,12 @@ const DEFAULT_FRAMES =
     ? "0,10,30,57,58,90,120,150,151,163,200,240,299"
     : BUNDLE === "atlas"
       ? "0,20,40,60,80,100,120"
-      : "0,45,90,120,150,200,240,299";
+      : BAKE
+        ? "0,1,7,15,29,30,31,44,58,59"
+        : "0,45,90,120,150,200,240,299";
 const FRAMES_ARG = H.arg("frames", "");
 let FRAMES = (FRAMES_ARG || DEFAULT_FRAMES).split(",").map(Number);
-const SIZE = Number(H.arg("size", "512"));
+const SIZE = Number(H.arg("size", BAKE ? "128" : "512"));
 const WRITE_GOLDEN = H.flag("write-golden");
 const FPS = 60;
 
@@ -107,11 +113,11 @@ if (
   !(JITTER >= 0) ||
   (JITTER > 0 && !NATIVE) ||
   (SEGMENT && !NATIVE) ||
-  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas", "image", "procedural", "procedural-baked", "text", "filters", "split"].includes(BUNDLE) ||
+  !["effect", "scene", "baked", "native", "native-easings", "native-scene", "atlas", "image", "procedural", "procedural-baked", "text", "filters", "split", "bake"].includes(BUNDLE) ||
   (WRITE_GOLDEN && BUNDLE !== "effect")
 ) {
   console.error(
-    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image|procedural|procedural-baked|text|filters|split] [--segment name --jitter ms --seed n (native only)] [--write-golden (effect only)]"
+    "usage: npm run parity:skia -- [--frames 0,45,120 (ascending for native)] [--size 512] [--bundle effect|scene|baked|native|native-easings|native-scene|atlas|image|procedural|procedural-baked|text|filters|split|bake] [--segment name --jitter ms --seed n (native only)] [--write-golden (effect only)]"
   );
   process.exit(2);
 }
@@ -203,9 +209,27 @@ app.whenReady().then(async () => {
         await new Promise((r) => setTimeout(r, 300));
       }
     }
+    if (BAKE) {
+      // The sheet arrives through useImage (fetch + decode, async): a
+      // snapshot taken before it lands is stable too — just without the
+      // bake. Capture once to settle, then give the decode time.
+      await H.call(win, `window.__toolboxHarness.capture(0)`, 60000, "device warm-up");
+      await new Promise((r) => setTimeout(r, 1500));
+    }
     const device = [];
     for (const f of FRAMES) {
       device.push(await H.call(win, `window.__toolboxHarness.capture(${f / FPS})`, 60000, `device capture f${f}`));
+    }
+    // bake: a baked frame HOLDS until the next tick's frame — between frames
+    // the clock must still show frame f (never a sheet offset in between).
+    const HOLD_AT = [0.5, 0.999];
+    const held = [];
+    if (BAKE) {
+      for (const f of FRAMES) {
+        for (const d of HOLD_AT) {
+          held.push({ f, d, cap: await H.call(win, `window.__toolboxHarness.capture(${(f + d) / FPS})`, 60000, `device capture f${f}+${d}`) });
+        }
+      }
     }
     const dw = device[0].width;
     const dh = device[0].height;
@@ -277,6 +301,21 @@ app.whenReady().then(async () => {
       }
     }
 
+    // bake: the in-between ticks against the same toolbox frame f. The
+    // ring's keyframed radius DOES move between frames (a track), so these
+    // compare the bake alone: pixels outside the ring's band.
+    const holdRows = [];
+    for (const h of held) {
+      const i = FRAMES.indexOf(h.f);
+      const { metrics } = await H.call(
+        win,
+        `window.__parity.compareOutsideRing(${JSON.stringify(toolbox[i])}, ${JSON.stringify(h.cap.rgba)}, ${SIZE}, ${SIZE}, ${h.f})`
+      );
+      holdRows.push({ frame: h.f, offset: h.d, ...metrics });
+      console.log(
+        `f${h.f}+${h.d} (bake only, ${metrics.pixels} px): ${metrics.verdict.toUpperCase()} max ${metrics.maxSteps}/255 identical ${(metrics.identical * 100).toFixed(2)}%`
+      );
+    }
     // The clock really moved: first and middle device frames must differ.
     const mid = Math.floor(FRAMES.length / 2);
     const moved = (
@@ -299,7 +338,7 @@ app.whenReady().then(async () => {
       `motion check: device f${FRAMES[0]} vs f${FRAMES[mid]} meanAbs ${moved.toFixed(4)} (toolbox ${tmoved.toFixed(4)}; must be ≫ 0, or > 0 and toolbox's own)`
     );
 
-    const all = rows.every((r) => r.verdict === "match") && motionOk;
+    const all = rows.every((r) => r.verdict === "match") && holdRows.every((r) => r.maxSteps === 0) && motionOk;
     fs.writeFileSync(
       path.join(OUT, "report.json"),
       JSON.stringify(
@@ -313,6 +352,7 @@ app.whenReady().then(async () => {
           motionMeanAbs: moved,
           toolboxMotionMeanAbs: tmoved,
           rows,
+          ...(holdRows.length ? { holdRows } : {}),
           ...(drift ? { drift } : {}),
           ...(density ? { density } : {}),
           ok: all,

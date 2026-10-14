@@ -375,6 +375,7 @@ import { skiaMorphologyNode } from "./skia/morphology";
 import { skiaColorMatrixNode } from "./skia/color-matrix";
 import { skiaSkslFilterNode } from "./skia/sksl-filter";
 import { skiaLensFlareNode } from "./skia/lens-flare";
+import { skiaBakeNode } from "./skia/bake";
 
 let registered = false;
 
@@ -792,5 +793,6 @@ export function registerAllNodes() {
   registerNode(skiaColorMatrixNode);
   registerNode(skiaSkslFilterNode);
   registerNode(skiaLensFlareNode);
+  registerNode(skiaBakeNode);
   registered = true;
 }

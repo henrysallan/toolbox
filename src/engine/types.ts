@@ -2068,9 +2068,11 @@ export interface NodeDefinition {
   // "skia"; `class` is how the node lowers (sksl: fused into a runtime
   // effect; native: React Native Skia drawing; filter: an image filter over
   // rendered content; driver: a keyframe source the timeline exports;
-  // terminal: Skia Canvas). `mirrors` names the default-layer node it ports,
-  // for "convert layer to Skia" and compare:skia.
-  skia?: { class: "sksl" | "native" | "filter" | "driver" | "terminal"; mirrors?: string };
+  // terminal: Skia Canvas; bake: an engine image rendered at export and
+  // shipped as an image asset — Skia Bake, additive 2026-10-14). `mirrors`
+  // names the default-layer node it ports, for "convert layer to Skia" and
+  // compare:skia.
+  skia?: { class: "sksl" | "native" | "filter" | "driver" | "terminal" | "bake"; mirrors?: string };
   inputs: InputSocketDef[];
   // Optional: derive the active input socket list from params and from
   // the source-output types of any currently-wired edges. The

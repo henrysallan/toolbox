@@ -490,7 +490,7 @@ the GL implementation and parity would depend on a translation again.
 | `sksl-gather` | re-evaluates upstream at offset coords | fused; cost × taps | displace, chromatic-aberration, sharpen, edge-detect, bevel-emboss, vector-field, flow-blur, kuwahara, array |
 | `filter` | needs the rendered result of what's below | native image filter, or `RuntimeShader` over a `Group` layer | blur → `Blur`, bloom → threshold `RuntimeShader` + `Blur` + `Blend(plus)`, grain (classic) → `RuntimeShader`, liquid-glass, lens-flare |
 | `native` | vector/text/image drawing | RN Skia components | circle/rectangle/polygon/star/arc/line/wave/spiral/cross/arrow/spline-draw/svg-source → `Path`; spline-stroke/spline-fill → paint style; trim-path → `Path start/end`; spline-boolean → `Path.op`; round-corners → `CornerPathEffect`; dash → `DashPathEffect`; gradient fill → gradient shaders; text → `Paragraph`; image-source → `Image`; points + copy-to-points → `Atlas`; transform → `Group transform` |
-| `bake` | not live-exportable, but renderable | image / image sequence / video asset + `Image` | simulations, ML, 3D, video, stateful nodes |
+| `bake` | not live-exportable, but renderable | image asset (one PNG, or a sprite sheet stepped by the clock) + `Image` — built as Skia Bake (§3.2b) | simulations, ML, 3D, video, stateful nodes, any engine effect (blur / bloom over noise) |
 | `none` | not offered in a Skia layer | — | audio, trackers, webcam |
 
 Counts today (`classes.ts`): pure 20, gather 11, multipass 12, compiled 5,
@@ -629,6 +629,116 @@ resolution and resamples); alpha-0 light through Graphite's layers.
 **Native toolbox bug found:** Lens Flare's description says it outputs the
 flare "(transparent background)"; its composite writes alpha 1 (opaque
 black). The Skia mirror follows the pixels.
+
+#### 3.2b The `bake` class: built and measured (Wave 3 lane B, 2026-10-14)
+
+**Skia Bake** (`skia-bake`, `src/nodes/skia/bake.ts`, `skia: { class:
+"bake" }`) puts an ENGINE image inside a Skia layer and ships it as pixels:
+one PNG at canvas size when it doesn't change over the timeline, otherwise a
+**sprite sheet** of frames that the exported clock steps through. Params:
+*Bake* (Auto / Static PNG / Sprite sheet), *Bake FPS* (0 = the timeline's),
+*Max sheet* (2048 / 4096 / 8192 px per side).
+
+**Wiring rule.** A Skia layer still holds only Skia nodes. The engine
+graph that makes the picture stays OUTSIDE the layer, and its image comes in
+through a Layer Input socket (minted by dragging onto the Layer Input's empty
+port) or the Layer Input's `backdrop`, wired into the bake's `image`.
+Flatten splices the Layer Input wire, so the evaluator and the exporter see
+source → Skia Bake. No engine node is sanctioned inside the layer:
+- the add-node menu would have to offer the whole catalog there;
+- the layer would stop reading as "what ships".
+
+The validator's refusal for an engine node inside a Skia layer now names
+this route.
+
+**Preview.** The node reads its input back at canvas size and makes an
+UNPREMULTIPLIED CanvasKit image (`engine/skia/bake-frames.ts`). It files
+the image in the context's node state under the AssetIR object its output
+carries: a ring of 4 per node, deleted by dispose. It returns one `image`
+draw of the asset `bake:<nodeId>` over the canvas. The Skia Canvas resolves
+`bake:` URLs from those frames (`withBakeFrames`). The image stays unpremul
+because CanvasKit decodes the shipped PNG unpremul and filters it that way.
+A premultiplied copy of the same bytes draws identically 1:1 but differs
+when scaled.
+
+**Export** (`lib/skia-export/bake.ts`).
+- **Sampler.** The GL-less scene sampler stops at the bake's input
+  (`scene-sample.ts`).
+- **Planning.** `planSceneBakes` plans every `bake:` asset in the scene.
+  *Auto* reads the graph upstream of the image:
+  - keyframes;
+  - clip windows;
+  - `stable: false` / `tickDriven` defs;
+  - `fingerprintExtras` that differ between probe ticks. Noise's
+    `animated` and an SkSL Shader reading `iTime` are caught only by this.
+- **Animated bakes.** The draw is rewritten into
+  `<Group clip={rect}><Image image={sheet} x={X(f)} y={Y(f)} width={SW} height={SH} fit="fill"/>`.
+  - X / Y are **hold binds**: additive `Bind.hold`, sampled per frame,
+    emitted as `seriesStep`.
+  - Every tick therefore shows `floor(frame)`'s cell, fractional ticks
+    included.
+  - All three animation modes carry them on `sampleBinds`:
+    - worklet: the master clock;
+    - baked: non-program binds stay on the worklet timeline;
+    - native: the native linear clock.
+- **Sheet layout** (`AssetIR.sheet`, additive). Cells are row-major with
+  1-px edge-repeat gutters. Frames are full size when they fit under the
+  cap; otherwise the largest aspect-kept size that does, with a warning. The
+  manifest carries the layout and the tick of each cell.
+- **Bytes.** The bytes come through lane I's asset seam: the async
+  pre-pass `withSkiaAssets` (editor.ts) collects the tick-0 scene's assets
+  (`collectSkiaExportAssets`, which applies the bake rewrite so it sees the
+  sheet), resolves them, and hands them to the synchronous `exportSkia` on
+  `SkiaExportRequest.assets`. `bake:` is a registered scheme on
+  `engine/skia/asset-bytes.ts`; with no frame renderer it fails with the
+  reason, which the export's warning quotes. `exportSkiaWithBakes`
+  (editor.ts; the editor, MCP and the CLI) hands the pre-pass a resolver
+  that answers `bake:` first and passes every other URL to
+  `env.resolveAsset`. The preview never fetches bake bytes: it draws the
+  live frames.
+  - Bake URLs render through `env.renderBakeFrames`, the host's real-engine
+    renderer:
+    - the editor: `renderSkiaBakeFrames`, with the source forced as the
+      terminal inside the export-resolution bracket;
+    - MCP `export_skia`: the same function, passed through deps;
+    - the CLI: headless Electron, `scripts/skia-bake-frames.cjs`.
+  - Renders happen at composition ticks, so a late layer's in-point is
+    added.
+  - The renders are checked against Auto's verdict. A "static" bake whose
+    5 probe frames move, or an "animated" one whose frames are all
+    identical, is re-exported in the other mode once. Nothing is rendered
+    twice.
+  - PNGs are encoded byte-exact by `lib/skia-export/png.ts`
+    (`CompressionStream`).
+
+| what | result |
+|---|---|
+| `parity:skia -- --bundle bake` (128², animated Noise → Blur baked under a keyframed native ring, RN Skia 3.4 web) | **pixel-identical**, 10/10 frames 0/255, 100.00 % identical; motion 0.136 |
+| …the same frames captured at f + 0.5 and f + 0.999 vs toolbox frame f (outside the ring's swept band) | 20/20 at 0/255: the baked frame holds between ticks |
+| `compare:skia -- --a bake:blur --b bake:skb` (the engine image vs the Skia Canvas drawing the bake) | MATCH, 8/8 frames 0/255 |
+| CanvasKit CPU, shipped clipped-sheet `<Image>` vs the preview's frame, 7 cells with translucent pixels | scale 1, 2, 0.5: **0/255**. Scale 1.37: 30/255 on ≤ 4.8 % px (AA'd clip edge vs image-rect edge, plus 6 interior px of float precision at large offsets) |
+| …the alternatives | ImageShader + clip: same as `<Image>` at every scale. Atlas: 0 at 1, 2, 0.5, but 60/255 at 1.37, and RSXform is uniform-scale only. **A zero RSXform makes CanvasKit's drawAtlas draw nothing at all**: other sprites must be parked off-canvas. No gutter: 70/255 at 2× (neighbour-cell bleed) |
+| premultiplied preview copy vs the decoded PNG | 0 at 1:1; 41/255 at 2×, 27 at 0.5, 40 at 1.37, which is why the preview stays unpremul (unpremul ≡ decoded PNG at every scale) |
+| emitted `sampleBinds`, 61 frames × {+0, +0.25, +0.5, +0.999} | 241/241 exactly `floor(frame)`'s cell. An interpolated series would sit between two cells |
+| Bake FPS 20 on 60 fps | 21 cells, each held 3 timeline frames (warned) |
+| native mode on Reanimated's stand-in, steady 60 Hz | every frame its own cell |
+| native mode, jittered vsync | ±0.05 ms and ±1 ms: 29/61 frames show the previous cell, **0 differ from the worklet master clock** (both read time; an early frame shows its clock time's cell; nothing accumulates) |
+| fixture sheet | 61 cells (frames 0…60) of 128² → 4030 × 260, 806,686 B PNG (19.2 % of raw RGBA) |
+| caps | 301 frames × 512² @ 4096 → 225² cells (43.9 %), 18 × 17, 4086 × 3859. 121 × 1080 × 1920 @ 4096 → 255 × 453; @ 8192 → 511 × 908 |
+
+Not measured: the editor's bake render time on hardware, the device
+(Graphite) decode and filtering of the sheet, and on-device vsync. The
+type-checks pass for all three modes.
+
+Open:
+- **Clock jitter.** Under a jittery clock a held cell follows its clock
+  time, in both modes. If devices jitter, snapping the clock to the frame
+  grid within a tolerance would fix it.
+- **Preview cost.** The preview readback is a sync GPU stall per changed
+  frame (the §3.8.3 GPU path would remove it).
+- **MCP.** `export_skia`'s 10 s MCP timeout is short for long bakes.
+- **Scaled sheets.** A scaled-down sheet loses resolution: measured 167/255
+  max, 19/255 mean at 92 %.
 
 ### 3.3 Fusion: Skia layer → one shader (deterministic)
 

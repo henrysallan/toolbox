@@ -882,6 +882,7 @@ export const BRIDGED_TOOLS = [
       "name), `warnings`, and a `note`. Write every file verbatim into one " +
       "folder of the app; `assets/*.b64` entries are base64 — decode to " +
       "binary and drop the suffix. " +
+      "Skia Bake nodes render in the editor here (its playhead moves while it renders): one PNG, or a sprite sheet (`assets[].sheet`), reported in `bakes`. " +
       "Images and fonts ship under assets/ (manifest.json `assets` lists each with its size and `bundled`; a warning names any whose bytes didn't resolve). " +
       "Procedural drivers (LFO, Expression, Math, Scene Time, Random) compile into procedural.ts worklets (SkSL in baked mode); manifest `procedural` lists them. Fails with the plan's problems when the " +
       "target can't export. `animation` (default \"worklet\"): \"worklet\" " +

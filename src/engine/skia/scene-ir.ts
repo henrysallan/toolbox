@@ -72,6 +72,11 @@ export interface Bind<T> {
   // matrix). If any dep animates, the exporter samples the producer per
   // frame instead of shipping a track (spec §3.4 "derived binds").
   deps?: BindRef[];
+  // A per-frame value that HOLDS between frames: always sampled at every
+  // frame (never a track) and stepped, never interpolated, at fractional
+  // times — a baked sprite sheet's cell offset, where a value between two
+  // cells would show neither frame. Additive (2026-10-14, Wave 3 lane B).
+  hold?: true;
 }
 
 export type RGBA = [number, number, number, number];
@@ -306,6 +311,29 @@ export interface AssetIR {
   // by URL like `url`; the exporter writes it next to the asset. Additive
   // (2026-10-14, Wave 3 lane I).
   license?: string;
+  // The image is a sprite sheet of frames (a baked animation, Skia Bake):
+  // the layout the bytes follow. Additive (2026-10-14, Wave 3 lane B).
+  sheet?: AssetSheetIR;
+}
+
+// A sprite sheet: `ticks.length` cells of frameWidth × frameHeight px, row
+// major, `cols` per row, each surrounded by `pad` px that repeat its edge
+// pixels (so a scaled draw never samples the neighbouring cell). Cell k's
+// top-left is (k % cols · (frameWidth + 2·pad) + pad, ⌊k / cols⌋ ·
+// (frameHeight + 2·pad) + pad). Cell k holds the producer's frame at tick
+// ticks[k] on the exported clock. Additive (2026-10-14, Wave 3 lane B).
+export interface AssetSheetIR {
+  frameWidth: number;
+  frameHeight: number;
+  cols: number;
+  rows: number;
+  pad: number;
+  ticks: number[];
+  // Cells per second (≤ the timeline's fps); the frame size the cells were
+  // baked from (the canvas) when they are scaled down to fit the sheet.
+  fps: number;
+  sourceWidth: number;
+  sourceHeight: number;
 }
 
 export interface SkiaScene {

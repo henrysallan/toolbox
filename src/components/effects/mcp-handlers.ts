@@ -92,6 +92,7 @@ import {
 import { enclosingSkiaLayer, type SkiaLayerRef } from "@/engine/skia/layer-target";
 import { SKIA_ANIMATION_MODES, isSkiaAnimationMode } from "@/lib/skia-export/animation-modes";
 import type { SkiaExportEnv } from "@/lib/skia-export/editor";
+import type { BakeFrameRenderer } from "@/lib/skia-export/bake";
 import {
   describeMarkers,
   vetMarkersInput,
@@ -225,6 +226,10 @@ export interface McpHandlerDeps {
   backendRef: MutableRefObject<EngineBackend | null>;
   evalCacheRef: MutableRefObject<EvalCache>;
   lastEvalOutputsRef: MutableRefObject<Map<string, NodeOutput> | null>;
+  // Skia Bake frames for export_skia (EffectsApp renderSkiaBakeFrames):
+  // the real engine at the export size. Optional: without it a bake's
+  // asset is left out of the bundle with a warning.
+  renderSkiaBakeFrames?: BakeFrameRenderer;
 }
 
 // Shared validate step (identical split to the generate/edit clients): hard
@@ -405,6 +410,9 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       frames: deps.status.loopFrames,
       markers: deps.getMarkers?.(),
       ...(animation != null ? { animation } : {}),
+      // Skia Bake assets render in the editor (export_skia only; the plan
+      // reads the graph).
+      ...(deps.renderSkiaBakeFrames ? { renderBakeFrames: deps.renderSkiaBakeFrames } : {}),
     };
   };
   const skiaTargetId = (raw: unknown): string => {
@@ -1843,7 +1851,8 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
       const env = skiaEnv(animation);
       const id = skiaTargetId(target);
       const { exportSkiaFromEditor, skiaBundleSlug } = await import("@/lib/skia-export/editor");
-      const { prepared, result } = await exportSkiaFromEditor(
+      // Async: asset bytes, and Skia Bake frames rendered in the editor.
+      const { prepared, result, bakes } = await exportSkiaFromEditor(
         deps.nodesRef.current,
         deps.edgesRef.current,
         id,
@@ -1864,6 +1873,8 @@ export function buildMcpHandlers(deps: McpHandlerDeps): BridgeHandlers {
         folder,
         files: result.files,
         warnings: result.warnings,
+        // Skia Bakes rendered for this bundle (one PNG / a sprite sheet).
+        ...(bakes?.length ? { bakes } : {}),
         note:
           `Write every file verbatim into one folder of the React Native app (e.g. src/toolbox/${folder}/); index.ts is the entry point. ` +
           (mode === "native"

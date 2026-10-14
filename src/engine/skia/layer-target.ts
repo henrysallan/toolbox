@@ -8,6 +8,17 @@
 // Switching a layer's target is non-destructive: nodes already inside stay
 // (they just won't export, and nonSkiaLayerMembers names them).
 //
+// Engine content (the `bake` class, Wave 3): a Skia layer still holds only
+// Skia nodes. A picture only the engine can make — a blur or bloom over
+// noise, a simulation, video — is built OUTSIDE the layer and enters it as
+// an image through a Layer Input socket (one minted on the interior Layer
+// Input, or its `backdrop`) wired into Skia Bake (`skia-bake`, class
+// "bake"), which the export renders with the real engine and ships as a
+// PNG / sprite sheet. Flatten splices the Layer Input wire, so the
+// evaluator sees source → Skia Bake. No engine node is ever sanctioned
+// inside the layer: the add-node menu would have to offer the whole
+// catalog there, and the layer would stop reading as "what ships".
+//
 // Engine-side and pure (no React, no editor state) so graph-validation can
 // call it and the export bundle stays self-contained.
 
@@ -185,6 +196,7 @@ export function skiaLayerIssueMessage(
   return (
     `Node ${node.id} (${node.defType}) can't go inside Skia layer "${layer.name}" — ` +
     `a Skia layer only holds nodes with a React Native Skia lowering ` +
-    `(get_catalog with target: "skia" lists them).`
+    `(get_catalog with target: "skia" lists them). To ship what it draws, build it outside ` +
+    `the layer and wire its image in through a Layer Input socket into a Skia Bake (skia-bake).`
   );
 }

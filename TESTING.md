@@ -890,6 +890,41 @@ that pair). Offline node tests should push each input through
   harness plays it through `skia-harness/runtime-filter-web.ts`
   (index.web.ts installs it), which mirrors scene-render's emulation — web
   parity is NOT native Skia.
+- `check-skia-bake` — Skia Bake, the `bake` class (101326_skia-target.md
+  §3.2, `src/nodes/skia/bake.ts`, `engine/skia/bake-frames.ts`,
+  `lib/skia-export/bake.ts`): an ENGINE image inside a Skia layer, shipped
+  as one PNG or a sprite sheet. The wiring rule (engine nodes stay outside
+  the layer; their image comes in through a Layer Input socket or the
+  backdrop and flattens to source → bake; an engine node inside is still
+  refused, with a message naming Skia Bake); the preview (readback at
+  canvas size → an UNPREMUL CanvasKit image filed under the output's
+  AssetIR object, a ring of 4 per node and context, deleted by dispose);
+  the PNG codec (`lib/skia-export/png.ts`, CompressionStream, byte-exact);
+  static vs animated from the graph (keyframes, clip windows, time-driven
+  defs, fingerprintExtras that move with the tick — Noise's `animated`),
+  forced modes, the frame map at any Bake FPS, the sheet layout and cap;
+  sheet composition (cells, 1-px edge-repeat gutters); EXACTNESS on
+  CanvasKit CPU — the shipped clipped-sheet `<Image>` at a held whole-pixel
+  offset ≡ the preview at device scale 1, 2 and 0.5 (0/255), beside
+  ImageShader / Atlas / no-gutter / scaled-cell variants it measures; the
+  export (held offsets step at every tick incl. fractional ones — the
+  emitted timeline.ts runs; the three animation modes type-check; native
+  mode's linear clock on Reanimated's stand-in); bake on lane I's asset
+  seam (`bake:` a registered scheme on `engine/skia/asset-bytes.ts` that
+  fails with its reason when no frame renderer is there; through
+  `exportSkiaFromEditor` + a fake frame renderer: bytes bundled, a late
+  layer's ticks shifted, Auto flips without re-rendering, `bake:` never
+  reaching `resolveAsset` while a renderer answers it); and that
+  `skia-harness/src/bundle-bake` is today's export (code byte for byte —
+  its sheet's pixels need the real engine, which `parity:skia --bundle
+  bake` checks). Traps it pins: CanvasKit decodes a PNG UNPREMULTIPLIED and
+  filters it so — a premultiplied copy of the same bytes draws identically
+  at 1:1 but up to 41/255 off when scaled, so the preview must stay
+  unpremul; a zero RSXform in drawAtlas makes CanvasKit draw NOTHING (the
+  live sprite too); a held value must step — the same series interpolated
+  sits between two cells. Regenerate the slot with `npx tsx
+  scripts/export-skia.mts --fixture bake --out skia-harness/src/bundle-bake`
+  (renders through headless Electron, `scripts/skia-bake-frames.cjs`).
 - **Skia parity tools** (Electron or devices, not in `npm run check`):
   - `npm run bench:skia-atlas [-- --counts 1,4,16,64 --frames 120 --static]`
     — per-frame draw cost of Copy to Points (Skia), groups vs atlas, on
@@ -976,6 +1011,13 @@ that pair). Offline node tests should push each input through
     exception while the parity script itself loads ("App threw an error
     during load") leaves Electron open forever — run it in the foreground
     or with a timeout.
+    `--bundle bake` plays the Skia Bake slot (128², frames 0…59; output in
+    `parity-out/bake/`) and also captures every frame at f + 0.5 and
+    f + 0.999, held to 0/255 against toolbox frame f outside the band the
+    keyframed ring sweeps — the baked frame must hold between ticks. Traps:
+    the sheet loads through `useImage` (async), and a snapshot taken before
+    it lands is stable too, so the run captures once and waits before the
+    real captures (the canvaskit.wasm note above applies too).
   - `npm run parity:skia:device -- --platform ios|android` — the same
     frames captured on the iOS Simulator / Android emulator through the
     harness's deep-link capture mode, scored against the goldens. Needs
